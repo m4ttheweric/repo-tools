@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+
+# Run prettier on staged files before committing
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx|js|jsx|json|css|scss|md|yaml|yml|graphql)$')
+
+if [ -n "$STAGED_FILES" ]; then
+  echo "Running prettier on staged files..."
+  echo "$STAGED_FILES" | xargs npx prettier --write
+  echo "$STAGED_FILES" | xargs git add
+fi
+
+# Chain to the original husky pre-commit hook
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+HUSKY_HOOK="$REPO_ROOT/.husky/pre-commit"
+if [ -f "$HUSKY_HOOK" ]; then
+  HUSKY_SH="$REPO_ROOT/.husky/_/husky.sh"
+  if [ -f "$HUSKY_SH" ]; then
+    . "$HUSKY_SH"
+  fi
+fi

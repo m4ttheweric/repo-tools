@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+HUSKY_SH="$REPO_ROOT/.husky/_/husky.sh"
+
+if [ -f "$HUSKY_SH" ]; then
+  . "$HUSKY_SH"
+fi
+
+. "$REPO_ROOT/.husky/pre-push"
