@@ -25,6 +25,6 @@ Note: if the repo uses husky with a `prepare` script, `pnpm install` will reset 
 Hooks for the assured-dev monorepo. Chains to husky for anything the repo already does, and adds:
 
 - **pre-commit** — runs prettier on staged files before committing
-- **pre-push** — chains to husky's pre-push (lint check)
+- **pre-push** — chains to husky's pre-push (node version check, lint), then checks changed TS/TSX files for circular dependencies
 - **post-checkout** — chains to husky's post-checkout (node version check)
 - **post-merge** — chains to husky's post-merge (node version check)
