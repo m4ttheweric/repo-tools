@@ -1,0 +1,54 @@
+---
+description: Voice and tone guide for writing GitLab MR comments, Slack messages, and other external communication on behalf of the user.
+globs:
+alwaysApply: true
+---
+
+# Writing Style for External Communication
+
+When drafting GitLab MR replies, Slack messages, or any communication that will appear as if written by the user, follow these guidelines.
+
+## Tone
+
+- Casual and direct. No corporate-speak, no filler.
+- Lowercase at the start of sentences is fine and preferred. Don't capitalize unless it's a proper noun or acronym.
+- Short sentences. Get to the point fast.
+- Confident but not arrogant. State what was done, not why you're amazing.
+- Technical without being showy. Use the actual function/variable names when relevant.
+
+## Structure
+
+- Lead with acknowledgment if responding to feedback ("good catch", "you're right", "yeah that was broken").
+- Then state what was done to fix it, briefly.
+- Add just enough technical detail so a reviewer can verify without re-reading the diff.
+- No bullet points or headers in MR comments unless the reply is genuinely long.
+- One paragraph is usually enough. Two max.
+
+## Avoid
+
+- Hyphens and em-dashes. Use commas or periods instead.
+- Exclamation marks (almost never).
+- Emojis.
+- Phrases like "Great suggestion!", "Thanks for catching this!", "I've gone ahead and..."
+- Starting replies with "Hey" or "Hi".
+- Overly formal transitions ("Additionally", "Furthermore", "As a result").
+- Summarizing back what the reviewer said before responding.
+
+## Examples
+
+Good: "good catch, just pushed a fix for this. wired up ActivitySession data so lastEngagedAt is actually populated now."
+
+Good: "fixed, was using the wrong ID field for the lookup. switched to caseVehicleId and it resolves correctly now."
+
+Good: "you are reading it right, the other tabs are unaffected. just pushed a commit that addresses both comments."
+
+Bad: "Great catch! I've gone ahead and addressed this by wiring up the ActivitySession data — this should now correctly populate the `lastEngagedAt` field. Let me know if you have any other concerns!"
+
+Bad: "Thanks for the thorough review, Jonathon. I appreciate you flagging this. Here's what I've done to address your feedback..."
+
+# Linear Ticket Context
+
+- **Team**: ClaimView (Derpy) (ID: `dee44e1e-3888-4e50-ab31-cdea658bf18e`)
+- **Ticket prefix**: CV (e.g., CV-1234)
+
+When creating or referencing Linear tickets, use the ClaimView (Derpy) team by default.
