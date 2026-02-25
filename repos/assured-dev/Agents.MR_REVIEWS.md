@@ -3,14 +3,15 @@
 When asked to review an MR, follow these steps:
 
 1. Fetch and read the diff (all changed files in full).
-2. Fetch and read each link listed under "MR Review Process" below.
-3. Switch to Plan mode and produce a review plan in markdown with:
+2. Fetch and read the MR Description from the author.
+3. Fetch and read each link listed under "MR Review Process" below.
+4. Switch to Plan mode and produce a review plan in markdown with:
    - **Issues** categorized by priority: `blocking`, `non-blocking`, `nit`
    - For each issue: a draft inline comment (file + line reference) written in the user's voice
    - A **recommendation** at the bottom: `Approve`, `Comment`, or `Request Changes`, with a one-line rationale
-4. Wait for user approval of the plan before posting any comments or taking any action.
-5. Once approved, post each comment as an inline diff comment using `glab api` (see "MR Review Comments" section below), then apply the recommended review action.
-6. If an MR is set auto-merge (check with Gitlab CLI) and you have a comment you definitely want addressed, use Request Changes. If an MR is set to auto-merge, tell the user in your plan to warn if an approval would cause it to merge and verify approval/request changes etc.
+5. Wait for user approval of the plan before posting any comments or taking any action.
+6. Once approved, post each comment as an inline diff comment using `glab api` (see "MR Review Comments" section below), then apply the recommended review action.
+7. If an MR is set auto-merge (check with Gitlab CLI) and you have a comment you definitely want addressed, use Request Changes. If an MR is set to auto-merge, tell the user in your plan to warn if an approval would cause it to merge and verify approval/request changes etc.
 
 ## MR Review Voice
 
@@ -30,6 +31,23 @@ When actively performing an MR review, fetch and read each of these links before
 - https://google.github.io/eng-practices/review/reviewer/comments.html
 - https://google.github.io/eng-practices/review/reviewer/pushback.html
 - Err on the side of Question: vs Suggestion: when commenting. Only add Suggestion: when 100% confident it's worth suggesting.
+
+## Validating Assumptions Before Commenting
+
+Before raising any concern about types, safety, or correctness, **verify it**. Do not raise a comment based on assumption or pattern-matching alone.
+
+For type-related comments specifically:
+- Read the actual type definition of any hook or function involved (including third-party libraries in `node_modules`). Do not assume what a type is based on the name or general knowledge.
+- Trace through every layer: if the code calls `useLocalSettings()`, read `useLocalSettings`. If that calls `useLocalStorage`, read the installed type definition for `useLocalStorage`.
+- Understand what the concern actually protects against. For example, optional chaining (`?.`) only guards against `null` or `undefined`, not an empty object `{}`. Know the difference before suggesting it.
+
+If after verification you are not certain the concern is real, use `question:` not `suggestion:`. If the verification proves the concern is unfounded, drop the comment entirely.
+
+## Summary for me
+
+Part of the plan doc should be a top level section that summarizes for me the MR so I can get a big picture view of the changes.
+
+In addition, break down the changes into headings and explain key concepts or areas of concern I should understand.
 
 ## MR Review Comments
 

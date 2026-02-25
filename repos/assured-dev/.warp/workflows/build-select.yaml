@@ -1,0 +1,7 @@
+---
+name: Build Select
+command: bun ~/Documents/GitHub/assured-dev/matts-tools/build-select.ts
+description: Interactive turbo build selector - choose which packages to build
+tags:
+  - build
+  - turbo

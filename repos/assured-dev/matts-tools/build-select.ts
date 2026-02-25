@@ -1,6 +1,6 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
 
@@ -8,8 +8,7 @@ const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 
 const HISTORY_PATH = join(ROOT, '.cursor_me', 'build-history.json');
 
-// ANSI helpers
-const esc = (code) => `\x1b[${code}m`;
+const esc = (code: number): string => `\x1b[${code}m`;
 const reset = esc(0);
 const bold = esc(1);
 const dim = esc(2);
@@ -18,15 +17,30 @@ const green = esc(32);
 const yellow = esc(33);
 const magenta = esc(35);
 const white = esc(37);
-const bgCyan = esc(46);
-const black = esc(30);
 
 const CHECKBOX_ON = `${green}◉${reset}`;
 const CHECKBOX_OFF = `${dim}○${reset}`;
 const POINTER = `${cyan}❯${reset}`;
 const BLANK = ' ';
 
-function loadHistory() {
+interface Package {
+  name: string;
+  path: string;
+}
+
+interface HistoryEntry {
+  lastBuilt: number;
+  count: number;
+}
+
+type History = Record<string, HistoryEntry>;
+
+type DisplayItem =
+  | { type: 'header'; label: string }
+  | { type: 'separator' }
+  | { type: 'pkg'; pkg: Package; tag: string | null };
+
+function loadHistory(): History {
   try {
     return JSON.parse(readFileSync(HISTORY_PATH, 'utf8'));
   } catch {
@@ -34,25 +48,32 @@ function loadHistory() {
   }
 }
 
-function saveHistory(selectedNames) {
+function saveHistory(selectedNames: string[]): void {
   const history = loadHistory();
   const now = Date.now();
   for (const name of selectedNames) {
-    history[name] = { lastBuilt: now, count: (history[name]?.count ?? 0) + 1 };
+    history[name] = {
+      lastBuilt: now,
+      count: (history[name]?.count ?? 0) + 1,
+    };
   }
   mkdirSync(join(ROOT, '.cursor_me'), { recursive: true });
   writeFileSync(HISTORY_PATH, JSON.stringify(history, null, 2));
 }
 
-function getRecentPackages(packages) {
+function getRecentPackages(packages: Package[]): Package[] {
   const history = loadHistory();
-  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000; // 7 days
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
   return packages
     .filter((p) => history[p.name]?.lastBuilt > cutoff)
-    .sort((a, b) => (history[b.name]?.lastBuilt ?? 0) - (history[a.name]?.lastBuilt ?? 0));
+    .sort(
+      (a, b) =>
+        (history[b.name]?.lastBuilt ?? 0) -
+        (history[a.name]?.lastBuilt ?? 0),
+    );
 }
 
-function getPackages() {
+function getPackages(): Package[] {
   const yaml = readFileSync(join(ROOT, 'pnpm-workspace.yaml'), 'utf8');
   const paths = yaml
     .split('\n')
@@ -61,7 +82,7 @@ function getPackages() {
     .map((l) => l.slice(2).trim());
 
   return paths
-    .map((pkgPath) => {
+    .map((pkgPath): Package | null => {
       try {
         const pkg = JSON.parse(
           readFileSync(join(ROOT, pkgPath, 'package.json'), 'utf8'),
@@ -71,22 +92,22 @@ function getPackages() {
         return null;
       }
     })
-    .filter(Boolean)
+    .filter((p): p is Package => p !== null)
     .filter((p) => p.path.startsWith('packages/'))
     .sort((a, b) => a.path.localeCompare(b.path));
 }
 
-function groupByDirectory(packages) {
-  const groups = new Map();
+function groupByDirectory(packages: Package[]): Map<string, Package[]> {
+  const groups = new Map<string, Package[]>();
   for (const pkg of packages) {
     const dir = pkg.path.split('/')[0];
     if (!groups.has(dir)) groups.set(dir, []);
-    groups.get(dir).push(pkg);
+    groups.get(dir)!.push(pkg);
   }
   return groups;
 }
 
-function timeAgo(ts) {
+function timeAgo(ts: number): string {
   const diff = Date.now() - ts;
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return 'just now';
@@ -97,8 +118,15 @@ function timeAgo(ts) {
   return `${days}d ago`;
 }
 
-function render(packages, groups, cursor, selected, searchTerm, recentPackages) {
-  const lines = [];
+function render(
+  packages: Package[],
+  _groups: Map<string, Package[]>,
+  cursor: number,
+  selected: Set<string>,
+  searchTerm: string | null,
+  recentPackages: Package[],
+): { lines: string[]; filtered: Package[] } {
+  const lines: string[] = [];
   const history = loadHistory();
 
   lines.push('');
@@ -116,42 +144,57 @@ function render(packages, groups, cursor, selected, searchTerm, recentPackages) 
   const baseFiltered = isSearching
     ? packages.filter(
         (p) =>
-          p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          p.path.toLowerCase().includes(searchTerm.toLowerCase()),
+          p.name.toLowerCase().includes(searchTerm!.toLowerCase()) ||
+          p.path.toLowerCase().includes(searchTerm!.toLowerCase()),
       )
     : packages;
 
   const recentNames = new Set(recentPackages.map((p) => p.name));
   const hasRecent = recentPackages.length > 0 && !isSearching;
 
-  const displayList = [];
+  const displayList: DisplayItem[] = [];
 
   if (hasRecent) {
-    displayList.push({ type: 'header', label: `${bold}${yellow}recent${reset}` });
+    displayList.push({
+      type: 'header',
+      label: `${bold}${yellow}recent${reset}`,
+    });
     for (const pkg of recentPackages) {
-      const ago = history[pkg.name] ? timeAgo(history[pkg.name].lastBuilt) : '';
-      displayList.push({ type: 'pkg', pkg, tag: `${dim}${ago}${reset}` });
+      const ago = history[pkg.name]
+        ? timeAgo(history[pkg.name].lastBuilt)
+        : '';
+      displayList.push({
+        type: 'pkg',
+        pkg,
+        tag: `${dim}${ago}${reset}`,
+      });
     }
     displayList.push({ type: 'separator' });
   }
 
-  let lastGroup = null;
+  let lastGroup: string | null = null;
   for (const pkg of baseFiltered) {
     if (hasRecent && recentNames.has(pkg.name)) continue;
     const group = pkg.path.split('/')[0];
     if (group !== lastGroup) {
       if (lastGroup !== null) displayList.push({ type: 'separator' });
-      displayList.push({ type: 'header', label: `${bold}${magenta}${group}/${reset}` });
+      displayList.push({
+        type: 'header',
+        label: `${bold}${magenta}${group}/${reset}`,
+      });
       lastGroup = group;
     }
     displayList.push({ type: 'pkg', pkg, tag: null });
   }
 
   if (isSearching && baseFiltered.length === 0) {
-    displayList.push({ type: 'header', label: `${dim}no matches${reset}` });
+    displayList.push({
+      type: 'header',
+      label: `${dim}no matches${reset}`,
+    });
   }
 
-  const filtered = [];
+  const filtered: Package[] = [];
   let visibleIdx = 0;
   for (const item of displayList) {
     if (item.type === 'header') {
@@ -188,7 +231,7 @@ function render(packages, groups, cursor, selected, searchTerm, recentPackages) 
   return { lines, filtered };
 }
 
-async function run() {
+async function run(): Promise<string[]> {
   const packages = getPackages();
   const groups = groupByDirectory(packages);
   const recentPackages = getRecentPackages(packages);
@@ -199,41 +242,47 @@ async function run() {
   }
 
   let cursor = 0;
-  const selected = new Set();
-  let searchTerm = null;
+  const selected = new Set<string>();
+  let searchTerm: string | null = null;
   let filtered = packages;
 
   process.stdin.setRawMode(true);
   process.stdin.resume();
   process.stdin.setEncoding('utf8');
-  process.stdout.write('\x1b[?25l'); // hide cursor
+  process.stdout.write('\x1b[?25l');
 
   let lastLineCount = 0;
 
-  function draw() {
-    // clear previous render
+  function draw(): void {
     if (lastLineCount > 0) {
       process.stdout.write(`\x1b[${lastLineCount}A`);
       process.stdout.write('\x1b[0J');
     }
 
-    const result = render(packages, groups, cursor, selected, searchTerm, recentPackages);
+    const result = render(
+      packages,
+      groups,
+      cursor,
+      selected,
+      searchTerm,
+      recentPackages,
+    );
     filtered = result.filtered;
     const output = result.lines.join('\n');
     process.stdout.write(output + '\n');
     lastLineCount = result.lines.length;
   }
 
-  function cleanup() {
-    process.stdout.write('\x1b[?25h'); // show cursor
+  function cleanup(): void {
+    process.stdout.write('\x1b[?25h');
     process.stdin.setRawMode(false);
     process.stdin.pause();
   }
 
   draw();
 
-  return new Promise((resolve) => {
-    process.stdin.on('data', (key) => {
+  return new Promise<string[]>((resolve) => {
+    process.stdin.on('data', (key: string) => {
       if (searchTerm !== null) {
         if (key === '\r' || key === '\n') {
           searchTerm = null;
@@ -263,14 +312,12 @@ async function run() {
         return;
       }
 
-      // ctrl+c or q
       if (key === '\x03' || key === 'q') {
         cleanup();
         console.log(`\n  ${dim}cancelled${reset}\n`);
         process.exit(0);
       }
 
-      // enter
       if (key === '\r' || key === '\n') {
         cleanup();
         if (selected.size === 0) {
@@ -281,7 +328,6 @@ async function run() {
         return;
       }
 
-      // slash for search
       if (key === '/') {
         searchTerm = '';
         cursor = 0;
@@ -289,7 +335,6 @@ async function run() {
         return;
       }
 
-      // 'a' toggle all
       if (key === 'a') {
         const target = filtered.length > 0 ? filtered : packages;
         const allSelected = target.every((p) => selected.has(p.name));
@@ -301,7 +346,6 @@ async function run() {
         return;
       }
 
-      // space toggle
       if (key === ' ') {
         if (filtered.length > 0) {
           const pkg = filtered[cursor];
@@ -312,7 +356,6 @@ async function run() {
         return;
       }
 
-      // arrow keys
       if (key === '\x1b[A' || key === 'k') {
         cursor = Math.max(0, cursor - 1);
         draw();

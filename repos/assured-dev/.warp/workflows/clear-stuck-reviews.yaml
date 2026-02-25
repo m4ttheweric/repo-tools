@@ -1,0 +1,7 @@
+---
+name: Clear Stuck Reviews
+command: bun ~/Documents/GitHub/assured-dev/matts-tools/clear-stuck-reviews.ts
+description: Find and clear stuck Cursor composer review sessions that block the UI
+tags:
+  - cursor
+  - fix
