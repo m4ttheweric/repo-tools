@@ -5,40 +5,36 @@ const config: DevConfig = {
   // Optional: glob patterns to exclude worktrees by path
   // ignore: ["**/.cursor/worktrees/**"],
 
-  // Define your apps — each gets a PORT_<NAME> env var in the Tiltfile
-  apps: [
-    { name: "api" },
-    { name: "web", proxied: true, proxyPort: 4001 },
-  ],
-
-  // Define Tilt resources — use {repo} and {port_<name>} placeholders
-  resources: [
+  // One-shot setup tasks (run once, then done)
+  setup: [
     {
       name: "install",
       cmd: "cd {repo} && npm install",
-      labels: ["setup"],
     },
+  ],
+
+  // Long-running app servers — use {port} for own port, {port_<name>} to cross-reference
+  apps: [
     {
       name: "api",
-      cmd: "cd {repo}/apps/api && PORT={port_api} npm start",
-      cmdType: "serve",
-      labels: ["apps"],
+      cmd: "cd {repo}/apps/api && PORT={port} npm start",
       deps: ["install"],
-      links: ["http://localhost:{port_api}"],
+      links: ["http://localhost:{port}"],
     },
     {
       name: "web",
-      cmd: "cd {repo}/apps/web && PORT={port_web} npm start",
-      cmdType: "serve",
-      labels: ["apps"],
+      cmd: "cd {repo}/apps/web && PORT={port} npm start",
+      proxy: { port: 4001 },
       deps: ["install"],
-      links: ["http://localhost:{port_web}"],
+      links: ["http://localhost:{port}"],
     },
+  ],
+
+  // Manual-trigger tools (autoInit: false)
+  tools: [
     {
       name: "lint",
       cmd: "cd {repo} && npm run lint",
-      labels: ["tools"],
-      autoInit: false,
     },
   ],
 };
