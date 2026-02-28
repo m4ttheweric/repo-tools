@@ -11,11 +11,13 @@ import {
   shortDirFromPath,
   validateConfig,
   flattenResources,
+  ConfigError,
   BADGE_COLORS,
   type Worktree,
   type DetectedWorktree,
   type DevConfig,
   type TiltResource,
+  type AppResource,
 } from "./lib";
 import { generateTiltfile, normalizeCmd } from "./tiltfile-template";
 
@@ -352,7 +354,7 @@ describe("flattenResources", () => {
 
 describe("validateConfig", () => {
   const base: DevConfig = {
-    repoDir: "/repo",
+    repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
     apps: [{ name: "api", cmd: "echo api" }],
   };
 
@@ -372,14 +374,14 @@ describe("validateConfig", () => {
 
   test("throws on empty apps with no setup or tools", () => {
     expect(() =>
-      validateConfig({ repoDir: "/repo", apps: [] }),
+      validateConfig({ repoDir: "/Users/matthew/Documents/GitHub/assured-dev", apps: [] }),
     ).toThrow("at least one resource");
   });
 
   test("throws on empty name", () => {
     expect(() =>
       validateConfig({
-        repoDir: "/repo",
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
         apps: [{ name: "", cmd: "echo" }],
       }),
     ).toThrow("empty name");
@@ -388,7 +390,7 @@ describe("validateConfig", () => {
   test("throws on empty cmd", () => {
     expect(() =>
       validateConfig({
-        repoDir: "/repo",
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
         apps: [{ name: "x", cmd: "  " }],
       }),
     ).toThrow("empty cmd");
@@ -397,7 +399,7 @@ describe("validateConfig", () => {
   test("throws on duplicate names across sections", () => {
     expect(() =>
       validateConfig({
-        repoDir: "/repo",
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
         setup: [{ name: "x", cmd: "echo 1" }],
         apps: [{ name: "x", cmd: "echo 2" }],
       }),
@@ -407,7 +409,7 @@ describe("validateConfig", () => {
   test("throws on unknown dep", () => {
     expect(() =>
       validateConfig({
-        repoDir: "/repo",
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
         apps: [{ name: "a", cmd: "echo a", deps: ["missing"] }],
       }),
     ).toThrow("depends on unknown resource 'missing'");
@@ -416,7 +418,7 @@ describe("validateConfig", () => {
   test("passes with valid cross-section deps", () => {
     expect(() =>
       validateConfig({
-        repoDir: "/repo",
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
         setup: [{ name: "install", cmd: "npm i" }],
         apps: [{ name: "api", cmd: "npm start", deps: ["install"] }],
       }),
@@ -648,5 +650,280 @@ done`;
     const result = normalizeCmd(input);
     expect(result).not.toContain("\n");
     expect(result).toBe("cd /repo && PORT=3000 pnpm exec parcel src/index.html");
+  });
+});
+
+// ── V1–V7 validation rules ─────────────────────────────────
+
+describe("validateConfig — V1: empty repoDir", () => {
+  test("throws ConfigError on empty repoDir", () => {
+    expect(() =>
+      validateConfig({ repoDir: "", apps: [{ name: "api", cmd: "echo" }] }),
+    ).toThrow(ConfigError);
+  });
+
+  test("throws ConfigError on whitespace repoDir", () => {
+    expect(() =>
+      validateConfig({ repoDir: "  ", apps: [{ name: "api", cmd: "echo" }] }),
+    ).toThrow("repoDir is empty");
+  });
+});
+
+describe("validateConfig — V2: duplicate proxy ports", () => {
+  test("throws on two apps with same proxy port", () => {
+    expect(() =>
+      validateConfig({
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
+        apps: [
+          { name: "a", cmd: "echo a", proxy: { port: 4001 } },
+          { name: "b", cmd: "echo b", proxy: { port: 4001 } },
+        ],
+      }),
+    ).toThrow("Duplicate proxy port: 4001");
+  });
+
+  test("passes with different proxy ports", () => {
+    expect(() =>
+      validateConfig({
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
+        apps: [
+          { name: "a", cmd: "echo a", proxy: { port: 4001 } },
+          { name: "b", cmd: "echo b", proxy: { port: 4002 } },
+        ],
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe("validateConfig — V3: invalid app name", () => {
+  test("throws on app name with hyphens", () => {
+    expect(() =>
+      validateConfig({
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
+        apps: [{ name: "my-app", cmd: "echo" }],
+      }),
+    ).toThrow("Invalid app name: 'my-app'");
+  });
+
+  test("throws on app name starting with number", () => {
+    expect(() =>
+      validateConfig({
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
+        apps: [{ name: "1app", cmd: "echo" }],
+      }),
+    ).toThrow("Invalid app name");
+  });
+
+  test("allows underscores", () => {
+    expect(() =>
+      validateConfig({
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
+        apps: [{ name: "my_app", cmd: "echo" }],
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe("validateConfig — V4: {port} in setup/tools", () => {
+  test("throws on {port} in setup cmd", () => {
+    expect(() =>
+      validateConfig({
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
+        setup: [{ name: "s", cmd: "PORT={port} npm i" }],
+        apps: [{ name: "api", cmd: "echo" }],
+      }),
+    ).toThrow("{port} placeholder in setup");
+  });
+
+  test("throws on {port} in tools cmd", () => {
+    expect(() =>
+      validateConfig({
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
+        apps: [{ name: "api", cmd: "echo" }],
+        tools: [{ name: "t", cmd: "PORT={port} npm lint" }],
+      }),
+    ).toThrow("{port} placeholder in tools");
+  });
+
+  test("{port} in apps cmd is fine", () => {
+    expect(() =>
+      validateConfig({
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
+        apps: [{ name: "api", cmd: "PORT={port} echo" }],
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe("validateConfig — V5: self-dep", () => {
+  test("throws when resource depends on itself", () => {
+    expect(() =>
+      validateConfig({
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
+        apps: [{ name: "api", cmd: "echo", deps: ["api"] }],
+      }),
+    ).toThrow("depends on itself");
+  });
+});
+
+describe("validateConfig — V6: unknown {port_<name>}", () => {
+  test("throws on unknown port reference", () => {
+    expect(() =>
+      validateConfig({
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
+        apps: [
+          { name: "api", cmd: "BACKEND=http://localhost:{port_missing} echo" },
+        ],
+      }),
+    ).toThrow("Unknown port reference {port_missing}");
+  });
+
+  test("allows valid port reference", () => {
+    expect(() =>
+      validateConfig({
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
+        apps: [
+          { name: "backend", cmd: "echo" },
+          { name: "web", cmd: "API=http://localhost:{port_backend} echo" },
+        ],
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe("validateConfig — V7: invalid proxy port", () => {
+  test("throws on port 0", () => {
+    expect(() =>
+      validateConfig({
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
+        apps: [{ name: "api", cmd: "echo", proxy: { port: 0 } }],
+      }),
+    ).toThrow("Invalid proxy port");
+  });
+
+  test("throws on port > 65535", () => {
+    expect(() =>
+      validateConfig({
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
+        apps: [{ name: "api", cmd: "echo", proxy: { port: 70000 } }],
+      }),
+    ).toThrow("Invalid proxy port");
+  });
+
+  test("throws on negative port", () => {
+    expect(() =>
+      validateConfig({
+        repoDir: "/Users/matthew/Documents/GitHub/assured-dev",
+        apps: [{ name: "api", cmd: "echo", proxy: { port: -1 } }],
+      }),
+    ).toThrow("Invalid proxy port");
+  });
+});
+
+// ── B1: worktree path collision ─────────────────────────────
+
+describe("resolveWorktrees — path collision", () => {
+  test("throws on duplicate basenames", () => {
+    const detected: DetectedWorktree[] = [
+      { dir: "/repos/a/feature", branch: "main" },
+      { dir: "/repos/b/feature", branch: "dev" },
+    ];
+    expect(() => resolveWorktrees(detected, ["api"])).toThrow(
+      "Worktree path collision",
+    );
+  });
+
+  test("passes with unique basenames", () => {
+    const detected: DetectedWorktree[] = [
+      { dir: "/repos/main", branch: "main" },
+      { dir: "/repos/feature", branch: "dev" },
+    ];
+    expect(() => resolveWorktrees(detected, ["api"])).not.toThrow();
+  });
+});
+
+// ── B2: port overflow ───────────────────────────────────────
+
+describe("assignPorts — overflow", () => {
+  test("throws when port exceeds 65535", () => {
+    // 1000 apps x 14 worktrees from base 52000 → 52000 + 999*14 = 65986 > 65535
+    const manyApps = Array.from({ length: 1000 }, (_, i) => `app${i}`);
+    expect(() => assignPorts(manyApps, 0, 14)).toThrow("Port overflow");
+  });
+
+  test("passes within range", () => {
+    expect(() => assignPorts(["api", "web"], 0, 5)).not.toThrow();
+  });
+});
+
+// ── Full pipeline integration ───────────────────────────────
+
+describe("full pipeline: config → flatten → generate", () => {
+  test("no raw {port} remains in generated Tiltfile", async () => {
+    const configPath = new URL("./dev-proxy.config.ts", import.meta.url)
+      .pathname;
+    const { default: config } = (await import(configPath)) as {
+      default: DevConfig;
+    };
+    const resources = flattenResources(config);
+    const appNames = config.apps.map((a) => a.name);
+    const tiltfile = generateTiltfile(resources, appNames);
+
+    // {port} should have been expanded to {port_<name>}
+    // Check no standalone {port} remains (but {port_xxx} is fine)
+    const standalonePort = tiltfile.match(/\{port\}/);
+    expect(standalonePort).toBeNull();
+
+    // Verify app-specific port vars appear
+    for (const name of appNames) {
+      expect(tiltfile).toContain(`port_${name}`);
+    }
+
+    // Valid Python/Starlark
+    const result = Bun.spawnSync([
+      "python3",
+      "-c",
+      `compile(${JSON.stringify(tiltfile)}, '<tiltfile>', 'exec')`,
+    ]);
+    expect(result.exitCode).toBe(0);
+  });
+});
+
+// ── Runtime config contract ─────────────────────────────────
+
+describe("runtime config JSON contract", () => {
+  test("round-trip through JSON preserves deriveProxyConfigs", () => {
+    const detected: DetectedWorktree[] = [
+      { dir: "/repo/a", branch: "main" },
+      { dir: "/repo/b", branch: "feature" },
+    ];
+    const apps: AppResource[] = [
+      { name: "backend", cmd: "echo" },
+      { name: "web", cmd: "echo", proxy: { port: 4001 } },
+    ];
+    const appNames = apps.map((a) => a.name);
+    const resolved = resolveWorktrees(detected, appNames);
+
+    // Simulate what orchestrate.ts does
+    const json = JSON.stringify({
+      apps,
+      worktrees: resolved.map((rw) => ({
+        path: rw.path,
+        dir: rw.dir,
+        branch: rw.branch,
+        ports: rw.ports,
+      })),
+    });
+
+    // Simulate what dev-proxy.ts does
+    const raw = JSON.parse(json);
+    const configs = deriveProxyConfigs(raw.apps, raw.worktrees);
+
+    expect(configs.size).toBe(1);
+    const web = configs.get("web")!;
+    expect(web.port).toBe(4001);
+    expect(web.worktrees).toHaveLength(2);
+    expect(web.worktrees[0].upstream).toBe(resolved[0].ports.web);
+    expect(web.worktrees[1].upstream).toBe(resolved[1].ports.web);
   });
 });
