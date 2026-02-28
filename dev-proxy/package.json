@@ -8,6 +8,7 @@
     "start": "bun run dev-proxy.ts",
     "dev": "bun --watch run dev-proxy.ts",
     "orchestrate": "bun run orchestrate.ts",
+    "dump-tiltfile": "bun run dump-tiltfile.ts -o Tiltfile",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
