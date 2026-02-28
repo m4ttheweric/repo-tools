@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Dev Proxy</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 520px; margin: 60px auto; color: #222 }
+    h1 { font-size: 1.4rem }
+    a {
+      display: inline-block; margin: 4px; padding: 8px 20px; border-radius: 6px;
+      text-decoration: none; color: #fff; font-weight: 600;
+    }
+    .active { outline: 3px solid #000; outline-offset: 2px }
+    code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px }
+    table { border-collapse: collapse; margin: 16px 0; width: 100% }
+    td, th { text-align: left; padding: 4px 12px 4px 0 }
+  </style>
+</head>
+<body>
+  <h1>Dev proxy</h1>
+  <p>Routing to <strong><%= it.currentName %></strong>
+    (<code>localhost:<%= it.currentUpstream %></code>)</p>
+  <div><%~ it.buttons %></div>
+  <table><%~ it.rows %></table>
+</body>
+</html>
