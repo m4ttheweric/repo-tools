@@ -8,14 +8,16 @@ import { resolve, dirname, join } from "path";
 import { writeFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { generateTiltfile } from "./tiltfile-template";
-import { validateConfig, type DevConfig } from "./lib";
+import { validateConfig, flattenResources, type DevConfig, assignPorts } from "./lib";
 
 const configPath = resolve(dirname(import.meta.path), "dev-proxy.config.ts");
 const { default: config } = (await import(configPath)) as { default: DevConfig };
 validateConfig(config);
 
+const appNames = config.apps.map((a) => a.name);
+const resources = flattenResources(config);
 const tiltfilePath = join(tmpdir(), `dev-proxy-tiltfile-test-${process.pid}`);
-writeFileSync(tiltfilePath, generateTiltfile(config.resources));
+writeFileSync(tiltfilePath, generateTiltfile(resources, appNames));
 
 const worktreeDir = config.repoDir;
 const devProxyDir = dirname(import.meta.path);
@@ -26,15 +28,21 @@ const cleanPath = (process.env.PATH ?? "")
   .filter((p) => !p.startsWith(devProxyDir))
   .join(":");
 
+// Assign ports dynamically for worktree index 0 with 1 total worktree
+const ports = assignPorts(appNames, 0, 1);
+
 const env: Record<string, string> = {
   ...(process.env as Record<string, string>),
   PATH: cleanPath,
   PWD: worktreeDir,
   REPO_ROOT: worktreeDir,
-  PORT_BACKEND: "52000",
-  PORT_ADJUSTER: "52002",
-  PORT_FRONTEND: "52004",
 };
+
+// Set PORT_<NAME> env vars dynamically
+for (const [name, port] of Object.entries(ports)) {
+  env[`PORT_${name.toUpperCase()}`] = String(port);
+}
+
 // Remove leaked env vars
 delete env.OLDPWD;
 delete env.INIT_CWD;
@@ -44,6 +52,10 @@ for (const key of Object.keys(env)) {
 
 console.log(`Tiltfile: ${tiltfilePath}`);
 console.log(`cwd: ${worktreeDir}`);
+console.log(`\nPorts:`);
+for (const [name, port] of Object.entries(ports)) {
+  console.log(`  PORT_${name.toUpperCase()} = ${port}`);
+}
 console.log(`\nLeaked env vars:`);
 let found = false;
 for (const [k, v] of Object.entries(env)) {

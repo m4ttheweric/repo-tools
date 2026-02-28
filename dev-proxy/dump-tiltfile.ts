@@ -9,7 +9,7 @@
 import { resolve, dirname } from "path";
 import { writeFileSync } from "fs";
 import { generateTiltfile } from "./tiltfile-template";
-import { validateConfig, type DevConfig } from "./lib";
+import { validateConfig, flattenResources, type DevConfig } from "./lib";
 
 const configPath = resolve(dirname(import.meta.path), "dev-proxy.config.ts");
 const { default: config } = (await import(configPath)) as {
@@ -18,7 +18,9 @@ const { default: config } = (await import(configPath)) as {
 
 validateConfig(config);
 
-const tiltfile = generateTiltfile(config.resources);
+const resources = flattenResources(config);
+const appNames = config.apps.map((a) => a.name);
+const tiltfile = generateTiltfile(resources, appNames);
 
 const outFlag = process.argv.indexOf("-o");
 if (outFlag !== -1 && process.argv[outFlag + 1]) {

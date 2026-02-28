@@ -20,8 +20,8 @@ import {
   type Worktree,
   type ProxyConfig,
   type DevConfig,
+  type AppResource,
   type ResolvedWorktree,
-  DEFAULT_PROXY_PORTS,
   detectWorktrees,
   resolveWorktrees,
   deriveProxyConfigs,
@@ -50,32 +50,27 @@ const runtimeConfigEnv = process.env.DEV_PROXY_RUNTIME_CONFIG;
 if (runtimeConfigEnv) {
   const raw = JSON.parse(runtimeConfigEnv);
   const resolved: ResolvedWorktree[] = raw.worktrees;
-  const proxyPorts = raw.proxy as { adjuster: number; frontend: number };
-  const derived = deriveProxyConfigs(proxyPorts, resolved);
-  proxyConfigs.push(
-    { label: "adjuster", config: derived.adjuster },
-    { label: "frontend", config: derived.frontend },
-  );
+  const apps: AppResource[] = raw.apps;
+  const derived = deriveProxyConfigs(apps, resolved);
+  for (const [name, pc] of derived) {
+    proxyConfigs.push({ label: name, config: pc });
+  }
 } else {
   const configPath = resolve(dirname(import.meta.path), "dev-proxy.config.ts");
   const { default: config } = (await import(configPath)) as {
     default: DevConfig;
   };
-  const proxyPorts = {
-    adjuster: config.proxy?.adjuster ?? DEFAULT_PROXY_PORTS.adjuster,
-    frontend: config.proxy?.frontend ?? DEFAULT_PROXY_PORTS.frontend,
-  };
+  const appNames = config.apps.map((a) => a.name);
   const detected = detectWorktrees(config.repoDir, config.ignore);
   if (detected.length < 2) {
     console.error("Need at least 2 git worktrees.");
     process.exit(1);
   }
-  const resolved = resolveWorktrees(detected);
-  const derived = deriveProxyConfigs(proxyPorts, resolved);
-  proxyConfigs.push(
-    { label: "adjuster", config: derived.adjuster },
-    { label: "frontend", config: derived.frontend },
-  );
+  const resolved = resolveWorktrees(detected, appNames);
+  const derived = deriveProxyConfigs(config.apps, resolved);
+  for (const [name, pc] of derived) {
+    proxyConfigs.push({ label: name, config: pc });
+  }
 }
 
 for (const { config } of proxyConfigs) {

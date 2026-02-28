@@ -2,7 +2,7 @@
 /**
  * Orchestrator for multi-worktree local development.
  *
- * 1. Reads DevConfig (just repoDir + optional proxy ports)
+ * 1. Reads DevConfig (grouped setup/apps/tools sections)
  * 2. Auto-detects all git worktrees
  * 3. Presents interactive checkbox to select which to run
  * 4. Persists selection for next run
@@ -20,11 +20,11 @@ import {
   type DevConfig,
   type DetectedWorktree,
   type ResolvedWorktree,
-  DEFAULT_PROXY_PORTS,
   validateConfig,
   detectWorktrees,
   resolveWorktrees,
   deriveProxyConfigs,
+  flattenResources,
 } from "./lib";
 import { generateTiltfile } from "./tiltfile-template";
 
@@ -45,10 +45,8 @@ const { default: config } = (await import(configPath)) as {
 
 validateConfig(config);
 
-const proxyPorts = {
-  adjuster: config.proxy?.adjuster ?? DEFAULT_PROXY_PORTS.adjuster,
-  frontend: config.proxy?.frontend ?? DEFAULT_PROXY_PORTS.frontend,
-};
+const appNames = config.apps.map((a) => a.name);
+const proxiedApps = config.apps.filter((a) => a.proxy);
 
 // ── Detect worktrees ────────────────────────────────────────
 
@@ -115,7 +113,7 @@ if (selected.length < 2) {
 
 saveSelection(selected.map((wt) => wt.dir));
 
-const resolved = resolveWorktrees(selected);
+const resolved = resolveWorktrees(selected, appNames);
 
 // ── Port conflict check ─────────────────────────────────────
 
@@ -155,12 +153,13 @@ async function checkPort(port: number): Promise<void> {
   }
 }
 
-const proxyDerived = deriveProxyConfigs(proxyPorts, resolved);
+const proxyConfigs = deriveProxyConfigs(config.apps, resolved);
 const TILT_DASHBOARD_BASE = 10350;
 
 // Check proxy ports
-await checkPort(proxyDerived.adjuster.port);
-await checkPort(proxyDerived.frontend.port);
+for (const [, pc] of proxyConfigs) {
+  await checkPort(pc.port);
+}
 
 // Check tilt dashboard ports for orphaned processes from a previous run
 for (let i = 0; i < resolved.length; i++) {
@@ -175,16 +174,17 @@ function wtLabel(rw: ResolvedWorktree): string {
 
 // ── Write temp Tiltfile ─────────────────────────────────────
 
+const resources = flattenResources(config);
 const tiltfilePath = join(tmpdir(), `dev-proxy-tiltfile-${process.pid}`);
 writeFileSync(
   tiltfilePath,
-  generateTiltfile(config.resources),
+  generateTiltfile(resources, appNames),
 );
 
 // ── Build runtime config JSON for dev-proxy ─────────────────
 
 const runtimeConfigJson = JSON.stringify({
-  proxy: proxyPorts,
+  apps: config.apps,
   worktrees: resolved.map((rw) => ({
     path: rw.path,
     dir: rw.dir,
@@ -215,10 +215,13 @@ function spawnTilt(rw: ResolvedWorktree, index: number): Subprocess {
     PATH: cleanPath,
     PWD: rw.dir,
     REPO_ROOT: rw.dir,
-    PORT_BACKEND: String(rw.ports.backend),
-    PORT_ADJUSTER: String(rw.ports.adjuster),
-    PORT_FRONTEND: String(rw.ports.frontend),
   };
+
+  // Set PORT_<NAME> env vars dynamically from resolved ports
+  for (const [name, port] of Object.entries(rw.ports)) {
+    env[`PORT_${name.toUpperCase()}`] = String(port);
+  }
+
   // Remove env vars from `bun run` / npm that leak the orchestrator's context.
   // Parcel's static-files-copy plugin uses npm_package_json to resolve project
   // root, which causes it to look for static/ in the dev-proxy dir.
@@ -270,17 +273,18 @@ async function shutdown() {
   // Run tilt down for each worktree to cleanly tear down resources
   const tiltDownProcs = resolved.map((rw, i) => {
     const dashPort = TILT_DASHBOARD_BASE + i;
+    const env: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      REPO_ROOT: rw.dir,
+    };
+    for (const [name, port] of Object.entries(rw.ports)) {
+      env[`PORT_${name.toUpperCase()}`] = String(port);
+    }
     return Bun.spawn(
       ["tilt", "down", "-f", tiltfilePath, "--port", String(dashPort)],
       {
         cwd: rw.dir,
-        env: {
-          ...(process.env as Record<string, string>),
-          REPO_ROOT: rw.dir,
-          PORT_BACKEND: String(rw.ports.backend),
-          PORT_ADJUSTER: String(rw.ports.adjuster),
-          PORT_FRONTEND: String(rw.ports.frontend),
-        },
+        env,
         stdout: "ignore",
         stderr: "ignore",
       },
@@ -348,8 +352,9 @@ for (let i = 0; i < resolved.length; i++) {
 
 console.log();
 console.log(`  ${bold("Proxies:")}`);
-console.log(`    adjuster  ${cyan(`http://localhost:${proxyDerived.adjuster.port}`)}`);
-console.log(`    frontend  ${cyan(`http://localhost:${proxyDerived.frontend.port}`)}`);
+for (const [name, pc] of proxyConfigs) {
+  console.log(`    ${name.padEnd(10)} ${cyan(`http://localhost:${pc.port}`)}`);
+}
 console.log(`\n  ${green("Running.")} ${dim("Ctrl+C to stop.")}`);
 
 

@@ -1,29 +1,39 @@
-// ── Tilt resource config ────────────────────────────────────
+// ── Resource types (section-specific) ───────────────────────
 
-export type TiltResource = {
+/** Base fields shared by all resource types */
+type ResourceBase = {
   /** Name shown in the Tilt dashboard */
   name: string;
-  /** The shell command */
+  /** The shell command. Use {repo} for worktree root, {port_<name>} for cross-refs */
   cmd: string;
-  /** 'run' = one-shot (cmd=), 'serve' = long-running (serve_cmd=). Default: 'run' */
-  cmdType?: "run" | "serve";
-  /** Labels shown in the Tilt sidebar (e.g. ["setup"], ["apps"], ["tools"]) */
-  labels: string[];
-  /** If false, resource won't start automatically (manual trigger only). Default: true */
-  autoInit?: boolean;
-  /** Resources that must be ready first */
+  /** Resources that must be ready first (can reference any section) */
   deps?: string[];
-  /** Link URLs shown in the Tilt dashboard */
+};
+
+/** A one-shot setup resource (e.g. install, migrations) */
+export type SetupResource = ResourceBase;
+
+/** A long-running app resource */
+export type AppResource = ResourceBase & {
+  /** If set, a reverse proxy is created for this app on the given port */
+  proxy?: { port: number };
+  /** Link URLs shown in the Tilt dashboard. Use {port} for own port */
   links?: string[];
 };
 
-export type AppConfig = {
-  /** App name — used for port env vars (e.g. 'api' → PORT_API) */
+/** A manually-triggered tool resource */
+export type ToolResource = ResourceBase;
+
+// ── Tilt resource (internal, used by tiltfile-template) ─────
+
+export type TiltResource = {
   name: string;
-  /** If true, a reverse proxy is created for this app across worktrees */
-  proxied?: boolean;
-  /** Override the proxy's listen port (otherwise auto-assigned) */
-  proxyPort?: number;
+  cmd: string;
+  cmdType?: "run" | "serve";
+  labels: string[];
+  autoInit?: boolean;
+  deps?: string[];
+  links?: string[];
 };
 
 // ── Dev config (user-facing) ────────────────────────────────
@@ -31,32 +41,31 @@ export type AppConfig = {
 export type DevConfig = {
   repoDir: string;
   ignore?: string[];
-  apps?: AppConfig[];
-  resources: TiltResource[];
-  proxy?: {
-    adjuster?: number;
-    frontend?: number;
-  };
+  /** One-shot setup resources (label: "setup", cmdType: "run", autoInit: true) */
+  setup?: SetupResource[];
+  /** Long-running app resources (label: "apps", cmdType: "serve", autoInit: true) */
+  apps: AppResource[];
+  /** Manual-trigger tool resources (label: "tools", cmdType: "run", autoInit: false) */
+  tools?: ToolResource[];
 };
 
 // ── Config validation ───────────────────────────────────────
 
 export function validateConfig(config: DevConfig): void {
-  if (config.resources.length === 0) {
+  const allResources = flattenResources(config);
+
+  if (allResources.length === 0) {
     throw new Error("Config must define at least one resource");
   }
 
   const names = new Set<string>();
 
-  for (const r of config.resources) {
+  for (const r of allResources) {
     if (!r.name.trim()) {
       throw new Error("Resource has an empty name");
     }
     if (!r.cmd.trim()) {
       throw new Error(`Resource '${r.name}' has an empty cmd`);
-    }
-    if (r.labels.length === 0) {
-      throw new Error(`Resource '${r.name}' must have at least one label`);
     }
     if (names.has(r.name)) {
       throw new Error(`Duplicate resource name: '${r.name}'`);
@@ -64,7 +73,7 @@ export function validateConfig(config: DevConfig): void {
     names.add(r.name);
   }
 
-  for (const r of config.resources) {
+  for (const r of allResources) {
     for (const dep of r.deps ?? []) {
       if (!names.has(dep)) {
         throw new Error(
@@ -73,12 +82,71 @@ export function validateConfig(config: DevConfig): void {
       }
     }
   }
+
+  // Validate app names are unique (for port vars)
+  const appNames = new Set<string>();
+  for (const app of config.apps) {
+    if (appNames.has(app.name)) {
+      throw new Error(`Duplicate app name: '${app.name}'`);
+    }
+    appNames.add(app.name);
+  }
 }
 
-export const DEFAULT_PROXY_PORTS = {
-  adjuster: 4001,
-  frontend: 4002,
-} as const;
+// ── Flatten config into TiltResource[] ──────────────────────
+
+/**
+ * Convert the grouped DevConfig into a flat TiltResource array
+ * suitable for the Tiltfile generator. Applies section-level defaults:
+ *   setup → labels: ["setup"], cmdType: "run", autoInit: true
+ *   apps  → labels: ["apps"],  cmdType: "serve", autoInit: true
+ *   tools → labels: ["tools"], cmdType: "run", autoInit: false
+ *
+ * For apps, {port} placeholders in cmd and links are replaced with
+ * {port_<appName>} so the Tiltfile generator can resolve them uniformly.
+ */
+export function flattenResources(config: DevConfig): TiltResource[] {
+  const resources: TiltResource[] = [];
+
+  for (const r of config.setup ?? []) {
+    resources.push({
+      name: r.name,
+      cmd: r.cmd,
+      labels: ["setup"],
+      deps: r.deps,
+    });
+  }
+
+  for (const app of config.apps) {
+    // Replace {port} with {port_<name>} for uniform placeholder resolution
+    const portVar = `port_${app.name}`;
+    const cmd = app.cmd.replace(/\{port\}/g, `{${portVar}}`);
+    const links = app.links?.map((l) =>
+      l.replace(/\{port\}/g, `{${portVar}}`),
+    );
+
+    resources.push({
+      name: app.name,
+      cmd,
+      cmdType: "serve",
+      labels: ["apps"],
+      deps: app.deps,
+      links,
+    });
+  }
+
+  for (const r of config.tools ?? []) {
+    resources.push({
+      name: r.name,
+      cmd: r.cmd,
+      labels: ["tools"],
+      autoInit: false,
+      deps: r.deps,
+    });
+  }
+
+  return resources;
+}
 
 // ── Git worktree detection ──────────────────────────────────
 
@@ -134,22 +202,20 @@ export function pathFromDir(dir: string): string {
 // ── Port assignment ─────────────────────────────────────────
 
 const PORT_BASE = 52000;
-const APP_INDICES = { backend: 0, adjuster: 1, frontend: 2 } as const;
-export type AppName = keyof typeof APP_INDICES;
 
-export type ResolvedPorts = Record<AppName, number>;
-
+/**
+ * Dynamically assign ports for a set of apps.
+ * Each app gets a unique port: PORT_BASE + (appIndex * totalWorktrees) + worktreeIndex
+ */
 export function assignPorts(
+  appNames: string[],
   worktreeIndex: number,
   totalWorktrees: number,
-  overrides?: Partial<ResolvedPorts>,
-): ResolvedPorts {
-  const ports: ResolvedPorts = {
-    backend: PORT_BASE + APP_INDICES.backend * totalWorktrees + worktreeIndex,
-    adjuster: PORT_BASE + APP_INDICES.adjuster * totalWorktrees + worktreeIndex,
-    frontend: PORT_BASE + APP_INDICES.frontend * totalWorktrees + worktreeIndex,
-  };
-  if (overrides) Object.assign(ports, overrides);
+): Record<string, number> {
+  const ports: Record<string, number> = {};
+  for (let i = 0; i < appNames.length; i++) {
+    ports[appNames[i]] = PORT_BASE + i * totalWorktrees + worktreeIndex;
+  }
   return ports;
 }
 
@@ -159,18 +225,19 @@ export type ResolvedWorktree = {
   path: string;
   dir: string;
   branch: string;
-  ports: ResolvedPorts;
+  ports: Record<string, number>;
 };
 
 export function resolveWorktrees(
   selected: DetectedWorktree[],
+  appNames: string[],
 ): ResolvedWorktree[] {
   const N = selected.length;
   return selected.map((wt, i) => ({
     path: pathFromDir(wt.dir),
     dir: wt.dir,
     branch: wt.branch,
-    ports: assignPorts(i, N),
+    ports: assignPorts(appNames, i, N),
   }));
 }
 
@@ -187,28 +254,29 @@ export type ProxyConfig = {
   worktrees: Worktree[];
 };
 
+/**
+ * Derive proxy configs from apps that have `proxy` set.
+ * Returns a map of app name → ProxyConfig.
+ */
 export function deriveProxyConfigs(
-  proxyPorts: { adjuster: number; frontend: number },
+  apps: AppResource[],
   resolved: ResolvedWorktree[],
-): { adjuster: ProxyConfig; frontend: ProxyConfig } {
-  return {
-    adjuster: {
-      port: proxyPorts.adjuster,
+): Map<string, ProxyConfig> {
+  const configs = new Map<string, ProxyConfig>();
+
+  for (const app of apps) {
+    if (!app.proxy) continue;
+    configs.set(app.name, {
+      port: app.proxy.port,
       worktrees: resolved.map((rw) => ({
         path: rw.path,
-        upstream: rw.ports.adjuster,
+        upstream: rw.ports[app.name],
         dir: rw.dir,
       })),
-    },
-    frontend: {
-      port: proxyPorts.frontend,
-      worktrees: resolved.map((rw) => ({
-        path: rw.path,
-        upstream: rw.ports.frontend,
-        dir: rw.dir,
-      })),
-    },
-  };
+    });
+  }
+
+  return configs;
 }
 
 export function displayName(w: Worktree): string {

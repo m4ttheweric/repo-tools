@@ -14,43 +14,60 @@ Edit `dev-proxy.config.ts` with your worktree paths, upstream ports, and filesys
 ## Usage
 
 ```bash
-bun start        # run the proxy
-bun dev          # run with --watch (auto-restart on file changes)
-bun run typecheck # type-check without emitting
+bun run orchestrate.ts  # interactive worktree selection → spawns tilt + proxy
+bun run dev-proxy.ts    # run the proxy standalone
+bun run typecheck       # type-check without emitting
+bun test                # run tests
 ```
 
 ## How it works
 
-1. The proxy listens on a single port (e.g. `4001`) that Auth0 recognizes as a valid callback origin.
-2. Each worktree's dev server runs on its own port (e.g. `52001`, `52002`).
-3. Visiting `/-/main` or `/-/feature` sets a `wt` cookie and redirects to `/`.
-4. All subsequent requests are routed to the upstream matching the cookie value.
+1. The orchestrator detects all git worktrees and lets you select which to run.
+2. Each worktree gets its own Tilt instance with auto-assigned ports for each app.
+3. For apps with `proxy` set, a reverse proxy listens on a single Auth0-approved port and routes traffic based on a `wt` cookie.
+4. Visiting a worktree path (e.g. `/main`, `/feature`) sets the cookie and redirects to `/`.
 5. WebSocket connections (Parcel HMR) are transparently proxied.
 6. A floating badge is injected into HTML responses showing which worktree is active, with one-click switching.
 
 ## Config
 
 ```typescript
-import type { ProxyConfig } from "./dev-proxy";
+import type { DevConfig } from "./lib";
 
-const config: ProxyConfig = {
-  port: 4001,
-  worktrees: [
+const config: DevConfig = {
+  repoDir: "/path/to/your/repo",
+
+  setup: [
+    { name: "install", cmd: "cd {repo} && npm install" },
+  ],
+
+  apps: [
     {
-      path: "/-/main",       // URL path to set this worktree active
-      upstream: 52001,        // dev server port
-      dir: "/path/to/repo",  // optional: filesystem path (enables branch display)
+      name: "api",
+      cmd: "cd {repo}/apps/api && PORT={port} npm start",
+      deps: ["install"],
+      links: ["http://localhost:{port}"],
     },
     {
-      path: "/-/feature",
-      upstream: 52002,
-      dir: "/path/to/repo-two",
+      name: "web",
+      cmd: "cd {repo}/apps/web && PORT={port} npm start",
+      proxy: { port: 4001 },
+      deps: ["install"],
+      links: ["http://localhost:{port}"],
     },
+  ],
+
+  tools: [
+    { name: "lint", cmd: "cd {repo} && npm run lint" },
   ],
 };
 
 export default config;
 ```
+
+**Placeholders:** `{repo}` = worktree root, `{port}` = this app's port, `{port_<name>}` = another app's port.
+
+**Sections:** `setup` runs once (one-shot), `apps` are long-running servers (`serve_cmd`), `tools` are manual-trigger only.
 
 ## Templates
 
