@@ -2,9 +2,16 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 
-const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
+const gitRoot = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+  encoding: 'utf-8',
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+const ROOT =
+  gitRoot.status === 0
+    ? gitRoot.stdout.trim()
+    : new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 
 const HISTORY_PATH = join(ROOT, '.cursor_me', 'build-history.json');
 

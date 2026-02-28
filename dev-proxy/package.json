@@ -1,0 +1,22 @@
+{
+  "name": "dev-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Multi-worktree reverse proxy for local dev with Auth0-compatible cookie-based routing",
+  "type": "module",
+  "scripts": {
+    "start": "bun run dev-proxy.ts",
+    "dev": "bun --watch run dev-proxy.ts",
+    "orchestrate": "bun run orchestrate.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^8.3.0",
+    "eta": "^4.5.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.3"
+  }
+}

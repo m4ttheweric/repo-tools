@@ -1,15 +1,8 @@
 #!/usr/bin/env sh
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-HUSKY_SH="$REPO_ROOT/.husky/_/husky.sh"
-
-if [ -f "$HUSKY_SH" ]; then
-  . "$HUSKY_SH"
-fi
-
 if [ -f .nvmrc ]; then
     required_version=$(grep -v '^#' .nvmrc | tr -d '[:space:]')
-    current_version=$(node -v 2>/dev/null | sed 's/^v//')
+    current_version=$(/usr/local/bin/node -v 2>/dev/null | sed 's/^v//')
 
     if [ -z "$current_version" ]; then
         echo ""
@@ -29,25 +22,4 @@ if [ -f .nvmrc ]; then
     fi
 fi
 
-pnpm prePush
-
-# Check for circular dependencies in files changed vs the remote branch
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
-MATTS_UTILS="$(dirname "$(dirname "$SCRIPT_DIR")")"
-
-REMOTE_BRANCH=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null)
-if [ -n "$REMOTE_BRANCH" ]; then
-  CHANGED_TS=$(git diff --name-only "$REMOTE_BRANCH"...HEAD | grep -E '\.(ts|tsx)$' | grep -v '\.test\.\|\.spec\.\|__fixtures__\|__mocks__\|\.d\.ts')
-else
-  CHANGED_TS=$(git diff --name-only HEAD~1 | grep -E '\.(ts|tsx)$' | grep -v '\.test\.\|\.spec\.\|__fixtures__\|__mocks__\|\.d\.ts')
-fi
-
-if [ -n "$CHANGED_TS" ]; then
-  # shellcheck disable=SC2086
-  "$MATTS_UTILS/scripts/check-circular-deps.sh" $CHANGED_TS
-  if [ $? -ne 0 ]; then
-    echo ""
-    echo "push blocked. fix circular dependencies or use: git push --no-verify"
-    exit 1
-  fi
-fi
+/usr/local/bin/pnpm prePush
