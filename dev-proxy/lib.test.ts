@@ -9,10 +9,14 @@ import {
   parseWorktreeCookie,
   pickUpstream,
   shortDirFromPath,
+  validateConfig,
   BADGE_COLORS,
   type Worktree,
   type DetectedWorktree,
+  type DevConfig,
+  type TiltResource,
 } from "./lib";
+import { generateTiltfile, normalizeCmd } from "./tiltfile-template";
 
 describe("displayName", () => {
   test("extracts last path segment", () => {
@@ -243,5 +247,304 @@ describe("BADGE_COLORS", () => {
     for (const c of BADGE_COLORS) {
       expect(c).toMatch(/^#[0-9a-f]{6}$/i);
     }
+  });
+});
+
+// ── validateConfig ──────────────────────────────────────────
+
+describe("validateConfig", () => {
+  const base: DevConfig = {
+    repoDir: "/repo",
+    resources: [{ name: "a", cmd: "echo a", labels: ["setup"] }],
+  };
+
+  test("passes for valid config", () => {
+    expect(() => validateConfig(base)).not.toThrow();
+  });
+
+  test("throws on empty resources", () => {
+    expect(() =>
+      validateConfig({ ...base, resources: [] }),
+    ).toThrow("at least one resource");
+  });
+
+  test("throws on empty name", () => {
+    expect(() =>
+      validateConfig({
+        ...base,
+        resources: [{ name: "", cmd: "echo", labels: ["x"] }],
+      }),
+    ).toThrow("empty name");
+  });
+
+  test("throws on empty cmd", () => {
+    expect(() =>
+      validateConfig({
+        ...base,
+        resources: [{ name: "x", cmd: "  ", labels: ["x"] }],
+      }),
+    ).toThrow("empty cmd");
+  });
+
+  test("throws on empty labels", () => {
+    expect(() =>
+      validateConfig({
+        ...base,
+        resources: [{ name: "x", cmd: "echo", labels: [] }],
+      }),
+    ).toThrow("at least one label");
+  });
+
+  test("throws on duplicate names", () => {
+    expect(() =>
+      validateConfig({
+        ...base,
+        resources: [
+          { name: "x", cmd: "echo 1", labels: ["a"] },
+          { name: "x", cmd: "echo 2", labels: ["a"] },
+        ],
+      }),
+    ).toThrow("Duplicate resource name: 'x'");
+  });
+
+  test("throws on unknown dep", () => {
+    expect(() =>
+      validateConfig({
+        ...base,
+        resources: [
+          { name: "a", cmd: "echo a", labels: ["s"], deps: ["missing"] },
+        ],
+      }),
+    ).toThrow("depends on unknown resource 'missing'");
+  });
+
+  test("passes with valid deps", () => {
+    expect(() =>
+      validateConfig({
+        ...base,
+        resources: [
+          { name: "install", cmd: "npm i", labels: ["setup"] },
+          {
+            name: "build",
+            cmd: "npm build",
+            labels: ["setup"],
+            deps: ["install"],
+          },
+        ],
+      }),
+    ).not.toThrow();
+  });
+});
+
+// ── generateTiltfile ────────────────────────────────────────
+
+describe("generateTiltfile", () => {
+  test("renders a minimal run resource", () => {
+    const resources: TiltResource[] = [
+      { name: "install", cmd: "npm install", labels: ["setup"] },
+    ];
+    const out = generateTiltfile(resources);
+    expect(out).toContain("local_resource(");
+    expect(out).toContain("'install'");
+    expect(out).toContain("cmd='npm install'");
+    expect(out).toContain("labels=['setup']");
+  });
+
+  test("cmdType serve emits serve_cmd", () => {
+    const resources: TiltResource[] = [
+      {
+        name: "server",
+        cmd: "node index.js",
+        cmdType: "serve",
+        labels: ["apps"],
+      },
+    ];
+    const out = generateTiltfile(resources);
+    expect(out).toContain("serve_cmd='node index.js'");
+    // Ensure 'cmd=' does not appear as a standalone key (only as part of serve_cmd)
+    expect(out).not.toMatch(/[^_]cmd='/);
+  });
+
+  test("autoInit false emits auto_init=False", () => {
+    const resources: TiltResource[] = [
+      {
+        name: "lint",
+        cmd: "npm run lint",
+        labels: ["tools"],
+        autoInit: false,
+      },
+    ];
+    const out = generateTiltfile(resources);
+    expect(out).toContain("auto_init=False");
+  });
+
+  test("autoInit true or undefined does not emit auto_init", () => {
+    const resources: TiltResource[] = [
+      { name: "build", cmd: "npm run build", labels: ["setup"] },
+    ];
+    const out = generateTiltfile(resources);
+    expect(out).not.toContain("auto_init");
+  });
+
+  test("deps renders resource_deps", () => {
+    const resources: TiltResource[] = [
+      {
+        name: "test",
+        cmd: "npm test",
+        labels: ["checks"],
+        deps: ["install", "build"],
+      },
+    ];
+    const out = generateTiltfile(resources);
+    expect(out).toContain("resource_deps=['install', 'build']");
+  });
+
+  test("links renders links", () => {
+    const resources: TiltResource[] = [
+      {
+        name: "api",
+        cmd: "node api.js",
+        cmdType: "serve",
+        labels: ["apps"],
+        links: ["http://localhost:3000"],
+      },
+    ];
+    const out = generateTiltfile(resources);
+    expect(out).toContain("links=['http://localhost:3000']");
+  });
+
+  test("groups resources by first label with section comments", () => {
+    const resources: TiltResource[] = [
+      { name: "a", cmd: "echo a", labels: ["setup"] },
+      { name: "b", cmd: "echo b", labels: ["setup"] },
+      { name: "c", cmd: "echo c", labels: ["apps"] },
+    ];
+    const out = generateTiltfile(resources);
+    const setupIdx = out.indexOf("# ── Setup");
+    const appsIdx = out.indexOf("# ── Apps");
+    expect(setupIdx).toBeGreaterThan(-1);
+    expect(appsIdx).toBeGreaterThan(setupIdx);
+  });
+
+  test("always emits env var preamble", () => {
+    const out = generateTiltfile([]);
+    expect(out).toContain("REPO_ROOT = os.environ['REPO_ROOT']");
+    expect(out).toContain("PORT_BACKEND");
+  });
+
+  test("multi-line cmd uses triple-quoted string", () => {
+    const resources: TiltResource[] = [
+      {
+        name: "multi",
+        cmd: "echo hello\necho world",
+        labels: ["setup"],
+      },
+    ];
+    const out = generateTiltfile(resources);
+    expect(out).toContain("cmd='''");
+  });
+});
+
+// ── Starlark syntax validation ──────────────────────────────
+
+describe("Starlark syntax", () => {
+  test("generated Tiltfile is valid Python syntax", () => {
+    const resources: TiltResource[] = [
+      { name: "install", cmd: "npm install", labels: ["setup"] },
+      {
+        name: "api",
+        cmd: "cd /repo && npm start",
+        cmdType: "serve",
+        labels: ["apps"],
+        deps: ["install"],
+        links: ["http://localhost:3000"],
+      },
+      {
+        name: "migrate",
+        cmd: "cd /repo\necho 'running migrations'\nnpm run migrate",
+        labels: ["setup"],
+        deps: ["install"],
+      },
+      {
+        name: "lint",
+        cmd: "npm run lint",
+        labels: ["tools"],
+        autoInit: false,
+      },
+    ];
+    const tiltfile = generateTiltfile(resources);
+    const result = Bun.spawnSync([
+      "python3",
+      "-c",
+      `compile(${JSON.stringify(tiltfile)}, '<tiltfile>', 'exec')`,
+    ]);
+    if (result.exitCode !== 0) {
+      const err = new TextDecoder().decode(result.stderr);
+      throw new Error(
+        `Generated Tiltfile has invalid syntax:\n${err}\n\nTiltfile:\n${tiltfile}`,
+      );
+    }
+  });
+
+  test("actual config produces valid Python syntax", async () => {
+    const configPath = new URL("./dev-proxy.config.ts", import.meta.url)
+      .pathname;
+    const { default: config } = (await import(configPath)) as {
+      default: DevConfig;
+    };
+    const tiltfile = generateTiltfile(config.resources);
+    const result = Bun.spawnSync([
+      "python3",
+      "-c",
+      `compile(${JSON.stringify(tiltfile)}, '<tiltfile>', 'exec')`,
+    ]);
+    if (result.exitCode !== 0) {
+      const err = new TextDecoder().decode(result.stderr);
+      throw new Error(
+        `Config Tiltfile has invalid syntax:\n${err}\n\nTiltfile:\n${tiltfile}`,
+      );
+    }
+  });
+});
+
+// ── normalizeCmd ────────────────────────────────────────────
+
+describe("normalizeCmd", () => {
+  test("collapses indented continuations into single line", () => {
+    const input = `cd /repo/apps/backend &&
+        PORT=3000
+        doppler run --preserve-env --
+        node server.js`;
+    expect(normalizeCmd(input)).toBe(
+      "cd /repo/apps/backend && PORT=3000 doppler run --preserve-env -- node server.js",
+    );
+  });
+
+  test("preserves real shell scripts with if/then/fi", () => {
+    const input = `cd /repo
+if true; then
+    echo yes
+fi`;
+    expect(normalizeCmd(input)).toBe(input);
+  });
+
+  test("preserves single-line commands as-is", () => {
+    expect(normalizeCmd("npm install")).toBe("npm install");
+  });
+
+  test("preserves for/do/done scripts", () => {
+    const input = `for f in *.js; do
+    echo $f
+done`;
+    expect(normalizeCmd(input)).toBe(input);
+  });
+
+  test("serve cmd with no script keywords collapses", () => {
+    const input = `cd /repo &&
+        PORT=3000
+        pnpm exec parcel src/index.html`;
+    const result = normalizeCmd(input);
+    expect(result).not.toContain("\n");
+    expect(result).toBe("cd /repo && PORT=3000 pnpm exec parcel src/index.html");
   });
 });

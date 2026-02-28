@@ -140,7 +140,11 @@ async function checkPort(port: number): Promise<void> {
     const answer = line.trim().toLowerCase();
     if (answer === "" || answer === "y" || answer === "yes") {
       for (const pid of pids) {
-        process.kill(parseInt(pid), "SIGTERM");
+        try {
+          process.kill(parseInt(pid), "SIGTERM");
+        } catch {
+          /* process already exited */
+        }
       }
       console.log(`  ✓ Killed. Waiting for port to free up...`);
       await Bun.sleep(500);
@@ -321,7 +325,7 @@ function startProxyServer(label: string, pc: ProxyConfig) {
         return maybeInjectBadge(proxyRes, wt, worktrees);
       } catch {
         return new Response(
-          `502 — ${displayName(wt)} (localhost:${wt.upstream}) is not reachable.\n`,
+          `502 - ${displayName(wt)} (localhost:${wt.upstream}) is not reachable.\n`,
           { status: 502, headers: { "Content-Type": "text/plain" } },
         );
       }
@@ -395,53 +399,16 @@ const servers = proxyConfigs.map(({ label, config }) =>
   startProxyServer(label, config),
 );
 
-// ── Console output ──────────────────────────────────────────
+// ── Console output (only when running standalone) ───────────
 
-const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
-const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
-const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
-const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
-const magenta = (s: string) => `\x1b[35m${s}\x1b[0m`;
+if (!runtimeConfigEnv) {
+  const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
+  const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
+  const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
 
-const colors = [green, cyan, magenta, (s: string) => `\x1b[33m${s}\x1b[0m`];
-
-for (const srv of servers) {
-  const { port, label, worktrees } = srv;
-
-  const nameCol =
-    Math.max("Status".length, ...worktrees.map((w) => displayName(w).length)) +
-    2;
-  const upstreamCol = Math.max(
-    ...worktrees.map((w) => `localhost:${w.upstream}`.length),
-  );
-
-  const rows = worktrees
-    .map((w, i) => {
-      const color = colors[i % colors.length];
-      const name = displayName(w).padEnd(nameCol);
-      const upstream = `localhost:${w.upstream}`.padEnd(upstreamCol);
-      const url = `http://localhost:${port}${w.path}`;
-      return `  ${color("●")} ${bold(name)} ${dim(upstream)}  ${cyan(url)}`;
-    })
-    .join("\n");
-
-  const statusUrl = `http://localhost:${port}${statusPath}`;
-  const statusRow = `  📋 ${bold("Status".padEnd(nameCol))} ${dim(
-    "·".repeat(upstreamCol),
-  )}  ${cyan(statusUrl)}`;
-
-  const lineLen = nameCol + upstreamCol + statusUrl.length + 10;
-
-  console.log(`
-  ⚡ ${bold("dev-proxy")} ${dim(label)} ${dim("v2.0")}
-  ${dim("─".repeat(lineLen))}
-
-${rows}
-
-${statusRow}
-  ${dim("─".repeat(lineLen))}
-  ${dim("Click a URL above to switch. HMR supported.")}
-
-  ${green("Ready")} on ${bold(`http://localhost:${port}`)}
-`);
+  console.log(`\n  ${bold("dev-proxy")} ${dim("ready")}`);
+  for (const srv of servers) {
+    console.log(`    ${srv.label.padEnd(10)} ${cyan(`http://localhost:${srv.port}`)}`);
+  }
+  console.log();
 }

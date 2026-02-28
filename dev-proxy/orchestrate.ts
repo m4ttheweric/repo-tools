@@ -21,6 +21,7 @@ import {
   type DetectedWorktree,
   type ResolvedWorktree,
   DEFAULT_PROXY_PORTS,
+  validateConfig,
   detectWorktrees,
   resolveWorktrees,
   deriveProxyConfigs,
@@ -41,6 +42,8 @@ const configPath = resolve(dirname(import.meta.path), "dev-proxy.config.ts");
 const { default: config } = (await import(configPath)) as {
   default: DevConfig;
 };
+
+validateConfig(config);
 
 const proxyPorts = {
   adjuster: config.proxy?.adjuster ?? DEFAULT_PROXY_PORTS.adjuster,
@@ -138,7 +141,11 @@ async function checkPort(port: number): Promise<void> {
 
   if (kill) {
     for (const pid of pids) {
-      process.kill(parseInt(pid), "SIGTERM");
+      try {
+        process.kill(parseInt(pid), "SIGTERM");
+      } catch {
+        /* process already exited */
+      }
     }
     console.log(`  ✓ Killed. Waiting for port to free up...`);
     await Bun.sleep(500);
@@ -169,7 +176,10 @@ function wtLabel(rw: ResolvedWorktree): string {
 // ── Write temp Tiltfile ─────────────────────────────────────
 
 const tiltfilePath = join(tmpdir(), `dev-proxy-tiltfile-${process.pid}`);
-writeFileSync(tiltfilePath, generateTiltfile());
+writeFileSync(
+  tiltfilePath,
+  generateTiltfile(config.resources),
+);
 
 // ── Build runtime config JSON for dev-proxy ─────────────────
 
@@ -192,13 +202,31 @@ type Subprocess = ReturnType<typeof Bun.spawn>;
 function spawnTilt(rw: ResolvedWorktree, index: number): Subprocess {
   const dashPort = TILT_DASHBOARD_BASE + index;
 
+  // Clean PATH: bun prepends local node_modules/.bin entries which leak into
+  // Tilt child processes and can confuse tools like Parcel about project root.
+  const devProxyDir = dirname(import.meta.path);
+  const cleanPath = (process.env.PATH ?? "")
+    .split(":")
+    .filter((p) => !p.startsWith(devProxyDir))
+    .join(":");
+
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
+    PATH: cleanPath,
+    PWD: rw.dir,
     REPO_ROOT: rw.dir,
     PORT_BACKEND: String(rw.ports.backend),
     PORT_ADJUSTER: String(rw.ports.adjuster),
     PORT_FRONTEND: String(rw.ports.frontend),
   };
+  // Remove env vars from `bun run` / npm that leak the orchestrator's context.
+  // Parcel's static-files-copy plugin uses npm_package_json to resolve project
+  // root, which causes it to look for static/ in the dev-proxy dir.
+  delete env.OLDPWD;
+  delete env.INIT_CWD;
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("npm_")) delete env[key];
+  }
 
   const proc = Bun.spawn(
     ["tilt", "up", "-f", tiltfilePath, "--port", String(dashPort)],
@@ -309,32 +337,20 @@ children.push(proxyProc);
 
 const nameCol = Math.max(...resolved.map((rw) => wtLabel(rw).length)) + 2;
 
-console.log(`
-  ${bold("dev-proxy orchestrator")}
-  ${dim("─".repeat(50))}
-`);
+console.log(`\n  ${bold("dev-proxy orchestrator")}\n`);
 
 for (let i = 0; i < resolved.length; i++) {
   const rw = resolved[i];
-  const label = wtLabel(rw);
-  const dashUrl = `http://localhost:${TILT_DASHBOARD_BASE + i}`;
-  console.log(
-    `  ${green("●")} ${bold(label.padEnd(nameCol))} ${dim(rw.branch)}`,
-  );
-  console.log(`    tilt  ${cyan(dashUrl)}`);
+  const label = wtLabel(rw).padEnd(nameCol);
+  const tiltUrl = `http://localhost:${TILT_DASHBOARD_BASE + i}`;
+  console.log(`  ${green("●")} ${bold(label)} ${dim(rw.branch.padEnd(30))} ${dim("tilt")} ${cyan(tiltUrl)}`);
 }
 
-console.log(`\n  ${bold("Proxies:")}`);
-console.log(
-  `    adjuster  ${cyan(`http://localhost:${proxyDerived.adjuster.port}`)}`,
-);
-console.log(
-  `    frontend  ${cyan(`http://localhost:${proxyDerived.frontend.port}`)}`,
-);
+console.log();
+console.log(`  ${bold("Proxies:")}`);
+console.log(`    adjuster  ${cyan(`http://localhost:${proxyDerived.adjuster.port}`)}`);
+console.log(`    frontend  ${cyan(`http://localhost:${proxyDerived.frontend.port}`)}`);
+console.log(`\n  ${green("Running.")} ${dim("Ctrl+C to stop.")}`);
 
-console.log(`
-  ${dim("─".repeat(50))}
-  ${green("All processes running.")} Press Ctrl+C to stop.
-`);
 
 await new Promise(() => {});

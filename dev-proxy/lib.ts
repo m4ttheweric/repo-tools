@@ -1,13 +1,79 @@
+// ── Tilt resource config ────────────────────────────────────
+
+export type TiltResource = {
+  /** Name shown in the Tilt dashboard */
+  name: string;
+  /** The shell command */
+  cmd: string;
+  /** 'run' = one-shot (cmd=), 'serve' = long-running (serve_cmd=). Default: 'run' */
+  cmdType?: "run" | "serve";
+  /** Labels shown in the Tilt sidebar (e.g. ["setup"], ["apps"], ["tools"]) */
+  labels: string[];
+  /** If false, resource won't start automatically (manual trigger only). Default: true */
+  autoInit?: boolean;
+  /** Resources that must be ready first */
+  deps?: string[];
+  /** Link URLs shown in the Tilt dashboard */
+  links?: string[];
+};
+
+export type AppConfig = {
+  /** App name — used for port env vars (e.g. 'api' → PORT_API) */
+  name: string;
+  /** If true, a reverse proxy is created for this app across worktrees */
+  proxied?: boolean;
+  /** Override the proxy's listen port (otherwise auto-assigned) */
+  proxyPort?: number;
+};
+
 // ── Dev config (user-facing) ────────────────────────────────
 
 export type DevConfig = {
   repoDir: string;
   ignore?: string[];
+  apps?: AppConfig[];
+  resources: TiltResource[];
   proxy?: {
     adjuster?: number;
     frontend?: number;
   };
 };
+
+// ── Config validation ───────────────────────────────────────
+
+export function validateConfig(config: DevConfig): void {
+  if (config.resources.length === 0) {
+    throw new Error("Config must define at least one resource");
+  }
+
+  const names = new Set<string>();
+
+  for (const r of config.resources) {
+    if (!r.name.trim()) {
+      throw new Error("Resource has an empty name");
+    }
+    if (!r.cmd.trim()) {
+      throw new Error(`Resource '${r.name}' has an empty cmd`);
+    }
+    if (r.labels.length === 0) {
+      throw new Error(`Resource '${r.name}' must have at least one label`);
+    }
+    if (names.has(r.name)) {
+      throw new Error(`Duplicate resource name: '${r.name}'`);
+    }
+    names.add(r.name);
+  }
+
+  for (const r of config.resources) {
+    for (const dep of r.deps ?? []) {
+      if (!names.has(dep)) {
+        throw new Error(
+          `Resource '${r.name}' depends on unknown resource '${dep}'`,
+        );
+      }
+    }
+  }
+}
 
 export const DEFAULT_PROXY_PORTS = {
   adjuster: 4001,
