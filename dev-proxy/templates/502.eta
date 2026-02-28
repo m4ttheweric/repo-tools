@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="3">
+  <title>Service Unavailable — Dev Proxy</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 480px;
+      margin: 80px auto;
+      color: #334155;
+      line-height: 1.5;
+    }
+    .icon { font-size: 2rem; margin-bottom: 8px }
+    h1 { font-size: 1.3rem; color: #0f172a; margin: 0 0 4px }
+    .sub { color: #64748b; font-size: 0.9rem; margin: 0 0 20px }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.85rem;
+    }
+    .refresh { color: #94a3b8; font-size: 0.8rem; margin-top: 20px }
+    .buttons { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 16px }
+    .buttons a {
+      display: inline-block;
+      padding: 6px 16px;
+      border-radius: 6px;
+      text-decoration: none;
+      color: #fff;
+      font-weight: 600;
+      font-size: 0.85rem;
+    }
+    .buttons a.active { outline: 2px solid #0f172a; outline-offset: 2px }
+  </style>
+</head>
+<body>
+  <div class="icon">⚠️</div>
+  <h1>Service unavailable</h1>
+  <p class="sub">
+    <strong><%= it.name %></strong> (<code>localhost:<%= it.upstream %></code>) is not reachable.
+  </p>
+  <p>The upstream server may still be starting up. This page will auto-refresh.</p>
+  <% if (it.buttons) { %>
+    <div class="buttons"><%~ it.buttons %></div>
+  <% } %>
+  <p class="refresh">↻ Auto-refreshing every 3 seconds…</p>
+</body>
+</html>

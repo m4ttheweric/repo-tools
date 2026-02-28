@@ -15,6 +15,7 @@
  */
 
 import { resolve, dirname, join } from "path";
+import { existsSync } from "fs";
 import { Eta } from "eta";
 import {
   type Worktree,
@@ -22,6 +23,7 @@ import {
   type DevConfig,
   type AppResource,
   type ResolvedWorktree,
+  ConfigError,
   detectWorktrees,
   resolveWorktrees,
   deriveProxyConfigs,
@@ -33,6 +35,17 @@ import {
 } from "./lib";
 
 export type { Worktree, ProxyConfig };
+
+const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
+const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
+const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
+
+function die(headline: string, hint?: string): never {
+  console.error(`\n  ${red("✗")} ${bold(headline)}`);
+  if (hint) console.error(`    ${dim(hint)}`);
+  console.error();
+  process.exit(1);
+}
 
 // ── Template engine ─────────────────────────────────────────
 
@@ -57,14 +70,30 @@ if (runtimeConfigEnv) {
   }
 } else {
   const configPath = resolve(dirname(import.meta.path), "dev-proxy.config.ts");
-  const { default: config } = (await import(configPath)) as {
-    default: DevConfig;
-  };
+
+  if (!existsSync(configPath)) {
+    die(
+      "Config file not found",
+      "Run: cp dev-proxy.config.example.ts dev-proxy.config.ts",
+    );
+  }
+
+  let config: DevConfig;
+  try {
+    const mod = (await import(configPath)) as { default: DevConfig };
+    config = mod.default;
+  } catch (e) {
+    if (e instanceof ConfigError) die(e.headline, e.hint);
+    die("Failed to load config", e instanceof Error ? e.message : String(e));
+  }
+
   const appNames = config.apps.map((a) => a.name);
   const detected = detectWorktrees(config.repoDir, config.ignore);
   if (detected.length < 2) {
-    console.error("Need at least 2 git worktrees.");
-    process.exit(1);
+    die(
+      "Need at least 2 git worktrees",
+      'Use "git worktree add" to create another',
+    );
   }
   const resolved = resolveWorktrees(detected, appNames);
   const derived = deriveProxyConfigs(config.apps, resolved);
@@ -73,11 +102,10 @@ if (runtimeConfigEnv) {
   }
 }
 
-for (const { config } of proxyConfigs) {
-  if (config.worktrees.length < 2) {
-    console.error("Config must have at least 2 worktrees.");
-    process.exit(1);
-  }
+// U5: if no proxied apps, nothing to do
+if (proxyConfigs.length === 0) {
+  console.log("\n  No apps have proxy configured — nothing to serve.\n");
+  process.exit(0);
 }
 
 // ── Git branch resolution ────────────────────────────────────
@@ -319,10 +347,23 @@ function startProxyServer(label: string, pc: ProxyConfig) {
 
         return maybeInjectBadge(proxyRes, wt, worktrees);
       } catch {
-        return new Response(
-          `502 - ${displayName(wt)} (localhost:${wt.upstream}) is not reachable.\n`,
-          { status: 502, headers: { "Content-Type": "text/plain" } },
-        );
+        const buttons = worktrees
+          .map(
+            (w) =>
+              `<a href="${w.path}" style="background:${w === wt ? "#2563eb" : "#64748b"}"${w === wt ? ' class="active"' : ''}>${displayName(w)}</a>`,
+          )
+          .join("\n    ");
+
+        const html = eta.render("./502", {
+          name: displayName(wt),
+          upstream: wt.upstream,
+          buttons,
+        });
+
+        return new Response(html, {
+          status: 502,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
       }
     },
 
