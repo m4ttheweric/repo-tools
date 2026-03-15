@@ -6,8 +6,8 @@ Shell config fragments meant to be sourced from `.zshrc`.
 
 Add this to `~/.zshrc`:
 
-```
-[ -f "$HOME/Documents/GitHub/matts-utils/shell/pnpm-hooks.sh" ] && . "$HOME/Documents/GitHub/matts-utils/shell/pnpm-hooks.sh"
+```zsh
+[ -f "$HOME/Documents/GitHub/repo-tools/shell/pnpm-hooks.sh" ] && . "$HOME/Documents/GitHub/repo-tools/shell/pnpm-hooks.sh"
 ```
 
 ## pnpm-hooks.sh
