@@ -1,5 +1,0 @@
-node_modules/
-.DS_Store
-dev-proxy.config.ts
-.worktree-selection.json
-Tiltfile.generated
