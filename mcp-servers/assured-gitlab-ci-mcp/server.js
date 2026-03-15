@@ -58,12 +58,12 @@ const server = new McpServer({
 
 server.tool(
   "find_pipelines",
-  "Find all relevant pipelines for a branch. Returns the latest branch pipeline and " +
-    "latest MR pipeline, and automatically resolves the dynamic-tests child pipeline ID " +
-    "from the MR pipeline. This is always the first tool to call when investigating a " +
-    "failing pipeline or CI failure on a branch. " +
-    "Use when: user asks why a branch is failing, what's broken in CI, pipeline status " +
-    "for a branch, or to start any CI investigation.",
+  "Find all relevant pipelines for a branch — always the first tool to call for any CI " +
+    "investigation. Returns the branch pipeline, the MR pipeline, and automatically " +
+    "resolves the dynamic-tests child pipeline ID in a single call. " +
+    "Use when: why is this branch failing, CI is red, pipeline is failing, check the " +
+    "pipeline, what's broken in CI, is CI passing, pipeline status, the MR is failing, " +
+    "investigate CI, what failed on this branch, check if tests are passing.",
   {
     branch: z
       .string()
@@ -166,9 +166,10 @@ server.tool(
 
 server.tool(
   "get_mr_pipelines",
-  "List pipelines for an open merge request by MR number. Useful when the branch name " +
-    "lookup doesn't return MR pipelines (MR pipelines use a special ref format). " +
-    "Also resolves the dynamic-tests child pipeline for each MR pipeline.",
+  "List pipelines for an open merge request by MR number, with automatic dynamic-tests " +
+    "child pipeline resolution. Use when the user refers to an MR or PR by number " +
+    "rather than branch name — e.g. MR 30466, PR !30466, merge request 30466, " +
+    "check pipeline for MR, why is MR failing, what failed on this MR.",
   {
     mrNumber: z.number().describe("The MR/PR number, e.g. 30466"),
     limit: z
@@ -237,10 +238,12 @@ server.tool(
 
 server.tool(
   "get_pipeline_jobs",
-  "List all jobs in a pipeline with their status, duration, and failure reason. " +
-    "Also fetches bridge jobs (child pipeline triggers) and includes the downstream pipeline ID. " +
-    "Use after find_pipelines to drill into the dynamic-tests child pipeline. " +
-    "Use when: user wants to see which jobs failed, what tests are broken, job statuses.",
+  "List all jobs in a pipeline with status, duration, and failure reason. Fetches both " +
+    "regular jobs and bridge jobs (child pipeline triggers). Use after find_pipelines " +
+    "to drill into the dynamic-tests child pipeline. " +
+    "Use when: which jobs failed, which tests are broken, show me the failures, " +
+    "what failed in the pipeline, list the failing jobs, what tests are red, " +
+    "show job statuses, what's failing in the dynamic tests pipeline.",
   {
     pipelineId: z.number().describe("The pipeline ID, e.g. 2385903614"),
     failedOnly: z
@@ -319,9 +322,11 @@ server.tool(
 
 server.tool(
   "get_job_log",
-  "Get the log output for a specific CI job. Returns the last portion of the log " +
-    "which contains the failure output. Use when: user wants to see what a job failed on, " +
-    "see error output, understand why a specific test or check failed.",
+  "Get the cleaned log output for a CI job — ANSI codes and GitLab section markers " +
+    "stripped. Returns the tail of the log where failure output appears. " +
+    "Use when: show me the error, what did the job fail on, see the failure output, " +
+    "why did type-check fail, what's the test failure, show me the log, " +
+    "what error is the job throwing, read the job output.",
   {
     jobId: z.number().describe("The job ID, e.g. 13497976028"),
     tailLines: z
