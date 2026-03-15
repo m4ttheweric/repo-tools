@@ -6,10 +6,30 @@ import {
   readdirSync,
   readFileSync,
   writeFileSync,
-  lstatSync,
 } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
+
+// ── Types ────────────────────────────────────────────────────────────────────
+
+interface LinkSpec {
+  repoPath: string;
+  sourcePath: string;
+  description?: string;
+}
+
+interface SourceEntry {
+  name: string;
+  type: "directory" | "file";
+}
+
+interface RepoInfo {
+  repo: string;
+  hasSpecs: boolean;
+  specCount: number;
+}
+
+// ── Paths ────────────────────────────────────────────────────────────────────
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -19,23 +39,23 @@ const REPOS_DIR = join(REPO_TOOLS_DIR, "repos");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function specsPath(repo) {
+function specsPath(repo: string): string {
   return join(REPOS_DIR, repo, "link-specs.json");
 }
 
-function readSpecs(repo) {
+function readSpecs(repo: string): LinkSpec[] | null {
   try {
-    return JSON.parse(readFileSync(specsPath(repo), "utf8"));
+    return JSON.parse(readFileSync(specsPath(repo), "utf8")) as LinkSpec[];
   } catch {
     return null;
   }
 }
 
-function writeSpecs(repo, specs) {
+function writeSpecs(repo: string, specs: LinkSpec[]): void {
   writeFileSync(specsPath(repo), JSON.stringify(specs, null, 2) + "\n", "utf8");
 }
 
-function listRepos() {
+function listRepos(): string[] {
   try {
     return readdirSync(REPOS_DIR, { withFileTypes: true })
       .filter((d) => d.isDirectory())
@@ -46,30 +66,18 @@ function listRepos() {
   }
 }
 
-function listSourceFiles(repo) {
+function listSourceFiles(repo: string): SourceEntry[] {
   const repoDir = join(REPOS_DIR, repo);
   try {
     return readdirSync(repoDir, { withFileTypes: true })
       .filter((d) => d.name !== "link-specs.json" && d.name !== ".DS_Store")
       .map((d) => ({
         name: d.name,
-        type: d.isDirectory() ? "directory" : "file",
+        type: d.isDirectory() ? "directory" as const : "file" as const,
       }));
   } catch {
     return [];
   }
-}
-
-function symlinkedStatus(repo) {
-  const specs = readSpecs(repo) ?? [];
-  return specs.map((spec) => {
-    const symlinkPath = join(REPOS_DIR, repo, spec.sourcePath);
-    let sourceExists = false;
-    try {
-      sourceExists = existsSync(symlinkPath);
-    } catch {}
-    return { ...spec, sourceExists };
-  });
 }
 
 // ── Server ───────────────────────────────────────────────────────────────────
@@ -96,13 +104,13 @@ server.tool(
   {},
   async () => {
     const repos = listRepos();
-    const result = repos.map((repo) => {
+    const result: RepoInfo[] = repos.map((repo) => {
       const hasSpecs = existsSync(specsPath(repo));
       const specs = hasSpecs ? (readSpecs(repo) ?? []) : [];
       return { repo, hasSpecs, specCount: specs.length };
     });
     return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
     };
   },
 );
@@ -121,7 +129,7 @@ server.tool(
       return {
         content: [
           {
-            type: "text",
+            type: "text" as const,
             text: `No link-specs.json found for repo '${repo}'. Available repos: ${listRepos().join(", ")}`,
           },
         ],
@@ -129,7 +137,7 @@ server.tool(
       };
     }
     return {
-      content: [{ type: "text", text: JSON.stringify(specs, null, 2) }],
+      content: [{ type: "text" as const, text: JSON.stringify(specs, null, 2) }],
     };
   },
 );
@@ -168,7 +176,7 @@ server.tool(
       return {
         content: [
           {
-            type: "text",
+            type: "text" as const,
             text: `No link-specs.json found for repo '${repo}'. Create repos/${repo}/link-specs.json first.`,
           },
         ],
@@ -180,7 +188,7 @@ server.tool(
       return {
         content: [
           {
-            type: "text",
+            type: "text" as const,
             text: `A spec with repoPath '${repoPath}' already exists in ${repo}.`,
           },
         ],
@@ -188,14 +196,14 @@ server.tool(
       };
     }
 
-    const newSpec = { repoPath, sourcePath, ...(description ? { description } : {}) };
+    const newSpec: LinkSpec = { repoPath, sourcePath, ...(description ? { description } : {}) };
     specs.push(newSpec);
     writeSpecs(repo, specs);
 
     return {
       content: [
         {
-          type: "text",
+          type: "text" as const,
           text: `Added spec to repos/${repo}/link-specs.json:\n${JSON.stringify(newSpec, null, 2)}\n\nRun link-repo-tools.ts to apply.`,
         },
       ],
@@ -221,7 +229,7 @@ server.tool(
     const specs = readSpecs(repo);
     if (specs === null) {
       return {
-        content: [{ type: "text", text: `No link-specs.json found for repo '${repo}'.` }],
+        content: [{ type: "text" as const, text: `No link-specs.json found for repo '${repo}'.` }],
         isError: true,
       };
     }
@@ -233,7 +241,7 @@ server.tool(
       return {
         content: [
           {
-            type: "text",
+            type: "text" as const,
             text: `No spec with repoPath '${repoPath}' found in ${repo}.`,
           },
         ],
@@ -246,7 +254,7 @@ server.tool(
     return {
       content: [
         {
-          type: "text",
+          type: "text" as const,
           text: `Removed spec '${repoPath}' from repos/${repo}/link-specs.json.\n\nNote: any existing symlink at that path in the repo was not removed.`,
         },
       ],
@@ -267,13 +275,13 @@ server.tool(
     const repoDir = join(REPOS_DIR, repo);
     if (!existsSync(repoDir)) {
       return {
-        content: [{ type: "text", text: `No config directory found for repo '${repo}'.` }],
+        content: [{ type: "text" as const, text: `No config directory found for repo '${repo}'.` }],
         isError: true,
       };
     }
     const files = listSourceFiles(repo);
     return {
-      content: [{ type: "text", text: JSON.stringify(files, null, 2) }],
+      content: [{ type: "text" as const, text: JSON.stringify(files, null, 2) }],
     };
   },
 );
