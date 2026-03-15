@@ -3,11 +3,30 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import pg from "pg";
 import { z } from "zod";
 
+// ── Types ────────────────────────────────────────────────────────────────────
+
+interface QueryOutput {
+  command: string;
+  rowCount: number | null;
+  rows: Record<string, unknown>[];
+  truncated?: boolean;
+  totalRows?: number;
+}
+
+interface TableCount {
+  table: string;
+  rows: number | "error";
+}
+
+// ── Database ─────────────────────────────────────────────────────────────────
+
 const connectionString =
   process.env.POSTGRES_URL ||
   "postgresql://postgres:postgres@localhost:5432/assured?connect_timeout=300";
 
 const pool = new pg.Pool({ connectionString, max: 3 });
+
+// ── Server ───────────────────────────────────────────────────────────────────
 
 const server = new McpServer({
   name: "local-db",
@@ -24,7 +43,7 @@ server.tool(
   async ({ sql }) => {
     try {
       const result = await pool.query(sql);
-      const output = {
+      const output: QueryOutput = {
         command: result.command,
         rowCount: result.rowCount,
         rows: result.rows?.slice(0, 500),
@@ -33,9 +52,10 @@ server.tool(
         output.truncated = true;
         output.totalRows = result.rows.length;
       }
-      return { content: [{ type: "text", text: JSON.stringify(output, null, 2) }] };
-    } catch (err) {
-      return { content: [{ type: "text", text: `SQL Error: ${err.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }] };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text" as const, text: `SQL Error: ${message}` }], isError: true };
     }
   },
 );
@@ -50,22 +70,23 @@ server.tool(
         `SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename`,
         [schema],
       );
-      const tables = result.rows.map((r) => r.tablename);
+      const tables: string[] = result.rows.map((r: { tablename: string }) => r.tablename);
 
-      const counts = await Promise.all(
+      const counts: TableCount[] = await Promise.all(
         tables.slice(0, 100).map(async (t) => {
           try {
             const c = await pool.query(`SELECT COUNT(*)::int as count FROM "${t}"`);
-            return { table: t, rows: c.rows[0].count };
+            return { table: t, rows: c.rows[0].count as number };
           } catch {
-            return { table: t, rows: "error" };
+            return { table: t, rows: "error" as const };
           }
         }),
       );
 
-      return { content: [{ type: "text", text: JSON.stringify(counts, null, 2) }] };
-    } catch (err) {
-      return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: JSON.stringify(counts, null, 2) }] };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text" as const, text: `Error: ${message}` }], isError: true };
     }
   },
 );
@@ -104,7 +125,7 @@ server.tool(
       return {
         content: [
           {
-            type: "text",
+            type: "text" as const,
             text: JSON.stringify(
               {
                 table,
@@ -118,11 +139,14 @@ server.tool(
           },
         ],
       };
-    } catch (err) {
-      return { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text" as const, text: `Error: ${message}` }], isError: true };
     }
   },
 );
+
+// ── Transport ────────────────────────────────────────────────────────────────
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
