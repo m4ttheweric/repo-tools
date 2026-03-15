@@ -1,0 +1,2278 @@
+{
+  "meta": {
+    "baselineFileVersion": 1,
+    "ignoreMessages": true
+  },
+  "errors": {
+    "14bab12fd125d006ae46627f06435fe8c73cddc8": {
+      "file": "src/aiClaimsRep/aiClaimsRep.integration.test.ts",
+      "code": "TS2349",
+      "count": 6
+    },
+    "249d111c05d3c51a5e33deb57bb52fe1563e6819": {
+      "file": "src/aiClaimsRep/index.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "a2ba79f2e40d6c1d1489ebdcd3ff0c399e4e00a7": {
+      "file": "src/carrierApis/chubb/buildApiPayload/buildChubbClaimsParty.ts",
+      "code": "TS1202",
+      "count": 1
+    },
+    "85f01f3fca2657a80dea52334e7146184412bd09": {
+      "file": "src/carrierApis/chubb/commands/chubbAttachmentSubmission.ts",
+      "code": "TS1202",
+      "count": 1
+    },
+    "cfdf647d58aa6324baeeb5976e73b1e658147cf3": {
+      "file": "src/carrierApis/common/mapVendorLoss/llmFallback/vendorLossLlmFallbackService.ts",
+      "code": "TS2307",
+      "count": 1
+    },
+    "d458c955bd03613ff0ee531e9537cc60ad60891d": {
+      "file": "src/carrierApis/geico/api/geicoCaseSubmission.test.ts",
+      "code": "TS1202",
+      "count": 2
+    },
+    "9db895afc87ead945c32437b5623d5ff10325ec5": {
+      "file": "src/carrierApis/libertymutual/api/sendPayload/sendPayload.test.ts",
+      "code": "TS2345",
+      "count": 2
+    },
+    "7e9878a3cb8f648b78f5cd50d4d9f096b8bea2be": {
+      "file": "src/carrierApis/libertymutual/buildApiPayload/vendorLossMapping/llmFallback/prompts/subsetPrompt.ts",
+      "code": "TS2307",
+      "count": 1
+    },
+    "6b04cbfcab25f74d7a1220542980de9dd05ea8a3": {
+      "file": "src/carrierApis/libertymutual/commands/libertyClaimSubmission.test.ts",
+      "code": "TS2353",
+      "count": 2
+    },
+    "526c42c8ce2bf2dc3c11b40a1fb364682976f2f9": {
+      "file": "src/carrierApis/libertymutual/commands/libertyMutualPolicyLookup.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "9525de00df6c0396b94d6017c50e40514f445da1": {
+      "file": "src/carrierApis/libertymutual/commands/libertyMutualPolicyLookup.ts",
+      "code": "TS7006",
+      "count": 1
+    },
+    "0dccde3247c55303ec222841dc94d48324c149e9": {
+      "file": "src/carrierApis/libertymutual/helpers/normalizeString.ts",
+      "code": "TS1202",
+      "count": 1
+    },
+    "d7a9fa7aa9f7ab6227c4ca34263547c6ccaf1894": {
+      "file": "src/carrierApis/mercury/api/mercuryPolicyLookup.ts",
+      "code": "TS1202",
+      "count": 1
+    },
+    "52a2a0227ce3e94517819e5fb66ee54ae59efe4d": {
+      "file": "src/carrierApis/statefarm/commands/stateFarmPolicyLookup.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "b9e5afb3a568f04acb40bd406779de145beffcf5": {
+      "file": "src/carrierApis/statefarm/commands/stateFarmPolicyLookup.ts",
+      "code": "TS7006",
+      "count": 1
+    },
+    "c21139297b8fb2f0a5e9376999a30c5830be0664": {
+      "file": "src/database/prisma/instrumentation.ts",
+      "code": "TS1202",
+      "count": 2
+    },
+    "e8afd0fa14b718788000780ca5168432d8d6856b": {
+      "file": "src/dispatch/index.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "b751a66730c3e3f7d01078c149b803d57fa54482": {
+      "file": "src/domainServices/claimEntityService.test.ts",
+      "code": "TS2740",
+      "count": 3
+    },
+    "05533af320dfd20fdf399435bc350b84beef6f57": {
+      "file": "src/domainServices/claimEntityService.test.ts",
+      "code": "TS2345",
+      "count": 3
+    },
+    "1973dcf92bd54adf3f0e10b7495f878272ad0045": {
+      "file": "src/domainServices/claimNoteService.test.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "afc86ead0e08ac20e24bd1d6fe20dbc5a4f3ca45": {
+      "file": "src/domainServices/claimNoteService.test.ts",
+      "code": "TS2345",
+      "count": 7
+    },
+    "f6b7b0f2e0b9de5a5b652fda005a8dd63a6ae5d5": {
+      "file": "src/domainServices/claimService.test.ts",
+      "code": "TS2345",
+      "count": 6
+    },
+    "8e263b6dfcbe8016edef14e1af95fe261a22b210": {
+      "file": "src/domainServices/legacyMediaService.test.ts",
+      "code": "TS2345",
+      "count": 17
+    },
+    "f29e9177609edeb04b3b5a184bd0875038c6e1c1": {
+      "file": "src/downloads/index.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "2e8c04e135d8865b13a5566c193b78cbfb3b53c9": {
+      "file": "src/externalApi/carriers/progressive/controllers/claims/createClaimInvestigation/createClaimInvestigation.test.ts",
+      "code": "TS2352",
+      "count": 5
+    },
+    "532b3838744e3aa5c13aebae457c133d3500df79": {
+      "file": "src/externalApi/carriers/progressive/routes/messages.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "a62479f29bf0888822f0a03632f0a195c46729e6": {
+      "file": "src/externalApi/shared/controllers/oauth.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "654470dde6f47d419d65de8f3b0c1e974e9a8a0a": {
+      "file": "src/externalApi/tests/claims.integration.test.ts",
+      "code": "TS2349",
+      "count": 27
+    },
+    "aec212ad644acce113a81b129caa600225186d53": {
+      "file": "src/externalApi/tests/messages.integration.test.ts",
+      "code": "TS2349",
+      "count": 20
+    },
+    "171f1ec42f35ba792fa7942ccb7c75d0fb8e014c": {
+      "file": "src/externalApi/tests/messages.integration.test.ts",
+      "code": "TS7006",
+      "count": 20
+    },
+    "84a3c8a18693ac5f89d356a58e21e41bb38da9a3": {
+      "file": "src/externalApi/tests/oauth.integration.test.ts",
+      "code": "TS2349",
+      "count": 11
+    },
+    "0b2192df28ff4e00858a4d976b25122bda7a5720": {
+      "file": "src/fraud/factsApplication/facts/hasMultipleStateLocations.test.ts",
+      "code": "TS2740",
+      "count": 5
+    },
+    "5e4f879ad3d5d91222060e6f3f89b09499f27dc9": {
+      "file": "src/fraud/factsApplication/facts/hasNewPolicy.test.ts",
+      "code": "TS2739",
+      "count": 4
+    },
+    "01978a99960fde8e409ec74246a5b3bbb0b86d83": {
+      "file": "src/fraud/factsApplication/facts/hasNewPolicy.test.ts",
+      "code": "TS2345",
+      "count": 1
+    },
+    "eb3db4f051a58888d635a184900ee4f410e7eb15": {
+      "file": "src/graphqlServer.integration.test.ts",
+      "code": "TS2349",
+      "count": 4
+    },
+    "4e7677fe008a6a45ea87c915e01a5a68ed8a1ba4": {
+      "file": "src/graphqlServerExpress.ts",
+      "code": "TS2349",
+      "count": 2
+    },
+    "8b36833f11846f8127e98321df261aa61cc2960f": {
+      "file": "src/helpers/fuzzyMatch.ts",
+      "code": "TS1202",
+      "count": 1
+    },
+    "1219e26dedbd4c15cf9cdb361b9731c6e08bc2da": {
+      "file": "src/helpers/nameHelpers/nameHelpers.ts",
+      "code": "TS1202",
+      "count": 1
+    },
+    "3e75aaa75b7d7d3212bbb972613a30267826b76d": {
+      "file": "src/integrations/custom/index.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "2959976f5821ae55264858bd66bfccf5eb11935d": {
+      "file": "src/jobs/batch-replay-claim-submission.test.ts",
+      "code": "TS2345",
+      "count": 21
+    },
+    "a86bdcf4bcde4e00e8a7f08bff56c5ba9ff23e12": {
+      "file": "src/jobs/batch-replay-claim-submission.test.ts",
+      "code": "TS2353",
+      "count": 1
+    },
+    "df28f633a74a763bcc1f38390f6aeb1f3cd1e76f": {
+      "file": "src/jobs/batch-replay-content-submission.test.ts",
+      "code": "TS2345",
+      "count": 21
+    },
+    "7cab423d013d3122b2bd8d179920214d7cfc68ec": {
+      "file": "src/jobs/batch-replay-digital-statement-submission.test.ts",
+      "code": "TS2345",
+      "count": 26
+    },
+    "b82db56b113f64cf04666c65e40689e3cfc60294": {
+      "file": "src/jobs/emma/emma-data-generation.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "d0aaad66b81085bbc151cf163dacc54ddcc58455": {
+      "file": "src/jobs/emma/emma-task-handler.ts",
+      "code": "TS2351",
+      "count": 1
+    },
+    "efb2ab0462e846171f33343a119f20397fb093e0": {
+      "file": "src/jobs/emma/emma-task-handler.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "ee2e10048d69d2661cd4e54bdb92acf103b42577": {
+      "file": "src/jobs/emma/task-recommendation-job.ts",
+      "code": "TS2351",
+      "count": 1
+    },
+    "2d50ccc2487b2f4c134b80cec28078e463cd8bea": {
+      "file": "src/jobs/emma/task-recommendation-job.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "087e84257d52c91f0eeaf56d431df95c2dc96a29": {
+      "file": "src/jobs/process-emma-task-reminders.ts",
+      "code": "TS2351",
+      "count": 1
+    },
+    "9e7e5ebd0470cdea37192e249b5e90227465678c": {
+      "file": "src/jobs/process-emma-task-reminders.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "6dcbaea98ef12c519ef0296753fbe12844d4ce72": {
+      "file": "src/jobs/testEnv.ts",
+      "code": "TS7016",
+      "count": 1
+    },
+    "2195e9e5abfd64ead61e44b0361f92126f116293": {
+      "file": "src/jsonParse/jsonParse.test.ts",
+      "code": "TS2339",
+      "count": 4
+    },
+    "3ec05a10dc86bab70f14be919e235b8897f34972": {
+      "file": "src/jsonParse/jsonParse.test.ts",
+      "code": "TS7006",
+      "count": 1
+    },
+    "d94475480967d958ef5f824e127bb50a1b29530a": {
+      "file": "src/mockServer/index.ts",
+      "code": "TS2349",
+      "count": 2
+    },
+    "c44f9f9dda212fada328231f37a00a732aafd46e": {
+      "file": "src/mockServer/index.ts",
+      "code": "TS7006",
+      "count": 7
+    },
+    "4da086544384e4afb831aae21f2ec48a86942326": {
+      "file": "src/mockServer/mockServer.integration.test.ts",
+      "code": "TS2349",
+      "count": 5
+    },
+    "38dfa2d1975b98c8ae5b78569eb3d768de2c5a89": {
+      "file": "src/permissions/authRules.test.ts",
+      "code": "TS2304",
+      "count": 1
+    },
+    "fcacaabdd3695dc94d1804a88ba5fd2ded2e5f8c": {
+      "file": "src/permissions/authRules.test.ts",
+      "code": "TS7053",
+      "count": 1
+    },
+    "bba8b0ca3e049ee69d1e682aab2fd2327cb07ce4": {
+      "file": "src/recording/index.ts",
+      "code": "TS1202",
+      "count": 1
+    },
+    "2641ea086162c61755c9c143a3c502f06cb75fda": {
+      "file": "src/replaying/index.ts",
+      "code": "TS2349",
+      "count": 3
+    },
+    "ece9ba6f23eb86e0e54e52f3168b3260e0e6a3a8": {
+      "file": "src/services/blueBoxSummaryService/summarizeIncident.ts",
+      "code": "TS2305",
+      "count": 5
+    },
+    "392589f2f65e024fc23c71a4431655ac11e89819": {
+      "file": "src/services/caseContactSimulatorService/exportConversationService.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "abd6b37d107180cffb2957daedec830340e126df": {
+      "file": "src/services/catastropheService/pipeline/importSHP.ts",
+      "code": "TS2497",
+      "count": 1
+    },
+    "a304418fd4a5fe55ebf1ddeed2f0d9a99e8e8ee2": {
+      "file": "src/services/catastropheService/pipeline/importSHP.ts",
+      "code": "TS2503",
+      "count": 1
+    },
+    "be168342e39018161c1dd35a05d825c6ccbf9bc4": {
+      "file": "src/services/claimAnalysisService/analyze.ts",
+      "code": "TS2305",
+      "count": 3
+    },
+    "fd15c4b7db2a7ed6baf3fc211ef4a7929d78816a": {
+      "file": "src/services/claimAnalysisService/triage.ts",
+      "code": "TS2305",
+      "count": 3
+    },
+    "e216e10bc961b23e98cad699ad73218e33fe7062": {
+      "file": "src/services/conversationService/conversationService.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "40f58d104125fe4bbffbcdfc62308d6eb7b5299f": {
+      "file": "src/services/conversationService/tests/inboundMessage.integration.test.ts",
+      "code": "TS2349",
+      "count": 7
+    },
+    "6550a8f511d9c58d6da6ccb968755f7da535a6c3": {
+      "file": "src/services/conversationService/tests/inboundMessage.integration.test.ts",
+      "code": "TS7006",
+      "count": 6
+    },
+    "fb68cb85c56ec2e7724fac8519b9f216550f66e7": {
+      "file": "src/services/conversationService/tests/outboundMessage.integration.test.ts",
+      "code": "TS2349",
+      "count": 22
+    },
+    "bc5826c47811752d7685bc4850d3f8182cb13cfb": {
+      "file": "src/services/conversationService/tests/outboundMessage.integration.test.ts",
+      "code": "TS7006",
+      "count": 24
+    },
+    "cfe5208caf1b8b82255f8907d7fb9fe0e79e9dae": {
+      "file": "src/services/eligibility/eligibilityCommon/testUtils.ts",
+      "code": "TS2349",
+      "count": 2
+    },
+    "23ec9e742add7815011100a2929119d77d5f1687": {
+      "file": "src/services/emailParsingService/emailUtils.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "18038f3dfa69d5aa5d2eadc03e2e98337294608e": {
+      "file": "src/services/emmaAdjusterChatService/conversationTitleService.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "7bd5e9f17ac844e14624e5575a38ddefbd4b9fc6": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModel/plannerAgent.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "af412656b5b4a8f583338768d3f37ff479516954": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModel/suggestedTaskAssignments.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "84c56ac4d2a7be274bd5f91310848c8705020448": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModel/tools/assignTask/assignTask.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "94c9db5478a6163e9dc4f715c6ac252eb48fcabc": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModel/tools/assignTask/assignTask.ts",
+      "code": "TS7006",
+      "count": 1
+    },
+    "7d45d1af68a667818a5a55a2d139d0fddc682b9e": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModel/tools/searchAgent/searchAgent.ts",
+      "code": "TS2305",
+      "count": 8
+    },
+    "a16d4cbc01acac6b696d5a7feaf281725cfa7ee8": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModel/tools/searchAgent/searchAgent.ts",
+      "code": "TS7006",
+      "count": 9
+    },
+    "3822c6b51c0670a69541bbacc90a69667aac97f0": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModel/tools/staticTaskSearch/embeddings.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "dec4cca7037eb85d51ce9029509d311c2d7b08e3": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModel/tools/staticTaskSearch/staticTaskSearch.ts",
+      "code": "TS2305",
+      "count": 6
+    },
+    "5eef073ca63a73319b7d4dfd60406da1e2f17026": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModel/tools/taskAssignmentHistory/taskAssignmentHistory.ts",
+      "code": "TS2305",
+      "count": 8
+    },
+    "dacb41c2e35548487a78bf0c24c57fa56b73635f": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModel/tools/taskGenerator/taskGenerator.ts",
+      "code": "TS2305",
+      "count": 8
+    },
+    "65274d89abbd8713fa8ede715597412d3690711d": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModelFast/fastChains/claimInfo/claimInfoFastChain.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "ee3e39a6cf847145ac043b21fd218e02c8495a5c": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModelFast/fastChains/staticTask/staticTaskFastChain.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "653f3ec2588a0501ea25d43f1d6c4152527964df": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModelFast/plannerAgent.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "69fa40e0bd120236e1f90d3c3d601e2ad31b31fe": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModelFast/routerChain.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "6c2a4db30c621fcce8fe8bd7b758b38cf60f6844": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModelFast/suggestedTaskAssignments.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "556508e75bb7aabf2b149756095cb8c7092ab124": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModelFast/tools/assignTask/assignTask.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "4486a4f0d900b0025515a68dd7c2de34c2e648d3": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModelFast/tools/assignTask/assignTask.ts",
+      "code": "TS7006",
+      "count": 1
+    },
+    "e85ac0371e3cda30b5fb33d1159119bbfde47b80": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModelFast/tools/searchAgent/searchAgent.ts",
+      "code": "TS2305",
+      "count": 8
+    },
+    "39e14f828008a4aa554ab2726125b10a57c4ad49": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModelFast/tools/searchAgent/searchAgent.ts",
+      "code": "TS7006",
+      "count": 9
+    },
+    "db0d861e6699ba2843d1186ccc2094e16ed57979": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModelFast/tools/staticTaskSearch/embeddings.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "7a2b6281085b673c388a40d6255c2ff3ab97112b": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModelFast/tools/staticTaskSearch/staticTaskSearch.ts",
+      "code": "TS2305",
+      "count": 6
+    },
+    "32ec7f280166d2ae071daf6d82860a7bb89dd490": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModelFast/tools/taskAssignmentHistory/taskAssignmentHistory.ts",
+      "code": "TS2305",
+      "count": 8
+    },
+    "e7683039a7717af9c98991a92fff48880e5e73af": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModelFast/tools/taskGenerator/taskGenerator.ts",
+      "code": "TS2305",
+      "count": 8
+    },
+    "55baca2d282d4dc09ad0281b7a9ef1eb6e0fcbc0": {
+      "file": "src/services/emmaAdjusterChatService/models/adjusterConversationModelFast/utilLLM.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "c5086b5f23b75d5347b268b28dbad82043292dbd": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph/agent.ts",
+      "code": "TS2305",
+      "count": 4
+    },
+    "a33dc3a386af4a03ac6b4b177df9182f3ab25edc": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph/nodes/agentNode.ts",
+      "code": "TS2305",
+      "count": 6
+    },
+    "3fb931eaa169eea59f599be5033b5d284597294e": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph/nodes/contextFilters.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "bdce0ad4d2d3321b60ebd03ce59a8a3a1e342417": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph/nodes/fetchClaimDataNode.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "5eeada9095e267b895bff333dbd4db0fba565b72": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph/nodes/toolNode.ts",
+      "code": "TS2305",
+      "count": 4
+    },
+    "2a22a87f6284a8ea83ea5b1d2d1a8f9bc07ba3e3": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph/nodes/toolNode.ts",
+      "code": "TS7006",
+      "count": 2
+    },
+    "9a321d8e21b89aaebe3775945adc1ba33a2ef5d7": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph/nodes/toolNode.ts",
+      "code": "TS7031",
+      "count": 4
+    },
+    "3f300801e04f429a091f3a52d8a2355d8d683262": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph/tools/getRelevantStaticTasks/staticTaskSearch/staticTaskSearch/embeddings.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "6411ac27267122a7045cf49c743d4b6284543da0": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph/tools/media/showMediaToAdjuster.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "1ccad285cff7ab3dc33ebe6c37ff6a7d748d6f0f": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph/tools/registry.ts",
+      "code": "TS2305",
+      "count": 3
+    },
+    "58f8835e5b3627555677552db73fc2619ab3fb1d": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph/types.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "c46fa0f6e0bc6e30b4b5698097ba1c1fcc3037a9": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph/utils/prisma-checkpointer.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "26c12c7ad9f12669fbbef8720f79ddd960745d0b": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1/agent.ts",
+      "code": "TS2305",
+      "count": 4
+    },
+    "9ddb6d9c2ba745c28c7b4a2486a9610d7754a2f8": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1/nodes/agentNode.ts",
+      "code": "TS2305",
+      "count": 5
+    },
+    "00b805efd490eacdf33fcca1f5970fb1afdf3693": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1/nodes/contextFilters.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "1bc9913506ac81905140d6e68bec021c002400eb": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1/nodes/fetchClaimDataNode.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "358a4126610d7d477d9ef8969294c80b55d89a03": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1/nodes/toolNode.ts",
+      "code": "TS2305",
+      "count": 4
+    },
+    "4fa87fff65a9942550cfe6ae0573715a902adfd9": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1/nodes/toolNode.ts",
+      "code": "TS7006",
+      "count": 2
+    },
+    "3d411e501087cac3af98de96585e05502fa059bd": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1/nodes/toolNode.ts",
+      "code": "TS7031",
+      "count": 4
+    },
+    "c407c0e1963ac79acb7de8adf93c84551efc6ff4": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1/tools/getRelevantStaticTasks/staticTaskSearch/staticTaskSearch/embeddings.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "71285a540f7ca8e457b5e605294b6e443ac156cb": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1/tools/media/showMediaToAdjuster.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "c3709c3555938050eb66c5c1cee085bbaa9dc681": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1/tools/registry.ts",
+      "code": "TS2305",
+      "count": 3
+    },
+    "131ee17bcb20465a742e8de18e2a41a442a8c453": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1/types.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "f0b963d0bf4f1493af5d4a85b17ad8cf85ad58e3": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1/utils/prisma-checkpointer.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "3ca683bbc5eab19b0bf93516243f410c6b0e9cf6": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/graph.ts",
+      "code": "TS2305",
+      "count": 5
+    },
+    "3bf7187a26de75d2d555e52aef7422c53f3b09cb": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/graph.ts",
+      "code": "TS2554",
+      "count": 1
+    },
+    "f6d2ae7b4111da2ac1a345be8c4031bed92fbfe1": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/graph.ts",
+      "code": "TS2578",
+      "count": 1
+    },
+    "9bc68360f00d1c5c47b46f6c91b15a0baf4f9380": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/nodes/agentNode.ts",
+      "code": "TS2305",
+      "count": 5
+    },
+    "f3380fb6e6291b2980dd6bfd0b8277d592f6ffe2": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/nodes/buildTimelineNode.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "7e771c496abea0bab3dc664f7073321c7d49d219": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/nodes/contextFilters.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "233b4086cab88a9025334d7f0fbb51fe12b476e4": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/nodes/toolNode.ts",
+      "code": "TS2305",
+      "count": 3
+    },
+    "e0d52c51c91ddc4aba3cf6bfb3d6e15b424321d0": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/nodes/toolNode.ts",
+      "code": "TS2578",
+      "count": 2
+    },
+    "ed19f00fee4ffef633c832fb93e159c4c6db4318": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/subgraphs/task_agent/graph.ts",
+      "code": "TS2305",
+      "count": 3
+    },
+    "b889d333a3d60f631aebfb931c3f3e109ead60c2": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/subgraphs/task_agent/nodes/agent/agent.ts",
+      "code": "TS2305",
+      "count": 12
+    },
+    "5a0ffc301a90820fc45449f5b8a4c8ad7aa75427": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/subgraphs/task_agent/nodes/agent/agent.ts",
+      "code": "TS7006",
+      "count": 1
+    },
+    "d5950c127cda95e112489e58fbc2a657e81b1555": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/subgraphs/task_agent/state.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "b84220ecbc21c2ba9b64302bc4a9792931999af7": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/subgraphs/task_agent/tools/assignStaticTask.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "89eee3c79b2bd29e3f024789c8e01da2af952f20": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/subgraphs/task_agent/tools/createAndAssignNewTask.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "5199e669842e8a79bf4eea846ca0489c09f83886": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/subgraphs/task_agent/tools/exposeStaticTaskInformation.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "d85bb978284f26e38c192d286ba37d92b341513c": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/tools/media/showMediaToAdjuster.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "10992c3df7ae1f6345d2b64348e05fc467db7bef": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/tools/registry.ts",
+      "code": "TS2305",
+      "count": 5
+    },
+    "b066c24074dc2bc64221eda2bfcdcdb4dbc14bd4": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/tools/shared/helpers.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "c9c93cc78b4e7171c677a8301ee1fb92e661d092": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_task_subagent/tools/shared/helpers.ts",
+      "code": "TS2578",
+      "count": 2
+    },
+    "e5bedbe9ad21385fda0732d79d00a120fb616e24": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/agent.ts",
+      "code": "TS2305",
+      "count": 4
+    },
+    "f47a0e759b4c50218644b2a1a406221018785715": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/agent.ts",
+      "code": "TS2554",
+      "count": 1
+    },
+    "cf271ff04d5837ec161850af70b9a6ad9e53ea86": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/agent.ts",
+      "code": "TS2578",
+      "count": 1
+    },
+    "9a5d1a63b5748e8e7368103487d7e62f0cefde47": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/nodes/agentNode.ts",
+      "code": "TS2305",
+      "count": 5
+    },
+    "e31f9a88f3578a274cea31d9b9832462eb808434": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/nodes/buildTimelineNode.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "5c57bb2935a0899fb2daa97e6871ffaa8c1825a9": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/nodes/contextFilters.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "74f7052fd350f18f096d9bc7edc787f19fed40e3": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/nodes/fetchClaimDataNode.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "c5f51f8b4bafa7137dcf69882347ca5345795d90": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/nodes/toolNode.ts",
+      "code": "TS2305",
+      "count": 3
+    },
+    "67ddffedf1bca14e623ff80e6e26f4e7c7c2da17": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/nodes/toolNode.ts",
+      "code": "TS2578",
+      "count": 2
+    },
+    "b7dc36f84c0cb34ea8dbe67be671bf95a99318cf": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/tools/getRelevantStaticTasks/staticTaskSearch/staticTaskSearch/embeddings.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "1768b32af58f206e5c5876e36412952e8adde8ef": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/tools/media/showMediaToAdjuster.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "d6a323a0c44bcd2f5f77b3b99f286b43b4e2a3b0": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/tools/registry.ts",
+      "code": "TS2305",
+      "count": 3
+    },
+    "cb21191503f1212e29b7e6ef151196eac092b74d": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/tools/sendTaskToAdjusterTool/helpers.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "be05f57d0cab40beb4970dde9b7736edf0962470": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/tools/shared/helpers.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "b8f971434e9099bcd026eb99fa62f7e8673d7062": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/tools/shared/helpers.ts",
+      "code": "TS2578",
+      "count": 2
+    },
+    "795435694670999ae8183156c895e673b6d04163": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/types.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "f7ecd9d412c0af745815a4f31eb14bb29f7e8889": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_timeline/utils/prisma-checkpointer.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "e0698361a9aef526a04dfc8b2a5c7ba2d6862fcb": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/agent.ts",
+      "code": "TS2305",
+      "count": 4
+    },
+    "4126cdd126af867c46928a48238b30312c0278ec": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/agent.ts",
+      "code": "TS2554",
+      "count": 1
+    },
+    "2851c8f95ca16ed4b16cc7ce01aff5d4ae5450dd": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/agent.ts",
+      "code": "TS2578",
+      "count": 1
+    },
+    "280df32aa51edc0f3748c6c489992eac49a1c667": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/nodes/agentNode.ts",
+      "code": "TS2305",
+      "count": 5
+    },
+    "6b8c6b44a39ec8d507293c878de8fa530e4be354": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/nodes/contextFilters.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "b433f793b30ba7ac55c857a1571c593da2d1fe90": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/nodes/fetchClaimDataNode.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "d6d0cb6f802d1f5bae4ca2a98ca58fadd550f177": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/nodes/toolNode.ts",
+      "code": "TS2305",
+      "count": 5
+    },
+    "85d712b145e6420b3c1f6abb5c8ec86e2270fcb8": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/nodes/toolNode.ts",
+      "code": "TS2578",
+      "count": 2
+    },
+    "1e10ba3d477e75898cf02a5daf761291951e235c": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/nodes/toolNode.ts",
+      "code": "TS7006",
+      "count": 1
+    },
+    "a69f554cae58059672054b5d1f9e2c068dcdc13f": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/tools/getRelevantStaticTasks/staticTaskSearch/staticTaskSearch/embeddings.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "9b6ac50492d5fa7bfa95d71ddba608c697aefd65": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/tools/media/showMediaToAdjuster.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "623b3dcdc2e2bb828f62b6c4d4120b8d4ff1b5d8": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/tools/registry.ts",
+      "code": "TS2305",
+      "count": 3
+    },
+    "5b2bc3e504884b6fe063be33fa4022360bc742e0": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/tools/sendTaskToAdjusterTool/helpers.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "5d188089feddd2d8e1429eda82145986a5f6e5b0": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/tools/shared/helpers.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "3bcb66add78b01c7513a305423f57ffa451bc947": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/tools/shared/helpers.ts",
+      "code": "TS2578",
+      "count": 2
+    },
+    "8065635dbe3befc260540b64f9eaea04e47362b1": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/types.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "d0310de3e2a27fed967cf24788ff45151e834423": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_1_with_task_reducer/utils/prisma-checkpointer.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "e38a940fcfe77a4e4299b15f2e27378c3b2c9fb3": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/agent.ts",
+      "code": "TS2305",
+      "count": 4
+    },
+    "65fc4a4f176fefabfd5b9119a61f48864379d9bb": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/agent.ts",
+      "code": "TS2554",
+      "count": 1
+    },
+    "efbd40067a5bfa24258d5085d08e244b4481cbb7": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/agent.ts",
+      "code": "TS2578",
+      "count": 1
+    },
+    "4a79d72f629ed738e8239210a49b10d3a7c74d69": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/nodes/agentNode.ts",
+      "code": "TS2305",
+      "count": 5
+    },
+    "5db1700f7aa803bd40749b1522080f1e0141ac1e": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/nodes/contextFilters.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "c7c04eca3c6b186a5280990c0fd2fc36a036e740": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/nodes/fetchClaimDataNode.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "e949daf79c6f10f37e5b0d3d9ed474543c07d68d": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/nodes/toolNode.ts",
+      "code": "TS2305",
+      "count": 5
+    },
+    "c05df28c63112c1dacfd7e4969a682201a319f35": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/nodes/toolNode.ts",
+      "code": "TS2578",
+      "count": 2
+    },
+    "085f46c93cdd44d5de4e71e0250c2f3b7382a6ab": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/nodes/toolNode.ts",
+      "code": "TS7006",
+      "count": 1
+    },
+    "da6a452f19dd1225e714cf08172a8278930338bd": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/tools/getRelevantStaticTasks/staticTaskSearch/staticTaskSearch/embeddings.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "8b23ae5500fa9c2390c95fd94c10934e644a8222": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/tools/media/showMediaToAdjuster.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "4abe503334374a019038a5e8cc89849dad194f94": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/tools/registry.ts",
+      "code": "TS2305",
+      "count": 3
+    },
+    "578b8f8346874fb241abd3106edd255726e91251": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/tools/sendTaskToAdjusterTool/helpers.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "17b8f8b9c1c9ad99bbddeeb883cfe0f5df9811be": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/tools/shared/helpers.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "734b70966449ff0d16ea112adeebef97e5f7b120": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/tools/shared/helpers.ts",
+      "code": "TS2578",
+      "count": 2
+    },
+    "46230bafd8593b2e485f4e1baf953f89a456b10e": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/types.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "556b2cbe5dbc8d2ceebcdbd475b2a7e8eaf20400": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_GPT_5_2_no_ttl_tool_call_filter/utils/prisma-checkpointer.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "807fdd1038553be8c50894bb78bcab17ecc0c54d": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/graph.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "bae4e2a309212a6b505800d489b6cf003e92c87f": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/graph.ts",
+      "code": "TS2554",
+      "count": 1
+    },
+    "eba97d1fe07d81ab70544650debbf2bc656cfac4": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/graph.ts",
+      "code": "TS2578",
+      "count": 1
+    },
+    "1ceadbd70dc7b05643d28326b5db00e2415c83de": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/nodes/agentNode.ts",
+      "code": "TS2305",
+      "count": 5
+    },
+    "279fc5fcf1f06e1a98f4050ab12611b2acda829c": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/nodes/buildTimelineNode.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "f31938c45f98fa09dfc5d31e902b31ac81952e3a": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/nodes/contextFilters.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "ae988145f9d7bd7e1481f7710fe17338a56b6b5f": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/nodes/toolNode.ts",
+      "code": "TS2305",
+      "count": 3
+    },
+    "807665b28ee77175458032154050a08d62ff635c": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/nodes/toolNode.ts",
+      "code": "TS2578",
+      "count": 2
+    },
+    "58cdd188a1c3247fd431c05a07f78253568eca05": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/runGraph.ts",
+      "code": "TS2305",
+      "count": 5
+    },
+    "182a5d1d29bc973dd09c584ebf35452d733f5bd4": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/runGraph.ts",
+      "code": "TS2339",
+      "count": 4
+    },
+    "2fbb56c037a846bb0f4dcb8b4ea037e065eee06c": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/subgraphs/task_agent/graph.ts",
+      "code": "TS2305",
+      "count": 3
+    },
+    "9804b0d9da55f182936d9acc6054fbec320f4c22": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/subgraphs/task_agent/nodes/agent/agent.ts",
+      "code": "TS2305",
+      "count": 10
+    },
+    "5ad09caa2bc8ca2891f3199137f5e34bfd89a8af": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/subgraphs/task_agent/nodes/agent/agent.ts",
+      "code": "TS7006",
+      "count": 1
+    },
+    "39d2bb3f9066b7f1775babb8744ce1735f1fbc25": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/subgraphs/task_agent/state.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "be8d5b7cb9c3d39f32314d6e37e65881db545562": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/subgraphs/task_agent/tools/askTaskClarificationQuestions.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "c1b845e9d463d46b8cf75c8cba2a34311ab86244": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/subgraphs/task_agent/tools/assignStaticTask.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "08d68db6be7b30892e7231c64167c3c8c5becabe": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/subgraphs/task_agent/tools/createAndAssignNewTask.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "876d980c18891f632a0b55679fafabd9311c45ff": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/subgraphs/task_agent/tools/exposeStaticTaskInformation.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "0258262af370d633e1286a7c44a4b7b5e9b443e9": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/tools/media/showMediaToAdjuster.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "15c24b193e80eb571bc18ab46c4fb1ce0ffea2b5": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/tools/registry.ts",
+      "code": "TS2305",
+      "count": 6
+    },
+    "800b0dc78fa849d0c53819c58de10d8f091cc96d": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/tools/shared/helpers.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "91d49769e3e577a13cc2de57e174425ec102916a": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/tools/shared/helpers.ts",
+      "code": "TS2578",
+      "count": 2
+    },
+    "c3eedf6404be2f96e690241bde53adefdb92db8b": {
+      "file": "src/services/emmaAdjusterChatService/models/langgraph_task_subagent_streaming/utils/patchedRedisSaver.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "080f7736de17657a823e3befac328036cee7e63f": {
+      "file": "src/services/emmaAdjusterChatService/tools/staticTaskSearch/embeddings.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "9f7ebe3a05c7e029499ddb33efc39352eae95e81": {
+      "file": "src/services/emmaEvaluationService/evaluator/conversations.ts",
+      "code": "TS2305",
+      "count": 3
+    },
+    "5da821d182389493dac098516a700768be8c3ea8": {
+      "file": "src/services/emmaEvaluationService/evaluator/evaluations.ts",
+      "code": "TS2305",
+      "count": 4
+    },
+    "54a5357ce51e87b70e773f3019212c3691565075": {
+      "file": "src/services/emmaEvaluationService/evaluator/prompts.ts",
+      "code": "TS2305",
+      "count": 3
+    },
+    "9e584f5b3b84bc6dcec373d7d8666cdba404a569": {
+      "file": "src/services/emmaEvaluationWithLabelsService/evaluator/agent.ts",
+      "code": "TS2305",
+      "count": 4
+    },
+    "c45a718f1a57ffbe794277fabf93beb9d1ff41db": {
+      "file": "src/services/emmaEvaluationWithLabelsService/evaluator/llmFactory.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "f91df1bc7c34f2a62a3b8fb31302ea3cafe63baf": {
+      "file": "src/services/emmaEvaluationWithLabelsService/evaluator/tools/addLabels.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "727499838446f8d77ab5f295f60a3a112cb0a1fd": {
+      "file": "src/services/emmaEvaluationWithLabelsService/evaluator/tools/createNewLabel.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "bb6164dca99d4110dfd3b61bab7d03bade3c0ed8": {
+      "file": "src/services/emmaSearch/search.ts",
+      "code": "TS2305",
+      "count": 10
+    },
+    "821487240b0bfa4b95c6f9158068eb8caa716e67": {
+      "file": "src/services/emmaSmartComposer/gpt5Client.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "bcb00b0ef3fb90377941ed166e89fbeba36e94c3": {
+      "file": "src/services/emmaSmartComposer/llmHelpers.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "6d8911567cb961c94a52dcb94ba54ccf843e44da": {
+      "file": "src/services/emmaSmartComposer/promptBuilder.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "20a3e3aaedfddbd8fd3b9cc9c8de920e02ec4b21": {
+      "file": "src/services/emmaTaskService/emmaBaseUtils.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "511081865303a6d189544a4212b461b9a53409b2": {
+      "file": "src/services/emmaTaskService/emmaCodeTests/runModel.ts",
+      "code": "TS2578",
+      "count": 1
+    },
+    "a67ff6ca61c369637c9b99354a8ff9d991d79caf": {
+      "file": "src/services/emmaTaskService/emmaRoutines.ts",
+      "code": "TS7006",
+      "count": 2
+    },
+    "5cff6eecc41cce1aa446272fe25eeaad026c9856": {
+      "file": "src/services/emmaTaskService/emmaTaskAnalysis.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "50a8cea10e2ed1d46985ebdd2b129cd53445c1ac": {
+      "file": "src/services/emmaTaskService/emmaTaskOrchestrator.ts",
+      "code": "TS2351",
+      "count": 1
+    },
+    "a528f5489b91cd5360d22b170ca0ab4e266cf932": {
+      "file": "src/services/emmaTaskService/emmaTaskOrchestrator.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "8dbc60f1f404fd2e55c11a8ef1c315bfb79c4452": {
+      "file": "src/services/emmaTaskService/models/dispatchTaskModels/langchainModel.ts",
+      "code": "TS2305",
+      "count": 6
+    },
+    "505c502908c62705130322c3fbf8a2a7f9164c7c": {
+      "file": "src/services/emmaTaskService/models/emailParsingModel.ts",
+      "code": "TS2305",
+      "count": 10
+    },
+    "1139598278f988c94038ed9e65a0e98d05eaa3df": {
+      "file": "src/services/emmaTaskService/models/emailParsingModel.ts",
+      "code": "TS7006",
+      "count": 1
+    },
+    "bbc02b5dd50628eb3233a75bf514f013360ccd5b": {
+      "file": "src/services/emmaTaskService/models/emmaTaskAnalysisModels/cancellationTaskAnalysis.ts",
+      "code": "TS2305",
+      "count": 4
+    },
+    "6c14f6138ddd4bb446187a71f1440461b03e8b89": {
+      "file": "src/services/emmaTaskService/models/evalmodel.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "438a25d0d0427e651e6661567878b304ab2a0efd": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/escalationModel.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "aa40ce116b7eaf2d1e0939623df70916c5730fb1": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskContextEfficientModels/generatedTaskContextEfficientModelsWithWaitingAndTranslation.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "ef6493afeec4b01552007cb5206a6851952c4deb": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskContextEfficientModels/generatedTaskContextEfficientModelsWithWaitingAndTranslationGPT41.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "3649e8aad5d4d8927c6f27038845e476aecd6716": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskContextEfficientModels/langchainModel.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "4fb6250ca4dcb1cd978539d715271df154858cf8": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskEscalateKbSplit/langchainEmpathyRefinedWaitTaskCompletionMediaUploadTapbacksSubpoena.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "23e12f789689fae4ff511d0986be809f3f1a07e1": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskEscalateKbSplit/langchainModel.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "a3bfff62ee0d25ae444446fc04a51c8907602f27": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskEscalateKbSplit/langchainModelwProvideInfo.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "31e8fda7dffeff260b25b692f441dc601cb49ec0": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskEscalateKbSplit/langchainModelwProviderInfoAndSafety.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "bd9db38a946f3a254e362201b5d460ef62819189": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskEscalateKbSplit/langchainModelwProviderInfoAndSafetyAndEmpathy.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "8f050cd544256655fdf6f1353ec51b8208258787": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskEscalateKbSplit/langchainModelwProviderInfoAndSafetyAndEmpathyRefinedWait.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "c54c23c6e11c7cbb441f3854ab98ad019d448b19": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskEscalateKbSplit/langchainModelwProviderInfoAndSafetyAndEmpathyRefinedWaitTaskCompletion.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "cffbee9f77e5404921d658d4d7eb2d1c85823cad": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskEscalateKbSplit/langchainModelwProviderInfoAndSafetyAndEmpathyRefinedWaitTaskCompletionMediaUpload.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "ad1b3aa64f3013858fe3de6c82c7aea552f8bc5c": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskEscalateKbSplit/langchainModelwProviderInfoAndSafetyAndEmpathyRefinedWaitTaskCompletionMediaUploadTapbacks.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "e53e4f6d14c8030e711cdfcd5dac7f311317d225": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskInfoModel/langchainModel.ts",
+      "code": "TS2305",
+      "count": 8
+    },
+    "e4b073ddd2cd7f0f3cb1b7293fd4e36740e3f53d": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskInfoModel/recommenderModel.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "e850618b6b9e774e6088e699eeb96a07b672ae0a": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskInfoModel/summaryModel.ts",
+      "code": "TS2305",
+      "count": 5
+    },
+    "e01f28f91ccabe5f196c6caecaacd351deb25726": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskModels/langchainModel.ts",
+      "code": "TS2305",
+      "count": 8
+    },
+    "7901fe806dae3b1c2c6abe121d6a1418d45573f8": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/generatedTaskModels/summaryModel.ts",
+      "code": "TS2305",
+      "count": 5
+    },
+    "e595e90c9a6d7e138e3fae75cf84096615722b2c": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/infoExtractionModel.ts",
+      "code": "TS2305",
+      "count": 6
+    },
+    "c364522c5e4050d12ab07d34310b2366967665cd": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/knowledgeBaseModel.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "68eefb21140d207d404869d34779d9ec4173bdde": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/requiredDataInboundAnswerExtractionModel.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "ff9b274d93ce0ea91330141a7ba7458458c1a791": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/requiredDataInboundAnswerExtractionModel.ts",
+      "code": "TS7006",
+      "count": 1
+    },
+    "7c55e12a01f78325d6ff284554d7b496984eca4c": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/safetyCheckModel/demandLetterSafetyCheckModel.ts",
+      "code": "TS2305",
+      "count": 6
+    },
+    "fc60b4c5189ffa8abd188382ab9f6682754c6fd8": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/safetyCheckModel/outboundSafetyCheckModel.ts",
+      "code": "TS2305",
+      "count": 6
+    },
+    "e4830b29b4f24b14f20e3fb7a9a8f9e316b7961e": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/safetyCheckModel/outboundSafetyCheckModelTuned.ts",
+      "code": "TS2305",
+      "count": 6
+    },
+    "d97ff1ac6ccccfdbe77f56290b4d69d4af7f0730": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/safetyCheckModel/outboundSafetyCheckModelWithDemand.ts",
+      "code": "TS2305",
+      "count": 6
+    },
+    "38e648e0aa4f5eef9c29b808c34154269558a13b": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/semanticRecommenderModel/collectInformationOnlyRecommenderModel.ts",
+      "code": "TS2305",
+      "count": 10
+    },
+    "7196286e3ef03eca6451a041c0e30b936d686cf6": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/semanticRecommenderModel/recommenderModel.ts",
+      "code": "TS2305",
+      "count": 8
+    },
+    "c8e13de430b6ffa91b4c809e77ea467bf8632fe8": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/semanticRecommenderModel/semanticFastRecommenderModel.ts",
+      "code": "TS2305",
+      "count": 10
+    },
+    "d1a69a41f16f13a8ef81023202ee4bce2669a09c": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/semanticRecommenderModel/taskSearchEmbeddingModel.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "e46a2fbedf48c42e38d0acf4cb8703c453567a4f": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/taskSwitchModel/langchainModel.ts",
+      "code": "TS2305",
+      "count": 10
+    },
+    "4e6dece893affb748ed749269ba4598905d4f0e9": {
+      "file": "src/services/emmaTaskService/models/generatedTaskModels/taskSwitchModel/langchainModel.ts",
+      "code": "TS7006",
+      "count": 2
+    },
+    "1dba406f750d0a8b29ca0fc92bfd5f18530ccb5a": {
+      "file": "src/services/emmaTaskService/models/imageSummary/imageSummaryModel.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "874bced4e82b25f401ae31b3a9333610a7aaa1f8": {
+      "file": "src/services/emmaTaskService/models/imageSummary/strategies/imageSummaryGemini.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "467b30646419c42204c1a26747a19e837991bec6": {
+      "file": "src/services/emmaTaskService/models/imageSummary/strategies/imageSummaryOpenAI.ts",
+      "code": "TS2305",
+      "count": 9
+    },
+    "9df03055190c920337fb76d28a58411251c18524": {
+      "file": "src/services/emmaTaskService/models/imageSummaryModel.ts",
+      "code": "TS2305",
+      "count": 8
+    },
+    "c406d080b81fb5de0720a2fddf9eb1088aab2044": {
+      "file": "src/services/emmaTaskService/models/parallelGeneratedTaskModels/globalEscalationCheckModel.ts",
+      "code": "TS2305",
+      "count": 7
+    },
+    "15bf8d1b6e2358c728ea12b0772ca4117f6bc39d": {
+      "file": "src/services/emmaTaskService/models/parallelGeneratedTaskModels/parallelTaskChain.ts",
+      "code": "TS7006",
+      "count": 9
+    },
+    "98f01aebe861bf6cb0bc1f55c1bfe18c36d5d566": {
+      "file": "src/services/emmaTaskService/models/parallelGeneratedTaskModels/parallelTaskChain.ts",
+      "code": "TS7031",
+      "count": 2
+    },
+    "6dd60a83913697e69ac2e324f36bca5ec8df8373": {
+      "file": "src/services/emmaTaskService/models/parallelGeneratedTaskModels/taskSelectorModel.ts",
+      "code": "TS2305",
+      "count": 8
+    },
+    "ef323a2c5fc6c7d0344d1d3ceb5885421f8cbf44": {
+      "file": "src/services/emmaTaskService/models/responseWarrantedModel.ts",
+      "code": "TS2305",
+      "count": 8
+    },
+    "e40f175893c57b48302746aadecc0427f7c8500f": {
+      "file": "src/services/emmaTaskService/models/utils.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "ce5765a593b82a9167f634392213c35bb3050485": {
+      "file": "src/services/emmaTaskService/taskHandlers/__tests__/gpcDispatchHandlers.integration.test.ts",
+      "code": "TS2349",
+      "count": 4
+    },
+    "a212b6421520576676e276306e355d680ab55272": {
+      "file": "src/services/emmaTaskService/taskHandlers/__tests__/gpcDispatchHandlers.integration.test.ts",
+      "code": "TS2322",
+      "count": 5
+    },
+    "bec9a35bdfd97045e576430c8402312f271710bf": {
+      "file": "src/services/emmaTaskService/taskHandlers/__tests__/gpcDispatchHandlers.integration.test.ts",
+      "code": "TS2339",
+      "count": 6
+    },
+    "7c4ad5da1a2318fd8f434eba5b4fccbe4341cbdc": {
+      "file": "src/services/emmaTaskService/taskHandlers/taskHandlerModules/conversational/generatedTaskHandler.ts",
+      "code": "TS2305",
+      "count": 1
+    },
+    "c7f794ad2023675ffa0a2ccda793f4c7f47d9084": {
+      "file": "src/services/emmaTaskService/taskHandlers/taskHandlerSupport/generatedTaskUtils.ts",
+      "code": "TS2305",
+      "count": 2
+    },
+    "6c74de20b0dad3726989254c176eab0c5f65c409": {
+      "file": "src/services/externalCaseExtractionService/extendedFuzzyNameMatch.ts",
+      "code": "TS1202",
+      "count": 1
+    },
+    "9dcbcd477c6a51e476c3bfd055eb9dd04586b3c6": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/002-initialclassifiers.ts",
+      "code": "TS7031",
+      "count": 5
+    },
+    "3eaa8da07f46f1eb950c0c18a886c0be5133e14e": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/002-initialclassifiers.ts",
+      "code": "TS7006",
+      "count": 1
+    },
+    "59f045354aed18de0370170be9f7bda746fc1b1b": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/003-enteringorleaving.ts",
+      "code": "TS7031",
+      "count": 14
+    },
+    "99a36644fa2e8b981014232c9664f8ac204180b2": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/003-enteringorleaving.ts",
+      "code": "TS7006",
+      "count": 1
+    },
+    "912926d3a0c2a6b6657621288638e45524c54614": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/003-enteringorleaving.ts",
+      "code": "TS2322",
+      "count": 2
+    },
+    "c7a97253b130ada189be5bb6d8667a146663964f": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/003a-enteringorleavingdriveway.ts",
+      "code": "TS7031",
+      "count": 14
+    },
+    "e4278f0e5479732e7e56a99c3d8f890ee2688baa": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/003a-enteringorleavingdriveway.ts",
+      "code": "TS7006",
+      "count": 1
+    },
+    "6d7c78e01606c1cc3ff55dc111faa5804ba4aa70": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/003a-enteringorleavingdriveway.ts",
+      "code": "TS2322",
+      "count": 2
+    },
+    "1ab66f267ab91ca8938d767f7c6b5365a99b2efd": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/004-unsupported.ts",
+      "code": "TS7031",
+      "count": 2
+    },
+    "48f16eb15b8bbc18a73525b7345edc9b44e7afe3": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/005-classification.ts",
+      "code": "TS7031",
+      "count": 8
+    },
+    "b0720aa30cd669f016eb6f28b7b112fc6fb7e2e0": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/005-classification.ts",
+      "code": "TS7006",
+      "count": 4
+    },
+    "1d50d49c3fbecb959cb1ff40e158d950d11b5bed": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/005-classification.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "207db88d9877c82ffda8c050c53b8fab7eabac5d": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/006-largevehicledynamics.ts",
+      "code": "TS7031",
+      "count": 8
+    },
+    "c8fb104d4602f52391ab11c4caf3d8f7c66014c7": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/010-leftofcenter.ts",
+      "code": "TS7031",
+      "count": 8
+    },
+    "242384ce09e5fba86f4d4b3e656de51f0d8d982c": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/010-leftofcenter.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "5a3fd26cfdd8744bb299129cf59be6090411a1b4": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/015-rearending.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "701f0a3c22c44be3fe6f293580269d93c572d0b4": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/015-rearending.ts",
+      "code": "TS7031",
+      "count": 7
+    },
+    "5eb8a07aac6c2ae315142410d8e4ca8db9b5187b": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/030-highwaylanechangeormerging.ts",
+      "code": "TS7031",
+      "count": 8
+    },
+    "d41c0cdf19fa86c281264cdaad577c5f0c428ad4": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/030-highwaylanechangeormerging.ts",
+      "code": "TS2322",
+      "count": 2
+    },
+    "c5d3bfeb827fb49e3b47ad27803816c239c3965d": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/105-manyparty-subsequentcollision.ts",
+      "code": "TS7031",
+      "count": 13
+    },
+    "942ce1b0c9709da751eac71fd618fb78f5777afc": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/105-manyparty-subsequentcollision.ts",
+      "code": "TS7006",
+      "count": 8
+    },
+    "a4f525eb82b02514ed633695bc1282882ddf89e2": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/110-signaling.ts",
+      "code": "TS7031",
+      "count": 11
+    },
+    "e2c502162fe965433f394517baf2d6fa68c1446d": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/110-signaling.ts",
+      "code": "TS7006",
+      "count": 1
+    },
+    "d90069e7ebd9a6989c3a0acaf18384734cd164a4": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/110-signaling.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "6696201197454d8c1c32ee0110e7f34f28d81a1a": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/115-vehiclebehavior.ts",
+      "code": "TS7031",
+      "count": 5
+    },
+    "a0b437caed9d1d42b6e1a5895f1ab90654fa0cd3": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/115.2-vehiclebehavior.ts",
+      "code": "TS7031",
+      "count": 7
+    },
+    "909b7bd34388bba607adc5f6254e3ecf5e282f20": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/common/laneDynamics.ts",
+      "code": "TS2322",
+      "count": 2
+    },
+    "76af46fde924c5a239c8df87e8c49fd87ca44bb5": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/common/laneOfVehicle.ts",
+      "code": "TS7031",
+      "count": 1
+    },
+    "c1dcca828e9729b1a5bde7baaf00b747d4f2e71e": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/common/legacyIntersection/general.ts",
+      "code": "TS7031",
+      "count": 6
+    },
+    "2d2b3986f472bd473ed495cf22185fbcbc60fe30": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/common/legacyIntersection/general.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "2d33e2b23be7e5ab5a16cae1324e6ddc3b56db82": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/common/legacyIntersection/stopsign.ts",
+      "code": "TS7031",
+      "count": 24
+    },
+    "b3a54437a05f58a5be5957c05e3143f1d60f7d59": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/common/legacyIntersection/stopsign.ts",
+      "code": "TS2322",
+      "count": 2
+    },
+    "b72c1880803421b939c91fa5a94442c7223d8503": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/common/legacyIntersection/trafficlight.ts",
+      "code": "TS7031",
+      "count": 33
+    },
+    "76d7842211038e9075b096a201ccadf60ac385ac": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/common/legacyIntersection/trafficlight.ts",
+      "code": "TS2322",
+      "count": 3
+    },
+    "51ddd1445bd1d1710809160a6752d7245ba456fb": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/common/legacyIntersection/uncontrolled.ts",
+      "code": "TS7031",
+      "count": 14
+    },
+    "a5e17334c240cf78f91822652f1490ba839251bf": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/common/legacyIntersection/uncontrolled.ts",
+      "code": "TS2322",
+      "count": 2
+    },
+    "d03e298acb3b5c4bde0d0c273618f9557314f74d": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/common/legacyIntersection/yield.ts",
+      "code": "TS7031",
+      "count": 4
+    },
+    "b895d658fe67c360e74d233aa6c437a609e04620": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/intersection/index.ts",
+      "code": "TS7031",
+      "count": 7
+    },
+    "44aff15d5967c620f67fa4710d99c0bfd42f9317": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/intersection/index.ts",
+      "code": "TS2322",
+      "count": 5
+    },
+    "70fc402bef2f29bdadf3e8c965b43fc0bbc3cb40": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/intersection/intersectionScene/intersectionOtherVehicleDynamics.ts",
+      "code": "TS7031",
+      "count": 10
+    },
+    "5c999e772aff16b38c99ecb480202dee3742e738": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/intersection/intersectionScene/intersectionOtherVehicleDynamics.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "36ab48152bcc10a6cfef14654943673f910f487b": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/intersection/intersectionScene/intersectionVehicleDynamics.ts",
+      "code": "TS2322",
+      "count": 2
+    },
+    "67d544dc349b4a30b6086eb272629bf2646ae884": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/intersection/intersectionScene/intersectionVehicleDynamics.ts",
+      "code": "TS7031",
+      "count": 2
+    },
+    "d3a7165c0fc8a44a416d052967b8e4d20ce09467": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/intersection/leftTurn.ts",
+      "code": "TS7006",
+      "count": 2
+    },
+    "e8901523479958d03471b60d423bf8c3b379883c": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/intersection/leftTurn.ts",
+      "code": "TS7031",
+      "count": 4
+    },
+    "7741e3eb2765c51b0fe1dd2686c4251da54321dd": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/intersection/leftTurn.ts",
+      "code": "TS2322",
+      "count": 4
+    },
+    "26233ec6bd029f87ceea2abb12ff9d91525a296c": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/intersection/trafficControl/index.ts",
+      "code": "TS7031",
+      "count": 2
+    },
+    "e798d6788d9a9450caf617a7ad30be6e069a90bb": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/intersection/trafficControl/stopsign.ts",
+      "code": "TS7031",
+      "count": 21
+    },
+    "3381013b602cff3208464a82f233b4572699178a": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/intersection/trafficControl/stopsign.ts",
+      "code": "TS7006",
+      "count": 2
+    },
+    "d9470ea9579e70f68039b3d282f39878fdb2b4e4": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/intersection/trafficControl/trafficlight.ts",
+      "code": "TS7031",
+      "count": 21
+    },
+    "86abbba977c3193c82caba85fe3a3d33d17e5ae5": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/intersection/trafficControl/yield.ts",
+      "code": "TS7031",
+      "count": 3
+    },
+    "22b81dcc3135aa981893ddffcb8a37936b059355": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/lanechange/lanechangeLegacy.ts",
+      "code": "TS7031",
+      "count": 17
+    },
+    "12ab57ce70bb782d404d65157b139282ff33cc62": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/lanechange/lanechangeLegacy.ts",
+      "code": "TS2322",
+      "count": 3
+    },
+    "b32b8c32e5921d35719d371b350dbc25bcda8884": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/merging/legacyMerging.ts",
+      "code": "TS7031",
+      "count": 18
+    },
+    "49efdedb8593481a10ef6fd6543b497ba7c625e5": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/merging/legacyMerging.ts",
+      "code": "TS2322",
+      "count": 2
+    },
+    "38e27f52784fb924e258f76bd15118bf9a0fd83a": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/merging/merging.ts",
+      "code": "TS2322",
+      "count": 9
+    },
+    "535a7769fb7a62b94e4010c33c420dac0a861f09": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/merging/merging.ts",
+      "code": "TS7031",
+      "count": 22
+    },
+    "1e98eaae690505276b39ff8b56a649edbbbaa0af": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/merging/merging.ts",
+      "code": "TS2719",
+      "count": 2
+    },
+    "f540616a6a4815960c61737c641a00caf1e40846": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/motorcyclerelatedvehiclebehavior/laidbikedown.ts",
+      "code": "TS7031",
+      "count": 8
+    },
+    "7c75d1fbdbf2f7528ee07353edf2c1c1f39129ec": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/motorcyclerelatedvehiclebehavior/laidbikedown.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "f9151ed695434d3044e03d62b59932445dca1a8a": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/motorcyclerelatedvehiclebehavior/lanesharing.ts",
+      "code": "TS7031",
+      "count": 13
+    },
+    "b14e79998361cd500ac14baa8daeb76f1ef4cda3": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/motorcyclerelatedvehiclebehavior/lanesharing.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "da2d50c52995bc02e4699235747f873d4251d7ff": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/motorcyclerelatedvehiclebehavior/lanesplitting.ts",
+      "code": "TS7031",
+      "count": 7
+    },
+    "e812f266258ae527cd00af7bfb40e64adad7c694": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/motorcyclerelatedvehiclebehavior/lanesplitting.ts",
+      "code": "TS2322",
+      "count": 2
+    },
+    "c36d3dd1270584f386b9161e79953b181b2c7156": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/motorcyclerelatedvehiclebehavior/offroading.ts",
+      "code": "TS7031",
+      "count": 13
+    },
+    "a80ca0cf88559ffa7203261caacf211bc3ee4d0c": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/motorcyclerelatedvehiclebehavior/offroading.ts",
+      "code": "TS2322",
+      "count": 2
+    },
+    "975d8149e083fda4fe86eb6b92b851d3b74fc4a2": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/motorcyclerelatedvehiclebehavior/performingstunt.ts",
+      "code": "TS7031",
+      "count": 10
+    },
+    "2fa65fae80db83d8137624ede66505839f446a20": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/motorcyclerelatedvehiclebehavior/performingstunt.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "c3ded446d5675057fb7d1ca275e2a2c344229543": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/motorcyclerelatedvehiclebehavior/racing.ts",
+      "code": "TS7031",
+      "count": 9
+    },
+    "5672722c8fc9e437e70b138a8a464bfbbef7dca0": {
+      "file": "src/services/guidedCollisionReconstructionService/data/steps/motorcyclerelatedvehiclebehavior/racing.ts",
+      "code": "TS2322",
+      "count": 2
+    },
+    "faf157fc8a034540cf11b6e01c3fa5b5340ea56d": {
+      "file": "src/services/guidedPhotoCaptureService/addGuidedPhotoCaptureMediaItem.test.ts",
+      "code": "TS2345",
+      "count": 1
+    },
+    "8478924f6afbbfe9ce9ef8e6ffb572a9a41b3a2d": {
+      "file": "src/services/guidedPhotoCaptureService/deleteGuidedPhotoCaptureMediaItem.test.ts",
+      "code": "TS2345",
+      "count": 1
+    },
+    "07d28e994d2fe7f81fc5a29607054a218fb3dbe3": {
+      "file": "src/services/guidedPhotoCaptureService/index.ts",
+      "code": "TS7016",
+      "count": 1
+    },
+    "d98afa860c7e1f7f132f92aa71fad5c6a26ba756": {
+      "file": "src/services/guidedPhotoCaptureService/updateGuidedPhotoCaptureMediaItem.test.ts",
+      "code": "TS2345",
+      "count": 1
+    },
+    "54e98245dd4783d1b906a8f95cd5f78e07134a5c": {
+      "file": "src/services/isa/shopNonDrivableDataImportService.test.ts",
+      "code": "TS2345",
+      "count": 4
+    },
+    "7147fe45840d478e333f23cb45da7712984fe7f5": {
+      "file": "src/services/isa/shopSearchAudit.test.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "d8d6aba3037e44d4ac6b255dc3025e760c0b1ddc": {
+      "file": "src/services/isa/towingService/towProviderJobService.test.ts",
+      "code": "TS2345",
+      "count": 2
+    },
+    "fe4e1203f680e382eb085854d36a87dd7228a107": {
+      "file": "src/services/isa/towingService/towServicerService.test.ts",
+      "code": "TS2345",
+      "count": 7
+    },
+    "86970ceeec083c0adedc6efbbab66b381d47ed35": {
+      "file": "src/services/isa/towingService/towSessionService.test.ts",
+      "code": "TS2345",
+      "count": 11
+    },
+    "c8529fac870e403c3d0a369f15145405755a149d": {
+      "file": "src/services/isa/towingService/towSessionService.test.ts",
+      "code": "TS2353",
+      "count": 1
+    },
+    "1cbad8f6a9b5399b5dbb2faa5677d04b167c45eb": {
+      "file": "src/services/isa/vehicleRentalService/vehicleRentalService.test.ts",
+      "code": "TS2741",
+      "count": 1
+    },
+    "429608f8a1ad3e1f1411e80c14d37bddd4889726": {
+      "file": "src/services/ivr/ivrSessionService.test.ts",
+      "code": "TS2339",
+      "count": 1
+    },
+    "ca3e99bce43c69dbb795f12b3598ca457b90b39d": {
+      "file": "src/services/mapService.ts",
+      "code": "TS7016",
+      "count": 1
+    },
+    "ee5e49fd90f6f87269746d618aaab82ac1207057": {
+      "file": "src/services/openaiService/summarizeCollisionFromQuestionsAndAnswers.ts",
+      "code": "TS2305",
+      "count": 6
+    },
+    "f49151da41e71066e923225232e41d2b9b8d2e83": {
+      "file": "src/services/puppeteerService.test.ts",
+      "code": "TS2345",
+      "count": 1
+    },
+    "f89a6bfc8b6083cfb811b047415bf9aca60c4532": {
+      "file": "src/services/richPdfGeneratorService/generateCaseViewRichPdf.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "f50a70dc33de64de2187daf4f825937a90239a88": {
+      "file": "src/services/richPdfGeneratorService/generateClaimViewRichPdf.ts",
+      "code": "TS2322",
+      "count": 2
+    },
+    "f17eafff79b36acbb7ca25c0975c28c44d1885c9": {
+      "file": "src/services/serviceAssignmentForRepsService.test.ts",
+      "code": "TS2345",
+      "count": 4
+    },
+    "8db227f2effa96acfaef6de8e85cc0bbc52d851d": {
+      "file": "src/services/taskRecommendationEngine/recommendTasks.ts",
+      "code": "TS2305",
+      "count": 5
+    },
+    "6cf0aceb5d1c03238e4c24ba492c09f21191d6db": {
+      "file": "src/services/veriskService/mockServer.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "b76b26e09788814368364c0ccf8763dec69ad254": {
+      "file": "src/services/weather/weatherServiceViaWeatherKit.test.ts",
+      "code": "TS2339",
+      "count": 31
+    },
+    "d399ff529ce5a18e586d0ab017d6f223818151d2": {
+      "file": "src/telemetry/newRelicWinstonTransport.ts",
+      "code": "TS1202",
+      "count": 1
+    },
+    "c88887328eefc32771fe3086cfb75e489dc18458": {
+      "file": "src/telemetry/nexusInstrumentationPlugin.test.ts",
+      "code": "TS2722",
+      "count": 1
+    },
+    "00cca80834c8514f3b8d267ff683647a776f6ef1": {
+      "file": "src/telemetry/nexusInstrumentationPlugin.test.ts",
+      "code": "TS18048",
+      "count": 1
+    },
+    "daedaef1d730ada92c3df9db1832a8b476e46a50": {
+      "file": "src/testUtils/builders/caseContactBuilder/index.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "0c9cc86421c49e60e8eb31796a250bad7ea1980b": {
+      "file": "src/testUtils/builders/caseContactBuilder/index.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "9dc06c9c0ed2d02e6ee94ee04e5acca36a71686c": {
+      "file": "src/testUtils/testEnvironment/testEnvironment.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "f9909f6cb0ece372aa9f1de0519cb9fdcc0db1fb": {
+      "file": "src/transcodeMedia/index.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "e1d36ba37d431d222398018943a4f5eb932901ac": {
+      "file": "src/types/AdminIntake.lookupCaseOrClaimByIdentifier.integration.test.ts",
+      "code": "TS2349",
+      "count": 7
+    },
+    "efc212c59c9dce9853157f156e2c8aafe07f4763": {
+      "file": "src/types/AdminTestBench/AdminTestBench.ts",
+      "code": "TS7006",
+      "count": 4
+    },
+    "23db870a02aa5e3bbd8cb2932eab4f5d98717d6f": {
+      "file": "src/types/Case.integration.test.ts",
+      "code": "TS2349",
+      "count": 32
+    },
+    "1378b482216dcfb7249c7918173545804c5a9623": {
+      "file": "src/types/CaseContact.integration.test.ts",
+      "code": "TS2349",
+      "count": 33
+    },
+    "b1c8e6da6a715fd24cb3e0f6a5871ca7e5e2ea67": {
+      "file": "src/types/Conversation.integration.test.ts",
+      "code": "TS2349",
+      "count": 12
+    },
+    "68833825010591738b9462364ee2fe536bf120eb": {
+      "file": "src/types/Emma/EmmaStaticGeneratedTask.integration.test.ts",
+      "code": "TS2349",
+      "count": 24
+    },
+    "f134f8fc858bb8027b4741284f720b54aeeb8ac9": {
+      "file": "src/types/Emma/EmmaTaskGQL.integration.test.ts",
+      "code": "TS2349",
+      "count": 14
+    },
+    "2716edc0e6ccda8585548721cc28f15107c7bd7d": {
+      "file": "src/types/Emma/EmmaTasks.integration.test.ts",
+      "code": "TS2349",
+      "count": 9
+    },
+    "90d2dd7c1618aa3011bedf8f71cefc81b96a0528": {
+      "file": "src/types/Emma/SignableDocument.integration.test.ts",
+      "code": "TS2349",
+      "count": 20
+    },
+    "20c6fdace5c527a4273ec7e3336f2119769015d8": {
+      "file": "src/types/Emma/SignableDocumentSubmission.integration.test.ts",
+      "code": "TS2349",
+      "count": 17
+    },
+    "ca084364d043ab4e19031dfffd425020b4f93f6e": {
+      "file": "src/types/Hub.integration.test.ts",
+      "code": "TS2349",
+      "count": 9
+    },
+    "e8449710c7f2b74eff924e03a52b658c54777f08": {
+      "file": "src/types/Hub.ts",
+      "code": "TS2349",
+      "count": 2
+    },
+    "a0b35dc511dbfcc19efb8ad798c910a6e7aaeb5e": {
+      "file": "src/types/ISA/Isa.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "a01af4ac9b9f5268e91913b5e439ee1943750f39": {
+      "file": "src/types/Mutation.updateClaimNote.integration.test.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "4598be57a0034068e441b21da81f7246bb4f6cdc": {
+      "file": "src/types/Query.unifiedLocationSearch.integration.test.ts",
+      "code": "TS2349",
+      "count": 15
+    },
+    "5d2ab2f710b9d7556dd0ac061af345ecb704b682": {
+      "file": "src/types/Query.unifiedLocationSearch.nonUs.integration.test.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "9f1da759ca0ca68967bc6ba8f0db6fd566e87e41": {
+      "file": "src/types/TenantConfig.integration.test.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "cefcc3ec2d175dfcf33e77dd494c726c3f200df0": {
+      "file": "src/types/__tests__/CaseContact.test.ts",
+      "code": "TS2345",
+      "count": 12
+    },
+    "5ea4ef5f3feb04f50815e6fbb460c4a2a24e6acd": {
+      "file": "src/types/__tests__/CaseContact.test.ts",
+      "code": "TS2339",
+      "count": 3
+    },
+    "52a62f2e8da3602ec0cff2ffebe49b85d24d1f3c": {
+      "file": "src/types/__tests__/CaseContact.test.ts",
+      "code": "TS2741",
+      "count": 4
+    },
+    "0aa2caf680b4bf7d9c9ba7d3a3d5d4cadd4985b6": {
+      "file": "src/types/__tests__/CaseContact.test.ts",
+      "code": "TS2740",
+      "count": 4
+    },
+    "aeda286196ab0510d03c4d87c974a970f42ad02d": {
+      "file": "src/voiceAI/evals/generateWorkflowStepComponents.ts",
+      "code": "TS2578",
+      "count": 1
+    },
+    "d84a46a1535dde285a57b4cb94bba13322196226": {
+      "file": "src/webhooks/email/index.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "874efcb01db762e076029650248580f0196633ef": {
+      "file": "src/webhooks/ses/index.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "74ce234a40b0395717a972e8bad3123f736788c7": {
+      "file": "src/webhooks/sms/keyphraseHandlers/subscriptions/testEnv.ts",
+      "code": "TS7016",
+      "count": 1
+    },
+    "4f54abb0cbb47bfb2b3df7bc7f4cdcd4bb136b48": {
+      "file": "src/webhooks/voice/fnol/fnolFlow.integration.test.ts",
+      "code": "TS2349",
+      "count": 6
+    },
+    "e6056db7e87b4fe5cb9236efd9d033c71f3d5ee2": {
+      "file": "src/worker.ts",
+      "code": "TS2349",
+      "count": 2
+    },
+    "b3ba7248b397c518f71066936f4f51f95cae0b72": {
+      "file": "src/worker.ts",
+      "code": "TS7006",
+      "count": 2
+    },
+    "18a6bc2687ab14fd0d063e0c38a6b86354964204": {
+      "file": "src/worker.ts",
+      "code": "TS18048",
+      "count": 1
+    },
+    "ac7360252c5a92b155f036c48ac30552d88088a9": {
+      "file": "src/workflows/common/classification/autoClassification.test.ts",
+      "code": "TS2345",
+      "count": 1
+    },
+    "25496ac6cbc341bd9b1d3fc02920274aa4a100c9": {
+      "file": "src/workflows/common/partyClassification/followupPartyVehicleClassification.test.ts",
+      "code": "TS2345",
+      "count": 1
+    },
+    "43f68a56e633a4530747a3c9c10a6f30e8cd9fff": {
+      "file": "src/workflows/common/vehicleDamage/accessoriesDamagedItems.test.ts",
+      "code": "TS2345",
+      "count": 1
+    },
+    "58e9e0c7fa4702199033281dff137413f5aae786": {
+      "file": "src/workflows/common/vehicleDamage/accessoriesDamagedItemsCost.test.ts",
+      "code": "TS2345",
+      "count": 1
+    },
+    "42b5633fdab42ed352e6c81465aa6cbaba8fa916": {
+      "file": "src/workflows/common/vehicleDamage/accessoriesDamagedItemsMedia.test.ts",
+      "code": "TS2345",
+      "count": 2
+    },
+    "4b04a911845479c8cb222fc44eee51b4e2527401": {
+      "file": "src/workflows/common/vehicleDamage/ridingApparelDamagedItems.test.ts",
+      "code": "TS2345",
+      "count": 1
+    },
+    "4cb85e5d525192ddd113ea90ed14ceacf1037227": {
+      "file": "src/workflows/common/vehicleDamage/ridingApparelDamagedItemsCost.test.ts",
+      "code": "TS2345",
+      "count": 1
+    },
+    "b8db04b01a32c97a84294f58709d3b94ab34c56e": {
+      "file": "src/workflows/common/vehicleDamage/ridingApparelDamagedItemsMedia.test.ts",
+      "code": "TS2345",
+      "count": 1
+    },
+    "e91d80b07893c8eb8711c84841f966128d2f54c0": {
+      "file": "src/workflows/common/vehicleDamage/wasRidingApparelOrAccessoriesDamaged.test.ts",
+      "code": "TS2353",
+      "count": 2
+    },
+    "5884ae0c42226a0dc587bf25eac440a5a4984daf": {
+      "file": "src/workflows/common/vehicleDamage/wasRidingApparelOrAccessoriesDamaged.test.ts",
+      "code": "TS2345",
+      "count": 1
+    },
+    "f3a7cabe5a97fdbebab895d2684b7cb814de6424": {
+      "file": "src/workflows/generate-flow.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "22e1d4c55055590d292a863d70a17261e1aaac44": {
+      "file": "src/workflows/modules/auto_sidekick/__common/__rules/locationEntry/_tests/locationHighwayPoint.test.ts",
+      "code": "TS2345",
+      "count": 14
+    },
+    "7ec1f21c7a913cd56f4c7ed8f3efa81db3640edf": {
+      "file": "src/workflows/modules/auto_sidekick/__common/__rules/locationEntry/_tests/locationHighwayPoint.test.ts",
+      "code": "TS2353",
+      "count": 1
+    },
+    "95391265fddb5ed0c2f88546733cfea202e764a4": {
+      "file": "src/workflows/modules/auto_sidekick/__common/__rules/locationEntry/_tests/locationNearestCity.test.ts",
+      "code": "TS2345",
+      "count": 11
+    },
+    "67006230ae0babecf3ee4958a6bf3a85c1378e23": {
+      "file": "src/workflows/modules/auto_sidekick/__common/__rules/locationEntry/_tests/unifiedLocationEntry.direction.test.ts",
+      "code": "TS18048",
+      "count": 1
+    },
+    "2e05efeb2ded74d175804a6a1b67103b23e19cb0": {
+      "file": "src/workflows/modules/auto_sidekick/__common/__rules/locationEntry/_tests/unifiedLocationEntry.direction.test.ts",
+      "code": "TS2532",
+      "count": 2
+    },
+    "c1e4ac635ddaf0259e8a5d72e40dd6c1a4c9ed18": {
+      "file": "src/workflows/modules/auto_sidekick/__common/__rules/locationEntry/_tests/unifiedLocationEntry.direction.test.ts",
+      "code": "TS2339",
+      "count": 2
+    },
+    "5884bdfcf45f9714c34276cfd6bab314aa7bd8b0": {
+      "file": "src/workflows/modules/auto_sidekick/__common/__rules/locationEntry/_tests/unifiedLocationEntry.highwayMismatch.test.ts",
+      "code": "TS2345",
+      "count": 6
+    },
+    "23deb064643962c2c9a9e905605747d49751270a": {
+      "file": "src/workflows/modules/auto_sidekick/__common/__rules/locationEntry/_tests/unifiedLocationEntry.onPersistence.test.ts",
+      "code": "TS2345",
+      "count": 14
+    },
+    "f7d7f63fae7a6593fb04bdec5983a360620a7b20": {
+      "file": "src/workflows/modules/auto_sidekick/__common/__rules/locationEntry/_tests/unifiedLocationEntry.onPersistence.test.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "175d7e65be3d4966324fb1f136655a3270be30fd": {
+      "file": "src/workflows/modules/intelligent_investigation/_tests/050-injuries/utils.ts",
+      "code": "TS2349",
+      "count": 2
+    },
+    "35cc6a1bd78d624669602feb36c15d1be57d5c83": {
+      "file": "src/workflows/modules/isa_auto/__tests/042-towing/towing.integration.test.ts",
+      "code": "TS7016",
+      "count": 1
+    },
+    "4f7af17a59f3dca9119c3c9713a2e12d009af0e8": {
+      "file": "src/workflows/modules/isa_auto/__tests/044-towing-info/towConfirmation.integration.test.ts",
+      "code": "TS7016",
+      "count": 1
+    },
+    "43978f6546ba9549cec7d6fabee4b39370ecd601": {
+      "file": "src/workflows/modules/isa_auto/_stateHandlers/__tests__/handleIsaStarted.test.ts",
+      "code": "TS2345",
+      "count": 4
+    },
+    "ccf3505782e223e87c24a8ca7e8caa9c03583044": {
+      "file": "src/workflows/modules/isa_towing/__tests/standalone-towing.integration.test.ts",
+      "code": "TS7016",
+      "count": 1
+    },
+    "a811f07e6308a64da3e04c2207ad6d13bc0e5167": {
+      "file": "src/workflows/modules/standard/053a-trip/filters.test.ts",
+      "code": "TS2345",
+      "count": 1
+    },
+    "8a998a0f1680a8577df38ee29cca2d262557822c": {
+      "file": "src/workflows/simulator.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "dedb5a29b43141be20e5d81fe32524f60777f4a0": {
+      "file": "src/workflows/tests/helpers/createMockRSAJwt.ts",
+      "code": "TS2349",
+      "count": 3
+    },
+    "779380324724af51257b316f1725c0ae637c5ae0": {
+      "file": "src/workflows/tests/helpers/workflowTester.ts",
+      "code": "TS2349",
+      "count": 29
+    },
+    "8f188f2571881057bc873266d44d09d292daed8b": {
+      "file": "src/workflows/tests/startWorkflow/sidekick.startWorkflow.integration.test.ts",
+      "code": "TS2349",
+      "count": 3
+    },
+    "72b2d5774763ac92d4fc7a4154ec1618916102ea": {
+      "file": "src/workflows/utils/stringUtils.ts",
+      "code": "TS2349",
+      "count": 1
+    },
+    "69bf770210b635c6179e69de8e176c1fe868ee7d": {
+      "file": "src/workflows/v2/steps/contact/whoOwnsVehicle.test.ts",
+      "code": "TS2345",
+      "count": 3
+    },
+    "a6d1af8f8219867ba5611ab067f1919a1a29baca": {
+      "file": "src/workflows/v2/steps/contact/whoOwnsVehicle.test.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "4eff075d0b350a19a5f477cf125df912c5572246": {
+      "file": "src/workflows/v2/steps/repair/addUnlistedShop.test.ts",
+      "code": "TS2345",
+      "count": 1
+    },
+    "5162c4a1134fd20545c34ca87261bcd099497641": {
+      "file": "src/workflows/v2/steps/vehicle/pickVehicleFromPolicy.test.ts",
+      "code": "TS2740",
+      "count": 10
+    },
+    "bd5dd6ada44e161a1c530c717839750e3162eabe": {
+      "file": "src/workflows/v2/steps/vehicle/pickVehicleFromPolicy.test.ts",
+      "code": "TS2322",
+      "count": 1
+    },
+    "4b10e2894e22ea6222e500b9574601be68987eb1": {
+      "file": "src/workflows/v2/steps/vehicle/pickVehicleFromPolicy.test.ts",
+      "code": "TS2345",
+      "count": 7
+    },
+    "3cf6f43befbe4de82abff08622265866bcb986ef": {
+      "file": "src/workflows/v2/steps/vehicle/pickVehicleFromPolicy.test.ts",
+      "code": "TS2741",
+      "count": 1
+    },
+    "689bb9626d34f7482f1df7e743a40586bd946798": {
+      "file": "src/workflows/workflowEngine/continueWorkflow.test.ts",
+      "code": "TS2353",
+      "count": 4
+    },
+    "a2e26040cd718e5355172628a28dbe04342ed0eb": {
+      "file": "src/workflows/workflowEngine/continueWorkflow.test.ts",
+      "code": "TS2345",
+      "count": 2
+    },
+    "a1cfe1ff5ad8794873f4fb6d6c1f0a7ba6212464": {
+      "file": "src/workflows/workflowEngine/continueWorkflow.test.ts",
+      "code": "TS2322",
+      "count": 2
+    }
+  }
+}

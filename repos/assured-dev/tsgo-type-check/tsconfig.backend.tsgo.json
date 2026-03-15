@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "lib": ["esnext"],
+    "strict": true,
+    "skipLibCheck": true,
+    "moduleResolution": "node",
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "paths": {
+      "~/*": ["./*"]
+    }
+  },
+  "include": ["src/**/*", "prisma/*.ts", "types.d.ts"],
+  "exclude": [
+    "src/scripts/**/*",
+    "src/workflows/v2/workflowMaps",
+    "src/monorepoPackageImportReplacer.cjs"
+  ]
+}

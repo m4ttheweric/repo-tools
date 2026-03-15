@@ -7,10 +7,13 @@
  * Run once per repo folder / worktree.
  *
  * What it does:
- *   - Creates symlinks from the repo into matts-utils/repos/<repo-name>/
+ *   - Reads link-specs.json from repos/<repo-name>/ for the declarative spec list
+ *   - Creates symlinks from the repo into repos/<repo-name>/
  *   - Adds each symlink to .git/info/exclude so git never sees them
  *   - Sets core.hooksPath = .local-hooks so the local git hooks are active
- *   - Also symlinks ~/.warp/workflows so Warp terminal picks up workflows
+ *
+ * To add new specs: edit repos/<repo-name>/link-specs.json directly, or use
+ * the link-repo-tools MCP server which can do it for you.
  */
 
 import {
@@ -42,43 +45,26 @@ const POINTER = `${cyan}❯${reset}`;
 const BLANK = " ";
 
 // ============================================================================
-// Symlink config — one entry per thing to link into the repo
+// LinkSpec — loaded from repos/<repoName>/link-specs.json at runtime
 // ============================================================================
 
 interface LinkSpec {
   /** Path relative to the repo root where the symlink is created */
   repoPath: string;
-  /** Path relative to matts-utils/repos/<repoName>/ where the target lives */
+  /** Path relative to repos/<repoName>/ where the symlink target lives */
   sourcePath: string;
-  /** Entry to add to .git/info/exclude (defaults to repoPath/) */
-  excludeEntry?: string;
-  /** If true, ensure the parent directory exists before creating the symlink */
-  ensureParent?: boolean;
+  /** Optional human-readable description (shown by MCP server) */
+  description?: string;
 }
 
-const LINK_SPECS: LinkSpec[] = [
-  {
-    repoPath: "matts-tools",
-    sourcePath: "matts-tools",
-    excludeEntry: "matts-tools",
-  },
-  {
-    repoPath: ".local-hooks",
-    sourcePath: ".local-hooks",
-    excludeEntry: ".local-hooks",
-  },
-  {
-    repoPath: ".cursor/rules/local.mdc",
-    sourcePath: ".cursor/rules/local.mdc",
-    excludeEntry: ".cursor/rules/local.mdc",
-    ensureParent: true,
-  },
-  {
-    repoPath: "Agents.MR_REVIEWS.md",
-    sourcePath: "Agents.MR_REVIEWS.md",
-    excludeEntry: "Agents.MR_REVIEWS.md",
-  },
-];
+function loadLinkSpecs(sourceDir: string): LinkSpec[] {
+  const specsPath = join(sourceDir, "link-specs.json");
+  try {
+    return JSON.parse(readFileSync(specsPath, "utf8")) as LinkSpec[];
+  } catch {
+    return [];
+  }
+}
 
 // ============================================================================
 // Helpers
@@ -293,12 +279,27 @@ async function setup(selectedRepo: string): Promise<void> {
     process.exit(1);
   }
 
+  const specs = loadLinkSpecs(sourceDir);
+
+  if (specs.length === 0) {
+    console.log(
+      `  ${yellow}no link-specs.json found (or empty) in ${sourceDir}${reset}`,
+    );
+    console.log(
+      `  ${dim}create one or use the link-repo-tools MCP server to add specs${reset}`,
+    );
+    console.log("");
+  }
+
   let anyChange = false;
 
-  for (const spec of LINK_SPECS) {
+  for (const spec of specs) {
     const symlinkPath = join(selectedRepo, spec.repoPath);
     const targetPath = join(sourceDir, spec.sourcePath);
-    const excludeEntry = spec.excludeEntry ?? spec.repoPath + "/";
+    // excludeEntry is always the repoPath (no trailing slash for files)
+    const excludeEntry = spec.repoPath;
+    // ensureParent whenever the symlink lives in a subdirectory
+    const needsParent = dirname(spec.repoPath) !== ".";
 
     if (!existsSync(targetPath)) {
       console.log(
@@ -307,7 +308,7 @@ async function setup(selectedRepo: string): Promise<void> {
       continue;
     }
 
-    if (spec.ensureParent) {
+    if (needsParent) {
       mkdirSync(dirname(symlinkPath), { recursive: true });
     }
 
