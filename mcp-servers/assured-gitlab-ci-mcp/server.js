@@ -188,35 +188,33 @@ server.tool(
         return err(`No pipelines found for MR !${mrNumber}`);
       }
 
-      const results = await Promise.all(
-        pipelines.map(async (p) => {
-          const entry = {
-            id: p.id,
-            status: p.status,
-            ref: p.ref,
-            sha: p.sha?.slice(0, 8),
-            webUrl: p.web_url,
-            createdAt: p.created_at,
-            dynamicTestsPipeline: null,
-          };
+      const results = pipelines.map((p) => {
+        const entry = {
+          id: p.id,
+          status: p.status,
+          ref: p.ref,
+          sha: p.sha?.slice(0, 8),
+          webUrl: p.web_url,
+          createdAt: p.created_at,
+          dynamicTestsPipeline: null,
+        };
 
-          try {
-            const bridges = glabApi(`/pipelines/${p.id}/bridges`);
-            const dtBridge = bridges.find((b) => b.name === "dynamic-tests");
-            if (dtBridge?.downstream_pipeline) {
-              entry.dynamicTestsPipeline = {
-                id: dtBridge.downstream_pipeline.id,
-                status: dtBridge.downstream_pipeline.status,
-                webUrl: dtBridge.downstream_pipeline.web_url,
-              };
-            }
-          } catch {
-            // bridge lookup failed, continue
+        try {
+          const bridges = glabApi(`/pipelines/${p.id}/bridges`);
+          const dtBridge = bridges.find((b) => b.name === "dynamic-tests");
+          if (dtBridge?.downstream_pipeline) {
+            entry.dynamicTestsPipeline = {
+              id: dtBridge.downstream_pipeline.id,
+              status: dtBridge.downstream_pipeline.status,
+              webUrl: dtBridge.downstream_pipeline.web_url,
+            };
           }
+        } catch {
+          // bridge lookup failed, continue
+        }
 
-          return entry;
-        }),
-      );
+        return entry;
+      });
 
       const latest = results[0];
       const lines = [JSON.stringify(results, null, 2)];
@@ -253,10 +251,17 @@ server.tool(
   },
   async ({ pipelineId, failedOnly }) => {
     try {
-      const [jobs, bridges] = await Promise.all([
-        glabApi(`/pipelines/${pipelineId}/jobs?per_page=100`),
-        glabApi(`/pipelines/${pipelineId}/bridges`).catch(() => []),
-      ]);
+      let jobs, bridges;
+      try {
+        jobs = glabApi(`/pipelines/${pipelineId}/jobs?per_page=100`);
+      } catch {
+        jobs = [];
+      }
+      try {
+        bridges = glabApi(`/pipelines/${pipelineId}/bridges`);
+      } catch {
+        bridges = [];
+      }
 
       const allJobs = [
         ...jobs.map((j) => ({
