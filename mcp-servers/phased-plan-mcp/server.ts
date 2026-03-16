@@ -37,6 +37,8 @@ interface PhaseEntry {
   outputs: string[];
   context_snapshot?: Record<string, string | number>;
   notes?: string;
+  expected_counts?: { key: string; min: number; max?: number }[];
+  required_paths?: string[];
 }
 
 interface PlanStatus {
@@ -58,6 +60,8 @@ interface PhaseInput {
   verification?: string[];
   outputs?: string[];
   context_snapshot?: string[];
+  expected_counts?: { key: string; min: number; max?: number }[];
+  required_paths?: string[];
 }
 
 // ── Global index (registry of all plans) ─────────────────────────────────────
@@ -308,6 +312,8 @@ server.tool(
     "is created inside the user's project so it appears in their IDE file tree. " +
     "Use when setting up a new multi-phase project, migration, refactoring, or any work " +
     "too large for a single session. " +
+    "TIP: If you have an existing implementation_plan.md, call plan_from_doc first to get " +
+    "decomposition guidance before calling this tool. " +
     "Best practice: include a Phase 0 for pre-flight checks (verify repos are clean, " +
     "dependencies are met, environment is ready) and a final phase for end-to-end " +
     "verification (full build, smoke tests, cleanup of scaffolding).",
@@ -373,6 +379,24 @@ server.tool(
             .describe(
               "Bash commands to run in teardown to capture state for next agent",
             ),
+          expected_counts: z
+            .array(
+              z.object({
+                key: z.string().describe("Key name that must appear in context_snapshot (e.g. 'packages', 'apps')"),
+                min: z.number().describe("Minimum acceptable value"),
+                max: z.number().optional().describe("Maximum acceptable value (omit for no upper bound)"),
+              }),
+            )
+            .optional()
+            .describe(
+              "Expected count ranges for context_snapshot values. complete_phase will reject if snapshot values fall outside these ranges.",
+            ),
+          required_paths: z
+            .array(z.string())
+            .optional()
+            .describe(
+              "Paths (relative to plan directory's parent) that must exist when phase completes. complete_phase checks existence before allowing DONE.",
+            ),
         }),
       )
       .describe("Ordered array of phases"),
@@ -416,6 +440,8 @@ server.tool(
         completed: null,
         depends_on: p.depends_on,
         outputs: p.outputs || [],
+        ...(p.expected_counts?.length ? { expected_counts: p.expected_counts } : {}),
+        ...(p.required_paths?.length ? { required_paths: p.required_paths } : {}),
       })),
     };
 
@@ -660,10 +686,19 @@ server.tool(
   "Mark a phase as DONE. Records completion time and optional context snapshot. " +
     "Use when an agent has finished all steps, passed wiring checks, and confirmed clean git status. " +
     "Use when asking: I'm done with this phase, mark phase 2 as done, finish this phase. " +
-    "Always call this after completing all steps and wiring checks.",
+    "Always call this after completing all steps and wiring checks. " +
+    "If the phase has expected_counts or required_paths defined, completion will be REJECTED " +
+    "if the context_snapshot values don't match or if required paths don't exist on disk.",
   {
     plan_id: z.string().describe("Plan ID"),
     phase_id: z.number().describe("Phase number to complete"),
+    wiring_checks_passed: z
+      .boolean()
+      .optional()
+      .describe(
+        "Attestation that all wiring checks passed. If the phase has wiring_checks defined, " +
+        "this MUST be set to true. Set to false or omit if checks have not been run.",
+      ),
     context_snapshot: z
       .record(z.string(), z.union([z.string(), z.number()]))
       .optional()
@@ -675,7 +710,7 @@ server.tool(
       .optional()
       .describe("Any notes or issues encountered during the phase"),
   },
-  async ({ plan_id, phase_id, context_snapshot, notes }) => {
+  async ({ plan_id, phase_id, wiring_checks_passed, context_snapshot, notes }) => {
     const status = readStatus(plan_id);
     if (!status) {
       return err(`Plan '${plan_id}' not found.`);
@@ -685,6 +720,68 @@ server.tool(
     if (!phase) {
       return err(`Phase ${phase_id} not found in plan.`);
     }
+
+    // ── Validation gates ──────────────────────────────────────────────────
+
+    // Gate 1: Validate expected_counts against context_snapshot
+    if (phase.expected_counts?.length) {
+      if (!context_snapshot) {
+        return err(
+          `Cannot complete Phase ${phase_id}: this phase has expected_counts defined ` +
+          `(${phase.expected_counts.map(e => e.key).join(', ')}) but no context_snapshot was provided. ` +
+          `Call complete_phase with a context_snapshot that includes these keys.`,
+        );
+      }
+      const failures = phase.expected_counts.filter(({ key, min, max }) => {
+        const val = Number(context_snapshot[key]);
+        return isNaN(val) || val < min || (max !== undefined && val > max);
+      });
+      if (failures.length > 0) {
+        return err(
+          `Cannot complete Phase ${phase_id}: context_snapshot values don't match expected_counts:\n` +
+          failures
+            .map((f) => {
+              const got = context_snapshot[f.key];
+              const range = f.max !== undefined ? `${f.min}-${f.max}` : `${f.min}+`;
+              return `  ❌ ${f.key}: got ${got ?? 'missing'}, expected ${range}`;
+            })
+            .join('\n') +
+          `\n\nFix the issues and try again, or update expected_counts if the plan changed.`,
+        );
+      }
+    }
+
+    // Gate 2: Validate required_paths exist on disk
+    if (phase.required_paths?.length) {
+      const dir = resolvePlanDir(plan_id)!;
+      // Resolve paths relative to the plan directory's parent (typically the repo root)
+      const repoRoot = dirname(dir);
+      const missing = phase.required_paths.filter(
+        (p) => !existsSync(isAbsolute(p) ? p : join(repoRoot, p)),
+      );
+      if (missing.length > 0) {
+        return err(
+          `Cannot complete Phase ${phase_id}: required paths missing:\n` +
+          missing.map((p) => `  ❌ ${p}`).join('\n') +
+          `\n\nEnsure these paths exist before completing the phase.`,
+        );
+      }
+    }
+
+    // Gate 3: Wiring checks attestation
+    // Read the phase doc to check if wiring_checks were defined
+    const phaseDoc = readPhaseDoc(plan_id, phase_id);
+    const hasWiringChecks = phaseDoc?.includes('## Wiring Check') &&
+      !phaseDoc?.includes('No wiring checks defined');
+    if (hasWiringChecks && !wiring_checks_passed) {
+      return err(
+        `Cannot complete Phase ${phase_id}: this phase has wiring checks defined ` +
+        `but wiring_checks_passed was not set to true. ` +
+        `Run the wiring checks first, then call complete_phase with wiring_checks_passed: true.`,
+      );
+    }
+
+    // ── All gates passed — mark as DONE ───────────────────────────────────
 
     phase.status = "DONE";
     phase.completed = nowISO();
@@ -900,6 +997,18 @@ server.tool(
       verification: z.array(z.string()).optional(),
       outputs: z.array(z.string()).optional(),
       context_snapshot: z.array(z.string()).optional(),
+      expected_counts: z
+        .array(z.object({
+          key: z.string(),
+          min: z.number(),
+          max: z.number().optional(),
+        }))
+        .optional()
+        .describe("Expected count ranges for context_snapshot values"),
+      required_paths: z
+        .array(z.string())
+        .optional()
+        .describe("Paths that must exist when phase completes"),
     }),
   },
   async ({ plan_id, phase }) => {
@@ -925,6 +1034,8 @@ server.tool(
       completed: null,
       depends_on: phase.depends_on,
       outputs: phase.outputs || [],
+      ...(phase.expected_counts?.length ? { expected_counts: phase.expected_counts } : {}),
+      ...(phase.required_paths?.length ? { required_paths: phase.required_paths } : {}),
     });
 
     status.phases.sort((a, b) => a.id - b.id);
@@ -1030,6 +1141,142 @@ server.tool(
 
     return ok(
       `Removed plan '${plan_id}' from the index. Files remain at: ${dir}`,
+    );
+  },
+);
+
+// ── plan_from_doc ────────────────────────────────────────────────────────────
+
+server.tool(
+  "plan_from_doc",
+  "Read an implementation plan document and get structured guidance for decomposing it into " +
+    "a phased execution plan. Returns the full document content plus instructions on how to " +
+    "call create_plan with the right phase structure. " +
+    "Typical workflow: (1) agent writes implementation_plan.md, (2) user approves it, " +
+    "(3) agent calls plan_from_doc to get decomposition guidance, (4) agent calls create_plan. " +
+    "Use when asking: convert this plan to phases, make this a phased plan, " +
+    "split this implementation plan into executable phases.",
+  {
+    doc_path: z
+      .string()
+      .describe(
+        "Absolute path to the implementation plan markdown file to read and decompose.",
+      ),
+    plan_id: z
+      .string()
+      .optional()
+      .describe(
+        "Suggested plan ID. If omitted, one will be suggested based on the doc filename.",
+      ),
+    plan_directory: z
+      .string()
+      .optional()
+      .describe(
+        "Absolute path where the phased plan should be created. " +
+          "If omitted, will suggest creating it alongside the source document.",
+      ),
+  },
+  async ({ doc_path, plan_id, plan_directory }) => {
+    if (!isAbsolute(doc_path)) {
+      return err(`doc_path must be an absolute path. Got: '${doc_path}'`);
+    }
+
+    let content: string;
+    try {
+      content = readFileSync(doc_path, "utf8");
+    } catch (e) {
+      return err(`Could not read file: ${doc_path}. Error: ${(e as Error).message}`);
+    }
+
+    const suggestedId =
+      plan_id ||
+      doc_path
+        .split("/")
+        .pop()
+        ?.replace(/\.md$/, "")
+        .replace(/[^a-z0-9]+/gi, "-")
+        .toLowerCase() ||
+      "my-plan";
+
+    const suggestedDir =
+      plan_directory || join(dirname(doc_path), suggestedId);
+
+    return ok(
+      `# Implementation Plan Document
+
+**Source:** \`${doc_path}\`
+**Suggested plan_id:** \`${suggestedId}\`
+**Suggested directory:** \`${suggestedDir}\`
+
+---
+
+## Document Content
+
+${content}
+
+---
+
+## Decomposition Instructions
+
+Now call \`create_plan\` to convert this into a phased execution plan. Follow these guidelines:
+
+### Phase Structure Best Practices
+
+1. **Phase 0 — Pre-flight checks**: Verify environment, dependencies, clean git status
+2. **Middle phases**: One phase per logical unit of work that can be completed in a single agent session (~30-60 min of work)
+3. **Final phase — Verification**: End-to-end validation, smoke tests, cleanup
+
+### Phase Boundary Heuristics
+
+Split phases at natural boundaries where:
+- A \`git commit\` marks a stable checkpoint
+- The next step has different prerequisites than the current step
+- A different agent session should pick up (e.g., after a long build)
+- The work shifts from one component/concern to another
+
+### Required Fields for Each Phase
+
+\`\`\`json
+{
+  "id": 0,
+  "name": "Phase Name",
+  "goal": "One-sentence goal",
+  "depends_on": [],
+  "steps": [
+    {
+      "title": "Step title",
+      "instructions": "Detailed markdown instructions with bash commands, file contents, etc."
+    }
+  ],
+  "wiring_checks": ["Check X is true", "Check Y exists"],
+  "verification": ["Verify A works", "Verify B passes"],
+  "outputs": ["What this phase produces for the next phase"],
+  "context_snapshot": ["echo \\"key: $(command)\\""],
+  "expected_counts": [
+    { "key": "snapshot_key", "min": 5, "max": 10 }
+  ],
+  "required_paths": ["relative/path/that/must/exist"]
+}
+\`\`\`
+
+### Guardrail Fields (recommended)
+
+- **\`expected_counts\`**: Define min/max ranges for numeric values in context_snapshot. \`complete_phase\` will REJECT completion if values fall outside these ranges.
+- **\`required_paths\`**: Paths that must exist on disk when the phase completes. Use absolute paths if the plan directory is not inside the repo.
+- **\`wiring_checks\`**: Things agents commonly forget to connect — the agent must attest these passed before completing.
+
+### Call create_plan
+
+\`\`\`
+create_plan({
+  plan_id: "${suggestedId}",
+  directory: "${suggestedDir}",
+  title: "...",
+  description: "...",
+  phases: [...]
+})
+\`\`\`
+`,
     );
   },
 );
