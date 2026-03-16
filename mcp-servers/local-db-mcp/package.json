@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "better-sqlite3": "^12.8.0",
     "pg": "^8.13.1"
   }
 }
