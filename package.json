@@ -1,0 +1,20 @@
+{
+  "name": "repo-tools",
+  "private": true,
+  "bin": {
+    "rt": "./cli.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.2.14"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@inkjs/ui": "^2.0.0",
+    "@workforge/glance-sdk": "^0.5.1",
+    "ink": "^6.8.0",
+    "react": "^19.2.4"
+  }
+}
