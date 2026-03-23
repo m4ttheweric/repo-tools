@@ -28,3 +28,11 @@ export type {
 // ─── Re-exports from ink ────────────────────────────────────────────────────
 
 export { Box, Text, Newline, Spacer, useInput, useApp } from "ink";
+
+// ─── Custom components ──────────────────────────────────────────────────────
+
+export {
+  FilterableMultiSelect,
+  type FilterableOption,
+  type FilterableMultiSelectProps,
+} from "./filterable-multi-select.tsx";

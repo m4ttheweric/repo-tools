@@ -5,8 +5,7 @@
  *
  * Usage:
  *   rt                   interactive menu
- *   rt dev [preset]      dev workflow composer
- *   rt type-check [...]  tsgo type-check
+ *   rt x [script]        script runner (setup → commands → teardown)
  *   rt build             turbo build selector
  *   rt kill-port [port]  orphaned port killer
  *   rt doctor            environment health check
@@ -17,8 +16,7 @@ import { bold, cyan, dim, green, yellow, reset } from "./lib/tui.ts";
 import { getRepoIdentity } from "./lib/repo.ts";
 
 const COMMANDS: Record<string, { description: string; module: string; fn?: string }> = {
-  dev:          { description: "dev workflow composer (pick apps, setup, concurrent servers)", module: "./commands/dev.ts" },
-  "type-check": { description: "tsgo type-check with baseline regression detection",        module: "./commands/type-check.ts" },
+  x:            { description: "script runner (setup → commands → teardown)",                 module: "./commands/x.ts" },
   build:        { description: "interactive turbo build selector",                            module: "./commands/build-select.ts" },
   hooks:        { description: "toggle git hooks on/off (husky)",                             module: "./commands/hooks.ts" },
   "kill-port":  { description: "kill orphaned processes on known ports",                      module: "./commands/kill-port.ts" },
