@@ -1,0 +1,238 @@
+/**
+ * Repo identity, pickers, and workspace discovery.
+ *
+ * Re-exports types and helpers from focused modules so existing
+ * imports (`from "../lib/repo.ts"`) continue to work.
+ */
+
+import { execSync } from "child_process";
+import { existsSync, readdirSync, readFileSync, mkdirSync } from "fs";
+import { homedir } from "os";
+import { join, resolve } from "path";
+
+// ─── Re-exports ──────────────────────────────────────────────────────────────
+
+export { getRepoRoot, getCurrentBranch, getRemoteUrl } from "./git.ts";
+export { updateRepoIndex, getKnownRepos, type KnownRepo } from "./repo-index.ts";
+export {
+  loadRepoConfig, loadOrCreateRepoConfig, saveRepoConfig,
+  type RepoConfig, type SetupStep,
+} from "./repo-config.ts";
+
+// ─── Internal imports ────────────────────────────────────────────────────────
+
+import { getRepoRoot, getRemoteUrl } from "./git.ts";
+import { updateRepoIndex, getKnownRepos, type KnownRepo } from "./repo-index.ts";
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+export const RT_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
+
+// ─── Repo identity ──────────────────────────────────────────────────────────
+
+export interface RepoIdentity {
+  repoName: string;
+  repoRoot: string;
+  dataDir: string;
+  remoteUrl: string;
+  baseUrl: string;
+}
+
+function deriveRepoName(remoteUrl: string): string {
+  return remoteUrl
+    .replace(/^git@[^:]+:/, "")
+    .replace(/^https?:\/\/[^/]+\//, "")
+    .replace(/\.git$/, "")
+    .split("/")
+    .pop() || "unknown";
+}
+
+function deriveBaseUrl(remoteUrl: string): string {
+  return remoteUrl
+    .replace(/\.git$/, "")
+    .replace(/^git@([^:]+):(.*)/, "https://$1/$2");
+}
+
+export function getRepoIdentity(): RepoIdentity | null {
+  const repoRoot = getRepoRoot();
+  if (!repoRoot) return null;
+
+  const remoteUrl = getRemoteUrl();
+  if (!remoteUrl) return null;
+
+  const repoName = deriveRepoName(remoteUrl);
+  const dataDir = join(homedir(), ".rt", repoName);
+  mkdirSync(dataDir, { recursive: true });
+
+  updateRepoIndex(repoName, repoRoot);
+
+  return {
+    repoName,
+    repoRoot,
+    dataDir,
+    remoteUrl,
+    baseUrl: deriveBaseUrl(remoteUrl),
+  };
+}
+
+/**
+ * Get repo identity, falling back to the interactive worktree picker
+ * if not currently inside a git repo.
+ */
+export async function requireIdentity(commandLabel?: string): Promise<RepoIdentity> {
+  let identity = getRepoIdentity();
+  if (identity) return identity;
+
+  const selected = await pickWorktree(commandLabel ? `Pick a repo for ${commandLabel}` : "Pick a repo");
+  process.chdir(selected);
+
+  identity = getRepoIdentity();
+  if (!identity) {
+    console.log(`\n  could not identify repo\n`);
+    process.exit(1);
+  }
+  return identity;
+}
+
+// ─── Pickers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Two-step interactive picker: repo → worktree.
+ * Auto-selects when there's only one option at either step.
+ */
+export async function pickWorktree(prompt: string): Promise<string> {
+  const repos = getKnownRepos();
+
+  if (repos.length === 0) {
+    console.log(`\n  not in a git repo and no known repos found`);
+    console.log(`  run rt from inside a git repo first to register it\n`);
+    process.exit(1);
+  }
+
+  const totalWorktrees = repos.reduce((n, r) => n + r.worktrees.length, 0);
+  if (totalWorktrees === 1) {
+    return repos[0]!.worktrees[0]!.path;
+  }
+
+  if (!process.stdin.isTTY) {
+    console.log(`\n  not in a git repo — run interactively to pick one\n`);
+    process.exit(1);
+  }
+
+  let selectedRepo: KnownRepo;
+
+  if (repos.length === 1) {
+    selectedRepo = repos[0]!;
+  } else {
+    const { select: inkSelect } = await import("./rt-render.tsx");
+    const repoOptions = repos.map(r => ({
+      value: r.repoName,
+      label: r.repoName,
+      hint: r.worktrees.length > 1
+        ? `${r.worktrees.length} worktrees`
+        : r.worktrees[0]?.path.replace(process.env.HOME || "", "~") || "",
+    }));
+
+    const picked = await inkSelect({ message: prompt, options: repoOptions });
+    selectedRepo = repos.find(r => r.repoName === picked)!;
+  }
+
+  if (selectedRepo.worktrees.length === 1) {
+    return selectedRepo.worktrees[0]!.path;
+  }
+
+  return pickWorktreeFromRepo(selectedRepo, prompt);
+}
+
+/**
+ * Pick a worktree from a specific repo (enriched with Linear ticket info).
+ */
+export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string): Promise<string> {
+  const { select: inkSelect } = await import("./rt-render.tsx");
+  const { enrichBranches, formatBranchLabel } = await import("./enrich.ts");
+
+  let remoteUrl: string | undefined;
+  try {
+    remoteUrl = execSync("git config --get remote.origin.url", {
+      cwd: repo.worktrees[0]?.path, encoding: "utf8", stdio: "pipe",
+    }).trim();
+  } catch { /* no remote */ }
+
+  const enriched = await enrichBranches(
+    repo.worktrees.map(wt => ({ path: wt.path, branch: wt.branch })),
+    remoteUrl,
+  );
+
+  const options = enriched.map(eb => ({
+    value: eb.path,
+    label: formatBranchLabel(eb),
+    hint: "",
+  }));
+
+  return inkSelect({
+    message: prompt || `${repo.repoName} worktrees`,
+    options,
+  });
+}
+
+// ─── Workspace package discovery ─────────────────────────────────────────────
+
+export interface WorkspacePackage {
+  name: string;
+  path: string;
+}
+
+/**
+ * Parse pnpm-workspace.yaml and discover all workspace packages.
+ */
+export function getWorkspacePackages(repoRoot: string): WorkspacePackage[] {
+  const wsFile = join(repoRoot, "pnpm-workspace.yaml");
+  if (!existsSync(wsFile)) return [];
+
+  const yaml = readFileSync(wsFile, "utf8");
+  const entries = yaml
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("- "))
+    .map((l) => l.slice(2).trim().replace(/['"]/g, ""));
+
+  const packages: WorkspacePackage[] = [];
+
+  for (const entry of entries) {
+    const baseDir = entry.replace("/*", "").replace("/**", "");
+    const fullDir = join(repoRoot, baseDir);
+
+    if (!existsSync(fullDir)) continue;
+
+    if (entry.includes("*")) {
+      try {
+        for (const child of readdirSync(fullDir, { withFileTypes: true })) {
+          if (!child.isDirectory()) continue;
+          const pkgJsonPath = join(fullDir, child.name, "package.json");
+          if (existsSync(pkgJsonPath)) {
+            try {
+              const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf8"));
+              packages.push({
+                name: pkg.name || child.name,
+                path: `${baseDir}/${child.name}`,
+              });
+            } catch { /* skip */ }
+          }
+        }
+      } catch { /* skip */ }
+    } else {
+      const pkgJsonPath = join(repoRoot, baseDir, "package.json");
+      if (existsSync(pkgJsonPath)) {
+        try {
+          const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf8"));
+          packages.push({
+            name: pkg.name || baseDir.split("/").pop() || baseDir,
+            path: baseDir,
+          });
+        } catch { /* skip */ }
+      }
+    }
+  }
+
+  return packages.sort((a, b) => a.path.localeCompare(b.path));
+}
