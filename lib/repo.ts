@@ -175,6 +175,103 @@ export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string): Pr
   });
 }
 
+/**
+ * Interactive repo/worktree picker, triggered by --pick.
+ *
+ * 1. If in a repo with worktrees → show worktrees + "Pick from all repos"
+ * 2. If "Pick from all repos" → show repos → pick worktree if multiple
+ * 3. Returns updated RepoIdentity after chdir
+ */
+export async function pickRepoInteractive(): Promise<RepoIdentity> {
+  const { select: inkSelect } = await import("./rt-render.tsx");
+  const repos = getKnownRepos();
+
+  if (repos.length === 0) {
+    console.log(`\n  no known repos — run rt from inside a git repo first\n`);
+    process.exit(1);
+  }
+
+  // Find current repo (if any)
+  const currentIdentity = getRepoIdentity();
+  const currentRepo = currentIdentity
+    ? repos.find((r) => r.repoName === currentIdentity.repoName)
+    : null;
+
+  let selectedPath: string;
+
+  if (currentRepo && currentRepo.worktrees.length > 1) {
+    // Show current repo's worktrees + escape hatch
+    const { enrichBranches, formatBranchLabel } = await import("./enrich.ts");
+
+    let remoteUrl: string | undefined;
+    try {
+      remoteUrl = execSync("git config --get remote.origin.url", {
+        cwd: currentRepo.worktrees[0]?.path, encoding: "utf8", stdio: "pipe",
+      }).trim();
+    } catch { /* no remote */ }
+
+    const enriched = await enrichBranches(
+      currentRepo.worktrees.map((wt) => ({ path: wt.path, branch: wt.branch })),
+      remoteUrl,
+    );
+
+    const options = enriched.map((eb) => ({
+      value: eb.path,
+      label: formatBranchLabel(eb),
+      hint: "",
+    }));
+
+    options.push({
+      value: "__all_repos__",
+      label: "Pick from all repos",
+      hint: `${repos.length} repos available`,
+    });
+
+    const picked = await inkSelect({
+      message: `${currentRepo.repoName} worktrees`,
+      options,
+    });
+
+    if (picked === "__all_repos__") {
+      selectedPath = await pickFromAllRepos(repos);
+    } else {
+      selectedPath = picked;
+    }
+  } else {
+    // Not in a repo or repo has only one worktree → go straight to all repos
+    selectedPath = await pickFromAllRepos(repos);
+  }
+
+  process.chdir(selectedPath);
+  const identity = getRepoIdentity();
+  if (!identity) {
+    console.log(`\n  could not identify repo\n`);
+    process.exit(1);
+  }
+  return identity;
+}
+
+async function pickFromAllRepos(repos: KnownRepo[]): Promise<string> {
+  const { select: inkSelect } = await import("./rt-render.tsx");
+
+  const repoOptions = repos.map((r) => ({
+    value: r.repoName,
+    label: r.repoName,
+    hint: r.worktrees.length > 1
+      ? `${r.worktrees.length} worktrees`
+      : r.worktrees[0]?.path.replace(process.env.HOME || "", "~") || "",
+  }));
+
+  const pickedRepo = await inkSelect({ message: "Pick a repo", options: repoOptions });
+  const repo = repos.find((r) => r.repoName === pickedRepo)!;
+
+  if (repo.worktrees.length === 1) {
+    return repo.worktrees[0]!.path;
+  }
+
+  return pickWorktreeFromRepo(repo, "Pick a worktree");
+}
+
 // ─── Workspace package discovery ─────────────────────────────────────────────
 
 export interface WorkspacePackage {

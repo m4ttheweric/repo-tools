@@ -70,7 +70,7 @@ function PromptFrame({
 }): React.ReactElement {
   return React.createElement(
     Box,
-    { flexDirection: "column" as const },
+    { flexDirection: "column" as const, marginTop: 1 },
     React.createElement(
       Box,
       { marginBottom: 1 },
@@ -144,7 +144,8 @@ export async function multiselect(opts: {
 }
 
 /**
- * Show a yes/no confirmation. Returns boolean.
+ * Show a yes/no confirmation as a two-option select.
+ * Arrow keys to pick, enter to confirm. Matches the style of all other pickers.
  * Exits on Ctrl+C.
  */
 export async function confirm(opts: {
@@ -152,16 +153,25 @@ export async function confirm(opts: {
   initialValue?: boolean;
   stderr?: boolean;
 }): Promise<boolean> {
+  const yesFirst = opts.initialValue !== false;
+  const options = yesFirst
+    ? [
+        { value: "yes", label: "Yes" },
+        { value: "no", label: "No" },
+      ]
+    : [
+        { value: "no", label: "No" },
+        { value: "yes", label: "Yes" },
+      ];
+
   return prompt<boolean>(
     (resolve) =>
       React.createElement(
         PromptFrame,
         { message: opts.message },
-        React.createElement(ConfirmInput, {
-          defaultChoice:
-            opts.initialValue === false ? "cancel" : "confirm",
-          onConfirm: () => resolve(true),
-          onCancel: () => resolve(false),
+        React.createElement(Select, {
+          options,
+          onChange: (value: string) => resolve(value === "yes"),
         }),
       ),
     { stderr: opts.stderr },
@@ -189,4 +199,114 @@ export async function textInput(opts: {
       ),
     { stderr: opts.stderr },
   );
+}
+
+/**
+ * Show a filterable multi-select using fzf.
+ * Selected items are shown in a preview pane at the top so you can always
+ * see what you've picked, even when filtering.
+ * Falls back to standard multiselect if fzf is not installed.
+ */
+export async function filterableMultiselect(opts: {
+  message: string;
+  options: SelectOption[];
+  initialValues?: string[];
+  stderr?: boolean;
+}): Promise<string[]> {
+  const { spawnSync, execSync } = await import("child_process");
+
+  let hasFzf = false;
+  try {
+    execSync("which fzf", { stdio: "pipe" });
+    hasFzf = true;
+  } catch {}
+
+  if (!hasFzf) {
+    return multiselect(opts);
+  }
+
+  console.log(`  \x1b[36m\x1b[1m❯ \x1b[0m\x1b[1m${opts.message}\x1b[0m\n`);
+
+  const input = opts.options
+    .map((o) => `${o.value}\t${o.label}${o.hint ? `  ${o.hint}` : ""}`)
+    .join("\n");
+
+  const result = spawnSync("fzf", [
+    "--multi",
+    "--with-nth=2..",
+    "--delimiter=\t",
+    "--height=~60%",
+    "--layout=reverse",
+    "--border=rounded",
+    "--prompt=filter: ",
+    "--header=tab: toggle  enter: confirm  |: OR  !: exclude",
+    "--no-mouse",
+    "--bind=tab:toggle+down",
+    "--preview=printf '%s\\n' {+2..}",
+    "--preview-window=up,4,wrap,border-bottom",
+    "--preview-label= selected ",
+  ], {
+    input,
+    stdio: ["pipe", "pipe", "inherit"],
+    encoding: "utf8",
+  });
+
+  if (result.status !== 0 || !result.stdout?.trim()) {
+    return [];
+  }
+
+  return result.stdout
+    .trim()
+    .split("\n")
+    .map((line) => line.split("\t")[0]!)
+    .filter(Boolean);
+}
+
+/**
+ * Show a filterable single-select using fzf.
+ * Falls back to standard select if fzf is not installed.
+ */
+export async function filterableSelect(opts: {
+  message: string;
+  options: SelectOption[];
+  stderr?: boolean;
+}): Promise<string> {
+  const { spawnSync, execSync } = await import("child_process");
+
+  let hasFzf = false;
+  try {
+    execSync("which fzf", { stdio: "pipe" });
+    hasFzf = true;
+  } catch {}
+
+  if (!hasFzf) {
+    return select(opts);
+  }
+
+  console.log(`  \x1b[36m\x1b[1m❯ \x1b[0m\x1b[1m${opts.message}\x1b[0m\n`);
+
+  const input = opts.options
+    .map((o) => `${o.value}\t${o.label}${o.hint ? `  ${o.hint}` : ""}`)
+    .join("\n");
+
+  const result = spawnSync("fzf", [
+    "--with-nth=2..",
+    "--delimiter=\t",
+    "--height=~60%",
+    "--layout=reverse",
+    "--border=rounded",
+    "--prompt=filter: ",
+    "--header=enter: select  |: OR  !: exclude",
+    "--no-mouse",
+  ], {
+    input,
+    stdio: ["pipe", "pipe", "inherit"],
+    encoding: "utf8",
+  });
+
+  if (result.status !== 0 || !result.stdout?.trim()) {
+    return "";
+  }
+
+  return result.stdout.trim().split("\t")[0]!;
 }
