@@ -32,7 +32,7 @@ const TREE: Record<string, CommandNode> = {
   },
 
   branch: {
-    description: "Branch management (switch, create)",
+    description: "Branch management (switch, create, clean)",
     subcommands: {
       switch: {
         description: "Checkout with stash handling",
@@ -47,6 +47,13 @@ const TREE: Record<string, CommandNode> = {
         fn: "createBranchFlow",
         context: "worktree",
         aliases: ["new"],
+      },
+      clean: {
+        description: "Delete stale branches interactively",
+        module: "./commands/branch-clean.ts",
+        fn: "cleanBranches",
+        context: "worktree",
+        requiresTTY: true,
       },
     },
   },
