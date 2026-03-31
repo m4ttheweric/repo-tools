@@ -12,7 +12,12 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
-import { GitLabProvider, type PullRequest } from "@workforge/glance-sdk";
+import {
+  GitLabProvider,
+  type PullRequest,
+  getMRDashboardProps,
+  type MRDashboardProps,
+} from "@workforge/glance-sdk";
 import { green, blue, red, reset, dim, yellow, cyan } from "./tui.ts";
 import {
   loadSecrets,
@@ -34,24 +39,8 @@ function parseRemoteUrl(url: string): { host: string; projectPath: string } | nu
 
 // ─── EnrichedBranch type ─────────────────────────────────────────────────────
 
-export interface MRInfo {
-  iid: number;
-  state: "opened" | "merged" | "closed";
-  draft: boolean;
-  webUrl: string | null;
-  title: string;
-  pipeline: {
-    status: string;
-    passing: number;
-    failing: number;
-    running: number;
-    total: number;
-  } | null;
-  approvalsLeft: number;
-  approved: boolean;
-  conflicts: boolean;
-  shouldBeRebased: boolean;
-}
+/** Re-export for downstream consumers */
+export type { MRDashboardProps };
 
 export interface EnrichedBranch {
   path: string;
@@ -59,34 +48,13 @@ export interface EnrichedBranch {
   branch: string;
   linearId: string | null;
   ticket: LinearTicket | null;
-  mr: MRInfo | null;
+  mr: MRDashboardProps | null;
 }
 
-// ─── PullRequest → MRInfo ────────────────────────────────────────────────────
+// ─── PullRequest → MRDashboardProps ──────────────────────────────────────────
 
-function toMRInfo(pr: PullRequest): MRInfo {
-  const pipeline = pr.pipeline
-    ? {
-        status: pr.pipeline.status,
-        passing: pr.pipeline.jobs.filter(j => j.status === "success").length,
-        failing: pr.pipeline.jobs.filter(j => j.status === "failed" && !j.allowFailure).length,
-        running: pr.pipeline.jobs.filter(j => j.status === "running" || j.status === "pending").length,
-        total: pr.pipeline.jobs.length,
-      }
-    : null;
-
-  return {
-    iid: pr.iid,
-    state: pr.state as MRInfo["state"],
-    draft: pr.draft,
-    webUrl: pr.webUrl,
-    title: pr.title,
-    pipeline,
-    approvalsLeft: pr.approvalsLeft,
-    approved: pr.approved,
-    conflicts: pr.conflicts,
-    shouldBeRebased: pr.shouldBeRebased,
-  };
+function toMRInfo(pr: PullRequest): MRDashboardProps {
+  return getMRDashboardProps(pr, "idle");
 }
 
 // ─── Disk cache (~/.rt/branch-cache.json) ────────────────────────────────────
@@ -96,7 +64,7 @@ const CACHE_PATH = join(homedir(), ".rt", "branch-cache.json");
 interface CacheEntry {
   ticket: LinearTicket | null;
   linearId: string;
-  mr: MRInfo | null;
+  mr: MRDashboardProps | null;
   fetchedAt: number;
 }
 
