@@ -283,7 +283,7 @@ async function wizard(repoRoot: string, dataDir: string): Promise<void> {
               options: availableScripts,
             });
 
-            if (selected.length === 0) break;
+            if (!selected || selected.length === 0) break;
 
             const parsed = selected.map((val) => JSON.parse(val));
 
@@ -549,7 +549,7 @@ export async function scriptRunner(args: string[]): Promise<void> {
 
       const { filterableSelect } = await import("../lib/rt-render.tsx");
       console.log(`\n  ${bold}${cyan}rt x edit${reset}\n`);
-      targetName = await filterableSelect({
+      const picked = await filterableSelect({
         message: "Select a script to edit",
         options: entries.map((e) => ({
           value: e.name,
@@ -557,6 +557,12 @@ export async function scriptRunner(args: string[]): Promise<void> {
           hint: `${e.script.description ?? ""} (${e.scope})`.trim(),
         })),
       });
+
+      if (!picked) {
+        console.log(`\n  ${dim}cancelled${reset}\n`);
+        return;
+      }
+      targetName = picked;
     }
 
     const filePath = resolveScriptPath(targetName, repoRoot, dataDir);

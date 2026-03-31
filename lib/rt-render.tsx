@@ -212,7 +212,7 @@ export async function filterableMultiselect(opts: {
   options: SelectOption[];
   initialValues?: string[];
   stderr?: boolean;
-}): Promise<string[]> {
+}): Promise<string[] | null> {
   const { spawnSync, execSync } = await import("child_process");
 
   let hasFzf = false;
@@ -270,7 +270,11 @@ export async function filterableMultiselect(opts: {
     encoding: "utf8",
   });
 
-  if (result.status !== 0 || !result.stdout?.trim()) {
+  if (result.status !== 0) {
+    return null;
+  }
+
+  if (!result.stdout?.trim()) {
     return [];
   }
 
@@ -289,7 +293,7 @@ export async function filterableSelect(opts: {
   message: string;
   options: SelectOption[];
   stderr?: boolean;
-}): Promise<string> {
+}): Promise<string | null> {
   const { spawnSync, execSync } = await import("child_process");
 
   let hasFzf = false;
@@ -324,7 +328,7 @@ export async function filterableSelect(opts: {
   });
 
   if (result.status !== 0 || !result.stdout?.trim()) {
-    return "";
+    return null;
   }
 
   return result.stdout.trim().split("\t")[0]!;
