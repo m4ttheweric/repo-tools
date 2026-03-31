@@ -55,7 +55,7 @@ function formatUptime(ms: number): string {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-export async function run(_args: string[]): Promise<void> {
+export async function runDoctor(_args: string[]): Promise<void> {
   const repoRoot = getRepoRoot();
   const identity = getRepoIdentity();
 

@@ -120,7 +120,7 @@ function scanAllPorts(ports: Record<string, number>): {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-export async function run(args: string[]): Promise<void> {
+export async function portScanner(args: string[]): Promise<void> {
   // Ad-hoc mode: rt port 8080
   if (args.length > 0 && /^\d+$/.test(args[0] || "")) {
     const port = parseInt(args[0]!, 10);
