@@ -60,10 +60,10 @@
       "id": 2,
       "name": "Worktree Context Extension Integration",
       "file": "phase-2.md",
-      "status": "NOT_STARTED",
-      "agent": null,
-      "started": null,
-      "completed": null,
+      "status": "DONE",
+      "agent": "claude-opus-4-20250514",
+      "started": "2026-03-31T17:09:09.060Z",
+      "completed": "2026-03-31T17:09:16.146Z",
       "depends_on": [
         1
       ],
@@ -71,23 +71,38 @@
         "Extension lives at repo-tools/extensions/vscode/worktree-context/",
         "Extension uses daemon HTTP API instead of direct Linear/GitLab calls",
         "New daemon endpoints: /repos, /branch:enrich"
-      ]
+      ],
+      "context_snapshot": {
+        "daemon_endpoints": "/repos, /branch:enrich, /ports, /cache:read",
+        "extension_path": "extensions/vscode/worktree-context/",
+        "git_status": "clean"
+      },
+      "notes": "Completed in a separate session (conversation 3529bd86). Extension migrated into monorepo, refactored to use daemon HTTP API for cached branch/ticket data."
     },
     {
       "id": 3,
       "name": "Daemon Port Discovery",
       "file": "phase-3.md",
-      "status": "NOT_STARTED",
-      "agent": null,
-      "started": null,
-      "completed": null,
+      "status": "DONE",
+      "agent": "claude-opus-4-20250514",
+      "started": "2026-03-31T17:08:26.511Z",
+      "completed": "2026-03-31T17:08:38.005Z",
       "depends_on": [
         1
       ],
       "outputs": [
         "Daemon cache includes port scan data refreshed every cycle",
         "rt port command uses daemon data for instant, zero-config display"
-      ]
+      ],
+      "context_snapshot": {
+        "cli_architecture": "daemon-first with direct lsof fallback",
+        "daemon_endpoint": "GET /ports",
+        "features": "IPv6 support, app bundle filtering, PID-level caching, zero-config discovery",
+        "git_status": "clean",
+        "port_scanner_module": "lib/port-scanner.ts",
+        "ui_improvements": "fzf border-label, deduplicated kill picker"
+      },
+      "notes": "Completed across two sessions. Implemented scanListeningPorts in shared lib/port-scanner.ts, daemon /ports endpoint with 30s refresh, CLI port command with daemon-first architecture, IPv6 parsing fix, macOS .app bundle process filtering, and fzf UI cleanup (border-label, deduplicated display)."
     },
     {
       "id": 4,
