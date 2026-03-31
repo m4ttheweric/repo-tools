@@ -38,14 +38,14 @@ const TREE: Record<string, CommandNode> = {
         description: "Checkout with stash handling",
         module: "./commands/branch.ts",
         fn: "switchBranch",
-        requiresRepo: true,
+        context: "worktree",
         aliases: ["sw"],
       },
       create: {
         description: "From Linear ticket or scratch",
         module: "./commands/branch.ts",
         fn: "createBranchFlow",
-        requiresRepo: true,
+        context: "worktree",
         aliases: ["new"],
       },
     },
@@ -55,12 +55,15 @@ const TREE: Record<string, CommandNode> = {
     description: "Interactive turbo build selector",
     module: "./commands/build-select.ts",
     fn: "buildSelect",
+    context: "worktree",
+    requiresTTY: true,
   },
 
   hooks: {
     description: "Toggle git hooks on/off (husky)",
     module: "./commands/hooks.ts",
     fn: "toggleHooks",
+    context: "repo",
   },
 
   port: {
@@ -82,26 +85,26 @@ const TREE: Record<string, CommandNode> = {
         description: "GitLab merge request",
         module: "./commands/open.ts",
         fn: "openMR",
-        requiresRepo: true,
+        context: "worktree",
       },
       pipeline: {
         description: "GitLab CI pipelines",
         module: "./commands/open.ts",
         fn: "openPipeline",
-        requiresRepo: true,
+        context: "worktree",
         aliases: ["ci"],
       },
       repo: {
         description: "Repository page",
         module: "./commands/open.ts",
         fn: "openRepo",
-        requiresRepo: true,
+        context: "worktree",
       },
       ticket: {
         description: "Linear ticket for this branch",
         module: "./commands/open.ts",
         fn: "openTicket",
-        requiresRepo: true,
+        context: "worktree",
         aliases: ["linear"],
       },
     },
@@ -111,12 +114,14 @@ const TREE: Record<string, CommandNode> = {
     description: "Worktree/repo directory picker",
     module: "./commands/cd.ts",
     fn: "worktreePicker",
+    requiresTTY: true,
   },
 
   code: {
     description: "Open a worktree in your preferred editor",
     module: "./commands/code.ts",
     fn: "openInEditor",
+    requiresTTY: true,
   },
 
   daemon: {
@@ -187,7 +192,7 @@ const TREE: Record<string, CommandNode> = {
         description: "Remove all rt data for this repo",
         module: "./commands/settings.ts",
         fn: "uninstallRepo",
-        requiresRepo: true,
+        context: "worktree",
       },
     },
   },

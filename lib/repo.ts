@@ -94,6 +94,57 @@ export async function requireIdentity(commandLabel?: string): Promise<RepoIdenti
   return identity;
 }
 
+/**
+ * Get repo identity at the repo level (no worktree picker step).
+ * Falls back to a repo-only picker if not currently inside a git repo.
+ * Chdirs to the first worktree of the selected repo.
+ *
+ * Used by commands that operate on repo-wide config (e.g. hooks, port).
+ */
+export async function requireRepoIdentity(commandLabel?: string): Promise<RepoIdentity> {
+  let identity = getRepoIdentity();
+  if (identity) return identity;
+
+  const repos = getKnownRepos();
+
+  if (repos.length === 0) {
+    console.log(`\n  not in a git repo and no known repos found`);
+    console.log(`  run rt from inside a git repo first to register it\n`);
+    process.exit(1);
+  }
+
+  let selectedRepo = repos[0]!;
+
+  if (repos.length > 1) {
+    if (!process.stdin.isTTY) {
+      console.log(`\n  not in a git repo — run interactively to pick one\n`);
+      process.exit(1);
+    }
+
+    const { filterableSelect } = await import("./rt-render.tsx");
+    const picked = await filterableSelect({
+      message: commandLabel ? `Pick a repo for ${commandLabel}` : "Pick a repo",
+      options: repos.map(r => ({
+        value: r.repoName,
+        label: r.repoName,
+        hint: r.worktrees.length > 1
+          ? `${r.worktrees.length} worktrees`
+          : r.worktrees[0]?.path.replace(process.env.HOME || "", "~") || "",
+      })),
+    });
+    selectedRepo = repos.find(r => r.repoName === picked)!;
+  }
+
+  process.chdir(selectedRepo.worktrees[0]!.path);
+
+  identity = getRepoIdentity();
+  if (!identity) {
+    console.log(`\n  could not identify repo\n`);
+    process.exit(1);
+  }
+  return identity;
+}
+
 // ─── Pickers ─────────────────────────────────────────────────────────────────
 
 /**
