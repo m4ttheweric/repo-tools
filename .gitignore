@@ -2,3 +2,4 @@
 node_modules/
 dist/
 *.vsix
+extensions/vscode/worktree-context/package-lock.json
