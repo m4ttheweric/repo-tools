@@ -47,11 +47,6 @@ const TREE: Record<string, CommandNode> = {
         requiresRepo: true,
         aliases: ["new"],
       },
-      team: {
-        description: "Set your default Linear team",
-        module: "./commands/branch.ts",
-        fn: "configureTeam",
-      },
     },
   },
 
