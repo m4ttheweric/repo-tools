@@ -18,7 +18,7 @@ import {
   getTeamConfig,
   saveTeamConfig,
 } from "../lib/linear.ts";
-import { requireIdentity } from "../lib/repo.ts";
+import type { CommandContext } from "../lib/command-tree.ts";
 
 // ─── Linear token ────────────────────────────────────────────────────────────
 
@@ -131,10 +131,8 @@ async function pickAndSaveTeam(apiKey: string): Promise<{ teamId: string; teamKe
 
 // ─── Uninstall ───────────────────────────────────────────────────────────────
 
-export async function uninstallRepo(args: string[]): Promise<void> {
-  const identity = await requireIdentity("rt settings uninstall");
-
-  const { repoName, repoRoot, dataDir } = identity;
+export async function uninstallRepo(args: string[], ctx: CommandContext): Promise<void> {
+  const { repoName, repoRoot, dataDir } = ctx.identity!;
   const force = args.includes("--force") || args.includes("-f");
 
   // Check what exists

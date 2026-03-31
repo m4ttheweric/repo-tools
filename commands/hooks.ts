@@ -21,8 +21,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, chmodS
 import { join } from "path";
 import { execSync } from "child_process";
 import { bold, cyan, dim, green, yellow, red, reset } from "../lib/tui.ts";
-import { getRepoIdentity, type RepoIdentity } from "../lib/repo.ts";
-import { getKnownRepos } from "../lib/repo-index.ts";
+import type { CommandContext } from "../lib/command-tree.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -185,46 +184,8 @@ function showStatus(config: HooksConfig, repoName: string): void {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-export async function toggleHooks(args: string[]): Promise<void> {
-  // Hook settings are repo-wide (core.hooksPath + ~/.rt/<repo>/hooks.json),
-  // so we only need a repo picker — not a worktree picker.
-  let identity: RepoIdentity | null = getRepoIdentity();
-
-  if (!identity) {
-    const repos = getKnownRepos();
-
-    if (repos.length === 0) {
-      console.log(`\n  not in a git repo and no known repos found`);
-      console.log(`  run rt from inside a git repo first to register it\n`);
-      process.exit(1);
-    }
-
-    let selectedRepo = repos[0]!;
-
-    if (repos.length > 1 && process.stdin.isTTY) {
-      const { filterableSelect } = await import("../lib/rt-render.tsx");
-      const picked = await filterableSelect({
-        message: "Pick a repo for rt hooks",
-        options: repos.map(r => ({
-          value: r.repoName,
-          label: r.repoName,
-          hint: `${r.worktrees.length} worktree${r.worktrees.length > 1 ? "s" : ""}`,
-        })),
-      });
-      selectedRepo = repos.find(r => r.repoName === picked)!;
-    }
-
-    // Use the first worktree to resolve identity (all share the same git config)
-    process.chdir(selectedRepo.worktrees[0]!.path);
-    identity = getRepoIdentity();
-
-    if (!identity) {
-      console.log(`\n  could not identify repo\n`);
-      process.exit(1);
-    }
-  }
-
-  const { repoName, repoRoot, dataDir } = identity;
+export async function toggleHooks(args: string[], ctx: CommandContext): Promise<void> {
+  const { repoName, repoRoot, dataDir } = ctx.identity!;
   const discoveredHooks = discoverHooks(repoRoot);
 
   if (discoveredHooks.length === 0) {
