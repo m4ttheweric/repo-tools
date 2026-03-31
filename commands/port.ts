@@ -189,13 +189,12 @@ export async function portScanner(args: string[]): Promise<void> {
     return;
   }
 
-  // Non-TTY: print and exit
+  // Non-TTY: print table and exit
   if (!process.stdin.isTTY) {
     displayPorts(entries);
     return;
   }
 
-  // TTY: display then offer kill picker
-  displayPorts(entries);
+  // TTY: interactive kill picker (already shows port info in options)
   await showKillPicker(entries);
 }
