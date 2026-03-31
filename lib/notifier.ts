@@ -47,7 +47,43 @@ interface NotifierState {
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 const STATE_PATH = join(RT_DIR, "notifier-state.json");
+const PREFS_PATH = join(RT_DIR, "notifications.json");
 const STALE_PORT_THRESHOLD_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+// ─── Notification type registry ──────────────────────────────────────────────
+
+export const NOTIFICATION_TYPES = [
+  { key: "pipeline_failed",   label: "Pipeline failed",     description: "When a running pipeline fails" },
+  { key: "pipeline_passed",   label: "Pipeline passed",     description: "When a running pipeline succeeds" },
+  { key: "mr_approved",       label: "MR approved",         description: "When your MR gets fully approved" },
+  { key: "mr_merged",         label: "MR merged",           description: "When your MR is merged" },
+  { key: "merge_conflicts",   label: "Merge conflicts",     description: "When merge conflicts appear on your MR" },
+  { key: "stale_port",        label: "Stale processes",     description: "When a dev server has been running 6h+" },
+] as const;
+
+export type NotificationPrefs = Record<string, boolean>;
+
+export function loadNotificationPrefs(): NotificationPrefs {
+  try {
+    return JSON.parse(readFileSync(PREFS_PATH, "utf8"));
+  } catch {
+    // Default: everything enabled
+    const defaults: NotificationPrefs = {};
+    for (const t of NOTIFICATION_TYPES) defaults[t.key] = true;
+    return defaults;
+  }
+}
+
+export function saveNotificationPrefs(prefs: NotificationPrefs): void {
+  try {
+    mkdirSync(RT_DIR, { recursive: true });
+    writeFileSync(PREFS_PATH, JSON.stringify(prefs, null, 2));
+  } catch { /* best-effort */ }
+}
+
+function isEnabled(prefs: NotificationPrefs, key: string): boolean {
+  return prefs[key] !== false; // default to enabled if not set
+}
 
 // ─── State persistence ───────────────────────────────────────────────────────
 
@@ -131,6 +167,7 @@ function detectBranchTransitions(
   prev: Record<string, BranchSnapshot>,
   current: Record<string, CacheEntry>,
   fired: Set<string>,
+  prefs: NotificationPrefs,
   log: (msg: string) => void,
 ): void {
   for (const [branch, entry] of Object.entries(current)) {
@@ -151,7 +188,7 @@ function detectBranchTransitions(
       if (!fired.has(key)) {
         fired.add(key);
         log(`notify: pipeline failed on ${branch}`);
-        notify("Pipeline Failed", branchShort, mrUrl);
+        if (isEnabled(prefs, "pipeline_failed")) notify("Pipeline Failed", branchShort, mrUrl);
       }
     }
 
@@ -165,7 +202,7 @@ function detectBranchTransitions(
       if (!fired.has(key)) {
         fired.add(key);
         log(`notify: pipeline passed on ${branch}`);
-        notify("Pipeline Passed ✓", branchShort, mrUrl);
+        if (isEnabled(prefs, "pipeline_passed")) notify("Pipeline Passed ✓", branchShort, mrUrl);
       }
     }
 
@@ -175,7 +212,7 @@ function detectBranchTransitions(
       if (!fired.has(key)) {
         fired.add(key);
         log(`notify: MR approved on ${branch}`);
-        notify("MR Approved 👍", branchShort, mrUrl);
+        if (isEnabled(prefs, "mr_approved")) notify("MR Approved 👍", branchShort, mrUrl);
       }
     }
 
@@ -185,7 +222,7 @@ function detectBranchTransitions(
       if (!fired.has(key)) {
         fired.add(key);
         log(`notify: MR merged on ${branch}`);
-        notify("MR Merged 🎉", branchShort, mrUrl);
+        if (isEnabled(prefs, "mr_merged")) notify("MR Merged 🎉", branchShort, mrUrl);
       }
     }
 
@@ -195,7 +232,7 @@ function detectBranchTransitions(
       if (!fired.has(key)) {
         fired.add(key);
         log(`notify: merge conflicts on ${branch}`);
-        notify("Merge Conflicts", branchShort, mrUrl);
+        if (isEnabled(prefs, "merge_conflicts")) notify("Merge Conflicts", branchShort, mrUrl);
       }
     }
 
@@ -220,6 +257,7 @@ function detectBranchTransitions(
 function detectStalePortTransitions(
   portState: Record<string, PortSnapshot>,
   currentPorts: PortEntry[],
+  prefs: NotificationPrefs,
   log: (msg: string) => void,
 ): void {
   const now = Date.now();
@@ -250,10 +288,12 @@ function detectStalePortTransitions(
       snapshot.staleNotified = true;
       const hours = Math.round(age / (60 * 60 * 1000));
       log(`notify: stale port ${entry.command} on :${entry.port} (${hours}h)`);
-      notify(
-        "Stale Process",
-        `${entry.command} on :${entry.port} has been running ${hours}h (${snapshot.relativeDir})`,
-      );
+      if (isEnabled(prefs, "stale_port")) {
+        notify(
+          "Stale Process",
+          `${entry.command} on :${entry.port} has been running ${hours}h (${snapshot.relativeDir})`,
+        );
+      }
     }
   }
 
@@ -273,13 +313,14 @@ export function checkAndNotify(
   log: (msg: string) => void,
 ): void {
   const state = loadState();
+  const prefs = loadNotificationPrefs();
   const fired = new Set(state.fired);
 
   // Branch transitions
-  detectBranchTransitions(state.branches, cacheEntries, fired, log);
+  detectBranchTransitions(state.branches, cacheEntries, fired, prefs, log);
 
   // Port staleness
-  detectStalePortTransitions(state.ports, ports, log);
+  detectStalePortTransitions(state.ports, ports, prefs, log);
 
   // Update state with current snapshots
   const newBranches: Record<string, BranchSnapshot> = {};
