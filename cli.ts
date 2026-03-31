@@ -194,6 +194,12 @@ const TREE: Record<string, CommandNode> = {
         fn: "uninstallRepo",
         context: "worktree",
       },
+      notifications: {
+        description: "Toggle notification preferences",
+        module: "./commands/settings.ts",
+        fn: "configureNotifications",
+        requiresTTY: true,
+      },
     },
   },
 };

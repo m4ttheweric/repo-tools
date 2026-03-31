@@ -18,6 +18,11 @@ import {
   getTeamConfig,
   saveTeamConfig,
 } from "../lib/linear.ts";
+import {
+  loadNotificationPrefs,
+  saveNotificationPrefs,
+  NOTIFICATION_TYPES,
+} from "../lib/notifier.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
 
 // ─── Linear token ────────────────────────────────────────────────────────────
@@ -210,4 +215,40 @@ export async function uninstallRepo(args: string[], ctx: CommandContext): Promis
   }
 
   console.log(`\n  ${dim}all rt footprint removed for ${repoName}${reset}\n`);
+}
+
+// ─── Notification preferences ────────────────────────────────────────────────
+
+export async function configureNotifications(): Promise<void> {
+  const { multiselect } = await import("../lib/rt-render.tsx");
+
+  const prefs = loadNotificationPrefs();
+
+  const options = NOTIFICATION_TYPES.map((t) => ({
+    value: t.key,
+    label: t.label,
+    hint: t.description,
+  }));
+
+  const enabledKeys = NOTIFICATION_TYPES
+    .filter((t) => prefs[t.key] !== false)
+    .map((t) => t.key);
+
+  const selected = await multiselect({
+    message: "Toggle notifications (space to toggle, enter to save)",
+    options,
+    initialValues: enabledKeys,
+  });
+
+  // Build new prefs: selected = enabled, unselected = disabled
+  const newPrefs: Record<string, boolean> = {};
+  for (const t of NOTIFICATION_TYPES) {
+    newPrefs[t.key] = selected.includes(t.key);
+  }
+
+  saveNotificationPrefs(newPrefs);
+
+  const enabledCount = selected.length;
+  const totalCount = NOTIFICATION_TYPES.length;
+  console.log(`\n  ${green}✓${reset} ${enabledCount}/${totalCount} notification types enabled\n`);
 }
