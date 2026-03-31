@@ -284,7 +284,7 @@ async function refreshCache(): Promise<void> {
 
 // ─── Socket server ───────────────────────────────────────────────────────────
 
-function handleCommand(cmd: string, payload: any): any {
+async function handleCommand(cmd: string, payload: any): Promise<any> {
   switch (cmd) {
     case "ping":
       return { ok: true, uptime: Date.now() - startedAt, pid: process.pid };
@@ -338,7 +338,74 @@ function handleCommand(cmd: string, payload: any): any {
     case "repos": {
       const repos = loadRepoIndex();
       const watched = [...watchedConfigs.keys()];
-      return { ok: true, data: { repos: Object.keys(repos), watched } };
+      const detailed: Record<string, { path: string; worktrees: Array<{ path: string; branch: string }> }> = {};
+
+      for (const [repoName, repoPath] of Object.entries(repos)) {
+        if (!existsSync(repoPath)) continue;
+
+        const worktrees: Array<{ path: string; branch: string }> = [];
+        try {
+          const output = execSync("git worktree list --porcelain", {
+            cwd: repoPath, encoding: "utf8", stdio: "pipe",
+          });
+          let currentPath = "";
+          let currentBranch = "";
+          for (const line of output.split("\n")) {
+            if (line.startsWith("worktree ")) {
+              if (currentPath && currentBranch) {
+                worktrees.push({ path: currentPath, branch: currentBranch });
+              }
+              currentPath = line.replace("worktree ", "").trim();
+              currentBranch = "";
+            } else if (line.startsWith("branch ")) {
+              currentBranch = line.replace("branch refs/heads/", "").trim();
+            }
+          }
+          if (currentPath && currentBranch) {
+            worktrees.push({ path: currentPath, branch: currentBranch });
+          }
+        } catch { /* git command failed */ }
+
+        detailed[repoName] = { path: repoPath, worktrees };
+      }
+
+      return { ok: true, data: { repos: detailed, watched } };
+    }
+
+    case "branch:enrich": {
+      const branch = payload?.branch as string;
+      const repoPath = payload?.repoPath as string;
+      const remoteUrl = payload?.remoteUrl as string | undefined;
+
+      if (!branch) return { ok: false, error: "missing branch" };
+
+      // Return cached data if available
+      if (cache.entries[branch]) {
+        return { ok: true, data: cache.entries[branch], source: "cache" };
+      }
+
+      // On-demand enrichment (async — returns promise result)
+      if (!repoPath) return { ok: false, error: "missing repoPath for cold enrichment" };
+
+      try {
+        const { enrichBranches } = await import("./enrich.ts");
+        const results = await enrichBranches(
+          [{ path: repoPath, branch }],
+          remoteUrl,
+          { silent: true },
+        );
+
+        // Reload cache (enrichBranches writes to disk)
+        loadCache();
+
+        if (cache.entries[branch]) {
+          return { ok: true, data: cache.entries[branch], source: "fresh" };
+        }
+
+        return { ok: true, data: null, source: "empty" };
+      } catch (err) {
+        return { ok: false, error: `enrichment failed: ${err}` };
+      }
     }
 
     case "status": {
@@ -382,7 +449,7 @@ function startSocketServer(): void {
           try { payload = await req.json(); } catch { /* empty body is fine */ }
         }
 
-        const result = handleCommand(cmd, payload);
+        const result = await handleCommand(cmd, payload);
         return Response.json(result);
       } catch (err) {
         return Response.json({ ok: false, error: String(err) }, { status: 500 });
