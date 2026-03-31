@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { exec } from 'child_process';
 import { branchCache, branchListCache } from './cache';
+import { setSecret } from './secrets';
 import {
   initStatusBar,
   waitForGitAndStart,
@@ -83,8 +84,8 @@ export function activate(context: vscode.ExtensionContext) {
         ignoreFocusOut: true,
       });
       if (key) {
-        await context.secrets.store('worktreeContext.linearApiKey', key);
-        vscode.window.showInformationMessage('Linear API key saved.');
+        await setSecret(context, 'linearApiKey', key);
+        vscode.window.showInformationMessage('Linear API key saved (shared with rt CLI).');
         branchCache.clear();
         branchListCache.clear();
         scheduleUpdate(context);
@@ -99,8 +100,8 @@ export function activate(context: vscode.ExtensionContext) {
         ignoreFocusOut: true,
       });
       if (token) {
-        await context.secrets.store('worktreeContext.gitlabToken', token);
-        vscode.window.showInformationMessage('GitLab token saved.');
+        await setSecret(context, 'gitlabToken', token);
+        vscode.window.showInformationMessage('GitLab token saved (shared with rt CLI).');
         branchCache.clear();
         branchListCache.clear();
         scheduleUpdate(context);

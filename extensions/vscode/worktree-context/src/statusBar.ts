@@ -6,6 +6,7 @@ import { fetchTicket, type LinearTicket } from './linear';
 import { fetchMRInfo } from './gitlab';
 import { branchCache } from './cache';
 import { daemonQuery } from './daemonClient';
+import { getSecret } from './secrets';
 import type { CachedBranchData, GitExtensionExports } from './types';
 import { getGitApi, findWorkspaceRepo, getRemoteUrl, getWorktreeName } from './git';
 
@@ -281,7 +282,7 @@ async function fetchBranchDataDirect(
 
   // Fetch MR info
   if (shouldLookupMR) {
-    const gitlabToken = await context.secrets.get('worktreeContext.gitlabToken');
+    const gitlabToken = await getSecret(context, 'gitlabToken');
     if (gitlabToken) {
       const gitApi = getGitApi();
       const repo = gitApi?.repositories.length
@@ -312,7 +313,7 @@ async function fetchBranchDataDirect(
   // Fetch Linear ticket
   let ticket: LinearTicket | null = null;
   if (linearId) {
-    const apiKey = await context.secrets.get('worktreeContext.linearApiKey');
+    const apiKey = await getSecret(context, 'linearApiKey');
     if (apiKey) {
       try {
         ticket = await fetchTicket(apiKey, linearId);
