@@ -72,6 +72,12 @@ const TREE: Record<string, CommandNode> = {
     fn: "portScanner",
   },
 
+  status: {
+    description: "Branch dashboard with MR, pipeline & port status",
+    module: "./commands/status.ts",
+    fn: "showStatus",
+  },
+
   doctor: {
     description: "Environment health check",
     module: "./commands/doctor.ts",
