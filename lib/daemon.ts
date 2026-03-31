@@ -39,6 +39,8 @@ import {
   type PortEntry,
 } from "./port-scanner.ts";
 
+import { checkAndNotify } from "./notifier.ts";
+
 // ─── State ───────────────────────────────────────────────────────────────────
 
 interface CacheEntry {
@@ -298,6 +300,9 @@ async function refreshCache(): Promise<void> {
     // Reload cache from disk (enrichBranches writes to disk)
     loadCache();
     log(`cache: refresh complete (${Object.keys(cache.entries).length} entries)`);
+
+    // Check for state transitions and fire notifications
+    checkAndNotify(cache.entries, portCache, log);
   } catch (err) {
     log(`cache: refresh failed: ${err}`);
   }

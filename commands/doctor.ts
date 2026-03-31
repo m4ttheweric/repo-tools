@@ -144,7 +144,14 @@ export async function runDoctor(_args: string[]): Promise<void> {
     info("zellij", zellijVersion);
   } else {
     check(false, "zellij", "not installed — brew install zellij (required for rt dev)");
-  }  
+  }
+
+  const tnVersion = commandOutput("terminal-notifier -version");
+  if (tnVersion) {
+    info("terminal-notifier", tnVersion);
+  } else {
+    info("terminal-notifier", "not installed — brew install terminal-notifier (optional, for smart notifications)");
+  }
 
   console.log("");
 
