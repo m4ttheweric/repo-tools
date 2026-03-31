@@ -5,6 +5,7 @@ import { extractLinearId } from './branchParser';
 import { fetchTicket, type LinearTicket } from './linear';
 import { fetchMRInfo } from './gitlab';
 import { branchCache } from './cache';
+import { daemonQuery } from './daemonClient';
 import type { CachedBranchData, GitExtensionExports } from './types';
 import { getGitApi, findWorkspaceRepo, getRemoteUrl, getWorktreeName } from './git';
 
@@ -227,9 +228,45 @@ function renderFinalState(
 
 /**
  * Fetch all data for a branch (MR info + Linear ticket).
+ *
+ * Strategy:
+ *  1. Try daemon cache first (instant, no network) — daemon already has
+ *     enriched data from its background refresh loop.
+ *  2. Fall back to direct API calls if daemon is unavailable.
+ *
  * Returns null if nothing useful could be fetched.
  */
 export async function fetchBranchData(
+  context: vscode.ExtensionContext,
+  branch: string,
+): Promise<CachedBranchData | null> {
+  // ── Daemon-first path ──
+  try {
+    const response = await daemonQuery('cache:read', { branches: [branch] });
+    if (response?.ok && response.data) {
+      const entry = response.data[branch];
+      if (entry) {
+        return {
+          ticket: entry.ticket ?? null,
+          mrUrl: entry.mr?.webUrl ?? null,
+          linearId: entry.linearId || null,
+          fetchedAt: entry.fetchedAt ?? Date.now(),
+        };
+      }
+    }
+  } catch {
+    // Daemon not available — fall through to direct fetch
+  }
+
+  // ── Direct API fallback (daemon not running) ──
+  return fetchBranchDataDirect(context, branch);
+}
+
+/**
+ * Direct API fetch — used when daemon is not available.
+ * Makes independent Linear/GitLab calls from the extension itself.
+ */
+async function fetchBranchDataDirect(
   context: vscode.ExtensionContext,
   branch: string,
 ): Promise<CachedBranchData | null> {
