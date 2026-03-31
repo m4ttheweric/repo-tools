@@ -1,7 +1,8 @@
 /**
  * Per-repo config — ~/.rt/<repo>/config.json.
  *
- * Stores ports, setup steps, clean commands, and dev preferences.
+ * Stores setup steps, clean commands, and dev preferences.
+ * Port discovery is handled automatically by the daemon.
  * Includes the first-run config wizard.
  */
 
@@ -19,7 +20,6 @@ export interface SetupStep {
 }
 
 export interface RepoConfig {
-  ports: Record<string, number>;
   setup: SetupStep[];
   clean: string[];
   startScript: string;
@@ -27,7 +27,6 @@ export interface RepoConfig {
 }
 
 const DEFAULT_CONFIG: RepoConfig = {
-  ports: {},
   setup: [],
   clean: [],
   startScript: "start",
@@ -47,7 +46,6 @@ export function loadRepoConfig(dataDir: string): RepoConfig {
     try {
       const raw = JSON.parse(readFileSync(configPath, "utf8"));
       return {
-        ports: raw.ports ?? DEFAULT_CONFIG.ports,
         setup: raw.setup ?? DEFAULT_CONFIG.setup,
         clean: raw.clean ?? DEFAULT_CONFIG.clean,
         startScript: raw.startScript ?? DEFAULT_CONFIG.startScript,
@@ -96,20 +94,6 @@ async function runConfigWizard(repoRoot: string, repoName: string): Promise<Repo
   const { textInput, confirm: inkConfirm } = await import("./rt-render.tsx");
 
   console.log(`\n  First-time setup for ${repoName}\n`);
-
-  // ── Ports ───────────────────────────────────────────────────────────────────
-
-  const ports: Record<string, number> = {};
-  try {
-    const portsInput = await textInput({
-      message: "Known ports for rt kill-port (name:port, comma separated — or press Enter to skip)",
-      placeholder: "backend:3000, frontend:3002, postgres:5432",
-    });
-    for (const pair of portsInput.split(",").map(s => s.trim())) {
-      const [name, port] = pair.split(":").map(s => s.trim());
-      if (name && port && !isNaN(Number(port))) ports[name!] = Number(port);
-    }
-  } catch { /* user skipped */ }
 
   // ── Setup steps ─────────────────────────────────────────────────────────────
 
@@ -165,7 +149,6 @@ async function runConfigWizard(repoRoot: string, repoName: string): Promise<Repo
   // ── Build config ────────────────────────────────────────────────────────────
 
   const config: RepoConfig = {
-    ports,
     setup,
     clean,
     startScript: "start",
