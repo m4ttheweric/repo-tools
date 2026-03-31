@@ -4,6 +4,7 @@ import { fetchTicketsBatch, fetchMyTodoTickets } from './linear';
 import { fetchMRInfoBatch } from './gitlab';
 import { branchCache, branchListCache } from './cache';
 import { daemonQuery } from './daemonClient';
+import { getSecret } from './secrets';
 import { scheduleUpdate, openLinearUrl } from './statusBar';
 import {
   listAllBranches,
@@ -266,8 +267,8 @@ export async function showBranchSwitcher(context: vscode.ExtensionContext): Prom
     const fetchableBranches = localBranchNames.filter((b) => !SKIP_MR_BRANCHES.has(b));
 
     const [gitlabToken, apiKey] = await Promise.all([
-      context.secrets.get('worktreeContext.gitlabToken'),
-      context.secrets.get('worktreeContext.linearApiKey'),
+      getSecret(context, 'gitlabToken'),
+      getSecret(context, 'linearApiKey'),
     ]);
     const remoteUrl = getRemoteUrl(repo);
 
@@ -375,7 +376,7 @@ async function handleLinearCreate(
   currentBranch: string | null,
   maxLen: number,
 ): Promise<void> {
-  const apiKey = await context.secrets.get('worktreeContext.linearApiKey');
+  const apiKey = await getSecret(context, 'linearApiKey');
   if (!apiKey) {
     vscode.window.showErrorMessage(
       'Linear API key not set. Run "Worktree Context: Set Linear API Key" first.',
