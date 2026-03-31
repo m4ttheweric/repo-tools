@@ -222,6 +222,22 @@ function refreshWatchedRepos(): void {
 
 // ─── Port discovery ──────────────────────────────────────────────────────────
 
+/**
+ * Check if a PID belongs to a macOS .app bundle (Cursor, Zed, GitHub Desktop, etc.).
+ * These GUI apps listen on ports for IPC but aren't dev servers we care about.
+ */
+function isAppBundleProcess(pid: number): boolean {
+  try {
+    const comm = execSync(`ps -p ${pid} -o comm= 2>/dev/null`, {
+      encoding: "utf8", stdio: "pipe", timeout: 2000,
+    }).trim();
+    return comm.includes(".app/Contents/");
+  } catch {
+    return false;
+  }
+}
+
+
 function getProcessCwd(pid: number): string | null {
   try {
     const output = execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null`, {
@@ -324,6 +340,7 @@ function scanListeningPorts(): PortEntry[] {
 
   // Deduplicate by PID+port
   const seen = new Set<string>();
+  const appBundlePids = new Map<number, boolean>(); // cache app-bundle checks
   const entries: PortEntry[] = [];
 
   for (const line of lines.slice(1)) {
@@ -340,6 +357,12 @@ function scanListeningPorts(): PortEntry[] {
     const key = `${pid}:${port}`;
     if (seen.has(key)) continue;
     seen.add(key);
+
+    // Skip macOS GUI apps (Cursor, Zed, etc.) — they listen on ports for IPC
+    if (!appBundlePids.has(pid)) {
+      appBundlePids.set(pid, isAppBundleProcess(pid));
+    }
+    if (appBundlePids.get(pid)) continue;
 
     // Resolve CWD and match to repo
     const cwd = getProcessCwd(pid);

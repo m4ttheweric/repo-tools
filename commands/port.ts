@@ -86,6 +86,7 @@ function directScan(): PortEntry[] {
   if (lines.length <= 1) return [];
 
   const seen = new Set<string>();
+  const appBundlePids = new Map<number, boolean>();
   const entries: PortEntry[] = [];
 
   for (const line of lines.slice(1)) {
@@ -102,6 +103,19 @@ function directScan(): PortEntry[] {
     const key = `${pid}:${port}`;
     if (seen.has(key)) continue;
     seen.add(key);
+
+    // Skip macOS GUI apps (Cursor, Zed, etc.) — they listen on ports for IPC
+    if (!appBundlePids.has(pid)) {
+      try {
+        const comm = execSync(`ps -p ${pid} -o comm= 2>/dev/null`, {
+          encoding: "utf8", stdio: "pipe", timeout: 2000,
+        }).trim();
+        appBundlePids.set(pid, comm.includes(".app/Contents/"));
+      } catch {
+        appBundlePids.set(pid, false);
+      }
+    }
+    if (appBundlePids.get(pid)) continue;
 
     // Resolve CWD
     let cwd: string | null = null;
