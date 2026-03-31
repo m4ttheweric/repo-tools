@@ -99,7 +99,7 @@ async function selectPackages(root: string, dataDir: string): Promise<string[]> 
     return a.path.localeCompare(b.path);
   });
 
-  const { multiselect } = await import("../lib/rt-render.tsx");
+  const { filterableMultiselect } = await import("../lib/rt-render.tsx");
 
   const options = sortedPackages.map((pkg) => {
     const shortPath = pkg.path.split("/").slice(1).join("/") || pkg.path;
@@ -115,19 +115,21 @@ async function selectPackages(root: string, dataDir: string): Promise<string[]> 
     };
   });
 
-  return multiselect({
-    message: "Select packages to build (space to select, enter to build)",
+  return filterableMultiselect({
+    message: "Select packages to build",
     options,
   });
 }
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-export async function run(_args: string[]): Promise<void> {
+export async function run(args: string[]): Promise<void> {
   if (!process.stdin.isTTY) {
     console.log(`\n  ${yellow}must be run in an interactive terminal${reset}\n`);
     process.exit(1);
   }
+
+  const force = args.includes("--force");
 
   const identity = await requireIdentity("rt build");
   const root = identity.repoRoot;
@@ -140,16 +142,18 @@ export async function run(_args: string[]): Promise<void> {
   }
 
   const filters = selectedPackages.map((p) => `--filter=${p}`).join(" ");
+  const forceFlag = force ? " --force" : "";
+  const cmd = `pnpm turbo run build ${filters}${forceFlag}`;
 
   console.log("");
   console.log(
-    `  ${bold}${cyan}building ${selectedPackages.length} package${selectedPackages.length !== 1 ? "s" : ""}...${reset}`,
+    `  ${bold}${cyan}building ${selectedPackages.length} package${selectedPackages.length !== 1 ? "s" : ""}${force ? " (force)" : ""}...${reset}`,
   );
-  console.log(`  ${dim}pnpm turbo run build ${filters}${reset}`);
+  console.log(`  ${dim}${cmd}${reset}`);
   console.log("");
 
   try {
-    execSync(`pnpm turbo run build ${filters}`, {
+    execSync(cmd, {
       cwd: root,
       stdio: "inherit",
     });

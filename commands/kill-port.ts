@@ -151,9 +151,9 @@ export async function run(args: string[]): Promise<void> {
 
   console.log(`\n  ${bold}${cyan}rt kill-port${reset}  ${dim}(${repoName})${reset}\n`);
 
-  const { multiselect } = await import("../lib/rt-render.tsx");
+  const { filterableMultiselect } = await import("../lib/rt-render.tsx");
 
-  const selectedPids = await multiselect({
+  const selectedPids = await filterableMultiselect({
     message: "Select processes to kill",
     options: flatProcesses.map(({ label, proc, bumped }) => {
       const portStr = bumped ? `[bumped] :${proc.port}` : `:${proc.port}`;

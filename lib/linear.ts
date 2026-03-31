@@ -21,6 +21,8 @@ const SECRETS_PATH = join(homedir(), ".rt", "secrets.json");
 interface Secrets {
   linearApiKey?: string;
   gitlabToken?: string;
+  linearTeamId?: string;
+  linearTeamKey?: string;
 }
 
 export function loadSecrets(): Secrets {
@@ -75,12 +77,13 @@ export interface LinearTicket {
   url: string;
   stateName: string | null;
   stateColor: string | null;
+  branchName: string | null;
 }
 
 const ISSUE_BY_ID_QUERY = `
   query IssueById($id: String!) {
     issue(id: $id) {
-      id identifier title url
+      id identifier title url branchName
       state { name color }
     }
   }
@@ -90,7 +93,7 @@ const SEARCH_ISSUES_QUERY = `
   query SearchIssues($term: String!) {
     searchIssues(term: $term, first: 5) {
       nodes {
-        id identifier title url
+        id identifier title url branchName
         state { name color }
       }
     }
@@ -120,6 +123,7 @@ function toTicket(raw: Record<string, unknown>): LinearTicket {
     url: raw.url as string,
     stateName: state?.name ?? null,
     stateColor: state?.color ?? null,
+    branchName: (raw.branchName as string) ?? null,
   };
 }
 
@@ -144,7 +148,46 @@ export async function fetchTicket(apiKey: string, identifier: string): Promise<L
   }
 }
 
+/**
+ * Fetch multiple Linear tickets in a single GraphQL request using aliased fields.
+ * Each identifier gets its own `issue(id:)` lookup — all resolved in one HTTP round-trip.
+ *
+ * Returns a Map of uppercase identifier → LinearTicket.
+ */
+export async function fetchTicketsBatch(
+  apiKey: string,
+  identifiers: string[],
+): Promise<Map<string, LinearTicket>> {
+  const results = new Map<string, LinearTicket>();
+  if (!identifiers.length) return results;
 
+  // Build a single query with aliased fields:
+  //   query Batch {
+  //     i0: issue(id: "CV-1403") { id identifier title url branchName state { name color } }
+  //     i1: issue(id: "CV-1386") { id identifier title url branchName state { name color } }
+  //     ...
+  //   }
+  const fields = identifiers.map(
+    (id, idx) => `i${idx}: issue(id: "${id}") { id identifier title url branchName state { name color } }`,
+  );
+  const query = `query Batch { ${fields.join("\n")} }`;
+
+  try {
+    const data = (await linearGraphql(apiKey, query, {})) as Record<string, Record<string, unknown> | null>;
+
+    for (let idx = 0; idx < identifiers.length; idx++) {
+      const raw = data[`i${idx}`];
+      if (raw && raw.id) {
+        const ticket = toTicket(raw);
+        results.set(ticket.identifier.toUpperCase(), ticket);
+      }
+    }
+  } catch {
+    // Batch fetch failed — caller will use cached data gracefully
+  }
+
+  return results;
+}
 
 // ─── Setup command ───────────────────────────────────────────────────────────
 
@@ -184,4 +227,120 @@ export async function setupSecrets(): Promise<void> {
   }
 
   console.log("\n  Keys stored in ~/.rt/secrets.json\n");
+}
+
+// ─── Team configuration ─────────────────────────────────────────────────────
+
+const TEAMS_QUERY = `
+  query Teams {
+    teams { nodes { id key name } }
+  }
+`;
+
+export interface LinearTeam {
+  id: string;
+  key: string;
+  name: string;
+}
+
+export async function fetchTeams(apiKey: string): Promise<LinearTeam[]> {
+  try {
+    const data = (await linearGraphql(apiKey, TEAMS_QUERY, {})) as {
+      teams: { nodes: Array<{ id: string; key: string; name: string }> };
+    };
+    return data.teams.nodes;
+  } catch {
+    return [];
+  }
+}
+
+export function getTeamConfig(): { teamId: string; teamKey: string } | null {
+  const secrets = loadSecrets();
+  if (secrets.linearTeamId && secrets.linearTeamKey) {
+    return { teamId: secrets.linearTeamId, teamKey: secrets.linearTeamKey };
+  }
+  return null;
+}
+
+export function saveTeamConfig(teamId: string, teamKey: string): void {
+  const secrets = loadSecrets();
+  secrets.linearTeamId = teamId;
+  secrets.linearTeamKey = teamKey;
+  writeFileSync(SECRETS_PATH, JSON.stringify(secrets, null, 2));
+}
+
+// ─── Create issue ────────────────────────────────────────────────────────────
+
+const CREATE_ISSUE_MUTATION = `
+  mutation CreateIssue($teamId: String!, $title: String!, $description: String) {
+    issueCreate(input: { teamId: $teamId, title: $title, description: $description }) {
+      success
+      issue {
+        id identifier title url branchName
+        state { name color }
+      }
+    }
+  }
+`;
+
+export async function createIssue(
+  apiKey: string,
+  teamId: string,
+  title: string,
+  description?: string,
+): Promise<LinearTicket | null> {
+  try {
+    const data = (await linearGraphql(apiKey, CREATE_ISSUE_MUTATION, {
+      teamId,
+      title,
+      description: description || undefined,
+    })) as {
+      issueCreate: {
+        success: boolean;
+        issue: Record<string, unknown> | null;
+      };
+    };
+    if (data.issueCreate.success && data.issueCreate.issue) {
+      return toTicket(data.issueCreate.issue);
+    }
+    return null;
+  } catch (err) {
+    throw new Error(`Failed to create issue: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// ─── Fetch assigned tickets ──────────────────────────────────────────────────
+
+const MY_TODO_ISSUES_QUERY = `
+  query MyTodoIssues {
+    viewer {
+      assignedIssues(
+        filter: {
+          state: { type: { in: ["unstarted", "backlog"] } }
+        }
+        first: 50
+        orderBy: updatedAt
+      ) {
+        nodes {
+          id identifier title url branchName
+          state { name color }
+        }
+      }
+    }
+  }
+`;
+
+export async function fetchMyTodoTickets(apiKey: string): Promise<LinearTicket[]> {
+  try {
+    const data = (await linearGraphql(apiKey, MY_TODO_ISSUES_QUERY, {})) as {
+      viewer: {
+        assignedIssues: {
+          nodes: Array<Record<string, unknown>>;
+        };
+      };
+    };
+    return data.viewer.assignedIssues.nodes.map(toTicket);
+  } catch {
+    return [];
+  }
 }

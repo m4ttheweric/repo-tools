@@ -170,7 +170,7 @@ async function pickWithCurrentUntracked(
   identity: { repoName: string; repoRoot: string },
   repos: KnownRepo[],
 ): Promise<string> {
-  const { select } = await import("../lib/rt-render.tsx");
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
 
   const OPEN_THIS = "__open_this__";
 
@@ -189,7 +189,7 @@ async function pickWithCurrentUntracked(
     })),
   ];
 
-  const picked = await select({
+  const picked = await filterableSelect({
     message: "Pick a repo to open",
     options,
   });

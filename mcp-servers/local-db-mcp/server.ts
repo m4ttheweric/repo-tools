@@ -36,6 +36,11 @@ type InvestigationState =
   | "completed"
   | "not-started";
 
+// ── Config ───────────────────────────────────────────────────────────────────
+
+const dbLabel = process.env.DB_LABEL || "local";
+const dbSchema = process.env.DB_SCHEMA || "public";
+
 // ── Databases ────────────────────────────────────────────────────────────────
 
 const connectionString =
@@ -43,6 +48,11 @@ const connectionString =
   "postgresql://postgres:postgres@localhost:5432/assured?connect_timeout=300";
 
 const pool = new pg.Pool({ connectionString, max: 3 });
+
+// Set search_path on every new connection so unqualified table names resolve correctly
+pool.on("connect", (client) => {
+  client.query(`SET search_path TO "${dbSchema}", public`);
+});
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const favoritesDb = new Database(join(__dirname, "favorites.db"));
@@ -274,18 +284,18 @@ async function applyInvestigationState(
 // ── Server ───────────────────────────────────────────────────────────────────
 
 const server = new McpServer({
-  name: "local-db",
+  name: `${dbLabel}-db`,
   version: "1.1.0",
   description:
-    "Direct access to the local database, local DB, development database, dev DB, dev database. " +
-    "Use this server for any database queries, data inspection, or data manipulation on the local Postgres instance.",
+    `Direct access to the ${dbLabel} database. ` +
+    `Use this server for any database queries, data inspection, or data manipulation on the ${dbLabel} Postgres instance.`,
 });
 
 // ── Generic Database Tools ───────────────────────────────────────────────────
 
 server.tool(
   "query",
-  "Run a SQL query against the local database (local DB, development database, dev DB, dev database). Returns rows as JSON. Use for SELECT, INSERT, UPDATE, DELETE, or any valid SQL.",
+  `Run a SQL query against the ${dbLabel} database. Returns rows as JSON. Use for SELECT, INSERT, UPDATE, DELETE, or any valid SQL.`,
   { sql: z.string().describe("The SQL query to execute") },
   async ({ sql }) => {
     try {
@@ -308,13 +318,13 @@ server.tool(
 
 server.tool(
   "list_tables",
-  "List all tables in the local database (local DB, dev DB, development database) with row counts.",
+  `List all tables in the ${dbLabel} database with row counts.`,
   {
     schema: z
       .string()
       .optional()
-      .default("public")
-      .describe("Schema name (default: public)"),
+      .default(dbSchema)
+      .describe(`Schema name (default: ${dbSchema})`),
   },
   async ({ schema }) => {
     try {
@@ -348,7 +358,7 @@ server.tool(
 
 server.tool(
   "describe_table",
-  "Describe a table's columns, types, and constraints in the local database (local DB, dev DB, dev database).",
+  `Describe a table's columns, types, and constraints in the ${dbLabel} database.`,
   {
     table: z
       .string()
@@ -362,9 +372,9 @@ server.tool(
         pool.query(
           `SELECT column_name, data_type, is_nullable, column_default, character_maximum_length
            FROM information_schema.columns
-           WHERE table_name = $1 AND table_schema = 'public'
+           WHERE table_name = $1 AND table_schema = $2
            ORDER BY ordinal_position`,
-          [table],
+          [table, dbSchema],
         ),
         pool.query(
           `SELECT
@@ -374,12 +384,12 @@ server.tool(
            FROM information_schema.table_constraints tc
            JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
            JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name
-           WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = $1`,
-          [table],
+           WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = $1 AND tc.table_schema = $2`,
+          [table, dbSchema],
         ),
         pool.query(
-          `SELECT indexname, indexdef FROM pg_indexes WHERE tablename = $1`,
-          [table],
+          `SELECT indexname, indexdef FROM pg_indexes WHERE tablename = $1 AND schemaname = $2`,
+          [table, dbSchema],
         ),
       ]);
 
@@ -399,7 +409,7 @@ server.tool(
 
 server.tool(
   "find_cases",
-  "Search for cases in the local database. Returns recent investigation cases with contact counts, FNOL status, and investigation progress.",
+  `Search for cases in the ${dbLabel} database. Returns recent investigation cases with contact counts, FNOL status, and investigation progress.`,
   {
     limit: z
       .number()
@@ -597,7 +607,7 @@ server.tool(
 
 server.tool(
   "list_favorites",
-  "List all favorited cases and claims with their labels, notes, and current status from the database.",
+  `List all favorited cases and claims with their labels, notes, and current status from the ${dbLabel} database.`,
   {},
   async () => {
     try {

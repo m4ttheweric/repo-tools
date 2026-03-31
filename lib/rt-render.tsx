@@ -225,14 +225,16 @@ export async function filterableMultiselect(opts: {
     return multiselect(opts);
   }
 
-  console.log(`  \x1b[36m\x1b[1m❯ \x1b[0m\x1b[1m${opts.message}\x1b[0m\n`);
+  const writer = opts.stderr ? process.stderr : process.stdout;
+  writer.write(`  \x1b[36m\x1b[1m❯ \x1b[0m\x1b[1m${opts.message}\x1b[0m\n\n`);
 
   const input = opts.options
-    .map((o) => `${o.value}\t${o.label}${o.hint ? `  ${o.hint}` : ""}`)
+    .map((o) => `${o.value}\t\x1b[1m${o.label}\x1b[22m${o.hint ? `  \x1b[2m${o.hint}\x1b[22m` : ""}`)
     .join("\n");
 
   const result = spawnSync("fzf", [
     "--multi",
+    "--ansi",
     "--with-nth=2..",
     "--delimiter=\t",
     "--height=~60%",
@@ -283,13 +285,15 @@ export async function filterableSelect(opts: {
     return select(opts);
   }
 
-  console.log(`  \x1b[36m\x1b[1m❯ \x1b[0m\x1b[1m${opts.message}\x1b[0m\n`);
+  const writer = opts.stderr ? process.stderr : process.stdout;
+  writer.write(`  \x1b[36m\x1b[1m❯ \x1b[0m\x1b[1m${opts.message}\x1b[0m\n\n`);
 
   const input = opts.options
-    .map((o) => `${o.value}\t${o.label}${o.hint ? `  ${o.hint}` : ""}`)
+    .map((o) => `${o.value}\t\x1b[1m${o.label}\x1b[22m${o.hint ? `  \x1b[2m${o.hint}\x1b[22m` : ""}`)
     .join("\n");
 
   const result = spawnSync("fzf", [
+    "--ansi",
     "--with-nth=2..",
     "--delimiter=\t",
     "--height=~60%",
@@ -310,3 +314,47 @@ export async function filterableSelect(opts: {
 
   return result.stdout.trim().split("\t")[0]!;
 }
+
+// ─── Spinner helper ─────────────────────────────────────────────────────────
+
+/**
+ * Show an animated spinner while an async task runs.
+ * The spinner is automatically removed when the task completes.
+ */
+export async function withSpinner<T>(
+  label: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  const { Spinner } = await import("@inkjs/ui");
+
+  let result: T;
+  let error: unknown;
+
+  return new Promise<T>((outerResolve, outerReject) => {
+    let instance: Instance | undefined;
+
+    const SpinnerView = () =>
+      React.createElement(
+        Box,
+        { marginLeft: 1 },
+        React.createElement(Spinner, { label }),
+      );
+
+    instance = render(React.createElement(SpinnerView), {
+      exitOnCtrlC: true,
+    });
+
+    task()
+      .then((r) => {
+        result = r;
+        instance?.unmount();
+        outerResolve(result);
+      })
+      .catch((e) => {
+        error = e;
+        instance?.unmount();
+        outerReject(error);
+      });
+  });
+}
+

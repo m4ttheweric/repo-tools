@@ -21,7 +21,8 @@ import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, chmodS
 import { join } from "path";
 import { execSync } from "child_process";
 import { bold, cyan, dim, green, yellow, red, reset } from "../lib/tui.ts";
-import { requireIdentity } from "../lib/repo.ts";
+import { getRepoIdentity, type RepoIdentity } from "../lib/repo.ts";
+import { getKnownRepos } from "../lib/repo-index.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -185,7 +186,43 @@ function showStatus(config: HooksConfig, repoName: string): void {
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
 export async function run(args: string[]): Promise<void> {
-  const identity = await requireIdentity("rt hooks");
+  // Hook settings are repo-wide (core.hooksPath + ~/.rt/<repo>/hooks.json),
+  // so we only need a repo picker — not a worktree picker.
+  let identity: RepoIdentity | null = getRepoIdentity();
+
+  if (!identity) {
+    const repos = getKnownRepos();
+
+    if (repos.length === 0) {
+      console.log(`\n  not in a git repo and no known repos found`);
+      console.log(`  run rt from inside a git repo first to register it\n`);
+      process.exit(1);
+    }
+
+    let selectedRepo = repos[0]!;
+
+    if (repos.length > 1 && process.stdin.isTTY) {
+      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      const picked = await filterableSelect({
+        message: "Pick a repo for rt hooks",
+        options: repos.map(r => ({
+          value: r.repoName,
+          label: r.repoName,
+          hint: `${r.worktrees.length} worktree${r.worktrees.length > 1 ? "s" : ""}`,
+        })),
+      });
+      selectedRepo = repos.find(r => r.repoName === picked)!;
+    }
+
+    // Use the first worktree to resolve identity (all share the same git config)
+    process.chdir(selectedRepo.worktrees[0]!.path);
+    identity = getRepoIdentity();
+
+    if (!identity) {
+      console.log(`\n  could not identify repo\n`);
+      process.exit(1);
+    }
+  }
 
   const { repoName, repoRoot, dataDir } = identity;
   const discoveredHooks = discoverHooks(repoRoot);
@@ -200,6 +237,11 @@ export async function run(args: string[]): Promise<void> {
   // Always regenerate shims and ensure hooksPath is set
   generateShims(dataDir, discoveredHooks);
   setHooksPath(repoRoot, dataDir);
+
+  // Notify daemon to watch this repo's .git/config (best-effort, no-op if daemon not running)
+  import("../lib/daemon-client.ts")
+    .then(({ daemonQuery }) => daemonQuery("hooks:watch", { repo: repoName }))
+    .catch(() => {});
 
   const sub = args[0];
 

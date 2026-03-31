@@ -1,0 +1,93 @@
+{
+  "plan_id": "rt-roadmap",
+  "title": "repo-tools (rt) CLI Roadmap",
+  "description": "Multi-phase roadmap for rt CLI: command restructure + tree migration, worktree-context extension integration, and daemon-powered features (status dashboard, port discovery, notifications).",
+  "directory": "/Users/matthew/Documents/GitHub/repo-tools/plans/roadmap",
+  "created": "2026-03-31T13:49:28.162Z",
+  "phases": [
+    {
+      "id": 0,
+      "name": "Command Restructure",
+      "file": "phase-0.md",
+      "status": "IN_PROGRESS",
+      "agent": "claude-opus-4-20250514",
+      "started": "2026-03-31T13:52:17.084Z",
+      "completed": null,
+      "depends_on": [],
+      "outputs": [
+        "commands/settings.ts with 4 exported handlers",
+        "commands/port.ts with scan/kill handlers",
+        "Cleaned cli.ts tree with settings and port branch nodes",
+        "commands/type-check.ts deleted",
+        "commands/uninstall.ts deleted"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "Leaf Command Migration",
+      "file": "phase-1.md",
+      "status": "NOT_STARTED",
+      "agent": null,
+      "started": null,
+      "completed": null,
+      "depends_on": [
+        0
+      ],
+      "outputs": [
+        "All command files export named handler functions",
+        "cli.ts tree is the sole source of truth for command structure"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Worktree Context Extension Integration",
+      "file": "phase-2.md",
+      "status": "NOT_STARTED",
+      "agent": null,
+      "started": null,
+      "completed": null,
+      "depends_on": [
+        1
+      ],
+      "outputs": [
+        "Extension lives at repo-tools/extensions/vscode/worktree-context/",
+        "Extension uses daemon HTTP API instead of direct Linear/GitLab calls",
+        "New daemon endpoints: /repos, /branch:enrich"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Daemon Port Discovery",
+      "file": "phase-3.md",
+      "status": "NOT_STARTED",
+      "agent": null,
+      "started": null,
+      "completed": null,
+      "depends_on": [
+        1
+      ],
+      "outputs": [
+        "Daemon cache includes port scan data refreshed every cycle",
+        "rt port command uses daemon data for instant, zero-config display"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Status Dashboard & Notifications",
+      "file": "phase-4.md",
+      "status": "NOT_STARTED",
+      "agent": null,
+      "started": null,
+      "completed": null,
+      "depends_on": [
+        2,
+        3
+      ],
+      "outputs": [
+        "commands/status.ts with dashboard and watch mode",
+        "commands/branch.ts with clean subcommand",
+        "Daemon notification engine"
+      ]
+    }
+  ]
+}
