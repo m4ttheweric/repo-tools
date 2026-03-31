@@ -220,7 +220,17 @@ export async function uninstallRepo(args: string[], ctx: CommandContext): Promis
 // ─── Notification preferences ────────────────────────────────────────────────
 
 export async function configureNotifications(): Promise<void> {
+  const { execSync } = await import("child_process");
   const { multiselect } = await import("../lib/rt-render.tsx");
+
+  // Check for terminal-notifier
+  let hasTN = false;
+  try { execSync("which terminal-notifier", { stdio: "pipe" }); hasTN = true; } catch {}
+
+  if (!hasTN) {
+    console.log(`\n  ${yellow}!${reset} terminal-notifier not installed — notifications will use basic osascript`);
+    console.log(`  ${dim}install for richer notifications: ${bold}brew install terminal-notifier${reset}\n`);
+  }
 
   const prefs = loadNotificationPrefs();
 
@@ -250,5 +260,11 @@ export async function configureNotifications(): Promise<void> {
 
   const enabledCount = selected.length;
   const totalCount = NOTIFICATION_TYPES.length;
-  console.log(`\n  ${green}✓${reset} ${enabledCount}/${totalCount} notification types enabled\n`);
+  console.log(`\n  ${green}✓${reset} ${enabledCount}/${totalCount} notification types enabled`);
+
+  if (!hasTN) {
+    console.log(`  ${dim}tip: brew install terminal-notifier for clickable notifications with custom icons${reset}`);
+  }
+
+  console.log("");
 }
