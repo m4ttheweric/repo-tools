@@ -185,7 +185,7 @@ function showStatus(config: HooksConfig, repoName: string): void {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-export async function run(args: string[]): Promise<void> {
+export async function toggleHooks(args: string[]): Promise<void> {
   // Hook settings are repo-wide (core.hooksPath + ~/.rt/<repo>/hooks.json),
   // so we only need a repo picker — not a worktree picker.
   let identity: RepoIdentity | null = getRepoIdentity();
