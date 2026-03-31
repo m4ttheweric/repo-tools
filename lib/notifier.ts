@@ -21,6 +21,9 @@ interface BranchSnapshot {
   mrState: string | null;
   approved: boolean;
   conflicts: boolean;
+  needsRebase: boolean;
+  isReady: boolean;
+  mergeError: string | null;
   ticketState: string | null;
 }
 
@@ -57,7 +60,10 @@ export const NOTIFICATION_TYPES = [
   { key: "pipeline_passed",   label: "Pipeline passed",     description: "When a running pipeline succeeds" },
   { key: "mr_approved",       label: "MR approved",         description: "When your MR gets fully approved" },
   { key: "mr_merged",         label: "MR merged",           description: "When your MR is merged" },
+  { key: "mr_ready",          label: "MR ready to merge",   description: "When all blockers are cleared" },
   { key: "merge_conflicts",   label: "Merge conflicts",     description: "When merge conflicts appear on your MR" },
+  { key: "needs_rebase",      label: "Needs rebase",        description: "When your branch falls behind target" },
+  { key: "merge_error",       label: "Merge error",         description: "When auto-merge or merge train fails" },
   { key: "stale_port",        label: "Stale processes",     description: "When a dev server has been running 6h+" },
 ] as const;
 
@@ -159,6 +165,9 @@ function snapshotBranch(entry: CacheEntry): BranchSnapshot {
     mrState: entry.mr?.state ?? null,
     approved: entry.mr?.reviews?.isApproved ?? false,
     conflicts: entry.mr?.blockers?.hasConflicts ?? false,
+    needsRebase: entry.mr?.blockers?.needsRebase ?? false,
+    isReady: entry.mr?.isReady ?? false,
+    mergeError: entry.mr?.blockers?.mergeError ?? null,
     ticketState: entry.ticket?.stateName ?? null,
   };
 }
@@ -236,6 +245,36 @@ function detectBranchTransitions(
       }
     }
 
+    // MR ready to merge (all blockers cleared)
+    if (!was.isReady && now.isReady) {
+      const key = `mr:ready:${branch}`;
+      if (!fired.has(key)) {
+        fired.add(key);
+        log(`notify: MR ready to merge on ${branch}`);
+        if (isEnabled(prefs, "mr_ready")) notify("Ready to Merge ✓", branchShort, mrUrl);
+      }
+    }
+
+    // Needs rebase (branch fell behind target)
+    if (!was.needsRebase && now.needsRebase) {
+      const key = `mr:rebase:${branch}`;
+      if (!fired.has(key)) {
+        fired.add(key);
+        log(`notify: needs rebase on ${branch}`);
+        if (isEnabled(prefs, "needs_rebase")) notify("Needs Rebase", branchShort, mrUrl);
+      }
+    }
+
+    // Merge error (auto-merge or merge train failed)
+    if (!was.mergeError && now.mergeError) {
+      const key = `mr:merge_error:${branch}`;
+      if (!fired.has(key)) {
+        fired.add(key);
+        log(`notify: merge error on ${branch}: ${now.mergeError}`);
+        if (isEnabled(prefs, "merge_error")) notify("Merge Error", `${branchShort}: ${now.mergeError}`, mrUrl);
+      }
+    }
+
     // Clear fired keys when state changes back (so we can re-notify on next transition)
     if (was.pipelineStatus === "failed" && now.pipelineStatus !== "failed") {
       fired.delete(`pipeline:failed:${branch}`);
@@ -248,6 +287,15 @@ function detectBranchTransitions(
     }
     if (was.conflicts && !now.conflicts) {
       fired.delete(`mr:conflicts:${branch}`);
+    }
+    if (was.isReady && !now.isReady) {
+      fired.delete(`mr:ready:${branch}`);
+    }
+    if (was.needsRebase && !now.needsRebase) {
+      fired.delete(`mr:rebase:${branch}`);
+    }
+    if (was.mergeError && !now.mergeError) {
+      fired.delete(`mr:merge_error:${branch}`);
     }
   }
 }
