@@ -61,9 +61,20 @@ const TREE: Record<string, CommandNode> = {
     requiresRepo: true,
   },
 
-  "kill-port": {
-    description: "Kill orphaned processes on known ports",
-    module: "./commands/kill-port.ts",
+  port: {
+    description: "Port management (scan, kill)",
+    subcommands: {
+      scan: {
+        description: "Show port status for known services",
+        module: "./commands/port.ts",
+        fn: "scanPorts",
+      },
+      kill: {
+        description: "Kill processes on known ports",
+        module: "./commands/port.ts",
+        fn: "killPorts",
+      },
+    },
   },
 
   doctor: {
