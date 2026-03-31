@@ -213,10 +213,6 @@ async function pickWithCurrentUntracked(
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
 export async function openInEditor(args: string[]): Promise<void> {
-  if (!process.stdin.isTTY) {
-    console.log(`\n  ${yellow}rt code must be run interactively${reset}\n`);
-    process.exit(1);
-  }
 
   const pickMode = args.includes("-p") || args.includes("--pick");
   const prefs = loadPrefs();

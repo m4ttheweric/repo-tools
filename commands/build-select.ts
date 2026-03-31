@@ -13,7 +13,8 @@ import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 import { bold, cyan, dim, green, yellow, reset } from "../lib/tui.ts";
-import { requireIdentity, getWorkspacePackages } from "../lib/repo.ts";
+import { getWorkspacePackages } from "../lib/repo.ts";
+import type { CommandContext } from "../lib/command-tree.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -123,17 +124,10 @@ async function selectPackages(root: string, dataDir: string): Promise<string[]> 
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-export async function buildSelect(args: string[]): Promise<void> {
-  if (!process.stdin.isTTY) {
-    console.log(`\n  ${yellow}must be run in an interactive terminal${reset}\n`);
-    process.exit(1);
-  }
-
+export async function buildSelect(args: string[], ctx: CommandContext): Promise<void> {
   const force = args.includes("--force");
 
-  const identity = await requireIdentity("rt build");
-  const root = identity.repoRoot;
-  const dataDir = identity.dataDir;
+  const { repoRoot: root, dataDir } = ctx.identity!;
   const selectedPackages = await selectPackages(root, dataDir);
 
   if (selectedPackages.length === 0) {
