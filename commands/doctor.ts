@@ -43,6 +43,16 @@ function info(label: string, detail: string): void {
   console.log(`  ${dim}●${reset} ${label}  ${dim}${detail}${reset}`);
 }
 
+function formatUptime(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
+}
+
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
 export async function run(_args: string[]): Promise<void> {
@@ -190,6 +200,34 @@ export async function run(_args: string[]): Promise<void> {
       info("hooks", `using ${hooksPath || ".git/hooks"} (not managed by rt)`);
     }
 
+    console.log("");
+  }
+
+  // ─── Daemon health ────────────────────────────────────────────────────────
+
+  {
+    const { isDaemonInstalled } = await import("../lib/daemon-config.ts");
+    const { isDaemonRunning, daemonQuery } = await import("../lib/daemon-client.ts");
+
+    if (isDaemonInstalled()) {
+      const running = await isDaemonRunning();
+      if (running) {
+        const response = await daemonQuery("status");
+        if (response?.ok) {
+          const { pid, uptime, watchedRepos, cacheEntries } = response.data;
+          const uptimeStr = formatUptime(uptime);
+          check(true, "daemon", `running (pid ${pid}, uptime ${uptimeStr})`);
+          console.log(`    ${dim}watching: ${watchedRepos} repo${watchedRepos !== 1 ? "s" : ""}${reset}`);
+          console.log(`    ${dim}cache: ${cacheEntries} entries${reset}`);
+        } else {
+          check(true, "daemon", "running");
+        }
+      } else {
+        check(false, "daemon", `installed but not running — run: ${bold}rt daemon start${reset}`);
+      }
+    } else {
+      info("daemon", `not installed (optional — run ${bold}rt daemon install${reset})`);
+    }
     console.log("");
   }
 

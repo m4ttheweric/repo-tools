@@ -127,12 +127,51 @@ function patchForTsgo(config: TsConfig): TsConfig {
 }
 
 /**
+ * Resolve include/exclude glob arrays to absolute paths.
+ * tsgo resolves these relative to the config file's directory,
+ * so they must be absolute when the config lives in /tmp/.
+ */
+function resolveGlobs(globs: string[] | undefined, baseDir: string): string[] | undefined {
+  if (!globs) return undefined;
+  return globs.map(g => {
+    // Already absolute → keep as-is
+    if (g.startsWith("/")) return g;
+    // Resolve relative globs against the original tsconfig's directory
+    return join(baseDir, g);
+  });
+}
+
+/**
  * Read a tsconfig, patch it for tsgo, and write to a temp file.
  * Returns the path to the temp file.
+ *
+ * include/exclude paths are resolved to absolute so tsgo can find
+ * source files even though the config is written to /tmp/.
  */
 export function createTsgoConfig(tsconfigPath: string, appName: string): string {
   const config = readTsConfig(tsconfigPath);
   const patched = patchForTsgo(config);
+
+  // Resolve include/exclude relative to the original tsconfig directory
+  const configDir = dirname(resolve(tsconfigPath));
+  patched.include = resolveGlobs(patched.include, configDir);
+  patched.exclude = resolveGlobs(patched.exclude, configDir);
+
+  // Also resolve compilerOptions.paths values if present
+  if (patched.compilerOptions?.paths) {
+    const paths = patched.compilerOptions.paths as Record<string, string[]>;
+    for (const key of Object.keys(paths)) {
+      paths[key] = paths[key]!.map(p =>
+        p.startsWith("/") ? p : join(configDir, p),
+      );
+    }
+  }
+
+  // Set rootDir so tsgo resolves source files correctly
+  if (!patched.compilerOptions) patched.compilerOptions = {};
+  if (!patched.compilerOptions.rootDir) {
+    patched.compilerOptions.rootDir = configDir;
+  }
 
   const tmpPath = join("/tmp", `rt-typecheck-${appName}.json`);
   writeFileSync(tmpPath, JSON.stringify(patched, null, 2));

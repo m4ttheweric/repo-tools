@@ -124,7 +124,7 @@ export async function pickWorktree(prompt: string): Promise<string> {
   if (repos.length === 1) {
     selectedRepo = repos[0]!;
   } else {
-    const { select: inkSelect } = await import("./rt-render.tsx");
+    const { filterableSelect } = await import("./rt-render.tsx");
     const repoOptions = repos.map(r => ({
       value: r.repoName,
       label: r.repoName,
@@ -133,7 +133,7 @@ export async function pickWorktree(prompt: string): Promise<string> {
         : r.worktrees[0]?.path.replace(process.env.HOME || "", "~") || "",
     }));
 
-    const picked = await inkSelect({ message: prompt, options: repoOptions });
+    const picked = await filterableSelect({ message: "Select a repo", options: repoOptions });
     selectedRepo = repos.find(r => r.repoName === picked)!;
   }
 
@@ -141,14 +141,17 @@ export async function pickWorktree(prompt: string): Promise<string> {
     return selectedRepo.worktrees[0]!.path;
   }
 
-  return pickWorktreeFromRepo(selectedRepo, prompt);
+  // Clear between repo and worktree picker
+  console.clear();
+
+  return pickWorktreeFromRepo(selectedRepo, "Select a worktree");
 }
 
 /**
  * Pick a worktree from a specific repo (enriched with Linear ticket info).
  */
 export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string): Promise<string> {
-  const { select: inkSelect } = await import("./rt-render.tsx");
+  const { filterableSelect } = await import("./rt-render.tsx");
   const { enrichBranches, formatBranchLabel } = await import("./enrich.ts");
 
   let remoteUrl: string | undefined;
@@ -169,7 +172,7 @@ export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string): Pr
     hint: "",
   }));
 
-  return inkSelect({
+  return filterableSelect({
     message: prompt || `${repo.repoName} worktrees`,
     options,
   });
@@ -183,7 +186,7 @@ export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string): Pr
  * 3. Returns updated RepoIdentity after chdir
  */
 export async function pickRepoInteractive(): Promise<RepoIdentity> {
-  const { select: inkSelect } = await import("./rt-render.tsx");
+  const { filterableSelect } = await import("./rt-render.tsx");
   const repos = getKnownRepos();
 
   if (repos.length === 0) {
@@ -227,7 +230,7 @@ export async function pickRepoInteractive(): Promise<RepoIdentity> {
       hint: `${repos.length} repos available`,
     });
 
-    const picked = await inkSelect({
+    const picked = await filterableSelect({
       message: `${currentRepo.repoName} worktrees`,
       options,
     });
@@ -252,7 +255,7 @@ export async function pickRepoInteractive(): Promise<RepoIdentity> {
 }
 
 async function pickFromAllRepos(repos: KnownRepo[]): Promise<string> {
-  const { select: inkSelect } = await import("./rt-render.tsx");
+  const { filterableSelect } = await import("./rt-render.tsx");
 
   const repoOptions = repos.map((r) => ({
     value: r.repoName,
@@ -262,7 +265,7 @@ async function pickFromAllRepos(repos: KnownRepo[]): Promise<string> {
       : r.worktrees[0]?.path.replace(process.env.HOME || "", "~") || "",
   }));
 
-  const pickedRepo = await inkSelect({ message: "Pick a repo", options: repoOptions });
+  const pickedRepo = await filterableSelect({ message: "Pick a repo", options: repoOptions });
   const repo = repos.find((r) => r.repoName === pickedRepo)!;
 
   if (repo.worktrees.length === 1) {

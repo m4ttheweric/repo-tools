@@ -7,18 +7,21 @@
  *   rt x                   list saved scripts + run one
  *   rt x <name> [flags]    run a named script
  *   rt x create            interactive script wizard
+ *   rt x edit [--script=n] open a script's JSON in $EDITOR
  *
  * Scripts are composed of setup → commands → teardown steps.
  * Any step can have a `flag` field so it only runs when that flag is passed.
  */
 
-import { spawnSync } from "child_process";
-import { existsSync } from "fs";
+import { execSync, spawnSync } from "child_process";
+import { existsSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
+import { homedir } from "os";
 import { bold, cyan, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import { requireIdentity, getWorkspacePackages, pickRepoInteractive } from "../lib/repo.ts";
 import {
   loadScript, saveScript, listScripts, filterSteps, isReservedName,
+  resolveScriptPath,
   type RtScript, type StepDef, type Multiplexer,
 } from "../lib/script-store.ts";
 import { launch, type MuxCommand } from "../lib/multiplexer.ts";
@@ -32,26 +35,7 @@ function detectPackageManager(repoRoot: string): string {
   return "npm";
 }
 
-// ─── Built-in scripts ────────────────────────────────────────────────────────
 
-/**
- * Built-in type-check script. Replaces the old `rt type-check` command.
- * Uses tsgo + tsc-baseline for regression detection.
- */
-function builtinTypeCheck(repoRoot: string): RtScript {
-  return {
-    name: "type-check",
-    description: "tsgo type-check with baseline regression detection",
-    setup: [],
-    commands: [
-      {
-        label: "type-check",
-        command: `bun ${join(repoRoot, "node_modules", ".bin", "..","..","repo-tools","commands","type-check.ts")} "$@"`,
-      },
-    ],
-    teardown: [],
-  };
-}
 
 // ─── Step execution ──────────────────────────────────────────────────────────
 
@@ -94,6 +78,17 @@ async function executeScript(
   const setup = filterSteps(script.setup, activeFlags);
   const commands = filterSteps(script.commands, activeFlags);
   const teardown = filterSteps(script.teardown, activeFlags);
+
+  // Write breadcrumb so the shell wrapper can cd after execution.
+  // Single command with a cwd → resolve into that subdir; otherwise repo root.
+  const targetCwd = commands.length === 1 && commands[0]!.cwd
+    ? join(repoRoot, commands[0]!.cwd)
+    : repoRoot;
+  try {
+    const rtDir = join(homedir(), ".rt");
+    mkdirSync(rtDir, { recursive: true });
+    writeFileSync(join(rtDir, ".last-cwd"), targetCwd);
+  } catch { /* best-effort */ }
 
   console.log(`\n  ${bold}${cyan}rt x${reset} ${bold}${script.name}${reset}`);
   if (script.description) {
@@ -526,6 +521,73 @@ export async function run(args: string[]): Promise<void> {
     : await requireIdentity("rt x");
   const { repoRoot, dataDir } = identity;
 
+  // ── rt x edit → open script JSON in editor ────────────────────────────────
+
+  if (scriptName === "edit") {
+    if (!process.stdin.isTTY) {
+      console.log(`\n  ${red}edit requires an interactive terminal${reset}\n`);
+      process.exit(1);
+    }
+
+    // Parse --script=<name> from flags
+    let targetName: string | undefined;
+    for (const f of flags) {
+      if (f.startsWith("--script=")) {
+        targetName = f.slice("--script=".length);
+        break;
+      }
+    }
+
+    // If no --script flag, show picker
+    if (!targetName) {
+      const entries = listScripts(repoRoot, dataDir);
+      if (entries.length === 0) {
+        console.log(`\n  ${yellow}no scripts to edit${reset}`);
+        console.log(`  ${dim}create one: rt x create${reset}\n`);
+        process.exit(1);
+      }
+
+      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      console.log(`\n  ${bold}${cyan}rt x edit${reset}\n`);
+      targetName = await filterableSelect({
+        message: "Select a script to edit",
+        options: entries.map((e) => ({
+          value: e.name,
+          label: e.name,
+          hint: `${e.script.description ?? ""} (${e.scope})`.trim(),
+        })),
+      });
+    }
+
+    const filePath = resolveScriptPath(targetName, repoRoot, dataDir);
+    if (!filePath) {
+      console.log(`\n  ${red}unknown script: ${targetName}${reset}`);
+      const entries = listScripts(repoRoot, dataDir);
+      if (entries.length > 0) {
+        console.log(`  ${dim}available: ${entries.map((e) => e.name).join(", ")}${reset}`);
+      }
+      console.log(`  ${dim}create one: rt x create${reset}\n`);
+      process.exit(1);
+    }
+
+    // Open in editor: $EDITOR → code → open (macOS)
+    const editor = process.env.EDITOR || "code";
+    try {
+      execSync(`${editor} "${filePath}"`, { stdio: "inherit" });
+      console.log(`\n  ${green}✓${reset} opened ${dim}${filePath}${reset}\n`);
+    } catch {
+      // Fallback to macOS `open`
+      try {
+        execSync(`open "${filePath}"`, { stdio: "inherit" });
+        console.log(`\n  ${green}✓${reset} opened ${dim}${filePath}${reset}\n`);
+      } catch {
+        console.log(`\n  ${red}failed to open ${filePath}${reset}\n`);
+        process.exit(1);
+      }
+    }
+    return;
+  }
+
   // ── rt x create → wizard ──────────────────────────────────────────────────
 
   if (scriptName === "create") {
@@ -545,12 +607,6 @@ export async function run(args: string[]): Promise<void> {
 
     // Fall back to built-ins
     if (!script) {
-      if (scriptName === "type-check") {
-        // Port the old rt type-check as a thin wrapper
-        // Just delegate to the existing type-check.ts module directly
-        const mod = await import("./type-check.ts");
-        return mod.run(args.slice(1));
-      }
 
       console.log(`\n  ${red}unknown script: ${scriptName}${reset}`);
       const entries = listScripts(repoRoot, dataDir);
@@ -583,14 +639,13 @@ export async function run(args: string[]): Promise<void> {
     hint: `${e.script.description ?? ""} (${e.scope})`.trim(),
   }));
 
-  // Always include built-in type-check if not shadowed
-  if (!entries.some((e) => e.name === "type-check")) {
-    options.push({
-      value: "type-check",
-      label: "type-check",
-      hint: "tsgo type-check with baseline regression (built-in)",
-    });
-  }
+
+
+  options.push({
+    value: "__edit__",
+    label: "✏️  Edit a script",
+    hint: "open script JSON in editor",
+  });
 
   options.push({
     value: "__create__",
@@ -603,16 +658,18 @@ export async function run(args: string[]): Promise<void> {
     options,
   });
 
+  if (selected === "__edit__") {
+    // Re-enter with "edit" as the subcommand
+    return run(["edit"]);
+  }
+
   if (selected === "__create__") {
     console.log("");
     await wizard(repoRoot, dataDir);
     return;
   }
 
-  if (selected === "type-check") {
-    const mod = await import("./type-check.ts");
-    return mod.run([]);
-  }
+
 
   const script = loadScript(selected, repoRoot, dataDir);
   if (!script) {

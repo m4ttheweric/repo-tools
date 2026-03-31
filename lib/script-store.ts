@@ -35,7 +35,7 @@ export interface RtScript {
 
 // ─── Reserved names ──────────────────────────────────────────────────────────
 
-const RESERVED_NAMES = new Set(["create"]);
+const RESERVED_NAMES = new Set(["create", "edit"]);
 
 export function isReservedName(name: string): boolean {
   return RESERVED_NAMES.has(name);
@@ -86,6 +86,22 @@ export function loadScript(
     loadFromFile(scriptPath(teamDir(repoRoot), name)) ??
     loadFromFile(scriptPath(userDir(dataDir), name))
   );
+}
+
+/**
+ * Resolve the absolute path to a script's JSON file.
+ * Team scope takes precedence over user scope. Returns null if not found.
+ */
+export function resolveScriptPath(
+  name: string,
+  repoRoot: string,
+  dataDir: string,
+): string | null {
+  const teamPath = scriptPath(teamDir(repoRoot), name);
+  if (existsSync(teamPath)) return teamPath;
+  const userPath = scriptPath(userDir(dataDir), name);
+  if (existsSync(userPath)) return userPath;
+  return null;
 }
 
 // ─── Save ────────────────────────────────────────────────────────────────────

@@ -56,7 +56,7 @@ export async function pickWorktreeWithSwitch(
   currentPath: string,
   opts?: { stderr?: boolean },
 ): Promise<string | typeof SWITCH_REPO> {
-  const { select } = await import("./rt-render.tsx");
+  const { filterableSelect } = await import("./rt-render.tsx");
 
   const otherWorktrees = repo.worktrees.filter(wt => wt.path !== currentPath);
   if (otherWorktrees.length === 0) return SWITCH_REPO;
@@ -70,7 +70,7 @@ export async function pickWorktreeWithSwitch(
     hint: "",
   });
 
-  return select({
+  return filterableSelect({
     message: `${repo.repoName} worktrees`,
     options,
     ...(opts?.stderr ? { stderr: true } : {}),
@@ -85,7 +85,7 @@ export async function pickFromAllRepos(
   repos: KnownRepo[],
   opts?: { stderr?: boolean; errorMessage?: string },
 ): Promise<string> {
-  const { select } = await import("./rt-render.tsx");
+  const { filterableSelect } = await import("./rt-render.tsx");
 
   if (repos.length === 0) {
     const msg = opts?.errorMessage || "no known repos found — run rt from inside a git repo first";
@@ -99,7 +99,7 @@ export async function pickFromAllRepos(
   if (repos.length === 1) {
     selectedRepo = repos[0]!;
   } else {
-    const picked = await select({
+    const picked = await filterableSelect({
       message: "Pick a repo",
       options: repoOptionsFromList(repos),
       ...(opts?.stderr ? { stderr: true } : {}),

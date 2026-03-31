@@ -17,7 +17,6 @@ import { green, blue, red, reset, dim, yellow, cyan } from "./tui.ts";
 import {
   loadSecrets,
   extractLinearId,
-  fetchTicket,
   type LinearTicket,
 } from "./linear.ts";
 
@@ -217,6 +216,38 @@ export async function enrichBranches(
   remoteUrl?: string,
   options?: { silent?: boolean },
 ): Promise<EnrichedBranch[]> {
+  // ── Daemon-first path: instant response from in-memory cache ──
+  if (!options?.silent) {
+    try {
+      const { daemonQuery } = await import("./daemon-client.ts");
+      const response = await daemonQuery("cache:read", {
+        branches: branches.map(b => b.branch),
+      });
+
+      if (response?.ok && response.data) {
+        const daemonCache = response.data as Record<string, CacheEntry>;
+        const allHit = branches.every(b => b.branch in daemonCache);
+
+        if (allHit) {
+          return branches.map(b => {
+            const entry = daemonCache[b.branch]!;
+            return {
+              path: b.path,
+              dirName: b.path.split("/").pop() || b.path,
+              branch: b.branch,
+              linearId: entry.linearId || null,
+              ticket: entry.ticket,
+              mr: entry.mr ?? null,
+            };
+          });
+        }
+      }
+    } catch {
+      // Daemon not available — fall through to disk cache / direct fetch
+    }
+  }
+
+  // ── Existing logic (disk cache + fetch) ──
   const secrets = loadSecrets();
   const willFetch = !!(secrets.linearApiKey || secrets.gitlabToken);
   const diskCache = readDiskCache();
@@ -236,8 +267,8 @@ export async function enrichBranches(
       };
     });
 
-    // Revalidate in background (silently)
-    fetchAndCache(branches, remoteUrl, diskCache, true).catch(() => {});
+    // Revalidate in a detached subprocess so the main process can exit immediately
+    spawnCacheRefresh(branches, remoteUrl);
 
     return cachedResults;
   }
@@ -261,7 +292,7 @@ async function fetchAndCache(
     process.stderr.write(`  ${cyan}⟳${reset} Fetching branch info…\r`);
   }
 
-  // ── Step 1: Fetch GitLab MR data via glance-sdk ──
+  // ── Step 1: Fetch GitLab MR data via glance-sdk (already batched) ──
   let mrMap = new Map<string, PullRequest | null>();
 
   if (secrets.gitlabToken && remoteUrl) {
@@ -277,41 +308,54 @@ async function fetchAndCache(
     }
   }
 
-  // ── Step 2: Enrich each branch with Linear ticket + MR info ──
-  const results = await Promise.all(
-    branches.map(async (b) => {
-      const dirName = b.path.split("/").pop() || b.path;
-      let linearId = extractLinearId(b.branch);
+  // ── Step 2: Collect Linear IDs and MR-derived IDs ──
+  const branchLinearIds: Array<{ branch: string; linearId: string | null }> = branches.map(b => {
+    let linearId = extractLinearId(b.branch);
 
-      // Get MR data
-      const pr = mrMap.get(b.branch) ?? null;
-      const mr = pr ? toMRInfo(pr) : null;
-
-      // Fall back to MR title for Linear ID
-      if (!linearId && pr) {
+    // Fall back to MR title for Linear ID
+    if (!linearId) {
+      const pr = mrMap.get(b.branch);
+      if (pr) {
         const titleMatch = /\b([A-Za-z]+-\d+)\b/.exec(pr.title);
         if (titleMatch) linearId = titleMatch[1]!.toUpperCase();
       }
+    }
 
-      // Fetch Linear ticket
-      let ticket: LinearTicket | null = null;
-      if (linearId && secrets.linearApiKey) {
-        try {
-          ticket = await fetchTicket(secrets.linearApiKey, linearId);
-        } catch { /* fetch failed */ }
-      }
+    return { branch: b.branch, linearId };
+  });
 
-      // Update cache
-      diskCache.entries[b.branch] = {
-        ticket,
-        linearId: linearId || "",
-        mr,
-        fetchedAt: Date.now(),
-      };
+  // ── Step 3: Batch-fetch all Linear tickets in ONE API call ──
+  const { fetchTicketsBatch } = await import("./linear.ts");
+  const uniqueIds = [...new Set(
+    branchLinearIds
+      .map(b => b.linearId)
+      .filter((id): id is string => !!id),
+  )];
 
-      return { path: b.path, dirName, branch: b.branch, linearId, ticket, mr };
-    }),
-  );
+  let ticketMap = new Map<string, LinearTicket>();
+  if (uniqueIds.length > 0 && secrets.linearApiKey) {
+    ticketMap = await fetchTicketsBatch(secrets.linearApiKey, uniqueIds);
+  }
+
+  // ── Step 4: Assemble results ──
+  const results: EnrichedBranch[] = branches.map((b, idx) => {
+    const dirName = b.path.split("/").pop() || b.path;
+    const { linearId } = branchLinearIds[idx]!;
+
+    const pr = mrMap.get(b.branch) ?? null;
+    const mr = pr ? toMRInfo(pr) : null;
+    const ticket = linearId ? (ticketMap.get(linearId.toUpperCase()) ?? null) : null;
+
+    // Update disk cache
+    diskCache.entries[b.branch] = {
+      ticket,
+      linearId: linearId || "",
+      mr,
+      fetchedAt: Date.now(),
+    };
+
+    return { path: b.path, dirName, branch: b.branch, linearId, ticket, mr };
+  });
 
   writeDiskCache(diskCache);
 
@@ -325,4 +369,34 @@ async function fetchAndCache(
   }
 
   return results;
+}
+
+// ─── Detached cache refresh ──────────────────────────────────────────────────
+
+function spawnCacheRefresh(
+  branches: Array<{ path: string; branch: string }>,
+  remoteUrl: string | undefined,
+): void {
+  try {
+    const scriptPath = new URL(import.meta.url).pathname;
+    const payload = JSON.stringify({
+      branches: branches.map(b => ({ path: b.path, branch: b.branch })),
+      remoteUrl,
+    });
+    const child = Bun.spawn(["bun", "run", scriptPath, payload], {
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    child.unref();
+  } catch { /* best-effort */ }
+}
+
+// ─── Standalone entry (called by detached subprocess) ────────────────────────
+
+if (import.meta.main) {
+  const data = JSON.parse(process.argv[2]!) as {
+    branches: Array<{ path: string; branch: string }>;
+    remoteUrl?: string;
+  };
+  const cache = readDiskCache();
+  await fetchAndCache(data.branches, data.remoteUrl, cache, true);
 }
