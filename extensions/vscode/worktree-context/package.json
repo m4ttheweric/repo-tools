@@ -1,0 +1,89 @@
+{
+  "name": "worktree-context",
+  "displayName": "Worktree Context",
+  "description": "Shows worktree name, branch, and Linear ticket info in the status bar",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/m4ttheweric/worktree-context"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "worktreeContext.setLinearApiKey",
+        "title": "Worktree Context: Set Linear API Key"
+      },
+      {
+        "command": "worktreeContext.setGitlabToken",
+        "title": "Worktree Context: Set GitLab Token"
+      },
+      {
+        "command": "worktreeContext.openTicket",
+        "title": "Worktree Context: Open Linear Ticket"
+      },
+      {
+        "command": "worktreeContext.showAllWorktrees",
+        "title": "Worktree Context: Show All Worktrees"
+      },
+      {
+        "command": "worktreeContext.switchBranch",
+        "title": "Worktree Context: Switch Branch"
+      },
+      {
+        "command": "worktreeContext.refresh",
+        "title": "Worktree Context: Refresh"
+      },
+      {
+        "command": "worktreeContext.resetWorkspacePref",
+        "title": "Worktree Context: Reset Workspace File Preference"
+      }
+    ],
+    "configuration": {
+      "title": "Worktree Context",
+      "properties": {
+        "worktreeContext.maxTitleLength": {
+          "type": "number",
+          "default": 50,
+          "description": "Maximum length for the Linear ticket title in the status bar (0 = no limit)"
+        },
+        "worktreeContext.statusBarPriority": {
+          "type": "number",
+          "default": 200,
+          "description": "Status bar priority (higher = further left)"
+        },
+        "worktreeContext.cacheTtlSeconds": {
+          "type": "number",
+          "default": 300,
+          "description": "How long to cache Linear ticket info (in seconds)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
+    "package": "pnpm build && pnpm exec vsce package --no-dependencies",
+    "install-local": "pnpm package && cursor --install-extension worktree-context-0.1.0.vsix"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@workforge/glance-sdk": "^0.5.1"
+  }
+}
