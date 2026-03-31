@@ -194,6 +194,10 @@ async function pickWithCurrentUntracked(
     options,
   });
 
+  if (!picked) {
+    process.exit(0);
+  }
+
   if (picked === OPEN_THIS) {
     updateRepoIndex(identity.repoName, identity.repoRoot);
     console.log(`  Now tracking ${identity.repoName}`);

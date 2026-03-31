@@ -136,7 +136,7 @@ async function showKillPicker(entries: PortEntry[]): Promise<void> {
     }),
   });
 
-  if (selectedPids.length === 0) {
+  if (!selectedPids || selectedPids.length === 0) {
     console.log(`\n  ${dim}nothing selected${reset}\n`);
     return;
   }

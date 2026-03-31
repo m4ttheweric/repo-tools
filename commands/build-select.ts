@@ -77,7 +77,7 @@ function timeAgo(ts: number): string {
 
 // ─── Interactive selector ────────────────────────────────────────────────────
 
-async function selectPackages(root: string, dataDir: string): Promise<string[]> {
+async function selectPackages(root: string, dataDir: string): Promise<string[] | null> {
   const packages = getPackages(root);
 
   if (packages.length === 0) {
@@ -130,7 +130,7 @@ export async function buildSelect(args: string[], ctx: CommandContext): Promise<
   const { repoRoot: root, dataDir } = ctx.identity!;
   const selectedPackages = await selectPackages(root, dataDir);
 
-  if (selectedPackages.length === 0) {
+  if (!selectedPackages || selectedPackages.length === 0) {
     console.log(`\n  ${yellow}nothing selected, exiting${reset}\n`);
     process.exit(0);
   }
