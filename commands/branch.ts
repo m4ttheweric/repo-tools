@@ -5,6 +5,7 @@
  *   switch  — Switch branches with enriched picker, stash handling, stash restore
  *   create  — Create branch from Linear ticket (existing or new)
  *
+ * Team configuration has moved to `rt settings linear team`.
  * Uses the rt daemon for instant cache reads when available.
  */
 
@@ -12,10 +13,7 @@ import { execSync } from "child_process";
 import { green, yellow, red, reset, bold, dim, cyan } from "../lib/tui.ts";
 import {
   loadSecrets,
-  extractLinearId,
-  fetchTeams,
   getTeamConfig,
-  saveTeamConfig,
   createIssue,
   fetchMyTodoTickets,
   type LinearTicket,
@@ -241,7 +239,7 @@ export async function createBranchFlow(args: string[]): Promise<void> {
   const secrets = loadSecrets();
   if (!secrets.linearApiKey) {
     console.log(`\n  ${yellow}Linear API key not configured${reset}`);
-    console.log(`  ${dim}run: rt setup-keys${reset}\n`);
+    console.log(`  ${dim}run: rt settings linear token${reset}\n`);
     return;
   }
 
@@ -299,11 +297,11 @@ async function createFromExistingTicket(apiKey: string): Promise<void> {
 
 async function createNewTicketAndBranch(apiKey: string): Promise<void> {
   // Ensure team is configured
-  let teamConfig = getTeamConfig();
+  const teamConfig = getTeamConfig();
   if (!teamConfig) {
     console.log(`\n  ${yellow}no default team configured${reset}`);
-    teamConfig = await pickAndSaveTeam(apiKey);
-    if (!teamConfig) return;
+    console.log(`  ${dim}run: rt settings linear team${reset}\n`);
+    return;
   }
 
   const { textInput } = await import("../lib/rt-render.tsx");
@@ -426,47 +424,4 @@ async function createBranchDirect(branchName: string, startPoint?: string): Prom
   }
 }
 
-// ─── Team configuration ──────────────────────────────────────────────────────
 
-export async function configureTeam(): Promise<void> {
-  const secrets = loadSecrets();
-  if (!secrets.linearApiKey) {
-    console.log(`\n  ${yellow}Linear API key not configured${reset}`);
-    console.log(`  ${dim}run: rt setup-keys${reset}\n`);
-    return;
-  }
-
-  const result = await pickAndSaveTeam(secrets.linearApiKey);
-  if (result) {
-    console.log(`\n  ${green}✓${reset} default team set to ${bold}${result.teamKey}${reset}\n`);
-  }
-}
-
-async function pickAndSaveTeam(apiKey: string): Promise<{ teamId: string; teamKey: string } | null> {
-  console.log(`\n  ${dim}fetching teams…${reset}`);
-  const teams = await fetchTeams(apiKey);
-
-  if (teams.length === 0) {
-    console.log(`  ${red}✗${reset} no teams found\n`);
-    return null;
-  }
-
-  const { filterableSelect } = await import("../lib/rt-render.tsx");
-
-  const selectedId = await filterableSelect({
-    message: "Select your team",
-    options: teams.map((t) => ({
-      value: t.id,
-      label: `${t.key}  ${t.name}`,
-      hint: "",
-    })),
-  });
-
-  if (!selectedId) return null;
-
-  const team = teams.find((t) => t.id === selectedId);
-  if (!team) return null;
-
-  saveTeamConfig(team.id, team.key);
-  return { teamId: team.id, teamKey: team.key };
-}
