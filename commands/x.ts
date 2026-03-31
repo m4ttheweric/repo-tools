@@ -495,7 +495,7 @@ async function wizard(repoRoot: string, dataDir: string): Promise<void> {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-export async function run(args: string[]): Promise<void> {
+export async function scriptRunner(args: string[]): Promise<void> {
 
   // Parse args: first non-flag arg is the script name
   let scriptName: string | undefined;
@@ -660,7 +660,7 @@ export async function run(args: string[]): Promise<void> {
 
   if (selected === "__edit__") {
     // Re-enter with "edit" as the subcommand
-    return run(["edit"]);
+    return scriptRunner(["edit"]);
   }
 
   if (selected === "__create__") {

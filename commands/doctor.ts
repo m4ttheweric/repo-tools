@@ -138,29 +138,13 @@ export async function run(_args: string[]): Promise<void> {
   } else {
     check(false, "pnpm", "not found");
   }
-
-  // ─── tsgo ──────────────────────────────────────────────────────────────────
-
-  const tsgoVersion = commandOutput("tsgo --version");
-  if (tsgoVersion) {
-    info("tsgo", tsgoVersion);
-  } else {
-    check(false, "tsgo", "not installed — npm install -g @typescript/native-preview");
-  }
-
+  
   const zellijVersion = commandOutput("zellij --version");
   if (zellijVersion) {
     info("zellij", zellijVersion);
   } else {
     check(false, "zellij", "not installed — brew install zellij (required for rt dev)");
-  }
-
-  const baselineVersion = commandOutput("tsc-baseline --version");
-  if (baselineVersion) {
-    info("tsc-baseline", baselineVersion);
-  } else {
-    check(false, "tsc-baseline", "not installed — npm install -g tsc-baseline");
-  }
+  }  
 
   console.log("");
 

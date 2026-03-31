@@ -28,6 +28,7 @@ const TREE: Record<string, CommandNode> = {
   x: {
     description: "Script runner (setup → commands → teardown)",
     module: "./commands/x.ts",
+    fn: "scriptRunner",
   },
 
   branch: {
