@@ -154,16 +154,41 @@ const TREE: Record<string, CommandNode> = {
     },
   },
 
-  uninstall: {
-    description: "Remove all rt data for this repo",
-    module: "./commands/uninstall.ts",
-    requiresRepo: true,
-  },
-
-  "setup-keys": {
-    description: "Configure Linear and GitLab API keys",
-    module: "./lib/linear.ts",
-    fn: "setupSecrets",
+  settings: {
+    description: "Configure tokens, team, and repo data",
+    subcommands: {
+      linear: {
+        description: "Linear API configuration",
+        subcommands: {
+          token: {
+            description: "Set Linear API key",
+            module: "./commands/settings.ts",
+            fn: "setLinearToken",
+          },
+          team: {
+            description: "Set default Linear team",
+            module: "./commands/settings.ts",
+            fn: "setLinearTeam",
+          },
+        },
+      },
+      gitlab: {
+        description: "GitLab API configuration",
+        subcommands: {
+          token: {
+            description: "Set GitLab personal access token",
+            module: "./commands/settings.ts",
+            fn: "setGitlabToken",
+          },
+        },
+      },
+      uninstall: {
+        description: "Remove all rt data for this repo",
+        module: "./commands/settings.ts",
+        fn: "uninstallRepo",
+        requiresRepo: true,
+      },
+    },
   },
 };
 
