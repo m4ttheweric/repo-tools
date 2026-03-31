@@ -60,7 +60,7 @@ const TREE: Record<string, CommandNode> = {
   hooks: {
     description: "Toggle git hooks on/off (husky)",
     module: "./commands/hooks.ts",
-    requiresRepo: true,
+    fn: "toggleHooks",
   },
 
   port: {
