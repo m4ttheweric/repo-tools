@@ -95,7 +95,6 @@ export async function dispatch(
     }
 
     console.clear();
-    renderHeader(breadcrumb);
 
     const selected = await showPicker(tree, breadcrumb);
     if (!selected) process.exit(0);
@@ -124,7 +123,6 @@ export async function dispatch(
     }
 
     console.clear();
-    renderHeader([...breadcrumb, resolvedName]);
 
     const selected = await showPicker(node.subcommands, [...breadcrumb, resolvedName]);
     if (!selected) return;
@@ -201,7 +199,7 @@ async function showPicker(
   const visible = Object.entries(tree).filter(([_, n]) => !n.hidden);
 
   const selected = await filterableSelect({
-    message: "Select a command",
+    message: breadcrumb.join(" › "),
     options: visible.map(([name, node]) => ({
       value: name,
       label: name,
