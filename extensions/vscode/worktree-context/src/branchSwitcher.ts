@@ -3,6 +3,7 @@ import { extractLinearId } from './branchParser';
 import { fetchTicketsBatch, fetchMyTodoTickets } from './linear';
 import { fetchMRInfoBatch } from './gitlab';
 import { branchCache, branchListCache } from './cache';
+import { daemonQuery } from './daemonClient';
 import { scheduleUpdate, openLinearUrl } from './statusBar';
 import {
   listAllBranches,
@@ -207,16 +208,50 @@ export async function showBranchSwitcher(context: vscode.ExtensionContext): Prom
     applyBranchList(freshBranches, freshWtNames);
     branchNames = branches.map((b) => b.name);
 
-    // 2. Check if ANY local branch has stale or missing cache
     const localBranchNames = branches.filter((b) => b.isLocal).map((b) => b.name);
+
+    // 2. Try daemon cache first — one request for all branches
+    let daemonHit = false;
+    try {
+      const response = await daemonQuery('cache:read', { branches: localBranchNames });
+      if (response?.ok && response.data) {
+        const daemonCache = response.data as Record<string, any>;
+        let hitCount = 0;
+        for (const branch of localBranchNames) {
+          const entry = daemonCache[branch];
+          if (entry) {
+            hitCount++;
+            branchCache.set(branch, {
+              ticket: entry.ticket ?? null,
+              mrUrl: entry.mr?.webUrl ?? null,
+              linearId: entry.linearId || null,
+              fetchedAt: entry.fetchedAt ?? now,
+            });
+          }
+        }
+        daemonHit = hitCount > 0;
+      }
+    } catch {
+      // Daemon not available — fall through to direct fetch
+    }
+
+    // If daemon provided data, re-render and stop — no direct API calls needed
+    if (daemonHit) {
+      if (!pickerDisposed) {
+        picker.items = buildAllItems();
+        picker.busy = false;
+      }
+      return;
+    }
+
+    // 3. Daemon unavailable — check if ANY local branch has stale or missing cache
     const hasStaleBranches = localBranchNames.some((branch) => {
       const linearId = extractLinearId(branch);
-      if (!linearId) return false; // no ticket to fetch — not stale
+      if (!linearId) return false;
       const existing = branchCache.get(branch);
       return !existing || (now - existing.fetchedAt) >= cacheTtl;
     });
 
-    // If everything is fresh, just re-render from cache and stop — no network, no spinner
     if (!hasStaleBranches) {
       if (!pickerDisposed) {
         picker.items = buildAllItems();
@@ -225,7 +260,7 @@ export async function showBranchSwitcher(context: vscode.ExtensionContext): Prom
       return;
     }
 
-    // 3. Some data is stale — show spinner and fetch
+    // 4. Some data is stale — show spinner and fetch directly
     if (!pickerDisposed) picker.busy = true;
 
     const fetchableBranches = localBranchNames.filter((b) => !SKIP_MR_BRANCHES.has(b));
@@ -236,13 +271,13 @@ export async function showBranchSwitcher(context: vscode.ExtensionContext): Prom
     ]);
     const remoteUrl = getRemoteUrl(repo);
 
-    // 4. Batch MR lookup — single API call for all local non-default branches
+    // 5. Batch MR lookup — single API call for all local non-default branches
     let mrResults = new Map<string, { webUrl: string | null; linearId: string | null }>();
     if (gitlabToken && remoteUrl && fetchableBranches.length) {
       mrResults = await fetchMRInfoBatch(gitlabToken, remoteUrl, fetchableBranches);
     }
 
-    // 5. Collect Linear IDs that actually need fetching (respect TTL)
+    // 6. Collect Linear IDs that actually need fetching (respect TTL)
     const staleLinearIds: string[] = [];
     const branchLinearMap = new Map<string, string>();
 
@@ -253,28 +288,26 @@ export async function showBranchSwitcher(context: vscode.ExtensionContext): Prom
 
       branchLinearMap.set(branch, linearId);
 
-      // Skip if cache is still fresh
       const existing = branchCache.get(branch);
       if (existing && (now - existing.fetchedAt) < cacheTtl) continue;
 
       staleLinearIds.push(linearId);
     }
 
-    // 6. ONE batch request to Linear instead of N individual calls
+    // 7. ONE batch request to Linear instead of N individual calls
     const uniqueIds = [...new Set(staleLinearIds)];
     let ticketMap = new Map<string, import('./linear').LinearTicket>();
     if (apiKey && uniqueIds.length) {
       ticketMap = await fetchTicketsBatch(apiKey, uniqueIds);
     }
 
-    // 7. Update cache for local branches
+    // 8. Update cache for local branches
     for (const branch of localBranchNames) {
       const mrInfo = mrResults.get(branch) ?? null;
       const linearId = branchLinearMap.get(branch) ?? null;
       const existing = branchCache.get(branch);
       const isFreshCache = existing && (now - existing.fetchedAt) < cacheTtl;
 
-      // Use fresh ticket if we fetched one, otherwise keep cached ticket if TTL is still valid
       const freshTicket = linearId ? ticketMap.get(linearId) ?? null : null;
       const ticket = freshTicket ?? (isFreshCache ? existing?.ticket ?? null : null);
 
@@ -286,7 +319,7 @@ export async function showBranchSwitcher(context: vscode.ExtensionContext): Prom
       });
     }
 
-    // 8. Single re-render with all data
+    // 9. Single re-render with all data
     if (!pickerDisposed) {
       picker.items = buildAllItems();
       picker.busy = false;
