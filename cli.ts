@@ -54,6 +54,7 @@ const TREE: Record<string, CommandNode> = {
   build: {
     description: "Interactive turbo build selector",
     module: "./commands/build-select.ts",
+    fn: "buildSelect",
   },
 
   hooks: {
