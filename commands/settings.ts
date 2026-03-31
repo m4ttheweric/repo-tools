@@ -250,6 +250,12 @@ export async function configureNotifications(): Promise<void> {
     initialValues: enabledKeys,
   });
 
+  // fzf returns [] on cancel (Ctrl+C / Esc) — don't save
+  if (selected.length === 0 && enabledKeys.length > 0) {
+    console.log(`\n  ${dim}cancelled — no changes${reset}\n`);
+    return;
+  }
+
   // Build new prefs: selected = enabled, unselected = disabled
   const newPrefs: Record<string, boolean> = {};
   for (const t of NOTIFICATION_TYPES) {
