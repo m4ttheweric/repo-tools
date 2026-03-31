@@ -189,45 +189,8 @@ export async function fetchTicketsBatch(
   return results;
 }
 
-// ─── Setup command ───────────────────────────────────────────────────────────
 
-/**
- * Interactive setup for Linear and GitLab API keys.
- */
-export async function setupSecrets(): Promise<void> {
-  const { textInput } = await import("./rt-render.tsx");
-  const secrets = loadSecrets();
 
-  console.log("\n  Configure API keys for rt\n");
-
-  try {
-    const linearKey = await textInput({
-      message: "Linear API key (lin_api_...)",
-      placeholder: secrets.linearApiKey ? "••• (already set, leave empty to keep)" : "lin_api_...",
-    });
-    saveSecret("linearApiKey", linearKey);
-    console.log("  ✓ Linear API key saved");
-  } catch {
-    if (secrets.linearApiKey) {
-      console.log("  Keeping existing Linear API key");
-    }
-  }
-
-  try {
-    const gitlabToken = await textInput({
-      message: "GitLab personal access token (for MR fallback)",
-      placeholder: secrets.gitlabToken ? "••• (already set, leave empty to keep)" : "glpat-...",
-    });
-    saveSecret("gitlabToken", gitlabToken);
-    console.log("  ✓ GitLab token saved");
-  } catch {
-    if (secrets.gitlabToken) {
-      console.log("  Keeping existing GitLab token");
-    }
-  }
-
-  console.log("\n  Keys stored in ~/.rt/secrets.json\n");
-}
 
 // ─── Team configuration ─────────────────────────────────────────────────────
 
