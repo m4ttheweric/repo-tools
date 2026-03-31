@@ -225,9 +225,6 @@ export async function filterableMultiselect(opts: {
     return multiselect(opts);
   }
 
-  const writer = opts.stderr ? process.stderr : process.stdout;
-  writer.write(`  \x1b[36m\x1b[1m❯ \x1b[0m\x1b[1m${opts.message}\x1b[0m\n\n`);
-
   const input = opts.options
     .map((o) => `${o.value}\t\x1b[1m${o.label}\x1b[22m${o.hint ? `  \x1b[2m${o.hint}\x1b[22m` : ""}`)
     .join("\n");
@@ -240,6 +237,7 @@ export async function filterableMultiselect(opts: {
     "--height=~60%",
     "--layout=reverse",
     "--border=rounded",
+    `--border-label= ${opts.message} `,
     "--prompt=filter: ",
     "--header=tab: toggle  enter: confirm  |: OR  !: exclude",
     "--no-mouse",
@@ -285,9 +283,6 @@ export async function filterableSelect(opts: {
     return select(opts);
   }
 
-  const writer = opts.stderr ? process.stderr : process.stdout;
-  writer.write(`  \x1b[36m\x1b[1m❯ \x1b[0m\x1b[1m${opts.message}\x1b[0m\n\n`);
-
   const input = opts.options
     .map((o) => `${o.value}\t\x1b[1m${o.label}\x1b[22m${o.hint ? `  \x1b[2m${o.hint}\x1b[22m` : ""}`)
     .join("\n");
@@ -299,6 +294,7 @@ export async function filterableSelect(opts: {
     "--height=~60%",
     "--layout=reverse",
     "--border=rounded",
+    `--border-label= ${opts.message} `,
     "--prompt=filter: ",
     "--header=enter: select  |: OR  !: exclude",
     "--no-mouse",
