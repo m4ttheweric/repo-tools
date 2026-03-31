@@ -67,7 +67,7 @@ const TREE: Record<string, CommandNode> = {
   },
 
   port: {
-    description: "Scan known ports, kill orphaned processes",
+    description: "Port scanner + killer (zero-config, daemon-powered)",
     module: "./commands/port.ts",
     fn: "portScanner",
   },
