@@ -10,6 +10,7 @@
  *  1. Watch .git/config for known repos → re-apply core.hooksPath if clobbered
  *  2. Proactively refresh branch/MR/Linear cache on a timer
  *  3. Serve cached data instantly to CLI commands via socket IPC
+ *  4. Zero-config port discovery via lsof + CWD matching
  */
 
 import {
@@ -28,6 +29,7 @@ import {
 
 const MR_REFRESH_INTERVAL_MS = 5 * 60 * 1000;      // 5 minutes
 const LINEAR_REFRESH_INTERVAL_MS = 30 * 60 * 1000;  // 30 minutes
+const PORT_SCAN_INTERVAL_MS = 30 * 1000;             // 30 seconds
 const LOG_MAX_BYTES = 10 * 1024 * 1024;              // 10MB
 const REPOS_JSON_PATH = join(RT_DIR, "repos.json");
 const CACHE_PATH = join(RT_DIR, "branch-cache.json");
@@ -45,7 +47,28 @@ interface DiskCache {
   entries: Record<string, CacheEntry>;
 }
 
+// ─── Port discovery types ────────────────────────────────────────────────────
+
+export interface PortEntry {
+  port: number;
+  pid: number;
+  command: string;
+  cwd: string;
+  /** Matched repo name (or null if unmatched) */
+  repo: string | null;
+  /** Matched worktree path (or null) */
+  worktree: string | null;
+  /** Worktree branch (or null) */
+  branch: string | null;
+  /** CWD relative to the worktree root (e.g. "apps/backend") */
+  relativeDir: string;
+  /** Process uptime string from ps */
+  uptime: string;
+}
+
 let cache: DiskCache = { entries: {} };
+let portCache: PortEntry[] = [];
+let portCacheUpdatedAt = 0;
 const watchedConfigs = new Map<string, FSWatcher>();
 const startedAt = Date.now();
 
@@ -194,6 +217,169 @@ function refreshWatchedRepos(): void {
   for (const [repoName, repoPath] of Object.entries(repos)) {
     if (!existsSync(repoPath)) continue;
     startWatchingRepo(repoName, repoPath);
+  }
+}
+
+// ─── Port discovery ──────────────────────────────────────────────────────────
+
+function getProcessCwd(pid: number): string | null {
+  try {
+    const output = execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null`, {
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 3000,
+    });
+    // Output format: "p<pid>\nn<path>"
+    for (const line of output.split("\n")) {
+      if (line.startsWith("n") && line.length > 1 && line[1] === "/") {
+        return line.slice(1);
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function getProcessUptime(pid: number): string {
+  try {
+    return execSync(`ps -p ${pid} -o etime= 2>/dev/null`, {
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 2000,
+    }).trim() || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function matchCwdToRepo(
+  cwd: string,
+  repos: Record<string, string>,
+  worktreeMap: Map<string, { repo: string; branch: string }>,
+): { repo: string | null; worktree: string | null; branch: string | null; relativeDir: string } {
+  // Try worktree match first (more specific)
+  for (const [wtPath, info] of worktreeMap) {
+    if (cwd === wtPath || cwd.startsWith(wtPath + "/")) {
+      const relativeDir = cwd === wtPath ? "." : cwd.slice(wtPath.length + 1);
+      return { repo: info.repo, worktree: wtPath, branch: info.branch, relativeDir };
+    }
+  }
+
+  // Fall back to repo root match
+  for (const [repoName, repoPath] of Object.entries(repos)) {
+    if (cwd === repoPath || cwd.startsWith(repoPath + "/")) {
+      const relativeDir = cwd === repoPath ? "." : cwd.slice(repoPath.length + 1);
+      return { repo: repoName, worktree: repoPath, branch: null, relativeDir };
+    }
+  }
+
+  return { repo: null, worktree: null, branch: null, relativeDir: cwd };
+}
+
+function scanListeningPorts(): PortEntry[] {
+  const repos = loadRepoIndex();
+
+  // Build worktree map: path → { repo, branch }
+  const worktreeMap = new Map<string, { repo: string; branch: string }>();
+  for (const [repoName, repoPath] of Object.entries(repos)) {
+    if (!existsSync(repoPath)) continue;
+    try {
+      const output = execSync("git worktree list --porcelain", {
+        cwd: repoPath, encoding: "utf8", stdio: "pipe", timeout: 5000,
+      });
+      let currentPath = "";
+      let currentBranch = "";
+      for (const line of output.split("\n")) {
+        if (line.startsWith("worktree ")) {
+          if (currentPath && currentBranch) {
+            worktreeMap.set(currentPath, { repo: repoName, branch: currentBranch });
+          }
+          currentPath = line.replace("worktree ", "").trim();
+          currentBranch = "";
+        } else if (line.startsWith("branch ")) {
+          currentBranch = line.replace("branch refs/heads/", "").trim();
+        }
+      }
+      if (currentPath && currentBranch) {
+        worktreeMap.set(currentPath, { repo: repoName, branch: currentBranch });
+      }
+    } catch { /* skip repos that error */ }
+  }
+
+  // Get all listening TCP ports
+  let lsofOutput: string;
+  try {
+    lsofOutput = execSync("lsof -iTCP -sTCP:LISTEN -P -n 2>/dev/null", {
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 10000,
+    });
+  } catch {
+    return [];
+  }
+
+  const lines = lsofOutput.trim().split("\n").filter(Boolean);
+  if (lines.length <= 1) return []; // header only
+
+  // Deduplicate by PID+port
+  const seen = new Set<string>();
+  const entries: PortEntry[] = [];
+
+  for (const line of lines.slice(1)) {
+    const parts = line.split(/\s+/);
+    const command = parts[0] || "unknown";
+    const pid = parseInt(parts[1] || "0", 10);
+    if (!pid) continue;
+
+    // Parse port from the NAME column (last column, e.g. "*:3000" or "127.0.0.1:4000")
+    const nameCol = parts[parts.length - 1] || "";
+    const portMatch = nameCol.match(/:([0-9]+)$/);
+    if (!portMatch) continue;
+    const port = parseInt(portMatch[1]!, 10);
+
+    const key = `${pid}:${port}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    // Resolve CWD and match to repo
+    const cwd = getProcessCwd(pid);
+    if (!cwd) continue;
+
+    const match = matchCwdToRepo(cwd, repos, worktreeMap);
+    // Only include ports that match a known repo
+    if (!match.repo) continue;
+
+    const uptime = getProcessUptime(pid);
+
+    entries.push({
+      port,
+      pid,
+      command,
+      cwd,
+      repo: match.repo,
+      worktree: match.worktree,
+      branch: match.branch,
+      relativeDir: match.relativeDir,
+      uptime,
+    });
+  }
+
+  return entries.sort((a, b) => {
+    // Sort by repo, then worktree, then port
+    if (a.repo !== b.repo) return (a.repo || "").localeCompare(b.repo || "");
+    if (a.worktree !== b.worktree) return (a.worktree || "").localeCompare(b.worktree || "");
+    return a.port - b.port;
+  });
+}
+
+function refreshPortCache(): void {
+  try {
+    portCache = scanListeningPorts();
+    portCacheUpdatedAt = Date.now();
+    log(`ports: scanned ${portCache.length} listening ports matching known repos`);
+  } catch (err) {
+    log(`ports: scan failed: ${err}`);
   }
 }
 
@@ -408,6 +594,35 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
       }
     }
 
+    case "ports": {
+      // Return cached port data, optionally filtered by repo
+      const repoFilter = payload?.repo as string | undefined;
+      let ports = portCache;
+      if (repoFilter) {
+        ports = ports.filter(p => p.repo === repoFilter);
+      }
+
+      // Group by repo → worktree for structured display
+      const grouped: Record<string, Record<string, PortEntry[]>> = {};
+      for (const entry of ports) {
+        const repoKey = entry.repo || "unknown";
+        const wtKey = entry.worktree || "unknown";
+        if (!grouped[repoKey]) grouped[repoKey] = {};
+        if (!grouped[repoKey]![wtKey]) grouped[repoKey]![wtKey] = [];
+        grouped[repoKey]![wtKey]!.push(entry);
+      }
+
+      return {
+        ok: true,
+        data: {
+          ports,
+          grouped,
+          updatedAt: portCacheUpdatedAt,
+          age: portCacheUpdatedAt ? Date.now() - portCacheUpdatedAt : null,
+        },
+      };
+    }
+
     case "status": {
       return {
         ok: true,
@@ -416,6 +631,8 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
           uptime: Date.now() - startedAt,
           watchedRepos: watchedConfigs.size,
           cacheEntries: Object.keys(cache.entries).length,
+          portsCached: portCache.length,
+          portCacheAge: portCacheUpdatedAt ? Date.now() - portCacheUpdatedAt : null,
         },
       };
     }
@@ -513,6 +730,10 @@ function main(): void {
   // Schedule periodic cache refresh
   setTimeout(() => refreshCache(), 5000); // initial refresh after 5s
   setInterval(() => refreshCache(), MR_REFRESH_INTERVAL_MS);
+
+  // Schedule port scanning (lightweight — every 30s)
+  setTimeout(() => refreshPortCache(), 2000); // initial scan after 2s
+  setInterval(() => refreshPortCache(), PORT_SCAN_INTERVAL_MS);
 
   // Graceful shutdown
   process.on("SIGTERM", () => { cleanup(); process.exit(0); });
