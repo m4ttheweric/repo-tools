@@ -212,7 +212,7 @@ async function pickWithCurrentUntracked(
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-export async function run(args: string[]): Promise<void> {
+export async function openInEditor(args: string[]): Promise<void> {
   if (!process.stdin.isTTY) {
     console.log(`\n  ${yellow}rt code must be run interactively${reset}\n`);
     process.exit(1);

@@ -108,11 +108,13 @@ const TREE: Record<string, CommandNode> = {
   cd: {
     description: "Worktree/repo directory picker",
     module: "./commands/cd.ts",
+    fn: "worktreePicker",
   },
 
   code: {
     description: "Open a worktree in your preferred editor",
     module: "./commands/code.ts",
+    fn: "openInEditor",
   },
 
   daemon: {
