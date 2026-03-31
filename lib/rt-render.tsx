@@ -229,6 +229,24 @@ export async function filterableMultiselect(opts: {
     .map((o) => `${o.value}\t\x1b[1m${o.label}\x1b[22m${o.hint ? `  \x1b[2m${o.hint}\x1b[22m` : ""}`)
     .join("\n");
 
+  // Build start binding to pre-select initialValues
+  // Strategy: select-all, then deselect items NOT in initialValues
+  const initialSet = new Set(opts.initialValues ?? []);
+  const bindings: string[] = [];
+
+  if (opts.initialValues !== undefined) {
+    const actions: string[] = ["toggle-all"];
+    // Deselect items that should NOT be selected
+    for (let i = 0; i < opts.options.length; i++) {
+      if (!initialSet.has(opts.options[i]!.value)) {
+        actions.push(`pos(${i + 1})+toggle`);
+      }
+    }
+    // Reset cursor to top
+    actions.push("pos(1)");
+    bindings.push(`--bind=start:${actions.join("+")}`);
+  }
+
   const result = spawnSync("fzf", [
     "--multi",
     "--ansi",
@@ -245,6 +263,7 @@ export async function filterableMultiselect(opts: {
     "--preview=printf '%s\\n' {+2..}",
     "--preview-window=up,4,wrap,border-bottom",
     "--preview-label= selected ",
+    ...bindings,
   ], {
     input,
     stdio: ["pipe", "pipe", "inherit"],
