@@ -66,11 +66,13 @@ const TREE: Record<string, CommandNode> = {
   port: {
     description: "Scan known ports, kill orphaned processes",
     module: "./commands/port.ts",
+    fn: "portScanner",
   },
 
   doctor: {
     description: "Environment health check",
     module: "./commands/doctor.ts",
+    fn: "runDoctor",
   },
 
   open: {
