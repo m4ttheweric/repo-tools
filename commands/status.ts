@@ -222,7 +222,7 @@ function renderDashboard(data: StatusData): string {
       const stateIcon = STATE_ICONS[mr.state] || "";
       const branchDisplay = branch.length > 50 ? branch.slice(0, 49) + "…" : branch;
 
-      // Line 1: branch + MR state
+      // Line 1: branch + ticket title (most useful for identification)
       const segments: string[] = [];
       segments.push(`  ${stateIcon} ${bold}${branchDisplay}${reset}`);
 
@@ -235,9 +235,17 @@ function renderDashboard(data: StatusData): string {
         segments.push(`${green}ready${reset}`);
       }
 
+      // Ticket title inline with branch
+      if (entry.ticket?.title) {
+        const title = entry.ticket.title.length > 50
+          ? entry.ticket.title.slice(0, 49) + "…"
+          : entry.ticket.title;
+        segments.push(`${dim}${title}${reset}`);
+      }
+
       lines.push(segments.join("  "));
 
-      // Line 2: pipeline, reviews, blockers
+      // Line 2: pipeline, reviews, blockers, ticket ID + status
       const details: string[] = [];
       const pipelineStr = renderPipeline(mr);
       if (pipelineStr) details.push(pipelineStr);
@@ -246,7 +254,7 @@ function renderDashboard(data: StatusData): string {
       const blockerStr = renderBlockers(mr);
       if (blockerStr) details.push(blockerStr);
 
-      // Ticket
+      // Ticket identifier + Linear status
       if (entry.ticket) {
         let ticketStr = `${dim}${entry.ticket.identifier}${reset}`;
         if (entry.ticket.stateName) {
