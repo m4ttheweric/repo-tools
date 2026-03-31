@@ -221,7 +221,7 @@ export async function uninstallRepo(args: string[], ctx: CommandContext): Promis
 
 export async function configureNotifications(): Promise<void> {
   const { execSync } = await import("child_process");
-  const { multiselect } = await import("../lib/rt-render.tsx");
+  const { filterableMultiselect } = await import("../lib/rt-render.tsx");
 
   // Check for terminal-notifier
   let hasTN = false;
@@ -244,8 +244,8 @@ export async function configureNotifications(): Promise<void> {
     .filter((t) => prefs[t.key] !== false)
     .map((t) => t.key);
 
-  const selected = await multiselect({
-    message: "Toggle notifications (space to toggle, enter to save)",
+  const selected = await filterableMultiselect({
+    message: "Toggle notifications (tab to toggle, enter to save)",
     options,
     initialValues: enabledKeys,
   });
