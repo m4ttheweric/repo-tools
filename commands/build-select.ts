@@ -123,7 +123,7 @@ async function selectPackages(root: string, dataDir: string): Promise<string[]> 
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-export async function run(args: string[]): Promise<void> {
+export async function buildSelect(args: string[]): Promise<void> {
   if (!process.stdin.isTTY) {
     console.log(`\n  ${yellow}must be run in an interactive terminal${reset}\n`);
     process.exit(1);
