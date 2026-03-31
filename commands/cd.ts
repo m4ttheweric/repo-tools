@@ -110,7 +110,7 @@ async function ensureShellFunction(): Promise<void> {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-export async function run(_args: string[]): Promise<void> {
+export async function worktreePicker(_args: string[]): Promise<void> {
   if (!process.stdin.isTTY) {
     console.error("rt cd must be run interactively");
     process.exit(1);
