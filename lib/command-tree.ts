@@ -5,7 +5,8 @@
  *  - Screen clearing between steps
  *  - Breadcrumb headers (rt › branch › switch)
  *  - fzf pickers for subcommand navigation
- *  - Repo/worktree context requirements
+ *  - Context resolution (repo/worktree identity)
+ *  - TTY guards
  *  - Lazy module loading for fast startup
  *
  * Direct args still work: `rt branch switch` traverses silently.
@@ -13,9 +14,15 @@
  */
 
 import { bold, cyan, dim, reset } from "./tui.ts";
-import { resolve, dirname } from "path";
+import { resolve } from "path";
+import type { RepoIdentity } from "./repo.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
+
+export interface CommandContext {
+  /** Resolved identity — present when the node declares context. */
+  identity?: RepoIdentity;
+}
 
 export interface CommandNode {
   description: string;
@@ -30,10 +37,20 @@ export interface CommandNode {
   fn?: string;
 
   /** Inline handler — overrides module/fn. */
-  handler?: (args: string[]) => Promise<void>;
+  handler?: (args: string[], ctx: CommandContext) => Promise<void>;
 
-  /** Require repo context. Calls requireIdentity() before handler. */
-  requiresRepo?: boolean;
+  /**
+   * Declare what context this command needs. Dispatcher resolves it
+   * and injects it into the handler via CommandContext.
+   *
+   * - "repo"     → repo-level identity (repo picker only, no worktree step)
+   * - "worktree" → worktree-level identity (repo → worktree picker if needed)
+   * - absent     → no identity resolution
+   */
+  context?: "repo" | "worktree";
+
+  /** Guard: exit early with a message if not in an interactive terminal. */
+  requiresTTY?: boolean;
 
   /** Name aliases (e.g. ["sw"] for switch). */
   aliases?: string[];
@@ -119,12 +136,32 @@ export async function dispatch(
   console.clear();
   renderHeader([...breadcrumb, resolvedName]);
 
-  if (node.requiresRepo) {
+  // TTY guard
+  if (node.requiresTTY && !process.stdin.isTTY) {
+    const { yellow } = await import("./tui.ts");
+    const label = breadcrumb.slice(1).concat(resolvedName).join(" ");
+    console.log(`\n  ${yellow}rt ${label} requires an interactive terminal${reset}\n`);
+    process.exit(1);
+  }
+
+  // Context resolution
+  const ctx: CommandContext = {};
+  const commandLabel = breadcrumb.slice(1).concat(resolvedName).join(" ");
+
+  if (node.context === "worktree") {
     const cwdBefore = process.cwd();
     const { requireIdentity } = await import("./repo.ts");
-    await requireIdentity(breadcrumb.slice(1).concat(resolvedName).join(" "));
+    ctx.identity = await requireIdentity(commandLabel);
 
-    // Only re-clear if a picker was shown (cwd changed)
+    if (process.cwd() !== cwdBefore) {
+      console.clear();
+      renderHeader([...breadcrumb, resolvedName]);
+    }
+  } else if (node.context === "repo") {
+    const cwdBefore = process.cwd();
+    const { requireRepoIdentity } = await import("./repo.ts");
+    ctx.identity = await requireRepoIdentity(commandLabel);
+
     if (process.cwd() !== cwdBefore) {
       console.clear();
       renderHeader([...breadcrumb, resolvedName]);
@@ -132,7 +169,7 @@ export async function dispatch(
   }
 
   const handler = await resolveHandler(node, baseDir);
-  await handler(rest);
+  await handler(rest, ctx);
 }
 
 // ─── Rendering ───────────────────────────────────────────────────────────────
@@ -199,7 +236,7 @@ function resolveNodeName(tree: Record<string, CommandNode>, name: string): strin
   return name;
 }
 
-async function resolveHandler(node: CommandNode, baseDir?: string): Promise<(args: string[]) => Promise<void>> {
+async function resolveHandler(node: CommandNode, baseDir?: string): Promise<(args: string[], ctx: CommandContext) => Promise<void>> {
   if (node.handler) return node.handler;
 
   if (node.module) {

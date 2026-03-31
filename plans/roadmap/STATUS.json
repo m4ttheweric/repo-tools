@@ -36,17 +36,25 @@
       "id": 1,
       "name": "Leaf Command Migration",
       "file": "phase-1.md",
-      "status": "IN_PROGRESS",
+      "status": "DONE",
       "agent": "claude-opus-4-20250514",
       "started": "2026-03-31T14:21:24.724Z",
-      "completed": null,
+      "completed": "2026-03-31T14:25:11.948Z",
       "depends_on": [
         0
       ],
       "outputs": [
         "All command files export named handler functions",
         "cli.ts tree is the sole source of truth for command structure"
-      ]
+      ],
+      "context_snapshot": {
+        "commits": 5,
+        "fn_strategy": "all leaf nodes use explicit fn in cli.ts",
+        "git_status": "clean",
+        "migrated_commands": "x, build-select, hooks, cd, code, doctor, port",
+        "run_exports_remaining": 0
+      },
+      "notes": "All 5 steps completed. Also migrated port.ts which was missed in Phase 0 (still had run() export). Hooks command had requiresRepo removed since it manages its own repo-level identity picker. Console.clear() calls in x.ts and branch.ts were kept — they're internal wizard preview refreshes, not boilerplate entry clears. requireIdentity() calls in build-select.ts, settings.ts, and x.ts were kept — those commands manage their own identity resolution and don't have requiresRepo in the tree."
     },
     {
       "id": 2,
