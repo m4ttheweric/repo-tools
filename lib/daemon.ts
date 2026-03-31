@@ -332,9 +332,8 @@ function scanListeningPorts(): PortEntry[] {
     const pid = parseInt(parts[1] || "0", 10);
     if (!pid) continue;
 
-    // Parse port from the NAME column (last column, e.g. "*:3000" or "127.0.0.1:4000")
-    const nameCol = parts[parts.length - 1] || "";
-    const portMatch = nameCol.match(/:([0-9]+)$/);
+    // Parse port — handles both IPv4 (*:3000) and IPv6 ([::1]:4001 (LISTEN))
+    const portMatch = line.match(/:(\d+)\s+\(LISTEN\)/);
     if (!portMatch) continue;
     const port = parseInt(portMatch[1]!, 10);
 
