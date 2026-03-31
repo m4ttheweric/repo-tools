@@ -1,10 +1,12 @@
-#!/usr/bin/env bun
-
 /**
- * rt kill-port — Kill orphaned processes on known ports.
+ * rt port — Repo-aware port management.
+ *
+ * Subcommands:
+ *   scan  — Show which known ports have active processes
+ *   kill  — Interactive kill picker, or `rt port kill 8080` ad-hoc mode
  *
  * Scans ports defined in ~/.rt/<repo>/config.json with a small range
- * to catch auto-bumped instances. Interactive TUI for selecting processes to kill.
+ * to catch auto-bumped instances.
  */
 
 import { execSync } from "child_process";
@@ -59,62 +61,38 @@ function timeRunning(pid: string): string {
   }
 }
 
-// ─── Entry ───────────────────────────────────────────────────────────────────
+// ─── Shared: discover ports and processes ────────────────────────────────────
 
-export async function run(args: string[]): Promise<void> {
-  // Ad-hoc mode: rt kill-port 8080
-  if (args.length > 0 && /^\d+$/.test(args[0] || "")) {
-    const port = parseInt(args[0]!, 10);
-    const procs = getProcessesOnPort(port);
-    if (procs.length === 0) {
-      console.log(`\n  ${dim}no processes on port ${port}${reset}\n`);
-      return;
-    }
-    for (const proc of procs) {
-      try {
-        execSync(`kill -9 ${proc.pid}`);
-        console.log(`  ${green}killed${reset} ${proc.command} (pid ${proc.pid}) on :${port}`);
-      } catch {
-        console.log(`  ${red}failed to kill${reset} pid ${proc.pid}`);
-      }
-    }
-    return;
-  }
-
+async function discoverPorts(): Promise<{
+  repoName: string;
+  ports: Record<string, number>;
+}> {
   const identity = getRepoIdentity();
-  let repoName: string;
-  let ports: Record<string, number>;
 
   if (identity) {
-    repoName = identity.repoName;
     const config = loadRepoConfig(identity.dataDir);
-    ports = config.ports;
-  } else {
-    repoName = "all repos";
-    ports = {};
-    const { getKnownRepos } = await import("../lib/repo.ts");
-    const repos = getKnownRepos();
-    for (const repo of repos) {
-      const config = loadRepoConfig(repo.dataDir);
-      for (const [name, port] of Object.entries(config.ports)) {
-        ports[`${repo.repoName}/${name}`] = port;
-      }
+    return { repoName: identity.repoName, ports: config.ports };
+  }
+
+  // No repo context — scan all registered repos
+  const ports: Record<string, number> = {};
+  const { getKnownRepos } = await import("../lib/repo.ts");
+  const repos = getKnownRepos();
+  for (const repo of repos) {
+    const config = loadRepoConfig(repo.dataDir);
+    for (const [name, port] of Object.entries(config.ports)) {
+      ports[`${repo.repoName}/${name}`] = port;
     }
   }
 
-  if (Object.keys(ports).length === 0) {
-    console.log(`\n  ${yellow}no known ports configured${reset}`);
-    if (identity) {
-      console.log(`  ${dim}add ports to ~/.rt/${identity.repoName}/config.json${reset}`);
-    } else {
-      console.log(`  ${dim}run rt from inside a git repo first to register it${reset}`);
-    }
-    console.log("");
-    process.exit(1);
-  }
+  return { repoName: "all repos", ports };
+}
 
-  console.log(`\n  ${dim}scanning known ports...${reset}`);
-
+function scanAllPorts(ports: Record<string, number>): {
+  label: string;
+  proc: ProcessInfo;
+  bumped: boolean;
+}[] {
   const flatProcesses: { label: string; proc: ProcessInfo; bumped: boolean }[] = [];
 
   for (const [name, basePort] of Object.entries(ports)) {
@@ -137,6 +115,84 @@ export async function run(args: string[]): Promise<void> {
     }
   }
 
+  return flatProcesses;
+}
+
+// ─── rt port scan ────────────────────────────────────────────────────────────
+
+export async function scanPorts(): Promise<void> {
+  const identity = getRepoIdentity();
+  const { repoName, ports } = await discoverPorts();
+
+  if (Object.keys(ports).length === 0) {
+    console.log(`\n  ${yellow}no known ports configured${reset}`);
+    if (identity) {
+      console.log(`  ${dim}add ports to ~/.rt/${identity.repoName}/config.json${reset}`);
+    } else {
+      console.log(`  ${dim}run rt from inside a git repo first to register it${reset}`);
+    }
+    console.log("");
+    return;
+  }
+
+  console.log(`\n  ${bold}${cyan}rt port scan${reset}  ${dim}(${repoName})${reset}\n`);
+  console.log(`  ${dim}scanning known ports...${reset}`);
+
+  const flatProcesses = scanAllPorts(ports);
+
+  if (flatProcesses.length === 0) {
+    console.log(`\n  ${green}${bold}✓ all ports clear${reset}\n`);
+    return;
+  }
+
+  for (const { label, proc, bumped } of flatProcesses) {
+    const portStr = bumped ? `[bumped] :${proc.port}` : `:${proc.port}`;
+    const elapsed = timeRunning(proc.pid);
+    console.log(`  ${label}  ${portStr}  ${proc.command} (pid ${proc.pid})  ${dim}${elapsed}${reset}`);
+  }
+  console.log("");
+}
+
+// ─── rt port kill ────────────────────────────────────────────────────────────
+
+export async function killPorts(args: string[]): Promise<void> {
+  // Ad-hoc mode: rt port kill 8080
+  if (args.length > 0 && /^\d+$/.test(args[0] || "")) {
+    const port = parseInt(args[0]!, 10);
+    const procs = getProcessesOnPort(port);
+    if (procs.length === 0) {
+      console.log(`\n  ${dim}no processes on port ${port}${reset}\n`);
+      return;
+    }
+    for (const proc of procs) {
+      try {
+        execSync(`kill -9 ${proc.pid}`);
+        console.log(`  ${green}killed${reset} ${proc.command} (pid ${proc.pid}) on :${port}`);
+      } catch {
+        console.log(`  ${red}failed to kill${reset} pid ${proc.pid}`);
+      }
+    }
+    return;
+  }
+
+  const identity = getRepoIdentity();
+  const { repoName, ports } = await discoverPorts();
+
+  if (Object.keys(ports).length === 0) {
+    console.log(`\n  ${yellow}no known ports configured${reset}`);
+    if (identity) {
+      console.log(`  ${dim}add ports to ~/.rt/${identity.repoName}/config.json${reset}`);
+    } else {
+      console.log(`  ${dim}run rt from inside a git repo first to register it${reset}`);
+    }
+    console.log("");
+    process.exit(1);
+  }
+
+  console.log(`\n  ${dim}scanning known ports...${reset}`);
+
+  const flatProcesses = scanAllPorts(ports);
+
   if (flatProcesses.length === 0) {
     console.log(`\n  ${green}${bold}✓ all ports clear${reset}\n`);
     return;
@@ -149,7 +205,7 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
 
-  console.log(`\n  ${bold}${cyan}rt kill-port${reset}  ${dim}(${repoName})${reset}\n`);
+  console.log(`\n  ${bold}${cyan}rt port kill${reset}  ${dim}(${repoName})${reset}\n`);
 
   const { filterableMultiselect } = await import("../lib/rt-render.tsx");
 
