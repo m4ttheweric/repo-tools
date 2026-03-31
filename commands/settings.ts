@@ -245,7 +245,7 @@ export async function configureNotifications(): Promise<void> {
     .map((t) => t.key);
 
   const selected = await filterableMultiselect({
-    message: "Toggle notifications (tab to toggle, enter to save)",
+    message: "Notifications",
     options,
     initialValues: enabledKeys,
   });
