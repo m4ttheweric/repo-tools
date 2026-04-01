@@ -289,8 +289,8 @@ async function refreshCache(): Promise<void> {
             }).trim();
           } catch { /* no remote */ }
 
-          // Fetch fresh data (silent mode — no spinner)
-          await enrichBranches(branches, remoteUrl, { silent: true });
+          // Fetch fresh data (silent + forceRefresh: always hit API, never return stale cache)
+          await enrichBranches(branches, remoteUrl, { silent: true, forceRefresh: true });
         }
       } catch {
         // Skip repos that error

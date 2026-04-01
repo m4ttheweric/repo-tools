@@ -51,11 +51,14 @@ interface StatusData {
 async function fetchStatusData(): Promise<StatusData> {
   const { daemonQuery } = await import("../lib/daemon-client.ts");
 
-  // Fetch branch cache and ports in parallel
+  // Fetch branch cache and ports in parallel, and kick off a background refresh
   const [cacheResult, portResult] = await Promise.all([
     daemonQuery("cache:read"),
     daemonQuery("ports"),
   ]);
+
+  // Fire-and-forget: tell daemon to refresh so data is fresh next time
+  daemonQuery("cache:refresh").catch(() => {});
 
   let branches: Record<string, CacheEntry> = {};
   let ports: PortEntry[] = [];
