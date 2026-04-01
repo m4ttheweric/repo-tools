@@ -182,7 +182,7 @@ export function formatBranchLabel(eb: EnrichedBranch): string {
 export async function enrichBranches(
   branches: Array<{ path: string; branch: string }>,
   remoteUrl?: string,
-  options?: { silent?: boolean },
+  options?: { silent?: boolean; forceRefresh?: boolean },
 ): Promise<EnrichedBranch[]> {
   // ── Daemon-first path: instant response from in-memory cache ──
   if (!options?.silent) {
@@ -220,7 +220,7 @@ export async function enrichBranches(
   const willFetch = !!(secrets.linearApiKey || secrets.gitlabToken);
   const diskCache = readDiskCache();
 
-  const allCached = willFetch && branches.every((b) => b.branch in diskCache.entries);
+  const allCached = !options?.forceRefresh && willFetch && branches.every((b) => b.branch in diskCache.entries);
 
   if (allCached) {
     const cachedResults = branches.map((b) => {
