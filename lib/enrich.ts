@@ -342,11 +342,8 @@ async function fetchAndCache(
 // ─── Daemon-optimized bulk refresh ───────────────────────────────────────────
 
 /**
- * Optimized refresh for the daemon: fetches ALL open MRs in 3 GraphQL calls
- * (authored + reviewing + assigned) instead of N REST calls per branch.
- *
- * Matches MRs to local branches by sourceBranch, then batch-fetches Linear
- * tickets for any branch with a Linear ID (from branch name or MR title).
+ * Optimized refresh for the daemon: fetches MRs for all branches in a single
+ * GraphQL query using the sourceBranches filter, then batch-fetches Linear tickets.
  *
  * @param branches - local branches to update in the cache
  * @param remoteUrl - git remote origin URL (for GitLab host/project resolution)
@@ -359,18 +356,18 @@ export async function refreshAllMRs(
   const diskCache = readDiskCache();
   const now = Date.now();
 
-  // ── Step 1: Fetch ALL open MRs in 3 GraphQL calls ─────────────────────
-  let mrsByBranch = new Map<string, PullRequest>();
+  // ── Step 1: Fetch MRs for all branches in 1 GraphQL call ──────────────
+  let mrsByBranch = new Map<string, PullRequest | null>();
 
   if (secrets.gitlabToken && remoteUrl) {
     const remote = parseRemoteUrl(remoteUrl);
     if (remote) {
       try {
         const provider = new GitLabProvider(remote.host, secrets.gitlabToken);
-        // fetchPullRequests() with no iids → 3 role-based queries (authored + reviewing + assigned)
-        const allMRs = await provider.fetchPullRequests({ state: "opened" });
-        for (const pr of allMRs) {
-          mrsByBranch.set(pr.sourceBranch, pr);
+        const branchNames = branches.map(b => b.branch).filter(b => b !== "");
+        if (branchNames.length > 0) {
+          // Single GraphQL query with sourceBranches filter (glance-sdk 0.5.2+)
+          mrsByBranch = await provider.fetchPullRequestsByBranches(remote.projectPath, branchNames);
         }
       } catch { /* GitLab fetch failed — continue without MR data */ }
     }
