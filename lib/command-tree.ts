@@ -57,6 +57,9 @@ export interface CommandNode {
 
   /** Hide from picker (still accessible by name). */
   hidden?: boolean;
+
+  /** Skip dispatcher header — command manages its own screen. */
+  fullscreen?: boolean;
 }
 
 // ─── Dispatcher ──────────────────────────────────────────────────────────────
@@ -111,28 +114,28 @@ export async function dispatch(
       return dispatch(node.subcommands, rest, [...breadcrumb, resolvedName], baseDir);
     }
 
-    if (node.handler) {
-      // Branch node with a default handler (e.g. `rt daemon` could show status)
-      // But if it has subcommands, prefer showing the picker for discoverability
+    // Node has its own handler — run it directly when no sub-args given
+    if (node.fn && node.module) {
+      // Fall through to leaf execution below
+    } else {
+      // No more args and no own handler → show subcommand picker
+      if (!process.stdin.isTTY) {
+        showUsage(node.subcommands, [...breadcrumb, resolvedName]);
+        process.exit(0);
+      }
+
+      console.clear();
+
+      const selected = await showPicker(node.subcommands, [...breadcrumb, resolvedName]);
+      if (!selected) return;
+
+      return dispatch(node.subcommands, [selected], [...breadcrumb, resolvedName], baseDir);
     }
-
-    // No more args → show subcommand picker
-    if (!process.stdin.isTTY) {
-      showUsage(node.subcommands, [...breadcrumb, resolvedName]);
-      process.exit(0);
-    }
-
-    console.clear();
-
-    const selected = await showPicker(node.subcommands, [...breadcrumb, resolvedName]);
-    if (!selected) return;
-
-    return dispatch(node.subcommands, [selected], [...breadcrumb, resolvedName], baseDir);
   }
 
   // Leaf node → execute
   console.clear();
-  renderHeader([...breadcrumb, resolvedName]);
+  if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
 
   // TTY guard
   if (node.requiresTTY && !process.stdin.isTTY) {
@@ -153,7 +156,7 @@ export async function dispatch(
 
     if (process.cwd() !== cwdBefore) {
       console.clear();
-      renderHeader([...breadcrumb, resolvedName]);
+      if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
     }
   } else if (node.context === "repo") {
     const cwdBefore = process.cwd();
@@ -162,7 +165,7 @@ export async function dispatch(
 
     if (process.cwd() !== cwdBefore) {
       console.clear();
-      renderHeader([...breadcrumb, resolvedName]);
+      if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
     }
   }
 

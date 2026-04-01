@@ -366,8 +366,8 @@ export async function refreshAllMRs(
         const provider = new GitLabProvider(remote.host, secrets.gitlabToken);
         const branchNames = branches.map(b => b.branch).filter(b => b !== "");
         if (branchNames.length > 0) {
-          // Single GraphQL query with sourceBranches filter (glance-sdk 0.5.2+)
-          mrsByBranch = await provider.fetchPullRequestsByBranches(remote.projectPath, branchNames);
+          // Single query fetching all states (glance-sdk 0.5.3+)
+          mrsByBranch = await provider.fetchPullRequestsByBranches(remote.projectPath, branchNames, 'all');
         }
       } catch { /* GitLab fetch failed — continue without MR data */ }
     }

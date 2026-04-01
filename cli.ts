@@ -80,9 +80,11 @@ const TREE: Record<string, CommandNode> = {
   },
 
   status: {
-    description: "Branch dashboard with MR, pipeline & port status",
-    module: "./commands/status.ts",
+    description: "Live branch dashboard with MR actions, pipeline & review status",
+    module: "./commands/status.tsx",
     fn: "showStatus",
+    context: "repo",
+    fullscreen: true,
   },
 
   doctor: {

@@ -187,6 +187,19 @@ function detectBranchTransitions(
     const branchShort = branch.length > 40 ? branch.slice(0, 39) + "…" : branch;
     const mrUrl = entry.mr?.webUrl ?? undefined;
 
+    // MR merged (open → merged) — check BEFORE skipping merged MRs
+    if (was.mrState === "opened" && now.mrState === "merged") {
+      const key = `mr:merged:${branch}`;
+      if (!fired.has(key)) {
+        fired.add(key);
+        log(`notify: MR merged on ${branch}`);
+        if (isEnabled(prefs, "mr_merged")) notify("MR Merged 🎉", branchShort, mrUrl);
+      }
+    }
+
+    // Skip all other notifications for merged/closed MRs
+    if (entry.mr?.status === "merged" || entry.mr?.status === "closed") continue;
+
     // Pipeline: running/pending → failed
     if (
       was.pipelineStatus &&
@@ -222,16 +235,6 @@ function detectBranchTransitions(
         fired.add(key);
         log(`notify: MR approved on ${branch}`);
         if (isEnabled(prefs, "mr_approved")) notify("MR Approved 👍", branchShort, mrUrl);
-      }
-    }
-
-    // MR merged
-    if (was.mrState === "opened" && now.mrState === "merged") {
-      const key = `mr:merged:${branch}`;
-      if (!fired.has(key)) {
-        fired.add(key);
-        log(`notify: MR merged on ${branch}`);
-        if (isEnabled(prefs, "mr_merged")) notify("MR Merged 🎉", branchShort, mrUrl);
       }
     }
 
