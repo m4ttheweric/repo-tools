@@ -339,6 +339,91 @@ async function fetchAndCache(
   return results;
 }
 
+// ─── Daemon-optimized bulk refresh ───────────────────────────────────────────
+
+/**
+ * Optimized refresh for the daemon: fetches ALL open MRs in 3 GraphQL calls
+ * (authored + reviewing + assigned) instead of N REST calls per branch.
+ *
+ * Matches MRs to local branches by sourceBranch, then batch-fetches Linear
+ * tickets for any branch with a Linear ID (from branch name or MR title).
+ *
+ * @param branches - local branches to update in the cache
+ * @param remoteUrl - git remote origin URL (for GitLab host/project resolution)
+ */
+export async function refreshAllMRs(
+  branches: Array<{ path: string; branch: string }>,
+  remoteUrl?: string,
+): Promise<void> {
+  const secrets = loadSecrets();
+  const diskCache = readDiskCache();
+  const now = Date.now();
+
+  // ── Step 1: Fetch ALL open MRs in 3 GraphQL calls ─────────────────────
+  let mrsByBranch = new Map<string, PullRequest>();
+
+  if (secrets.gitlabToken && remoteUrl) {
+    const remote = parseRemoteUrl(remoteUrl);
+    if (remote) {
+      try {
+        const provider = new GitLabProvider(remote.host, secrets.gitlabToken);
+        // fetchPullRequests() with no iids → 3 role-based queries (authored + reviewing + assigned)
+        const allMRs = await provider.fetchPullRequests({ state: "opened" });
+        for (const pr of allMRs) {
+          mrsByBranch.set(pr.sourceBranch, pr);
+        }
+      } catch { /* GitLab fetch failed — continue without MR data */ }
+    }
+  }
+
+  // ── Step 2: Collect Linear IDs from branches + MR titles ──────────────
+  const branchLinearIds: Array<{ branch: string; linearId: string | null }> = branches.map(b => {
+    let linearId = extractLinearId(b.branch);
+
+    // Fall back to MR title for Linear ID
+    if (!linearId) {
+      const pr = mrsByBranch.get(b.branch);
+      if (pr) {
+        const titleMatch = /\b([A-Za-z]+-\d+)\b/.exec(pr.title);
+        if (titleMatch) linearId = titleMatch[1]!.toUpperCase();
+      }
+    }
+
+    return { branch: b.branch, linearId };
+  });
+
+  // ── Step 3: Batch-fetch all Linear tickets in ONE API call ────────────
+  const { fetchTicketsBatch } = await import("./linear.ts");
+  const uniqueIds = [...new Set(
+    branchLinearIds
+      .map(b => b.linearId)
+      .filter((id): id is string => !!id),
+  )];
+
+  let ticketMap = new Map<string, LinearTicket>();
+  if (uniqueIds.length > 0 && secrets.linearApiKey) {
+    ticketMap = await fetchTicketsBatch(secrets.linearApiKey, uniqueIds);
+  }
+
+  // ── Step 4: Assemble and write cache ──────────────────────────────────
+  for (let i = 0; i < branches.length; i++) {
+    const b = branches[i]!;
+    const { linearId } = branchLinearIds[i]!;
+    const pr = mrsByBranch.get(b.branch) ?? null;
+    const mr = pr ? toMRInfo(pr) : null;
+    const ticket = linearId ? (ticketMap.get(linearId.toUpperCase()) ?? null) : null;
+
+    diskCache.entries[b.branch] = {
+      ticket,
+      linearId: linearId || "",
+      mr,
+      fetchedAt: now,
+    };
+  }
+
+  writeDiskCache(diskCache);
+}
+
 // ─── Detached cache refresh ──────────────────────────────────────────────────
 
 function spawnCacheRefresh(
