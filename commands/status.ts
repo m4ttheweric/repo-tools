@@ -211,8 +211,15 @@ function renderDashboard(data: StatusData): string {
   // Sort: most recently fetched first
   activeBranches.sort((a, b) => (b[1].fetchedAt || 0) - (a[1].fetchedAt || 0));
 
+  // Compute cache freshness from the most recent fetchedAt
+  let latestFetch = 0;
+  for (const entry of Object.values(branches)) {
+    if (entry.fetchedAt > latestFetch) latestFetch = entry.fetchedAt;
+  }
+
   // Header
-  lines.push(`  ${bold}${cyan}rt status${reset}  ${dim}${data.source === "daemon" ? "⚡ daemon" : "📁 cache file"} · ${timeAgo(Date.now())}${reset}`);
+  const freshness = latestFetch > 0 ? timeAgo(latestFetch) : "no data";
+  lines.push(`  ${bold}${cyan}rt status${reset}  ${dim}${data.source === "daemon" ? "⚡ daemon" : "📁 cache file"} · ${freshness}${reset}`);
   lines.push("");
 
   // Active MRs
