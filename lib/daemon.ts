@@ -227,7 +227,7 @@ async function refreshCache(): Promise<void> {
 
   try {
     // Dynamic import to avoid loading heavy deps if not needed
-    const { enrichBranches } = await import("./enrich.ts");
+    const { refreshAllMRs } = await import("./enrich.ts");
     const repos = loadRepoIndex();
 
     for (const [repoName, repoPath] of Object.entries(repos)) {
@@ -261,7 +261,6 @@ async function refreshCache(): Promise<void> {
         }
 
         // 2. Discover local branches (not just worktrees)
-        //    These are the branches you'd see in `rt branch switch`
         const worktreeBranchSet = new Set(branches.map(b => b.branch));
         try {
           const localBranchOutput = execSync(
@@ -272,13 +271,12 @@ async function refreshCache(): Promise<void> {
           for (const name of localBranchOutput.split("\n")) {
             const trimmed = name.trim().replace(/^'|'$/g, "");
             if (!trimmed || worktreeBranchSet.has(trimmed)) continue;
-            // Only cache branches with a Linear ID — plain branches have nothing to enrich
             const { extractLinearId } = await import("./linear.ts");
             if (extractLinearId(trimmed)) {
               branches.push({ path: repoPath, branch: trimmed });
             }
           }
-        } catch { /* git command failed — continue with worktree branches only */ }
+        } catch { /* git command failed */ }
 
         if (branches.length > 0) {
           // Get remote URL
@@ -289,8 +287,8 @@ async function refreshCache(): Promise<void> {
             }).trim();
           } catch { /* no remote */ }
 
-          // Fetch fresh data (silent + forceRefresh: always hit API, never return stale cache)
-          await enrichBranches(branches, remoteUrl, { silent: true, forceRefresh: true });
+          // Optimized: 3 GraphQL calls for ALL open MRs + 1 Linear batch
+          await refreshAllMRs(branches, remoteUrl);
         }
       } catch {
         // Skip repos that error
