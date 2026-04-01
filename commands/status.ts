@@ -329,26 +329,25 @@ export async function showStatus(args: string[]): Promise<void> {
 
   // --fetch: trigger a real API refresh, wait for it, then show fresh data
   if (fetchMode) {
+    const { withSpinner } = await import("../lib/rt-render.tsx");
     const { daemonQuery } = await import("../lib/daemon-client.ts");
-    process.stdout.write(`  ${cyan}⟳${reset} ${dim}refreshing…${reset}`);
-    const result = await daemonQuery("cache:refresh");
-    if (!result?.ok) {
-      process.stdout.write(`\r  ${red}✗${reset} daemon not available\n`);
-      return;
-    }
-    // Wait for the refresh to actually complete (it's async in the daemon)
-    // Poll until fetchedAt changes
-    const before = await daemonQuery("cache:read");
-    const oldTs = Math.max(...Object.values((before?.data ?? {}) as Record<string, any>).map((e: any) => e.fetchedAt || 0));
-    let attempts = 0;
-    while (attempts < 30) {
-      await Bun.sleep(500);
-      const check = await daemonQuery("cache:read");
-      const newTs = Math.max(...Object.values((check?.data ?? {}) as Record<string, any>).map((e: any) => e.fetchedAt || 0));
-      if (newTs > oldTs) break;
-      attempts++;
-    }
-    process.stdout.write(`\r                        \r`);
+
+    await withSpinner("fetching latest pipeline & MR data…", async () => {
+      const result = await daemonQuery("cache:refresh");
+      if (!result?.ok) throw new Error("daemon not available");
+
+      // Poll until fetchedAt changes (refresh is async in the daemon)
+      const before = await daemonQuery("cache:read");
+      const oldTs = Math.max(...Object.values((before?.data ?? {}) as Record<string, any>).map((e: any) => e.fetchedAt || 0));
+      let attempts = 0;
+      while (attempts < 30) {
+        await Bun.sleep(500);
+        const check = await daemonQuery("cache:read");
+        const newTs = Math.max(...Object.values((check?.data ?? {}) as Record<string, any>).map((e: any) => e.fetchedAt || 0));
+        if (newTs > oldTs) break;
+        attempts++;
+      }
+    });
   }
 
   if (!watchMode) {
