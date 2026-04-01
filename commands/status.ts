@@ -324,7 +324,32 @@ function renderDashboard(data: StatusData): string {
 
 export async function showStatus(args: string[]): Promise<void> {
   const watchMode = args.includes("--watch") || args.includes("-w");
+  const fetchMode = args.includes("--fetch") || args.includes("-f");
   const intervalSec = 15;
+
+  // --fetch: trigger a real API refresh, wait for it, then show fresh data
+  if (fetchMode) {
+    const { daemonQuery } = await import("../lib/daemon-client.ts");
+    process.stdout.write(`  ${cyan}⟳${reset} ${dim}refreshing…${reset}`);
+    const result = await daemonQuery("cache:refresh");
+    if (!result?.ok) {
+      process.stdout.write(`\r  ${red}✗${reset} daemon not available\n`);
+      return;
+    }
+    // Wait for the refresh to actually complete (it's async in the daemon)
+    // Poll until fetchedAt changes
+    const before = await daemonQuery("cache:read");
+    const oldTs = Math.max(...Object.values((before?.data ?? {}) as Record<string, any>).map((e: any) => e.fetchedAt || 0));
+    let attempts = 0;
+    while (attempts < 30) {
+      await Bun.sleep(500);
+      const check = await daemonQuery("cache:read");
+      const newTs = Math.max(...Object.values((check?.data ?? {}) as Record<string, any>).map((e: any) => e.fetchedAt || 0));
+      if (newTs > oldTs) break;
+      attempts++;
+    }
+    process.stdout.write(`\r                        \r`);
+  }
 
   if (!watchMode) {
     const data = await fetchStatusData();
