@@ -6,7 +6,8 @@
       "name": "repo-tools",
       "dependencies": {
         "@inkjs/ui": "^2.0.0",
-        "@workforge/glance-sdk": "^0.5.2",
+        "@workforge/glance-sdk": "0.5.3",
+        "fullscreen-ink": "^0.1.0",
         "ink": "^6.8.0",
         "react": "^19.2.4",
       },
@@ -30,7 +31,7 @@
 
     "@types/react": ["@types/react@19.2.14", "", { "dependencies": { "csstype": "^3.2.2" } }, "sha512-ilcTH/UniCkMdtexkoCN0bI7pMcJDvmQFPvuPvmEaYA/NSfFTAgdUSLAoVjaRJm7+6PvcM+q1zYOwS4wTYMF9w=="],
 
-    "@workforge/glance-sdk": ["@workforge/glance-sdk@0.5.2", "", {}, "sha512-PvyA4DK/qGuVb2xRiA14U/3hfEctZATBS1f/Gj35Px19tGKpfCTke5QMF54rJa/TxBJep+QUCi7xdXC8Mexcgg=="],
+    "@workforge/glance-sdk": ["@workforge/glance-sdk@0.5.3", "", {}, "sha512-GnRH3XKBJCzZG/ToWQji/kxiBYJzCQM0iCT8EsoR6NXFpIykVLZuS1mvk/z0rArPXbkCUnZAPp6forIIFTNVkg=="],
 
     "ansi-escapes": ["ansi-escapes@7.3.0", "", { "dependencies": { "environment": "^1.0.0" } }, "sha512-BvU8nYgGQBxcmMuEeUEmNTvrMVjJNSH7RgW24vXexN4Ven6qCvy4TntnvlnwnMLTVlcRQQdbRY8NKnaIoeWDNg=="],
 
@@ -69,6 +70,8 @@
     "escape-string-regexp": ["escape-string-regexp@2.0.0", "", {}, "sha512-UpzcLCXolUWcNu5HtVMHYdXJjArjsF9C0aNnquZYY4uW/Vu0miy5YoWvbV345HauVvcAUnpRuhMMcqTcGOY2+w=="],
 
     "figures": ["figures@6.1.0", "", { "dependencies": { "is-unicode-supported": "^2.0.0" } }, "sha512-d+l3qxjSesT4V7v2fh+QnmFnUWv9lSpjarhShNTgBOfA0ttejbQUAlHLitbjkoRiDulW0OPoQPYIGhIC8ohejg=="],
+
+    "fullscreen-ink": ["fullscreen-ink@0.1.0", "", { "dependencies": { "ink": ">=4.4.1", "react": ">=18.2.0" } }, "sha512-GkyPG5Y8YxRT6i1Q8mZ0BCMSpgQjdBY+C39DnCUMswBpSypTk0G80rAYs6FoEp6Da2gzAwygXbJbju6GahbrFQ=="],
 
     "get-east-asian-width": ["get-east-asian-width@1.5.0", "", {}, "sha512-CQ+bEO+Tva/qlmw24dCejulK5pMzVnUOFOijVogd3KQs07HnRIgp8TGipvCCRT06xeYEbpbgwaCxglFyiuIcmA=="],
 

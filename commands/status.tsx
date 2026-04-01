@@ -1,0 +1,1025 @@
+/**
+ * rt status — Live interactive branch dashboard.
+ *
+ * WebSocket-powered real-time MR dashboard with navigation,
+ * detail drill-down, and inline actions (merge, rebase, approve, etc.)
+ */
+
+import React, { useState, useEffect, useCallback } from "react";
+import { render, Box, Text, useInput } from "ink";
+import { Badge, Spinner, StatusMessage, Alert } from "@inkjs/ui";
+import { ScrollableList } from "../lib/ScrollableList.tsx";
+import type { MRDashboardProps, MRDashboardActions, Reviewer, PipelineJob } from "@workforge/glance-sdk";
+import { getReviewDisplayState } from "@workforge/glance-sdk";
+import type { PortEntry } from "../lib/port-scanner.ts";
+
+// ─── Types ──────────────────────────────────────────────────────────────────
+
+interface CacheEntry {
+  ticket: {
+    identifier: string;
+    title: string;
+    stateName?: string;
+    stateColor?: string;
+  } | null;
+  linearId: string;
+  mr: MRDashboardProps | null;
+  fetchedAt: number;
+}
+
+interface StatusData {
+  branches: Record<string, CacheEntry>;
+  ports: PortEntry[];
+  source: "daemon" | "cache-file" | "live";
+}
+
+type ActionPending = {
+  key: string;
+  label: string;
+  action: () => Promise<void>;
+} | null;
+
+type ActionState = {
+  loading: string | null; // label while loading
+  result: { ok: boolean; message: string } | null;
+  confirm: ActionPending;
+};
+
+// ─── Data fetching ──────────────────────────────────────────────────────────
+
+async function fetchStatusData(): Promise<StatusData> {
+  const { daemonQuery } = await import("../lib/daemon-client.ts");
+
+  const [cacheResult, portResult] = await Promise.all([
+    daemonQuery("cache:read"),
+    daemonQuery("ports"),
+  ]);
+
+  // Note: no cache:refresh here — the dashboard has its own live WebSocket connection
+
+  let branches: Record<string, CacheEntry> = {};
+  let ports: PortEntry[] = [];
+  let source: "daemon" | "cache-file" = "daemon";
+
+  if (cacheResult?.ok && cacheResult.data) {
+    branches = cacheResult.data;
+  } else {
+    source = "cache-file";
+    try {
+      const { readFileSync } = await import("fs");
+      const { homedir } = await import("os");
+      const { join } = await import("path");
+      const raw = JSON.parse(
+        readFileSync(join(homedir(), ".rt", "branch-cache.json"), "utf8"),
+      );
+      branches = raw.entries || {};
+    } catch {
+      /* no cache */
+    }
+  }
+
+  if (portResult?.ok && portResult.data?.ports) {
+    ports = portResult.data.ports;
+  }
+
+  return { branches, ports, source };
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function timeAgo(ms: number | string): string {
+  const ts = typeof ms === "string" ? new Date(ms).getTime() : ms;
+  const mins = Math.floor((Date.now() - ts) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
+/** Reactive terminal width — triggers re-render on resize. */
+function useTerminalWidth(): number {
+  const [width, setWidth] = useState(process.stdout.columns || 80);
+  useEffect(() => {
+    const onResize = () => setWidth(process.stdout.columns || 80);
+    process.stdout.on("resize", onResize);
+    return () => { process.stdout.off("resize", onResize); };
+  }, []);
+  return width;
+}
+
+// ─── Status config ──────────────────────────────────────────────────────────
+
+type MRStatus = MRDashboardProps["status"];
+
+
+
+const STATUS_COLOR: Record<MRStatus, string> = {
+  mergeable: "green",     // positive  → green-40
+  merged: "magenta",      // action    → purple-40
+  blocked: "yellow",      // caution   → yellow-40
+  draft: "gray",          // muted     → border
+  closed: "red",          // negative  → red-40
+};
+
+const STATUS_LABEL: Record<MRStatus, string> = {
+  mergeable: "Ready to merge",
+  merged: "Merged",
+  blocked: "Blocked",
+  draft: "Draft",
+  closed: "Closed",
+};
+
+// ─── Review display state ───────────────────────────────────────────────────
+
+const REVIEW_ICON: Record<string, string> = {
+  approved: "✓",
+  commented: "💬",
+  changes_requested: "✗",
+  reviewing: "…",
+  awaiting_review: "○",
+};
+
+const REVIEW_COLOR: Record<string, string> = {
+  approved: "green",
+  commented: "cyan",
+  changes_requested: "yellow",
+  reviewing: "gray",
+  awaiting_review: "gray",
+};
+
+// ─── Pipeline Badge (compact + detailed) ────────────────────────────────────
+
+function PipelineBadgeCompact({ pipeline }: { pipeline: MRDashboardProps["pipeline"] }) {
+  if (!pipeline) return null;
+  const { status, failing, running, total } = pipeline;
+
+  if (failing > 0 || status === "failed") {
+    return <Badge color="red">{failing} failing</Badge>;
+  }
+  if (status === "running" || status === "pending" || running > 0) {
+    return (
+      <Box gap={1}>
+        <Spinner label="" />
+        <Text dimColor>{running}/{total}</Text>
+      </Box>
+    );
+  }
+  return <Badge color="green">passed</Badge>;
+}
+
+function PipelineDetailed({ pipeline }: { pipeline: MRDashboardProps["pipeline"] }) {
+  if (!pipeline) {
+    return <Text dimColor>  No pipeline</Text>;
+  }
+
+  const { status, failing, running, passing, total, hasWarnings, jobs } = pipeline;
+  const notableJobs = jobs.filter(
+    (j: PipelineJob) => j.status === "failed" || j.status === "running" || j.status === "pending",
+  );
+
+  return (
+    <Box flexDirection="column">
+      <Box gap={1}>
+        {failing > 0 || status === "failed" ? (
+          <>
+            <Text color="red">✗</Text>
+            <Text>
+              <Text color="red" bold>{failing} failing</Text>
+              <Text dimColor> of {total} checks</Text>
+            </Text>
+          </>
+        ) : status === "running" || status === "pending" || running > 0 ? (
+          <>
+            <Spinner label="" />
+            <Text>
+              <Text dimColor>{running} running of {total} checks</Text>
+            </Text>
+          </>
+        ) : hasWarnings ? (
+          <>
+            <Text color="yellow">⚠</Text>
+            <Text>
+              <Text color="yellow" bold>Passed with warnings</Text>
+              <Text dimColor> — {passing}/{total} checks</Text>
+            </Text>
+          </>
+        ) : (
+          <>
+            <Text color="green">✓</Text>
+            <Text>
+              All <Text color="green" bold>{total} checks passed</Text>
+            </Text>
+          </>
+        )}
+      </Box>
+      {notableJobs.length > 0 && (
+        <Box flexDirection="column" paddingLeft={2}>
+          {notableJobs.map((job: PipelineJob) => (
+            <Box key={job.id} gap={1}>
+              <Text color={job.status === "failed" ? "red" : "cyan"}>
+                {job.status === "failed" ? "✗" : "⟳"}
+              </Text>
+              <Text>{job.name}</Text>
+              <Text dimColor>({job.stage})</Text>
+            </Box>
+          ))}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+// ─── Diff stats ─────────────────────────────────────────────────────────────
+
+function DiffStatsCompact({ diff }: { diff: MRDashboardProps["diff"] }) {
+  if (!diff) return null;
+  return (
+    <Text>
+      <Text color="green">+{diff.additions}</Text>
+      <Text dimColor> </Text>
+      <Text color="red">-{diff.deletions}</Text>
+    </Text>
+  );
+}
+
+function DiffStatsDetailed({ diff }: { diff: MRDashboardProps["diff"] }) {
+  if (!diff) return null;
+  const total = diff.additions + diff.deletions;
+  const dots = Math.min(diff.filesChanged, 20);
+  const greenDots = total > 0 ? Math.round((diff.additions / total) * dots) : dots;
+
+  return (
+    <Box flexDirection="column">
+      <Box gap={2}>
+        <Text color="green" bold>+{diff.additions}</Text>
+        <Text color="red" bold>-{diff.deletions}</Text>
+        <Text dimColor>{diff.filesChanged} files</Text>
+      </Box>
+      <Text>
+        {Array.from({ length: dots }, (_, i) =>
+          i < greenDots ? "🟩" : "🟥"
+        ).join("")}
+      </Text>
+    </Box>
+  );
+}
+
+// ─── Reviewer detail ────────────────────────────────────────────────────────
+
+function ReviewerDetailed({ reviews }: { reviews: MRDashboardProps["reviews"] }) {
+  if (reviews.reviewers.length === 0) {
+    return <Text dimColor>  No reviewers assigned</Text>;
+  }
+
+  const totalReviewers = reviews.given + reviews.remaining;
+
+  return (
+    <Box flexDirection="column">
+      <Box gap={1}>
+        {reviews.isApproved ? (
+          <>
+            <Text color="green">✓</Text>
+            <Text>
+              <Text color="green" bold>Approved</Text>
+              <Text dimColor> by {reviews.given}/{totalReviewers} reviewers</Text>
+            </Text>
+          </>
+        ) : (
+          <>
+            <Text color="yellow">◈</Text>
+            <Text>
+              {reviews.given}/{totalReviewers} approvals
+              {reviews.remaining > 0 && (
+                <Text dimColor> — {reviews.remaining} remaining</Text>
+              )}
+            </Text>
+          </>
+        )}
+      </Box>
+      <Box flexDirection="column" paddingLeft={2}>
+        {reviews.reviewers.map((r: Reviewer) => {
+          const state = getReviewDisplayState(r.reviewState);
+          const icon = REVIEW_ICON[state] || "○";
+          const color = REVIEW_COLOR[state] || "gray";
+          return (
+            <Box key={r.id} gap={1}>
+              <Text color={color as any}>{icon}</Text>
+              <Text>{r.name}</Text>
+              <Text dimColor>{state.replace(/_/g, " ")}</Text>
+            </Box>
+          );
+        })}
+      </Box>
+    </Box>
+  );
+}
+
+// ─── Blocker detail ─────────────────────────────────────────────────────────
+
+function BlockerDetailed({ mr }: { mr: MRDashboardProps }) {
+  const b = mr.blockers;
+  const items: { icon: string; color: string; text: string }[] = [];
+
+  if (b.hasConflicts) items.push({ icon: "⚠", color: "yellow", text: "Merge conflicts" });
+  if (b.needsRebase) items.push({ icon: "↻", color: "yellow", text: `Branch is behind target by ${mr.rebaseButton.behindBy} commits` });
+  if (b.hasUnresolvedDiscussions) items.push({ icon: "💬", color: "cyan", text: "Unresolved discussions" });
+  if (b.isDraft) items.push({ icon: "○", color: "gray", text: "Draft — mark as ready before merging" });
+  if (b.mergeError) items.push({ icon: "✗", color: "red", text: b.mergeError });
+
+  if (items.length === 0) return null;
+
+  return (
+    <Box flexDirection="column">
+      {items.map((item, i) => (
+        <Box key={i} gap={1}>
+          <Text color={item.color as any}>{item.icon}</Text>
+          <Text>{item.text}</Text>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+// ─── MR Row (list view) — mirrors glance-react MRRow ────────────────────────
+
+/** Pipeline status → TUI icon */
+function pipelineIcon(pipeline: MRDashboardProps["pipeline"]): { icon: string; color: string } {
+  if (!pipeline) return { icon: " ", color: "gray" };
+  const { status, failing, running } = pipeline;
+  if (status === "failed" || failing > 0) return { icon: "✗", color: "red" };
+  if (status === "running" || running > 0) return { icon: "~", color: "blue" };
+  return { icon: "●", color: "green" };
+}
+
+/**
+ * 2-line box-art status icons, colored by STATUS_COLOR.
+ */
+const STATUS_ART: Record<MRStatus, [string, string]> = {
+  mergeable: ["╭ ✓ ╮", "╰───╯"],
+  merged:    ["╭ ⏣ ╮", "╰───╯"],
+  blocked:   ["╭ ━ ╮", "╰───╯"],
+  draft:     ["┌ · ┐", "└───┘"],
+  closed:    ["╭ ✗ ╮", "╰───╯"],
+};
+
+/** Right-pad a string to a fixed width */
+function rpad(s: string, w: number): string {
+  return s.length >= w ? s.slice(0, w) : s + " ".repeat(w - s.length);
+}
+/** Left-pad a string to a fixed width */
+function lpad(s: string, w: number): string {
+  return s.length >= w ? s : " ".repeat(w - s.length) + s;
+}
+
+function MRRowTUI({
+  mr,
+  focused,
+  ticket,
+}: {
+  mr: MRDashboardProps;
+  focused: boolean;
+  ticket?: CacheEntry["ticket"];
+}) {
+  const statusColor = STATUS_COLOR[mr.status] || "gray";
+  const art = STATUS_ART[mr.status] || STATUS_ART.blocked;
+  const cols = useTerminalWidth();
+
+  const totalReviewers = mr.reviews.given + mr.reviews.remaining;
+  const reviewStr = totalReviewers > 0 ? `${mr.reviews.given}/${totalReviewers}` : "";
+  const pi = pipelineIcon(mr.pipeline);
+  const delStr = mr.diff ? `-${mr.diff.deletions}` : "";
+  const addStr = mr.diff ? `+${mr.diff.additions}` : "";
+  const filesStr = mr.diff ? `${mr.diff.filesChanged} files` : "";
+
+  const RIGHT_W = 22; // lpad(5) + lpad(2) + lpad(8) + lpad(7)
+  const LEFT_W = 8;
+  const titleMax = Math.max(20, cols - RIGHT_W - LEFT_W - 1);
+
+  const bg = focused ? "#334155" : undefined;
+  const meta = `!${mr.iid} · ⎇ ${truncate(mr.sourceBranch, 25)} → ${mr.targetBranch}`;
+  const line2ContentW = cols - LEFT_W;
+
+  return (
+    <Box flexDirection="column" width="100%">
+      <Box width="100%">
+        <Text color={focused ? "cyan" : statusColor} bold={focused}>│</Text>
+        <Text backgroundColor={bg}> </Text>
+        <Text backgroundColor={bg} color={statusColor} bold>{art[0]}</Text>
+        <Text backgroundColor={bg}> </Text>
+        <Text backgroundColor={bg} bold>{rpad(truncate(mr.title, titleMax), titleMax)}</Text>
+        <Text backgroundColor={bg} color={mr.reviews.isApproved ? "green" : "yellow"}>{lpad(reviewStr || "   ", 5)}</Text>
+        <Text backgroundColor={bg} color={pi.color}>{lpad(pi.icon, 2)}</Text>
+        <Text backgroundColor={bg} color="red">{lpad(delStr, 8)}</Text>
+        <Text backgroundColor={bg} color="green">{lpad(addStr, 7)}</Text>
+      </Box>
+      <Box width="100%">
+        <Text color={focused ? "cyan" : statusColor} bold={focused}>│</Text>
+        <Text backgroundColor={bg}> </Text>
+        <Text backgroundColor={bg} color={statusColor} bold>{art[1]}</Text>
+        <Text backgroundColor={bg}> </Text>
+        <Text backgroundColor={bg} dimColor={!focused}>
+          {rpad(meta, Math.max(0, line2ContentW - 11))}
+        </Text>
+        <Text backgroundColor={bg} dimColor={!focused}>{filesStr ? lpad(filesStr, 10) : "          "}</Text>
+      </Box>
+      <Text dimColor>{"·".repeat(Math.max(0, cols - 2))}</Text>
+    </Box>
+  );
+}
+
+// ─── MR Detail View (MRCard equivalent) ─────────────────────────────────────
+
+function MRDetailView({
+  mr,
+  ticket,
+  actionState,
+}: {
+  mr: MRDashboardProps;
+  ticket?: CacheEntry["ticket"];
+  actionState: ActionState;
+}) {
+  const statusColor = STATUS_COLOR[mr.status] || "gray";
+
+  return (
+    <Box flexDirection="column" paddingLeft={1}>
+      {/* Header: status badge */}
+      <Box gap={1} marginBottom={1}>
+        <Badge color={statusColor === "green" ? "green" : statusColor === "blue" ? "blue" : statusColor === "yellow" ? "yellow" : statusColor === "red" ? "red" : "cyan"}>
+          {STATUS_LABEL[mr.status]}
+        </Badge>
+        {mr.isLoading && <Spinner label="updating" />}
+      </Box>
+
+      {/* Title + branch info */}
+      <Box gap={1}>
+        <Text dimColor>!{mr.iid}</Text>
+        <Text dimColor>·</Text>
+        <Text bold>{mr.title}</Text>
+      </Box>
+      <Box paddingLeft={2} gap={1}>
+        <Text dimColor>⎇</Text>
+        <Text dimColor>{mr.sourceBranch}</Text>
+        <Text dimColor>→</Text>
+        <Text dimColor>{mr.targetBranch}</Text>
+        {mr.createdAt && (
+          <>
+            <Text dimColor>·</Text>
+            <Text dimColor>{timeAgo(mr.createdAt)}</Text>
+          </>
+        )}
+        <Text dimColor>· by {mr.author.username}</Text>
+      </Box>
+
+      {ticket && (
+        <Box paddingLeft={2} gap={1}>
+          <Text dimColor>{ticket.identifier}</Text>
+          {ticket.title && <Text dimColor>{truncate(ticket.title, 50)}</Text>}
+          {ticket.stateName && <Text dimColor>[{ticket.stateName}]</Text>}
+        </Box>
+      )}
+
+      {/* Diff stats */}
+      <Box marginTop={1} paddingLeft={2}>
+        <DiffStatsDetailed diff={mr.diff} />
+      </Box>
+
+      {/* Status card: pipeline + reviews + blockers */}
+      <Box flexDirection="column" marginTop={1} paddingLeft={2} borderStyle="single" borderLeft borderColor={statusColor as any} paddingRight={1}>
+        <PipelineDetailed pipeline={mr.pipeline} />
+        <ReviewerDetailed reviews={mr.reviews} />
+        <BlockerDetailed mr={mr} />
+      </Box>
+
+      {/* Action bar */}
+      {mr.status !== "closed" && mr.status !== "merged" && (
+        <Box marginTop={1} paddingLeft={2}>
+          <ActionBarView mr={mr} actionState={actionState} />
+        </Box>
+      )}
+
+      {/* Action feedback */}
+      {actionState.loading && (
+        <Box paddingLeft={2} marginTop={1}>
+          <Spinner label={actionState.loading} />
+        </Box>
+      )}
+      {actionState.result && (
+        <Box paddingLeft={2} marginTop={1}>
+          <StatusMessage variant={actionState.result.ok ? "success" : "error"}>
+            {actionState.result.message}
+          </StatusMessage>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+// ─── Action Bar ─────────────────────────────────────────────────────────────
+
+function ActionBarView({
+  mr,
+  actionState,
+}: {
+  mr: MRDashboardProps;
+  actionState: ActionState;
+}) {
+  const pending = actionState.confirm;
+
+  const items: { key: string; label: string; dimmed?: boolean }[] = [];
+
+  if (mr.mergeButton.visible && !mr.mergeButton.disabled) {
+    items.push({ key: "m", label: mr.mergeButton.label });
+  }
+  if (mr.rebaseButton.visible) {
+    const behind = mr.rebaseButton.behindBy;
+    items.push({ key: "r", label: `${mr.rebaseButton.label}${behind > 0 ? ` (${behind} behind)` : ""}` });
+  }
+  items.push({ key: "a", label: "Approve" });
+  if (mr.autoMergeButton.visible) {
+    items.push({
+      key: "A",
+      label: mr.autoMergeButton.isActive ? "Auto-merge ✓" : "Auto-merge",
+    });
+  }
+  if (mr.isDraft) {
+    items.push({ key: "d", label: "Mark ready" });
+  }
+  if (mr.pipeline) {
+    items.push({ key: "p", label: "Retry pipeline", dimmed: true });
+  }
+  items.push({ key: "o", label: "Open in browser", dimmed: true });
+
+  return (
+    <Box gap={2} flexWrap="wrap">
+      {items.map((item) => {
+        const isConfirming = pending?.key === item.key;
+        return (
+          <Text key={item.key} dimColor={item.dimmed && !isConfirming}>
+            <Text color={isConfirming ? "yellow" : "cyan"} bold={isConfirming}>[{item.key}]</Text>
+            {" "}
+            {isConfirming ? (
+              <Text color="yellow" bold>press [{item.key}] again to confirm</Text>
+            ) : (
+              <Text>{item.label}</Text>
+            )}
+          </Text>
+        );
+      })}
+    </Box>
+  );
+}
+
+// ─── Entry point ────────────────────────────────────────────────────────────
+
+export async function showStatus(_args: string[]): Promise<void> {
+  const { GitLabProvider } = await import("@workforge/glance-sdk");
+  const { loadSecrets } = await import("../lib/linear.ts");
+  const { execSync } = await import("child_process");
+
+  const secrets = loadSecrets();
+  if (!secrets.gitlabToken) {
+    const i = render(
+      <Alert variant="error">
+        No GitLab token configured. Run <Text bold>rt settings setup-keys</Text>
+      </Alert>,
+    );
+    i.unmount();
+    return;
+  }
+
+  let remoteUrl: string;
+  try {
+    remoteUrl = execSync("git config --get remote.origin.url", {
+      encoding: "utf8",
+      stdio: "pipe",
+    }).trim();
+  } catch {
+    const i = render(
+      <Alert variant="error">Not in a git repository</Alert>,
+    );
+    i.unmount();
+    return;
+  }
+
+  const httpsMatch = /^https?:\/\/([^/]+)\/(.+?)(?:\.git)?$/.exec(remoteUrl);
+  const sshMatch = /^git@([^:]+):(.+?)(?:\.git)?$/.exec(remoteUrl);
+  const host = httpsMatch
+    ? `https://${httpsMatch[1]}`
+    : sshMatch
+      ? `https://${sshMatch[1]}`
+      : null;
+  const projectPath = httpsMatch?.[2] || sshMatch?.[2];
+
+  if (!host || !projectPath) {
+    const i = render(
+      <Alert variant="error">
+        Could not parse git remote: {remoteUrl}
+      </Alert>,
+    );
+    i.unmount();
+    return;
+  }
+
+  const provider = new GitLabProvider(host, secrets.gitlabToken);
+
+  let userId: number | null = null;
+  try {
+    const user = await provider.validateToken();
+    const numId = user.id.split(":").pop();
+    userId = numId ? parseInt(numId, 10) : null;
+  } catch {
+    /* continue without */
+  }
+
+  const data = await fetchStatusData();
+  const mrIids: number[] = [];
+  const iidToBranch = new Map<
+    number,
+    { branch: string; entry: CacheEntry }
+  >();
+
+  for (const [branch, entry] of Object.entries(data.branches)) {
+    if (entry.mr?.iid) {
+      mrIids.push(entry.mr.iid);
+      iidToBranch.set(entry.mr.iid, { branch, entry });
+    }
+  }
+
+  if (mrIids.length === 0) {
+    const i = render(
+      <StatusMessage variant="info">
+        No active merge requests to watch
+      </StatusMessage>,
+    );
+    i.unmount();
+    return;
+  }
+
+  // Enter alternate screen buffer (like fzf/vim) for clean resize
+  process.stdout.write("\x1b[?1049h");
+  // Restore on exit
+  const restoreScreen = () => process.stdout.write("\x1b[?1049l");
+  process.on("exit", restoreScreen);
+  process.on("SIGINT", () => { restoreScreen(); process.exit(0); });
+
+  const instance = render(
+    <LiveDashboard
+      initialData={data}
+      provider={provider}
+      projectPath={projectPath}
+      mrIids={mrIids}
+      iidToBranch={iidToBranch}
+      userId={userId}
+    />,
+  );
+  await instance.waitUntilExit();
+}
+
+
+const DEFAULT_BRANCHES = new Set(["main", "master", "develop", "dev"]);
+
+function LiveDashboard({
+  initialData,
+  provider,
+  projectPath,
+  mrIids,
+  iidToBranch,
+  userId,
+}: {
+  initialData: StatusData;
+  provider: any;
+  projectPath: string;
+  mrIids: number[];
+  iidToBranch: Map<number, { branch: string; entry: CacheEntry }>;
+  userId: number | null;
+}) {
+  const [data, setData] = useState<StatusData>(initialData);
+  const [connection, setConnection] = useState("connecting");
+  const [focusedIndex, setFocusedIndex] = useState(0);
+  const [detailView, setDetailView] = useState(false);
+  const [mergedDays, setMergedDays] = useState(0); // 0=off, 1, 3, 7
+  type SortMode = "status" | "pipeline" | "approved" | "newest" | "oldest";
+  const SORT_CYCLE: SortMode[] = ["status", "pipeline", "approved", "newest", "oldest"];
+  const [sortMode, setSortMode] = useState<SortMode>("newest");
+  const [actionsMap, setActionsMap] = useState<Map<number, MRDashboardActions>>(new Map());
+
+  // Action state: loading, result feedback, confirmation
+  const [actionState, setActionState] = useState<ActionState>({
+    loading: null,
+    result: null,
+    confirm: null,
+  });
+
+  // Clear result after 3s
+  useEffect(() => {
+    if (actionState.result) {
+      const t = setTimeout(() => setActionState((s) => ({ ...s, result: null })), 3000);
+      return () => clearTimeout(t);
+    }
+  }, [actionState.result]);
+
+  // Clear confirmation after 3s of inactivity
+  useEffect(() => {
+    if (actionState.confirm) {
+      const t = setTimeout(() => setActionState((s) => ({ ...s, confirm: null })), 3000);
+      return () => clearTimeout(t);
+    }
+  }, [actionState.confirm]);
+
+  // Get sorted active branches
+  const mergedMs = mergedDays * 24 * 60 * 60 * 1000;
+  const activeBranches: [string, CacheEntry][] = [];
+  for (const [branch, entry] of Object.entries(data.branches)) {
+    if (!entry.mr) continue;
+    const isMergedOrClosed = entry.mr.status === "merged" || entry.mr.status === "closed";
+    if (isMergedOrClosed) {
+      if (mergedDays === 0) continue;
+      const ts = entry.mr.createdAt ? new Date(entry.mr.createdAt).getTime() : (entry.fetchedAt || 0);
+      if (Date.now() - ts > mergedMs) continue;
+    }
+    activeBranches.push([branch, entry]);
+  }
+  const STATUS_PRIORITY: Record<string, number> = {
+    blocked: 0, mergeable: 1, draft: 2, merged: 3, closed: 4,
+  };
+  const PIPELINE_PRIORITY: Record<string, number> = {
+    failed: 0, running: 1, pending: 2, success: 3, canceled: 4,
+  };
+
+  activeBranches.sort((a, b) => {
+    const aMr = a[1].mr!;
+    const bMr = b[1].mr!;
+    switch (sortMode) {
+      case "status": {
+        const aP = STATUS_PRIORITY[aMr.status] ?? 99;
+        const bP = STATUS_PRIORITY[bMr.status] ?? 99;
+        return aP - bP;
+      }
+      case "pipeline": {
+        const aP = PIPELINE_PRIORITY[aMr.pipeline?.status ?? ""] ?? 99;
+        const bP = PIPELINE_PRIORITY[bMr.pipeline?.status ?? ""] ?? 99;
+        return aP - bP;
+      }
+      case "approved": {
+        const aR = aMr.reviews.remaining;
+        const bR = bMr.reviews.remaining;
+        if (aR !== bR) return bR - aR;
+        return (aMr.reviews.given) - (bMr.reviews.given);
+      }
+      case "oldest": {
+        const aD = aMr.createdAt ? new Date(aMr.createdAt).getTime() : 0;
+        const bD = bMr.createdAt ? new Date(bMr.createdAt).getTime() : 0;
+        return aD - bD;
+      }
+      default: {
+        const aD = aMr.createdAt ? new Date(aMr.createdAt).getTime() : 0;
+        const bD = bMr.createdAt ? new Date(bMr.createdAt).getTime() : 0;
+        return bD - aD;
+      }
+    }
+  });
+
+  const focusedEntry = activeBranches[focusedIndex];
+  const focusedMR = focusedEntry?.[1]?.mr;
+  const focusedIid = focusedMR?.iid;
+  const focusedActions = focusedIid ? actionsMap.get(focusedIid) : undefined;
+
+  // Execute action with confirmation + spinner
+  const executeAction = useCallback(
+    async (key: string, label: string, loadingLabel: string, fn: () => Promise<void>) => {
+      // Already confirming this action? Execute it
+      if (actionState.confirm?.key === key) {
+        setActionState({ loading: loadingLabel, result: null, confirm: null });
+        try {
+          await fn();
+          setActionState({ loading: null, result: { ok: true, message: `${label} succeeded` }, confirm: null });
+        } catch (e: any) {
+          setActionState({ loading: null, result: { ok: false, message: e.message || `${label} failed` }, confirm: null });
+        }
+        return;
+      }
+      // First press: set confirmation
+      setActionState((s) => ({
+        ...s,
+        confirm: { key, label, action: fn },
+      }));
+    },
+    [actionState.confirm],
+  );
+
+  // Input handling
+  useInput((input, key) => {
+    if (actionState.loading) return; // ignore input while action in progress
+
+    // Navigation
+    if (!detailView) {
+      if (key.downArrow) {
+        setFocusedIndex((i) => Math.min(i + 1, activeBranches.length - 1));
+        setActionState({ loading: null, result: null, confirm: null });
+      }
+      if (key.upArrow) {
+        setFocusedIndex((i) => Math.max(i - 1, 0));
+        setActionState({ loading: null, result: null, confirm: null });
+      }
+      if (key.return && focusedMR) {
+        setDetailView(true);
+        setActionState({ loading: null, result: null, confirm: null });
+      }
+    } else {
+      // Detail view: escape/backspace goes back
+      if (key.escape || key.delete || (input === "b")) {
+        setDetailView(false);
+        setActionState({ loading: null, result: null, confirm: null });
+        return;
+      }
+    }
+
+    // Actions (only in detail view, when we have a focused MR and actions)
+    if (detailView && focusedMR && focusedActions) {
+      const mr = focusedMR;
+
+      if (input === "m" && mr.mergeButton.visible && !mr.mergeButton.disabled) {
+        executeAction("m", "Merge", "Merging…", () => focusedActions.merge().then(() => {}));
+      }
+      if (input === "r" && mr.rebaseButton.visible) {
+        executeAction("r", "Rebase", "Rebasing…", () => focusedActions.rebase());
+      }
+      if (input === "a") {
+        executeAction("a", "Approve", "Approving…", () => focusedActions.approve());
+      }
+      if (input === "u") {
+        executeAction("u", "Unapprove", "Removing approval…", () => focusedActions.unapprove());
+      }
+      if (input === "A" && mr.autoMergeButton.visible) {
+        if (mr.autoMergeButton.isActive) {
+          executeAction("A", "Cancel auto-merge", "Cancelling…", () => focusedActions.cancelAutoMerge());
+        } else {
+          executeAction("A", "Enable auto-merge", "Enabling…", () => focusedActions.setAutoMerge());
+        }
+      }
+      if (input === "d") {
+        executeAction("d", mr.isDraft ? "Mark ready" : "Mark draft", mr.isDraft ? "Setting ready…" : "Marking draft…", () =>
+          focusedActions.toggleDraft(!mr.isDraft).then(() => {}),
+        );
+      }
+      if (input === "p" && mr.pipeline) {
+        // No confirmation needed for retry
+        setActionState({ loading: "Retrying pipeline…", result: null, confirm: null });
+        const pipelineId = parseInt(mr.pipeline.jobs[0]?.id?.split(":").pop() || "0", 10);
+        focusedActions
+          .retryPipeline(pipelineId)
+          .then(() => setActionState({ loading: null, result: { ok: true, message: "Pipeline retry triggered" }, confirm: null }))
+          .catch((e: any) => setActionState({ loading: null, result: { ok: false, message: e.message }, confirm: null }));
+      }
+      if (input === "o" && mr.webUrl) {
+        import("child_process").then(({ execSync }) => {
+          execSync(`open ${JSON.stringify(mr.webUrl)}`, { stdio: "ignore" });
+        });
+      }
+    }
+
+    // Open in browser from list view too
+    if (!detailView && input === "o" && focusedMR?.webUrl) {
+      import("child_process").then(({ execSync }) => {
+        execSync(`open ${JSON.stringify(focusedMR.webUrl)}`, { stdio: "ignore" });
+      });
+    }
+
+    // Cycle merged MR window: off → 1d → 3d → 7d → off
+    if (!detailView && input === "m") {
+      setMergedDays((d) => ({ 0: 1, 1: 3, 3: 7, 7: 0 }[d] ?? 0));
+    }
+
+    // Cycle sort mode
+    if (!detailView && input === "s") {
+      setSortMode((m) => SORT_CYCLE[(SORT_CYCLE.indexOf(m) + 1) % SORT_CYCLE.length]!);
+      setFocusedIndex(0);
+    }
+
+    // Global: q to quit
+    if (input === "q" && !actionState.confirm) {
+      process.exit(0);
+    }
+  });
+
+  // WebSocket subscription
+  useEffect(() => {
+    let disposed = false;
+    let group: any;
+
+    (async () => {
+      const { createDashboard } = await import("@workforge/glance-sdk");
+      if (disposed) return;
+
+      group = createDashboard({
+        provider,
+        projectPath,
+        mrIid: mrIids,
+        userId,
+      });
+
+      // Capture actions
+      const newActionsMap = new Map<number, MRDashboardActions>();
+      for (const iid of mrIids) {
+        newActionsMap.set(iid, group.actionsFor(iid));
+      }
+      if (!disposed) setActionsMap(newActionsMap);
+
+      group.onStatusChange((s: any) => {
+        if (!disposed) setConnection(s.connection);
+      });
+
+      group.subscribe((mrs: Map<number, MRDashboardProps>) => {
+        if (disposed) return;
+        setData((prev) => {
+          const newBranches = { ...prev.branches };
+          for (const [iid, mrProps] of mrs) {
+            const info = iidToBranch.get(iid);
+            if (info) {
+              newBranches[info.branch] = {
+                ...info.entry,
+                mr: mrProps,
+                fetchedAt: Date.now(),
+              };
+            }
+          }
+          return { ...prev, branches: newBranches, source: "live" as const };
+        });
+      });
+    })();
+
+    return () => {
+      disposed = true;
+      group?.dispose();
+    };
+  }, []);
+
+  // Count other branches
+  const localCount = Object.values(data.branches).filter(
+    (e) => !e.mr && !DEFAULT_BRANCHES.has(Object.keys(data.branches).find((k) => data.branches[k] === e) || ""),
+  ).length;
+
+  return (
+    <Box flexDirection="column" width="100%" marginTop={1}>
+      {/* Header */}
+      <Box gap={1} marginBottom={1} width="100%">
+        <Text bold color="cyan">rt status</Text>
+        {connection === "connected" ? (
+          <Badge color="green">live</Badge>
+        ) : (
+          <Spinner label="connecting" />
+        )}
+        {!detailView && activeBranches.length > 0 && (
+          <Text dimColor>{focusedIndex + 1}/{activeBranches.length}</Text>
+        )}
+        <Box flexGrow={1} />
+        {detailView ? (
+          <Text dimColor wrap="truncate">esc back · o open · q quit</Text>
+        ) : localCount > 0 ? (
+          <Text dimColor>{localCount} local-only</Text>
+        ) : null}
+      </Box>
+
+      {detailView && focusedMR ? (
+        /* ─── Detail view ─── */
+        <MRDetailView
+          mr={focusedMR}
+          ticket={focusedEntry?.[1]?.ticket ?? undefined}
+          actionState={actionState}
+        />
+      ) : (
+        /* ─── List view ─── */
+        <>
+          {activeBranches.length > 0 ? (
+            <ScrollableList reservedRows={6} itemHeight={3} handleInput={false} focusedIndex={focusedIndex}>
+              {activeBranches.map(([branch, entry], i) => (
+                <Box key={branch}>
+                  <MRRowTUI
+                    mr={entry.mr!}
+                    focused={i === focusedIndex}
+                    ticket={entry.ticket ?? undefined}
+                  />
+                </Box>
+              ))}
+            </ScrollableList>
+          ) : (
+            <StatusMessage variant="info">No active merge requests</StatusMessage>
+          )}
+        </>
+      )}
+
+      {/* Footer shortcuts — list view only */}
+      {!detailView && (
+        <Text dimColor wrap="truncate">↑↓ navigate · enter detail · o open · s {sortMode} · m merged{mergedDays > 0 ? ` (${mergedDays}d)` : ""} · q quit</Text>
+      )}
+    </Box>
+  );
+}
+
+
