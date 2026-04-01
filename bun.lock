@@ -6,7 +6,7 @@
       "name": "repo-tools",
       "dependencies": {
         "@inkjs/ui": "^2.0.0",
-        "@workforge/glance-sdk": "^0.5.1",
+        "@workforge/glance-sdk": "^0.5.2",
         "ink": "^6.8.0",
         "react": "^19.2.4",
       },
@@ -30,7 +30,7 @@
 
     "@types/react": ["@types/react@19.2.14", "", { "dependencies": { "csstype": "^3.2.2" } }, "sha512-ilcTH/UniCkMdtexkoCN0bI7pMcJDvmQFPvuPvmEaYA/NSfFTAgdUSLAoVjaRJm7+6PvcM+q1zYOwS4wTYMF9w=="],
 
-    "@workforge/glance-sdk": ["@workforge/glance-sdk@0.5.1", "", {}, "sha512-VLrski4t6FwY3gZhgNbFvTOK7muetdCp9/4yDoJ58Q7KbwByqmSmEHS33XNKjn3j/7Cd5CO1yvP2Gwu/uUF5zQ=="],
+    "@workforge/glance-sdk": ["@workforge/glance-sdk@0.5.2", "", {}, "sha512-PvyA4DK/qGuVb2xRiA14U/3hfEctZATBS1f/Gj35Px19tGKpfCTke5QMF54rJa/TxBJep+QUCi7xdXC8Mexcgg=="],
 
     "ansi-escapes": ["ansi-escapes@7.3.0", "", { "dependencies": { "environment": "^1.0.0" } }, "sha512-BvU8nYgGQBxcmMuEeUEmNTvrMVjJNSH7RgW24vXexN4Ven6qCvy4TntnvlnwnMLTVlcRQQdbRY8NKnaIoeWDNg=="],
 
