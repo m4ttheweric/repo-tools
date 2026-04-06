@@ -261,44 +261,85 @@ export async function createBranchFlow(args: string[]): Promise<void> {
 }
 
 async function createFromExistingTicket(apiKey: string): Promise<void> {
-  console.log(`\n  ${dim}fetching your assigned tickets…${reset}`);
-
-  const tickets = await fetchMyTodoTickets(apiKey);
-  if (tickets.length === 0) {
-    console.log(`  ${yellow}no unstarted/backlog tickets assigned to you${reset}\n`);
-    return;
-  }
-
   const { filterableSelect } = await import("../lib/rt-render.tsx");
 
-  const options = tickets
-    .filter((t) => t.branchName) // only tickets with suggested branch names
-    .map((t) => {
-      const title = t.title.length > 50 ? t.title.slice(0, 49) + "…" : t.title;
-      const info = `${title}${t.stateName ? ` [${t.stateName}]` : ""}`;
-      return {
-        value: t.identifier,
-        label: `${t.identifier}  ${cyan}${info}${reset}`,
-        hint: "",
-      };
-    });
+  const REFRESH = "__refresh__";
 
-  if (options.length === 0) {
-    console.log(`  ${yellow}no tickets with suggested branch names found${reset}\n`);
-    return;
+  /** Fetch tickets with an inline spinner written to stderr. */
+  async function loadTickets(): Promise<LinearTicket[]> {
+    const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"];
+    let fi = 0;
+    const timer = setInterval(() => {
+      process.stderr.write(`\r  ${dim}${frames[fi++ % frames.length]} fetching tickets…${reset}`);
+    }, 80);
+
+    try {
+      const tickets = await fetchMyTodoTickets(apiKey);
+      clearInterval(timer);
+      process.stderr.write(`\r\x1b[K`); // erase spinner line
+      return tickets;
+    } catch {
+      clearInterval(timer);
+      process.stderr.write(`\r\x1b[K`);
+      return [];
+    }
   }
 
-  const selectedId = await filterableSelect({
-    message: "Select a ticket",
-    options,
-  });
+  /** Build fzf options list from ticket array. */
+  function buildOptions(tickets: LinearTicket[]): Array<{ value: string; label: string; hint: string }> {
+    const ticketOptions = tickets
+      .filter((t) => t.branchName)
+      .map((t) => {
+        const title = t.title.length > 50 ? t.title.slice(0, 49) + "…" : t.title;
+        const info = `${title}${t.stateName ? ` [${t.stateName}]` : ""}`;
+        return {
+          value: t.identifier,
+          label: `${t.identifier}  ${cyan}${info}${reset}`,
+          hint: "",
+        };
+      });
 
-  if (!selectedId) return;
+    return [
+      { value: REFRESH, label: `${dim}↻  Refresh tickets${reset}`, hint: "" },
+      ...ticketOptions,
+    ];
+  }
 
-  const ticket = tickets.find((t) => t.identifier === selectedId);
-  if (!ticket?.branchName) return;
+  // Initial load
+  let tickets = await loadTickets();
 
-  await createWithBaseRef(ticket.branchName, ticket);
+  while (true) {
+    if (tickets.length === 0) {
+      console.log(`  ${yellow}no unstarted/backlog tickets assigned to you${reset}\n`);
+      // Still offer a refresh in case they just created a ticket
+      const retry = await filterableSelect({
+        message: "Select a ticket",
+        options: [{ value: REFRESH, label: `${dim}↻  Refresh tickets${reset}`, hint: "" }],
+      });
+      if (!retry || retry !== REFRESH) return;
+      tickets = await loadTickets();
+      continue;
+    }
+
+    const options = buildOptions(tickets);
+    const selectedId = await filterableSelect({
+      message: "Select a ticket",
+      options,
+    });
+
+    if (!selectedId) return; // ESC / cancelled
+
+    if (selectedId === REFRESH) {
+      tickets = await loadTickets();
+      continue;
+    }
+
+    const ticket = tickets.find((t) => t.identifier === selectedId);
+    if (!ticket?.branchName) return;
+
+    await createWithBaseRef(ticket.branchName, ticket);
+    return;
+  }
 }
 
 async function createNewTicketAndBranch(apiKey: string): Promise<void> {
@@ -389,13 +430,28 @@ async function createWithBaseRef(branchName: string, ticket?: LinearTicket): Pro
     });
 
     if (base === "remote") {
-      // Fetch latest
-      const remoteName = remoteDefault.split("/")[0]!;
+      const remoteName   = remoteDefault.split("/")[0]!;
       const remoteBranch = remoteDefault.split("/").slice(1).join("/");
+
+      // Animated spinner — git fetch can take 3–8s on slow connections
+      const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"];
+      let fi = 0;
+      const spinnerTimer = setInterval(() => {
+        process.stderr.write(`\r  ${dim}${frames[fi++ % frames.length]} fetching ${remoteDefault}…${reset}`);
+      }, 80);
+
+      const fetchStart = Date.now();
       try {
-        console.log(`  ${dim}fetching ${remoteDefault}…${reset}`);
         fetchRemoteBranch(cwd, remoteName, remoteBranch);
-      } catch { /* continue with local ref */ }
+        clearInterval(spinnerTimer);
+        const ms = Date.now() - fetchStart;
+        process.stderr.write(`\r\x1b[K`); // erase spinner line
+        console.log(`  ${green}✓${reset} fetched ${bold}${remoteDefault}${reset}  ${dim}(${ms}ms)${reset}`);
+      } catch {
+        clearInterval(spinnerTimer);
+        process.stderr.write(`\r\x1b[K`);
+        console.log(`  ${yellow}!${reset} fetch failed — branching from local ref`);
+      }
       startPoint = remoteDefault;
     }
   }
@@ -408,7 +464,8 @@ async function createWithBaseRef(branchName: string, ticket?: LinearTicket): Pro
     }
     console.log("");
 
-    // Notify daemon
+    // Notify daemon — fire and forget, runner's FSEvents watcher will
+    // pick up the HEAD change independently and update the UI immediately
     daemonQuery("cache:refresh").catch(() => {});
   } catch (err) {
     console.log(`  ${red}✗${reset} failed: ${err instanceof Error ? err.message : String(err)}\n`);
