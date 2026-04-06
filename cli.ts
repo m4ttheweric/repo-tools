@@ -73,6 +73,27 @@ const TREE: Record<string, CommandNode> = {
     context: "repo",
   },
 
+  run: {
+    description: "Interactive script runner (repo → worktree → package → script)",
+    module: "./commands/run.ts",
+    fn: "runCommand",
+    requiresTTY: true,
+  },
+
+  attach: {
+    description: "Attach terminal to a daemon-managed process",
+    module: "./commands/attach.ts",
+    fn: "attachProcess",
+    requiresTTY: true,
+  },
+
+  runner: {
+    description: "Multiplexed service runner dashboard",
+    module: "./commands/runner.tsx",
+    fn: "showRunner",
+    fullscreen: true,
+  },
+
   port: {
     description: "Port scanner + killer (zero-config, daemon-powered)",
     module: "./commands/port.ts",
