@@ -119,52 +119,62 @@ const DEFAULT_BRANCHES = new Set(["master", "main", "develop", "development", "s
  * Build a full label string for a branch picker option.
  * Everything is in the label so it's always visible.
  *
- * Format: `dirname · branch · ✓ ◉ CV-1287: Title [In Progress]`
+ * When the branch is a Linear ticket branch (linearId extracted) AND ticket
+ * data is available, the branch name is dropped entirely — it's just a
+ * machine-readable encoding of the ticket. Show the ticket title instead.
+ *
+ * Format (ticket branch):   `dirname · Ticket Title [In Progress] · ✓ ◉`
+ * Format (normal branch):   `dirname · branch · ✓ ◉`
  */
 export function formatBranchLabel(eb: EnrichedBranch): string {
   const sep = `${dim} · ${reset}`;
   const parts: string[] = [eb.dirName];
 
-  if (eb.branch) {
-    const branchDisplay = eb.branch.length > 40 ? eb.branch.slice(0, 39) + "…" : eb.branch;
-    parts.push(`${dim}${branchDisplay}${reset}`);
-  }
-
-  // MR + pipeline info
-  const infoParts: string[] = [];
-
+  // MR pipeline + state icons
+  const iconParts: string[] = [];
   if (eb.mr?.pipeline) {
     const icon = PIPELINE_ICONS[eb.mr.pipeline.status] || "";
-    if (icon) infoParts.push(icon);
+    if (icon) iconParts.push(icon);
   }
-
   if (eb.mr) {
     const stateIcon = MR_STATE_ICONS[eb.mr.state] || "";
-    if (stateIcon) infoParts.push(stateIcon);
-  }
-
-  if (eb.ticket) {
-    let status = "";
-    if (eb.ticket.stateName) {
-      const color = eb.ticket.stateColor ? hexToAnsi(eb.ticket.stateColor) : dim;
-      status = ` ${color}[${eb.ticket.stateName}]${reset}`;
-    }
-    const title = eb.ticket.title.length > 40
-      ? eb.ticket.title.slice(0, 39) + "…"
-      : eb.ticket.title;
-    infoParts.push(`${eb.ticket.identifier}: ${title}${status}`);
-  } else if (eb.linearId) {
-    infoParts.push(eb.linearId);
+    if (stateIcon) iconParts.push(stateIcon);
   }
 
   const isDefault = DEFAULT_BRANCHES.has(eb.branch);
+  // Branch is a ticket branch when we have both the linearId and ticket data.
+  const isTicketBranch = !!(eb.linearId && eb.ticket);
 
-  if (infoParts.length > 0) {
-    parts.push(infoParts.join(" "));
-  } else if (isDefault) {
-    parts.push(`${dim}[main branch]${reset}`);
+  if (isTicketBranch) {
+    // Replace the branch name with the ticket title — the branch slug is redundant
+    let status = "";
+    if (eb.ticket!.stateName) {
+      const color = eb.ticket!.stateColor ? hexToAnsi(eb.ticket!.stateColor) : dim;
+      status = ` ${color}[${eb.ticket!.stateName}]${reset}`;
+    }
+    const title = eb.ticket!.title.length > 40
+      ? eb.ticket!.title.slice(0, 39) + "…"
+      : eb.ticket!.title;
+    parts.push(`${title}${status}`);
+    if (iconParts.length > 0) parts.push(iconParts.join(" "));
   } else {
-    parts.push(`${dim}[Local Only]${reset}`);
+    // Branch name is meaningful — show it
+    if (eb.branch) {
+      const branchDisplay = eb.branch.length > 40 ? eb.branch.slice(0, 39) + "…" : eb.branch;
+      parts.push(`${dim}${branchDisplay}${reset}`);
+    }
+
+    // Append MR icons + Linear ID fallback (when ticket not yet fetched)
+    const infoParts: string[] = [...iconParts];
+    if (eb.linearId) infoParts.push(eb.linearId);
+
+    if (infoParts.length > 0) {
+      parts.push(infoParts.join(" "));
+    } else if (isDefault) {
+      parts.push(`${dim}[main branch]${reset}`);
+    } else {
+      parts.push(`${dim}[Local Only]${reset}`);
+    }
   }
 
   return parts.join(sep);
