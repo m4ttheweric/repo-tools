@@ -6,10 +6,15 @@
  * without spawning anything. All picker UI output goes to stderr so the
  * JSON result is cleanly parseable.
  *
+ * When context is resolved by the dispatcher (via --repo flag or cwd),
+ * the repo and worktree steps are skipped and the command jumps straight
+ * to package → script selection.
+ *
  * Used by rt runner's [a] handler to add a new process to a lane.
  */
 
 import { existsSync, readFileSync } from "fs";
+import { execSync } from "child_process";
 import { join, relative } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { filterableSelect } from "../lib/rt-render.tsx";
@@ -43,27 +48,34 @@ function getPackageJsonScripts(dir: string): string[] {
   }
 }
 
-export async function runCommand(args: string[], _ctx: CommandContext): Promise<void> {
+export async function runCommand(args: string[], ctx: CommandContext): Promise<void> {
   const resolveOnly = args.includes("--resolve-only");
-  const repoIdx = args.indexOf("--repo");
-  const repoFlag = repoIdx !== -1 && repoIdx + 1 < args.length ? args[repoIdx + 1] : undefined;
 
-  // ── Step 1: Pick repo ──────────────────────────────────────────────────────
+  let worktreePath: string;
+  let worktreeBranch: string;
 
-  const knownRepos = getKnownRepos();
-  if (knownRepos.length === 0) {
-    process.stderr.write("No known repos. Run rt from inside a git repo to register it.\n");
-    process.exit(1);
-  }
+  if (ctx.identity) {
+    // Dispatcher already resolved repo + worktree via --repo flag or cwd detection.
+    // Jump straight to package → script selection.
+    worktreePath = ctx.identity.repoRoot;
+    try {
+      worktreeBranch = execSync("git rev-parse --abbrev-ref HEAD", {
+        cwd: worktreePath, encoding: "utf8", stdio: "pipe",
+      }).trim();
+    } catch {
+      worktreeBranch = "";
+    }
+  } else {
+    // ── Step 1: Pick repo ────────────────────────────────────────────────────
+    const knownRepos = getKnownRepos();
+    if (knownRepos.length === 0) {
+      process.stderr.write("No known repos. Run rt from inside a git repo to register it.\n");
+      process.exit(1);
+    }
 
-  let selectedRepo = repoFlag
-    ? knownRepos.find((r) => r.repoName === repoFlag)
-    : undefined;
+    let selectedRepo = knownRepos.length === 1 ? knownRepos[0]! : undefined;
 
-  if (!selectedRepo) {
-    if (knownRepos.length === 1) {
-      selectedRepo = knownRepos[0]!;
-    } else {
+    if (!selectedRepo) {
       const chosen = await filterableSelect({
         message: "Select repo",
         options: knownRepos.map((r) => ({
@@ -77,37 +89,33 @@ export async function runCommand(args: string[], _ctx: CommandContext): Promise<
       if (!chosen) { process.exit(1); }
       selectedRepo = knownRepos.find((r) => r.repoName === chosen)!;
     }
-  }
 
-  // ── Step 2: Pick worktree ──────────────────────────────────────────────────
+    // ── Step 2: Pick worktree ────────────────────────────────────────────────
+    const worktrees = selectedRepo.worktrees.filter((wt) => existsSync(wt.path));
+    if (worktrees.length === 0) {
+      process.stderr.write(`No accessible worktrees for ${selectedRepo.repoName}.\n`);
+      process.exit(1);
+    }
 
-  const worktrees = selectedRepo.worktrees.filter((wt) => existsSync(wt.path));
-  if (worktrees.length === 0) {
-    process.stderr.write(`No accessible worktrees for ${selectedRepo.repoName}.\n`);
-    process.exit(1);
-  }
+    if (worktrees.length === 1) {
+      worktreePath = worktrees[0]!.path;
+      worktreeBranch = worktrees[0]!.branch;
+    } else {
+      const chosen = await filterableSelect({
+        message: "Select worktree",
+        options: worktrees.map((wt) => ({
+          value: wt.path,
+          label: wt.branch,
+          hint: wt.path,
+        })),
+        stderr: true,
+      });
 
-  let worktreePath: string;
-  let worktreeBranch: string;
-
-  if (worktrees.length === 1) {
-    worktreePath = worktrees[0]!.path;
-    worktreeBranch = worktrees[0]!.branch;
-  } else {
-    const chosen = await filterableSelect({
-      message: "Select worktree",
-      options: worktrees.map((wt) => ({
-        value: wt.path,
-        label: wt.branch,
-        hint: wt.path,
-      })),
-      stderr: true,
-    });
-
-    if (!chosen) { process.exit(1); }
-    const wt = worktrees.find((w) => w.path === chosen)!;
-    worktreePath = wt.path;
-    worktreeBranch = wt.branch;
+      if (!chosen) { process.exit(1); }
+      const wt = worktrees.find((w) => w.path === chosen)!;
+      worktreePath = wt.path;
+      worktreeBranch = wt.branch;
+    }
   }
 
   // ── Step 3: Pick package ───────────────────────────────────────────────────
@@ -118,14 +126,12 @@ export async function runCommand(args: string[], _ctx: CommandContext): Promise<
   let packageLabel: string;
 
   if (packages.length === 0) {
-    // Single-package repo — use root
     packagePath = worktreePath;
     packageLabel = ".";
   } else if (packages.length === 1) {
     packagePath = join(worktreePath, packages[0]!.path);
     packageLabel = packages[0]!.name;
   } else {
-    // Include root as an option too
     const rootPkgJson = join(worktreePath, "package.json");
     const rootScripts = existsSync(rootPkgJson)
       ? Object.keys(
@@ -144,12 +150,7 @@ export async function runCommand(args: string[], _ctx: CommandContext): Promise<
       })),
     ];
 
-    const chosen = await filterableSelect({
-      message: "Select package",
-      options,
-      stderr: true,
-    });
-
+    const chosen = await filterableSelect({ message: "Select package", options, stderr: true });
     if (!chosen) { process.exit(1); }
     packagePath = chosen;
     if (chosen === worktreePath) {
@@ -173,7 +174,6 @@ export async function runCommand(args: string[], _ctx: CommandContext): Promise<
   if (scripts.length === 1) {
     selectedScript = scripts[0]!;
   } else {
-    // Show script content as hint
     let pkgScripts: Record<string, string> = {};
     try {
       const pkg = JSON.parse(readFileSync(join(packagePath, "package.json"), "utf8")) as { scripts?: Record<string, string> };
@@ -208,12 +208,10 @@ export async function runCommand(args: string[], _ctx: CommandContext): Promise<
   };
 
   if (resolveOnly) {
-    // Write JSON to stdout; all picker output already went to stderr
     process.stdout.write(JSON.stringify(result) + "\n");
     return;
   }
 
-  // Not --resolve-only: spawn the script
   const cmd = `${pm} run ${selectedScript}`;
   process.stderr.write(`\nRunning: ${cmd}\n`);
   process.stderr.write(`  in: ${packagePath}\n\n`);

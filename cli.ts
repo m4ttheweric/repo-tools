@@ -77,6 +77,7 @@ const TREE: Record<string, CommandNode> = {
     description: "Interactive script runner (repo → worktree → package → script)",
     module: "./commands/run.ts",
     fn: "runCommand",
+    context: "worktree",
     requiresTTY: true,
   },
 
