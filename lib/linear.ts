@@ -74,6 +74,7 @@ const GRAPHQL_URL = "https://api.linear.app/graphql";
 export interface LinearTicket {
   identifier: string;
   title: string;
+  description: string | null;
   url: string;
   stateName: string | null;
   stateColor: string | null;
@@ -83,7 +84,7 @@ export interface LinearTicket {
 const ISSUE_BY_ID_QUERY = `
   query IssueById($id: String!) {
     issue(id: $id) {
-      id identifier title url branchName
+      id identifier title description url branchName
       state { name color }
     }
   }
@@ -93,7 +94,7 @@ const SEARCH_ISSUES_QUERY = `
   query SearchIssues($term: String!) {
     searchIssues(term: $term, first: 5) {
       nodes {
-        id identifier title url branchName
+        id identifier title description url branchName
         state { name color }
       }
     }
@@ -120,6 +121,7 @@ function toTicket(raw: Record<string, unknown>): LinearTicket {
   return {
     identifier: raw.identifier as string,
     title: raw.title as string,
+    description: (raw.description as string) ?? null,
     url: raw.url as string,
     stateName: state?.name ?? null,
     stateColor: state?.color ?? null,
@@ -163,12 +165,12 @@ export async function fetchTicketsBatch(
 
   // Build a single query with aliased fields:
   //   query Batch {
-  //     i0: issue(id: "CV-1403") { id identifier title url branchName state { name color } }
-  //     i1: issue(id: "CV-1386") { id identifier title url branchName state { name color } }
+  //     i0: issue(id: "CV-1403") { id identifier title description url branchName state { name color } }
+  //     i1: issue(id: "CV-1386") { id identifier title description url branchName state { name color } }
   //     ...
   //   }
   const fields = identifiers.map(
-    (id, idx) => `i${idx}: issue(id: "${id}") { id identifier title url branchName state { name color } }`,
+    (id, idx) => `i${idx}: issue(id: "${id}") { id identifier title description url branchName state { name color } }`,
   );
   const query = `query Batch { ${fields.join("\n")} }`;
 
@@ -239,7 +241,7 @@ const CREATE_ISSUE_MUTATION = `
     issueCreate(input: { teamId: $teamId, title: $title, description: $description }) {
       success
       issue {
-        id identifier title url branchName
+        id identifier title description url branchName
         state { name color }
       }
     }
@@ -285,7 +287,7 @@ const MY_TODO_ISSUES_QUERY = `
         orderBy: updatedAt
       ) {
         nodes {
-          id identifier title url branchName
+          id identifier title description url branchName
           state { name color }
         }
       }
