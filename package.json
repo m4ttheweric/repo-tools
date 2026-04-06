@@ -4,6 +4,10 @@
   "bin": {
     "rt": "./cli.ts"
   },
+  "scripts": {
+    "test": "bun test lib/daemon/__tests__",
+    "test:watch": "bun test --watch lib/daemon/__tests__"
+  },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/react": "^19.2.14"

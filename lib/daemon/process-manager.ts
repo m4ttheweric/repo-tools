@@ -93,7 +93,7 @@ export class ProcessManager {
     const logBuffer = this.logBuffer;
     const outputHooks = this.outputHooks;
 
-    const terminal = Bun.Terminal({
+    const terminal = new Bun.Terminal({
       cols: 220,
       rows: 50,
       data(_term: ReturnType<typeof Bun.Terminal>, chunk: Uint8Array) {
