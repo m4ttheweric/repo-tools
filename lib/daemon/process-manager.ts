@@ -33,6 +33,8 @@ export class ProcessManager {
   private stateStore: StateStore;
   private logBuffer: LogBuffer;
   private attachServer: AttachServer;
+  /** Full user PATH resolved once at daemon startup from a login+interactive shell. */
+  userPath: string | undefined;
 
   /** Per-process set of live output subscribers (registered by AttachServer). */
   private outputHooks = new Map<string, Set<(chunk: Uint8Array) => void>>();
@@ -107,7 +109,8 @@ export class ProcessManager {
       },
     });
 
-    const mergedEnv = { ...process.env, ...opts.env } as Record<string, string>;
+    const pathEnv = this.userPath ? { PATH: this.userPath } : {};
+    const mergedEnv = { ...process.env, ...pathEnv, ...opts.env } as Record<string, string>;
 
     const proc = Bun.spawn(["bash", "-c", cmd], {
       terminal,
