@@ -39,8 +39,20 @@ export class ExclusiveGroup {
   private load(): void {
     try {
       if (existsSync(this.persistPath)) {
-        const raw = JSON.parse(readFileSync(this.persistPath, "utf8")) as Record<string, GroupRecord>;
-        for (const [groupId, record] of Object.entries(raw)) {
+        const raw = JSON.parse(readFileSync(this.persistPath, "utf8"));
+        // Support both formats:
+        //   array: [{id, members, active|activeId}, ...]
+        //   object: {groupId: {members, active}, ...}
+        const entries: [string, GroupRecord][] = Array.isArray(raw)
+          ? raw.map((r: any) => [
+              String(r.id),
+              { members: r.members ?? [], active: r.active ?? r.activeId ?? null },
+            ])
+          : Object.entries(raw as Record<string, any>).map(([k, v]: [string, any]) => [
+              k,
+              { members: v.members ?? [], active: v.active ?? v.activeId ?? null },
+            ]);
+        for (const [groupId, record] of entries) {
           this.groups.set(groupId, record);
         }
       }
@@ -88,22 +100,35 @@ export class ExclusiveGroup {
     this.persist();
   }
 
-  async activate(groupId: string, processId: string): Promise<void> {
+  /**
+   * Activate a process in a group.
+   *
+   * mode "warm"   — SIGSTOP other running members (they stay in memory, instant resume)
+   * mode "single" — kill other running/warm members (frees resources, cold start on switch)
+   */
+  async activate(groupId: string, processId: string, mode: "warm" | "single" = "warm"): Promise<void> {
     const group = this.groups.get(groupId);
     if (!group) throw new Error(`ExclusiveGroup: group "${groupId}" does not exist`);
 
-    // Suspend all other running members
-    const suspendPromises: Promise<void>[] = [];
+    const otherPromises: Promise<void>[] = [];
     for (const memberId of group.members) {
       if (memberId === processId) continue;
       const state = this.stateStore.getState(memberId);
-      if (state === "running") {
-        suspendPromises.push(this.suspendManager.suspend(memberId));
+      if (mode === "single") {
+        // Kill any running or warm members — free the resources
+        if (state === "running" || state === "warm") {
+          otherPromises.push(this.suspendManager.kill(memberId));
+        }
+      } else {
+        // Suspend running members — keep them in memory for fast resume
+        if (state === "running") {
+          otherPromises.push(this.suspendManager.suspend(memberId));
+        }
       }
     }
-    await Promise.all(suspendPromises);
+    await Promise.all(otherPromises);
 
-    // Resume the target if it was warm
+    // Resume the target if it was warm (only relevant in "warm" mode)
     const targetState = this.stateStore.getState(processId);
     if (targetState === "warm") {
       await this.suspendManager.resume(processId);

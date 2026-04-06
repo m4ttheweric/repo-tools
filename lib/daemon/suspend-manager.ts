@@ -72,4 +72,8 @@ export class SuspendManager {
     this.sendSignalToTree(pids, "SIGCONT");
     this.stateStore.setState(processId, "running");
   }
+
+  async kill(processId: string): Promise<void> {
+    await this.processManager.kill(processId);
+  }
 }
