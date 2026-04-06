@@ -55,9 +55,9 @@ import { RT_ROOT, getKnownRepos, type KnownRepo } from "../lib/repo.ts";
 
 const CLI_PATH = join(RT_ROOT, "cli.ts");
 
-/** Open a horizontal tmux split running `cmd`. Non-blocking — returns immediately. */
+/** Open a vertical tmux split (below current pane) running `cmd`. Non-blocking. */
 function tmuxSplit(cmd: string, cwd?: string): void {
-  const args = ["split-window", "-h"];
+  const args = ["split-window", "-v"];
   if (cwd) args.push("-c", cwd);
   args.push(cmd);
   spawnSync("tmux", args);
@@ -78,8 +78,7 @@ type InteractiveRequest = { type: "quit" };
 
 type Mode =
   | { type: "normal" }
-  | { type: "repo-pick"; purpose: "new-lane"; idx: number }
-  | { type: "port-input"; purpose: "new-lane" | "edit-port"; laneId?: string; repoName?: string }
+  | { type: "port-input"; purpose: "edit-port"; laneId: string }
   | { type: "entry-picker"; purpose: "remove"; laneId: string; idx: number }
   | { type: "command-edit"; laneId: string; entryId: string }
   | { type: "confirm-reset" }
@@ -343,7 +342,7 @@ async function runOnce(
 
     // Ensure a bg pane exists for this lane; refresh it if this is the first entry
     if (!lanePanes.has(laneId)) {
-      createBgPane(laneId, processId);
+      createBgPane(laneId, processId, `lane ${laneId} · ${lane.repoName} :${lane.canonicalPort}`);
       initDisplayPane(laneId);
     } else if (isFirst) {
       // Lane had no entries before — update the "no service" pane to the real attach loop
@@ -364,6 +363,48 @@ async function runOnce(
     if (runnerPaneId) spawnSync("tmux", ["select-pane", "-t", runnerPaneId]);
   }
 
+  // ── MR info pane (bottom-right, hidden by default, toggled with [i]) ────────
+  let mrPaneEnabled = false; // global on/off — persists across navigation
+  let mrPaneId = "";         // tmux pane ID; "" = not yet spawned
+  let mrPaneBranch = "";     // branch currently shown in the MR pane
+
+  function showMrPane(branch: string): void {
+    const displayPaneId = displayedLaneId ? lanePanes.get(displayedLaneId) : undefined;
+    if (!displayPaneId) return;
+    const cmd = `${process.execPath} ${CLI_PATH} mr-status ${branch || ""}`;
+    const result = spawnSync("tmux", [
+      "split-window", "-v", "-l", "14", "-t", displayPaneId,
+      "-P", "-F", "#{pane_id}", "-d", cmd,
+    ], { encoding: "utf8" });
+    mrPaneId = result.stdout.trim();
+    mrPaneBranch = branch;
+    if (mrPaneId) spawnSync("tmux", ["select-pane", "-t", mrPaneId, "-T", `MR · ${branch || "no branch"}`]);
+    restoreFocus();
+  }
+
+  function hideMrPane(): void {
+    if (!mrPaneId) return;
+    spawnSync("tmux", ["kill-pane", "-t", mrPaneId]);
+    mrPaneId = "";
+    mrPaneBranch = "";
+  }
+
+  /** If the info pane is enabled and the branch changed, respawn it. */
+  function updateMrPane(branch: string): void {
+    if (!mrPaneEnabled) return;
+    if (branch === mrPaneBranch && mrPaneId) return;
+    hideMrPane();
+    showMrPane(branch);
+  }
+
+  /** Branch of the currently focused lane entry. */
+  function focusedBranch(s: { lanes: LaneConfig[]; laneIdx: number; entryIdx: number }): string {
+    const lane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
+    if (!lane) return "";
+    const entry = lane.entries[Math.min(s.entryIdx, lane.entries.length - 1)];
+    return entry?.branch ?? "";
+  }
+
   function ensureBgWindow(): void {
     if (bgWindowCreated) return;
     spawnSync("tmux", ["new-window", "-d", "-n", bgWindowName, "sleep infinity"]);
@@ -371,7 +412,7 @@ async function runOnce(
   }
 
   /** Create a pane in the background window for `laneId`, return its pane ID. */
-  function createBgPane(laneId: string, processId: string): string {
+  function createBgPane(laneId: string, processId: string, paneTitle?: string): string {
     ensureBgWindow();
     const result = spawnSync("tmux", [
       "split-window", "-t", bgWindowName, "-d", "-P", "-F", "#{pane_id}",
@@ -379,6 +420,7 @@ async function runOnce(
     ], { encoding: "utf8" });
     const paneId = result.stdout.trim();
     lanePanes.set(laneId, paneId);
+    if (paneTitle) spawnSync("tmux", ["select-pane", "-t", paneId, "-T", paneTitle]);
     return paneId;
   }
 
@@ -797,6 +839,7 @@ async function runOnce(
           <text style={{ fg: C.muted }}>[r]</text><text style={{ fg: C.dim }}>remove</text>
           <text style={{ fg: C.muted }}>[e]</text><text style={{ fg: C.dim }}>cmd</text>
           <text style={{ fg: C.muted }}>[t]</text><text style={{ fg: C.dim }}>shell</text>
+          <text style={{ fg: C.muted }}>[i]</text><text style={{ fg: C.dim }}>info</text>
         </row>
       </column>
     );
@@ -816,30 +859,6 @@ async function runOnce(
         <text style={{ fg: C.dim }}>{"  "}{s.runnerName}</text>
       </row>
     );
-
-    // Repo-pick overlay (for new-lane creation)
-    if (s.mode.type === "repo-pick") {
-      const repoPickMode = s.mode as { type: "repo-pick"; purpose: "new-lane"; idx: number };
-      const repos = s.knownRepos;
-      const selectedIdx = repoPickMode.idx;
-      return (
-        <column p={1} gap={1}>
-          <Header />
-          <text style={{ fg: C.muted }}>Select a repo for this lane:</text>
-          <column>
-            {repos.map((repo, i) => (
-              <text
-                key={repo.repoName}
-                style={{ fg: i === selectedIdx ? C.cyan : C.white, bold: i === selectedIdx }}
-              >
-                {i === selectedIdx ? "▶ " : "  "}{repo.repoName}
-              </text>
-            ))}
-          </column>
-          <text style={{ fg: C.dim }}>j/k navigate · Enter select · Esc cancel</text>
-        </column>
-      );
-    }
 
     // Entry-picker overlay
     if (s.mode.type === "entry-picker") {
@@ -894,7 +913,7 @@ async function runOnce(
         return <text style={{ fg: C.yel }}>{`Spread ${spreadLabel} to all worktrees of ${spreadLane?.repoName ?? ""}?  [y] confirm  [n / Esc] cancel`}</text>;
       }
       if (s.mode.type === "port-input") {
-        const label = s.mode.purpose === "new-lane" ? "Add lane — port:" : "Edit port:";
+        const label = "Edit port:";
         return (
           <focusTrap id="input-trap" active={true} initialFocus="port-input">
             <row gap={1}>
@@ -1003,12 +1022,25 @@ async function runOnce(
     );
   }, 3_000);
 
+  // ── tmux window options ───────────────────────────────────────────────────
+  // Pane borders: thick lines, dim inactive, cyan active, title in top border.
+  spawnSync("tmux", ["set-option", "-w", "pane-border-lines",        "heavy"]);
+  spawnSync("tmux", ["set-option", "-w", "pane-border-style",        "fg=colour238"]);
+  spawnSync("tmux", ["set-option", "-w", "pane-active-border-style", "fg=cyan"]);
+  spawnSync("tmux", ["set-option", "-w", "pane-border-status",       "top"]);
+  spawnSync("tmux", ["set-option", "-w", "pane-border-format",       " #{pane_title} "]);
+  // Mouse support: click to focus panes, scroll, resize.
+  spawnSync("tmux", ["set-option", "-g", "mouse", "on"]);
+  // Name the runner pane itself.
+  if (runnerPaneId) spawnSync("tmux", ["select-pane", "-t", runnerPaneId, "-T", "rt runner"]);
+
   // ── Lane pane startup ─────────────────────────────────────────────────────
   // Create one background pane per lane and swap the first into the display split.
   for (const lane of initialLanes) {
     const entry = lane.entries.find((e) => e.id === lane.activeEntryId) ?? lane.entries[0];
     const processId = entry ? entryWindowName(lane.id, entry.id) : "";
-    createBgPane(lane.id, processId);
+    const title = `lane ${lane.id} · ${lane.repoName} :${lane.canonicalPort}`;
+    createBgPane(lane.id, processId, title);
   }
   const firstInitLane = initialLanes[0];
   if (firstInitLane) {
@@ -1024,36 +1056,73 @@ async function runOnce(
       const newLi = Math.min(state.laneIdx + 1, state.lanes.length - 1);
       update((s) => ({ ...s, laneIdx: newLi, entryIdx: 0 }));
       switchDisplay(state.lanes[newLi]?.id ?? "");
+      updateMrPane(state.lanes[newLi]?.entries[0]?.branch ?? "");
     },
     k: ({ state, update }) => {
       const newLi = Math.max(0, state.laneIdx - 1);
       update((s) => ({ ...s, laneIdx: newLi, entryIdx: 0 }));
       switchDisplay(state.lanes[newLi]?.id ?? "");
+      updateMrPane(state.lanes[newLi]?.entries[0]?.branch ?? "");
     },
     down: ({ state, update }) => {
       const newLi = Math.min(state.laneIdx + 1, state.lanes.length - 1);
       update((s) => ({ ...s, laneIdx: newLi, entryIdx: 0 }));
       switchDisplay(state.lanes[newLi]?.id ?? "");
+      updateMrPane(state.lanes[newLi]?.entries[0]?.branch ?? "");
     },
     up: ({ state, update }) => {
       const newLi = Math.max(0, state.laneIdx - 1);
       update((s) => ({ ...s, laneIdx: newLi, entryIdx: 0 }));
       switchDisplay(state.lanes[newLi]?.id ?? "");
+      updateMrPane(state.lanes[newLi]?.entries[0]?.branch ?? "");
     },
 
     right: ({ state, update }) => {
       const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      update((s) => ({ ...s, entryIdx: Math.min(s.entryIdx + 1, (lane?.entries.length ?? 1) - 1) }));
+      const newEi = Math.min(state.entryIdx + 1, (lane?.entries.length ?? 1) - 1);
+      update((s) => ({ ...s, entryIdx: newEi }));
+      updateMrPane(lane?.entries[newEi]?.branch ?? "");
     },
-    left: ({ update }) => update((s) => ({ ...s, entryIdx: Math.max(0, s.entryIdx - 1) })),
+    left: ({ state, update }) => {
+      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
+      const newEi = Math.max(0, state.entryIdx - 1);
+      update((s) => ({ ...s, entryIdx: newEi }));
+      updateMrPane(lane?.entries[newEi]?.branch ?? "");
+    },
 
-    // [l] add lane — first pick a repo, then enter port
-    l: ({ state, update }) => {
+    // [l] add lane — open tmux picker (repo + port), poll for result
+    l: ({ state }) => {
       if (state.knownRepos.length === 0) {
         showToast("No known repos — run rt in a repo first");
         return;
       }
-      update((s) => ({ ...s, mode: { type: "repo-pick", purpose: "new-lane", idx: 0 }, inputValue: "" }));
+      const tmpFile = join(tmpdir(), `rt-lane-${Date.now()}.json`);
+      const cmd = `${process.execPath} ${CLI_PATH} pick-lane > ${tmpFile}`;
+      tmuxSplit(cmd);
+
+      const poll = setInterval(() => {
+        if (!existsSync(tmpFile)) return;
+        clearInterval(poll);
+        try {
+          const { repoName, port } = JSON.parse(readFileSync(tmpFile, "utf8").trim()) as { repoName: string; port: number };
+          unlinkSync(tmpFile);
+          safeUpdate((s) => {
+            if (s.lanes.find((l) => l.canonicalPort === port)) {
+              showToast(`port ${port} is already used by another lane`);
+              return s;
+            }
+            const id = nextLaneId(s.lanes);
+            const newLane: LaneConfig = { id, canonicalPort: port, entries: [], repoName };
+            void daemonQuery("group:create", { id: newLane.id });
+            void ensureProxy(newLane);
+            createBgPane(newLane.id, "", `lane ${newLane.id} · ${newLane.repoName} :${newLane.canonicalPort}`);
+            initDisplayPane(newLane.id);
+            const next = [...s.lanes, newLane];
+            saveCurrent(next);
+            return { ...s, lanes: next, laneIdx: next.length - 1 };
+          });
+        } catch { /* ignore parse errors */ }
+      }, 300);
     },
 
     // [p] edit canonical port
@@ -1075,7 +1144,7 @@ async function runOnce(
       const laneRepo = state.knownRepos.find((r) => r.repoName === lane.repoName);
       const laneRepoRoot = laneRepo?.worktrees[0]?.path ?? process.cwd();
       const tmpFile = join(tmpdir(), `rt-resolve-${Date.now()}.json`);
-      const cmd = `${process.execPath} ${CLI_PATH} run --resolve-only --pick-worktree > ${tmpFile} 2>/dev/null`;
+      const cmd = `${process.execPath} ${CLI_PATH} run --resolve-only --repo ${JSON.stringify(lane.repoName)} > ${tmpFile} 2>/dev/null`;
       tmuxSplit(cmd, laneRepoRoot);
 
       const poll = setInterval(() => {
@@ -1167,6 +1236,17 @@ async function runOnce(
       tmuxSplit(process.env.SHELL ?? "zsh", entry.targetDir);
     },
 
+    // [i] toggle the MR/ticket info pane (bottom-right, hidden by default)
+    i: ({ state }) => {
+      if (mrPaneEnabled) {
+        mrPaneEnabled = false;
+        hideMrPane();
+      } else {
+        mrPaneEnabled = true;
+        showMrPane(focusedBranch(state));
+      }
+    },
+
     // [Enter] — right pane always shows the service; no explicit action needed
   });
 
@@ -1217,53 +1297,6 @@ async function runOnce(
   // ── Modal mode bindings ────────────────────────────────────────────────────
 
   app.modes({
-    // Repo picker for new-lane creation
-    "repo-pick": {
-      j: ({ state, update }) => {
-        if (state.mode.type !== "repo-pick") return;
-        update((s) => s.mode.type === "repo-pick"
-          ? { ...s, mode: { ...s.mode, idx: Math.min(s.mode.idx + 1, s.knownRepos.length - 1) } }
-          : s
-        );
-      },
-      k: ({ state, update }) => {
-        if (state.mode.type !== "repo-pick") return;
-        update((s) => s.mode.type === "repo-pick"
-          ? { ...s, mode: { ...s.mode, idx: Math.max(0, s.mode.idx - 1) } }
-          : s
-        );
-      },
-      down: ({ state, update }) => {
-        if (state.mode.type !== "repo-pick") return;
-        update((s) => s.mode.type === "repo-pick"
-          ? { ...s, mode: { ...s.mode, idx: Math.min(s.mode.idx + 1, s.knownRepos.length - 1) } }
-          : s
-        );
-      },
-      up: ({ state, update }) => {
-        if (state.mode.type !== "repo-pick") return;
-        update((s) => s.mode.type === "repo-pick"
-          ? { ...s, mode: { ...s.mode, idx: Math.max(0, s.mode.idx - 1) } }
-          : s
-        );
-      },
-      enter: ({ state, update }) => {
-        if (state.mode.type !== "repo-pick") return;
-        const repo = state.knownRepos[state.mode.idx];
-        if (!repo) { update((s) => ({ ...s, mode: { type: "normal" } })); app.setMode("default"); return; }
-        update((s) => ({
-          ...s,
-          mode: { type: "port-input", purpose: "new-lane", repoName: repo.repoName },
-          inputValue: "",
-        }));
-        app.setMode("port-input");
-      },
-      escape: ({ update }) => {
-        update((s) => ({ ...s, mode: { type: "normal" } }));
-        app.setMode("default");
-      },
-    },
-
     // Port input: digits go to ui.input(), only enter/escape handled here
     "port-input": {
       enter: ({ state, update }) => {
@@ -1277,27 +1310,6 @@ async function runOnce(
           if (ephemeralConflict) {
             showToast(`port ${port} is used by a running entry — pick another`);
             returnToNormal(update);
-          } else if (mode.purpose === "new-lane") {
-            if (!state.lanes.find((l) => l.canonicalPort === port)) {
-              const id = nextLaneId(state.lanes);
-              const repoName = mode.repoName ?? "";
-              const newLane: LaneConfig = { id, canonicalPort: port, entries: [], repoName };
-              // Ensure proxy + group exist asynchronously; UI updates immediately
-              void daemonQuery("group:create", { id: newLane.id });
-              void ensureProxy(newLane);
-              // Create a "no service" bg pane for the new lane
-              createBgPane(newLane.id, "");
-              initDisplayPane(newLane.id);
-              update((s) => {
-                const next = [...s.lanes, newLane];
-                saveCurrent(next);
-                return { ...s, lanes: next, laneIdx: next.length - 1, mode: { type: "normal" }, inputValue: "" };
-              });
-              app.setMode("default");
-            } else {
-              showToast(`port ${port} is already used by another lane`);
-              returnToNormal(update);
-            }
           } else if (mode.purpose === "edit-port" && mode.laneId) {
             const oldLane = state.lanes.find((l) => l.id === mode.laneId);
             if (oldLane && !state.lanes.find((l) => l.canonicalPort === port && l.id !== mode.laneId)) {
@@ -1470,6 +1482,7 @@ async function runOnce(
   clearInterval(spinnerTimer);
 
   // ── Lane pane cleanup ─────────────────────────────────────────────────────
+  hideMrPane();
   for (const paneId of lanePanes.values()) {
     spawnSync("tmux", ["kill-pane", "-t", paneId]);
   }
