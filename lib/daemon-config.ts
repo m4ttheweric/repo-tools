@@ -12,7 +12,7 @@ import { join } from "path";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type DaemonMode = "launchd" | "manual";
+export type DaemonMode = "launchd" | "manual" | "tray";
 
 export interface DaemonConfig {
   installed: boolean;
@@ -33,6 +33,8 @@ export const LAUNCHD_PLIST_PATH = join(
   homedir(), "Library", "LaunchAgents", "com.rt.daemon.plist",
 );
 export const LAUNCHD_LABEL = "com.rt.daemon";
+export const TRAY_SOCK_PATH = join(RT_DIR, "tray.sock");
+export const NOTIFY_QUEUE_PATH = join(RT_DIR, "notify-queue.json");
 
 // ─── Read / Write ────────────────────────────────────────────────────────────
 

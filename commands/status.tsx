@@ -9,7 +9,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { render, Box, Text, useInput } from "ink";
 import { Badge, Spinner, StatusMessage, Alert } from "@inkjs/ui";
 import { ScrollableList } from "../lib/ScrollableList.tsx";
-import type { MRDashboardProps, MRDashboardActions, Reviewer, PipelineJob } from "@workforge/glance-sdk";
+import type { MRDashboardProps, MRDashboardActions, Reviewer, PipelineJob, Pipeline } from "@workforge/glance-sdk";
 import { getReviewDisplayState } from "@workforge/glance-sdk";
 import type { PortEntry } from "../lib/port-scanner.ts";
 
@@ -100,6 +100,18 @@ function timeAgo(ms: number | string): string {
 
 function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
+/** Animated spinner character — only ticks when a pipeline is running. */
+function useSpinnerChar(active: boolean): string {
+  const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  const [frame, setFrame] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => setFrame(f => (f + 1) % FRAMES.length), 80);
+    return () => clearInterval(t);
+  }, [active]);
+  return FRAMES[frame]!;
 }
 
 /** Reactive terminal width — triggers re-render on resize. */
@@ -349,11 +361,11 @@ function BlockerDetailed({ mr }: { mr: MRDashboardProps }) {
 // ─── MR Row (list view) — mirrors glance-react MRRow ────────────────────────
 
 /** Pipeline status → TUI icon */
-function pipelineIcon(pipeline: MRDashboardProps["pipeline"]): { icon: string; color: string } {
+function pipelineIcon(pipeline: { status: string; failing?: number; running?: number } | null): { icon: string; color: string } {
   if (!pipeline) return { icon: " ", color: "gray" };
   const { status, failing, running } = pipeline;
-  if (status === "failed" || failing > 0) return { icon: "✗", color: "red" };
-  if (status === "running" || running > 0) return { icon: "~", color: "blue" };
+  if (status === "failed" || (failing && failing > 0)) return { icon: "✗", color: "red" };
+  if (status === "running" || (running && running > 0)) return { icon: "~", color: "blue" };
   return { icon: "●", color: "green" };
 }
 
@@ -389,6 +401,8 @@ function MRRowTUI({
   const statusColor = STATUS_COLOR[mr.status] || "gray";
   const art = STATUS_ART[mr.status] || STATUS_ART.blocked;
   const cols = useTerminalWidth();
+  const pipelineRunning = mr.pipeline?.status === "running" || mr.pipeline?.status === "pending";
+  const spinnerChar = useSpinnerChar(pipelineRunning);
 
   const totalReviewers = mr.reviews.given + mr.reviews.remaining;
   const reviewStr = totalReviewers > 0 ? `${mr.reviews.given}/${totalReviewers}` : "";
@@ -414,7 +428,7 @@ function MRRowTUI({
         <Text backgroundColor={bg}> </Text>
         <Text backgroundColor={bg} bold>{rpad(truncate(mr.title, titleMax), titleMax)}</Text>
         <Text backgroundColor={bg} color={mr.reviews.isApproved ? "green" : "yellow"}>{lpad(reviewStr || "   ", 5)}</Text>
-        <Text backgroundColor={bg} color={pi.color}>{lpad(pi.icon, 2)}</Text>
+        <Text backgroundColor={bg} color={pi.color}>{pipelineRunning ? lpad(spinnerChar, 2) : lpad(pi.icon, 2)}</Text>
         <Text backgroundColor={bg} color="red">{lpad(delStr, 8)}</Text>
         <Text backgroundColor={bg} color="green">{lpad(addStr, 7)}</Text>
       </Box>
@@ -540,10 +554,11 @@ function ActionBarView({
     const behind = mr.rebaseButton.behindBy;
     items.push({ key: "r", label: `${mr.rebaseButton.label}${behind > 0 ? ` (${behind} behind)` : ""}` });
   }
+  items.push({ key: "R", label: "Local rebase" });
   items.push({ key: "a", label: "Approve" });
   if (mr.autoMergeButton.visible) {
     items.push({
-      key: "A",
+      key: "M",
       label: mr.autoMergeButton.isActive ? "Auto-merge ✓" : "Auto-merge",
     });
   }
@@ -551,7 +566,7 @@ function ActionBarView({
     items.push({ key: "d", label: "Mark ready" });
   }
   if (mr.pipeline) {
-    items.push({ key: "p", label: "Retry pipeline", dimmed: true });
+    items.push({ key: "p", label: "Pipeline" });
   }
   items.push({ key: "o", label: "Open in browser", dimmed: true });
 
@@ -571,6 +586,248 @@ function ActionBarView({
           </Text>
         );
       })}
+    </Box>
+  );
+}
+// ─── Trace log formatting ───────────────────────────────────────────────────
+
+/** Strip GitLab CI section markers and clean up trace lines, preserving ANSI color codes */
+function cleanTraceLine(line: string): string {
+  // Strip GitLab section markers: \x1b[0Ksection_start:...\r\x1b[0K / section_end:...
+  let cleaned = line
+    .replace(/\x1b\[0Ksection_(start|end):[^\r\n]*/g, "")
+    .replace(/\r/g, "")
+    // Strip leading/trailing reset sequences that add no value
+    .replace(/^\x1b\[0;m/, "")
+    .replace(/\x1b\[0;m$/, "");
+
+  // If line already has ANSI color codes, leave it as-is (GitLab colored it)
+  if (/\x1b\[\d+/.test(cleaned)) return cleaned;
+
+  // Pattern-based colorization for plain lines
+  const lower = cleaned.toLowerCase();
+
+  // Error patterns → red
+  if (/\b(error|ERR!|FAIL|fatal|panic|exception)\b/i.test(cleaned)) {
+    return `\x1b[31m${cleaned}\x1b[0m`;
+  }
+  // Warning patterns → yellow
+  if (/\b(warn(ing)?|WARN|deprecated)\b/i.test(cleaned)) {
+    return `\x1b[33m${cleaned}\x1b[0m`;
+  }
+  // Command prefix ($ ...) → cyan
+  if (/^\$\s/.test(cleaned)) {
+    return `\x1b[36m${cleaned}\x1b[0m`;
+  }
+  // Pass/success patterns → green
+  if (/\b(pass(ed)?|success(ful)?|✓|ok)\b/i.test(cleaned) && !lower.includes("fail")) {
+    return `\x1b[32m${cleaned}\x1b[0m`;
+  }
+
+  return cleaned;
+}
+
+// ─── Pipeline Detail View ───────────────────────────────────────────────────
+function formatDuration(seconds: number | null): string {
+  if (seconds == null) return "";
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+function jobStatusIcon(status: string, allowFailure = false): { icon: string; color: string; isSpinner?: boolean } {
+  switch (status) {
+    case "success": return { icon: "✓", color: "green" };
+    case "failed": return allowFailure
+      ? { icon: "⚠", color: "yellow" }   // allowed failure — warning, not error
+      : { icon: "✗", color: "red" };
+    case "running": return { icon: "", color: "blue", isSpinner: true };
+    case "pending":
+    case "waiting_for_resource":
+    case "preparing":
+    case "created": return { icon: "○", color: "yellow" };
+    case "canceled": return { icon: "⊘", color: "gray" };
+    case "skipped": return { icon: "⊘", color: "gray" };
+    case "manual": return { icon: "▸", color: "cyan" };
+    case "scheduled": return { icon: "◷", color: "cyan" };
+    default: return { icon: "?", color: "gray" };
+  }
+}
+
+function PipelineDetailView({
+  pipeline,
+  focusedJobIndex,
+  actionState,
+  breadcrumb,
+}: {
+  pipeline: Pipeline | MRDashboardProps["pipeline"] | null;
+  focusedJobIndex: number;
+  actionState: ActionState;
+  breadcrumb?: string | null;
+}) {
+  if (!pipeline) {
+    return <StatusMessage variant="info">No pipeline data</StatusMessage>;
+  }
+
+  // Group jobs by stage, maintaining order
+  const stages: { name: string; jobs: (PipelineJob & { globalIndex: number })[] }[] = [];
+  const stageMap = new Map<string, typeof stages[number]>();
+  let globalIdx = 0;
+  for (const job of pipeline.jobs) {
+    let stage = stageMap.get(job.stage);
+    if (!stage) {
+      stage = { name: job.stage, jobs: [] };
+      stageMap.set(job.stage, stage);
+      stages.push(stage);
+    }
+    stage.jobs.push({ ...job, globalIndex: globalIdx++ });
+  }
+
+  // Flatten stages + jobs into a single array of rows for ScrollableList.
+  // Stage headers don't count as focusable items; we track the "visual row" index
+  // of each job to set focusedIndex on the ScrollableList.
+  const rows: React.ReactNode[] = [];
+  const jobVisualRow: number[] = []; // jobVisualRow[globalIdx] = row index in `rows`
+
+  for (const stage of stages) {
+    rows.push(
+      <Box key={`stage-${stage.name}`}>
+        <Text dimColor bold>── {stage.name} </Text>
+        <Text dimColor>{"─".repeat(Math.max(1, 40 - stage.name.length))}</Text>
+      </Box>
+    );
+    for (const job of stage.jobs) {
+      jobVisualRow[job.globalIndex] = rows.length;
+      const si = jobStatusIcon(job.status, job.allowFailure);
+      const focused = job.globalIndex === focusedJobIndex;
+      const bg = focused ? "#334155" : undefined;
+      const hasChildren = !!job.downstreamPipeline;
+      const childCount = hasChildren ? job.downstreamPipeline!.jobs.length : 0;
+      rows.push(
+        <Box key={job.id} gap={1}>
+          <Text backgroundColor={bg} color={focused ? "cyan" : "white"}>{focused ? "▸" : " "}</Text>
+          {si.isSpinner ? (
+            <Spinner />
+          ) : (
+            <Text backgroundColor={bg} color={si.color}>{si.icon}</Text>
+          )}
+          <Text backgroundColor={bg} bold={focused}>{rpad(job.name, 35)}</Text>
+          <Text backgroundColor={bg} dimColor>{lpad(formatDuration(job.duration), 8)}</Text>
+          {job.allowFailure && <Text backgroundColor={bg} color="gray"> (allowed)</Text>}
+          {hasChildren && <Text backgroundColor={bg} color="cyan"> ▶ {childCount} jobs</Text>}
+        </Box>
+      );
+    }
+  }
+
+  const pi = pipelineIcon(pipeline);
+  // Which visual row is the focused job on?
+  const scrollFocusedRow = jobVisualRow[focusedJobIndex] ?? 0;
+
+  const pipelineRunning = pipeline.status === "running" || pipeline.status === "pending";
+  const spinnerChar = useSpinnerChar(pipelineRunning);
+
+  return (
+    <Box flexDirection="column" paddingLeft={1}>
+      {/* Header */}
+      <Box gap={1} marginBottom={1}>
+        <Text color={pi.color} bold>{pipelineRunning ? spinnerChar : pi.icon}</Text>
+        <Text bold>{breadcrumb ? `Child Pipeline` : `Pipeline`}</Text>
+        <Text dimColor>— {pipeline.status}</Text>
+        {"passing" in pipeline && <Text dimColor>· {pipeline.passing}/{pipeline.total} passed</Text>}
+        {breadcrumb && <Text dimColor>· via {breadcrumb}</Text>}
+      </Box>
+
+      {/* Scrollable job list */}
+      <ScrollableList
+        reservedRows={8}
+        focusedIndex={scrollFocusedRow}
+        handleInput={false}
+      >
+        {rows}
+      </ScrollableList>
+
+      {/* Action feedback */}
+      {actionState.loading && (
+        <Box paddingLeft={2} marginTop={1}>
+          <Spinner label={actionState.loading} />
+        </Box>
+      )}
+      {actionState.result && (
+        <Box paddingLeft={2} marginTop={1}>
+          <StatusMessage variant={actionState.result.ok ? "success" : "error"}>
+            {actionState.result.message}
+          </StatusMessage>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+function JobLogView({
+  job,
+  trace,
+  onScrollTop,
+}: {
+  job: PipelineJob;
+  trace: {
+    loading: boolean;
+    error?: string;
+    lines: string[];
+    hasMore: boolean;
+    followTail: boolean;
+    displayedFrom: number;
+    prependedCount: number;
+  };
+  onScrollTop: () => void;
+}) {
+  const si = jobStatusIcon(job.status, job.allowFailure);
+
+  return (
+    <Box flexDirection="column" paddingLeft={1}>
+      {/* Header */}
+      <Box gap={1} marginBottom={1}>
+        {si.isSpinner ? (
+          <Spinner />
+        ) : (
+          <Text color={si.color} bold>{si.icon}</Text>
+        )}
+        <Text bold>{job.name}</Text>
+        <Text dimColor>— {job.status}</Text>
+        {job.duration != null && <Text dimColor>· {formatDuration(job.duration)}</Text>}
+        <Text dimColor>· Stage: {job.stage}</Text>
+        {job.allowFailure && <Text dimColor>· (allow failure)</Text>}
+      </Box>
+
+      {/* Log content */}
+      {trace.loading ? (
+        <Box paddingLeft={2}>
+          <Spinner label="Loading job output..." />
+        </Box>
+      ) : trace.error ? (
+        <StatusMessage variant="error">{trace.error}</StatusMessage>
+      ) : (
+        <>
+          {trace.hasMore && (
+            <Text dimColor>↑ {trace.displayedFrom} more lines above — scroll up to load
+            </Text>
+          )}
+          {/* No key reset — prependedCount shifts offset smoothly */}
+          <ScrollableList
+            reservedRows={trace.hasMore ? 7 : 6}
+            handleInput={true}
+            followTail={trace.followTail}
+            thumbColor="gray"
+            onScrollTop={trace.hasMore ? onScrollTop : undefined}
+            prependedCount={trace.prependedCount}
+          >
+            {trace.lines.map((line, i) => (
+              <Text key={i} wrap="truncate">{line}</Text>
+            ))}
+          </ScrollableList>
+        </>
+      )}
     </Box>
   );
 }
@@ -701,8 +958,28 @@ function LiveDashboard({
 }) {
   const [data, setData] = useState<StatusData>(initialData);
   const [connection, setConnection] = useState("connecting");
+  const [hasLiveData, setHasLiveData] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [detailView, setDetailView] = useState(false);
+  const [pipelineView, setPipelineView] = useState(false);
+  const [pipelineFromList, setPipelineFromList] = useState(false); // entered via p from list, skip card on esc
+  const [jobLogView, setJobLogView] = useState(false);
+  const [focusedJobIndex, setFocusedJobIndex] = useState(0);
+  // Stack for drilling into child/downstream pipelines
+  const [childPipelineStack, setChildPipelineStack] = useState<Array<{ pipeline: Pipeline; parentJobIndex: number }>>([]);
+  // Set of job IDs that are bridge/trigger jobs (fetched when entering pipeline view)
+  const [bridgeJobIds, setBridgeJobIds] = useState<Set<string>>(new Set());
+  const [jobTrace, setJobTrace] = useState<{
+    loading: boolean;
+    error?: string;
+    lines: string[];       // currently visible window
+    allLines: string[];    // full trace content
+    displayedFrom: number; // index into allLines where visible window starts
+    hasMore: boolean;      // are there earlier lines not yet shown?
+    followTail: boolean;   // scroll to bottom on first mount
+    prependedCount: number; // cumulative lines added to top (for viewport-stable scroll)
+  }>({ loading: false, lines: [], allLines: [], displayedFrom: 0, hasMore: false, followTail: false, prependedCount: 0 });
+  const [logScrollOffset, setLogScrollOffset] = useState(0);
   const [mergedDays, setMergedDays] = useState(0); // 0=off, 1, 3, 7
   type SortMode = "status" | "pipeline" | "approved" | "newest" | "oldest";
   const SORT_CYCLE: SortMode[] = ["status", "pipeline", "approved", "newest", "oldest"];
@@ -814,34 +1091,225 @@ function LiveDashboard({
   );
 
   // Input handling
+  // Open pipeline view (clears child stack and bridge state)
+  const openPipelineView = useCallback(() => {
+    setPipelineView(true);
+    setFocusedJobIndex(0);
+    setChildPipelineStack([]);
+    setBridgeJobIds(new Set());
+    setActionState({ loading: null, result: null, confirm: null });
+  }, []);
+
+  // Helper to fetch job trace
+  const fetchTrace = useCallback(async (jobId: string) => {
+    const numericId = parseInt(jobId.split(":").pop() || "0", 10);
+    setJobTrace({ loading: true, lines: [], allLines: [], displayedFrom: 0, hasMore: false, followTail: false, prependedCount: 0 });
+    setLogScrollOffset(0);
+    try {
+      const raw = await focusedActions!.fetchJobTrace(numericId);
+      const allLines = raw.split("\n").map(cleanTraceLine);
+      const displayedFrom = Math.max(0, allLines.length - 200);
+      setJobTrace({
+        loading: false,
+        lines: allLines.slice(displayedFrom),
+        allLines,
+        displayedFrom,
+        hasMore: displayedFrom > 0,
+        followTail: true,
+        prependedCount: 0,
+      });
+    } catch (e: any) {
+      setJobTrace({ loading: false, error: e.message || "Failed to load trace", lines: [], allLines: [], displayedFrom: 0, hasMore: false, followTail: false, prependedCount: 0 });
+    }
+  }, [focusedActions]);
+
+  // Load 200 more lines above the current window (viewport-stable: offset shifts by delta)
+  const loadMoreTraceLines = useCallback(() => {
+    setJobTrace(prev => {
+      if (prev.displayedFrom === 0 || prev.loading) return prev;
+      const newFrom = Math.max(0, prev.displayedFrom - 200);
+      const delta = prev.displayedFrom - newFrom;
+      return {
+        ...prev,
+        lines: prev.allLines.slice(newFrom),
+        displayedFrom: newFrom,
+        hasMore: newFrom > 0,
+        followTail: false, // don't jump to bottom after prepend
+        prependedCount: prev.prependedCount + delta,
+      };
+    });
+  }, []);
+
   useInput((input, key) => {
     if (actionState.loading) return; // ignore input while action in progress
 
-    // Navigation
+    const resetAction = () => setActionState({ loading: null, result: null, confirm: null });
+    const totalJobs = focusedMR?.pipeline?.jobs?.length ?? 0;
+
+    // ── Job Log View ──────────────────────────────────────────────────────
+    if (jobLogView) {
+      if (key.escape || key.delete || input === "b") {
+        setJobLogView(false);
+        resetAction();
+        return;
+      }
+      // Scroll is handled by ScrollableList's own useInput
+      // Retry this job
+      if (input === "r" && focusedMR?.pipeline && focusedActions) {
+        const job = focusedMR.pipeline.jobs[focusedJobIndex];
+        if (job) {
+          const numericId = parseInt(job.id.split(":").pop() || "0", 10);
+          setActionState({ loading: `Retrying ${job.name}…`, result: null, confirm: null });
+          focusedActions.retryJob(numericId)
+            .then(() => setActionState({ loading: null, result: { ok: true, message: `${job.name} retry triggered` }, confirm: null }))
+            .catch((e: any) => setActionState({ loading: null, result: { ok: false, message: e.message }, confirm: null }));
+        }
+      }
+      // Open job in browser
+      if (input === "o" && focusedMR?.pipeline) {
+        const job = focusedMR.pipeline.jobs[focusedJobIndex];
+        if (job?.webUrl) {
+          import("child_process").then(({ execSync }) => {
+            execSync(`open ${JSON.stringify(job.webUrl)}`, { stdio: "ignore" });
+          });
+        }
+      }
+      if (input === "q" && !actionState.confirm) process.exit(0);
+      return;
+    }
+
+    // ── Pipeline View ─────────────────────────────────────────────────────
+    if (pipelineView) {
+      // Resolve current pipeline: head or deepest child in stack
+      const activePipeline = childPipelineStack.length > 0
+        ? childPipelineStack[childPipelineStack.length - 1]!.pipeline
+        : focusedMR?.pipeline;
+      const activeJobs = activePipeline?.jobs ?? [];
+      const activeJobCount = activeJobs.length;
+
+      if (key.escape || key.delete || input === "b") {
+        if (childPipelineStack.length > 0) {
+          // Pop child pipeline, restore parent job index
+          const popped = childPipelineStack[childPipelineStack.length - 1]!;
+          setChildPipelineStack((s) => s.slice(0, -1));
+          setFocusedJobIndex(popped.parentJobIndex);
+        } else {
+          setPipelineView(false);
+          setChildPipelineStack([]);
+          // If we jumped straight to pipeline from the list, skip the card view
+          if (pipelineFromList) {
+            setDetailView(false);
+            setPipelineFromList(false);
+          }
+        }
+        resetAction();
+        return;
+      }
+      if (key.downArrow) {
+        setFocusedJobIndex((i) => Math.min(i + 1, activeJobCount - 1));
+        resetAction();
+      }
+      if (key.upArrow) {
+        setFocusedJobIndex((i) => Math.max(i - 1, 0));
+        resetAction();
+      }
+      // Enter: drill into child pipeline or job log
+      if (key.return && activePipeline && focusedActions) {
+        const job = activeJobs[focusedJobIndex];
+        if (job) {
+          const numericId = parseInt(job.id.split(":").pop() || "0", 10);
+          const pipelineNumericId = parseInt(activePipeline.id?.split(":").pop() || "0", 10) || undefined;
+          setActionState({ loading: "Loading…", result: null, confirm: null });
+          focusedActions.fetchJobDetail(numericId, pipelineNumericId).then((detail) => {
+            setActionState({ loading: null, result: null, confirm: null });
+            if (detail.type === "bridge") {
+              // Trigger job — drill into child pipeline
+              setChildPipelineStack((s) => [...s, { pipeline: detail.downstreamPipeline, parentJobIndex: focusedJobIndex }]);
+              setFocusedJobIndex(0);
+            } else {
+              // Regular job — show trace log
+              const allLines = detail.content.split("\n").map(cleanTraceLine);
+              const displayedFrom = Math.max(0, allLines.length - 200);
+              setJobTrace({
+                loading: false,
+                lines: allLines.slice(displayedFrom),
+                allLines,
+                displayedFrom,
+                hasMore: displayedFrom > 0,
+                followTail: true,
+                prependedCount: 0,
+              });
+              setJobLogView(true);
+            }
+          }).catch((e: any) => {
+            setActionState({ loading: null, result: { ok: false, message: e.message ?? "Failed to load job" }, confirm: null });
+          });
+        }
+      }
+      // Retry focused job
+      if (input === "r" && activePipeline && focusedActions) {
+        const job = activeJobs[focusedJobIndex];
+        if (job && (job.status === "failed" || job.status === "canceled")) {
+          const numericId = parseInt(job.id.split(":").pop() || "0", 10);
+          setActionState({ loading: `Retrying ${job.name}…`, result: null, confirm: null });
+          focusedActions.retryJob(numericId)
+            .then(() => setActionState({ loading: null, result: { ok: true, message: `${job.name} retry triggered` }, confirm: null }))
+            .catch((e: any) => setActionState({ loading: null, result: { ok: false, message: e.message }, confirm: null }));
+        }
+      }
+      // Open job in browser
+      if (input === "o" && activePipeline) {
+        const job = activeJobs[focusedJobIndex];
+        if (job?.webUrl) {
+          import("child_process").then(({ execSync }) => {
+            execSync(`open ${JSON.stringify(job.webUrl)}`, { stdio: "ignore" });
+          });
+        }
+      }
+      if (input === "q" && !actionState.confirm) process.exit(0);
+      return;
+    }
+
+    // ── MR Detail View ────────────────────────────────────────────────────
+    if (detailView) {
+      if (key.escape || key.delete || input === "b") {
+        setDetailView(false);
+        resetAction();
+        return;
+      }
+      // Enter pipeline view
+      if (input === "p" && focusedMR?.pipeline) {
+        setPipelineFromList(false);
+        openPipelineView();
+        return;
+      }
+    }
+
+    // ── MR List View ──────────────────────────────────────────────────────
     if (!detailView) {
       if (key.downArrow) {
         setFocusedIndex((i) => Math.min(i + 1, activeBranches.length - 1));
-        setActionState({ loading: null, result: null, confirm: null });
+        resetAction();
       }
       if (key.upArrow) {
         setFocusedIndex((i) => Math.max(i - 1, 0));
-        setActionState({ loading: null, result: null, confirm: null });
+        resetAction();
       }
       if (key.return && focusedMR) {
         setDetailView(true);
-        setActionState({ loading: null, result: null, confirm: null });
+        resetAction();
       }
-    } else {
-      // Detail view: escape/backspace goes back
-      if (key.escape || key.delete || (input === "b")) {
-        setDetailView(false);
-        setActionState({ loading: null, result: null, confirm: null });
+      // Pipeline shortcut from list view
+      if (input === "p" && focusedMR?.pipeline) {
+        setDetailView(true);
+        setPipelineFromList(true);
+        openPipelineView();
         return;
       }
     }
 
     // Actions (only in detail view, when we have a focused MR and actions)
-    if (detailView && focusedMR && focusedActions) {
+    if (detailView && !pipelineView && focusedMR && focusedActions) {
       const mr = focusedMR;
 
       if (input === "m" && mr.mergeButton.visible && !mr.mergeButton.disabled) {
@@ -850,13 +1318,50 @@ function LiveDashboard({
       if (input === "r" && mr.rebaseButton.visible) {
         executeAction("r", "Rebase", "Rebasing…", () => focusedActions.rebase());
       }
+      if (input === "R") {
+        // Local rebase: worktree-aware fetch + rebase against target branch
+        executeAction("R", "Local rebase", "Rebasing locally…", async () => {
+          const { execSync } = await import("child_process");
+          const { getKnownRepos } = await import("../lib/repo.ts");
+          const target = mr.targetBranch;
+          const source = mr.sourceBranch;
+
+          // Find the worktree that has the source branch checked out
+          const repos = getKnownRepos();
+          const allWorktrees = repos.flatMap(r => r.worktrees);
+          const sourceWorktree = allWorktrees.find(wt => wt.branch === source);
+
+          if (!sourceWorktree) {
+            throw new Error(
+              `Branch "${source}" is not checked out in any worktree.\n` +
+              `Check it out first: git worktree add <path> ${source}`,
+            );
+          }
+
+          const opts = { cwd: sourceWorktree.path, stdio: "pipe" as const };
+
+          // Fetch both refs (branch is already checked out — no checkout needed)
+          execSync(`git fetch origin ${target} ${source}`, opts);
+
+          try {
+            execSync(`git rebase origin/${target}`, opts);
+            execSync(`git push --force-with-lease`, opts);
+          } catch (e: any) {
+            try { execSync(`git rebase --abort`, opts); } catch {}
+            throw new Error(
+              `Rebase conflicts in ${sourceWorktree.path} — resolve manually:\n` +
+              `  cd ${sourceWorktree.path} && git rebase origin/${target}`,
+            );
+          }
+        });
+      }
       if (input === "a") {
         executeAction("a", "Approve", "Approving…", () => focusedActions.approve());
       }
       if (input === "u") {
         executeAction("u", "Unapprove", "Removing approval…", () => focusedActions.unapprove());
       }
-      if (input === "A" && mr.autoMergeButton.visible) {
+      if (input === "M" && mr.autoMergeButton.visible) {
         if (mr.autoMergeButton.isActive) {
           executeAction("A", "Cancel auto-merge", "Cancelling…", () => focusedActions.cancelAutoMerge());
         } else {
@@ -867,15 +1372,6 @@ function LiveDashboard({
         executeAction("d", mr.isDraft ? "Mark ready" : "Mark draft", mr.isDraft ? "Setting ready…" : "Marking draft…", () =>
           focusedActions.toggleDraft(!mr.isDraft).then(() => {}),
         );
-      }
-      if (input === "p" && mr.pipeline) {
-        // No confirmation needed for retry
-        setActionState({ loading: "Retrying pipeline…", result: null, confirm: null });
-        const pipelineId = parseInt(mr.pipeline.jobs[0]?.id?.split(":").pop() || "0", 10);
-        focusedActions
-          .retryPipeline(pipelineId)
-          .then(() => setActionState({ loading: null, result: { ok: true, message: "Pipeline retry triggered" }, confirm: null }))
-          .catch((e: any) => setActionState({ loading: null, result: { ok: false, message: e.message }, confirm: null }));
       }
       if (input === "o" && mr.webUrl) {
         import("child_process").then(({ execSync }) => {
@@ -951,6 +1447,7 @@ function LiveDashboard({
           }
           return { ...prev, branches: newBranches, source: "live" as const };
         });
+        if (!disposed) setHasLiveData(true);
       });
     })();
 
@@ -964,6 +1461,15 @@ function LiveDashboard({
   const localCount = Object.values(data.branches).filter(
     (e) => !e.mr && !DEFAULT_BRANCHES.has(Object.keys(data.branches).find((k) => data.branches[k] === e) || ""),
   ).length;
+
+  // Determine current view for header hints
+  const viewHints = jobLogView
+    ? "esc back · ↑↓ scroll · r retry · o open · q quit"
+    : pipelineView
+    ? "esc back · ↑↓ navigate · enter view log · r retry · o open · q quit"
+    : detailView
+    ? "esc back · p pipeline · o open · q quit"
+    : null;
 
   return (
     <Box flexDirection="column" width="100%" marginTop={1}>
@@ -979,44 +1485,78 @@ function LiveDashboard({
           <Text dimColor>{focusedIndex + 1}/{activeBranches.length}</Text>
         )}
         <Box flexGrow={1} />
-        {detailView ? (
-          <Text dimColor wrap="truncate">esc back · o open · q quit</Text>
+        {viewHints ? (
+          <Text dimColor wrap="truncate">{viewHints}</Text>
         ) : localCount > 0 ? (
           <Text dimColor>{localCount} local-only</Text>
         ) : null}
       </Box>
 
-      {detailView && focusedMR ? (
-        /* ─── Detail view ─── */
-        <MRDetailView
-          mr={focusedMR}
-          ticket={focusedEntry?.[1]?.ticket ?? undefined}
-          actionState={actionState}
-        />
-      ) : (
-        /* ─── List view ─── */
-        <>
-          {activeBranches.length > 0 ? (
-            <ScrollableList reservedRows={6} itemHeight={3} handleInput={false} focusedIndex={focusedIndex}>
-              {activeBranches.map(([branch, entry], i) => (
-                <Box key={branch}>
-                  <MRRowTUI
-                    mr={entry.mr!}
-                    focused={i === focusedIndex}
-                    ticket={entry.ticket ?? undefined}
-                  />
-                </Box>
-              ))}
-            </ScrollableList>
-          ) : (
-            <StatusMessage variant="info">No active merge requests</StatusMessage>
-          )}
-        </>
-      )}
+      {(() => {
+        // Resolve active pipeline: child stack or head
+        const activePipeline = childPipelineStack.length > 0
+          ? childPipelineStack[childPipelineStack.length - 1]!.pipeline
+          : focusedMR?.pipeline;
+        const breadcrumb = childPipelineStack.length > 0
+          ? childPipelineStack.map((c, i) => {
+              const parentPl = i === 0 ? focusedMR?.pipeline : childPipelineStack[i - 1]!.pipeline;
+              return parentPl?.jobs?.[c.parentJobIndex]?.name || "child";
+            }).join(" › ")
+          : null;
+
+        if (jobLogView && activePipeline) {
+          return (
+            <JobLogView
+              job={activePipeline.jobs[focusedJobIndex]!}
+              trace={jobTrace}
+              onScrollTop={loadMoreTraceLines}
+            />
+          );
+        }
+        if (pipelineView && focusedMR) {
+          return (
+            <PipelineDetailView
+              pipeline={activePipeline ?? null}
+              focusedJobIndex={focusedJobIndex}
+              actionState={actionState}
+              breadcrumb={breadcrumb}
+            />
+          );
+        }
+        if (detailView && focusedMR) {
+          return (
+            <MRDetailView
+              mr={focusedMR}
+              ticket={focusedEntry?.[1]?.ticket ?? undefined}
+              actionState={actionState}
+            />
+          );
+        }
+        return (
+          <>
+            {activeBranches.length > 0 ? (
+              <ScrollableList reservedRows={6} itemHeight={3} handleInput={false} focusedIndex={focusedIndex}>
+                {activeBranches.map(([branch, entry], i) => (
+                  <Box key={branch}>
+                    <MRRowTUI
+                      mr={entry.mr!}
+                      focused={i === focusedIndex}
+                      ticket={entry.ticket ?? undefined}
+                    />
+                  </Box>
+                ))}
+              </ScrollableList>
+            ) : (
+              <StatusMessage variant="info">No active merge requests</StatusMessage>
+            )}
+          </>
+        );
+      })()}
+
 
       {/* Footer shortcuts — list view only */}
       {!detailView && (
-        <Text dimColor wrap="truncate">↑↓ navigate · enter detail · o open · s {sortMode} · m merged{mergedDays > 0 ? ` (${mergedDays}d)` : ""} · q quit</Text>
+        <Text dimColor wrap="truncate">↑↓ navigate · enter detail · p pipeline · o open · s {sortMode} · m merged{mergedDays > 0 ? ` (${mergedDays}d)` : ""} · q quit</Text>
       )}
     </Box>
   );

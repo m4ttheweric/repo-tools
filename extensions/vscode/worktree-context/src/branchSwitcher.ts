@@ -214,12 +214,13 @@ export async function showBranchSwitcher(context: vscode.ExtensionContext): Prom
     // 2. Try daemon cache first — one request for all branches
     let daemonHit = false;
     try {
-      const response = await daemonQuery('cache:read', { branches: localBranchNames });
+      const response = await daemonQuery('/api/cache');
       if (response?.ok && response.data) {
-        const daemonCache = response.data as Record<string, any>;
+        const allEntries = response.data as Record<string, any>;
+        const localSet = new Set(localBranchNames);
         let hitCount = 0;
         for (const branch of localBranchNames) {
-          const entry = daemonCache[branch];
+          const entry = allEntries[branch];
           if (entry) {
             hitCount++;
             branchCache.set(branch, {

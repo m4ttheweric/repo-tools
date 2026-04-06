@@ -358,6 +358,7 @@ export async function refreshAllMRs(
 
   // ── Step 1: Fetch MRs for all branches in 1 GraphQL call ──────────────
   let mrsByBranch = new Map<string, PullRequest | null>();
+  let mrFetchSucceeded = false;
 
   if (secrets.gitlabToken && remoteUrl) {
     const remote = parseRemoteUrl(remoteUrl);
@@ -368,8 +369,9 @@ export async function refreshAllMRs(
         if (branchNames.length > 0) {
           // Single query fetching all states (glance-sdk 0.5.3+)
           mrsByBranch = await provider.fetchPullRequestsByBranches(remote.projectPath, branchNames, 'all');
+          mrFetchSucceeded = true;
         }
-      } catch { /* GitLab fetch failed — continue without MR data */ }
+      } catch { /* GitLab fetch failed — keep stale MR data to avoid false transitions */ }
     }
   }
 
@@ -406,16 +408,29 @@ export async function refreshAllMRs(
   for (let i = 0; i < branches.length; i++) {
     const b = branches[i]!;
     const { linearId } = branchLinearIds[i]!;
-    const pr = mrsByBranch.get(b.branch) ?? null;
-    const mr = pr ? toMRInfo(pr) : null;
     const ticket = linearId ? (ticketMap.get(linearId.toUpperCase()) ?? null) : null;
 
-    diskCache.entries[b.branch] = {
-      ticket,
-      linearId: linearId || "",
-      mr,
-      fetchedAt: now,
-    };
+    if (mrFetchSucceeded) {
+      // Fresh MR data — write it (null means no MR exists for this branch)
+      const pr = mrsByBranch.get(b.branch) ?? null;
+      const mr = pr ? toMRInfo(pr) : null;
+      diskCache.entries[b.branch] = {
+        ticket,
+        linearId: linearId || "",
+        mr,
+        fetchedAt: now,
+      };
+    } else {
+      // API failed — preserve existing MR data to avoid false transitions in notifications.
+      // Only update ticket and linearId so Linear data stays fresh.
+      const existing = diskCache.entries[b.branch];
+      diskCache.entries[b.branch] = {
+        ticket,
+        linearId: linearId || "",
+        mr: existing?.mr ?? null,
+        fetchedAt: existing?.fetchedAt ?? now,
+      };
+    }
   }
 
   writeDiskCache(diskCache);

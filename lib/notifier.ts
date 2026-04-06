@@ -2,8 +2,15 @@
  * Smart notification engine for the rt daemon.
  *
  * Compares current cache state against the previous snapshot to detect
- * transitions (pipeline failures, MR approvals, etc.) and fires macOS
- * notifications via terminal-notifier (preferred) or osascript (fallback).
+ * transitions (pipeline failures, MR approvals, etc.) and dispatches
+ * notifications via a durable queue.
+ *
+ * Notification flow:
+ *  1. Transition detected → event queued in memory + persisted to disk
+ *  2. Push attempt to rt-tray.app via ~/.rt/tray.sock (instant delivery)
+ *  3. If tray is unavailable → event stays in queue for later drain
+ *  4. Fallback: if no tray.sock exists, shell out to terminal-notifier/osascript
+ *  5. Tray app can drain pending queue via drainNotifications() on startup
  *
  * Called at the end of each daemon cache refresh cycle.
  */
@@ -47,10 +54,30 @@ interface NotifierState {
   fired: string[];
 }
 
+export interface NotificationEvent {
+  id: string;
+  title: string;
+  message: string;
+  url?: string;
+  category: string;
+  timestamp: number;
+}
+
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 const STATE_PATH = join(RT_DIR, "notifier-state.json");
 const PREFS_PATH = join(RT_DIR, "notifications.json");
+const QUEUE_PATH = join(RT_DIR, "notify-queue.json");
+const TRAY_SOCK_PATH = join(RT_DIR, "tray.sock");
+
+// ─── Broadcast hook (set by daemon.ts to push to WebSocket clients) ──────────
+
+let _broadcastHook: ((type: string, data: any) => void) | null = null;
+
+/** Register a callback to broadcast notification events (e.g. to WebSocket clients) */
+export function onNotification(hook: (type: string, data: any) => void): void {
+  _broadcastHook = hook;
+}
 const STALE_PORT_THRESHOLD_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 // ─── Notification type registry ──────────────────────────────────────────────
@@ -108,25 +135,132 @@ function saveState(state: NotifierState): void {
   } catch { /* best-effort */ }
 }
 
-// ─── Notification dispatch ───────────────────────────────────────────────────
+// ─── Notification queue (durable) ────────────────────────────────────────────
 
-let _hasTerminalNotifier: boolean | null = null;
+/** In-memory queue — also persisted to disk for durability */
+let notificationQueue: NotificationEvent[] = [];
 
-function hasTerminalNotifier(): boolean {
-  if (_hasTerminalNotifier === null) {
-    try {
-      execSync("which terminal-notifier", { stdio: "pipe" });
-      _hasTerminalNotifier = true;
-    } catch {
-      _hasTerminalNotifier = false;
-    }
-  }
-  return _hasTerminalNotifier;
+/** Load any persisted notifications from a previous daemon session */
+function loadQueue(): void {
+  try {
+    const raw = JSON.parse(readFileSync(QUEUE_PATH, "utf8"));
+    if (Array.isArray(raw)) notificationQueue = raw;
+  } catch { /* no queue file or corrupt — start fresh */ }
 }
 
-export function notify(title: string, message: string, url?: string): void {
+/** Persist the current queue to disk */
+function flushQueue(): void {
   try {
-    if (hasTerminalNotifier()) {
+    mkdirSync(RT_DIR, { recursive: true });
+    if (notificationQueue.length === 0) {
+      // Clean up empty queue file
+      try { if (existsSync(QUEUE_PATH)) writeFileSync(QUEUE_PATH, "[]"); } catch { /* */ }
+    } else {
+      writeFileSync(QUEUE_PATH, JSON.stringify(notificationQueue, null, 2));
+    }
+  } catch { /* best-effort */ }
+}
+
+// Load persisted queue on module init (daemon startup)
+loadQueue();
+
+/**
+ * Drain all pending notifications. Called by the tray app on startup
+ * and by the daemon's /notifications endpoint.
+ * Returns the events and clears the queue.
+ */
+export function drainNotifications(): NotificationEvent[] {
+  const events = notificationQueue.splice(0);
+  flushQueue();
+  return events;
+}
+
+/**
+ * Peek at pending notifications without draining.
+ */
+export function peekNotifications(): NotificationEvent[] {
+  return [...notificationQueue];
+}
+
+// ─── Push to tray app ────────────────────────────────────────────────────────
+
+/**
+ * Attempt to push a notification event to the tray app via its Unix socket.
+ * Returns true if the push succeeded, false if tray is unavailable.
+ */
+async function pushToTray(event: NotificationEvent): Promise<boolean> {
+  if (!existsSync(TRAY_SOCK_PATH)) return false;
+
+  try {
+    const response = await fetch("http://localhost/notify", {
+      unix: TRAY_SOCK_PATH,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(event),
+      signal: AbortSignal.timeout(2000),
+    } as any);
+
+    if (response.ok) {
+      // Push succeeded — remove from queue
+      const idx = notificationQueue.findIndex(n => n.id === event.id);
+      if (idx !== -1) notificationQueue.splice(idx, 1);
+      flushQueue();
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// ─── Fallback dispatch (terminal-notifier / osascript) ───────────────────────
+
+/**
+ * Resolve the absolute path to terminal-notifier.
+ *
+ * We can't rely on `which` because when the daemon is launched by launchd,
+ * PATH is minimal (/usr/bin:/bin:/usr/sbin:/sbin) and won't include
+ * Homebrew's bin dirs. Instead, probe well-known Homebrew install locations
+ * directly, then fall back to `which` for non-standard installs.
+ */
+let _terminalNotifierPath: string | false | null = null;
+
+function resolveTerminalNotifier(): string | false {
+  if (_terminalNotifierPath === null) {
+    // Check well-known Homebrew locations first (ARM + Intel)
+    const candidates = [
+      "/opt/homebrew/bin/terminal-notifier",    // Apple Silicon Homebrew
+      "/usr/local/bin/terminal-notifier",        // Intel Homebrew
+    ];
+
+    for (const p of candidates) {
+      if (existsSync(p)) {
+        _terminalNotifierPath = p;
+        return _terminalNotifierPath;
+      }
+    }
+
+    // Fall back to `which` for custom installs (nix, macports, etc.)
+    try {
+      _terminalNotifierPath = execSync("which terminal-notifier", {
+        stdio: "pipe", timeout: 3000,
+      }).toString().trim();
+    } catch {
+      _terminalNotifierPath = false;
+    }
+  }
+  return _terminalNotifierPath;
+}
+
+function escapeShell(s: string): string {
+  return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+/** Direct notification via terminal-notifier or osascript (no queue) */
+function notifyFallback(title: string, message: string, url?: string): void {
+  try {
+    const tnPath = resolveTerminalNotifier();
+    if (tnPath) {
       const args = [
         `-title "rt"`,
         `-subtitle ${escapeShell(title)}`,
@@ -134,7 +268,7 @@ export function notify(title: string, message: string, url?: string): void {
         `-group "rt"`,
       ];
       if (url) args.push(`-open ${escapeShell(url)}`);
-      execSync(`terminal-notifier ${args.join(" ")}`, { stdio: "pipe", timeout: 5000 });
+      execSync(`${escapeShell(tnPath)} ${args.join(" ")}`, { stdio: "pipe", timeout: 5000 });
     } else {
       // osascript fallback
       const body = `${title}: ${message}`;
@@ -146,8 +280,58 @@ export function notify(title: string, message: string, url?: string): void {
   } catch { /* notification is best-effort */ }
 }
 
-function escapeShell(s: string): string {
-  return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+// ─── Main notification dispatch ──────────────────────────────────────────────
+
+/**
+ * Queue a notification, persist it, and attempt to push to the tray app.
+ * Falls back to terminal-notifier/osascript if no tray app is available.
+ */
+export function notify(
+  title: string,
+  message: string,
+  url?: string,
+  category: string = "general",
+): void {
+  const event: NotificationEvent = {
+    id: crypto.randomUUID(),
+    title,
+    message,
+    url,
+    category,
+    timestamp: Date.now(),
+  };
+
+  // 1. Queue + persist
+  notificationQueue.push(event);
+  flushQueue();
+
+  // 1b. Broadcast to WebSocket clients
+  if (_broadcastHook) _broadcastHook("notification", event);
+
+  // 2. Try to push to tray app (async, fire-and-forget)
+  pushToTray(event).then(pushed => {
+    if (!pushed) {
+      // Tray unavailable — if no tray.sock exists at all, this is likely
+      // a setup without the tray app. Use the CLI fallback after a short delay
+      // to give the tray a chance to come online.
+      setTimeout(() => {
+        const stillQueued = notificationQueue.find(n => n.id === event.id);
+        if (stillQueued) {
+          // Still not drained — remove from queue and use fallback
+          const idx = notificationQueue.findIndex(n => n.id === event.id);
+          if (idx !== -1) notificationQueue.splice(idx, 1);
+          flushQueue();
+          notifyFallback(title, message, url);
+        }
+      }, 10_000);
+    }
+  }).catch(() => {
+    // Push errored — fallback immediately
+    const idx = notificationQueue.findIndex(n => n.id === event.id);
+    if (idx !== -1) notificationQueue.splice(idx, 1);
+    flushQueue();
+    notifyFallback(title, message, url);
+  });
 }
 
 // ─── Branch transition detection ─────────────────────────────────────────────
@@ -180,6 +364,10 @@ function detectBranchTransitions(
   log: (msg: string) => void,
 ): void {
   for (const [branch, entry] of Object.entries(current)) {
+    // If the MR slot is null we have no fresh data — skipping prevents
+    // false "transition" detection that would clear the fired key set.
+    if (!entry.mr) continue;
+
     const now = snapshotBranch(entry);
     const was = prev[branch];
     if (!was) continue; // First time seeing this branch — no transition
@@ -193,7 +381,7 @@ function detectBranchTransitions(
       if (!fired.has(key)) {
         fired.add(key);
         log(`notify: MR merged on ${branch}`);
-        if (isEnabled(prefs, "mr_merged")) notify("MR Merged 🎉", branchShort, mrUrl);
+        if (isEnabled(prefs, "mr_merged")) notify("MR Merged 🎉", branchShort, mrUrl, "mr_merged");
       }
     }
 
@@ -210,7 +398,7 @@ function detectBranchTransitions(
       if (!fired.has(key)) {
         fired.add(key);
         log(`notify: pipeline failed on ${branch}`);
-        if (isEnabled(prefs, "pipeline_failed")) notify("Pipeline Failed", branchShort, mrUrl);
+        if (isEnabled(prefs, "pipeline_failed")) notify("Pipeline Failed", branchShort, mrUrl, "pipeline_failed");
       }
     }
 
@@ -224,7 +412,7 @@ function detectBranchTransitions(
       if (!fired.has(key)) {
         fired.add(key);
         log(`notify: pipeline passed on ${branch}`);
-        if (isEnabled(prefs, "pipeline_passed")) notify("Pipeline Passed ✓", branchShort, mrUrl);
+        if (isEnabled(prefs, "pipeline_passed")) notify("Pipeline Passed ✓", branchShort, mrUrl, "pipeline_passed");
       }
     }
 
@@ -234,7 +422,7 @@ function detectBranchTransitions(
       if (!fired.has(key)) {
         fired.add(key);
         log(`notify: MR approved on ${branch}`);
-        if (isEnabled(prefs, "mr_approved")) notify("MR Approved 👍", branchShort, mrUrl);
+        if (isEnabled(prefs, "mr_approved")) notify("MR Approved 👍", branchShort, mrUrl, "mr_approved");
       }
     }
 
@@ -244,7 +432,7 @@ function detectBranchTransitions(
       if (!fired.has(key)) {
         fired.add(key);
         log(`notify: merge conflicts on ${branch}`);
-        if (isEnabled(prefs, "merge_conflicts")) notify("Merge Conflicts", branchShort, mrUrl);
+        if (isEnabled(prefs, "merge_conflicts")) notify("Merge Conflicts", branchShort, mrUrl, "merge_conflicts");
       }
     }
 
@@ -254,7 +442,7 @@ function detectBranchTransitions(
       if (!fired.has(key)) {
         fired.add(key);
         log(`notify: MR ready to merge on ${branch}`);
-        if (isEnabled(prefs, "mr_ready")) notify("Ready to Merge ✓", branchShort, mrUrl);
+        if (isEnabled(prefs, "mr_ready")) notify("Ready to Merge ✓", branchShort, mrUrl, "mr_ready");
       }
     }
 
@@ -264,7 +452,7 @@ function detectBranchTransitions(
       if (!fired.has(key)) {
         fired.add(key);
         log(`notify: needs rebase on ${branch}`);
-        if (isEnabled(prefs, "needs_rebase")) notify("Needs Rebase", branchShort, mrUrl);
+        if (isEnabled(prefs, "needs_rebase")) notify("Needs Rebase", branchShort, mrUrl, "needs_rebase");
       }
     }
 
@@ -274,7 +462,7 @@ function detectBranchTransitions(
       if (!fired.has(key)) {
         fired.add(key);
         log(`notify: merge error on ${branch}: ${now.mergeError}`);
-        if (isEnabled(prefs, "merge_error")) notify("Merge Error", `${branchShort}: ${now.mergeError}`, mrUrl);
+        if (isEnabled(prefs, "merge_error")) notify("Merge Error", `${branchShort}: ${now.mergeError}`, mrUrl, "merge_error");
       }
     }
 
@@ -343,6 +531,8 @@ function detectStalePortTransitions(
         notify(
           "Stale Process",
           `${entry.command} on :${entry.port} has been running ${hours}h (${snapshot.relativeDir})`,
+          undefined,
+          "stale_port",
         );
       }
     }
@@ -373,10 +563,17 @@ export function checkAndNotify(
   // Port staleness
   detectStalePortTransitions(state.ports, ports, prefs, log);
 
-  // Update state with current snapshots
+  // Update state with current snapshots.
+  // When entry.mr is null (API failure or branch has no MR), keep the
+  // previous snapshot so we don't wipe conflict/approval state that the
+  // dedup logic depends on.
   const newBranches: Record<string, BranchSnapshot> = {};
   for (const [branch, entry] of Object.entries(cacheEntries)) {
-    newBranches[branch] = snapshotBranch(entry);
+    if (!entry.mr && state.branches[branch]) {
+      newBranches[branch] = state.branches[branch]!;
+    } else {
+      newBranches[branch] = snapshotBranch(entry);
+    }
   }
 
   state.branches = newBranches;

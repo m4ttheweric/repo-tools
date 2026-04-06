@@ -18,42 +18,25 @@ interface Props {
   children: ReactNode[];
   /** Number of terminal rows reserved for chrome outside this list (headers, footers, input box). */
   reservedRows?: number;
-  /** Estimated terminal lines per child item. Default 1. Use for multi-line items. */
-  itemHeight?: number;
   /** Whether arrow keys control scrolling. Default true. Set false if parent handles input. */
   handleInput?: boolean;
   /** Scrollbar thumb color. Default 'cyan'. */
   thumbColor?: string;
   /** Auto-scroll to bottom when children change. Default false. */
   followTail?: boolean;
-  /** Index of the focused item — list auto-scrolls to keep it visible. */
-  focusedIndex?: number;
 }
 
 export function ScrollableList({
   children,
   reservedRows = 6,
-  itemHeight = 1,
   handleInput = true,
   thumbColor = 'cyan',
   followTail = false,
-  focusedIndex,
 }: Props) {
   const [scrollOffset, setScrollOffset] = useState(0);
   const items = React.Children.toArray(children);
   const totalLines = items.length;
-  const availableRows = Math.max(Math.floor(((process.stdout.rows ?? 24) - reservedRows) / itemHeight), 1);
-
-  // Auto-scroll to keep focused item visible
-  useEffect(() => {
-    if (focusedIndex != null) {
-      if (focusedIndex < scrollOffset) {
-        setScrollOffset(focusedIndex);
-      } else if (focusedIndex >= scrollOffset + availableRows) {
-        setScrollOffset(focusedIndex - availableRows + 1);
-      }
-    }
-  }, [focusedIndex, availableRows]);
+  const availableRows = Math.max((process.stdout.rows ?? 24) - reservedRows, 3);
 
   // Auto-scroll to bottom when items change (tail mode)
   useEffect(() => {
@@ -83,9 +66,19 @@ export function ScrollableList({
 
   return (
     <Box flexDirection="column" flexGrow={1}>
-      {visible.map((child, i) => (
-        <Box key={i}>{child}</Box>
-      ))}
+      {visible.map((child, i) => {
+        const isThumb = needsBar && i >= thumbStart && i < thumbStart + thumbSize;
+        const barChar = needsBar ? (isThumb ? '█' : '│') : '';
+
+        return (
+          <Box key={i}>
+            <Box flexGrow={1}>{child}</Box>
+            {needsBar && (
+              <Text dimColor color={isThumb ? thumbColor : undefined}> {barChar}</Text>
+            )}
+          </Box>
+        );
+      })}
     </Box>
   );
 }
