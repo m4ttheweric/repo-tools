@@ -13,6 +13,9 @@
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
+    "@rezi-ui/core": "^0.1.0-alpha.60",
+    "@rezi-ui/jsx": "^0.1.0-alpha.60",
+    "@rezi-ui/node": "^0.1.0-alpha.60",
     "@workforge/glance-sdk": "0.7.5",
     "fullscreen-ink": "^0.1.0",
     "ink": "^6.8.0",
