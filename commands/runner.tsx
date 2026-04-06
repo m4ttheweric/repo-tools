@@ -30,6 +30,7 @@
  *   D            delete selected lane
  *   R            reset all lanes (with confirmation)
  *   b            switch branch for the selected entry (rt branch switch)
+ *   c            open entry's worktree in editor (rt code)
  *   t            open a one-off shell at the entry's working directory
  *   q            quit
  */
@@ -903,6 +904,7 @@ async function runOnce(
           <text style={{ fg: C.muted }}>[r]</text><text style={{ fg: C.dim }}>remove</text>
           <text style={{ fg: C.muted }}>[e]</text><text style={{ fg: C.dim }}>cmd</text>
           <text style={{ fg: C.muted }}>[t]</text><text style={{ fg: C.dim }}>shell</text>
+          <text style={{ fg: C.muted }}>[c]</text><text style={{ fg: C.dim }}>code</text>
           <text style={{ fg: C.muted }}>[b]</text><text style={{ fg: C.dim }}>branch</text>
           <text style={{ fg: C.muted }}>[i]</text><text style={{ fg: C.dim }}>info</text>
           <text style={{ fg: C.muted }}>[m]</text><text style={{ fg: C.dim }}>mode</text>
@@ -1357,6 +1359,15 @@ async function runOnce(
 
     // [D] delete lane — handled via onEvent for text events (see below)
     // [R] reset — handled via onEvent for text events (see below)
+
+    // [c] open entry's worktree in editor (rt code, cwd = worktree → no picker needed)
+    c: ({ state }) => {
+      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
+      if (!lane) return;
+      const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
+      if (!entry) return;
+      tmuxSplit(`${process.execPath} ${CLI_PATH} code`, entry.worktree);
+    },
 
     // [b] open rt branch switch in the entry's worktree
     b: ({ state }) => {
