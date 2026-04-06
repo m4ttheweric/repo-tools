@@ -22,7 +22,7 @@
  *   a            add process (interactive rt run picker)
  *   s            start / resume / restart selected entry
  *   S            warm all entries in lane (spawn all, only active runs)
- *   w            switch active entry (proxy target)
+ *   Enter        activate selected entry (switch proxy target)
  *   x            stop selected entry
  *   X            stop all entries in lane
  *   r            remove a process (entry picker)
@@ -80,7 +80,7 @@ type Mode =
   | { type: "normal" }
   | { type: "repo-pick"; purpose: "new-lane"; idx: number }
   | { type: "port-input"; purpose: "new-lane" | "edit-port"; laneId?: string; repoName?: string }
-  | { type: "entry-picker"; purpose: "switch" | "remove"; laneId: string; idx: number }
+  | { type: "entry-picker"; purpose: "remove"; laneId: string; idx: number }
   | { type: "command-edit"; laneId: string; entryId: string }
   | { type: "confirm-reset" }
   | { type: "confirm-spread"; laneId: string };
@@ -668,9 +668,19 @@ async function runOnce(
 
   // ── View components ───────────────────────────────────────────────────────
 
-  function EntryRow({ lane, entry, ei, isSelectedLane, selectedEi, s }: {
+  /** Compute the display label for an entry's command (package · script or custom template). */
+  function entryCommandLabel(entry: LaneEntry): string {
+    const defaultCmd = `${entry.pm} run ${entry.script}`;
+    const hasCustomCmd = entry.commandTemplate !== defaultCmd;
+    return entry.packageLabel !== "root"
+      ? `${entry.packageLabel} · ${hasCustomCmd ? entry.commandTemplate : entry.script}`
+      : (hasCustomCmd ? entry.commandTemplate : entry.script);
+  }
+
+  function EntryRow({ lane, entry, ei, isSelectedLane, selectedEi, s, uniform }: {
     lane: LaneConfig; entry: LaneEntry; ei: number;
     isSelectedLane: boolean; selectedEi: number; s: RunnerUIState;
+    uniform: boolean;
   }) {
     const win = entryWindowName(lane.id, entry.id);
     const state = s.entryStates.get(win) ?? "stopped";
@@ -679,11 +689,6 @@ async function runOnce(
     const eKey = `${lane.id}:${entry.id}`;
 
     const stateColor = STATUS_COLOR[state];
-    const defaultCmd = `${entry.pm} run ${entry.script}`;
-    const hasCustomCmd = entry.commandTemplate !== defaultCmd;
-    const label = entry.packageLabel !== "root"
-      ? `${entry.packageLabel} · ${hasCustomCmd ? entry.commandTemplate : entry.script}`
-      : (hasCustomCmd ? entry.commandTemplate : entry.script);
     const branchLabel = s.enrichment[eKey] ?? entry.branch ?? "";
     const nameColor = isActive ? C.green : (isSelected ? C.white : C.muted);
     const spinnerChar = SPINNER_FRAMES[s.spinnerFrame % SPINNER_FRAMES.length]!;
@@ -692,6 +697,22 @@ async function runOnce(
       state === "starting" ? "starting…" :
       state === "warm"     ? "❄ warm"    : state;
 
+    if (uniform) {
+      // Compact single-row: only the branch/worktree label differs between entries
+      return (
+        <row key={eKey} gap={1}>
+          <text style={{ fg: isSelected ? C.cyan : C.dim }}>{isSelected ? "❯" : " "}</text>
+          <text style={{ fg: stateColor }}>{stateIcon}</text>
+          <text style={{ fg: nameColor, bold: isActive }}>{branchLabel || entry.branch || entry.worktree}</text>
+          <spacer flex={1} />
+          <text style={{ fg: C.dim }}>:{entry.ephemeralPort}</text>
+          <text style={{ fg: stateColor }}>{stateLabel}</text>
+        </row>
+      );
+    }
+
+    // Normal two-row layout when commands differ between entries
+    const label = entryCommandLabel(entry);
     return (
       <column key={eKey} gap={0}>
         <row key={`${eKey}-1`} gap={1}>
@@ -714,7 +735,12 @@ async function runOnce(
     const isSelected = li === s.laneIdx;
     const safeEi = Math.min(s.entryIdx, Math.max(0, lane.entries.length - 1));
     const proxyUp = s.proxyStates[proxyWindowName(lane.id)] ?? false;
-    const title = ` ${isSelected ? "❯ " : ""}LANE ${lane.id}  ·  :${lane.canonicalPort}  `;
+    const title = ` ${isSelected ? "❯ " : ""}LANE ${lane.id}  ·  ${lane.repoName}  ·  :${lane.canonicalPort}  `;
+
+    // If all entries share the same commandTemplate, hoist the command to the header
+    const commandIsUniform = lane.entries.length > 0 &&
+      lane.entries.every((e) => e.commandTemplate === lane.entries[0]!.commandTemplate);
+    const sharedLabel = commandIsUniform ? entryCommandLabel(lane.entries[0]!) : null;
 
     return (
       <box
@@ -726,7 +752,11 @@ async function runOnce(
         px={1}
         gap={1}
       >
-        <text style={{ fg: proxyUp ? C.green : C.red }}>{proxyUp ? "proxy ✓" : "proxy ✗"}</text>
+        <row gap={1}>
+          <text style={{ fg: proxyUp ? C.green : C.red }}>{proxyUp ? "proxy ✓" : "proxy ✗"}</text>
+          {sharedLabel && <text style={{ fg: C.dim }}>{"·"}</text>}
+          {sharedLabel && <text style={{ fg: C.muted }}>{sharedLabel}</text>}
+        </row>
         {lane.entries.length === 0
           ? <text style={{ fg: C.dim }}>{"  press [a] to add a process"}</text>
           : lane.entries.map((entry, ei) => (
@@ -734,6 +764,7 @@ async function runOnce(
                 key={`${lane.id}:${entry.id}`}
                 lane={lane} entry={entry} ei={ei}
                 isSelectedLane={isSelected} selectedEi={safeEi} s={s}
+                uniform={commandIsUniform}
               />
             ))
         }
@@ -757,7 +788,7 @@ async function runOnce(
           <text style={{ fg: C.muted }}>[a]</text><text style={{ fg: C.dim }}>add</text>
           <text style={{ fg: C.muted }}>[s]</text><text style={{ fg: C.dim }}>start</text>
           <text style={{ fg: C.muted }}>[S]</text><text style={{ fg: C.dim }}>warm</text>
-          <text style={{ fg: C.muted }}>[w]</text><text style={{ fg: C.dim }}>switch</text>
+          <text style={{ fg: C.muted }}>[↵]</text><text style={{ fg: C.dim }}>activate</text>
           <text style={{ fg: C.muted }}>[x/X]</text><text style={{ fg: C.dim }}>stop</text>
           <text style={{ fg: C.muted }}>[r]</text><text style={{ fg: C.dim }}>remove</text>
           <text style={{ fg: C.muted }}>[e]</text><text style={{ fg: C.dim }}>cmd</text>
@@ -808,18 +839,17 @@ async function runOnce(
 
     // Entry-picker overlay
     if (s.mode.type === "entry-picker") {
-      const pickerMode = s.mode as { type: "entry-picker"; laneId: string; purpose: "switch" | "remove"; idx: number };
+      const pickerMode = s.mode as { type: "entry-picker"; laneId: string; purpose: "remove"; idx: number };
       const lane = s.lanes.find((l) => l.id === pickerMode.laneId);
       if (!lane) return <column p={1}><Header /></column>;
 
-      const isSwitch = pickerMode.purpose === "switch";
       const pickerIdx = pickerMode.idx;
 
       return (
         <column p={1} gap={1}>
           <Header />
           <box
-            title={` ${isSwitch ? "Switch active entry" : "Remove entry"} — LANE ${lane.id}  :${lane.canonicalPort} `}
+            title={` Remove entry — LANE ${lane.id}  :${lane.canonicalPort} `}
             border="single"
             borderStyle={{ fg: C.cyan }}
             px={1}
@@ -841,7 +871,7 @@ async function runOnce(
                 </row>
               );
             })}
-            <text style={{ fg: C.dim }}>{`[↑↓] select  [↵] ${isSwitch ? "activate" : "remove"}  [Esc] cancel`}</text>
+            <text style={{ fg: C.dim }}>{`[↑↓] select  [↵] remove  [Esc] cancel`}</text>
           </box>
         </column>
       );
@@ -1078,13 +1108,16 @@ async function runOnce(
 
     // [S] warm all — handled via onEvent for text events (see below)
 
-    // [w] switch active entry (opens entry picker)
-    w: ({ state, update }) => {
-      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      if (!lane || lane.entries.length < 2) return;
-      const currentIdx = Math.max(0, lane.entries.findIndex((e) => e.id === lane.activeEntryId));
-      update((s) => ({ ...s, mode: { type: "entry-picker", purpose: "switch", laneId: lane.id, idx: currentIdx } }));
-      app.setMode("entry-picker");
+    // [Enter] activate the ←/→ selected entry (switch proxy target)
+    enter: ({ state }) => {
+      const li = Math.min(state.laneIdx, state.lanes.length - 1);
+      const lane = state.lanes[li];
+      if (!lane) return;
+      const ei = Math.min(state.entryIdx, lane.entries.length - 1);
+      const entry = lane.entries[ei];
+      if (!entry) return;
+      if (lane.activeEntryId === entry.id) return; // already active
+      doDispatch({ type: "activate", laneId: lane.id, entryId: entry.id }, state);
     },
 
     // [x] stop selected entry
@@ -1359,8 +1392,7 @@ async function runOnce(
         if (!lane) { update((s) => ({ ...s, mode: { type: "normal" } })); app.setMode("default"); return; }
         const entry = lane.entries[mode.idx];
         if (entry) {
-          if (mode.purpose === "switch")  doDispatch({ type: "activate",      laneId: lane.id, entryId: entry.id }, state);
-          else                            doDispatch({ type: "remove-entry",  laneId: lane.id, entryId: entry.id }, state);
+          doDispatch({ type: "remove-entry", laneId: lane.id, entryId: entry.id }, state);
         }
         update((s) => ({ ...s, mode: { type: "normal" } }));
         app.setMode("default");
@@ -1502,10 +1534,8 @@ export async function showRunner(args: string[], _ctx: CommandContext): Promise<
       const name = await promptRunnerName();
       if (!name) { console.error("  Cancelled.\n"); process.exit(0); }
       runnerName = name;
-    } else if (configs.length === 1) {
-      runnerName = configs[0]!;
     } else {
-      // Multiple configs — pick one with filterableSelect
+      // Always show a picker so the user can choose or create a new config
       const { filterableSelect } = await import("../lib/rt-render.tsx");
       const options = [
         ...configs.map((c) => ({ value: c, label: c })),
