@@ -128,6 +128,7 @@ const C = {
   dim:   rgb(100, 100, 100),
   muted: rgb(160, 160, 160),
   white: rgb(220, 220, 220),
+  selBg: rgb(35,  50,  70),  // subtle blue-grey highlight for selected entry
 };
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"];
@@ -697,16 +698,18 @@ async function runOnce(
       state === "starting" ? "starting…" :
       state === "warm"     ? "❄ warm"    : state;
 
+    const rowBg = isSelected ? C.selBg : undefined;
+
     if (uniform) {
       // Compact single-row: only the branch/worktree label differs between entries
       return (
-        <row key={eKey} gap={1}>
-          <text style={{ fg: isSelected ? C.cyan : C.dim }}>{isSelected ? "❯" : " "}</text>
-          <text style={{ fg: stateColor }}>{stateIcon}</text>
-          <text style={{ fg: nameColor, bold: isActive }}>{branchLabel || entry.branch || entry.worktree}</text>
+        <row key={eKey} gap={1} style={{ bg: rowBg }}>
+          <text style={{ fg: isSelected ? C.cyan : C.dim, bg: rowBg }}>{isSelected ? "❯" : " "}</text>
+          <text style={{ fg: stateColor, bg: rowBg }}>{stateIcon}</text>
+          <text style={{ fg: nameColor, bold: isActive, bg: rowBg }}>{branchLabel || entry.branch || entry.worktree}</text>
           <spacer flex={1} />
-          <text style={{ fg: C.dim }}>:{entry.ephemeralPort}</text>
-          <text style={{ fg: stateColor }}>{stateLabel}</text>
+          <text style={{ fg: C.dim, bg: rowBg }}>:{entry.ephemeralPort}</text>
+          <text style={{ fg: stateColor, bg: rowBg }}>{stateLabel}</text>
         </row>
       );
     }
@@ -715,17 +718,17 @@ async function runOnce(
     const label = entryCommandLabel(entry);
     return (
       <column key={eKey} gap={0}>
-        <row key={`${eKey}-1`} gap={1}>
-          <text style={{ fg: isSelected ? C.cyan : C.dim }}>{isSelected ? "❯" : " "}</text>
-          <text style={{ fg: stateColor }}>{stateIcon}</text>
-          <text style={{ fg: nameColor, bold: isActive }}>{label}</text>
+        <row key={`${eKey}-1`} gap={1} style={{ bg: rowBg }}>
+          <text style={{ fg: isSelected ? C.cyan : C.dim, bg: rowBg }}>{isSelected ? "❯" : " "}</text>
+          <text style={{ fg: stateColor, bg: rowBg }}>{stateIcon}</text>
+          <text style={{ fg: nameColor, bold: isActive, bg: rowBg }}>{label}</text>
           <spacer flex={1} />
-          <text style={{ fg: C.dim }}>:{entry.ephemeralPort}</text>
-          <text style={{ fg: stateColor }}>{stateLabel}</text>
+          <text style={{ fg: C.dim, bg: rowBg }}>:{entry.ephemeralPort}</text>
+          <text style={{ fg: stateColor, bg: rowBg }}>{stateLabel}</text>
         </row>
-        <row key={`${eKey}-2`} gap={0}>
-          <text>{"    "}</text>
-          {branchLabel && <text style={{ fg: C.dim }}>{branchLabel}</text>}
+        <row key={`${eKey}-2`} gap={0} style={{ bg: rowBg }}>
+          <text style={{ bg: rowBg }}>{"    "}</text>
+          {branchLabel && <text style={{ fg: C.dim, bg: rowBg }}>{branchLabel}</text>}
         </row>
       </column>
     );
@@ -750,7 +753,7 @@ async function runOnce(
         border={isSelected ? "heavy" : "single"}
         borderStyle={{ fg: isSelected ? C.cyan : C.dim }}
         px={1}
-        gap={1}
+        gap={0}
       >
         <row gap={1}>
           <text style={{ fg: proxyUp ? C.green : C.red }}>{proxyUp ? "proxy ✓" : "proxy ✗"}</text>
