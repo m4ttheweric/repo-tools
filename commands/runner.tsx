@@ -428,6 +428,13 @@ async function runOnce(
     showMrPane(branch);
   }
 
+  /** Index of the active entry in a lane (falls back to 0). */
+  function activeEntryIdx(lane: LaneConfig | undefined): number {
+    if (!lane || lane.entries.length === 0) return 0;
+    const idx = lane.entries.findIndex((e) => e.id === lane.activeEntryId);
+    return idx >= 0 ? idx : 0;
+  }
+
   /** Branch of the currently focused lane entry. */
   function focusedBranch(s: { lanes: LaneConfig[]; laneIdx: number; entryIdx: number }): string {
     const lane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
@@ -1170,27 +1177,31 @@ async function runOnce(
 
     j: ({ state, update }) => {
       const newLi = Math.min(state.laneIdx + 1, state.lanes.length - 1);
-      update((s) => ({ ...s, laneIdx: newLi, entryIdx: 0 }));
+      const newEi = activeEntryIdx(state.lanes[newLi]);
+      update((s) => ({ ...s, laneIdx: newLi, entryIdx: newEi }));
       switchDisplay(state.lanes[newLi]?.id ?? "");
-      updateMrPane(state.lanes[newLi]?.entries[0]?.branch ?? "");
+      updateMrPane(state.lanes[newLi]?.entries[newEi]?.branch ?? "");
     },
     k: ({ state, update }) => {
       const newLi = Math.max(0, state.laneIdx - 1);
-      update((s) => ({ ...s, laneIdx: newLi, entryIdx: 0 }));
+      const newEi = activeEntryIdx(state.lanes[newLi]);
+      update((s) => ({ ...s, laneIdx: newLi, entryIdx: newEi }));
       switchDisplay(state.lanes[newLi]?.id ?? "");
-      updateMrPane(state.lanes[newLi]?.entries[0]?.branch ?? "");
+      updateMrPane(state.lanes[newLi]?.entries[newEi]?.branch ?? "");
     },
     down: ({ state, update }) => {
       const newLi = Math.min(state.laneIdx + 1, state.lanes.length - 1);
-      update((s) => ({ ...s, laneIdx: newLi, entryIdx: 0 }));
+      const newEi = activeEntryIdx(state.lanes[newLi]);
+      update((s) => ({ ...s, laneIdx: newLi, entryIdx: newEi }));
       switchDisplay(state.lanes[newLi]?.id ?? "");
-      updateMrPane(state.lanes[newLi]?.entries[0]?.branch ?? "");
+      updateMrPane(state.lanes[newLi]?.entries[newEi]?.branch ?? "");
     },
     up: ({ state, update }) => {
       const newLi = Math.max(0, state.laneIdx - 1);
-      update((s) => ({ ...s, laneIdx: newLi, entryIdx: 0 }));
+      const newEi = activeEntryIdx(state.lanes[newLi]);
+      update((s) => ({ ...s, laneIdx: newLi, entryIdx: newEi }));
       switchDisplay(state.lanes[newLi]?.id ?? "");
-      updateMrPane(state.lanes[newLi]?.entries[0]?.branch ?? "");
+      updateMrPane(state.lanes[newLi]?.entries[newEi]?.branch ?? "");
     },
 
     right: ({ state, update }) => {
