@@ -57,9 +57,14 @@ import { RT_ROOT, getKnownRepos, type KnownRepo } from "../lib/repo.ts";
 
 const CLI_PATH = join(RT_ROOT, "cli.ts");
 
-/** Open a vertical tmux split (below current pane) running `cmd`. Non-blocking. */
-function tmuxSplit(cmd: string, cwd?: string): void {
+/**
+ * Open a vertical tmux split running `cmd`.
+ * Always targets `targetPane` (the display pane) so the runner pane is never
+ * resized and the Rezi layout stays intact.
+ */
+function tmuxSplit(cmd: string, cwd?: string, targetPane?: string): void {
   const args = ["split-window", "-v"];
+  if (targetPane) args.push("-t", targetPane);
   if (cwd) args.push("-c", cwd);
   args.push(cmd);
   spawnSync("tmux", args);
@@ -393,6 +398,11 @@ async function runOnce(
 
   function restoreFocus(): void {
     if (runnerPaneId) spawnSync("tmux", ["select-pane", "-t", runnerPaneId]);
+  }
+
+  /** Pane ID of the right-side display pane (used as split target to avoid resizing the runner). */
+  function displayPane(): string | undefined {
+    return displayedLaneId ? lanePanes.get(displayedLaneId) : undefined;
   }
 
   // ── MR info pane (bottom-right, hidden by default, toggled with [i]) ────────
@@ -1227,7 +1237,7 @@ async function runOnce(
       }
       const tmpFile = join(tmpdir(), `rt-lane-${Date.now()}.json`);
       const cmd = `${process.execPath} ${CLI_PATH} pick-lane > ${tmpFile}`;
-      tmuxSplit(cmd);
+      tmuxSplit(cmd, undefined, displayPane());
 
       const poll = setInterval(() => {
         if (!existsSync(tmpFile)) return;
@@ -1276,7 +1286,7 @@ async function runOnce(
       const laneRepoRoot = laneRepo?.worktrees[0]?.path ?? process.cwd();
       const tmpFile = join(tmpdir(), `rt-resolve-${Date.now()}.json`);
       const cmd = `${process.execPath} ${CLI_PATH} run --resolve-only --repo ${lane.repoName} > ${tmpFile}`;
-      tmuxSplit(cmd, laneRepoRoot);
+      tmuxSplit(cmd, laneRepoRoot, displayPane());
 
       const poll = setInterval(() => {
         if (!existsSync(tmpFile)) return;
@@ -1366,7 +1376,7 @@ async function runOnce(
       if (!lane) return;
       const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
       if (!entry) return;
-      tmuxSplit(`${process.execPath} ${CLI_PATH} code`, entry.worktree);
+      tmuxSplit(`${process.execPath} ${CLI_PATH} code`, entry.worktree, displayPane());
     },
 
     // [b] open rt branch switch in the entry's worktree
@@ -1375,7 +1385,7 @@ async function runOnce(
       if (!lane) return;
       const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
       if (!entry) return;
-      tmuxSplit(`${process.execPath} ${CLI_PATH} branch switch`, entry.worktree);
+      tmuxSplit(`${process.execPath} ${CLI_PATH} branch switch`, entry.worktree, displayPane());
     },
 
     // [t] open a one-off interactive shell at the entry's working directory
@@ -1384,7 +1394,7 @@ async function runOnce(
       if (!lane) return;
       const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
       if (!entry) return;
-      tmuxSplit(process.env.SHELL ?? "zsh", entry.targetDir);
+      tmuxSplit(process.env.SHELL ?? "zsh", entry.targetDir, displayPane());
     },
 
     // [i] toggle the MR/ticket info pane (bottom-right, hidden by default)
