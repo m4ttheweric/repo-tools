@@ -254,11 +254,12 @@ async function runOnce(
   // We use it to snap focus back to the runner after any tmux swap/split.
   const runnerPaneId = process.env.TMUX_PANE ?? "";
 
-  // Pre-fetch process and proxy state so the first frame is already correct —
-  // avoids the 1-3s flash of "stopped" / proxy-X after returning from rt attach.
-  const [initStatesRes, initProxyRes] = await Promise.all([
+  // Pre-fetch process state, proxy state, and enrichment so the first frame is
+  // already fully populated — avoids flashes of "stopped"/proxy-X/bare branch names.
+  const [initStatesRes, initProxyRes, initialEnrichment] = await Promise.all([
     daemonQuery("process:states"),
     daemonQuery("proxy:list"),
+    fetchEnrichment(initialLanes),
   ]);
   const initialEntryStates = new Map<string, EntryState>();
   if (initStatesRes?.ok && initStatesRes.data) {
@@ -281,7 +282,7 @@ async function runOnce(
       mode:         { type: "normal" },
       entryStates:  initialEntryStates,
       proxyStates:  initialProxyStates,
-      enrichment:   {},
+      enrichment:   initialEnrichment,
       inputValue:   "",
       toast:        null,
       spinnerFrame: 0,
@@ -996,14 +997,11 @@ async function runOnce(
     });
   }, 80);
 
-  void fetchEnrichment(currentLanes).then((enrichment) =>
-    safeUpdate((s) => ({ ...s, enrichment }))
-  );
   const enrichTimer = setInterval(() => {
     void fetchEnrichment(currentLanes).then((enrichment) =>
       safeUpdate((s) => ({ ...s, enrichment }))
     );
-  }, 30_000);
+  }, 3_000);
 
   // ── Lane pane startup ─────────────────────────────────────────────────────
   // Create one background pane per lane and swap the first into the display split.
