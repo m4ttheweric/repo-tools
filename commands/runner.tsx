@@ -36,20 +36,20 @@
 import { rgb } from "@rezi-ui/jsx";
 import { createNodeApp } from "@rezi-ui/node";
 import { spawnSync } from "node:child_process";
-import { join, basename } from "node:path";
-import { homedir, tmpdir } from "node:os";
+import { join, basename, relative } from "node:path";
+import { tmpdir } from "node:os";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { createInterface } from "node:readline";
 import type { CommandContext } from "../lib/command-tree.ts";
-import { getRepoRoot } from "../lib/git.ts";
 import { daemonQuery, isDaemonRunning } from "../lib/daemon-client.ts";
 import {
-  loadLanes, saveLanes, resetLanes,
+  listRunnerConfigs, loadRunnerConfig, saveRunnerConfig, resetRunnerConfig,
   nextLaneId, nextEntryId, proxyWindowName, entryWindowName,
   type LaneConfig, type LaneEntry,
 } from "../lib/runner-store.ts";
 import type { ProcessState } from "../lib/daemon/state-store.ts";
 import type { RunResolveResult } from "./run.ts";
-import { RT_ROOT } from "../lib/repo.ts";
+import { RT_ROOT, getKnownRepos, type KnownRepo } from "../lib/repo.ts";
 
 // ─── tmux helpers ─────────────────────────────────────────────────────────────
 
@@ -78,10 +78,12 @@ type InteractiveRequest = { type: "quit" };
 
 type Mode =
   | { type: "normal" }
-  | { type: "port-input"; purpose: "new-lane" | "edit-port"; laneId?: string }
+  | { type: "repo-pick"; purpose: "new-lane"; idx: number }
+  | { type: "port-input"; purpose: "new-lane" | "edit-port"; laneId?: string; repoName?: string }
   | { type: "entry-picker"; purpose: "switch" | "remove"; laneId: string; idx: number }
   | { type: "command-edit"; laneId: string; entryId: string }
-  | { type: "confirm-reset" };
+  | { type: "confirm-reset" }
+  | { type: "confirm-spread"; laneId: string };
 
 type LaneAction =
   | { type: "spawn";        laneId: string; entryId: string }
@@ -110,6 +112,10 @@ interface RunnerUIState {
   toast:         string | null;
   /** Monotonically incrementing counter used to animate the "starting" spinner. */
   spinnerFrame:  number;
+  /** Name of the loaded runner config (displayed in header). */
+  runnerName:    string;
+  /** All known repos, used for repo-pick mode and resolving lane repoRoot. */
+  knownRepos:    KnownRepo[];
 }
 
 // ─── Palette ──────────────────────────────────────────────────────────────────
@@ -232,9 +238,8 @@ async function fetchEnrichment(lanes: LaneConfig[]): Promise<Record<string, stri
 
 async function runOnce(
   initialLanes: LaneConfig[],
-  dataDir: string,
-  repoLabel: string,
-  repoRoot: string,
+  runnerName: string,
+  knownRepos: KnownRepo[],
 ): Promise<InteractiveRequest> {
   const pending: InteractiveRequest = { type: "quit" };
   let currentLanes = initialLanes;
@@ -279,6 +284,8 @@ async function runOnce(
       inputValue:   "",
       toast:        null,
       spinnerFrame: 0,
+      runnerName,
+      knownRepos,
     },
   });
 
@@ -291,7 +298,7 @@ async function runOnce(
 
   function saveCurrent(newLanes: LaneConfig[]) {
     currentLanes = newLanes;
-    saveLanes(dataDir, newLanes);
+    saveRunnerConfig(runnerName, newLanes);
   }
 
   /** Port-allocate, create entry, persist lanes, update UI state. */
@@ -590,7 +597,7 @@ async function runOnce(
             daemonQuery("group:remove", { id: lane.id }),
           ])
         );
-        resetLanes(dataDir);
+        saveRunnerConfig(runnerName, []);
         currentLanes = [];
         return { lanes: [], laneIdx: 0, entryIdx: 0 };
       }
@@ -734,7 +741,7 @@ async function runOnce(
     );
   }
 
-  function HintBar() {
+  function HintBar({ canSpread }: { canSpread?: boolean }) {
     return (
       <column gap={0}>
         <row gap={1}>          
@@ -743,6 +750,8 @@ async function runOnce(
           <text style={{ fg: C.muted }}>[p]</text><text style={{ fg: C.dim }}>port</text>
           <text style={{ fg: C.muted }}>[D]</text><text style={{ fg: C.dim }}>del</text>
           <text style={{ fg: C.muted }}>[R]</text><text style={{ fg: C.dim }}>reset</text>
+          {canSpread && <text style={{ fg: C.muted }}>[W]</text>}
+          {canSpread && <text style={{ fg: C.dim }}>spread to worktrees</text>}
         </row>
         <row gap={1}>
           <text style={{ fg: C.muted }}>[a]</text><text style={{ fg: C.dim }}>add</text>
@@ -769,9 +778,33 @@ async function runOnce(
       <row gap={0}>
         <text style={{ fg: C.cyan, bold: true }}>rt</text>
         <text style={{ bold: true }}>{"  runner"}</text>
-        <text style={{ fg: C.dim }}>{"  "}{repoLabel}</text>
+        <text style={{ fg: C.dim }}>{"  "}{s.runnerName}</text>
       </row>
     );
+
+    // Repo-pick overlay (for new-lane creation)
+    if (s.mode.type === "repo-pick") {
+      const repoPickMode = s.mode as { type: "repo-pick"; purpose: "new-lane"; idx: number };
+      const repos = s.knownRepos;
+      const selectedIdx = repoPickMode.idx;
+      return (
+        <column p={1} gap={1}>
+          <Header />
+          <text style={{ fg: C.muted }}>Select a repo for this lane:</text>
+          <column>
+            {repos.map((repo, i) => (
+              <text
+                key={repo.repoName}
+                style={{ fg: i === selectedIdx ? C.cyan : C.white, bold: i === selectedIdx }}
+              >
+                {i === selectedIdx ? "▶ " : "  "}{repo.repoName}
+              </text>
+            ))}
+          </column>
+          <text style={{ fg: C.dim }}>j/k navigate · Enter select · Esc cancel</text>
+        </column>
+      );
+    }
 
     // Entry-picker overlay
     if (s.mode.type === "entry-picker") {
@@ -820,6 +853,12 @@ async function runOnce(
       if (s.mode.type === "confirm-reset") {
         return <text style={{ fg: C.red }}>{"Reset all lanes and stop all processes?  [y] confirm  [n / Esc] cancel"}</text>;
       }
+      if (s.mode.type === "confirm-spread") {
+        const spreadLane = s.lanes.find((l) => l.id === (s.mode as { laneId: string }).laneId);
+        const spreadEntry = spreadLane?.entries[0];
+        const spreadLabel = spreadEntry ? `'${spreadEntry.script}'` : "command";
+        return <text style={{ fg: C.yel }}>{`Spread ${spreadLabel} to all worktrees of ${spreadLane?.repoName ?? ""}?  [y] confirm  [n / Esc] cancel`}</text>;
+      }
       if (s.mode.type === "port-input") {
         const label = s.mode.purpose === "new-lane" ? "Add lane — port:" : "Edit port:";
         return (
@@ -854,7 +893,9 @@ async function runOnce(
           </focusTrap>
         );
       }
-      return <HintBar />;
+      const activeLane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
+      const canSpread = activeLane ? activeLane.entries.length === 1 : false;
+      return <HintBar canSpread={canSpread} />;
     };
 
     return (
@@ -975,10 +1016,13 @@ async function runOnce(
     },
     left: ({ update }) => update((s) => ({ ...s, entryIdx: Math.max(0, s.entryIdx - 1) })),
 
-    // [l] add lane
-    l: ({ update }) => {
-      update((s) => ({ ...s, mode: { type: "port-input", purpose: "new-lane" }, inputValue: "" }));
-      app.setMode("port-input");
+    // [l] add lane — first pick a repo, then enter port
+    l: ({ state, update }) => {
+      if (state.knownRepos.length === 0) {
+        showToast("No known repos — run rt in a repo first");
+        return;
+      }
+      update((s) => ({ ...s, mode: { type: "repo-pick", purpose: "new-lane", idx: 0 }, inputValue: "" }));
     },
 
     // [p] edit canonical port
@@ -997,9 +1041,11 @@ async function runOnce(
     a: ({ state }) => {
       const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
       if (!lane) return;
+      const laneRepo = state.knownRepos.find((r) => r.repoName === lane.repoName);
+      const laneRepoRoot = laneRepo?.worktrees[0]?.path ?? process.cwd();
       const tmpFile = join(tmpdir(), `rt-resolve-${Date.now()}.json`);
       const cmd = `${process.execPath} ${CLI_PATH} run --resolve-only --pick-worktree > ${tmpFile} 2>/dev/null`;
-      tmuxSplit(cmd, repoRoot);
+      tmuxSplit(cmd, laneRepoRoot);
 
       const poll = setInterval(() => {
         if (!existsSync(tmpFile)) return;
@@ -1125,12 +1171,65 @@ async function runOnce(
         safeUpdate((st) => ({ ...st, mode: { type: "confirm-reset" } }));
         app.setMode("confirm-reset");
         break;
+      case "W": // spread lane to all worktrees
+        if (lane && lane.entries.length === 1) {
+          safeUpdate((st) => ({ ...st, mode: { type: "confirm-spread", laneId: lane.id } }));
+          app.setMode("confirm-spread");
+        }
+        break;
     }
   });
 
   // ── Modal mode bindings ────────────────────────────────────────────────────
 
   app.modes({
+    // Repo picker for new-lane creation
+    "repo-pick": {
+      j: ({ state, update }) => {
+        if (state.mode.type !== "repo-pick") return;
+        update((s) => s.mode.type === "repo-pick"
+          ? { ...s, mode: { ...s.mode, idx: Math.min(s.mode.idx + 1, s.knownRepos.length - 1) } }
+          : s
+        );
+      },
+      k: ({ state, update }) => {
+        if (state.mode.type !== "repo-pick") return;
+        update((s) => s.mode.type === "repo-pick"
+          ? { ...s, mode: { ...s.mode, idx: Math.max(0, s.mode.idx - 1) } }
+          : s
+        );
+      },
+      down: ({ state, update }) => {
+        if (state.mode.type !== "repo-pick") return;
+        update((s) => s.mode.type === "repo-pick"
+          ? { ...s, mode: { ...s.mode, idx: Math.min(s.mode.idx + 1, s.knownRepos.length - 1) } }
+          : s
+        );
+      },
+      up: ({ state, update }) => {
+        if (state.mode.type !== "repo-pick") return;
+        update((s) => s.mode.type === "repo-pick"
+          ? { ...s, mode: { ...s.mode, idx: Math.max(0, s.mode.idx - 1) } }
+          : s
+        );
+      },
+      enter: ({ state, update }) => {
+        if (state.mode.type !== "repo-pick") return;
+        const repo = state.knownRepos[state.mode.idx];
+        if (!repo) { update((s) => ({ ...s, mode: { type: "normal" } })); app.setMode("default"); return; }
+        update((s) => ({
+          ...s,
+          mode: { type: "port-input", purpose: "new-lane", repoName: repo.repoName },
+          inputValue: "",
+        }));
+        app.setMode("port-input");
+      },
+      escape: ({ update }) => {
+        update((s) => ({ ...s, mode: { type: "normal" } }));
+        app.setMode("default");
+      },
+    },
+
     // Port input: digits go to ui.input(), only enter/escape handled here
     "port-input": {
       enter: ({ state, update }) => {
@@ -1147,7 +1246,8 @@ async function runOnce(
           } else if (mode.purpose === "new-lane") {
             if (!state.lanes.find((l) => l.canonicalPort === port)) {
               const id = nextLaneId(state.lanes);
-              const newLane: LaneConfig = { id, canonicalPort: port, entries: [] };
+              const repoName = mode.repoName ?? "";
+              const newLane: LaneConfig = { id, canonicalPort: port, entries: [], repoName };
               // Ensure proxy + group exist asynchronously; UI updates immediately
               void daemonQuery("group:create", { id: newLane.id });
               void ensureProxy(newLane);
@@ -1278,6 +1378,48 @@ async function runOnce(
       n: ({ update }) => { update((s) => ({ ...s, mode: { type: "normal" } })); app.setMode("default"); },
       escape: ({ update }) => { update((s) => ({ ...s, mode: { type: "normal" } })); app.setMode("default"); },
     },
+
+    "confirm-spread": {
+      y: ({ state, update }) => {
+        const mode = state.mode;
+        if (mode.type !== "confirm-spread") return;
+        const lane = state.lanes.find((l) => l.id === mode.laneId);
+        if (!lane || lane.entries.length !== 1) {
+          update((s) => ({ ...s, mode: { type: "normal" } }));
+          app.setMode("default");
+          return;
+        }
+        const entry = lane.entries[0]!;
+        const repo = state.knownRepos.find((r) => r.repoName === lane.repoName);
+        const worktrees = repo?.worktrees ?? [];
+        const existing = new Set(lane.entries.map((e) => e.worktree));
+        const relPath = relative(entry.worktree, entry.targetDir);
+        let added = 0;
+        for (const wt of worktrees) {
+          if (existing.has(wt.path)) continue;
+          const targetDir = relPath ? join(wt.path, relPath) : wt.path;
+          if (!existsSync(targetDir)) continue;
+          void addResolvedEntry(lane.id, {
+            targetDir,
+            pm: entry.pm,
+            script: entry.script,
+            packageLabel: entry.packageLabel,
+            worktree: wt.path,
+            branch: wt.branch,
+          });
+          added++;
+        }
+        showToast(
+          added > 0
+            ? `added to ${added} worktree${added === 1 ? "" : "s"}`
+            : "no new worktrees to add",
+        );
+        update((s) => ({ ...s, mode: { type: "normal" } }));
+        app.setMode("default");
+      },
+      n: ({ update }) => { update((s) => ({ ...s, mode: { type: "normal" } })); app.setMode("default"); },
+      escape: ({ update }) => { update((s) => ({ ...s, mode: { type: "normal" } })); app.setMode("default"); },
+    },
   });
 
   try {
@@ -1307,7 +1449,19 @@ async function runOnce(
 
 // ─── Entry ────────────────────────────────────────────────────────────────────
 
-export async function showRunner(args: string[], ctx: CommandContext): Promise<void> {
+/** Prompt the user for a new runner config name via readline. */
+async function promptRunnerName(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question("  New runner name: ", (answer) => {
+      rl.close();
+      const name = answer.trim();
+      resolve(name.length > 0 ? name : null);
+    });
+  });
+}
+
+export async function showRunner(args: string[], _ctx: CommandContext): Promise<void> {
   // Rezi's worker backend requires a real TTY. Show a clear error early.
   if (!process.stdin.isTTY && !process.stdout.isTTY && !process.stderr.isTTY) {
     console.error("\n  ✗  rt runner requires an interactive terminal (TTY)\n");
@@ -1333,16 +1487,50 @@ export async function showRunner(args: string[], ctx: CommandContext): Promise<v
     process.exit(1);
   }
 
-  const repoRoot = ctx.identity?.repoRoot ?? getRepoRoot() ?? process.cwd();
-  const dataDir = ctx.identity?.dataDir ?? join(homedir(), ".rt", "runner");
-  const repoLabel = basename(repoRoot);
+  // ── Runner config selection (pre-TUI) ─────────────────────────────────────
+  let runnerName: string;
+
+  const runnerArg = args.find((a) => a.startsWith("--runner="))?.split("=")[1];
+  if (runnerArg) {
+    runnerName = runnerArg;
+  } else {
+    const configs = listRunnerConfigs();
+
+    if (configs.length === 0) {
+      // No configs yet — prompt for a name to create one
+      console.log("\n  No runner configurations found. Create one:\n");
+      const name = await promptRunnerName();
+      if (!name) { console.error("  Cancelled.\n"); process.exit(0); }
+      runnerName = name;
+    } else if (configs.length === 1) {
+      runnerName = configs[0]!;
+    } else {
+      // Multiple configs — pick one with filterableSelect
+      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      const options = [
+        ...configs.map((c) => ({ value: c, label: c })),
+        { value: "__new__", label: "＋ create new runner" },
+      ];
+      const picked = await filterableSelect({ message: "Select a runner", options });
+      if (picked === null) { process.exit(0); }
+      if (picked === "__new__") {
+        console.log("");
+        const name = await promptRunnerName();
+        if (!name) { console.error("  Cancelled.\n"); process.exit(0); }
+        runnerName = name;
+      } else {
+        runnerName = picked;
+      }
+    }
+  }
 
   if (args.includes("--reset")) {
-    resetLanes(dataDir);
+    resetRunnerConfig(runnerName);
     if (!process.stdin.isTTY) return;
   }
 
-  const lanes = loadLanes(dataDir);
+  const lanes = loadRunnerConfig(runnerName);
+  const knownRepos = getKnownRepos();
 
   // Ensure all existing lanes have proxies and exclusive groups in the daemon
   for (const lane of lanes) {
@@ -1353,5 +1541,5 @@ export async function showRunner(args: string[], ctx: CommandContext): Promise<v
     }
   }
 
-  await runOnce(lanes, dataDir, repoLabel, repoRoot);
+  await runOnce(lanes, runnerName, knownRepos);
 }
