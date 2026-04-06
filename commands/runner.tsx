@@ -29,6 +29,7 @@
  *   e            edit command template for selected entry
  *   D            delete selected lane
  *   R            reset all lanes (with confirmation)
+ *   b            switch branch for the selected entry (rt branch switch)
  *   t            open a one-off shell at the entry's working directory
  *   q            quit
  */
@@ -38,7 +39,7 @@ import { createNodeApp } from "@rezi-ui/node";
 import { spawnSync } from "node:child_process";
 import { join, basename, relative } from "node:path";
 import { tmpdir } from "node:os";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, watch, type FSWatcher } from "node:fs";
 import { createInterface } from "node:readline";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { daemonQuery, isDaemonRunning } from "../lib/daemon-client.ts";
@@ -201,6 +202,34 @@ async function setProxyUpstream(laneId: string, ephemeralPort: number): Promise<
   await daemonQuery("proxy:set-upstream", { id: proxyWindowName(laneId), port: ephemeralPort });
 }
 
+// ─── Git HEAD helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Returns the common .git directory for any worktree path.
+ * `git rev-parse --git-common-dir` always returns the main repo's .git dir,
+ * even when called from a linked worktree — so this is the right thing to watch
+ * for a lane (one watcher covers all worktrees of that repo).
+ */
+function repoGitDir(worktreePath: string): string | null {
+  try {
+    const result = spawnSync("git", ["rev-parse", "--git-common-dir"], { cwd: worktreePath, encoding: "utf8" });
+    if (result.status !== 0) return null;
+    const gitDir = result.stdout.trim();
+    return gitDir.startsWith("/") ? gitDir : join(worktreePath, gitDir);
+  } catch {
+    return null;
+  }
+}
+
+function readCurrentBranch(worktreePath: string): string | null {
+  try {
+    const result = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath, encoding: "utf8" });
+    return result.status === 0 ? result.stdout.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Enrichment ───────────────────────────────────────────────────────────────
 
 async function fetchEnrichment(lanes: LaneConfig[]): Promise<Record<string, string>> {
@@ -337,6 +366,7 @@ async function runOnce(
     const newLanes = currentLanes.map((l) => (l.id === laneId ? updatedLane : l));
     saveCurrent(newLanes);
     safeUpdate((s) => ({ ...s, lanes: newLanes }));
+    syncGitWatchers(newLanes);
 
     await daemonQuery("group:add", { groupId: lane.id, processId });
     if (isFirst) await setProxyUpstream(lane.id, ephemeralPort);
@@ -866,6 +896,7 @@ async function runOnce(
           <text style={{ fg: C.muted }}>[r]</text><text style={{ fg: C.dim }}>remove</text>
           <text style={{ fg: C.muted }}>[e]</text><text style={{ fg: C.dim }}>cmd</text>
           <text style={{ fg: C.muted }}>[t]</text><text style={{ fg: C.dim }}>shell</text>
+          <text style={{ fg: C.muted }}>[b]</text><text style={{ fg: C.dim }}>branch</text>
           <text style={{ fg: C.muted }}>[i]</text><text style={{ fg: C.dim }}>info</text>
           <text style={{ fg: C.muted }}>[m]</text><text style={{ fg: C.dim }}>mode</text>
         </row>
@@ -1049,6 +1080,63 @@ async function runOnce(
       safeUpdate((s) => ({ ...s, enrichment }))
     );
   }, 3_000);
+
+  // ── Git HEAD watchers (one per lane / repo) ───────────────────────────────
+  // Each lane is bound to one repo. We watch that repo's common .git dir with
+  // recursive: true — a single FSEvents watcher covers HEAD changes in all
+  // linked worktrees (.git/worktrees/<name>/HEAD) as well as the main one.
+  const gitWatchers = new Map<string, FSWatcher>(); // laneId → watcher
+
+  function syncGitWatchers(lanes: LaneConfig[]): void {
+    const activeLaneIds = new Set(lanes.map((l) => l.id));
+
+    // Remove watchers for lanes that no longer exist
+    for (const [laneId, w] of gitWatchers) {
+      if (!activeLaneIds.has(laneId)) { try { w.close(); } catch { /* */ } gitWatchers.delete(laneId); }
+    }
+
+    // Add a watcher for each lane that has at least one entry with a worktree
+    for (const lane of lanes) {
+      if (gitWatchers.has(lane.id)) continue;
+      const anyWorktree = lane.entries.find((e) => e.worktree)?.worktree;
+      if (!anyWorktree) continue;
+      const gitDir = repoGitDir(anyWorktree);
+      if (!gitDir || !existsSync(gitDir)) continue;
+      try {
+        const w = watch(gitDir, { recursive: true }, () => onRepoChange(lane.id));
+        gitWatchers.set(lane.id, w);
+      } catch { /* fs.watch not available for this path */ }
+    }
+  }
+
+  function onRepoChange(laneId: string): void {
+    safeUpdate((s) => {
+      const lane = s.lanes.find((l) => l.id === laneId);
+      if (!lane) return s;
+
+      let changed = false;
+      const updatedEntries = lane.entries.map((entry) => {
+        if (!entry.worktree) return entry;
+        const branch = readCurrentBranch(entry.worktree);
+        if (!branch || branch === entry.branch) return entry;
+        changed = true;
+        return { ...entry, branch };
+      });
+      if (!changed) return s;
+
+      const updatedLanes = s.lanes.map((l) =>
+        l.id === laneId ? { ...l, entries: updatedEntries } : l
+      );
+      currentLanes = updatedLanes;
+      saveRunnerConfig(runnerName, updatedLanes);
+      void fetchEnrichment(updatedLanes).then((enrichment) =>
+        safeUpdate((s2) => ({ ...s2, enrichment }))
+      );
+      return { ...s, lanes: updatedLanes };
+    });
+  }
+
+  syncGitWatchers(initialLanes);
 
   // ── tmux window options ───────────────────────────────────────────────────
   // Pane borders: thick lines, dim inactive, cyan active, title in top border.
@@ -1258,6 +1346,15 @@ async function runOnce(
 
     // [D] delete lane — handled via onEvent for text events (see below)
     // [R] reset — handled via onEvent for text events (see below)
+
+    // [b] open rt branch switch in the entry's worktree
+    b: ({ state }) => {
+      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
+      if (!lane) return;
+      const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
+      if (!entry) return;
+      tmuxSplit(`${process.execPath} ${CLI_PATH} branch switch`, entry.worktree);
+    },
 
     // [t] open a one-off interactive shell at the entry's working directory
     t: ({ state }) => {
@@ -1519,6 +1616,8 @@ async function runOnce(
   clearInterval(pollTimer);
   clearInterval(enrichTimer);
   clearInterval(spinnerTimer);
+  for (const w of gitWatchers.values()) { try { w.close(); } catch { /* */ } }
+  gitWatchers.clear();
 
   // ── Lane pane cleanup ─────────────────────────────────────────────────────
   hideMrPane();
