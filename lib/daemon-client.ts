@@ -25,7 +25,7 @@ export interface DaemonResponse {
 
 // ─── HTTP over Unix socket ───────────────────────────────────────────────────
 
-const REQUEST_TIMEOUT_MS = 2000;
+const REQUEST_TIMEOUT_MS = 5000;
 
 async function trySocketQuery(
   cmd: string,
