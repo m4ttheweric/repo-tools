@@ -90,6 +90,21 @@ attachServer.setProcessManager(processManager);
 // Wire SuspendManager into ProcessManager so kill() can resume warm processes
 processManager.suspendManager = suspendManager;
 
+// Resolve the user's full PATH once at startup by running a login+interactive
+// shell. This handles NVM, bun, volta, fnm etc. regardless of whether the
+// daemon was launched by launchd (minimal PATH) or from a terminal session.
+// We do it once so spawns don't pay shell init overhead (compinit, Oh My Zsh…).
+try {
+  const shell = process.env.SHELL ?? "/bin/zsh";
+  processManager.userPath = execSync(`${shell} -lic 'echo $PATH' 2>/dev/null`, {
+    encoding: "utf8",
+    timeout: 5000,
+  }).trim();
+} catch {
+  // Fall back to the daemon's own PATH — better than nothing
+  processManager.userPath = process.env.PATH;
+}
+
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
 function log(msg: string): void {
@@ -594,7 +609,10 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
     case "process:attach-info": {
       const { id } = payload as { id: string };
       if (!id) return { ok: false, error: "missing id" };
-      return { ok: true, data: { socketPath: attachServer.socketPath(id) } };
+      const socketPath = attachServer.socketPath(id);
+      const hasSocket = existsSync(socketPath);
+      const state = stateStore.getState(id) ?? "stopped";
+      return { ok: true, data: { socketPath: hasSocket ? socketPath : null, state } };
     }
 
     case "process:suspend": {
@@ -700,9 +718,9 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
     }
 
     case "group:activate": {
-      const { groupId, processId } = payload as { groupId: string; processId: string };
+      const { groupId, processId, mode } = payload as { groupId: string; processId: string; mode?: "warm" | "single" };
       if (!groupId || !processId) return { ok: false, error: "missing groupId or processId" };
-      await exclusiveGroup.activate(groupId, processId);
+      await exclusiveGroup.activate(groupId, processId, mode ?? "warm");
       return { ok: true };
     }
 
