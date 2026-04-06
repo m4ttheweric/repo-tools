@@ -108,6 +108,21 @@ const TREE: Record<string, CommandNode> = {
     fullscreen: true,
   },
 
+  "mr-status": {
+    description: "MR status card for a branch (used by runner info pane)",
+    module: "./commands/mr-status.tsx",
+    fn: "showMrStatus",
+    fullscreen: true,
+    hidden: true,
+  },
+
+  "pick-lane": {
+    description: "Repo + port picker for adding a runner lane (used by runner)",
+    module: "./commands/pick-lane.ts",
+    fn: "pickLane",
+    hidden: true,
+  },
+
   doctor: {
     description: "Environment health check",
     module: "./commands/doctor.ts",

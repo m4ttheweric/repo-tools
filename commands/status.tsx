@@ -15,7 +15,7 @@ import type { PortEntry } from "../lib/port-scanner.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-interface CacheEntry {
+export interface CacheEntry {
   ticket: {
     identifier: string;
     title: string;
@@ -39,7 +39,7 @@ type ActionPending = {
   action: () => Promise<void>;
 } | null;
 
-type ActionState = {
+export type ActionState = {
   loading: string | null; // label while loading
   result: { ok: boolean; message: string } | null;
   confirm: ActionPending;
@@ -47,7 +47,7 @@ type ActionState = {
 
 // ─── Data fetching ──────────────────────────────────────────────────────────
 
-async function fetchStatusData(): Promise<StatusData> {
+export async function fetchStatusData(): Promise<StatusData> {
   const { daemonQuery } = await import("../lib/daemon-client.ts");
 
   const [cacheResult, portResult] = await Promise.all([
@@ -449,7 +449,7 @@ function MRRowTUI({
 
 // ─── MR Detail View (MRCard equivalent) ─────────────────────────────────────
 
-function MRDetailView({
+export function MRDetailView({
   mr,
   ticket,
   actionState,
@@ -568,7 +568,7 @@ function ActionBarView({
   if (mr.pipeline) {
     items.push({ key: "p", label: "Pipeline" });
   }
-  items.push({ key: "o", label: "Open in browser", dimmed: true });
+  items.push({ key: "o", label: "Open in browser" });
 
   return (
     <Box gap={2} flexWrap="wrap">
@@ -939,7 +939,7 @@ export async function showStatus(_args: string[]): Promise<void> {
 }
 
 
-const DEFAULT_BRANCHES = new Set(["main", "master", "develop", "dev"]);
+export const DEFAULT_BRANCHES = new Set(["main", "master", "develop", "dev"]);
 
 function LiveDashboard({
   initialData,

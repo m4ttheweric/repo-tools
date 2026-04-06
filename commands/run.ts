@@ -45,9 +45,8 @@ function getPackageJsonScripts(dir: string): string[] {
 
 export async function runCommand(args: string[], _ctx: CommandContext): Promise<void> {
   const resolveOnly = args.includes("--resolve-only");
-  const repoFlag = args.find((a, i) => a === "--repo" && args[i + 1])
-    ? args[args.indexOf("--repo") + 1]
-    : undefined;
+  const repoIdx = args.indexOf("--repo");
+  const repoFlag = repoIdx !== -1 && repoIdx + 1 < args.length ? args[repoIdx + 1] : undefined;
 
   // ── Step 1: Pick repo ──────────────────────────────────────────────────────
 
