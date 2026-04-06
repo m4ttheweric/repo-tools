@@ -23,6 +23,7 @@ import { execSync } from "child_process";
 
 import {
   RT_DIR, DAEMON_SOCK_PATH, DAEMON_PID_PATH, DAEMON_LOG_PATH,
+  readDaemonPid,
 } from "./daemon-config.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -31,15 +32,18 @@ const MR_REFRESH_INTERVAL_MS = 5 * 60 * 1000;      // 5 minutes
 const LINEAR_REFRESH_INTERVAL_MS = 30 * 60 * 1000;  // 30 minutes
 const PORT_SCAN_INTERVAL_MS = 30 * 1000;             // 30 seconds
 const LOG_MAX_BYTES = 10 * 1024 * 1024;              // 10MB
+const API_PORT = 9401;
 const REPOS_JSON_PATH = join(RT_DIR, "repos.json");
 const CACHE_PATH = join(RT_DIR, "branch-cache.json");
+
+import type { ServerWebSocket } from "bun";
 
 import {
   scanListeningPorts,
   type PortEntry,
 } from "./port-scanner.ts";
 
-import { checkAndNotify } from "./notifier.ts";
+import { checkAndNotify, drainNotifications, peekNotifications, onNotification } from "./notifier.ts";
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -57,6 +61,7 @@ interface DiskCache {
 let cache: DiskCache = { entries: {} };
 let portCache: PortEntry[] = [];
 let portCacheUpdatedAt = 0;
+let lastRefreshTimestamp = 0;
 const watchedConfigs = new Map<string, FSWatcher>();
 const startedAt = Date.now();
 
@@ -215,6 +220,9 @@ function refreshPortCache(): void {
     portCache = scanListeningPorts();
     portCacheUpdatedAt = Date.now();
     log(`ports: scanned ${portCache.length} listening ports matching known repos`);
+
+    // Broadcast to WebSocket clients
+    broadcast("ports", { ports: portCache, updatedAt: portCacheUpdatedAt });
   } catch (err) {
     log(`ports: scan failed: ${err}`);
   }
@@ -297,10 +305,14 @@ async function refreshCache(): Promise<void> {
 
     // Reload cache from disk (enrichBranches writes to disk)
     loadCache();
+    lastRefreshTimestamp = Date.now();
     log(`cache: refresh complete (${Object.keys(cache.entries).length} entries)`);
 
     // Check for state transitions and fire notifications
     checkAndNotify(cache.entries, portCache, log);
+
+    // Broadcast to WebSocket clients
+    broadcast("status", await handleCommand("tray:status", {}));
   } catch (err) {
     log(`cache: refresh failed: ${err}`);
   }
@@ -475,6 +487,42 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
       };
     }
 
+    case "notifications": {
+      // Drain the notification queue — tray app calls this on startup
+      // to pick up any events that accumulated while it was offline
+      return { ok: true, data: drainNotifications() };
+    }
+
+    case "notifications:peek": {
+      // Peek without draining — for diagnostics
+      return { ok: true, data: peekNotifications() };
+    }
+
+    case "tray:status": {
+      // Richer status payload designed for the menu bar tray app
+      const portsByRepo: Record<string, number> = {};
+      for (const p of portCache) {
+        const repo = p.repo || "unknown";
+        portsByRepo[repo] = (portsByRepo[repo] || 0) + 1;
+      }
+
+      return {
+        ok: true,
+        data: {
+          pid: process.pid,
+          uptime: Date.now() - startedAt,
+          memoryUsage: process.memoryUsage().rss,
+          watchedRepos: watchedConfigs.size,
+          cacheEntries: Object.keys(cache.entries).length,
+          portsCached: portCache.length,
+          portCacheAge: portCacheUpdatedAt ? Date.now() - portCacheUpdatedAt : null,
+          lastRefresh: lastRefreshTimestamp || null,
+          portsByRepo,
+          pendingNotifications: peekNotifications().length,
+        },
+      };
+    }
+
     case "shutdown":
       log("received shutdown command");
       cleanup();
@@ -515,6 +563,137 @@ function startSocketServer(): void {
   log(`socket server listening on ${DAEMON_SOCK_PATH}`);
 }
 
+// ─── REST API + WebSocket server ─────────────────────────────────────────────
+
+const API_INDEX = {
+  name: "rt daemon",
+  version: "1.0.0",
+  docs: `http://localhost:${API_PORT}/`,
+  websocket: `ws://localhost:${API_PORT}/ws`,
+  endpoints: [
+    { method: "GET",  path: "/api/status",        description: "Daemon health, uptime, memory, cache stats" },
+    { method: "GET",  path: "/api/ports",          description: "Listening ports grouped by repo/worktree" },
+    { method: "GET",  path: "/api/cache",           description: "All branch cache entries (MR, Linear, pipeline)" },
+    { method: "GET",  path: "/api/cache/:branch",   description: "Single branch cache entry" },
+    { method: "GET",  path: "/api/repos",           description: "Tracked repos with worktrees and watched status" },
+    { method: "GET",  path: "/api/notifications",   description: "Pending notifications (drains queue)" },
+    { method: "POST", path: "/api/refresh",         description: "Trigger a background cache refresh" },
+    { method: "POST", path: "/api/hooks/:repo/repair", description: "Repair hooks path for a repo" },
+    { method: "POST", path: "/api/shutdown",        description: "Gracefully stop the daemon" },
+  ],
+  websocket_events: [
+    { type: "status",       description: "Full daemon status — after each cache refresh (~5 min)" },
+    { type: "ports",        description: "Full port list — after each port scan (~30s)" },
+    { type: "notification", description: "Notification event — when a transition fires" },
+  ],
+};
+
+const REST_ROUTES: Record<string, { cmd: string; method: string }> = {
+  "/api/status":        { cmd: "tray:status", method: "GET" },
+  "/api/ports":         { cmd: "ports", method: "GET" },
+  "/api/cache":         { cmd: "cache:read", method: "GET" },
+  "/api/repos":         { cmd: "repos", method: "GET" },
+  "/api/notifications": { cmd: "notifications", method: "GET" },
+  "/api/refresh":       { cmd: "cache:refresh", method: "POST" },
+  "/api/shutdown":      { cmd: "shutdown", method: "POST" },
+};
+
+const wsClients = new Set<ServerWebSocket<unknown>>();
+
+/** Broadcast an event to all connected WebSocket clients. */
+export function broadcast(type: string, data: any): void {
+  if (wsClients.size === 0) return;
+  const msg = JSON.stringify({ type, data, timestamp: Date.now() });
+  for (const ws of wsClients) {
+    try { ws.send(msg); } catch { /* client disconnected */ }
+  }
+}
+
+function startApiServer(): void {
+  Bun.serve({
+    port: API_PORT,
+    async fetch(req, server) {
+      const url = new URL(req.url);
+
+      // WebSocket upgrade
+      if (url.pathname === "/ws") {
+        if (server.upgrade(req)) return undefined as any;
+        return new Response("WebSocket upgrade failed", { status: 400 });
+      }
+
+      // CORS headers for local dev
+      const corsHeaders = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      };
+
+      if (req.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: corsHeaders });
+      }
+
+      try {
+        // Self-describing root
+        if (url.pathname === "/" || url.pathname === "") {
+          return Response.json(API_INDEX, { headers: corsHeaders });
+        }
+
+        // Single branch lookup: /api/cache/:branch
+        if (url.pathname.startsWith("/api/cache/") && req.method === "GET") {
+          const branch = decodeURIComponent(url.pathname.slice("/api/cache/".length));
+          const result = await handleCommand("cache:read", { branches: [branch] });
+          return Response.json(result, { headers: corsHeaders });
+        }
+
+        // Hooks repair: /api/hooks/:repo/repair
+        if (url.pathname.startsWith("/api/hooks/") && url.pathname.endsWith("/repair") && req.method === "POST") {
+          const repo = decodeURIComponent(url.pathname.slice("/api/hooks/".length, -"/repair".length));
+          const result = await handleCommand("hooks:repair", { repo });
+          return Response.json(result, { headers: corsHeaders });
+        }
+
+        // Static routes
+        const route = REST_ROUTES[url.pathname];
+        if (!route) {
+          return Response.json({ ok: false, error: "not found", docs: `http://localhost:${API_PORT}/` }, { status: 404, headers: corsHeaders });
+        }
+
+        if (req.method !== route.method && req.method !== "OPTIONS") {
+          return Response.json({ ok: false, error: `use ${route.method}` }, { status: 405, headers: corsHeaders });
+        }
+
+        // Build payload from query params (GET) or body (POST)
+        let payload: any = {};
+        if (req.method === "POST") {
+          try { payload = await req.json(); } catch { /* empty body */ }
+        } else {
+          payload = Object.fromEntries(url.searchParams);
+        }
+
+        const result = await handleCommand(route.cmd, payload);
+        return Response.json(result, { headers: corsHeaders });
+      } catch (err) {
+        return Response.json({ ok: false, error: String(err) }, { status: 500, headers: corsHeaders });
+      }
+    },
+    websocket: {
+      open(ws) {
+        wsClients.add(ws);
+        log(`api: WebSocket client connected (${wsClients.size} total)`);
+      },
+      close(ws) {
+        wsClients.delete(ws);
+        log(`api: WebSocket client disconnected (${wsClients.size} total)`);
+      },
+      message(_ws, _msg) {
+        // Clients don't send messages — this is a broadcast-only stream
+      },
+    },
+  });
+
+  log(`api server listening on http://localhost:${API_PORT}`);
+}
+
 // ─── Lifecycle ───────────────────────────────────────────────────────────────
 
 function writePidFile(): void {
@@ -544,6 +723,23 @@ function cleanup(): void {
 function main(): void {
   mkdirSync(RT_DIR, { recursive: true });
 
+  // ── Self-healing startup ────────────────────────────────────────────────────
+  // If a previous daemon process is still alive (orphan from a failed restart),
+  // evict it before we bind the socket. This is the last line of defence
+  // when the `start` command's orphan-detection doesn't fire (e.g. launchd
+  // relaunches us automatically without going through `rt daemon start`).
+  const previousPid = readDaemonPid();
+  if (previousPid && previousPid !== process.pid) {
+    try {
+      process.kill(previousPid, 0); // throws if not alive
+      process.kill(previousPid, "SIGTERM");
+      log(`evicted stale daemon process (pid ${previousPid})`);
+      // Brief pause so the old process can exit and release any shared resources
+      Bun.sleepSync(300);
+    } catch { /* process not found — nothing to evict */ }
+  }
+  // ───────────────────────────────────────────────────────────────────────────
+
   log("daemon starting");
   writePidFile();
 
@@ -551,8 +747,14 @@ function main(): void {
   loadCache();
   log(`cache: loaded ${Object.keys(cache.entries).length} entries from disk`);
 
-  // Start socket server
+  // Start socket server (Unix socket for CLI/tray)
   startSocketServer();
+
+  // Start REST API + WebSocket server (HTTP for external clients)
+  startApiServer();
+
+  // Wire notification broadcasts to WebSocket clients
+  onNotification(broadcast);
 
   // Discover and watch repos
   refreshWatchedRepos();

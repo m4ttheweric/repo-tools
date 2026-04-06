@@ -269,6 +269,26 @@ export async function start(): Promise<void> {
     return;
   }
 
+  // ── Orphan detection ─────────────────────────────────────────────────────
+  // A process is an "orphan" when it's alive (process exists) but its socket
+  // is gone or unresponsive. This happens when the socket file is deleted by
+  // a stop/restart but the process itself wasn't killed. Kill it so the new
+  // instance can bind the socket cleanly.
+  if (isDaemonProcessRunning()) {
+    const pid = readDaemonPid();
+    if (pid) {
+      try {
+        process.kill(pid, "SIGTERM");
+        console.log(`  ${yellow}⚠${reset} evicted stale daemon process (pid ${pid}, socket was missing)`);
+        await Bun.sleep(400);
+      } catch { /* already dead */ }
+    }
+    // Remove any leftover runtime files so the new process starts clean
+    for (const p of [DAEMON_SOCK_PATH, DAEMON_PID_PATH]) {
+      try { if (existsSync(p)) unlinkSync(p); } catch { /* */ }
+    }
+  }
+
   const config = getDaemonConfig();
 
   if (config?.mode === "launchd") {
@@ -283,7 +303,9 @@ export async function start(): Promise<void> {
     await spawnDaemonProcess();
   }
 
-  await Bun.sleep(500);
+  // Give launchd slightly more time to settle than a manual spawn
+  const waitMs = config?.mode === "launchd" ? 1500 : 600;
+  await Bun.sleep(waitMs);
 
   if (await isDaemonRunning()) {
     console.log(`\n  ${green}✓ daemon started${reset}\n`);

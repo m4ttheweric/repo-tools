@@ -86,8 +86,8 @@ export async function dispatch(
     if (name) {
       // Unknown command — show help
       const { yellow } = await import("./tui.ts");
-      console.log(`\n  ${yellow}unknown command: ${name}${reset}`);
-      console.log(`  ${dim}available: ${Object.keys(tree).filter(k => !tree[k]!.hidden).join(", ")}${reset}\n`);
+      console.error(`\n  ${yellow}unknown command: ${name}${reset}`);
+      console.error(`  ${dim}available: ${Object.keys(tree).filter(k => !tree[k]!.hidden).join(", ")}${reset}\n`);
       process.exit(1);
     }
 
@@ -97,7 +97,7 @@ export async function dispatch(
       process.exit(0);
     }
 
-    console.clear();
+    process.stderr.write("\x1b[2J\x1b[H");
 
     const selected = await showPicker(tree, breadcrumb);
     if (!selected) process.exit(0);
@@ -124,7 +124,7 @@ export async function dispatch(
         process.exit(0);
       }
 
-      console.clear();
+      process.stderr.write("\x1b[2J\x1b[H");
 
       const selected = await showPicker(node.subcommands, [...breadcrumb, resolvedName]);
       if (!selected) return;
@@ -134,14 +134,14 @@ export async function dispatch(
   }
 
   // Leaf node → execute
-  console.clear();
+  process.stderr.write("\x1b[2J\x1b[H");
   if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
 
   // TTY guard
   if (node.requiresTTY && !process.stdin.isTTY) {
     const { yellow } = await import("./tui.ts");
     const label = breadcrumb.slice(1).concat(resolvedName).join(" ");
-    console.log(`\n  ${yellow}rt ${label} requires an interactive terminal${reset}\n`);
+    console.error(`\n  ${yellow}rt ${label} requires an interactive terminal${reset}\n`);
     process.exit(1);
   }
 
@@ -149,13 +149,43 @@ export async function dispatch(
   const ctx: CommandContext = {};
   const commandLabel = breadcrumb.slice(1).concat(resolvedName).join(" ");
 
+  // Extract --repo <name> flag if present (allows callers to pre-select the repo
+  // but still trigger the worktree picker)
+  let repoFlag: string | null = null;
+  const repoFlagIdx = rest.indexOf("--repo");
+  if (repoFlagIdx !== -1 && rest[repoFlagIdx + 1]) {
+    repoFlag = rest[repoFlagIdx + 1]!;
+    rest.splice(repoFlagIdx, 2);
+  }
+
   if (node.context === "worktree") {
     const cwdBefore = process.cwd();
-    const { requireIdentity } = await import("./repo.ts");
-    ctx.identity = await requireIdentity(commandLabel);
+
+    if (repoFlag) {
+      // --repo provided: resolve that repo and show worktree picker (skip repo picker + cwd detection)
+      const { getKnownRepos, pickWorktreeFromRepo, getRepoIdentity } = await import("./repo.ts");
+      const repos = getKnownRepos();
+      const repo = repos.find(r => r.repoName === repoFlag);
+      if (!repo) {
+        const { yellow } = await import("./tui.ts");
+        console.error(`\n  ${yellow}unknown repo: ${repoFlag}${reset}`);
+        console.error(`  ${dim}known: ${repos.map(r => r.repoName).join(", ")}${reset}\n`);
+        process.exit(1);
+      }
+      if (repo.worktrees.length === 1) {
+        process.chdir(repo.worktrees[0]!.path);
+      } else {
+        const selected = await pickWorktreeFromRepo(repo, `${repoFlag} worktrees`);
+        process.chdir(selected);
+      }
+      ctx.identity = getRepoIdentity()!;
+    } else {
+      const { requireIdentity } = await import("./repo.ts");
+      ctx.identity = await requireIdentity(commandLabel);
+    }
 
     if (process.cwd() !== cwdBefore) {
-      console.clear();
+      process.stderr.write("\x1b[2J\x1b[H");
       if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
     }
   } else if (node.context === "repo") {
@@ -164,7 +194,7 @@ export async function dispatch(
     ctx.identity = await requireRepoIdentity(commandLabel);
 
     if (process.cwd() !== cwdBefore) {
-      console.clear();
+      process.stderr.write("\x1b[2J\x1b[H");
       if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
     }
   }
@@ -180,7 +210,7 @@ function renderHeader(breadcrumb: string[]): void {
     if (i === 0) return `${bold}${cyan}${part}${reset}`;
     return `${bold}${part}${reset}`;
   });
-  console.log(`  ${parts.join(` ${dim}›${reset} `)}\n`);
+  console.error(`  ${parts.join(` ${dim}›${reset} `)}\n`);
 }
 
 function showUsage(tree: Record<string, CommandNode>, breadcrumb: string[]): void {
@@ -188,9 +218,9 @@ function showUsage(tree: Record<string, CommandNode>, breadcrumb: string[]): voi
   const visible = Object.entries(tree).filter(([_, n]) => !n.hidden);
   for (const [name, node] of visible) {
     const padded = name.padEnd(14);
-    console.log(`  ${bold}${padded}${reset} ${dim}${node.description}${reset}`);
+    console.error(`  ${bold}${padded}${reset} ${dim}${node.description}${reset}`);
   }
-  console.log("");
+  console.error("");
 }
 
 async function showPicker(

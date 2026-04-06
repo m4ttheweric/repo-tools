@@ -99,10 +99,12 @@ export async function switchBranch(): Promise<void> {
     // MR indicator
     if (enriched?.mr?.webUrl) parts.push("MR");
 
+    const info = parts.join("  ");
+
     return {
       value: b.name,
-      label: b.name,
-      hint: parts.join("  "),
+      label: info ? `${b.name}  ${cyan}${info}${reset}` : b.name,
+      hint: "",
     };
   }
 
@@ -271,11 +273,15 @@ async function createFromExistingTicket(apiKey: string): Promise<void> {
 
   const options = tickets
     .filter((t) => t.branchName) // only tickets with suggested branch names
-    .map((t) => ({
-      value: t.identifier,
-      label: `${t.identifier}  ${t.title.length > 50 ? t.title.slice(0, 49) + "…" : t.title}`,
-      hint: t.stateName ?? "",
-    }));
+    .map((t) => {
+      const title = t.title.length > 50 ? t.title.slice(0, 49) + "…" : t.title;
+      const info = `${title}${t.stateName ? ` [${t.stateName}]` : ""}`;
+      return {
+        value: t.identifier,
+        label: `${t.identifier}  ${cyan}${info}${reset}`,
+        hint: "",
+      };
+    });
 
   if (options.length === 0) {
     console.log(`  ${yellow}no tickets with suggested branch names found${reset}\n`);

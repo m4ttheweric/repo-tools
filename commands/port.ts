@@ -31,6 +31,16 @@ async function getPortData(): Promise<{ entries: PortEntry[]; source: "daemon" |
 
 // ─── Display ─────────────────────────────────────────────────────────────────
 
+/**
+ * Build a human-readable path starting from the worktree/repo folder name.
+ * e.g. "my-repo-wktree-2/apps/adjuster" or "my-repo/."
+ */
+function folderPath(entry: PortEntry): string {
+  const { basename } = require("path") as typeof import("path");
+  const wtName = entry.worktree ? basename(entry.worktree) : (entry.repo ?? "unknown");
+  return entry.relativeDir && entry.relativeDir !== "." ? `${wtName}/${entry.relativeDir}` : wtName;
+}
+
 function formatUptime(etime: string): string {
   const trimmed = etime.trim();
   if (!trimmed || trimmed === "unknown") return "?";
@@ -81,7 +91,7 @@ function displayPorts(entries: PortEntry[]): void {
 
       for (const p of ports) {
         const portStr = `:${p.port}`.padEnd(7);
-        const dirStr = p.relativeDir.padEnd(20);
+        const dirStr = folderPath(p).padEnd(30);
         const cmdStr = p.command.padEnd(8);
         const uptimeStr = formatUptime(p.uptime);
         console.log(`      ${yellow}${portStr}${reset} ${dirStr} ${dim}${cmdStr}${reset} ${dim}(${uptimeStr})${reset}`);
@@ -130,7 +140,7 @@ async function showKillPicker(entries: PortEntry[]): Promise<void> {
       const uptimeStr = formatUptime(p.uptime);
       return {
         value: String(p.pid),
-        label: `${yellow}:${p.port}${reset}  ${p.relativeDir}  ${dim}${p.command}${reset}`,
+        label: `${yellow}:${p.port}${reset}  ${folderPath(p)}  ${dim}${p.command}${reset}`,
         hint: `${p.repo}${p.branch ? ` \u00b7 ${p.branch}` : ""} \u00b7 ${uptimeStr}`,
       };
     }),

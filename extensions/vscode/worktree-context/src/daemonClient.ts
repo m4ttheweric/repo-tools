@@ -1,21 +1,21 @@
 /**
- * Daemon HTTP client for VS Code extension.
+ * Daemon HTTP + WebSocket client for VS Code extension.
  *
- * Communicates with the rt daemon via HTTP over Unix socket (~/.rt/rt.sock).
- * Uses node:http (not fetch) since VS Code extensions run in Node.js,
- * and node:http supports the `socketPath` option natively.
+ * Communicates with the rt daemon via:
+ *  1. HTTP REST API at http://localhost:9401 (for queries)
+ *  2. WebSocket at ws://localhost:9401/ws (for live updates)
  *
- * Returns null when daemon is unavailable — callers should fall back
- * to direct API calls or cached data.
+ * Falls back gracefully when daemon is unavailable.
  */
 
-import * as http from 'http';
-import { existsSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
+import * as vscode from 'vscode';
 
-const SOCK_PATH = join(homedir(), '.rt', 'rt.sock');
+const API_BASE = 'http://localhost:9401';
+const WS_URL = 'ws://localhost:9401/ws';
 const REQUEST_TIMEOUT_MS = 2000;
+const WS_RECONNECT_DELAY_MS = 10_000;
+
+// ── Types ──
 
 export interface DaemonResponse {
   ok: boolean;
@@ -23,59 +23,152 @@ export interface DaemonResponse {
   error?: string;
 }
 
+export interface DaemonEvent {
+  type: 'status' | 'ports' | 'notification';
+  data: any;
+  timestamp: number;
+}
+
+// ── HTTP Client ──
+
 /**
- * Send a command to the rt daemon over the Unix socket.
- * Returns null if daemon is not running or unreachable.
+ * Query the daemon's REST API. Returns null if daemon is unavailable.
  */
 export async function daemonQuery(
-  cmd: string,
-  payload?: Record<string, any>,
+  path: string,
+  options?: { method?: string; body?: any },
 ): Promise<DaemonResponse | null> {
-  if (!existsSync(SOCK_PATH)) return null;
+  const url = `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+  const method = options?.method ?? 'GET';
 
-  const hasBody = payload && Object.keys(payload).length > 0;
-  const body = hasBody ? JSON.stringify(payload) : undefined;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
-  return new Promise<DaemonResponse | null>((resolve) => {
-    const req = http.request(
-      {
-        socketPath: SOCK_PATH,
-        path: `/${cmd}`,
-        method: hasBody ? 'POST' : 'GET',
-        headers: hasBody
-          ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body!) }
-          : undefined,
-        timeout: REQUEST_TIMEOUT_MS,
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-            resolve(json as DaemonResponse);
-          } catch {
-            resolve(null);
-          }
-        });
-      },
-    );
+    const fetchOptions: RequestInit = {
+      method,
+      signal: controller.signal,
+      headers: options?.body ? { 'Content-Type': 'application/json' } : undefined,
+      body: options?.body ? JSON.stringify(options.body) : undefined,
+    };
 
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve(null);
-    });
+    const response = await fetch(url, fetchOptions);
+    clearTimeout(timeout);
 
-    if (body) req.write(body);
-    req.end();
-  });
+    return await response.json() as DaemonResponse;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Quick check: is the daemon reachable right now?
  */
 export async function isDaemonRunning(): Promise<boolean> {
-  const response = await daemonQuery('ping');
+  const response = await daemonQuery('/api/status');
   return response?.ok === true;
+}
+
+/**
+ * Fetch a single branch's cached data from the daemon.
+ */
+export async function fetchBranchFromDaemon(
+  branch: string,
+): Promise<DaemonResponse | null> {
+  return daemonQuery(`/api/cache/${encodeURIComponent(branch)}`);
+}
+
+// ── WebSocket Client ──
+
+type EventHandler = (event: DaemonEvent) => void;
+
+let ws: WebSocket | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let eventHandlers: EventHandler[] = [];
+let isConnecting = false;
+
+/**
+ * Register a handler for daemon events (status, ports, notification).
+ * Returns a Disposable that removes the handler.
+ */
+export function onDaemonEvent(handler: EventHandler): vscode.Disposable {
+  eventHandlers.push(handler);
+  return new vscode.Disposable(() => {
+    eventHandlers = eventHandlers.filter(h => h !== handler);
+  });
+}
+
+/**
+ * Start the WebSocket connection to the daemon.
+ * Automatically reconnects on disconnect.
+ */
+export function connectWebSocket(): void {
+  if (ws || isConnecting) return;
+  isConnecting = true;
+
+  try {
+    ws = new WebSocket(WS_URL);
+
+    ws.onopen = () => {
+      isConnecting = false;
+      console.log('[worktree-context] WebSocket connected to daemon');
+
+      // Clear any pending reconnect
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = undefined;
+      }
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const parsed = JSON.parse(String(event.data)) as DaemonEvent;
+        for (const handler of eventHandlers) {
+          try { handler(parsed); } catch { /* handler error */ }
+        }
+      } catch {
+        // Invalid JSON — ignore
+      }
+    };
+
+    ws.onclose = () => {
+      ws = null;
+      isConnecting = false;
+      scheduleReconnect();
+    };
+
+    ws.onerror = () => {
+      // onclose will fire after this — reconnect handled there
+      ws?.close();
+    };
+  } catch {
+    ws = null;
+    isConnecting = false;
+    scheduleReconnect();
+  }
+}
+
+function scheduleReconnect(): void {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = undefined;
+    connectWebSocket();
+  }, WS_RECONNECT_DELAY_MS);
+}
+
+/**
+ * Close the WebSocket connection and stop reconnecting.
+ */
+export function disconnectWebSocket(): void {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+  }
+  if (ws) {
+    ws.onclose = null; // Prevent auto-reconnect on intentional close
+    ws.close();
+    ws = null;
+  }
+  isConnecting = false;
+  eventHandlers = [];
 }

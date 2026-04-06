@@ -3,3 +3,5 @@ node_modules/
 dist/
 *.vsix
 extensions/vscode/worktree-context/package-lock.json
+rt-tray/.build/
+rt-tray/rt-tray.app/
