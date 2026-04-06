@@ -22,7 +22,7 @@
  *   a            add process (interactive rt run picker)
  *   s            start / resume / restart selected entry
  *   S            warm all entries in lane (spawn all, only active runs)
- *   Enter        activate selected entry (switch proxy target)
+ *   Enter        activate selected entry (auto-starts if stopped)
  *   x            stop selected entry
  *   X            stop all entries in lane
  *   r            remove a process (entry picker)
@@ -45,7 +45,7 @@ import { daemonQuery, isDaemonRunning } from "../lib/daemon-client.ts";
 import {
   listRunnerConfigs, loadRunnerConfig, saveRunnerConfig, resetRunnerConfig,
   nextLaneId, nextEntryId, proxyWindowName, entryWindowName,
-  type LaneConfig, type LaneEntry,
+  type LaneConfig, type LaneEntry, type LaneMode,
 } from "../lib/runner-store.ts";
 import type { ProcessState } from "../lib/daemon/state-store.ts";
 import type { RunResolveResult } from "./run.ts";
@@ -93,6 +93,7 @@ type LaneAction =
   | { type: "stop-all";     laneId: string }
   | { type: "remove-entry"; laneId: string; entryId: string }
   | { type: "remove-lane";  laneId: string }
+  | { type: "toggle-mode";  laneId: string }
   | { type: "reset" };
 
 /** Fields that dispatch() may modify (merged into full state by doDispatch). */
@@ -504,7 +505,7 @@ async function runOnce(
         const processId = entryWindowName(lane.id, entry.id);
         await ensureProxy(lane);
         const actualPort = await spawnEntry(lane, entry);
-        await daemonQuery("group:activate", { groupId: lane.id, processId });
+        await daemonQuery("group:activate", { groupId: lane.id, processId, mode: lane.mode ?? "warm" });
         await setProxyUpstream(lane.id, actualPort);
         // Persist the actual port back into the entry if it changed (e.g. was 0)
         const updatedEntries = lane.entries.map((e) =>
@@ -520,7 +521,22 @@ async function runOnce(
         const entry = lane?.entries.find((e) => e.id === action.entryId);
         if (!lane || !entry) return {};
         const processId = entryWindowName(lane.id, entry.id);
-        await daemonQuery("group:activate", { groupId: lane.id, processId });
+        const entryState = est(processId);
+        await ensureProxy(lane);
+        // Auto-start if not already running or suspended
+        if (entryState === "stopped" || entryState === "crashed") {
+          const actualPort = await spawnEntry(lane, entry);
+          await daemonQuery("group:activate", { groupId: lane.id, processId, mode: lane.mode ?? "warm" });
+          await setProxyUpstream(lane.id, actualPort);
+          const updatedEntries = lane.entries.map((e) =>
+            e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e
+          );
+          return { lanes: lanes.map((l) => l.id === action.laneId
+            ? { ...l, activeEntryId: action.entryId, entries: updatedEntries }
+            : l) };
+        }
+        // Already running or warm — just route the proxy and resume if needed
+        await daemonQuery("group:activate", { groupId: lane.id, processId, mode: lane.mode ?? "warm" });
         await setProxyUpstream(lane.id, entry.ephemeralPort);
         return { lanes: lanes.map((l) => l.id === action.laneId ? { ...l, activeEntryId: action.entryId } : l) };
       }
@@ -547,6 +563,7 @@ async function runOnce(
           await daemonQuery("group:activate", {
             groupId: lane.id,
             processId: entryWindowName(lane.id, activeId),
+            mode: lane.mode ?? "warm",
           });
           const activeEntry = lane.entries.find((e) => e.id === activeId);
           const activePort = portFixes.get(activeId) ?? activeEntry?.ephemeralPort;
@@ -572,7 +589,7 @@ async function runOnce(
         const processId = entryWindowName(lane.id, entry.id);
         await ensureProxy(lane);
         const actualPort = await spawnEntry(lane, entry);
-        await daemonQuery("group:activate", { groupId: lane.id, processId });
+        await daemonQuery("group:activate", { groupId: lane.id, processId, mode: lane.mode ?? "warm" });
         await setProxyUpstream(lane.id, actualPort);
         const updatedEntries = lane.entries.map((e) =>
           e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e
@@ -631,6 +648,15 @@ async function runOnce(
           laneIdx: Math.max(0, Math.min(s.laneIdx, newLanes.length - 1)),
           entryIdx: 0,
         };
+      }
+
+      case "toggle-mode": {
+        const lane = lanes.find((l) => l.id === action.laneId);
+        if (!lane) return {};
+        const newMode: LaneMode = (lane.mode ?? "warm") === "warm" ? "single" : "warm";
+        const updatedLanes = lanes.map((l) => l.id === action.laneId ? { ...l, mode: newMode } : l);
+        saveCurrent(updatedLanes);
+        return { lanes: updatedLanes };
       }
 
       case "reset": {
@@ -781,7 +807,8 @@ async function runOnce(
     const isSelected = li === s.laneIdx;
     const safeEi = Math.min(s.entryIdx, Math.max(0, lane.entries.length - 1));
     const proxyUp = s.proxyStates[proxyWindowName(lane.id)] ?? false;
-    const title = ` ${isSelected ? "❯ " : ""}LANE ${lane.id}  ·  ${lane.repoName}  ·  :${lane.canonicalPort}  `;
+    const modeLabel = (lane.mode ?? "warm") === "single" ? "single" : "warm";
+    const title = ` ${isSelected ? "❯ " : ""}LANE ${lane.id}  ·  ${lane.repoName}  ·  :${lane.canonicalPort}  ·  ${modeLabel}  `;
 
     // If all entries share the same commandTemplate, hoist the command to the header
     const commandIsUniform = lane.entries.length > 0 &&
@@ -840,6 +867,7 @@ async function runOnce(
           <text style={{ fg: C.muted }}>[e]</text><text style={{ fg: C.dim }}>cmd</text>
           <text style={{ fg: C.muted }}>[t]</text><text style={{ fg: C.dim }}>shell</text>
           <text style={{ fg: C.muted }}>[i]</text><text style={{ fg: C.dim }}>info</text>
+          <text style={{ fg: C.muted }}>[m]</text><text style={{ fg: C.dim }}>mode</text>
         </row>
       </column>
     );
@@ -1102,9 +1130,11 @@ async function runOnce(
 
       const poll = setInterval(() => {
         if (!existsSync(tmpFile)) return;
+        const content = readFileSync(tmpFile, "utf8").trim();
+        if (!content) return;
         clearInterval(poll);
         try {
-          const { repoName, port } = JSON.parse(readFileSync(tmpFile, "utf8").trim()) as { repoName: string; port: number };
+          const { repoName, port } = JSON.parse(content) as { repoName: string; port: number };
           unlinkSync(tmpFile);
           safeUpdate((s) => {
             if (s.lanes.find((l) => l.canonicalPort === port)) {
@@ -1112,7 +1142,7 @@ async function runOnce(
               return s;
             }
             const id = nextLaneId(s.lanes);
-            const newLane: LaneConfig = { id, canonicalPort: port, entries: [], repoName };
+            const newLane: LaneConfig = { id, canonicalPort: port, entries: [], repoName, mode: "warm" };
             void daemonQuery("group:create", { id: newLane.id });
             void ensureProxy(newLane);
             createBgPane(newLane.id, "", `lane ${newLane.id} · ${newLane.repoName} :${newLane.canonicalPort}`);
@@ -1144,14 +1174,16 @@ async function runOnce(
       const laneRepo = state.knownRepos.find((r) => r.repoName === lane.repoName);
       const laneRepoRoot = laneRepo?.worktrees[0]?.path ?? process.cwd();
       const tmpFile = join(tmpdir(), `rt-resolve-${Date.now()}.json`);
-      const cmd = `${process.execPath} ${CLI_PATH} run --resolve-only --repo ${JSON.stringify(lane.repoName)} > ${tmpFile} 2>/dev/null`;
+      const cmd = `${process.execPath} ${CLI_PATH} run --resolve-only --repo ${lane.repoName} > ${tmpFile}`;
       tmuxSplit(cmd, laneRepoRoot);
 
       const poll = setInterval(() => {
         if (!existsSync(tmpFile)) return;
+        const content = readFileSync(tmpFile, "utf8").trim();
+        if (!content) return; // file created by shell redirect but not yet written — keep polling
         clearInterval(poll);
         try {
-          const resolved = JSON.parse(readFileSync(tmpFile, "utf8").trim()) as RunResolveResult;
+          const resolved = JSON.parse(content) as RunResolveResult;
           unlinkSync(tmpFile);
           void addResolvedEntry(lane.id, resolved);
         } catch { /* ignore parse errors */ }
@@ -1178,7 +1210,7 @@ async function runOnce(
 
     // [S] warm all — handled via onEvent for text events (see below)
 
-    // [Enter] activate the ←/→ selected entry (switch proxy target)
+    // [Enter] activate the ←/→ selected entry — auto-starts if stopped/crashed
     enter: ({ state }) => {
       const li = Math.min(state.laneIdx, state.lanes.length - 1);
       const lane = state.lanes[li];
@@ -1245,6 +1277,13 @@ async function runOnce(
         mrPaneEnabled = true;
         showMrPane(focusedBranch(state));
       }
+    },
+
+    // [m] toggle lane mode between "warm" (suspend old) and "single" (kill old)
+    m: ({ state }) => {
+      const lane = state.lanes[state.laneIdx];
+      if (!lane) return;
+      doDispatch({ type: "toggle-mode", laneId: lane.id }, state);
     },
 
     // [Enter] — right pane always shows the service; no explicit action needed
