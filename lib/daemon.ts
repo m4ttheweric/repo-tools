@@ -26,6 +26,15 @@ import {
   readDaemonPid,
 } from "./daemon-config.ts";
 
+import { StateStore }    from "./daemon/state-store.ts";
+import { PortAllocator } from "./daemon/port-allocator.ts";
+import { LogBuffer }     from "./daemon/log-buffer.ts";
+import { AttachServer }  from "./daemon/attach-server.ts";
+import { ProcessManager } from "./daemon/process-manager.ts";
+import { SuspendManager } from "./daemon/suspend-manager.ts";
+import { ProxyManager }  from "./daemon/proxy-manager.ts";
+import { ExclusiveGroup } from "./daemon/exclusive-group.ts";
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const MR_REFRESH_INTERVAL_MS = 5 * 60 * 1000;      // 5 minutes
@@ -64,6 +73,22 @@ let portCacheUpdatedAt = 0;
 let lastRefreshTimestamp = 0;
 const watchedConfigs = new Map<string, FSWatcher>();
 const startedAt = Date.now();
+
+// ─── Daemon units (process management) ───────────────────────────────────────
+
+const stateStore     = new StateStore();
+const portAllocator  = new PortAllocator();
+const logBuffer      = new LogBuffer();
+const attachServer   = new AttachServer({ logBuffer });
+const processManager = new ProcessManager({ stateStore, logBuffer, attachServer });
+const suspendManager = new SuspendManager({ processManager, stateStore });
+const proxyManager   = new ProxyManager();
+const exclusiveGroup = new ExclusiveGroup({ suspendManager, stateStore });
+
+// Wire circular reference: AttachServer needs ProcessManager for output subscriptions
+attachServer.setProcessManager(processManager);
+// Wire SuspendManager into ProcessManager so kill() can resume warm processes
+processManager.suspendManager = suspendManager;
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
@@ -523,6 +548,176 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
       };
     }
 
+    // ── Process management ─────────────────────────────────────────────────────
+
+    case "process:spawn": {
+      const { id, cmd, cwd, env } = payload as { id: string; cmd: string; cwd: string; env?: Record<string, string> };
+      if (!id || !cmd || !cwd) return { ok: false, error: "missing id, cmd, or cwd" };
+      await processManager.spawn(id, cmd, { cwd, env });
+      return { ok: true };
+    }
+
+    case "process:kill": {
+      const { id } = payload as { id: string };
+      if (!id) return { ok: false, error: "missing id" };
+      await processManager.kill(id);
+      return { ok: true };
+    }
+
+    case "process:respawn": {
+      const { id } = payload as { id: string };
+      if (!id) return { ok: false, error: "missing id" };
+      await processManager.respawn(id);
+      return { ok: true };
+    }
+
+    case "process:list": {
+      return { ok: true, data: processManager.list() };
+    }
+
+    case "process:state": {
+      const { id } = payload as { id: string };
+      if (!id) return { ok: false, error: "missing id" };
+      return { ok: true, data: stateStore.getState(id) };
+    }
+
+    case "process:states": {
+      return { ok: true, data: stateStore.getAll() };
+    }
+
+    case "process:logs": {
+      const { id, n } = payload as { id: string; n?: number };
+      if (!id) return { ok: false, error: "missing id" };
+      return { ok: true, data: logBuffer.getLastLines(id, n) };
+    }
+
+    case "process:attach-info": {
+      const { id } = payload as { id: string };
+      if (!id) return { ok: false, error: "missing id" };
+      return { ok: true, data: { socketPath: attachServer.socketPath(id) } };
+    }
+
+    case "process:suspend": {
+      const { id } = payload as { id: string };
+      if (!id) return { ok: false, error: "missing id" };
+      await suspendManager.suspend(id);
+      return { ok: true };
+    }
+
+    case "process:resume": {
+      const { id } = payload as { id: string };
+      if (!id) return { ok: false, error: "missing id" };
+      await suspendManager.resume(id);
+      return { ok: true };
+    }
+
+    // ── Port allocation ────────────────────────────────────────────────────────
+
+    case "port:allocate": {
+      const { label } = payload as { label: string };
+      if (!label) return { ok: false, error: "missing label" };
+      const port = portAllocator.allocate(label);
+      return { ok: true, data: { port } };
+    }
+
+    case "port:release": {
+      const { label, port } = payload as { label?: string; port?: number };
+      if (label) {
+        portAllocator.releaseByLabel(label);
+      } else if (port !== undefined) {
+        portAllocator.release(port);
+      } else {
+        return { ok: false, error: "missing label or port" };
+      }
+      return { ok: true };
+    }
+
+    case "port:list": {
+      return { ok: true, data: portAllocator.list() };
+    }
+
+    // ── Proxy management ───────────────────────────────────────────────────────
+
+    case "proxy:start": {
+      const { id, canonicalPort, upstreamPort } = payload as { id: string; canonicalPort: number; upstreamPort: number };
+      if (!id || !canonicalPort || !upstreamPort) return { ok: false, error: "missing id, canonicalPort, or upstreamPort" };
+      proxyManager.start(id, canonicalPort, upstreamPort);
+      return { ok: true };
+    }
+
+    case "proxy:stop": {
+      const { id } = payload as { id: string };
+      if (!id) return { ok: false, error: "missing id" };
+      proxyManager.stop(id);
+      return { ok: true };
+    }
+
+    case "proxy:set-upstream": {
+      const { id, port } = payload as { id: string; port: number };
+      if (!id || !port) return { ok: false, error: "missing id or port" };
+      proxyManager.setUpstream(id, port);
+      return { ok: true };
+    }
+
+    case "proxy:status": {
+      const { id } = payload as { id: string };
+      if (!id) return { ok: false, error: "missing id" };
+      return { ok: true, data: proxyManager.getStatus(id) };
+    }
+
+    case "proxy:list": {
+      return { ok: true, data: proxyManager.list() };
+    }
+
+    // ── Exclusive groups ───────────────────────────────────────────────────────
+
+    case "group:create": {
+      const { id } = payload as { id: string };
+      if (!id) return { ok: false, error: "missing id" };
+      exclusiveGroup.create(id);
+      return { ok: true };
+    }
+
+    case "group:remove": {
+      const { id } = payload as { id: string };
+      if (!id) return { ok: false, error: "missing id" };
+      exclusiveGroup.remove(id);
+      return { ok: true };
+    }
+
+    case "group:add": {
+      const { groupId, processId } = payload as { groupId: string; processId: string };
+      if (!groupId || !processId) return { ok: false, error: "missing groupId or processId" };
+      exclusiveGroup.addMember(groupId, processId);
+      return { ok: true };
+    }
+
+    case "group:remove-member": {
+      const { groupId, processId } = payload as { groupId: string; processId: string };
+      if (!groupId || !processId) return { ok: false, error: "missing groupId or processId" };
+      exclusiveGroup.removeMember(groupId, processId);
+      return { ok: true };
+    }
+
+    case "group:activate": {
+      const { groupId, processId } = payload as { groupId: string; processId: string };
+      if (!groupId || !processId) return { ok: false, error: "missing groupId or processId" };
+      await exclusiveGroup.activate(groupId, processId);
+      return { ok: true };
+    }
+
+    case "group:list": {
+      return { ok: true, data: exclusiveGroup.list() };
+    }
+
+    case "group:get": {
+      const { id } = payload as { id: string };
+      if (!id) return { ok: false, error: "missing id" };
+      return { ok: true, data: exclusiveGroup.get(id) };
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+
     case "shutdown":
       log("received shutdown command");
       cleanup();
@@ -701,8 +896,17 @@ function writePidFile(): void {
 }
 
 function cleanup(): void {
+  // Kill all managed processes and stop proxy/attach servers
+  try {
+    for (const { id } of processManager.list()) {
+      try { processManager.kill(id).catch(() => {}); } catch { /* */ }
+    }
+  } catch { /* */ }
+  try { proxyManager.stopAll(); } catch { /* */ }
+  try { attachServer.closeAll(); } catch { /* */ }
+
   // Stop all file watches
-  for (const [configPath, watcher] of watchedConfigs.entries()) {
+  for (const [, watcher] of watchedConfigs.entries()) {
     try { watcher.close(); } catch { /* */ }
   }
   watchedConfigs.clear();
@@ -742,6 +946,9 @@ function main(): void {
 
   log("daemon starting");
   writePidFile();
+
+  // On restart, all processes are dead — reset any non-stopped states
+  stateStore.reconcileAfterRestart();
 
   // Load cache from disk
   loadCache();
