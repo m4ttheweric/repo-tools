@@ -42,12 +42,20 @@ export interface LaneEntry {
  * The proxy forwards :canonicalPort to the activeEntry's ephemeralPort.
  * Each lane is scoped to a single repo (`repoName`).
  */
+/**
+ * How a lane handles deactivated entries when switching the active one.
+ *  "warm"   — SIGSTOP the old process (stays in memory, instant resume)
+ *  "single" — kill the old process (frees resources, cold start on switch)
+ */
+export type LaneMode = "warm" | "single";
+
 export interface LaneConfig {
   id: string;             // "1", "2", "3" — display number
   canonicalPort: number;  // user-declared, stable, browser-facing
   entries: LaneEntry[];
   activeEntryId?: string; // which entry the proxy is currently routing to
   repoName: string;       // e.g. "assured-dev" — repo this lane is scoped to
+  mode: LaneMode;         // how to handle deactivated entries (default: "warm")
 }
 
 // ─── ID helpers ──────────────────────────────────────────────────────────────
@@ -107,12 +115,15 @@ function normalizeEntry(raw: any): LaneEntry {
 }
 
 function normalizeLane(raw: any): LaneConfig {
+  const rawMode = raw.mode;
+  const mode: LaneMode = rawMode === "single" ? "single" : "warm";
   return {
     id: String(raw.id ?? ""),
     canonicalPort: Number(raw.canonicalPort ?? 0),
     entries: Array.isArray(raw.entries) ? raw.entries.map(normalizeEntry) : [],
     activeEntryId: raw.activeEntryId ?? undefined,
     repoName: String(raw.repoName ?? ""),
+    mode,
   };
 }
 
