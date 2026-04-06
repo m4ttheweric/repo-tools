@@ -29,7 +29,7 @@
  *   e            edit command template for selected entry
  *   D            delete selected lane
  *   R            reset all lanes (with confirmation)
- *   b            switch branch for the selected entry (rt branch switch)
+ *   b            branch picker for the selected entry (switch / create / clean)
  *   c            open entry's worktree in editor (rt code)
  *   t            open a one-off shell at the entry's working directory
  *   q            quit
@@ -37,6 +37,7 @@
 
 import { rgb } from "@rezi-ui/jsx";
 import { createNodeApp } from "@rezi-ui/node";
+import { extendTheme, darkTheme } from "@rezi-ui/core";
 import { spawnSync } from "node:child_process";
 import { join, basename, relative } from "node:path";
 import { tmpdir } from "node:os";
@@ -125,18 +126,75 @@ interface RunnerUIState {
   knownRepos:    KnownRepo[];
 }
 
-// ─── Palette ──────────────────────────────────────────────────────────────────
+// ─── Theme — bubble tea ✨ ───────────────────────────────────────────────────
+//
+// Two-layer system:
+//   T  — raw color tokens (edit these to retheme everything)
+//   C  — semantic roles (what the UI code references — don't change these names)
+//
+// To switch themes: only touch the `T` block below.
+// ─────────────────────────────────────────────────────────────────────────────
 
-const C = {
-  cyan:  rgb(80,  220, 220),
-  green: rgb(80,  200, 100),
-  yel:   rgb(220, 180,  50),
-  red:   rgb(220,  80,  80),
-  dim:   rgb(100, 100, 100),
-  muted: rgb(160, 160, 160),
-  white: rgb(220, 220, 220),
-  selBg: rgb(35,  50,  70),  // subtle blue-grey highlight for selected entry
+/** Raw palette tokens — one place to edit per color. */
+const T = {
+  // ── Backgrounds ────────────────────────────────────────────────────────────
+  bgBase:     [22,  18,  36] as const,  // #161224  dark plum-black   (canvas fill)
+  bgElevated: [35,  28,  55] as const,  // #231C37  slightly lighter
+  bgOverlay:  [50,  40,  75] as const,  // #32284B  overlays / overlaid boxes
+  bgSubtle:   [28,  22,  44] as const,  // #1C162C  subtly lighter than base
+  bgSelBg:    [55,  40,  75] as const,  // #37284B  selected-row highlight
+
+  // ── Accents ────────────────────────────────────────────────────────────────
+  pink:  [255, 107, 157] as const,  // #FF6B9D  rose pink    — primary / borders / active
+  lav:   [189, 147, 249] as const,  // #BD93F9  soft lavender — secondary hints
+  mint:  [ 98, 230, 168] as const,  // #62E6A8  mint green   — running / healthy
+  peach: [255, 183, 122] as const,  // #FFB77A  warm peach   — warnings / toasts
+  coral: [255, 121, 121] as const,  // #FF7979  coral rose   — errors / stopped
+  warm:  [255, 210, 100] as const,  // #FFD264  warm yellow  — warm/idle state
+
+  // ── Neutrals ───────────────────────────────────────────────────────────────
+  dim:   [168, 160, 198] as const,  // #A8A0C6  muted plum   — secondary text / borders
+  muted: [210, 205, 235] as const,  // #D2CDEB  lilac-grey   — tertiary text
+  white: [230, 224, 255] as const,  // #E6E0FF  lavender white — primary text
 };
+
+/** Semantic color roles — reference these in JSX (never raw T values). */
+const C = {
+  // accents
+  pink:  rgb(...T.pink),
+  lav:   rgb(...T.lav),
+  mint:  rgb(...T.mint),
+  peach: rgb(...T.peach),
+  coral: rgb(...T.coral),
+  // neutrals
+  dim:   rgb(...T.dim),
+  muted: rgb(...T.muted),
+  white: rgb(...T.white),
+  // backgrounds
+  selBg: rgb(...T.bgSelBg),
+};
+
+/** Status state → display color (references T tokens). */
+const STATUS_COLOR: Record<EntryState, number> = {
+  starting: rgb(...T.mint),
+  running:  rgb(...T.mint),
+  warm:     rgb(...T.warm),
+  crashed:  rgb(...T.coral),
+  stopped:  rgb(...T.dim),
+};
+
+/** Rezi canvas theme — bg pulled from T so it stays in sync with the palette. */
+const runnerTheme = extendTheme(darkTheme, {
+  colors: {
+    bg: {
+      base:     rgb(...T.bgBase),
+      elevated: rgb(...T.bgElevated),
+      overlay:  rgb(...T.bgOverlay),
+      subtle:   rgb(...T.bgSubtle),
+    },
+  } as any,
+});
+
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"];
 
@@ -146,14 +204,6 @@ const STATUS_ICON: Record<EntryState, string> = {
   warm:     "❄",
   crashed:  "✗",
   stopped:  "○",
-};
-
-const STATUS_COLOR: Record<EntryState, number> = {
-  starting: rgb(80,  200, 100),
-  running:  rgb(80,  200, 100),
-  warm:     rgb(220, 180,  50),
-  crashed: rgb(220,  80,  80),
-  stopped: rgb(100, 100, 100),
 };
 
 // ─── Daemon helpers ───────────────────────────────────────────────────────────
@@ -324,6 +374,7 @@ async function runOnce(
       runnerName,
       knownRepos,
     },
+    theme: runnerTheme,
   });
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -808,7 +859,7 @@ async function runOnce(
 
     const stateColor = STATUS_COLOR[state];
     const branchLabel = s.enrichment[eKey] ?? entry.branch ?? "";
-    const nameColor = isActive ? C.green : (isSelected ? C.white : C.muted);
+    const nameColor = isActive ? C.mint : (isSelected ? C.white : C.muted);
     const spinnerChar = SPINNER_FRAMES[s.spinnerFrame % SPINNER_FRAMES.length]!;
     const stateIcon = state === "starting" ? spinnerChar : STATUS_ICON[state];
     const stateLabel =
@@ -821,7 +872,7 @@ async function runOnce(
       // Compact single-row: only the branch/worktree label differs between entries
       return (
         <row key={eKey} gap={1} style={{ bg: rowBg }}>
-          <text style={{ fg: isSelected ? C.cyan : C.dim, bg: rowBg }}>{isSelected ? "❯" : " "}</text>
+          <text style={{ fg: isSelected ? C.pink : C.dim, bg: rowBg }}>{isSelected ? "❯" : " "}</text>
           <text style={{ fg: stateColor, bg: rowBg }}>{stateIcon}</text>
           <text style={{ fg: nameColor, bold: isActive, bg: rowBg }}>{branchLabel || entry.branch || entry.worktree}</text>
           <spacer flex={1} />
@@ -836,7 +887,7 @@ async function runOnce(
     return (
       <column key={eKey} gap={0}>
         <row key={`${eKey}-1`} gap={1} style={{ bg: rowBg }}>
-          <text style={{ fg: isSelected ? C.cyan : C.dim, bg: rowBg }}>{isSelected ? "❯" : " "}</text>
+          <text style={{ fg: isSelected ? C.pink : C.dim, bg: rowBg }}>{isSelected ? "❯" : " "}</text>
           <text style={{ fg: stateColor, bg: rowBg }}>{stateIcon}</text>
           <text style={{ fg: nameColor, bold: isActive, bg: rowBg }}>{label}</text>
           <spacer flex={1} />
@@ -856,7 +907,7 @@ async function runOnce(
     const safeEi = Math.min(s.entryIdx, Math.max(0, lane.entries.length - 1));
     const proxyUp = s.proxyStates[proxyWindowName(lane.id)] ?? false;
     const modeLabel = (lane.mode ?? "warm") === "single" ? "single" : "warm";
-    const title = ` ${isSelected ? "❯ " : ""}LANE ${lane.id}  ·  ${lane.repoName}  ·  :${lane.canonicalPort}  ·  ${modeLabel}  `;
+    const title = ` LANE ${lane.id}  ·  ${lane.repoName}  ·  :${lane.canonicalPort}  ·  ${modeLabel}  `;
 
     // If all entries share the same commandTemplate, hoist the command to the header
     const commandIsUniform = lane.entries.length > 0 &&
@@ -869,12 +920,12 @@ async function runOnce(
         title={title}
         titleAlign="left"
         border={isSelected ? "heavy" : "single"}
-        borderStyle={{ fg: isSelected ? C.cyan : C.dim }}
+        borderStyle={{ fg: isSelected ? C.pink : C.dim }}
         px={1}
         gap={0}
       >
         <row gap={1}>
-          <text style={{ fg: proxyUp ? C.green : C.red }}>{proxyUp ? "proxy ✓" : "proxy ✗"}</text>
+          <text style={{ fg: proxyUp ? C.mint : C.coral }}>{proxyUp ? "proxy ✓" : "proxy ✗"}</text>
           {sharedLabel && <text style={{ fg: C.dim }}>{"·"}</text>}
           {sharedLabel && <text style={{ fg: C.muted }}>{sharedLabel}</text>}
         </row>
@@ -894,32 +945,58 @@ async function runOnce(
   }
 
   function HintBar({ canSpread }: { canSpread?: boolean }) {
+    // Separator between the section label and its commands
+    const Sep = () => <text style={{ fg: C.lav }}>{"  "}</text>;
+    // Dim pipe divider between groups on the same row
+    const Pipe = () => <text style={{ fg: C.dim }}>{"  ·  "}</text>;
+
+    const Key = ({ k }: { k: string }) => <text style={{ fg: C.muted }}>{`[${k}]`}</text>;
+    const Label = ({ l }: { l: string }) => <text style={{ fg: C.dim }}>{l}</text>;
+    const Cmd = ({ k, l }: { k: string; l: string }) => (
+      <row gap={1}><Key k={k} /><Label l={l} /></row>
+    );
+    const Section = ({ name }: { name: string }) => (
+      <text style={{ fg: C.lav, bold: true }}>{name.padEnd(7)}</text>
+    );
+
     return (
       <column gap={0}>
-        <row gap={1}>          
-          <text style={{ fg: C.muted }}>[q]</text><text style={{ fg: C.dim }}>quit</text>          
-          <text style={{ fg: C.muted }}>[l]</text><text style={{ fg: C.dim }}>add lane</text>
-          <text style={{ fg: C.muted }}>[p]</text><text style={{ fg: C.dim }}>port</text>
-          <text style={{ fg: C.muted }}>[D]</text><text style={{ fg: C.dim }}>del</text>
-          <text style={{ fg: C.muted }}>[R]</text><text style={{ fg: C.dim }}>reset</text>
-          {canSpread && <text style={{ fg: C.muted }}>[W]</text>}
-          {canSpread && <text style={{ fg: C.dim }}>spread to worktrees</text>}
-        </row>
+        {/* Row 1 — Lane management */}
         <row gap={1}>
-          <text style={{ fg: C.muted }}>[a]</text><text style={{ fg: C.dim }}>add</text>
-          <text style={{ fg: C.muted }}>[s]</text><text style={{ fg: C.dim }}>start</text>
-          <text style={{ fg: C.muted }}>[S]</text><text style={{ fg: C.dim }}>warm</text>
-          <text style={{ fg: C.muted }}>[↵]</text><text style={{ fg: C.dim }}>activate</text>
-          <text style={{ fg: C.muted }}>[x/X]</text><text style={{ fg: C.dim }}>stop</text>
-          <text style={{ fg: C.muted }}>[r]</text><text style={{ fg: C.dim }}>remove</text>
-          <text style={{ fg: C.muted }}>[e]</text><text style={{ fg: C.dim }}>cmd</text>
-          <text style={{ fg: C.muted }}>[t]</text><text style={{ fg: C.dim }}>shell</text>
-          <text style={{ fg: C.muted }}>[c]</text><text style={{ fg: C.dim }}>code</text>
-          <text style={{ fg: C.muted }}>[b]</text><text style={{ fg: C.dim }}>branch</text>
-          <text style={{ fg: C.muted }}>[i]</text><text style={{ fg: C.dim }}>info</text>
-          <text style={{ fg: C.muted }}>[m]</text><text style={{ fg: C.dim }}>mode</text>
+          <Section name="lane" /><Sep />
+          <Cmd k="l" l="add" />
+          <Cmd k="p" l="port" />
+          <Cmd k="D" l="delete" />
+          <Cmd k="m" l="mode" />
+        </row>
+        {/* Row 2 — Process lifecycle */}
+        <row gap={1}>
+          <Section name="process" /><Sep />
+          <Cmd k="a" l="add" />
+          <Cmd k="s" l="start" />
+          <Cmd k="S" l="warm" />
+          <Cmd k="↵" l="activate" />
+          <Cmd k="x/X" l="stop" />
+          <Cmd k="r" l="remove" />
+        </row>
+        {/* Row 3 — Open / navigate */}
+        <row gap={1}>
+          <Section name="open" /><Sep />
+          <Cmd k="b" l="branch" />
+          <Cmd k="c" l="code" />
+          <Cmd k="t" l="shell" />
+          <Cmd k="e" l="cmd" />
+          <Cmd k="i" l="info" />
+        </row>
+        {/* Row 4 — Global */}
+        <row gap={1}>
+          <Section name="global" /><Sep />
+          <Cmd k="q" l="quit" />
+          <Cmd k="R" l="reset" />
+          {canSpread && <Cmd k="W" l="spread to worktrees" />}
         </row>
       </column>
+
     );
   }
 
@@ -932,7 +1009,7 @@ async function runOnce(
     _currentState = s;
     const Header = () => (
       <row gap={0}>
-        <text style={{ fg: C.cyan, bold: true }}>rt</text>
+        <text style={{ fg: C.pink, bold: true }}>rt</text>
         <text style={{ bold: true }}>{"  runner"}</text>
         <text style={{ fg: C.dim }}>{"  "}{s.runnerName}</text>
       </row>
@@ -952,7 +1029,7 @@ async function runOnce(
           <box
             title={` Remove entry — LANE ${lane.id}  :${lane.canonicalPort} `}
             border="single"
-            borderStyle={{ fg: C.cyan }}
+            borderStyle={{ fg: C.pink }}
             px={1}
             gap={1}
           >
@@ -962,13 +1039,13 @@ async function runOnce(
               const isSel = i === pickerIdx;
               return (
                 <row key={e.id} gap={1}>
-                  <text style={{ fg: isSel ? C.cyan : C.dim }}>{isSel ? "❯" : " "}</text>
+                  <text style={{ fg: isSel ? C.pink : C.dim }}>{isSel ? "❯" : " "}</text>
                   <text style={{ fg: STATUS_COLOR[st] }}>{STATUS_ICON[st]}</text>
-                  <text style={{ fg: lane.activeEntryId === e.id ? C.green : C.white }}>
+                  <text style={{ fg: lane.activeEntryId === e.id ? C.mint : C.white }}>
                     {e.packageLabel !== "root" ? `${e.packageLabel} · ${e.script}` : e.script}
                   </text>
                   <text style={{ fg: C.dim }}>:{e.ephemeralPort}</text>
-                  {lane.activeEntryId === e.id && <text style={{ fg: C.green }}>{"← active"}</text>}
+                  {lane.activeEntryId === e.id && <text style={{ fg: C.mint }}>{"← active"}</text>}
                 </row>
               );
             })}
@@ -980,15 +1057,15 @@ async function runOnce(
 
     // Bottom area: toast > modal > input > hints
     const Bottom = () => {
-      if (s.toast) return <text style={{ fg: C.yel }}>{s.toast}</text>;
+      if (s.toast) return <text style={{ fg: C.peach }}>{s.toast}</text>;
       if (s.mode.type === "confirm-reset") {
-        return <text style={{ fg: C.red }}>{"Reset all lanes and stop all processes?  [y] confirm  [n / Esc] cancel"}</text>;
+        return <text style={{ fg: C.coral }}>{"Reset all lanes and stop all processes?  [y] confirm  [n / Esc] cancel"}</text>;
       }
       if (s.mode.type === "confirm-spread") {
         const spreadLane = s.lanes.find((l) => l.id === (s.mode as { laneId: string }).laneId);
         const spreadEntry = spreadLane?.entries[0];
         const spreadLabel = spreadEntry ? `'${spreadEntry.script}'` : "command";
-        return <text style={{ fg: C.yel }}>{`Spread ${spreadLabel} to all worktrees of ${spreadLane?.repoName ?? ""}?  [y] confirm  [n / Esc] cancel`}</text>;
+        return <text style={{ fg: C.peach }}>{`Spread ${spreadLabel} to all worktrees of ${spreadLane?.repoName ?? ""}?  [y] confirm  [n / Esc] cancel`}</text>;
       }
       if (s.mode.type === "port-input") {
         const label = "Edit port:";
@@ -1128,20 +1205,62 @@ async function runOnce(
     }
   }
 
-  function onRepoChange(laneId: string): void {
-    safeUpdate((s) => {
-      const lane = s.lanes.find((l) => l.id === laneId);
-      if (!lane) return s;
+  // Debounce per-lane: git checkout touches dozens of .git/ files, causing
+  // a storm of FSEvents. Without debouncing, each event calls spawnSync which
+  // blocks the event loop and makes arrow keys unresponsive for several seconds.
+  const repoChangeDebounce = new Map<string, ReturnType<typeof setTimeout>>();
 
-      let changed = false;
-      const updatedEntries = lane.entries.map((entry) => {
-        if (!entry.worktree) return entry;
-        const branch = readCurrentBranch(entry.worktree);
-        if (!branch || branch === entry.branch) return entry;
-        changed = true;
-        return { ...entry, branch };
+  function onRepoChange(laneId: string): void {
+    const existing = repoChangeDebounce.get(laneId);
+    if (existing) clearTimeout(existing);
+    repoChangeDebounce.set(
+      laneId,
+      setTimeout(() => {
+        repoChangeDebounce.delete(laneId);
+        doRepoChange(laneId);
+      }, 150), // 150ms quiet period — git finishes writing before we read HEAD
+    );
+  }
+
+  function doRepoChange(laneId: string, attempt = 0): void {
+    // Read all current branches BEFORE entering the Ink state updater.
+    // spawnSync inside app.update() blocks the render loop — keep the
+    // updater callback a pure synchronous object merge.
+    // currentLanes is kept in sync with Ink state by every mutation.
+    const lane = currentLanes.find((l) => l.id === laneId);
+    if (!lane) return;
+
+    // Snapshot: entryId → freshly-read branch name
+    const freshBranches = new Map<string, string>();
+    for (const entry of lane.entries) {
+      if (!entry.worktree) continue;
+      const branch = readCurrentBranch(entry.worktree);
+      if (branch) freshBranches.set(entry.id, branch);
+    }
+
+    const anyChanged = lane.entries.some(
+      (e) => freshBranches.has(e.id) && freshBranches.get(e.id) !== e.branch,
+    );
+
+    if (!anyChanged) {
+      // Debounce handles mid-write races in most cases, but schedule one
+      // direct retry in case HEAD still hadn't been fully written.
+      if (attempt < 1) {
+        setTimeout(() => doRepoChange(laneId, attempt + 1), 250);
+      }
+      return;
+    }
+
+    // Pure state update — no I/O inside the updater.
+    safeUpdate((s) => {
+      const targetLane = s.lanes.find((l) => l.id === laneId);
+      if (!targetLane) return s;
+
+      const updatedEntries = targetLane.entries.map((entry) => {
+        const fresh = freshBranches.get(entry.id);
+        if (!fresh || fresh === entry.branch) return entry;
+        return { ...entry, branch: fresh };
       });
-      if (!changed) return s;
 
       const updatedLanes = s.lanes.map((l) =>
         l.id === laneId ? { ...l, entries: updatedEntries } : l
@@ -1379,13 +1498,14 @@ async function runOnce(
       tmuxSplit(`${process.execPath} ${CLI_PATH} code`, entry.worktree, displayPane());
     },
 
-    // [b] open rt branch switch in the entry's worktree
+    // [b] open rt branch picker (switch / create / clean) in the entry's worktree
     b: ({ state }) => {
       const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
       if (!lane) return;
       const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
       if (!entry) return;
-      tmuxSplit(`${process.execPath} ${CLI_PATH} branch switch`, entry.worktree, displayPane());
+      // No subcommand → dispatcher shows the branch picker (switch / create / clean)
+      tmuxSplit(`${process.execPath} ${CLI_PATH} branch`, entry.worktree, displayPane());
     },
 
     // [t] open a one-off interactive shell at the entry's working directory

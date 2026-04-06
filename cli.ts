@@ -81,6 +81,14 @@ const TREE: Record<string, CommandNode> = {
     requiresTTY: true,
   },
 
+  commit: {
+    description: "Interactive staged/unstaged commit picker with live diff preview",
+    module: "./commands/commit.ts",
+    fn: "commitFlow",
+    context: "worktree",
+    requiresTTY: true,
+  },
+
   attach: {
     description: "Attach terminal to a daemon-managed process",
     module: "./commands/attach.ts",
