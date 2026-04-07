@@ -50,6 +50,21 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
+# Generate app icon (draws "rt" via Core Graphics → iconutil → AppIcon.icns)
+if [ ! -f "$SCRIPT_DIR/AppIcon.icns" ]; then
+    echo "  Generating AppIcon.icns..."
+    swift "$SCRIPT_DIR/make-icon.swift"
+else
+    echo "  AppIcon.icns already exists — skipping generation (delete to regenerate)"
+fi
+
+if [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
+    cp "$SCRIPT_DIR/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+    echo "  ✓ AppIcon.icns copied to Resources"
+else
+    echo "  ⚠ AppIcon.icns not found — notifications will show a default icon"
+fi
+
 # Copy binary
 cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
