@@ -134,7 +134,7 @@ function openTempPane(
  * triggers a spawn/respawn — before the daemon has confirmed the process is
  * alive. It is replaced by the real daemon state on the next poll.
  */
-export type EntryState = ProcessState | "starting";
+export type EntryState = ProcessState | "starting" | "stopping";
 
 type InteractiveRequest = { type: "quit" };
 
@@ -231,6 +231,7 @@ const C = {
 /** Status state → display color (references T tokens). */
 const STATUS_COLOR: Record<EntryState, number> = {
   starting: rgb(...T.mint),
+  stopping: rgb(...T.coral),
   running:  rgb(...T.mint),
   warm:     rgb(...T.warm),
   crashed:  rgb(...T.coral),
@@ -254,6 +255,7 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
 
 const STATUS_ICON: Record<EntryState, string> = {
   starting: SPINNER_FRAMES[0]!, // overridden at render time with animated frame
+  stopping: SPINNER_FRAMES[0]!, // overridden at render time with animated frame
   running:  "●",
   warm:     "❄",
   crashed:  "✗",
@@ -828,11 +830,19 @@ async function runOnce(
   }
 
   function doDispatch(action: LaneAction, currentState: RunnerUIState): void {
-    // For actions that start a process, show an optimistic "starting" state
-    // immediately so the UI responds at once rather than after the daemon round-trip.
+    // For start actions: show optimistic "starting" immediately.
+    // For stop actions: show optimistic "stopping" immediately.
+    // Both are replaced by the real daemon state on the next poll.
     const startingIds: string[] = [];
+    const stoppingIds: string[] = [];
+
     if (action.type === "spawn" || action.type === "respawn") {
       startingIds.push(entryWindowName(action.laneId, action.entryId));
+    } else if (action.type === "activate") {
+      // Only show starting if the entry isn't already alive
+      const processId = entryWindowName(action.laneId, action.entryId);
+      const st = currentState.entryStates.get(processId) ?? "stopped";
+      if (st === "stopped" || st === "crashed") startingIds.push(processId);
     } else if (action.type === "warm-all") {
       const lane = currentState.lanes.find((l) => l.id === action.laneId);
       if (lane) {
@@ -842,12 +852,20 @@ async function runOnce(
           if (st === "stopped" || st === "crashed") startingIds.push(id);
         }
       }
+    } else if (action.type === "stop") {
+      stoppingIds.push(entryWindowName(action.laneId, action.entryId));
+    } else if (action.type === "stop-all") {
+      const lane = currentState.lanes.find((l) => l.id === action.laneId);
+      if (lane) {
+        for (const e of lane.entries) stoppingIds.push(entryWindowName(lane.id, e.id));
+      }
     }
 
-    if (startingIds.length > 0) {
+    if (startingIds.length > 0 || stoppingIds.length > 0) {
       app.update((s) => {
         const next = new Map(s.entryStates);
         for (const id of startingIds) next.set(id, "starting");
+        for (const id of stoppingIds) next.set(id, "stopping");
         return { ...s, entryStates: next };
       });
     }
@@ -915,9 +933,10 @@ async function runOnce(
     const branchLabel = s.enrichment[eKey] ?? entry.branch ?? "";
     const nameColor = isActive ? C.mint : (isSelected ? C.white : C.muted);
     const spinnerChar = SPINNER_FRAMES[s.spinnerFrame % SPINNER_FRAMES.length]!;
-    const stateIcon = state === "starting" ? spinnerChar : STATUS_ICON[state];
+    const stateIcon = (state === "starting" || state === "stopping") ? spinnerChar : STATUS_ICON[state];
     const stateLabel =
       state === "starting" ? "starting…" :
+      state === "stopping" ? "stopping…" :
       state === "warm"     ? "❄ warm"    : state;
 
     const rowBg = isSelected ? C.selBg : undefined;
@@ -1216,11 +1235,15 @@ async function runOnce(
   void pollDaemon();
   const pollTimer = setInterval(() => { void pollDaemon(); }, 2000);
 
-  // Advance the spinner frame at ~12fps (only re-renders when something is "starting")
+  // Advance the spinner frame at ~12fps.
+  // Only triggers a re-render when something is actually in a transient state
+  // ("starting" or "stopping") — avoids needless renders otherwise.
   const spinnerTimer = setInterval(() => {
     safeUpdate((s) => {
-      const hasStarting = [...s.entryStates.values()].some((st) => st === "starting");
-      if (!hasStarting) return s; // no-op if nothing is starting — avoids needless renders
+      const hasTransient = [...s.entryStates.values()].some(
+        (st) => st === "starting" || st === "stopping",
+      );
+      if (!hasTransient) return s;
       return { ...s, spinnerFrame: s.spinnerFrame + 1 };
     });
   }, 80);
