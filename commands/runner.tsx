@@ -40,8 +40,8 @@ import { createNodeApp } from "@rezi-ui/node";
 import { extendTheme, darkTheme } from "@rezi-ui/core";
 import { spawnSync } from "node:child_process";
 import { join, basename, relative } from "node:path";
-import { tmpdir } from "node:os";
-import { existsSync, readFileSync, unlinkSync, watch, type FSWatcher } from "node:fs";
+import { tmpdir, homedir } from "node:os";
+import { existsSync, readFileSync, unlinkSync, mkdirSync, writeFileSync, watch, type FSWatcher } from "node:fs";
 import { createInterface } from "node:readline";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { daemonQuery, isDaemonRunning } from "../lib/daemon-client.ts";
@@ -63,12 +63,47 @@ const CLI_PATH = join(RT_ROOT, "cli.ts");
  * Always targets `targetPane` (the display pane) so the runner pane is never
  * resized and the Rezi layout stays intact.
  */
-function tmuxSplit(cmd: string, cwd?: string, targetPane?: string): void {
-  const args = ["split-window", "-v"];
-  if (targetPane) args.push("-t", targetPane);
-  if (cwd) args.push("-c", cwd);
-  args.push(cmd);
-  spawnSync("tmux", args);
+/**
+ * Open a temporary tmux split pane. Returns the tmux pane ID.
+ *
+ * All temporary panes use this function so behaviour is consistent:
+ *   - Pane ID is always captured (useful for targeting send-keys / kill-pane).
+ *   - When `escToClose` is true the function injects a zsh bindkey widget so
+ *     pressing Esc exits the shell and closes the pane automatically.
+ *     Picker panes (fzf-based) should leave this false — they handle Esc
+ *     natively and exit on their own.
+ */
+function openTempPane(
+  cmd: string,
+  opts: { cwd?: string; target?: string; escToClose?: boolean } = {},
+): string | undefined {
+  let resolvedCmd = cmd;
+
+  if (opts.escToClose) {
+    // Launch the shell with a temp ZDOTDIR so the Esc binding is wired
+    // silently during .zshrc initialisation — no visible command is typed.
+    // The temp dir self-destructs when the shell exits via a trap.
+    const zdotdir  = join(tmpdir(), `rt-shell-${Date.now()}`);
+    const rcFile   = join(zdotdir, ".zshrc");
+    const realRc   = join(homedir(), ".zshrc");
+    mkdirSync(zdotdir, { recursive: true });
+    writeFileSync(rcFile, [
+      `# rt runner — sources real .zshrc then wires Esc→close silently`,
+      `[[ -f "${realRc}" ]] && ZDOTDIR="${homedir()}" source "${realRc}"`,
+      `esc-exit() { exit 0; }`,
+      `zle -N esc-exit`,
+      `bindkey '^[' esc-exit`,
+      `trap 'rm -rf "${zdotdir}"' EXIT`,
+    ].join("\n"));
+    resolvedCmd = `ZDOTDIR=${zdotdir} ${cmd}`;
+  }
+
+  const args = ["split-window", "-v", "-P", "-F", "#{pane_id}"];
+  if (opts.target) args.push("-t", opts.target);
+  if (opts.cwd)    args.push("-c", opts.cwd);
+  args.push(resolvedCmd);
+  const result = spawnSync("tmux", args, { encoding: "utf8" });
+  return result.stdout?.trim() || undefined;
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -964,9 +999,9 @@ async function runOnce(
         {/* Row 1 — Lane management */}
         <row gap={1}>
           <Section name="lane" /><Sep />
-          <Cmd k="l" l="add" />
+          <Cmd k="A" l="add" />
           <Cmd k="p" l="port" />
-          <Cmd k="D" l="delete" />
+          <Cmd k="R" l="remove" />
           <Cmd k="m" l="mode" />
         </row>
         {/* Row 2 — Process lifecycle */}
@@ -992,7 +1027,7 @@ async function runOnce(
         <row gap={1}>
           <Section name="global" /><Sep />
           <Cmd k="q" l="quit" />
-          <Cmd k="R" l="reset" />
+          <Cmd k="!" l="reset all" />
           {canSpread && <Cmd k="W" l="spread to worktrees" />}
         </row>
       </column>
@@ -1348,42 +1383,8 @@ async function runOnce(
       updateMrPane(lane?.entries[newEi]?.branch ?? "");
     },
 
-    // [l] add lane — open tmux picker (repo + port), poll for result
-    l: ({ state }) => {
-      if (state.knownRepos.length === 0) {
-        showToast("No known repos — run rt in a repo first");
-        return;
-      }
-      const tmpFile = join(tmpdir(), `rt-lane-${Date.now()}.json`);
-      const cmd = `${process.execPath} ${CLI_PATH} pick-lane > ${tmpFile}`;
-      tmuxSplit(cmd, undefined, displayPane());
-
-      const poll = setInterval(() => {
-        if (!existsSync(tmpFile)) return;
-        const content = readFileSync(tmpFile, "utf8").trim();
-        if (!content) return;
-        clearInterval(poll);
-        try {
-          const { repoName, port } = JSON.parse(content) as { repoName: string; port: number };
-          unlinkSync(tmpFile);
-          safeUpdate((s) => {
-            if (s.lanes.find((l) => l.canonicalPort === port)) {
-              showToast(`port ${port} is already used by another lane`);
-              return s;
-            }
-            const id = nextLaneId(s.lanes);
-            const newLane: LaneConfig = { id, canonicalPort: port, entries: [], repoName, mode: "warm" };
-            void daemonQuery("group:create", { id: newLane.id });
-            void ensureProxy(newLane);
-            createBgPane(newLane.id, "", `lane ${newLane.id} · ${newLane.repoName} :${newLane.canonicalPort}`);
-            initDisplayPane(newLane.id);
-            const next = [...s.lanes, newLane];
-            saveCurrent(next);
-            return { ...s, lanes: next, laneIdx: next.length - 1 };
-          });
-        } catch { /* ignore parse errors */ }
-      }, 300);
-    },
+    // [A] add lane — open tmux picker (repo + port), poll for result
+    // NOTE: uppercase A arrives as a text event — handled in onEvent block below
 
     // [p] edit canonical port
     p: ({ state, update }) => {
@@ -1405,7 +1406,7 @@ async function runOnce(
       const laneRepoRoot = laneRepo?.worktrees[0]?.path ?? process.cwd();
       const tmpFile = join(tmpdir(), `rt-resolve-${Date.now()}.json`);
       const cmd = `${process.execPath} ${CLI_PATH} run --resolve-only --repo ${lane.repoName} > ${tmpFile}`;
-      tmuxSplit(cmd, laneRepoRoot, displayPane());
+      openTempPane(cmd, { cwd: laneRepoRoot, target: displayPane() });
 
       const poll = setInterval(() => {
         if (!existsSync(tmpFile)) return;
@@ -1486,8 +1487,9 @@ async function runOnce(
       app.setMode("command-edit");
     },
 
-    // [D] delete lane — handled via onEvent for text events (see below)
-    // [R] reset — handled via onEvent for text events (see below)
+    // [A] add lane  — handled via onEvent (uppercase text event)
+    // [R] delete lane — handled via onEvent (uppercase text event)
+    // [!] reset all  — handled via onEvent (text event)
 
     // [c] open entry's worktree in editor (rt code, cwd = worktree → no picker needed)
     c: ({ state }) => {
@@ -1495,7 +1497,7 @@ async function runOnce(
       if (!lane) return;
       const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
       if (!entry) return;
-      tmuxSplit(`${process.execPath} ${CLI_PATH} code`, entry.worktree, displayPane());
+      openTempPane(`${process.execPath} ${CLI_PATH} code`, { cwd: entry.worktree, target: displayPane() });
     },
 
     // [b] open rt branch picker (switch / create / clean) in the entry's worktree
@@ -1505,7 +1507,7 @@ async function runOnce(
       const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
       if (!entry) return;
       // No subcommand → dispatcher shows the branch picker (switch / create / clean)
-      tmuxSplit(`${process.execPath} ${CLI_PATH} branch`, entry.worktree, displayPane());
+      openTempPane(`${process.execPath} ${CLI_PATH} branch`, { cwd: entry.worktree, target: displayPane() });
     },
 
     // [t] open a one-off interactive shell at the entry's working directory
@@ -1514,7 +1516,13 @@ async function runOnce(
       if (!lane) return;
       const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
       if (!entry) return;
-      tmuxSplit(process.env.SHELL ?? "zsh", entry.targetDir, displayPane());
+      // Open interactive shell — escToClose:true injects a zsh Esc→exit binding
+      // so the pane closes naturally when the user hits Escape.
+      openTempPane(process.env.SHELL ?? "zsh", {
+        cwd: entry.targetDir,
+        target: displayPane(),
+        escToClose: true,
+      });
     },
 
     // [i] toggle the MR/ticket info pane (bottom-right, hidden by default)
@@ -1566,10 +1574,45 @@ async function runOnce(
       case "X": // stop all entries in selected lane
         if (lane) doDispatch({ type: "stop-all", laneId: lane.id }, s);
         break;
-      case "D": // delete selected lane
+      case "A": { // [A] add lane — open tmux picker
+        if (_currentState && _currentState.knownRepos.length === 0) {
+          showToast("No known repos — run rt in a repo first");
+          break;
+        }
+        const tmpFile = join(tmpdir(), `rt-lane-${Date.now()}.json`);
+        const cmd = `${process.execPath} ${CLI_PATH} pick-lane > ${tmpFile}`;
+        openTempPane(cmd, { target: displayPane() });
+        const poll = setInterval(() => {
+          if (!existsSync(tmpFile)) return;
+          const content = readFileSync(tmpFile, "utf8").trim();
+          if (!content) return;
+          clearInterval(poll);
+          try {
+            const { repoName, port } = JSON.parse(content) as { repoName: string; port: number };
+            unlinkSync(tmpFile);
+            safeUpdate((s) => {
+              if (s.lanes.find((l) => l.canonicalPort === port)) {
+                showToast(`port ${port} is already used by another lane`);
+                return s;
+              }
+              const id = nextLaneId(s.lanes);
+              const newLane: LaneConfig = { id, canonicalPort: port, entries: [], repoName, mode: "warm" };
+              void daemonQuery("group:create", { id: newLane.id });
+              void ensureProxy(newLane);
+              createBgPane(newLane.id, "", `lane ${newLane.id} · ${newLane.repoName} :${newLane.canonicalPort}`);
+              initDisplayPane(newLane.id);
+              const next = [...s.lanes, newLane];
+              saveCurrent(next);
+              return { ...s, lanes: next, laneIdx: next.length - 1 };
+            });
+          } catch { /* ignore parse errors */ }
+        }, 300);
+        break;
+      }
+      case "R": // [R] delete selected lane
         if (lane) doDispatch({ type: "remove-lane", laneId: lane.id }, s);
         break;
-      case "R": // reset with confirmation
+      case "!": // [!] reset all lanes with confirmation
         safeUpdate((st) => ({ ...st, mode: { type: "confirm-reset" } }));
         app.setMode("confirm-reset");
         break;

@@ -16,6 +16,9 @@
  */
 
 import { execSync, spawnSync } from "child_process";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { writeFileSync, unlinkSync } from "node:fs";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { textInput } from "../lib/rt-render.tsx";
 
@@ -94,37 +97,29 @@ function fileLabel(f: ChangedFile): string {
 function deltaPipeCmd(): string {
   try {
     execSync("which delta", { stdio: "pipe" });
-    // delta flags tuned for preview pane:
-    //   --no-gitconfig       ignore user's ~/.gitconfig pager settings
-    //   --paging=never       never launch a sub-pager inside fzf
-    //   --width=variable     fit to preview pane width
-    //   --line-numbers       show line numbers
-    //   --syntax-theme=...   dark theme that works well on most terminals
-    return "| delta --no-gitconfig --paging=never --width=variable --line-numbers --syntax-theme=\"Monokai Extended\"";
+    // delta flags tuned for the preview pane.
+    // --syntax-theme intentionally omitted — let delta use its configured default
+    // to avoid quote-escaping issues when the theme name contains spaces.
+    return "| delta --no-gitconfig --paging=never --width=variable --line-numbers";
   } catch {
     return "";
   }
 }
 
 /**
- * Build the preview command passed to fzf's --preview flag.
+ * Build the preview command for fzf's --preview flag.
  *
- * Uses `bash -c '...' -- {1}` so that:
- *   - The script uses proper multi-line if/then/else (no "then;" or "else;"
- *     which are illegal in zsh and cause the parse error).
- *   - fzf substitutes {1} as a shell argument ($1), so paths with spaces
- *     are handled correctly.
+ * Writes the bash script to a temp file so that real newlines are preserved
+ * exactly as written — bypassing the multi-layer quoting that occurs when a
+ * script is embedded inline (JSON.stringify \n escapes collapse to 'n' when
+ * the shell parser rescans them, producing errors like "thenn: not found").
  *
- * The fzf value column is: "<rawStatus>:<path>"
- * We parse $1 to choose the right git diff command:
- *   - Untracked (??)      → git diff --no-index /dev/null <file>
- *   - Staged only         → git diff --cached -- <file>
- *   - Staged + unstaged   → show both sections with headers
- *   - Unstaged only       → git diff -- <file>
+ * Returns { cmd, cleanup } — call cleanup() after fzf exits.
  */
-function buildPreviewCmd(cwd: string, pipe: string): string {
-  // Build the script with real newlines — no semicolons after then/else.
-  // $1 is the fzf value field passed via `-- {1}`.
+function buildPreviewCmd(
+  cwd: string,
+  pipe: string,
+): { cmd: string; cleanup: () => void } {
   const script = [
     `f="$1"`,
     `xy="\${f%%:*}"`,
@@ -148,9 +143,17 @@ function buildPreviewCmd(cwd: string, pipe: string): string {
     `fi`,
   ].join("\n");
 
-  // Pass the script to bash -c with {1} as positional arg $1.
-  // JSON.stringify produces a double-quoted string safe to embed in shell.
-  return `bash -c ${JSON.stringify(script)} -- {1}`;
+  const scriptPath = join(tmpdir(), `rt-preview-${process.pid}.sh`);
+  writeFileSync(scriptPath, `#!/usr/bin/env bash\n${script}\n`, { mode: 0o755 });
+
+  const cleanup = () => {
+    try { unlinkSync(scriptPath); } catch { /* already gone — ignore */ }
+  };
+
+  // Safety net: delete the script if the process exits before fzf does.
+  process.once("exit", cleanup);
+
+  return { cmd: `bash ${JSON.stringify(scriptPath)} {1}`, cleanup };
 }
 
 // ─── fzf picker ───────────────────────────────────────────────────────────────
@@ -165,7 +168,7 @@ function runFilePicker(
   initiallyStaged: Set<string>,
 ): string[] | null {
   const pipe = deltaPipeCmd();
-  const previewCmd = buildPreviewCmd(cwd, pipe);
+  const { cmd: previewCmd, cleanup: cleanupPreview } = buildPreviewCmd(cwd, pipe);
 
   // Build the input: "<xy>:<path>\t<displayLabel>"
   const input = files
@@ -222,8 +225,11 @@ function runFilePicker(
 
   // fzf exits non-zero on ESC / Ctrl+C
   if (result.status !== 0 || !result.stdout?.trim()) {
+    cleanupPreview();
     return null;
   }
+
+  cleanupPreview();
 
   // Extract the path from the value column "<xy>:<path>"
   return result.stdout
