@@ -112,9 +112,15 @@ if [ "$MODE" = "install" ]; then
     INSTALL_DIR="$HOME/Applications"
     mkdir -p "$INSTALL_DIR"
     
-    # Kill existing instance
-    pkill -f "$APP_NAME.app/Contents/MacOS/$APP_NAME" 2>/dev/null || true
-    
+    # Kill existing instance and wait for it to fully exit
+    if pkill -f "$APP_NAME.app/Contents/MacOS/$APP_NAME" 2>/dev/null; then
+        echo "  Waiting for old instance to exit…"
+        for i in $(seq 1 20); do
+            pgrep -f "$APP_NAME.app/Contents/MacOS/$APP_NAME" > /dev/null 2>&1 || break
+            sleep 0.1
+        done
+    fi
+
     rm -rf "$INSTALL_DIR/$APP_NAME.app"
     cp -R "$APP_BUNDLE" "$INSTALL_DIR/$APP_NAME.app"
     echo "  ✓ Installed to $INSTALL_DIR/$APP_NAME.app"

@@ -41,7 +41,7 @@ import { extendTheme, darkTheme } from "@rezi-ui/core";
 import { spawnSync } from "node:child_process";
 import { join, basename, relative } from "node:path";
 import { tmpdir, homedir } from "node:os";
-import { existsSync, readFileSync, unlinkSync, mkdirSync, writeFileSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, mkdirSync, writeFileSync, rmSync, watch, type FSWatcher } from "node:fs";
 import { createInterface } from "node:readline";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { daemonQuery, isDaemonRunning } from "../lib/daemon-client.ts";
@@ -64,6 +64,21 @@ const CLI_PATH = join(RT_ROOT, "cli.ts");
  * resized and the Rezi layout stays intact.
  */
 /**
+ * Registry of all ZDOTDIR temp dirs created for Esc-able shell panes.
+ *
+ * The .zshrc trap handles normal exits; this Set + process exit handler is a
+ * safety net for the case where tmux kills the pane with SIGHUP/SIGKILL
+ * (e.g. the runner is quit while a shell pane is still open) and the shell
+ * never gets a chance to run its own cleanup.
+ */
+const _zdotdirRegistry = new Set<string>();
+process.once("exit", () => {
+  for (const dir of _zdotdirRegistry) {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
+/**
  * Open a temporary tmux split pane. Returns the tmux pane ID.
  *
  * All temporary panes use this function so behaviour is consistent:
@@ -82,18 +97,22 @@ function openTempPane(
   if (opts.escToClose) {
     // Launch the shell with a temp ZDOTDIR so the Esc binding is wired
     // silently during .zshrc initialisation — no visible command is typed.
-    // The temp dir self-destructs when the shell exits via a trap.
     const zdotdir  = join(tmpdir(), `rt-shell-${Date.now()}`);
     const rcFile   = join(zdotdir, ".zshrc");
     const realRc   = join(homedir(), ".zshrc");
     mkdirSync(zdotdir, { recursive: true });
+    _zdotdirRegistry.add(zdotdir);
     writeFileSync(rcFile, [
       `# rt runner — sources real .zshrc then wires Esc→close silently`,
       `[[ -f "${realRc}" ]] && ZDOTDIR="${homedir()}" source "${realRc}"`,
       `esc-exit() { exit 0; }`,
       `zle -N esc-exit`,
       `bindkey '^[' esc-exit`,
+      // EXIT fires on clean exit / esc-exit / ctrl-d
       `trap 'rm -rf "${zdotdir}"' EXIT`,
+      // HUP fires when tmux kills the pane (e.g. runner quits while shell is open)
+      // TERM fires on explicit kill-pane
+      `trap 'rm -rf "${zdotdir}"; exit' HUP TERM`,
     ].join("\n"));
     resolvedCmd = `ZDOTDIR=${zdotdir} ${cmd}`;
   }

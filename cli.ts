@@ -207,6 +207,12 @@ const TREE: Record<string, CommandNode> = {
         module: "./commands/daemon.ts",
         fn: "stop",
       },
+      restart: {
+        description: "Restart the daemon",
+        module: "./commands/daemon.ts",
+        fn: "restart",
+      },
+
       status: {
         description: "Show daemon status",
         module: "./commands/daemon.ts",

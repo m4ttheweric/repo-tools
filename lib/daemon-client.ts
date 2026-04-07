@@ -111,7 +111,13 @@ export async function daemonQuery(
   // 2. Check if user opted in
   if (!isDaemonInstalled()) return null; // not installed → silent fallback
 
-  // 3. Installed but not running → attempt restart
+  // 3. If the socket file still exists, the daemon IS running — this query
+  //    simply timed out or hit a transient error (daemon busy, slow git op,
+  //    etc.). Return null silently; do NOT warn or attempt a restart, which
+  //    would bleed "daemon not running" text into the TUI.
+  if (existsSync(DAEMON_SOCK_PATH)) return null;
+
+  // 4. Socket is gone → daemon is genuinely not running. Attempt restart.
   const restarted = attemptRestart();
   if (restarted) {
     // Retry once after short delay
@@ -120,7 +126,7 @@ export async function daemonQuery(
     if (retryResult !== null) return retryResult;
   }
 
-  // 4. Restart failed → warn (once per session)
+  // 5. Restart failed → warn (once per session)
   warnDaemonDown();
   return null;
 }
