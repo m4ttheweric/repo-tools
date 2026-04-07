@@ -18,7 +18,7 @@ import {
   unlinkSync, watch, statSync, type FSWatcher,
 } from "fs";
 import { homedir } from "os";
-import { join, resolve } from "path";
+import { join, resolve, dirname, basename } from "path";
 import { execSync } from "child_process";
 
 import {
@@ -40,6 +40,7 @@ import { ExclusiveGroup } from "./daemon/exclusive-group.ts";
 const MR_REFRESH_INTERVAL_MS = 5 * 60 * 1000;      // 5 minutes
 const LINEAR_REFRESH_INTERVAL_MS = 30 * 60 * 1000;  // 30 minutes
 const PORT_SCAN_INTERVAL_MS = 30 * 1000;             // 30 seconds
+const HOOKS_SCAN_INTERVAL_MS = 60 * 1000;            // 60 seconds (fallback for stale watchers)
 const LOG_MAX_BYTES = 10 * 1024 * 1024;              // 10MB
 const API_PORT = 9401;
 const REPOS_JSON_PATH = join(RT_DIR, "repos.json");
@@ -227,19 +228,29 @@ function startWatchingRepo(repoName: string, repoPath: string): void {
   // Don't double-watch
   if (watchedConfigs.has(configPath)) return;
 
-  // Use fs.watch (FSEvents on macOS) for near-instant detection
+  // Watch the PARENT DIRECTORY, not the file itself.
+  //
+  // git config always writes atomically: it writes to .git/config.lock then
+  // renames it to .git/config. Each rename creates a new inode. An fs.watch
+  // on a specific file inode goes deaf after the first such rename, silently
+  // missing every subsequent change. Watching the directory is inode-agnostic:
+  // it fires on any create/rename/modify within the dir regardless of inodes.
+  const gitDir     = dirname(configPath);
+  const configFile = basename(configPath); // "config"
+
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const watcher = watch(configPath, () => {
-    // Debounce: git can trigger multiple rapid writes
+  const watcher = watch(gitDir, (_event, filename) => {
+    // Only act on the config file — ignore refs, COMMIT_EDITMSG, etc.
+    if (filename !== configFile) return;
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       checkAndRepairHooksPath(repoName, repoPath);
-    }, 50);
+    }, 100); // slightly longer debounce: rename events can cluster
   });
 
   watchedConfigs.set(configPath, watcher);
-  log(`watching: ${repoName} (${configPath})`);
+  log(`watching: ${repoName} (${gitDir}/${configFile})`);
 
   // Initial check
   checkAndRepairHooksPath(repoName, repoPath);
@@ -1000,9 +1011,23 @@ function main(): void {
   setTimeout(() => refreshPortCache(), 2000); // initial scan after 2s
   setInterval(() => refreshPortCache(), PORT_SCAN_INTERVAL_MS);
 
-  // Graceful shutdown
+  // Periodic hooks scan — belt-and-suspenders fallback in case a directory
+  // watcher ever misses a write (e.g. watcher limit hit, FS edge-case).
+  // Runs every 60s; each call is cheap (one git-config read per watched repo).
+  setInterval(() => {
+    const repos = loadRepoIndex();
+    for (const [repoName, repoPath] of Object.entries(repos)) {
+      if (existsSync(repoPath)) checkAndRepairHooksPath(repoName, repoPath);
+    }
+  }, HOOKS_SCAN_INTERVAL_MS);
+
+  // Graceful shutdown on all termination signals
   process.on("SIGTERM", () => { cleanup(); process.exit(0); });
-  process.on("SIGINT", () => { cleanup(); process.exit(0); });
+  process.on("SIGINT",  () => { cleanup(); process.exit(0); });
+  // SIGHUP: sent when the parent process exits (e.g. launchd session ends, or
+  // a tray-spawned daemon's parent tray is killed).  Treat it as a clean stop.
+  process.on("SIGHUP",  () => { cleanup(); process.exit(0); });
+
 
   log(`daemon ready (pid: ${process.pid})`);
 }

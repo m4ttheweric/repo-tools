@@ -7,7 +7,8 @@
  *   rt daemon install     install + start daemon (launchd)
  *   rt daemon uninstall   stop + remove daemon
  *   rt daemon start       start daemon (if installed)
- *   rt daemon stop        stop daemon gracefully
+ *   rt daemon stop        stop daemon gracefully (waits for process death)
+ *   rt daemon restart     stop then start (clean handoff, no orphans)
  *   rt daemon status      show daemon state
  *   rt daemon logs        tail daemon log
  */
@@ -314,23 +315,80 @@ export async function start(): Promise<void> {
   }
 }
 
+/** Poll until a process is dead or the timeout elapses. Returns true if dead. */
+async function waitForProcessDeath(pid: number, timeoutMs = 3000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0); // throws if not alive
+      await Bun.sleep(100);
+    } catch {
+      return true; // gone
+    }
+  }
+  return false;
+}
+
+/** Remove socket + PID files (best-effort — called after any stop path). */
+function cleanupRuntimeFiles(): void {
+  for (const p of [DAEMON_SOCK_PATH, DAEMON_PID_PATH]) {
+    try { if (existsSync(p)) unlinkSync(p); } catch { /* best-effort */ }
+  }
+}
+
 export async function stop(): Promise<void> {
+  const pidBefore = readDaemonPid();
+
+  // 1. Try graceful shutdown via socket
   const response = await daemonQuery("shutdown");
   if (response?.ok) {
+    // Daemon acknowledged — wait for the process to actually exit
+    // (the daemon runs cleanup() then process.exit after a 100ms setTimeout)
+    if (pidBefore) {
+      const died = await waitForProcessDeath(pidBefore, 3000);
+      if (!died) {
+        // Graceful took too long — escalate to SIGKILL
+        try { process.kill(pidBefore, "SIGKILL"); } catch { /* already dead */ }
+      }
+    } else {
+      await Bun.sleep(300); // no PID on record — brief wait for socket cleanup
+    }
+    cleanupRuntimeFiles();
     console.log(`\n  ${green}✓ daemon stopped${reset}\n`);
-  } else if (isDaemonProcessRunning()) {
+    return;
+  }
+
+  // 2. Socket didn't respond — try SIGTERM via PID file
+  if (isDaemonProcessRunning()) {
     const pid = readDaemonPid();
     if (pid) {
       try {
         process.kill(pid, "SIGTERM");
-        console.log(`\n  ${green}✓ daemon stopped (SIGTERM)${reset}\n`);
+        const died = await waitForProcessDeath(pid, 2000);
+        if (!died) {
+          process.kill(pid, "SIGKILL");
+          await Bun.sleep(200);
+        }
+        cleanupRuntimeFiles();
+        console.log(`\n  ${green}✓ daemon stopped${reset}\n`);
       } catch {
         console.log(`\n  ${red}failed to stop daemon${reset}\n`);
       }
+      return;
     }
-  } else {
-    console.log(`\n  ${dim}daemon is not running${reset}\n`);
   }
+
+  console.log(`\n  ${dim}daemon is not running${reset}\n`);
+}
+
+export async function restart(): Promise<void> {
+  const wasRunning = (await isDaemonRunning()) || isDaemonProcessRunning();
+  if (wasRunning) {
+    await stop();
+  } else {
+    console.log(`  ${dim}daemon was not running — starting fresh${reset}`);
+  }
+  await start();
 }
 
 // ─── Status ──────────────────────────────────────────────────────────────────
