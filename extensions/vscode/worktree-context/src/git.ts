@@ -12,7 +12,7 @@ const WORKTREE_LINE_RE = /^(.+?)\s+[0-9a-f]+\s+\[(.+?)\]\s*$/;
 const WORKTREE_BARE_RE = /^(.+?)\s+[0-9a-f]+\s+\(bare\)\s*$/;
 
 export async function listWorktrees(cwd: string): Promise<WorktreeEntry[]> {
-  const currentFolder = getWorktreeName();
+  const currentFolder = await getRepoRootName();
 
   try {
     const { stdout } = await execFileAsync('git', ['worktree', 'list'], { cwd });
@@ -235,13 +235,24 @@ export function getGitApi(): GitAPI | null {
   return ext.exports.getAPI(1);
 }
 
-export function findWorkspaceRepo(gitApi: GitAPI): GitRepository | undefined {
+export async function findWorkspaceRepo(gitApi: GitAPI): Promise<GitRepository | undefined> {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders?.length) return undefined;
 
   const workspacePath = folders[0]!.uri.fsPath;
+
+  // Resolve the actual git root — the workspace may be opened to a subfolder
+  let repoRoot = workspacePath;
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: workspacePath });
+    const resolved = stdout.trim();
+    if (resolved) repoRoot = resolved;
+  } catch {
+    // git not available — fall back to raw workspace path
+  }
+
   return gitApi.repositories.find(
-    (repo) => repo.rootUri.fsPath === workspacePath,
+    (repo) => repo.rootUri.fsPath === repoRoot,
   );
 }
 
@@ -254,4 +265,44 @@ export function getWorktreeName(): string {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders?.length) return 'unknown';
   return path.basename(folders[0]!.uri.fsPath);
+}
+
+/**
+ * Get the git directory path (e.g. `/path/.git` or `/path/.git/worktrees/branch`).
+ * Handles linked worktrees where `.git` is a file.
+ * Returns null if the cwd is not inside a git repo.
+ */
+export async function getGitDir(cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', '--git-dir'], { cwd });
+    const gitDir = stdout.trim();
+    if (!gitDir) return null;
+    // --git-dir may return a relative path; resolve it against cwd
+    return path.resolve(cwd, gitDir);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get the repo root folder name by running `git rev-parse --show-toplevel`.
+ * Falls back to the workspace folder name if git isn't available.
+ *
+ * This is important when the workspace is opened to a subfolder — the
+ * status bar should still show the worktree/repo root name.
+ */
+export async function getRepoRootName(): Promise<string> {
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders?.length) return 'unknown';
+
+  const cwd = folders[0]!.uri.fsPath;
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd });
+    const toplevel = stdout.trim();
+    if (toplevel) return path.basename(toplevel);
+  } catch {
+    // git not available — fall back
+  }
+
+  return path.basename(cwd);
 }

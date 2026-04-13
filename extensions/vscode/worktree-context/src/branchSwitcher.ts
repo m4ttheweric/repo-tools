@@ -27,7 +27,7 @@ import type { BranchInfo } from './types';
 export async function showBranchSwitcher(context: vscode.ExtensionContext): Promise<void> {
   const gitApi = getGitApi();
   const repo = gitApi?.repositories.length
-    ? findWorkspaceRepo(gitApi) ?? gitApi.repositories[0]!
+    ? (await findWorkspaceRepo(gitApi)) ?? gitApi.repositories[0]!
     : null;
 
   if (!repo) {

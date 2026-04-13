@@ -592,7 +592,7 @@ function ActionBarView({
 // ─── Trace log formatting ───────────────────────────────────────────────────
 
 /** Strip GitLab CI section markers and clean up trace lines, preserving ANSI color codes */
-function cleanTraceLine(line: string): string {
+export function cleanTraceLine(line: string): string {
   // Strip GitLab section markers: \x1b[0Ksection_start:...\r\x1b[0K / section_end:...
   let cleaned = line
     .replace(/\x1b\[0Ksection_(start|end):[^\r\n]*/g, "")
@@ -655,16 +655,19 @@ function jobStatusIcon(status: string, allowFailure = false): { icon: string; co
   }
 }
 
-function PipelineDetailView({
+export function PipelineDetailView({
   pipeline,
   focusedJobIndex,
   actionState,
   breadcrumb,
+  handleInput = false,
 }: {
   pipeline: Pipeline | MRDashboardProps["pipeline"] | null;
   focusedJobIndex: number;
   actionState: ActionState;
   breadcrumb?: string | null;
+  /** If true, the list handles its own up/down scrolling (useful in standalone panes). Default false. */
+  handleInput?: boolean;
 }) {
   if (!pipeline) {
     return <StatusMessage variant="info">No pipeline data</StatusMessage>;
@@ -742,8 +745,8 @@ function PipelineDetailView({
       {/* Scrollable job list */}
       <ScrollableList
         reservedRows={8}
-        focusedIndex={scrollFocusedRow}
-        handleInput={false}
+        focusedIndex={handleInput ? undefined : scrollFocusedRow}
+        handleInput={handleInput}
       >
         {rows}
       </ScrollableList>
@@ -765,7 +768,7 @@ function PipelineDetailView({
   );
 }
 
-function JobLogView({
+export function JobLogView({
   job,
   trace,
   onScrollTop,

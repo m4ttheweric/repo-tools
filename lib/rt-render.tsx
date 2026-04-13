@@ -334,46 +334,114 @@ export async function filterableSelect(opts: {
   return result.stdout.trim().split("\t")[0]!;
 }
 
-// ─── Spinner helper ─────────────────────────────────────────────────────────
+// ─── Step Runner ─────────────────────────────────────────────────────────────
 
 /**
- * Show an animated spinner while an async task runs.
- * The spinner is automatically removed when the task completes.
+ * A sequential step runner for CLI workflows.
+ *
+ * Each step transitions through states:
+ *   pending  → spinner + title
+ *   done     → ✓ title  description (dim)
+ *   error    → ✗ title  description (dim)
+ *
+ * Static log lines (info, warn) can be interspersed between steps.
+ *
+ * Usage:
+ *   const steps = createStepRunner();
+ *   await steps.run("fetching origin…", async () => { ... }, { done: "origin fetched" });
+ *   steps.log("rebasing onto origin/master");
+ *   await steps.run("pushing…", async () => { ... }, { done: "pushed" });
+ */
+
+type StepStyle = "info" | "warn" | "error" | "success";
+
+export interface StepRunner {
+  /** Run an async step with spinner → done/error transition. */
+  run<T>(
+    pending: string,
+    task: () => Promise<T>,
+    opts?: { done?: string; doneHint?: string; errorHint?: string },
+  ): Promise<T>;
+
+  /** Print a static line between steps. */
+  log(message: string, style?: StepStyle): void;
+}
+
+// ANSI helpers (inline to avoid import cycle with tui.ts)
+const _green = "\x1b[32m";
+const _red = "\x1b[31m";
+const _yellow = "\x1b[33m";
+const _dim = "\x1b[2m";
+const _bold = "\x1b[1m";
+const _reset = "\x1b[0m";
+
+const ICONS = {
+  success: `${_green}✓${_reset}`,
+  error: `${_red}✗${_reset}`,
+  warn: `${_yellow}⚠${_reset}`,
+  info: `${_dim}•${_reset}`,
+};
+
+export function createStepRunner(): StepRunner {
+  return {
+    async run<T>(
+      pending: string,
+      task: () => Promise<T>,
+      opts?: { done?: string; doneHint?: string; errorHint?: string },
+    ): Promise<T> {
+      const { Spinner } = await import("@inkjs/ui");
+
+      return new Promise<T>((outerResolve, outerReject) => {
+        let instance: Instance | undefined;
+
+        instance = render(
+          <Box marginLeft={1}>
+            <Spinner label={pending} />
+          </Box>,
+          { exitOnCtrlC: true },
+        );
+
+        task()
+          .then((r) => {
+            instance?.clear();
+            instance?.unmount();
+            const title = opts?.done ?? pending.replace(/…$/, "");
+            const hint = opts?.doneHint ? `  ${_dim}${opts.doneHint}${_reset}` : "";
+            process.stdout.write(`  ${ICONS.success} ${title}${hint}\n`);
+            outerResolve(r);
+          })
+          .catch((e) => {
+            instance?.clear();
+            instance?.unmount();
+            const title = opts?.done ?? pending.replace(/…$/, " failed");
+            const hint = opts?.errorHint
+              ? `  ${_dim}${opts.errorHint}${_reset}`
+              : e?.message
+                ? `  ${_dim}${e.message}${_reset}`
+                : "";
+            process.stdout.write(`  ${ICONS.error} ${title}${hint}\n`);
+            outerReject(e);
+          });
+      });
+    },
+
+    log(message: string, style: StepStyle = "info"): void {
+      process.stdout.write(`  ${ICONS[style]} ${message}\n`);
+    },
+  };
+}
+
+/**
+ * Legacy wrapper — use createStepRunner() for new code.
  */
 export async function withSpinner<T>(
   label: string,
   task: () => Promise<T>,
+  opts?: { doneLabel?: string; failLabel?: string },
 ): Promise<T> {
-  const { Spinner } = await import("@inkjs/ui");
-
-  let result: T;
-  let error: unknown;
-
-  return new Promise<T>((outerResolve, outerReject) => {
-    let instance: Instance | undefined;
-
-    const SpinnerView = () =>
-      React.createElement(
-        Box,
-        { marginLeft: 1 },
-        React.createElement(Spinner, { label }),
-      );
-
-    instance = render(React.createElement(SpinnerView), {
-      exitOnCtrlC: true,
-    });
-
-    task()
-      .then((r) => {
-        result = r;
-        instance?.unmount();
-        outerResolve(result);
-      })
-      .catch((e) => {
-        error = e;
-        instance?.unmount();
-        outerReject(error);
-      });
+  const steps = createStepRunner();
+  return steps.run(label, task, {
+    done: opts?.doneLabel,
+    errorHint: opts?.failLabel,
   });
 }
-

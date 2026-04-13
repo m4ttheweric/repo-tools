@@ -31,9 +31,16 @@ export interface RunResolveResult {
 }
 
 function detectPackageManager(dir: string): string {
-  if (existsSync(join(dir, "bun.lockb")) || existsSync(join(dir, "bun.lock"))) return "bun";
-  if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm";
-  if (existsSync(join(dir, "yarn.lock"))) return "yarn";
+  // Check at repo root — that's where lockfiles live in monorepos
+  let root = dir;
+  try {
+    root = execSync("git rev-parse --show-toplevel", { cwd: dir, encoding: "utf8", stdio: "pipe" }).trim();
+  } catch { /* fallback to dir itself */ }
+
+  if (existsSync(join(root, "bun.lockb")) || existsSync(join(root, "bun.lock"))) return "bun";
+  if (existsSync(join(root, "pnpm-lock.yaml"))) return "pnpm";
+  if (existsSync(join(root, "yarn.lock"))) return "yarn";
+  if (existsSync(join(root, "package-lock.json"))) return "npm";
   return "npm";
 }
 
@@ -127,37 +134,53 @@ export async function runCommand(args: string[], ctx: CommandContext): Promise<v
 
   if (packages.length === 0) {
     packagePath = worktreePath;
-    packageLabel = ".";
+    packageLabel = "root";
   } else if (packages.length === 1) {
     packagePath = join(worktreePath, packages[0]!.path);
     packageLabel = packages[0]!.name;
   } else {
-    const rootPkgJson = join(worktreePath, "package.json");
-    const rootScripts = existsSync(rootPkgJson)
-      ? Object.keys(
-          (JSON.parse(readFileSync(rootPkgJson, "utf8")) as { scripts?: Record<string, string> }).scripts ?? {},
-        )
-      : [];
+    // ── CWD auto-detection ─────────────────────────────────────────────────
+    // If the user is inside a known package directory, select it automatically.
+    const cwd = process.cwd();
+    const cwdMatch = packages
+      .map((p) => ({ p, abs: join(worktreePath, p.path) }))
+      .filter(({ abs }) => cwd === abs || cwd.startsWith(abs + "/"))
+      .sort((a, b) => b.abs.length - a.abs.length) // deepest match wins
+      [0];
 
-    const options = [
-      ...(rootScripts.length > 0
-        ? [{ value: worktreePath, label: "(root)", hint: "workspace root" }]
-        : []),
-      ...packages.map((p) => ({
-        value: join(worktreePath, p.path),
-        label: p.name,
-        hint: p.path,
-      })),
-    ];
-
-    const chosen = await filterableSelect({ message: "Select package", options, stderr: true });
-    if (!chosen) { process.exit(1); }
-    packagePath = chosen;
-    if (chosen === worktreePath) {
-      packageLabel = ".";
+    if (cwdMatch) {
+      packagePath = cwdMatch.abs;
+      packageLabel = cwdMatch.p.name;
+      process.stderr.write(`  ↳ package: ${packageLabel} (from cwd)\n`);
     } else {
-      const pkg = packages.find((p) => join(worktreePath, p.path) === chosen);
-      packageLabel = pkg?.name ?? relative(worktreePath, chosen);
+      // ── Manual picker ────────────────────────────────────────────────────
+      const rootPkgJson = join(worktreePath, "package.json");
+      const rootScripts = existsSync(rootPkgJson)
+        ? Object.keys(
+            (JSON.parse(readFileSync(rootPkgJson, "utf8")) as { scripts?: Record<string, string> }).scripts ?? {},
+          )
+        : [];
+
+      const options = [
+        ...(rootScripts.length > 0
+          ? [{ value: worktreePath, label: "(root)", hint: "workspace root" }]
+          : []),
+        ...packages.map((p) => ({
+          value: join(worktreePath, p.path),
+          label: p.name,
+          hint: p.path,
+        })),
+      ];
+
+      const chosen = await filterableSelect({ message: "Select package", options, stderr: true });
+      if (!chosen) { process.exit(1); }
+      packagePath = chosen;
+      if (chosen === worktreePath) {
+        packageLabel = ".";
+      } else {
+        const pkg = packages.find((p) => join(worktreePath, p.path) === chosen);
+        packageLabel = pkg?.name ?? relative(worktreePath, chosen);
+      }
     }
   }
 

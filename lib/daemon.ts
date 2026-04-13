@@ -34,6 +34,12 @@ import { ProcessManager } from "./daemon/process-manager.ts";
 import { SuspendManager } from "./daemon/suspend-manager.ts";
 import { ProxyManager }  from "./daemon/proxy-manager.ts";
 import { ExclusiveGroup } from "./daemon/exclusive-group.ts";
+import {
+  startWatching, stopWatching, getWatcherStatus, cleanupAllWatchers,
+  restoreWatchers, loadSyncConfig, saveSyncConfig, ensureGitExclude,
+  removeGitExclude, getWorktreePaths, syncWorkspaceFile,
+  type WorkspaceSyncConfig,
+} from "./daemon/workspace-sync.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -54,6 +60,7 @@ import {
 } from "./port-scanner.ts";
 
 import { checkAndNotify, drainNotifications, peekNotifications, onNotification } from "./notifier.ts";
+import { listRunnerConfigs, loadRunnerConfig, entryWindowName, proxyWindowName } from "./runner-store.ts";
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -91,19 +98,62 @@ attachServer.setProcessManager(processManager);
 // Wire SuspendManager into ProcessManager so kill() can resume warm processes
 processManager.suspendManager = suspendManager;
 
-// Resolve the user's full PATH once at startup by running a login+interactive
-// shell. This handles NVM, bun, volta, fnm etc. regardless of whether the
-// daemon was launched by launchd (minimal PATH) or from a terminal session.
-// We do it once so spawns don't pay shell init overhead (compinit, Oh My Zsh…).
+// ── Prune orphaned port allocations from previous sessions ───────────────────
+// Build the set of all valid labels (entryWindowName for every entry across all
+// runner configs) and remove any allocation whose label is absent. This cleans
+// up ports left by the old timestamp-label bug or crashed daemon restarts.
 try {
-  const shell = process.env.SHELL ?? "/bin/zsh";
-  processManager.userPath = execSync(`${shell} -lic 'echo $PATH' 2>/dev/null`, {
-    encoding: "utf8",
-    timeout: 5000,
-  }).trim();
+  const validLabels = new Set<string>();
+  for (const name of listRunnerConfigs()) {
+    for (const lane of loadRunnerConfig(name)) {
+      for (const entry of lane.entries) {
+        validLabels.add(entryWindowName(lane.id, entry.id));
+      }
+    }
+  }
+  const pruned = portAllocator.pruneToLabels(validLabels);
+  if (pruned > 0) console.error(`[daemon] pruned ${pruned} stale port allocation(s)`);
 } catch {
-  // Fall back to the daemon's own PATH — better than nothing
-  processManager.userPath = process.env.PATH;
+  // best-effort; don't crash daemon startup on prune failure
+}
+
+// Resolve the user's full PATH once at startup.
+// Strategy: use `zsh -lc` (login shell, no interactive) — fast because it
+// sources .zprofile/.zlogin but skips Oh My Zsh compinit (~28s overhead).
+// Then layer in an explicit NVM resolution so nvm-managed tools (node, pnpm,
+// etc.) are included regardless of how the daemon was launched.
+{
+  const shell = process.env.SHELL ?? "/bin/zsh";
+  let resolvedPath = process.env.PATH ?? ""; // baseline
+
+  // 1. Login shell profile (fast: no compinit, no OMZ theme)
+  try {
+    resolvedPath = execSync(`${shell} -lc 'echo $PATH' 2>/dev/null`, {
+      encoding: "utf8",
+      timeout: 8000,
+    }).trim() || resolvedPath;
+  } catch { /* timeout or shell error — keep baseline */ }
+
+  // 2. Explicit NVM: source nvm.sh on top of the already-resolved PATH so
+  //    NVM prepends its bin dirs without losing Homebrew/login-shell entries.
+  try {
+    const nvmDir = process.env.NVM_DIR ?? `${process.env.HOME}/.nvm`;
+    const nvmScript = `${nvmDir}/nvm.sh`;
+    const nvmPath = execSync(
+      `[ -s "${nvmScript}" ] && export PATH="${resolvedPath}" && . "${nvmScript}" && echo $PATH`,
+      { encoding: "utf8", timeout: 5000, shell: "/bin/zsh" },
+    ).trim();
+    if (nvmPath) resolvedPath = nvmPath;
+  } catch { /* nvm not installed or failed */ }
+
+  processManager.userPath = resolvedPath || process.env.PATH;
+
+  // Log so we can verify key tools are present after restarts
+  const pathEntries = resolvedPath.split(":");
+  const hasTool = (name: string) => pathEntries.some(p => {
+    try { return Bun.file(`${p}/${name}`).size > 0; } catch { return false; }
+  });
+  log(`PATH resolved (${pathEntries.length} entries, pnpm=${hasTool("pnpm") ? "✓" : "✗"} doppler=${hasTool("doppler") ? "✓" : "✗"})`);
 }
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
@@ -347,10 +397,10 @@ async function refreshCache(): Promise<void> {
           } catch { /* no remote */ }
 
           // Optimized: 3 GraphQL calls for ALL open MRs + 1 Linear batch
-          await refreshAllMRs(branches, remoteUrl);
+          await refreshAllMRs(branches, remoteUrl, (msg) => log(`cache: ${msg}`));
         }
-      } catch {
-        // Skip repos that error
+      } catch (err) {
+        log(`cache: skipping ${repoName} due to error: ${err}`);
       }
     }
 
@@ -597,6 +647,89 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
       return { ok: true };
     }
 
+    // ── Composite lifecycle commands ───────────────────────────────────────────
+    // These bundle spawn/kill + group:activate + proxy:set-upstream into a single
+    // atomic round-trip so the runner never has to orchestrate multi-step sequences
+    // that can race or leave state machines in inconsistent intermediate states.
+
+    case "process:start": {
+      const { id, cmd, cwd, env, groupId, canonicalPort, mode } =
+        payload as {
+          id: string; cmd: string; cwd: string;
+          env?: Record<string, string>;
+          groupId?: string;
+          canonicalPort?: number;
+          mode?: "warm" | "single";
+        };
+      if (!id || !cmd || !cwd) return { ok: false, error: "missing id, cmd, or cwd" };
+
+      // 1. Spawn (sets state "starting" → "running")
+      await processManager.spawn(id, cmd, { cwd, env });
+
+      // 2. Group activate — suspends/kills other members
+      if (groupId) {
+        try { await exclusiveGroup.activate(groupId, id, mode ?? "warm"); } catch { /* group may not exist yet */ }
+      }
+
+      // 3. Point proxy upstream to the new ephemeral port
+      const ephemeralPort = Number(env?.PORT ?? 0);
+      if (groupId && canonicalPort && ephemeralPort) {
+        proxyManager.setUpstream(proxyWindowName(groupId), ephemeralPort);
+      }
+
+      return { ok: true, data: { ephemeralPort } };
+    }
+
+    case "process:stop": {
+      const { id, stopProxy, groupId } =
+        payload as { id: string; stopProxy?: boolean; groupId?: string };
+      if (!id) return { ok: false, error: "missing id" };
+
+      // Kill (sets state "stopping" → "stopped")
+      await processManager.kill(id);
+
+      // Optionally stop the proxy (e.g. for pause-lane)
+      if (stopProxy && groupId) {
+        proxyManager.stop(proxyWindowName(groupId));
+      }
+
+      return { ok: true };
+    }
+
+    case "process:restart": {
+      const { id, cmd, cwd, env, groupId, canonicalPort, mode } =
+        payload as {
+          id: string; cmd: string; cwd: string;
+          env?: Record<string, string>;
+          groupId?: string;
+          canonicalPort?: number;
+          mode?: "warm" | "single";
+        };
+      if (!id || !cmd || !cwd) return { ok: false, error: "missing id, cmd, or cwd" };
+
+      // 1. Kill current process and AWAIT its death — no cross-process race possible
+      //    because both kill and spawn run sequentially in this daemon event loop.
+      await processManager.kill(id);
+
+      // 2. Spawn fresh (sets state "starting" → "running")
+      await processManager.spawn(id, cmd, { cwd, env });
+
+      // 3. Group activate
+      if (groupId) {
+        try { await exclusiveGroup.activate(groupId, id, mode ?? "warm"); } catch { /* group may not exist yet */ }
+      }
+
+      // 4. Point proxy upstream to the new ephemeral port
+      const ephemeralPort = Number(env?.PORT ?? 0);
+      if (groupId && canonicalPort && ephemeralPort) {
+        proxyManager.setUpstream(proxyWindowName(groupId), ephemeralPort);
+      }
+
+      return { ok: true, data: { ephemeralPort } };
+    }
+
+
+
     case "process:list": {
       return { ok: true, data: processManager.list() };
     }
@@ -743,6 +876,116 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
       const { id } = payload as { id: string };
       if (!id) return { ok: false, error: "missing id" };
       return { ok: true, data: exclusiveGroup.get(id) };
+    }
+
+    // ── Workspace sync ─────────────────────────────────────────────────────────
+
+    case "workspace:sync:start": {
+      const { repo, repoPath, fileName, sourcePath } = payload as {
+        repo: string; repoPath: string; fileName: string; sourcePath: string;
+      };
+      if (!repo || !repoPath || !fileName) {
+        return { ok: false, error: "missing repo, repoPath, or fileName" };
+      }
+
+      const config: WorkspaceSyncConfig = {
+        fileName,
+        enabled: true,
+        preserveKeys: [
+          "peacock.color",
+          "peacock.favoriteColors",
+          "workbench.colorCustomizations",
+        ],
+      };
+
+      // Save config
+      saveSyncConfig(repo, config);
+
+      // Add to git exclude
+      ensureGitExclude(repoPath, fileName);
+
+      // Do initial sync from the specified source
+      const worktrees = getWorktreePaths(repoPath);
+      const targetPaths = worktrees.map(wt => join(wt, fileName));
+      const result = syncWorkspaceFile(
+        sourcePath || join(repoPath, fileName),
+        targetPaths,
+        config.preserveKeys,
+        log,
+      );
+
+      config.lastSyncAt = new Date().toISOString();
+      config.lastSyncSource = sourcePath;
+      saveSyncConfig(repo, config);
+
+      // Start watching
+      startWatching(repo, repoPath, config, log);
+
+      return { ok: true, data: result };
+    }
+
+    case "workspace:sync:stop": {
+      const { repo } = payload as { repo: string };
+      if (!repo) return { ok: false, error: "missing repo" };
+
+      stopWatching(repo, log);
+
+      // Disable config
+      const config = loadSyncConfig(repo);
+      if (config) {
+        config.enabled = false;
+        saveSyncConfig(repo, config);
+      }
+
+      // Remove from git exclude
+      const repos = loadRepoIndex();
+      const repoPath = repos[repo];
+      if (repoPath && config) {
+        removeGitExclude(repoPath, config.fileName);
+      }
+
+      return { ok: true };
+    }
+
+    case "workspace:sync:status": {
+      const { repo } = payload as { repo: string };
+      if (!repo) return { ok: false, error: "missing repo" };
+      return { ok: true, data: getWatcherStatus(repo) };
+    }
+
+    case "workspace:sync:trigger": {
+      const { repo } = payload as { repo: string };
+      if (!repo) return { ok: false, error: "missing repo" };
+
+      const config = loadSyncConfig(repo);
+      if (!config) return { ok: false, error: "no sync config for this repo" };
+
+      const repos = loadRepoIndex();
+      const repoPath = repos[repo];
+      if (!repoPath) return { ok: false, error: "unknown repo" };
+
+      // Find the most recently modified copy as source
+      const worktrees = getWorktreePaths(repoPath);
+      let latestPath = "";
+      let latestMtime = 0;
+      for (const wt of worktrees) {
+        const fp = join(wt, config.fileName);
+        try {
+          const mt = statSync(fp).mtimeMs;
+          if (mt > latestMtime) { latestMtime = mt; latestPath = fp; }
+        } catch { /* missing */ }
+      }
+
+      if (!latestPath) return { ok: false, error: "no workspace files found" };
+
+      const targetPaths = worktrees.map(wt => join(wt, config.fileName));
+      const result = syncWorkspaceFile(latestPath, targetPaths, config.preserveKeys, log);
+
+      config.lastSyncAt = new Date().toISOString();
+      config.lastSyncSource = latestPath;
+      saveSyncConfig(repo, config);
+
+      return { ok: true, data: result };
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -932,6 +1175,7 @@ function cleanup(): void {
     }
   } catch { /* */ }
   try { proxyManager.stopAll(); } catch { /* */ }
+  try { cleanupAllWatchers(); } catch { /* */ }
   try { attachServer.closeAll(); } catch { /* */ }
 
   // Stop all file watches
@@ -994,6 +1238,14 @@ function main(): void {
 
   // Discover and watch repos
   refreshWatchedRepos();
+
+  // Restore workspace sync watchers
+  try {
+    const repos = loadRepoIndex();
+    restoreWatchers(repos, log);
+  } catch (err) {
+    log(`workspace-sync: failed to restore watchers: ${err}`);
+  }
 
   // Watch repos.json for changes (new repos added)
   if (existsSync(REPOS_JSON_PATH)) {

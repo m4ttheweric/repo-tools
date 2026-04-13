@@ -8,7 +8,7 @@ import { branchCache } from './cache';
 import { fetchBranchFromDaemon } from './daemonClient';
 import { getSecret } from './secrets';
 import type { CachedBranchData, GitExtensionExports } from './types';
-import { getGitApi, findWorkspaceRepo, getRemoteUrl, getWorktreeName } from './git';
+import { getGitApi, findWorkspaceRepo, getRemoteUrl, getRepoRootName, getGitDir } from './git';
 
 // ── Module state ──
 
@@ -56,8 +56,10 @@ export function showStatusBarItems() {
 export function waitForGitAndStart(context: vscode.ExtensionContext) {
   const gitExtension = vscode.extensions.getExtension<import('./types').GitExtensionExports>('vscode.git');
   if (!gitExtension) {
-    statusBarItem.text = '$(folder) ' + getWorktreeName();
-    showStatusBarItems();
+    getRepoRootName().then((name) => {
+      statusBarItem.text = '$(folder) ' + name;
+      showStatusBarItems();
+    });
     return;
   }
 
@@ -81,6 +83,21 @@ export function waitForGitAndStart(context: vscode.ExtensionContext) {
   } else {
     gitExtension.activate().then((exports) => startWatching(exports.getAPI(1)));
   }
+
+  // Watch .git/HEAD directly for instant branch-change detection.
+  // The VS Code Git API can lag after external checkouts (terminal, other tools);
+  // HEAD changes immediately on every branch switch, so this gives a near-instant
+  // status bar update via FSEvents without any polling.
+  const folders = vscode.workspace.workspaceFolders;
+  if (folders?.length) {
+    getGitDir(folders[0]!.uri.fsPath).then((gitDir) => {
+      if (!gitDir) return;
+      const pattern = new vscode.RelativePattern(vscode.Uri.file(gitDir), 'HEAD');
+      const headWatcher = vscode.workspace.createFileSystemWatcher(pattern);
+      context.subscriptions.push(headWatcher.onDidChange(() => scheduleUpdate(context)));
+      context.subscriptions.push(headWatcher);
+    });
+  }
 }
 
 // ── Update scheduling ──
@@ -97,7 +114,7 @@ export function clearUpdateTimer() {
 // ── Status bar rendering ──
 
 async function updateStatusBar(context: vscode.ExtensionContext) {
-  const worktreeName = getWorktreeName();
+  const worktreeName = await getRepoRootName();
   const gitApi = getGitApi();
 
   // Store the worktree folder path for the Finder action
@@ -115,7 +132,7 @@ async function updateStatusBar(context: vscode.ExtensionContext) {
     return;
   }
 
-  const repo = findWorkspaceRepo(gitApi) ?? gitApi.repositories[0]!;
+  const repo = (await findWorkspaceRepo(gitApi)) ?? gitApi.repositories[0]!;
   const branch = repo.state.HEAD?.name;
 
   if (!branch) {
@@ -287,7 +304,7 @@ async function fetchBranchDataDirect(
     if (gitlabToken) {
       const gitApi = getGitApi();
       const repo = gitApi?.repositories.length
-        ? findWorkspaceRepo(gitApi) ?? gitApi.repositories[0]!
+        ? (await findWorkspaceRepo(gitApi)) ?? gitApi.repositories[0]!
         : null;
       if (repo) {
         const remoteUrl = getRemoteUrl(repo);

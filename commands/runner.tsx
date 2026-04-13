@@ -53,6 +53,7 @@ import {
 import type { ProcessState } from "../lib/daemon/state-store.ts";
 import type { RunResolveResult } from "./run.ts";
 import { RT_ROOT, getKnownRepos, type KnownRepo } from "../lib/repo.ts";
+import { willPrompt } from "./code.ts";
 
 // ─── tmux helpers ─────────────────────────────────────────────────────────────
 
@@ -81,12 +82,10 @@ process.once("exit", () => {
 /**
  * Open a temporary tmux split pane. Returns the tmux pane ID.
  *
- * All temporary panes use this function so behaviour is consistent:
- *   - Pane ID is always captured (useful for targeting send-keys / kill-pane).
- *   - When `escToClose` is true the function injects a zsh bindkey widget so
- *     pressing Esc exits the shell and closes the pane automatically.
- *     Picker panes (fzf-based) should leave this false — they handle Esc
- *     natively and exit on their own.
+ * Use for **persistent** panes (lane log views, interactive shells)
+ * where pane ID tracking and split layout are needed.
+ *
+ * For ephemeral task-oriented commands (pickers, editors), use openPopup() instead.
  */
 function openTempPane(
   cmd: string,
@@ -95,8 +94,6 @@ function openTempPane(
   let resolvedCmd = cmd;
 
   if (opts.escToClose) {
-    // Launch the shell with a temp ZDOTDIR so the Esc binding is wired
-    // silently during .zshrc initialisation — no visible command is typed.
     const zdotdir  = join(tmpdir(), `rt-shell-${Date.now()}`);
     const rcFile   = join(zdotdir, ".zshrc");
     const realRc   = join(homedir(), ".zshrc");
@@ -108,10 +105,7 @@ function openTempPane(
       `esc-exit() { exit 0; }`,
       `zle -N esc-exit`,
       `bindkey '^[' esc-exit`,
-      // EXIT fires on clean exit / esc-exit / ctrl-d
       `trap 'rm -rf "${zdotdir}"' EXIT`,
-      // HUP fires when tmux kills the pane (e.g. runner quits while shell is open)
-      // TERM fires on explicit kill-pane
       `trap 'rm -rf "${zdotdir}"; exit' HUP TERM`,
     ].join("\n"));
     resolvedCmd = `ZDOTDIR=${zdotdir} ${cmd}`;
@@ -124,6 +118,40 @@ function openTempPane(
   const result = spawnSync("tmux", args, { encoding: "utf8" });
   return result.stdout?.trim() || undefined;
 }
+
+/**
+ * Open a floating tmux popup (requires tmux ≥ 3.2).
+ *
+ * Use for **ephemeral** task-oriented commands (pickers, editors, one-off scripts).
+ * The popup floats above the runner layout without resizing any panes.
+ * Closes automatically when the command exits (-E flag).
+ *
+ * Does NOT return a pane ID — popups are truly ephemeral.
+ */
+function openPopup(
+  cmd: string,
+  opts: { cwd?: string; width?: string; height?: string; title?: string; hint?: string } = {},
+): void {
+  const w = opts.width ?? "80%";
+  const h = opts.height ?? "80%";
+  const title = opts.title ?? "";
+  const hint = opts.hint ?? "Esc to close";
+  const titleFmt = title
+    ? ` ${title} #[align=right] ${hint} `
+    : "";
+  const args = [
+    "display-popup", "-E",
+    "-w", w, "-h", h,
+    "-b", "rounded",
+    "-s", "bg=#1a1b26",        // darker bg to distinguish from runner
+    "-S", "fg=cyan",           // border color
+  ];
+  if (titleFmt) args.push("-T", titleFmt);
+  if (opts.cwd) args.push("-d", opts.cwd);
+  args.push("sh", "-c", cmd);
+  spawnSync("tmux", args, { encoding: "utf8" });
+}
+
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -142,9 +170,8 @@ type Mode =
   | { type: "normal" }
   | { type: "port-input"; purpose: "edit-port"; laneId: string }
   | { type: "entry-picker"; purpose: "remove"; laneId: string; idx: number }
-  | { type: "command-edit"; laneId: string; entryId: string }
   | { type: "confirm-reset" }
-  | { type: "confirm-spread"; laneId: string };
+  | { type: "confirm-spread"; laneId: string; entryId: string };
 
 type LaneAction =
   | { type: "spawn";        laneId: string; entryId: string }
@@ -153,6 +180,8 @@ type LaneAction =
   | { type: "respawn";      laneId: string; entryId: string }
   | { type: "stop";         laneId: string; entryId: string }
   | { type: "stop-all";     laneId: string }
+  | { type: "pause-lane";   laneId: string }
+  | { type: "restart";      laneId: string; entryId: string }
   | { type: "remove-entry"; laneId: string; entryId: string }
   | { type: "remove-lane";  laneId: string }
   | { type: "toggle-mode";  laneId: string }
@@ -205,6 +234,7 @@ const T = {
   peach: [255, 183, 122] as const,  // #FFB77A  warm peach   — warnings / toasts
   coral: [255, 121, 121] as const,  // #FF7979  coral rose   — errors / stopped
   warm:  [255, 210, 100] as const,  // #FFD264  warm yellow  — warm/idle state
+  cyan:  [ 90, 170, 255] as const,  // #5AAAFF  electric blue — group headers
 
   // ── Neutrals ───────────────────────────────────────────────────────────────
   dim:   [168, 160, 198] as const,  // #A8A0C6  muted plum   — secondary text / borders
@@ -220,6 +250,7 @@ const C = {
   mint:  rgb(...T.mint),
   peach: rgb(...T.peach),
   coral: rgb(...T.coral),
+  cyan:  rgb(...T.cyan),
   // neutrals
   dim:   rgb(...T.dim),
   muted: rgb(...T.muted),
@@ -278,18 +309,18 @@ async function ensureProxy(lane: LaneConfig): Promise<void> {
   }
 }
 
-/** Spawn a single entry process in the daemon (no-op if already alive). */
 /**
- * Spawn an entry's process via the daemon.
- * Returns the actual ephemeral port used — may differ from entry.ephemeralPort
- * if the saved value was 0 (unallocated), in which case a new port is allocated.
+ * Start an entry's process via the daemon.
+ * Handles port auto-allocation, command substitution, spawn, group activation,
+ * and proxy upstream routing.
+ * Returns the actual ephemeral port used.
  */
-async function spawnEntry(lane: LaneConfig, entry: LaneEntry): Promise<number> {
-  // Auto-heal entries that were saved with ephemeralPort: 0 (before port
-  // allocation was wired up, or if allocation failed at add-time).
+async function startEntry(lane: LaneConfig, entry: LaneEntry): Promise<number> {
+  // Auto-heal entries saved with ephemeralPort: 0.
   let ephemeralPort = entry.ephemeralPort;
   if (!ephemeralPort) {
-    const portRes = await daemonQuery("port:allocate", { label: `entry-${lane.id}-${entry.id}-spawn` });
+    const win = entryWindowName(lane.id, entry.id);
+    const portRes = await daemonQuery("port:allocate", { label: win });
     ephemeralPort = portRes?.ok ? Number((portRes.data as { port: number })?.port) : (10000 + Math.floor(Math.random() * 55000));
   }
 
@@ -299,20 +330,53 @@ async function spawnEntry(lane: LaneConfig, entry: LaneEntry): Promise<number> {
     .replace(/\$\{?PORT\}?/g, port)
     .replace(/\$\{?CANONICAL_PORT\}?/g, canonicalPort);
 
+  const processId = entryWindowName(lane.id, entry.id);
   await daemonQuery("process:spawn", {
-    id: entryWindowName(lane.id, entry.id),
+    id: processId,
     cmd,
     cwd: entry.targetDir,
     env: { PORT: port, CANONICAL_PORT: canonicalPort },
   });
+  await daemonQuery("group:activate", { groupId: lane.id, processId, mode: lane.mode ?? "warm" });
+  await daemonQuery("proxy:set-upstream", { id: proxyWindowName(lane.id), port: ephemeralPort });
 
   return ephemeralPort;
 }
 
-/** Tell the daemon proxy to route the lane's canonical port to an ephemeral port. */
-async function setProxyUpstream(laneId: string, ephemeralPort: number): Promise<void> {
-  await daemonQuery("proxy:set-upstream", { id: proxyWindowName(laneId), port: ephemeralPort });
+/**
+ * Restart an entry's process via the daemon (kill awaited → spawn).
+ * Returns the actual ephemeral port used.
+ */
+async function restartEntry(lane: LaneConfig, entry: LaneEntry): Promise<number> {
+  let ephemeralPort = entry.ephemeralPort;
+  if (!ephemeralPort) {
+    const win = entryWindowName(lane.id, entry.id);
+    const portRes = await daemonQuery("port:allocate", { label: win });
+    ephemeralPort = portRes?.ok ? Number((portRes.data as { port: number })?.port) : (10000 + Math.floor(Math.random() * 55000));
+  }
+
+  const port = String(ephemeralPort);
+  const canonicalPort = String(lane.canonicalPort);
+  const cmd = entry.commandTemplate
+    .replace(/\$\{?PORT\}?/g, port)
+    .replace(/\$\{?CANONICAL_PORT\}?/g, canonicalPort);
+
+  const processId = entryWindowName(lane.id, entry.id);
+  // Kill first, then spawn fresh
+  await daemonQuery("process:kill", { id: processId });
+  await daemonQuery("process:spawn", {
+    id: processId,
+    cmd,
+    cwd: entry.targetDir,
+    env: { PORT: port, CANONICAL_PORT: canonicalPort },
+  });
+  await daemonQuery("group:activate", { groupId: lane.id, processId, mode: lane.mode ?? "warm" });
+  await daemonQuery("proxy:set-upstream", { id: proxyWindowName(lane.id), port: ephemeralPort });
+
+  return ephemeralPort;
 }
+
+
 
 // ─── Git HEAD helpers ─────────────────────────────────────────────────────────
 
@@ -357,12 +421,26 @@ async function fetchEnrichment(lanes: LaneConfig[]): Promise<Record<string, stri
 
   try {
     const { formatBranchLabel } = await import("../lib/enrich.ts");
+
+    // Primary: daemon in-memory cache (fast, always up-to-date after a refresh)
     const response = await daemonQuery("cache:read", { branches: targets.map((t) => t.branch) });
-    if (!response?.ok || !response.data) return {};
-    const cache = response.data as Record<string, any>;
+    const daemonCache = (response?.ok && response.data) ? response.data as Record<string, any> : {};
+
+    // Fallback: disk cache for any branches the daemon doesn't have yet
+    let diskCache: Record<string, any> = {};
+    const missingFromDaemon = targets.filter(t => !daemonCache[t.branch]);
+    if (missingFromDaemon.length > 0) {
+      try {
+        const { join } = await import("node:path");
+        const { homedir } = await import("node:os");
+        const raw = readFileSync(join(homedir(), ".rt", "branch-cache.json"), "utf8");
+        diskCache = (JSON.parse(raw) as { entries: Record<string, any> }).entries ?? {};
+      } catch { /* no disk cache */ }
+    }
+
     const result: Record<string, string> = {};
     for (const { key, branch, worktree } of targets) {
-      const e = cache[branch];
+      const e = daemonCache[branch] ?? diskCache[branch];
       const raw = e
         ? formatBranchLabel({ path: worktree, dirName: worktree.split("/").pop() ?? worktree, branch, linearId: e.linearId || null, ticket: e.ticket ?? null, mr: e.mr ?? null })
         : branch;
@@ -375,6 +453,7 @@ async function fetchEnrichment(lanes: LaneConfig[]): Promise<Record<string, stri
     return result;
   }
 }
+
 
 // ─── Runner (one UI session) ──────────────────────────────────────────────────
 
@@ -450,13 +529,15 @@ async function runOnce(
     const lane = currentLanes.find((l) => l.id === laneId);
     if (!lane) return;
 
-    const portRes = await daemonQuery("port:allocate", { label: `entry-${laneId}-${Date.now()}` });
+    // Compute entryId BEFORE port allocation so we can use entryWindowName as
+    // the port label — matching what port:release uses (avoids orphan ports).
+    const entryId = nextEntryId(lane.entries);
+    const processId = entryWindowName(lane.id, entryId);
+
+    const portRes = await daemonQuery("port:allocate", { label: processId });
     const ephemeralPort: number = portRes?.ok
       ? Number((portRes.data as { port: number })?.port)
       : (10000 + Math.floor(Math.random() * 1000));
-
-    const entryId = nextEntryId(lane.entries);
-    const processId = entryWindowName(lane.id, entryId);
     const newEntry: LaneEntry = {
       id: entryId,
       targetDir: resolved.targetDir,
@@ -482,7 +563,7 @@ async function runOnce(
     syncGitWatchers(newLanes);
 
     await daemonQuery("group:add", { groupId: lane.id, processId });
-    if (isFirst) await setProxyUpstream(lane.id, ephemeralPort);
+    if (isFirst) await daemonQuery("proxy:set-upstream", { id: proxyWindowName(lane.id), port: ephemeralPort });
 
     // Ensure a bg pane exists for this lane; refresh it if this is the first entry
     if (!lanePanes.has(laneId)) {
@@ -522,7 +603,7 @@ async function runOnce(
     if (!displayPaneId) return;
     const cmd = `${process.execPath} ${CLI_PATH} mr-status ${branch || ""}`;
     const result = spawnSync("tmux", [
-      "split-window", "-v", "-l", "14", "-t", displayPaneId,
+      "split-window", "-v", "-l", "50%", "-t", displayPaneId,
       "-P", "-F", "#{pane_id}", "-d", cmd,
     ], { encoding: "utf8" });
     mrPaneId = result.stdout.trim();
@@ -657,11 +738,8 @@ async function runOnce(
         const lane = lanes.find((l) => l.id === action.laneId);
         const entry = lane?.entries.find((e) => e.id === action.entryId);
         if (!lane || !entry) return {};
-        const processId = entryWindowName(lane.id, entry.id);
         await ensureProxy(lane);
-        const actualPort = await spawnEntry(lane, entry);
-        await daemonQuery("group:activate", { groupId: lane.id, processId, mode: lane.mode ?? "warm" });
-        await setProxyUpstream(lane.id, actualPort);
+        const actualPort = await startEntry(lane, entry);
         // Persist the actual port back into the entry if it changed (e.g. was 0)
         const updatedEntries = lane.entries.map((e) =>
           e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e
@@ -678,11 +756,9 @@ async function runOnce(
         const processId = entryWindowName(lane.id, entry.id);
         const entryState = est(processId);
         await ensureProxy(lane);
-        // Auto-start if not already running or suspended
         if (entryState === "stopped" || entryState === "crashed") {
-          const actualPort = await spawnEntry(lane, entry);
-          await daemonQuery("group:activate", { groupId: lane.id, processId, mode: lane.mode ?? "warm" });
-          await setProxyUpstream(lane.id, actualPort);
+          // Not running — do a full start (spawn + group:activate + proxy)
+          const actualPort = await startEntry(lane, entry);
           const updatedEntries = lane.entries.map((e) =>
             e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e
           );
@@ -690,9 +766,10 @@ async function runOnce(
             ? { ...l, activeEntryId: action.entryId, entries: updatedEntries }
             : l) };
         }
-        // Already running or warm — just route the proxy and resume if needed
+        // Already running or warm — just group:activate (resumes + suspends others)
+        // and update proxy upstream.
         await daemonQuery("group:activate", { groupId: lane.id, processId, mode: lane.mode ?? "warm" });
-        await setProxyUpstream(lane.id, entry.ephemeralPort);
+        await daemonQuery("proxy:set-upstream", { id: proxyWindowName(lane.id), port: entry.ephemeralPort });
         return { lanes: lanes.map((l) => l.id === action.laneId ? { ...l, activeEntryId: action.entryId } : l) };
       }
 
@@ -701,19 +778,37 @@ async function runOnce(
         if (!lane) return {};
         const activeId = lane.activeEntryId ?? lane.entries[0]?.id;
         await ensureProxy(lane);
-        // Accumulate port fixes (entries with ephemeralPort: 0 get real ports allocated)
+        // Start stopped/crashed entries individually.
+        // process:start handles group:activate internally so each entry
+        // correctly suspends/resumes others as it starts.
+        // For warm-all we want everything spawned, so use process:spawn directly
+        // for non-active entries to avoid them suspending each other mid-startup,
+        // then do a final group:activate for just the active one.
         const portFixes = new Map<string, number>();
         for (const entry of lane.entries) {
           const win = entryWindowName(lane.id, entry.id);
           const st = est(win);
-          if (st === "stopped") {
-            const actualPort = await spawnEntry(lane, entry);
-            if (actualPort !== entry.ephemeralPort) portFixes.set(entry.id, actualPort);
-          } else if (st === "crashed") {
-            await daemonQuery("process:respawn", { id: win });
+          if (st === "stopped" || st === "crashed") {
+            let ephemeralPort = entry.ephemeralPort;
+            if (!ephemeralPort) {
+              const portRes = await daemonQuery("port:allocate", { label: win });
+              ephemeralPort = portRes?.ok ? Number((portRes.data as { port: number })?.port) : (10000 + Math.floor(Math.random() * 55000));
+            }
+            const port = String(ephemeralPort);
+            const canonicalPort = String(lane.canonicalPort);
+            const cmd = entry.commandTemplate
+              .replace(/\$\{?PORT\}?/g, port)
+              .replace(/\$\{?CANONICAL_PORT\}?/g, canonicalPort);
+            // Use process:spawn (not process:start) to avoid premature group:activate
+            // on non-active entries while others are still starting up.
+            await daemonQuery("process:spawn", {
+              id: win, cmd, cwd: entry.targetDir,
+              env: { PORT: port, CANONICAL_PORT: canonicalPort },
+            });
+            if (ephemeralPort !== entry.ephemeralPort) portFixes.set(entry.id, ephemeralPort);
           }
-          // warm/running entries are handled by group:activate below
         }
+        // Activate the designated active entry after all are spawned.
         if (activeId) {
           await daemonQuery("group:activate", {
             groupId: lane.id,
@@ -722,7 +817,9 @@ async function runOnce(
           });
           const activeEntry = lane.entries.find((e) => e.id === activeId);
           const activePort = portFixes.get(activeId) ?? activeEntry?.ephemeralPort;
-          if (activePort) await setProxyUpstream(lane.id, activePort);
+          if (activePort) {
+            await daemonQuery("proxy:set-upstream", { id: proxyWindowName(lane.id), port: activePort });
+          }
           const updatedEntries = lane.entries.map((e) =>
             portFixes.has(e.id) ? { ...e, ephemeralPort: portFixes.get(e.id)! } : e
           );
@@ -734,18 +831,13 @@ async function runOnce(
       }
 
       case "respawn": {
-        // Always do a full fresh spawn rather than process:respawn so we
-        // re-run port allocation and command substitution. This prevents a
-        // stale bad command (e.g. "pnpm run start -p NaN") stored in the
-        // daemon's spawnConfigs from being replayed on every restart.
+        // Re-run port allocation and command substitution via process:start.
+        // This prevents a stale command stored in the daemon from being replayed.
         const lane = lanes.find((l) => l.id === action.laneId);
         const entry = lane?.entries.find((e) => e.id === action.entryId);
         if (!lane || !entry) return {};
-        const processId = entryWindowName(lane.id, entry.id);
         await ensureProxy(lane);
-        const actualPort = await spawnEntry(lane, entry);
-        await daemonQuery("group:activate", { groupId: lane.id, processId, mode: lane.mode ?? "warm" });
-        await setProxyUpstream(lane.id, actualPort);
+        const actualPort = await startEntry(lane, entry);
         const updatedEntries = lane.entries.map((e) =>
           e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e
         );
@@ -760,12 +852,42 @@ async function runOnce(
         return {};
       }
 
+      case "restart": {
+        // Single atomic round-trip: kill (awaited in daemon) → spawn → activate → proxy.
+        const lane = lanes.find((l) => l.id === action.laneId);
+        const entry = lane?.entries.find((e) => e.id === action.entryId);
+        if (!lane || !entry) return {};
+        await ensureProxy(lane);
+        const actualPort = await restartEntry(lane, entry);
+        const updatedEntries = lane.entries.map((e) =>
+          e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e
+        );
+        return { lanes: lanes.map((l) => l.id === action.laneId
+          ? { ...l, activeEntryId: action.entryId, entries: updatedEntries }
+          : l) };
+      }
+
       case "stop-all": {
         const lane = lanes.find((l) => l.id === action.laneId);
         if (!lane) return {};
         await Promise.all(
-          lane.entries.map((e) => daemonQuery("process:kill", { id: entryWindowName(action.laneId, e.id) }))
+          lane.entries
+            .filter((e) => {
+              const st = est(entryWindowName(action.laneId, e.id));
+              return st === "running" || st === "warm" || st === "starting" || st === "stopping";
+            })
+            .map((e) => daemonQuery("process:kill", { id: entryWindowName(action.laneId, e.id) }))
         );
+        return {};
+      }
+
+      case "pause-lane": {
+        // Stop the proxy — frees the canonical port.
+        // All processes keep running; only the proxy is torn down.
+        // [S] (warm-all) will restart the proxy and re-route traffic.
+        const lane = lanes.find((l) => l.id === action.laneId);
+        if (!lane) return {};
+        await daemonQuery("proxy:stop", { id: proxyWindowName(action.laneId) });
         return {};
       }
 
@@ -780,7 +902,7 @@ async function runOnce(
         const nextActive = lane.activeEntryId === action.entryId ? nextEntries[0]?.id : lane.activeEntryId;
         if (nextActive && nextActive !== lane.activeEntryId) {
           const e = nextEntries.find((e) => e.id === nextActive);
-          if (e) await setProxyUpstream(lane.id, e.ephemeralPort);
+          if (e) await daemonQuery("proxy:set-upstream", { id: proxyWindowName(lane.id), port: e.ephemeralPort });
         }
         return {
           lanes: lanes.map((l) => l.id === action.laneId ? { ...l, entries: nextEntries, activeEntryId: nextActive } : l),
@@ -830,16 +952,17 @@ async function runOnce(
   }
 
   function doDispatch(action: LaneAction, currentState: RunnerUIState): void {
-    // For start actions: show optimistic "starting" immediately.
-    // For stop actions: show optimistic "stopping" immediately.
-    // Both are replaced by the real daemon state on the next poll.
+    // Show optimistic "starting"/"stopping" immediately for instant visual feedback.
+    // The daemon also sets these states authoritatively, but the transient window
+    // is often too brief for the 2s poll to catch (e.g. fast SIGTERM kills).
+    // The optimistic state is cleared when dispatch completes and the next poll
+    // returns the real daemon state.
     const startingIds: string[] = [];
     const stoppingIds: string[] = [];
 
     if (action.type === "spawn" || action.type === "respawn") {
       startingIds.push(entryWindowName(action.laneId, action.entryId));
     } else if (action.type === "activate") {
-      // Only show starting if the entry isn't already alive
       const processId = entryWindowName(action.laneId, action.entryId);
       const st = currentState.entryStates.get(processId) ?? "stopped";
       if (st === "stopped" || st === "crashed") startingIds.push(processId);
@@ -852,17 +975,24 @@ async function runOnce(
           if (st === "stopped" || st === "crashed") startingIds.push(id);
         }
       }
+    } else if (action.type === "restart") {
+      // Restart: show "starting" (not "stopping") since the intent is to get it running.
+      startingIds.push(entryWindowName(action.laneId, action.entryId));
     } else if (action.type === "stop") {
       stoppingIds.push(entryWindowName(action.laneId, action.entryId));
     } else if (action.type === "stop-all") {
       const lane = currentState.lanes.find((l) => l.id === action.laneId);
       if (lane) {
-        for (const e of lane.entries) stoppingIds.push(entryWindowName(lane.id, e.id));
+        for (const e of lane.entries) {
+          const id = entryWindowName(lane.id, e.id);
+          const st = currentState.entryStates.get(id) ?? "stopped";
+          if (st === "running" || st === "warm") stoppingIds.push(id);
+        }
       }
     }
 
     if (startingIds.length > 0 || stoppingIds.length > 0) {
-      app.update((s) => {
+      safeUpdate((s) => {
         const next = new Map(s.entryStates);
         for (const id of startingIds) next.set(id, "starting");
         for (const id of stoppingIds) next.set(id, "stopping");
@@ -907,6 +1037,7 @@ async function runOnce(
     });
   }
 
+
   // ── View components ───────────────────────────────────────────────────────
 
   /** Compute the display label for an entry's command (package · script or custom template). */
@@ -937,7 +1068,7 @@ async function runOnce(
     const stateLabel =
       state === "starting" ? "starting…" :
       state === "stopping" ? "stopping…" :
-      state === "warm"     ? "❄ warm"    : state;
+      null;
 
     const rowBg = isSelected ? C.selBg : undefined;
 
@@ -949,8 +1080,7 @@ async function runOnce(
           <text style={{ fg: stateColor, bg: rowBg }}>{stateIcon}</text>
           <text style={{ fg: nameColor, bold: isActive, bg: rowBg }}>{branchLabel || entry.branch || entry.worktree}</text>
           <spacer flex={1} />
-          <text style={{ fg: C.dim, bg: rowBg }}>:{entry.ephemeralPort}</text>
-          <text style={{ fg: stateColor, bg: rowBg }}>{stateLabel}</text>
+          {stateLabel && <text style={{ fg: stateColor, bg: rowBg }}>{stateLabel}</text>}
         </row>
       );
     }
@@ -964,8 +1094,7 @@ async function runOnce(
           <text style={{ fg: stateColor, bg: rowBg }}>{stateIcon}</text>
           <text style={{ fg: nameColor, bold: isActive, bg: rowBg }}>{label}</text>
           <spacer flex={1} />
-          <text style={{ fg: C.dim, bg: rowBg }}>:{entry.ephemeralPort}</text>
-          <text style={{ fg: stateColor, bg: rowBg }}>{stateLabel}</text>
+          {stateLabel && <text style={{ fg: stateColor, bg: rowBg }}>{stateLabel}</text>}
         </row>
         <row key={`${eKey}-2`} gap={0} style={{ bg: rowBg }}>
           <text style={{ bg: rowBg }}>{"    "}</text>
@@ -975,6 +1104,32 @@ async function runOnce(
     );
   }
 
+  /** Compute ordered entry groups keyed by exact commandTemplate. */
+  function computeEntryGroups(entries: LaneEntry[]): { key: string; label: string; entries: LaneEntry[] }[] {
+    const groupOrder: string[] = [];
+    const groupMap = new Map<string, LaneEntry[]>();
+    for (const entry of entries) {
+      const key = entry.commandTemplate;
+      if (!groupMap.has(key)) {
+        groupOrder.push(key);
+        groupMap.set(key, []);
+      }
+      groupMap.get(key)!.push(entry);
+    }
+    return groupOrder.map((key) => {
+      const groupEntries = groupMap.get(key)!;
+      return { key, label: entryCommandLabel(groupEntries[0]!), entries: groupEntries };
+    });
+  }
+
+  /** Find which group an entry belongs to (by index into the flat entries array). */
+  function entryGroupForIdx(entries: LaneEntry[], idx: number): { key: string; entries: LaneEntry[] } | null {
+    const entry = entries[idx];
+    if (!entry) return null;
+    const key = entry.commandTemplate;
+    return { key, entries: entries.filter((e) => e.commandTemplate === key) };
+  }
+
   function LaneCard({ lane, li, s }: { lane: LaneConfig; li: number; s: RunnerUIState }) {
     const isSelected = li === s.laneIdx;
     const safeEi = Math.min(s.entryIdx, Math.max(0, lane.entries.length - 1));
@@ -982,10 +1137,40 @@ async function runOnce(
     const modeLabel = (lane.mode ?? "warm") === "single" ? "single" : "warm";
     const title = ` LANE ${lane.id}  ·  ${lane.repoName}  ·  :${lane.canonicalPort}  ·  ${modeLabel}  `;
 
-    // If all entries share the same commandTemplate, hoist the command to the header
-    const commandIsUniform = lane.entries.length > 0 &&
-      lane.entries.every((e) => e.commandTemplate === lane.entries[0]!.commandTemplate);
-    const sharedLabel = commandIsUniform ? entryCommandLabel(lane.entries[0]!) : null;
+    const groups = computeEntryGroups(lane.entries);
+
+    // Build the entry list with group separators
+    const entryElements: any[] = [];
+    if (lane.entries.length === 0) {
+      entryElements.push(<text key="empty" style={{ fg: C.dim }}>{"  press [a] to add a process"}</text>);
+    } else {
+      let globalEi = 0;
+      for (let gi = 0; gi < groups.length; gi++) {
+        const group = groups[gi]!;
+        // Separator between groups (not before the first)
+        if (gi > 0) {
+          entryElements.push(
+            <text key={`sep-${gi}`} style={{ fg: C.dim }}>{"  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌"}</text>
+          );
+        }
+        // Group sub-header
+        entryElements.push(
+          <text key={`gh-${gi}`} style={{ fg: C.cyan }}>{`  ${group.label}`}</text>
+        );
+        // Entries in this group — compact/uniform within the group
+        for (const entry of group.entries) {
+          entryElements.push(
+            <EntryRow
+              key={`${lane.id}:${entry.id}`}
+              lane={lane} entry={entry} ei={globalEi}
+              isSelectedLane={isSelected} selectedEi={safeEi} s={s}
+              uniform={true}
+            />
+          );
+          globalEi++;
+        }
+      }
+    }
 
     return (
       <box
@@ -999,20 +1184,8 @@ async function runOnce(
       >
         <row gap={1}>
           <text style={{ fg: proxyUp ? C.mint : C.coral }}>{proxyUp ? "proxy ✓" : "proxy ✗"}</text>
-          {sharedLabel && <text style={{ fg: C.dim }}>{"·"}</text>}
-          {sharedLabel && <text style={{ fg: C.muted }}>{sharedLabel}</text>}
         </row>
-        {lane.entries.length === 0
-          ? <text style={{ fg: C.dim }}>{"  press [a] to add a process"}</text>
-          : lane.entries.map((entry, ei) => (
-              <EntryRow
-                key={`${lane.id}:${entry.id}`}
-                lane={lane} entry={entry} ei={ei}
-                isSelectedLane={isSelected} selectedEi={safeEi} s={s}
-                uniform={commandIsUniform}
-              />
-            ))
-        }
+        {entryElements}
       </box>
     );
   }
@@ -1041,13 +1214,14 @@ async function runOnce(
           <Cmd k="p" l="port" />
           <Cmd k="R" l="remove" />
           <Cmd k="m" l="mode" />
+          <Cmd k="Z" l="pause" />
         </row>
         {/* Row 2 — Process lifecycle */}
         <row gap={1}>
           <Section name="process" /><Sep />
           <Cmd k="a" l="add" />
-          <Cmd k="s" l="start" />
-          <Cmd k="S" l="warm" />
+          <Cmd k="s" l="start/restart" />
+          <Cmd k="S" l="warm/resume" />
           <Cmd k="↵" l="activate" />
           <Cmd k="x/X" l="stop" />
           <Cmd k="r" l="remove" />
@@ -1057,7 +1231,9 @@ async function runOnce(
           <Section name="open" /><Sep />
           <Cmd k="b" l="branch" />
           <Cmd k="c" l="code" />
+          <Cmd k="o" l="browser" />
           <Cmd k="t" l="shell" />
+          <Cmd k="f" l="run" />
           <Cmd k="e" l="cmd" />
           <Cmd k="i" l="info" />
         </row>
@@ -1117,7 +1293,6 @@ async function runOnce(
                   <text style={{ fg: lane.activeEntryId === e.id ? C.mint : C.white }}>
                     {e.packageLabel !== "root" ? `${e.packageLabel} · ${e.script}` : e.script}
                   </text>
-                  <text style={{ fg: C.dim }}>:{e.ephemeralPort}</text>
                   {lane.activeEntryId === e.id && <text style={{ fg: C.mint }}>{"← active"}</text>}
                 </row>
               );
@@ -1135,8 +1310,9 @@ async function runOnce(
         return <text style={{ fg: C.coral }}>{"Reset all lanes and stop all processes?  [y] confirm  [n / Esc] cancel"}</text>;
       }
       if (s.mode.type === "confirm-spread") {
-        const spreadLane = s.lanes.find((l) => l.id === (s.mode as { laneId: string }).laneId);
-        const spreadEntry = spreadLane?.entries[0];
+        const spreadMode = s.mode as { laneId: string; entryId: string };
+        const spreadLane = s.lanes.find((l) => l.id === spreadMode.laneId);
+        const spreadEntry = spreadLane?.entries.find((e) => e.id === spreadMode.entryId);
         const spreadLabel = spreadEntry ? `'${spreadEntry.script}'` : "command";
         return <text style={{ fg: C.peach }}>{`Spread ${spreadLabel} to all worktrees of ${spreadLane?.repoName ?? ""}?  [y] confirm  [n / Esc] cancel`}</text>;
       }
@@ -1156,26 +1332,10 @@ async function runOnce(
           </focusTrap>
         );
       }
-      if (s.mode.type === "command-edit") {
-        return (
-          <focusTrap id="input-trap" active={true} initialFocus="cmd-input">
-            <column gap={0}>
-              <text style={{ fg: C.dim }}>{"Edit command  ($PORT is replaced with the ephemeral port)"}</text>
-              <row gap={1}>
-                <text style={{ fg: C.dim }}>$</text>
-                <input
-                  id="cmd-input"
-                  value={s.inputValue}
-                  onInput={(v) => app.update((st) => ({ ...st, inputValue: v }))}
-                />
-                <text style={{ fg: C.dim }}>{"[↵] save  [Esc] cancel"}</text>
-              </row>
-            </column>
-          </focusTrap>
-        );
-      }
       const activeLane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
-      const canSpread = activeLane ? activeLane.entries.length === 1 : false;
+      const focusedEi = Math.min(s.entryIdx, Math.max(0, (activeLane?.entries.length ?? 1) - 1));
+      const focusedGroup = activeLane ? entryGroupForIdx(activeLane.entries, focusedEi) : null;
+      const canSpread = focusedGroup ? focusedGroup.entries.length === 1 : false;
       return <HintBar canSpread={canSpread} />;
     };
 
@@ -1229,8 +1389,26 @@ async function runOnce(
       }
     }
 
-    safeUpdate((s) => ({ ...s, entryStates, proxyStates }));
+    safeUpdate((s) => {
+      // Merge daemon state with any in-flight optimistic transient states.
+      // The daemon also sets "starting"/"stopping" authoritatively, but the
+      // window is often too brief for the 2s poll to catch. So we preserve
+      // client-side optimistic transients until the daemon confirms the
+      // expected terminal state (running for starting, stopped/crashed for stopping).
+      const merged = new Map(entryStates);
+      for (const [id, current] of s.entryStates) {
+        if (current === "stopping") {
+          const fresh = entryStates.get(id) ?? "stopped";
+          if (fresh !== "stopped" && fresh !== "crashed") merged.set(id, "stopping");
+        } else if (current === "starting") {
+          const fresh = entryStates.get(id);
+          if (fresh !== "running" && fresh !== "crashed") merged.set(id, "starting");
+        }
+      }
+      return { ...s, entryStates: merged, proxyStates };
+    });
   }
+
 
   void pollDaemon();
   const pollTimer = setInterval(() => { void pollDaemon(); }, 2000);
@@ -1268,7 +1446,12 @@ async function runOnce(
       if (!activeLaneIds.has(laneId)) { try { w.close(); } catch { /* */ } gitWatchers.delete(laneId); }
     }
 
-    // Add a watcher for each lane that has at least one entry with a worktree
+    // Add a watcher for each lane that has at least one entry with a worktree.
+    // Watch only the git common dir's HEAD-adjacent files (not the entire .git
+    // dir recursively) so the watcher only fires on real branch changes and not
+    // on every git operation (fetch, gc, ref updates, etc.) — which previously
+    // triggered spurious doRepoChange calls that could race with addResolvedEntry
+    // and save a stale lane snapshot that dropped newly-added entries.
     for (const lane of lanes) {
       if (gitWatchers.has(lane.id)) continue;
       const anyWorktree = lane.entries.find((e) => e.worktree)?.worktree;
@@ -1276,8 +1459,25 @@ async function runOnce(
       const gitDir = repoGitDir(anyWorktree);
       if (!gitDir || !existsSync(gitDir)) continue;
       try {
-        const w = watch(gitDir, { recursive: true }, () => onRepoChange(lane.id));
+        // Watch the git common dir NON-recursively and filter to HEAD only.
+        // This fires when the main worktree switches branches. Linked worktrees
+        // have their HEAD under .git/worktrees/<name>/HEAD — watch that subdir too.
+        const onEvent = (_evt: string, filename: string | null) => {
+          if (filename === "HEAD") onRepoChange(lane.id);
+        };
+        const w = watch(gitDir, onEvent);
         gitWatchers.set(lane.id, w);
+        // Also watch the worktrees subdir if it exists (linked worktree HEADs live here)
+        const worktreesDir = join(gitDir, "worktrees");
+        if (existsSync(worktreesDir)) {
+          try {
+            const ww = watch(worktreesDir, { recursive: true }, (_evt, filename) => {
+              if (filename?.endsWith("HEAD")) onRepoChange(lane.id);
+            });
+            // Store under a derived key so cleanup still works
+            gitWatchers.set(`${lane.id}:wt`, ww);
+          } catch { /* worktrees subdir watch failed — main HEAD watcher still active */ }
+        }
       } catch { /* fs.watch not available for this path */ }
     }
   }
@@ -1300,10 +1500,10 @@ async function runOnce(
   }
 
   function doRepoChange(laneId: string, attempt = 0): void {
-    // Read all current branches BEFORE entering the Ink state updater.
-    // spawnSync inside app.update() blocks the render loop — keep the
+    // Read all current branches BEFORE entering the state updater.
+    // spawnSync inside safeUpdate() blocks the render loop — keep the
     // updater callback a pure synchronous object merge.
-    // currentLanes is kept in sync with Ink state by every mutation.
+    // currentLanes is kept in sync with app state by every mutation.
     const lane = currentLanes.find((l) => l.id === laneId);
     if (!lane) return;
 
@@ -1329,6 +1529,13 @@ async function runOnce(
     }
 
     // Pure state update — no I/O inside the updater.
+    // IMPORTANT: saveRunnerConfig is called OUTSIDE safeUpdate (after the state
+    // has been committed) to avoid a race with addResolvedEntry. If we saved
+    // inside the updater callback, a queued safeUpdate from addResolvedEntry
+    // that runs *after* ours could see s.lanes without the newly-added entry
+    // and overwrite the file with a stale snapshot, erasing the new entry.
+    let savedLanes: LaneConfig[] | null = null;
+
     safeUpdate((s) => {
       const targetLane = s.lanes.find((l) => l.id === laneId);
       if (!targetLane) return s;
@@ -1343,12 +1550,17 @@ async function runOnce(
         l.id === laneId ? { ...l, entries: updatedEntries } : l
       );
       currentLanes = updatedLanes;
-      saveRunnerConfig(runnerName, updatedLanes);
-      void fetchEnrichment(updatedLanes).then((enrichment) =>
-        safeUpdate((s2) => ({ ...s2, enrichment }))
-      );
+      savedLanes = updatedLanes; // capture for post-update save
       return { ...s, lanes: updatedLanes };
     });
+
+    // Persist and re-enrich after the state update has been applied.
+    if (savedLanes) {
+      saveRunnerConfig(runnerName, savedLanes);
+      void fetchEnrichment(savedLanes).then((enrichment) =>
+        safeUpdate((s2) => ({ ...s2, enrichment }))
+      );
+    }
   }
 
   syncGitWatchers(initialLanes);
@@ -1414,13 +1626,15 @@ async function runOnce(
 
     right: ({ state, update }) => {
       const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      const newEi = Math.min(state.entryIdx + 1, (lane?.entries.length ?? 1) - 1);
+      const len = lane?.entries.length ?? 1;
+      const newEi = (state.entryIdx + 1) % len;
       update((s) => ({ ...s, entryIdx: newEi }));
       updateMrPane(lane?.entries[newEi]?.branch ?? "");
     },
     left: ({ state, update }) => {
       const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      const newEi = Math.max(0, state.entryIdx - 1);
+      const len = lane?.entries.length ?? 1;
+      const newEi = (state.entryIdx - 1 + len) % len;
       update((s) => ({ ...s, entryIdx: newEi }));
       updateMrPane(lane?.entries[newEi]?.branch ?? "");
     },
@@ -1463,7 +1677,7 @@ async function runOnce(
       }, 300);
     },
 
-    // [s] start / activate / respawn
+    // [s] start / restart / activate / respawn
     s: ({ state }) => {
       const li = Math.min(state.laneIdx, state.lanes.length - 1);
       const lane = state.lanes[li];
@@ -1473,11 +1687,13 @@ async function runOnce(
       if (!entry) return;
       const win = entryWindowName(lane.id, entry.id);
       const st = state.entryStates.get(win) ?? "stopped";
-      if (st === "starting") return; // already in flight, ignore
+      if (st === "starting" || st === "stopping") return; // already in flight
       const action: LaneAction =
         st === "stopped" ? { type: "spawn",   laneId: lane.id, entryId: entry.id } :
         st === "crashed" ? { type: "respawn", laneId: lane.id, entryId: entry.id } :
-                           { type: "activate", laneId: lane.id, entryId: entry.id };
+        (st === "running" && lane.activeEntryId === entry.id)
+          ? { type: "restart",  laneId: lane.id, entryId: entry.id } :
+            { type: "activate", laneId: lane.id, entryId: entry.id };
       doDispatch(action, state);
     },
 
@@ -1515,31 +1731,90 @@ async function runOnce(
       app.setMode("entry-picker");
     },
 
-    // [e] edit command template
+    // [e] edit command template via $EDITOR in a popup
     e: ({ state, update }) => {
       const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
       if (!lane) return;
       const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
       if (!entry) return;
-      update((s) => ({
-        ...s,
-        mode: { type: "command-edit", laneId: lane.id, entryId: entry.id },
-        inputValue: entry.commandTemplate,
-      }));
-      app.setMode("command-edit");
+
+      // Use a clean short path so editors show a readable name in their header
+      const tmpFile = `/tmp/rt-edit-${entry.id}.sh`;
+      writeFileSync(tmpFile, entry.commandTemplate + "\n");
+
+      // Prefer $EDITOR, then detect best available: nvim > vim > nano
+      const detectEditor = () => {
+        for (const e of ["nvim", "vim", "nano"]) {
+          const r = spawnSync("which", [e], { encoding: "utf8" });
+          if (r.status === 0) return e;
+        }
+        return "nano";
+      };
+      const editor = process.env.EDITOR || detectEditor();
+      // Build editor invocation
+      //   nano: --save-on-exit auto-saves on Ctrl-X without Y/N/filename prompts
+      //   vim/nvim: open directly in insert mode at end of line
+      const isVim = /\bnvi?m\b/.test(editor);
+      const isNano = /\bnano\b/.test(editor);
+      const editorCmd = isVim
+        ? `${editor} '+call cursor(1, 1000)' -c 'startinsert!' '${tmpFile}'`
+        : isNano
+          ? `${editor} --save-on-exit '${tmpFile}'`
+          : `${editor} '${tmpFile}'`;
+
+      // Popup blocks until editor exits — no signal dance needed
+      openPopup(editorCmd, {
+        title: "edit command",
+        hint: isVim ? ":wq to save" : isNano ? "Ctrl-X to save" : "save and close",
+        width: "100",
+        height: "12",
+      });
+
+      try {
+        const newCmd = readFileSync(tmpFile, "utf8").trim();
+        if (newCmd && newCmd !== entry.commandTemplate) {
+          update((s) => {
+            const next = s.lanes.map((l) =>
+              l.id === lane.id
+                ? { ...l, entries: l.entries.map((e) => e.id === entry.id ? { ...e, commandTemplate: newCmd } : e) }
+                : l
+            );
+            saveCurrent(next);
+            return { ...s, lanes: next };
+          });
+          showToast("command updated — restart entry to apply");
+        }
+      } catch { /* file gone or unreadable */ }
+      try { unlinkSync(tmpFile); } catch { /* already cleaned */ }
     },
 
     // [A] add lane  — handled via onEvent (uppercase text event)
     // [R] delete lane — handled via onEvent (uppercase text event)
     // [!] reset all  — handled via onEvent (text event)
 
-    // [c] open entry's worktree in editor (rt code, cwd = worktree → no picker needed)
+    // [c] open entry's worktree in editor (rt code)
     c: ({ state }) => {
       const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
       if (!lane) return;
       const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
       if (!entry) return;
-      openTempPane(`${process.execPath} ${CLI_PATH} code`, { cwd: entry.worktree, target: displayPane() });
+      if (willPrompt(entry.worktree)) {
+        // Needs a picker — open in a popup so the UI is visible
+        openPopup(`${process.execPath} ${CLI_PATH} code`, {
+          cwd: entry.worktree,
+          title: "rt code",
+          width: "100",
+          height: "20",
+        });
+      } else {
+        // No picker needed — fire rt code directly with RT_BATCH=1 to bypass TTY guard
+        spawnSync(process.execPath, [CLI_PATH, "code"], {
+          cwd: entry.worktree,
+          stdio: "pipe",
+          env: { ...process.env, RT_BATCH: "1" },
+        });
+        showToast(`↗ opened ${entry.worktree.split("/").pop()} in editor`);
+      }
     },
 
     // [b] open rt branch picker (switch / create / clean) in the entry's worktree
@@ -1548,8 +1823,12 @@ async function runOnce(
       if (!lane) return;
       const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
       if (!entry) return;
-      // No subcommand → dispatcher shows the branch picker (switch / create / clean)
-      openTempPane(`${process.execPath} ${CLI_PATH} branch`, { cwd: entry.worktree, target: displayPane() });
+      openPopup(`${process.execPath} ${CLI_PATH} branch`, {
+        cwd: entry.worktree,
+        title: "rt branch",
+        width: "100",
+        height: "20",
+      });
     },
 
     // [t] open a one-off interactive shell at the entry's working directory
@@ -1558,13 +1837,35 @@ async function runOnce(
       if (!lane) return;
       const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
       if (!entry) return;
-      // Open interactive shell — escToClose:true injects a zsh Esc→exit binding
-      // so the pane closes naturally when the user hits Escape.
+      // Shell stays as a split pane — Esc conflicts with vim, and shells are persistent
       openTempPane(process.env.SHELL ?? "zsh", {
         cwd: entry.targetDir,
         target: displayPane(),
         escToClose: true,
       });
+    },
+
+    // [f] run a one-off package script at the entry's working directory
+    f: ({ state }) => {
+      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
+      if (!lane) return;
+      const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
+      if (!entry) return;
+      openPopup(`${process.execPath} ${CLI_PATH} run`, {
+        cwd: entry.targetDir,
+        title: "rt run",
+        width: "100",
+        height: "20",
+      });
+    },
+
+    // [o] open the active lane's canonical port in the default browser
+    o: ({ state }) => {
+      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
+      if (!lane?.canonicalPort) return;
+      try {
+        spawnSync("open", [`http://localhost:${lane.canonicalPort}`]);
+      } catch { /* ignore */ }
     },
 
     // [i] toggle the MR/ticket info pane (bottom-right, hidden by default)
@@ -1616,6 +1917,9 @@ async function runOnce(
       case "X": // stop all entries in selected lane
         if (lane) doDispatch({ type: "stop-all", laneId: lane.id }, s);
         break;
+      case "Z": // pause lane — stop proxy + all services, keep config intact
+        if (lane) doDispatch({ type: "pause-lane", laneId: lane.id }, s);
+        break;
       case "A": { // [A] add lane — open tmux picker
         if (_currentState && _currentState.knownRepos.length === 0) {
           showToast("No known repos — run rt in a repo first");
@@ -1658,12 +1962,17 @@ async function runOnce(
         safeUpdate((st) => ({ ...st, mode: { type: "confirm-reset" } }));
         app.setMode("confirm-reset");
         break;
-      case "W": // spread lane to all worktrees
-        if (lane && lane.entries.length === 1) {
-          safeUpdate((st) => ({ ...st, mode: { type: "confirm-spread", laneId: lane.id } }));
+      case "W": { // spread focused entry's command to all worktrees
+        if (!lane) break;
+        const spreadEi = Math.min(s.entryIdx, lane.entries.length - 1);
+        const spreadGroup = entryGroupForIdx(lane.entries, spreadEi);
+        const spreadEntry = lane.entries[spreadEi];
+        if (spreadGroup && spreadGroup.entries.length === 1 && spreadEntry) {
+          safeUpdate((st) => ({ ...st, mode: { type: "confirm-spread", laneId: lane.id, entryId: spreadEntry.id } }));
           app.setMode("confirm-spread");
         }
         break;
+      }
     }
   });
 
@@ -1706,31 +2015,6 @@ async function runOnce(
         } else {
           returnToNormal(update);
         }
-      },
-      escape: ({ update }) => returnToNormal(update),
-    },
-
-    // Command edit: all characters go to ui.input(), only enter/escape handled
-    "command-edit": {
-      enter: ({ state, update }) => {
-        const mode = state.mode;
-        if (mode.type !== "command-edit") return;
-        const cmd = state.inputValue.trim();
-        if (cmd) {
-          update((s) => {
-            const next = s.lanes.map((l) =>
-              l.id === mode.laneId
-                ? { ...l, entries: l.entries.map((e) => e.id === mode.entryId ? { ...e, commandTemplate: cmd } : e) }
-                : l
-            );
-            saveCurrent(next);
-            return { ...s, lanes: next, mode: { type: "normal" }, inputValue: "" };
-          });
-          showToast("command updated — restart entry to apply");
-        } else {
-          returnToNormal(update);
-        }
-        app.setMode("default");
       },
       escape: ({ update }) => returnToNormal(update),
     },
@@ -1802,19 +2086,22 @@ async function runOnce(
         const mode = state.mode;
         if (mode.type !== "confirm-spread") return;
         const lane = state.lanes.find((l) => l.id === mode.laneId);
-        if (!lane || lane.entries.length !== 1) {
+        const entry = lane?.entries.find((e) => e.id === mode.entryId);
+        if (!lane || !entry) {
           update((s) => ({ ...s, mode: { type: "normal" } }));
           app.setMode("default");
           return;
         }
-        const entry = lane.entries[0]!;
+        // Only spread to worktrees that don't already have an entry with this command
+        const sameGroupWorktrees = new Set(
+          lane.entries.filter((e) => e.commandTemplate === entry.commandTemplate).map((e) => e.worktree)
+        );
         const repo = state.knownRepos.find((r) => r.repoName === lane.repoName);
         const worktrees = repo?.worktrees ?? [];
-        const existing = new Set(lane.entries.map((e) => e.worktree));
         const relPath = relative(entry.worktree, entry.targetDir);
         let added = 0;
         for (const wt of worktrees) {
-          if (existing.has(wt.path)) continue;
+          if (sameGroupWorktrees.has(wt.path)) continue;
           const targetDir = relPath ? join(wt.path, relPath) : wt.path;
           if (!existsSync(targetDir)) continue;
           void addResolvedEntry(lane.id, {

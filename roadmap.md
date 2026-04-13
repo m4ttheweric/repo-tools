@@ -98,3 +98,20 @@ rt run                   →  interactive picker: package → script
 
 - **`rt all`** — execute commands across all tracked repos e.g. `rt all status`
   only for commands that make sense to run across multiple repos
+
+## Agent Integration
+
+- **`rt agent`** — launch an AI agent session in a worktree
+  - Pick repo/worktree → launch agent (Claude Code, Cursor, Aider)
+  - Auto-detect available agent CLI via `which`
+  - Build context hint from daemon cache (branch, MR status, Linear ticket)
+  - Runner integration: `[A]` key to launch agent in focused entry's worktree
+  - Settings persistence in `~/.rt/settings.json`
+
+## Tunneling
+
+- **`rt tunnel`** — expose a local port via Cloudflare Tunnel
+  - `rt tunnel <port>` — expose a daemon-managed port with a random subdomain
+  - Runner integration: `[u]` key to toggle tunnel for focused entry's canonical port
+  - Daemon-managed lifecycle (tunnel survives terminal close)
+  - Uses `cloudflared` CLI under the hood

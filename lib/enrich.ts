@@ -54,6 +54,8 @@ export interface EnrichedBranch {
 // ─── PullRequest → MRDashboardProps ──────────────────────────────────────────
 
 function toMRInfo(pr: PullRequest): MRDashboardProps {
+  // Delegates to glance-sdk ≥ 0.7.6, which uses mergeabilityChecks as a stable
+  // source for `conflicts` (fixes GitLab's async boolean flapping).
   return getMRDashboardProps(pr, "idle");
 }
 
@@ -361,6 +363,7 @@ async function fetchAndCache(
 export async function refreshAllMRs(
   branches: Array<{ path: string; branch: string }>,
   remoteUrl?: string,
+  onError?: (msg: string) => void,
 ): Promise<void> {
   const secrets = loadSecrets();
   const diskCache = readDiskCache();
@@ -381,7 +384,10 @@ export async function refreshAllMRs(
           mrsByBranch = await provider.fetchPullRequestsByBranches(remote.projectPath, branchNames, 'all');
           mrFetchSucceeded = true;
         }
-      } catch { /* GitLab fetch failed — keep stale MR data to avoid false transitions */ }
+      } catch (err) {
+        onError?.(`GitLab MR fetch failed for ${remote.projectPath}: ${err}`);
+        // keep stale MR data to avoid false transitions in notifications
+      }
     }
   }
 
@@ -411,7 +417,11 @@ export async function refreshAllMRs(
 
   let ticketMap = new Map<string, LinearTicket>();
   if (uniqueIds.length > 0 && secrets.linearApiKey) {
-    ticketMap = await fetchTicketsBatch(secrets.linearApiKey, uniqueIds);
+    try {
+      ticketMap = await fetchTicketsBatch(secrets.linearApiKey, uniqueIds);
+    } catch (err) {
+      onError?.(`Linear ticket fetch failed for [${uniqueIds.join(", ")}]: ${err}`);
+    }
   }
 
   // ── Step 4: Assemble and write cache ──────────────────────────────────
@@ -424,6 +434,19 @@ export async function refreshAllMRs(
       // Fresh MR data — write it (null means no MR exists for this branch)
       const pr = mrsByBranch.get(b.branch) ?? null;
       const mr = pr ? toMRInfo(pr) : null;
+
+      // If we resolved nothing new (no MR found, no linearId from branch name or MR title),
+      // preserve the existing entry to avoid overwriting good enrichment data that was
+      // previously resolved via a full enrich (e.g., from an older/renamed MR title).
+      if (!mr && !linearId) {
+        const existing = diskCache.entries[b.branch];
+        if (existing?.linearId || existing?.ticket) {
+          // Keep existing enrichment — we have nothing better to replace it with
+          diskCache.entries[b.branch] = { ...existing, fetchedAt: now };
+          continue;
+        }
+      }
+
       diskCache.entries[b.branch] = {
         ticket,
         linearId: linearId || "",
@@ -431,13 +454,14 @@ export async function refreshAllMRs(
         fetchedAt: now,
       };
     } else {
-      // API failed — preserve existing MR data to avoid false transitions in notifications.
-      // Only update ticket and linearId so Linear data stays fresh.
+      // GitLab API failed entirely — preserve existing MR data to avoid false transitions.
+      // If we also couldn't resolve a linearId (non-standard branch name, no MR title to fall
+      // back on), preserve existing ticket/linearId too — we have nothing better to substitute.
       const existing = diskCache.entries[b.branch];
       diskCache.entries[b.branch] = {
-        ticket,
-        linearId: linearId || "",
-        mr: existing?.mr ?? null,
+        ticket:    linearId ? ticket : (existing?.ticket ?? null),
+        linearId:  linearId || existing?.linearId || "",
+        mr:        existing?.mr ?? null,
         fetchedAt: existing?.fetchedAt ?? now,
       };
     }

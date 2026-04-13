@@ -137,8 +137,8 @@ export async function dispatch(
   process.stderr.write("\x1b[2J\x1b[H");
   if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
 
-  // TTY guard
-  if (node.requiresTTY && !process.stdin.isTTY) {
+  // TTY guard — bypass when RT_BATCH=1 (called programmatically, no picker needed)
+  if (node.requiresTTY && !process.stdin.isTTY && !process.env.RT_BATCH) {
     const { yellow } = await import("./tui.ts");
     const label = breadcrumb.slice(1).concat(resolvedName).join(" ");
     console.error(`\n  ${yellow}rt ${label} requires an interactive terminal${reset}\n`);

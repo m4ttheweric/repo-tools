@@ -11,16 +11,18 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
-export type ProcessState = "running" | "warm" | "crashed" | "stopped";
+export type ProcessState = "running" | "warm" | "crashed" | "stopped" | "starting" | "stopping";
 
 type StateChangeListener = (id: string, prev: ProcessState, next: ProcessState) => void;
 
 // Valid state transitions
 const VALID_TRANSITIONS: Record<ProcessState, ProcessState[]> = {
-  stopped:  ["running"],
-  running:  ["warm", "crashed", "stopped"],
-  warm:     ["running", "stopped"],
-  crashed:  ["running", "stopped"],
+  stopped:  ["running", "starting"],
+  running:  ["warm", "crashed", "stopped", "stopping"],
+  warm:     ["running", "stopped", "stopping"],
+  crashed:  ["running", "stopped", "starting"],
+  starting: ["running", "crashed", "stopped"],
+  stopping: ["stopped", "crashed"],
 };
 
 export class StateStore {
