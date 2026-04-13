@@ -4,7 +4,7 @@ import { existsSync, promises as fs } from 'fs';
 import { extractLinearId } from './branchParser';
 import { branchCache } from './cache';
 import { fetchBranchData, openLinearUrl } from './statusBar';
-import { listWorktrees, getGitApi, findWorkspaceRepo, getRemoteUrl, getWorktreeName } from './git';
+import { listWorktrees, getGitApi, findWorkspaceRepo, getRemoteUrl } from './git';
 
 const WORKSPACE_PREF_KEY = 'worktreeContext.preferredWorkspaceFile';
 
@@ -91,7 +91,7 @@ export async function resolveOpenTarget(
 export async function showAllWorktrees(context: vscode.ExtensionContext): Promise<void> {
   const gitApi = getGitApi();
   const repo = gitApi && gitApi.repositories.length
-    ? findWorkspaceRepo(gitApi) ?? gitApi.repositories[0]!
+    ? (await findWorkspaceRepo(gitApi)) ?? gitApi.repositories[0]!
     : null;
 
   if (!repo) {

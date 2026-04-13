@@ -90,6 +90,23 @@ export class PortAllocator {
     return this.allocated.has(port);
   }
 
+  /**
+   * Remove all allocations whose label is NOT in `validLabels`.
+   * Call at daemon startup (with labels derived from persisted runner configs)
+   * to purge orphaned ports left by removed entries or crashed restarts.
+   */
+  pruneToLabels(validLabels: Set<string>): number {
+    let pruned = 0;
+    for (const [port, label] of this.allocated) {
+      if (!validLabels.has(label)) {
+        this.allocated.delete(port);
+        pruned++;
+      }
+    }
+    if (pruned > 0) this.persist();
+    return pruned;
+  }
+
   list(): { port: number; label: string }[] {
     return Array.from(this.allocated.entries())
       .map(([port, label]) => ({ port, label }))

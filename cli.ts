@@ -31,6 +31,111 @@ const TREE: Record<string, CommandNode> = {
     fn: "scriptRunner",
   },
 
+  git: {
+    description: "Git operations (rebase, reset, branch, commit, backup)",
+    subcommands: {
+      rebase: {
+        description: "Smart rebase onto origin/master with auto-resolve",
+        module: "./commands/git/rebase.ts",
+        fn: "rebaseCommand",
+        context: "worktree",
+        subcommands: {
+          onto: {
+            description: "Rebase onto a specific branch",
+            module: "./commands/git/rebase.ts",
+            fn: "ontoCommand",
+            context: "worktree",
+          },
+        },
+      },
+      reset: {
+        description: "Safe reset with divergence detection",
+        subcommands: {
+          origin: {
+            description: "Sync with origin/current-branch (after remote rebase)",
+            module: "./commands/git/reset.ts",
+            fn: "originCommand",
+            context: "worktree",
+          },
+          soft: {
+            description: "Soft reset to HEAD (unstage files)",
+            module: "./commands/git/reset.ts",
+            fn: "softResetCommand",
+            context: "worktree",
+          },
+          hard: {
+            description: "Hard reset to HEAD (discard all changes)",
+            module: "./commands/git/reset.ts",
+            fn: "hardResetCommand",
+            context: "worktree",
+          },
+        },
+      },
+      branch: {
+        description: "Branch management (switch, create, clean)",
+        subcommands: {
+          switch: {
+            description: "Checkout with stash handling",
+            module: "./commands/branch.ts",
+            fn: "switchBranch",
+            context: "worktree",
+            aliases: ["sw"],
+          },
+          create: {
+            description: "From Linear ticket or scratch",
+            module: "./commands/branch.ts",
+            fn: "createBranchFlow",
+            context: "worktree",
+            aliases: ["new"],
+          },
+          clean: {
+            description: "Delete stale branches interactively",
+            module: "./commands/branch-clean.ts",
+            fn: "cleanBranches",
+            context: "worktree",
+            requiresTTY: true,
+          },
+        },
+      },
+      commit: {
+        description: "Interactive staging + commit with live diff preview",
+        module: "./commands/commit.ts",
+        fn: "commitFlow",
+        context: "worktree",
+        requiresTTY: true,
+      },
+      backup: {
+        description: "Back up the current branch",
+        module: "./commands/git/backup.ts",
+        fn: "backupCommand",
+        context: "worktree",
+      },
+      restore: {
+        description: "Restore from a backup branch",
+        module: "./commands/git/backup.ts",
+        fn: "restoreCommand",
+        context: "worktree",
+        requiresTTY: true,
+      },
+    },
+  },
+
+  sync: {
+    description: "Sync branches: rebase onto master + push (daily routine)",
+    module: "./commands/sync.ts",
+    fn: "syncCommand",
+    context: "worktree",
+    subcommands: {
+      all: {
+        description: "Sync all worktrees in the current repo",
+        module: "./commands/sync.ts",
+        fn: "syncAllCommand",
+        context: "repo",
+      },
+    },
+  },
+
+  // Aliases — rt branch and rt commit still work as before
   branch: {
     description: "Branch management (switch, create, clean)",
     subcommands: {
@@ -56,6 +161,13 @@ const TREE: Record<string, CommandNode> = {
         requiresTTY: true,
       },
     },
+  },
+
+  gitx: {
+    description: "Git passthrough in rt-resolved directory",
+    module: "./commands/gitx.ts",
+    fn: "gitPassthrough",
+    context: "worktree",
   },
 
   build: {
@@ -182,6 +294,19 @@ const TREE: Record<string, CommandNode> = {
     module: "./commands/code.ts",
     fn: "openInEditor",
     requiresTTY: true,
+  },
+
+  workspace: {
+    description: "VS Code workspace management",
+    subcommands: {
+      sync: {
+        description: "Auto-sync workspace file across worktrees",
+        module: "./commands/workspace.ts",
+        fn: "workspaceSyncCommand",
+        context: "repo",
+        requiresTTY: true,
+      },
+    },
   },
 
   daemon: {

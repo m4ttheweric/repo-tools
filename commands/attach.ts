@@ -86,28 +86,41 @@ export async function attachProcess(args: string[], _ctx: CommandContext): Promi
     try { socket.write(Buffer.from(msg)); } catch { /* */ }
   };
 
-  // Connect to the attach socket
-  socket = await Bun.connect({
-    unix: socketPath,
-    socket: {
-      data(_sock, data) {
-        process.stdout.write(data);
+  // Connect to the attach socket.
+  // Guard against the race where the daemon closes+recreates the socket between
+  // our attach-info query and this connect call (e.g. during a spawn/respawn).
+  // ENOENT / ECONNREFUSED → exit 0 so the shell attach-loop retries immediately.
+  try {
+    socket = await Bun.connect({
+      unix: socketPath,
+      socket: {
+        data(_sock, data) {
+          process.stdout.write(data);
+        },
+        close() {
+          cleanup();
+          process.exit(0);
+        },
+        error(_sock, err) {
+          process.stderr.write(`\nAttach error: ${err}\n`);
+          cleanup();
+          process.exit(1);
+        },
+        open(_sock) {
+          // Send current terminal size on connect
+          sendResize();
+        },
       },
-      close() {
-        cleanup();
-        process.exit(0);
-      },
-      error(_sock, err) {
-        process.stderr.write(`\nAttach error: ${err}\n`);
-        cleanup();
-        process.exit(1);
-      },
-      open(_sock) {
-        // Send current terminal size on connect
-        sendResize();
-      },
-    },
-  });
+    });
+  } catch (err: any) {
+    // Socket vanished between query and connect (daemon is mid-respawn) — retry.
+    const code = err?.code ?? "";
+    if (code === "ENOENT" || code === "ECONNREFUSED") {
+      process.exit(0); // shell loop will re-exec attach immediately
+    }
+    process.stderr.write(`Failed to connect: ${err}\n`);
+    process.exit(1);
+  }
 
   // Pipe stdin → socket; intercept Ctrl+Q (byte 17) to detach
   process.stdin.on("data", (chunk: Buffer) => {

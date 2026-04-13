@@ -380,8 +380,10 @@ function detectBranchTransitions(
       const key = `mr:merged:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: MR merged on ${branch}`);
+        log(`notify: MR merged on ${branch} [was=${was.mrState} now=${now.mrState}]`);
         if (isEnabled(prefs, "mr_merged")) notify("MR Merged 🎉", branchShort, mrUrl, "mr_merged");
+      } else {
+        log(`notify: suppressed duplicate MR merged on ${branch}`);
       }
     }
 
@@ -397,8 +399,10 @@ function detectBranchTransitions(
       const key = `pipeline:failed:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: pipeline failed on ${branch}`);
+        log(`notify: pipeline failed on ${branch} [was=${was.pipelineStatus} now=${now.pipelineStatus}]`);
         if (isEnabled(prefs, "pipeline_failed")) notify("Pipeline Failed", branchShort, mrUrl, "pipeline_failed");
+      } else {
+        log(`notify: suppressed duplicate pipeline_failed on ${branch}`);
       }
     }
 
@@ -411,8 +415,10 @@ function detectBranchTransitions(
       const key = `pipeline:success:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: pipeline passed on ${branch}`);
+        log(`notify: pipeline passed on ${branch} [was=${was.pipelineStatus} now=${now.pipelineStatus}]`);
         if (isEnabled(prefs, "pipeline_passed")) notify("Pipeline Passed ✓", branchShort, mrUrl, "pipeline_passed");
+      } else {
+        log(`notify: suppressed duplicate pipeline_passed on ${branch}`);
       }
     }
 
@@ -421,8 +427,10 @@ function detectBranchTransitions(
       const key = `mr:approved:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: MR approved on ${branch}`);
+        log(`notify: MR approved on ${branch} [was=${was.approved} now=${now.approved}]`);
         if (isEnabled(prefs, "mr_approved")) notify("MR Approved 👍", branchShort, mrUrl, "mr_approved");
+      } else {
+        log(`notify: suppressed duplicate mr_approved on ${branch}`);
       }
     }
 
@@ -431,8 +439,10 @@ function detectBranchTransitions(
       const key = `mr:conflicts:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: merge conflicts on ${branch}`);
+        log(`notify: merge conflicts on ${branch} [was=${was.conflicts} now=${now.conflicts}]`);
         if (isEnabled(prefs, "merge_conflicts")) notify("Merge Conflicts", branchShort, mrUrl, "merge_conflicts");
+      } else {
+        log(`notify: suppressed duplicate merge_conflicts on ${branch}`);
       }
     }
 
@@ -441,8 +451,10 @@ function detectBranchTransitions(
       const key = `mr:ready:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: MR ready to merge on ${branch}`);
+        log(`notify: MR ready to merge on ${branch} [was=${was.isReady} now=${now.isReady}]`);
         if (isEnabled(prefs, "mr_ready")) notify("Ready to Merge ✓", branchShort, mrUrl, "mr_ready");
+      } else {
+        log(`notify: suppressed duplicate mr_ready on ${branch}`);
       }
     }
 
@@ -451,8 +463,10 @@ function detectBranchTransitions(
       const key = `mr:rebase:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: needs rebase on ${branch}`);
+        log(`notify: needs rebase on ${branch} [was=${was.needsRebase} now=${now.needsRebase}]`);
         if (isEnabled(prefs, "needs_rebase")) notify("Needs Rebase", branchShort, mrUrl, "needs_rebase");
+      } else {
+        log(`notify: suppressed duplicate needs_rebase on ${branch}`);
       }
     }
 
@@ -461,32 +475,42 @@ function detectBranchTransitions(
       const key = `mr:merge_error:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: merge error on ${branch}: ${now.mergeError}`);
+        log(`notify: merge error on ${branch}: ${now.mergeError} [was=${was.mergeError}]`);
         if (isEnabled(prefs, "merge_error")) notify("Merge Error", `${branchShort}: ${now.mergeError}`, mrUrl, "merge_error");
+      } else {
+        log(`notify: suppressed duplicate merge_error on ${branch}`);
       }
     }
 
-    // Clear fired keys when state changes back (so we can re-notify on next transition)
+    // Clear fired keys when state changes back (so we can re-notify on next transition).
+    // Log every clear so over-notification can be traced.
     if (was.pipelineStatus === "failed" && now.pipelineStatus !== "failed") {
-      fired.delete(`pipeline:failed:${branch}`);
+      if (fired.delete(`pipeline:failed:${branch}`))
+        log(`notify: cleared pipeline:failed key for ${branch} (pipeline now ${now.pipelineStatus})`);
     }
     if (was.pipelineStatus === "success" && now.pipelineStatus !== "success") {
-      fired.delete(`pipeline:success:${branch}`);
+      if (fired.delete(`pipeline:success:${branch}`))
+        log(`notify: cleared pipeline:success key for ${branch} (pipeline now ${now.pipelineStatus})`);
     }
     if (was.approved && !now.approved) {
-      fired.delete(`mr:approved:${branch}`);
+      if (fired.delete(`mr:approved:${branch}`))
+        log(`notify: cleared mr:approved key for ${branch}`);
     }
     if (was.conflicts && !now.conflicts) {
-      fired.delete(`mr:conflicts:${branch}`);
+      if (fired.delete(`mr:conflicts:${branch}`))
+        log(`notify: cleared mr:conflicts key for ${branch}`);
     }
     if (was.isReady && !now.isReady) {
-      fired.delete(`mr:ready:${branch}`);
+      if (fired.delete(`mr:ready:${branch}`))
+        log(`notify: cleared mr:ready key for ${branch}`);
     }
     if (was.needsRebase && !now.needsRebase) {
-      fired.delete(`mr:rebase:${branch}`);
+      if (fired.delete(`mr:rebase:${branch}`))
+        log(`notify: cleared mr:rebase key for ${branch}`);
     }
     if (was.mergeError && !now.mergeError) {
-      fired.delete(`mr:merge_error:${branch}`);
+      if (fired.delete(`mr:merge_error:${branch}`))
+        log(`notify: cleared mr:merge_error key for ${branch}`);
     }
   }
 }

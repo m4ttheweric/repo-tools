@@ -294,7 +294,8 @@ export async function commitFlow(_args: string[], ctx: CommandContext): Promise<
     process.exit(0);
   }
 
-  const initiallyStaged = new Set(files.filter((f) => f.isStaged).map((f) => f.path));
+  // GitHub Desktop style: all files selected by default — deselect what you don't want
+  const initiallyStaged = new Set(files.map((f) => f.path));
 
   // 2. Show fzf file picker with diff preview
   const selected = runFilePicker(cwd, files, initiallyStaged);

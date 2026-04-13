@@ -24,6 +24,27 @@ interface Props {
   thumbColor?: string;
   /** Auto-scroll to bottom when children change. Default false. */
   followTail?: boolean;
+  /**
+   * When set, the list scrolls to keep this child index in view.
+   * Useful when the parent controls navigation (handleInput=false) and
+   * needs the list to follow a focused row.
+   */
+  focusedIndex?: number;
+  /**
+   * Called when the user presses up while already at the top.
+   * Useful for "load more" / prepend patterns.
+   */
+  onScrollTop?: () => void;
+  /**
+   * When N items are prepended to the front of the list, pass the count
+   * here so the scroll offset is shifted by N to preserve the visible position.
+   */
+  prependedCount?: number;
+  /**
+   * Number of terminal rows each item occupies. Default 1.
+   * Set to 2 for two-line rows so the viewport calculation stays correct.
+   */
+  itemHeight?: number;
 }
 
 export function ScrollableList({
@@ -32,34 +53,67 @@ export function ScrollableList({
   handleInput = true,
   thumbColor = 'cyan',
   followTail = false,
+  focusedIndex,
+  onScrollTop,
+  prependedCount = 0,
+  itemHeight = 1,
 }: Props) {
   const [scrollOffset, setScrollOffset] = useState(0);
   const items = React.Children.toArray(children);
-  const totalLines = items.length;
-  const availableRows = Math.max((process.stdout.rows ?? 24) - reservedRows, 3);
+  const totalItems = items.length;
 
-  // Auto-scroll to bottom when items change (tail mode)
+  const termRows = process.stdout.rows ?? 24;
+  // How many items fit in the available rows
+  const viewportSize = Math.max(Math.floor((termRows - reservedRows) / itemHeight), 1);
+
+  const maxOffset = Math.max(0, totalItems - viewportSize);
+
+  // ── followTail: auto-scroll to bottom when items grow ──────────────────────
   useEffect(() => {
     if (followTail) {
-      const max = Math.max(0, totalLines - availableRows);
-      setScrollOffset(max);
+      setScrollOffset(maxOffset);
     }
-  }, [followTail, totalLines, availableRows]);
+  }, [followTail, totalItems, maxOffset]);
+
+  // ── focusedIndex: keep the focused item in the visible window ───────────────
+  useEffect(() => {
+    if (focusedIndex == null) return;
+    setScrollOffset((prev) => {
+      if (focusedIndex < prev) return focusedIndex;
+      if (focusedIndex >= prev + viewportSize) return focusedIndex - viewportSize + 1;
+      return prev;
+    });
+  }, [focusedIndex, viewportSize]);
+
+  // ── prependedCount: shift offset to preserve visual position on prepend ────
+  const prevPrepended = React.useRef(0);
+  useEffect(() => {
+    const delta = prependedCount - prevPrepended.current;
+    if (delta > 0) {
+      setScrollOffset((s) => Math.min(s + delta, maxOffset));
+    }
+    prevPrepended.current = prependedCount;
+  }, [prependedCount, maxOffset]);
 
   // Clamp offset
-  const maxOffset = Math.max(0, totalLines - availableRows);
   const clamped = Math.min(scrollOffset, maxOffset);
-  const visible = items.slice(clamped, clamped + availableRows);
+  const visible = items.slice(clamped, clamped + viewportSize);
 
   // Scrollbar
-  const needsBar = totalLines > availableRows;
-  const thumbSize = needsBar ? Math.max(1, Math.round((availableRows / totalLines) * availableRows)) : 0;
-  const thumbStart = needsBar ? Math.round((clamped / Math.max(1, maxOffset)) * (availableRows - thumbSize)) : 0;
+  const needsBar = totalItems > viewportSize;
+  const thumbSize = needsBar ? Math.max(1, Math.round((viewportSize / totalItems) * viewportSize)) : 0;
+  const thumbStart = needsBar ? Math.round((clamped / Math.max(1, maxOffset)) * (viewportSize - thumbSize)) : 0;
 
   useInput(
     (_input, key) => {
+      if (key.upArrow) {
+        setScrollOffset((s) => {
+          const next = Math.max(0, s - 1);
+          if (s === 0 && onScrollTop) onScrollTop();
+          return next;
+        });
+      }
       if (key.downArrow) setScrollOffset((s) => Math.min(s + 1, maxOffset));
-      if (key.upArrow) setScrollOffset((s) => Math.max(0, s - 1));
     },
     { isActive: handleInput },
   );

@@ -59,6 +59,9 @@ export class ProcessManager {
   }
 
   async spawn(id: string, cmd: string, opts: { cwd: string; env?: Record<string, string> }): Promise<void> {
+    // Signal to pollers that a spawn is in progress
+    this.stateStore.setState(id, "starting");
+
     // Clear previous output so attach clients don't see stale log from last run
     this.logBuffer.clear(id);
 
@@ -143,8 +146,14 @@ export class ProcessManager {
       return;
     }
 
+    // Capture previous state before transitioning — needed for the warm-resume check below.
+    const prevState = this.stateStore.getState(id);
+
+    // Signal to pollers that a kill is in progress
+    this.stateStore.setState(id, "stopping");
+
     // If warm (suspended), resume first so SIGTERM is delivered
-    if (this.stateStore.getState(id) === "warm" && this.suspendManager) {
+    if (prevState === "warm" && this.suspendManager) {
       await this.suspendManager.resume(id);
     }
 
