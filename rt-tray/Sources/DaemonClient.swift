@@ -63,13 +63,18 @@ class DaemonClient {
             params.defaultProtocolStack.transportProtocol = NWProtocolTCP.Options()
             let connection = NWConnection(to: endpoint, using: params)
 
+            // Serial queue guards `completed` — prevents the timeout and NW callbacks
+            // from racing to call continuation.resume() more than once (fatal crash).
+            let guard_q = DispatchQueue(label: "rt.query.\(command)")
             var completed = false
             var hasReachedReady = false
             let complete: (T?) -> Void = { result in
-                guard !completed else { return }
-                completed = true
-                connection.cancel()
-                continuation.resume(returning: result)
+                guard_q.sync {
+                    guard !completed else { return }
+                    completed = true
+                    connection.cancel()
+                    continuation.resume(returning: result)
+                }
             }
 
             // Timeout after 2 seconds
@@ -80,7 +85,7 @@ class DaemonClient {
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    hasReachedReady = true
+                    guard_q.sync { hasReachedReady = true }
                     // Send HTTP GET request
                     let request = "GET /\(command) HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
                     guard let data = request.data(using: .utf8) else {
@@ -114,7 +119,8 @@ class DaemonClient {
                     // After .ready, the server's "Connection: close" fires .failed
                     // (POSIX error 50) but the response data is already buffered
                     // and will be delivered via readFullResponse.
-                    if !hasReachedReady {
+                    let wasReady = guard_q.sync { hasReachedReady }
+                    if !wasReady {
                         complete(nil)
                     }
 

@@ -208,12 +208,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func restartDaemon() {
         Task { @MainActor in
             setHealth(.starting)
+            // Send shutdown via the daemon's own command channel so it cleans up
+            // gracefully (releases socket, writes final state).
             await daemonClient.sendShutdown()
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            daemonLifecycle.startDaemon()
 
-            // Poll until it comes back (up to 5s)
-            for _ in 0..<10 {
+            // Hand off to DaemonLifecycle.restartDaemon(), which polls until the
+            // socket file is gone before spawning — prevents the race where
+            // startDaemon() sees the socket still present and bails out silently.
+            daemonLifecycle.restartDaemon()
+
+            // Poll until it comes back (up to 8s — allows ~2s cleanup + startup)
+            for _ in 0..<16 {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 if await daemonClient.isReachable() {
                     await refreshStatus()

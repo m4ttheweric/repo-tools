@@ -951,6 +951,13 @@ async function runOnce(
     }
   }
 
+  // Minimum time (ms) to display optimistic "starting"/"stopping" states.
+  // The daemon transitions happen so fast (spawn sets starting→running in <100ms)
+  // that the poll immediately clears the optimistic state before the user sees
+  // the spinner. This floor guarantees visual feedback.
+  const MIN_TRANSIENT_MS = 800;
+  const optimisticSetAt = new Map<string, number>();
+
   function doDispatch(action: LaneAction, currentState: RunnerUIState): void {
     // Show optimistic "starting"/"stopping" immediately for instant visual feedback.
     // The daemon also sets these states authoritatively, but the transient window
@@ -992,6 +999,9 @@ async function runOnce(
     }
 
     if (startingIds.length > 0 || stoppingIds.length > 0) {
+      const now = Date.now();
+      for (const id of startingIds) optimisticSetAt.set(id, now);
+      for (const id of stoppingIds) optimisticSetAt.set(id, now);
       safeUpdate((s) => {
         const next = new Map(s.entryStates);
         for (const id of startingIds) next.set(id, "starting");
@@ -1393,16 +1403,27 @@ async function runOnce(
       // Merge daemon state with any in-flight optimistic transient states.
       // The daemon also sets "starting"/"stopping" authoritatively, but the
       // window is often too brief for the 2s poll to catch. So we preserve
-      // client-side optimistic transients until the daemon confirms the
-      // expected terminal state (running for starting, stopped/crashed for stopping).
+      // client-side optimistic transients until (a) the daemon confirms the
+      // expected terminal state AND (b) the minimum display time has elapsed.
       const merged = new Map(entryStates);
+      const now = Date.now();
       for (const [id, current] of s.entryStates) {
         if (current === "stopping") {
           const fresh = entryStates.get(id) ?? "stopped";
-          if (fresh !== "stopped" && fresh !== "crashed") merged.set(id, "stopping");
+          const age = now - (optimisticSetAt.get(id) ?? 0);
+          if (fresh !== "stopped" && fresh !== "crashed" || age < MIN_TRANSIENT_MS) {
+            merged.set(id, "stopping");
+          } else {
+            optimisticSetAt.delete(id);
+          }
         } else if (current === "starting") {
           const fresh = entryStates.get(id);
-          if (fresh !== "running" && fresh !== "crashed") merged.set(id, "starting");
+          const age = now - (optimisticSetAt.get(id) ?? 0);
+          if (fresh !== "running" && fresh !== "crashed" || age < MIN_TRANSIENT_MS) {
+            merged.set(id, "starting");
+          } else {
+            optimisticSetAt.delete(id);
+          }
         }
       }
       return { ...s, entryStates: merged, proxyStates };

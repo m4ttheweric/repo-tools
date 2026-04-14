@@ -26,6 +26,15 @@ export interface SelectOption {
   hint?: string;
 }
 
+// ─── Back Navigation ────────────────────────────────────────────────────────
+
+/** Thrown by filterableSelect when the user picks the "↩ back" sentinel. */
+export class BackNavigation extends Error {
+  constructor() { super("back"); this.name = "BackNavigation"; }
+}
+
+const BACK = "__back__";
+
 // ─── Core render helper ─────────────────────────────────────────────────────
 
 /**
@@ -91,14 +100,20 @@ export async function select(opts: {
   message: string;
   options: SelectOption[];
   stderr?: boolean;
+  backLabel?: string;
 }): Promise<string> {
+  // Prepend back sentinel if backLabel is provided
+  const allOptions = opts.backLabel
+    ? [{ value: BACK, label: `↩ ${opts.backLabel}`, hint: "" }, ...opts.options]
+    : opts.options;
+
   // ink-ui's Option type doesn't have `hint`, so we bake it into the label
-  const uiOptions = opts.options.map((o) => ({
+  const uiOptions = allOptions.map((o) => ({
     value: o.value,
     label: o.hint ? `${o.label}  \x1b[2m${o.hint}\x1b[22m` : o.label,
   }));
 
-  return prompt<string>(
+  const value = await prompt<string>(
     (resolve) =>
       React.createElement(
         PromptFrame,
@@ -110,6 +125,9 @@ export async function select(opts: {
       ),
     { stderr: opts.stderr },
   );
+
+  if (value === BACK) throw new BackNavigation();
+  return value;
 }
 
 /**
@@ -293,8 +311,15 @@ export async function filterableSelect(opts: {
   message: string;
   options: SelectOption[];
   stderr?: boolean;
+  /** When set, appends a "↩ {backLabel}" sentinel. Throws BackNavigation when selected. */
+  backLabel?: string;
 }): Promise<string | null> {
   const { spawnSync, execSync } = await import("child_process");
+
+  // Prepend back sentinel if backLabel is provided
+  const options = opts.backLabel
+    ? [{ value: BACK, label: `↩ ${opts.backLabel}`, hint: "" }, ...opts.options]
+    : opts.options;
 
   let hasFzf = false;
   try {
@@ -303,10 +328,10 @@ export async function filterableSelect(opts: {
   } catch {}
 
   if (!hasFzf) {
-    return select(opts);
+    return select({ ...opts, options });
   }
 
-  const input = opts.options
+  const input = options
     .map((o) => `${o.value}\t\x1b[1m${o.label}\x1b[22m${o.hint ? `  \x1b[2m${o.hint}\x1b[22m` : ""}`)
     .join("\n");
 
@@ -331,7 +356,9 @@ export async function filterableSelect(opts: {
     return null;
   }
 
-  return result.stdout.trim().split("\t")[0]!;
+  const value = result.stdout.trim().split("\t")[0]!;
+  if (value === BACK) throw new BackNavigation();
+  return value;
 }
 
 // ─── Step Runner ─────────────────────────────────────────────────────────────

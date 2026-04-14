@@ -201,7 +201,7 @@ export async function pickWorktree(prompt: string): Promise<string> {
 /**
  * Pick a worktree from a specific repo (enriched with Linear ticket info).
  */
-export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string): Promise<string> {
+export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string, opts?: { backLabel?: string }): Promise<string> {
   const { filterableSelect } = await import("./rt-render.tsx");
   const { enrichBranches, formatBranchLabel } = await import("./enrich.ts");
 
@@ -226,6 +226,7 @@ export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string): Pr
   return filterableSelect({
     message: prompt || `${repo.repoName} worktrees`,
     options,
+    backLabel: opts?.backLabel,
   });
 }
 

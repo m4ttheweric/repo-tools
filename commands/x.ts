@@ -635,7 +635,7 @@ export async function scriptRunner(args: string[]): Promise<void> {
   }
 
   const entries = listScripts(repoRoot, dataDir);
-  const { select } = await import("../lib/rt-render.tsx");
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
 
   console.log(`\n  ${bold}${cyan}rt x${reset}\n`);
 
@@ -659,7 +659,7 @@ export async function scriptRunner(args: string[]): Promise<void> {
     hint: "launch the wizard",
   });
 
-  const selected = await select({
+  const selected = await filterableSelect({
     message: "Select a script",
     options,
   });
