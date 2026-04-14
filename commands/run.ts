@@ -17,7 +17,7 @@ import { existsSync, readFileSync } from "fs";
 import { execSync } from "child_process";
 import { join, relative } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
-import { filterableSelect } from "../lib/rt-render.tsx";
+import { filterableSelect, BackNavigation } from "../lib/rt-render.tsx";
 import { getKnownRepos } from "../lib/repo-index.ts";
 import { getWorkspacePackages } from "../lib/repo.ts";
 
@@ -125,96 +125,122 @@ export async function runCommand(args: string[], ctx: CommandContext): Promise<v
     }
   }
 
-  // ── Step 3: Pick package ───────────────────────────────────────────────────
+  // ── Step 3 + 4: Pick package → script (with back-navigation) ───────────────
 
   const packages = getWorkspacePackages(worktreePath);
 
   let packagePath: string;
   let packageLabel: string;
+  let selectedScript: string;
+  let skipCwdDetection = false;
 
-  if (packages.length === 0) {
-    packagePath = worktreePath;
-    packageLabel = "root";
-  } else if (packages.length === 1) {
-    packagePath = join(worktreePath, packages[0]!.path);
-    packageLabel = packages[0]!.name;
-  } else {
-    // ── CWD auto-detection ─────────────────────────────────────────────────
-    // If the user is inside a known package directory, select it automatically.
-    const cwd = process.cwd();
-    const cwdMatch = packages
-      .map((p) => ({ p, abs: join(worktreePath, p.path) }))
-      .filter(({ abs }) => cwd === abs || cwd.startsWith(abs + "/"))
-      .sort((a, b) => b.abs.length - a.abs.length) // deepest match wins
-      [0];
-
-    if (cwdMatch) {
-      packagePath = cwdMatch.abs;
-      packageLabel = cwdMatch.p.name;
-      process.stderr.write(`  ↳ package: ${packageLabel} (from cwd)\n`);
+  // Loop: back from script picker restarts at package picker
+  packageLoop: while (true) {
+    if (packages.length === 0) {
+      packagePath = worktreePath;
+      packageLabel = "root";
+    } else if (packages.length === 1) {
+      packagePath = join(worktreePath, packages[0]!.path);
+      packageLabel = packages[0]!.name;
     } else {
-      // ── Manual picker ────────────────────────────────────────────────────
-      const rootPkgJson = join(worktreePath, "package.json");
-      const rootScripts = existsSync(rootPkgJson)
-        ? Object.keys(
-            (JSON.parse(readFileSync(rootPkgJson, "utf8")) as { scripts?: Record<string, string> }).scripts ?? {},
-          )
-        : [];
+      // ── CWD auto-detection ─────────────────────────────────────────────────
+      // If the user is inside a known package directory, select it automatically.
+      // Skipped when coming back from the script picker.
+      const cwd = process.cwd();
+      const cwdMatch = !skipCwdDetection
+        ? packages
+            .map((p) => ({ p, abs: join(worktreePath, p.path) }))
+            .filter(({ abs }) => cwd === abs || cwd.startsWith(abs + "/"))
+            .sort((a, b) => b.abs.length - a.abs.length) // deepest match wins
+            [0]
+        : undefined;
 
-      const options = [
-        ...(rootScripts.length > 0
-          ? [{ value: worktreePath, label: "(root)", hint: "workspace root" }]
-          : []),
-        ...packages.map((p) => ({
-          value: join(worktreePath, p.path),
-          label: p.name,
-          hint: p.path,
-        })),
-      ];
-
-      const chosen = await filterableSelect({ message: "Select package", options, stderr: true });
-      if (!chosen) { process.exit(1); }
-      packagePath = chosen;
-      if (chosen === worktreePath) {
-        packageLabel = ".";
+      if (cwdMatch) {
+        packagePath = cwdMatch.abs;
+        packageLabel = cwdMatch.p.name;
+        process.stderr.write(`  ↳ package: ${packageLabel} (from cwd)\n`);
       } else {
-        const pkg = packages.find((p) => join(worktreePath, p.path) === chosen);
-        packageLabel = pkg?.name ?? relative(worktreePath, chosen);
+        // ── Manual picker ────────────────────────────────────────────────────
+        const rootPkgJson = join(worktreePath, "package.json");
+        const rootScripts = existsSync(rootPkgJson)
+          ? Object.keys(
+              (JSON.parse(readFileSync(rootPkgJson, "utf8")) as { scripts?: Record<string, string> }).scripts ?? {},
+            )
+          : [];
+
+        const options = [
+          ...(rootScripts.length > 0
+            ? [{ value: worktreePath, label: "(root)", hint: "workspace root" }]
+            : []),
+          ...packages.map((p) => ({
+            value: join(worktreePath, p.path),
+            label: p.name,
+            hint: p.path,
+          })),
+        ];
+
+        const chosen = await filterableSelect({
+          message: "Select package",
+          options,
+          stderr: true,
+          backLabel: "Switch worktree",
+        });
+        if (!chosen) { process.exit(1); }
+        packagePath = chosen;
+        if (chosen === worktreePath) {
+          packageLabel = ".";
+        } else {
+          const pkg = packages.find((p) => join(worktreePath, p.path) === chosen);
+          packageLabel = pkg?.name ?? relative(worktreePath, chosen);
+        }
       }
     }
-  }
 
-  // ── Step 4: Pick script ────────────────────────────────────────────────────
+    // ── Pick script ────────────────────────────────────────────────────────────
 
-  const scripts = getPackageJsonScripts(packagePath);
-  if (scripts.length === 0) {
-    process.stderr.write(`No scripts found in ${packagePath}/package.json.\n`);
-    process.exit(1);
-  }
+    const scripts = getPackageJsonScripts(packagePath);
+    if (scripts.length === 0) {
+      process.stderr.write(`No scripts found in ${packagePath}/package.json.\n`);
+      process.exit(1);
+    }
 
-  let selectedScript: string;
+    if (scripts.length === 1) {
+      selectedScript = scripts[0]!;
+      break packageLoop;
+    }
 
-  if (scripts.length === 1) {
-    selectedScript = scripts[0]!;
-  } else {
     let pkgScripts: Record<string, string> = {};
     try {
       const pkg = JSON.parse(readFileSync(join(packagePath, "package.json"), "utf8")) as { scripts?: Record<string, string> };
       pkgScripts = pkg.scripts ?? {};
     } catch { /* skip hints */ }
 
-    const chosen = await filterableSelect({
-      message: "Select script",
-      options: scripts.map((s) => ({
-        value: s,
-        label: s,
-        hint: pkgScripts[s]?.slice(0, 60),
-      })),
-      stderr: true,
-    });
+    // Back from script picker → restart at package picker (one level up)
+    try {
+      const chosen = await filterableSelect({
+        message: "Select script",
+        options: scripts.map((s) => ({
+          value: s,
+          label: s,
+          hint: pkgScripts[s]?.slice(0, 60),
+        })),
+        stderr: true,
+        backLabel: packages.length > 1 ? "Switch package" : undefined,
+      });
 
-    if (!chosen) { process.exit(1); }
-    selectedScript = chosen;
+      if (!chosen) { process.exit(1); }
+      selectedScript = chosen;
+      break packageLoop;
+    } catch (err) {
+      if (err instanceof BackNavigation) {
+        // Go back one level: show the full package picker
+        skipCwdDetection = true;
+        process.stderr.write("\x1b[2J\x1b[H");
+        process.stderr.write(`  ↳ back to package selection\n`);
+        continue packageLoop;
+      }
+      throw err;
+    }
   }
 
   // ── Build result ───────────────────────────────────────────────────────────

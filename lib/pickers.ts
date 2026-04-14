@@ -58,13 +58,17 @@ export async function pickWorktreeWithSwitch(
 ): Promise<string | typeof SWITCH_REPO> {
   const { filterableSelect } = await import("./rt-render.tsx");
 
-  const otherWorktrees = repo.worktrees.filter(wt => wt.path !== currentPath);
-  if (otherWorktrees.length === 0) return SWITCH_REPO;
+  if (repo.worktrees.length === 0) return SWITCH_REPO;
 
   const remoteUrl = await getRemoteUrl(repo.worktrees[0]?.path || currentPath);
-  const options = await buildWorktreeOptions(otherWorktrees, remoteUrl);
+  const options = await buildWorktreeOptions(repo.worktrees, remoteUrl);
 
-  options.push({
+  // Annotate the current worktree so the user knows where they are
+  for (const opt of options) {
+    if (opt.value === currentPath) opt.hint = "(current)";
+  }
+
+  options.unshift({
     value: SWITCH_REPO,
     label: "↩ Switch to a different repo",
     hint: "",
@@ -85,7 +89,7 @@ export async function pickFromAllRepos(
   repos: KnownRepo[],
   opts?: { stderr?: boolean; errorMessage?: string },
 ): Promise<string> {
-  const { filterableSelect } = await import("./rt-render.tsx");
+  const { filterableSelect, BackNavigation } = await import("./rt-render.tsx");
 
   if (repos.length === 0) {
     const msg = opts?.errorMessage || "no known repos found — run rt from inside a git repo first";
@@ -94,24 +98,36 @@ export async function pickFromAllRepos(
     process.exit(1);
   }
 
-  let selectedRepo: KnownRepo;
+  // Loop: back from worktree picker restarts at repo picker
+  while (true) {
+    let selectedRepo: KnownRepo;
 
-  if (repos.length === 1) {
-    selectedRepo = repos[0]!;
-  } else {
-    const picked = await filterableSelect({
-      message: "Pick a repo",
-      options: repoOptionsFromList(repos),
-      ...(opts?.stderr ? { stderr: true } : {}),
-    });
-    selectedRepo = repos.find(r => r.repoName === picked)!;
+    if (repos.length === 1) {
+      selectedRepo = repos[0]!;
+    } else {
+      const picked = await filterableSelect({
+        message: "Pick a repo",
+        options: repoOptionsFromList(repos),
+        ...(opts?.stderr ? { stderr: true } : {}),
+      });
+      selectedRepo = repos.find(r => r.repoName === picked)!;
+    }
+
+    if (selectedRepo.worktrees.length === 1) {
+      return selectedRepo.worktrees[0]!.path;
+    }
+
+    try {
+      return await pickWorktreeFromRepo(
+        selectedRepo,
+        `${selectedRepo.repoName} worktrees`,
+        { backLabel: repos.length > 1 ? "Switch repo" : undefined },
+      );
+    } catch (err) {
+      if (err instanceof BackNavigation) continue;
+      throw err;
+    }
   }
-
-  if (selectedRepo.worktrees.length === 1) {
-    return selectedRepo.worktrees[0]!.path;
-  }
-
-  return pickWorktreeFromRepo(selectedRepo, `${selectedRepo.repoName} worktrees`);
 }
 
 /** Check if user chose to switch repos. */

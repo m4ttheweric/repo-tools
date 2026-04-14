@@ -16,12 +16,16 @@
 import { bold, cyan, dim, reset } from "./tui.ts";
 import { resolve } from "path";
 import type { RepoIdentity } from "./repo.ts";
+import { MODULE_REGISTRY } from "./module-registry.ts";
+import { BackNavigation } from "./rt-render.tsx";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface CommandContext {
   /** Resolved identity — present when the node declares context. */
   identity?: RepoIdentity;
+  /** True when identity was auto-detected from cwd (not user-picked). */
+  autoResolved?: boolean;
 }
 
 export interface CommandNode {
@@ -188,6 +192,11 @@ export async function dispatch(
       process.stderr.write("\x1b[2J\x1b[H");
       if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
     }
+
+    // Mark auto-resolved when identity came from cwd without user interaction
+    if (!repoFlag) {
+      ctx.autoResolved = process.cwd() === cwdBefore;
+    }
   } else if (node.context === "repo") {
     const cwdBefore = process.cwd();
     const { requireRepoIdentity } = await import("./repo.ts");
@@ -200,7 +209,57 @@ export async function dispatch(
   }
 
   const handler = await resolveHandler(node, baseDir);
-  await handler(rest, ctx);
+
+  // Retry loop: if the command throws BackNavigation (user picked "↩ back"),
+  // go up one level — show the worktree picker for the current repo —
+  // then re-run the handler with the new context.
+  while (true) {
+    try {
+      await handler(rest, ctx);
+      break;
+    } catch (err) {
+      if (!(err instanceof BackNavigation) || !ctx.identity) throw err;
+
+      process.stderr.write("\x1b[2J\x1b[H");
+      if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
+
+      const { getKnownRepos, getRepoIdentity } = await import("./repo.ts");
+      const { pickWorktreeWithSwitch, pickFromAllRepos, isSwitchRepo }
+        = await import("./pickers.ts");
+
+      const repos = getKnownRepos();
+      const currentRepo = repos.find(r => r.repoName === ctx.identity!.repoName);
+
+      if (!currentRepo || currentRepo.worktrees.length <= 1) {
+        // Single worktree or unknown repo — go to all repos
+        const selectedPath = await pickFromAllRepos(repos);
+        if (!selectedPath) process.exit(0);
+        process.chdir(selectedPath);
+      } else {
+        // Show worktree picker with existing "↩ Switch to a different repo"
+        const result = await pickWorktreeWithSwitch(
+          currentRepo, ctx.identity!.repoRoot,
+        );
+        if (isSwitchRepo(result)) {
+          const selectedPath = await pickFromAllRepos(repos);
+          if (!selectedPath) process.exit(0);
+          process.chdir(selectedPath);
+        } else if (!result) {
+          process.exit(0);
+        } else {
+          process.chdir(result);
+        }
+      }
+
+      ctx.identity = getRepoIdentity()!;
+      ctx.autoResolved = false;
+
+      // Clear and re-run handler with new context
+      process.stderr.write("\x1b[2J\x1b[H");
+      if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
+      continue;
+    }
+  }
 }
 
 // ─── Rendering ───────────────────────────────────────────────────────────────
@@ -271,6 +330,14 @@ async function resolveHandler(node: CommandNode, baseDir?: string): Promise<(arg
   if (node.handler) return node.handler;
 
   if (node.module) {
+    // Try static registry first (required for compiled binary mode)
+    const registryMod = MODULE_REGISTRY[node.module];
+    if (registryMod) {
+      const fn = registryMod[node.fn || "run"];
+      if (typeof fn === "function") return fn;
+    }
+
+    // Fall back to dynamic import (source mode)
     const modulePath = baseDir ? resolve(baseDir, node.module) : node.module;
     const mod = await import(modulePath);
     const fn = mod[node.fn || "run"];

@@ -65,8 +65,8 @@ export class AttachServer {
         open(socket) {
           socket.data = { unsubscribe: null };
 
-          // Replay buffered history so new attach clients see past output
-          const history = logBuffer.getLastLines(id, 200);
+          // Replay full buffered history so new attach clients see past output
+          const history = logBuffer.getLastLines(id);
           if (history.length > 0) {
             const historyText = history.join("\n") + "\n";
             socket.write(Buffer.from(historyText));
