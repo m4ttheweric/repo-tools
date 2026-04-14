@@ -43,7 +43,7 @@ jobs:
       - name: Build extension
         run: |
           cd extensions/vscode/rt-context
-          npm ci
+          npm install
           npm run package
 
       # ── Bundle release archives ──────────────────────────────────────────────
