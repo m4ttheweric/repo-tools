@@ -111,7 +111,7 @@ export function connectWebSocket(): void {
 
     ws.onopen = () => {
       isConnecting = false;
-      console.log('[worktree-context] WebSocket connected to daemon');
+      console.log('[rt-context] WebSocket connected to daemon');
 
       // Clear any pending reconnect
       if (reconnectTimer) {

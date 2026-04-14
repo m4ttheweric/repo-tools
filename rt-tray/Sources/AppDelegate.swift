@@ -22,6 +22,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // ── State ───────────────────────────────────────────────────────────────
     private var lastDaemonStatus: DaemonStatus?
     private var currentHealth: DaemonHealth = .unknown
+    private let updateChecker = UpdateChecker.shared
 
     // MARK: - Lifecycle
 
@@ -30,6 +31,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupNotifications()
         setupTrayServer()
         startPolling()
+        setupAutoUpdate()
 
         // On first launch, ensure daemon is running
         Task { @MainActor in
@@ -47,6 +49,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         statusTimer?.invalidate()
         notificationTimer?.invalidate()
+        updateChecker.stopChecking()
         TrayServer.shared.stop()
     }
 
@@ -140,6 +143,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         loginItem.tag = 200
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
         statusMenu.addItem(loginItem)
+
+        statusMenu.addItem(NSMenuItem.separator())
+
+        // Updates
+        let updateItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        updateItem.target = self
+        updateItem.tag = 300
+        statusMenu.addItem(updateItem)
 
         statusMenu.addItem(NSMenuItem.separator())
 
@@ -254,6 +265,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quitApp() {
         NSApplication.shared.terminate(nil)
+    }
+
+    @objc private func checkForUpdates() {
+        updateChecker.checkForUpdates(userInitiated: true)
+    }
+
+    // MARK: - Auto-Update
+
+    private func setupAutoUpdate() {
+        updateChecker.onUpdateAvailable = { [weak self] release in
+            self?.handleUpdateAvailable(release)
+        }
+        updateChecker.startPeriodicChecks()
+    }
+
+    private func handleUpdateAvailable(_ release: GitHubRelease) {
+        // Update menu item to show available version
+        if let item = statusMenu.item(withTag: 300) {
+            item.title = "Update Available: \(release.tagName)"
+        }
+
+        // Fire native notification
+        let content = UNMutableNotificationContent()
+        content.title = "rt Update Available"
+        content.body = "\(release.tagName) is ready to install."
+        content.sound = .default
+        content.categoryIdentifier = "UPDATE"
+
+        let request = UNNotificationRequest(
+            identifier: "rt-update-\(release.tagName)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
     }
 
     // MARK: - Polling

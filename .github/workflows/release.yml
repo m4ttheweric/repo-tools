@@ -1,0 +1,170 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # needed for git describe
+
+      # ── Setup ────────────────────────────────────────────────────────────────
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install
+
+      # ── Build rt binary (arm64 + x64) ────────────────────────────────────────
+      - name: Compile rt (arm64)
+        run: bun build --compile --target=bun-darwin-arm64 ./cli.ts --outfile rt-arm64
+        env:
+          RT_VERSION: ${{ github.ref_name }}
+
+      - name: Compile rt (x64)
+        run: bun build --compile --target=bun-darwin-x64 ./cli.ts --outfile rt-x64
+        env:
+          RT_VERSION: ${{ github.ref_name }}
+
+      # ── Build rt-tray.app ────────────────────────────────────────────────────
+      - name: Build rt-tray
+        run: cd rt-tray && ./build.sh release
+
+      # ── Package VS Code extension ────────────────────────────────────────────
+      - name: Build extension
+        run: |
+          cd extensions/vscode/rt-context
+          npm ci
+          npm run package
+
+      # ── Bundle release archives ──────────────────────────────────────────────
+      - name: Create release bundles
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          VSIX=$(ls extensions/vscode/rt-context/*.vsix | head -1)
+
+          # arm64 bundle
+          mkdir -p dist/arm64
+          cp rt-arm64 dist/arm64/rt
+          chmod +x dist/arm64/rt
+          cp -R rt-tray/rt-tray.app dist/arm64/
+          cp "$VSIX" dist/arm64/rt-context.vsix
+          tar -czf "rt-darwin-arm64-${VERSION}.tar.gz" -C dist/arm64 .
+
+          # x64 bundle
+          mkdir -p dist/x64
+          cp rt-x64 dist/x64/rt
+          chmod +x dist/x64/rt
+          cp -R rt-tray/rt-tray.app dist/x64/
+          cp "$VSIX" dist/x64/rt-context.vsix
+          tar -czf "rt-darwin-x64-${VERSION}.tar.gz" -C dist/x64 .
+
+      # ── Create GitHub Release ────────────────────────────────────────────────
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            rt-darwin-arm64-*.tar.gz
+            rt-darwin-x64-*.tar.gz
+
+      # ── Update Homebrew formula ──────────────────────────────────────────────
+      - name: Update Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          VERSION_NUM="${VERSION#v}"
+          SHA_ARM=$(shasum -a 256 rt-darwin-arm64-${VERSION}.tar.gz | cut -d' ' -f1)
+          SHA_X64=$(shasum -a 256 rt-darwin-x64-${VERSION}.tar.gz | cut -d' ' -f1)
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/m4ttheweric/homebrew-tap.git" /tmp/homebrew-tap
+          cd /tmp/homebrew-tap
+
+          cat > Formula/rt.rb << FORMULA
+          class Rt < Formula
+            desc "Developer CLI — branch management, service runner, daemon, notifications"
+            homepage "https://github.com/m4ttheweric/repo-tools"
+            version "${VERSION_NUM}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/m4ttheweric/repo-tools/releases/download/${VERSION}/rt-darwin-arm64-${VERSION}.tar.gz"
+                sha256 "${SHA_ARM}"
+              end
+              on_intel do
+                url "https://github.com/m4ttheweric/repo-tools/releases/download/${VERSION}/rt-darwin-x64-${VERSION}.tar.gz"
+                sha256 "${SHA_X64}"
+              end
+            end
+
+            depends_on :macos
+            depends_on "fzf"
+            depends_on "terminal-notifier" => :recommended
+            depends_on "zellij" => :recommended
+
+            def install
+              bin.install "rt"
+              prefix.install "rt-tray.app"
+              prefix.install "rt-context.vsix"
+            end
+
+            def post_install
+              # Tray app → ~/Applications
+              apps_dir = Pathname.new(Dir.home) / "Applications"
+              apps_dir.mkpath
+              FileUtils.rm_rf(apps_dir / "rt-tray.app")
+              FileUtils.cp_r(prefix / "rt-tray.app", apps_dir / "rt-tray.app")
+              system "xattr", "-cr", (apps_dir / "rt-tray.app").to_s
+
+              # Extension → local editors
+              vsix = (prefix / "rt-context.vsix").to_s
+              system "cursor", "--install-extension", vsix, "--force" if which("cursor")
+              system "code", "--install-extension", vsix, "--force" if which("code")
+
+              # Daemon
+              system bin / "rt", "daemon", "install", "--manual"
+
+              # Shell integration (idempotent)
+              zshrc = Pathname.new(Dir.home) / ".zshrc"
+              marker = "# rt — repo tools"
+              unless zshrc.exist? && zshrc.read.include?(marker)
+                zshrc.open("a") do |f|
+                  f.puts "", marker
+                  f.puts 'rt-cd() { local dir=\$(rt cd 2>/dev/null); [ -n "\$dir" ] && cd "\$dir"; }'
+                  f.puts "alias rtcd='rt-cd'"
+                end
+              end
+            end
+
+            def caveats
+              <<~EOS
+                Configure your API tokens:
+                  rt settings linear token
+                  rt settings gitlab token
+
+                Restart your terminal, then verify:
+                  rt doctor
+              EOS
+            end
+          end
+          FORMULA
+
+          # Dedent the heredoc (remove leading spaces)
+          sed -i '' 's/^          //' Formula/rt.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/rt.rb
+          git commit -m "rt ${VERSION}"
+          git push

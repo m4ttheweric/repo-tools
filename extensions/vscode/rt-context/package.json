@@ -1,13 +1,13 @@
 {
-  "name": "worktree-context",
-  "displayName": "Worktree Context",
+  "name": "rt-context",
+  "displayName": "RT Context",
   "description": "Shows worktree name, branch, and Linear ticket info in the status bar",
   "version": "0.1.0",
   "publisher": "local",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/m4ttheweric/worktree-context"
+    "url": "https://github.com/m4ttheweric/repo-tools"
   },
   "engines": {
     "vscode": "^1.85.0"
@@ -22,48 +22,48 @@
   "contributes": {
     "commands": [
       {
-        "command": "worktreeContext.setLinearApiKey",
-        "title": "Worktree Context: Set Linear API Key"
+        "command": "rtContext.setLinearApiKey",
+        "title": "RT Context: Set Linear API Key"
       },
       {
-        "command": "worktreeContext.setGitlabToken",
-        "title": "Worktree Context: Set GitLab Token"
+        "command": "rtContext.setGitlabToken",
+        "title": "RT Context: Set GitLab Token"
       },
       {
-        "command": "worktreeContext.openTicket",
-        "title": "Worktree Context: Open Linear Ticket"
+        "command": "rtContext.openTicket",
+        "title": "RT Context: Open Linear Ticket"
       },
       {
-        "command": "worktreeContext.showAllWorktrees",
-        "title": "Worktree Context: Show All Worktrees"
+        "command": "rtContext.showAllWorktrees",
+        "title": "RT Context: Show All Worktrees"
       },
       {
-        "command": "worktreeContext.switchBranch",
-        "title": "Worktree Context: Switch Branch"
+        "command": "rtContext.switchBranch",
+        "title": "RT Context: Switch Branch"
       },
       {
-        "command": "worktreeContext.refresh",
-        "title": "Worktree Context: Refresh"
+        "command": "rtContext.refresh",
+        "title": "RT Context: Refresh"
       },
       {
-        "command": "worktreeContext.resetWorkspacePref",
-        "title": "Worktree Context: Reset Workspace File Preference"
+        "command": "rtContext.resetWorkspacePref",
+        "title": "RT Context: Reset Workspace File Preference"
       }
     ],
     "configuration": {
-      "title": "Worktree Context",
+      "title": "RT Context",
       "properties": {
-        "worktreeContext.maxTitleLength": {
+        "rtContext.maxTitleLength": {
           "type": "number",
           "default": 50,
           "description": "Maximum length for the Linear ticket title in the status bar (0 = no limit)"
         },
-        "worktreeContext.statusBarPriority": {
+        "rtContext.statusBarPriority": {
           "type": "number",
           "default": 200,
           "description": "Status bar priority (higher = further left)"
         },
-        "worktreeContext.cacheTtlSeconds": {
+        "rtContext.cacheTtlSeconds": {
           "type": "number",
           "default": 300,
           "description": "How long to cache Linear ticket info (in seconds)"
@@ -75,7 +75,7 @@
     "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
     "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
     "package": "pnpm build && pnpm exec vsce package --no-dependencies",
-    "install-local": "pnpm package && cursor --install-extension worktree-context-0.1.0.vsix"
+    "install-local": "pnpm package && cursor --install-extension rt-context-0.1.0.vsix"
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",

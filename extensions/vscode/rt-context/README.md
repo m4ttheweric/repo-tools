@@ -1,6 +1,8 @@
-# Worktree Context
+# RT Context
 
 A VS Code / Cursor extension that keeps you oriented when working across multiple git worktrees. It shows the current worktree name, branch, and linked Linear ticket in the status bar — and lets you quickly switch between worktrees.
+
+Part of the [repo-tools](https://github.com/m4ttheweric/repo-tools) suite.
 
 ## Features
 
@@ -42,26 +44,10 @@ For branches without a recognizable Linear ID in the name, the extension can loo
 
 ## Install
 
-### Cursor
+Installed automatically with `brew install m4ttheweric/tap/rt`. To reinstall manually:
 
 ```bash
-curl -L https://github.com/m4ttheweric/worktree-context/releases/latest/download/worktree-context.vsix -o /tmp/worktree-context.vsix && cursor --install-extension /tmp/worktree-context.vsix
-```
-
-### VS Code
-
-```bash
-curl -L https://github.com/m4ttheweric/worktree-context/releases/latest/download/worktree-context.vsix -o /tmp/worktree-context.vsix && code --install-extension /tmp/worktree-context.vsix
-```
-
-### Build from source
-
-```bash
-git clone https://github.com/m4ttheweric/worktree-context.git
-cd worktree-context
-pnpm install
-pnpm package
-cursor --install-extension worktree-context-0.1.0.vsix
+rt extension install
 ```
 
 ## Setup
@@ -70,29 +56,30 @@ cursor --install-extension worktree-context-0.1.0.vsix
 
 Open the command palette and run:
 
-- **Worktree Context: Set Linear API Key** — enables ticket title and status lookup
-- **Worktree Context: Set GitLab Token** — enables MR title fallback for branches without a Linear ID
+- **RT Context: Set Linear API Key** — enables ticket title and status lookup
+- **RT Context: Set GitLab Token** — enables MR title fallback for branches without a Linear ID
 
-Both keys are stored securely in the editor's secret storage.
+Both keys are stored securely in the editor's secret storage and shared with the rt CLI.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `Worktree Context: Show All Worktrees` | Open the worktree switcher |
-| `Worktree Context: Open Linear Ticket` | Open the current branch's Linear ticket |
-| `Worktree Context: Set Linear API Key` | Store your Linear personal API key |
-| `Worktree Context: Set GitLab Token` | Store your GitLab personal access token |
-| `Worktree Context: Refresh` | Clear caches and refresh the status bar |
-| `Worktree Context: Reset Workspace File Preference` | Forget the saved `.code-workspace` file choice |
+| `RT Context: Show All Worktrees` | Open the worktree switcher |
+| `RT Context: Open Linear Ticket` | Open the current branch's Linear ticket |
+| `RT Context: Switch Branch` | Switch to a different branch |
+| `RT Context: Set Linear API Key` | Store your Linear personal API key |
+| `RT Context: Set GitLab Token` | Store your GitLab personal access token |
+| `RT Context: Refresh` | Clear caches and refresh the status bar |
+| `RT Context: Reset Workspace File Preference` | Forget the saved `.code-workspace` file choice |
 
 ## Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `worktreeContext.maxTitleLength` | `50` | Max length for ticket titles in the status bar (0 = no limit) |
-| `worktreeContext.statusBarPriority` | `200` | Status bar priority (higher = further left) |
-| `worktreeContext.cacheTtlSeconds` | `300` | How long to cache Linear ticket info (seconds) |
+| `rtContext.maxTitleLength` | `50` | Max length for ticket titles in the status bar (0 = no limit) |
+| `rtContext.statusBarPriority` | `200` | Status bar priority (higher = further left) |
+| `rtContext.cacheTtlSeconds` | `300` | How long to cache Linear ticket info (seconds) |
 
 ## How it works
 

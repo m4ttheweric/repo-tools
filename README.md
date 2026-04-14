@@ -1,6 +1,46 @@
 # repo-tools
 
-Personal dev tools, scripts, git hooks, and MCP servers for local development.
+Developer CLI for branch management, service orchestration, daemon, and notifications.
+
+## Install
+
+```bash
+brew install m4ttheweric/tap/rt
+```
+
+Then configure your tokens:
+
+```bash
+rt settings linear token
+rt settings gitlab token
+```
+
+Verify everything is working:
+
+```bash
+rt doctor
+```
+
+### What Gets Installed
+
+| Component | Description |
+|---|---|
+| `rt` binary | Standalone CLI — branch management, runner, build, commit, port scanner |
+| `rt-tray.app` | Menu bar tray app — daemon health, notifications, auto-updates |
+| `rt-context` | VS Code/Cursor extension — branch + ticket info in status bar |
+| Background daemon | Cache refresh, hooks guard, port scanning, workspace sync |
+| Shell integration | `rtcd` alias for fast directory switching |
+| Dependencies | `fzf` (required), `terminal-notifier`, `zellij` (recommended) |
+
+### Upgrade
+
+```bash
+brew upgrade rt
+```
+
+The tray app also checks for updates automatically and notifies you.
+
+---
 
 ## Layout
 

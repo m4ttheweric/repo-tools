@@ -30,17 +30,17 @@ export function getCurrentWorktreePath(): string | null { return currentWorktree
 
 export function initStatusBar(context: vscode.ExtensionContext, priority: number) {
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, priority);
-  statusBarItem.command = 'worktreeContext.openTicket';
+  statusBarItem.command = 'rtContext.openTicket';
   context.subscriptions.push(statusBarItem);
 
   allWorktreesItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, priority - 1);
-  allWorktreesItem.command = 'worktreeContext.showAllWorktrees';
+  allWorktreesItem.command = 'rtContext.showAllWorktrees';
   allWorktreesItem.text = '$(list-tree) Worktrees';
   allWorktreesItem.tooltip = 'Show all worktrees';
   context.subscriptions.push(allWorktreesItem);
 
   branchSwitcherItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, priority - 2);
-  branchSwitcherItem.command = 'worktreeContext.switchBranch';
+  branchSwitcherItem.command = 'rtContext.switchBranch';
   branchSwitcherItem.tooltip = 'Switch branch';
   context.subscriptions.push(branchSwitcherItem);
 }
@@ -124,7 +124,7 @@ async function updateStatusBar(context: vscode.ExtensionContext) {
   if (!gitApi || !gitApi.repositories.length) {
     statusBarItem.text = `$(folder) ${worktreeName}`;
     statusBarItem.tooltip = `Worktree: ${worktreeName}\nNo git repository found`;
-    statusBarItem.command = 'worktreeContext.openTicket';
+    statusBarItem.command = 'rtContext.openTicket';
     branchSwitcherItem.text = '$(git-branch)';
     currentTicketUrl = null;
     currentMrUrl = null;
@@ -138,7 +138,7 @@ async function updateStatusBar(context: vscode.ExtensionContext) {
   if (!branch) {
     statusBarItem.text = `$(folder) ${worktreeName}  │  $(git-branch) (detached)`;
     statusBarItem.tooltip = `Worktree: ${worktreeName}\nDetached HEAD`;
-    statusBarItem.command = 'worktreeContext.openTicket';
+    statusBarItem.command = 'rtContext.openTicket';
     branchSwitcherItem.text = '$(git-branch) (detached)';
     currentTicketUrl = null;
     currentMrUrl = null;
@@ -152,7 +152,7 @@ async function updateStatusBar(context: vscode.ExtensionContext) {
   const cached = branchCache.get(branch);
 
   // Check if cache is fresh enough to render immediately (skip spinner)
-  const config = vscode.workspace.getConfiguration('worktreeContext');
+  const config = vscode.workspace.getConfiguration('rtContext');
   const cacheTtl = config.get<number>('cacheTtlSeconds', 300) * 1000;
   const isFreshCache = cached && (Date.now() - cached.fetchedAt) < cacheTtl;
 
@@ -209,7 +209,7 @@ async function updateStatusBar(context: vscode.ExtensionContext) {
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
-    vscode.window.showErrorMessage(`Worktree Context: Failed to refresh — ${msg}`);
+    vscode.window.showErrorMessage(`RT Context: Failed to refresh — ${msg}`);
   } finally {
     const effectiveData = fresh ?? cached ?? null;
     renderFinalState(worktreeName, branch, effectiveData, linearIdFromBranch);
@@ -223,7 +223,7 @@ function renderFinalState(
   data: CachedBranchData | null,
   linearIdFromBranch: string | null,
 ) {
-  statusBarItem.command = 'worktreeContext.openTicket';
+  statusBarItem.command = 'rtContext.openTicket';
   const effectiveLinearId = data?.linearId ?? linearIdFromBranch;
 
   if (effectiveLinearId && data?.ticket) {
@@ -364,7 +364,7 @@ function renderTicket(
     return;
   }
 
-  const config = vscode.workspace.getConfiguration('worktreeContext');
+  const config = vscode.workspace.getConfiguration('rtContext');
   const maxLen = config.get<number>('maxTitleLength', 50);
   let title = ticket.title;
   if (maxLen > 0 && title.length > maxLen) {

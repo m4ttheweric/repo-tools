@@ -49,8 +49,8 @@ export async function getSecret(
 
   // 2. Fall back to VS Code secret store (legacy)
   const vscodeKey = key === 'linearApiKey'
-    ? 'worktreeContext.linearApiKey'
-    : 'worktreeContext.gitlabToken';
+    ? 'rtContext.linearApiKey'
+    : 'rtContext.gitlabToken';
   return context.secrets.get(vscodeKey);
 }
 
@@ -70,7 +70,7 @@ export async function setSecret(
 
   // 2. Also write to VS Code secrets (backward compatibility)
   const vscodeKey = key === 'linearApiKey'
-    ? 'worktreeContext.linearApiKey'
-    : 'worktreeContext.gitlabToken';
+    ? 'rtContext.linearApiKey'
+    : 'rtContext.gitlabToken';
   await context.secrets.store(vscodeKey, value);
 }

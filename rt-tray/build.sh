@@ -68,8 +68,15 @@ fi
 # Copy binary
 cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
-# Copy Info.plist
+# Copy Info.plist and inject version from git tag
 cp "$SCRIPT_DIR/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+RT_VERSION=$(cd "$SCRIPT_DIR/.." && git describe --tags --abbrev=0 2>/dev/null || echo "dev")
+RT_VERSION="${RT_VERSION#v}"  # strip leading 'v'
+if [ "$RT_VERSION" != "dev" ]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $RT_VERSION" "$APP_BUNDLE/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $RT_VERSION" "$APP_BUNDLE/Contents/Info.plist"
+    echo "  ✓ Version set to $RT_VERSION"
+fi
 
 # Create PkgInfo
 echo -n "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"

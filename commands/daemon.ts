@@ -27,9 +27,17 @@ import {
 } from "../lib/daemon-config.ts";
 import { daemonQuery, isDaemonRunning } from "../lib/daemon-client.ts";
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+/**
+ * Detect if rt is running as a compiled standalone binary.
+ * In compiled mode, process.execPath points to the rt binary itself,
+ * not to the bun runtime.
+ */
+function isCompiledBinary(): boolean {
+  return !process.execPath.includes("bun");
+}
 
 function resolveBunPath(): string {
+  if (isCompiledBinary()) return process.execPath; // compiled: use self
   try {
     return execSync("which bun", { encoding: "utf8", stdio: "pipe" }).trim();
   } catch {
@@ -48,7 +56,16 @@ function formatUptime(ms: number): string {
   return `${hours}h ${remainingMinutes}m`;
 }
 
-function generatePlist(bunPath: string, daemonScript: string): string {
+function generatePlist(rtPath: string, daemonScript?: string): string {
+  // In compiled mode: single arg `rt --daemon`
+  // In source mode: `bun run <script>`
+  const argsXml = isCompiledBinary()
+    ? `        <string>${rtPath}</string>
+        <string>--daemon</string>`
+    : `        <string>${rtPath}</string>
+        <string>run</string>
+        <string>${daemonScript}</string>`;
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -57,9 +74,7 @@ function generatePlist(bunPath: string, daemonScript: string): string {
     <string>${LAUNCHD_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${bunPath}</string>
-        <string>run</string>
-        <string>${daemonScript}</string>
+${argsXml}
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -134,21 +149,23 @@ export async function install(args: string[] = []): Promise<void> {
 
   console.log("");
 
-  const bunPath = resolveBunPath();
-  const daemonScript = resolve(new URL(import.meta.url).pathname, "../../lib/daemon.ts");
+  const rtPath = resolveBunPath();
+  const daemonScript = isCompiledBinary()
+    ? undefined  // compiled: daemon is embedded, no script needed
+    : resolve(new URL(import.meta.url).pathname, "../../lib/daemon.ts");
 
-  if (!existsSync(daemonScript)) {
+  if (!isCompiledBinary() && (!daemonScript || !existsSync(daemonScript))) {
     console.log(`  ${red}daemon script not found: ${daemonScript}${reset}\n`);
     process.exit(1);
   }
 
   // 1. Persist install config
-  markDaemonInstalled(bunPath, daemonScript, mode);
+  markDaemonInstalled(rtPath, daemonScript ?? "--daemon", mode);
   console.log(`  ${green}✓${reset} saved config to ~/.rt/daemon.json`);
 
   if (mode === "launchd") {
     // launchd mode: register plist
-    const plist = generatePlist(bunPath, daemonScript);
+    const plist = generatePlist(rtPath, daemonScript);
     writeFileSync(LAUNCHD_PLIST_PATH, plist);
     console.log(`  ${green}✓${reset} created ${dim}${LAUNCHD_PLIST_PATH}${reset}`);
 
@@ -163,7 +180,7 @@ export async function install(args: string[] = []): Promise<void> {
     }
   } else {
     // manual mode: spawn detached background process
-    await spawnDaemonProcess(bunPath, daemonScript);
+    await spawnDaemonProcess(rtPath, daemonScript);
   }
 
   // Wait for daemon to be reachable
@@ -188,21 +205,20 @@ export async function install(args: string[] = []): Promise<void> {
   }
 }
 
-async function spawnDaemonProcess(bunPath?: string, daemonScript?: string): Promise<void> {
+async function spawnDaemonProcess(rtPath?: string, daemonScript?: string): Promise<void> {
   const config = getDaemonConfig();
-  const bun = bunPath || config?.bunPath || "bun";
+  const bin = rtPath || config?.bunPath || "bun";
   const script = daemonScript || config?.daemonScript;
 
-  if (!script) {
-    console.log(`  ${red}daemon script path not found in config${reset}`);
-    return;
-  }
+  // Determine spawn args: compiled binary uses `rt --daemon`, source uses `bun run <script>`
+  const compiled = isCompiledBinary() || !script || script === "--daemon";
+  const spawnArgs = compiled ? ["--daemon"] : ["run", script!];
 
   const { spawn } = await import("child_process");
   const { openSync } = await import("fs");
 
   const logFd = openSync(DAEMON_LOG_PATH, "a");
-  const child = spawn(bun, ["run", script], {
+  const child = spawn(bin, spawnArgs, {
     detached: true,
     stdio: ["ignore", logFd, logFd],
     cwd: RT_DIR,
