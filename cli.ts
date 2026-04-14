@@ -250,6 +250,7 @@ const TREE: Record<string, CommandNode> = {
     fn: "runDoctor",
   },
 
+
   open: {
     description: "Open external pages for the current branch",
     subcommands: {
@@ -391,16 +392,32 @@ const TREE: Record<string, CommandNode> = {
         fn: "configureNotifications",
         requiresTTY: true,
       },
+      extension: {
+        description: "Install RT Context extension in editors",
+        module: "./commands/extension.ts",
+        fn: "installExtension",
+        requiresTTY: true,
+      },
     },
   },
 };
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
+const RT_VERSION = process.env.RT_VERSION || "dev";
+
 const args = process.argv.slice(2);
 const baseDir = import.meta.dir; // resolve module paths relative to cli.ts
 
-if (args[0] === "--help" || args[0] === "-h") {
+if (args[0] === "--version" || args[0] === "-V") {
+  console.log(`rt ${RT_VERSION}`);
+} else if (args[0] === "--daemon") {
+  // Hidden entry point: start the daemon server directly.
+  // Used when rt is a compiled binary — daemon install spawns `rt --daemon`
+  // instead of `bun run lib/daemon.ts`.
+  const { startDaemon } = await import("./lib/daemon.ts");
+  startDaemon();
+} else if (args[0] === "--help" || args[0] === "-h") {
   // Non-interactive help — dispatch handles showUsage when !isTTY
   const originalIsTTY = process.stdin.isTTY;
   Object.defineProperty(process.stdin, "isTTY", { value: false });

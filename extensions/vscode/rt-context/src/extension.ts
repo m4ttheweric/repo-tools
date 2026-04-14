@@ -17,7 +17,7 @@ import { showBranchSwitcher } from './branchSwitcher';
 import { showAllWorktrees } from './worktreePicker';
 
 export function activate(context: vscode.ExtensionContext) {
-  const config = vscode.workspace.getConfiguration('worktreeContext');
+  const config = vscode.workspace.getConfiguration('rtContext');
   const priority = config.get<number>('statusBarPriority', 200);
 
   branchCache.init(context);
@@ -25,7 +25,7 @@ export function activate(context: vscode.ExtensionContext) {
   initStatusBar(context, priority);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('worktreeContext.openTicket', async () => {
+    vscode.commands.registerCommand('rtContext.openTicket', async () => {
       interface ActionItem extends vscode.QuickPickItem {
         action: () => void;
       }
@@ -69,15 +69,15 @@ export function activate(context: vscode.ExtensionContext) {
       picked?.action();
     }),
 
-    vscode.commands.registerCommand('worktreeContext.showAllWorktrees', () =>
+    vscode.commands.registerCommand('rtContext.showAllWorktrees', () =>
       showAllWorktrees(context),
     ),
 
-    vscode.commands.registerCommand('worktreeContext.switchBranch', () =>
+    vscode.commands.registerCommand('rtContext.switchBranch', () =>
       showBranchSwitcher(context),
     ),
 
-    vscode.commands.registerCommand('worktreeContext.setLinearApiKey', async () => {
+    vscode.commands.registerCommand('rtContext.setLinearApiKey', async () => {
       const key = await vscode.window.showInputBox({
         prompt: 'Enter your Linear personal API key',
         placeHolder: 'lin_api_...',
@@ -93,7 +93,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
 
-    vscode.commands.registerCommand('worktreeContext.setGitlabToken', async () => {
+    vscode.commands.registerCommand('rtContext.setGitlabToken', async () => {
       const token = await vscode.window.showInputBox({
         prompt: 'Enter your GitLab personal access token (for MR title fallback)',
         placeHolder: 'glpat-...',
@@ -109,14 +109,14 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
 
-    vscode.commands.registerCommand('worktreeContext.refresh', () => {
+    vscode.commands.registerCommand('rtContext.refresh', () => {
       branchCache.clear();
       branchListCache.clear();
       scheduleUpdate(context);
     }),
 
-    vscode.commands.registerCommand('worktreeContext.resetWorkspacePref', async () => {
-      await context.globalState.update('worktreeContext.preferredWorkspaceFile', {});
+    vscode.commands.registerCommand('rtContext.resetWorkspacePref', async () => {
+      await context.globalState.update('rtContext.preferredWorkspaceFile', {});
       vscode.window.showInformationMessage(
         'All workspace file preferences cleared. You will be prompted next time.',
       );

@@ -57,7 +57,7 @@ export async function showBranchSwitcher(context: vscode.ExtensionContext): Prom
 
   const DEFAULT_BRANCH_NAMES = new Set(['master', 'main']);
 
-  const config = vscode.workspace.getConfiguration('worktreeContext');
+  const config = vscode.workspace.getConfiguration('rtContext');
   const maxLen = config.get<number>('maxTitleLength', 50);
 
   interface BranchPickItem extends vscode.QuickPickItem {
@@ -380,7 +380,7 @@ async function handleLinearCreate(
   const apiKey = await getSecret(context, 'linearApiKey');
   if (!apiKey) {
     vscode.window.showErrorMessage(
-      'Linear API key not set. Run "Worktree Context: Set Linear API Key" first.',
+      'Linear API key not set. Run "RT Context: Set Linear API Key" first.',
     );
     return;
   }

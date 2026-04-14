@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
 import type { CachedBranchData, BranchInfo, BranchListSnapshot } from './types';
 
-const BRANCH_CACHE_KEY = 'worktreeContext.branchCache';
-const BRANCH_LIST_CACHE_KEY = 'worktreeContext.branchListCache';
+const BRANCH_CACHE_KEY = 'rtContext.branchCache';
+const BRANCH_LIST_CACHE_KEY = 'rtContext.branchListCache';
 
 export class PersistedCache {
   private map = new Map<string, CachedBranchData>();

@@ -1197,7 +1197,7 @@ function cleanup(): void {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-function main(): void {
+export function startDaemon(): void {
   mkdirSync(RT_DIR, { recursive: true });
 
   // ── Self-healing startup ────────────────────────────────────────────────────
@@ -1284,4 +1284,8 @@ function main(): void {
   log(`daemon ready (pid: ${process.pid})`);
 }
 
-main();
+// Auto-run when executed directly (source mode: bun run lib/daemon.ts)
+if (import.meta.main) {
+  startDaemon();
+}
+

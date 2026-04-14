@@ -6,7 +6,7 @@ import { branchCache } from './cache';
 import { fetchBranchData, openLinearUrl } from './statusBar';
 import { listWorktrees, getGitApi, findWorkspaceRepo, getRemoteUrl } from './git';
 
-const WORKSPACE_PREF_KEY = 'worktreeContext.preferredWorkspaceFile';
+const WORKSPACE_PREF_KEY = 'rtContext.preferredWorkspaceFile';
 
 function getWorkspacePrefs(context: vscode.ExtensionContext): Record<string, string> {
   return context.globalState.get<Record<string, string>>(WORKSPACE_PREF_KEY, {});
@@ -107,7 +107,7 @@ export async function showAllWorktrees(context: vscode.ExtensionContext): Promis
     return;
   }
 
-  const config = vscode.workspace.getConfiguration('worktreeContext');
+  const config = vscode.workspace.getConfiguration('rtContext');
   const maxLen = config.get<number>('maxTitleLength', 50);
 
   interface WorktreePickItem extends vscode.QuickPickItem {
