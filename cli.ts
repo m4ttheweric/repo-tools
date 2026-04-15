@@ -254,6 +254,7 @@ const TREE: Record<string, CommandNode> = {
     description: "Verify installation — exits non-zero on failure (CI-safe)",
     module: "./commands/verify.ts",
     fn: "runVerify",
+    fullscreen: true,
   },
 
   open: {
