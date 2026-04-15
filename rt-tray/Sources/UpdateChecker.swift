@@ -6,7 +6,7 @@ import AppKit
 /// Polls `https://api.github.com/repos/m4ttheweric/repo-tools/releases/latest`
 /// on launch and every 6 hours. Compares the release tag against the embedded
 /// build version. When a newer version is found, fires a native macOS notification
-/// and enables the "Check for Updates…" menu action.
+/// and updates the menu item — prompting the user to run `rt update`.
 class UpdateChecker {
 
     static let shared = UpdateChecker()
@@ -80,9 +80,8 @@ class UpdateChecker {
                         NSLog("rt-tray: update available: \(release.tagName) (current: \(self.currentVersion))")
                         self.latestRelease = release
                         self.onUpdateAvailable?(release)
-                        // For user-initiated checks, also immediately offer to install
                         if userInitiated {
-                            self.installUpdate(release: release)
+                            self.showRunUpdateAlert(release: release)
                         }
                     } else {
                         NSLog("rt-tray: up to date (\(self.currentVersion))")
@@ -110,47 +109,16 @@ class UpdateChecker {
         timer = nil
     }
 
-    /// Install the update via Homebrew — keeps version tracking consistent
-    /// and runs post_install hooks (daemon, extension, shell integration).
-    func installUpdate(release: GitHubRelease) {
-        let alert = NSAlert()
-        alert.messageText = "Update to \(release.tagName)?"
-        alert.informativeText = "This will run `brew upgrade rt` in the background."
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Update")
-        alert.addButton(withTitle: "Cancel")
-
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        Task {
-            let success = await runBrewUpgrade()
-            await MainActor.run {
-                if success {
-                    let done = NSAlert()
-                    done.messageText = "Update Complete"
-                    done.informativeText = "rt has been updated to \(release.tagName).\n\nRestart rt-tray to use the new version."
-                    done.alertStyle = .informational
-                    done.addButton(withTitle: "Restart Now")
-                    done.addButton(withTitle: "Later")
-
-                    if done.runModal() == .alertFirstButtonReturn {
-                        // Relaunch ourselves
-                        let url = Bundle.main.bundleURL
-                        NSWorkspace.shared.openApplication(
-                            at: url,
-                            configuration: .init()
-                        )
-                        NSApplication.shared.terminate(nil)
-                    }
-                } else {
-                    showAlert(title: "Update Failed",
-                             message: "brew upgrade rt failed.\n\nTry running it manually in Terminal.")
-                }
-            }
-        }
-    }
-
     // MARK: - Private
+
+    private func showRunUpdateAlert(release: GitHubRelease) {
+        let alert = NSAlert()
+        alert.messageText = "rt \(release.tagName) Available"
+        alert.informativeText = "Run the following in your terminal to upgrade:\n\n  rt update"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
 
     private func isNewerVersion(_ remote: String, than local: String) -> Bool {
         if local == "dev" { return false } // dev builds never auto-update
@@ -164,40 +132,6 @@ class UpdateChecker {
             if r < l { return false }
         }
         return false
-    }
-
-    private func runBrewUpgrade() async -> Bool {
-        // Resolve brew path — Homebrew may be in different locations
-        let brewPaths = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
-        guard let brewPath = brewPaths.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
-            NSLog("rt-tray: brew not found")
-            return false
-        }
-
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: brewPath)
-                process.arguments = ["upgrade", "m4ttheweric/tap/rt"]
-
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = pipe
-
-                do {
-                    try process.run()
-                    process.waitUntilExit()
-
-                    let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                    NSLog("rt-tray: brew upgrade output: \(output)")
-
-                    continuation.resume(returning: process.terminationStatus == 0)
-                } catch {
-                    NSLog("rt-tray: brew upgrade failed: \(error)")
-                    continuation.resume(returning: false)
-                }
-            }
-        }
     }
 
     private func showAlert(title: String, message: String) {

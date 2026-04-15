@@ -219,6 +219,12 @@ export async function runPostInstall(): Promise<void> {
   await installDaemon();
   installShellIntegrationStep();
 
+  const trayDest = join(HOME, "Applications", "rt-tray.app");
+  if (existsSync(trayDest)) {
+    spawnSync("open", [trayDest], { stdio: "pipe" });
+    ok("rt-tray.app", "launched");
+  }
+
   console.log("");
   console.log("  Done. Restart your terminal, then run: rt doctor");
   console.log("");

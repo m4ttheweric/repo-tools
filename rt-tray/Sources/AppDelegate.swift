@@ -289,7 +289,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Fire native notification
         let content = UNMutableNotificationContent()
         content.title = "rt Update Available"
-        content.body = "\(release.tagName) is ready to install."
+        content.body = "\(release.tagName) is available — run: rt update"
         content.sound = .default
         content.categoryIdentifier = "UPDATE"
 

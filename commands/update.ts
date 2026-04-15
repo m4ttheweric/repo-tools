@@ -12,6 +12,8 @@ import { homedir } from "os";
 import { join } from "path";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 
+declare const RT_VERSION: string;
+
 export async function runUpdate(_args: string[]): Promise<void> {
   // Detect dev mode — updating makes no sense when running from source.
   // Use the wrapper script as the authoritative signal (same as settings.ts:currentMode()).
@@ -31,8 +33,8 @@ export async function runUpdate(_args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  // Show current version
-  const current = process.env.RT_VERSION ?? "dev";
+  // Show current version — RT_VERSION is injected at compile time via bun build --define.
+  const current = (typeof RT_VERSION !== "undefined" ? RT_VERSION : null) ?? process.env.RT_VERSION ?? "dev";
   console.log(`\n  ${bold}${cyan}rt update${reset}\n`);
   console.log(`  ${dim}current: ${current}${reset}`);
 
