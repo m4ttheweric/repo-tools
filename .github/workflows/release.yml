@@ -51,6 +51,10 @@ jobs:
           VERSION="${GITHUB_REF_NAME}"
           VSIX=$(ls extensions/vscode/rt-context/*.vsix | head -1)
 
+          # Ad-hoc sign binaries so macOS Gatekeeper doesn't kill them
+          codesign --force --sign - rt-arm64
+          codesign --force --sign - rt-x64
+
           # arm64 bundle
           mkdir -p dist/arm64
           cp rt-arm64 dist/arm64/rt
