@@ -13,9 +13,11 @@ import { join } from "path";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 
 export async function runUpdate(_args: string[]): Promise<void> {
-  // Detect dev mode — updating makes no sense when running from source
-  const devModeFile = join(homedir(), ".rt/dev-mode.json");
-  if (existsSync(devModeFile)) {
+  // Detect dev mode — updating makes no sense when running from source.
+  // Use the wrapper script as the authoritative signal (same as settings.ts:currentMode()).
+  // dev-mode.json persists even after switching to prod, so it's not reliable.
+  const devModeWrapper = join(homedir(), ".local/bin/rt");
+  if (existsSync(devModeWrapper)) {
     console.log(`\n  ${yellow}⚠${reset}  dev mode is active — you're running from local source.`);
     console.log(`  ${dim}Switch to prod first: rt settings dev-mode prod${reset}\n`);
     process.exit(1);
