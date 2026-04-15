@@ -120,12 +120,12 @@ export async function runDoctor(_args: string[]): Promise<void> {
     check(false, "bun", "not found — https://bun.sh");
   }
 
-  // zellij — recommended (runner)
-  const zellijVersion = commandOutput("zellij --version");
-  if (zellijVersion) {
-    check(true, "zellij", zellijVersion);
+  // tmux — required (rt runner uses it for split panes and popups)
+  const tmuxVersion = commandOutput("tmux -V");
+  if (tmuxVersion) {
+    check(true, "tmux", tmuxVersion);
   } else {
-    warn("zellij", "not installed — brew install zellij  (recommended for rt runner)");
+    warn("tmux", "not installed — brew install tmux  (required for rt runner)");
   }
 
 

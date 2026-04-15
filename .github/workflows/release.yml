@@ -113,7 +113,7 @@ jobs:
 
             depends_on :macos
             depends_on "fzf"
-            depends_on "terminal-notifier" => :recommended
+            depends_on "tmux"
             depends_on "zellij" => :recommended
 
             def install
@@ -164,6 +164,16 @@ jobs:
         run: |
           rt --version
           echo "Binary OK: $(rt --version)"
+
+      - name: Run post-install setup
+        run: |
+          # Run explicitly outside the Homebrew sandbox for full user-env access
+          rt --post-install
+
+      - name: Install and start daemon
+        run: |
+          rt daemon install --launchd
+          sleep 3
 
       - name: Verify installation
         run: rt verify --ci
