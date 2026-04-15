@@ -132,15 +132,15 @@ jobs:
 
             def caveats
               <<~EOS
-                Configure your API tokens:
+                Complete setup (tray app, daemon, shell integration):
+                  rt --post-install
+
+                Then configure your API tokens:
                   rt settings linear token
                   rt settings gitlab token
 
                 Verify the installation:
                   rt verify
-
-                Restart your terminal, then run for detailed diagnostics:
-                  rt doctor
               EOS
             end
           end

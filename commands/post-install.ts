@@ -174,10 +174,45 @@ function installShellIntegrationStep(): void {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
+/**
+ * Returns true when running inside the Homebrew post_install sandbox.
+ * The sandbox blocks writes to ~/Applications, ~/.rt/, ~/.zshrc, etc.
+ * Extensions still work because they're installed via signed app subprocesses.
+ */
+function isHomebrewSandboxed(): boolean {
+  // Homebrew sets these env vars during formula post_install
+  return !!(process.env.HOMEBREW_CELLAR || process.env.HOMEBREW_PREFIX) &&
+    process.env.HOME !== undefined &&
+    // If we can't write to HOME, we're sandboxed
+    (() => {
+      try {
+        const testPath = join(homedir(), ".rt");
+        mkdirSync(testPath, { recursive: true });
+        return false; // write worked — not sandboxed
+      } catch {
+        return true; // EPERM — sandboxed
+      }
+    })();
+}
+
 export async function runPostInstall(): Promise<void> {
   console.log("");
   console.log("  rt post-install");
   console.log("");
+
+  const sandboxed = isHomebrewSandboxed();
+
+  if (sandboxed) {
+    // Only install extensions — they work via signed app subprocesses.
+    // Home-directory writes (tray, daemon, shell) are blocked by the sandbox.
+    info("sandbox", "Homebrew sandbox detected — installing extensions only");
+    installExtensions();
+    console.log("");
+    console.log("  Run the following to complete setup:");
+    console.log("    rt --post-install");
+    console.log("");
+    return;
+  }
 
   installTrayApp();
   installExtensions();
