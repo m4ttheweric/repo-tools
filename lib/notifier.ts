@@ -87,6 +87,7 @@ export const NOTIFICATION_TYPES = [
   { key: "pipeline_passed",   label: "Pipeline passed",     description: "When a running pipeline succeeds" },
   { key: "mr_approved",       label: "MR approved",         description: "When your MR gets fully approved" },
   { key: "mr_merged",         label: "MR merged",           description: "When your MR is merged" },
+  { key: "mr_closed",         label: "MR closed",           description: "When your MR is closed without merging" },
   { key: "mr_ready",          label: "MR ready to merge",   description: "When all blockers are cleared" },
   { key: "merge_conflicts",   label: "Merge conflicts",     description: "When merge conflicts appear on your MR" },
   { key: "needs_rebase",      label: "Needs rebase",        description: "When your branch falls behind target" },
@@ -375,7 +376,7 @@ function detectBranchTransitions(
     const branchShort = branch.length > 40 ? branch.slice(0, 39) + "…" : branch;
     const mrUrl = entry.mr?.webUrl ?? undefined;
 
-    // MR merged (open → merged) — check BEFORE skipping merged MRs
+    // MR merged (opened → merged) — check BEFORE skipping merged MRs
     if (was.mrState === "opened" && now.mrState === "merged") {
       const key = `mr:merged:${branch}`;
       if (!fired.has(key)) {
@@ -384,6 +385,18 @@ function detectBranchTransitions(
         if (isEnabled(prefs, "mr_merged")) notify("MR Merged 🎉", branchShort, mrUrl, "mr_merged");
       } else {
         log(`notify: suppressed duplicate MR merged on ${branch}`);
+      }
+    }
+
+    // MR closed without merge (opened → closed)
+    if (was.mrState === "opened" && now.mrState === "closed") {
+      const key = `mr:closed:${branch}`;
+      if (!fired.has(key)) {
+        fired.add(key);
+        log(`notify: MR closed on ${branch} [was=${was.mrState} now=${now.mrState}]`);
+        if (isEnabled(prefs, "mr_closed")) notify("MR Closed", branchShort, mrUrl, "mr_closed");
+      } else {
+        log(`notify: suppressed duplicate MR closed on ${branch}`);
       }
     }
 

@@ -1017,8 +1017,9 @@ function LiveDashboard({
   const activeBranches: [string, CacheEntry][] = [];
   for (const [branch, entry] of Object.entries(data.branches)) {
     if (!entry.mr) continue;
-    const isMergedOrClosed = entry.mr.status === "merged" || entry.mr.status === "closed";
-    if (isMergedOrClosed) {
+    // Closed MRs are never shown — they're terminal and uninteresting.
+    if (entry.mr.status === "closed") continue;
+    if (entry.mr.status === "merged") {
       if (mergedDays === 0) continue;
       const ts = entry.mr.createdAt ? new Date(entry.mr.createdAt).getTime() : (entry.fetchedAt || 0);
       if (Date.now() - ts > mergedMs) continue;
