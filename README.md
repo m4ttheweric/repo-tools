@@ -218,11 +218,12 @@ From the menu you can restart the daemon, stop it, toggle launch-at-login, and c
 
 ## Requirements
 
-| Dependency | Required | Install |
-|---|---|---|
-| `fzf` | ✅ Required | `brew install fzf` |
-| `tmux` | ✅ Required | `brew install tmux` |
-| `zellij` | Optional | `brew install zellij` |
+| Dependency | Notes |
+|---|---|
+| macOS | Required (Apple Silicon or Intel) |
+| `fzf` | Auto-installed by Homebrew |
+| `tmux` | Auto-installed by Homebrew |
+| `zellij` | Optional — only needed for `rt x --zellij` mode (`brew install zellij`) |
 
 ---
 
