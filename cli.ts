@@ -250,13 +250,6 @@ const TREE: Record<string, CommandNode> = {
     fn: "runDoctor",
   },
 
-  verify: {
-    description: "Verify installation — exits non-zero on failure (CI-safe)",
-    module: "./commands/verify.ts",
-    fn: "runVerify",
-    fullscreen: true,
-  },
-
   open: {
     description: "Open external pages for the current branch",
     subcommands: {
@@ -434,6 +427,11 @@ if (args[0] === "--version" || args[0] === "-V") {
   // Handles tray app, extension install, daemon setup, and shell integration.
   const { runPostInstall } = await import("./commands/post-install.ts");
   await runPostInstall();
+} else if (args[0] === "verify") {
+  // Statically imported so bun --compile includes verify.ts in the bundle.
+  const { runVerify } = await import("./commands/verify.ts");
+  await runVerify(args.slice(1));
+  process.exit(0);
 } else if (args[0] === "--help" || args[0] === "-h") {
   // Non-interactive help — dispatch handles showUsage when !isTTY
   const originalIsTTY = process.stdin.isTTY;
