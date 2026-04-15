@@ -429,6 +429,11 @@ if (args[0] === "--version" || args[0] === "-V") {
   // instead of `bun run lib/daemon.ts`.
   const { startDaemon } = await import("./lib/daemon.ts");
   startDaemon();
+} else if (args[0] === "--post-install") {
+  // Hidden entry point: called by the Homebrew formula's post_install hook.
+  // Handles tray app, extension install, daemon setup, and shell integration.
+  const { runPostInstall } = await import("./commands/post-install.ts");
+  await runPostInstall();
 } else if (args[0] === "--help" || args[0] === "-h") {
   // Non-interactive help — dispatch handles showUsage when !isTTY
   const originalIsTTY = process.stdin.isTTY;

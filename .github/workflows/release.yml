@@ -120,33 +120,10 @@ jobs:
             end
 
             def post_install
-              # Tray app → ~/Applications
-              apps_dir = Pathname.new(Dir.home) / "Applications"
-              apps_dir.mkpath
-              FileUtils.rm_rf(apps_dir / "rt-tray.app")
-              FileUtils.cp_r(prefix / "rt-tray.app", apps_dir / "rt-tray.app")
-              system "xattr", "-cr", (apps_dir / "rt-tray.app").to_s
-
-              # Extension → local editors
-              vsix = (prefix / "rt-context.vsix").to_s
-              system "cursor", "--install-extension", vsix, "--force" if which("cursor")
-              system "code", "--install-extension", vsix, "--force" if which("code")
-
-              # Daemon — install as launchd agent so it auto-starts on login
-              system bin / "rt", "daemon", "install", "--launchd"
-
-              # Shell integration (idempotent)
-              zshrc = Pathname.new(Dir.home) / ".zshrc"
-              marker = "# rt — repo tools"
-              unless zshrc.exist? && zshrc.read.include?(marker)
-                zshrc.open("a") do |f|
-                  f.puts "", marker
-                  f.puts 'export PATH="$HOME/.local/bin:$PATH"'
-                  f.puts 'rt-cd() { local dir=$(rt cd 2>/dev/null); [ -n "$dir" ] && cd "$dir"; }'
-                  f.puts "alias rtcd='rt-cd'"
-                end
-              end
+              # All setup logic lives in the binary — versioned alongside the code.
+              system bin / "rt", "--post-install"
             end
+
 
             def caveats
               <<~EOS
