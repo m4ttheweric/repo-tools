@@ -53,6 +53,11 @@ function installTrayApp(): void {
   const destTray = join(appsDir, "rt-tray.app");
 
   try {
+    // Quit any running instance first — `open` on a running app just activates
+    // the existing process and never boots the newly-copied binary.
+    spawnSync("osascript", ["-e", 'tell application "rt-tray" to quit'], { stdio: "pipe", timeout: 3_000 });
+    spawnSync("pkill", ["-x", "rt-tray"], { stdio: "pipe" });
+
     mkdirSync(appsDir, { recursive: true });
     if (existsSync(destTray)) rmSync(destTray, { recursive: true, force: true });
     cpSync(srcTray, destTray, { recursive: true });
