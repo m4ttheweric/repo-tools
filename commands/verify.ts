@@ -201,20 +201,26 @@ async function runChecks(): Promise<CheckResult[]> {
 
 // ─── Output formatters ────────────────────────────────────────────────────────
 
-function printHuman(results: CheckResult[]): void {
-  console.log("");
-  console.log(`  ${bold}${cyan}rt verify${reset}`);
-  console.log("");
+/**
+ * Shared human-readable format — used for both terminal and CI.
+ * When noColor=true, ANSI codes are stripped so CI logs stay readable.
+ */
+function printHuman(results: CheckResult[], noColor = false): void {
+  const c = (code: string) => (noColor ? "" : code);
 
   const icons: Record<Status, string> = {
-    pass: `${green}✓${reset}`,
-    fail: `${red}✗${reset}`,
-    warn: `${yellow}⚠${reset}`,
-    skip: `${dim}–${reset}`,
+    pass: `${c(green)}✓${c(reset)}`,
+    fail: `${c(red)}✗${c(reset)}`,
+    warn: `${c(yellow)}⚠${c(reset)}`,
+    skip: `${c(dim)}–${c(reset)}`,
   };
 
+  console.log("");
+  console.log(`  ${c(bold)}${c(cyan)}rt verify${c(reset)}`);
+  console.log("");
+
   for (const r of results) {
-    console.log(`  ${icons[r.status]} ${r.name}  ${dim}${r.detail}${reset}`);
+    console.log(`  ${icons[r.status]} ${r.name}  ${c(dim)}${r.detail}${c(reset)}`);
   }
 
   const failures = results.filter((r) => r.status === "fail" && r.severity === "critical");
@@ -223,18 +229,11 @@ function printHuman(results: CheckResult[]): void {
 
   console.log("");
   if (failures.length === 0) {
-    console.log(`  ${green}${bold}✓ all critical checks passed${reset}  ${dim}${passes.length} passed, ${warnings.length} warnings${reset}`);
+    console.log(`  ${c(green)}${c(bold)}✓ all critical checks passed${c(reset)}  ${c(dim)}${passes.length} passed, ${warnings.length} warnings${c(reset)}`);
   } else {
-    console.log(`  ${red}${bold}✗ ${failures.length} critical check${failures.length !== 1 ? "s" : ""} failed${reset}  ${dim}${passes.length} passed, ${warnings.length} warnings${reset}`);
+    console.log(`  ${c(red)}${c(bold)}✗ ${failures.length} critical check${failures.length !== 1 ? "s" : ""} failed${c(reset)}  ${c(dim)}${passes.length} passed, ${warnings.length} warnings${c(reset)}`);
   }
   console.log("");
-}
-
-function printCI(results: CheckResult[]): void {
-  for (const r of results) {
-    const tag = r.status.toUpperCase().padEnd(4);
-    console.log(`[${tag}] ${r.name}: ${r.detail}`);
-  }
 }
 
 function printJSON(results: CheckResult[]): void {
@@ -264,7 +263,7 @@ export async function runVerify(args: string[]): Promise<void> {
   if (isJSON) {
     printJSON(results);
   } else if (isCI) {
-    printCI(results);
+    printHuman(results, /* noColor */ true);
   } else {
     printHuman(results);
   }
