@@ -128,13 +128,6 @@ export async function runDoctor(_args: string[]): Promise<void> {
     warn("zellij", "not installed — brew install zellij  (recommended for rt runner)");
   }
 
-  // terminal-notifier — recommended (notifications)
-  const tnVersion = commandOutput("terminal-notifier -version");
-  if (tnVersion) {
-    check(true, "terminal-notifier", tnVersion);
-  } else {
-    warn("terminal-notifier", "not installed — brew install terminal-notifier  (recommended for notifications)");
-  }
 
   console.log("");
 

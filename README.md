@@ -204,7 +204,6 @@ From the menu you can restart the daemon, stop it, toggle launch-at-login, and c
 |---|---|---|
 | `fzf` | ✅ Required | `brew install fzf` |
 | `zellij` | Recommended | `brew install zellij` |
-| `terminal-notifier` | Recommended | `brew install terminal-notifier` |
 
 ---
 
