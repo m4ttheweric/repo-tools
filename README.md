@@ -8,6 +8,12 @@ Personal developer CLI for branch management, service orchestration, git workflo
 brew install m4ttheweric/tap/rt
 ```
 
+Complete setup (tray app, daemon, shell integration):
+
+```bash
+rt --post-install
+```
+
 Then configure your API tokens:
 
 ```bash
