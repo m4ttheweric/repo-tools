@@ -124,23 +124,18 @@ jobs:
               prefix.install "rt-context.vsix"
             end
 
-            def post_install
-              # All setup logic lives in the binary — versioned alongside the code.
-              system bin / "rt", "--post-install"
-            end
-
+            # No post_install hook: Homebrew runs hooks in a sandbox that can't
+            # write to ~/Applications, ~/.rt, or shell rc files. Setup is handled
+            # by the binary on first invocation (or via \`rt verify\`).
 
             def caveats
               <<~EOS
-                Complete setup (tray app, daemon, shell integration):
-                  rt --post-install
+                Complete setup + verify the install:
+                  rt verify
 
                 Then configure your API tokens:
                   rt settings linear token
                   rt settings gitlab token
-
-                Verify the installation:
-                  rt verify
               EOS
             end
           end
