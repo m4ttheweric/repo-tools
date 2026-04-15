@@ -131,30 +131,23 @@ function installExtensions(): void {
 
 async function installDaemon(): Promise<void> {
   try {
-    const { markDaemonInstalled, isDaemonInstalled, LAUNCHD_PLIST_PATH, LAUNCHD_LABEL } =
-      await import("../lib/daemon-config.ts");
-    const { isDaemonRunning } = await import("../lib/daemon-client.ts");
+    // Use the same binary to install the daemon — avoids complex dynamic imports
+    // and ensures the plist uses the correct binary path.
+    const result = spawnSync(process.execPath, ["daemon", "install", "--launchd"], {
+      stdio: "pipe",
+      timeout: 15_000,
+    });
 
-    const rtPath = process.execPath;
-
-    // Always re-mark installed on upgrade (ensures binary path stays current)
-    markDaemonInstalled(rtPath, "--daemon", "launchd");
-
-    // Write fresh plist
-    const { generatePlist } = await import("../commands/daemon.ts") as any;
-    if (typeof generatePlist === "function") {
-      const plist = generatePlist(rtPath, undefined);
-      mkdirSync(join(HOME, "Library/LaunchAgents"), { recursive: true });
-      writeFileSync(LAUNCHD_PLIST_PATH, plist);
+    if (result.status !== 0) {
+      const msg = result.stderr?.toString().trim() || "non-zero exit";
+      fail("daemon", msg);
+      return;
     }
-
-    // Re-register with launchd (unload first to handle upgrades cleanly)
-    try { execSync(`launchctl unload "${LAUNCHD_PLIST_PATH}" 2>/dev/null`, { stdio: "pipe" }); } catch {}
-    execSync(`launchctl load "${LAUNCHD_PLIST_PATH}"`, { stdio: "pipe" });
 
     ok("daemon", "registered with launchd");
 
     // Wait briefly for it to start
+    const { isDaemonRunning } = await import("../lib/daemon-client.ts");
     for (let i = 0; i < 8; i++) {
       await Bun.sleep(250);
       if (await isDaemonRunning()) { ok("daemon", "running"); return; }
@@ -164,6 +157,7 @@ async function installDaemon(): Promise<void> {
     fail("daemon", err?.message ?? String(err));
   }
 }
+
 
 // ─── 4. Shell integration ─────────────────────────────────────────────────────────
 

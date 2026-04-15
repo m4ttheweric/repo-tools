@@ -93,8 +93,20 @@ async function runChecks(): Promise<CheckResult[]> {
       : null;
     results.push(pass("rt-tray.app", trayVersion ? `v${trayVersion} in ~/Applications` : "installed in ~/Applications"));
   } else {
-    results.push(fail("rt-tray.app", "not found in ~/Applications — formula post_install may have failed"));
+    // Fallback: check if the tray is at least present in the Homebrew prefix
+    // (post_install may not have run yet, but the package IS correct)
+    const rtExec = process.execPath;
+    const prefixTray = [
+      join(rtExec, "../../rt-tray.app"),
+      join(rtExec, "../rt-tray.app"),
+    ].find(existsSync);
+    if (prefixTray) {
+      results.push(warn("rt-tray.app", "in Homebrew prefix but not yet in ~/Applications — re-run: rt --post-install"));
+    } else {
+      results.push(fail("rt-tray.app", "not found in ~/Applications or Homebrew prefix — formula may be missing it"));
+    }
   }
+
 
   // ── Extension VSIX in prefix ──────────────────────────────────────────────
 
