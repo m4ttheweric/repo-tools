@@ -8,7 +8,7 @@
  *   settings uninstall      — remove all rt data for current repo
  */
 
-import { existsSync, rmSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import {
@@ -269,6 +269,130 @@ export async function configureNotifications(): Promise<void> {
 
   if (!hasTN) {
     console.log(`  ${dim}tip: brew install terminal-notifier for clickable notifications with custom icons${reset}`);
+  }
+
+  console.log("");
+}
+
+// ─── Dev mode toggle ─────────────────────────────────────────────────────────
+
+const DEV_MODE_WRAPPER = `${Bun.env.HOME}/.local/bin/rt`;
+const DEV_MODE_CONFIG  = `${Bun.env.HOME}/.rt/dev-mode.json`;
+
+function readDevModeConfig(): { sourcePath?: string } {
+  try {
+    return JSON.parse(readFileSync(DEV_MODE_CONFIG, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function currentMode(): "dev" | "prod" {
+  return existsSync(DEV_MODE_WRAPPER) ? "dev" : "prod";
+}
+
+function detectSourcePath(): string | null {
+  // When running from source (bun run cli.ts), import.meta.dir is the repo root
+  const dir = import.meta.dir;
+  if (dir && !dir.includes("/opt/homebrew") && !dir.includes("/usr/local")) {
+    // Walk up one level if we're in a subdirectory (e.g. commands/)
+    const candidate = dir.endsWith("/commands") ? dir.replace(/\/commands$/, "") : dir;
+    if (existsSync(`${candidate}/cli.ts`)) return candidate;
+  }
+  // Fall back to saved config
+  return readDevModeConfig().sourcePath ?? null;
+}
+
+function enableDevMode(sourcePath: string): void {
+  // Save source path for future use (e.g. when running in prod mode)
+  mkdirSync(`${Bun.env.HOME}/.rt`, { recursive: true });
+  writeFileSync(DEV_MODE_CONFIG, JSON.stringify({ sourcePath }, null, 2));
+
+  // Ensure ~/.local/bin exists
+  mkdirSync(`${Bun.env.HOME}/.local/bin`, { recursive: true });
+
+  // Write wrapper script
+  const wrapper = [
+    `#!/bin/zsh`,
+    `exec bun run "${sourcePath}/cli.ts" "$@"`,
+  ].join("\n") + "\n";
+  writeFileSync(DEV_MODE_WRAPPER, wrapper, { mode: 0o755 });
+}
+
+function disableDevMode(): void {
+  if (existsSync(DEV_MODE_WRAPPER)) {
+    rmSync(DEV_MODE_WRAPPER);
+  }
+}
+
+export async function toggleDevMode(args: string[]): Promise<void> {
+  const { select } = await import("../lib/rt-render.tsx");
+
+  const mode = currentMode();
+  const sourcePath = detectSourcePath();
+
+  // Show current state
+  console.log("");
+  const modeLabel = mode === "dev"
+    ? `${green}dev${reset}  ${dim}(local source)${reset}`
+    : `${bold}prod${reset}  ${dim}(Homebrew binary)${reset}`;
+  console.log(`  ${bold}${cyan}rt dev mode${reset}  currently: ${modeLabel}`);
+  if (mode === "dev" && sourcePath) {
+    console.log(`  ${dim}source: ${sourcePath}${reset}`);
+  }
+  console.log("");
+
+  // Resolve target from args or picker
+  let target = args[0] as "dev" | "prod" | undefined;
+
+  if (target !== "dev" && target !== "prod") {
+    target = await select({
+      message: "Switch to",
+      options: [
+        { value: "dev",  label: "Dev",  hint: `bun run cli.ts — uses local source` },
+        { value: "prod", label: "Prod", hint: "Homebrew binary — uses installed release" },
+      ],
+    }) as "dev" | "prod";
+  }
+
+  if (target === "dev") {
+    // Need a source path
+    let resolvedPath = sourcePath;
+
+    if (!resolvedPath) {
+      const { textInput } = await import("../lib/rt-render.tsx");
+      const entered = await textInput({
+        message: "Path to repo-tools source directory",
+        placeholder: `${Bun.env.HOME}/Documents/GitHub/repo-tools`,
+      });
+      if (!entered?.trim() || !existsSync(`${entered.trim()}/cli.ts`)) {
+        console.log(`  ${red}✗${reset} cli.ts not found at that path\n`);
+        return;
+      }
+      resolvedPath = entered.trim();
+    }
+
+    enableDevMode(resolvedPath!);
+
+    // Warn if ~/.local/bin isn't in PATH
+    const pathDirs = (process.env.PATH ?? "").split(":");
+    const localBinInPath = pathDirs.includes(`${Bun.env.HOME}/.local/bin`);
+
+    console.log(`  ${green}✓${reset} dev mode enabled`);
+    console.log(`  ${dim}wrapper → ${DEV_MODE_WRAPPER}${reset}`);
+    console.log(`  ${dim}source  → ${resolvedPath}${reset}`);
+
+    if (!localBinInPath) {
+      console.log("");
+      console.log(`  ${yellow}⚠${reset}  ~/.local/bin is not in your PATH`);
+      console.log(`  ${dim}add this to ~/.zshrc:${reset}`);
+      console.log(`  ${dim}  export PATH="$HOME/.local/bin:$PATH"${reset}`);
+      console.log(`  ${dim}then restart your terminal or run: source ~/.zshrc${reset}`);
+    }
+
+  } else {
+    disableDevMode();
+    console.log(`  ${green}✓${reset} prod mode enabled  ${dim}(Homebrew binary is now active)${reset}`);
   }
 
   console.log("");
