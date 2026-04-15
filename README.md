@@ -6,27 +6,18 @@ Personal developer CLI for branch management, service orchestration, git workflo
 
 ```bash
 brew install m4ttheweric/tap/rt
-rt                         # first run auto-completes setup (tray, daemon, extensions, shell)
+rt verify                  # completes first-run setup, then verifies everything
 ```
 
-Setup (tray app, daemon, extensions, shell integration) runs automatically the
-first time you invoke `rt`. To re-run it manually at any point:
-
-```bash
-rt --post-install
-```
+`rt verify` runs setup on first use (tray app, daemon, editor extensions, shell
+integration) and then reports the health of each piece — use it any time you
+want to confirm the install is in good shape.
 
 Then configure your API tokens:
 
 ```bash
 rt settings linear token   # Linear API key (for ticket lookup)
 rt settings gitlab token   # GitLab PAT (for MR status)
-```
-
-Verify the installation:
-
-```bash
-rt verify
 ```
 
 For detailed diagnostics (API tokens, repo context, etc.):
@@ -280,7 +271,8 @@ Run the post-install script manually to test the full setup flow on your machine
 rt --post-install
 ```
 
-This is the same code that Homebrew calls after `brew install` or `brew upgrade`. It:
+This is the same code that `rt` auto-runs on its first invocation (and that
+`rt update` re-runs after a Homebrew upgrade). It:
 1. Copies `rt-tray.app` to `~/Applications`
 2. Installs `rt-context.vsix` into all detected editors
 3. Installs the daemon as a launchd agent
