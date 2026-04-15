@@ -162,32 +162,11 @@ jobs:
           rt --version
           echo "Binary OK: $(rt --version)"
 
-      - name: Verify dependencies
-        run: |
-          fzf --version
-          echo "fzf OK"
-
-      - name: Verify tray app installed
-        run: |
-          test -d "$HOME/Applications/rt-tray.app" && echo "rt-tray.app OK" || (echo "rt-tray.app MISSING" && exit 1)
-
-      - name: Verify VSIX in prefix
-        run: |
-          PREFIX=$(brew --prefix m4ttheweric/tap/rt)
-          test -f "$PREFIX/rt-context.vsix" && echo "rt-context.vsix OK" || (echo "rt-context.vsix MISSING" && exit 1)
-
-      - name: Verify daemon installs and starts
-        run: |
-          rt daemon install --launchd
-          sleep 3
-          rt daemon status
-
-      - name: Run rt verify
+      - name: Verify installation
         run: rt verify --ci
 
-      - name: Smoke test git commands (no repo context)
+      - name: Smoke test
         run: |
-          # Commands that work outside a repo should exit cleanly or with a known message
           rt --version
-          rt doctor || true   # doctor is informational only, don't fail CI on warnings
+          rt doctor || true   # informational only, don't fail CI on warnings
 
