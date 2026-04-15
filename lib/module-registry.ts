@@ -32,6 +32,8 @@ import * as status from "../commands/status.tsx";
 import * as mrStatus from "../commands/mr-status.tsx";
 import * as cd from "../commands/cd.ts";
 import * as code from "../commands/code.ts";
+import * as version from "../commands/version.ts";
+import * as update from "../commands/update.ts";
 
 export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/branch.ts": branch,
@@ -60,4 +62,6 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/mr-status.tsx": mrStatus,
   "./commands/cd.ts": cd,
   "./commands/code.ts": code,
+  "./commands/version.ts": version,
+  "./commands/update.ts": update,
 };

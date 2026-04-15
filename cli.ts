@@ -250,6 +250,18 @@ const TREE: Record<string, CommandNode> = {
     fn: "runDoctor",
   },
 
+  update: {
+    description: "Update rt to the latest version via Homebrew",
+    module: "./commands/update.ts",
+    fn: "runUpdate",
+  },
+
+  version: {
+    description: "Show current version and prod/dev mode",
+    module: "./commands/version.ts",
+    fn: "runVersion",
+  },
+
   open: {
     description: "Open external pages for the current branch",
     subcommands: {
