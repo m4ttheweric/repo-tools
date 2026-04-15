@@ -409,13 +409,16 @@ const TREE: Record<string, CommandNode> = {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-const RT_VERSION = process.env.RT_VERSION || "dev";
+// Injected at compile time via `bun build --define RT_VERSION='"v1.x.x"'`.
+// Falls back to "dev" when running from source.
+declare const RT_VERSION: string;
+const _RT_VERSION = (typeof RT_VERSION !== "undefined" ? RT_VERSION : null) ?? process.env.RT_VERSION ?? "dev";
 
 const args = process.argv.slice(2);
 const baseDir = import.meta.dir; // resolve module paths relative to cli.ts
 
 if (args[0] === "--version" || args[0] === "-V") {
-  console.log(`rt ${RT_VERSION}`);
+  console.log(`rt ${_RT_VERSION}`);
 } else if (args[0] === "--daemon") {
   // Hidden entry point: start the daemon server directly.
   // Used when rt is a compiled binary — daemon install spawns `rt --daemon`

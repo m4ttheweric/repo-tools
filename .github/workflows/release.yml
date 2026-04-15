@@ -29,14 +29,10 @@ jobs:
 
       # ── Build rt binary (arm64 + x64) ────────────────────────────────────────
       - name: Compile rt (arm64)
-        run: bun build --compile --target=bun-darwin-arm64 ./cli.ts --outfile rt-arm64
-        env:
-          RT_VERSION: ${{ github.ref_name }}
+        run: bun build --compile --target=bun-darwin-arm64 ./cli.ts --outfile rt-arm64 --define RT_VERSION='"${{ github.ref_name }}"'
 
       - name: Compile rt (x64)
-        run: bun build --compile --target=bun-darwin-x64 ./cli.ts --outfile rt-x64
-        env:
-          RT_VERSION: ${{ github.ref_name }}
+        run: bun build --compile --target=bun-darwin-x64 ./cli.ts --outfile rt-x64 --define RT_VERSION='"${{ github.ref_name }}"'
 
       # ── Build rt-tray.app ────────────────────────────────────────────────────
       - name: Build rt-tray
