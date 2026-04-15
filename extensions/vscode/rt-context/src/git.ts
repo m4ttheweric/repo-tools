@@ -272,6 +272,22 @@ export function getWorktreeName(): string {
  * Handles linked worktrees where `.git` is a file.
  * Returns null if the cwd is not inside a git repo.
  */
+/**
+ * Read the current branch name directly from the .git/HEAD file.
+ * Synchronous and instant — no subprocess. Returns null for detached HEAD.
+ * Use this instead of repo.state.HEAD?.name to avoid VS Code git API lag
+ * after external checkouts.
+ */
+export function readBranchFromHead(gitDir: string): string | null {
+  try {
+    const { readFileSync } = require('fs') as typeof import('fs');
+    const head = readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+    return head.startsWith('ref: refs/heads/') ? head.slice('ref: refs/heads/'.length) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getGitDir(cwd: string): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync('git', ['rev-parse', '--git-dir'], { cwd });

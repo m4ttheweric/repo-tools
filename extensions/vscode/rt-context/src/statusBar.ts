@@ -8,7 +8,7 @@ import { branchCache } from './cache';
 import { fetchBranchFromDaemon } from './daemonClient';
 import { getSecret } from './secrets';
 import type { CachedBranchData, GitExtensionExports } from './types';
-import { getGitApi, findWorkspaceRepo, getRemoteUrl, getRepoRootName, getGitDir } from './git';
+import { getGitApi, findWorkspaceRepo, getRemoteUrl, getRepoRootName, getGitDir, readBranchFromHead } from './git';
 
 // ── Module state ──
 
@@ -19,6 +19,11 @@ let currentTicketUrl: string | null = null;
 let currentMrUrl: string | null = null;
 let currentWorktreePath: string | null = null;
 let updateTimer: ReturnType<typeof setTimeout> | undefined;
+
+// Cached values that are stable for the lifetime of a workspace session.
+// Avoids spawning git subprocesses on every status bar update.
+let cachedGitDir: string | null | undefined; // undefined = not yet resolved
+let cachedWorktreeName: string | undefined;
 
 // ── Public getters for extension command handlers ──
 
@@ -88,13 +93,17 @@ export function waitForGitAndStart(context: vscode.ExtensionContext) {
   // The VS Code Git API can lag after external checkouts (terminal, other tools);
   // HEAD changes immediately on every branch switch, so this gives a near-instant
   // status bar update via FSEvents without any polling.
+  // We use a shorter debounce here (50ms vs 300ms) since HEAD changing is an
+  // unambiguous signal that the checkout is complete, and we read branch from the
+  // file directly (not from the VS Code git API) so we don't need to wait for it.
   const folders = vscode.workspace.workspaceFolders;
   if (folders?.length) {
     getGitDir(folders[0]!.uri.fsPath).then((gitDir) => {
+      cachedGitDir = gitDir; // cache for use in updateStatusBar
       if (!gitDir) return;
       const pattern = new vscode.RelativePattern(vscode.Uri.file(gitDir), 'HEAD');
       const headWatcher = vscode.workspace.createFileSystemWatcher(pattern);
-      context.subscriptions.push(headWatcher.onDidChange(() => scheduleUpdate(context)));
+      context.subscriptions.push(headWatcher.onDidChange(() => scheduleUpdate(context, 50)));
       context.subscriptions.push(headWatcher);
     });
   }
@@ -102,9 +111,9 @@ export function waitForGitAndStart(context: vscode.ExtensionContext) {
 
 // ── Update scheduling ──
 
-export function scheduleUpdate(context: vscode.ExtensionContext) {
+export function scheduleUpdate(context: vscode.ExtensionContext, delayMs = 300) {
   if (updateTimer) clearTimeout(updateTimer);
-  updateTimer = setTimeout(() => updateStatusBar(context), 300);
+  updateTimer = setTimeout(() => updateStatusBar(context), delayMs);
 }
 
 export function clearUpdateTimer() {
@@ -114,7 +123,12 @@ export function clearUpdateTimer() {
 // ── Status bar rendering ──
 
 async function updateStatusBar(context: vscode.ExtensionContext) {
-  const worktreeName = await getRepoRootName();
+  // Use cached worktree name — it's stable for the lifetime of the workspace session.
+  // getRepoRootName() spawns a git subprocess on every call; avoid it after first run.
+  if (!cachedWorktreeName) {
+    cachedWorktreeName = await getRepoRootName();
+  }
+  const worktreeName = cachedWorktreeName;
   const gitApi = getGitApi();
 
   // Store the worktree folder path for the Finder action
@@ -133,7 +147,12 @@ async function updateStatusBar(context: vscode.ExtensionContext) {
   }
 
   const repo = (await findWorkspaceRepo(gitApi)) ?? gitApi.repositories[0]!;
-  const branch = repo.state.HEAD?.name;
+
+  // Read branch directly from .git/HEAD — VS Code's git API (repo.state.HEAD) updates
+  // asynchronously after a checkout and can lag by hundreds of milliseconds, causing
+  // the status bar to show the old branch through an extra debounce cycle.
+  // Reading the file directly is synchronous and always reflects the true current branch.
+  const branch = (cachedGitDir ? readBranchFromHead(cachedGitDir) : null) ?? repo.state.HEAD?.name;
 
   if (!branch) {
     statusBarItem.text = `$(folder) ${worktreeName}  │  $(git-branch) (detached)`;
