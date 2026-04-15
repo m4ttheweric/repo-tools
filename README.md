@@ -210,30 +210,102 @@ From the menu you can restart the daemon, stop it, toggle launch-at-login, and c
 
 ## Development
 
-This repo uses [Bun](https://bun.sh). Clone and run directly from source:
+This repo uses [Bun](https://bun.sh).
+
+### Day-to-day dev (source mode)
+
+The normal way to develop — no compile step, changes are instant:
 
 ```bash
 git clone https://github.com/m4ttheweric/repo-tools.git
 cd repo-tools
 bun install
-bun run cli.ts
+bun run cli.ts          # runs the CLI from source
+bun run cli.ts doctor   # run any subcommand the same way
 ```
 
-To build a local compiled binary:
+`rt --version` will report `dev` when running from source.
+
+### Switching between dev and production
+
+Once you have a Homebrew install alongside your source checkout, use the built-in toggle:
 
 ```bash
-bun build --compile ./cli.ts --outfile rt
-./rt --version
+rt settings dev-mode        # interactive picker: dev ↔ prod
+rt settings dev-mode dev    # switch to local source
+rt settings dev-mode prod   # switch back to Homebrew binary
 ```
 
-To install rt-tray locally:
+**How it works:**
+- `dev` mode writes a wrapper script at `~/.local/bin/rt` that calls `bun run /path/to/cli.ts "$@"`
+- `prod` mode removes that wrapper, letting `/opt/homebrew/bin/rt` take over
+- `~/.local/bin` is added to your PATH automatically (in `~/.zshrc`) during `brew install` and on first `dev-mode dev`
+- The source path is remembered in `~/.rt/dev-mode.json` — no re-entry needed when toggling back
+
+`rt --version` always tells you which is active: `dev` vs `v1.x.x`.
+
+### Testing the installer
+
+Run the post-install script manually to test the full setup flow on your machine:
+
+```bash
+rt --post-install
+```
+
+This is the same code that Homebrew calls after `brew install` or `brew upgrade`. It:
+1. Copies `rt-tray.app` to `~/Applications`
+2. Installs `rt-context.vsix` into all detected editors
+3. Installs the daemon as a launchd agent
+4. Writes shell integration to `~/.zshrc` (idempotent)
+
+### Verifying an installation
+
+```bash
+rt verify           # human output, exits 1 on critical failures
+rt verify --ci      # same output, no ANSI colors (for CI logs)
+rt verify --json    # structured JSON for tooling
+```
+
+Critical checks: binary on PATH, fzf, tray app, vsix, daemon installed + running + API responding.
+
+### Building a local compiled binary
+
+Use this to test how the release binary behaves (compiled mode, no bun dependency):
+
+```bash
+bun build --compile ./cli.ts --outfile /tmp/rt-local
+/tmp/rt-local --version
+/tmp/rt-local doctor
+```
+
+### rt-context extension
+
+```bash
+cd extensions/vscode/rt-context
+bun install
+bun run watch       # live rebuild during development
+
+# Package a .vsix manually
+bun run package     # outputs rt-context-x.x.x.vsix
+
+# Install into local editors
+bun run install-local   # packages + installs into Cursor
+# or via the CLI:
+rt settings extension
+```
+
+### rt-tray
 
 ```bash
 cd rt-tray
-./build.sh install
+./build.sh debug    # build and open in Xcode simulator
+./build.sh release  # build release .app
+./build.sh install  # build + copy to ~/Applications
 ```
 
-### Release Process
+The tray app reads its version from `Info.plist` (`CFBundleShortVersionString`), which the CI build injects via `git describe`. Local builds report the version as whatever is in the plist at build time.
+
+### Release process
 
 Push a version tag — CI handles everything else:
 
@@ -244,7 +316,10 @@ git push --tags
 
 GitHub Actions will:
 1. Compile `rt` for arm64 + x64
-2. Build `rt-tray.app` with version baked in
+2. Build `rt-tray.app` with version baked into `Info.plist`
 3. Package `rt-context.vsix`
 4. Create a GitHub Release with bundled tarballs
-5. Update `m4ttheweric/homebrew-tap` formula with new URLs and SHA256s
+5. Update `m4ttheweric/homebrew-tap` formula with real URLs + SHA256s
+6. Run `rt verify --ci` on a fresh `macos-latest` runner to confirm the install works
+
+The formula's `post_install` is a single call: `rt --post-install`. All real setup logic lives in `commands/post-install.ts`.
