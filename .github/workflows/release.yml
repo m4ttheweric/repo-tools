@@ -43,8 +43,8 @@ jobs:
       - name: Build extension
         run: |
           cd extensions/vscode/rt-context
-          npm install
-          npm run package
+          bun install
+          bun run package
 
       # ── Bundle release archives ──────────────────────────────────────────────
       - name: Create release bundles

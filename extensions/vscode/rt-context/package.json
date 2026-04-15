@@ -74,8 +74,8 @@
   "scripts": {
     "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --minify",
     "watch": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --watch",
-    "package": "pnpm build && pnpm exec vsce package --no-dependencies",
-    "install-local": "pnpm package && cursor --install-extension rt-context-0.1.0.vsix"
+    "package": "bun run build && bunx vsce package --no-dependencies",
+    "install-local": "bun run package && cursor --install-extension rt-context-0.1.0.vsix"
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",
