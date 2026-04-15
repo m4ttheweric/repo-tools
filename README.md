@@ -203,7 +203,8 @@ From the menu you can restart the daemon, stop it, toggle launch-at-login, and c
 | Dependency | Required | Install |
 |---|---|---|
 | `fzf` | ✅ Required | `brew install fzf` |
-| `zellij` | Recommended | `brew install zellij` |
+| `tmux` | ✅ Required | `brew install tmux` |
+| `zellij` | Optional | `brew install zellij` |
 
 ---
 
