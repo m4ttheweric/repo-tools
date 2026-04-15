@@ -8,7 +8,7 @@
  *   settings uninstall      — remove all rt data for current repo
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import {
@@ -24,6 +24,7 @@ import {
   NOTIFICATION_TYPES,
 } from "../lib/notifier.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
+import { installShellIntegration } from "../lib/shell-integration.ts";
 
 // ─── Linear token ────────────────────────────────────────────────────────────
 
@@ -374,20 +375,16 @@ export async function toggleDevMode(args: string[]): Promise<void> {
 
     enableDevMode(resolvedPath!);
 
-    // Ensure ~/.local/bin is in PATH via ~/.zshrc (idempotent)
-    const zshrc = `${Bun.env.HOME}/.zshrc`;
-    const localBinLine = 'export PATH="$HOME/.local/bin:$PATH"';
-    const zshrcContent = existsSync(zshrc) ? readFileSync(zshrc, "utf8") : "";
-    if (!zshrcContent.includes(".local/bin")) {
-      const block = `\n# rt — local bin (dev mode)\n${localBinLine}\n`;
-      writeFileSync(zshrc, zshrcContent + block);
-      console.log(`  ${green}✓${reset} added ~/.local/bin to PATH in ~/.zshrc`);
+    // Ensure shell integration exists (idempotent — handles zsh/bash/fish)
+    const shellResult = installShellIntegration();
+    if (shellResult.written) {
+      console.log(`  ${green}✓${reset} added shell integration to ${shellResult.rcPath}`);
     }
 
     console.log(`  ${green}✓${reset} dev mode enabled`);
     console.log(`  ${dim}wrapper → ${DEV_MODE_WRAPPER}${reset}`);
     console.log(`  ${dim}source  → ${resolvedPath}${reset}`);
-    console.log(`  ${dim}restart your terminal (or: source ~/.zshrc) to activate${reset}`);
+    console.log(`  ${dim}restart your terminal (or: source ${shellResult.rcPath ?? "~/.zshrc"}) to activate${reset}`);
 
   } else {
     disableDevMode();
