@@ -374,21 +374,20 @@ export async function toggleDevMode(args: string[]): Promise<void> {
 
     enableDevMode(resolvedPath!);
 
-    // Warn if ~/.local/bin isn't in PATH
-    const pathDirs = (process.env.PATH ?? "").split(":");
-    const localBinInPath = pathDirs.includes(`${Bun.env.HOME}/.local/bin`);
+    // Ensure ~/.local/bin is in PATH via ~/.zshrc (idempotent)
+    const zshrc = `${Bun.env.HOME}/.zshrc`;
+    const localBinLine = 'export PATH="$HOME/.local/bin:$PATH"';
+    const zshrcContent = existsSync(zshrc) ? readFileSync(zshrc, "utf8") : "";
+    if (!zshrcContent.includes(".local/bin")) {
+      const block = `\n# rt — local bin (dev mode)\n${localBinLine}\n`;
+      writeFileSync(zshrc, zshrcContent + block);
+      console.log(`  ${green}✓${reset} added ~/.local/bin to PATH in ~/.zshrc`);
+    }
 
     console.log(`  ${green}✓${reset} dev mode enabled`);
     console.log(`  ${dim}wrapper → ${DEV_MODE_WRAPPER}${reset}`);
     console.log(`  ${dim}source  → ${resolvedPath}${reset}`);
-
-    if (!localBinInPath) {
-      console.log("");
-      console.log(`  ${yellow}⚠${reset}  ~/.local/bin is not in your PATH`);
-      console.log(`  ${dim}add this to ~/.zshrc:${reset}`);
-      console.log(`  ${dim}  export PATH="$HOME/.local/bin:$PATH"${reset}`);
-      console.log(`  ${dim}then restart your terminal or run: source ~/.zshrc${reset}`);
-    }
+    console.log(`  ${dim}restart your terminal (or: source ~/.zshrc) to activate${reset}`);
 
   } else {
     disableDevMode();

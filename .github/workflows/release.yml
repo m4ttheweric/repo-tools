@@ -141,7 +141,8 @@ jobs:
               unless zshrc.exist? && zshrc.read.include?(marker)
                 zshrc.open("a") do |f|
                   f.puts "", marker
-                  f.puts 'rt-cd() { local dir=\$(rt cd 2>/dev/null); [ -n "\$dir" ] && cd "\$dir"; }'
+                  f.puts 'export PATH="$HOME/.local/bin:$PATH"'
+                  f.puts 'rt-cd() { local dir=$(rt cd 2>/dev/null); [ -n "$dir" ] && cd "$dir"; }'
                   f.puts "alias rtcd='rt-cd'"
                 end
               end
