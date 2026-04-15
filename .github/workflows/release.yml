@@ -51,9 +51,12 @@ jobs:
           VERSION="${GITHUB_REF_NAME}"
           VSIX=$(ls extensions/vscode/rt-context/*.vsix | head -1)
 
-          # Ad-hoc sign binaries so macOS Gatekeeper doesn't kill them
-          codesign --force --sign - rt-arm64
-          codesign --force --sign - rt-x64
+          # Sign with Bun JIT entitlements — required so macOS doesn't kill
+          # the process when Bun's JS engine maps executable memory.
+          codesign --remove-signature rt-arm64
+          codesign --force --sign - --entitlements scripts/entitlements.plist rt-arm64
+          codesign --remove-signature rt-x64
+          codesign --force --sign - --entitlements scripts/entitlements.plist rt-x64
 
           # arm64 bundle
           mkdir -p dist/arm64
