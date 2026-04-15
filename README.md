@@ -41,10 +41,16 @@ rt doctor
 ### Upgrade
 
 ```bash
+rt update
+```
+
+Or via Homebrew directly:
+
+```bash
 brew upgrade rt
 ```
 
-The tray app also checks for updates automatically and can run the upgrade for you.
+The tray app also checks for updates automatically and can run `rt update` for you.
 
 ---
 

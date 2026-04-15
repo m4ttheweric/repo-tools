@@ -435,6 +435,10 @@ if (args[0] === "--version" || args[0] === "-V") {
   const { runVerify } = await import("./commands/verify.ts");
   await runVerify(args.slice(1));
   process.exit(0);
+} else if (args[0] === "update") {
+  const { runUpdate } = await import("./commands/update.ts");
+  await runUpdate(args.slice(1));
+  process.exit(0);
 } else if (args[0] === "--help" || args[0] === "-h") {
   // Non-interactive help — dispatch handles showUsage when !isTTY
   const originalIsTTY = process.stdin.isTTY;
