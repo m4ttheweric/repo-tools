@@ -250,6 +250,11 @@ const TREE: Record<string, CommandNode> = {
     fn: "runDoctor",
   },
 
+  verify: {
+    description: "Verify installation — exits non-zero on failure (CI-safe)",
+    module: "./commands/verify.ts",
+    fn: "runVerify",
+  },
 
   open: {
     description: "Open external pages for the current branch",
