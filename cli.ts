@@ -431,7 +431,7 @@ if (args[0] === "--version" || args[0] === "-V") {
   const { runPostInstall } = await import("./commands/post-install.ts");
   await runPostInstall();
 } else if (args[0] === "verify") {
-  // Statically imported so bun --compile includes verify.ts in the bundle.
+  // verify and update are always allowed without auto-setup
   const { runVerify } = await import("./commands/verify.ts");
   await runVerify(args.slice(1));
   process.exit(0);
@@ -439,12 +439,28 @@ if (args[0] === "--version" || args[0] === "-V") {
   const { runUpdate } = await import("./commands/update.ts");
   await runUpdate(args.slice(1));
   process.exit(0);
-} else if (args[0] === "--help" || args[0] === "-h") {
-  // Non-interactive help — dispatch handles showUsage when !isTTY
-  const originalIsTTY = process.stdin.isTTY;
-  Object.defineProperty(process.stdin, "isTTY", { value: false });
-  await dispatch(TREE, [], ["rt"], baseDir);
-  Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY });
 } else {
-  await dispatch(TREE, args, ["rt"], baseDir);
+  // ── First-run auto-setup ──────────────────────────────────────────────────
+  // If daemon.json doesn't exist, post-install hasn't completed outside the
+  // Homebrew sandbox. Run it now transparently before the requested command.
+  if (process.env.CI !== "true" && process.env.RT_SKIP_SETUP !== "1") {
+    const { existsSync } = await import("fs");
+    const { join } = await import("path");
+    const { homedir } = await import("os");
+    if (!existsSync(join(homedir(), ".rt", "daemon.json"))) {
+      console.log("\n  rt — first run detected, completing setup…\n");
+      const { runPostInstall } = await import("./commands/post-install.ts");
+      await runPostInstall();
+    }
+  }
+
+  // ── Command dispatch ────────────────────────────────────────────────────
+  if (args[0] === "--help" || args[0] === "-h") {
+    const originalIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", { value: false });
+    await dispatch(TREE, [], ["rt"], baseDir);
+    Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY });
+  } else {
+    await dispatch(TREE, args, ["rt"], baseDir);
+  }
 }
