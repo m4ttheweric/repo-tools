@@ -6,9 +6,11 @@ Personal developer CLI for branch management, service orchestration, git workflo
 
 ```bash
 brew install m4ttheweric/tap/rt
+rt                         # first run auto-completes setup (tray, daemon, extensions, shell)
 ```
 
-Complete setup (tray app, daemon, shell integration):
+Setup (tray app, daemon, extensions, shell integration) runs automatically the
+first time you invoke `rt`. To re-run it manually at any point:
 
 ```bash
 rt --post-install
@@ -56,7 +58,10 @@ Or via Homebrew directly:
 brew upgrade rt
 ```
 
-The tray app also checks for updates automatically and can run `rt update` for you.
+The tray app checks for new releases automatically and, when one is available,
+prompts you to run `rt update` from your terminal (it never runs the upgrade
+itself). `rt update` also re-runs post-install so the tray app, daemon, and
+editor extensions are refreshed in a single step.
 
 ---
 
@@ -166,6 +171,7 @@ rt settings linear team       # Set default Linear team
 rt settings gitlab token      # Set GitLab personal access token
 rt settings extension         # Install RT Context extension into local editors
 rt settings notifications     # Toggle notification preferences
+rt settings dev-mode          # Toggle between local source and Homebrew binary
 rt settings uninstall         # Remove all rt data for this repo
 ```
 
@@ -176,7 +182,9 @@ rt x                      # Script runner with setup/teardown lifecycle
 rt build                  # Interactive turbo build selector
 rt hooks                  # Toggle git hooks on/off
 rt doctor                 # Environment health check
-rt --version              # Print version
+rt version                # Print version + mode (dev/prod)
+rt update                 # Upgrade to the latest release via Homebrew
+rt --version              # Print version (short)
 ```
 
 ---
@@ -261,7 +269,8 @@ rt settings dev-mode prod   # switch back to Homebrew binary
 - `~/.local/bin` is added to your PATH automatically (in your shell rc file) during `brew install` and on first `dev-mode dev`
 - The source path is remembered in `~/.rt/dev-mode.json` — no re-entry needed when toggling back
 
-`rt --version` always tells you which is active: `dev` vs `v1.x.x`.
+`rt version` tells you which is active (and the source path in dev mode);
+`rt --version` is the short form that just prints the version string.
 
 ### Testing the installer
 
@@ -341,4 +350,9 @@ GitHub Actions will:
 5. Update `m4ttheweric/homebrew-tap` formula with real URLs + SHA256s
 6. Run `rt verify --ci` on a fresh `macos-latest` runner to confirm the install works
 
-The formula's `post_install` is a single call: `rt --post-install`. All real setup logic lives in `commands/post-install.ts`.
+The formula has **no** `post_install` hook — Homebrew runs formula hooks in a
+sandbox that can't write to `~/Applications`, `~/.rt`, or shell rc files, so
+setup is deferred to the binary itself. `cli.ts` detects a missing
+`~/.rt/daemon.json` on first invocation and transparently runs
+`commands/post-install.ts`, which is also what `rt --post-install` and the
+post-upgrade step of `rt update` invoke.
