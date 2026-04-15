@@ -380,7 +380,10 @@ export async function refreshAllMRs(
         const provider = new GitLabProvider(remote.host, secrets.gitlabToken);
         const branchNames = branches.map(b => b.branch).filter(b => b !== "");
         if (branchNames.length > 0) {
-          // Single query fetching all states (glance-sdk 0.5.3+)
+          // Fetch all states in one query. The cache keeps whatever state
+          // the SDK returns (opened/merged/closed); rt status hides closed
+          // and recently-merged-only, and the notifier uses the state to
+          // fire distinct merged vs closed transitions.
           mrsByBranch = await provider.fetchPullRequestsByBranches(remote.projectPath, branchNames, 'all');
           mrFetchSucceeded = true;
         }
