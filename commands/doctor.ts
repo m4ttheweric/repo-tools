@@ -270,7 +270,7 @@ export async function runDoctor(_args: string[]): Promise<void> {
         check(false, "daemon", `installed but not running — run: ${bold}rt daemon start${reset}`);
       }
     } else {
-      warn("daemon", `not installed (optional) — run: ${bold}rt daemon install${reset}`);
+      warn("daemon", `not installed — run: ${bold}rt daemon install${reset}  (use launchd mode for auto-start on login)`);
     }
   }
 

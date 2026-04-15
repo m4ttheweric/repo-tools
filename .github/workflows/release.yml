@@ -132,8 +132,8 @@ jobs:
               system "cursor", "--install-extension", vsix, "--force" if which("cursor")
               system "code", "--install-extension", vsix, "--force" if which("code")
 
-              # Daemon
-              system bin / "rt", "daemon", "install", "--manual"
+              # Daemon — install as launchd agent so it auto-starts on login
+              system bin / "rt", "daemon", "install", "--launchd"
 
               # Shell integration (idempotent)
               zshrc = Pathname.new(Dir.home) / ".zshrc"
