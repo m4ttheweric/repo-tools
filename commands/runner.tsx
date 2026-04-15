@@ -523,6 +523,11 @@ async function runOnce(
       knownRepos,
     },
     theme: runnerTheme,
+    // In the compiled binary, Rezi's worker entry lives on the virtual
+    // bunfs that a worker_threads.Worker can't see — forcing inline mode
+    // keeps rendering on the main thread and avoids the "Unable to locate
+    // worker entry" error. Dev (bun) keeps the faster worker path.
+    config: IS_COMPILED_RT ? { executionMode: "inline" } : undefined,
   });
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -2167,7 +2172,14 @@ async function runOnce(
     // If the backend fails to start (e.g. TTY not available, or race with
     // pollDaemon losing), log a clear message instead of crashing silently.
     const msg = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error && err.stack ? err.stack : msg;
     process.stderr.write(`\r\n\x1b[31m  ✗  rt runner failed to start: ${msg}\x1b[0m\r\n`);
+    try {
+      const logPath = join(RT_ROOT, "runner-error.log");
+      writeFileSync(logPath, `[${new Date().toISOString()}] ${stack}\n`);
+      process.stderr.write(`\x1b[2m     details: ${logPath}\x1b[0m\r\n`);
+    } catch { /* best-effort */ }
+    process.exitCode = 1;
   }
 
   appRunning = false;
@@ -2214,9 +2226,13 @@ export async function showRunner(args: string[], _ctx: CommandContext): Promise<
   // tmux is required — [t], [Enter], and [a] all open split panes.
   // If not already inside tmux, re-exec inside a new session transparently.
   if (!process.env.TMUX) {
+    // Wrap the re-exec in a shell so a crash inside tmux doesn't silently
+    // eat its own error. On non-zero exit we pause so the user can see it.
+    const innerCmd = `${RT_SHELL} runner ${args.map((a) => JSON.stringify(a)).join(" ")}`;
+    const shellCmd = `${innerCmd}; rc=$?; if [ $rc -ne 0 ]; then printf '\\n\\033[31m  rt runner exited with code %s — press enter to close\\033[0m' "$rc"; read _; fi; exit $rc`;
     const result = spawnSync(
       "tmux",
-      ["new-session", "--", ...RT_INVOKE, "runner", ...args],
+      ["new-session", "--", "sh", "-c", shellCmd],
       { stdio: "inherit" },
     );
     process.exit(result.status ?? 0);
