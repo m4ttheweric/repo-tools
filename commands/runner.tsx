@@ -59,6 +59,19 @@ import { willPrompt } from "./code.ts";
 
 const CLI_PATH = join(RT_ROOT, "cli.ts");
 
+// In dev mode, `process.execPath` is the bun interpreter and we need to pass
+// cli.ts as the first arg. In prod (compiled binary), `process.execPath` IS
+// the rt binary — cli.ts lives on a virtual bunfs filesystem that only the
+// current process can see, so passing it as an arg would make a fresh child
+// process fail with "unknown command: /$bunfs/root/cli.ts".
+const IS_COMPILED_RT = basename(process.execPath) !== "bun";
+// Argv prefix for spawn/execFile calls: ["bun", "/path/cli.ts"] or ["rt"].
+const RT_INVOKE: readonly string[] = IS_COMPILED_RT
+  ? [process.execPath]
+  : [process.execPath, CLI_PATH];
+// Shell-escaped prefix for embedding into shell command strings.
+const RT_SHELL = RT_INVOKE.map((s) => JSON.stringify(s)).join(" ");
+
 /**
  * Open a vertical tmux split running `cmd`.
  * Always targets `targetPane` (the display pane) so the runner pane is never
@@ -580,7 +593,7 @@ async function runOnce(
   /** Shell loop that keeps attaching to `processId` and shows a "stopped" banner on exit. */
   function attachLoopCmd(processId: string): string {
     return processId
-      ? `while true; do ${process.execPath} ${CLI_PATH} attach ${processId} 2>&1 || true; printf '\\033[2m  ─ stopped ─\\033[0m\\r\\n'; sleep 1; done`
+      ? `while true; do ${RT_SHELL} attach ${processId} 2>&1 || true; printf '\\033[2m  ─ stopped ─\\033[0m\\r\\n'; sleep 1; done`
       : `while true; do printf '\\033[2m  no service\\033[0m\\r\\n'; sleep 5; done`;
   }
 
@@ -601,7 +614,7 @@ async function runOnce(
   function showMrPane(branch: string): void {
     const displayPaneId = displayedLaneId ? lanePanes.get(displayedLaneId) : undefined;
     if (!displayPaneId) return;
-    const cmd = `${process.execPath} ${CLI_PATH} mr-status ${branch || ""}`;
+    const cmd = `${RT_SHELL} mr-status ${branch || ""}`;
     const result = spawnSync("tmux", [
       "split-window", "-v", "-l", "50%", "-t", displayPaneId,
       "-P", "-F", "#{pane_id}", "-d", cmd,
@@ -1682,7 +1695,7 @@ async function runOnce(
       const laneRepo = state.knownRepos.find((r) => r.repoName === lane.repoName);
       const laneRepoRoot = laneRepo?.worktrees[0]?.path ?? process.cwd();
       const tmpFile = join(tmpdir(), `rt-resolve-${Date.now()}.json`);
-      const cmd = `${process.execPath} ${CLI_PATH} run --resolve-only --repo ${lane.repoName} > ${tmpFile}`;
+      const cmd = `${RT_SHELL} run --resolve-only --repo ${lane.repoName} > ${tmpFile}`;
       openTempPane(cmd, { cwd: laneRepoRoot, target: displayPane() });
 
       const poll = setInterval(() => {
@@ -1821,7 +1834,7 @@ async function runOnce(
       if (!entry) return;
       if (willPrompt(entry.worktree)) {
         // Needs a picker — open in a popup so the UI is visible
-        openPopup(`${process.execPath} ${CLI_PATH} code`, {
+        openPopup(`${RT_SHELL} code`, {
           cwd: entry.worktree,
           title: "rt code",
           width: "100",
@@ -1829,7 +1842,7 @@ async function runOnce(
         });
       } else {
         // No picker needed — fire rt code directly with RT_BATCH=1 to bypass TTY guard
-        spawnSync(process.execPath, [CLI_PATH, "code"], {
+        spawnSync(RT_INVOKE[0]!, [...RT_INVOKE.slice(1), "code"], {
           cwd: entry.worktree,
           stdio: "pipe",
           env: { ...process.env, RT_BATCH: "1" },
@@ -1844,7 +1857,7 @@ async function runOnce(
       if (!lane) return;
       const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
       if (!entry) return;
-      openPopup(`${process.execPath} ${CLI_PATH} branch`, {
+      openPopup(`${RT_SHELL} branch`, {
         cwd: entry.worktree,
         title: "rt branch",
         width: "100",
@@ -1872,7 +1885,7 @@ async function runOnce(
       if (!lane) return;
       const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
       if (!entry) return;
-      openPopup(`${process.execPath} ${CLI_PATH} run`, {
+      openPopup(`${RT_SHELL} run`, {
         cwd: entry.targetDir,
         title: "rt run",
         width: "100",
@@ -1947,7 +1960,7 @@ async function runOnce(
           break;
         }
         const tmpFile = join(tmpdir(), `rt-lane-${Date.now()}.json`);
-        const cmd = `${process.execPath} ${CLI_PATH} pick-lane > ${tmpFile}`;
+        const cmd = `${RT_SHELL} pick-lane > ${tmpFile}`;
         openTempPane(cmd, { target: displayPane() });
         const poll = setInterval(() => {
           if (!existsSync(tmpFile)) return;
@@ -2203,7 +2216,7 @@ export async function showRunner(args: string[], _ctx: CommandContext): Promise<
   if (!process.env.TMUX) {
     const result = spawnSync(
       "tmux",
-      ["new-session", "--", process.execPath, CLI_PATH, "runner", ...args],
+      ["new-session", "--", ...RT_INVOKE, "runner", ...args],
       { stdio: "inherit" },
     );
     process.exit(result.status ?? 0);
