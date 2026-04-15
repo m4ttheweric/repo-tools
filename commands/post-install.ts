@@ -1,7 +1,7 @@
 /**
- * rt --post-install — Run automatically by the Homebrew formula after install/upgrade.
+ * rt --post-install — First-run setup, auto-triggered on the first `rt` invocation.
  *
- * Handles all setup that would otherwise live in the formula's post_install block:
+ * Handles all setup steps:
  *   1. Copy rt-tray.app → ~/Applications (remove quarantine)
  *   2. Install rt-context.vsix into all detected editors (best-effort, non-interactive)
  *   3. Install daemon as a launchd agent (auto-starts on login)
@@ -14,8 +14,8 @@
  *   - Works correctly for both fresh install and upgrade
  */
 
-import { execSync, spawnSync } from "child_process";
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, rmSync, cpSync } from "fs";
+import { spawnSync } from "child_process";
+import { existsSync, readdirSync, mkdirSync, rmSync, cpSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
 import { installShellIntegration } from "../lib/shell-integration.ts";
