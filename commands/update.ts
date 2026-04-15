@@ -69,5 +69,13 @@ export async function runUpdate(_args: string[]): Promise<void> {
     }
   }
 
+  // Run post-install using the newly installed binary so it finds the new
+  // tray app / extension relative to its own path, and restarts the daemon.
+  const newRt = spawnSync("which", ["rt"], { encoding: "utf8" }).stdout.trim();
+  if (newRt) {
+    console.log(`\n  running post-install setup…\n`);
+    spawnSync(newRt, ["--post-install"], { stdio: "inherit", env: { ...process.env, RT_SKIP_SETUP: "1" } });
+  }
+
   console.log(`\n  ${green}✓${reset}  rt updated — restart your terminal for the new version\n`);
 }
