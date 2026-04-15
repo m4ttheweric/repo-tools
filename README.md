@@ -43,12 +43,6 @@ rt doctor
 rt update
 ```
 
-Or via Homebrew directly:
-
-```bash
-brew upgrade rt
-```
-
 The tray app checks for new releases automatically and, when one is available,
 prompts you to run `rt update` from your terminal (it never runs the upgrade
 itself). `rt update` also re-runs post-install so the tray app, daemon, and
@@ -63,6 +57,28 @@ Run `rt` with no arguments for an interactive menu. All commands support direct 
 ```bash
 rt <command> [subcommand] [args]
 ```
+
+### Navigation
+
+```bash
+rt cd                     # Fuzzy worktree/repo directory picker
+rt code                   # Open a worktree in your preferred editor
+```
+
+Shell alias added by install:
+```bash
+rtcd                      # cd into a picked worktree (wraps rt cd)
+```
+
+### Runner
+
+```bash
+rt runner                 # Multiplexed service runner dashboard (fullscreen TUI)
+rt attach                 # Attach terminal to a daemon-managed process
+rt run                    # Interactive script runner — repo → worktree → package → script
+```
+
+The runner dashboard manages multiple long-running processes across worktrees with live output streaming and port tracking.
 
 ### Branch
 
@@ -94,15 +110,7 @@ rt sync                   # Rebase current worktree onto master + push
 rt sync all               # Sync all worktrees in the repo
 ```
 
-### Runner
 
-```bash
-rt runner                 # Multiplexed service runner dashboard (fullscreen TUI)
-rt attach                 # Attach terminal to a daemon-managed process
-rt run                    # Interactive script runner — repo → worktree → package → script
-```
-
-The runner dashboard manages multiple long-running processes across worktrees with live output streaming and port tracking.
 
 ### Status
 
@@ -111,17 +119,6 @@ rt status                 # Live branch dashboard — MR actions, pipeline & rev
 rt port                   # Port scanner + killer (daemon-powered, zero-config)
 ```
 
-### Navigation
-
-```bash
-rt cd                     # Fuzzy worktree/repo directory picker
-rt code                   # Open a worktree in your preferred editor
-```
-
-Shell alias added by install:
-```bash
-rtcd                      # cd into a picked worktree (wraps rt cd)
-```
 
 ### Open
 
@@ -229,6 +226,7 @@ From the menu you can restart the daemon, stop it, toggle launch-at-login, and c
 ## Development
 
 This repo uses [Bun](https://bun.sh).
+
 
 ### Day-to-day dev (source mode)
 
