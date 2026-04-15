@@ -15,7 +15,13 @@ rt settings linear token   # Linear API key (for ticket lookup)
 rt settings gitlab token   # GitLab PAT (for MR status)
 ```
 
-Verify everything is working:
+Verify the installation:
+
+```bash
+rt verify
+```
+
+For detailed diagnostics (API tokens, repo context, etc.):
 
 ```bash
 rt doctor
@@ -29,7 +35,7 @@ rt doctor
 | `rt-tray.app` | Menu bar app — daemon health, notifications, auto-updates |
 | `rt-context` extension | VS Code/Cursor — branch + ticket in status bar |
 | Background daemon | Caches MR/branch data, scans ports, guards git hooks |
-| `fzf` | Required for all fuzzy pickers |
+| `fzf` + `tmux` | Required dependencies (installed automatically) |
 | Shell alias | `rtcd` — fast worktree directory switching |
 
 ### Upgrade

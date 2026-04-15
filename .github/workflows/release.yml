@@ -129,7 +129,10 @@ jobs:
                   rt settings linear token
                   rt settings gitlab token
 
-                Restart your terminal, then verify:
+                Verify the installation:
+                  rt verify
+
+                Restart your terminal, then run for detailed diagnostics:
                   rt doctor
               EOS
             end
