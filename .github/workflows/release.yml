@@ -114,7 +114,6 @@ jobs:
             depends_on :macos
             depends_on "fzf"
             depends_on "tmux"
-            depends_on "zellij" => :recommended
 
             def install
               bin.install "rt"
