@@ -404,6 +404,12 @@ const TREE: Record<string, CommandNode> = {
         fn: "installExtension",
         requiresTTY: true,
       },
+      "dev-mode": {
+        description: "Toggle between local dev source and Homebrew production binary",
+        module: "./commands/settings.ts",
+        fn: "toggleDevMode",
+        requiresTTY: true,
+      },
     },
   },
 };
