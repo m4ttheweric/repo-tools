@@ -5,7 +5,7 @@
  *   1. Copy rt-tray.app → ~/Applications (remove quarantine)
  *   2. Install rt-context.vsix into all detected editors (best-effort, non-interactive)
  *   3. Install daemon as a launchd agent (auto-starts on login)
- *   4. Write shell integration to ~/.zshrc (PATH + rtcd alias, idempotent)
+ *   4. Write shell integration to the user's rc file (PATH + rtcd, idempotent)
  *
  * Keeping this in the binary (not the formula) means:
  *   - Setup logic is versioned alongside the binary
@@ -18,6 +18,7 @@ import { execSync, spawnSync } from "child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, rmSync, cpSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
+import { installShellIntegration } from "../lib/shell-integration.ts";
 
 const HOME = homedir();
 
@@ -164,32 +165,16 @@ async function installDaemon(): Promise<void> {
   }
 }
 
-// ─── 4. Shell integration ─────────────────────────────────────────────────────
+// ─── 4. Shell integration ─────────────────────────────────────────────────────────
 
-function installShellIntegration(): void {
-  const zshrc = join(HOME, ".zshrc");
-  const marker = "# rt — repo tools";
-
-  const existing = existsSync(zshrc) ? readFileSync(zshrc, "utf8") : "";
-  if (existing.includes(marker)) {
-    info("shell integration", "already configured in ~/.zshrc");
-    return;
-  }
-
-  const block = [
-    "",
-    marker,
-    'export PATH="$HOME/.local/bin:$PATH"',
-    'rt-cd() { local dir=$(rt cd 2>/dev/null); [ -n "$dir" ] && cd "$dir"; }',
-    "alias rtcd='rt-cd'",
-    "",
-  ].join("\n");
-
-  try {
-    writeFileSync(zshrc, existing + block);
-    ok("shell integration", "added PATH + rtcd alias to ~/.zshrc");
-  } catch (err: any) {
-    fail("shell integration", err?.message ?? String(err));
+function installShellIntegrationStep(): void {
+  const result = installShellIntegration();
+  if (result.alreadyInstalled) {
+    info("shell integration", `already configured (${result.shell})`);
+  } else if (result.written) {
+    ok("shell integration", `added to ${result.rcPath}`);
+  } else {
+    fail("shell integration", result.error ?? "unknown error");
   }
 }
 
@@ -203,7 +188,7 @@ export async function runPostInstall(): Promise<void> {
   installTrayApp();
   installExtensions();
   await installDaemon();
-  installShellIntegration();
+  installShellIntegrationStep();
 
   console.log("");
   console.log("  Done. Restart your terminal, then run: rt doctor");
