@@ -13,6 +13,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { bold, cyan, dim, green, yellow, red, reset, white } from "../lib/tui.ts";
 import { getRepoIdentity, getRepoRoot, getCurrentBranch } from "../lib/repo.ts";
+import { detectShell, shellRcPath } from "../lib/shell-integration.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -222,13 +223,14 @@ export async function runDoctor(_args: string[]): Promise<void> {
   if (rtcdCheck && !rtcdCheck.includes("not found")) {
     check(true, "rtcd alias", "available");
   } else {
-    // Check if it's in .zshrc even if not active in this shell
-    const zshrc = join(homedir(), ".zshrc");
-    const inZshrc = existsSync(zshrc) && readFileSync(zshrc, "utf8").includes("rtcd");
-    if (inZshrc) {
-      warn("rtcd alias", "defined in .zshrc but not active — restart your terminal");
+    // Check if it's in the user's rc file even if not active in this shell
+    const shell = detectShell();
+    const rcFile = shellRcPath(shell);
+    const inRc = !!rcFile && existsSync(rcFile) && readFileSync(rcFile, "utf8").includes("rtcd");
+    if (inRc) {
+      warn("rtcd alias", `defined in ${rcFile} but not active — restart your terminal`);
     } else {
-      warn("rtcd alias", "not configured — added automatically by brew install");
+      warn("rtcd alias", "not configured — run: rt --post-install");
     }
   }
 

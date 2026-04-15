@@ -17,6 +17,7 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { bold, cyan, dim, green, yellow, red, reset } from "../lib/tui.ts";
+import { detectShell, shellRcPath } from "../lib/shell-integration.ts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -144,12 +145,13 @@ async function runChecks(): Promise<CheckResult[]> {
 
   // ── Shell integration ─────────────────────────────────────────────────────
 
-  const zshrc = join(home, ".zshrc");
-  const hasRtcdInZshrc = existsSync(zshrc) && readFileSync(zshrc, "utf8").includes("rtcd");
-  if (hasRtcdInZshrc) {
-    results.push(pass("shell integration", "rtcd alias in ~/.zshrc", "warning"));
+  const shell = detectShell();
+  const rcFile = shellRcPath(shell);
+  const hasRtcdInRc = !!rcFile && existsSync(rcFile) && readFileSync(rcFile, "utf8").includes("rtcd");
+  if (hasRtcdInRc) {
+    results.push(pass("shell integration", `rtcd alias in ${rcFile}`, "warning"));
   } else {
-    results.push(warn("shell integration", "rtcd not found in ~/.zshrc — may need terminal restart"));
+    results.push(warn("shell integration", `rtcd not found in ${rcFile ?? "rc file"} — may need terminal restart`));
   }
 
   // ── Daemon ────────────────────────────────────────────────────────────────
