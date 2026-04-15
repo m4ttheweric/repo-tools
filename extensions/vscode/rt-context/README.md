@@ -11,7 +11,7 @@ Part of the [repo-tools](https://github.com/m4ttheweric/repo-tools) suite.
 Always see which worktree you're in and what you're working on, right in the status bar:
 
 ```
-📁 assured-primary  │  🔖 CV-1287: Add damage photo uploads
+📁 my-repo-main  │  🔖 PROJ-1287: Add user photo uploads
 ```
 
 - **Worktree name** — the folder name of the current worktree

@@ -48,8 +48,8 @@ export function extractLinearId(branch: string): string | null {
  * Parse a GitLab/GitHub remote URL to extract the project path.
  *
  * Handles both SSH and HTTPS formats:
- *   "git@gitlab.com:assured/assured-dev.git" → "assured/assured-dev"
- *   "https://gitlab.com/assured/assured-dev.git" → "assured/assured-dev"
+ *   "git@gitlab.com:my-org/my-repo.git" → "my-org/my-repo"
+ *   "https://gitlab.com/my-org/my-repo.git" → "my-org/my-repo"
  */
 export function parseRemoteUrl(url: string): { host: string; projectPath: string } | null {
   // SSH format: git@host:org/repo.git

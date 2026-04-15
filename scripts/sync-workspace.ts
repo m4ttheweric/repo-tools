@@ -10,7 +10,7 @@
  *   rt x sync-workspace   (if wired up)
  *
  * Example:
- *   bun scripts/sync-workspace.ts ./assured-dev.matt.code-workspace
+ *   bun scripts/sync-workspace.ts ./my-repo.code-workspace
  */
 
 import { readFileSync, writeFileSync, existsSync } from "fs";

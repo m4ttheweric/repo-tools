@@ -54,7 +54,7 @@ export interface LaneConfig {
   canonicalPort: number;  // user-declared, stable, browser-facing
   entries: LaneEntry[];
   activeEntryId?: string; // which entry the proxy is currently routing to
-  repoName: string;       // e.g. "assured-dev" — repo this lane is scoped to
+  repoName: string;       // e.g. "my-repo" — repo this lane is scoped to
   mode: LaneMode;         // how to handle deactivated entries (default: "warm")
 }
 
