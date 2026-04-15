@@ -8,7 +8,7 @@
  *   settings uninstall      — remove all rt data for current repo
  */
 
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import {
@@ -282,13 +282,27 @@ function currentMode(): "dev" | "prod" {
 function detectSourcePath(): string | null {
   // When running from source (bun run cli.ts), import.meta.dir is the repo root
   const dir = import.meta.dir;
-  if (dir && !dir.includes("/opt/homebrew") && !dir.includes("/usr/local")) {
+  if (dir && !dir.includes("/opt/homebrew") && !dir.includes("/usr/local") && !dir.startsWith("/$bunfs")) {
     // Walk up one level if we're in a subdirectory (e.g. commands/)
     const candidate = dir.endsWith("/commands") ? dir.replace(/\/commands$/, "") : dir;
     if (existsSync(`${candidate}/cli.ts`)) return candidate;
   }
-  // Fall back to saved config
-  return readDevModeConfig().sourcePath ?? null;
+  // Prefer saved config
+  const saved = readDevModeConfig().sourcePath;
+  if (saved && existsSync(`${saved}/cli.ts`)) return saved;
+
+  // Fall back to common checkout locations
+  const home = Bun.env.HOME!;
+  for (const guess of [
+    `${home}/Documents/GitHub/repo-tools`,
+    `${home}/GitHub/repo-tools`,
+    `${home}/code/repo-tools`,
+    `${home}/src/repo-tools`,
+    `${home}/repos/repo-tools`,
+  ]) {
+    if (existsSync(`${guess}/cli.ts`)) return guess;
+  }
+  return null;
 }
 
 function enableDevMode(sourcePath: string): void {
@@ -349,15 +363,21 @@ export async function toggleDevMode(args: string[]): Promise<void> {
 
     if (!resolvedPath) {
       const { textInput } = await import("../lib/rt-render.tsx");
+      const defaultGuess = `${Bun.env.HOME}/Documents/GitHub/repo-tools`;
       const entered = await textInput({
         message: "Path to repo-tools source directory",
-        placeholder: `${Bun.env.HOME}/Documents/GitHub/repo-tools`,
+        defaultValue: defaultGuess,
       });
-      if (!entered?.trim() || !existsSync(`${entered.trim()}/cli.ts`)) {
-        console.log(`  ${red}✗${reset} cli.ts not found at that path\n`);
+      const path = entered?.trim();
+      if (!path) {
+        console.log(`  ${red}✗${reset} no path entered\n`);
         return;
       }
-      resolvedPath = entered.trim();
+      if (!existsSync(`${path}/cli.ts`)) {
+        console.log(`  ${red}✗${reset} cli.ts not found at: ${path}\n`);
+        return;
+      }
+      resolvedPath = path;
     }
 
     enableDevMode(resolvedPath!);
