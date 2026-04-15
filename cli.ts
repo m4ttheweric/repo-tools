@@ -442,12 +442,8 @@ if (args[0] === "--version" || args[0] === "-V") {
   // Handles tray app, extension install, daemon setup, and shell integration.
   const { runPostInstall } = await import("./commands/post-install.ts");
   await runPostInstall();
-} else if (args[0] === "verify") {
-  // verify and update are always allowed without auto-setup
-  const { runVerify } = await import("./commands/verify.ts");
-  await runVerify(args.slice(1));
-  process.exit(0);
 } else if (args[0] === "update") {
+  // `update` bypasses first-run setup — its own post-upgrade step runs it.
   const { runUpdate } = await import("./commands/update.ts");
   await runUpdate(args.slice(1));
   process.exit(0);
@@ -455,6 +451,8 @@ if (args[0] === "--version" || args[0] === "-V") {
   // ── First-run auto-setup ──────────────────────────────────────────────────
   // If daemon.json doesn't exist, post-install hasn't completed outside the
   // Homebrew sandbox. Run it now transparently before the requested command.
+  // This also applies to `rt verify`, which is the command we recommend users
+  // run after `brew install` — it should set up + then verify in one shot.
   if (process.env.CI !== "true" && process.env.RT_SKIP_SETUP !== "1") {
     const { existsSync } = await import("fs");
     const { join } = await import("path");
@@ -464,6 +462,12 @@ if (args[0] === "--version" || args[0] === "-V") {
       const { runPostInstall } = await import("./commands/post-install.ts");
       await runPostInstall();
     }
+  }
+
+  if (args[0] === "verify") {
+    const { runVerify } = await import("./commands/verify.ts");
+    await runVerify(args.slice(1));
+    process.exit(0);
   }
 
   // ── Command dispatch ────────────────────────────────────────────────────
