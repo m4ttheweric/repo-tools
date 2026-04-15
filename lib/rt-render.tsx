@@ -203,6 +203,7 @@ export async function confirm(opts: {
 export async function textInput(opts: {
   message: string;
   placeholder?: string;
+  defaultValue?: string;
   stderr?: boolean;
 }): Promise<string> {
   return prompt<string>(
@@ -212,6 +213,7 @@ export async function textInput(opts: {
         { message: opts.message },
         React.createElement(TextInput, {
           placeholder: opts.placeholder,
+          defaultValue: opts.defaultValue,
           onSubmit: resolve,
         }),
       ),
@@ -337,8 +339,11 @@ export async function filterableSelect(opts: {
 
   const result = spawnSync("fzf", [
     "--ansi",
+    // --with-nth renumbers fields: field 1 of the display = original field 2 (label),
+    // field 2 of the display = original field 3 (hint). --nth operates on the
+    // transformed fields, so --nth=1 restricts search to the label only.
     "--with-nth=2..",
-    "--nth=2",
+    "--nth=1",
     "--delimiter=\t",
     "--height=~60%",
     "--layout=reverse",
