@@ -332,12 +332,13 @@ export async function filterableSelect(opts: {
   }
 
   const input = options
-    .map((o) => `${o.value}\t\x1b[1m${o.label}\x1b[22m${o.hint ? `  \x1b[2m${o.hint}\x1b[22m` : ""}`)
+    .map((o) => `${o.value}\t\x1b[1m${o.label}\x1b[22m\t${o.hint ? `  \x1b[2m${o.hint}\x1b[22m` : ""}`)
     .join("\n");
 
   const result = spawnSync("fzf", [
     "--ansi",
     "--with-nth=2..",
+    "--nth=2",
     "--delimiter=\t",
     "--height=~60%",
     "--layout=reverse",
