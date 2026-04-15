@@ -239,7 +239,7 @@ rt settings dev-mode prod   # switch back to Homebrew binary
 **How it works:**
 - `dev` mode writes a wrapper script at `~/.local/bin/rt` that calls `bun run /path/to/cli.ts "$@"`
 - `prod` mode removes that wrapper, letting `/opt/homebrew/bin/rt` take over
-- `~/.local/bin` is added to your PATH automatically (in `~/.zshrc`) during `brew install` and on first `dev-mode dev`
+- `~/.local/bin` is added to your PATH automatically (in your shell rc file) during `brew install` and on first `dev-mode dev`
 - The source path is remembered in `~/.rt/dev-mode.json` — no re-entry needed when toggling back
 
 `rt --version` always tells you which is active: `dev` vs `v1.x.x`.
@@ -256,7 +256,7 @@ This is the same code that Homebrew calls after `brew install` or `brew upgrade`
 1. Copies `rt-tray.app` to `~/Applications`
 2. Installs `rt-context.vsix` into all detected editors
 3. Installs the daemon as a launchd agent
-4. Writes shell integration to `~/.zshrc` (idempotent)
+4. Writes shell integration to your rc file (PATH + rtcd, idempotent — supports zsh, bash, fish)
 
 ### Verifying an installation
 

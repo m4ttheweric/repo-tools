@@ -10,17 +10,17 @@
  *   - In a tracked repo without worktrees → repo picker (all known repos)
  *   - Not in a tracked repo → repo picker (all known repos with worktrees)
  *
- * Shell setup (add to ~/.zshrc):
+ * Shell setup (add to your shell rc file):
  *   rtcd() { local dir; dir="$(rt cd "$@")" && [ -n "$dir" ] && cd "$dir"; }
  */
 
-import { execSync } from "child_process";
 import { readFileSync, writeFileSync, appendFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { yellow, green, reset } from "../lib/tui.ts";
 import { getRepoIdentity, getKnownRepos, type KnownRepo } from "../lib/repo.ts";
 import { pickWorktreeWithSwitch, pickFromAllRepos, isSwitchRepo } from "../lib/pickers.ts";
+import { detectShell, shellRcPath } from "../lib/shell-integration.ts";
 
 // ─── Shell function setup ────────────────────────────────────────────────────
 
@@ -43,11 +43,12 @@ const SHELL_FUNCTION = [
 ].join("\n");
 
 async function ensureShellFunction(): Promise<void> {
-  const rcFile = join(homedir(), ".zshrc");
+  const shell = detectShell();
+  const rcFile = shellRcPath(shell) ?? join(homedir(), ".zshrc");
   let rcContent = "";
   try {
     rcContent = readFileSync(rcFile, "utf8");
-  } catch { /* no .zshrc */ }
+  } catch { /* no rc file yet */ }
 
   if (rcContent.includes('rt() {') && rcContent.includes('command rt cd') && rcContent.includes('.last-cwd')) return;
 
@@ -68,10 +69,11 @@ async function ensureShellFunction(): Promise<void> {
     console.error(`\n  ${yellow}rt cd needs a shell function to change your directory.${reset}`);
   }
 
+  const rcLabel = rcFile.replace(homedir(), "~");
   const install = await inkConfirm({
     message: hasOldFunction
-      ? "Upgrade rt shell wrapper in ~/.zshrc?"
-      : "Add rt cd support to ~/.zshrc?",
+      ? `Upgrade rt shell wrapper in ${rcLabel}?`
+      : `Add rt cd support to ${rcLabel}?`,
     initialValue: true,
     stderr: true,
   });
@@ -84,7 +86,6 @@ async function ensureShellFunction(): Promise<void> {
   }
 
   if (hasOldRtWrapper) {
-    // Remove the old rt() wrapper block
     rcContent = rcContent
       .replace(/\n?# rt — shell wrapper \(enables rt cd to change directory\)\n?/g, "")
       .replace(/\n?rt\(\) \{[\s\S]*?\n\}\n?/g, "\n");
@@ -98,12 +99,8 @@ async function ensureShellFunction(): Promise<void> {
 
   const line = `\n# rt — shell wrapper (enables rt cd to change directory)\n${SHELL_FUNCTION}\n`;
   appendFileSync(rcFile, line);
-  console.error(`  ${green}✓ Installed rt shell wrapper in ~/.zshrc${reset}`);
-  console.error(`  Reloading shell config…`);
-
-  try {
-    execSync("source ~/.zshrc", { stdio: "ignore", shell: "/bin/zsh" });
-  } catch { /* best-effort */ }
+  console.error(`  ${green}✓ Installed rt shell wrapper in ${rcLabel}${reset}`);
+  console.error(`  Restart your terminal or run: source ${rcLabel}`);
 
   process.stdout.write = origWrite;
 }
