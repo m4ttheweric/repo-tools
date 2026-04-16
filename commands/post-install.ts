@@ -197,14 +197,8 @@ async function checkTccAccess(): Promise<void> {
     console.log("  The rt daemon needs Full Disk Access to read your repos.");
     console.log("  Opening System Settings — add the 'rt' binary shown below:\n");
 
-    const { basename } = await import("path");
-    const isCompiled = basename(process.execPath) !== "bun";
-    const rtPath = isCompiled ? process.execPath : (() => {
-      try {
-        const { execSync } = require("child_process");
-        return execSync("which rt", { encoding: "utf8" }).trim();
-      } catch { return "/opt/homebrew/bin/rt"; }
-    })();
+    const rtPath = ["/opt/homebrew/bin/rt", "/usr/local/bin/rt"].find(existsSync)
+      ?? "/opt/homebrew/bin/rt";
 
     console.log(`    ${rtPath}\n`);
 
