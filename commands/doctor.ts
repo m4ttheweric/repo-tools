@@ -247,22 +247,19 @@ export async function runDoctor(_args: string[]): Promise<void> {
   section("daemon");
 
   {
-    const { isDaemonInstalled, getDaemonConfig } = await import("../lib/daemon-config.ts");
+    const { isDaemonInstalled } = await import("../lib/daemon-config.ts");
     const { isDaemonRunning, daemonQuery } = await import("../lib/daemon-client.ts");
 
     if (isDaemonInstalled()) {
-      const daemonConfig = getDaemonConfig();
-      const modeLabels: Record<string, string> = { launchd: "launchd", tray: "tray-managed", manual: "manual" };
-      const modeLabel = modeLabels[daemonConfig?.mode ?? ""] ?? daemonConfig?.mode ?? "";
       const running = await isDaemonRunning();
       if (running) {
         const response = await daemonQuery("status");
         if (response?.ok) {
           const { pid, uptime, watchedRepos, cacheEntries } = response.data;
-          check(true, "daemon", `running  ${modeLabel}  pid ${pid}  uptime ${formatUptime(uptime)}`);
+          check(true, "daemon", `running  tray-managed  pid ${pid}  uptime ${formatUptime(uptime)}`);
           console.log(`    ${dim}watching ${watchedRepos} repo${watchedRepos !== 1 ? "s" : ""}  ·  ${cacheEntries} cache entries${reset}`);
         } else {
-          check(true, "daemon", `running (${modeLabel})`);
+          check(true, "daemon", "running (tray-managed)");
         }
 
         const tccResponse = await daemonQuery("tcc:check");
@@ -277,15 +274,11 @@ export async function runDoctor(_args: string[]): Promise<void> {
             for (const b of blocked) {
               console.log(`    ${red}${b.path}${reset}  ${dim}${b.error}${reset}`);
             }
-            if (daemonConfig?.mode === "tray") {
-              console.log(`    ${yellow}try:${reset} quit and reopen rt-tray (daemon inherits tray's TCC grants)`);
-            } else {
-              console.log(`    ${yellow}grant Full Disk Access:${reset}  ${bold}rt --grant-fda${reset}`);
-            }
+            console.log(`    ${yellow}try:${reset} quit and reopen rt-tray (daemon inherits tray's TCC grants)`);
           }
         }
       } else {
-        check(false, "daemon", `installed (${modeLabel}) but not running — run: ${bold}rt daemon start${reset}`);
+        check(false, "daemon", `installed but not running — run: ${bold}rt daemon start${reset}`);
       }
     } else {
       warn("daemon", `not installed — run: ${bold}rt daemon install${reset}`);

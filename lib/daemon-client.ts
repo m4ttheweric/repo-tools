@@ -7,14 +7,12 @@
  *  - Installed but down → attempts launchctl restart, warns if that fails
  */
 
-import { execSync } from "child_process";
 import { existsSync } from "fs";
 import {
   isDaemonInstalled,
   getDaemonConfig,
   DAEMON_SOCK_PATH,
   TRAY_SOCK_PATH,
-  LAUNCHD_LABEL,
 } from "./daemon-config.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -73,10 +71,6 @@ export async function trayQuery(
   }
 }
 
-export function isTrayReachable(): boolean {
-  return existsSync(TRAY_SOCK_PATH);
-}
-
 // ─── Auto-recovery ───────────────────────────────────────────────────────────
 
 let hasWarnedThisSession = false;
@@ -86,28 +80,8 @@ function attemptRestart(): boolean {
     const config = getDaemonConfig();
     if (!config) return false;
 
-    if (config.mode === "tray") {
-      // In tray mode, ask the tray app to start the daemon
-      // (fire-and-forget — we'll retry the query after a delay)
-      trayQuery("/daemon/start", "POST");
-    } else if (config.mode === "launchd") {
-      execSync(`launchctl kickstart gui/$(id -u)/${LAUNCHD_LABEL}`, {
-        stdio: "pipe",
-        timeout: 3000,
-      });
-    } else {
-      // manual mode: spawn detached
-      const { openSync } = require("fs");
-      const { spawn } = require("child_process");
-      const { DAEMON_LOG_PATH, RT_DIR } = require("./daemon-config.ts");
-      const logFd = openSync(DAEMON_LOG_PATH, "a");
-      const child = spawn(config.bunPath, ["run", config.daemonScript], {
-        detached: true,
-        stdio: ["ignore", logFd, logFd],
-        cwd: RT_DIR,
-      });
-      child.unref();
-    }
+    // Ask the tray app to start the daemon (fire-and-forget)
+    trayQuery("/daemon/start", "POST");
     return true;
   } catch {
     return false;
