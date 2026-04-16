@@ -391,12 +391,6 @@ const TREE: Record<string, CommandNode> = {
           },
         },
       },
-      uninstall: {
-        description: "Remove all rt data for this repo",
-        module: "./commands/settings.ts",
-        fn: "uninstallRepo",
-        context: "worktree",
-      },
       notifications: {
         description: "Toggle notification preferences",
         module: "./commands/settings.ts",
