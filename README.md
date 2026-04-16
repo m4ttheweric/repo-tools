@@ -50,6 +50,49 @@ editor extensions are refreshed in a single step.
 
 ---
 
+## Onboarding a repo
+
+There's no explicit "add repo" step — any git repo with an `origin` remote is
+picked up automatically the first time you run an `rt` command inside it:
+
+```bash
+cd ~/code/my-repo
+rt status            # or rt cd, rt branch switch, anything repo-aware
+```
+
+On first invocation rt will:
+
+1. Derive the repo name from `git remote get-url origin`
+2. Register the repo in `~/.rt/repos.json`
+3. Create a data dir at `~/.rt/<repo-name>/`
+4. Start the daemon watching it for MR / branch / port state
+
+If the daemon was already running, the next refresh cycle picks it up (MR data
+refreshes every 5 min, port scans every ~30s). From then on `rt status`,
+`rt runner`, ticket lookup, port scanning, and MR notifications all work from
+anywhere on your machine.
+
+### Optional per-repo config
+
+| Command | When you need it |
+|---|---|
+| `rt hooks` | Repo uses husky and you want a quick on/off toggle |
+| `rt workspace sync` | Repo has a `.code-workspace` file you want synced across worktrees |
+| `rt settings extension` | Install the `rt-context` status-bar extension into local editors |
+
+### Global settings that affect every repo
+
+Set these once; they apply to all repos:
+
+```bash
+rt settings gitlab token       # required for rt status, MR actions, notifications
+rt settings linear token       # required for ticket lookup in rt status / branch names
+rt settings linear team        # only needed if you use `rt branch create` to file new tickets
+rt settings notifications      # pick which events fire native macOS notifications
+```
+
+---
+
 ## Commands
 
 Run `rt` with no arguments for an interactive menu. All commands support direct invocation:
@@ -160,7 +203,6 @@ rt settings gitlab token      # Set GitLab personal access token
 rt settings extension         # Install RT Context extension into local editors
 rt settings notifications     # Toggle notification preferences
 rt settings dev-mode          # Toggle between local source and Homebrew binary
-rt settings uninstall         # Remove all rt data for this repo
 ```
 
 ### Other
