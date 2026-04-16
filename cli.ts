@@ -450,9 +450,10 @@ if (args[0] === "--version" || args[0] === "-V") {
     try { return execSync("which rt", { encoding: "utf8" }).trim(); }
     catch { return "/opt/homebrew/bin/rt"; }
   })();
-  console.log("\n  Opening System Settings → Privacy → Full Disk Access…");
-  console.log(`  Click the ${"\x1b[1m"}+${"\x1b[0m"} button and add: ${"\x1b[1m"}${rtPath}${"\x1b[0m"}`);
-  console.log(`  Then restart the daemon: ${"\x1b[1m"}rt daemon restart${"\x1b[0m"}\n`);
+  console.log("\n  Opening System Settings → Privacy → Full Disk Access…\n");
+  console.log(`  1. Click ${"\x1b[1m"}+${"\x1b[0m"} and add: ${"\x1b[1m"}${rtPath}${"\x1b[0m"}`);
+  console.log(`     (will appear as ${"\x1b[1m"}"rt"${"\x1b[0m"} — this covers the daemon)`);
+  console.log(`  2. Restart the daemon: ${"\x1b[1m"}rt daemon restart${"\x1b[0m"}\n`);
   try {
     execSync('open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"');
   } catch {
