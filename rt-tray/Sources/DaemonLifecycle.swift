@@ -3,7 +3,8 @@ import Foundation
 // MARK: - DaemonLifecycle
 
 /// Manages the Bun daemon process — start, stop, restart.
-/// Reads daemon config from ~/.rt/daemon.json to find the Bun binary and script paths.
+/// Spawns the daemon as a direct child process so it inherits the tray app's
+/// TCC grants (file access to ~/Documents, ~/Desktop, etc.).
 class DaemonLifecycle {
 
     private let rtDir: String
@@ -11,8 +12,11 @@ class DaemonLifecycle {
     private let sockPath: String
     private let pidPath: String
 
+    private var daemonProcess: Process?
+    private var intentionalStop = false
+
     init() {
-        rtDir     = NSHomeDirectory() + "/.rt"
+        rtDir      = NSHomeDirectory() + "/.rt"
         configPath = rtDir + "/daemon.json"
         sockPath   = rtDir + "/rt.sock"
         pidPath    = rtDir + "/rt.pid"
@@ -38,52 +42,76 @@ class DaemonLifecycle {
 
     // MARK: - Start
 
-    /// Spawn the daemon if it is not already running.
-    ///
-    /// Uses `nohup bun run <script> &` via /bin/sh so the daemon is fully
-    /// detached from the tray's process group and will *not* be killed when
-    /// the tray is restarted or updated.
+    /// Spawn the daemon as a direct child process.
+    /// The daemon inherits the tray's TCC grants because it's a child process,
+    /// eliminating the need for separate Full Disk Access configuration.
     func startDaemon() {
         guard let config = loadConfig() else {
             NSLog("rt-tray: daemon config not found at \(configPath)")
             return
         }
 
-        // ── Guard: don't spawn a duplicate ──────────────────────────────────
-        // If the socket already exists, a daemon is already running.
-        // Spawning another would cause a brief two-daemon conflict (resolved
-        // by the daemon's own self-healing, but not ideal).
-        if FileManager.default.fileExists(atPath: sockPath) {
-            NSLog("rt-tray: socket exists — daemon is already running, skipping spawn")
+        if let existing = daemonProcess, existing.isRunning {
+            NSLog("rt-tray: daemon process already running (pid \(existing.processIdentifier)), skipping spawn")
             return
         }
 
-        let logPath = rtDir + "/daemon.log"
+        // Clean up stale socket from a previous crash
+        if FileManager.default.fileExists(atPath: sockPath) {
+            try? FileManager.default.removeItem(atPath: sockPath)
+        }
 
-        // Ensure log file exists so the append redirect doesn't fail
+        let logPath = rtDir + "/daemon.log"
         if !FileManager.default.fileExists(atPath: logPath) {
             FileManager.default.createFile(atPath: logPath, contents: nil)
         }
 
-        // ── Spawn via shell with nohup ───────────────────────────────────────
-        // Using `nohup ... &` through a shell ensures:
-        //   • The daemon is in its own process group (won't receive SIGHUP from tray)
-        //   • The shell exits immediately; the tray doesn't hold a child ref
-        //   • Tray restarts / pkills do not kill the daemon
-        let shellCmd = "nohup \(config.bunPath) run \(config.daemonScript) >> \(logPath) 2>&1 &"
+        let proc = Process()
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", shellCmd]
-        process.currentDirectoryURL = URL(fileURLWithPath: rtDir)
-        process.standardInput  = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError  = FileHandle.nullDevice
+        // Determine spawn arguments from config
+        if config.daemonScript == "--daemon" {
+            // Compiled install: `rt --daemon`
+            proc.executableURL = URL(fileURLWithPath: config.bunPath)
+            proc.arguments = ["--daemon"]
+        } else {
+            // Dev install: `bun run <script>`
+            proc.executableURL = URL(fileURLWithPath: config.bunPath)
+            proc.arguments = ["run", config.daemonScript]
+        }
+
+        proc.currentDirectoryURL = URL(fileURLWithPath: rtDir)
+        proc.standardInput = FileHandle.nullDevice
+
+        if let logHandle = FileHandle(forWritingAtPath: logPath) {
+            logHandle.seekToEndOfFile()
+            proc.standardOutput = logHandle
+            proc.standardError = logHandle
+        } else {
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+        }
+
+        intentionalStop = false
+
+        proc.terminationHandler = { [weak self] terminatedProc in
+            guard let self = self else { return }
+            let code = terminatedProc.terminationStatus
+            NSLog("rt-tray: daemon exited (status \(code), intentional: \(self.intentionalStop))")
+
+            self.daemonProcess = nil
+
+            if !self.intentionalStop {
+                NSLog("rt-tray: daemon crashed — restarting in 2s")
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
+                    self.startDaemon()
+                }
+            }
+        }
 
         do {
-            try process.run()
-            process.waitUntilExit() // shell exits immediately once nohup & is launched
-            NSLog("rt-tray: daemon spawned (detached via nohup)")
+            try proc.run()
+            daemonProcess = proc
+            NSLog("rt-tray: daemon spawned as child process (pid \(proc.processIdentifier))")
         } catch {
             NSLog("rt-tray: failed to start daemon: \(error)")
         }
@@ -91,36 +119,47 @@ class DaemonLifecycle {
 
     // MARK: - Stop
 
-    /// Send SIGTERM to the daemon via its PID file.
     func stopDaemon() {
+        intentionalStop = true
+
+        if let proc = daemonProcess, proc.isRunning {
+            proc.terminate()
+            NSLog("rt-tray: sent SIGTERM to daemon (pid \(proc.processIdentifier))")
+            return
+        }
+
+        // Fallback: kill via PID file (daemon may have been started by launchd or manually)
         guard let pidStr = try? String(contentsOfFile: pidPath, encoding: .utf8)
                                     .trimmingCharacters(in: .whitespacesAndNewlines),
               let pid = Int32(pidStr) else {
             return
         }
         kill(pid, SIGTERM)
-        NSLog("rt-tray: sent SIGTERM to daemon (pid \(pid))")
+        NSLog("rt-tray: sent SIGTERM to daemon via PID file (pid \(pid))")
     }
 
     // MARK: - Restart
 
-    /// Stop the daemon and wait for it to fully release the socket before
-    /// starting a replacement.  Polling prevents the 500 ms fixed-delay race
-    /// that previously allowed two daemons to overlap.
     func restartDaemon() {
         stopDaemon()
 
         DispatchQueue.global().async {
-            // Poll until the socket file is gone (daemon has finished cleanup)
-            // or until a 2-second safety timeout is hit.
-            let deadline = Date().addingTimeInterval(2.0)
-            while FileManager.default.fileExists(atPath: self.sockPath), Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.1)
+            let deadline = Date().addingTimeInterval(3.0)
+            while Date() < deadline {
+                // Wait for process to exit
+                if let proc = self.daemonProcess, proc.isRunning {
+                    Thread.sleep(forTimeInterval: 0.1)
+                    continue
+                }
+                // Wait for socket cleanup
+                if FileManager.default.fileExists(atPath: self.sockPath) {
+                    Thread.sleep(forTimeInterval: 0.1)
+                    continue
+                }
+                break
             }
 
-            // Extra safety margin so the daemon process itself exits cleanly
             Thread.sleep(forTimeInterval: 0.15)
-
             self.startDaemon()
         }
     }

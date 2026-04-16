@@ -136,9 +136,12 @@ function installExtensions(): void {
 
 async function installDaemon(): Promise<void> {
   try {
-    // Use the same binary to install the daemon — avoids complex dynamic imports
-    // and ensures the plist uses the correct binary path.
-    const result = spawnSync(process.execPath, ["daemon", "install", "--launchd"], {
+    // Default to tray mode (daemon inherits tray's TCC grants).
+    // Falls back to launchd if tray app isn't installed.
+    const trayInstalled = existsSync(join(HOME, "Applications", "rt-tray.app"));
+    const mode = trayInstalled ? "--tray" : "--launchd";
+
+    const result = spawnSync(process.execPath, ["daemon", "install", mode], {
       stdio: "pipe",
       timeout: 15_000,
     });
@@ -149,15 +152,19 @@ async function installDaemon(): Promise<void> {
       return;
     }
 
-    ok("daemon", "registered with launchd");
+    const modeLabel = trayInstalled ? "tray-managed" : "launchd";
+    ok("daemon", `installed (${modeLabel})`);
 
-    // Wait briefly for it to start
     const { isDaemonRunning } = await import("../lib/daemon-client.ts");
     for (let i = 0; i < 8; i++) {
       await Bun.sleep(250);
       if (await isDaemonRunning()) { ok("daemon", "running"); return; }
     }
-    info("daemon", "installed (will start on next login)");
+    if (trayInstalled) {
+      info("daemon", "will start when rt-tray launches");
+    } else {
+      info("daemon", "installed (will start on next login)");
+    }
   } catch (err: any) {
     fail("daemon", err?.message ?? String(err));
   }
@@ -193,16 +200,22 @@ async function checkTccAccess(): Promise<void> {
     for (const b of blocked) {
       console.log(`    ${b.path}`);
     }
-    console.log("");
-    console.log("  The rt daemon needs Full Disk Access to read your repos.");
-    console.log("  Opening System Settings — add the 'rt' binary shown below:\n");
 
-    const rtPath = ["/opt/homebrew/bin/rt", "/usr/local/bin/rt"].find(existsSync)
-      ?? "/opt/homebrew/bin/rt";
-
-    console.log(`    ${rtPath}\n`);
-
-    spawnSync("open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"], { stdio: "pipe" });
+    const { getDaemonConfig } = await import("../lib/daemon-config.ts");
+    const config = getDaemonConfig();
+    if (config?.mode === "tray") {
+      console.log("");
+      console.log("  Try restarting the tray app: quit rt-tray and reopen it.");
+      console.log("  The daemon inherits TCC grants from the tray app.");
+    } else {
+      console.log("");
+      console.log("  The rt daemon needs Full Disk Access to read your repos.");
+      console.log("  Opening System Settings — add the 'rt' binary shown below:\n");
+      const rtPath = ["/opt/homebrew/bin/rt", "/usr/local/bin/rt"].find(existsSync)
+        ?? "/opt/homebrew/bin/rt";
+      console.log(`    ${rtPath}\n`);
+      spawnSync("open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"], { stdio: "pipe" });
+    }
   } catch { /* daemon not reachable — skip silently */ }
 }
 

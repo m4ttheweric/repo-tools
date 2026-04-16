@@ -25,7 +25,7 @@ import {
   LAUNCHD_PLIST_PATH, LAUNCHD_LABEL, RT_DIR,
   type DaemonMode,
 } from "../lib/daemon-config.ts";
-import { daemonQuery, isDaemonRunning } from "../lib/daemon-client.ts";
+import { daemonQuery, isDaemonRunning, trayQuery, isTrayReachable } from "../lib/daemon-client.ts";
 
 /**
  * Detect if rt is running as a compiled standalone binary.
@@ -140,7 +140,8 @@ export async function install(args: string[] = []): Promise<void> {
     }
 
     if (running && process.stdin.isTTY) {
-      const currentLabel = config.mode === "launchd" ? "launchd agent" : "background process";
+      const modeLabels: Record<string, string> = { launchd: "launchd agent", tray: "tray-managed", manual: "background process" };
+      const currentLabel = modeLabels[config.mode] ?? config.mode;
       console.log(`\n  ${green}daemon is running${reset} ${dim}(${currentLabel})${reset}\n`);
 
       const { select } = await import("../lib/rt-render.tsx");
@@ -148,7 +149,7 @@ export async function install(args: string[] = []): Promise<void> {
         message: "What would you like to do?",
         options: [
           { value: "keep",   label: "Keep current setup",  hint: currentLabel },
-          { value: "switch", label: "Switch mode",         hint: config.mode === "launchd" ? "→ background process" : "→ launchd agent" },
+          { value: "switch", label: "Switch mode" },
         ],
       });
 
@@ -172,21 +173,30 @@ export async function install(args: string[] = []): Promise<void> {
   // Let user pick install mode
   let mode: DaemonMode;
 
-  if (args.includes("--launchd")) {
+  if (args.includes("--tray")) {
+    mode = "tray";
+  } else if (args.includes("--launchd")) {
     mode = "launchd";
   } else if (args.includes("--manual")) {
     mode = "manual";
   } else if (process.stdin.isTTY) {
+    const { join } = await import("path");
+    const { homedir } = await import("os");
+    const trayInstalled = existsSync(join(homedir(), "Applications", "rt-tray.app"));
     const { select } = await import("../lib/rt-render.tsx");
     mode = await select({
       message: "How should the daemon run?",
       options: [
+        ...(trayInstalled ? [{ value: "tray", label: "Tray-managed", hint: "recommended — auto TCC, crash recovery" }] : []),
         { value: "manual",  label: "Background process", hint: "start manually, no security prompts" },
-        { value: "launchd", label: "launchd agent",      hint: "auto-starts on login, may trigger endpoint security" },
+        { value: "launchd", label: "launchd agent",      hint: "auto-starts on login, requires FDA grant" },
       ],
     }) as DaemonMode;
   } else {
-    mode = "manual";
+    // Non-interactive: default to tray if tray app exists, otherwise manual
+    const { join } = await import("path");
+    const { homedir } = await import("os");
+    mode = existsSync(join(homedir(), "Applications", "rt-tray.app")) ? "tray" : "manual";
   }
 
   console.log("");
@@ -205,8 +215,23 @@ export async function install(args: string[] = []): Promise<void> {
   markDaemonInstalled(rtPath, daemonScript ?? "--daemon", mode);
   console.log(`  ${green}✓${reset} saved config to ~/.rt/daemon.json`);
 
-  if (mode === "launchd") {
-    // launchd mode: register plist
+  // Clean up launchd plist if switching away from launchd
+  if (mode !== "launchd" && existsSync(LAUNCHD_PLIST_PATH)) {
+    try { execSync(`launchctl unload "${LAUNCHD_PLIST_PATH}" 2>/dev/null`, { stdio: "pipe" }); } catch { /* */ }
+    try { unlinkSync(LAUNCHD_PLIST_PATH); } catch { /* */ }
+    console.log(`  ${green}✓${reset} removed old launchd plist`);
+  }
+
+  if (mode === "tray") {
+    // Tray mode: the tray app spawns the daemon as a child process.
+    // Just ask the tray to start it (or it'll start on next tray launch).
+    const trayResult = await trayQuery("/daemon/start", "POST");
+    if (trayResult?.ok) {
+      console.log(`  ${green}✓${reset} tray app is starting daemon`);
+    } else {
+      console.log(`  ${dim}·${reset} daemon will start when rt-tray launches`);
+    }
+  } else if (mode === "launchd") {
     const plist = generatePlist(rtPath, daemonScript);
     writeFileSync(LAUNCHD_PLIST_PATH, plist);
     console.log(`  ${green}✓${reset} created ${dim}${LAUNCHD_PLIST_PATH}${reset}`);
@@ -221,7 +246,6 @@ export async function install(args: string[] = []): Promise<void> {
       return;
     }
   } else {
-    // manual mode: spawn detached background process
     await spawnDaemonProcess(rtPath, daemonScript);
   }
 
@@ -237,10 +261,12 @@ export async function install(args: string[] = []): Promise<void> {
 
   if (connected) {
     console.log(`  ${green}✓${reset} daemon is running`);
-    const hint = mode === "launchd"
-      ? "daemon will auto-start on login"
-      : "run rt daemon start after reboot";
-    console.log(`\n  ${green}${bold}✓ installed${reset} ${dim}— ${hint}${reset}\n`);
+    const hints: Record<string, string> = {
+      tray: "managed by rt-tray — auto TCC, crash recovery",
+      launchd: "daemon will auto-start on login",
+      manual: "run rt daemon start after reboot",
+    };
+    console.log(`\n  ${green}${bold}✓ installed${reset} ${dim}— ${hints[mode]}${reset}\n`);
   } else {
     console.log(`  ${yellow}⚠${reset} daemon started but not yet responding`);
     console.log(`  ${dim}check logs: rt daemon logs${reset}\n`);
@@ -350,7 +376,13 @@ export async function start(): Promise<void> {
 
   const config = getDaemonConfig();
 
-  if (config?.mode === "launchd") {
+  if (config?.mode === "tray") {
+    const result = await trayQuery("/daemon/start", "POST");
+    if (!result?.ok) {
+      console.log(`  ${yellow}⚠${reset} tray not reachable — spawning daemon directly`);
+      await spawnDaemonProcess();
+    }
+  } else if (config?.mode === "launchd") {
     try {
       execSync(`launchctl kickstart gui/$(id -u)/${LAUNCHD_LABEL}`, { stdio: "pipe" });
     } catch {
@@ -362,7 +394,6 @@ export async function start(): Promise<void> {
     await spawnDaemonProcess();
   }
 
-  // Give launchd slightly more time to settle than a manual spawn
   const waitMs = config?.mode === "launchd" ? 1500 : 600;
   await Bun.sleep(waitMs);
 
@@ -395,6 +426,18 @@ function cleanupRuntimeFiles(): void {
 }
 
 export async function stop(): Promise<void> {
+  // In tray mode, ask the tray to stop the daemon
+  const config = getDaemonConfig();
+  if (config?.mode === "tray") {
+    const result = await trayQuery("/daemon/stop", "POST");
+    if (result?.ok) {
+      await Bun.sleep(500);
+      console.log(`\n  ${green}✓ daemon stopped${reset}\n`);
+      return;
+    }
+    // Tray not reachable — fall through to direct stop
+  }
+
   const pidBefore = readDaemonPid();
 
   // 1. Try graceful shutdown via socket
@@ -440,6 +483,25 @@ export async function stop(): Promise<void> {
 }
 
 export async function restart(): Promise<void> {
+  const config = getDaemonConfig();
+  if (config?.mode === "tray") {
+    const result = await trayQuery("/daemon/restart", "POST");
+    if (result?.ok) {
+      console.log(`  ${dim}restarting daemon via tray…${reset}`);
+      // Wait for daemon to come back
+      for (let i = 0; i < 16; i++) {
+        await Bun.sleep(500);
+        if (await isDaemonRunning()) {
+          console.log(`\n  ${green}✓ daemon restarted${reset}\n`);
+          return;
+        }
+      }
+      console.log(`\n  ${yellow}daemon restarting… check logs: rt daemon logs${reset}\n`);
+      return;
+    }
+    // Tray not reachable — fall through to direct restart
+  }
+
   const wasRunning = (await isDaemonRunning()) || isDaemonProcessRunning();
   if (wasRunning) {
     await stop();
@@ -459,10 +521,14 @@ export async function showStatus(): Promise<void> {
     return;
   }
 
+  const config = getDaemonConfig();
+  const modeLabels: Record<string, string> = { launchd: "launchd", tray: "tray-managed", manual: "manual" };
+  const modeLabel = modeLabels[config?.mode ?? ""] ?? config?.mode ?? "unknown";
+
   const response = await daemonQuery("status");
   if (response?.ok) {
     const { pid, uptime, watchedRepos, cacheEntries } = response.data;
-    console.log(`  ${green}●${reset} running ${dim}(pid ${pid}, uptime ${formatUptime(uptime)})${reset}`);
+    console.log(`  ${green}●${reset} running ${dim}(${modeLabel} · pid ${pid} · uptime ${formatUptime(uptime)})${reset}`);
     console.log(`    ${dim}watching: ${watchedRepos} repo${watchedRepos !== 1 ? "s" : ""}${reset}`);
     console.log(`    ${dim}cache: ${cacheEntries} entries${reset}`);
   } else {

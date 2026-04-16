@@ -11,7 +11,9 @@ import { execSync } from "child_process";
 import { existsSync } from "fs";
 import {
   isDaemonInstalled,
+  getDaemonConfig,
   DAEMON_SOCK_PATH,
+  TRAY_SOCK_PATH,
   LAUNCHD_LABEL,
 } from "./daemon-config.ts";
 
@@ -50,18 +52,45 @@ async function trySocketQuery(
   }
 }
 
+// ─── Tray socket query ──────────────────────────────────────────────────────
+
+export async function trayQuery(
+  endpoint: string,
+  method: "GET" | "POST" = "POST",
+): Promise<DaemonResponse | null> {
+  if (!existsSync(TRAY_SOCK_PATH)) return null;
+
+  try {
+    const response = await fetch(`http://localhost${endpoint}`, {
+      unix: TRAY_SOCK_PATH,
+      method,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    } as any);
+
+    return (await response.json()) as DaemonResponse;
+  } catch {
+    return null;
+  }
+}
+
+export function isTrayReachable(): boolean {
+  return existsSync(TRAY_SOCK_PATH);
+}
+
 // ─── Auto-recovery ───────────────────────────────────────────────────────────
 
 let hasWarnedThisSession = false;
 
 function attemptRestart(): boolean {
   try {
-    const { getDaemonConfig, DAEMON_LOG_PATH, RT_DIR } = require("./daemon-config.ts");
     const config = getDaemonConfig();
     if (!config) return false;
 
-    if (config.mode === "launchd") {
-      const { LAUNCHD_LABEL } = require("./daemon-config.ts");
+    if (config.mode === "tray") {
+      // In tray mode, ask the tray app to start the daemon
+      // (fire-and-forget — we'll retry the query after a delay)
+      trayQuery("/daemon/start", "POST");
+    } else if (config.mode === "launchd") {
       execSync(`launchctl kickstart gui/$(id -u)/${LAUNCHD_LABEL}`, {
         stdio: "pipe",
         timeout: 3000,
@@ -70,6 +99,7 @@ function attemptRestart(): boolean {
       // manual mode: spawn detached
       const { openSync } = require("fs");
       const { spawn } = require("child_process");
+      const { DAEMON_LOG_PATH, RT_DIR } = require("./daemon-config.ts");
       const logFd = openSync(DAEMON_LOG_PATH, "a");
       const child = spawn(config.bunPath, ["run", config.daemonScript], {
         detached: true,
