@@ -27,6 +27,61 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      # ── Import Developer ID certificate (skipped if secrets not set) ─────────
+      # When present, the CLI gets a stable Dev ID signature so macOS TCC grants
+      # (Full Disk Access) survive across releases. Without it, every release
+      # invalidates the user's TCC grant and they hit EPERM on ~/Documents/...
+      - name: Check signing secrets
+        id: signing
+        env:
+          CERT_B64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+        run: |
+          if [ -n "$CERT_B64" ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::warning::Developer ID secrets not configured — falling back to ad-hoc signing (TCC grants will be invalidated on every release)"
+          fi
+
+      - name: Import Developer ID certificate
+        if: steps.signing.outputs.available == 'true'
+        env:
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_P12_PASSWORD: ${{ secrets.APPLE_CERT_P12_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/rt-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+
+          echo "$APPLE_CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security import "$CERT_PATH" -P "$APPLE_CERT_P12_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Prepend our keychain so codesign (and rt-tray/build.sh) can find the cert
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+
+          SIGNING_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+
+          if [ -z "$SIGNING_IDENTITY" ]; then
+            echo "::error::Developer ID Application certificate not found in imported keychain"
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+            exit 1
+          fi
+
+          echo "Found signing identity: $SIGNING_IDENTITY"
+          echo "SIGNING_IDENTITY=$SIGNING_IDENTITY" >> $GITHUB_ENV
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
+          rm -f "$CERT_PATH"
+
       # ── Build rt binary (arm64 + x64) ────────────────────────────────────────
       - name: Compile rt (arm64)
         run: bun build --compile --target=bun-darwin-arm64 ./cli.ts --outfile rt-arm64 --define RT_VERSION='"${{ github.ref_name }}"'
@@ -35,6 +90,8 @@ jobs:
         run: bun build --compile --target=bun-darwin-x64 ./cli.ts --outfile rt-x64 --define RT_VERSION='"${{ github.ref_name }}"'
 
       # ── Build rt-tray.app ────────────────────────────────────────────────────
+      # rt-tray/build.sh auto-detects Developer ID in the keychain (added by the
+      # import step above) and signs with hardened runtime — no flags needed.
       - name: Build rt-tray
         run: cd rt-tray && ./build.sh release
 
@@ -51,12 +108,27 @@ jobs:
           VERSION="${GITHUB_REF_NAME}"
           VSIX=$(ls extensions/vscode/rt-context/*.vsix | head -1)
 
-          # Sign with Bun JIT entitlements — required so macOS doesn't kill
-          # the process when Bun's JS engine maps executable memory.
-          codesign --remove-signature rt-arm64
-          codesign --force --sign - --entitlements scripts/entitlements.plist rt-arm64
-          codesign --remove-signature rt-x64
-          codesign --force --sign - --entitlements scripts/entitlements.plist rt-x64
+          if [ -n "$SIGNING_IDENTITY" ]; then
+            # Dev ID signing: stable identity → TCC grants persist across releases.
+            # --options runtime enables the hardened runtime (required for notarization
+            # and required for some TCC paths). --timestamp adds a secure timestamp.
+            echo "Signing with Developer ID: $SIGNING_IDENTITY"
+            codesign --remove-signature rt-arm64
+            codesign --force --sign "$SIGNING_IDENTITY" \
+              --options runtime --timestamp \
+              --entitlements scripts/entitlements.plist rt-arm64
+            codesign --remove-signature rt-x64
+            codesign --force --sign "$SIGNING_IDENTITY" \
+              --options runtime --timestamp \
+              --entitlements scripts/entitlements.plist rt-x64
+          else
+            # Ad-hoc fallback (PRs, forks, missing secrets): TCC grants will reset on every release.
+            echo "Ad-hoc signing (no Dev ID configured)"
+            codesign --remove-signature rt-arm64
+            codesign --force --sign - --entitlements scripts/entitlements.plist rt-arm64
+            codesign --remove-signature rt-x64
+            codesign --force --sign - --entitlements scripts/entitlements.plist rt-x64
+          fi
 
           # arm64 bundle
           mkdir -p dist/arm64
@@ -64,7 +136,7 @@ jobs:
           chmod +x dist/arm64/rt
           cp -R rt-tray/rt-tray.app dist/arm64/
           cp "$VSIX" dist/arm64/rt-context.vsix
-          tar -czf "rt-darwin-arm64-${VERSION}.tar.gz" -C dist/arm64 .
+          # tar archive built later, after notarization
 
           # x64 bundle
           mkdir -p dist/x64
@@ -72,7 +144,60 @@ jobs:
           chmod +x dist/x64/rt
           cp -R rt-tray/rt-tray.app dist/x64/
           cp "$VSIX" dist/x64/rt-context.vsix
+
+      # ── Notarize rt-tray.app (skipped if notarization secrets not set) ───────
+      # Submits the signed .app to Apple's notary service and staples the result
+      # so Gatekeeper accepts it offline. Without this, users see "rt-tray
+      # cannot be opened because the developer cannot be verified" on first run.
+      - name: Check notarization secrets
+        id: notary
+        if: steps.signing.outputs.available == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_ID_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+            echo "::warning::Notarization secrets not set — rt-tray.app will trigger Gatekeeper warning on first launch"
+          fi
+
+      - name: Notarize and staple rt-tray.app
+        if: steps.notary.outputs.available == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Notarize the tray app once; copy stapled result into both bundles
+          ditto -c -k --keepParent dist/arm64/rt-tray.app "$RUNNER_TEMP/rt-tray.zip"
+
+          xcrun notarytool submit "$RUNNER_TEMP/rt-tray.zip" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          # Staple the original .app (notarytool checks by hash, not zip path)
+          xcrun stapler staple dist/arm64/rt-tray.app
+          xcrun stapler validate dist/arm64/rt-tray.app
+
+          # Mirror stapled .app into x64 bundle (it's the same Swift binary, same signature)
+          rm -rf dist/x64/rt-tray.app
+          cp -R dist/arm64/rt-tray.app dist/x64/rt-tray.app
+
+      - name: Create release tarballs
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          tar -czf "rt-darwin-arm64-${VERSION}.tar.gz" -C dist/arm64 .
           tar -czf "rt-darwin-x64-${VERSION}.tar.gz" -C dist/x64 .
+
+      # ── Cleanup signing keychain ─────────────────────────────────────────────
+      - name: Cleanup keychain
+        if: always() && env.KEYCHAIN_PATH != ''
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
 
       # ── Create GitHub Release ────────────────────────────────────────────────
       - name: Create Release

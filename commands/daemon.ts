@@ -86,6 +86,10 @@ ${argsXml}
     <string>${DAEMON_LOG_PATH}</string>
     <key>WorkingDirectory</key>
     <string>${RT_DIR}</string>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
 </dict>
 </plist>`;
 }
@@ -96,6 +100,28 @@ export async function install(args: string[] = []): Promise<void> {
   if (isDaemonInstalled()) {
     const config = getDaemonConfig()!;
     const running = await isDaemonRunning();
+
+    // For launchd installs, check whether the on-disk plist matches what we'd
+    // generate now. If it drifted (post-upgrade with new plist keys), refresh it.
+    // Done before the early-return paths so `rt update` → post-install picks up
+    // changes like new LimitLoadToSessionType / ProcessType keys.
+    if (config.mode === "launchd" && existsSync(LAUNCHD_PLIST_PATH)) {
+      const currentPlist = readFileSync(LAUNCHD_PLIST_PATH, "utf8");
+      const expectedPlist = generatePlist(config.bunPath, config.daemonScript);
+      if (currentPlist !== expectedPlist) {
+        console.log(`\n  ${yellow}launchd plist is out of date — refreshing${reset}`);
+        writeFileSync(LAUNCHD_PLIST_PATH, expectedPlist);
+        try {
+          execSync(`launchctl unload "${LAUNCHD_PLIST_PATH}" 2>/dev/null`, { stdio: "pipe" });
+        } catch { /* not loaded */ }
+        try {
+          execSync(`launchctl load "${LAUNCHD_PLIST_PATH}"`, { stdio: "pipe" });
+          console.log(`  ${green}✓${reset} reloaded launchd agent with refreshed plist`);
+        } catch (err) {
+          console.log(`  ${red}✗${reset} failed to reload launchd agent: ${err}`);
+        }
+      }
+    }
 
     if (running && process.stdin.isTTY) {
       const currentLabel = config.mode === "launchd" ? "launchd agent" : "background process";

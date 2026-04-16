@@ -210,6 +210,26 @@ async function runChecks(): Promise<CheckResult[]> {
     results.push(fail("daemon api", "worktrees endpoint not responding"));
   }
 
+  // ── TCC: can the daemon actually read user repos? ─────────────────────────
+  // The shell running rt verify has its own TCC grants, so file access checks
+  // here would always pass. Ask the daemon — it's the one that gets EPERM
+  // when macOS hasn't granted Full Disk Access to the rt binary.
+  const tccResponse = await daemonQuery("tcc:check");
+  if (tccResponse?.ok) {
+    const { blocked, accessible, totalRepos } = tccResponse.data;
+    if (totalRepos === 0) {
+      results.push(skip("tcc access", "no repos registered yet"));
+    } else if (blocked.length === 0) {
+      results.push(pass("tcc access", `daemon can read all ${accessible.length} registered repo${accessible.length !== 1 ? "s" : ""}`));
+    } else {
+      const paths = blocked.map((b: any) => b.path).join(", ");
+      results.push(fail(
+        "tcc access",
+        `daemon blocked from ${blocked.length} repo${blocked.length !== 1 ? "s" : ""} (${paths}). Run: rt --grant-fda  then add 'rt' under Full Disk Access`,
+      ));
+    }
+  }
+
   return results;
 }
 
