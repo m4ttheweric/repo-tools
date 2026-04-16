@@ -5,12 +5,17 @@ import Foundation
 /// Manages the Bun daemon process — start, stop, restart.
 /// Spawns the daemon as a direct child process so it inherits the tray app's
 /// TCC grants (file access to ~/Documents, ~/Desktop, etc.).
+///
+/// All mutable state is accessed exclusively on `queue` (serial) to prevent
+/// data races. The public methods are safe to call from any thread.
 class DaemonLifecycle {
 
     private let rtDir: String
     private let configPath: String
     private let sockPath: String
     private let pidPath: String
+
+    private let queue = DispatchQueue(label: "com.rt.daemon-lifecycle")
 
     private var daemonProcess: Process?
     private var intentionalStop = false
@@ -42,21 +47,22 @@ class DaemonLifecycle {
 
     // MARK: - Start
 
-    /// Spawn the daemon as a direct child process.
-    /// The daemon inherits the tray's TCC grants because it's a child process,
-    /// eliminating the need for separate Full Disk Access configuration.
     func startDaemon() {
+        queue.async { self._startDaemon() }
+    }
+
+    private func _startDaemon() {
         guard let config = loadConfig() else {
             NSLog("rt-tray: daemon config not found at \(configPath)")
             return
         }
 
         if let existing = daemonProcess, existing.isRunning {
-            NSLog("rt-tray: daemon process already running (pid \(existing.processIdentifier)), skipping spawn")
+            NSLog("rt-tray: daemon already running (pid \(existing.processIdentifier)), skipping")
             return
         }
 
-        // Clean up stale socket from a previous crash
+        // Clean up stale socket
         if FileManager.default.fileExists(atPath: sockPath) {
             try? FileManager.default.removeItem(atPath: sockPath)
         }
@@ -67,21 +73,15 @@ class DaemonLifecycle {
         }
 
         let proc = Process()
-
-        // Determine spawn arguments from config
         if config.daemonScript == "--daemon" {
-            // Compiled install: `rt --daemon`
             proc.executableURL = URL(fileURLWithPath: config.bunPath)
             proc.arguments = ["--daemon"]
         } else {
-            // Dev install: `bun run <script>`
             proc.executableURL = URL(fileURLWithPath: config.bunPath)
             proc.arguments = ["run", config.daemonScript]
         }
-
         proc.currentDirectoryURL = URL(fileURLWithPath: rtDir)
         proc.standardInput = FileHandle.nullDevice
-
         if let logHandle = FileHandle(forWritingAtPath: logPath) {
             logHandle.seekToEndOfFile()
             proc.standardOutput = logHandle
@@ -93,17 +93,20 @@ class DaemonLifecycle {
 
         intentionalStop = false
 
-        proc.terminationHandler = { [weak self] terminatedProc in
-            guard let self = self else { return }
-            let code = terminatedProc.terminationStatus
-            NSLog("rt-tray: daemon exited (status \(code), intentional: \(self.intentionalStop))")
+        // Capture proc by identity so a stale handler from a replaced process
+        // never touches the current daemonProcess.
+        proc.terminationHandler = { [weak self, weak proc] _ in
+            guard let self = self, let proc = proc else { return }
+            self.queue.async {
+                // Only act if this is still the active process
+                guard self.daemonProcess === proc else { return }
+                self.daemonProcess = nil
 
-            self.daemonProcess = nil
-
-            if !self.intentionalStop {
-                NSLog("rt-tray: daemon crashed — restarting in 2s")
-                DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
-                    self.startDaemon()
+                if !self.intentionalStop {
+                    NSLog("rt-tray: daemon crashed — restarting in 2s")
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
+                        self.queue.async { self._startDaemon() }
+                    }
                 }
             }
         }
@@ -111,7 +114,7 @@ class DaemonLifecycle {
         do {
             try proc.run()
             daemonProcess = proc
-            NSLog("rt-tray: daemon spawned as child process (pid \(proc.processIdentifier))")
+            NSLog("rt-tray: daemon spawned (pid \(proc.processIdentifier))")
         } catch {
             NSLog("rt-tray: failed to start daemon: \(error)")
         }
@@ -120,20 +123,25 @@ class DaemonLifecycle {
     // MARK: - Stop
 
     func stopDaemon() {
+        queue.async { self._stopDaemon() }
+    }
+
+    private func _stopDaemon() {
         intentionalStop = true
 
-        if let proc = daemonProcess, proc.isRunning {
+        // Nil and disarm BEFORE terminating so terminationHandler identity check
+        // fails and the crash-recovery path never fires.
+        if let proc = daemonProcess {
+            daemonProcess = nil
             proc.terminate()
             NSLog("rt-tray: sent SIGTERM to daemon (pid \(proc.processIdentifier))")
             return
         }
 
-        // Fallback: kill via PID file (daemon may have been started by launchd or manually)
+        // Fallback: kill via PID file
         guard let pidStr = try? String(contentsOfFile: pidPath, encoding: .utf8)
                                     .trimmingCharacters(in: .whitespacesAndNewlines),
-              let pid = Int32(pidStr) else {
-            return
-        }
+              let pid = Int32(pidStr) else { return }
         kill(pid, SIGTERM)
         NSLog("rt-tray: sent SIGTERM to daemon via PID file (pid \(pid))")
     }
@@ -141,26 +149,16 @@ class DaemonLifecycle {
     // MARK: - Restart
 
     func restartDaemon() {
-        stopDaemon()
+        queue.async { self._restartDaemon() }
+    }
 
-        DispatchQueue.global().async {
-            let deadline = Date().addingTimeInterval(3.0)
-            while Date() < deadline {
-                // Wait for process to exit
-                if let proc = self.daemonProcess, proc.isRunning {
-                    Thread.sleep(forTimeInterval: 0.1)
-                    continue
-                }
-                // Wait for socket cleanup
-                if FileManager.default.fileExists(atPath: self.sockPath) {
-                    Thread.sleep(forTimeInterval: 0.1)
-                    continue
-                }
-                break
-            }
+    private func _restartDaemon() {
+        _stopDaemon()
 
-            Thread.sleep(forTimeInterval: 0.15)
-            self.startDaemon()
+        // Fixed 1.5s wait — covers graceful shutdown + socket cleanup.
+        // Runs off-queue so the queue stays free for any stray terminationHandler callbacks.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) {
+            self.queue.async { self._startDaemon() }
         }
     }
 }

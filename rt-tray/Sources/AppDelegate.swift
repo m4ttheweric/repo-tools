@@ -219,16 +219,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func restartDaemon() {
         Task { @MainActor in
             setHealth(.starting)
-            // Send shutdown via the daemon's own command channel so it cleans up
-            // gracefully (releases socket, writes final state).
-            await daemonClient.sendShutdown()
 
-            // Hand off to DaemonLifecycle.restartDaemon(), which polls until the
-            // socket file is gone before spawning — prevents the race where
-            // startDaemon() sees the socket still present and bails out silently.
+            // Let DaemonLifecycle handle the full restart — it sets intentionalStop
+            // before terminating so the crash-recovery handler doesn't race with us.
             daemonLifecycle.restartDaemon()
 
-            // Poll until it comes back (up to 8s — allows ~2s cleanup + startup)
+            // Poll until it comes back (up to 8s)
             for _ in 0..<16 {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 if await daemonClient.isReachable() {
@@ -236,7 +232,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
             }
-            // Timed out
             setHealth(.down)
         }
     }
@@ -315,18 +310,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refreshStatus() async {
         guard let status = await daemonClient.queryTrayStatus() else {
-            // Don't overwrite "starting" with "down" during startup
-            if currentHealth != .starting {
-                setHealth(.down)
+            // Don't overwrite "starting" with "down" during startup.
+            // Dispatch to main — NSMenu/NSMenuItem must only be touched on the main thread,
+            // and this async func may resume on the cooperative thread pool after its await.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if self.currentHealth != .starting {
+                    self.setHealth(.down)
+                }
             }
             return
         }
 
-        lastDaemonStatus = status
         let health: DaemonHealth = status.pendingNotifications > 0 ? .warning : .healthy
-        currentHealth = health
-        updateMenuBarTitle(status: health)
-        updateMenuItems(with: status)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.lastDaemonStatus = status
+            self.currentHealth = health
+            self.updateMenuBarTitle(status: health)
+            self.updateMenuItems(with: status)
+        }
     }
 
     private func drainPendingNotifications() async {
