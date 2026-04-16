@@ -177,6 +177,41 @@ function installShellIntegrationStep(): void {
   }
 }
 
+// ─── 5. TCC / Full Disk Access check ─────────────────────────────────────────
+
+async function checkTccAccess(): Promise<void> {
+  try {
+    const { daemonQuery } = await import("../lib/daemon-client.ts");
+    const response = await daemonQuery("tcc:check");
+    if (!response?.ok) return;
+
+    const { blocked, totalRepos } = response.data;
+    if (totalRepos === 0 || blocked.length === 0) return;
+
+    console.log("");
+    fail("tcc access", `daemon is blocked from ${blocked.length} repo${blocked.length !== 1 ? "s" : ""}`);
+    for (const b of blocked) {
+      console.log(`    ${b.path}`);
+    }
+    console.log("");
+    console.log("  The rt daemon needs Full Disk Access to read your repos.");
+    console.log("  Opening System Settings — add the 'rt' binary shown below:\n");
+
+    const { basename } = await import("path");
+    const isCompiled = basename(process.execPath) !== "bun";
+    const rtPath = isCompiled ? process.execPath : (() => {
+      try {
+        const { execSync } = require("child_process");
+        return execSync("which rt", { encoding: "utf8" }).trim();
+      } catch { return "/opt/homebrew/bin/rt"; }
+    })();
+
+    console.log(`    ${rtPath}\n`);
+
+    spawnSync("open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"], { stdio: "pipe" });
+  } catch { /* daemon not reachable — skip silently */ }
+}
+
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
 /**
@@ -229,6 +264,8 @@ export async function runPostInstall(): Promise<void> {
     spawnSync("open", [trayDest], { stdio: "pipe" });
     ok("rt-tray.app", "launched");
   }
+
+  await checkTccAccess();
 
   console.log("");
   console.log("  Done. Restart your terminal, then run: rt doctor");
