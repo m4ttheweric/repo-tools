@@ -36,8 +36,17 @@ function isCompiledBinary(): boolean {
   return !process.execPath.includes("bun");
 }
 
+function resolveStableBrewPath(): string | null {
+  for (const p of ["/opt/homebrew/bin/rt", "/usr/local/bin/rt"]) {
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
 function resolveBunPath(): string {
-  if (isCompiledBinary()) return process.execPath; // compiled: use self
+  if (isCompiledBinary()) {
+    return resolveStableBrewPath() ?? process.execPath;
+  }
   try {
     return execSync("which bun", { encoding: "utf8", stdio: "pipe" }).trim();
   } catch {
@@ -57,9 +66,9 @@ function formatUptime(ms: number): string {
 }
 
 function generatePlist(rtPath: string, daemonScript?: string): string {
-  // In compiled mode: single arg `rt --daemon`
-  // In source mode: `bun run <script>`
-  const argsXml = isCompiledBinary()
+  // No daemonScript → compiled install: `rt --daemon`
+  // With daemonScript → dev install: `bun run <script>`
+  const argsXml = !daemonScript
     ? `        <string>${rtPath}</string>
         <string>--daemon</string>`
     : `        <string>${rtPath}</string>
@@ -107,7 +116,14 @@ export async function install(args: string[] = []): Promise<void> {
     // changes like new LimitLoadToSessionType / ProcessType keys.
     if (config.mode === "launchd" && existsSync(LAUNCHD_PLIST_PATH)) {
       const currentPlist = readFileSync(LAUNCHD_PLIST_PATH, "utf8");
-      const expectedPlist = generatePlist(config.bunPath, config.daemonScript);
+      // Detect install type from daemon.json — a compiled install stores
+      // "--daemon" as the script; dev stores the actual .ts path.
+      const isCompiledInstall = config.daemonScript === "--daemon";
+      const currentRtPath = isCompiledInstall
+        ? (resolveStableBrewPath() ?? config.bunPath)
+        : resolveBunPath();
+      const currentDaemonScript = isCompiledInstall ? undefined : config.daemonScript;
+      const expectedPlist = generatePlist(currentRtPath, currentDaemonScript);
       if (currentPlist !== expectedPlist) {
         console.log(`\n  ${yellow}launchd plist is out of date — refreshing${reset}`);
         writeFileSync(LAUNCHD_PLIST_PATH, expectedPlist);
