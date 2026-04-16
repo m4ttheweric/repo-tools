@@ -436,6 +436,29 @@ if (args[0] === "--version" || args[0] === "-V") {
   // Handles tray app, extension install, daemon setup, and shell integration.
   const { runPostInstall } = await import("./commands/post-install.ts");
   await runPostInstall();
+} else if (args[0] === "--grant-fda") {
+  // Hidden entry point: open System Settings → Privacy → Full Disk Access.
+  // Surfaced by rt verify / rt doctor when the daemon is hitting EPERM
+  // because macOS hasn't granted file access to the rt binary.
+  const { execSync } = await import("child_process");
+  const { basename } = await import("path");
+  const isCompiled = basename(process.execPath) !== "bun";
+  // In compiled mode, grant FDA to the rt binary itself. In dev mode, the
+  // running process is `bun`, but TCC issues are rare in dev (the daemon
+  // inherits Terminal's grants), so we still point them at the rt binary.
+  const rtPath = isCompiled ? process.execPath : (() => {
+    try { return execSync("which rt", { encoding: "utf8" }).trim(); }
+    catch { return "/opt/homebrew/bin/rt"; }
+  })();
+  console.log("\n  Opening System Settings → Privacy → Full Disk Access…");
+  console.log(`  Click the ${"\x1b[1m"}+${"\x1b[0m"} button and add: ${"\x1b[1m"}${rtPath}${"\x1b[0m"}`);
+  console.log(`  Then restart the daemon: ${"\x1b[1m"}rt daemon restart${"\x1b[0m"}\n`);
+  try {
+    execSync('open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"');
+  } catch {
+    console.error("  Could not open System Settings — open it manually: System Settings → Privacy & Security → Full Disk Access");
+    process.exit(1);
+  }
 } else if (args[0] === "update") {
   // `update` bypasses first-run setup — its own post-upgrade step runs it.
   const { runUpdate } = await import("./commands/update.ts");

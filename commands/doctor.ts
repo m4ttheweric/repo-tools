@@ -261,6 +261,23 @@ export async function runDoctor(_args: string[]): Promise<void> {
         } else {
           check(true, "daemon", "running");
         }
+
+        // TCC: ask the daemon if it can actually read the repos it watches
+        const tccResponse = await daemonQuery("tcc:check");
+        if (tccResponse?.ok) {
+          const { blocked, accessible, totalRepos } = tccResponse.data;
+          if (totalRepos === 0) {
+            info("tcc access", "no repos registered yet");
+          } else if (blocked.length === 0) {
+            check(true, "tcc access", `daemon can read all ${accessible.length} repo${accessible.length !== 1 ? "s" : ""}`);
+          } else {
+            check(false, "tcc access", `daemon blocked from ${blocked.length} repo${blocked.length !== 1 ? "s" : ""}`);
+            for (const b of blocked) {
+              console.log(`    ${red}${b.path}${reset}  ${dim}${b.error}${reset}`);
+            }
+            console.log(`    ${yellow}grant Full Disk Access:${reset}  ${bold}rt --grant-fda${reset}`);
+          }
+        }
       } else {
         check(false, "daemon", `installed but not running — run: ${bold}rt daemon start${reset}`);
       }

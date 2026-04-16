@@ -14,7 +14,7 @@
  */
 
 import {
-  existsSync, readFileSync, writeFileSync, mkdirSync,
+  existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync,
   unlinkSync, watch, statSync, type FSWatcher,
 } from "fs";
 import { homedir } from "os";
@@ -584,6 +584,37 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
           cacheEntries: Object.keys(cache.entries).length,
           portsCached: portCache.length,
           portCacheAge: portCacheUpdatedAt ? Date.now() - portCacheUpdatedAt : null,
+        },
+      };
+    }
+
+    case "tcc:check": {
+      // Self-test: can the daemon actually read each registered repo path?
+      // EPERM here means macOS TCC has not granted the daemon binary access
+      // to the parent directory (typically ~/Documents/...). The CLI shell
+      // running rt verify has its own TCC grants (via Terminal.app), so it
+      // can't detect this on its own — only the daemon can.
+      const repos = loadRepoIndex();
+      const blocked: Array<{ name: string; path: string; error: string }> = [];
+      const accessible: string[] = [];
+      for (const [name, path] of Object.entries(repos)) {
+        try {
+          readdirSync(path);
+          accessible.push(name);
+        } catch (err: any) {
+          if (err?.code === "EPERM" || err?.code === "EACCES") {
+            blocked.push({ name, path, error: err.code });
+          }
+          // ENOENT etc — repo moved/deleted, not a TCC issue, ignore
+        }
+      }
+      return {
+        ok: true,
+        data: {
+          blocked,
+          accessible,
+          totalRepos: Object.keys(repos).length,
+          daemonPid: process.pid,
         },
       };
     }
