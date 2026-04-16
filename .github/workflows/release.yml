@@ -166,6 +166,7 @@ jobs:
 
       - name: Notarize and staple rt-tray.app
         if: steps.notary.outputs.available == 'true'
+        continue-on-error: true
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
