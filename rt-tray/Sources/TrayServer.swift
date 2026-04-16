@@ -10,6 +10,7 @@ class TrayServer {
     static let shared = TrayServer()
 
     var onNotification: ((NotificationEvent) -> Void)?
+    var daemonLifecycle: DaemonLifecycle?
 
     private var listener: NWListener?
     private let socketPath: String
@@ -107,6 +108,24 @@ class TrayServer {
 
             } else if method == "GET" && path == "/health" {
                 self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true,\"app\":\"rt-tray\"}")
+
+            } else if method == "POST" && path == "/daemon/start" {
+                DispatchQueue.main.async {
+                    self.daemonLifecycle?.startDaemon()
+                }
+                self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true}")
+
+            } else if method == "POST" && path == "/daemon/stop" {
+                DispatchQueue.main.async {
+                    self.daemonLifecycle?.stopDaemon()
+                }
+                self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true}")
+
+            } else if method == "POST" && path == "/daemon/restart" {
+                DispatchQueue.main.async {
+                    self.daemonLifecycle?.restartDaemon()
+                }
+                self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true}")
 
             } else {
                 self.sendResponse(connection: connection, status: 404, body: "{\"ok\":false,\"error\":\"not found\"}")

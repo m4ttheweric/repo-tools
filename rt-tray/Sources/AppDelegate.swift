@@ -349,6 +349,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         TrayServer.shared.onNotification = { [weak self] event in
             self?.notificationManager.fire(event)
         }
+        TrayServer.shared.daemonLifecycle = daemonLifecycle
         TrayServer.shared.start()
     }
 
