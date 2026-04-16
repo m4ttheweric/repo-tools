@@ -136,12 +136,7 @@ function installExtensions(): void {
 
 async function installDaemon(): Promise<void> {
   try {
-    // Default to tray mode (daemon inherits tray's TCC grants).
-    // Falls back to launchd if tray app isn't installed.
-    const trayInstalled = existsSync(join(HOME, "Applications", "rt-tray.app"));
-    const mode = trayInstalled ? "--tray" : "--launchd";
-
-    const result = spawnSync(process.execPath, ["daemon", "install", mode], {
+    const result = spawnSync(process.execPath, ["daemon", "install"], {
       stdio: "pipe",
       timeout: 15_000,
     });
@@ -152,19 +147,14 @@ async function installDaemon(): Promise<void> {
       return;
     }
 
-    const modeLabel = trayInstalled ? "tray-managed" : "launchd";
-    ok("daemon", `installed (${modeLabel})`);
+    ok("daemon", "installed (tray-managed)");
 
     const { isDaemonRunning } = await import("../lib/daemon-client.ts");
     for (let i = 0; i < 8; i++) {
       await Bun.sleep(250);
       if (await isDaemonRunning()) { ok("daemon", "running"); return; }
     }
-    if (trayInstalled) {
-      info("daemon", "will start when rt-tray launches");
-    } else {
-      info("daemon", "installed (will start on next login)");
-    }
+    info("daemon", "will start when rt-tray launches");
   } catch (err: any) {
     fail("daemon", err?.message ?? String(err));
   }
