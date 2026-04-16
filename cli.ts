@@ -441,15 +441,11 @@ if (args[0] === "--version" || args[0] === "-V") {
   // Surfaced by rt verify / rt doctor when the daemon is hitting EPERM
   // because macOS hasn't granted file access to the rt binary.
   const { execSync } = await import("child_process");
-  const { basename } = await import("path");
-  const isCompiled = basename(process.execPath) !== "bun";
-  // In compiled mode, grant FDA to the rt binary itself. In dev mode, the
-  // running process is `bun`, but TCC issues are rare in dev (the daemon
-  // inherits Terminal's grants), so we still point them at the rt binary.
-  const rtPath = isCompiled ? process.execPath : (() => {
-    try { return execSync("which rt", { encoding: "utf8" }).trim(); }
-    catch { return "/opt/homebrew/bin/rt"; }
-  })();
+  const { existsSync } = await import("fs");
+  // Always point to the stable Homebrew symlink — not the versioned
+  // Cellar path that process.execPath resolves to.
+  const rtPath = ["/opt/homebrew/bin/rt", "/usr/local/bin/rt"].find(existsSync)
+    ?? "/opt/homebrew/bin/rt";
   console.log("\n  Opening System Settings → Privacy → Full Disk Access…\n");
   console.log(`  1. Click ${"\x1b[1m"}+${"\x1b[0m"} and add: ${"\x1b[1m"}${rtPath}${"\x1b[0m"}`);
   console.log(`     (will appear as ${"\x1b[1m"}"rt"${"\x1b[0m"} — this covers the daemon)`);
