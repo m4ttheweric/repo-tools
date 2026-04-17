@@ -12,13 +12,17 @@ import { join } from "path";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type DaemonMode = "launchd" | "manual" | "tray";
+/**
+ * Only one mode now ("smappservice"): the daemon is a LaunchAgent registered
+ * by rt-tray via SMAppService. The legacy values ("launchd", "manual", "tray")
+ * may appear in old daemon.json files written by previous rt versions —
+ * `getDaemonConfig` migrates them on read.
+ */
+export type DaemonMode = "smappservice";
 
 export interface DaemonConfig {
   installed: boolean;
   installedAt: string;
-  bunPath: string;
-  daemonScript: string;
   mode: DaemonMode;
 }
 
@@ -42,7 +46,12 @@ export function getDaemonConfig(): DaemonConfig | null {
   try {
     const raw = JSON.parse(readFileSync(DAEMON_CONFIG_PATH, "utf8"));
     if (!raw.installed) return null;
-    return raw as DaemonConfig;
+    // Normalize legacy modes ("launchd", "manual", "tray") → "smappservice".
+    return {
+      installed: true,
+      installedAt: String(raw.installedAt ?? new Date().toISOString()),
+      mode: "smappservice",
+    };
   } catch {
     return null;
   }
@@ -52,14 +61,12 @@ export function isDaemonInstalled(): boolean {
   return getDaemonConfig() !== null;
 }
 
-export function markDaemonInstalled(bunPath: string, daemonScript: string, mode: DaemonMode = "manual"): void {
+export function markDaemonInstalled(): void {
   mkdirSync(RT_DIR, { recursive: true });
   const config: DaemonConfig = {
     installed: true,
     installedAt: new Date().toISOString(),
-    bunPath,
-    daemonScript,
-    mode,
+    mode: "smappservice",
   };
   writeFileSync(DAEMON_CONFIG_PATH, JSON.stringify(config, null, 2));
 }

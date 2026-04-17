@@ -190,22 +190,15 @@ async function checkTccAccess(): Promise<void> {
     for (const b of blocked) {
       console.log(`    ${b.path}`);
     }
-
-    const { getDaemonConfig } = await import("../lib/daemon-config.ts");
-    const config = getDaemonConfig();
-    if (config?.mode === "tray") {
-      console.log("");
-      console.log("  Try restarting the tray app: quit rt-tray and reopen it.");
-      console.log("  The daemon inherits TCC grants from the tray app.");
-    } else {
-      console.log("");
-      console.log("  The rt daemon needs Full Disk Access to read your repos.");
-      console.log("  Opening System Settings — add the 'rt' binary shown below:\n");
-      const rtPath = ["/opt/homebrew/bin/rt", "/usr/local/bin/rt"].find(existsSync)
-        ?? "/opt/homebrew/bin/rt";
-      console.log(`    ${rtPath}\n`);
-      spawnSync("open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"], { stdio: "pipe" });
-    }
+    console.log("");
+    console.log("  The daemon inherits Full Disk Access from rt-tray.app.");
+    console.log("  Grant FDA to rt-tray, then restart the daemon:");
+    console.log("");
+    console.log("    1. System Settings → Privacy & Security → Full Disk Access");
+    console.log("    2. Click + and add: ~/Applications/rt-tray.app");
+    console.log("    3. rt daemon restart");
+    console.log("");
+    spawnSync("open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"], { stdio: "pipe" });
   } catch { /* daemon not reachable — skip silently */ }
 }
 
