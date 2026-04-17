@@ -10,6 +10,7 @@ import * as branch from "../commands/branch.ts";
 import * as branchClean from "../commands/branch-clean.ts";
 import * as buildSelect from "../commands/build-select.ts";
 import * as commit from "../commands/commit.ts";
+import * as agent from "../commands/agent.ts";
 import * as daemon from "../commands/daemon.ts";
 import * as extension from "../commands/extension.ts";
 import * as hooks from "../commands/hooks.ts";
@@ -26,6 +27,7 @@ import * as gitx from "../commands/gitx.ts";
 import * as rebase from "../commands/git/rebase.ts";
 import * as reset from "../commands/git/reset.ts";
 import * as backup from "../commands/git/backup.ts";
+import * as pull from "../commands/git/pull.ts";
 import * as runner from "../commands/runner.tsx";
 import * as status from "../commands/status.tsx";
 import * as mrStatus from "../commands/mr-status.tsx";
@@ -39,6 +41,7 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/branch-clean.ts": branchClean,
   "./commands/build-select.ts": buildSelect,
   "./commands/commit.ts": commit,
+  "./commands/agent.ts": agent,
   "./commands/daemon.ts": daemon,
   "./commands/extension.ts": extension,
   "./commands/hooks.ts": hooks,
@@ -55,6 +58,7 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/git/rebase.ts": rebase,
   "./commands/git/reset.ts": reset,
   "./commands/git/backup.ts": backup,
+  "./commands/git/pull.ts": pull,
   "./commands/runner.tsx": runner,
   "./commands/status.tsx": status,
   "./commands/mr-status.tsx": mrStatus,

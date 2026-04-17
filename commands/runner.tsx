@@ -49,7 +49,7 @@ import {
   listRunnerConfigs, loadRunnerConfig, saveRunnerConfig, resetRunnerConfig,
   acquireRunnerLock, releaseRunnerLock,
   nextLaneId, nextEntryId, proxyWindowName, entryWindowName,
-  type LaneConfig, type LaneEntry, type LaneMode,
+  type LaneConfig, type LaneEntry, type LaneMode, type Remedy,
 } from "../lib/runner-store.ts";
 import type { ProcessState } from "../lib/daemon/state-store.ts";
 import type { RunResolveResult } from "./run.ts";
@@ -340,9 +340,8 @@ async function ensureProxy(lane: LaneConfig): Promise<void> {
 }
 
 /**
- * Start an entry's process via the daemon.
- * Handles port auto-allocation, command substitution, spawn, group activation,
- * and proxy upstream routing.
+ * Start an entry's process via the atomic process:start daemon command.
+ * Handles port auto-allocation, command substitution, and proxy upstream routing.
  * Returns the actual ephemeral port used.
  */
 async function startEntry(lane: LaneConfig, entry: LaneEntry): Promise<number> {
@@ -361,20 +360,28 @@ async function startEntry(lane: LaneConfig, entry: LaneEntry): Promise<number> {
     .replace(/\$\{?CANONICAL_PORT\}?/g, canonicalPort);
 
   const processId = entryWindowName(lane.id, entry.id);
-  await daemonQuery("process:spawn", {
-    id: processId,
+
+  // process:start is an atomic composite: spawn + group:activate + proxy:set-upstream
+  // in a single daemon round-trip — no intermediate window where proxy has no upstream.
+  await daemonQuery("process:start", {
+    id:            processId,
     cmd,
-    cwd: entry.targetDir,
-    env: { PORT: port, CANONICAL_PORT: canonicalPort },
+    cwd:           entry.targetDir,
+    env:           { PORT: port, CANONICAL_PORT: canonicalPort },
+    groupId:       lane.id,
+    canonicalPort: lane.canonicalPort,
+    mode:          lane.mode ?? "warm",
   });
-  await daemonQuery("group:activate", { groupId: lane.id, processId, mode: lane.mode ?? "warm" });
-  await daemonQuery("proxy:set-upstream", { id: proxyWindowName(lane.id), port: ephemeralPort });
+
+  if (entry.remedies?.length) {
+    await daemonQuery("remedy:set", { id: processId, remedies: entry.remedies, cwd: entry.targetDir });
+  }
 
   return ephemeralPort;
 }
 
 /**
- * Restart an entry's process via the daemon (kill awaited → spawn).
+ * Restart an entry's process via the atomic process:restart daemon command.
  * Returns the actual ephemeral port used.
  */
 async function restartEntry(lane: LaneConfig, entry: LaneEntry): Promise<number> {
@@ -392,16 +399,22 @@ async function restartEntry(lane: LaneConfig, entry: LaneEntry): Promise<number>
     .replace(/\$\{?CANONICAL_PORT\}?/g, canonicalPort);
 
   const processId = entryWindowName(lane.id, entry.id);
-  // Kill first, then spawn fresh
-  await daemonQuery("process:kill", { id: processId });
-  await daemonQuery("process:spawn", {
-    id: processId,
+
+  // process:restart is an atomic composite: kill (awaited) + spawn + group:activate
+  // + proxy:set-upstream in a single daemon round-trip — no proxy-offline window.
+  await daemonQuery("process:restart", {
+    id:            processId,
     cmd,
-    cwd: entry.targetDir,
-    env: { PORT: port, CANONICAL_PORT: canonicalPort },
+    cwd:           entry.targetDir,
+    env:           { PORT: port, CANONICAL_PORT: canonicalPort },
+    groupId:       lane.id,
+    canonicalPort: lane.canonicalPort,
+    mode:          lane.mode ?? "warm",
   });
-  await daemonQuery("group:activate", { groupId: lane.id, processId, mode: lane.mode ?? "warm" });
-  await daemonQuery("proxy:set-upstream", { id: proxyWindowName(lane.id), port: ephemeralPort });
+
+  if (entry.remedies?.length) {
+    await daemonQuery("remedy:set", { id: processId, remedies: entry.remedies, cwd: entry.targetDir });
+  }
 
   return ephemeralPort;
 }
@@ -944,6 +957,7 @@ async function runOnce(
         const lane = lanes.find((l) => l.id === action.laneId);
         if (!lane) return {};
         const win = entryWindowName(action.laneId, action.entryId);
+        await daemonQuery("remedy:clear", { id: win }); // unregister before kill (Fix 2)
         await daemonQuery("process:kill", { id: win });
         await daemonQuery("group:remove-member", { groupId: lane.id, processId: win });
         await daemonQuery("port:release", { label: win });
@@ -970,6 +984,8 @@ async function runOnce(
       case "remove-lane": {
         const lane = lanes.find((l) => l.id === action.laneId);
         if (!lane) return {};
+        // Unregister remedies before killing processes (Fix 2: prevents orphan spawns)
+        await Promise.all(lane.entries.map((e) => daemonQuery("remedy:clear", { id: entryWindowName(action.laneId, e.id) })));
         await Promise.all(lane.entries.map((e) => daemonQuery("process:kill", { id: entryWindowName(action.laneId, e.id) })));
         await daemonQuery("proxy:stop", { id: proxyWindowName(action.laneId) });
         await daemonQuery("group:remove", { id: action.laneId });
@@ -1302,21 +1318,21 @@ async function runOnce(
       <column gap={0}>
         <ScopeTitle name="process" />
         <row gap={1}><Cmd k="a" l="add" /><Cmd k="s" l="start" /><Cmd k="w" l="warm" /><Cmd k="↵" l="activate" /></row>
-        <row gap={1}><Cmd k="x/X" l="stop" /><Cmd k="r" l="remove" /><Cmd k="esc" l="back" /></row>
+        <row gap={1}><Cmd k="r" l="remove" /><Cmd k="e" l="cmd" /><Cmd k="t" l="shell" /><Cmd k="f" l="fix rules" /><Cmd k="esc" l="back" /></row>
       </column>
     );
     if (mode === "open-scope") return (
       <column gap={0}>
         <ScopeTitle name="open" />
-        <row gap={1}><Cmd k="b" l="branch" /><Cmd k="c" l="code" /><Cmd k="w" l="browser" /><Cmd k="t" l="shell" /></row>
-        <row gap={1}><Cmd k="r" l="run" /><Cmd k="e" l="cmd" /><Cmd k="i" l="info" /><Cmd k="esc" l="back" /></row>
+        <row gap={1}><Cmd k="b" l="branch" /><Cmd k="c" l="code" /><Cmd k="w" l="browser" /></row>
+        <row gap={1}><Cmd k="r" l="run" /><Cmd k="i" l="info" /><Cmd k="esc" l="back" /></row>
       </column>
     );
     // Default top-level hints
     return (
       <column gap={0}>
         <row gap={1}><Cmd k="l" l="lane" /><Cmd k="p" l="process" /><Cmd k="o" l="open" /></row>
-        <row gap={1}><Cmd k="s" l="start" /><Cmd k="↵" l="activate" /></row>
+        <row gap={1}><Cmd k="s" l="start" /><Cmd k="x" l="stop" /><Cmd k="↵" l="activate" /></row>
         <row gap={1}><Cmd k="q" l="quit" /><Cmd k="!" l="reset" /></row>
       </column>
     );
@@ -1438,12 +1454,23 @@ async function runOnce(
 
   async function pollDaemon() {
     if (!appRunning) return;
-    const [statesRes, proxyRes] = await Promise.all([
+    const [statesRes, proxyRes, remedyRes] = await Promise.all([
       daemonQuery("process:states"),
       daemonQuery("proxy:list"),
+      daemonQuery("remedy:drain"),
     ]);
 
     if (!appRunning) return; // app may have stopped while we were awaiting
+
+    // Surface any remedy fire events as toasts
+    if (remedyRes?.ok && Array.isArray(remedyRes.data)) {
+      for (const ev of remedyRes.data as { name: string; success: boolean }[]) {
+        showToast(
+          ev.success ? `✓ Remedy: ${ev.name}` : `✗ Remedy failed: ${ev.name}`,
+          ev.success ? 3000 : 5000,
+        );
+      }
+    }
 
     const entryStates = new Map<string, EntryState>();
     if (statesRes?.ok && statesRes.data) {
@@ -1769,6 +1796,15 @@ async function runOnce(
       if (lane.activeEntryId === entry.id) return;
       doDispatch({ type: "activate", laneId: lane.id, entryId: entry.id }, state);
     },
+
+    // [x] stop focused entry — global shortcut (no scope needed)
+    x: ({ state }) => {
+      const li = Math.min(state.laneIdx, state.lanes.length - 1);
+      const lane = state.lanes[li];
+      if (!lane) return;
+      const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
+      if (entry) doDispatch({ type: "stop", laneId: lane.id, entryId: entry.id }, state);
+    },
   });
 
   // ── Text event handler — only for shifted symbols that can't go in app.keys ─
@@ -1965,17 +2001,6 @@ async function runOnce(
         doDispatch({ type: "activate", laneId: lane.id, entryId: entry.id }, state);
       },
 
-      // [x] stop selected entry
-      x: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState) return;
-        const s = _currentState;
-        const lane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
-        if (!lane) return;
-        const entry = lane.entries[Math.min(s.entryIdx, lane.entries.length - 1)];
-        if (entry) doDispatch({ type: "stop", laneId: lane.id, entryId: entry.id }, s);
-      },
-
       // [r] remove entry (opens entry picker overlay)
       r: ({ update }) => {
         if (!_currentState) { exitScope({ update }); return; }
@@ -1985,6 +2010,114 @@ async function runOnce(
         const safeEi = Math.min(state.entryIdx, lane.entries.length - 1);
         update((s) => ({ ...s, mode: { type: "entry-picker", purpose: "remove", laneId: lane.id, idx: safeEi } }));
         app.setMode("entry-picker");
+      },
+
+      // [f] edit fix/remedy rules for the focused entry
+      f: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        const state = _currentState;
+        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
+        if (!lane) return;
+        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
+        if (!entry) return;
+
+        // Write current remedies to a temp JSON file, open in $EDITOR, read back on close
+        const tmpFile = join(tmpdir(), `rt-remedies-${lane.id}-${entry.id}-${Date.now()}.json`);
+        const currentRemedies: Remedy[] = entry.remedies ?? [];
+        const template: Remedy[] = currentRemedies.length > 0 ? currentRemedies : [{
+          name: "Example: clear cache",
+          pattern: "ENOENT .cache",
+          cmds: ["rm -rf .cache"],
+          thenRestart: true,
+          cooldownMs: 30000,
+        }];
+        writeFileSync(tmpFile, JSON.stringify(template, null, 2));
+
+        const editor = process.env.EDITOR ?? "vi";
+        const label = `${entry.packageLabel || entry.script} · ${entry.branch || "no branch"}`;
+        openPopup(`${editor} ${tmpFile}`, { title: `remedies: ${label}`, width: "90%", height: "80%" });
+
+        // Read back after popup closes
+        try {
+          const updated = JSON.parse(readFileSync(tmpFile, "utf8")) as Remedy[];
+          unlinkSync(tmpFile);
+          const processId = entryWindowName(lane.id, entry.id);
+          const newLanes = currentLanes.map((l) =>
+            l.id !== lane.id ? l : {
+              ...l,
+              entries: l.entries.map((e) =>
+                e.id !== entry.id ? e : { ...e, remedies: updated.length > 0 ? updated : undefined },
+              ),
+            },
+          );
+          saveCurrent(newLanes);
+          safeUpdate((s) => ({ ...s, lanes: newLanes }));
+          // Re-register with daemon if process is live
+          void daemonQuery("remedy:set", { id: processId, remedies: updated, cwd: entry.targetDir });
+          showToast(`Remedies saved for ${entry.packageLabel || entry.script} (${updated.length})`);
+        } catch {
+          try { unlinkSync(tmpFile); } catch { /* already gone */ }
+          showToast("⚠ Remedy JSON invalid — changes discarded");
+        }
+      },
+
+      // [e] edit command template via $EDITOR
+      e: ({ update }) => {
+        exitScope({ update });
+        if (!_currentState) return;
+        const state = _currentState;
+        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
+        if (!lane) return;
+        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
+        if (!entry) return;
+        const tmpFile = `/tmp/rt-edit-${entry.id}.sh`;
+        writeFileSync(tmpFile, entry.commandTemplate + "\n");
+        const detectEditor = () => {
+          for (const ed of ["nvim", "vim", "nano"]) {
+            if (spawnSync("which", [ed], { encoding: "utf8" }).status === 0) return ed;
+          }
+          return "nano";
+        };
+        const editor = process.env.EDITOR || detectEditor();
+        const isVim = /\bnvi?m\b/.test(editor);
+        const isNano = /\bnano\b/.test(editor);
+        const editorCmd = isVim
+          ? `${editor} '+call cursor(1, 1000)' -c 'startinsert!' '${tmpFile}'`
+          : isNano ? `${editor} --save-on-exit '${tmpFile}'` : `${editor} '${tmpFile}'`;
+        openPopup(editorCmd, {
+          title: "edit command",
+          hint: isVim ? ":wq to save" : isNano ? "Ctrl-X to save" : "save and close",
+          width: "100", height: "12",
+        });
+        try {
+          const newCmd = readFileSync(tmpFile, "utf8").trim();
+          if (newCmd && newCmd !== entry.commandTemplate) {
+            update((s) => {
+              const next = s.lanes.map((l) =>
+                l.id === lane.id
+                  ? { ...l, entries: l.entries.map((e) => e.id === entry.id ? { ...e, commandTemplate: newCmd } : e) }
+                  : l
+              );
+              saveCurrent(next);
+              return { ...s, lanes: next };
+            });
+            showToast("command updated — restart entry to apply");
+          }
+        } catch { /* file gone or unreadable */ }
+        try { unlinkSync(tmpFile); } catch { /* already cleaned */ }
+      },
+
+      // [t] open shell at entry's working directory
+      t: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        const state = _currentState;
+        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
+        if (!lane) return;
+        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
+        if (!entry) return;
+        openTempPane(process.env.SHELL ?? "zsh", { cwd: entry.targetDir, target: displayPane(), escToClose: true });
       },
     },
 
@@ -2065,41 +2198,8 @@ async function runOnce(
         if (!lane) return;
         const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
         if (!entry) return;
-        const tmpFile = `/tmp/rt-edit-${entry.id}.sh`;
-        writeFileSync(tmpFile, entry.commandTemplate + "\n");
-        const detectEditor = () => {
-          for (const ed of ["nvim", "vim", "nano"]) {
-            if (spawnSync("which", [ed], { encoding: "utf8" }).status === 0) return ed;
-          }
-          return "nano";
-        };
-        const editor = process.env.EDITOR || detectEditor();
-        const isVim = /\bnvi?m\b/.test(editor);
-        const isNano = /\bnano\b/.test(editor);
-        const editorCmd = isVim
-          ? `${editor} '+call cursor(1, 1000)' -c 'startinsert!' '${tmpFile}'`
-          : isNano ? `${editor} --save-on-exit '${tmpFile}'` : `${editor} '${tmpFile}'`;
-        openPopup(editorCmd, {
-          title: "edit command",
-          hint: isVim ? ":wq to save" : isNano ? "Ctrl-X to save" : "save and close",
-          width: "100", height: "12",
-        });
-        try {
-          const newCmd = readFileSync(tmpFile, "utf8").trim();
-          if (newCmd && newCmd !== entry.commandTemplate) {
-            update((s) => {
-              const next = s.lanes.map((l) =>
-                l.id === lane.id
-                  ? { ...l, entries: l.entries.map((e) => e.id === entry.id ? { ...e, commandTemplate: newCmd } : e) }
-                  : l
-              );
-              saveCurrent(next);
-              return { ...s, lanes: next };
-            });
-            showToast("command updated — restart entry to apply");
-          }
-        } catch { /* file gone or unreadable */ }
-        try { unlinkSync(tmpFile); } catch { /* already cleaned */ }
+        // (handler body moved to process-scope [e])
+        showToast("tip: use [p → e] to edit the command");
       },
 
       // [i] toggle MR/ticket info pane

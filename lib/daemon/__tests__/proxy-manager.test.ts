@@ -27,6 +27,82 @@ function startUpstream(port: number, body: string): ReturnType<typeof Bun.serve>
   });
 }
 
+/**
+ * Start a WS echo upstream. Echoes messages back prefixed with `tag:` so tests
+ * can tell which upstream answered. Acknowledges subprotocol if sent.
+ */
+function startWsEcho(port: number, tag: string): ReturnType<typeof Bun.serve> {
+  return Bun.serve<{ sub?: string }, never>({
+    port,
+    fetch(req, srv) {
+      const proto = req.headers.get("sec-websocket-protocol");
+      const sub = proto?.split(",")[0]?.trim();
+      const ok = srv.upgrade(req, { data: { sub } });
+      return ok ? undefined : new Response("upgrade failed", { status: 400 });
+    },
+    websocket: {
+      open(ws) {
+        if (ws.data.sub) ws.send(`sub:${ws.data.sub}`);
+      },
+      message(ws, msg) {
+        if (typeof msg === "string") ws.send(`${tag}:${msg}`);
+        else ws.send(msg); // binary: echo raw
+      },
+    },
+  });
+}
+
+/** Wait for a single message matching a predicate, or time out. */
+function nextMessage(
+  ws: WebSocket,
+  predicate: (data: unknown) => boolean = () => true,
+  timeoutMs = 1000,
+): Promise<MessageEvent> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.removeEventListener("message", handler);
+      reject(new Error("nextMessage timed out"));
+    }, timeoutMs);
+    const handler = (ev: MessageEvent) => {
+      if (!predicate(ev.data)) return;
+      clearTimeout(timer);
+      ws.removeEventListener("message", handler);
+      resolve(ev);
+    };
+    ws.addEventListener("message", handler);
+  });
+}
+
+/** Wait for close event, or time out. */
+function waitClose(ws: WebSocket, timeoutMs = 1000): Promise<CloseEvent> {
+  return new Promise((resolve, reject) => {
+    if (ws.readyState === WebSocket.CLOSED) {
+      // already closed — synthesize an event-like object
+      resolve({ code: 1006, reason: "already closed", wasClean: false } as CloseEvent);
+      return;
+    }
+    const timer = setTimeout(() => reject(new Error("waitClose timed out")), timeoutMs);
+    ws.addEventListener("close", (ev) => {
+      clearTimeout(timer);
+      resolve(ev);
+    }, { once: true });
+  });
+}
+
+/** Open a client WS to the given port and wait until it opens. */
+async function openWs(port: number, protocols?: string | string[]): Promise<WebSocket> {
+  const ws = protocols
+    ? new WebSocket(`ws://localhost:${port}/`, protocols)
+    : new WebSocket(`ws://localhost:${port}/`);
+  ws.binaryType = "arraybuffer";
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("openWs timed out")), 1000);
+    ws.addEventListener("open", () => { clearTimeout(timer); resolve(); }, { once: true });
+    ws.addEventListener("error", () => { clearTimeout(timer); reject(new Error("openWs error")); }, { once: true });
+  });
+  return ws;
+}
+
 beforeEach(() => {
   pm = new ProxyManager();
 });
@@ -166,5 +242,132 @@ describe("stopAll", () => {
     pm.start("svc", c, u2);
     expect(pm.getStatus("svc")?.upstreamPort).toBe(u2);
     pm.stop("svc");
+  });
+});
+
+// ── WebSocket proxying ───────────────────────────────────────────────────────
+
+describe("WebSocket proxying", () => {
+  test("client↔upstream message round-trip through proxy", async () => {
+    const [canonical, upstreamPort] = [nextPort(), nextPort()];
+    const upstream = startWsEcho(upstreamPort, "one");
+    pm.start("svc", canonical, upstreamPort);
+    await sleep(50);
+
+    const ws = await openWs(canonical);
+    try {
+      ws.send("hello");
+      const ev = await nextMessage(ws);
+      expect(ev.data).toBe("one:hello");
+    } finally {
+      ws.close();
+      pm.stop("svc");
+      upstream.stop(true);
+    }
+  });
+
+  test("binary frames pass through", async () => {
+    const [canonical, upstreamPort] = [nextPort(), nextPort()];
+    const upstream = startWsEcho(upstreamPort, "bin");
+    pm.start("svc", canonical, upstreamPort);
+    await sleep(50);
+
+    const ws = await openWs(canonical);
+    try {
+      const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+      ws.send(bytes);
+      const ev = await nextMessage(ws, (d) => d instanceof ArrayBuffer);
+      const received = new Uint8Array(ev.data as ArrayBuffer);
+      expect(Array.from(received)).toEqual([1, 2, 3, 4, 5]);
+    } finally {
+      ws.close();
+      pm.stop("svc");
+      upstream.stop(true);
+    }
+  });
+
+  test("forwards Sec-WebSocket-Protocol to upstream", async () => {
+    const [canonical, upstreamPort] = [nextPort(), nextPort()];
+    const upstream = startWsEcho(upstreamPort, "proto");
+    pm.start("svc", canonical, upstreamPort);
+    await sleep(50);
+
+    const ws = await openWs(canonical, "hmr-v1");
+    try {
+      // echo upstream greets with `sub:<subprotocol>` on open
+      const ev = await nextMessage(ws, (d) => typeof d === "string" && (d as string).startsWith("sub:"));
+      expect(ev.data).toBe("sub:hmr-v1");
+    } finally {
+      ws.close();
+      pm.stop("svc");
+      upstream.stop(true);
+    }
+  });
+
+  test("setUpstream closes live bridges with code 1012", async () => {
+    const [canonical, port1, port2] = [nextPort(), nextPort(), nextPort()];
+    const up1 = startWsEcho(port1, "one");
+    const up2 = startWsEcho(port2, "two");
+    pm.start("svc", canonical, port1);
+    await sleep(50);
+
+    const ws = await openWs(canonical);
+    // prove it's connected to up1
+    ws.send("ping");
+    const first = await nextMessage(ws);
+    expect(first.data).toBe("one:ping");
+
+    // hot-swap — live bridge should be closed
+    pm.setUpstream("svc", port2);
+    const closeEv = await waitClose(ws);
+    expect(closeEv.code).toBe(1012);
+
+    // reconnect should hit the new upstream
+    const ws2 = await openWs(canonical);
+    try {
+      ws2.send("ping");
+      const ev = await nextMessage(ws2);
+      expect(ev.data).toBe("two:ping");
+    } finally {
+      ws2.close();
+      pm.stop("svc");
+      up1.stop(true);
+      up2.stop(true);
+    }
+  });
+
+  test("stop closes live bridges", async () => {
+    const [canonical, upstreamPort] = [nextPort(), nextPort()];
+    const upstream = startWsEcho(upstreamPort, "x");
+    pm.start("svc", canonical, upstreamPort);
+    await sleep(50);
+
+    const ws = await openWs(canonical);
+    try {
+      pm.stop("svc");
+      const ev = await waitClose(ws);
+      // Any close code is acceptable — the point is that the bridge was torn down
+      // (server.stop(true) and our explicit close race, resulting codes vary).
+      expect(ev).toBeDefined();
+      expect(ws.readyState).toBe(WebSocket.CLOSED);
+    } finally {
+      upstream.stop(true);
+    }
+  });
+
+  test("upstream close propagates to client", async () => {
+    const [canonical, upstreamPort] = [nextPort(), nextPort()];
+    const upstream = startWsEcho(upstreamPort, "x");
+    pm.start("svc", canonical, upstreamPort);
+    await sleep(50);
+
+    const ws = await openWs(canonical);
+    try {
+      upstream.stop(true);
+      const ev = await waitClose(ws, 2000);
+      expect(ev).toBeDefined();
+    } finally {
+      pm.stop("svc");
+    }
   });
 });

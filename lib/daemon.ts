@@ -34,6 +34,7 @@ import { ProcessManager } from "./daemon/process-manager.ts";
 import { SuspendManager } from "./daemon/suspend-manager.ts";
 import { ProxyManager }  from "./daemon/proxy-manager.ts";
 import { ExclusiveGroup } from "./daemon/exclusive-group.ts";
+import { RemedyEngine }  from "./daemon/remedy-engine.ts";
 import {
   startWatching, stopWatching, getWatcherStatus, cleanupAllWatchers,
   restoreWatchers, loadSyncConfig, saveSyncConfig, ensureGitExclude,
@@ -93,6 +94,23 @@ const processManager = new ProcessManager({ stateStore, logBuffer, attachServer 
 const suspendManager = new SuspendManager({ processManager, stateStore });
 const proxyManager   = new ProxyManager();
 const exclusiveGroup = new ExclusiveGroup({ suspendManager, stateStore });
+
+// ─── Remedy engine (auto-detect errors → run fix → restart) ─────────────────
+
+/** Bounded ring buffer of recent remedy fire events for UI polling. */
+interface RemedyEvent { id: string; name: string; success: boolean; firedAt: number }
+const remedyEventQueue: RemedyEvent[] = [];
+
+const remedyEngine = new RemedyEngine({
+  processManager,
+  stateStore,
+  onFire: (id, remedy, success) => {
+    remedyEventQueue.push({ id, name: remedy.name, success, firedAt: Date.now() });
+    if (remedyEventQueue.length > 50) remedyEventQueue.shift(); // bounded
+    broadcast("remedy", { id, name: remedy.name, success });
+    log(`remedy: ${success ? "✓" : "✗"} "${remedy.name}" fired for ${id}`);
+  },
+});
 
 // Wire circular reference: AttachServer needs ProcessManager for output subscriptions
 attachServer.setProcessManager(processManager);
@@ -662,6 +680,7 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
       const { id, cmd, cwd, env } = payload as { id: string; cmd: string; cwd: string; env?: Record<string, string> };
       if (!id || !cmd || !cwd) return { ok: false, error: "missing id, cmd, or cwd" };
       await processManager.spawn(id, cmd, { cwd, env });
+      remedyEngine.onSpawn(id);
       return { ok: true };
     }
 
@@ -725,6 +744,7 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
         }
       }
 
+      remedyEngine.onSpawn(id);
       diag("process.start.end", id, { ephemeralPort });
       return { ok: true, data: { ephemeralPort } };
     }
@@ -774,6 +794,7 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
         proxyManager.setUpstream(proxyWindowName(groupId), ephemeralPort);
       }
 
+      remedyEngine.onSpawn(id);
       return { ok: true, data: { ephemeralPort } };
     }
 
@@ -1037,6 +1058,29 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
       return { ok: true, data: result };
     }
 
+    // ── Remedy engine ──────────────────────────────────────────────────────────
+
+    case "remedy:set": {
+      const { id, remedies, cwd } = payload as { id: string; remedies: any[]; cwd: string };
+      if (!id || !Array.isArray(remedies) || !cwd) return { ok: false, error: "missing id, remedies, or cwd" };
+      remedyEngine.register(id, remedies, cwd);
+      // If the process is already running, subscribe immediately
+      if (stateStore.getState(id) === "running") remedyEngine.onSpawn(id);
+      return { ok: true };
+    }
+
+    case "remedy:clear": {
+      const { id } = payload as { id: string };
+      if (!id) return { ok: false, error: "missing id" };
+      remedyEngine.unregister(id);
+      return { ok: true };
+    }
+
+    case "remedy:drain": {
+      const events = remedyEventQueue.splice(0);
+      return { ok: true, data: events };
+    }
+
     // ──────────────────────────────────────────────────────────────────────────
 
     case "shutdown":
@@ -1101,6 +1145,7 @@ const API_INDEX = {
     { type: "status",       description: "Full daemon status — after each cache refresh (~5 min)" },
     { type: "ports",        description: "Full port list — after each port scan (~30s)" },
     { type: "notification", description: "Notification event — when a transition fires" },
+    { type: "remedy",       description: "Remedy fire event — when an auto-remedy triggers" },
   ],
 };
 

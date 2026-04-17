@@ -117,6 +117,12 @@ const TREE: Record<string, CommandNode> = {
         context: "worktree",
         requiresTTY: true,
       },
+      pull: {
+        description: "Pull from origin (mirror of GitHub Desktop's Pull button)",
+        module: "./commands/git/pull.ts",
+        fn: "pullCommand",
+        context: "worktree",
+      },
     },
   },
 
@@ -299,6 +305,13 @@ const TREE: Record<string, CommandNode> = {
     description: "Open a worktree in your preferred editor",
     module: "./commands/code.ts",
     fn: "openInEditor",
+    requiresTTY: true,
+  },
+
+  agent: {
+    description: "Launch a CLI coding agent (Claude Code, Cursor, etc.) in a worktree",
+    module: "./commands/agent.ts",
+    fn: "launchAgent",
     requiresTTY: true,
   },
 
