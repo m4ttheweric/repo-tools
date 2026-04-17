@@ -27,6 +27,8 @@ export interface DaemonResponse {
 
 const REQUEST_TIMEOUT_MS = 2000;
 
+let _lastQueryWasRefused = false;
+
 async function trySocketQuery(
   cmd: string,
   payload?: Record<string, any>,
@@ -44,8 +46,12 @@ async function trySocketQuery(
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     } as any);
 
+    _lastQueryWasRefused = false;
     return (await response.json()) as DaemonResponse;
-  } catch {
+  } catch (err) {
+    const code = (err as any)?.code ?? "";
+    const msg  = err instanceof Error ? err.message : "";
+    _lastQueryWasRefused = code === "ECONNREFUSED" || msg.includes("ECONNREFUSED") || msg.includes("Connection refused");
     return null;
   }
 }
@@ -115,11 +121,11 @@ export async function daemonQuery(
   // 2. Check if user opted in
   if (!isDaemonInstalled()) return null; // not installed → silent fallback
 
-  // 3. If the socket file still exists, the daemon IS running — this query
-  //    simply timed out or hit a transient error (daemon busy, slow git op,
-  //    etc.). Return null silently; do NOT warn or attempt a restart, which
-  //    would bleed "daemon not running" text into the TUI.
-  if (existsSync(DAEMON_SOCK_PATH)) return null;
+  // 3. If the socket file still exists AND the connection wasn't refused,
+  //    the daemon IS running — this query timed out or hit a transient error.
+  //    Return null silently. But if the connection was refused, the socket is
+  //    stale (daemon died without cleaning up) — fall through to attempt restart.
+  if (existsSync(DAEMON_SOCK_PATH) && !_lastQueryWasRefused) return null;
 
   // 4. Socket is gone → daemon is genuinely not running. Attempt restart.
   const restarted = attemptRestart();

@@ -1,12 +1,11 @@
 /**
  * rt pick-lane — Interactive repo + port picker for adding a new runner lane.
  *
- * Spawned by `rt runner` in a tmux pane when the user presses [l].
+ * Spawned by `rt runner` in a tmux popup when the user presses [l] then [a].
  * Writes { repoName, port } as JSON to stdout so the runner can read it
  * from a temp file. All interactive prompts go to stderr (which is /dev/tty).
  */
 
-import { createInterface } from "readline";
 import { getKnownRepos } from "../lib/repo.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
 
@@ -15,12 +14,12 @@ export async function pickLane(_args: string[], _ctx: CommandContext): Promise<v
 
   if (repos.length === 0) {
     process.stderr.write("\n  No known repos. Run rt from inside a git repo first.\n\n");
-    process.exit(1);
+    process.exit(0);
   }
 
-  // ── Step 1: pick a repo ───────────────────────────────────────────────────
-  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const { filterableSelect, textInput } = await import("../lib/rt-render.tsx");
 
+  // ── Step 1: pick a repo ───────────────────────────────────────────────────
   const repoOptions = repos.map((r) => ({
     value: r.repoName,
     label: r.repoName,
@@ -33,29 +32,24 @@ export async function pickLane(_args: string[], _ctx: CommandContext): Promise<v
   try {
     repoName = await filterableSelect({ message: "Select a repo for this lane", options: repoOptions });
   } catch {
-    process.exit(1);
+    process.exit(0);
   }
 
   // ── Step 2: prompt for canonical port ────────────────────────────────────
-  const port = await promptPort();
-  if (!port) process.exit(1);
+  let portStr: string;
+  try {
+    portStr = await textInput({ message: "Canonical port for this lane", placeholder: "e.g. 3000" });
+  } catch {
+    process.exit(0);
+  }
+
+  const port = parseInt(portStr.trim(), 10);
+  if (!port || port <= 1024 || port >= 65536) {
+    process.stderr.write("\n  Invalid port number.\n\n");
+    process.exit(0);
+  }
 
   // ── Write result to stdout (runner redirects to tmpFile) ─────────────────
   process.stdout.write(JSON.stringify({ repoName, port }) + "\n");
   process.exit(0);
-}
-
-function promptPort(): Promise<number | null> {
-  return new Promise((resolve) => {
-    // Open /dev/tty directly so stdin can be redirected to a file by the caller.
-    const tty = process.stderr.isTTY ? process.stderr : process.stdout;
-    const rl = createInterface({ input: process.stdin, output: tty, terminal: true });
-    tty.write("\n  Canonical port for this lane: ");
-    rl.question("", (answer) => {
-      rl.close();
-      const n = parseInt(answer.trim(), 10);
-      resolve(n > 1024 && n < 65536 ? n : null);
-    });
-    rl.once("close", () => resolve(null));
-  });
 }

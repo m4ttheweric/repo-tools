@@ -13,8 +13,14 @@
  * No args at a branch node → shows picker.
  */
 
-import { bold, cyan, dim, reset } from "./tui.ts";
-import { resolve } from "path";
+import { bold, cyan, dim, reset, yellow } from "./tui.ts";
+import { resolve, join } from "path";
+import { existsSync } from "fs";
+import { homedir } from "os";
+
+// Dev mode is active when ~/.local/bin/rt exists (the wrapper script pointing
+// at local source). Same detection used by commands/version.ts.
+const IS_DEV_MODE = existsSync(join(homedir(), ".local/bin/rt"));
 import type { RepoIdentity } from "./repo.ts";
 import { MODULE_REGISTRY } from "./module-registry.ts";
 import { BackNavigation } from "./rt-render.tsx";
@@ -266,7 +272,10 @@ export async function dispatch(
 
 function renderHeader(breadcrumb: string[]): void {
   const parts = breadcrumb.map((part, i) => {
-    if (i === 0) return `${bold}${cyan}${part}${reset}`;
+    if (i === 0) {
+      const base = `${bold}${cyan}${part}${reset}`;
+      return IS_DEV_MODE ? `${base} ${yellow}(dev mode)${reset}` : base;
+    }
     return `${bold}${part}${reset}`;
   });
   console.error(`  ${parts.join(` ${dim}›${reset} `)}\n`);

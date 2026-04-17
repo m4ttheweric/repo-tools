@@ -47,6 +47,7 @@ import type { CommandContext } from "../lib/command-tree.ts";
 import { daemonQuery, isDaemonRunning } from "../lib/daemon-client.ts";
 import {
   listRunnerConfigs, loadRunnerConfig, saveRunnerConfig, resetRunnerConfig,
+  acquireRunnerLock, releaseRunnerLock,
   nextLaneId, nextEntryId, proxyWindowName, entryWindowName,
   type LaneConfig, type LaneEntry, type LaneMode,
 } from "../lib/runner-store.ts";
@@ -65,6 +66,9 @@ const CLI_PATH = join(RT_ROOT, "cli.ts");
 // current process can see, so passing it as an arg would make a fresh child
 // process fail with "unknown command: /$bunfs/root/cli.ts".
 const IS_COMPILED_RT = basename(process.execPath) !== "bun";
+// Dev mode is active when ~/.local/bin/rt exists (the wrapper script that points
+// at local source). Mirrors the detection in commands/version.ts.
+const IS_DEV_MODE = existsSync(join(homedir(), ".local/bin/rt"));
 // Argv prefix for spawn/execFile calls: ["bun", "/path/cli.ts"] or ["rt"].
 const RT_INVOKE: readonly string[] = IS_COMPILED_RT
   ? [process.execPath]
@@ -161,7 +165,7 @@ function openPopup(
   ];
   if (titleFmt) args.push("-T", titleFmt);
   if (opts.cwd) args.push("-d", opts.cwd);
-  args.push("sh", "-c", cmd);
+  args.push("sh", "-c", `${cmd}; true`);
   spawnSync("tmux", args, { encoding: "utf8" });
 }
 
@@ -181,6 +185,9 @@ type InteractiveRequest = { type: "quit" };
 
 type Mode =
   | { type: "normal" }
+  | { type: "lane-scope" }
+  | { type: "process-scope" }
+  | { type: "open-scope" }
   | { type: "port-input"; purpose: "edit-port"; laneId: string }
   | { type: "entry-picker"; purpose: "remove"; laneId: string; idx: number }
   | { type: "confirm-reset" }
@@ -192,7 +199,6 @@ type LaneAction =
   | { type: "warm-all";     laneId: string }
   | { type: "respawn";      laneId: string; entryId: string }
   | { type: "stop";         laneId: string; entryId: string }
-  | { type: "stop-all";     laneId: string }
   | { type: "pause-lane";   laneId: string }
   | { type: "restart";      laneId: string; entryId: string }
   | { type: "remove-entry"; laneId: string; entryId: string }
@@ -200,8 +206,19 @@ type LaneAction =
   | { type: "toggle-mode";  laneId: string }
   | { type: "reset" };
 
-/** Fields that dispatch() may modify (merged into full state by doDispatch). */
-type DispatchPatch = Partial<Pick<RunnerUIState, "lanes" | "laneIdx" | "entryIdx">>;
+/**
+ * Result of a dispatched action.
+ *
+ * `mutate` is applied to the current lanes inside safeUpdate (not to a stale
+ * snapshot), so multiple in-flight dispatches — and concurrent edits from
+ * paths like addResolvedEntry — compose instead of clobbering each other.
+ */
+type LaneMutation = (lanes: LaneConfig[]) => LaneConfig[];
+type DispatchPatch = {
+  mutate?:   LaneMutation;
+  laneIdx?:  number;
+  entryIdx?: number;
+};
 
 interface RunnerUIState {
   lanes:         LaneConfig[];
@@ -470,6 +487,7 @@ async function fetchEnrichment(lanes: LaneConfig[]): Promise<Record<string, stri
 
 // ─── Runner (one UI session) ──────────────────────────────────────────────────
 
+
 async function runOnce(
   initialLanes: LaneConfig[],
   runnerName: string,
@@ -539,7 +557,13 @@ async function runOnce(
 
   function saveCurrent(newLanes: LaneConfig[]) {
     currentLanes = newLanes;
-    saveRunnerConfig(runnerName, newLanes);
+    if (!saveRunnerConfig(runnerName, newLanes)) {
+      // mtime guard refused the write — someone (another runner, a manual
+      // edit) changed the file out from under us. The singleton lock should
+      // make this unreachable, but if it triggers, warn the user so they can
+      // quit and restart rather than lose edits silently.
+      showToast("⚠ config changed on disk — restart runner to avoid drift", 5000);
+    }
   }
 
   /** Port-allocate, create entry, persist lanes, update UI state. */
@@ -758,13 +782,16 @@ async function runOnce(
         if (!lane || !entry) return {};
         await ensureProxy(lane);
         const actualPort = await startEntry(lane, entry);
-        // Persist the actual port back into the entry if it changed (e.g. was 0)
-        const updatedEntries = lane.entries.map((e) =>
-          e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e
-        );
-        return { lanes: lanes.map((l) => l.id === action.laneId
-          ? { ...l, activeEntryId: action.entryId, entries: updatedEntries }
-          : l) };
+        return {
+          mutate: (ls) => ls.map((l) => {
+            if (l.id !== action.laneId) return l;
+            return {
+              ...l,
+              activeEntryId: action.entryId,
+              entries: l.entries.map((e) => e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e),
+            };
+          }),
+        };
       }
 
       case "activate": {
@@ -777,18 +804,24 @@ async function runOnce(
         if (entryState === "stopped" || entryState === "crashed") {
           // Not running — do a full start (spawn + group:activate + proxy)
           const actualPort = await startEntry(lane, entry);
-          const updatedEntries = lane.entries.map((e) =>
-            e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e
-          );
-          return { lanes: lanes.map((l) => l.id === action.laneId
-            ? { ...l, activeEntryId: action.entryId, entries: updatedEntries }
-            : l) };
+          return {
+            mutate: (ls) => ls.map((l) => {
+              if (l.id !== action.laneId) return l;
+              return {
+                ...l,
+                activeEntryId: action.entryId,
+                entries: l.entries.map((e) => e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e),
+              };
+            }),
+          };
         }
         // Already running or warm — just group:activate (resumes + suspends others)
         // and update proxy upstream.
         await daemonQuery("group:activate", { groupId: lane.id, processId, mode: lane.mode ?? "warm" });
         await daemonQuery("proxy:set-upstream", { id: proxyWindowName(lane.id), port: entry.ephemeralPort });
-        return { lanes: lanes.map((l) => l.id === action.laneId ? { ...l, activeEntryId: action.entryId } : l) };
+        return {
+          mutate: (ls) => ls.map((l) => l.id === action.laneId ? { ...l, activeEntryId: action.entryId } : l),
+        };
       }
 
       case "warm-all": {
@@ -838,12 +871,16 @@ async function runOnce(
           if (activePort) {
             await daemonQuery("proxy:set-upstream", { id: proxyWindowName(lane.id), port: activePort });
           }
-          const updatedEntries = lane.entries.map((e) =>
-            portFixes.has(e.id) ? { ...e, ephemeralPort: portFixes.get(e.id)! } : e
-          );
-          return { lanes: lanes.map((l) => l.id === action.laneId
-            ? { ...l, activeEntryId: activeId, entries: updatedEntries }
-            : l) };
+          return {
+            mutate: (ls) => ls.map((l) => {
+              if (l.id !== action.laneId) return l;
+              return {
+                ...l,
+                activeEntryId: activeId,
+                entries: l.entries.map((e) => portFixes.has(e.id) ? { ...e, ephemeralPort: portFixes.get(e.id)! } : e),
+              };
+            }),
+          };
         }
         return {};
       }
@@ -856,12 +893,16 @@ async function runOnce(
         if (!lane || !entry) return {};
         await ensureProxy(lane);
         const actualPort = await startEntry(lane, entry);
-        const updatedEntries = lane.entries.map((e) =>
-          e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e
-        );
-        return { lanes: lanes.map((l) => l.id === action.laneId
-          ? { ...l, activeEntryId: action.entryId, entries: updatedEntries }
-          : l) };
+        return {
+          mutate: (ls) => ls.map((l) => {
+            if (l.id !== action.laneId) return l;
+            return {
+              ...l,
+              activeEntryId: action.entryId,
+              entries: l.entries.map((e) => e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e),
+            };
+          }),
+        };
       }
 
       case "stop": {
@@ -877,26 +918,16 @@ async function runOnce(
         if (!lane || !entry) return {};
         await ensureProxy(lane);
         const actualPort = await restartEntry(lane, entry);
-        const updatedEntries = lane.entries.map((e) =>
-          e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e
-        );
-        return { lanes: lanes.map((l) => l.id === action.laneId
-          ? { ...l, activeEntryId: action.entryId, entries: updatedEntries }
-          : l) };
-      }
-
-      case "stop-all": {
-        const lane = lanes.find((l) => l.id === action.laneId);
-        if (!lane) return {};
-        await Promise.all(
-          lane.entries
-            .filter((e) => {
-              const st = est(entryWindowName(action.laneId, e.id));
-              return st === "running" || st === "warm" || st === "starting" || st === "stopping";
-            })
-            .map((e) => daemonQuery("process:kill", { id: entryWindowName(action.laneId, e.id) }))
-        );
-        return {};
+        return {
+          mutate: (ls) => ls.map((l) => {
+            if (l.id !== action.laneId) return l;
+            return {
+              ...l,
+              activeEntryId: action.entryId,
+              entries: l.entries.map((e) => e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e),
+            };
+          }),
+        };
       }
 
       case "pause-lane": {
@@ -916,6 +947,9 @@ async function runOnce(
         await daemonQuery("process:kill", { id: win });
         await daemonQuery("group:remove-member", { groupId: lane.id, processId: win });
         await daemonQuery("port:release", { label: win });
+        // Proxy re-point uses the captured lane — accurate at dispatch time
+        // even if other entries are added later; the mutator re-derives the
+        // activeEntryId against the live lanes list.
         const nextEntries = lane.entries.filter((e) => e.id !== action.entryId);
         const nextActive = lane.activeEntryId === action.entryId ? nextEntries[0]?.id : lane.activeEntryId;
         if (nextActive && nextActive !== lane.activeEntryId) {
@@ -923,7 +957,12 @@ async function runOnce(
           if (e) await daemonQuery("proxy:set-upstream", { id: proxyWindowName(lane.id), port: e.ephemeralPort });
         }
         return {
-          lanes: lanes.map((l) => l.id === action.laneId ? { ...l, entries: nextEntries, activeEntryId: nextActive } : l),
+          mutate: (ls) => ls.map((l) => {
+            if (l.id !== action.laneId) return l;
+            const filtered = l.entries.filter((e) => e.id !== action.entryId);
+            const newActive = l.activeEntryId === action.entryId ? filtered[0]?.id : l.activeEntryId;
+            return { ...l, entries: filtered, activeEntryId: newActive };
+          }),
           entryIdx: 0,
         };
       }
@@ -937,11 +976,10 @@ async function runOnce(
         for (const e of lane.entries) {
           await daemonQuery("port:release", { label: entryWindowName(action.laneId, e.id) });
         }
-        const newLanes = lanes.filter((l) => l.id !== action.laneId);
         return {
-          lanes: newLanes,
-          laneIdx: Math.max(0, Math.min(s.laneIdx, newLanes.length - 1)),
+          mutate: (ls) => ls.filter((l) => l.id !== action.laneId),
           entryIdx: 0,
+          // laneIdx auto-clamped to new length in doDispatch
         };
       }
 
@@ -949,9 +987,9 @@ async function runOnce(
         const lane = lanes.find((l) => l.id === action.laneId);
         if (!lane) return {};
         const newMode: LaneMode = (lane.mode ?? "warm") === "warm" ? "single" : "warm";
-        const updatedLanes = lanes.map((l) => l.id === action.laneId ? { ...l, mode: newMode } : l);
-        saveCurrent(updatedLanes);
-        return { lanes: updatedLanes };
+        return {
+          mutate: (ls) => ls.map((l) => l.id === action.laneId ? { ...l, mode: newMode } : l),
+        };
       }
 
       case "reset": {
@@ -962,9 +1000,11 @@ async function runOnce(
             daemonQuery("group:remove", { id: lane.id }),
           ])
         );
-        saveRunnerConfig(runnerName, []);
-        currentLanes = [];
-        return { lanes: [], laneIdx: 0, entryIdx: 0 };
+        return {
+          mutate: () => [],
+          laneIdx: 0,
+          entryIdx: 0,
+        };
       }
     }
   }
@@ -1005,15 +1045,6 @@ async function runOnce(
       startingIds.push(entryWindowName(action.laneId, action.entryId));
     } else if (action.type === "stop") {
       stoppingIds.push(entryWindowName(action.laneId, action.entryId));
-    } else if (action.type === "stop-all") {
-      const lane = currentState.lanes.find((l) => l.id === action.laneId);
-      if (lane) {
-        for (const e of lane.entries) {
-          const id = entryWindowName(lane.id, e.id);
-          const st = currentState.entryStates.get(id) ?? "stopped";
-          if (st === "running" || st === "warm") stoppingIds.push(id);
-        }
-      }
     }
 
     if (startingIds.length > 0 || stoppingIds.length > 0) {
@@ -1029,39 +1060,67 @@ async function runOnce(
     }
 
     dispatch(action, currentState).then((patch) => {
-      safeUpdate((s) => ({ ...s, ...patch }));
-      if (patch.lanes && patch.lanes !== currentState.lanes) {
-        saveCurrent(patch.lanes);
+      // app.update() calls the updater asynchronously — work that depends on
+      // the mutated lanes (save, pane refresh, pane cleanup) must run INSIDE
+      // the updater, not after safeUpdate() returns. A once-guard prevents
+      // double-execution if the framework ever re-invokes the updater.
+      let postMutateDone = false;
+      safeUpdate((s) => {
+        const previousLanes = s.lanes;
+        const mutated: LaneConfig[] = patch.mutate ? patch.mutate(s.lanes) : s.lanes;
 
-        // Refresh lane panes whose active entry changed (e.g. spawn/activate/respawn)
-        for (const newLane of patch.lanes) {
-          const oldLane = currentState.lanes.find((l) => l.id === newLane.id);
-          if (oldLane && oldLane.activeEntryId !== newLane.activeEntryId && newLane.activeEntryId) {
-            const newActiveEntry = newLane.entries.find((e) => e.id === newLane.activeEntryId);
-            const processId = newActiveEntry ? entryWindowName(newLane.id, newActiveEntry.id) : "";
-            refreshLanePane(newLane.id, processId);
-          }
+        const updates: Partial<RunnerUIState> = {};
+        if (patch.mutate) updates.lanes = mutated;
+        if (patch.laneIdx !== undefined) {
+          const max = Math.max(0, mutated.length - 1);
+          updates.laneIdx = Math.max(0, Math.min(patch.laneIdx, max));
+        } else if (patch.mutate && mutated.length !== s.lanes.length) {
+          updates.laneIdx = Math.max(0, Math.min(s.laneIdx, Math.max(0, mutated.length - 1)));
         }
+        if (patch.entryIdx !== undefined) updates.entryIdx = patch.entryIdx;
 
-        // Kill panes for lanes that were removed (remove-lane / reset)
-        for (const oldLane of currentState.lanes) {
-          if (!patch.lanes.find((l) => l.id === oldLane.id)) {
-            const paneId = lanePanes.get(oldLane.id);
-            if (paneId) {
-              const wasDisplayed = displayedLaneId === oldLane.id;
-              spawnSync("tmux", ["kill-pane", "-t", paneId]);
-              lanePanes.delete(oldLane.id);
-              if (wasDisplayed) {
-                displayedLaneId = "";
-                const nextLane = patch.lanes[0];
-                if (nextLane && lanePanes.has(nextLane.id)) {
-                  initDisplayPane(nextLane.id);
-                }
-              }
+        if (patch.mutate && !postMutateDone) {
+          postMutateDone = true;
+          saveCurrent(mutated);
+
+          // Refresh lane panes whose active entry changed (spawn/activate/respawn)
+          for (const newLane of mutated) {
+            const oldLane = previousLanes.find((l) => l.id === newLane.id);
+            if (oldLane && oldLane.activeEntryId !== newLane.activeEntryId && newLane.activeEntryId) {
+              const newActiveEntry = newLane.entries.find((e) => e.id === newLane.activeEntryId);
+              const processId = newActiveEntry ? entryWindowName(newLane.id, newActiveEntry.id) : "";
+              refreshLanePane(newLane.id, processId);
             }
           }
+
+          // Kill panes for lanes that were removed (remove-lane / reset).
+          //
+          // Swap a surviving lane's pane into the display slot BEFORE killing,
+          // so the display split never collapses mid-operation (which would
+          // trigger a SIGWINCH that blanks the Ink TUI).
+          for (const oldLane of previousLanes) {
+            if (mutated.find((l) => l.id === oldLane.id)) continue;
+            const paneId = lanePanes.get(oldLane.id);
+            if (!paneId) continue;
+            const wasDisplayed = displayedLaneId === oldLane.id;
+            lanePanes.delete(oldLane.id);
+            if (wasDisplayed) {
+              const nextLane = mutated.find((l) => lanePanes.has(l.id));
+              const nextPaneId = nextLane ? lanePanes.get(nextLane.id) : undefined;
+              if (nextLane && nextPaneId) {
+                spawnSync("tmux", ["swap-pane", "-s", paneId, "-t", nextPaneId]);
+                displayedLaneId = nextLane.id;
+                restoreFocus();
+              } else {
+                displayedLaneId = "";
+              }
+            }
+            spawnSync("tmux", ["kill-pane", "-t", paneId]);
+          }
         }
-      }
+
+        return { ...s, ...updates };
+      });
     });
   }
 
@@ -1218,62 +1277,48 @@ async function runOnce(
     );
   }
 
-  function HintBar({ canSpread }: { canSpread?: boolean }) {
-    // Separator between the section label and its commands
-    const Sep = () => <text style={{ fg: C.lav }}>{"  "}</text>;
-    // Dim pipe divider between groups on the same row
-    const Pipe = () => <text style={{ fg: C.dim }}>{"  ·  "}</text>;
-
+  function HintBar({ mode }: { mode: Mode["type"] }) {
     const Key = ({ k }: { k: string }) => <text style={{ fg: C.muted }}>{`[${k}]`}</text>;
     const Label = ({ l }: { l: string }) => <text style={{ fg: C.dim }}>{l}</text>;
     const Cmd = ({ k, l }: { k: string; l: string }) => (
       <row gap={1}><Key k={k} /><Label l={l} /></row>
     );
-    const Section = ({ name }: { name: string }) => (
-      <text style={{ fg: C.lav, bold: true }}>{name.padEnd(7)}</text>
+    const ScopeTitle = ({ name }: { name: string }) => (
+      <row gap={1}>
+        <text style={{ fg: C.lav, bold: true }}>{name}</text>
+        <text style={{ fg: C.dim }}>{"›"}</text>
+      </row>
     );
 
+    if (mode === "lane-scope") return (
+      <column gap={0}>
+        <ScopeTitle name="lane" />
+        <row gap={1}><Cmd k="a" l="add" /><Cmd k="r" l="remove" /><Cmd k="p" l="port" /><Cmd k="m" l="mode" /></row>
+        <row gap={1}><Cmd k="z" l="pause" /><Cmd k="w" l="spread" /></row>
+        <row gap={1}><Cmd k="esc" l="back" /></row>
+      </column>
+    );
+    if (mode === "process-scope") return (
+      <column gap={0}>
+        <ScopeTitle name="process" />
+        <row gap={1}><Cmd k="a" l="add" /><Cmd k="s" l="start" /><Cmd k="w" l="warm" /><Cmd k="↵" l="activate" /></row>
+        <row gap={1}><Cmd k="x/X" l="stop" /><Cmd k="r" l="remove" /><Cmd k="esc" l="back" /></row>
+      </column>
+    );
+    if (mode === "open-scope") return (
+      <column gap={0}>
+        <ScopeTitle name="open" />
+        <row gap={1}><Cmd k="b" l="branch" /><Cmd k="c" l="code" /><Cmd k="w" l="browser" /><Cmd k="t" l="shell" /></row>
+        <row gap={1}><Cmd k="r" l="run" /><Cmd k="e" l="cmd" /><Cmd k="i" l="info" /><Cmd k="esc" l="back" /></row>
+      </column>
+    );
+    // Default top-level hints
     return (
       <column gap={0}>
-        {/* Row 1 — Lane management */}
-        <row gap={1}>
-          <Section name="lane" /><Sep />
-          <Cmd k="A" l="add" />
-          <Cmd k="p" l="port" />
-          <Cmd k="R" l="remove" />
-          <Cmd k="m" l="mode" />
-          <Cmd k="Z" l="pause" />
-        </row>
-        {/* Row 2 — Process lifecycle */}
-        <row gap={1}>
-          <Section name="process" /><Sep />
-          <Cmd k="a" l="add" />
-          <Cmd k="s" l="start/restart" />
-          <Cmd k="S" l="warm/resume" />
-          <Cmd k="↵" l="activate" />
-          <Cmd k="x/X" l="stop" />
-          <Cmd k="r" l="remove" />
-        </row>
-        {/* Row 3 — Open / navigate */}
-        <row gap={1}>
-          <Section name="open" /><Sep />
-          <Cmd k="b" l="branch" />
-          <Cmd k="c" l="code" />
-          <Cmd k="o" l="browser" />
-          <Cmd k="t" l="shell" />
-          <Cmd k="f" l="run" />
-          <Cmd k="e" l="cmd" />
-          <Cmd k="i" l="info" />
-        </row>
-        {/* Row 4 — Global */}
-        <row gap={1}>
-          <Section name="global" /><Sep />
-          <Cmd k="q" l="quit" />
-          <Cmd k="!" l="reset all" />
-          {canSpread && <Cmd k="W" l="spread to worktrees" />}
-        </row>
+        <row gap={1}><Cmd k="l" l="lane" /><Cmd k="p" l="process" /><Cmd k="o" l="open" /></row>
+        <row gap={1}><Cmd k="s" l="start" /><Cmd k="↵" l="activate" /></row>
+        <row gap={1}><Cmd k="q" l="quit" /><Cmd k="!" l="reset" /></row>
       </column>
-
     );
   }
 
@@ -1287,6 +1332,7 @@ async function runOnce(
     const Header = () => (
       <row gap={0}>
         <text style={{ fg: C.pink, bold: true }}>rt</text>
+        {IS_DEV_MODE && <text style={{ fg: C.peach }}>{"  (dev mode)"}</text>}
         <text style={{ bold: true }}>{"  runner"}</text>
         <text style={{ fg: C.dim }}>{"  "}{s.runnerName}</text>
       </row>
@@ -1360,18 +1406,14 @@ async function runOnce(
           </focusTrap>
         );
       }
-      const activeLane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
-      const focusedEi = Math.min(s.entryIdx, Math.max(0, (activeLane?.entries.length ?? 1) - 1));
-      const focusedGroup = activeLane ? entryGroupForIdx(activeLane.entries, focusedEi) : null;
-      const canSpread = focusedGroup ? focusedGroup.entries.length === 1 : false;
-      return <HintBar canSpread={canSpread} />;
+      return <HintBar mode={s.mode.type} />;
     };
 
     return (
       <column p={1} gap={1}>
         <Header />
         {s.lanes.length === 0
-          ? <text style={{ fg: C.dim }}>{"  No lanes — press [l] to create one"}</text>
+          ? <text style={{ fg: C.dim }}>{"  No lanes — press [l] then [a] to create one"}</text>
           : s.lanes.map((lane, li) => <LaneCard key={lane.id} lane={lane} li={li} s={s} />)
         }
         <Bottom />
@@ -1595,7 +1637,9 @@ async function runOnce(
 
     // Persist and re-enrich after the state update has been applied.
     if (savedLanes) {
-      saveRunnerConfig(runnerName, savedLanes);
+      if (!saveRunnerConfig(runnerName, savedLanes)) {
+        showToast("⚠ config changed on disk — restart runner to avoid drift", 5000);
+      }
       void fetchEnrichment(savedLanes).then((enrichment) =>
         safeUpdate((s2) => ({ ...s2, enrichment }))
       );
@@ -1628,6 +1672,19 @@ async function runOnce(
   if (firstInitLane) {
     initDisplayPane(firstInitLane.id);
   }
+
+  // ── Helpers shared across key scopes ─────────────────────────────────────
+
+  const enterScope = (scopeMode: "lane-scope" | "process-scope" | "open-scope") =>
+    (ctx: { update: (fn: (s: RunnerUIState) => RunnerUIState) => void }) => {
+      ctx.update((s) => ({ ...s, mode: { type: scopeMode } }));
+      app.setMode(scopeMode);
+    };
+
+  const exitScope = (ctx: { update: (fn: (s: RunnerUIState) => RunnerUIState) => void }) => {
+    ctx.update((s) => ({ ...s, mode: { type: "normal" } }));
+    app.setMode("default");
+  };
 
   // ── Key bindings (default / normal mode) ───────────────────────────────────
 
@@ -1678,45 +1735,12 @@ async function runOnce(
       updateMrPane(lane?.entries[newEi]?.branch ?? "");
     },
 
-    // [A] add lane — open tmux picker (repo + port), poll for result
-    // NOTE: uppercase A arrives as a text event — handled in onEvent block below
+    // Scope gates — enter sub-mode to show scoped key hints
+    l: enterScope("lane-scope"),
+    p: enterScope("process-scope"),
+    o: enterScope("open-scope"),
 
-    // [p] edit canonical port
-    p: ({ state, update }) => {
-      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      if (!lane) return;
-      update((s) => ({
-        ...s,
-        mode: { type: "port-input", purpose: "edit-port", laneId: lane.id },
-        inputValue: String(lane.canonicalPort),
-      }));
-      app.setMode("port-input");
-    },
-
-    // [a] add process — open tmux split running rt run --resolve-only, poll for result
-    a: ({ state }) => {
-      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      if (!lane) return;
-      const laneRepo = state.knownRepos.find((r) => r.repoName === lane.repoName);
-      const laneRepoRoot = laneRepo?.worktrees[0]?.path ?? process.cwd();
-      const tmpFile = join(tmpdir(), `rt-resolve-${Date.now()}.json`);
-      const cmd = `${RT_SHELL} run --resolve-only --repo ${lane.repoName} > ${tmpFile}`;
-      openTempPane(cmd, { cwd: laneRepoRoot, target: displayPane() });
-
-      const poll = setInterval(() => {
-        if (!existsSync(tmpFile)) return;
-        const content = readFileSync(tmpFile, "utf8").trim();
-        if (!content) return; // file created by shell redirect but not yet written — keep polling
-        clearInterval(poll);
-        try {
-          const resolved = JSON.parse(content) as RunResolveResult;
-          unlinkSync(tmpFile);
-          void addResolvedEntry(lane.id, resolved);
-        } catch { /* ignore parse errors */ }
-      }, 300);
-    },
-
-    // [s] start / restart / activate / respawn
+    // Quick-access globals (no scope needed — most common operations)
     s: ({ state }) => {
       const li = Math.min(state.laneIdx, state.lanes.length - 1);
       const lane = state.lanes[li];
@@ -1726,7 +1750,7 @@ async function runOnce(
       if (!entry) return;
       const win = entryWindowName(lane.id, entry.id);
       const st = state.entryStates.get(win) ?? "stopped";
-      if (st === "starting" || st === "stopping") return; // already in flight
+      if (st === "starting" || st === "stopping") return;
       const action: LaneAction =
         st === "stopped" ? { type: "spawn",   laneId: lane.id, entryId: entry.id } :
         st === "crashed" ? { type: "respawn", laneId: lane.id, entryId: entry.id } :
@@ -1735,10 +1759,6 @@ async function runOnce(
             { type: "activate", laneId: lane.id, entryId: entry.id };
       doDispatch(action, state);
     },
-
-    // [S] warm all — handled via onEvent for text events (see below)
-
-    // [Enter] activate the ←/→ selected entry — auto-starts if stopped/crashed
     enter: ({ state }) => {
       const li = Math.min(state.laneIdx, state.lanes.length - 1);
       const lane = state.lanes[li];
@@ -1746,227 +1766,45 @@ async function runOnce(
       const ei = Math.min(state.entryIdx, lane.entries.length - 1);
       const entry = lane.entries[ei];
       if (!entry) return;
-      if (lane.activeEntryId === entry.id) return; // already active
+      if (lane.activeEntryId === entry.id) return;
       doDispatch({ type: "activate", laneId: lane.id, entryId: entry.id }, state);
     },
-
-    // [x] stop selected entry
-    x: ({ state }) => {
-      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      if (!lane) return;
-      const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
-      if (!entry) return;
-      doDispatch({ type: "stop", laneId: lane.id, entryId: entry.id }, state);
-    },
-
-    // [X] stop all — handled via onEvent for text events (see below)
-
-    // [r] remove entry (opens entry picker)
-    r: ({ state, update }) => {
-      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      if (!lane || lane.entries.length === 0) return;
-      const safeEi = Math.min(state.entryIdx, lane.entries.length - 1);
-      update((s) => ({ ...s, mode: { type: "entry-picker", purpose: "remove", laneId: lane.id, idx: safeEi } }));
-      app.setMode("entry-picker");
-    },
-
-    // [e] edit command template via $EDITOR in a popup
-    e: ({ state, update }) => {
-      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      if (!lane) return;
-      const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
-      if (!entry) return;
-
-      // Use a clean short path so editors show a readable name in their header
-      const tmpFile = `/tmp/rt-edit-${entry.id}.sh`;
-      writeFileSync(tmpFile, entry.commandTemplate + "\n");
-
-      // Prefer $EDITOR, then detect best available: nvim > vim > nano
-      const detectEditor = () => {
-        for (const e of ["nvim", "vim", "nano"]) {
-          const r = spawnSync("which", [e], { encoding: "utf8" });
-          if (r.status === 0) return e;
-        }
-        return "nano";
-      };
-      const editor = process.env.EDITOR || detectEditor();
-      // Build editor invocation
-      //   nano: --save-on-exit auto-saves on Ctrl-X without Y/N/filename prompts
-      //   vim/nvim: open directly in insert mode at end of line
-      const isVim = /\bnvi?m\b/.test(editor);
-      const isNano = /\bnano\b/.test(editor);
-      const editorCmd = isVim
-        ? `${editor} '+call cursor(1, 1000)' -c 'startinsert!' '${tmpFile}'`
-        : isNano
-          ? `${editor} --save-on-exit '${tmpFile}'`
-          : `${editor} '${tmpFile}'`;
-
-      // Popup blocks until editor exits — no signal dance needed
-      openPopup(editorCmd, {
-        title: "edit command",
-        hint: isVim ? ":wq to save" : isNano ? "Ctrl-X to save" : "save and close",
-        width: "100",
-        height: "12",
-      });
-
-      try {
-        const newCmd = readFileSync(tmpFile, "utf8").trim();
-        if (newCmd && newCmd !== entry.commandTemplate) {
-          update((s) => {
-            const next = s.lanes.map((l) =>
-              l.id === lane.id
-                ? { ...l, entries: l.entries.map((e) => e.id === entry.id ? { ...e, commandTemplate: newCmd } : e) }
-                : l
-            );
-            saveCurrent(next);
-            return { ...s, lanes: next };
-          });
-          showToast("command updated — restart entry to apply");
-        }
-      } catch { /* file gone or unreadable */ }
-      try { unlinkSync(tmpFile); } catch { /* already cleaned */ }
-    },
-
-    // [A] add lane  — handled via onEvent (uppercase text event)
-    // [R] delete lane — handled via onEvent (uppercase text event)
-    // [!] reset all  — handled via onEvent (text event)
-
-    // [c] open entry's worktree in editor (rt code)
-    c: ({ state }) => {
-      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      if (!lane) return;
-      const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
-      if (!entry) return;
-      if (willPrompt(entry.worktree)) {
-        // Needs a picker — open in a popup so the UI is visible
-        openPopup(`${RT_SHELL} code`, {
-          cwd: entry.worktree,
-          title: "rt code",
-          width: "100",
-          height: "20",
-        });
-      } else {
-        // No picker needed — fire rt code directly with RT_BATCH=1 to bypass TTY guard
-        spawnSync(RT_INVOKE[0]!, [...RT_INVOKE.slice(1), "code"], {
-          cwd: entry.worktree,
-          stdio: "pipe",
-          env: { ...process.env, RT_BATCH: "1" },
-        });
-        showToast(`↗ opened ${entry.worktree.split("/").pop()} in editor`);
-      }
-    },
-
-    // [b] open rt branch picker (switch / create / clean) in the entry's worktree
-    b: ({ state }) => {
-      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      if (!lane) return;
-      const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
-      if (!entry) return;
-      openPopup(`${RT_SHELL} branch`, {
-        cwd: entry.worktree,
-        title: "rt branch",
-        width: "100",
-        height: "20",
-      });
-    },
-
-    // [t] open a one-off interactive shell at the entry's working directory
-    t: ({ state }) => {
-      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      if (!lane) return;
-      const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
-      if (!entry) return;
-      // Shell stays as a split pane — Esc conflicts with vim, and shells are persistent
-      openTempPane(process.env.SHELL ?? "zsh", {
-        cwd: entry.targetDir,
-        target: displayPane(),
-        escToClose: true,
-      });
-    },
-
-    // [f] run a one-off package script at the entry's working directory
-    f: ({ state }) => {
-      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      if (!lane) return;
-      const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
-      if (!entry) return;
-      openPopup(`${RT_SHELL} run`, {
-        cwd: entry.targetDir,
-        title: "rt run",
-        width: "100",
-        height: "20",
-      });
-    },
-
-    // [o] open the active lane's canonical port in the default browser
-    o: ({ state }) => {
-      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      if (!lane?.canonicalPort) return;
-      try {
-        spawnSync("open", [`http://localhost:${lane.canonicalPort}`]);
-      } catch { /* ignore */ }
-    },
-
-    // [i] toggle the MR/ticket info pane (bottom-right, hidden by default)
-    i: ({ state }) => {
-      if (mrPaneEnabled) {
-        mrPaneEnabled = false;
-        hideMrPane();
-      } else {
-        mrPaneEnabled = true;
-        showMrPane(focusedBranch(state));
-      }
-    },
-
-    // [m] toggle lane mode between "warm" (suspend old) and "single" (kill old)
-    m: ({ state }) => {
-      const lane = state.lanes[state.laneIdx];
-      if (!lane) return;
-      doDispatch({ type: "toggle-mode", laneId: lane.id }, state);
-    },
-
-    // [Enter] — right pane always shows the service; no explicit action needed
   });
 
-  // ── Uppercase shortcut handler ────────────────────────────────────────────
+  // ── Text event handler — only for shifted symbols that can't go in app.keys ─
   //
-  // Rezi's keybinding system only matches "key" events. In many terminal
-  // configurations (including Ghostty without full Kitty Keyboard Protocol),
-  // Shift+letter arrives as a "text" event (codepoint = uppercase char) rather
-  // than a "key" event with the shift modifier bit set. We intercept "text"
-  // events here and route uppercase letters to their respective actions.
-  //
-  // A mutable ref holds the latest state so the onEvent callback can read it
-  // without going through app.update().
+  // Unlike letter keys, `!` (shift+1) and `W` (shift+w) don't have lowercase
+  // equivalents in app.keys that could double-fire, so they're safe here.
   app.onEvent((ev) => {
-    if (ev.kind !== "engine") return;
-    const event = ev.event;
-    // Only handle text events for printable uppercase letters A-Z (codepoints 65-90).
-    // Only act in the default mode — don't intercept while a modal/input is active.
-    if (event.kind !== "text") return;
+    if (ev.kind !== "engine" || ev.event.kind !== "text") return;
     if (app.getMode() !== "default") return;
-    const char = String.fromCodePoint(event.codepoint);
+    const char = String.fromCodePoint(ev.event.codepoint);
     if (!_currentState) return;
-    const s = _currentState;
-    const lane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
     switch (char) {
-      case "S": // warm all entries in selected lane
-        if (lane) doDispatch({ type: "warm-all", laneId: lane.id }, s);
+      case "!":
+        safeUpdate((st) => ({ ...st, mode: { type: "confirm-reset" } }));
+        app.setMode("confirm-reset");
         break;
-      case "X": // stop all entries in selected lane
-        if (lane) doDispatch({ type: "stop-all", laneId: lane.id }, s);
-        break;
-      case "Z": // pause lane — stop proxy + all services, keep config intact
-        if (lane) doDispatch({ type: "pause-lane", laneId: lane.id }, s);
-        break;
-      case "A": { // [A] add lane — open tmux picker
-        if (_currentState && _currentState.knownRepos.length === 0) {
+    }
+  });
+
+  // ── Modal mode bindings ────────────────────────────────────────────────────
+
+  app.modes({
+    // ── Lane scope — entered with [l] ──────────────────────────────────────
+    "lane-scope": {
+      escape: exitScope,
+
+      // [a] add lane — open picker for repo + port, poll for result
+      a: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState || _currentState.knownRepos.length === 0) {
           showToast("No known repos — run rt in a repo first");
-          break;
+          return;
         }
         const tmpFile = join(tmpdir(), `rt-lane-${Date.now()}.json`);
         const cmd = `${RT_SHELL} pick-lane > ${tmpFile}`;
-        openTempPane(cmd, { target: displayPane() });
+        openPopup(cmd, { title: "add lane", width: "100", height: "20" });
         const poll = setInterval(() => {
           if (!existsSync(tmpFile)) return;
           const content = readFileSync(tmpFile, "utf8").trim();
@@ -1992,32 +1830,292 @@ async function runOnce(
             });
           } catch { /* ignore parse errors */ }
         }, 300);
-        break;
-      }
-      case "R": // [R] delete selected lane
+      },
+
+      // [r] remove selected lane
+      r: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        const s = _currentState;
+        const lane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
         if (lane) doDispatch({ type: "remove-lane", laneId: lane.id }, s);
-        break;
-      case "!": // [!] reset all lanes with confirmation
-        safeUpdate((st) => ({ ...st, mode: { type: "confirm-reset" } }));
-        app.setMode("confirm-reset");
-        break;
-      case "W": { // spread focused entry's command to all worktrees
-        if (!lane) break;
-        const spreadEi = Math.min(s.entryIdx, lane.entries.length - 1);
-        const spreadGroup = entryGroupForIdx(lane.entries, spreadEi);
-        const spreadEntry = lane.entries[spreadEi];
+      },
+
+      // [p] edit canonical port
+      p: ({ update }) => {
+        if (!_currentState) return;
+        const lane = _currentState.lanes[Math.min(_currentState.laneIdx, _currentState.lanes.length - 1)];
+        if (!lane) { exitScope({ update }); return; }
+        update((s) => ({
+          ...s,
+          mode: { type: "port-input", purpose: "edit-port", laneId: lane.id },
+          inputValue: String(lane.canonicalPort),
+        }));
+        app.setMode("port-input");
+      },
+
+      // [m] toggle lane mode (warm ↔ single)
+      m: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        const s = _currentState;
+        const lane = s.lanes[s.laneIdx];
+        if (lane) doDispatch({ type: "toggle-mode", laneId: lane.id }, s);
+      },
+
+      // [z] pause lane — stop proxy + all services, keep config intact
+      z: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        const s = _currentState;
+        const lane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
+        if (lane) doDispatch({ type: "pause-lane", laneId: lane.id }, s);
+      },
+
+      // [w] spread active entry to all worktrees
+      w: ({ update }) => {
+        if (!_currentState) { exitScope({ update }); return; }
+        const s = _currentState;
+        const lane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
+        if (!lane) { exitScope({ update }); return; }
+        const ei = Math.min(s.entryIdx, lane.entries.length - 1);
+        const spreadGroup = entryGroupForIdx(lane.entries, ei);
+        const spreadEntry = lane.entries[ei];
         if (spreadGroup && spreadGroup.entries.length === 1 && spreadEntry) {
-          safeUpdate((st) => ({ ...st, mode: { type: "confirm-spread", laneId: lane.id, entryId: spreadEntry.id } }));
+          update((st) => ({ ...st, mode: { type: "confirm-spread", laneId: lane.id, entryId: spreadEntry.id } }));
           app.setMode("confirm-spread");
+        } else {
+          exitScope({ update });
         }
-        break;
-      }
-    }
-  });
+      },
+    },
 
-  // ── Modal mode bindings ────────────────────────────────────────────────────
+    // ── Process scope — entered with [p] ──────────────────────────────────
+    "process-scope": {
+      escape: exitScope,
 
-  app.modes({
+      // [a] add process to selected lane
+      a: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        const state = _currentState;
+        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
+        if (!lane) return;
+        const laneRepo = state.knownRepos.find((r) => r.repoName === lane.repoName);
+        const laneRepoRoot = laneRepo?.worktrees[0]?.path ?? process.cwd();
+        const tmpFile = join(tmpdir(), `rt-resolve-${Date.now()}.json`);
+        const cmd = `${RT_SHELL} run --resolve-only --repo ${lane.repoName} > ${tmpFile}`;
+        openPopup(cmd, { cwd: laneRepoRoot, title: "add process", width: "100", height: "20" });
+        const poll = setInterval(() => {
+          if (!existsSync(tmpFile)) return;
+          const content = readFileSync(tmpFile, "utf8").trim();
+          if (!content) return;
+          clearInterval(poll);
+          try {
+            const resolved = JSON.parse(content) as RunResolveResult;
+            unlinkSync(tmpFile);
+            void addResolvedEntry(lane.id, resolved);
+          } catch { /* ignore parse errors */ }
+        }, 300);
+      },
+
+      // [s] start / restart / respawn / activate
+      s: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        const state = _currentState;
+        const li = Math.min(state.laneIdx, state.lanes.length - 1);
+        const lane = state.lanes[li];
+        if (!lane) return;
+        const ei = Math.min(state.entryIdx, lane.entries.length - 1);
+        const entry = lane.entries[ei];
+        if (!entry) return;
+        const win = entryWindowName(lane.id, entry.id);
+        const st = state.entryStates.get(win) ?? "stopped";
+        if (st === "starting" || st === "stopping") return;
+        const action: LaneAction =
+          st === "stopped" ? { type: "spawn",   laneId: lane.id, entryId: entry.id } :
+          st === "crashed" ? { type: "respawn", laneId: lane.id, entryId: entry.id } :
+          (st === "running" && lane.activeEntryId === entry.id)
+            ? { type: "restart",  laneId: lane.id, entryId: entry.id } :
+              { type: "activate", laneId: lane.id, entryId: entry.id };
+        doDispatch(action, state);
+      },
+
+      // [w] warm all entries in lane (spawn all, only active runs)
+      w: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        const s = _currentState;
+        const lane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
+        if (lane) doDispatch({ type: "warm-all", laneId: lane.id }, s);
+      },
+
+      // [enter] activate the selected entry (auto-start if stopped)
+      enter: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        const state = _currentState;
+        const li = Math.min(state.laneIdx, state.lanes.length - 1);
+        const lane = state.lanes[li];
+        if (!lane) return;
+        const ei = Math.min(state.entryIdx, lane.entries.length - 1);
+        const entry = lane.entries[ei];
+        if (!entry || lane.activeEntryId === entry.id) return;
+        doDispatch({ type: "activate", laneId: lane.id, entryId: entry.id }, state);
+      },
+
+      // [x] stop selected entry
+      x: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        const s = _currentState;
+        const lane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
+        if (!lane) return;
+        const entry = lane.entries[Math.min(s.entryIdx, lane.entries.length - 1)];
+        if (entry) doDispatch({ type: "stop", laneId: lane.id, entryId: entry.id }, s);
+      },
+
+      // [r] remove entry (opens entry picker overlay)
+      r: ({ update }) => {
+        if (!_currentState) { exitScope({ update }); return; }
+        const state = _currentState;
+        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
+        if (!lane || lane.entries.length === 0) { exitScope({ update }); return; }
+        const safeEi = Math.min(state.entryIdx, lane.entries.length - 1);
+        update((s) => ({ ...s, mode: { type: "entry-picker", purpose: "remove", laneId: lane.id, idx: safeEi } }));
+        app.setMode("entry-picker");
+      },
+    },
+
+    // ── Open scope — entered with [o] ─────────────────────────────────────
+    "open-scope": {
+      escape: exitScope,
+
+      // [b] branch picker
+      b: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        const state = _currentState;
+        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
+        if (!lane) return;
+        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
+        if (!entry) return;
+        openPopup(`${RT_SHELL} branch`, { cwd: entry.worktree, title: "rt branch", width: "100", height: "20" });
+      },
+
+      // [c] open worktree in editor
+      c: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        const state = _currentState;
+        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
+        if (!lane) return;
+        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
+        if (!entry) return;
+        if (willPrompt(entry.worktree)) {
+          openPopup(`${RT_SHELL} code`, { cwd: entry.worktree, title: "rt code", width: "100", height: "20" });
+        } else {
+          spawnSync(RT_INVOKE[0]!, [...RT_INVOKE.slice(1), "code"], {
+            cwd: entry.worktree, stdio: "pipe", env: { ...process.env, RT_BATCH: "1" },
+          });
+          showToast(`↗ opened ${entry.worktree.split("/").pop()} in editor`);
+        }
+      },
+
+      // [w] open canonical port in browser (web)
+      w: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        const lane = _currentState.lanes[Math.min(_currentState.laneIdx, _currentState.lanes.length - 1)];
+        if (!lane?.canonicalPort) return;
+        try { spawnSync("open", [`http://localhost:${lane.canonicalPort}`]); } catch { /* ignore */ }
+      },
+
+      // [t] open shell at entry's working directory
+      t: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        const state = _currentState;
+        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
+        if (!lane) return;
+        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
+        if (!entry) return;
+        openTempPane(process.env.SHELL ?? "zsh", { cwd: entry.targetDir, target: displayPane(), escToClose: true });
+      },
+
+      // [r] run a one-off package script
+      r: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        const state = _currentState;
+        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
+        if (!lane) return;
+        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
+        if (!entry) return;
+        openPopup(`${RT_SHELL} run`, { cwd: entry.targetDir, title: "rt run", width: "100", height: "20" });
+      },
+
+      // [e] edit command template via $EDITOR
+      e: ({ update }) => {
+        exitScope({ update });
+        if (!_currentState) return;
+        const state = _currentState;
+        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
+        if (!lane) return;
+        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
+        if (!entry) return;
+        const tmpFile = `/tmp/rt-edit-${entry.id}.sh`;
+        writeFileSync(tmpFile, entry.commandTemplate + "\n");
+        const detectEditor = () => {
+          for (const ed of ["nvim", "vim", "nano"]) {
+            if (spawnSync("which", [ed], { encoding: "utf8" }).status === 0) return ed;
+          }
+          return "nano";
+        };
+        const editor = process.env.EDITOR || detectEditor();
+        const isVim = /\bnvi?m\b/.test(editor);
+        const isNano = /\bnano\b/.test(editor);
+        const editorCmd = isVim
+          ? `${editor} '+call cursor(1, 1000)' -c 'startinsert!' '${tmpFile}'`
+          : isNano ? `${editor} --save-on-exit '${tmpFile}'` : `${editor} '${tmpFile}'`;
+        openPopup(editorCmd, {
+          title: "edit command",
+          hint: isVim ? ":wq to save" : isNano ? "Ctrl-X to save" : "save and close",
+          width: "100", height: "12",
+        });
+        try {
+          const newCmd = readFileSync(tmpFile, "utf8").trim();
+          if (newCmd && newCmd !== entry.commandTemplate) {
+            update((s) => {
+              const next = s.lanes.map((l) =>
+                l.id === lane.id
+                  ? { ...l, entries: l.entries.map((e) => e.id === entry.id ? { ...e, commandTemplate: newCmd } : e) }
+                  : l
+              );
+              saveCurrent(next);
+              return { ...s, lanes: next };
+            });
+            showToast("command updated — restart entry to apply");
+          }
+        } catch { /* file gone or unreadable */ }
+        try { unlinkSync(tmpFile); } catch { /* already cleaned */ }
+      },
+
+      // [i] toggle MR/ticket info pane
+      i: (ctx) => {
+        exitScope(ctx);
+        if (!_currentState) return;
+        if (mrPaneEnabled) {
+          mrPaneEnabled = false;
+          hideMrPane();
+        } else {
+          mrPaneEnabled = true;
+          showMrPane(focusedBranch(_currentState));
+        }
+      },
+    },
+
     // Port input: digits go to ui.input(), only enter/escape handled here
     "port-input": {
       enter: ({ state, update }) => {
@@ -2226,15 +2324,28 @@ export async function showRunner(args: string[], _ctx: CommandContext): Promise<
   // tmux is required — [t], [Enter], and [a] all open split panes.
   // If not already inside tmux, re-exec inside a new session transparently.
   if (!process.env.TMUX) {
-    // Wrap the re-exec in a shell so a crash inside tmux doesn't silently
-    // eat its own error. On non-zero exit we pause so the user can see it.
+    // Session name: rt-runner-<config> if the runner config is on the command
+    // line, else just "rt-runner-<pid>". Named sessions let the user spot and
+    // kill orphans, and let us detect duplicates on next start.
+    const runnerArg = args.find((a) => a.startsWith("--runner="))?.split("=")[1];
+    const sessionName = runnerArg ? `rt-runner-${runnerArg}` : `rt-runner-${process.pid}`;
+
+    // `set destroy-unattached on` makes the session self-destruct as soon as
+    // the last client disconnects (e.g. user closes the terminal window). This
+    // is the upstream fix for stale tmux sessions accumulating with dead
+    // runners inside them.
     const innerCmd = `${RT_SHELL} runner ${args.map((a) => JSON.stringify(a)).join(" ")}`;
-    const shellCmd = `${innerCmd}; rc=$?; if [ $rc -ne 0 ]; then printf '\\n\\033[31m  rt runner exited with code %s — press enter to close\\033[0m' "$rc"; read _; fi; exit $rc`;
-    const result = spawnSync(
-      "tmux",
-      ["new-session", "--", "sh", "-c", shellCmd],
-      { stdio: "inherit" },
-    );
+    const setupCmd = `tmux set destroy-unattached on 2>/dev/null;`;
+    const shellCmd = `${setupCmd} ${innerCmd}; rc=$?; if [ $rc -ne 0 ]; then printf '\\n\\033[31m  rt runner exited with code %s — press enter to close\\033[0m' "$rc"; read _; fi; exit $rc`;
+
+    // If a session with this name already exists (e.g. user re-ran rt runner
+    // after detaching), attach to it instead of creating a duplicate.
+    const exists = spawnSync("tmux", ["has-session", "-t", `=${sessionName}`], { stdio: "ignore" }).status === 0;
+    const tmuxArgs = exists
+      ? ["attach-session", "-t", `=${sessionName}`]
+      : ["new-session", "-s", sessionName, "--", "sh", "-c", shellCmd];
+
+    const result = spawnSync("tmux", tmuxArgs, { stdio: "inherit" });
     process.exit(result.status ?? 0);
   }
 
@@ -2284,6 +2395,32 @@ export async function showRunner(args: string[], _ctx: CommandContext): Promise<
     resetRunnerConfig(runnerName);
     if (!process.stdin.isTTY) return;
   }
+
+  // Singleton lock — prevent two rt runners from racing on the same config
+  // file. Multiple concurrent writers overwrite each other's snapshots and
+  // cause silent reverts (e.g. the branch watcher in one instance clobbering
+  // an entry just added in another).
+  const lockResult = acquireRunnerLock(runnerName, {
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    tmuxSession: process.env.TMUX ? (process.env.TMUX_PANE ?? "") : undefined,
+  });
+  if (!lockResult.ok) {
+    const h = lockResult.holder;
+    console.error(`\n  ✗  rt runner "${runnerName}" is already running (pid ${h.pid}, started ${h.startedAt})\n`);
+    console.error(`     Only one runner per config is allowed — concurrent writers cause config reverts.`);
+    console.error(`     To take over: kill ${h.pid}  ${h.tmuxSession ? `(tmux pane ${h.tmuxSession})` : ""}\n`);
+    process.exit(1);
+  }
+
+  // Release the lock on any exit path. SIGHUP fires when tmux destroys the
+  // session out from under us (e.g. terminal window closed → destroy-unattached
+  // tears down the session). Without this handler the lock would leak.
+  const releaseLock = () => releaseRunnerLock(runnerName, process.pid);
+  process.on("exit", releaseLock);
+  process.on("SIGINT", () => { releaseLock(); process.exit(130); });
+  process.on("SIGTERM", () => { releaseLock(); process.exit(143); });
+  process.on("SIGHUP", () => { releaseLock(); process.exit(129); });
 
   const lanes = loadRunnerConfig(runnerName);
   const knownRepos = getKnownRepos();

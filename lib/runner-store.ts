@@ -8,7 +8,7 @@
  * it lives in the rt daemon (ProcessManager, StateStore, ProxyManager).
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -147,6 +147,9 @@ export function loadRunnerConfig(name: string): LaneConfig[] {
   if (!existsSync(path)) return [];
   try {
     const raw = JSON.parse(readFileSync(path, "utf8"));
+    // Record mtime so saveRunnerConfig can detect external writes after this
+    // point. Set before returning so even the empty-array path is tracked.
+    lastKnownMtimeMs.set(name, fileMtimeMs(path));
     if (Array.isArray(raw)) return raw.map(normalizeLane);
     return [];
   } catch {
@@ -154,14 +157,51 @@ export function loadRunnerConfig(name: string): LaneConfig[] {
   }
 }
 
-/** Persist lanes for a named runner config. */
-export function saveRunnerConfig(name: string, lanes: LaneConfig[]): void {
+/**
+ * mtime of the runner config file at the moment it was last read or written
+ * by this process. Used to detect if someone else (another runner, a manual
+ * edit) clobbered the file between our snapshots, which would indicate our
+ * in-memory copy is stale and saving it would revert their change.
+ *
+ * Keyed by name so multiple configs can coexist in one process (unusual, but
+ * the picker flow briefly loads several).
+ */
+const lastKnownMtimeMs = new Map<string, number>();
+
+function fileMtimeMs(path: string): number {
+  try { return statSync(path).mtimeMs; } catch { return 0; }
+}
+
+/**
+ * Persist lanes for a named runner config.
+ *
+ * Returns `true` on success, `false` when the on-disk file changed since we
+ * last read/wrote it (meaning another writer edited it — we refuse to clobber).
+ * Callers should reload and retry on `false`.
+ *
+ * The race we're guarding against: multiple `rt runner` processes for the same
+ * config each hold their own in-memory `currentLanes` snapshot. If one of them
+ * wrote last, a background save in another (e.g. branch-watcher firing after
+ * `doRepoChange`) would silently overwrite it with a stale snapshot.
+ */
+export function saveRunnerConfig(name: string, lanes: LaneConfig[]): boolean {
   const dir = runnersDir();
+  const path = runnerPath(name);
   try {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(runnerPath(name), JSON.stringify(lanes, null, 2));
+    const diskMtime = fileMtimeMs(path);
+    const lastKnown = lastKnownMtimeMs.get(name) ?? 0;
+    // lastKnown === 0 means we've never read or written this file in-process
+    // yet — allow the first write. Otherwise any drift means someone else
+    // touched it; bail.
+    if (lastKnown !== 0 && diskMtime !== 0 && diskMtime !== lastKnown) {
+      return false;
+    }
+    writeFileSync(path, JSON.stringify(lanes, null, 2));
+    lastKnownMtimeMs.set(name, fileMtimeMs(path));
+    return true;
   } catch {
-    // best-effort
+    return false;
   }
 }
 
@@ -169,4 +209,57 @@ export function saveRunnerConfig(name: string, lanes: LaneConfig[]): void {
 export function resetRunnerConfig(name: string): LaneConfig[] {
   saveRunnerConfig(name, []);
   return [];
+}
+
+// ─── Singleton lock ──────────────────────────────────────────────────────────
+// Prevents two `rt runner` processes from running against the same config and
+// racing on save. Lock is a sibling file `~/.rt/runners/.<name>.lock` holding
+// the owning PID.
+
+function lockPath(name: string): string {
+  return join(runnersDir(), `.${name}.lock`);
+}
+
+function isPidAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+export interface RunnerLockHolder {
+  pid: number;
+  startedAt: string;
+  tmuxSession?: string;
+}
+
+/**
+ * Attempt to acquire the runner lock.
+ * Returns `{ ok: true }` on success, or `{ ok: false, holder }` if another
+ * live process already owns it. Stale locks (dead PID) are reclaimed.
+ */
+export function acquireRunnerLock(
+  name: string,
+  holder: RunnerLockHolder,
+): { ok: true } | { ok: false; holder: RunnerLockHolder } {
+  const dir = runnersDir();
+  mkdirSync(dir, { recursive: true });
+  const path = lockPath(name);
+  if (existsSync(path)) {
+    try {
+      const existing = JSON.parse(readFileSync(path, "utf8")) as RunnerLockHolder;
+      if (isPidAlive(existing.pid) && existing.pid !== holder.pid) {
+        return { ok: false, holder: existing };
+      }
+    } catch { /* corrupt lock — overwrite */ }
+  }
+  writeFileSync(path, JSON.stringify(holder, null, 2));
+  return { ok: true };
+}
+
+/** Release the lock if we still own it. Safe to call multiple times. */
+export function releaseRunnerLock(name: string, pid: number): void {
+  const path = lockPath(name);
+  try {
+    const existing = JSON.parse(readFileSync(path, "utf8")) as RunnerLockHolder;
+    if (existing.pid === pid) unlinkSync(path);
+  } catch { /* already gone or corrupt */ }
 }
