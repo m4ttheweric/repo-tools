@@ -258,6 +258,6 @@ export async function runPostInstall(): Promise<void> {
   await checkTccAccess();
 
   console.log("");
-  console.log("  Done. Restart your terminal, then run: rt doctor");
+  console.log("  Done. Restart your terminal, then run: rt verify");
   console.log("");
 }

@@ -20,10 +20,10 @@ rt settings linear token   # Linear API key (for ticket lookup)
 rt settings gitlab token   # GitLab PAT (for MR status)
 ```
 
-For detailed diagnostics (API tokens, repo context, etc.):
+For detailed diagnostics:
 
 ```bash
-rt doctor
+rt verify
 ```
 
 ### What Gets Installed
@@ -211,7 +211,7 @@ rt settings dev-mode          # Toggle between local source and Homebrew binary
 rt x                      # Script runner with setup/teardown lifecycle
 rt build                  # Interactive turbo build selector
 rt hooks                  # Toggle git hooks on/off
-rt doctor                 # Environment health check
+rt verify                 # Installation verification
 rt version                # Print version + mode (dev/prod)
 rt update                 # Upgrade to the latest release via Homebrew
 rt --version              # Print version (short)
@@ -279,7 +279,7 @@ git clone https://github.com/m4ttheweric/repo-tools.git
 cd repo-tools
 bun install
 bun run cli.ts          # runs the CLI from source
-bun run cli.ts doctor   # run any subcommand the same way
+bun run cli.ts verify   # run any subcommand the same way
 ```
 
 `rt --version` will report `dev` when running from source.
@@ -335,7 +335,7 @@ Use this to test how the release binary behaves (compiled mode, no bun dependenc
 ```bash
 bun build --compile ./cli.ts --outfile /tmp/rt-local
 /tmp/rt-local --version
-/tmp/rt-local doctor
+/tmp/rt-local verify
 ```
 
 ### rt-context extension
