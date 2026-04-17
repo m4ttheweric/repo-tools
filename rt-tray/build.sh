@@ -24,9 +24,11 @@ echo "  Building $APP_NAME ($MODE)..."
 if [ "$MODE" = "debug" ]; then
     swift build 2>&1 | sed 's/^/  /'
     BINARY="$SCRIPT_DIR/.build/debug/$APP_NAME"
+    SHIM_BINARY="$SCRIPT_DIR/.build/debug/rt-daemon-shim"
 else
     swift build -c release 2>&1 | sed 's/^/  /'
     BINARY="$SCRIPT_DIR/.build/release/$APP_NAME"
+    SHIM_BINARY="$SCRIPT_DIR/.build/release/rt-daemon-shim"
 fi
 
 if [ ! -f "$BINARY" ]; then
@@ -87,6 +89,16 @@ else
     echo "    Set RT_DAEMON_BIN or install rt on PATH"
 fi
 
+# Embed rt-daemon-shim — the signed exec-proxy used by dev-mode. It execs into
+# `bun run lib/daemon.ts` so daemon edits don't require a release cycle.
+if [ -f "$SHIM_BINARY" ]; then
+    cp "$SHIM_BINARY" "$APP_BUNDLE/Contents/MacOS/rt-daemon-shim"
+    chmod +x "$APP_BUNDLE/Contents/MacOS/rt-daemon-shim"
+    echo "  ✓ Embedded rt-daemon-shim from $SHIM_BINARY"
+else
+    echo "  ⚠ rt-daemon-shim not built — dev-mode daemon swap will be unavailable"
+fi
+
 # Ship LaunchAgent plist inside the bundle (SMAppService reads it from here)
 mkdir -p "$APP_BUNDLE/Contents/Library/LaunchAgents"
 cp "$SCRIPT_DIR/LaunchAgent.plist" "$APP_BUNDLE/Contents/Library/LaunchAgents/com.rt.daemon.plist"
@@ -130,6 +142,17 @@ if [ -f "$DAEMON_BIN" ]; then
         --entitlements "$SCRIPT_DIR/../scripts/entitlements.plist" \
         "$DAEMON_BIN"
     echo "  ✓ Signed rt-daemon with JIT entitlements"
+fi
+
+# 1b. Daemon shim — same Team ID + JIT entitlements so it can replace rt-daemon
+# under launchd's LWCR check. Entitlements apply if the shim ever serves in
+# rt-daemon's slot (dev-mode swap).
+SHIM_BUNDLE="$APP_BUNDLE/Contents/MacOS/rt-daemon-shim"
+if [ -f "$SHIM_BUNDLE" ]; then
+    codesign "${SIGN_FLAGS[@]}" \
+        --entitlements "$SCRIPT_DIR/../scripts/entitlements.plist" \
+        "$SHIM_BUNDLE"
+    echo "  ✓ Signed rt-daemon-shim with JIT entitlements"
 fi
 
 # 2. Outer .app bundle — tray entitlements (sandbox disabled)

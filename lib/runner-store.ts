@@ -15,6 +15,21 @@ import { join } from "path";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 /**
+ * An auto-remedy rule attached to a lane entry.
+ *
+ * When the daemon detects `pattern` in the entry's live PTY output, it runs
+ * `cmds` in the entry's working directory and optionally restarts the process.
+ * Used for mechanical fixes like clearing a corrupted cache directory.
+ */
+export interface Remedy {
+  name: string;          // human label, e.g. "Clear parcel cache"
+  pattern: string;       // regex string matched against ANSI-stripped log lines
+  cmds: string[];        // ordered shell commands to execute, e.g. ["rm -rf .parcel-cache"]
+  thenRestart?: boolean; // restart the process after cmds complete? (default: true)
+  cooldownMs?: number;   // min ms between triggers to prevent flapping (default: 30_000)
+}
+
+/**
  * A single service entry within a lane.
  * Each entry runs in its own daemon-managed PTY process on a stable ephemeral port.
  */
@@ -35,6 +50,8 @@ export interface LaneEntry {
    * from the environment.
    */
   commandTemplate: string;
+  /** Auto-remedy rules — see RemedyEngine in the daemon. */
+  remedies?: Remedy[];
 }
 
 /**
@@ -98,6 +115,16 @@ function runnerPath(name: string): string {
   return join(runnersDir(), `${name}.json`);
 }
 
+function normalizeRemedy(raw: any): Remedy {
+  return {
+    name:        String(raw.name ?? ""),
+    pattern:     String(raw.pattern ?? ""),
+    cmds:        Array.isArray(raw.cmds) ? raw.cmds.map(String) : [],
+    thenRestart: raw.thenRestart !== false,
+    cooldownMs:  Number(raw.cooldownMs ?? 30_000),
+  };
+}
+
 function normalizeEntry(raw: any): LaneEntry {
   const pm = String(raw.pm ?? "");
   const script = String(raw.script ?? "");
@@ -111,6 +138,7 @@ function normalizeEntry(raw: any): LaneEntry {
     branch: String(raw.branch ?? ""),
     ephemeralPort: Number(raw.ephemeralPort ?? 0),
     commandTemplate: String(raw.commandTemplate ?? (pm && script ? `${pm} run ${script}` : "")),
+    remedies: Array.isArray(raw.remedies) ? raw.remedies.map(normalizeRemedy) : undefined,
   };
 }
 

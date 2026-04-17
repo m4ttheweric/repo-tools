@@ -7,7 +7,8 @@
  *   settings gitlab token   — set GitLab personal access token
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { spawnSync } from "child_process";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import {
   loadSecrets,
@@ -181,7 +182,13 @@ export async function configureNotifications(): Promise<void> {
 const DEV_MODE_WRAPPER = `${Bun.env.HOME}/.local/bin/rt`;
 const DEV_MODE_CONFIG  = `${Bun.env.HOME}/.rt/dev-mode.json`;
 
-function readDevModeConfig(): { sourcePath?: string } {
+// Paths inside rt-tray.app that participate in the daemon-binary swap.
+const RT_TRAY_APP          = `${Bun.env.HOME}/Applications/rt-tray.app`;
+const DAEMON_LIVE_PATH     = `${RT_TRAY_APP}/Contents/MacOS/rt-daemon`;
+const DAEMON_REAL_BACKUP   = `${RT_TRAY_APP}/Contents/MacOS/rt-daemon.real`;
+const DAEMON_SHIM_PATH     = `${RT_TRAY_APP}/Contents/MacOS/rt-daemon-shim`;
+
+function readDevModeConfig(): { sourcePath?: string; bunPath?: string } {
   try {
     return JSON.parse(readFileSync(DEV_MODE_CONFIG, "utf8"));
   } catch {
@@ -219,10 +226,23 @@ function detectSourcePath(): string | null {
   return null;
 }
 
+function detectBunPath(): string {
+  const which = spawnSync("command", ["-v", "bun"], { shell: true, encoding: "utf8" });
+  const found = which.stdout?.trim();
+  if (found && existsSync(found)) return found;
+  // Fallbacks for common install locations
+  for (const p of [`${Bun.env.HOME}/.bun/bin/bun`, "/opt/homebrew/bin/bun", "/usr/local/bin/bun"]) {
+    if (existsSync(p)) return p;
+  }
+  return "bun"; // hope PATH resolves it at exec time
+}
+
 function enableDevMode(sourcePath: string): void {
-  // Save source path for future use (e.g. when running in prod mode)
+  const bunPath = detectBunPath();
+
+  // Save source + bun paths — also read by rt-daemon-shim inside rt-tray.app
   mkdirSync(`${Bun.env.HOME}/.rt`, { recursive: true });
-  writeFileSync(DEV_MODE_CONFIG, JSON.stringify({ sourcePath }, null, 2));
+  writeFileSync(DEV_MODE_CONFIG, JSON.stringify({ sourcePath, bunPath }, null, 2));
 
   // Ensure ~/.local/bin exists
   mkdirSync(`${Bun.env.HOME}/.local/bin`, { recursive: true });
@@ -239,6 +259,64 @@ function disableDevMode(): void {
   if (existsSync(DEV_MODE_WRAPPER)) {
     rmSync(DEV_MODE_WRAPPER);
   }
+}
+
+// ─── Daemon binary swap ──────────────────────────────────────────────────────
+//
+// dev  → swap the real compiled daemon out for rt-daemon-shim (signed with the
+//        same Team ID), which execs `bun run lib/daemon.ts`. LWCR accepts it
+//        because the signature Team ID matches rt-tray.app; TCC inherits
+//        because the binary still lives inside the bundle.
+// prod → restore the compiled daemon from the .real backup.
+
+type DaemonSwapResult =
+  | { status: "swapped" }
+  | { status: "already" }
+  | { status: "unavailable"; reason: string };
+
+function swapDaemonToShim(): DaemonSwapResult {
+  if (!existsSync(DAEMON_SHIM_PATH)) {
+    return {
+      status: "unavailable",
+      reason: "rt-daemon-shim not found in rt-tray.app — rebuild rt-tray (build.sh install) to enable dev-mode daemon swap",
+    };
+  }
+  if (existsSync(DAEMON_REAL_BACKUP)) {
+    return { status: "already" }; // already swapped previously
+  }
+  renameSync(DAEMON_LIVE_PATH, DAEMON_REAL_BACKUP);
+  // Hard-link (not rename) — we want to keep the shim in its canonical slot too
+  // so repeated toggles don't need rt-tray rebuilds.
+  spawnSync("cp", ["-c", DAEMON_SHIM_PATH, DAEMON_LIVE_PATH]); // APFS clone
+  return { status: "swapped" };
+}
+
+function swapDaemonToReal(): DaemonSwapResult {
+  if (!existsSync(DAEMON_REAL_BACKUP)) {
+    return { status: "already" };
+  }
+  if (existsSync(DAEMON_LIVE_PATH)) {
+    rmSync(DAEMON_LIVE_PATH);
+  }
+  renameSync(DAEMON_REAL_BACKUP, DAEMON_LIVE_PATH);
+  return { status: "swapped" };
+}
+
+/**
+ * After swapping the binary, launchd needs to clear its cached LWCR entry.
+ * `rt daemon uninstall` + `rt daemon install` does this via the tray's
+ * SMAppService API — same flow the user would run manually.
+ */
+function reregisterDaemon(): { ok: boolean; err?: string } {
+  const uninstall = spawnSync("rt", ["daemon", "uninstall"], { encoding: "utf8" });
+  if (uninstall.status !== 0) {
+    return { ok: false, err: `uninstall failed: ${uninstall.stderr || uninstall.stdout}` };
+  }
+  const install = spawnSync("rt", ["daemon", "install"], { encoding: "utf8" });
+  if (install.status !== 0) {
+    return { ok: false, err: `install failed: ${install.stderr || install.stdout}` };
+  }
+  return { ok: true };
 }
 
 export async function toggleDevMode(args: string[]): Promise<void> {
@@ -305,11 +383,44 @@ export async function toggleDevMode(args: string[]): Promise<void> {
     console.log(`  ${green}✓${reset} dev mode enabled`);
     console.log(`  ${dim}wrapper → ${DEV_MODE_WRAPPER}${reset}`);
     console.log(`  ${dim}source  → ${resolvedPath}${reset}`);
+
+    // Swap daemon binary so launchd runs from source too
+    const swap = swapDaemonToShim();
+    if (swap.status === "swapped") {
+      console.log(`  ${green}✓${reset} daemon binary swapped to shim  ${dim}(re-registering…)${reset}`);
+      const reg = reregisterDaemon();
+      if (reg.ok) {
+        console.log(`  ${green}✓${reset} daemon re-registered — running from source`);
+      } else {
+        console.log(`  ${yellow}⚠${reset} daemon re-register failed: ${reg.err}`);
+        console.log(`  ${dim}  fix manually: rt daemon uninstall && rt daemon install${reset}`);
+      }
+    } else if (swap.status === "already") {
+      console.log(`  ${dim}daemon already running as shim${reset}`);
+    } else {
+      console.log(`  ${yellow}⚠${reset} ${swap.reason}`);
+      console.log(`  ${dim}  CLI is in dev mode; daemon still runs the compiled binary${reset}`);
+    }
+
     console.log(`  ${dim}restart your terminal (or: source ${shellResult.rcPath ?? "~/.zshrc"}) to activate${reset}`);
 
   } else {
     disableDevMode();
-    console.log(`  ${green}✓${reset} prod mode enabled  ${dim}(Homebrew binary is now active)${reset}`);
+    console.log(`  ${green}✓${reset} CLI restored to prod mode  ${dim}(Homebrew binary is now active)${reset}`);
+
+    const swap = swapDaemonToReal();
+    if (swap.status === "swapped") {
+      console.log(`  ${green}✓${reset} daemon binary restored  ${dim}(re-registering…)${reset}`);
+      const reg = reregisterDaemon();
+      if (reg.ok) {
+        console.log(`  ${green}✓${reset} daemon re-registered — running compiled binary`);
+      } else {
+        console.log(`  ${yellow}⚠${reset} daemon re-register failed: ${reg.err}`);
+        console.log(`  ${dim}  fix manually: rt daemon uninstall && rt daemon install${reset}`);
+      }
+    } else {
+      console.log(`  ${dim}daemon already running compiled binary${reset}`);
+    }
   }
 
   console.log("");

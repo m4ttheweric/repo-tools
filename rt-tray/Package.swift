@@ -16,5 +16,9 @@ let package = Package(
                 .linkedFramework("ServiceManagement"),
             ]
         ),
+        .executableTarget(
+            name: "rt-daemon-shim",
+            path: "Sources-daemon-shim"
+        ),
     ]
 )
