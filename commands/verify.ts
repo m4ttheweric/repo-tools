@@ -188,7 +188,15 @@ async function runChecks(): Promise<CheckResult[]> {
 
   const running = await isDaemonRunning();
   if (!running) {
-    results.push(fail("daemon running", "installed but not responding — run: rt daemon start"));
+    // SMAppService LaunchAgents require Background Task Management approval
+    // on first install. In CI / headless sessions there's no one to approve,
+    // so the daemon won't actually boot — installation is still correct.
+    const inCi = process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true";
+    if (inCi) {
+      results.push(warn("daemon running", "not booted (expected in CI — needs user approval in Login Items on first launch)"));
+    } else {
+      results.push(fail("daemon running", "installed but not responding — open ~/Applications/rt-tray.app and approve in System Settings → General → Login Items"));
+    }
     return results;
   }
 
