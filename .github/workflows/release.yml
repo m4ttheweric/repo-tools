@@ -89,11 +89,40 @@ jobs:
       - name: Compile rt (x64)
         run: bun build --compile --target=bun-darwin-x64 ./cli.ts --outfile rt-x64 --define RT_VERSION='"${{ github.ref_name }}"'
 
-      # ── Build rt-tray.app ────────────────────────────────────────────────────
-      # rt-tray/build.sh auto-detects Developer ID in the keychain (added by the
-      # import step above) and signs with hardened runtime — no flags needed.
-      - name: Build rt-tray
-        run: cd rt-tray && ./build.sh release
+      # ── Sign rt binaries (must run BEFORE tray build so the embedded daemon
+      # carries Bun JIT entitlements baked in by codesign — re-signing later
+      # would invalidate the parent bundle's seal). ───────────────────────────
+      - name: Sign rt binaries
+        run: |
+          if [ -n "$SIGNING_IDENTITY" ]; then
+            echo "Signing rt binaries with Developer ID: $SIGNING_IDENTITY"
+            for bin in rt-arm64 rt-x64; do
+              codesign --remove-signature "$bin"
+              codesign --force --sign "$SIGNING_IDENTITY" \
+                --options runtime --timestamp \
+                --entitlements scripts/entitlements.plist "$bin"
+            done
+          else
+            echo "Ad-hoc signing rt binaries (no Dev ID configured)"
+            for bin in rt-arm64 rt-x64; do
+              codesign --remove-signature "$bin"
+              codesign --force --sign - --entitlements scripts/entitlements.plist "$bin"
+            done
+          fi
+
+      # ── Build rt-tray.app per arch (embeds matching rt as rt-daemon) ────────
+      # build.sh reads RT_DAEMON_BIN to copy the daemon into Contents/MacOS,
+      # ships LaunchAgent.plist into Contents/Library/LaunchAgents, and signs
+      # the bundle.
+      - name: Build rt-tray (arm64)
+        run: |
+          RT_DAEMON_BIN="$(pwd)/rt-arm64" rt-tray/build.sh release
+          mv rt-tray/rt-tray.app rt-tray/rt-tray-arm64.app
+
+      - name: Build rt-tray (x64)
+        run: |
+          RT_DAEMON_BIN="$(pwd)/rt-x64" rt-tray/build.sh release
+          mv rt-tray/rt-tray.app rt-tray/rt-tray-x64.app
 
       # ── Package VS Code extension ────────────────────────────────────────────
       - name: Build extension
@@ -108,41 +137,18 @@ jobs:
           VERSION="${GITHUB_REF_NAME}"
           VSIX=$(ls extensions/vscode/rt-context/*.vsix | head -1)
 
-          if [ -n "$SIGNING_IDENTITY" ]; then
-            # Dev ID signing: stable identity → TCC grants persist across releases.
-            # --options runtime enables the hardened runtime (required for notarization
-            # and required for some TCC paths). --timestamp adds a secure timestamp.
-            echo "Signing with Developer ID: $SIGNING_IDENTITY"
-            codesign --remove-signature rt-arm64
-            codesign --force --sign "$SIGNING_IDENTITY" \
-              --options runtime --timestamp \
-              --entitlements scripts/entitlements.plist rt-arm64
-            codesign --remove-signature rt-x64
-            codesign --force --sign "$SIGNING_IDENTITY" \
-              --options runtime --timestamp \
-              --entitlements scripts/entitlements.plist rt-x64
-          else
-            # Ad-hoc fallback (PRs, forks, missing secrets): TCC grants will reset on every release.
-            echo "Ad-hoc signing (no Dev ID configured)"
-            codesign --remove-signature rt-arm64
-            codesign --force --sign - --entitlements scripts/entitlements.plist rt-arm64
-            codesign --remove-signature rt-x64
-            codesign --force --sign - --entitlements scripts/entitlements.plist rt-x64
-          fi
-
           # arm64 bundle
           mkdir -p dist/arm64
           cp rt-arm64 dist/arm64/rt
           chmod +x dist/arm64/rt
-          cp -R rt-tray/rt-tray.app dist/arm64/
+          cp -R rt-tray/rt-tray-arm64.app dist/arm64/rt-tray.app
           cp "$VSIX" dist/arm64/rt-context.vsix
-          # tar archive built later, after notarization
 
           # x64 bundle
           mkdir -p dist/x64
           cp rt-x64 dist/x64/rt
           chmod +x dist/x64/rt
-          cp -R rt-tray/rt-tray.app dist/x64/
+          cp -R rt-tray/rt-tray-x64.app dist/x64/rt-tray.app
           cp "$VSIX" dist/x64/rt-context.vsix
 
       # ── Notarize rt-tray.app (skipped if notarization secrets not set) ───────

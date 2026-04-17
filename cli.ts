@@ -438,17 +438,15 @@ if (args[0] === "--version" || args[0] === "-V") {
   await runPostInstall();
 } else if (args[0] === "--grant-fda") {
   // Hidden entry point: open System Settings → Privacy → Full Disk Access.
-  // Surfaced by rt verify / rt doctor when the daemon is hitting EPERM
-  // because macOS hasn't granted file access to the rt binary.
+  // The daemon inherits TCC grants from rt-tray.app via SMAppService's
+  // AssociatedBundleIdentifiers, so the grant goes on rt-tray, not on rt.
   const { execSync } = await import("child_process");
-  const { existsSync } = await import("fs");
-  // Always point to the stable Homebrew symlink — not the versioned
-  // Cellar path that process.execPath resolves to.
-  const rtPath = ["/opt/homebrew/bin/rt", "/usr/local/bin/rt"].find(existsSync)
-    ?? "/opt/homebrew/bin/rt";
+  const { homedir } = await import("os");
+  const { join } = await import("path");
+  const trayPath = join(homedir(), "Applications", "rt-tray.app");
   console.log("\n  Opening System Settings → Privacy → Full Disk Access…\n");
-  console.log(`  1. Click ${"\x1b[1m"}+${"\x1b[0m"} and add: ${"\x1b[1m"}${rtPath}${"\x1b[0m"}`);
-  console.log(`     (will appear as ${"\x1b[1m"}"rt"${"\x1b[0m"} — this covers the daemon)`);
+  console.log(`  1. Click ${"\x1b[1m"}+${"\x1b[0m"} and add: ${"\x1b[1m"}${trayPath}${"\x1b[0m"}`);
+  console.log(`     (the rt daemon inherits this grant via SMAppService)`);
   console.log(`  2. Restart the daemon: ${"\x1b[1m"}rt daemon restart${"\x1b[0m"}\n`);
   try {
     execSync('open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"');

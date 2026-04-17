@@ -3,57 +3,32 @@
 /**
  * rt daemon — Manage the rt background daemon.
  *
- * The daemon is spawned by rt-tray as a child process, inheriting the tray
- * app's TCC grants automatically (no Full Disk Access needed).
+ * The daemon is an SMAppService LaunchAgent registered by rt-tray. The agent
+ * plist + daemon binary both live inside rt-tray.app, and TCC attributes the
+ * daemon's file accesses to the signed parent app via AssociatedBundleIdentifiers.
+ * launchd handles supervision (KeepAlive + ThrottleInterval).
  *
  * Usage:
- *   rt daemon install     install daemon (tray-managed)
- *   rt daemon uninstall   stop + remove daemon
- *   rt daemon start       start daemon (via tray or direct fallback)
- *   rt daemon stop        stop daemon
- *   rt daemon restart     stop then start
+ *   rt daemon install     ensure tray has registered the daemon
+ *   rt daemon uninstall   unregister daemon
+ *   rt daemon start       register/start daemon (via tray)
+ *   rt daemon stop        unregister/stop daemon
+ *   rt daemon restart     kickstart daemon
  *   rt daemon status      show daemon state
  *   rt daemon logs        tail daemon log
  */
 
 import { execSync } from "child_process";
 import { existsSync, readFileSync, unlinkSync } from "fs";
-import { resolve } from "path";
 import { bold, cyan, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import {
-  isDaemonInstalled, getDaemonConfig,
+  isDaemonInstalled,
   markDaemonInstalled, markDaemonUninstalled, cleanupDaemonFiles,
-  readDaemonPid, isDaemonProcessRunning,
-  DAEMON_SOCK_PATH, DAEMON_PID_PATH, DAEMON_LOG_PATH,
-  LAUNCHD_PLIST_PATH, RT_DIR,
+  readDaemonPid,
+  DAEMON_LOG_PATH,
+  LAUNCHD_PLIST_PATH,
 } from "../lib/daemon-config.ts";
 import { daemonQuery, isDaemonRunning, trayQuery } from "../lib/daemon-client.ts";
-
-/**
- * Detect if rt is running as a compiled standalone binary.
- */
-function isCompiledBinary(): boolean {
-  return !process.execPath.includes("bun");
-}
-
-function resolveStableBrewPath(): string | null {
-  for (const p of ["/opt/homebrew/bin/rt", "/usr/local/bin/rt"]) {
-    if (existsSync(p)) return p;
-  }
-  return null;
-}
-
-function resolveBunPath(): string {
-  if (isCompiledBinary()) {
-    return resolveStableBrewPath() ?? process.execPath;
-  }
-  try {
-    return execSync("which bun", { encoding: "utf8", stdio: "pipe" }).trim();
-  } catch {
-    console.log(`\n  ${red}bun not found on PATH${reset}\n`);
-    process.exit(1);
-  }
-}
 
 function formatUptime(ms: number): string {
   const seconds = Math.floor(ms / 1000);
@@ -67,7 +42,9 @@ function formatUptime(ms: number): string {
 
 /**
  * Clean up legacy launchd plist if it exists.
- * Called during install/migration to remove old launchd-managed daemon.
+ * Pre-SMAppService rt versions wrote a plist to ~/Library/LaunchAgents/.
+ * Removing it on install/uninstall prevents the old daemon from racing the
+ * SMAppService-managed one.
  */
 function cleanupLaunchdPlist(): boolean {
   if (!existsSync(LAUNCHD_PLIST_PATH)) return false;
@@ -79,93 +56,43 @@ function cleanupLaunchdPlist(): boolean {
 // ─── Install ─────────────────────────────────────────────────────────────────
 
 export async function install(_args: string[] = []): Promise<void> {
-  if (isDaemonInstalled()) {
-    const config = getDaemonConfig()!;
-    const running = await isDaemonRunning();
-
-    // Migrate from old launchd/manual mode → tray mode
-    if (config.mode !== "tray") {
-      console.log(`\n  ${yellow}migrating daemon from ${config.mode} → tray${reset}`);
-      await uninstall();
-      // Fall through to fresh tray install
-    } else if (running) {
-      console.log(`\n  ${green}daemon is already installed and running${reset}`);
-      await showStatus();
-      return;
-    } else {
-      console.log(`\n  ${yellow}daemon is installed but not running — restarting…${reset}`);
-      await start();
-      return;
-    }
-  }
-
   console.log(`\n  ${bold}${cyan}rt daemon install${reset}\n`);
 
-  const rtPath = resolveBunPath();
-  const daemonScript = isCompiledBinary()
-    ? undefined
-    : resolve(new URL(import.meta.url).pathname, "../../lib/daemon.ts");
-
-  if (!isCompiledBinary() && (!daemonScript || !existsSync(daemonScript))) {
-    console.log(`  ${red}daemon script not found: ${daemonScript}${reset}\n`);
-    process.exit(1);
-  }
-
-  // Persist install config
-  markDaemonInstalled(rtPath, daemonScript ?? "--daemon", "tray");
+  // Persist the install marker so isDaemonInstalled() returns true and the
+  // CLI will attempt to reach the daemon (rather than silently no-op).
+  markDaemonInstalled();
   console.log(`  ${green}✓${reset} saved config to ~/.rt/daemon.json`);
 
-  // Clean up any legacy launchd plist
+  // Migrate away from any pre-SMAppService launchd plist.
   if (cleanupLaunchdPlist()) {
-    console.log(`  ${green}✓${reset} removed old launchd plist`);
+    console.log(`  ${green}✓${reset} removed legacy launchd plist`);
   }
 
-  // Ask the tray to start the daemon (or it'll start on next tray launch)
+  // Ask the tray to register the daemon. If the tray isn't running yet, it
+  // will register on next launch.
   const trayResult = await trayQuery("/daemon/start", "POST");
   if (trayResult?.ok) {
-    console.log(`  ${green}✓${reset} tray app is starting daemon`);
+    console.log(`  ${green}✓${reset} tray app is registering daemon`);
   } else {
-    console.log(`  ${dim}·${reset} daemon will start when rt-tray launches`);
+    console.log(`  ${yellow}⚠${reset} rt-tray not reachable — open it to finish setup`);
+    console.log(`  ${dim}  ${bold}open ~/Applications/rt-tray.app${reset}`);
   }
 
-  // Wait for daemon to be reachable
+  // Wait for daemon to come online
   let connected = false;
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 12; i++) {
     await Bun.sleep(250);
-    if (await isDaemonRunning()) {
-      connected = true;
-      break;
-    }
+    if (await isDaemonRunning()) { connected = true; break; }
   }
 
   if (connected) {
     console.log(`  ${green}✓${reset} daemon is running`);
-    console.log(`\n  ${green}${bold}✓ installed${reset} ${dim}— managed by rt-tray · auto TCC · crash recovery${reset}\n`);
+    console.log(`\n  ${green}${bold}✓ installed${reset} ${dim}— managed by rt-tray · launchd-supervised · TCC inherits from rt-tray.app${reset}\n`);
   } else {
-    console.log(`  ${yellow}⚠${reset} daemon started but not yet responding`);
+    console.log(`  ${yellow}⚠${reset} daemon not yet responding`);
+    console.log(`  ${dim}If macOS is asking you to allow rt-tray as a background item, click Allow in System Settings → General → Login Items.${reset}`);
     console.log(`  ${dim}check logs: rt daemon logs${reset}\n`);
   }
-}
-
-async function spawnDaemonProcess(): Promise<void> {
-  const config = getDaemonConfig();
-  const bin = config?.bunPath || "bun";
-
-  const compiled = isCompiledBinary() || !config?.daemonScript || config.daemonScript === "--daemon";
-  const spawnArgs = compiled ? ["--daemon"] : ["run", config!.daemonScript];
-
-  const { spawn } = await import("child_process");
-  const { openSync } = await import("fs");
-
-  const logFd = openSync(DAEMON_LOG_PATH, "a");
-  const child = spawn(bin, spawnArgs, {
-    detached: true,
-    stdio: ["ignore", logFd, logFd],
-    cwd: RT_DIR,
-  });
-  child.unref();
-
-  console.log(`  ${green}✓${reset} spawned daemon (pid ${child.pid})`);
 }
 
 // ─── Uninstall ───────────────────────────────────────────────────────────────
@@ -173,51 +100,29 @@ async function spawnDaemonProcess(): Promise<void> {
 export async function uninstall(): Promise<void> {
   console.log(`\n  ${bold}${cyan}rt daemon uninstall${reset}\n`);
 
-  // 1. Stop daemon via tray first, then fall back to direct methods
-  const config = getDaemonConfig();
-  if (config?.mode === "tray") {
-    const result = await trayQuery("/daemon/stop", "POST");
-    if (result?.ok) {
-      console.log(`  ${green}✓${reset} daemon stopped via tray`);
-      await Bun.sleep(500);
-    }
+  // 1. Ask tray to unregister the SMAppService agent (stops launchd supervision).
+  const result = await trayQuery("/daemon/stop", "POST");
+  if (result?.ok) {
+    console.log(`  ${green}✓${reset} daemon unregistered via tray`);
+    await Bun.sleep(500);
+  } else {
+    console.log(`  ${dim}·${reset} tray not reachable — daemon may still be registered`);
   }
 
-  // 2. Graceful shutdown via socket (covers non-tray or tray fallback)
-  if (await isDaemonRunning()) {
-    const response = await daemonQuery("shutdown");
-    if (response?.ok) {
-      console.log(`  ${green}✓${reset} daemon stopped gracefully`);
-      await Bun.sleep(200);
-    } else if (isDaemonProcessRunning()) {
-      const pid = readDaemonPid();
-      if (pid) {
-        try {
-          process.kill(pid, "SIGTERM");
-          console.log(`  ${green}✓${reset} daemon stopped (SIGTERM)`);
-          await Bun.sleep(200);
-        } catch { /* already dead */ }
-      }
-    }
-  }
-
-  // 3. Clean up legacy launchd plist
+  // 2. Remove any legacy launchd plist.
   if (cleanupLaunchdPlist()) {
-    console.log(`  ${green}✓${reset} removed launchd agent`);
+    console.log(`  ${green}✓${reset} removed legacy launchd plist`);
   }
 
-  // 4. Clear install flag
+  // 3. Clear install flag + sock/pid files.
   markDaemonUninstalled();
-  console.log(`  ${green}✓${reset} cleared install flag`);
-
-  // 5. Clean up runtime files
   cleanupDaemonFiles();
-  console.log(`  ${green}✓${reset} cleaned up socket and pid files`);
+  console.log(`  ${green}✓${reset} cleared install flag`);
 
   console.log(`\n  ${dim}daemon fully uninstalled${reset}\n`);
 }
 
-// ─── Start / Stop ────────────────────────────────────────────────────────────
+// ─── Start / Stop / Restart ──────────────────────────────────────────────────
 
 export async function start(): Promise<void> {
   if (!isDaemonInstalled()) {
@@ -231,130 +136,49 @@ export async function start(): Promise<void> {
     return;
   }
 
-  // Evict orphan processes
-  if (isDaemonProcessRunning()) {
-    const pid = readDaemonPid();
-    if (pid) {
-      try {
-        process.kill(pid, "SIGTERM");
-        console.log(`  ${yellow}⚠${reset} evicted stale daemon process (pid ${pid})`);
-        await Bun.sleep(400);
-      } catch { /* already dead */ }
-    }
-    for (const p of [DAEMON_SOCK_PATH, DAEMON_PID_PATH]) {
-      try { if (existsSync(p)) unlinkSync(p); } catch { /* */ }
-    }
-  }
-
-  // Try tray first, fall back to direct spawn
   const result = await trayQuery("/daemon/start", "POST");
   if (!result?.ok) {
-    console.log(`  ${yellow}⚠${reset} tray not reachable — spawning daemon directly`);
-    await spawnDaemonProcess();
+    console.log(`\n  ${yellow}rt-tray is not running${reset}`);
+    console.log(`  ${dim}open it: ${bold}open ~/Applications/rt-tray.app${reset}\n`);
+    return;
   }
 
-  await Bun.sleep(600);
-
-  if (await isDaemonRunning()) {
-    console.log(`\n  ${green}✓ daemon started${reset}\n`);
-  } else {
-    console.log(`\n  ${yellow}daemon starting… check logs: rt daemon logs${reset}\n`);
-  }
-}
-
-/** Poll until a process is dead or the timeout elapses. Returns true if dead. */
-async function waitForProcessDeath(pid: number, timeoutMs = 3000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      process.kill(pid, 0);
-      await Bun.sleep(100);
-    } catch {
-      return true;
+  for (let i = 0; i < 12; i++) {
+    await Bun.sleep(250);
+    if (await isDaemonRunning()) {
+      console.log(`\n  ${green}✓ daemon started${reset}\n`);
+      return;
     }
   }
-  return false;
-}
-
-function cleanupRuntimeFiles(): void {
-  for (const p of [DAEMON_SOCK_PATH, DAEMON_PID_PATH]) {
-    try { if (existsSync(p)) unlinkSync(p); } catch { /* best-effort */ }
-  }
+  console.log(`\n  ${yellow}daemon starting… check logs: rt daemon logs${reset}\n`);
 }
 
 export async function stop(): Promise<void> {
-  // Try tray first
   const result = await trayQuery("/daemon/stop", "POST");
   if (result?.ok) {
     await Bun.sleep(500);
     console.log(`\n  ${green}✓ daemon stopped${reset}\n`);
     return;
   }
-
-  const pidBefore = readDaemonPid();
-
-  // Graceful shutdown via socket
-  const response = await daemonQuery("shutdown");
-  if (response?.ok) {
-    if (pidBefore) {
-      const died = await waitForProcessDeath(pidBefore, 3000);
-      if (!died) {
-        try { process.kill(pidBefore, "SIGKILL"); } catch { /* already dead */ }
-      }
-    } else {
-      await Bun.sleep(300);
-    }
-    cleanupRuntimeFiles();
-    console.log(`\n  ${green}✓ daemon stopped${reset}\n`);
-    return;
-  }
-
-  // SIGTERM via PID file
-  if (isDaemonProcessRunning()) {
-    const pid = readDaemonPid();
-    if (pid) {
-      try {
-        process.kill(pid, "SIGTERM");
-        const died = await waitForProcessDeath(pid, 2000);
-        if (!died) {
-          process.kill(pid, "SIGKILL");
-          await Bun.sleep(200);
-        }
-        cleanupRuntimeFiles();
-        console.log(`\n  ${green}✓ daemon stopped${reset}\n`);
-      } catch {
-        console.log(`\n  ${red}failed to stop daemon${reset}\n`);
-      }
-      return;
-    }
-  }
-
-  console.log(`\n  ${dim}daemon is not running${reset}\n`);
+  console.log(`\n  ${yellow}rt-tray is not running — nothing to stop${reset}\n`);
 }
 
 export async function restart(): Promise<void> {
   const result = await trayQuery("/daemon/restart", "POST");
-  if (result?.ok) {
-    console.log(`  ${dim}restarting daemon via tray…${reset}`);
-    for (let i = 0; i < 16; i++) {
-      await Bun.sleep(500);
-      if (await isDaemonRunning()) {
-        console.log(`\n  ${green}✓ daemon restarted${reset}\n`);
-        return;
-      }
-    }
-    console.log(`\n  ${yellow}daemon restarting… check logs: rt daemon logs${reset}\n`);
+  if (!result?.ok) {
+    console.log(`\n  ${yellow}rt-tray is not running${reset}`);
+    console.log(`  ${dim}open it: ${bold}open ~/Applications/rt-tray.app${reset}\n`);
     return;
   }
-
-  // Tray not reachable — direct restart
-  const wasRunning = (await isDaemonRunning()) || isDaemonProcessRunning();
-  if (wasRunning) {
-    await stop();
-  } else {
-    console.log(`  ${dim}daemon was not running — starting fresh${reset}`);
+  console.log(`  ${dim}restarting daemon via tray…${reset}`);
+  for (let i = 0; i < 16; i++) {
+    await Bun.sleep(500);
+    if (await isDaemonRunning()) {
+      console.log(`\n  ${green}✓ daemon restarted${reset}\n`);
+      return;
+    }
   }
-  await start();
+  console.log(`\n  ${yellow}daemon restarting… check logs: rt daemon logs${reset}\n`);
 }
 
 // ─── Status ──────────────────────────────────────────────────────────────────
@@ -370,7 +194,7 @@ export async function showStatus(): Promise<void> {
   const response = await daemonQuery("status");
   if (response?.ok) {
     const { pid, uptime, watchedRepos, cacheEntries } = response.data;
-    console.log(`  ${green}●${reset} running ${dim}(tray-managed · pid ${pid} · uptime ${formatUptime(uptime)})${reset}`);
+    console.log(`  ${green}●${reset} running ${dim}(SMAppService · pid ${pid} · uptime ${formatUptime(uptime)})${reset}`);
     console.log(`    ${dim}watching: ${watchedRepos} repo${watchedRepos !== 1 ? "s" : ""}${reset}`);
     console.log(`    ${dim}cache: ${cacheEntries} entries${reset}`);
   } else {

@@ -33,13 +33,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         startPolling()
         setupAutoUpdate()
 
-        // On first launch, ensure daemon is running
+        // Register the daemon as a LaunchAgent. Idempotent — if already
+        // registered, this is a no-op. If the user hasn't approved it yet,
+        // status flips to .requiresApproval and the menu surfaces a prompt.
         Task { @MainActor in
             setHealth(.starting)
-            let running = await daemonClient.isReachable()
-            if !running {
-                daemonLifecycle.startDaemon()
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            daemonLifecycle.startDaemon()
+
+            // Wait for launchd to bring the daemon up
+            for _ in 0..<8 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if await daemonClient.isReachable() { break }
             }
             await refreshStatus()
             await drainPendingNotifications()
@@ -135,6 +139,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         stopItem.target = self
         statusMenu.addItem(stopItem)
 
+        // Shown only when SMAppService says approval is required.
+        let approveItem = NSMenuItem(title: "Approve Daemon in Login Items…", action: #selector(openLoginItemsSettings), keyEquivalent: "")
+        approveItem.target = self
+        approveItem.tag = 150
+        approveItem.isHidden = true
+        statusMenu.addItem(approveItem)
+
         statusMenu.addItem(NSMenuItem.separator())
 
         // Login item toggle
@@ -179,14 +190,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let item = statusMenu.item(withTag: 200) {
             item.state = SMAppService.mainApp.status == .enabled ? .on : .off
         }
+        // Daemon is reachable → approval clearly worked, hide the prompt
+        if let item = statusMenu.item(withTag: 150) {
+            item.isHidden = true
+        }
     }
 
     private func updateMenuItemsOffline() {
         if let item = statusMenu.item(withTag: 100) {
-            item.title = "Daemon: not running"
+            switch daemonLifecycle.status {
+            case .requiresApproval:
+                item.title = "Daemon: needs approval in Login Items"
+            case .notRegistered, .notFound:
+                item.title = "Daemon: not registered"
+            default:
+                item.title = "Daemon: not running"
+            }
         }
         if let item = statusMenu.item(withTag: 101) {
             item.isHidden = true
+        }
+        if let item = statusMenu.item(withTag: 150) {
+            item.isHidden = daemonLifecycle.status != .requiresApproval
         }
     }
 
@@ -242,6 +267,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             try? await Task.sleep(nanoseconds: 500_000_000)
             setHealth(.down)
         }
+    }
+
+    @objc private func openLoginItemsSettings() {
+        SMAppService.openSystemSettingsLoginItems()
     }
 
     @objc private func toggleLoginItem(_ sender: NSMenuItem) {

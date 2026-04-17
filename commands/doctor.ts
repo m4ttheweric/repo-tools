@@ -256,10 +256,10 @@ export async function runDoctor(_args: string[]): Promise<void> {
         const response = await daemonQuery("status");
         if (response?.ok) {
           const { pid, uptime, watchedRepos, cacheEntries } = response.data;
-          check(true, "daemon", `running  tray-managed  pid ${pid}  uptime ${formatUptime(uptime)}`);
+          check(true, "daemon", `running  SMAppService  pid ${pid}  uptime ${formatUptime(uptime)}`);
           console.log(`    ${dim}watching ${watchedRepos} repo${watchedRepos !== 1 ? "s" : ""}  ·  ${cacheEntries} cache entries${reset}`);
         } else {
-          check(true, "daemon", "running (tray-managed)");
+          check(true, "daemon", "running (SMAppService)");
         }
 
         const tccResponse = await daemonQuery("tcc:check");
@@ -274,7 +274,8 @@ export async function runDoctor(_args: string[]): Promise<void> {
             for (const b of blocked) {
               console.log(`    ${red}${b.path}${reset}  ${dim}${b.error}${reset}`);
             }
-            console.log(`    ${yellow}try:${reset} quit and reopen rt-tray (daemon inherits tray's TCC grants)`);
+            console.log(`    ${yellow}try:${reset} grant Full Disk Access to rt-tray.app (daemon inherits via SMAppService)`);
+            console.log(`    ${dim}        run: ${bold}rt --grant-fda${reset}`);
           }
         }
       } else {

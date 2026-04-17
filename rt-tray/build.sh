@@ -65,8 +65,32 @@ else
     echo "  ⚠ AppIcon.icns not found — notifications will show a default icon"
 fi
 
-# Copy binary
+# Copy tray binary
 cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+
+# ─── Embed daemon binary ──────────────────────────────────────────────────────
+# RT_DAEMON_BIN env var wins (CI passes the freshly-built rt binary). For local
+# dev, fall back to whatever `rt` resolves to on PATH — that's the same compiled
+# binary the user already has installed.
+
+DAEMON_SRC="${RT_DAEMON_BIN:-}"
+if [ -z "$DAEMON_SRC" ]; then
+    DAEMON_SRC="$(command -v rt 2>/dev/null || true)"
+fi
+
+if [ -n "$DAEMON_SRC" ] && [ -f "$DAEMON_SRC" ]; then
+    cp "$DAEMON_SRC" "$APP_BUNDLE/Contents/MacOS/rt-daemon"
+    chmod +x "$APP_BUNDLE/Contents/MacOS/rt-daemon"
+    echo "  ✓ Embedded rt-daemon from $DAEMON_SRC"
+else
+    echo "  ⚠ rt binary not found — daemon will not be embedded"
+    echo "    Set RT_DAEMON_BIN or install rt on PATH"
+fi
+
+# Ship LaunchAgent plist inside the bundle (SMAppService reads it from here)
+mkdir -p "$APP_BUNDLE/Contents/Library/LaunchAgents"
+cp "$SCRIPT_DIR/LaunchAgent.plist" "$APP_BUNDLE/Contents/Library/LaunchAgents/com.rt.daemon.plist"
+echo "  ✓ LaunchAgent plist copied to Contents/Library/LaunchAgents"
 
 # Copy Info.plist and inject version from git tag
 cp "$SCRIPT_DIR/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
@@ -83,16 +107,34 @@ echo -n "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
 
 echo "  ✓ App bundle created at $APP_BUNDLE"
 
-# ─── Code sign ────────────────────────────────────────────────────────────────
+# ─── Code sign (inside-out) ──────────────────────────────────────────────────
+# Sign the embedded daemon FIRST with Bun's JIT entitlements, then sign the
+# outer bundle with the tray's minimal entitlements. --deep would clobber the
+# daemon's JIT entitlements, so we sign each piece explicitly.
 
-# Try to find a Developer ID certificate for proper signing
 SIGNING_IDENTITY=""
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
     SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
     echo "  Signing with: $SIGNING_IDENTITY"
-    codesign --force --deep --sign "$SIGNING_IDENTITY" \
-        --options runtime \
-        --entitlements /dev/stdin <<EOF "$APP_BUNDLE"
+    SIGN_FLAGS=(--force --sign "$SIGNING_IDENTITY" --options runtime --timestamp)
+else
+    echo "  No Developer ID found — ad-hoc signing"
+    SIGNING_IDENTITY="-"
+    SIGN_FLAGS=(--force --sign -)
+fi
+
+# 1. Embedded daemon — needs Bun JIT entitlements
+DAEMON_BIN="$APP_BUNDLE/Contents/MacOS/rt-daemon"
+if [ -f "$DAEMON_BIN" ]; then
+    codesign "${SIGN_FLAGS[@]}" \
+        --entitlements "$SCRIPT_DIR/../scripts/entitlements.plist" \
+        "$DAEMON_BIN"
+    echo "  ✓ Signed rt-daemon with JIT entitlements"
+fi
+
+# 2. Outer .app bundle — tray entitlements (sandbox disabled)
+codesign "${SIGN_FLAGS[@]}" \
+    --entitlements /dev/stdin <<EOF "$APP_BUNDLE"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -102,12 +144,7 @@ if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID 
 </dict>
 </plist>
 EOF
-    echo "  ✓ Signed with Developer ID"
-else
-    echo "  No Developer ID found — ad-hoc signing"
-    codesign --force --deep --sign - "$APP_BUNDLE"
-    echo "  ✓ Ad-hoc signed"
-fi
+echo "  ✓ Signed app bundle"
 
 # ─── Verify ──────────────────────────────────────────────────────────────────
 
