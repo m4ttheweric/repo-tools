@@ -49,7 +49,8 @@ import {
   listRunnerConfigs, loadRunnerConfig, saveRunnerConfig, resetRunnerConfig,
   acquireRunnerLock, releaseRunnerLock,
   nextLaneId, nextEntryId, proxyWindowName, entryWindowName,
-  type LaneConfig, type LaneEntry, type LaneMode, type Remedy,
+  globalRemedyPath, remediesDir,
+  type LaneConfig, type LaneEntry, type LaneMode,
 } from "../lib/runner-store.ts";
 import type { ProcessState } from "../lib/daemon/state-store.ts";
 import type { RunResolveResult } from "./run.ts";
@@ -322,6 +323,32 @@ const STATUS_ICON: Record<EntryState, string> = {
   crashed:  "✗",
   stopped:  "○",
 };
+
+// ─── Editor helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Detect the best available terminal editor. Checks $EDITOR first, then
+ * probes for nvim, vim, nano in order. Shared by [e] and [f] popup flows.
+ */
+function detectEditor(): string {
+  if (process.env.EDITOR) return process.env.EDITOR;
+  for (const ed of ["nvim", "vim", "nano"]) {
+    if (spawnSync("which", [ed], { encoding: "utf8" }).status === 0) return ed;
+  }
+  return "nano";
+}
+
+/** Build an editor invocation string with editor-specific flags. */
+function buildEditorCmd(filePath: string): { editorCmd: string; hint: string } {
+  const editor = detectEditor();
+  const isVim  = /\bnvi?m\b/.test(editor);
+  const isNano = /\bnano\b/.test(editor);
+  const editorCmd = isVim
+    ? `${editor} '+call cursor(1, 1000)' -c 'startinsert!' '${filePath}'`
+    : isNano ? `${editor} --save-on-exit '${filePath}'` : `${editor} '${filePath}'`;
+  const hint = isVim ? ":wq to save" : isNano ? "Ctrl-X to save" : "save and close";
+  return { editorCmd, hint };
+}
 
 // ─── Daemon helpers ───────────────────────────────────────────────────────────
 
@@ -1181,7 +1208,7 @@ async function runOnce(
         <row key={eKey} gap={1} style={{ bg: rowBg }}>
           <text style={{ fg: isSelected ? C.pink : C.dim, bg: rowBg }}>{isSelected ? "❯" : " "}</text>
           <text style={{ fg: stateColor, bg: rowBg }}>{stateIcon}</text>
-          <text style={{ fg: nameColor, bold: isActive, bg: rowBg }}>{branchLabel || entry.branch || entry.worktree}</text>
+          <text style={{ fg: nameColor, bold: isActive, bg: rowBg }}>{branchLabel || entry.branch || entry.id}</text>
           <spacer flex={1} />
           {stateLabel && <text style={{ fg: stateColor, bg: rowBg }}>{stateLabel}</text>}
         </row>
@@ -2012,54 +2039,30 @@ async function runOnce(
         app.setMode("entry-picker");
       },
 
-      // [f] edit fix/remedy rules for the focused entry
+      // [f] open global remedy rules file in $EDITOR
+      //     File: ~/.rt/remedies/_global.json
+      //     The daemon file-watches this and hot-reloads on save — no restart needed.
       f: (ctx) => {
         exitScope(ctx);
-        if (!_currentState) return;
-        const state = _currentState;
-        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-        if (!lane) return;
-        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
-        if (!entry) return;
-
-        // Write current remedies to a temp JSON file, open in $EDITOR, read back on close
-        const tmpFile = join(tmpdir(), `rt-remedies-${lane.id}-${entry.id}-${Date.now()}.json`);
-        const currentRemedies: Remedy[] = entry.remedies ?? [];
-        const template: Remedy[] = currentRemedies.length > 0 ? currentRemedies : [{
-          name: "Example: clear cache",
-          pattern: "ENOENT .cache",
-          cmds: ["rm -rf .cache"],
-          thenRestart: true,
-          cooldownMs: 30000,
-        }];
-        writeFileSync(tmpFile, JSON.stringify(template, null, 2));
-
-        const editor = process.env.EDITOR ?? "vi";
-        const label = `${entry.packageLabel || entry.script} · ${entry.branch || "no branch"}`;
-        openPopup(`${editor} ${tmpFile}`, { title: `remedies: ${label}`, width: "90%", height: "80%" });
-
-        // Read back after popup closes
-        try {
-          const updated = JSON.parse(readFileSync(tmpFile, "utf8")) as Remedy[];
-          unlinkSync(tmpFile);
-          const processId = entryWindowName(lane.id, entry.id);
-          const newLanes = currentLanes.map((l) =>
-            l.id !== lane.id ? l : {
-              ...l,
-              entries: l.entries.map((e) =>
-                e.id !== entry.id ? e : { ...e, remedies: updated.length > 0 ? updated : undefined },
-              ),
+        const gPath = globalRemedyPath();
+        mkdirSync(remediesDir(), { recursive: true });
+        // Seed an example if the file doesn't exist yet
+        if (!existsSync(gPath)) {
+          writeFileSync(gPath, JSON.stringify([
+            {
+              name: "Example — clear Prisma cache",
+              cwdContains: "apps/backend",
+              cmdContains: "start:lite",
+              pattern: "PrismaClientInitializationError",
+              cmds: ["rm -rf node_modules/.prisma"],
+              thenRestart: true,
+              cooldownMs: 30000,
             },
-          );
-          saveCurrent(newLanes);
-          safeUpdate((s) => ({ ...s, lanes: newLanes }));
-          // Re-register with daemon if process is live
-          void daemonQuery("remedy:set", { id: processId, remedies: updated, cwd: entry.targetDir });
-          showToast(`Remedies saved for ${entry.packageLabel || entry.script} (${updated.length})`);
-        } catch {
-          try { unlinkSync(tmpFile); } catch { /* already gone */ }
-          showToast("⚠ Remedy JSON invalid — changes discarded");
+          ], null, 2));
         }
+        const { editorCmd, hint } = buildEditorCmd(gPath);
+        openPopup(editorCmd, { title: "remedy rules (_global.json)", hint, width: "110", height: "30" });
+        showToast("✓ Remedy rules saved — daemon reloads automatically");
       },
 
       // [e] edit command template via $EDITOR
@@ -2073,23 +2076,8 @@ async function runOnce(
         if (!entry) return;
         const tmpFile = `/tmp/rt-edit-${entry.id}.sh`;
         writeFileSync(tmpFile, entry.commandTemplate + "\n");
-        const detectEditor = () => {
-          for (const ed of ["nvim", "vim", "nano"]) {
-            if (spawnSync("which", [ed], { encoding: "utf8" }).status === 0) return ed;
-          }
-          return "nano";
-        };
-        const editor = process.env.EDITOR || detectEditor();
-        const isVim = /\bnvi?m\b/.test(editor);
-        const isNano = /\bnano\b/.test(editor);
-        const editorCmd = isVim
-          ? `${editor} '+call cursor(1, 1000)' -c 'startinsert!' '${tmpFile}'`
-          : isNano ? `${editor} --save-on-exit '${tmpFile}'` : `${editor} '${tmpFile}'`;
-        openPopup(editorCmd, {
-          title: "edit command",
-          hint: isVim ? ":wq to save" : isNano ? "Ctrl-X to save" : "save and close",
-          width: "100", height: "12",
-        });
+        const { editorCmd, hint } = buildEditorCmd(tmpFile);
+        openPopup(editorCmd, { title: "edit command", hint, width: "100", height: "12" });
         try {
           const newCmd = readFileSync(tmpFile, "utf8").trim();
           if (newCmd && newCmd !== entry.commandTemplate) {
@@ -2523,6 +2511,18 @@ export async function showRunner(args: string[], _ctx: CommandContext): Promise<
   process.on("SIGHUP", () => { releaseLock(); process.exit(129); });
 
   const lanes = loadRunnerConfig(runnerName);
+
+  // Branches are no longer stored in the config — read them from git eagerly
+  // at startup so the display shows branch names from the first render.
+  for (const lane of lanes) {
+    for (const entry of lane.entries) {
+      if (entry.worktree) {
+        const branch = readCurrentBranch(entry.worktree);
+        if (branch) entry.branch = branch;
+      }
+    }
+  }
+
   const knownRepos = getKnownRepos();
 
   // Ensure all existing lanes have proxies and exclusive groups in the daemon

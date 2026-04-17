@@ -1,10 +1,13 @@
 /**
  * RemedyEngine — auto-detect error patterns in process output and execute fixes.
  *
- * Subscribes to live PTY output via ProcessManager.subscribeToOutput() for any
- * process that has remedies configured. When a log line matches a remedy's
- * pattern (after ANSI stripping), the engine runs the fix commands in the
- * entry's working directory and optionally restarts the process.
+ * Two remedy sources:
+ *   1. Per-entry:  registered via remedy:set IPC, stored in the runner config JSON.
+ *   2. Global:     loaded from ~/.rt/remedies/_global.json, matched by cwdContains
+ *                  and cmdContains substrings. Hot-reloaded when the file changes.
+ *
+ * When a log line matches a remedy's pattern (after ANSI stripping), the engine
+ * runs the fix commands in the entry's working directory and optionally restarts.
  *
  * Lifecycle safety:
  *   1. Hook accumulation:  unsub() called in onSpawn() before re-subscribing.
@@ -15,8 +18,9 @@
  */
 
 import type { ProcessManager } from "./process-manager.ts";
-import type { StateStore } from "./state-store.ts";
-import type { Remedy } from "../runner-store.ts";
+import type { StateStore }     from "./state-store.ts";
+import type { Remedy }         from "../runner-store.ts";
+import type { GlobalRemedy }   from "../runner-store.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -40,27 +44,49 @@ function splitLines(state: RemedyState, chunk: Uint8Array): string[] {
   return parts.slice(0, -1); // everything except the last is a complete line
 }
 
-// ─── Types ───────────────────────────────────────────────────────────────────
-
-interface RemedyState {
-  remedies:   Remedy[];
-  cwd:        string;
-  unsub:      () => void;          // unsubscribe fn from processManager.subscribeToOutput()
-  cooldowns:  Map<string, number>; // remedy.name → last-fired epoch ms
-  inFlight:   boolean;             // true while a fix is executing
-  cancelled:  boolean;             // set by unregister(); blocks post-await respawn
-  pending:    string;              // partial line carry buffer
+/**
+ * Return true if `globalRemedy` matches the given process context.
+ * Both `cwdContains` and `cmdContains` must match if specified (AND logic).
+ * Matching is case-insensitive substring.
+ */
+function globalMatches(r: GlobalRemedy, cwd: string, cmd: string): boolean {
+  if (r.cwdContains && !cwd.toLowerCase().includes(r.cwdContains.toLowerCase())) return false;
+  if (r.cmdContains && !cmd.toLowerCase().includes(r.cmdContains.toLowerCase())) return false;
+  return true;
 }
 
-const FIX_TIMEOUT_MS = 60_000;
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+interface ProcessMeta {
+  cwd: string;
+  cmd: string; // the resolved command string (after port substitution)
+}
+
+interface RemedyState {
+  remedies:  Remedy[];    // merged: per-entry + matching globals
+  cwd:       string;
+  cmd:       string;      // stored so we can re-merge on global reload
+  unsub:     () => void;  // unsubscribe fn from processManager.subscribeToOutput()
+  cooldowns: Map<string, number>; // remedy.name → last-fired epoch ms
+  inFlight:  boolean;             // true while a fix is executing
+  cancelled: boolean;             // set by unregister(); blocks post-await respawn
+  pending:   string;              // partial line carry buffer
+}
+
+const FIX_TIMEOUT_MS     = 60_000;
 const DEFAULT_COOLDOWN_MS = 30_000;
 
 // ─── Engine ──────────────────────────────────────────────────────────────────
 
 export class RemedyEngine {
-  private states = new Map<string, RemedyState>();
+  private states        = new Map<string, RemedyState>();
+  /** Per-entry remedy lists, before global merge.  Keyed by processId. */
+  private entryRemedies = new Map<string, Remedy[]>();
+  private processMeta   = new Map<string, ProcessMeta>();
+  private globalRemedies: GlobalRemedy[] = [];
+
   private processManager: ProcessManager;
-  private stateStore: StateStore;
+  private stateStore:     StateStore;
   private onFire: (id: string, remedy: Remedy, success: boolean) => void;
 
   constructor(deps: {
@@ -73,22 +99,58 @@ export class RemedyEngine {
     this.onFire         = deps.onFire;
   }
 
+  // ─── Global remedies ───────────────────────────────────────────────────────
+
   /**
-   * Register remedies for a process. Replaces any existing set.
+   * Replace the loaded global remedies and re-merge into all active states.
+   * Called by the daemon when ~/.rt/remedies/_global.json changes.
+   */
+  reloadGlobals(globals: GlobalRemedy[]): void {
+    this.globalRemedies = globals;
+    // Re-merge for every currently-registered process
+    for (const [id, s] of this.states) {
+      const entry = this.entryRemedies.get(id) ?? [];
+      const meta  = this.processMeta.get(id);
+      if (meta) {
+        s.remedies = this.mergeRemedies(entry, meta.cwd, meta.cmd);
+      }
+    }
+  }
+
+  /**
+   * Merge per-entry remedies with any matching global remedies.
+   * Global remedies are appended after per-entry ones so per-entry rules
+   * fire first (higher priority).
+   */
+  private mergeRemedies(entryRemedies: Remedy[], cwd: string, cmd: string): Remedy[] {
+    const matchingGlobals = this.globalRemedies.filter((r) => globalMatches(r, cwd, cmd));
+    return [...entryRemedies, ...matchingGlobals];
+  }
+
+  // ─── Per-entry registration ───────────────────────────────────────────────
+
+  /**
+   * Register per-entry remedies for a process. Replaces any existing set.
+   * Also stores the process metadata (cwd, cmd) for global matching.
    * Does NOT subscribe to output yet — that happens in onSpawn().
    */
-  register(id: string, remedies: Remedy[], cwd: string): void {
-    // Clean up any previous registration for this id
+  register(id: string, remedies: Remedy[], cwd: string, cmd = ""): void {
+    this.entryRemedies.set(id, remedies);
+    this.processMeta.set(id, { cwd, cmd });
+
+    // Clean up any previous state
     const prev = this.states.get(id);
     if (prev) {
       prev.cancelled = true;
       prev.unsub();
     }
 
+    const merged = this.mergeRemedies(remedies, cwd, cmd);
     this.states.set(id, {
-      remedies,
+      remedies:  merged,
       cwd,
-      unsub:     () => {},   // no-op until onSpawn subscribes
+      cmd,
+      unsub:     () => {},  // no-op until onSpawn subscribes
       cooldowns: new Map(),
       inFlight:  false,
       cancelled: false,
@@ -102,10 +164,13 @@ export class RemedyEngine {
    */
   unregister(id: string): void {
     const s = this.states.get(id);
-    if (!s) return;
-    s.cancelled = true;    // Fix 2: blocks in-flight fix from respawning
-    s.unsub();             // stops new chunks arriving
+    if (s) {
+      s.cancelled = true;   // Fix 2: blocks in-flight fix from respawning
+      s.unsub();            // stops new chunks arriving
+    }
     this.states.delete(id);
+    this.entryRemedies.delete(id);
+    this.processMeta.delete(id);
   }
 
   /**
@@ -113,17 +178,52 @@ export class RemedyEngine {
    * Unsubscribes the old hook (Fix 1), subscribes a fresh one, and resets
    * in-flight state for the new process incarnation.
    *
-   * No-op if no remedies are registered for this id.
+   * Also re-merges with current global remedies so a reload between spawns
+   * is always reflected.
+   *
+   * No-op if no remedies are registered for this id AND no globals match.
    */
-  onSpawn(id: string): void {
-    const s = this.states.get(id);
-    if (!s) return;
+  onSpawn(id: string, cwd?: string, cmd?: string): void {
+    // Update meta if caller provides fresh cwd/cmd (e.g. after a port substitution)
+    if (cwd !== undefined || cmd !== undefined) {
+      const prev = this.processMeta.get(id) ?? { cwd: "", cmd: "" };
+      this.processMeta.set(id, {
+        cwd: cwd ?? prev.cwd,
+        cmd: cmd ?? prev.cmd,
+      });
+    }
 
-    // Fix 1: unsubscribe old hook BEFORE re-subscribing — prevents accumulation
-    s.unsub();
-    s.inFlight  = false;
-    s.cancelled = false;
-    s.pending   = "";
+    const meta         = this.processMeta.get(id);
+    const entryRemedies = this.entryRemedies.get(id) ?? [];
+    const merged       = meta ? this.mergeRemedies(entryRemedies, meta.cwd, meta.cmd) : entryRemedies;
+
+    // Nothing to watch — skip
+    if (merged.length === 0) return;
+
+    let s = this.states.get(id);
+    if (!s) {
+      // No explicit register() call yet (e.g. globals-only match) — create state
+      s = {
+        remedies:  merged,
+        cwd:       meta?.cwd ?? "",
+        cmd:       meta?.cmd ?? "",
+        unsub:     () => {},
+        cooldowns: new Map(),
+        inFlight:  false,
+        cancelled: false,
+        pending:   "",
+      };
+      this.states.set(id, s);
+    } else {
+      // Fix 1: unsubscribe old hook BEFORE re-subscribing — prevents accumulation
+      s.unsub();
+      s.remedies  = merged;
+      s.cwd       = meta?.cwd ?? s.cwd;
+      s.cmd       = meta?.cmd ?? s.cmd;
+      s.inFlight  = false;
+      s.cancelled = false;
+      s.pending   = "";
+    }
 
     s.unsub = this.processManager.subscribeToOutput(id, (chunk) => {
       void this.handleChunk(id, chunk);
@@ -139,7 +239,7 @@ export class RemedyEngine {
     const lines = splitLines(s, chunk);
 
     for (const line of lines) {
-      if (s.cancelled) return;     // re-check between lines (entry might be removed mid-loop)
+      if (s.cancelled) return;     // re-check between lines
 
       const stripped = stripAnsi(line);
 
@@ -148,17 +248,19 @@ export class RemedyEngine {
         if (s.inFlight) continue;
 
         // Fix 3: cooldown check
-        const now = Date.now();
+        const now  = Date.now();
         const last = s.cooldowns.get(remedy.name) ?? 0;
         if (now - last < (remedy.cooldownMs ?? DEFAULT_COOLDOWN_MS)) continue;
 
-        // Pattern match
+        // Pattern match — any pattern in the array is sufficient (OR logic)
         let matched = false;
-        try {
-          matched = new RegExp(remedy.pattern).test(stripped);
-        } catch {
-          // invalid regex — skip silently (user error in config)
-          continue;
+        const patterns = Array.isArray(remedy.pattern) ? remedy.pattern : [remedy.pattern];
+        for (const pat of patterns) {
+          try {
+            if (new RegExp(pat).test(stripped)) { matched = true; break; }
+          } catch {
+            // invalid regex — skip this pattern silently
+          }
         }
         if (!matched) continue;
 

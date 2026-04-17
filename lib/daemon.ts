@@ -61,7 +61,10 @@ import {
 } from "./port-scanner.ts";
 
 import { checkAndNotify, drainNotifications, peekNotifications, onNotification } from "./notifier.ts";
-import { listRunnerConfigs, loadRunnerConfig, entryWindowName, proxyWindowName } from "./runner-store.ts";
+import {
+  listRunnerConfigs, loadRunnerConfig, entryWindowName, proxyWindowName,
+  loadGlobalRemedies, globalRemedyPath,
+} from "./runner-store.ts";
 import { diag } from "./diag-log.ts";
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -116,6 +119,29 @@ const remedyEngine = new RemedyEngine({
 attachServer.setProcessManager(processManager);
 // Wire SuspendManager into ProcessManager so kill() can resume warm processes
 processManager.suspendManager = suspendManager;
+
+// ─── Global remedy file watcher ──────────────────────────────────────────────
+// Load at startup, then hot-reload whenever ~/.rt/remedies/_global.json changes.
+
+remedyEngine.reloadGlobals(loadGlobalRemedies());
+log("remedy: global rules loaded");
+
+(function watchGlobalRemedies() {
+  const gPath = globalRemedyPath();
+  const dir   = gPath.replace(/_global\.json$/, "");
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    watch(dir, (_evt, filename) => {
+      if (filename === "_global.json") {
+        const rules = loadGlobalRemedies();
+        remedyEngine.reloadGlobals(rules);
+        log(`remedy: hot-reloaded ${rules.length} global rule(s) from _global.json`);
+      }
+    });
+  } catch (err) {
+    log(`remedy: could not watch global remedy dir (${String(err)})`);
+  }
+})();
 
 // ── Prune orphaned port allocations from previous sessions ───────────────────
 // Build the set of all valid labels (entryWindowName for every entry across all
@@ -680,7 +706,7 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
       const { id, cmd, cwd, env } = payload as { id: string; cmd: string; cwd: string; env?: Record<string, string> };
       if (!id || !cmd || !cwd) return { ok: false, error: "missing id, cmd, or cwd" };
       await processManager.spawn(id, cmd, { cwd, env });
-      remedyEngine.onSpawn(id);
+      remedyEngine.onSpawn(id, cwd, cmd);
       return { ok: true };
     }
 
@@ -744,7 +770,7 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
         }
       }
 
-      remedyEngine.onSpawn(id);
+      remedyEngine.onSpawn(id, cwd, cmd);
       diag("process.start.end", id, { ephemeralPort });
       return { ok: true, data: { ephemeralPort } };
     }
@@ -794,7 +820,7 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
         proxyManager.setUpstream(proxyWindowName(groupId), ephemeralPort);
       }
 
-      remedyEngine.onSpawn(id);
+      remedyEngine.onSpawn(id, cwd, cmd);
       return { ok: true, data: { ephemeralPort } };
     }
 
@@ -1061,11 +1087,11 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
     // ── Remedy engine ──────────────────────────────────────────────────────────
 
     case "remedy:set": {
-      const { id, remedies, cwd } = payload as { id: string; remedies: any[]; cwd: string };
+      const { id, remedies, cwd, cmd } = payload as { id: string; remedies: any[]; cwd: string; cmd?: string };
       if (!id || !Array.isArray(remedies) || !cwd) return { ok: false, error: "missing id, remedies, or cwd" };
-      remedyEngine.register(id, remedies, cwd);
+      remedyEngine.register(id, remedies, cwd, cmd ?? "");
       // If the process is already running, subscribe immediately
-      if (stateStore.getState(id) === "running") remedyEngine.onSpawn(id);
+      if (stateStore.getState(id) === "running") remedyEngine.onSpawn(id, cwd, cmd);
       return { ok: true };
     }
 
