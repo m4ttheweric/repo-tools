@@ -244,12 +244,6 @@ const TREE: Record<string, CommandNode> = {
     hidden: true,
   },
 
-  doctor: {
-    description: "Environment health check",
-    module: "./commands/doctor.ts",
-    fn: "runDoctor",
-  },
-
   update: {
     description: "Update rt to the latest version via Homebrew",
     module: "./commands/update.ts",

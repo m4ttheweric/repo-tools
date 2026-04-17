@@ -11,7 +11,6 @@ import * as branchClean from "../commands/branch-clean.ts";
 import * as buildSelect from "../commands/build-select.ts";
 import * as commit from "../commands/commit.ts";
 import * as daemon from "../commands/daemon.ts";
-import * as doctor from "../commands/doctor.ts";
 import * as extension from "../commands/extension.ts";
 import * as hooks from "../commands/hooks.ts";
 import * as open from "../commands/open.ts";
@@ -41,7 +40,6 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/build-select.ts": buildSelect,
   "./commands/commit.ts": commit,
   "./commands/daemon.ts": daemon,
-  "./commands/doctor.ts": doctor,
   "./commands/extension.ts": extension,
   "./commands/hooks.ts": hooks,
   "./commands/open.ts": open,

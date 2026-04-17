@@ -311,7 +311,5 @@ jobs:
         run: rt verify --ci
 
       - name: Smoke test
-        run: |
-          rt --version
-          rt doctor || true   # informational only, don't fail CI on warnings
+        run: rt --version
 
