@@ -6,6 +6,8 @@
  * upstream is hot-swapped without changing the public-facing port.
  */
 
+import { diag } from "../diag-log.ts";
+
 interface ProxyEntry {
   server: ReturnType<typeof Bun.serve>;
   canonicalPort: number;
@@ -15,9 +17,15 @@ interface ProxyEntry {
 export class ProxyManager {
   private proxies = new Map<string, ProxyEntry>();
 
+  /** Current set of proxy ids — cheap snapshot used by diag logs. */
+  private idsSnapshot(): string[] {
+    return Array.from(this.proxies.keys()).sort();
+  }
+
   start(id: string, canonicalPort: number, upstreamPort: number): void {
+    const hadPrevious = this.proxies.has(id);
     // Stop existing proxy for this id if any
-    this.stop(id);
+    this.stop(id, /* fromStart */ true);
 
     let currentUpstream = upstreamPort;
 
@@ -48,20 +56,39 @@ export class ProxyManager {
       currentUpstream = p;
       entry.upstreamPort = p;
     };
+
+    diag("proxy.start", id, {
+      canonicalPort, upstreamPort, replacedPrevious: hadPrevious,
+      size: this.proxies.size, ids: this.idsSnapshot(),
+    });
   }
 
   /** Hot-swap the upstream port. Next request will be forwarded to the new port. */
   setUpstream(id: string, port: number): void {
     const entry = this.proxies.get(id) as (ProxyEntry & { _setUpstream?: (p: number) => void }) | undefined;
-    if (!entry) throw new Error(`ProxyManager: no proxy running for "${id}"`);
+    if (!entry) {
+      diag("proxy.setUpstream.miss", id, {
+        port, size: this.proxies.size, ids: this.idsSnapshot(),
+      });
+      throw new Error(`ProxyManager: no proxy running for "${id}"`);
+    }
+    const prev = entry.upstreamPort;
     entry._setUpstream?.(port);
+    diag("proxy.setUpstream", id, { from: prev, to: port });
   }
 
-  stop(id: string): void {
+  stop(id: string, fromStart = false): void {
     const entry = this.proxies.get(id);
     if (entry) {
       try { entry.server.stop(true); } catch { /* ignore */ }
       this.proxies.delete(id);
+      diag(fromStart ? "proxy.stop.replace" : "proxy.stop", id, {
+        size: this.proxies.size, ids: this.idsSnapshot(),
+      });
+    } else if (!fromStart) {
+      diag("proxy.stop.miss", id, {
+        size: this.proxies.size, ids: this.idsSnapshot(),
+      });
     }
   }
 
@@ -81,6 +108,7 @@ export class ProxyManager {
   }
 
   stopAll(): void {
+    diag("proxy.stopAll", "", { size: this.proxies.size, ids: this.idsSnapshot() });
     for (const id of this.proxies.keys()) this.stop(id);
   }
 }

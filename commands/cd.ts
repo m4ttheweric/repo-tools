@@ -36,6 +36,11 @@ const SHELL_FUNCTION = [
   `    if [ -n "$rt_cwd" ] && [ "$rt_cwd" != "$PWD" ]; then`,
   `      builtin cd "$rt_cwd"`,
   `    fi`,
+  `  elif [ "$1" = "settings" ] && [ "$2" = "dev-mode" ]; then`,
+  `    command rt "$@"`,
+  `    # dev-mode swaps ~/.local/bin/rt in or out — rehash so the next invocation`,
+  `    # resolves to the new wrapper/binary without a terminal restart.`,
+  `    hash -r 2>/dev/null`,
   `  else`,
   `    command rt "$@"`,
   `  fi`,
@@ -50,7 +55,8 @@ async function ensureShellFunction(): Promise<void> {
     rcContent = readFileSync(rcFile, "utf8");
   } catch { /* no rc file yet */ }
 
-  if (rcContent.includes('rt() {') && rcContent.includes('command rt cd') && rcContent.includes('.last-cwd')) return;
+  // Latest version marker: rehashes PATH after `settings dev-mode` toggles.
+  if (rcContent.includes('rt() {') && rcContent.includes('command rt cd') && rcContent.includes('.last-cwd') && rcContent.includes('hash -r')) return;
 
   // Redirect stdout → stderr before showing prompts
   const origWrite = process.stdout.write.bind(process.stdout);
@@ -59,9 +65,12 @@ async function ensureShellFunction(): Promise<void> {
   const { confirm: inkConfirm } = await import("../lib/rt-render.tsx");
   const hasLegacyRtcd = rcContent.includes("rtcd()");
   const hasOldRtWrapper = rcContent.includes("rt() {") && rcContent.includes("command rt cd") && !rcContent.includes(".last-cwd");
-  const hasOldFunction = hasLegacyRtcd || hasOldRtWrapper;
+  const hasPreRehashWrapper = rcContent.includes("rt() {") && rcContent.includes(".last-cwd") && !rcContent.includes("hash -r");
+  const hasOldFunction = hasLegacyRtcd || hasOldRtWrapper || hasPreRehashWrapper;
 
-  if (hasOldRtWrapper) {
+  if (hasPreRehashWrapper) {
+    console.error(`\n  ${yellow}Upgrading rt shell wrapper: auto-rehash after dev-mode toggle${reset}`);
+  } else if (hasOldRtWrapper) {
     console.error(`\n  ${yellow}Upgrading rt shell wrapper: adding rt x auto-cd support${reset}`);
   } else if (hasLegacyRtcd) {
     console.error(`\n  ${yellow}Upgrading shell function: rtcd → rt cd (native)${reset}`);
@@ -85,7 +94,7 @@ async function ensureShellFunction(): Promise<void> {
     process.exit(0);
   }
 
-  if (hasOldRtWrapper) {
+  if (hasOldRtWrapper || hasPreRehashWrapper) {
     rcContent = rcContent
       .replace(/\n?# rt — shell wrapper \(enables rt cd to change directory\)\n?/g, "")
       .replace(/\n?rt\(\) \{[\s\S]*?\n\}\n?/g, "\n");

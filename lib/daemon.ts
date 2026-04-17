@@ -61,6 +61,7 @@ import {
 
 import { checkAndNotify, drainNotifications, peekNotifications, onNotification } from "./notifier.ts";
 import { listRunnerConfigs, loadRunnerConfig, entryWindowName, proxyWindowName } from "./runner-store.ts";
+import { diag } from "./diag-log.ts";
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -694,6 +695,8 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
         };
       if (!id || !cmd || !cwd) return { ok: false, error: "missing id, cmd, or cwd" };
 
+      diag("process.start.begin", id, { groupId, canonicalPort, mode });
+
       // 1. Spawn (sets state "starting" → "running")
       await processManager.spawn(id, cmd, { cwd, env });
 
@@ -705,9 +708,24 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
       // 3. Point proxy upstream to the new ephemeral port
       const ephemeralPort = Number(env?.PORT ?? 0);
       if (groupId && canonicalPort && ephemeralPort) {
-        proxyManager.setUpstream(proxyWindowName(groupId), ephemeralPort);
+        const proxyId = proxyWindowName(groupId);
+        try {
+          proxyManager.setUpstream(proxyId, ephemeralPort);
+        } catch (err) {
+          // No proxy exists yet — create it now so the process is reachable via
+          // the canonical port. This is the recovery path when a proxy has been
+          // lost but the runner still expects it to exist.
+          diag("process.start.proxy.missing", id, { proxyId, canonicalPort, ephemeralPort, err: String(err) });
+          try {
+            proxyManager.start(proxyId, canonicalPort, ephemeralPort);
+            diag("process.start.proxy.recreated", id, { proxyId, canonicalPort, ephemeralPort });
+          } catch (err2) {
+            diag("process.start.proxy.recreate.failed", id, { proxyId, err: String(err2) });
+          }
+        }
       }
 
+      diag("process.start.end", id, { ephemeralPort });
       return { ok: true, data: { ephemeralPort } };
     }
 
