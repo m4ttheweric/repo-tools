@@ -55,10 +55,27 @@ import {
   globalRemedyPath, remediesDir,
   type LaneConfig, type LaneEntry, type LaneMode,
 } from "../lib/runner-store.ts";
-import type { ProcessState } from "../lib/daemon/state-store.ts";
 import type { RunResolveResult } from "./run.ts";
 import { RT_ROOT, getKnownRepos, type KnownRepo } from "../lib/repo.ts";
 import { willPrompt } from "./code.ts";
+import {
+  T,
+  C,
+  STATUS_COLOR,
+  STATUS_ICON,
+  SPINNER_FRAMES,
+  entryCommandLabel,
+  type EntryState,
+} from "../lib/runner/components/shared.ts";
+import { EntryRow } from "../lib/runner/components/EntryRow.tsx";
+import { LaneCard, entryGroupForIdx } from "../lib/runner/components/LaneCard.tsx";
+import { HintBar } from "../lib/runner/components/HintBar.tsx";
+
+// Re-export theme/status constants and the command-label helper for any external
+// consumer that used to import them from this module. EntryState remains
+// publicly exported for the same reason.
+export type { EntryState };
+export { C, STATUS_COLOR, STATUS_ICON, SPINNER_FRAMES, entryCommandLabel };
 
 // ─── tmux helpers ─────────────────────────────────────────────────────────────
 
@@ -176,14 +193,7 @@ function openPopup(
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-/**
- * States a lane entry can be in.
- *
- * "starting" is a UI-only optimistic state shown immediately when the user
- * triggers a spawn/respawn — before the daemon has confirmed the process is
- * alive. It is replaced by the real daemon state on the next poll.
- */
-export type EntryState = ProcessState | "starting" | "stopping";
+// EntryState moved to lib/runner/components/shared.ts and re-exported above.
 
 type InteractiveRequest = { type: "quit" };
 
@@ -224,7 +234,7 @@ type DispatchPatch = {
   entryIdx?: number;
 };
 
-interface RunnerUIState {
+export interface RunnerUIState {
   lanes:         LaneConfig[];
   laneIdx:       number;
   entryIdx:      number;
@@ -245,63 +255,11 @@ interface RunnerUIState {
 
 // ─── Theme — bubble tea ✨ ───────────────────────────────────────────────────
 //
-// Two-layer system:
-//   T  — raw color tokens (edit these to retheme everything)
-//   C  — semantic roles (what the UI code references — don't change these names)
-//
-// To switch themes: only touch the `T` block below.
+// The T (raw tokens), C (semantic roles), STATUS_COLOR, STATUS_ICON, and
+// SPINNER_FRAMES now live in lib/runner/components/shared.ts so they can be
+// consumed by the extracted view components. `runnerTheme` still lives here
+// because it's only used to configure the local Rezi app instance.
 // ─────────────────────────────────────────────────────────────────────────────
-
-/** Raw palette tokens — one place to edit per color. */
-const T = {
-  // ── Backgrounds ────────────────────────────────────────────────────────────
-  bgBase:     [22,  18,  36] as const,  // #161224  dark plum-black   (canvas fill)
-  bgElevated: [35,  28,  55] as const,  // #231C37  slightly lighter
-  bgOverlay:  [50,  40,  75] as const,  // #32284B  overlays / overlaid boxes
-  bgSubtle:   [28,  22,  44] as const,  // #1C162C  subtly lighter than base
-  bgSelBg:    [55,  40,  75] as const,  // #37284B  selected-row highlight
-
-  // ── Accents ────────────────────────────────────────────────────────────────
-  pink:  [255, 107, 157] as const,  // #FF6B9D  rose pink    — primary / borders / active
-  lav:   [189, 147, 249] as const,  // #BD93F9  soft lavender — secondary hints
-  mint:  [ 98, 230, 168] as const,  // #62E6A8  mint green   — running / healthy
-  peach: [255, 183, 122] as const,  // #FFB77A  warm peach   — warnings / toasts
-  coral: [255, 121, 121] as const,  // #FF7979  coral rose   — errors / stopped
-  warm:  [255, 210, 100] as const,  // #FFD264  warm yellow  — warm/idle state
-  cyan:  [ 90, 170, 255] as const,  // #5AAAFF  electric blue — group headers
-
-  // ── Neutrals ───────────────────────────────────────────────────────────────
-  dim:   [168, 160, 198] as const,  // #A8A0C6  muted plum   — secondary text / borders
-  muted: [210, 205, 235] as const,  // #D2CDEB  lilac-grey   — tertiary text
-  white: [230, 224, 255] as const,  // #E6E0FF  lavender white — primary text
-};
-
-/** Semantic color roles — reference these in JSX (never raw T values). */
-const C = {
-  // accents
-  pink:  rgb(...T.pink),
-  lav:   rgb(...T.lav),
-  mint:  rgb(...T.mint),
-  peach: rgb(...T.peach),
-  coral: rgb(...T.coral),
-  cyan:  rgb(...T.cyan),
-  // neutrals
-  dim:   rgb(...T.dim),
-  muted: rgb(...T.muted),
-  white: rgb(...T.white),
-  // backgrounds
-  selBg: rgb(...T.bgSelBg),
-};
-
-/** Status state → display color (references T tokens). */
-const STATUS_COLOR: Record<EntryState, number> = {
-  starting: rgb(...T.mint),
-  stopping: rgb(...T.coral),
-  running:  rgb(...T.mint),
-  warm:     rgb(...T.warm),
-  crashed:  rgb(...T.coral),
-  stopped:  rgb(...T.dim),
-};
 
 /** Rezi canvas theme — bg pulled from T so it stays in sync with the palette. */
 const runnerTheme = extendTheme(darkTheme, {
@@ -314,18 +272,6 @@ const runnerTheme = extendTheme(darkTheme, {
     },
   } as any,
 });
-
-
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"];
-
-const STATUS_ICON: Record<EntryState, string> = {
-  starting: SPINNER_FRAMES[0]!, // overridden at render time with animated frame
-  stopping: SPINNER_FRAMES[0]!, // overridden at render time with animated frame
-  running:  "●",
-  warm:     "❄",
-  crashed:  "✗",
-  stopped:  "○",
-};
 
 // ─── Editor helpers ───────────────────────────────────────────────────────────
 
@@ -1156,201 +1102,12 @@ async function runOnce(
 
 
   // ── View components ───────────────────────────────────────────────────────
-
-  /** Compute the display label for an entry's command (package · script or custom template). */
-  function entryCommandLabel(entry: LaneEntry): string {
-    const defaultCmd = `${entry.pm} run ${entry.script}`;
-    const hasCustomCmd = entry.commandTemplate !== defaultCmd;
-    return entry.packageLabel !== "root"
-      ? `${entry.packageLabel} · ${hasCustomCmd ? entry.commandTemplate : entry.script}`
-      : (hasCustomCmd ? entry.commandTemplate : entry.script);
-  }
-
-  function EntryRow({ lane, entry, ei, isSelectedLane, selectedEi, s, uniform }: {
-    lane: LaneConfig; entry: LaneEntry; ei: number;
-    isSelectedLane: boolean; selectedEi: number; s: RunnerUIState;
-    uniform: boolean;
-  }) {
-    const win = entryWindowName(lane.id, entry.id);
-    const state = s.entryStates.get(win) ?? "stopped";
-    const isActive = lane.activeEntryId === entry.id;
-    const isSelected = isSelectedLane && ei === selectedEi;
-    const eKey = `${lane.id}:${entry.id}`;
-
-    const stateColor = STATUS_COLOR[state];
-    const branchLabel = s.enrichment[eKey] ?? entry.branch ?? "";
-    const nameColor = isActive ? C.mint : (isSelected ? C.white : C.muted);
-    const spinnerChar = SPINNER_FRAMES[s.spinnerFrame % SPINNER_FRAMES.length]!;
-    const stateIcon = (state === "starting" || state === "stopping") ? spinnerChar : STATUS_ICON[state];
-    const stateLabel =
-      state === "starting" ? "starting…" :
-      state === "stopping" ? "stopping…" :
-      null;
-
-    const rowBg = isSelected ? C.selBg : undefined;
-
-    if (uniform) {
-      // Compact single-row: only the branch/worktree label differs between entries
-      return (
-        <row key={eKey} gap={1} style={{ bg: rowBg }}>
-          <text style={{ fg: isSelected ? C.pink : C.dim, bg: rowBg }}>{isSelected ? "❯" : " "}</text>
-          <text style={{ fg: stateColor, bg: rowBg }}>{stateIcon}</text>
-          <text style={{ fg: nameColor, bold: isActive, bg: rowBg }}>{branchLabel || entry.branch || entry.id}</text>
-          <spacer flex={1} />
-          {stateLabel && <text style={{ fg: stateColor, bg: rowBg }}>{stateLabel}</text>}
-        </row>
-      );
-    }
-
-    // Normal two-row layout when commands differ between entries
-    const label = entryCommandLabel(entry);
-    return (
-      <column key={eKey} gap={0}>
-        <row key={`${eKey}-1`} gap={1} style={{ bg: rowBg }}>
-          <text style={{ fg: isSelected ? C.pink : C.dim, bg: rowBg }}>{isSelected ? "❯" : " "}</text>
-          <text style={{ fg: stateColor, bg: rowBg }}>{stateIcon}</text>
-          <text style={{ fg: nameColor, bold: isActive, bg: rowBg }}>{label}</text>
-          <spacer flex={1} />
-          {stateLabel && <text style={{ fg: stateColor, bg: rowBg }}>{stateLabel}</text>}
-        </row>
-        <row key={`${eKey}-2`} gap={0} style={{ bg: rowBg }}>
-          <text style={{ bg: rowBg }}>{"    "}</text>
-          {branchLabel && <text style={{ fg: C.dim, bg: rowBg }}>{branchLabel}</text>}
-        </row>
-      </column>
-    );
-  }
-
-  /** Compute ordered entry groups keyed by exact commandTemplate. */
-  function computeEntryGroups(entries: LaneEntry[]): { key: string; label: string; entries: LaneEntry[] }[] {
-    const groupOrder: string[] = [];
-    const groupMap = new Map<string, LaneEntry[]>();
-    for (const entry of entries) {
-      const key = entry.commandTemplate;
-      if (!groupMap.has(key)) {
-        groupOrder.push(key);
-        groupMap.set(key, []);
-      }
-      groupMap.get(key)!.push(entry);
-    }
-    return groupOrder.map((key) => {
-      const groupEntries = groupMap.get(key)!;
-      return { key, label: entryCommandLabel(groupEntries[0]!), entries: groupEntries };
-    });
-  }
-
-  /** Find which group an entry belongs to (by index into the flat entries array). */
-  function entryGroupForIdx(entries: LaneEntry[], idx: number): { key: string; entries: LaneEntry[] } | null {
-    const entry = entries[idx];
-    if (!entry) return null;
-    const key = entry.commandTemplate;
-    return { key, entries: entries.filter((e) => e.commandTemplate === key) };
-  }
-
-  function LaneCard({ lane, li, s }: { lane: LaneConfig; li: number; s: RunnerUIState }) {
-    const isSelected = li === s.laneIdx;
-    const safeEi = Math.min(s.entryIdx, Math.max(0, lane.entries.length - 1));
-    const proxyUp = s.proxyStates[proxyWindowName(lane.id)] ?? false;
-    const modeLabel = (lane.mode ?? "warm") === "single" ? "single" : "warm";
-    const title = ` LANE ${lane.id}  ·  ${lane.repoName}  ·  :${lane.canonicalPort}  ·  ${modeLabel}  `;
-
-    const groups = computeEntryGroups(lane.entries);
-
-    // Build the entry list with group separators
-    const entryElements: any[] = [];
-    if (lane.entries.length === 0) {
-      entryElements.push(<text key="empty" style={{ fg: C.dim }}>{"  press [a] to add a process"}</text>);
-    } else {
-      let globalEi = 0;
-      for (let gi = 0; gi < groups.length; gi++) {
-        const group = groups[gi]!;
-        // Separator between groups (not before the first)
-        if (gi > 0) {
-          entryElements.push(
-            <text key={`sep-${gi}`} style={{ fg: C.dim }}>{"  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌"}</text>
-          );
-        }
-        // Group sub-header
-        entryElements.push(
-          <text key={`gh-${gi}`} style={{ fg: C.cyan }}>{`  ${group.label}`}</text>
-        );
-        // Entries in this group — compact/uniform within the group
-        for (const entry of group.entries) {
-          entryElements.push(
-            <EntryRow
-              key={`${lane.id}:${entry.id}`}
-              lane={lane} entry={entry} ei={globalEi}
-              isSelectedLane={isSelected} selectedEi={safeEi} s={s}
-              uniform={true}
-            />
-          );
-          globalEi++;
-        }
-      }
-    }
-
-    return (
-      <box
-        key={lane.id}
-        title={title}
-        titleAlign="left"
-        border={isSelected ? "heavy" : "single"}
-        borderStyle={{ fg: isSelected ? C.pink : C.dim }}
-        px={1}
-        gap={0}
-      >
-        <row gap={1}>
-          <text style={{ fg: proxyUp ? C.mint : C.coral }}>{proxyUp ? "proxy ✓" : "proxy ✗"}</text>
-        </row>
-        {entryElements}
-      </box>
-    );
-  }
-
-  function HintBar({ mode }: { mode: Mode["type"] }) {
-    const Key = ({ k }: { k: string }) => <text style={{ fg: C.muted }}>{`[${k}]`}</text>;
-    const Label = ({ l }: { l: string }) => <text style={{ fg: C.dim }}>{l}</text>;
-    const Cmd = ({ k, l }: { k: string; l: string }) => (
-      <row gap={1}><Key k={k} /><Label l={l} /></row>
-    );
-    const ScopeTitle = ({ name }: { name: string }) => (
-      <row gap={1}>
-        <text style={{ fg: C.lav, bold: true }}>{name}</text>
-        <text style={{ fg: C.dim }}>{"›"}</text>
-      </row>
-    );
-
-    if (mode === "lane-scope") return (
-      <column gap={0}>
-        <ScopeTitle name="lane" />
-        <row gap={1}><Cmd k="a" l="add" /><Cmd k="r" l="remove" /><Cmd k="p" l="port" /><Cmd k="m" l="mode" /></row>
-        <row gap={1}><Cmd k="z" l="pause" /><Cmd k="w" l="spread" /></row>
-        <row gap={1}><Cmd k="esc" l="back" /></row>
-      </column>
-    );
-    if (mode === "process-scope") return (
-      <column gap={0}>
-        <ScopeTitle name="process" />
-        <row gap={1}><Cmd k="a" l="add" /><Cmd k="s" l="start" /><Cmd k="w" l="warm" /><Cmd k="↵" l="activate" /></row>
-        <row gap={1}><Cmd k="r" l="remove" /><Cmd k="e" l="cmd" /><Cmd k="t" l="shell" /><Cmd k="f" l="fix rules" /><Cmd k="esc" l="back" /></row>
-      </column>
-    );
-    if (mode === "open-scope") return (
-      <column gap={0}>
-        <ScopeTitle name="open" />
-        <row gap={1}><Cmd k="b" l="branch" /><Cmd k="c" l="code" /><Cmd k="w" l="browser" /></row>
-        <row gap={1}><Cmd k="r" l="run" /><Cmd k="i" l="info" /><Cmd k="esc" l="back" /></row>
-      </column>
-    );
-    // Default top-level hints
-    return (
-      <column gap={0}>
-        <row gap={1}><Cmd k="l" l="lane" /><Cmd k="p" l="process" /><Cmd k="o" l="open" /></row>
-        <row gap={1}><Cmd k="s" l="start" /><Cmd k="x" l="stop" /><Cmd k="↵" l="activate" /></row>
-        <row gap={1}><Cmd k="q" l="quit" /><Cmd k="!" l="reset" /></row>
-      </column>
-    );
-  }
+  //
+  // EntryRow, LaneCard, HintBar (plus the `computeEntryGroups` / `entryGroupForIdx`
+  // helpers and the `entryCommandLabel` display helper) live in
+  // lib/runner/components/. They're pure props-only views that only close over
+  // imported constants/helpers, so hoisting them out avoids re-declaring them
+  // on every call to runOnce().
 
   // ── View ──────────────────────────────────────────────────────────────────
 
