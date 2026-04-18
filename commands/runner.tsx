@@ -39,9 +39,9 @@ import { rgb } from "@rezi-ui/jsx";
 import { createNodeApp } from "@rezi-ui/node";
 import { extendTheme, darkTheme } from "@rezi-ui/core";
 import { spawnSync } from "node:child_process";
-import { join, basename, relative } from "node:path";
+import { join, basename } from "node:path";
 import { tmpdir, homedir } from "node:os";
-import { existsSync, readFileSync, unlinkSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { daemonQuery, isDaemonRunning } from "../lib/daemon-client.ts";
@@ -51,15 +51,25 @@ import {
 import {
   listRunnerConfigs, loadRunnerConfig, saveRunnerConfig, resetRunnerConfig,
   acquireRunnerLock, releaseRunnerLock,
-  nextLaneId, nextEntryId, proxyWindowName, entryWindowName,
-  globalRemedyPath, remediesDir,
-  type LaneConfig, type LaneEntry, type LaneMode,
+  nextEntryId, proxyWindowName, entryWindowName,
+  type LaneConfig, type LaneEntry,
 } from "../lib/runner-store.ts";
-import type { ProcessState } from "../lib/daemon/state-store.ts";
 import { mergeOptimisticStates } from "../lib/runner/optimistic-state.ts";
+import {
+  dispatch,
+  ensureProxy,
+  type LaneAction,
+} from "../lib/runner/dispatch.ts";
+import { createNormalKeymap } from "../lib/runner/keys/normal.ts";
+import { createLaneKeymap } from "../lib/runner/keys/lane.ts";
+import { createProcessKeymap } from "../lib/runner/keys/process.ts";
+import { createOpenKeymap } from "../lib/runner/keys/open.ts";
+import { createPortKeymap } from "../lib/runner/keys/port.ts";
+import { createPickerKeymap } from "../lib/runner/keys/picker.ts";
+import { createConfirmResetKeymap, createConfirmSpreadKeymap } from "../lib/runner/keys/confirm.ts";
+import type { KeymapContext } from "../lib/runner/keys/types.ts";
 import type { RunResolveResult } from "./run.ts";
 import { RT_ROOT, getKnownRepos, type KnownRepo } from "../lib/repo.ts";
-import { willPrompt } from "./code.ts";
 import {
   T,
   C,
@@ -209,33 +219,6 @@ type Mode =
   | { type: "confirm-reset" }
   | { type: "confirm-spread"; laneId: string; entryId: string };
 
-type LaneAction =
-  | { type: "spawn";        laneId: string; entryId: string }
-  | { type: "activate";     laneId: string; entryId: string }
-  | { type: "warm-all";     laneId: string }
-  | { type: "respawn";      laneId: string; entryId: string }
-  | { type: "stop";         laneId: string; entryId: string }
-  | { type: "pause-lane";   laneId: string }
-  | { type: "restart";      laneId: string; entryId: string }
-  | { type: "remove-entry"; laneId: string; entryId: string }
-  | { type: "remove-lane";  laneId: string }
-  | { type: "toggle-mode";  laneId: string }
-  | { type: "reset" };
-
-/**
- * Result of a dispatched action.
- *
- * `mutate` is applied to the current lanes inside safeUpdate (not to a stale
- * snapshot), so multiple in-flight dispatches — and concurrent edits from
- * paths like addResolvedEntry — compose instead of clobbering each other.
- */
-type LaneMutation = (lanes: LaneConfig[]) => LaneConfig[];
-type DispatchPatch = {
-  mutate?:   LaneMutation;
-  laneIdx?:  number;
-  entryIdx?: number;
-};
-
 export interface RunnerUIState {
   lanes:         LaneConfig[];
   laneIdx:       number;
@@ -300,103 +283,6 @@ function buildEditorCmd(filePath: string): { editorCmd: string; hint: string } {
   const hint = isVim ? ":wq to save" : isNano ? "Ctrl-X to save" : "save and close";
   return { editorCmd, hint };
 }
-
-// ─── Daemon helpers ───────────────────────────────────────────────────────────
-
-/** Ensure the proxy for a lane is running (creates it if missing). */
-async function ensureProxy(lane: LaneConfig): Promise<void> {
-  const proxyId = proxyWindowName(lane.id);
-  const status = await daemonQuery("proxy:status", { id: proxyId });
-  if (!status?.ok || !status.data) {
-    const activeEntry = lane.entries.find((e) => e.id === lane.activeEntryId);
-    await daemonQuery("proxy:start", {
-      id: proxyId,
-      canonicalPort: lane.canonicalPort,
-      upstreamPort: activeEntry?.ephemeralPort ?? 0,
-    });
-  }
-}
-
-/**
- * Start an entry's process via the atomic process:start daemon command.
- * Handles port auto-allocation, command substitution, and proxy upstream routing.
- * Returns the actual ephemeral port used.
- */
-async function startEntry(lane: LaneConfig, entry: LaneEntry): Promise<number> {
-  // Auto-heal entries saved with ephemeralPort: 0.
-  let ephemeralPort = entry.ephemeralPort;
-  if (!ephemeralPort) {
-    const win = entryWindowName(lane.id, entry.id);
-    const portRes = await daemonQuery("port:allocate", { label: win });
-    ephemeralPort = portRes?.ok ? Number((portRes.data as { port: number })?.port) : (10000 + Math.floor(Math.random() * 55000));
-  }
-
-  const port = String(ephemeralPort);
-  const canonicalPort = String(lane.canonicalPort);
-  const cmd = entry.commandTemplate
-    .replace(/\$\{?PORT\}?/g, port)
-    .replace(/\$\{?CANONICAL_PORT\}?/g, canonicalPort);
-
-  const processId = entryWindowName(lane.id, entry.id);
-
-  // process:start is an atomic composite: spawn + group:activate + proxy:set-upstream
-  // in a single daemon round-trip — no intermediate window where proxy has no upstream.
-  await daemonQuery("process:start", {
-    id:            processId,
-    cmd,
-    cwd:           entry.targetDir,
-    env:           { PORT: port, CANONICAL_PORT: canonicalPort },
-    groupId:       lane.id,
-    canonicalPort: lane.canonicalPort,
-    mode:          lane.mode ?? "warm",
-  });
-
-  if (entry.remedies?.length) {
-    await daemonQuery("remedy:set", { id: processId, remedies: entry.remedies, cwd: entry.targetDir });
-  }
-
-  return ephemeralPort;
-}
-
-/**
- * Restart an entry's process via the atomic process:restart daemon command.
- * Returns the actual ephemeral port used.
- */
-async function restartEntry(lane: LaneConfig, entry: LaneEntry): Promise<number> {
-  let ephemeralPort = entry.ephemeralPort;
-  if (!ephemeralPort) {
-    const win = entryWindowName(lane.id, entry.id);
-    const portRes = await daemonQuery("port:allocate", { label: win });
-    ephemeralPort = portRes?.ok ? Number((portRes.data as { port: number })?.port) : (10000 + Math.floor(Math.random() * 55000));
-  }
-
-  const port = String(ephemeralPort);
-  const canonicalPort = String(lane.canonicalPort);
-  const cmd = entry.commandTemplate
-    .replace(/\$\{?PORT\}?/g, port)
-    .replace(/\$\{?CANONICAL_PORT\}?/g, canonicalPort);
-
-  const processId = entryWindowName(lane.id, entry.id);
-
-  // process:restart is an atomic composite: kill (awaited) + spawn + group:activate
-  // + proxy:set-upstream in a single daemon round-trip — no proxy-offline window.
-  await daemonQuery("process:restart", {
-    id:            processId,
-    cmd,
-    cwd:           entry.targetDir,
-    env:           { PORT: port, CANONICAL_PORT: canonicalPort },
-    groupId:       lane.id,
-    canonicalPort: lane.canonicalPort,
-    mode:          lane.mode ?? "warm",
-  });
-
-  if (entry.remedies?.length) {
-    await daemonQuery("remedy:set", { id: processId, remedies: entry.remedies, cwd: entry.targetDir });
-  }
-
-  return ephemeralPort;
-}
-
 
 
 // ─── Git HEAD helpers ─────────────────────────────────────────────────────────
@@ -723,269 +609,11 @@ async function runOnce(
     spawnSync("tmux", ["kill-pane", "-t", oldPaneId]);
   }
 
-  function returnToNormal(update: (fn: (s: RunnerUIState) => RunnerUIState) => void, extra: Partial<RunnerUIState> = {}) {
-    update((s) => ({ ...s, mode: { type: "normal" }, inputValue: "", ...extra }));
-    app.setMode("default");
-  }
-
   // ── Async dispatch ────────────────────────────────────────────────────────
   //
-  // Returns a patch of only the fields that changed (lanes, laneIdx, entryIdx).
-  // doDispatch merges the patch into the current app state without clobbering
-  // mode, toast, entryStates, or proxyStates (managed by other paths).
-
-  async function dispatch(action: LaneAction, s: RunnerUIState): Promise<DispatchPatch> {
-    const { lanes, entryStates } = s;
-
-    function est(win: string): EntryState {
-      return entryStates.get(win) ?? "stopped";
-    }
-
-    switch (action.type) {
-      case "spawn": {
-        const lane = lanes.find((l) => l.id === action.laneId);
-        const entry = lane?.entries.find((e) => e.id === action.entryId);
-        if (!lane || !entry) return {};
-        await ensureProxy(lane);
-        const actualPort = await startEntry(lane, entry);
-        return {
-          mutate: (ls) => ls.map((l) => {
-            if (l.id !== action.laneId) return l;
-            return {
-              ...l,
-              activeEntryId: action.entryId,
-              entries: l.entries.map((e) => e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e),
-            };
-          }),
-        };
-      }
-
-      case "activate": {
-        const lane = lanes.find((l) => l.id === action.laneId);
-        const entry = lane?.entries.find((e) => e.id === action.entryId);
-        if (!lane || !entry) return {};
-        const processId = entryWindowName(lane.id, entry.id);
-        const entryState = est(processId);
-        await ensureProxy(lane);
-        if (entryState === "stopped" || entryState === "crashed") {
-          // Not running — do a full start (spawn + group:activate + proxy)
-          const actualPort = await startEntry(lane, entry);
-          return {
-            mutate: (ls) => ls.map((l) => {
-              if (l.id !== action.laneId) return l;
-              return {
-                ...l,
-                activeEntryId: action.entryId,
-                entries: l.entries.map((e) => e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e),
-              };
-            }),
-          };
-        }
-        // Already running or warm — just group:activate (resumes + suspends others)
-        // and update proxy upstream.
-        await daemonQuery("group:activate", { groupId: lane.id, processId, mode: lane.mode ?? "warm" });
-        await daemonQuery("proxy:set-upstream", { id: proxyWindowName(lane.id), port: entry.ephemeralPort });
-        return {
-          mutate: (ls) => ls.map((l) => l.id === action.laneId ? { ...l, activeEntryId: action.entryId } : l),
-        };
-      }
-
-      case "warm-all": {
-        const lane = lanes.find((l) => l.id === action.laneId);
-        if (!lane) return {};
-        const activeId = lane.activeEntryId ?? lane.entries[0]?.id;
-        await ensureProxy(lane);
-        // Start stopped/crashed entries individually.
-        // process:start handles group:activate internally so each entry
-        // correctly suspends/resumes others as it starts.
-        // For warm-all we want everything spawned, so use process:spawn directly
-        // for non-active entries to avoid them suspending each other mid-startup,
-        // then do a final group:activate for just the active one.
-        const portFixes = new Map<string, number>();
-        for (const entry of lane.entries) {
-          const win = entryWindowName(lane.id, entry.id);
-          const st = est(win);
-          if (st === "stopped" || st === "crashed") {
-            let ephemeralPort = entry.ephemeralPort;
-            if (!ephemeralPort) {
-              const portRes = await daemonQuery("port:allocate", { label: win });
-              ephemeralPort = portRes?.ok ? Number((portRes.data as { port: number })?.port) : (10000 + Math.floor(Math.random() * 55000));
-            }
-            const port = String(ephemeralPort);
-            const canonicalPort = String(lane.canonicalPort);
-            const cmd = entry.commandTemplate
-              .replace(/\$\{?PORT\}?/g, port)
-              .replace(/\$\{?CANONICAL_PORT\}?/g, canonicalPort);
-            // Use process:spawn (not process:start) to avoid premature group:activate
-            // on non-active entries while others are still starting up.
-            await daemonQuery("process:spawn", {
-              id: win, cmd, cwd: entry.targetDir,
-              env: { PORT: port, CANONICAL_PORT: canonicalPort },
-            });
-            if (ephemeralPort !== entry.ephemeralPort) portFixes.set(entry.id, ephemeralPort);
-          }
-        }
-        // Activate the designated active entry after all are spawned.
-        if (activeId) {
-          await daemonQuery("group:activate", {
-            groupId: lane.id,
-            processId: entryWindowName(lane.id, activeId),
-            mode: lane.mode ?? "warm",
-          });
-          const activeEntry = lane.entries.find((e) => e.id === activeId);
-          const activePort = portFixes.get(activeId) ?? activeEntry?.ephemeralPort;
-          if (activePort) {
-            await daemonQuery("proxy:set-upstream", { id: proxyWindowName(lane.id), port: activePort });
-          }
-          return {
-            mutate: (ls) => ls.map((l) => {
-              if (l.id !== action.laneId) return l;
-              return {
-                ...l,
-                activeEntryId: activeId,
-                entries: l.entries.map((e) => portFixes.has(e.id) ? { ...e, ephemeralPort: portFixes.get(e.id)! } : e),
-              };
-            }),
-          };
-        }
-        return {};
-      }
-
-      case "respawn": {
-        // Re-run port allocation and command substitution via process:start.
-        // This prevents a stale command stored in the daemon from being replayed.
-        const lane = lanes.find((l) => l.id === action.laneId);
-        const entry = lane?.entries.find((e) => e.id === action.entryId);
-        if (!lane || !entry) return {};
-        await ensureProxy(lane);
-        const actualPort = await startEntry(lane, entry);
-        return {
-          mutate: (ls) => ls.map((l) => {
-            if (l.id !== action.laneId) return l;
-            return {
-              ...l,
-              activeEntryId: action.entryId,
-              entries: l.entries.map((e) => e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e),
-            };
-          }),
-        };
-      }
-
-      case "stop": {
-        const win = entryWindowName(action.laneId, action.entryId);
-        await daemonQuery("process:kill", { id: win });
-        return {};
-      }
-
-      case "restart": {
-        // Single atomic round-trip: kill (awaited in daemon) → spawn → activate → proxy.
-        const lane = lanes.find((l) => l.id === action.laneId);
-        const entry = lane?.entries.find((e) => e.id === action.entryId);
-        if (!lane || !entry) return {};
-        await ensureProxy(lane);
-        const actualPort = await restartEntry(lane, entry);
-        return {
-          mutate: (ls) => ls.map((l) => {
-            if (l.id !== action.laneId) return l;
-            return {
-              ...l,
-              activeEntryId: action.entryId,
-              entries: l.entries.map((e) => e.id === action.entryId ? { ...e, ephemeralPort: actualPort } : e),
-            };
-          }),
-        };
-      }
-
-      case "pause-lane": {
-        // Stop the proxy — frees the canonical port.
-        // All processes keep running; only the proxy is torn down.
-        // [S] (warm-all) will restart the proxy and re-route traffic.
-        const lane = lanes.find((l) => l.id === action.laneId);
-        if (!lane) return {};
-        await daemonQuery("proxy:stop", { id: proxyWindowName(action.laneId) });
-        return {};
-      }
-
-      case "remove-entry": {
-        const lane = lanes.find((l) => l.id === action.laneId);
-        if (!lane) return {};
-        const win = entryWindowName(action.laneId, action.entryId);
-        await daemonQuery("remedy:clear", { id: win }); // unregister before kill (Fix 2)
-        await daemonQuery("process:kill", { id: win });
-        await daemonQuery("group:remove-member", { groupId: lane.id, processId: win });
-        await daemonQuery("port:release", { label: win });
-        await daemonQuery("process:remove", { id: win }); // free daemon-side maps
-
-        // Proxy re-point uses the captured lane — accurate at dispatch time
-        // even if other entries are added later; the mutator re-derives the
-        // activeEntryId against the live lanes list.
-        const nextEntries = lane.entries.filter((e) => e.id !== action.entryId);
-        const nextActive = lane.activeEntryId === action.entryId ? nextEntries[0]?.id : lane.activeEntryId;
-        if (nextActive && nextActive !== lane.activeEntryId) {
-          const e = nextEntries.find((e) => e.id === nextActive);
-          if (e) await daemonQuery("proxy:set-upstream", { id: proxyWindowName(lane.id), port: e.ephemeralPort });
-        }
-        return {
-          mutate: (ls) => ls.map((l) => {
-            if (l.id !== action.laneId) return l;
-            const filtered = l.entries.filter((e) => e.id !== action.entryId);
-            const newActive = l.activeEntryId === action.entryId ? filtered[0]?.id : l.activeEntryId;
-            return { ...l, entries: filtered, activeEntryId: newActive };
-          }),
-          entryIdx: 0,
-        };
-      }
-
-      case "remove-lane": {
-        const lane = lanes.find((l) => l.id === action.laneId);
-        if (!lane) return {};
-        // Unregister remedies before killing processes (Fix 2: prevents orphan spawns)
-        await Promise.all(lane.entries.map((e) => daemonQuery("remedy:clear", { id: entryWindowName(action.laneId, e.id) })));
-        await Promise.all(lane.entries.map((e) => daemonQuery("process:kill", { id: entryWindowName(action.laneId, e.id) })));
-        await daemonQuery("proxy:stop", { id: proxyWindowName(action.laneId) });
-        await daemonQuery("group:remove", { id: action.laneId });
-        for (const e of lane.entries) {
-          await daemonQuery("port:release", { label: entryWindowName(action.laneId, e.id) });
-          await daemonQuery("process:remove", { id: entryWindowName(action.laneId, e.id) });
-        }
-        return {
-          mutate: (ls) => ls.filter((l) => l.id !== action.laneId),
-          entryIdx: 0,
-          // laneIdx auto-clamped to new length in doDispatch
-        };
-      }
-
-      case "toggle-mode": {
-        const lane = lanes.find((l) => l.id === action.laneId);
-        if (!lane) return {};
-        const newMode: LaneMode = (lane.mode ?? "warm") === "warm" ? "single" : "warm";
-        return {
-          mutate: (ls) => ls.map((l) => l.id === action.laneId ? { ...l, mode: newMode } : l),
-        };
-      }
-
-      case "reset": {
-        await Promise.all(
-          lanes.flatMap((lane) => [
-            ...lane.entries.map((e) => daemonQuery("process:kill", { id: entryWindowName(lane.id, e.id) })),
-            daemonQuery("proxy:stop", { id: proxyWindowName(lane.id) }),
-            daemonQuery("group:remove", { id: lane.id }),
-          ])
-        );
-        // After kills complete, free all daemon-side per-process state so
-        // spawnConfigs/stateStore/logBuffer don't accumulate across resets.
-        await Promise.all(
-          lanes.flatMap((lane) => lane.entries.map((e) =>
-            daemonQuery("process:remove", { id: entryWindowName(lane.id, e.id) }))),
-        );
-        return {
-          mutate: () => [],
-          laneIdx: 0,
-          entryIdx: 0,
-        };
-      }
-    }
-  }
+  // dispatch() lives in lib/runner/dispatch.ts — pure (action, state) → Promise<patch>.
+  // doDispatch wraps it with runner-local side effects (optimistic UI state,
+  // persistence, pane refresh) that close over runOnce() state.
 
   // Minimum time (ms) to display optimistic "starting"/"stopping" states.
   // The daemon transitions happen so fast (spawn sets starting→running in <100ms)
@@ -1402,112 +1030,40 @@ async function runOnce(
     initDisplayPane(firstInitLane.id);
   }
 
-  // ── Helpers shared across key scopes ─────────────────────────────────────
+  // ── Keymaps ───────────────────────────────────────────────────────────────
+  //
+  // All key handlers live in lib/runner/keys/. Each factory closes over the
+  // same KeymapContext and returns a flat map of key → handler.
 
-  const enterScope = (scopeMode: "lane-scope" | "process-scope" | "open-scope") =>
-    (ctx: { update: (fn: (s: RunnerUIState) => RunnerUIState) => void }) => {
-      ctx.update((s) => ({ ...s, mode: { type: scopeMode } }));
-      app.setMode(scopeMode);
-    };
-
-  const exitScope = (ctx: { update: (fn: (s: RunnerUIState) => RunnerUIState) => void }) => {
-    ctx.update((s) => ({ ...s, mode: { type: "normal" } }));
-    app.setMode("default");
+  const keymapContext: KeymapContext = {
+    safeUpdate,
+    setMode:         (m) => app.setMode(m),
+    stopApp:         () => { app.stop(); },
+    getCurrentState: () => _currentState,
+    doDispatch,
+    showToast,
+    openPopup,
+    openTempPane,
+    displayPane,
+    switchDisplay,
+    createBgPane,
+    initDisplayPane,
+    mrPane: {
+      isEnabled:  () => mrPaneEnabled,
+      setEnabled: (b) => { mrPaneEnabled = b; },
+      show:       showMrPane,
+      hide:       hideMrPane,
+      update:     updateMrPane,
+    },
+    saveCurrent,
+    addResolvedEntry,
+    activeEntryIdx,
+    focusedBranch,
+    rtShell:  RT_SHELL,
+    rtInvoke: RT_INVOKE,
   };
 
-  // ── Key bindings (default / normal mode) ───────────────────────────────────
-
-  app.keys({
-    q: () => { app.stop(); },
-
-    j: ({ state, update }) => {
-      const newLi = Math.min(state.laneIdx + 1, state.lanes.length - 1);
-      const newEi = activeEntryIdx(state.lanes[newLi]);
-      update((s) => ({ ...s, laneIdx: newLi, entryIdx: newEi }));
-      switchDisplay(state.lanes[newLi]?.id ?? "");
-      updateMrPane(state.lanes[newLi]?.entries[newEi]?.branch ?? "");
-    },
-    k: ({ state, update }) => {
-      const newLi = Math.max(0, state.laneIdx - 1);
-      const newEi = activeEntryIdx(state.lanes[newLi]);
-      update((s) => ({ ...s, laneIdx: newLi, entryIdx: newEi }));
-      switchDisplay(state.lanes[newLi]?.id ?? "");
-      updateMrPane(state.lanes[newLi]?.entries[newEi]?.branch ?? "");
-    },
-    down: ({ state, update }) => {
-      const newLi = Math.min(state.laneIdx + 1, state.lanes.length - 1);
-      const newEi = activeEntryIdx(state.lanes[newLi]);
-      update((s) => ({ ...s, laneIdx: newLi, entryIdx: newEi }));
-      switchDisplay(state.lanes[newLi]?.id ?? "");
-      updateMrPane(state.lanes[newLi]?.entries[newEi]?.branch ?? "");
-    },
-    up: ({ state, update }) => {
-      const newLi = Math.max(0, state.laneIdx - 1);
-      const newEi = activeEntryIdx(state.lanes[newLi]);
-      update((s) => ({ ...s, laneIdx: newLi, entryIdx: newEi }));
-      switchDisplay(state.lanes[newLi]?.id ?? "");
-      updateMrPane(state.lanes[newLi]?.entries[newEi]?.branch ?? "");
-    },
-
-    right: ({ state, update }) => {
-      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      const len = lane?.entries.length ?? 1;
-      const newEi = (state.entryIdx + 1) % len;
-      update((s) => ({ ...s, entryIdx: newEi }));
-      updateMrPane(lane?.entries[newEi]?.branch ?? "");
-    },
-    left: ({ state, update }) => {
-      const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-      const len = lane?.entries.length ?? 1;
-      const newEi = (state.entryIdx - 1 + len) % len;
-      update((s) => ({ ...s, entryIdx: newEi }));
-      updateMrPane(lane?.entries[newEi]?.branch ?? "");
-    },
-
-    // Scope gates — enter sub-mode to show scoped key hints
-    l: enterScope("lane-scope"),
-    p: enterScope("process-scope"),
-    o: enterScope("open-scope"),
-
-    // Quick-access globals (no scope needed — most common operations)
-    s: ({ state }) => {
-      const li = Math.min(state.laneIdx, state.lanes.length - 1);
-      const lane = state.lanes[li];
-      if (!lane) return;
-      const ei = Math.min(state.entryIdx, lane.entries.length - 1);
-      const entry = lane.entries[ei];
-      if (!entry) return;
-      const win = entryWindowName(lane.id, entry.id);
-      const st = state.entryStates.get(win) ?? "stopped";
-      if (st === "starting" || st === "stopping") return;
-      const action: LaneAction =
-        st === "stopped" ? { type: "spawn",   laneId: lane.id, entryId: entry.id } :
-        st === "crashed" ? { type: "respawn", laneId: lane.id, entryId: entry.id } :
-        (st === "running" && lane.activeEntryId === entry.id)
-          ? { type: "restart",  laneId: lane.id, entryId: entry.id } :
-            { type: "activate", laneId: lane.id, entryId: entry.id };
-      doDispatch(action, state);
-    },
-    enter: ({ state }) => {
-      const li = Math.min(state.laneIdx, state.lanes.length - 1);
-      const lane = state.lanes[li];
-      if (!lane) return;
-      const ei = Math.min(state.entryIdx, lane.entries.length - 1);
-      const entry = lane.entries[ei];
-      if (!entry) return;
-      if (lane.activeEntryId === entry.id) return;
-      doDispatch({ type: "activate", laneId: lane.id, entryId: entry.id }, state);
-    },
-
-    // [x] stop focused entry — global shortcut (no scope needed)
-    x: ({ state }) => {
-      const li = Math.min(state.laneIdx, state.lanes.length - 1);
-      const lane = state.lanes[li];
-      if (!lane) return;
-      const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
-      if (entry) doDispatch({ type: "stop", laneId: lane.id, entryId: entry.id }, state);
-    },
-  });
+  app.keys(createNormalKeymap(keymapContext));
 
   // ── Text event handler — only for shifted symbols that can't go in app.keys ─
   //
@@ -1529,502 +1085,13 @@ async function runOnce(
   // ── Modal mode bindings ────────────────────────────────────────────────────
 
   app.modes({
-    // ── Lane scope — entered with [l] ──────────────────────────────────────
-    "lane-scope": {
-      escape: exitScope,
-
-      // [a] add lane — open picker for repo + port, poll for result
-      a: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState || _currentState.knownRepos.length === 0) {
-          showToast("No known repos — run rt in a repo first");
-          return;
-        }
-        const tmpFile = join(tmpdir(), `rt-lane-${Date.now()}.json`);
-        const cmd = `${RT_SHELL} pick-lane > ${tmpFile}`;
-        openPopup(cmd, { title: "add lane", width: "100", height: "20" });
-        const poll = setInterval(() => {
-          if (!existsSync(tmpFile)) return;
-          const content = readFileSync(tmpFile, "utf8").trim();
-          if (!content) return;
-          clearInterval(poll);
-          try {
-            const { repoName, port } = JSON.parse(content) as { repoName: string; port: number };
-            unlinkSync(tmpFile);
-            safeUpdate((s) => {
-              if (s.lanes.find((l) => l.canonicalPort === port)) {
-                showToast(`port ${port} is already used by another lane`);
-                return s;
-              }
-              const id = nextLaneId(s.lanes);
-              const newLane: LaneConfig = { id, canonicalPort: port, entries: [], repoName, mode: "warm" };
-              void daemonQuery("group:create", { id: newLane.id });
-              void ensureProxy(newLane);
-              createBgPane(newLane.id, "", `lane ${newLane.id} · ${newLane.repoName} :${newLane.canonicalPort}`);
-              initDisplayPane(newLane.id);
-              const next = [...s.lanes, newLane];
-              saveCurrent(next);
-              return { ...s, lanes: next, laneIdx: next.length - 1 };
-            });
-          } catch { /* ignore parse errors */ }
-        }, 300);
-      },
-
-      // [r] remove selected lane
-      r: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState) return;
-        const s = _currentState;
-        const lane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
-        if (lane) doDispatch({ type: "remove-lane", laneId: lane.id }, s);
-      },
-
-      // [p] edit canonical port
-      p: ({ update }) => {
-        if (!_currentState) return;
-        const lane = _currentState.lanes[Math.min(_currentState.laneIdx, _currentState.lanes.length - 1)];
-        if (!lane) { exitScope({ update }); return; }
-        update((s) => ({
-          ...s,
-          mode: { type: "port-input", purpose: "edit-port", laneId: lane.id },
-          inputValue: String(lane.canonicalPort),
-        }));
-        app.setMode("port-input");
-      },
-
-      // [m] toggle lane mode (warm ↔ single)
-      m: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState) return;
-        const s = _currentState;
-        const lane = s.lanes[s.laneIdx];
-        if (lane) doDispatch({ type: "toggle-mode", laneId: lane.id }, s);
-      },
-
-      // [z] pause lane — stop proxy + all services, keep config intact
-      z: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState) return;
-        const s = _currentState;
-        const lane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
-        if (lane) doDispatch({ type: "pause-lane", laneId: lane.id }, s);
-      },
-
-      // [w] spread active entry to all worktrees
-      w: ({ update }) => {
-        if (!_currentState) { exitScope({ update }); return; }
-        const s = _currentState;
-        const lane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
-        if (!lane) { exitScope({ update }); return; }
-        const ei = Math.min(s.entryIdx, lane.entries.length - 1);
-        const spreadGroup = entryGroupForIdx(lane.entries, ei);
-        const spreadEntry = lane.entries[ei];
-        if (spreadGroup && spreadGroup.entries.length === 1 && spreadEntry) {
-          update((st) => ({ ...st, mode: { type: "confirm-spread", laneId: lane.id, entryId: spreadEntry.id } }));
-          app.setMode("confirm-spread");
-        } else {
-          exitScope({ update });
-        }
-      },
-    },
-
-    // ── Process scope — entered with [p] ──────────────────────────────────
-    "process-scope": {
-      escape: exitScope,
-
-      // [a] add process to selected lane
-      a: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState) return;
-        const state = _currentState;
-        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-        if (!lane) return;
-        const laneRepo = state.knownRepos.find((r) => r.repoName === lane.repoName);
-        const laneRepoRoot = laneRepo?.worktrees[0]?.path ?? process.cwd();
-        const tmpFile = join(tmpdir(), `rt-resolve-${Date.now()}.json`);
-        const cmd = `${RT_SHELL} run --resolve-only --repo ${lane.repoName} > ${tmpFile}`;
-        openPopup(cmd, { cwd: laneRepoRoot, title: "add process", width: "100", height: "20" });
-        const poll = setInterval(() => {
-          if (!existsSync(tmpFile)) return;
-          const content = readFileSync(tmpFile, "utf8").trim();
-          if (!content) return;
-          clearInterval(poll);
-          try {
-            const resolved = JSON.parse(content) as RunResolveResult;
-            unlinkSync(tmpFile);
-            void addResolvedEntry(lane.id, resolved);
-          } catch { /* ignore parse errors */ }
-        }, 300);
-      },
-
-      // [s] start / restart / respawn / activate
-      s: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState) return;
-        const state = _currentState;
-        const li = Math.min(state.laneIdx, state.lanes.length - 1);
-        const lane = state.lanes[li];
-        if (!lane) return;
-        const ei = Math.min(state.entryIdx, lane.entries.length - 1);
-        const entry = lane.entries[ei];
-        if (!entry) return;
-        const win = entryWindowName(lane.id, entry.id);
-        const st = state.entryStates.get(win) ?? "stopped";
-        if (st === "starting" || st === "stopping") return;
-        const action: LaneAction =
-          st === "stopped" ? { type: "spawn",   laneId: lane.id, entryId: entry.id } :
-          st === "crashed" ? { type: "respawn", laneId: lane.id, entryId: entry.id } :
-          (st === "running" && lane.activeEntryId === entry.id)
-            ? { type: "restart",  laneId: lane.id, entryId: entry.id } :
-              { type: "activate", laneId: lane.id, entryId: entry.id };
-        doDispatch(action, state);
-      },
-
-      // [w] warm all entries in lane (spawn all, only active runs)
-      w: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState) return;
-        const s = _currentState;
-        const lane = s.lanes[Math.min(s.laneIdx, s.lanes.length - 1)];
-        if (lane) doDispatch({ type: "warm-all", laneId: lane.id }, s);
-      },
-
-      // [enter] activate the selected entry (auto-start if stopped)
-      enter: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState) return;
-        const state = _currentState;
-        const li = Math.min(state.laneIdx, state.lanes.length - 1);
-        const lane = state.lanes[li];
-        if (!lane) return;
-        const ei = Math.min(state.entryIdx, lane.entries.length - 1);
-        const entry = lane.entries[ei];
-        if (!entry || lane.activeEntryId === entry.id) return;
-        doDispatch({ type: "activate", laneId: lane.id, entryId: entry.id }, state);
-      },
-
-      // [r] remove entry (opens entry picker overlay)
-      r: ({ update }) => {
-        if (!_currentState) { exitScope({ update }); return; }
-        const state = _currentState;
-        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-        if (!lane || lane.entries.length === 0) { exitScope({ update }); return; }
-        const safeEi = Math.min(state.entryIdx, lane.entries.length - 1);
-        update((s) => ({ ...s, mode: { type: "entry-picker", purpose: "remove", laneId: lane.id, idx: safeEi } }));
-        app.setMode("entry-picker");
-      },
-
-      // [f] open global remedy rules file in $EDITOR
-      //     File: ~/.rt/remedies/_global.json
-      //     The daemon file-watches this and hot-reloads on save — no restart needed.
-      f: (ctx) => {
-        exitScope(ctx);
-        const gPath = globalRemedyPath();
-        mkdirSync(remediesDir(), { recursive: true });
-        // Seed an example if the file doesn't exist yet
-        if (!existsSync(gPath)) {
-          writeFileSync(gPath, JSON.stringify([
-            {
-              name: "Example — clear Prisma cache",
-              cwdContains: "apps/backend",
-              cmdContains: "start:lite",
-              pattern: "PrismaClientInitializationError",
-              cmds: ["rm -rf node_modules/.prisma"],
-              thenRestart: true,
-              cooldownMs: 30000,
-            },
-          ], null, 2));
-        }
-        const { editorCmd, hint } = buildEditorCmd(gPath);
-        openPopup(editorCmd, { title: "remedy rules (_global.json)", hint, width: "110", height: "30" });
-        showToast("✓ Remedy rules saved — daemon reloads automatically");
-      },
-
-      // [e] edit command template via $EDITOR
-      e: ({ update }) => {
-        exitScope({ update });
-        if (!_currentState) return;
-        const state = _currentState;
-        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-        if (!lane) return;
-        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
-        if (!entry) return;
-        const tmpFile = `/tmp/rt-edit-${entry.id}.sh`;
-        writeFileSync(tmpFile, entry.commandTemplate + "\n");
-        const { editorCmd, hint } = buildEditorCmd(tmpFile);
-        openPopup(editorCmd, { title: "edit command", hint, width: "100", height: "12" });
-        try {
-          const newCmd = readFileSync(tmpFile, "utf8").trim();
-          if (newCmd && newCmd !== entry.commandTemplate) {
-            update((s) => {
-              const next = s.lanes.map((l) =>
-                l.id === lane.id
-                  ? { ...l, entries: l.entries.map((e) => e.id === entry.id ? { ...e, commandTemplate: newCmd } : e) }
-                  : l
-              );
-              saveCurrent(next);
-              return { ...s, lanes: next };
-            });
-            showToast("command updated — restart entry to apply");
-          }
-        } catch { /* file gone or unreadable */ }
-        try { unlinkSync(tmpFile); } catch { /* already cleaned */ }
-      },
-
-      // [t] open shell at entry's working directory
-      t: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState) return;
-        const state = _currentState;
-        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-        if (!lane) return;
-        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
-        if (!entry) return;
-        openTempPane(process.env.SHELL ?? "zsh", { cwd: entry.targetDir, target: displayPane(), escToClose: true });
-      },
-    },
-
-    // ── Open scope — entered with [o] ─────────────────────────────────────
-    "open-scope": {
-      escape: exitScope,
-
-      // [b] branch picker
-      b: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState) return;
-        const state = _currentState;
-        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-        if (!lane) return;
-        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
-        if (!entry) return;
-        openPopup(`${RT_SHELL} branch`, { cwd: entry.worktree, title: "rt branch", width: "100", height: "20" });
-      },
-
-      // [c] open worktree in editor
-      c: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState) return;
-        const state = _currentState;
-        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-        if (!lane) return;
-        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
-        if (!entry) return;
-        if (willPrompt(entry.worktree)) {
-          openPopup(`${RT_SHELL} code`, { cwd: entry.worktree, title: "rt code", width: "100", height: "20" });
-        } else {
-          spawnSync(RT_INVOKE[0]!, [...RT_INVOKE.slice(1), "code"], {
-            cwd: entry.worktree, stdio: "pipe", env: { ...process.env, RT_BATCH: "1" },
-          });
-          showToast(`↗ opened ${entry.worktree.split("/").pop()} in editor`);
-        }
-      },
-
-      // [w] open canonical port in browser (web)
-      w: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState) return;
-        const lane = _currentState.lanes[Math.min(_currentState.laneIdx, _currentState.lanes.length - 1)];
-        if (!lane?.canonicalPort) return;
-        try { spawnSync("open", [`http://localhost:${lane.canonicalPort}`]); } catch { /* ignore */ }
-      },
-
-      // [t] open shell at entry's working directory
-      t: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState) return;
-        const state = _currentState;
-        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-        if (!lane) return;
-        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
-        if (!entry) return;
-        openTempPane(process.env.SHELL ?? "zsh", { cwd: entry.targetDir, target: displayPane(), escToClose: true });
-      },
-
-      // [r] run a one-off package script
-      r: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState) return;
-        const state = _currentState;
-        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-        if (!lane) return;
-        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
-        if (!entry) return;
-        openPopup(`${RT_SHELL} run`, { cwd: entry.targetDir, title: "rt run", width: "100", height: "20" });
-      },
-
-      // [e] edit command template via $EDITOR
-      e: ({ update }) => {
-        exitScope({ update });
-        if (!_currentState) return;
-        const state = _currentState;
-        const lane = state.lanes[Math.min(state.laneIdx, state.lanes.length - 1)];
-        if (!lane) return;
-        const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
-        if (!entry) return;
-        // (handler body moved to process-scope [e])
-        showToast("tip: use [p → e] to edit the command");
-      },
-
-      // [i] toggle MR/ticket info pane
-      i: (ctx) => {
-        exitScope(ctx);
-        if (!_currentState) return;
-        if (mrPaneEnabled) {
-          mrPaneEnabled = false;
-          hideMrPane();
-        } else {
-          mrPaneEnabled = true;
-          showMrPane(focusedBranch(_currentState));
-        }
-      },
-    },
-
-    // Port input: digits go to ui.input(), only enter/escape handled here
-    "port-input": {
-      enter: ({ state, update }) => {
-        const mode = state.mode;
-        if (mode.type !== "port-input") return;
-        const port = parseInt(state.inputValue, 10);
-        if (!isNaN(port) && port > 1024 && port < 65536) {
-          const ephemeralConflict = state.lanes.some((l) =>
-            l.entries.some((e) => e.ephemeralPort === port)
-          );
-          if (ephemeralConflict) {
-            showToast(`port ${port} is used by a running entry — pick another`);
-            returnToNormal(update);
-          } else if (mode.purpose === "edit-port" && mode.laneId) {
-            const oldLane = state.lanes.find((l) => l.id === mode.laneId);
-            if (oldLane && !state.lanes.find((l) => l.canonicalPort === port && l.id !== mode.laneId)) {
-              // Stop old proxy and start new one on the updated port
-              void daemonQuery("proxy:stop", { id: proxyWindowName(mode.laneId) }).then(() => {
-                const updatedLane = { ...oldLane, canonicalPort: port };
-                void ensureProxy(updatedLane);
-              });
-              update((s) => {
-                const updatedLane = { ...oldLane, canonicalPort: port };
-                const next = s.lanes.map((l) => l.id === mode.laneId ? updatedLane : l);
-                saveCurrent(next);
-                return { ...s, lanes: next, mode: { type: "normal" }, inputValue: "" };
-              });
-              app.setMode("default");
-            } else {
-              showToast(`port ${port} is already used by another lane`);
-              returnToNormal(update);
-            }
-          }
-        } else {
-          returnToNormal(update);
-        }
-      },
-      escape: ({ update }) => returnToNormal(update),
-    },
-
-    // Entry picker: navigate with j/k, select with Enter, cancel with Escape
-    "entry-picker": {
-      j: ({ state, update }) => {
-        const mode = state.mode;
-        if (mode.type !== "entry-picker") return;
-        const lane = state.lanes.find((l) => l.id === mode.laneId);
-        if (!lane) return;
-        update((s) => s.mode.type === "entry-picker"
-          ? { ...s, mode: { ...s.mode, idx: Math.min(s.mode.idx + 1, lane.entries.length - 1) } }
-          : s
-        );
-      },
-      k: ({ state, update }) => {
-        if (state.mode.type !== "entry-picker") return;
-        update((s) => s.mode.type === "entry-picker"
-          ? { ...s, mode: { ...s.mode, idx: Math.max(0, s.mode.idx - 1) } }
-          : s
-        );
-      },
-      down: ({ state, update }) => {
-        const mode = state.mode;
-        if (mode.type !== "entry-picker") return;
-        const lane = state.lanes.find((l) => l.id === mode.laneId);
-        if (!lane) return;
-        update((s) => s.mode.type === "entry-picker"
-          ? { ...s, mode: { ...s.mode, idx: Math.min(s.mode.idx + 1, lane.entries.length - 1) } }
-          : s
-        );
-      },
-      up: ({ state, update }) => {
-        if (state.mode.type !== "entry-picker") return;
-        update((s) => s.mode.type === "entry-picker"
-          ? { ...s, mode: { ...s.mode, idx: Math.max(0, s.mode.idx - 1) } }
-          : s
-        );
-      },
-      enter: ({ state, update }) => {
-        const mode = state.mode;
-        if (mode.type !== "entry-picker") return;
-        const lane = state.lanes.find((l) => l.id === mode.laneId);
-        if (!lane) { update((s) => ({ ...s, mode: { type: "normal" } })); app.setMode("default"); return; }
-        const entry = lane.entries[mode.idx];
-        if (entry) {
-          doDispatch({ type: "remove-entry", laneId: lane.id, entryId: entry.id }, state);
-        }
-        update((s) => ({ ...s, mode: { type: "normal" } }));
-        app.setMode("default");
-      },
-      escape: ({ update }) => { update((s) => ({ ...s, mode: { type: "normal" } })); app.setMode("default"); },
-    },
-
-    // Confirm reset: y to confirm, n / Escape to cancel
-    "confirm-reset": {
-      y: ({ state, update }) => {
-        doDispatch({ type: "reset" }, state);
-        update((s) => ({ ...s, mode: { type: "normal" } }));
-        app.setMode("default");
-      },
-      n: ({ update }) => { update((s) => ({ ...s, mode: { type: "normal" } })); app.setMode("default"); },
-      escape: ({ update }) => { update((s) => ({ ...s, mode: { type: "normal" } })); app.setMode("default"); },
-    },
-
-    "confirm-spread": {
-      y: ({ state, update }) => {
-        const mode = state.mode;
-        if (mode.type !== "confirm-spread") return;
-        const lane = state.lanes.find((l) => l.id === mode.laneId);
-        const entry = lane?.entries.find((e) => e.id === mode.entryId);
-        if (!lane || !entry) {
-          update((s) => ({ ...s, mode: { type: "normal" } }));
-          app.setMode("default");
-          return;
-        }
-        // Only spread to worktrees that don't already have an entry with this command
-        const sameGroupWorktrees = new Set(
-          lane.entries.filter((e) => e.commandTemplate === entry.commandTemplate).map((e) => e.worktree)
-        );
-        const repo = state.knownRepos.find((r) => r.repoName === lane.repoName);
-        const worktrees = repo?.worktrees ?? [];
-        const relPath = relative(entry.worktree, entry.targetDir);
-        let added = 0;
-        for (const wt of worktrees) {
-          if (sameGroupWorktrees.has(wt.path)) continue;
-          const targetDir = relPath ? join(wt.path, relPath) : wt.path;
-          if (!existsSync(targetDir)) continue;
-          void addResolvedEntry(lane.id, {
-            targetDir,
-            pm: entry.pm,
-            script: entry.script,
-            packageLabel: entry.packageLabel,
-            worktree: wt.path,
-            branch: wt.branch,
-          });
-          added++;
-        }
-        showToast(
-          added > 0
-            ? `added to ${added} worktree${added === 1 ? "" : "s"}`
-            : "no new worktrees to add",
-        );
-        update((s) => ({ ...s, mode: { type: "normal" } }));
-        app.setMode("default");
-      },
-      n: ({ update }) => { update((s) => ({ ...s, mode: { type: "normal" } })); app.setMode("default"); },
-      escape: ({ update }) => { update((s) => ({ ...s, mode: { type: "normal" } })); app.setMode("default"); },
-    },
+    "lane-scope":      createLaneKeymap(keymapContext),
+    "process-scope":   createProcessKeymap(keymapContext, { buildEditorCmd }),
+    "open-scope":      createOpenKeymap(keymapContext),
+    "port-input":      createPortKeymap(keymapContext),
+    "entry-picker":    createPickerKeymap(keymapContext),
+    "confirm-reset":   createConfirmResetKeymap(keymapContext),
+    "confirm-spread":  createConfirmSpreadKeymap(keymapContext),
   });
 
   try {
