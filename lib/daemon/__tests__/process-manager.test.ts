@@ -135,6 +135,35 @@ describe("kill", () => {
     await pm.kill("p1");
     await expect(pm.kill("p1")).resolves.toBeUndefined();
   });
+
+  test("kill reaps grandchildren (detached pgroup)", async () => {
+    // bash backgrounds two long sleepers then waits on them. Without the
+    // detached-pgroup fix, killing bash alone leaves the sleepers orphaned
+    // as children of pid 1 and they continue running until the 30s expires.
+    await pm.spawn("p1", "sleep 30 & sleep 30 & wait", { cwd: "/tmp" });
+    await sleep(250);
+
+    const proc = pm.getProcess("p1");
+    const rootPid = proc?.pid;
+    expect(rootPid).toBeGreaterThan(0);
+
+    // Collect grandchild pids via pgrep -P before killing
+    const pgrep = Bun.spawnSync(["pgrep", "-P", String(rootPid)]);
+    const grandchildren = new TextDecoder()
+      .decode(pgrep.stdout).trim().split("\n").filter(Boolean).map(Number);
+    expect(grandchildren.length).toBeGreaterThanOrEqual(2);
+
+    await pm.kill("p1");
+    // Kernel needs a tick to reap
+    await sleep(200);
+
+    // Every grandchild should now be gone (kill 0 throws ESRCH on dead pids)
+    for (const gpid of grandchildren) {
+      let alive = true;
+      try { process.kill(gpid, 0); } catch { alive = false; }
+      expect(alive).toBe(false);
+    }
+  });
 });
 
 // ── respawn ───────────────────────────────────────────────────────────────────

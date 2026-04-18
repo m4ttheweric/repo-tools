@@ -17,7 +17,6 @@ import {
   existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync,
   unlinkSync, watch, statSync, type FSWatcher,
 } from "fs";
-import { homedir } from "os";
 import { join, resolve, dirname, basename } from "path";
 import { execSync } from "child_process";
 
@@ -30,7 +29,7 @@ import { StateStore }    from "./daemon/state-store.ts";
 import { PortAllocator } from "./daemon/port-allocator.ts";
 import { LogBuffer }     from "./daemon/log-buffer.ts";
 import { AttachServer }  from "./daemon/attach-server.ts";
-import { ProcessManager } from "./daemon/process-manager.ts";
+import { ProcessManager, killGroup } from "./daemon/process-manager.ts";
 import { SuspendManager } from "./daemon/suspend-manager.ts";
 import { ProxyManager }  from "./daemon/proxy-manager.ts";
 import { ExclusiveGroup } from "./daemon/exclusive-group.ts";
@@ -45,7 +44,6 @@ import {
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const MR_REFRESH_INTERVAL_MS = 5 * 60 * 1000;      // 5 minutes
-const LINEAR_REFRESH_INTERVAL_MS = 30 * 60 * 1000;  // 30 minutes
 const PORT_SCAN_INTERVAL_MS = 30 * 1000;             // 30 seconds
 const HOOKS_SCAN_INTERVAL_MS = 60 * 1000;            // 60 seconds (fallback for stale watchers)
 const LOG_MAX_BYTES = 10 * 1024 * 1024;              // 10MB
@@ -62,25 +60,26 @@ import {
 
 import { checkAndNotify, drainNotifications, peekNotifications, onNotification } from "./notifier.ts";
 import {
-  listRunnerConfigs, loadRunnerConfig, entryWindowName, proxyWindowName,
+  listRunnerConfigs, loadRunnerConfig, entryWindowName,
   loadGlobalRemedies, globalRemedyPath,
 } from "./runner-store.ts";
-import { diag } from "./diag-log.ts";
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
-interface CacheEntry {
-  ticket: any;
-  linearId: string;
-  mr: any;
-  fetchedAt: number;
-}
+import type { CacheEntry, RemedyEvent } from "./daemon/handlers/types.ts";
+import { createCacheHandlers }   from "./daemon/handlers/cache.ts";
+import { createRemedyHandlers }  from "./daemon/handlers/remedy.ts";
+import { createProxyHandlers }   from "./daemon/handlers/proxy.ts";
+import { createProcessHandlers } from "./daemon/handlers/process.ts";
+import type { HandlerMap }       from "./daemon/handlers/types.ts";
 
 interface DiskCache {
   entries: Record<string, CacheEntry>;
 }
 
-let cache: DiskCache = { entries: {} };
+// Stable reference across reloads — loadCache() mutates `cache.entries` in place
+// so handler modules can hold a live reference via HandlerContext.cache.
+const cache: DiskCache = { entries: {} };
 let portCache: PortEntry[] = [];
 let portCacheUpdatedAt = 0;
 let lastRefreshTimestamp = 0;
@@ -101,7 +100,6 @@ const exclusiveGroup = new ExclusiveGroup({ suspendManager, stateStore });
 // ─── Remedy engine (auto-detect errors → run fix → restart) ─────────────────
 
 /** Bounded ring buffer of recent remedy fire events for UI polling. */
-interface RemedyEvent { id: string; name: string; success: boolean; firedAt: number }
 const remedyEventQueue: RemedyEvent[] = [];
 
 const remedyEngine = new RemedyEngine({
@@ -122,21 +120,42 @@ processManager.suspendManager = suspendManager;
 
 // ─── Global remedy file watcher ──────────────────────────────────────────────
 // Load at startup, then hot-reload whenever ~/.rt/remedies/_global.json changes.
+//
+// Debounce: fs.watch emits multiple rename+change events per atomic-rename save
+// (common editor pattern). A ~100ms settle window collapses these to one reload.
+// Parse error: retain last-good state — editors briefly produce invalid JSON
+// during saves, and loadGlobalRemedies throws. If we reloaded on every throw
+// we'd wipe rules every save-cycle and only recover on the next valid write.
 
-remedyEngine.reloadGlobals(loadGlobalRemedies());
-log("remedy: global rules loaded");
+let globalRemedyWatcher: ReturnType<typeof watch> | undefined;
+const GLOBAL_REMEDY_DEBOUNCE_MS = 100;
+
+try {
+  remedyEngine.reloadGlobals(loadGlobalRemedies());
+  log("remedy: global rules loaded");
+} catch (err) {
+  log(`remedy: could not load global rules at startup (${String(err)}) — starting empty`);
+}
 
 (function watchGlobalRemedies() {
   const gPath = globalRemedyPath();
   const dir   = gPath.replace(/_global\.json$/, "");
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    watch(dir, (_evt, filename) => {
-      if (filename === "_global.json") {
-        const rules = loadGlobalRemedies();
-        remedyEngine.reloadGlobals(rules);
-        log(`remedy: hot-reloaded ${rules.length} global rule(s) from _global.json`);
-      }
+    globalRemedyWatcher = watch(dir, (_evt, filename) => {
+      if (filename !== "_global.json") return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = undefined;
+        try {
+          const rules = loadGlobalRemedies();
+          remedyEngine.reloadGlobals(rules);
+          log(`remedy: hot-reloaded ${rules.length} global rule(s) from _global.json`);
+        } catch (err) {
+          log(`remedy: parse failed — retaining previous rules (${String(err)})`);
+        }
+      }, GLOBAL_REMEDY_DEBOUNCE_MS);
     });
   } catch (err) {
     log(`remedy: could not watch global remedy dir (${String(err)})`);
@@ -225,9 +244,10 @@ function log(msg: string): void {
 
 function loadCache(): void {
   try {
-    cache = JSON.parse(readFileSync(CACHE_PATH, "utf8"));
+    const parsed = JSON.parse(readFileSync(CACHE_PATH, "utf8"));
+    cache.entries = parsed?.entries ?? {};
   } catch {
-    cache = { entries: {} };
+    cache.entries = {};
   }
 }
 
@@ -375,8 +395,22 @@ function refreshPortCache(): void {
 }
 
 // ─── Cache refresh ───────────────────────────────────────────────────────────
+//
+// Coalesce concurrent callers: the 5-minute timer and `cache:refresh` IPC both
+// fire-and-forget into refreshCache. Without a guard they stack up, each
+// running execSync across every repo + a batch GraphQL. If a refresh is
+// already in flight, return the same promise so callers await the existing
+// run instead of starting a second one.
 
-async function refreshCache(): Promise<void> {
+let refreshInFlight: Promise<void> | null = null;
+
+function refreshCache(): Promise<void> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = refreshCacheImpl().finally(() => { refreshInFlight = null; });
+  return refreshInFlight;
+}
+
+async function refreshCacheImpl(): Promise<void> {
   log("cache: starting background refresh");
 
   try {
@@ -466,25 +500,43 @@ async function refreshCache(): Promise<void> {
 
 // ─── Socket server ───────────────────────────────────────────────────────────
 
+/**
+ * Extracted-handler map, built once at module load. Commands registered here
+ * are dispatched through a single lookup; commands still in the switch below
+ * are inline because they touch module-scoped daemon state (watchers, repos,
+ * notifications, port allocator, workspace sync, groups, shutdown) that
+ * wouldn't benefit from being pushed into a domain module.
+ */
+const routedHandlers: HandlerMap = {
+  ...createCacheHandlers({
+    processManager, stateStore, remedyEngine, suspendManager, proxyManager,
+    attachServer, logBuffer, exclusiveGroup,
+    cache, refreshCache, loadCache, remedyEvents: remedyEventQueue,
+  }),
+  ...createRemedyHandlers({
+    processManager, stateStore, remedyEngine, suspendManager, proxyManager,
+    attachServer, logBuffer, exclusiveGroup,
+    cache, refreshCache, loadCache, remedyEvents: remedyEventQueue,
+  }),
+  ...createProxyHandlers({
+    processManager, stateStore, remedyEngine, suspendManager, proxyManager,
+    attachServer, logBuffer, exclusiveGroup,
+    cache, refreshCache, loadCache, remedyEvents: remedyEventQueue,
+  }),
+  ...createProcessHandlers({
+    processManager, stateStore, remedyEngine, suspendManager, proxyManager,
+    attachServer, logBuffer, exclusiveGroup,
+    cache, refreshCache, loadCache, remedyEvents: remedyEventQueue,
+  }),
+};
+
 async function handleCommand(cmd: string, payload: any): Promise<any> {
+  const routed = routedHandlers[cmd];
+  if (routed) return routed(payload);
+
   switch (cmd) {
     case "ping":
       return { ok: true, uptime: Date.now() - startedAt, pid: process.pid };
-
-    case "cache:read": {
-      const branches = payload?.branches as string[] | undefined;
-      if (!branches) return { ok: true, data: cache.entries };
-      const filtered: Record<string, CacheEntry> = {};
-      for (const b of branches) {
-        if (cache.entries[b]) filtered[b] = cache.entries[b];
-      }
-      return { ok: true, data: filtered };
-    }
-
-    case "cache:refresh":
-      // Fire-and-forget refresh
-      refreshCache().catch(() => {});
-      return { ok: true, message: "refresh started" };
 
     case "hooks:status": {
       const repoName = payload?.repo;
@@ -552,42 +604,6 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
       }
 
       return { ok: true, data: { repos: detailed, watched } };
-    }
-
-    case "branch:enrich": {
-      const branch = payload?.branch as string;
-      const repoPath = payload?.repoPath as string;
-      const remoteUrl = payload?.remoteUrl as string | undefined;
-
-      if (!branch) return { ok: false, error: "missing branch" };
-
-      // Return cached data if available
-      if (cache.entries[branch]) {
-        return { ok: true, data: cache.entries[branch], source: "cache" };
-      }
-
-      // On-demand enrichment (async — returns promise result)
-      if (!repoPath) return { ok: false, error: "missing repoPath for cold enrichment" };
-
-      try {
-        const { enrichBranches } = await import("./enrich.ts");
-        const results = await enrichBranches(
-          [{ path: repoPath, branch }],
-          remoteUrl,
-          { silent: true },
-        );
-
-        // Reload cache (enrichBranches writes to disk)
-        loadCache();
-
-        if (cache.entries[branch]) {
-          return { ok: true, data: cache.entries[branch], source: "fresh" };
-        }
-
-        return { ok: true, data: null, source: "empty" };
-      } catch (err) {
-        return { ok: false, error: `enrichment failed: ${err}` };
-      }
     }
 
     case "ports": {
@@ -700,175 +716,6 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
       };
     }
 
-    // ── Process management ─────────────────────────────────────────────────────
-
-    case "process:spawn": {
-      const { id, cmd, cwd, env } = payload as { id: string; cmd: string; cwd: string; env?: Record<string, string> };
-      if (!id || !cmd || !cwd) return { ok: false, error: "missing id, cmd, or cwd" };
-      await processManager.spawn(id, cmd, { cwd, env });
-      remedyEngine.onSpawn(id, cwd, cmd);
-      return { ok: true };
-    }
-
-    case "process:kill": {
-      const { id } = payload as { id: string };
-      if (!id) return { ok: false, error: "missing id" };
-      await processManager.kill(id);
-      return { ok: true };
-    }
-
-    case "process:respawn": {
-      const { id } = payload as { id: string };
-      if (!id) return { ok: false, error: "missing id" };
-      await processManager.respawn(id);
-      return { ok: true };
-    }
-
-    // ── Composite lifecycle commands ───────────────────────────────────────────
-    // These bundle spawn/kill + group:activate + proxy:set-upstream into a single
-    // atomic round-trip so the runner never has to orchestrate multi-step sequences
-    // that can race or leave state machines in inconsistent intermediate states.
-
-    case "process:start": {
-      const { id, cmd, cwd, env, groupId, canonicalPort, mode } =
-        payload as {
-          id: string; cmd: string; cwd: string;
-          env?: Record<string, string>;
-          groupId?: string;
-          canonicalPort?: number;
-          mode?: "warm" | "single";
-        };
-      if (!id || !cmd || !cwd) return { ok: false, error: "missing id, cmd, or cwd" };
-
-      diag("process.start.begin", id, { groupId, canonicalPort, mode });
-
-      // 1. Spawn (sets state "starting" → "running")
-      await processManager.spawn(id, cmd, { cwd, env });
-
-      // 2. Group activate — suspends/kills other members
-      if (groupId) {
-        try { await exclusiveGroup.activate(groupId, id, mode ?? "warm"); } catch { /* group may not exist yet */ }
-      }
-
-      // 3. Point proxy upstream to the new ephemeral port
-      const ephemeralPort = Number(env?.PORT ?? 0);
-      if (groupId && canonicalPort && ephemeralPort) {
-        const proxyId = proxyWindowName(groupId);
-        try {
-          proxyManager.setUpstream(proxyId, ephemeralPort);
-        } catch (err) {
-          // No proxy exists yet — create it now so the process is reachable via
-          // the canonical port. This is the recovery path when a proxy has been
-          // lost but the runner still expects it to exist.
-          diag("process.start.proxy.missing", id, { proxyId, canonicalPort, ephemeralPort, err: String(err) });
-          try {
-            proxyManager.start(proxyId, canonicalPort, ephemeralPort);
-            diag("process.start.proxy.recreated", id, { proxyId, canonicalPort, ephemeralPort });
-          } catch (err2) {
-            diag("process.start.proxy.recreate.failed", id, { proxyId, err: String(err2) });
-          }
-        }
-      }
-
-      remedyEngine.onSpawn(id, cwd, cmd);
-      diag("process.start.end", id, { ephemeralPort });
-      return { ok: true, data: { ephemeralPort } };
-    }
-
-    case "process:stop": {
-      const { id, stopProxy, groupId } =
-        payload as { id: string; stopProxy?: boolean; groupId?: string };
-      if (!id) return { ok: false, error: "missing id" };
-
-      // Kill (sets state "stopping" → "stopped")
-      await processManager.kill(id);
-
-      // Optionally stop the proxy (e.g. for pause-lane)
-      if (stopProxy && groupId) {
-        proxyManager.stop(proxyWindowName(groupId));
-      }
-
-      return { ok: true };
-    }
-
-    case "process:restart": {
-      const { id, cmd, cwd, env, groupId, canonicalPort, mode } =
-        payload as {
-          id: string; cmd: string; cwd: string;
-          env?: Record<string, string>;
-          groupId?: string;
-          canonicalPort?: number;
-          mode?: "warm" | "single";
-        };
-      if (!id || !cmd || !cwd) return { ok: false, error: "missing id, cmd, or cwd" };
-
-      // 1. Kill current process and AWAIT its death — no cross-process race possible
-      //    because both kill and spawn run sequentially in this daemon event loop.
-      await processManager.kill(id);
-
-      // 2. Spawn fresh (sets state "starting" → "running")
-      await processManager.spawn(id, cmd, { cwd, env });
-
-      // 3. Group activate
-      if (groupId) {
-        try { await exclusiveGroup.activate(groupId, id, mode ?? "warm"); } catch { /* group may not exist yet */ }
-      }
-
-      // 4. Point proxy upstream to the new ephemeral port
-      const ephemeralPort = Number(env?.PORT ?? 0);
-      if (groupId && canonicalPort && ephemeralPort) {
-        proxyManager.setUpstream(proxyWindowName(groupId), ephemeralPort);
-      }
-
-      remedyEngine.onSpawn(id, cwd, cmd);
-      return { ok: true, data: { ephemeralPort } };
-    }
-
-
-
-    case "process:list": {
-      return { ok: true, data: processManager.list() };
-    }
-
-    case "process:state": {
-      const { id } = payload as { id: string };
-      if (!id) return { ok: false, error: "missing id" };
-      return { ok: true, data: stateStore.getState(id) };
-    }
-
-    case "process:states": {
-      return { ok: true, data: stateStore.getAll() };
-    }
-
-    case "process:logs": {
-      const { id, n } = payload as { id: string; n?: number };
-      if (!id) return { ok: false, error: "missing id" };
-      return { ok: true, data: logBuffer.getLastLines(id, n) };
-    }
-
-    case "process:attach-info": {
-      const { id } = payload as { id: string };
-      if (!id) return { ok: false, error: "missing id" };
-      const socketPath = attachServer.socketPath(id);
-      const hasSocket = existsSync(socketPath);
-      const state = stateStore.getState(id) ?? "stopped";
-      return { ok: true, data: { socketPath: hasSocket ? socketPath : null, state } };
-    }
-
-    case "process:suspend": {
-      const { id } = payload as { id: string };
-      if (!id) return { ok: false, error: "missing id" };
-      await suspendManager.suspend(id);
-      return { ok: true };
-    }
-
-    case "process:resume": {
-      const { id } = payload as { id: string };
-      if (!id) return { ok: false, error: "missing id" };
-      await suspendManager.resume(id);
-      return { ok: true };
-    }
-
     // ── Port allocation ────────────────────────────────────────────────────────
 
     case "port:allocate": {
@@ -892,39 +739,6 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
 
     case "port:list": {
       return { ok: true, data: portAllocator.list() };
-    }
-
-    // ── Proxy management ───────────────────────────────────────────────────────
-
-    case "proxy:start": {
-      const { id, canonicalPort, upstreamPort } = payload as { id: string; canonicalPort: number; upstreamPort: number };
-      if (!id || !canonicalPort || !upstreamPort) return { ok: false, error: "missing id, canonicalPort, or upstreamPort" };
-      proxyManager.start(id, canonicalPort, upstreamPort);
-      return { ok: true };
-    }
-
-    case "proxy:stop": {
-      const { id } = payload as { id: string };
-      if (!id) return { ok: false, error: "missing id" };
-      proxyManager.stop(id);
-      return { ok: true };
-    }
-
-    case "proxy:set-upstream": {
-      const { id, port } = payload as { id: string; port: number };
-      if (!id || !port) return { ok: false, error: "missing id or port" };
-      proxyManager.setUpstream(id, port);
-      return { ok: true };
-    }
-
-    case "proxy:status": {
-      const { id } = payload as { id: string };
-      if (!id) return { ok: false, error: "missing id" };
-      return { ok: true, data: proxyManager.getStatus(id) };
-    }
-
-    case "proxy:list": {
-      return { ok: true, data: proxyManager.list() };
     }
 
     // ── Exclusive groups ───────────────────────────────────────────────────────
@@ -1082,29 +896,6 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
       saveSyncConfig(repo, config);
 
       return { ok: true, data: result };
-    }
-
-    // ── Remedy engine ──────────────────────────────────────────────────────────
-
-    case "remedy:set": {
-      const { id, remedies, cwd, cmd } = payload as { id: string; remedies: any[]; cwd: string; cmd?: string };
-      if (!id || !Array.isArray(remedies) || !cwd) return { ok: false, error: "missing id, remedies, or cwd" };
-      remedyEngine.register(id, remedies, cwd, cmd ?? "");
-      // If the process is already running, subscribe immediately
-      if (stateStore.getState(id) === "running") remedyEngine.onSpawn(id, cwd, cmd);
-      return { ok: true };
-    }
-
-    case "remedy:clear": {
-      const { id } = payload as { id: string };
-      if (!id) return { ok: false, error: "missing id" };
-      remedyEngine.unregister(id);
-      return { ok: true };
-    }
-
-    case "remedy:drain": {
-      const events = remedyEventQueue.splice(0);
-      return { ok: true, data: events };
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -1297,6 +1088,7 @@ function cleanup(): void {
   try { proxyManager.stopAll(); } catch { /* */ }
   try { cleanupAllWatchers(); } catch { /* */ }
   try { attachServer.closeAll(); } catch { /* */ }
+  try { globalRemedyWatcher?.close(); } catch { /* */ }
 
   // Stop all file watches
   for (const [, watcher] of watchedConfigs.entries()) {
@@ -1340,8 +1132,24 @@ export function startDaemon(): void {
   log("daemon starting");
   writePidFile();
 
-  // On restart, all processes are dead — reset any non-stopped states
-  stateStore.reconcileAfterRestart();
+  // Surface invalid state transitions so drift in VALID_TRANSITIONS shows up
+  // in the daemon log instead of being silently permitted.
+  stateStore.onInvalidTransition((id, prev, next) => {
+    log(`stateStore: invalid transition for "${id}": ${prev} → ${next}`);
+  });
+
+  // On restart, most children are gone — but warm (SIGSTOP'd) processes survive
+  // as orphans reparented to init. Reap any whose pid we still have recorded:
+  // SIGCONT (so the pgroup can actually handle signals) then SIGKILL.
+  const orphans = stateStore.reconcileAfterRestart();
+  for (const { id, pid } of orphans) {
+    try {
+      process.kill(pid, 0); // probe — throws if pid is no longer live
+      killGroup(pid, "SIGCONT");
+      killGroup(pid, "SIGKILL");
+      log(`reaped orphan process for "${id}" (pid ${pid})`);
+    } catch { /* pid already gone */ }
+  }
 
   // Load cache from disk
   loadCache();

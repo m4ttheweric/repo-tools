@@ -197,6 +197,32 @@ describe("reconcileAfterRestart", () => {
     store.reconcileAfterRestart();
     expect(store.getState("p1")).toBe("stopped");
   });
+
+  test("returns recorded pids for non-stopped entries so caller can reap orphans", () => {
+    const store = new StateStore(dataDir);
+    store.setState("warm1", "running");
+    store.setPid("warm1", 12345);
+    store.setState("warm1", "warm");          // warm keeps its pid
+    store.setState("already-stopped", "running");
+    store.setPid("already-stopped", 99999);
+    store.setState("already-stopped", "stopped"); // terminal clears pid
+    store.setState("no-pid", "running");       // never recorded a pid
+
+    const orphans = store.reconcileAfterRestart();
+    const byId = Object.fromEntries(orphans.map((o) => [o.id, o.pid]));
+    expect(byId["warm1"]).toBe(12345);
+    expect(byId["already-stopped"]).toBeUndefined();
+    expect(byId["no-pid"]).toBeUndefined();
+  });
+
+  test("clears pids after reconcile", () => {
+    const store = new StateStore(dataDir);
+    store.setState("p1", "running");
+    store.setPid("p1", 42);
+    store.setState("p1", "warm");
+    store.reconcileAfterRestart();
+    expect(store.getPid("p1")).toBeUndefined();
+  });
 });
 
 // ── Persistence ──────────────────────────────────────────────────────────────
