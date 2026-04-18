@@ -183,7 +183,7 @@ describe("normalizeLane — on-disk shape normalization", () => {
     expect(lanes[0]!.mode).toBe("warm");
   });
 
-  test("duplicate entry IDs within a lane are preserved as-is (no salt in this branch)", () => {
+  test("duplicate entry IDs within a lane get a salt suffix on the collider", () => {
     // NOTE: the spec asked us to test a worktree-sha1-salted suffix for
     // duplicate entry IDs. That behavior does NOT exist in this branch of
     // runner-store.ts (normalizeLane does not detect or rewrite duplicates).
@@ -224,8 +224,8 @@ describe("normalizeLane — on-disk shape normalization", () => {
     expect(lanes).toHaveLength(1);
     expect(lanes[0]!.entries).toHaveLength(2);
     const ids = lanes[0]!.entries.map((e) => e.id);
-    // In this branch both entries keep id "dup" — no salt suffix applied.
-    expect(ids).toEqual(["dup", "dup"]);
+    expect(ids[0]).toBe("dup");
+    expect(ids[1]).toMatch(/^dup~[0-9a-f]+$/);
   });
 });
 
