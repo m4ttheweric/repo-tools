@@ -35,7 +35,7 @@
  */
 
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { spawn as cpSpawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn as cpSpawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync, chmodSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
@@ -87,7 +87,9 @@ function decideDaemonMode(): DaemonMode {
   };
 }
 
-function canRunPtyTest(): { ok: true; daemon: DaemonMode } | { ok: false; reason: string } {
+type LiveDaemonMode = Exclude<DaemonMode, { kind: "skip" }>;
+
+function canRunPtyTest(): { ok: true; daemon: LiveDaemonMode } | { ok: false; reason: string } {
   if (process.env.SKIP_PTY_TESTS === "1") return { ok: false, reason: "SKIP_PTY_TESTS=1" };
 
   // Need `node` on PATH (we spawn the pty bridge under it, not bun).
@@ -119,7 +121,7 @@ const SKIP = canRunPtyTest();
 // ─── Test fixtures ───────────────────────────────────────────────────────────
 
 let scratchHome: string;
-let daemonProc: ChildProcessWithoutNullStreams | null = null;
+let daemonProc: ChildProcess | null = null;
 
 // Lane/entry IDs — derived from the test process's pid so that when this test
 // is pointed at a live daemon (RT_PTY_TEST_ALLOW_REAL_DAEMON=1), it can't
@@ -236,11 +238,8 @@ describe.skipIf(!SKIP.ok)(`rt runner PTY smoke${SKIP.ok ? "" : ` (skipped: ${(SK
       mode: "smappservice",
     }, null, 2));
 
-    if (SKIP.daemon.kind === "spawn") {
-      // ── Spawn daemon ────────────────────────────────────────────────────
-      // `bun cli.ts --daemon` is the hidden entry point in cli.ts that calls
-      // startDaemon() directly. HOME redirects every path inside the daemon
-      // (sockets, state store, logs) into our scratch dir.
+    const daemon = SKIP.daemon;
+    if (daemon.kind === "spawn") {
       daemonProc = cpSpawn(process.execPath, [CLI_PATH, "--daemon"], {
         cwd: REPO_ROOT,
         env: {
@@ -250,7 +249,7 @@ describe.skipIf(!SKIP.ok)(`rt runner PTY smoke${SKIP.ok ? "" : ` (skipped: ${(SK
           CI: "true",
         },
         stdio: ["ignore", "pipe", "pipe"],
-      }) as ChildProcessWithoutNullStreams;
+      });
 
       const sockPath = join(rtDir, "rt.sock");
       await waitFor(
@@ -262,11 +261,7 @@ describe.skipIf(!SKIP.ok)(`rt runner PTY smoke${SKIP.ok ? "" : ` (skipped: ${(SK
         10_000,
       );
     } else {
-      // ── Reuse a live daemon ─────────────────────────────────────────────
-      // Symlink the scratch socket to the real one so the runner under test
-      // (HOME=scratch) talks to the real daemon. All runner config state
-      // still lives in scratch — only IPC is shared.
-      symlinkSync(SKIP.daemon.realSockPath, join(rtDir, "rt.sock"));
+      symlinkSync(daemon.realSockPath, join(rtDir, "rt.sock"));
       const ping = await daemonCall(join(rtDir, "rt.sock"), "ping");
       if (!ping?.ok) throw new Error("real daemon ping failed via symlink");
     }
