@@ -14,7 +14,7 @@
  */
 
 import {
-  existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync,
+  existsSync, readFileSync, writeFileSync, mkdirSync,
   unlinkSync, watch, statSync, type FSWatcher,
 } from "fs";
 import { join, resolve, dirname, basename } from "path";
@@ -34,12 +34,7 @@ import { SuspendManager } from "./daemon/suspend-manager.ts";
 import { ProxyManager }  from "./daemon/proxy-manager.ts";
 import { ExclusiveGroup } from "./daemon/exclusive-group.ts";
 import { RemedyEngine }  from "./daemon/remedy-engine.ts";
-import {
-  startWatching, stopWatching, getWatcherStatus, cleanupAllWatchers,
-  restoreWatchers, loadSyncConfig, saveSyncConfig, ensureGitExclude,
-  removeGitExclude, getWorktreePaths, syncWorkspaceFile,
-  type WorkspaceSyncConfig,
-} from "./daemon/workspace-sync.ts";
+import { cleanupAllWatchers, restoreWatchers } from "./daemon/workspace-sync.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -53,12 +48,9 @@ const CACHE_PATH = join(RT_DIR, "branch-cache.json");
 
 import type { ServerWebSocket } from "bun";
 
-import {
-  scanListeningPorts,
-  type PortEntry,
-} from "./port-scanner.ts";
+import { scanListeningPorts, type PortEntry } from "./port-scanner.ts";
 
-import { checkAndNotify, drainNotifications, peekNotifications, onNotification } from "./notifier.ts";
+import { checkAndNotify, onNotification } from "./notifier.ts";
 import {
   listRunnerConfigs, loadRunnerConfig, entryWindowName,
   loadGlobalRemedies, globalRemedyPath,
@@ -66,12 +58,16 @@ import {
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
-import type { CacheEntry, RemedyEvent } from "./daemon/handlers/types.ts";
-import { createCacheHandlers }   from "./daemon/handlers/cache.ts";
-import { createRemedyHandlers }  from "./daemon/handlers/remedy.ts";
-import { createProxyHandlers }   from "./daemon/handlers/proxy.ts";
-import { createProcessHandlers } from "./daemon/handlers/process.ts";
-import type { HandlerMap }       from "./daemon/handlers/types.ts";
+import type { CacheEntry, RemedyEvent, HandlerContext, HandlerMap } from "./daemon/handlers/types.ts";
+import { createCacheHandlers }     from "./daemon/handlers/cache.ts";
+import { createRemedyHandlers }    from "./daemon/handlers/remedy.ts";
+import { createProxyHandlers }     from "./daemon/handlers/proxy.ts";
+import { createProcessHandlers }   from "./daemon/handlers/process.ts";
+import { createHooksHandlers }     from "./daemon/handlers/hooks.ts";
+import { createStatusHandlers }    from "./daemon/handlers/status.ts";
+import { createPortsHandlers }     from "./daemon/handlers/ports.ts";
+import { createGroupsHandlers }    from "./daemon/handlers/groups.ts";
+import { createWorkspaceHandlers } from "./daemon/handlers/workspace.ts";
 
 interface DiskCache {
   entries: Record<string, CacheEntry>;
@@ -80,9 +76,12 @@ interface DiskCache {
 // Stable reference across reloads — loadCache() mutates `cache.entries` in place
 // so handler modules can hold a live reference via HandlerContext.cache.
 const cache: DiskCache = { entries: {} };
-let portCache: PortEntry[] = [];
-let portCacheUpdatedAt = 0;
-let lastRefreshTimestamp = 0;
+// Port scan cache, held as a single mutable ref so handler modules can read
+// fresh values without getters. refreshPortCache mutates it in place.
+const portCacheRef: { ports: PortEntry[]; updatedAt: number } = { ports: [], updatedAt: 0 };
+// Refresh-cycle status ref (last successful cache refresh), also mutated in place
+// so status handlers read a live value.
+const refreshStatusRef = { lastRefreshAt: 0 };
 const watchedConfigs = new Map<string, FSWatcher>();
 const startedAt = Date.now();
 
@@ -383,12 +382,12 @@ function refreshWatchedRepos(): void {
 
 function refreshPortCache(): void {
   try {
-    portCache = scanListeningPorts();
-    portCacheUpdatedAt = Date.now();
-    log(`ports: scanned ${portCache.length} listening ports matching known repos`);
+    portCacheRef.ports = scanListeningPorts();
+    portCacheRef.updatedAt = Date.now();
+    log(`ports: scanned ${portCacheRef.ports.length} listening ports matching known repos`);
 
     // Broadcast to WebSocket clients
-    broadcast("ports", { ports: portCache, updatedAt: portCacheUpdatedAt });
+    broadcast("ports", { ports: portCacheRef.ports, updatedAt: portCacheRef.updatedAt });
   } catch (err) {
     log(`ports: scan failed: ${err}`);
   }
@@ -485,11 +484,11 @@ async function refreshCacheImpl(): Promise<void> {
 
     // Reload cache from disk (enrichBranches writes to disk)
     loadCache();
-    lastRefreshTimestamp = Date.now();
+    refreshStatusRef.lastRefreshAt = Date.now();
     log(`cache: refresh complete (${Object.keys(cache.entries).length} entries)`);
 
     // Check for state transitions and fire notifications
-    checkAndNotify(cache.entries, portCache, log);
+    checkAndNotify(cache.entries, portCacheRef.ports, log);
 
     // Broadcast to WebSocket clients
     broadcast("status", await handleCommand("tray:status", {}));
@@ -501,33 +500,35 @@ async function refreshCacheImpl(): Promise<void> {
 // ─── Socket server ───────────────────────────────────────────────────────────
 
 /**
- * Extracted-handler map, built once at module load. Commands registered here
- * are dispatched through a single lookup; commands still in the switch below
- * are inline because they touch module-scoped daemon state (watchers, repos,
- * notifications, port allocator, workspace sync, groups, shutdown) that
- * wouldn't benefit from being pushed into a domain module.
+ * Extracted-handler map, built once at module load. Every command goes through
+ * a single map lookup in handleCommand; only the lifecycle-coupled `shutdown`
+ * and `default` fall-throughs remain inline in the switch below.
  */
+const handlerCtx: HandlerContext = {
+  processManager, stateStore, remedyEngine, suspendManager, proxyManager,
+  attachServer, logBuffer, exclusiveGroup,
+  cache, refreshCache, loadCache, remedyEvents: remedyEventQueue,
+  portAllocator,
+  log,
+  startedAt,
+  portCacheRef,
+  watchedConfigs,
+  repoIndex: loadRepoIndex,
+  checkAndRepairHooksPath,
+  startWatchingRepo,
+  refreshStatusRef,
+};
+
 const routedHandlers: HandlerMap = {
-  ...createCacheHandlers({
-    processManager, stateStore, remedyEngine, suspendManager, proxyManager,
-    attachServer, logBuffer, exclusiveGroup,
-    cache, refreshCache, loadCache, remedyEvents: remedyEventQueue,
-  }),
-  ...createRemedyHandlers({
-    processManager, stateStore, remedyEngine, suspendManager, proxyManager,
-    attachServer, logBuffer, exclusiveGroup,
-    cache, refreshCache, loadCache, remedyEvents: remedyEventQueue,
-  }),
-  ...createProxyHandlers({
-    processManager, stateStore, remedyEngine, suspendManager, proxyManager,
-    attachServer, logBuffer, exclusiveGroup,
-    cache, refreshCache, loadCache, remedyEvents: remedyEventQueue,
-  }),
-  ...createProcessHandlers({
-    processManager, stateStore, remedyEngine, suspendManager, proxyManager,
-    attachServer, logBuffer, exclusiveGroup,
-    cache, refreshCache, loadCache, remedyEvents: remedyEventQueue,
-  }),
+  ...createCacheHandlers(handlerCtx),
+  ...createRemedyHandlers(handlerCtx),
+  ...createProxyHandlers(handlerCtx),
+  ...createProcessHandlers(handlerCtx),
+  ...createHooksHandlers(handlerCtx),
+  ...createStatusHandlers(handlerCtx),
+  ...createPortsHandlers(handlerCtx),
+  ...createGroupsHandlers(handlerCtx),
+  ...createWorkspaceHandlers(handlerCtx),
 };
 
 async function handleCommand(cmd: string, payload: any): Promise<any> {
@@ -535,371 +536,6 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
   if (routed) return routed(payload);
 
   switch (cmd) {
-    case "ping":
-      return { ok: true, uptime: Date.now() - startedAt, pid: process.pid };
-
-    case "hooks:status": {
-      const repoName = payload?.repo;
-      if (!repoName) return { ok: false, error: "missing repo" };
-      const hooksJson = join(RT_DIR, repoName, "hooks.json");
-      try {
-        const config = JSON.parse(readFileSync(hooksJson, "utf8"));
-        return { ok: true, data: config };
-      } catch {
-        return { ok: true, data: null };
-      }
-    }
-
-    case "hooks:repair": {
-      const repoName = payload?.repo;
-      if (!repoName) return { ok: false, error: "missing repo" };
-      const repos = loadRepoIndex();
-      const repoPath = repos[repoName];
-      if (!repoPath) return { ok: false, error: "unknown repo" };
-      const repaired = checkAndRepairHooksPath(repoName, repoPath);
-      return { ok: true, repaired };
-    }
-
-    case "hooks:watch": {
-      const repoName = payload?.repo;
-      if (!repoName) return { ok: false, error: "missing repo" };
-      const repos = loadRepoIndex();
-      const repoPath = repos[repoName];
-      if (repoPath) startWatchingRepo(repoName, repoPath);
-      return { ok: true };
-    }
-
-    case "repos": {
-      const repos = loadRepoIndex();
-      const watched = [...watchedConfigs.keys()];
-      const detailed: Record<string, { path: string; worktrees: Array<{ path: string; branch: string }> }> = {};
-
-      for (const [repoName, repoPath] of Object.entries(repos)) {
-        if (!existsSync(repoPath)) continue;
-
-        const worktrees: Array<{ path: string; branch: string }> = [];
-        try {
-          const output = execSync("git worktree list --porcelain", {
-            cwd: repoPath, encoding: "utf8", stdio: "pipe",
-          });
-          let currentPath = "";
-          let currentBranch = "";
-          for (const line of output.split("\n")) {
-            if (line.startsWith("worktree ")) {
-              if (currentPath && currentBranch) {
-                worktrees.push({ path: currentPath, branch: currentBranch });
-              }
-              currentPath = line.replace("worktree ", "").trim();
-              currentBranch = "";
-            } else if (line.startsWith("branch ")) {
-              currentBranch = line.replace("branch refs/heads/", "").trim();
-            }
-          }
-          if (currentPath && currentBranch) {
-            worktrees.push({ path: currentPath, branch: currentBranch });
-          }
-        } catch { /* git command failed */ }
-
-        detailed[repoName] = { path: repoPath, worktrees };
-      }
-
-      return { ok: true, data: { repos: detailed, watched } };
-    }
-
-    case "ports": {
-      // Return cached port data, optionally filtered by repo
-      const repoFilter = payload?.repo as string | undefined;
-      let ports = portCache;
-      if (repoFilter) {
-        ports = ports.filter(p => p.repo === repoFilter);
-      }
-
-      // Group by repo → worktree for structured display
-      const grouped: Record<string, Record<string, PortEntry[]>> = {};
-      for (const entry of ports) {
-        const repoKey = entry.repo || "unknown";
-        const wtKey = entry.worktree || "unknown";
-        if (!grouped[repoKey]) grouped[repoKey] = {};
-        if (!grouped[repoKey]![wtKey]) grouped[repoKey]![wtKey] = [];
-        grouped[repoKey]![wtKey]!.push(entry);
-      }
-
-      return {
-        ok: true,
-        data: {
-          ports,
-          grouped,
-          updatedAt: portCacheUpdatedAt,
-          age: portCacheUpdatedAt ? Date.now() - portCacheUpdatedAt : null,
-        },
-      };
-    }
-
-    case "status": {
-      return {
-        ok: true,
-        data: {
-          pid: process.pid,
-          uptime: Date.now() - startedAt,
-          watchedRepos: watchedConfigs.size,
-          cacheEntries: Object.keys(cache.entries).length,
-          portsCached: portCache.length,
-          portCacheAge: portCacheUpdatedAt ? Date.now() - portCacheUpdatedAt : null,
-        },
-      };
-    }
-
-    case "tcc:check": {
-      // Self-test: can the daemon actually read each registered repo path?
-      // EPERM here means macOS TCC has not granted the daemon binary access
-      // to the parent directory (typically ~/Documents/...). The CLI shell
-      // running rt verify has its own TCC grants (via Terminal.app), so it
-      // can't detect this on its own — only the daemon can.
-      const repos = loadRepoIndex();
-      const blocked: Array<{ name: string; path: string; error: string }> = [];
-      const accessible: string[] = [];
-      for (const [name, path] of Object.entries(repos)) {
-        try {
-          readdirSync(path);
-          accessible.push(name);
-        } catch (err: any) {
-          if (err?.code === "EPERM" || err?.code === "EACCES") {
-            blocked.push({ name, path, error: err.code });
-          }
-          // ENOENT etc — repo moved/deleted, not a TCC issue, ignore
-        }
-      }
-      return {
-        ok: true,
-        data: {
-          blocked,
-          accessible,
-          totalRepos: Object.keys(repos).length,
-          daemonPid: process.pid,
-        },
-      };
-    }
-
-    case "notifications": {
-      // Drain the notification queue — tray app calls this on startup
-      // to pick up any events that accumulated while it was offline
-      return { ok: true, data: drainNotifications() };
-    }
-
-    case "notifications:peek": {
-      // Peek without draining — for diagnostics
-      return { ok: true, data: peekNotifications() };
-    }
-
-    case "tray:status": {
-      // Richer status payload designed for the menu bar tray app
-      const portsByRepo: Record<string, number> = {};
-      for (const p of portCache) {
-        const repo = p.repo || "unknown";
-        portsByRepo[repo] = (portsByRepo[repo] || 0) + 1;
-      }
-
-      return {
-        ok: true,
-        data: {
-          pid: process.pid,
-          uptime: Date.now() - startedAt,
-          memoryUsage: process.memoryUsage().rss,
-          watchedRepos: watchedConfigs.size,
-          cacheEntries: Object.keys(cache.entries).length,
-          portsCached: portCache.length,
-          portCacheAge: portCacheUpdatedAt ? Date.now() - portCacheUpdatedAt : null,
-          lastRefresh: lastRefreshTimestamp || null,
-          portsByRepo,
-          pendingNotifications: peekNotifications().length,
-        },
-      };
-    }
-
-    // ── Port allocation ────────────────────────────────────────────────────────
-
-    case "port:allocate": {
-      const { label } = payload as { label: string };
-      if (!label) return { ok: false, error: "missing label" };
-      const port = portAllocator.allocate(label);
-      return { ok: true, data: { port } };
-    }
-
-    case "port:release": {
-      const { label, port } = payload as { label?: string; port?: number };
-      if (label) {
-        portAllocator.releaseByLabel(label);
-      } else if (port !== undefined) {
-        portAllocator.release(port);
-      } else {
-        return { ok: false, error: "missing label or port" };
-      }
-      return { ok: true };
-    }
-
-    case "port:list": {
-      return { ok: true, data: portAllocator.list() };
-    }
-
-    // ── Exclusive groups ───────────────────────────────────────────────────────
-
-    case "group:create": {
-      const { id } = payload as { id: string };
-      if (!id) return { ok: false, error: "missing id" };
-      exclusiveGroup.create(id);
-      return { ok: true };
-    }
-
-    case "group:remove": {
-      const { id } = payload as { id: string };
-      if (!id) return { ok: false, error: "missing id" };
-      exclusiveGroup.remove(id);
-      return { ok: true };
-    }
-
-    case "group:add": {
-      const { groupId, processId } = payload as { groupId: string; processId: string };
-      if (!groupId || !processId) return { ok: false, error: "missing groupId or processId" };
-      exclusiveGroup.addMember(groupId, processId);
-      return { ok: true };
-    }
-
-    case "group:remove-member": {
-      const { groupId, processId } = payload as { groupId: string; processId: string };
-      if (!groupId || !processId) return { ok: false, error: "missing groupId or processId" };
-      exclusiveGroup.removeMember(groupId, processId);
-      return { ok: true };
-    }
-
-    case "group:activate": {
-      const { groupId, processId, mode } = payload as { groupId: string; processId: string; mode?: "warm" | "single" };
-      if (!groupId || !processId) return { ok: false, error: "missing groupId or processId" };
-      await exclusiveGroup.activate(groupId, processId, mode ?? "warm");
-      return { ok: true };
-    }
-
-    case "group:list": {
-      return { ok: true, data: exclusiveGroup.list() };
-    }
-
-    case "group:get": {
-      const { id } = payload as { id: string };
-      if (!id) return { ok: false, error: "missing id" };
-      return { ok: true, data: exclusiveGroup.get(id) };
-    }
-
-    // ── Workspace sync ─────────────────────────────────────────────────────────
-
-    case "workspace:sync:start": {
-      const { repo, repoPath, fileName, sourcePath } = payload as {
-        repo: string; repoPath: string; fileName: string; sourcePath: string;
-      };
-      if (!repo || !repoPath || !fileName) {
-        return { ok: false, error: "missing repo, repoPath, or fileName" };
-      }
-
-      const config: WorkspaceSyncConfig = {
-        fileName,
-        enabled: true,
-        preserveKeys: [
-          "peacock.color",
-          "peacock.favoriteColors",
-          "workbench.colorCustomizations",
-        ],
-      };
-
-      // Save config
-      saveSyncConfig(repo, config);
-
-      // Add to git exclude
-      ensureGitExclude(repoPath, fileName);
-
-      // Do initial sync from the specified source
-      const worktrees = getWorktreePaths(repoPath);
-      const targetPaths = worktrees.map(wt => join(wt, fileName));
-      const result = syncWorkspaceFile(
-        sourcePath || join(repoPath, fileName),
-        targetPaths,
-        config.preserveKeys,
-        log,
-      );
-
-      config.lastSyncAt = new Date().toISOString();
-      config.lastSyncSource = sourcePath;
-      saveSyncConfig(repo, config);
-
-      // Start watching
-      startWatching(repo, repoPath, config, log);
-
-      return { ok: true, data: result };
-    }
-
-    case "workspace:sync:stop": {
-      const { repo } = payload as { repo: string };
-      if (!repo) return { ok: false, error: "missing repo" };
-
-      stopWatching(repo, log);
-
-      // Disable config
-      const config = loadSyncConfig(repo);
-      if (config) {
-        config.enabled = false;
-        saveSyncConfig(repo, config);
-      }
-
-      // Remove from git exclude
-      const repos = loadRepoIndex();
-      const repoPath = repos[repo];
-      if (repoPath && config) {
-        removeGitExclude(repoPath, config.fileName);
-      }
-
-      return { ok: true };
-    }
-
-    case "workspace:sync:status": {
-      const { repo } = payload as { repo: string };
-      if (!repo) return { ok: false, error: "missing repo" };
-      return { ok: true, data: getWatcherStatus(repo) };
-    }
-
-    case "workspace:sync:trigger": {
-      const { repo } = payload as { repo: string };
-      if (!repo) return { ok: false, error: "missing repo" };
-
-      const config = loadSyncConfig(repo);
-      if (!config) return { ok: false, error: "no sync config for this repo" };
-
-      const repos = loadRepoIndex();
-      const repoPath = repos[repo];
-      if (!repoPath) return { ok: false, error: "unknown repo" };
-
-      // Find the most recently modified copy as source
-      const worktrees = getWorktreePaths(repoPath);
-      let latestPath = "";
-      let latestMtime = 0;
-      for (const wt of worktrees) {
-        const fp = join(wt, config.fileName);
-        try {
-          const mt = statSync(fp).mtimeMs;
-          if (mt > latestMtime) { latestMtime = mt; latestPath = fp; }
-        } catch { /* missing */ }
-      }
-
-      if (!latestPath) return { ok: false, error: "no workspace files found" };
-
-      const targetPaths = worktrees.map(wt => join(wt, config.fileName));
-      const result = syncWorkspaceFile(latestPath, targetPaths, config.preserveKeys, log);
-
-      config.lastSyncAt = new Date().toISOString();
-      config.lastSyncSource = latestPath;
-      saveSyncConfig(repo, config);
-
-      return { ok: true, data: result };
-    }
-
-    // ──────────────────────────────────────────────────────────────────────────
-
     case "shutdown":
       log("received shutdown command");
       cleanup();
