@@ -11,6 +11,8 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@types/react": "^19.2.14",
+    "@xterm/headless": "^6.0.0",
+    "node-pty": "^1.1.0",
     "react-devtools-core": "^7.0.1"
   },
   "peerDependencies": {
