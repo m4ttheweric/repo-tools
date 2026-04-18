@@ -21,6 +21,51 @@ export interface SpawnConfig {
   env?: Record<string, string>;
 }
 
+/**
+ * Evict any process currently bound to `port`. Covers the TIME_WAIT / stuck
+ * process case where the previous tenant hasn't released the socket yet.
+ * Runs lsof asynchronously so it doesn't block the daemon event loop, and
+ * gives the kernel a 150ms grace window before returning so the next bind
+ * has a better chance of succeeding.
+ */
+async function evictPort(port: string): Promise<void> {
+  try {
+    const proc = Bun.spawn(["sh", "-c", `lsof -ti :${port}`], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const [stdout] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    const pids = stdout.trim().split("\n").filter(Boolean);
+    if (pids.length === 0) return;
+    for (const pid of pids) {
+      try { process.kill(Number(pid), 9); } catch { /* already dead */ }
+    }
+    await new Promise<void>((r) => setTimeout(r, 150));
+  } catch { /* best-effort */ }
+}
+
+/**
+ * Signal an entire process group. Children are spawned with `detached: true`
+ * so each spawn is its own pgroup leader (pgid == pid). Signalling `-pid`
+ * delivers to every process in the group — the immediate child plus any
+ * transitive descendants that haven't changed their pgid.
+ *
+ * Guards:
+ *   - refuses pid 0/1 (would hit our own pgroup or init)
+ *   - swallows ESRCH (group already empty — normal race with process exit)
+ */
+export function killGroup(pid: number | undefined, signal: NodeJS.Signals): void {
+  if (!pid || pid <= 1) return;
+  try {
+    process.kill(-pid, signal);
+  } catch (err: any) {
+    if (err?.code !== "ESRCH") {
+      // Any other error (EPERM, EINVAL) is unexpected — surface it via throw
+      // so callers see it in the daemon log rather than silently swallowing.
+      throw err;
+    }
+  }
+}
+
 interface ManagedProcess {
   proc: ReturnType<typeof Bun.spawn>;
   terminal: ReturnType<typeof Bun.Terminal>;
@@ -55,7 +100,12 @@ export class ProcessManager {
   subscribeToOutput(id: string, cb: (chunk: Uint8Array) => void): () => void {
     if (!this.outputHooks.has(id)) this.outputHooks.set(id, new Set());
     this.outputHooks.get(id)!.add(cb);
-    return () => this.outputHooks.get(id)?.delete(cb);
+    return () => {
+      const set = this.outputHooks.get(id);
+      if (!set) return;
+      set.delete(cb);
+      if (set.size === 0) this.outputHooks.delete(id);
+    };
   }
 
   async spawn(id: string, cmd: string, opts: { cwd: string; env?: Record<string, string> }): Promise<void> {
@@ -68,27 +118,16 @@ export class ProcessManager {
     // Close any existing attach socket before opening a new one
     this.attachServer.close(id);
 
-    // Kill the previous process for this ID if still running
+    // Kill the previous process for this ID if still running.
+    // Signal the whole pgroup so any grandchildren go with it.
     const existing = this.processes.get(id);
     if (existing) {
-      try { existing.proc.kill("SIGKILL"); } catch { /* ignore */ }
+      killGroup(existing.proc.pid, "SIGKILL");
       this.processes.delete(id);
     }
 
-    // Evict any process currently holding PORT (handles TIME_WAIT / stuck processes)
-    const portEnv = opts.env?.PORT;
-    if (portEnv) {
-      try {
-        const lsof = Bun.spawnSync(["sh", "-c", `lsof -ti :${portEnv}`]);
-        const pids = new TextDecoder().decode(lsof.stdout).trim().split("\n").filter(Boolean);
-        for (const pid of pids) {
-          try { process.kill(Number(pid), 9); } catch { /* already dead */ }
-        }
-        if (pids.length > 0) {
-          await new Promise<void>((r) => setTimeout(r, 150));
-        }
-      } catch { /* best-effort */ }
-    }
+    // Evict anything still holding the target PORT before we try to bind it.
+    if (opts.env?.PORT) await evictPort(opts.env.PORT);
 
     // Save config for respawn before spawning
     const config: SpawnConfig = { cmd, cwd: opts.cwd, env: opts.env };
@@ -119,11 +158,19 @@ export class ProcessManager {
       terminal,
       cwd: opts.cwd,
       env: mergedEnv,
+      // Put the child in its own session/pgroup so kill() can reap
+      // grandchildren (vite → esbuild worker, etc.) via process.kill(-pid).
+      // Without this, the child inherits the daemon's pgroup and signalling
+      // -pid either errors (ESRCH) or targets the daemon itself.
+      detached: true,
     });
 
     const managed: ManagedProcess = { proc, terminal, config };
     this.processes.set(id, managed);
 
+    // Record pid BEFORE marking running so reconcileAfterRestart can find
+    // orphaned warm processes if we crash between spawn and exit.
+    this.stateStore.setPid(id, proc.pid);
     this.stateStore.setState(id, "running");
 
     // Open attach socket so `rt attach` clients can connect
@@ -157,11 +204,14 @@ export class ProcessManager {
       await this.suspendManager.resume(id);
     }
 
-    try { managed.proc.kill("SIGTERM"); } catch { /* ignore */ }
+    // Signal the whole pgroup, not just the immediate child — otherwise
+    // grandchildren (webpack/vite workers spawned by the user's dev command)
+    // survive as orphans reparented to pid 1 and keep holding their ports.
+    killGroup(managed.proc.pid, "SIGTERM");
 
-    // Fallback SIGKILL after 5 seconds
+    // Fallback SIGKILL after 5 seconds — also pgroup-scoped.
     const killTimeout = setTimeout(() => {
-      try { managed.proc.kill("SIGKILL"); } catch { /* ignore */ }
+      killGroup(managed.proc.pid, "SIGKILL");
     }, 5000);
 
     await managed.proc.exited;
@@ -191,6 +241,11 @@ export class ProcessManager {
 
   list(): { id: string; config: SpawnConfig }[] {
     return Array.from(this.spawnConfigs.entries()).map(([id, config]) => ({ id, config }));
+  }
+
+  /** Return the stored spawn config for `id`, if any. */
+  getSpawnConfig(id: string): SpawnConfig | undefined {
+    return this.spawnConfigs.get(id);
   }
 
   /** Remove all record of a process. Does not kill the running process. */

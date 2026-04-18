@@ -107,12 +107,24 @@ export class RemedyEngine {
    */
   reloadGlobals(globals: GlobalRemedy[]): void {
     this.globalRemedies = globals;
-    // Re-merge for every currently-registered process
+    // Re-merge for every currently-registered process. If this flips a state
+    // from empty→non-empty remedies, we also need to subscribe now (onSpawn
+    // would have early-returned when globals didn't match yet).
     for (const [id, s] of this.states) {
       const entry = this.entryRemedies.get(id) ?? [];
       const meta  = this.processMeta.get(id);
-      if (meta) {
-        s.remedies = this.mergeRemedies(entry, meta.cwd, meta.cmd);
+      if (!meta) continue;
+      const prevHad = s.remedies.length > 0;
+      s.remedies = this.mergeRemedies(entry, meta.cwd, meta.cmd);
+      const nowHas = s.remedies.length > 0;
+      if (!prevHad && nowHas) {
+        s.unsub();
+        s.unsub = this.processManager.subscribeToOutput(id, (chunk) => {
+          void this.handleChunk(id, chunk);
+        });
+      } else if (prevHad && !nowHas) {
+        s.unsub();
+        s.unsub = () => {};
       }
     }
   }

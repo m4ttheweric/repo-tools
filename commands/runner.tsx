@@ -41,10 +41,13 @@ import { extendTheme, darkTheme } from "@rezi-ui/core";
 import { spawnSync } from "node:child_process";
 import { join, basename, relative } from "node:path";
 import { tmpdir, homedir } from "node:os";
-import { existsSync, readFileSync, unlinkSync, mkdirSync, writeFileSync, rmSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { daemonQuery, isDaemonRunning } from "../lib/daemon-client.ts";
+import {
+  readCurrentBranch, readCurrentBranchAsync, createGitWatcherPool,
+} from "../lib/runner/git-watchers.ts";
 import {
   listRunnerConfigs, loadRunnerConfig, saveRunnerConfig, resetRunnerConfig,
   acquireRunnerLock, releaseRunnerLock,
@@ -449,32 +452,7 @@ async function restartEntry(lane: LaneConfig, entry: LaneEntry): Promise<number>
 
 
 // ─── Git HEAD helpers ─────────────────────────────────────────────────────────
-
-/**
- * Returns the common .git directory for any worktree path.
- * `git rev-parse --git-common-dir` always returns the main repo's .git dir,
- * even when called from a linked worktree — so this is the right thing to watch
- * for a lane (one watcher covers all worktrees of that repo).
- */
-function repoGitDir(worktreePath: string): string | null {
-  try {
-    const result = spawnSync("git", ["rev-parse", "--git-common-dir"], { cwd: worktreePath, encoding: "utf8" });
-    if (result.status !== 0) return null;
-    const gitDir = result.stdout.trim();
-    return gitDir.startsWith("/") ? gitDir : join(worktreePath, gitDir);
-  } catch {
-    return null;
-  }
-}
-
-function readCurrentBranch(worktreePath: string): string | null {
-  try {
-    const result = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath, encoding: "utf8" });
-    return result.status === 0 ? result.stdout.trim() : null;
-  } catch {
-    return null;
-  }
-}
+// (branch readers and watcher-pool factory live in ../lib/runner/git-watchers.ts)
 
 // ─── Enrichment ───────────────────────────────────────────────────────────────
 
@@ -988,6 +966,8 @@ async function runOnce(
         await daemonQuery("process:kill", { id: win });
         await daemonQuery("group:remove-member", { groupId: lane.id, processId: win });
         await daemonQuery("port:release", { label: win });
+        await daemonQuery("process:remove", { id: win }); // free daemon-side maps
+
         // Proxy re-point uses the captured lane — accurate at dispatch time
         // even if other entries are added later; the mutator re-derives the
         // activeEntryId against the live lanes list.
@@ -1018,6 +998,7 @@ async function runOnce(
         await daemonQuery("group:remove", { id: action.laneId });
         for (const e of lane.entries) {
           await daemonQuery("port:release", { label: entryWindowName(action.laneId, e.id) });
+          await daemonQuery("process:remove", { id: entryWindowName(action.laneId, e.id) });
         }
         return {
           mutate: (ls) => ls.filter((l) => l.id !== action.laneId),
@@ -1042,6 +1023,12 @@ async function runOnce(
             daemonQuery("proxy:stop", { id: proxyWindowName(lane.id) }),
             daemonQuery("group:remove", { id: lane.id }),
           ])
+        );
+        // After kills complete, free all daemon-side per-process state so
+        // spawnConfigs/stateStore/logBuffer don't accumulate across resets.
+        await Promise.all(
+          lanes.flatMap((lane) => lane.entries.map((e) =>
+            daemonQuery("process:remove", { id: entryWindowName(lane.id, e.id) }))),
         );
         return {
           mutate: () => [],
@@ -1568,70 +1555,12 @@ async function runOnce(
   }, 3_000);
 
   // ── Git HEAD watchers (one per lane / repo) ───────────────────────────────
-  // Each lane is bound to one repo. We watch that repo's common .git dir with
-  // recursive: true — a single FSEvents watcher covers HEAD changes in all
-  // linked worktrees (.git/worktrees/<name>/HEAD) as well as the main one.
-  const gitWatchers = new Map<string, FSWatcher>(); // laneId → watcher
-
+  // Watcher creation, per-lane debounce, and linked-worktree handling all live
+  // in `createGitWatcherPool`. We hand it a callback that runs the state-
+  // update logic for the lane whose HEAD moved.
+  const gitWatcherPool = createGitWatcherPool((laneId) => doRepoChange(laneId));
   function syncGitWatchers(lanes: LaneConfig[]): void {
-    const activeLaneIds = new Set(lanes.map((l) => l.id));
-
-    // Remove watchers for lanes that no longer exist
-    for (const [laneId, w] of gitWatchers) {
-      if (!activeLaneIds.has(laneId)) { try { w.close(); } catch { /* */ } gitWatchers.delete(laneId); }
-    }
-
-    // Add a watcher for each lane that has at least one entry with a worktree.
-    // Watch only the git common dir's HEAD-adjacent files (not the entire .git
-    // dir recursively) so the watcher only fires on real branch changes and not
-    // on every git operation (fetch, gc, ref updates, etc.) — which previously
-    // triggered spurious doRepoChange calls that could race with addResolvedEntry
-    // and save a stale lane snapshot that dropped newly-added entries.
-    for (const lane of lanes) {
-      if (gitWatchers.has(lane.id)) continue;
-      const anyWorktree = lane.entries.find((e) => e.worktree)?.worktree;
-      if (!anyWorktree) continue;
-      const gitDir = repoGitDir(anyWorktree);
-      if (!gitDir || !existsSync(gitDir)) continue;
-      try {
-        // Watch the git common dir NON-recursively and filter to HEAD only.
-        // This fires when the main worktree switches branches. Linked worktrees
-        // have their HEAD under .git/worktrees/<name>/HEAD — watch that subdir too.
-        const onEvent = (_evt: string, filename: string | null) => {
-          if (filename === "HEAD") onRepoChange(lane.id);
-        };
-        const w = watch(gitDir, onEvent);
-        gitWatchers.set(lane.id, w);
-        // Also watch the worktrees subdir if it exists (linked worktree HEADs live here)
-        const worktreesDir = join(gitDir, "worktrees");
-        if (existsSync(worktreesDir)) {
-          try {
-            const ww = watch(worktreesDir, { recursive: true }, (_evt, filename) => {
-              if (filename?.endsWith("HEAD")) onRepoChange(lane.id);
-            });
-            // Store under a derived key so cleanup still works
-            gitWatchers.set(`${lane.id}:wt`, ww);
-          } catch { /* worktrees subdir watch failed — main HEAD watcher still active */ }
-        }
-      } catch { /* fs.watch not available for this path */ }
-    }
-  }
-
-  // Debounce per-lane: git checkout touches dozens of .git/ files, causing
-  // a storm of FSEvents. Without debouncing, each event calls spawnSync which
-  // blocks the event loop and makes arrow keys unresponsive for several seconds.
-  const repoChangeDebounce = new Map<string, ReturnType<typeof setTimeout>>();
-
-  function onRepoChange(laneId: string): void {
-    const existing = repoChangeDebounce.get(laneId);
-    if (existing) clearTimeout(existing);
-    repoChangeDebounce.set(
-      laneId,
-      setTimeout(() => {
-        repoChangeDebounce.delete(laneId);
-        doRepoChange(laneId);
-      }, 150), // 150ms quiet period — git finishes writing before we read HEAD
-    );
+    gitWatcherPool.sync(lanes);
   }
 
   function doRepoChange(laneId: string, attempt = 0): void {
@@ -2372,8 +2301,7 @@ async function runOnce(
   clearInterval(pollTimer);
   clearInterval(enrichTimer);
   clearInterval(spinnerTimer);
-  for (const w of gitWatchers.values()) { try { w.close(); } catch { /* */ } }
-  gitWatchers.clear();
+  gitWatcherPool.dispose();
 
   // ── Lane pane cleanup ─────────────────────────────────────────────────────
   hideMrPane();
@@ -2513,15 +2441,19 @@ export async function showRunner(args: string[], _ctx: CommandContext): Promise<
   const lanes = loadRunnerConfig(runnerName);
 
   // Branches are no longer stored in the config — read them from git eagerly
-  // at startup so the display shows branch names from the first render.
-  for (const lane of lanes) {
-    for (const entry of lane.entries) {
-      if (entry.worktree) {
-        const branch = readCurrentBranch(entry.worktree);
-        if (branch) entry.branch = branch;
-      }
-    }
-  }
+  // at startup so the display shows branch names from the first render. Read
+  // in parallel: with 10+ entries this drops ~300ms of serial git calls to
+  // the slowest single call.
+  await Promise.all(
+    lanes.flatMap((lane) =>
+      lane.entries
+        .filter((e) => e.worktree)
+        .map(async (entry) => {
+          const branch = await readCurrentBranchAsync(entry.worktree);
+          if (branch) entry.branch = branch;
+        }),
+    ),
+  );
 
   const knownRepos = getKnownRepos();
 
