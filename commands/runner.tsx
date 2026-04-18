@@ -55,6 +55,8 @@ import {
   globalRemedyPath, remediesDir,
   type LaneConfig, type LaneEntry, type LaneMode,
 } from "../lib/runner-store.ts";
+import type { ProcessState } from "../lib/daemon/state-store.ts";
+import { mergeOptimisticStates } from "../lib/runner/optimistic-state.ts";
 import type { RunResolveResult } from "./run.ts";
 import { RT_ROOT, getKnownRepos, type KnownRepo } from "../lib/repo.ts";
 import { willPrompt } from "./code.ts";
@@ -1263,27 +1265,14 @@ async function runOnce(
       // window is often too brief for the 2s poll to catch. So we preserve
       // client-side optimistic transients until (a) the daemon confirms the
       // expected terminal state AND (b) the minimum display time has elapsed.
-      const merged = new Map(entryStates);
-      const now = Date.now();
-      for (const [id, current] of s.entryStates) {
-        if (current === "stopping") {
-          const fresh = entryStates.get(id) ?? "stopped";
-          const age = now - (optimisticSetAt.get(id) ?? 0);
-          if (fresh !== "stopped" && fresh !== "crashed" || age < MIN_TRANSIENT_MS) {
-            merged.set(id, "stopping");
-          } else {
-            optimisticSetAt.delete(id);
-          }
-        } else if (current === "starting") {
-          const fresh = entryStates.get(id);
-          const age = now - (optimisticSetAt.get(id) ?? 0);
-          if (fresh !== "running" && fresh !== "crashed" || age < MIN_TRANSIENT_MS) {
-            merged.set(id, "starting");
-          } else {
-            optimisticSetAt.delete(id);
-          }
-        }
-      }
+      const { merged, expiredIds } = mergeOptimisticStates({
+        daemonStates: entryStates,
+        currentStates: s.entryStates,
+        optimisticSetAt,
+        now: Date.now(),
+        minTransientMs: MIN_TRANSIENT_MS,
+      });
+      for (const id of expiredIds) optimisticSetAt.delete(id);
       return { ...s, entryStates: merged, proxyStates };
     });
   }
