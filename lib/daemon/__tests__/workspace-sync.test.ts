@@ -7,7 +7,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -77,6 +77,34 @@ describe("syncWorkspaceFile — deep merge with preserveKeys", () => {
 
     // Result includes per-target color summary
     expect(result.results.map((r) => r.color).sort()).toEqual(["#aaaaaa", "#bbbbbb"]);
+  });
+
+  test("no-op when target content already matches merged output (mtime unchanged)", async () => {
+    // Regression: without this guard, every sync round bumps mtime, which
+    // VS Code reloads as a workspace change and creates a feedback loop via
+    // the daemon's fs.watch watchers.
+    const source = join(tmp, "src.code-workspace");
+    const target = join(tmp, "t.code-workspace");
+
+    const sourceContent = {
+      folders: [{ path: "." }],
+      settings: { "editor.fontSize": 14, "peacock.color": "#111111" },
+    };
+    writeFileSync(source, JSON.stringify(sourceContent));
+
+    // Seed target with canonical post-sync form (source content + target's own peacock).
+    const canonical = { ...sourceContent, settings: { ...sourceContent.settings, "peacock.color": "#aaaaaa" } };
+    writeFileSync(target, JSON.stringify(canonical, null, 2) + "\n");
+
+    const mtimeBefore = statSync(target).mtimeMs;
+    // Bun.sleep ensures any actual write would bump mtime detectably.
+    await Bun.sleep(20);
+
+    const result = syncWorkspaceFile(source, [source, target], ["peacock.color"]);
+
+    expect(result.synced).toBe(0);
+    expect(result.results).toEqual([]);
+    expect(statSync(target).mtimeMs).toBe(mtimeBefore);
   });
 
   test("skips nonexistent targets silently (no throw)", () => {

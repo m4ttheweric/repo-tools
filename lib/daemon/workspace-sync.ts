@@ -146,9 +146,16 @@ export function syncWorkspaceFile(
     if (targetPath === sourcePath) continue;
     if (!existsSync(targetPath)) continue;
 
+    let existingRaw: string;
+    try {
+      existingRaw = readFileSync(targetPath, "utf8");
+    } catch {
+      continue;
+    }
+
     let target: any;
     try {
-      target = parseJsonc(readFileSync(targetPath, "utf8"));
+      target = parseJsonc(existingRaw);
     } catch {
       // Target is unparseable — overwrite from source (preserving nothing)
       target = { settings: {} };
@@ -169,7 +176,16 @@ export function syncWorkspaceFile(
       merged.settings[key] = value;
     }
 
-    writeFileSync(targetPath, JSON.stringify(merged, null, 2) + "\n");
+    const mergedText = JSON.stringify(merged, null, 2) + "\n";
+
+    // Skip the write when content is already identical. Without this, every
+    // sync round bumps the target's mtime, which VS Code sees as a workspace
+    // change and reloads (resetting sidebar scroll). Worse, the write re-
+    // triggers our own fs.watch on that directory, ping-ponging writes
+    // between worktrees indefinitely.
+    if (existingRaw === mergedText) continue;
+
+    writeFileSync(targetPath, mergedText);
 
     const color = preserved["peacock.color"] || undefined;
     results.push({ path: targetPath, color });
