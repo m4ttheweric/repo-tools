@@ -43,19 +43,26 @@ export type DispatchPatch = {
 export interface DispatchState {
   lanes:       LaneConfig[];
   entryStates: Map<string, EntryState>;
+  /** Label recorded on any proxy this dispatch cycle creates. */
+  initiator:   string;
 }
 
 /** Ensure the proxy for a lane is running (creates it if missing). */
-export async function ensureProxy(lane: LaneConfig): Promise<void> {
+export async function ensureProxy(lane: LaneConfig, initiator: string): Promise<void> {
   const proxyId = proxyWindowName(lane.id);
   const status = await daemonQuery("proxy:status", { id: proxyId });
-  if (!status?.ok || !status.data) {
+  const data = status?.data as { running?: boolean; paused?: boolean } | null | undefined;
+  if (!status?.ok || !data) {
     const activeEntry = lane.entries.find((e) => e.id === lane.activeEntryId);
     await daemonQuery("proxy:start", {
       id: proxyId,
       canonicalPort: lane.canonicalPort,
       upstreamPort: activeEntry?.ephemeralPort ?? 0,
+      initiator,
     });
+  } else if (data.paused) {
+    // Rebind with the remembered upstream — runner doesn't need to care about port.
+    await daemonQuery("proxy:resume", { id: proxyId });
   }
 }
 
@@ -140,7 +147,7 @@ export async function restartEntry(lane: LaneConfig, entry: LaneEntry): Promise<
 }
 
 export async function dispatch(action: LaneAction, s: DispatchState): Promise<DispatchPatch> {
-  const { lanes, entryStates } = s;
+  const { lanes, entryStates, initiator } = s;
 
   function est(win: string): EntryState {
     return entryStates.get(win) ?? "stopped";
@@ -151,7 +158,7 @@ export async function dispatch(action: LaneAction, s: DispatchState): Promise<Di
       const lane = lanes.find((l) => l.id === action.laneId);
       const entry = lane?.entries.find((e) => e.id === action.entryId);
       if (!lane || !entry) return {};
-      await ensureProxy(lane);
+      await ensureProxy(lane, initiator);
       const actualPort = await startEntry(lane, entry);
       return {
         mutate: (ls) => ls.map((l) => {
@@ -171,7 +178,7 @@ export async function dispatch(action: LaneAction, s: DispatchState): Promise<Di
       if (!lane || !entry) return {};
       const processId = entryWindowName(lane.id, entry.id);
       const entryState = est(processId);
-      await ensureProxy(lane);
+      await ensureProxy(lane, initiator);
       if (entryState === "stopped" || entryState === "crashed") {
         // Not running — do a full start (spawn + group:activate + proxy)
         const actualPort = await startEntry(lane, entry);
@@ -199,7 +206,7 @@ export async function dispatch(action: LaneAction, s: DispatchState): Promise<Di
       const lane = lanes.find((l) => l.id === action.laneId);
       if (!lane) return {};
       const activeId = lane.activeEntryId ?? lane.entries[0]?.id;
-      await ensureProxy(lane);
+      await ensureProxy(lane, initiator);
       // Start stopped/crashed entries individually.
       // process:start handles group:activate internally so each entry
       // correctly suspends/resumes others as it starts.
@@ -262,7 +269,7 @@ export async function dispatch(action: LaneAction, s: DispatchState): Promise<Di
       const lane = lanes.find((l) => l.id === action.laneId);
       const entry = lane?.entries.find((e) => e.id === action.entryId);
       if (!lane || !entry) return {};
-      await ensureProxy(lane);
+      await ensureProxy(lane, initiator);
       const actualPort = await startEntry(lane, entry);
       return {
         mutate: (ls) => ls.map((l) => {
@@ -287,7 +294,7 @@ export async function dispatch(action: LaneAction, s: DispatchState): Promise<Di
       const lane = lanes.find((l) => l.id === action.laneId);
       const entry = lane?.entries.find((e) => e.id === action.entryId);
       if (!lane || !entry) return {};
-      await ensureProxy(lane);
+      await ensureProxy(lane, initiator);
       const actualPort = await restartEntry(lane, entry);
       return {
         mutate: (ls) => ls.map((l) => {

@@ -107,7 +107,7 @@ export function createProcessHandlers(ctx: HandlerContext): HandlerMap {
           // lost but the runner still expects it to exist.
           diag("process.start.proxy.missing", id, { proxyId, canonicalPort, ephemeralPort, err: String(err) });
           try {
-            ctx.proxyManager.start(proxyId, canonicalPort, ephemeralPort);
+            ctx.proxyManager.start(proxyId, canonicalPort, ephemeralPort, "daemon:recovery");
             diag("process.start.proxy.recreated", id, { proxyId, canonicalPort, ephemeralPort });
           } catch (err2) {
             diag("process.start.proxy.recreate.failed", id, { proxyId, err: String(err2) });

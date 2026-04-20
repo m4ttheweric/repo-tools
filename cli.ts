@@ -227,6 +227,27 @@ const TREE: Record<string, CommandNode> = {
     fn: "portScanner",
   },
 
+  proxy: {
+    description: "Pause/resume daemon-managed reverse proxies",
+    subcommands: {
+      list: {
+        description: "Show all registered proxies and their state",
+        module: "./commands/proxy.ts",
+        fn: "listCommand",
+      },
+      pause: {
+        description: "Pause a proxy by port, picker if no port, or --all",
+        module: "./commands/proxy.ts",
+        fn: "pauseCommand",
+      },
+      resume: {
+        description: "Resume a paused proxy by port, picker if no port, or --all",
+        module: "./commands/proxy.ts",
+        fn: "resumeCommand",
+      },
+    },
+  },
+
   status: {
     description: "Live branch dashboard with MR actions, pipeline & review status",
     module: "./commands/status.tsx",

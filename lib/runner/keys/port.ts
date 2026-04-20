@@ -37,7 +37,7 @@ export function createPortKeymap(ctx: KeymapContext): KeymapHandlers {
             // Stop old proxy and start new one on the updated port
             void daemonQuery("proxy:stop", { id: proxyWindowName(mode.laneId) }).then(() => {
               const updatedLane = { ...oldLane, canonicalPort: port };
-              void ensureProxy(updatedLane);
+              void ensureProxy(updatedLane, ctx.initiator);
             });
             update((s) => {
               const updatedLane = { ...oldLane, canonicalPort: port };
