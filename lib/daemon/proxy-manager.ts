@@ -26,11 +26,27 @@ interface Bridge {
 }
 
 interface ProxyEntry {
-  server: ReturnType<typeof Bun.serve>;
+  /** null while paused — the Bun server is torn down but the entry is kept. */
+  server: ReturnType<typeof Bun.serve> | null;
   canonicalPort: number;
   upstreamPort: number;
   bridges: Set<Bridge>;
   setUpstream: (p: number) => void;
+  /**
+   * Free-form label for whoever started the proxy, e.g. "runner:assured" or
+   * "daemon:recovery". Survives pause/resume. Overwritten by start().
+   */
+  initiator: string;
+  paused: boolean;
+}
+
+export interface ProxyInfo {
+  id: string;
+  canonicalPort: number;
+  upstreamPort: number;
+  running: boolean;
+  paused: boolean;
+  initiator: string;
 }
 
 export class ProxyManager {
@@ -41,7 +57,7 @@ export class ProxyManager {
     return Array.from(this.proxies.keys()).sort();
   }
 
-  start(id: string, canonicalPort: number, upstreamPort: number): void {
+  start(id: string, canonicalPort: number, upstreamPort: number, initiator: string): void {
     const hadPrevious = this.proxies.has(id);
     // Stop existing proxy for this id if any
     this.stop(id, /* fromStart */ true);
@@ -148,11 +164,44 @@ export class ProxyManager {
       },
     });
 
-    entry = { server, canonicalPort, upstreamPort, bridges, setUpstream };
+    entry = { server, canonicalPort, upstreamPort, bridges, setUpstream, initiator, paused: false };
     this.proxies.set(id, entry);
 
     diag("proxy.start", id, {
-      canonicalPort, upstreamPort, replacedPrevious: hadPrevious,
+      canonicalPort, upstreamPort, initiator, replacedPrevious: hadPrevious,
+      size: this.proxies.size, ids: this.idsSnapshot(),
+    });
+  }
+
+  /**
+   * Stop the upstream server but keep the entry. `resume` rebinds using the
+   * remembered canonical + upstream ports. No-op if already paused or missing.
+   */
+  pause(id: string): void {
+    const entry = this.proxies.get(id);
+    if (!entry || entry.paused) return;
+    for (const b of entry.bridges) {
+      try { b.client.close(1001, "proxy paused"); } catch { /* ignore */ }
+      try { b.upstream.close(); } catch { /* ignore */ }
+    }
+    entry.bridges.clear();
+    try { entry.server?.stop(true); } catch { /* ignore */ }
+    entry.server = null;
+    entry.paused = true;
+    diag("proxy.pause", id, {
+      canonicalPort: entry.canonicalPort, upstreamPort: entry.upstreamPort,
+      size: this.proxies.size, ids: this.idsSnapshot(),
+    });
+  }
+
+  /** Rebind a paused entry. No-op if the entry is missing or not paused. */
+  resume(id: string): void {
+    const entry = this.proxies.get(id);
+    if (!entry || !entry.paused) return;
+    const { canonicalPort, upstreamPort, initiator } = entry;
+    this.start(id, canonicalPort, upstreamPort, initiator);
+    diag("proxy.resume", id, {
+      canonicalPort, upstreamPort,
       size: this.proxies.size, ids: this.idsSnapshot(),
     });
   }
@@ -181,7 +230,7 @@ export class ProxyManager {
         try { b.upstream.close(); } catch { /* ignore */ }
       }
       entry.bridges.clear();
-      try { entry.server.stop(true); } catch { /* ignore */ }
+      try { entry.server?.stop(true); } catch { /* ignore */ }
       this.proxies.delete(id);
       diag(fromStart ? "proxy.stop.replace" : "proxy.stop", id, {
         size: this.proxies.size, ids: this.idsSnapshot(),
@@ -193,18 +242,27 @@ export class ProxyManager {
     }
   }
 
-  getStatus(id: string): { id: string; canonicalPort: number; upstreamPort: number; running: boolean } | null {
+  getStatus(id: string): ProxyInfo | null {
     const entry = this.proxies.get(id);
     if (!entry) return null;
-    return { id, canonicalPort: entry.canonicalPort, upstreamPort: entry.upstreamPort, running: true };
+    return {
+      id,
+      canonicalPort: entry.canonicalPort,
+      upstreamPort:  entry.upstreamPort,
+      running:       !entry.paused,
+      paused:        entry.paused,
+      initiator:     entry.initiator,
+    };
   }
 
-  list(): { id: string; canonicalPort: number; upstreamPort: number; running: boolean }[] {
+  list(): ProxyInfo[] {
     return Array.from(this.proxies.entries()).map(([id, entry]) => ({
       id,
       canonicalPort: entry.canonicalPort,
-      upstreamPort: entry.upstreamPort,
-      running: true,
+      upstreamPort:  entry.upstreamPort,
+      running:       !entry.paused,
+      paused:        entry.paused,
+      initiator:     entry.initiator,
     }));
   }
 

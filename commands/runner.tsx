@@ -377,11 +377,29 @@ async function runOnce(
     }
   }
 
+  // Start on the first lane that has a running entry, so launching the runner
+  // lands on the work-in-progress instead of forcing the user to navigate.
+  // Mirrors the j/k navigation default (which selects each lane's active entry).
+  let initialLaneIdx = 0;
+  let initialEntryIdx = 0;
+  for (let li = 0; li < initialLanes.length; li++) {
+    const lane = initialLanes[li];
+    if (!lane) continue;
+    const ei = lane.entries.findIndex(
+      (e) => initialEntryStates.get(entryWindowName(lane.id, e.id)) === "running",
+    );
+    if (ei >= 0) {
+      initialLaneIdx = li;
+      initialEntryIdx = ei;
+      break;
+    }
+  }
+
   const app = createNodeApp<RunnerUIState>({
     initialState: {
       lanes:        initialLanes,
-      laneIdx:      0,
-      entryIdx:     0,
+      laneIdx:      initialLaneIdx,
+      entryIdx:     initialEntryIdx,
       mode:         { type: "normal" },
       entryStates:  initialEntryStates,
       proxyStates:  initialProxyStates,
@@ -665,7 +683,7 @@ async function runOnce(
       });
     }
 
-    dispatch(action, currentState).then((patch) => {
+    dispatch(action, { ...currentState, initiator: `runner:${runnerName}` }).then((patch) => {
       // app.update() calls the updater asynchronously — work that depends on
       // the mutated lanes (save, pane refresh, pane cleanup) must run INSIDE
       // the updater, not after safeUpdate() returns. A once-guard prevents
@@ -1025,7 +1043,7 @@ async function runOnce(
     const title = `lane ${lane.id} · ${lane.repoName} :${lane.canonicalPort}`;
     createBgPane(lane.id, processId, title);
   }
-  const firstInitLane = initialLanes[0];
+  const firstInitLane = initialLanes[initialLaneIdx] ?? initialLanes[0];
   if (firstInitLane) {
     initDisplayPane(firstInitLane.id);
   }
@@ -1061,6 +1079,7 @@ async function runOnce(
     focusedBranch,
     rtShell:  RT_SHELL,
     rtInvoke: RT_INVOKE,
+    initiator: `runner:${runnerName}`,
   };
 
   app.keys(createNormalKeymap(keymapContext));
@@ -1271,9 +1290,10 @@ export async function showRunner(args: string[], _ctx: CommandContext): Promise<
   const knownRepos = getKnownRepos();
 
   // Ensure all existing lanes have proxies and exclusive groups in the daemon
+  const bootInitiator = `runner:${runnerName}`;
   for (const lane of lanes) {
     void daemonQuery("group:create", { id: lane.id });
-    void ensureProxy(lane);
+    void ensureProxy(lane, bootInitiator);
     for (const entry of lane.entries) {
       void daemonQuery("group:add", { groupId: lane.id, processId: entryWindowName(lane.id, entry.id) });
     }

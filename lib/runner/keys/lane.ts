@@ -56,7 +56,7 @@ export function createLaneKeymap(ctx: KeymapContext): KeymapHandlers {
             const id = nextLaneId(s.lanes);
             const newLane: LaneConfig = { id, canonicalPort: port, entries: [], repoName, mode: "warm" };
             void daemonQuery("group:create", { id: newLane.id });
-            void ensureProxy(newLane);
+            void ensureProxy(newLane, ctx.initiator);
             ctx.createBgPane(newLane.id, "", `lane ${newLane.id} · ${newLane.repoName} :${newLane.canonicalPort}`);
             ctx.initDisplayPane(newLane.id);
             const next = [...s.lanes, newLane];

@@ -85,4 +85,6 @@ export interface KeymapContext {
   rtShell:  string;
   /** Raw argv prefix for direct spawnSync calls (no shell). */
   rtInvoke: readonly string[];
+  /** Label recorded on proxies this runner creates, e.g. "runner:assured". */
+  initiator: string;
 }
