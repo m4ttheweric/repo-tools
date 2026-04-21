@@ -172,7 +172,7 @@ async function runChecks(): Promise<CheckResult[]> {
   const { isDaemonRunning, daemonQuery } = await import("../lib/daemon-client.ts");
 
   if (!isDaemonInstalled()) {
-    results.push(fail("daemon installed", "not installed — run: rt daemon install --launchd"));
+    results.push(fail("daemon installed", "not installed — run: rt daemon install"));
     return results;
   }
 
@@ -183,7 +183,7 @@ async function runChecks(): Promise<CheckResult[]> {
   if (launchctlCheck && !launchctlCheck.includes("Could not find")) {
     results.push(pass("daemon launchd", "registered with launchd (auto-starts on login)"));
   } else {
-    results.push(warn("daemon launchd", "not registered with launchd — won't auto-start on login. Run: rt daemon install --launchd"));
+    results.push(warn("daemon launchd", "not registered with launchd — won't auto-start on login. Run: rt daemon install"));
   }
 
   const running = await isDaemonRunning();

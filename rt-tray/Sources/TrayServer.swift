@@ -127,6 +127,17 @@ class TrayServer {
                 }
                 self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true}")
 
+            } else if method == "GET" && path == "/daemon/status" {
+                let statusStr: String
+                switch self.daemonLifecycle?.status {
+                case .enabled:          statusStr = "enabled"
+                case .requiresApproval: statusStr = "requiresApproval"
+                case .notRegistered:    statusStr = "notRegistered"
+                case .notFound:         statusStr = "notFound"
+                default:                statusStr = "unknown"
+                }
+                self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true,\"status\":\"\(statusStr)\"}")
+
             } else {
                 self.sendResponse(connection: connection, status: 404, body: "{\"ok\":false,\"error\":\"not found\"}")
             }

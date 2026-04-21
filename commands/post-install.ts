@@ -246,14 +246,20 @@ export async function runPostInstall(): Promise<void> {
 
   installTrayApp();
   installExtensions();
-  await installDaemon();
-  installShellIntegrationStep();
 
+  // Launch rt-tray.app BEFORE installing the daemon so the tray's HTTP server
+  // is up when `rt daemon install` calls trayQuery("/daemon/start").
   const trayDest = join(HOME, "Applications", "rt-tray.app");
   if (existsSync(trayDest)) {
     spawnSync("open", [trayDest], { stdio: "pipe" });
-    ok("rt-tray.app", "launched");
+    ok("rt-tray.app", "launched — waiting for tray to start…");
+    // Give the tray's NWListener a moment to bind the socket before we send
+    // it the /daemon/start request.
+    await Bun.sleep(2_000);
   }
+
+  await installDaemon();
+  installShellIntegrationStep();
 
   await checkTccAccess();
 
