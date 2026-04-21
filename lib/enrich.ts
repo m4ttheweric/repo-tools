@@ -27,7 +27,7 @@ import {
 
 // ─── Remote URL parser ───────────────────────────────────────────────────────
 
-function parseRemoteUrl(url: string): { host: string; projectPath: string } | null {
+export function parseRemoteUrl(url: string): { host: string; projectPath: string } | null {
   const sshMatch = /^git@([^:]+):(.+?)(?:\.git)?$/.exec(url);
   if (sshMatch) return { host: `https://${sshMatch[1]}`, projectPath: sshMatch[2]! };
 
@@ -68,6 +68,7 @@ interface CacheEntry {
   linearId: string;
   mr: MRDashboardProps | null;
   fetchedAt: number;
+  repoName?: string;
 }
 
 interface DiskCache {
@@ -364,6 +365,7 @@ export async function refreshAllMRs(
   branches: Array<{ path: string; branch: string }>,
   remoteUrl?: string,
   onError?: (msg: string) => void,
+  repoName?: string,
 ): Promise<void> {
   const secrets = loadSecrets();
   const diskCache = readDiskCache();
@@ -445,7 +447,7 @@ export async function refreshAllMRs(
         const existing = diskCache.entries[b.branch];
         if (existing?.linearId || existing?.ticket) {
           // Keep existing enrichment — we have nothing better to replace it with
-          diskCache.entries[b.branch] = { ...existing, fetchedAt: now };
+          diskCache.entries[b.branch] = { ...existing, fetchedAt: now, repoName };
           continue;
         }
       }
@@ -455,6 +457,7 @@ export async function refreshAllMRs(
         linearId: linearId || "",
         mr,
         fetchedAt: now,
+        repoName,
       };
     } else {
       // GitLab API failed entirely — preserve existing MR data to avoid false transitions.
@@ -466,6 +469,7 @@ export async function refreshAllMRs(
         linearId:  linearId || existing?.linearId || "",
         mr:        existing?.mr ?? null,
         fetchedAt: existing?.fetchedAt ?? now,
+        repoName:  repoName ?? existing?.repoName,
       };
     }
   }

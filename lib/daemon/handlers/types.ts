@@ -24,6 +24,12 @@ export interface CacheEntry {
   linearId:  string;
   mr:        any;
   fetchedAt: number;
+  /**
+   * Repo this entry belongs to (from ~/.rt/repos.json). Optional for
+   * backward compat with older on-disk caches — populated on next
+   * refreshAllMRs pass.
+   */
+  repoName?: string;
 }
 
 /** Ring-buffer event pushed whenever a remedy fires; drained by UI polling. */
@@ -66,6 +72,8 @@ export interface HandlerContext {
   refreshCache:   () => Promise<void>;
   /** Reload cache.entries in-place from disk; used after enrichBranches writes. */
   loadCache:      () => void;
+  /** Persist cache.entries to disk. Handlers call this after mutating in-memory entries. */
+  flushCache:     () => void;
   /** Live ring buffer of remedy events; drained by remedy:drain. */
   remedyEvents:   RemedyEvent[];
 
