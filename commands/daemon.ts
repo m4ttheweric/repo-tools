@@ -26,6 +26,7 @@ import {
   markDaemonInstalled, markDaemonUninstalled, cleanupDaemonFiles,
   readDaemonPid,
   DAEMON_LOG_PATH,
+  DAEMON_STDERR_LOG_PATH,
   LAUNCHD_PLIST_PATH,
 } from "../lib/daemon-config.ts";
 import { daemonQuery, isDaemonRunning, trayQuery } from "../lib/daemon-client.ts";
@@ -89,9 +90,28 @@ export async function install(_args: string[] = []): Promise<void> {
     console.log(`  ${green}✓${reset} daemon is running`);
     console.log(`\n  ${green}${bold}✓ installed${reset} ${dim}— managed by rt-tray · launchd-supervised · TCC inherits from rt-tray.app${reset}\n`);
   } else {
+    // Query the tray to find out WHY the daemon isn't responding
+    const trayStatus = await trayQuery("/daemon/status", "GET");
+    const smStatus = trayStatus?.ok ? (trayStatus as any).status : "unknown";
+
     console.log(`  ${yellow}⚠${reset} daemon not yet responding`);
-    console.log(`  ${dim}If macOS is asking you to allow rt-tray as a background item, click Allow in System Settings → General → Login Items.${reset}`);
-    console.log(`  ${dim}check logs: rt daemon logs${reset}\n`);
+
+    if (smStatus === "requiresApproval") {
+      console.log(`  ${dim}macOS requires approval to run the background service.${reset}`);
+      console.log(`  ${dim}Opening System Settings → Login Items — click ${bold}Allow${reset}${dim} next to rt-tray.${reset}`);
+      console.log(`  ${dim}Then run: ${bold}rt daemon start${reset}\n`);
+      try { execSync("open 'x-apple.systempreferences:com.apple.LoginItems-Settings.extension'", { stdio: "pipe" }); } catch { /* */ }
+    } else if (smStatus === "notFound") {
+      console.log(`  ${red}✗${reset} daemon binary not found inside rt-tray.app`);
+      console.log(`  ${dim}Re-run: ${bold}rt --post-install${reset}${dim} to reinstall the tray app.${reset}\n`);
+    } else if (smStatus === "enabled") {
+      // Registered + approved, but daemon is crashing on launch
+      console.log(`  ${dim}The agent is registered with launchd but the process keeps exiting.${reset}`);
+      console.log(`  ${dim}Check logs: ${bold}rt daemon logs${reset}\n`);
+    } else {
+      // notRegistered, unknown, or tray unreachable
+      console.log(`  ${dim}check logs: rt daemon logs${reset}\n`);
+    }
   }
 }
 
@@ -212,17 +232,36 @@ export async function showStatus(): Promise<void> {
 // ─── Logs ────────────────────────────────────────────────────────────────────
 
 export function showLogs(): void {
-  if (!existsSync(DAEMON_LOG_PATH)) {
+  const hasMain = existsSync(DAEMON_LOG_PATH);
+  const hasStderr = existsSync(DAEMON_STDERR_LOG_PATH);
+
+  if (!hasMain && !hasStderr) {
     console.log(`\n  ${dim}no daemon logs yet${reset}\n`);
     return;
   }
 
-  const content = readFileSync(DAEMON_LOG_PATH, "utf8");
-  const lines = content.trim().split("\n");
-  const tail = lines.slice(-50);
-  console.log(`\n  ${bold}${cyan}rt daemon logs${reset} ${dim}(last ${tail.length} lines)${reset}\n`);
-  for (const line of tail) {
-    console.log(`  ${dim}${line}${reset}`);
+  console.log(`\n  ${bold}${cyan}rt daemon logs${reset}\n`);
+
+  // Show launchd stderr first — it captures crashes before daemon.log is written
+  if (hasStderr) {
+    const stderr = readFileSync(DAEMON_STDERR_LOG_PATH, "utf8").trim();
+    if (stderr) {
+      console.log(`  ${bold}launchd stderr${reset} ${dim}(~/.rt/daemon-stderr.log)${reset}`);
+      for (const line of stderr.split("\n").slice(-20)) {
+        console.log(`  ${red}${line}${reset}`);
+      }
+      console.log("");
+    }
   }
-  console.log("");
+
+  if (hasMain) {
+    const content = readFileSync(DAEMON_LOG_PATH, "utf8");
+    const lines = content.trim().split("\n");
+    const tail = lines.slice(-50);
+    console.log(`  ${bold}daemon log${reset} ${dim}(last ${tail.length} lines — ~/.rt/daemon.log)${reset}`);
+    for (const line of tail) {
+      console.log(`  ${dim}${line}${reset}`);
+    }
+    console.log("");
+  }
 }
