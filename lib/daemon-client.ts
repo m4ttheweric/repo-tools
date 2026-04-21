@@ -13,6 +13,7 @@ import {
   getDaemonConfig,
   DAEMON_SOCK_PATH,
   TRAY_SOCK_PATH,
+  API_PORT,
 } from "./daemon-config.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -147,4 +148,165 @@ export async function daemonQuery(
 export async function isDaemonRunning(): Promise<boolean> {
   const response = await trySocketQuery("ping");
   return response?.ok === true;
+}
+
+// ─── MR action facade ────────────────────────────────────────────────────────
+
+/**
+ * JSON-over-IPC mirror of glance-sdk's `MRDashboardActions` bound to a
+ * `{repoName, iid}` pair. Each method round-trips through the daemon, which
+ * holds the single authoritative GitLabProvider + DashboardGroup and runs the
+ * real action against the live group.
+ *
+ * Errors returned by the daemon (`{ok: false, error}`) and transport-level
+ * failures (daemon down) both surface as thrown Errors so callers can handle
+ * them uniformly in action-state machinery.
+ */
+export interface DaemonMRActions {
+  merge:            (opts?: any) => Promise<void>;
+  rebase:           () => Promise<void>;
+  approve:          () => Promise<void>;
+  unapprove:        () => Promise<void>;
+  setAutoMerge:     () => Promise<void>;
+  cancelAutoMerge:  () => Promise<void>;
+  retryPipeline:    (pipelineId?: number) => Promise<void>;
+  retryJob:         (jobId: number) => Promise<void>;
+  toggleDraft:      (isDraft: boolean) => Promise<void>;
+  requestReReview:  (userId: number) => Promise<void>;
+  fetchJobDetail:   (jobId: number, pipelineId?: number) => Promise<any>;
+  fetchJobTrace:    (jobId: number) => Promise<string>;
+}
+
+export function mrActions(repoName: string, iid: number): DaemonMRActions {
+  const fire = async (action: string, args: any[] = []): Promise<void> => {
+    const res = await daemonQuery("mr:action", { repoName, iid, action, args });
+    if (!res) throw new Error("daemon unavailable");
+    if (!res.ok) throw new Error(res.error || `${action} failed`);
+  };
+
+  return {
+    merge:            (opts) => fire("merge", [opts]),
+    rebase:           ()     => fire("rebase"),
+    approve:          ()     => fire("approve"),
+    unapprove:        ()     => fire("unapprove"),
+    setAutoMerge:     ()     => fire("setAutoMerge"),
+    cancelAutoMerge:  ()     => fire("cancelAutoMerge"),
+    retryPipeline:    (id)   => fire("retryPipeline", [id]),
+    retryJob:         (id)   => fire("retryJob", [id]),
+    toggleDraft:      (d)    => fire("toggleDraft", [d]),
+    requestReReview:  (uid)  => fire("requestReReview", [uid]),
+
+    fetchJobDetail: async (jobId, pipelineId) => {
+      const res = await daemonQuery("mr:fetch-job-detail", { repoName, iid, jobId, pipelineId });
+      if (!res) throw new Error("daemon unavailable");
+      if (!res.ok) throw new Error(res.error || "fetchJobDetail failed");
+      return res.data;
+    },
+    fetchJobTrace: async (jobId) => {
+      const res = await daemonQuery("mr:fetch-job-trace", { repoName, iid, jobId });
+      if (!res) throw new Error("daemon unavailable");
+      if (!res.ok) throw new Error(res.error || "fetchJobTrace failed");
+      return res.data as string;
+    },
+  };
+}
+
+// ─── Daemon event subscription (WebSocket) ───────────────────────────────────
+
+/**
+ * Shape of events pushed by the daemon over its WS endpoint.
+ * The daemon wraps every broadcast as `{ type, data }`.
+ */
+export interface DaemonEvent {
+  type: string;
+  data: any;
+}
+
+export interface DaemonSubscription {
+  /** Close the socket and stop auto-reconnecting. */
+  close: () => void;
+}
+
+/**
+ * Open a persistent WS connection to the daemon and forward every event to
+ * `onEvent`. Auto-reconnects with a capped exponential backoff until `close()`
+ * is called.
+ *
+ * The daemon's WS endpoint is a plain broadcast fan-out: every message
+ * received here is a `{ type, data }` object the daemon pushed via its
+ * `broadcast()` helper. Callers filter by `type` (`mr:update`, `mr:status`,
+ * `status`, `ports`, `remedy`, `notification`, …).
+ *
+ * Errors are silent by design — the daemon may be down at any moment, and
+ * the caller just keeps reading from its disk cache until the socket comes
+ * back up.
+ */
+export function subscribeToDaemon(
+  onEvent: (ev: DaemonEvent) => void,
+  opts?: {
+    /** Fired whenever the socket transitions open/closed. */
+    onStatusChange?: (status: "connecting" | "connected" | "disconnected") => void;
+  },
+): DaemonSubscription {
+  let ws: WebSocket | null = null;
+  let closed = false;
+  let retryMs = 500;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const setStatus = (s: "connecting" | "connected" | "disconnected") => {
+    opts?.onStatusChange?.(s);
+  };
+
+  const connect = () => {
+    if (closed) return;
+    setStatus("connecting");
+    try {
+      ws = new WebSocket(`ws://localhost:${API_PORT}/ws`);
+    } catch {
+      scheduleReconnect();
+      return;
+    }
+
+    ws.addEventListener("open", () => {
+      retryMs = 500;
+      setStatus("connected");
+    });
+
+    ws.addEventListener("message", (ev: MessageEvent) => {
+      try {
+        const raw = typeof ev.data === "string" ? ev.data : String(ev.data);
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.type === "string") {
+          onEvent(parsed as DaemonEvent);
+        }
+      } catch { /* ignore malformed frame */ }
+    });
+
+    const onDown = () => {
+      setStatus("disconnected");
+      scheduleReconnect();
+    };
+    ws.addEventListener("close", onDown);
+    ws.addEventListener("error", onDown);
+  };
+
+  const scheduleReconnect = () => {
+    if (closed || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, retryMs);
+    retryMs = Math.min(retryMs * 2, 10_000);
+  };
+
+  connect();
+
+  return {
+    close: () => {
+      closed = true;
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      try { ws?.close(); } catch { /* best-effort */ }
+      ws = null;
+    },
+  };
 }
