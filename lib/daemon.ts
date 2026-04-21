@@ -22,6 +22,7 @@ import { execSync } from "child_process";
 
 import {
   RT_DIR, DAEMON_SOCK_PATH, DAEMON_PID_PATH, DAEMON_LOG_PATH,
+  API_PORT,
   readDaemonPid,
 } from "./daemon-config.ts";
 
@@ -48,7 +49,6 @@ const MR_REFRESH_INTERVAL_MS = 5 * 60 * 1000;      // 5 minutes
 const PORT_SCAN_INTERVAL_MS = 30 * 1000;             // 30 seconds
 const HOOKS_SCAN_INTERVAL_MS = 60 * 1000;            // 60 seconds (fallback for stale watchers)
 const LOG_MAX_BYTES = 10 * 1024 * 1024;              // 10MB
-const API_PORT = 9401;
 const REPOS_JSON_PATH = join(RT_DIR, "repos.json");
 const CACHE_PATH = join(RT_DIR, "branch-cache.json");
 
@@ -74,6 +74,7 @@ import { createStatusHandlers }    from "./daemon/handlers/status.ts";
 import { createPortsHandlers }     from "./daemon/handlers/ports.ts";
 import { createGroupsHandlers }    from "./daemon/handlers/groups.ts";
 import { createWorkspaceHandlers } from "./daemon/handlers/workspace.ts";
+import { createMRHandlers }        from "./daemon/handlers/mr.ts";
 
 interface DiskCache {
   entries: Record<string, CacheEntry>;
@@ -544,6 +545,7 @@ const routedHandlers: HandlerMap = {
   ...createPortsHandlers(handlerCtx),
   ...createGroupsHandlers(handlerCtx),
   ...createWorkspaceHandlers(handlerCtx),
+  ...createMRHandlers(),
 };
 
 async function handleCommand(cmd: string, payload: any): Promise<any> {

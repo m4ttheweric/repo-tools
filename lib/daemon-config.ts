@@ -33,12 +33,18 @@ export const DAEMON_CONFIG_PATH = join(RT_DIR, "daemon.json");
 export const DAEMON_SOCK_PATH = join(RT_DIR, "rt.sock");
 export const DAEMON_PID_PATH = join(RT_DIR, "rt.pid");
 export const DAEMON_LOG_PATH = join(RT_DIR, "daemon.log");
+export const DAEMON_STDOUT_LOG_PATH = join(RT_DIR, "daemon-stdout.log");
+export const DAEMON_STDERR_LOG_PATH = join(RT_DIR, "daemon-stderr.log");
 export const LAUNCHD_PLIST_PATH = join(
   homedir(), "Library", "LaunchAgents", "com.rt.daemon.plist",
 );
 export const LAUNCHD_LABEL = "com.rt.daemon";
 export const TRAY_SOCK_PATH = join(RT_DIR, "tray.sock");
 export const NOTIFY_QUEUE_PATH = join(RT_DIR, "notify-queue.json");
+
+/** Daemon HTTP/WS port. Shared so clients can open WS connections without
+ *  re-declaring the constant. */
+export const API_PORT = 9401;
 
 // ─── Read / Write ────────────────────────────────────────────────────────────
 

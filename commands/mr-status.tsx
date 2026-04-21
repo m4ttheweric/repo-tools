@@ -1,9 +1,10 @@
 /**
  * rt mr-status — Single-branch MR/ticket status card.
  *
- * Spawned by `rt runner` into a tmux pane. Bootstraps its own GitLabProvider
- * from the cached mr.webUrl — no git remote needed. Receives the same
- * fetchJobDetail / fetchJobTrace API as the full status dashboard.
+ * Spawned by `rt runner` into a tmux pane. Routes all live-MR reads and
+ * actions through the rt daemon, which owns the single authoritative
+ * glance-sdk subscription for the repo. Receives the same fetchJobDetail /
+ * fetchJobTrace API as the full status dashboard.
  *
  * Keys (card view):   p=pipeline  o=browser  q=quit
  * Keys (pipeline):    j/k/↑/↓=navigate  ↵=drill/log  o=browser  Esc=back  q=quit
@@ -14,8 +15,9 @@ import React, { useState, useEffect, useCallback } from "react";
 import { render, Box, Text, useInput } from "ink";
 import { Spinner } from "@inkjs/ui";
 import { execSync } from "child_process";
-import type { Pipeline, MRDashboardProps, MRDashboardActions, PipelineJob } from "@workforge/glance-sdk";
+import type { Pipeline, MRDashboardProps, PipelineJob } from "@workforge/glance-sdk";
 import type { CommandContext } from "../lib/command-tree.ts";
+import { mrActions, subscribeToDaemon, type DaemonMRActions } from "../lib/daemon-client.ts";
 import {
   fetchStatusData,
   MRDetailView,
@@ -26,14 +28,6 @@ import {
   type CacheEntry,
   type ActionState,
 } from "./status.tsx";
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function parseMrWebUrl(webUrl: string): { host: string; projectPath: string } | null {
-  const m = /^(https?:\/\/[^/]+)\/(.+?)\/-\/merge_requests\/\d+/.exec(webUrl);
-  if (!m) return null;
-  return { host: m[1]!, projectPath: m[2]! };
-}
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -63,7 +57,7 @@ function MrStatusApp({
 }: {
   branch: string;
   initialEntry: CacheEntry;
-  actions: MRDashboardActions | null;
+  actions: DaemonMRActions | null;
 }) {
   const [mr, setMr] = useState<MRDashboardProps>(initialEntry.mr!);
   const [ticket] = useState(initialEntry.ticket ?? undefined);
@@ -75,15 +69,18 @@ function MrStatusApp({
   const [childPipelineStack, setChildPipelineStack] = useState<StackEntry[]>([]);
   const [jobTrace, setJobTrace] = useState<TraceState>(EMPTY_TRACE);
 
-  // ── Poll cache as fallback (WebSocket updates flow through the group subscription) ──
+  // ── Live updates via daemon WS broadcast (mr:update) ──
   useEffect(() => {
-    const t = setInterval(async () => {
-      const data = await fetchStatusData();
-      const fresh = data.branches[branch]?.mr;
+    const initialIid = initialEntry.mr?.iid;
+    const sub = subscribeToDaemon((ev) => {
+      if (ev.type !== "mr:update") return;
+      const mrs = ev.data?.mrs as Record<string, MRDashboardProps> | undefined;
+      if (!mrs || initialIid === undefined) return;
+      const fresh = mrs[String(initialIid)];
       if (fresh) setMr(fresh);
-    }, 5_000);
-    return () => clearInterval(t);
-  }, [branch]);
+    });
+    return () => { sub.close(); };
+  }, [branch, initialEntry.mr?.iid]);
 
   // ── Active pipeline ─────────────────────────────────────────────────────────
   const rootPipeline = mr.pipeline ?? null;
@@ -292,27 +289,13 @@ export async function showMrStatus(args: string[], _ctx: CommandContext): Promis
     return;
   }
 
-  // Bootstrap GitLab provider from mr.webUrl (no git remote needed)
-  let actions: MRDashboardActions | null = null;
-  try {
-    const { loadSecrets } = await import("../lib/linear.ts");
-    const secrets = loadSecrets();
-    if (secrets.gitlabToken && entry.mr.webUrl) {
-      const parsed = parseMrWebUrl(entry.mr.webUrl);
-      if (parsed) {
-        const { GitLabProvider, createDashboard } = await import("@workforge/glance-sdk");
-        const provider = new GitLabProvider(parsed.host, secrets.gitlabToken);
-        let userId: number | null = null;
-        try {
-          const user = await provider.validateToken();
-          const numId = user.id.split(":").pop();
-          userId = numId ? parseInt(numId, 10) : null;
-        } catch { /* continue without userId */ }
-        const group = createDashboard({ provider, projectPath: parsed.projectPath, mrIid: [entry.mr.iid], userId });
-        actions = group.actionsFor(entry.mr.iid);
-      }
-    }
-  } catch { /* non-fatal — falls back to cached data */ }
+  // Route actions through the daemon. The daemon owns the live glance-sdk
+  // subscription for this repo; `mrActions(repoName, iid)` is a JSON-over-IPC
+  // facade with the same shape as glance-sdk's MRDashboardActions. If the
+  // entry pre-dates the `repoName` field, skip actions — the card still
+  // renders cached data.
+  const actions: DaemonMRActions | null =
+    entry.repoName ? mrActions(entry.repoName, entry.mr.iid) : null;
 
   const { waitUntilExit } = render(
     <MrStatusApp branch={branch} initialEntry={entry} actions={actions} />

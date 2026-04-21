@@ -7,11 +7,12 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import { render, Box, Text, useInput } from "ink";
-import { Badge, Spinner, StatusMessage, Alert } from "@inkjs/ui";
+import { Badge, Spinner, StatusMessage } from "@inkjs/ui";
 import { ScrollableList } from "../lib/ScrollableList.tsx";
-import type { MRDashboardProps, MRDashboardActions, Reviewer, PipelineJob, Pipeline } from "@workforge/glance-sdk";
+import type { MRDashboardProps, Reviewer, PipelineJob, Pipeline } from "@workforge/glance-sdk";
 import { getReviewDisplayState } from "@workforge/glance-sdk";
 import type { PortEntry } from "../lib/port-scanner.ts";
+import { mrActions, subscribeToDaemon, type DaemonMRActions } from "../lib/daemon-client.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -25,6 +26,10 @@ export interface CacheEntry {
   linearId: string;
   mr: MRDashboardProps | null;
   fetchedAt: number;
+  /** Repo this entry belongs to (from ~/.rt/repos.json). Used to route
+   *  daemon mr:action IPC calls. Optional for backward compatibility with
+   *  older on-disk caches — filled in on the next daemon refresh. */
+  repoName?: string;
 }
 
 interface StatusData {
@@ -838,67 +843,7 @@ export function JobLogView({
 // ─── Entry point ────────────────────────────────────────────────────────────
 
 export async function showStatus(_args: string[]): Promise<void> {
-  const { GitLabProvider } = await import("@workforge/glance-sdk");
-  const { loadSecrets } = await import("../lib/linear.ts");
-  const { execSync } = await import("child_process");
-
-  const secrets = loadSecrets();
-  if (!secrets.gitlabToken) {
-    const i = render(
-      <Alert variant="error">
-        No GitLab token configured. Run <Text bold>rt settings setup-keys</Text>
-      </Alert>,
-    );
-    i.unmount();
-    return;
-  }
-
-  let remoteUrl: string;
-  try {
-    remoteUrl = execSync("git config --get remote.origin.url", {
-      encoding: "utf8",
-      stdio: "pipe",
-    }).trim();
-  } catch {
-    const i = render(
-      <Alert variant="error">Not in a git repository</Alert>,
-    );
-    i.unmount();
-    return;
-  }
-
-  const httpsMatch = /^https?:\/\/([^/]+)\/(.+?)(?:\.git)?$/.exec(remoteUrl);
-  const sshMatch = /^git@([^:]+):(.+?)(?:\.git)?$/.exec(remoteUrl);
-  const host = httpsMatch
-    ? `https://${httpsMatch[1]}`
-    : sshMatch
-      ? `https://${sshMatch[1]}`
-      : null;
-  const projectPath = httpsMatch?.[2] || sshMatch?.[2];
-
-  if (!host || !projectPath) {
-    const i = render(
-      <Alert variant="error">
-        Could not parse git remote: {remoteUrl}
-      </Alert>,
-    );
-    i.unmount();
-    return;
-  }
-
-  const provider = new GitLabProvider(host, secrets.gitlabToken);
-
-  let userId: number | null = null;
-  try {
-    const user = await provider.validateToken();
-    const numId = user.id.split(":").pop();
-    userId = numId ? parseInt(numId, 10) : null;
-  } catch {
-    /* continue without */
-  }
-
   const data = await fetchStatusData();
-  const mrIids: number[] = [];
   const iidToBranch = new Map<
     number,
     { branch: string; entry: CacheEntry }
@@ -906,12 +851,11 @@ export async function showStatus(_args: string[]): Promise<void> {
 
   for (const [branch, entry] of Object.entries(data.branches)) {
     if (entry.mr?.iid) {
-      mrIids.push(entry.mr.iid);
       iidToBranch.set(entry.mr.iid, { branch, entry });
     }
   }
 
-  if (mrIids.length === 0) {
+  if (iidToBranch.size === 0) {
     const i = render(
       <StatusMessage variant="info">
         No active merge requests to watch
@@ -931,11 +875,7 @@ export async function showStatus(_args: string[]): Promise<void> {
   const instance = render(
     <LiveDashboard
       initialData={data}
-      provider={provider}
-      projectPath={projectPath}
-      mrIids={mrIids}
       iidToBranch={iidToBranch}
-      userId={userId}
     />,
   );
   await instance.waitUntilExit();
@@ -946,18 +886,10 @@ export const DEFAULT_BRANCHES = new Set(["main", "master", "develop", "dev"]);
 
 function LiveDashboard({
   initialData,
-  provider,
-  projectPath,
-  mrIids,
   iidToBranch,
-  userId,
 }: {
   initialData: StatusData;
-  provider: any;
-  projectPath: string;
-  mrIids: number[];
   iidToBranch: Map<number, { branch: string; entry: CacheEntry }>;
-  userId: number | null;
 }) {
   const [data, setData] = useState<StatusData>(initialData);
   const [connection, setConnection] = useState("connecting");
@@ -987,7 +919,16 @@ function LiveDashboard({
   type SortMode = "status" | "pipeline" | "approved" | "newest" | "oldest";
   const SORT_CYCLE: SortMode[] = ["status", "pipeline", "approved", "newest", "oldest"];
   const [sortMode, setSortMode] = useState<SortMode>("newest");
-  const [actionsMap, setActionsMap] = useState<Map<number, MRDashboardActions>>(new Map());
+  // Build per-iid action facades synchronously from cache entries. Each facade
+  // is a thin wrapper that round-trips through the daemon's `mr:action` IPC,
+  // so the daemon's GitLabProvider is the only thing talking to upstream.
+  const actionsMap = React.useMemo(() => {
+    const m = new Map<number, DaemonMRActions>();
+    for (const [iid, { entry }] of iidToBranch) {
+      if (entry.repoName) m.set(iid, mrActions(entry.repoName, iid));
+    }
+    return m;
+  }, [iidToBranch]);
 
   // Action state: loading, result feedback, confirmation
   const [actionState, setActionState] = useState<ActionState>({
@@ -1408,58 +1349,47 @@ function LiveDashboard({
     }
   });
 
-  // WebSocket subscription
+  // Daemon WS subscription — the daemon owns the glance-sdk connection; we
+  // just consume `mr:update` broadcasts and the aggregated `mr:status` flag.
   useEffect(() => {
-    let disposed = false;
-    let group: any;
-
-    (async () => {
-      const { createDashboard } = await import("@workforge/glance-sdk");
-      if (disposed) return;
-
-      group = createDashboard({
-        provider,
-        projectPath,
-        mrIid: mrIids,
-        userId,
-      });
-
-      // Capture actions
-      const newActionsMap = new Map<number, MRDashboardActions>();
-      for (const iid of mrIids) {
-        newActionsMap.set(iid, group.actionsFor(iid));
-      }
-      if (!disposed) setActionsMap(newActionsMap);
-
-      group.onStatusChange((s: any) => {
-        if (!disposed) setConnection(s.connection);
-      });
-
-      group.subscribe((mrs: Map<number, MRDashboardProps>) => {
-        if (disposed) return;
+    const sub = subscribeToDaemon((ev) => {
+      if (ev.type === "mr:update") {
+        const mrs = ev.data?.mrs as Record<string, MRDashboardProps> | undefined;
+        if (!mrs) return;
         setData((prev) => {
           const newBranches = { ...prev.branches };
-          for (const [iid, mrProps] of mrs) {
+          let changed = false;
+          for (const [iidStr, mrProps] of Object.entries(mrs)) {
+            const iid = Number(iidStr);
             const info = iidToBranch.get(iid);
-            if (info) {
-              newBranches[info.branch] = {
-                ...info.entry,
-                mr: mrProps,
-                fetchedAt: Date.now(),
-              };
-            }
+            if (!info) continue;
+            newBranches[info.branch] = {
+              ...(newBranches[info.branch] ?? info.entry),
+              mr: mrProps,
+              fetchedAt: Date.now(),
+            };
+            changed = true;
           }
+          if (!changed) return prev;
           return { ...prev, branches: newBranches, source: "live" as const };
         });
-        if (!disposed) setHasLiveData(true);
-      });
-    })();
+        setHasLiveData(true);
+      } else if (ev.type === "mr:status") {
+        const c = ev.data?.connection;
+        if (c === "connected" || c === "connecting" || c === "disconnected") {
+          setConnection(c);
+        }
+      }
+    }, {
+      onStatusChange: (s) => {
+        // Transport-level status (WS to daemon). If we can't reach the daemon,
+        // surface that — otherwise defer to the daemon's mr:status broadcast.
+        if (s === "disconnected") setConnection("disconnected");
+      },
+    });
 
-    return () => {
-      disposed = true;
-      group?.dispose();
-    };
-  }, []);
+    return () => { sub.close(); };
+  }, [iidToBranch]);
 
   // Count other branches
   const localCount = Object.values(data.branches).filter(
