@@ -26,11 +26,10 @@
     <key>ThrottleInterval</key>
     <integer>10</integer>
 
-    <!-- Capture all output so crashes before lib/daemon.ts starts are visible -->
-    <key>StandardOutPath</key>
-    <string>$(HOME)/.rt/daemon-stdout.log</string>
-    <key>StandardErrorPath</key>
-    <string>$(HOME)/.rt/daemon-stderr.log</string>
+    <!-- NOTE: StandardOutPath/StandardErrorPath intentionally omitted.
+         macOS 26 broke $(HOME) expansion in SMAppService-registered plists,
+         causing EX_CONFIG / spawn failed. The daemon binary redirects its
+         own output to ~/.rt/daemon.log and ~/.rt/daemon-stderr.log directly. -->
 
     <key>LimitLoadToSessionType</key>
     <string>Aqua</string>
