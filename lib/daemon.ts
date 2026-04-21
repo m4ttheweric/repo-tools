@@ -35,6 +35,12 @@ import { ProxyManager }  from "./daemon/proxy-manager.ts";
 import { ExclusiveGroup } from "./daemon/exclusive-group.ts";
 import { RemedyEngine }  from "./daemon/remedy-engine.ts";
 import { cleanupAllWatchers, restoreWatchers } from "./daemon/workspace-sync.ts";
+import {
+  initMRSubscriptions,
+  reconcileMRSubscriptions,
+  disposeAllMRSubscriptions,
+  type MRSubscriptionEnv,
+} from "./daemon/mr-subscriptions.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -475,7 +481,7 @@ async function refreshCacheImpl(): Promise<void> {
           } catch { /* no remote */ }
 
           // Optimized: 3 GraphQL calls for ALL open MRs + 1 Linear batch
-          await refreshAllMRs(branches, remoteUrl, (msg) => log(`cache: ${msg}`));
+          await refreshAllMRs(branches, remoteUrl, (msg) => log(`cache: ${msg}`), repoName);
         }
       } catch (err) {
         log(`cache: skipping ${repoName} due to error: ${err}`);
@@ -492,6 +498,12 @@ async function refreshCacheImpl(): Promise<void> {
 
     // Broadcast to WebSocket clients
     broadcast("status", await handleCommand("tray:status", {}));
+
+    // Reconcile live MR subscriptions against the freshly-loaded cache.
+    // Adds/removes watchers for MRs that appeared/disappeared since last tick.
+    reconcileMRSubscriptions(mrSubEnv).catch((err) => {
+      log(`mr-subscriptions: reconcile failed: ${err}`);
+    });
   } catch (err) {
     log(`cache: refresh failed: ${err}`);
   }
@@ -507,7 +519,7 @@ async function refreshCacheImpl(): Promise<void> {
 const handlerCtx: HandlerContext = {
   processManager, stateStore, remedyEngine, suspendManager, proxyManager,
   attachServer, logBuffer, exclusiveGroup,
-  cache, refreshCache, loadCache, remedyEvents: remedyEventQueue,
+  cache, refreshCache, loadCache, flushCache, remedyEvents: remedyEventQueue,
   portAllocator,
   log,
   startedAt,
@@ -518,6 +530,9 @@ const handlerCtx: HandlerContext = {
   startWatchingRepo,
   refreshStatusRef,
 };
+
+/** Env bundle for the MR subscription subsystem. */
+const mrSubEnv: MRSubscriptionEnv = { ctx: handlerCtx, log, broadcast };
 
 const routedHandlers: HandlerMap = {
   ...createCacheHandlers(handlerCtx),
@@ -723,6 +738,7 @@ function cleanup(): void {
   } catch { /* */ }
   try { proxyManager.stopAll(); } catch { /* */ }
   try { cleanupAllWatchers(); } catch { /* */ }
+  try { disposeAllMRSubscriptions(); } catch { /* */ }
   try { attachServer.closeAll(); } catch { /* */ }
   try { globalRemedyWatcher?.close(); } catch { /* */ }
 
@@ -822,6 +838,15 @@ export function startDaemon(): void {
   // Schedule periodic cache refresh
   setTimeout(() => refreshCache(), 5000); // initial refresh after 5s
   setInterval(() => refreshCache(), MR_REFRESH_INTERVAL_MS);
+
+  // Kick off live MR subscriptions once the first refresh has populated the
+  // cache with iids + repoName stamps. reconcileMRSubscriptions inside
+  // refreshCacheImpl picks up the slack from there.
+  setTimeout(() => {
+    initMRSubscriptions(mrSubEnv).catch((err) => {
+      log(`mr-subscriptions: init failed: ${err}`);
+    });
+  }, 7000);
 
   // Schedule port scanning (lightweight — every 30s)
   setTimeout(() => refreshPortCache(), 2000); // initial scan after 2s
