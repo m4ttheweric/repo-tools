@@ -23,7 +23,7 @@
     "@rezi-ui/core": "^0.1.0-alpha.60",
     "@rezi-ui/jsx": "^0.1.0-alpha.60",
     "@rezi-ui/node": "^0.1.0-alpha.60",
-    "@workforge/glance-sdk": "0.8.0",
+    "@workforge/glance-sdk": "0.8.1",
     "fullscreen-ink": "^0.1.0",
     "ink": "^6.8.0",
     "react": "^19.2.4"

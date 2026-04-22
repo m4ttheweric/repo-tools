@@ -9,7 +9,7 @@
         "@rezi-ui/core": "^0.1.0-alpha.60",
         "@rezi-ui/jsx": "^0.1.0-alpha.60",
         "@rezi-ui/node": "^0.1.0-alpha.60",
-        "@workforge/glance-sdk": "0.8.0",
+        "@workforge/glance-sdk": "0.8.1",
         "fullscreen-ink": "^0.1.0",
         "ink": "^6.8.0",
         "react": "^19.2.4",
@@ -45,7 +45,7 @@
 
     "@types/react": ["@types/react@19.2.14", "", { "dependencies": { "csstype": "^3.2.2" } }, "sha512-ilcTH/UniCkMdtexkoCN0bI7pMcJDvmQFPvuPvmEaYA/NSfFTAgdUSLAoVjaRJm7+6PvcM+q1zYOwS4wTYMF9w=="],
 
-    "@workforge/glance-sdk": ["@workforge/glance-sdk@0.8.0", "", {}, "sha512-xIDJCt50FRgOz2dWUAZk1L+zamo7fC8bBTc/EPTHOSnpCGNc+onvCQ7pDKjx9erqPO3CzJJ3IsdaoqfjN23flA=="],
+    "@workforge/glance-sdk": ["@workforge/glance-sdk@0.8.1", "", {}, "sha512-m8Sz8QSPl04GHD3w+DMYttRLzM4s934zfPg6rZyHXlCnfZtgHWjXi1K6LofhkRJ5u3H0DuE0B3DyPYXzC8Odag=="],
 
     "@xterm/headless": ["@xterm/headless@6.0.0", "", {}, "sha512-5Yj1QINYCyzrZtf8OFIHi47iQtI+0qYFPHmouEfG8dHNxbZ9Tb9YGSuLcsEwj9Z+OL75GJqPyJbyoFer80a2Hw=="],
 
