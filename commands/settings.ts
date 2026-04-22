@@ -303,15 +303,32 @@ function swapDaemonToReal(): DaemonSwapResult {
 }
 
 /**
- * After swapping the binary, launchd needs to clear its cached LWCR entry.
- * `rt daemon uninstall` + `rt daemon install` does this via the tray's
- * SMAppService API — same flow the user would run manually.
+ * After swapping the daemon binary on disk, launchd needs to fully forget its
+ * cached LWCR (Launch With Code Requirements) entry — otherwise it marks the
+ * job "needs LWCR update" and refuses to spawn with EX_CONFIG.
+ *
+ * SMAppService unregister/register alone is not enough because launchd caches
+ * the binary hash at registration time and doesn't re-read it on re-register
+ * unless the job has been completely booted out of the domain first.
+ *
+ * Flow:
+ *   1. launchctl bootout — forcibly evicts the job from launchd's domain
+ *   2. rt daemon uninstall — SMAppService unregister (cleans up BTM entry)
+ *   3. rt daemon install   — SMAppService register (reads fresh binary hash)
  */
 function reregisterDaemon(): { ok: boolean; err?: string } {
+  // 1. Force launchd to forget the LWCR hash for this job.
+  // Ignore errors — the job may not be registered yet.
+  const uid = spawnSync("id", ["-u"], { encoding: "utf8" }).stdout.trim();
+  spawnSync("launchctl", ["bootout", `gui/${uid}/com.rt.daemon`], { encoding: "utf8" });
+
+  // 2. SMAppService unregister
   const uninstall = spawnSync("rt", ["daemon", "uninstall"], { encoding: "utf8" });
   if (uninstall.status !== 0) {
     return { ok: false, err: `uninstall failed: ${uninstall.stderr || uninstall.stdout}` };
   }
+
+  // 3. SMAppService register (reads the new binary from disk)
   const install = spawnSync("rt", ["daemon", "install"], { encoding: "utf8" });
   if (install.status !== 0) {
     return { ok: false, err: `install failed: ${install.stderr || install.stdout}` };

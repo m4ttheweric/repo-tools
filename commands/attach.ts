@@ -1,5 +1,5 @@
 /**
- * rt attach <id> — Connect terminal to a daemon-managed process PTY.
+ * rt attach [id] — Connect terminal to a daemon-managed process PTY.
  *
  * Opens the Unix socket created by AttachServer for the given process id,
  * puts stdin in raw mode, and bidirectionally pipes:
@@ -8,16 +8,77 @@
  *
  * Resize events (SIGWINCH) are sent as JSON {type:"resize",cols,rows}.
  * Ctrl+Q (codepoint 17) detaches cleanly without killing the process.
+ *
+ * If no id is given, shows a picker of all daemon-managed processes.
  */
 
 import type { CommandContext } from "../lib/command-tree.ts";
 import { daemonQuery } from "../lib/daemon-client.ts";
+import { green, red, dim, reset, bold } from "../lib/tui.ts";
+
+// ─── Process picker ──────────────────────────────────────────────────────────
+
+async function pickProcess(): Promise<string | null> {
+  const [listRes, statesRes] = await Promise.all([
+    daemonQuery("process:list"),
+    daemonQuery("process:states"),
+  ]);
+
+  if (!listRes?.ok || !Array.isArray(listRes.data) || listRes.data.length === 0) {
+    process.stderr.write(
+      "\n  No daemon-managed processes found.\n" +
+      "  Start a process via the runner first: rt runner\n\n"
+    );
+    return null;
+  }
+
+  const states: Record<string, string> = statesRes?.ok ? statesRes.data : {};
+
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
+
+  // Sort: running first, then crashed, then stopped/warm
+  const priority = (s: string) =>
+    s === "running" ? 0 : s === "crashed" ? 1 : 2;
+
+  const entries = (listRes.data as { id: string; config: { cmd: string; cwd: string } }[])
+    .slice()
+    .sort((a, b) => priority(states[a.id] ?? "stopped") - priority(states[b.id] ?? "stopped"));
+
+  const stateLabel = (id: string): string => {
+    const s = states[id] ?? "stopped";
+    switch (s) {
+      case "running":  return `${green}● running${reset}`;
+      case "crashed":  return `${red}✖ crashed${reset}`;
+      case "starting": return `${dim}◌ starting${reset}`;
+      case "stopping": return `${dim}◌ stopping${reset}`;
+      case "warm":     return `${dim}◌ warm${reset}`;
+      default:         return `${dim}○ stopped${reset}`;
+    }
+  };
+
+  const options = entries.map(({ id, config }) => ({
+    value: id,
+    label: `${bold}${id}${reset}`,
+    hint: `${stateLabel(id)}  ${dim}${config.cwd.replace(process.env.HOME ?? "", "~")}  ${config.cmd}${reset}`,
+  }));
+
+  const selected = await filterableSelect({
+    message: "Attach to process",
+    options,
+  });
+
+  return selected ?? null;
+}
+
+// ─── Entry ───────────────────────────────────────────────────────────────────
 
 export async function attachProcess(args: string[], _ctx: CommandContext): Promise<void> {
-  const id = args[0];
+  let id = args[0];
+
   if (!id) {
-    process.stderr.write("Usage: rt attach <process-id>\n");
-    process.exit(1);
+    const picked = await pickProcess();
+    if (!picked) process.exit(0);
+    id = picked;
   }
 
   // Ask daemon for the attach socket path and current process state
@@ -73,6 +134,7 @@ export async function attachProcess(args: string[], _ctx: CommandContext): Promi
     if (detached) return;
     detached = true;
     try { if (process.stdin.setRawMode) process.stdin.setRawMode(false); } catch { /* */ }
+    try { process.stdin.pause(); } catch { /* */ }
     try { socket?.end(); } catch { /* */ }
   };
 
@@ -122,12 +184,20 @@ export async function attachProcess(args: string[], _ctx: CommandContext): Promi
     process.exit(1);
   }
 
-  // Pipe stdin → socket; intercept Ctrl+Q (byte 17) to detach
+  // Pipe stdin → socket; intercept Ctrl+Q (byte 17) to detach cleanly,
+  // and Ctrl+C (byte 3) to exit — in raw mode Ctrl+C is NOT converted to
+  // SIGINT, it arrives here as a plain byte and must be handled explicitly.
   process.stdin.on("data", (chunk: Buffer) => {
     for (let i = 0; i < chunk.length; i++) {
       if (chunk[i] === 17) {
-        // Ctrl+Q — detach
+        // Ctrl+Q — detach without killing the process
         process.stdout.write("\r\n[detached]\r\n");
+        cleanup();
+        process.exit(0);
+      }
+      if (chunk[i] === 3) {
+        // Ctrl+C — detach and exit
+        process.stdout.write("\r\n");
         cleanup();
         process.exit(0);
       }

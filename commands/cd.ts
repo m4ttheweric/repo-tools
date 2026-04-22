@@ -18,8 +18,14 @@ import { readFileSync, writeFileSync, appendFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { yellow, green, reset } from "../lib/tui.ts";
-import { getRepoIdentity, getKnownRepos, type KnownRepo } from "../lib/repo.ts";
-import { pickWorktreeWithSwitch, pickFromAllRepos, isSwitchRepo } from "../lib/pickers.ts";
+import { getRepoIdentity, getKnownRepos, getWorkspacePackages, type KnownRepo } from "../lib/repo.ts";
+import {
+  pickWorktreeWithSwitch,
+  pickFromAllRepos,
+  pickPackageWithEscape,
+  resolveWorktreeByBranch,
+  isSwitchRepo,
+} from "../lib/pickers.ts";
 import { detectShell, shellRcPath } from "../lib/shell-integration.ts";
 
 // ─── Shell function setup ────────────────────────────────────────────────────
@@ -116,32 +122,82 @@ async function ensureShellFunction(): Promise<void> {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-export async function worktreePicker(_args: string[]): Promise<void> {
+export async function worktreePicker(args: string[]): Promise<void> {
 
   await ensureShellFunction();
 
-  // Redirect stdout → stderr so TUI prompts don't contaminate the path output
+  // Redirect stdout → stderr so TUI prompts don’t contaminate the path output
   const realStdoutWrite = process.stdout.write.bind(process.stdout);
   process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
   if (!process.stdout.columns && process.stderr.columns) {
     Object.defineProperty(process.stdout, "columns", { value: process.stderr.columns, configurable: true });
   }
 
-  const repos = getKnownRepos();
-  const identity = getRepoIdentity();
-  const currentRepo = identity
-    ? repos.find(r => r.repoName === identity.repoName) ?? null
+  // ── Parse flags ─────────────────────────────────────────────────────────────────────
+  const forceRepo    = args.includes("--repo");
+  const wtIdx        = args.indexOf("--worktree");
+  const wtBranch     = wtIdx !== -1 ? args[wtIdx + 1] : undefined;
+
+  const repos        = getKnownRepos();
+  const identity     = getRepoIdentity();
+  const currentRepo  = identity
+    ? repos.find((r) => r.repoName === identity.repoName) ?? null
     : null;
 
   let selectedPath: string;
 
-  if (currentRepo && currentRepo.worktrees.length > 1) {
-    const result = await pickWorktreeWithSwitch(currentRepo, identity?.repoRoot || "", { stderr: true });
+  // ── --repo flag: always go to repo picker ────────────────────────────────────
+  if (forceRepo) {
+    if (wtBranch) {
+      // Pick repo first, then jump to the matching worktree (or show picker)
+      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      const repoOptions = repos.map((r) => ({
+        value: r.repoName,
+        label: r.repoName,
+        hint: r.worktrees.length > 1
+          ? `${r.worktrees.length} worktrees`
+          : r.worktrees[0]?.path.replace(homedir(), "~") ?? "",
+      }));
+      const pickedRepoName = repos.length === 1
+        ? repos[0]!.repoName
+        : await filterableSelect({ message: "Pick a repo", options: repoOptions, stderr: true });
+      const pickedRepo = repos.find((r) => r.repoName === pickedRepoName)!;
+
+      // Try to resolve the worktree in that repo; fall back to picker
+      const lower = wtBranch.toLowerCase();
+      const hit = pickedRepo.worktrees.filter((wt) => wt.branch.toLowerCase().startsWith(lower));
+      if (hit.length === 1) {
+        selectedPath = hit[0]!.path;
+      } else {
+        selectedPath = await resolveWorktreeByBranch(wtBranch, [pickedRepo], { stderr: true });
+      }
+    } else {
+      selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: true });
+    }
+
+  // ── --worktree flag only: resolve branch in current repo (then all repos) ──
+  } else if (wtBranch) {
+    const searchRepos = currentRepo ? [currentRepo] : repos;
+    const lower = wtBranch.toLowerCase();
+    const inCurrent = currentRepo?.worktrees.filter((wt) => wt.branch.toLowerCase().startsWith(lower)) ?? [];
+    // If not found in current repo, broaden to all repos
+    const finalRepos = inCurrent.length > 0 ? searchRepos : repos;
+    selectedPath = await resolveWorktreeByBranch(wtBranch, finalRepos, { stderr: true });
+
+  // ── In a monorepo: package picker ────────────────────────────────────────
+  } else if (currentRepo && getWorkspacePackages(identity!.repoRoot).length > 0) {
+    selectedPath = await pickPackageWithEscape(currentRepo, identity!.repoRoot, repos, { stderr: true });
+
+  // ── In a plain multi-worktree repo: worktree picker [unchanged] ──────────
+  } else if (currentRepo && currentRepo.worktrees.length > 1) {
+    const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot, { stderr: true });
     selectedPath = isSwitchRepo(result)
-      ? await pickFromAllRepos(repos, { stderr: true })
+      ? await pickFromAllRepos(repos, { stderr: true, includePackages: true })
       : result;
+
+  // ── Not in a tracked repo or single-worktree: repo picker [unchanged] ───
   } else {
-    selectedPath = await pickFromAllRepos(repos, { stderr: true });
+    selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: true });
   }
 
   // Restore stdout and print just the path
