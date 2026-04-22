@@ -237,15 +237,16 @@ function PipelineDetailed({ pipeline }: { pipeline: MRDashboardProps["pipeline"]
       </Box>
       {notableJobs.length > 0 && (
         <Box flexDirection="column" paddingLeft={2}>
-          {notableJobs.map((job: PipelineJob) => (
-            <Box key={job.id} gap={1}>
-              <Text color={job.status === "failed" ? "red" : "cyan"}>
-                {job.status === "failed" ? "✗" : "⟳"}
-              </Text>
-              <Text>{job.name}</Text>
-              <Text dimColor>({job.stage})</Text>
-            </Box>
-          ))}
+          {notableJobs.map((job: PipelineJob) => {
+            const si = jobStatusIcon(job.status, job.allowFailure);
+            return (
+              <Box key={job.id} gap={1}>
+                <Text color={si.color}>{si.isSpinner ? "⟳" : si.icon}</Text>
+                <Text>{job.name}</Text>
+                <Text dimColor>({job.stage})</Text>
+              </Box>
+            );
+          })}
         </Box>
       )}
     </Box>
@@ -469,10 +470,17 @@ export function MRDetailView({
     <Box flexDirection="column" paddingLeft={1}>
       {/* Header: status badge */}
       <Box gap={1} marginBottom={1}>
-        <Badge color={statusColor === "green" ? "green" : statusColor === "blue" ? "blue" : statusColor === "yellow" ? "yellow" : statusColor === "red" ? "red" : "cyan"}>
-          {STATUS_LABEL[mr.status]}
-        </Badge>
+        {mr.isCheckingMergeability ? (
+          <Badge color="cyan">Checking…</Badge>
+        ) : (
+          <Badge color={statusColor === "green" ? "green" : statusColor === "blue" ? "blue" : statusColor === "yellow" ? "yellow" : statusColor === "red" ? "red" : "cyan"}>
+            {STATUS_LABEL[mr.status]}
+          </Badge>
+        )}
         {mr.isLoading && <Spinner label="updating" />}
+        {mr.status === "blocked" && mr.statusDetail && (
+          <Text dimColor>({mr.statusDetail})</Text>
+        )}
       </Box>
 
       {/* Title + branch info */}
@@ -1308,9 +1316,9 @@ function LiveDashboard({
       }
       if (input === "M" && mr.autoMergeButton.visible) {
         if (mr.autoMergeButton.isActive) {
-          executeAction("A", "Cancel auto-merge", "Cancelling…", () => focusedActions.cancelAutoMerge());
+          executeAction("M", "Cancel auto-merge", "Cancelling…", () => focusedActions.cancelAutoMerge());
         } else {
-          executeAction("A", "Enable auto-merge", "Enabling…", () => focusedActions.setAutoMerge());
+          executeAction("M", "Enable auto-merge", "Enabling…", () => focusedActions.setAutoMerge());
         }
       }
       if (input === "d") {
