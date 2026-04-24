@@ -132,13 +132,22 @@ export async function dispatch(
   const resolvedName = resolveNodeName(tree, name!);
 
   if (node.subcommands) {
-    if (rest.length > 0) {
-      // More args → try to resolve deeper
+    // Only recurse into subcommands when the next arg actually matches one.
+    // This lets a node with both a handler and subcommands receive flags
+    // (e.g. `rt run --print`) without them being mis-parsed as subcommands.
+    const firstArg = rest[0];
+    const firstMatchesSub = firstArg ? !!resolveNode(node.subcommands, firstArg) : false;
+    const nodeHasHandler = !!(node.fn && node.module);
+
+    if (rest.length > 0 && (firstMatchesSub || !nodeHasHandler)) {
+      // Recurse: either the arg is a known subcommand, or this node has no
+      // handler of its own so any arg must be a subcommand (yields the usual
+      // "unknown command" message if it's bogus).
       return dispatch(node.subcommands, rest, [...breadcrumb, resolvedName], baseDir);
     }
 
-    // Node has its own handler — run it directly when no sub-args given
-    if (node.fn && node.module) {
+    // Node has its own handler — run it directly, passing rest through as args
+    if (nodeHasHandler) {
       // Fall through to leaf execution below
     } else {
       // No more args and no own handler → show subcommand picker
