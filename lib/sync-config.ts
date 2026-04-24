@@ -15,8 +15,11 @@ import { join, dirname } from "path";
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface AutoResolveRule {
-  /** Glob pattern to match against conflicted file paths (relative to repo root). */
-  glob: string;
+  /**
+   * Glob pattern(s) to match against conflicted file paths (relative to repo root).
+   * Accepts a single pattern or an array — the rule matches if any pattern matches.
+   */
+  glob: string | string[];
   /** Resolution strategy: "theirs" accepts incoming changes, "ours" keeps current. */
   strategy: "theirs" | "ours";
   /**
@@ -100,9 +103,15 @@ export function matchRule(
   }
 
   for (const rule of rules) {
-    if (matcher(rule.glob, filePath)) return rule;
+    const globs = Array.isArray(rule.glob) ? rule.glob : [rule.glob];
+    if (globs.some((g) => matcher(g, filePath))) return rule;
   }
   return null;
+}
+
+/** Normalize a rule's glob field to an array of patterns. */
+export function ruleGlobs(rule: AutoResolveRule): string[] {
+  return Array.isArray(rule.glob) ? rule.glob : [rule.glob];
 }
 
 /**
