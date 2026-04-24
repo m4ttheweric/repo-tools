@@ -109,21 +109,8 @@ export async function dispatch(
 
     process.stderr.write("\x1b[2J\x1b[H");
 
-    // At the root level, surface recent `rt run` entries at the top of the picker.
-    const isRoot = breadcrumb.length === 1;
-    const recentsModule = isRoot ? await import("./root-recents.ts") : null;
-    const recents = recentsModule?.loadRootRecents() ?? { options: [], byValue: new Map() };
-
-    const selected = await showPicker(tree, breadcrumb, recents.options);
+    const selected = await showPicker(tree, breadcrumb);
     if (!selected) process.exit(0);
-
-    if (recentsModule && selected.startsWith(recentsModule.ROOT_RECENT_PREFIX)) {
-      const entry = recents.byValue.get(selected);
-      if (entry) {
-        await recentsModule.executeRecentEntry(entry);
-        return;
-      }
-    }
 
     return dispatch(tree, [selected, ...rest], breadcrumb, baseDir);
   }
@@ -316,7 +303,6 @@ function showUsage(tree: Record<string, CommandNode>, breadcrumb: string[]): voi
 async function showPicker(
   tree: Record<string, CommandNode>,
   breadcrumb: string[],
-  prepend: Array<{ value: string; label: string; hint: string }> = [],
 ): Promise<string | null> {
   const { filterableSelect } = await import("./rt-render.tsx");
 
@@ -324,14 +310,11 @@ async function showPicker(
 
   const selected = await filterableSelect({
     message: breadcrumb.join(" › "),
-    options: [
-      ...prepend,
-      ...visible.map(([name, node]) => ({
-        value: name,
-        label: name,
-        hint: node.description,
-      })),
-    ],
+    options: visible.map(([name, node]) => ({
+      value: name,
+      label: name,
+      hint: node.description,
+    })),
   });
 
   return selected || null;
