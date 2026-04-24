@@ -30,7 +30,9 @@ export async function pickLane(_args: string[], _ctx: CommandContext): Promise<v
 
   let repoName: string;
   try {
-    repoName = await filterableSelect({ message: "Select a repo for this lane", options: repoOptions });
+    const picked = await filterableSelect({ message: "Select a repo for this lane", options: repoOptions });
+    if (!picked) process.exit(0);
+    repoName = picked;
   } catch {
     process.exit(0);
   }
