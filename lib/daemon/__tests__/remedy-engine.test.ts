@@ -28,12 +28,16 @@ interface Sub { id: string; cb: (chunk: Uint8Array) => void; active: boolean }
 class FakeProcessManager {
   subs: Sub[] = [];
   respawned: string[] = [];
+  notices: Array<{ id: string; text: string }> = [];
   subscribeToOutput(id: string, cb: (chunk: Uint8Array) => void): () => void {
     const entry: Sub = { id, cb, active: true };
     this.subs.push(entry);
     return () => { entry.active = false; };
   }
   async respawn(id: string): Promise<void> { this.respawned.push(id); }
+  emitNotice(id: string, text: string): void {
+    this.notices.push({ id, text });
+  }
   /** Count of currently-active subscriptions for a given id. */
   activeSubs(id: string): number {
     return this.subs.filter((s) => s.id === id && s.active).length;

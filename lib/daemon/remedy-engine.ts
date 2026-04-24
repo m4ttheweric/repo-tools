@@ -88,15 +88,18 @@ export class RemedyEngine {
   private processManager: ProcessManager;
   private stateStore:     StateStore;
   private onFire: (id: string, remedy: Remedy, success: boolean) => void;
+  private onMatch?: (id: string, remedy: Remedy, pattern: string) => void;
 
   constructor(deps: {
     processManager: ProcessManager;
     stateStore:     StateStore;
     onFire:         (id: string, remedy: Remedy, success: boolean) => void;
+    onMatch?:       (id: string, remedy: Remedy, pattern: string) => void;
   }) {
     this.processManager = deps.processManager;
     this.stateStore     = deps.stateStore;
     this.onFire         = deps.onFire;
+    this.onMatch        = deps.onMatch;
   }
 
   // ─── Global remedies ───────────────────────────────────────────────────────
@@ -265,22 +268,24 @@ export class RemedyEngine {
         if (now - last < (remedy.cooldownMs ?? DEFAULT_COOLDOWN_MS)) continue;
 
         // Pattern match — any pattern in the array is sufficient (OR logic)
-        let matched = false;
+        let matchedPattern: string | undefined;
         const patterns = Array.isArray(remedy.pattern) ? remedy.pattern : [remedy.pattern];
         for (const pat of patterns) {
           try {
-            if (new RegExp(pat).test(stripped)) { matched = true; break; }
+            if (new RegExp(pat).test(stripped)) { matchedPattern = pat; break; }
           } catch {
             // invalid regex — skip this pattern silently
           }
         }
-        if (!matched) continue;
+        if (!matchedPattern) continue;
 
         // ── All guards passed — commit SYNCHRONOUSLY before any await ──
         s.inFlight = true;
         s.cooldowns.set(remedy.name, now);  // Fix 3: set before first await
 
-        const ok = await this.runFix(remedy.cmds, s.cwd);
+        try { this.onMatch?.(id, remedy, matchedPattern); } catch { /* notice channel only */ }
+
+        const ok = await this.runFix(id, remedy.cmds, s.cwd);
 
         // Fix 2: entry might have been removed during runFix
         if (s.cancelled || !this.states.has(id)) {
@@ -307,11 +312,27 @@ export class RemedyEngine {
   /**
    * Run fix commands sequentially. Returns true if all succeeded.
    * Fix 4: each command gets a 60s timeout — SIGKILL on exceeded.
+   *
+   * Output from each fix command is streamed back into the attached process's
+   * output pane via processManager.emitNotice. Without this the fix ran
+   * invisibly — a failing `pnpm run clean` looked identical to a succeeding one
+   * because stderr was silently discarded. Each line is prefixed with `│ ` so
+   * the user can distinguish fix-output from the original process's output.
    */
-  private async runFix(cmds: string[], cwd: string): Promise<boolean> {
+  private async runFix(id: string, cmds: string[], cwd: string): Promise<boolean> {
+    // Reuse the daemon's resolved login-shell PATH so fix commands can find
+    // pnpm, doppler, nvm-managed node, etc. Without this the fix inherits the
+    // daemon's raw process.env.PATH (often just /usr/bin:/bin) and anything
+    // that isn't system-installed fails with "command not found" — the very
+    // first failure mode we saw in production.
+    const userPath = this.processManager.userPath;
+    const fixEnv = userPath
+      ? { ...process.env, PATH: userPath } as Record<string, string>
+      : undefined;
     for (const cmd of cmds) {
       const proc = Bun.spawn(["bash", "-c", cmd], {
         cwd,
+        env: fixEnv,
         stdio: ["ignore", "pipe", "pipe"],
       });
 
@@ -319,9 +340,38 @@ export class RemedyEngine {
         try { proc.kill("SIGKILL"); } catch { /* already exited */ }
       }, FIX_TIMEOUT_MS);
 
-      const code = await proc.exited;
+      // Drain stdout + stderr into the attach pane. Both are read concurrently
+      // so the child never blocks on a full pipe buffer (which would hang
+      // longer than the 60s timeout for any chatty command).
+      const pipeToAttach = async (stream: ReadableStream<Uint8Array> | null | undefined) => {
+        if (!stream) return;
+        const reader = stream.getReader();
+        let pending = "";
+        try {
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            pending += new TextDecoder().decode(value);
+            const parts = pending.split("\n");
+            pending = parts.pop() ?? "";
+            for (const line of parts) {
+              this.processManager.emitNotice(id, `\x1b[2m│\x1b[0m ${line}\r\n`);
+            }
+          }
+          if (pending.length > 0) {
+            this.processManager.emitNotice(id, `\x1b[2m│\x1b[0m ${pending}\r\n`);
+          }
+        } catch { /* stream closed */ }
+      };
+
+      await Promise.all([
+        pipeToAttach(proc.stdout as ReadableStream<Uint8Array>),
+        pipeToAttach(proc.stderr as ReadableStream<Uint8Array>),
+        proc.exited,
+      ]);
       clearTimeout(timeout);
 
+      const code = proc.exitCode ?? 1;
       if (code !== 0) return false; // stop on first failure
     }
     return true;
