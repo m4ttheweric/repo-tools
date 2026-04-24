@@ -74,25 +74,25 @@ function toTicket(raw: Record<string, unknown>): LinearTicket {
 }
 
 const MY_TODO_ISSUES_QUERY = `
-  query MyTodoIssues {
-    viewer {
-      assignedIssues(
-        filter: {
-          state: { type: { in: ["unstarted", "backlog"] } }
-          attachments: { or: [{ length: { eq: 0 } }, { url: { notContains: "github.com" } }] }
-        }
-        first: 50
-        orderBy: updatedAt
-      ) {
-        nodes {
-          id
-          identifier
-          title
-          url
-          branchName
-          state { name }
-          attachments { nodes { url } }
-        }
+  query MyBranchableIssues {
+    issues(
+      filter: {
+        or: [
+          { assignee: { isMe: { eq: true } } }
+          { assignee: { null: true } }
+        ]
+        state: { type: { nin: ["completed", "canceled"] } }
+      }
+      first: 50
+      orderBy: updatedAt
+    ) {
+      nodes {
+        id
+        identifier
+        title
+        url
+        branchName
+        state { name }
       }
     }
   }
@@ -130,29 +130,16 @@ export async function fetchTicket(apiKey: string, identifier: string): Promise<L
 }
 
 /**
- * Fetch the viewer's assigned issues in To Do / Backlog state
- * that do not yet have a git branch linked.
+ * Fetch issues eligible for branch creation: assigned to the viewer or
+ * unassigned, in any state except completed/canceled.
  */
 export async function fetchMyTodoTickets(apiKey: string): Promise<LinearTicket[]> {
   try {
     const data = (await graphql(apiKey, MY_TODO_ISSUES_QUERY, {})) as {
-      viewer: {
-        assignedIssues: {
-          nodes: Array<Record<string, unknown> & { attachments: { nodes: Array<{ url: string }> } }>;
-        };
-      };
+      issues: { nodes: Array<Record<string, unknown>> };
     };
 
-    // Client-side filter: skip tickets that have a branch-like attachment (GitHub/GitLab link)
-    return data.viewer.assignedIssues.nodes
-      .filter((n) => {
-        const attachments = n.attachments?.nodes ?? [];
-        const hasBranchLink = attachments.some(
-          (a) => a.url && (/github\.com/.test(a.url) || /gitlab\.com/.test(a.url)),
-        );
-        return !hasBranchLink;
-      })
-      .map(toTicket);
+    return data.issues.nodes.map(toTicket);
   } catch {
     return [];
   }
