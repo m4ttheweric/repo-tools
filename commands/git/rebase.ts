@@ -25,6 +25,7 @@ import {
   loadSyncConfig,
   classifyConflicts,
   collectPostResolveSteps,
+  ruleGlobs,
   type AutoResolveRule,
 } from "../../lib/sync-config.ts";
 import type { CommandContext } from "../../lib/command-tree.ts";
@@ -249,7 +250,7 @@ export async function rebaseOnto(opts: RebaseOptions): Promise<RebaseResult> {
   if (dryRun) {
     log(`  ${dim}would rebase${reset} ${bold}${branch}${reset} ${dim}onto ${target} (${behind} commit${behind !== 1 ? "s" : ""} behind)${reset}\n`, quiet);
     if (rules.length > 0) {
-      log(`  ${dim}auto-resolve rules: ${rules.map((r) => r.glob).join(", ")}${reset}\n`, quiet);
+      log(`  ${dim}auto-resolve rules: ${rules.flatMap(ruleGlobs).join(", ")}${reset}\n`, quiet);
     }
     return {
       status: "ok",
@@ -389,22 +390,48 @@ export async function rebaseOnto(opts: RebaseOptions): Promise<RebaseResult> {
   // 8. Run triggered postResolve steps
   const postResolveSteps = collectPostResolveSteps(
     allResolvedFiles.map((file) => {
-      const rule = [...triggeredRules].find((r) => {
-        try { return new Bun.Glob(r.glob).match(file); } catch { return false; }
-      });
+      const rule = [...triggeredRules].find((r) =>
+        ruleGlobs(r).some((g) => {
+          try { return new Bun.Glob(g).match(file); } catch { return false; }
+        }),
+      );
       return { file, rule: rule! };
     }).filter((m) => m.rule),
   );
 
+  // Use the user's login shell so profile-sourced PATH additions (pnpm,
+  // corepack, volta, nvm, etc.) are available. Plain `sh -c` inherits only
+  // the parent env and misses shell-rc-managed bins.
+  const userShell = process.env.SHELL || "/bin/zsh";
+  let failedStep: { step: string; status: number | null; signal: NodeJS.Signals | null } | null = null;
+
   for (const step of postResolveSteps) {
     log(`  ${dim}running:${reset} ${step}\n`, quiet);
-    const result = spawnSync("sh", ["-c", step], {
+    const result = spawnSync(userShell, ["-lc", step], {
       cwd,
       stdio: quiet ? "pipe" : "inherit",
     });
     if (result.status !== 0) {
-      log(`  ${yellow}⚠ post-resolve step failed: ${step}${reset}\n`, quiet);
+      log(`  ${red}✗ post-resolve step failed: ${step}${reset}\n`, quiet);
+      failedStep = { step, status: result.status, signal: result.signal };
+      break;
     }
+  }
+
+  if (failedStep) {
+    const errMsg = `post-resolve step failed: ${failedStep.step}${failedStep.signal ? ` (signal ${failedStep.signal})` : ` (exit ${failedStep.status ?? "?"})`}`;
+    log(`  ${red}halting — working tree left as-is; restore from ${backupBranch} if needed${reset}\n`, quiet);
+    return {
+      status: "error",
+      branch,
+      target,
+      commitsBehind: behind,
+      resolvedFiles: allResolvedFiles,
+      unresolvedFiles: [],
+      postResolveSteps,
+      backupBranch,
+      error: errMsg,
+    };
   }
 
   // 9. Auto-commit regenerated files if any changed
