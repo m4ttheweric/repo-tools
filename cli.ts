@@ -197,6 +197,14 @@ const TREE: Record<string, CommandNode> = {
     fn: "runCommand",
     context: "worktree",
     requiresTTY: true,
+    subcommands: {
+      again: {
+        description: "Pick from recently run scripts across all repos",
+        module: "./commands/run.ts",
+        fn: "runAgainCommand",
+        requiresTTY: true,
+      },
+    },
   },
 
   commit: {

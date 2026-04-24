@@ -15,11 +15,13 @@
 
 import { existsSync, readFileSync } from "fs";
 import { execSync } from "child_process";
-import { join, relative } from "path";
+import { join, relative, basename } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { filterableSelect, BackNavigation } from "../lib/rt-render.tsx";
 import { getKnownRepos } from "../lib/repo-index.ts";
 import { getWorkspacePackages } from "../lib/repo.ts";
+import { appendRunHistory, readRunHistory, type RunHistoryEntry } from "../lib/run-history.ts";
+import { bold, dim, reset, yellow } from "../lib/tui.ts";
 
 export interface RunResolveResult {
   targetDir: string;
@@ -271,5 +273,136 @@ export async function runCommand(args: string[], ctx: CommandContext): Promise<v
   });
 
   const exitCode = await proc.exited;
+
+  // Record to per-repo run history for rt run again / rt no-arg Recent.
+  if (ctx.identity) {
+    appendRunHistory(ctx.identity.dataDir, {
+      ts: new Date().toISOString(),
+      cmd,
+      cwd: packagePath,
+      worktree: worktreePath,
+      branch: worktreeBranch,
+      pkg: packageLabel,
+      script: selectedScript,
+      exit: typeof exitCode === "number" ? exitCode : null,
+    });
+  }
+
   process.exit(exitCode ?? 0);
+}
+
+// ─── rt run again ──────────────────────────────────────────────────────────
+
+/**
+ * rt run again — flat fzf picker of recently-run scripts across all known repos.
+ *
+ * No repo/worktree resolution step. Reads every known repo's run-history.jsonl,
+ * merges newest-first, and shows one flat list. The hint tells you where each
+ * entry would run; selecting one executes it at the recorded cwd.
+ */
+export async function runAgainCommand(_args: string[], _ctx: CommandContext): Promise<void> {
+  const { entries, totalRepos } = loadAllRunHistory();
+  if (entries.length === 0) {
+    process.stderr.write(`\n  ${dim}No run history yet${totalRepos > 0 ? "" : " — no repos registered"}.${reset}\n`);
+    process.stderr.write(`  ${dim}Run ${reset}${bold}rt run${reset}${dim} from a repo first — entries will show up here.${reset}\n\n`);
+    process.exit(0);
+  }
+
+  const chosen = await filterableSelect({
+    message: "Recent runs",
+    options: entries.map((tagged) => ({
+      value: taggedId(tagged),
+      label: tagged.entry.cmd,
+      hint: formatFlatHint(tagged),
+    })),
+    stderr: true,
+  });
+
+  if (!chosen) process.exit(0);
+
+  const picked = entries.find((t) => taggedId(t) === chosen);
+  if (!picked) process.exit(1);
+
+  const { entry, dataDir } = picked;
+
+  if (!existsSync(entry.cwd)) {
+    process.stderr.write(`\n  ${yellow}skipping — directory no longer exists:${reset} ${entry.cwd}\n\n`);
+    process.exit(1);
+  }
+
+  process.stderr.write(`\nRunning: ${entry.cmd}\n`);
+  process.stderr.write(`  in: ${entry.cwd}\n\n`);
+
+  const proc = Bun.spawn(["bash", "-c", entry.cmd], {
+    cwd: entry.cwd,
+    stdio: ["inherit", "inherit", "inherit"],
+  });
+
+  const exitCode = await proc.exited;
+
+  appendRunHistory(dataDir, {
+    ...entry,
+    ts: new Date().toISOString(),
+    exit: typeof exitCode === "number" ? exitCode : null,
+  });
+
+  process.exit(exitCode ?? 0);
+}
+
+interface TaggedEntry {
+  entry: RunHistoryEntry;
+  repoName: string;
+  /** dataDir the entry was read from — used for re-logging on replay. */
+  dataDir: string;
+}
+
+function loadAllRunHistory(): { entries: TaggedEntry[]; totalRepos: number } {
+  const repos = getKnownRepos();
+  const all: TaggedEntry[] = [];
+  for (const repo of repos) {
+    for (const entry of readRunHistory(repo.dataDir)) {
+      all.push({ entry, repoName: repo.repoName, dataDir: repo.dataDir });
+    }
+  }
+  all.sort((a, b) => (a.entry.ts < b.entry.ts ? 1 : a.entry.ts > b.entry.ts ? -1 : 0));
+
+  // Dedupe by (cmd, cwd) — keep newest. Because `all` is sorted newest-first,
+  // the first occurrence of any (cmd, cwd) pair is the one we keep.
+  const seen = new Set<string>();
+  const deduped: TaggedEntry[] = [];
+  for (const t of all) {
+    const key = `${t.entry.cmd}\x00${t.entry.cwd}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(t);
+  }
+  return { entries: deduped, totalRepos: repos.length };
+}
+
+function taggedId(t: TaggedEntry): string {
+  return `${t.entry.ts}|${t.entry.cwd}|${t.entry.cmd}`;
+}
+
+function formatFlatHint(t: TaggedEntry): string {
+  const { entry, repoName } = t;
+  const age = formatAge(entry.ts);
+  const worktreeName = entry.worktree ? basename(entry.worktree) : "";
+  // Prefer worktree name over repo name when they differ (e.g. "assured-wktree-2").
+  const where = worktreeName || repoName;
+  const sub = entry.pkg && entry.pkg !== "." && entry.pkg !== "root" ? ` · ${entry.pkg}` : "";
+  const exit = entry.exit == null || entry.exit === 0 ? "" : ` · exit ${entry.exit}`;
+  return `${age} · ${where}${sub}${exit}`;
+}
+
+function formatAge(iso: string): string {
+  const ms = Date.now() - Date.parse(iso);
+  if (Number.isNaN(ms)) return "—";
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  return `${d}d ago`;
 }
