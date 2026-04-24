@@ -677,6 +677,8 @@ export async function scriptRunner(args: string[]): Promise<void> {
 
 
 
+  if (!selected) return;
+
   const script = loadScript(selected, repoRoot, dataDir);
   if (!script) {
     console.log(`\n  ${red}script not found: ${selected}${reset}\n`);

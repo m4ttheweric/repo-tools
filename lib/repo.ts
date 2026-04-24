@@ -132,7 +132,10 @@ export async function requireRepoIdentity(commandLabel?: string): Promise<RepoId
           : r.worktrees[0]?.path.replace(process.env.HOME || "", "~") || "",
       })),
     });
-    selectedRepo = repos.find(r => r.repoName === picked)!;
+    if (!picked) process.exit(0);  // Esc on picker — clean exit
+    const match = repos.find(r => r.repoName === picked);
+    if (!match) process.exit(0);
+    selectedRepo = match;
   }
 
   process.chdir(selectedRepo.worktrees[0]!.path);
@@ -185,7 +188,10 @@ export async function pickWorktree(prompt: string): Promise<string> {
     }));
 
     const picked = await filterableSelect({ message: "Select a repo", options: repoOptions });
-    selectedRepo = repos.find(r => r.repoName === picked)!;
+    if (!picked) process.exit(0);            // user escaped — clean exit, no error
+    const match = repos.find(r => r.repoName === picked);
+    if (!match) process.exit(0);             // shouldn't happen, but don't crash
+    selectedRepo = match;
   }
 
   if (selectedRepo.worktrees.length === 1) {
@@ -195,7 +201,9 @@ export async function pickWorktree(prompt: string): Promise<string> {
   // Clear between repo and worktree picker
   console.clear();
 
-  return pickWorktreeFromRepo(selectedRepo, "Select a worktree");
+  const wtPath = await pickWorktreeFromRepo(selectedRepo, "Select a worktree");
+  if (!wtPath) process.exit(0);              // user escaped the worktree picker
+  return wtPath;
 }
 
 /**
@@ -287,6 +295,7 @@ export async function pickRepoInteractive(): Promise<RepoIdentity> {
       options,
     });
 
+    if (!picked) process.exit(0);            // Esc on worktree picker
     if (picked === "__all_repos__") {
       selectedPath = await pickFromAllRepos(repos);
     } else {
@@ -318,13 +327,17 @@ async function pickFromAllRepos(repos: KnownRepo[]): Promise<string> {
   }));
 
   const pickedRepo = await filterableSelect({ message: "Pick a repo", options: repoOptions });
-  const repo = repos.find((r) => r.repoName === pickedRepo)!;
+  if (!pickedRepo) process.exit(0);        // Esc on all-repos picker
+  const repo = repos.find((r) => r.repoName === pickedRepo);
+  if (!repo) process.exit(0);
 
   if (repo.worktrees.length === 1) {
     return repo.worktrees[0]!.path;
   }
 
-  return pickWorktreeFromRepo(repo, "Pick a worktree");
+  const wtPath = await pickWorktreeFromRepo(repo, "Pick a worktree");
+  if (!wtPath) process.exit(0);            // Esc on worktree picker
+  return wtPath;
 }
 
 // ─── Workspace package discovery ─────────────────────────────────────────────
