@@ -144,15 +144,18 @@ if [ -f "$DAEMON_BIN" ]; then
     echo "  ✓ Signed rt-daemon with JIT entitlements"
 fi
 
-# 1b. Daemon shim — same Team ID + JIT entitlements so it can replace rt-daemon
-# under launchd's LWCR check. Entitlements apply if the shim ever serves in
-# rt-daemon's slot (dev-mode swap).
+# 1b. Daemon shim — same Team ID, same IDENTIFIER, and same JIT entitlements
+# so it can replace rt-daemon under launchd's LWCR check. The identifier
+# override is load-bearing: without -i rt-daemon, codesign keeps SwiftPM's
+# default (rt-daemon-shim) and launchd rejects the swapped binary with
+# EX_CONFIG (cached LWCR was for identifier=rt-daemon).
 SHIM_BUNDLE="$APP_BUNDLE/Contents/MacOS/rt-daemon-shim"
 if [ -f "$SHIM_BUNDLE" ]; then
     codesign "${SIGN_FLAGS[@]}" \
+        -i rt-daemon \
         --entitlements "$SCRIPT_DIR/../scripts/entitlements.plist" \
         "$SHIM_BUNDLE"
-    echo "  ✓ Signed rt-daemon-shim with JIT entitlements"
+    echo "  ✓ Signed rt-daemon-shim as identifier=rt-daemon (JIT entitlements)"
 fi
 
 # 2. Outer .app bundle — tray entitlements (sandbox disabled)
