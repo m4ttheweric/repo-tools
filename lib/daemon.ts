@@ -108,13 +108,53 @@ const exclusiveGroup = new ExclusiveGroup({ suspendManager, stateStore });
 /** Bounded ring buffer of recent remedy fire events for UI polling. */
 const remedyEventQueue: RemedyEvent[] = [];
 
+// Remedy banner styling — a single blank line is emitted above and below each
+// banner so it stands out from the surrounding stack traces. The match banner
+// is broken across three lines (title + pattern + running) because a single
+// long line wraps awkwardly in narrow panes and is hard to scan at a glance.
+const ANSI_RESET  = "\x1b[0m";
+const ANSI_YELLOW = "\x1b[1;33m"; // matched
+const ANSI_GREEN  = "\x1b[1;32m"; // ✓ fix succeeded
+const ANSI_RED    = "\x1b[1;31m"; // ✗ fix failed
+const ANSI_DIM    = "\x1b[2m";    // label gutter
+
+function matchBanner(name: string, pattern: string, cmd: string): string {
+  return (
+    `\r\n\r\n` +
+    `${ANSI_YELLOW}▸ rt remedy matched: ${name}${ANSI_RESET}\r\n` +
+    `${ANSI_DIM}    pattern:${ANSI_RESET}  ${pattern}\r\n` +
+    `${ANSI_DIM}    running:${ANSI_RESET}  ${cmd}\r\n` +
+    `\r\n`
+  );
+}
+
+function fireBanner(name: string, success: boolean, willRestart: boolean): string {
+  const color = success ? ANSI_GREEN : ANSI_RED;
+  const mark  = success ? "✓" : "✗";
+  const tail  = success
+    ? (willRestart ? "fix succeeded — restarting process" : "fix succeeded")
+    : "fix failed";
+  return (
+    `\r\n` +
+    `${color}▸ rt remedy ${mark} ${name} — ${tail}${ANSI_RESET}\r\n` +
+    `\r\n\r\n`
+  );
+}
+
 const remedyEngine = new RemedyEngine({
   processManager,
   stateStore,
+  onMatch: (id, remedy, pattern) => {
+    const cmdPreview = remedy.cmds.join(" && ");
+    processManager.emitNotice(id, matchBanner(remedy.name, pattern, cmdPreview));
+    log(`remedy: ▸ "${remedy.name}" matched for ${id} (pattern: ${pattern})`);
+  },
   onFire: (id, remedy, success) => {
     remedyEventQueue.push({ id, name: remedy.name, success, firedAt: Date.now() });
     if (remedyEventQueue.length > 50) remedyEventQueue.shift(); // bounded
     broadcast("remedy", { id, name: remedy.name, success });
+    const willRestart = success && remedy.thenRestart !== false;
+    processManager.emitNotice(id, fireBanner(remedy.name, success, willRestart));
     log(`remedy: ${success ? "✓" : "✗"} "${remedy.name}" fired for ${id}`);
   },
 });

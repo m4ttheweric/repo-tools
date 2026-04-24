@@ -108,6 +108,33 @@ export class ProcessManager {
     };
   }
 
+  /**
+   * Inject synthetic text into a process's output stream as if it had come
+   * from the PTY. Appends to the log buffer (visible to future attach clients
+   * on replay) and fans out to live outputHooks (visible to currently attached
+   * clients). Used by the RemedyEngine to surface remedy activity in-band so
+   * the user can see it in `rt attach`.
+   *
+   * Fanout is deferred via queueMicrotask so that if emitNotice is called from
+   * inside an outputHook (RemedyEngine's handleChunk matches on a PTY chunk
+   * and synthesizes a banner), the originating chunk still reaches
+   * later-subscribed hooks (AttachServer) BEFORE the banner. Without the
+   * defer, the banner overtakes the triggering line in the live socket
+   * stream, so you see the match announcement appear before the error line
+   * that actually triggered it.
+   */
+  emitNotice(id: string, text: string): void {
+    const chunk = new TextEncoder().encode(text);
+    this.logBuffer.append(id, chunk);
+    queueMicrotask(() => {
+      const hooks = this.outputHooks.get(id);
+      if (!hooks) return;
+      for (const hook of hooks) {
+        try { hook(chunk); } catch { /* subscriber may have disconnected */ }
+      }
+    });
+  }
+
   async spawn(id: string, cmd: string, opts: { cwd: string; env?: Record<string, string> }): Promise<void> {
     // Signal to pollers that a spawn is in progress
     this.stateStore.setState(id, "starting");
