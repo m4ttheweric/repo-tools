@@ -303,37 +303,31 @@ function swapDaemonToReal(): DaemonSwapResult {
 }
 
 /**
- * After swapping the daemon binary on disk, launchd needs to fully forget its
- * cached LWCR (Launch With Code Requirements) entry — otherwise it marks the
- * job "needs LWCR update" and refuses to spawn with EX_CONFIG.
+ * After swapping the daemon binary on disk, launchd caches a Launch With
+ * Code Requirements (LWCR) entry that pins the binary's hash at registration
+ * time. Neither `launchctl bootout` nor `SMAppService.agent.unregister()` +
+ * `.register()` reliably forces a refresh — BTM retains the cached LWCR and
+ * reuses it on re-register. The job then crash-loops with EX_CONFIG (78)
+ * and launchd reports "needs LWCR update".
  *
- * SMAppService unregister/register alone is not enough because launchd caches
- * the binary hash at registration time and doesn't re-read it on re-register
- * unless the job has been completely booted out of the domain first.
+ * The only thing that does reliably force a refresh is toggling the app's
+ * Login Item registration (what System Settings → Login Items does). That
+ * calls `SMAppService.mainApp.unregister()` + `.register()` — the parent-
+ * app-level cycle cascades to all embedded agents with fresh LWCR reads.
  *
- * Flow:
- *   1. launchctl bootout — forcibly evicts the job from launchd's domain
- *   2. rt daemon uninstall — SMAppService unregister (cleans up BTM entry)
- *   3. rt daemon install   — SMAppService register (reads fresh binary hash)
+ * We delegate to rt-tray via `/login-item/reset` because SMAppService is
+ * app-context only; the rt CLI can't call it directly.
  */
-function reregisterDaemon(): { ok: boolean; err?: string } {
-  // 1. Force launchd to forget the LWCR hash for this job.
-  // Ignore errors — the job may not be registered yet.
-  const uid = spawnSync("id", ["-u"], { encoding: "utf8" }).stdout.trim();
-  spawnSync("launchctl", ["bootout", `gui/${uid}/com.rt.daemon`], { encoding: "utf8" });
-
-  // 2. SMAppService unregister
-  const uninstall = spawnSync("rt", ["daemon", "uninstall"], { encoding: "utf8" });
-  if (uninstall.status !== 0) {
-    return { ok: false, err: `uninstall failed: ${uninstall.stderr || uninstall.stdout}` };
+async function reregisterDaemon(): Promise<{ ok: boolean; err?: string; status?: string }> {
+  const { trayQuery } = await import("../lib/daemon-client.ts");
+  const result = await trayQuery("/login-item/reset", "POST");
+  if (!result) {
+    return { ok: false, err: "rt-tray not reachable" };
   }
-
-  // 3. SMAppService register (reads the new binary from disk)
-  const install = spawnSync("rt", ["daemon", "install"], { encoding: "utf8" });
-  if (install.status !== 0) {
-    return { ok: false, err: `install failed: ${install.stderr || install.stdout}` };
+  if (!result.ok) {
+    return { ok: false, err: (result as any).error ?? "unknown tray error" };
   }
-  return { ok: true };
+  return { ok: true, status: (result as any).status };
 }
 
 export async function toggleDevMode(args: string[]): Promise<void> {
@@ -405,12 +399,19 @@ export async function toggleDevMode(args: string[]): Promise<void> {
     const swap = swapDaemonToShim();
     if (swap.status === "swapped") {
       console.log(`  ${green}✓${reset} daemon binary swapped to shim  ${dim}(re-registering…)${reset}`);
-      const reg = reregisterDaemon();
+      const reg = await reregisterDaemon();
       if (reg.ok) {
-        console.log(`  ${green}✓${reset} daemon re-registered — running from source`);
+        if (reg.status === "requiresApproval") {
+          console.log(`  ${yellow}⚠${reset} rt-tray needs re-approval after reset`);
+          console.log(`  ${dim}  Opening System Settings → Login Items…${reset}`);
+          spawnSync("open", ["x-apple.systempreferences:com.apple.LoginItems-Settings.extension"]);
+        } else {
+          console.log(`  ${green}✓${reset} daemon re-registered — running ${reg.status ?? "enabled"}`);
+        }
       } else {
         console.log(`  ${yellow}⚠${reset} daemon re-register failed: ${reg.err}`);
-        console.log(`  ${dim}  fix manually: rt daemon uninstall && rt daemon install${reset}`);
+        console.log(`  ${dim}  fix manually: System Settings → General → Login Items & Extensions${reset}`);
+        console.log(`  ${dim}  → toggle rt-tray off/on (forces a fresh LWCR read)${reset}`);
       }
     } else if (swap.status === "already") {
       console.log(`  ${dim}daemon already running as shim${reset}`);
@@ -428,12 +429,13 @@ export async function toggleDevMode(args: string[]): Promise<void> {
     const swap = swapDaemonToReal();
     if (swap.status === "swapped") {
       console.log(`  ${green}✓${reset} daemon binary restored  ${dim}(re-registering…)${reset}`);
-      const reg = reregisterDaemon();
+      const reg = await reregisterDaemon();
       if (reg.ok) {
         console.log(`  ${green}✓${reset} daemon re-registered — running compiled binary`);
       } else {
         console.log(`  ${yellow}⚠${reset} daemon re-register failed: ${reg.err}`);
-        console.log(`  ${dim}  fix manually: rt daemon uninstall && rt daemon install${reset}`);
+        console.log(`  ${dim}  fix manually: System Settings → General → Login Items & Extensions${reset}`);
+        console.log(`  ${dim}  → toggle rt-tray off/on (forces a fresh LWCR read)${reset}`);
       }
     } else {
       console.log(`  ${dim}daemon already running compiled binary${reset}`);

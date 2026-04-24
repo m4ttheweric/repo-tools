@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import ServiceManagement
 
 // MARK: - TrayServer
 
@@ -126,6 +127,53 @@ class TrayServer {
                     self.daemonLifecycle?.restartDaemon()
                 }
                 self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true}")
+
+            } else if method == "POST" && path == "/login-item/reset" {
+                // Full SMAppService reset: unregister + register the parent
+                // app so BTM drops its cached LWCR for every embedded agent
+                // and re-hashes them on re-registration. This is the only
+                // reliable way to recover after a dev-mode binary swap —
+                // agent-level unregister/register leaves BTM's LWCR stale.
+                //
+                // Runs synchronously on main so the caller can trust the
+                // response reflects the actual outcome.
+                var ok = true
+                var errMsg = ""
+                var statusAfter = "unknown"
+                DispatchQueue.main.sync {
+                    do {
+                        if SMAppService.mainApp.status == .enabled {
+                            try SMAppService.mainApp.unregister()
+                        }
+                    } catch {
+                        // Best-effort — proceed to register even if this fails.
+                        NSLog("rt-tray: mainApp.unregister failed: \(error)")
+                    }
+                    // Let BTM settle before the re-register.
+                    Thread.sleep(forTimeInterval: 1.0)
+                    do {
+                        try SMAppService.mainApp.register()
+                    } catch {
+                        ok = false
+                        errMsg = "\(error)".replacingOccurrences(of: "\"", with: "\\\"")
+                    }
+                    switch SMAppService.mainApp.status {
+                    case .enabled:          statusAfter = "enabled"
+                    case .requiresApproval: statusAfter = "requiresApproval"
+                    case .notRegistered:    statusAfter = "notRegistered"
+                    case .notFound:         statusAfter = "notFound"
+                    @unknown default:       statusAfter = "unknown"
+                    }
+                }
+                if ok {
+                    NSLog("rt-tray: login-item reset — status=\(statusAfter)")
+                    self.sendResponse(connection: connection, status: 200,
+                                      body: "{\"ok\":true,\"status\":\"\(statusAfter)\"}")
+                } else {
+                    NSLog("rt-tray: login-item reset failed: \(errMsg)")
+                    self.sendResponse(connection: connection, status: 500,
+                                      body: "{\"ok\":false,\"error\":\"\(errMsg)\"}")
+                }
 
             } else if method == "GET" && path == "/daemon/status" {
                 let statusStr: String
