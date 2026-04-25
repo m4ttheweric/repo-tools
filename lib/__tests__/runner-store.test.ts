@@ -133,7 +133,7 @@ describe("normalizeLane — on-disk shape normalization", () => {
     expect(lanes[0]!.entries[0]!.targetDir.endsWith("/app")).toBe(true);
   });
 
-  test("multi-command compact shape expands cross-product", () => {
+  test("multi-command compact shape expands per-worktree with a menu", () => {
     const name = track(uniqueName());
     const runnerPath = join(RUNNERS_DIR, `${name}.json`);
 
@@ -157,13 +157,42 @@ describe("normalizeLane — on-disk shape normalization", () => {
 
     const lanes = loadRunnerConfig(name);
     expect(lanes).toHaveLength(1);
-    // 2 commands × 1 worktree = 2 entries
-    expect(lanes[0]!.entries).toHaveLength(2);
-    expect(lanes[0]!.entries[0]!.id).toBe("primary");     // cmd index 0, no suffix
-    expect(lanes[0]!.entries[1]!.id).toBe("primary-1");   // cmd index 1, -1 suffix
-    expect(lanes[0]!.entries[0]!.commandTemplate).toBe("bun run dev");
-    expect(lanes[0]!.entries[1]!.commandTemplate).toBe("bun run debug");
+    // 1 worktree → 1 entry; the 2 cmds live on availableCommands as a menu.
+    expect(lanes[0]!.entries).toHaveLength(1);
+    const e = lanes[0]!.entries[0]!;
+    expect(e.id).toBe("primary");
+    expect(e.commandTemplate).toBe("bun run dev");        // active defaults to idx 0
+    expect(e.availableCommands?.map((c) => c.cmd)).toEqual(["bun run dev", "bun run debug"]);
     expect(lanes[0]!.mode).toBe("single");
+  });
+
+  test("activeCmdIdx on a compact entry selects a non-default command", () => {
+    const name = track(uniqueName());
+    const runnerPath = join(RUNNERS_DIR, `${name}.json`);
+
+    const raw = [{
+      id: "1",
+      canonicalPort: 3007,
+      repoName: "r",
+      mode: "warm",
+      entries: [{
+        pm: "bun",
+        script: "dev",
+        packagePath: "",
+        packageLabel: "svc",
+        commandTemplate: ["bun run dev", { cmd: "bun run debug", alias: "debug" }],
+        activeCmdIdx: 1,
+        worktrees: [
+          { root: join(scratchDir, "primary") },
+        ],
+      }],
+    }];
+    writeFileSync(runnerPath, JSON.stringify(raw, null, 2));
+
+    const lanes = loadRunnerConfig(name);
+    const e = lanes[0]!.entries[0]!;
+    expect(e.commandTemplate).toBe("bun run debug");
+    expect(e.alias).toBe("debug");
   });
 
   test("unknown mode coerces to 'warm' (default)", () => {

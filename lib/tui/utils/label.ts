@@ -86,6 +86,7 @@ export function rowBg(selected: boolean): number | undefined {
  * Formats a lane entry's display label from its package/script metadata.
  *
  * Rules:
+ *   - If alias is set: shows the alias (scoped with packageLabel if not "root")
  *   - If packageLabel !== "root": shows "packageLabel · script" (or custom cmd)
  *   - If packageLabel === "root": shows just the script (or custom cmd)
  *   - If commandTemplate differs from the default "pm run script": shows the custom command
@@ -97,10 +98,12 @@ export function entryCommandLabel(entry: {
   pm: string;
   script: string;
   commandTemplate: string;
+  alias?: string;
 }): string {
   const defaultCmd = `${entry.pm} run ${entry.script}`;
   const hasCustomCmd = entry.commandTemplate !== defaultCmd;
+  const cmdLabel = entry.alias ?? (hasCustomCmd ? entry.commandTemplate : entry.script);
   return entry.packageLabel !== "root"
-    ? `${entry.packageLabel} · ${hasCustomCmd ? entry.commandTemplate : entry.script}`
-    : (hasCustomCmd ? entry.commandTemplate : entry.script);
+    ? `${entry.packageLabel} · ${cmdLabel}`
+    : cmdLabel;
 }

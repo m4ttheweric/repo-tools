@@ -245,8 +245,12 @@ export async function filterableMultiselect(opts: {
     return multiselect(opts);
   }
 
+  const labelWidth = Math.max(...opts.options.map((o) => o.label.length));
   const input = opts.options
-    .map((o) => `${o.value}\t\x1b[1m${o.label}\x1b[22m${o.hint ? `  \x1b[2m${o.hint}\x1b[22m` : ""}`)
+    .map((o) => {
+      const pad = " ".repeat(labelWidth - o.label.length);
+      return `${o.value}\t\x1b[1m${o.label}\x1b[22m${pad}${o.hint ? `  \x1b[2m${o.hint}\x1b[22m` : ""}`;
+    })
     .join("\n");
 
   // Build start binding to pre-select initialValues
@@ -272,7 +276,7 @@ export async function filterableMultiselect(opts: {
     "--ansi",
     "--with-nth=2..",
     "--delimiter=\t",
-    "--height=~60%",
+    "--height=~100%",
     "--layout=reverse",
     "--border=rounded",
     `--border-label= ${opts.message} `,
@@ -333,8 +337,15 @@ export async function filterableSelect(opts: {
     return select({ ...opts, options });
   }
 
+  const labelWidth = Math.max(...options.map((o) => o.label.length));
   const input = options
-    .map((o) => `${o.value}\t\x1b[1m${o.label}\x1b[22m\t${o.hint ? `  \x1b[2m${o.hint}\x1b[22m` : ""}`)
+    .map((o) => {
+      const pad = " ".repeat(labelWidth - o.label.length);
+      // Keep label/hint as separate tab-delimited fields so --nth=1 scopes search
+      // to the label only. --tabstop=1 in the fzf args keeps the tab from
+      // expanding to the next 8-column stop and creating a huge visual gap.
+      return `${o.value}\t\x1b[1m${o.label}\x1b[22m${pad}\t  ${o.hint ? `\x1b[2m${o.hint}\x1b[22m` : ""}`;
+    })
     .join("\n");
 
   const result = spawnSync("fzf", [
@@ -345,7 +356,8 @@ export async function filterableSelect(opts: {
     "--with-nth=2..",
     "--nth=1",
     "--delimiter=\t",
-    "--height=~60%",
+    "--tabstop=1",
+    "--height=~100%",
     "--layout=reverse",
     "--border=rounded",
     `--border-label= ${opts.message} `,

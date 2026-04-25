@@ -19,6 +19,10 @@
  *   Single-command:  { commandTemplate, packagePath, ..., worktrees: [{root}] }
  *   Multi-command:   { commandTemplate: [cmd0, cmd1], ..., worktrees: [{root}] }
  *                    (cross-product of cmds × worktrees is expanded on load)
+ *
+ * Any command variant (the bare field or an array element) can also be an
+ * object `{ cmd, alias? }` — `alias` becomes a UI label and round-trips back
+ * to the object form on save.
  */
 
 import { basename } from "path";
@@ -70,8 +74,31 @@ function worktreeEntryId(worktreeRoot: string, cmdIdx = 0): string {
 }
 
 /**
+ * Parse a commandTemplate variant into its cmd/alias pair.
+ * Accepts a bare string (no alias) or `{ cmd, alias? }`. Unknown shapes
+ * coerce to a string so round-tripping never throws on malformed input.
+ */
+function parseCmd(raw: any): { cmd: string; alias?: string } {
+  if (raw && typeof raw === "object" && typeof raw.cmd === "string") {
+    return typeof raw.alias === "string" && raw.alias
+      ? { cmd: raw.cmd, alias: raw.alias }
+      : { cmd: raw.cmd };
+  }
+  return { cmd: String(raw ?? "") };
+}
+
+/**
  * Expand a compact entry (has `worktrees` array) into individual LaneEntry objects.
- * Handles both single-command and multi-command (commandTemplate array) shapes.
+ *
+ * When `commandTemplate` is an array, the variants form a *menu* — one per
+ * entry is active (selected by `activeCmdIdx`, default 0) and the full list
+ * is carried on every expanded entry as `availableCommands` so the runner's
+ * [l][c] picker can switch templates without re-reading disk.
+ *
+ * Earlier versions fanned the cross-product (cmds × worktrees). That produced
+ * N*M visible rows and stopped scaling past a handful of worktrees — now the
+ * picker covers it instead.
+ *
  * ephemeralPort is always 0 on load — the daemon allocates it dynamically.
  */
 function expandCompactEntry(raw: any): LaneEntry[] {
@@ -85,33 +112,43 @@ function expandCompactEntry(raw: any): LaneEntry[] {
   const packageLabel = String(raw.packageLabel ?? "");
   const remedies     = Array.isArray(raw.remedies) ? raw.remedies.map(normalizeRemedy) : undefined;
 
-  // Normalise commandTemplate → always string[]
-  const rawCmd   = raw.commandTemplate;
-  const commands: string[] = Array.isArray(rawCmd)
-    ? rawCmd.map(String)
-    : [String(rawCmd ?? (pm && script ? `${pm} run ${script}` : ""))];
+  // Normalise commandTemplate → always { cmd, alias? }[]
+  const rawCmd = raw.commandTemplate;
+  const rawCmds: any[] = Array.isArray(rawCmd)
+    ? rawCmd
+    : [rawCmd ?? (pm && script ? `${pm} run ${script}` : "")];
+  const commands = rawCmds.map(parseCmd);
+
+  const activeIdxRaw = Number(raw.activeCmdIdx ?? 0);
+  const activeIdx = Number.isFinite(activeIdxRaw) && activeIdxRaw >= 0 && activeIdxRaw < commands.length
+    ? activeIdxRaw
+    : 0;
+  const active = commands[activeIdx]!;
+  const hasMenu = commands.length > 1;
+  // Strip undefined aliases when forwarding to availableCommands so the
+  // on-disk round-trip stays minimal.
+  const availableCommands = hasMenu
+    ? commands.map((c) => c.alias ? { cmd: c.cmd, alias: c.alias } : { cmd: c.cmd })
+    : undefined;
 
   const entries: LaneEntry[] = [];
-
-  // Commands outer, worktrees inner — matches computeEntryGroups() render order
-  // (all entries for cmd[0] first, then cmd[1], ...) so entryIdx maps correctly.
-  for (let i = 0; i < commands.length; i++) {
-    for (const wt of raw.worktrees as any[]) {
-      const root      = String(wt.root ?? "");
-      const targetDir = packagePath && packagePath !== "." ? `${root}/${packagePath}` : root;
-      entries.push({
-        id:              worktreeEntryId(root, i),
-        targetDir,
-        pm,
-        script,
-        packageLabel,
-        worktree:        root,
-        branch:          "",  // populated at runtime by git watcher
-        ephemeralPort:   0,   // allocated at runtime by port allocator
-        commandTemplate: commands[i]!,
-        ...(remedies ? { remedies } : {}),
-      } satisfies LaneEntry);
-    }
+  for (const wt of raw.worktrees as any[]) {
+    const root      = String(wt.root ?? "");
+    const targetDir = packagePath && packagePath !== "." ? `${root}/${packagePath}` : root;
+    entries.push({
+      id:              worktreeEntryId(root, 0),
+      targetDir,
+      pm,
+      script,
+      packageLabel,
+      worktree:        root,
+      branch:          "",  // populated at runtime by git watcher
+      ephemeralPort:   0,   // allocated at runtime by port allocator
+      commandTemplate: active.cmd,
+      ...(active.alias ? { alias: active.alias } : {}),
+      ...(availableCommands ? { availableCommands } : {}),
+      ...(remedies ? { remedies } : {}),
+    } satisfies LaneEntry);
   }
 
   return entries;
@@ -124,6 +161,18 @@ function normalizeExpandedEntry(raw: any): LaneEntry {
   const worktree = String(raw.worktree ?? "");
   // Derive id from worktree basename if not explicitly stored
   const id = String(raw.id || (worktree ? worktreeEntryId(worktree) : ""));
+  // commandTemplate on an expanded entry can also be the object form;
+  // a top-level `alias` field takes precedence if present.
+  const parsed = raw.commandTemplate !== undefined
+    ? parseCmd(raw.commandTemplate)
+    : { cmd: pm && script ? `${pm} run ${script}` : "" };
+  const alias = typeof raw.alias === "string" && raw.alias ? raw.alias : parsed.alias;
+  const availableCommands: Array<{ cmd: string; alias?: string }> | undefined = Array.isArray(raw.availableCommands)
+    ? (raw.availableCommands as any[]).map((r): { cmd: string; alias?: string } => {
+        const parsed = parseCmd(r);
+        return parsed.alias ? { cmd: parsed.cmd, alias: parsed.alias } : { cmd: parsed.cmd };
+      })
+    : undefined;
   return {
     id,
     targetDir:       String(raw.targetDir ?? ""),
@@ -133,7 +182,9 @@ function normalizeExpandedEntry(raw: any): LaneEntry {
     worktree,
     branch:          "",  // populated at runtime
     ephemeralPort:   0,   // allocated at runtime
-    commandTemplate: String(raw.commandTemplate ?? (pm && script ? `${pm} run ${script}` : "")),
+    commandTemplate: parsed.cmd,
+    ...(alias ? { alias } : {}),
+    ...(availableCommands && availableCommands.length > 1 ? { availableCommands } : {}),
     remedies:        Array.isArray(raw.remedies) ? raw.remedies.map(normalizeRemedy) : undefined,
   };
 }
@@ -189,18 +240,47 @@ export function compactEntries(entries: LaneEntry[]): any[] {
     const first = group[0]!;
     const rel   = relativePackagePath(first)!;
 
+    const encodeCmd = (cmd: string, alias: string | undefined) =>
+      alias ? { cmd, alias } : cmd;
+
     if (group.length === 1) {
-      // True singleton — keep as expanded object, strip ephemeralPort
-      const { ephemeralPort: _port, ...rest } = first;
-      slots.push({ pos, value: rest });
+      // True singleton — keep as expanded object, strip ephemeralPort.
+      // Fold `alias` into the object form of commandTemplate so disk shape stays uniform.
+      const { ephemeralPort: _port, alias, commandTemplate, availableCommands, ...rest } = first;
+      const singletonValue: any = { ...rest };
+      if (availableCommands && availableCommands.length > 1) {
+        singletonValue.commandTemplate = availableCommands.map((c) => encodeCmd(c.cmd, c.alias));
+        const activeIdx = availableCommands.findIndex((c) => c.cmd === commandTemplate);
+        if (activeIdx > 0) singletonValue.activeCmdIdx = activeIdx;
+      } else {
+        singletonValue.commandTemplate = encodeCmd(commandTemplate, alias);
+      }
+      slots.push({ pos, value: singletonValue });
       continue;
     }
 
-    // Collect ordered command variants (insertion order)
-    const cmdOrder: string[] = [];
-    const cmdSet = new Set<string>();
-    for (const e of group) {
-      if (!cmdSet.has(e.commandTemplate)) { cmdSet.add(e.commandTemplate); cmdOrder.push(e.commandTemplate); }
+    // Worktree entries in the same group now share one active cmd (menu
+    // lives on `availableCommands`). Prefer the menu when present; fall
+    // back to collecting distinct cmds for legacy/manually-constructed input.
+    const menu = first.availableCommands;
+    let cmdOut: any;
+    let activeCmdIdx: number | undefined;
+    if (menu && menu.length > 1) {
+      cmdOut = menu.map((c) => encodeCmd(c.cmd, c.alias));
+      const idx = menu.findIndex((c) => c.cmd === first.commandTemplate);
+      if (idx > 0) activeCmdIdx = idx;
+    } else {
+      const cmdOrder: string[] = [];
+      const aliasByCmd = new Map<string, string | undefined>();
+      for (const e of group) {
+        if (!aliasByCmd.has(e.commandTemplate)) {
+          cmdOrder.push(e.commandTemplate);
+          aliasByCmd.set(e.commandTemplate, e.alias);
+        }
+      }
+      cmdOut = cmdOrder.length > 1
+        ? cmdOrder.map((c) => encodeCmd(c, aliasByCmd.get(c)))
+        : encodeCmd(cmdOrder[0]!, aliasByCmd.get(cmdOrder[0]!));
     }
 
     // Collect ordered worktree roots (insertion order)
@@ -209,8 +289,6 @@ export function compactEntries(entries: LaneEntry[]): any[] {
     for (const e of group) {
       if (!wtSet.has(e.worktree)) { wtSet.add(e.worktree); wtOrder.push(e.worktree); }
     }
-
-    const multiCmd = cmdOrder.length > 1;
 
     // Worktrees get only `root` — no id, no branch (both are runtime-derived)
     const worktrees = wtOrder.map((root) => ({ root }));
@@ -222,7 +300,8 @@ export function compactEntries(entries: LaneEntry[]): any[] {
     slots.push({
       pos,
       value: {
-        commandTemplate: multiCmd ? cmdOrder : cmdOrder[0]!,
+        commandTemplate: cmdOut,
+        ...(activeCmdIdx !== undefined ? { activeCmdIdx } : {}),
         packagePath:     rel === "." ? "" : rel,
         packageLabel:    first.packageLabel,
         pm:              first.pm,
@@ -234,8 +313,16 @@ export function compactEntries(entries: LaneEntry[]): any[] {
   }
 
   for (const { pos, entry } of solo) {
-    const { ephemeralPort: _port, ...rest } = entry;
-    slots.push({ pos, value: rest });
+    const { ephemeralPort: _port, alias, commandTemplate, availableCommands, ...rest } = entry;
+    const soloValue: any = { ...rest };
+    if (availableCommands && availableCommands.length > 1) {
+      soloValue.commandTemplate = availableCommands.map((c) => c.alias ? { cmd: c.cmd, alias: c.alias } : c.cmd);
+      const idx = availableCommands.findIndex((c) => c.cmd === commandTemplate);
+      if (idx > 0) soloValue.activeCmdIdx = idx;
+    } else {
+      soloValue.commandTemplate = alias ? { cmd: commandTemplate, alias } : commandTemplate;
+    }
+    slots.push({ pos, value: soloValue });
   }
   return slots.sort((a, b) => a.pos - b.pos).map((s) => s.value);
 }

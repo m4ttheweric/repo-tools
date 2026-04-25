@@ -26,6 +26,7 @@ export type LaneAction =
   | { type: "remove-entry"; laneId: string; entryId: string }
   | { type: "remove-lane";  laneId: string }
   | { type: "toggle-mode";  laneId: string }
+  | { type: "switch-cmd-group"; laneId: string; groupEntryIds: string[] }
   | { type: "reset" };
 
 /**
@@ -373,6 +374,90 @@ export async function dispatch(action: LaneAction, s: DispatchState): Promise<Di
       const newMode: LaneMode = (lane.mode ?? "warm") === "warm" ? "single" : "warm";
       return {
         mutate: (ls) => ls.map((l) => l.id === action.laneId ? { ...l, mode: newMode } : l),
+      };
+    }
+
+    case "switch-cmd-group": {
+      // Fired from the [l][c] template picker after the state update has already
+      // written the new commandTemplate/alias onto every entry in the group.
+      // Our job: kill the running/warm processes and respawn them with the new
+      // cmd, preserving which entry was active so the proxy keeps pointing at
+      // the same worktree slot. Stopped/crashed entries stay as they are — the
+      // user can [s] them to pick up the new cmd lazily.
+      const lane = lanes.find((l) => l.id === action.laneId);
+      if (!lane) return {};
+      const groupIds = new Set(action.groupEntryIds);
+      const preservedActiveId = lane.activeEntryId;
+
+      const toRestart = lane.entries.filter((e) => {
+        if (!groupIds.has(e.id)) return false;
+        const st = est(entryWindowName(lane.id, e.id));
+        return st === "running" || st === "warm";
+      });
+      if (toRestart.length === 0) return {};
+
+      await ensureProxy(lane, initiator);
+
+      // Kill in parallel. process:kill awaits SIGTERM drain daemon-side, so by
+      // the time this Promise.all resolves each pid is gone and we can safely
+      // re-spawn under the same window name without racing the old process.
+      await Promise.all(toRestart.map((e) =>
+        daemonQuery("process:kill", { id: entryWindowName(lane.id, e.id) })
+      ));
+
+      // Spawn each with the new cmd, matching warm-all's shape: spawn without
+      // activating, then issue one group:activate at the end so warm peers get
+      // their SIGSTOP after the active one is chosen (avoids a brief window
+      // where all N processes are running simultaneously and fighting for CPU).
+      const portFixes = new Map<string, number>();
+      for (const entry of toRestart) {
+        const win = entryWindowName(lane.id, entry.id);
+        let ephemeralPort = entry.ephemeralPort;
+        if (!ephemeralPort) {
+          const portRes = await daemonQuery("port:allocate", { label: win });
+          ephemeralPort = portRes?.ok
+            ? Number((portRes.data as { port: number })?.port)
+            : (10000 + Math.floor(Math.random() * 55000));
+          portFixes.set(entry.id, ephemeralPort);
+        }
+        const port = String(ephemeralPort);
+        const canonicalPort = String(lane.canonicalPort);
+        const cmd = entry.commandTemplate
+          .replace(/\$\{?PORT\}?/g, port)
+          .replace(/\$\{?CANONICAL_PORT\}?/g, canonicalPort);
+        await daemonQuery("process:spawn", {
+          id: win, cmd, cwd: entry.targetDir,
+          env: { PORT: port, CANONICAL_PORT: canonicalPort },
+        });
+        if (entry.remedies?.length) {
+          await daemonQuery("remedy:set", { id: win, remedies: entry.remedies, cwd: entry.targetDir });
+        }
+      }
+
+      // Re-activate the previously active entry if we restarted it — this
+      // picks its pid as the group leader and SIGSTOPs its warm peers. Proxy
+      // upstream updates to the (possibly re-allocated) ephemeral port.
+      if (preservedActiveId && toRestart.some((e) => e.id === preservedActiveId)) {
+        const activeEntry = lane.entries.find((e) => e.id === preservedActiveId);
+        const activePort = portFixes.get(preservedActiveId) ?? activeEntry?.ephemeralPort;
+        await daemonQuery("group:activate", {
+          groupId: lane.id,
+          processId: entryWindowName(lane.id, preservedActiveId),
+          mode: lane.mode ?? "warm",
+        });
+        if (activePort) {
+          await daemonQuery("proxy:set-upstream", { id: proxyWindowName(lane.id), port: activePort });
+        }
+      }
+
+      return {
+        mutate: (ls) => ls.map((l) => {
+          if (l.id !== action.laneId) return l;
+          return {
+            ...l,
+            entries: l.entries.map((e) => portFixes.has(e.id) ? { ...e, ephemeralPort: portFixes.get(e.id)! } : e),
+          };
+        }),
       };
     }
 

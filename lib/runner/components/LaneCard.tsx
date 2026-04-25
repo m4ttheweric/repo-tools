@@ -15,7 +15,7 @@ import { C, entryCommandLabel } from "./shared.ts";
 import { EntryRow } from "./EntryRow.tsx";
 
 /** Compute ordered entry groups keyed by exact commandTemplate. */
-export function computeEntryGroups(entries: LaneEntry[]): { key: string; label: string; entries: LaneEntry[] }[] {
+export function computeEntryGroups(entries: LaneEntry[]): { key: string; label: string; entries: LaneEntry[]; menuSize: number }[] {
   const groupOrder: string[] = [];
   const groupMap = new Map<string, LaneEntry[]>();
   for (const entry of entries) {
@@ -28,7 +28,9 @@ export function computeEntryGroups(entries: LaneEntry[]): { key: string; label: 
   }
   return groupOrder.map((key) => {
     const groupEntries = groupMap.get(key)!;
-    return { key, label: entryCommandLabel(groupEntries[0]!), entries: groupEntries };
+    const first = groupEntries[0]!;
+    const menuSize = first.availableCommands?.length ?? 1;
+    return { key, label: entryCommandLabel(first), entries: groupEntries, menuSize };
   });
 }
 
@@ -63,9 +65,15 @@ export function LaneCard({ lane, li, s }: { lane: LaneConfig; li: number; s: Run
           <text key={`sep-${gi}`} style={{ fg: C.dim }}>{"  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌"}</text>
         );
       }
-      // Group sub-header
+      // Group sub-header; append "▾ n" when alternate command templates exist
+      // so the user knows [l][c] will open a picker.
       entryElements.push(
-        <text key={`gh-${gi}`} style={{ fg: C.cyan }}>{`  ${group.label}`}</text>
+        <row key={`gh-${gi}`} gap={1}>
+          <text style={{ fg: C.cyan }}>{`  ${group.label}`}</text>
+          {group.menuSize > 1 ? (
+            <text style={{ fg: C.dim }}>{`▾ ${group.menuSize}`}</text>
+          ) : null}
+        </row>
       );
       // Entries in this group — compact/uniform within the group
       for (const entry of group.entries) {

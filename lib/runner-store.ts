@@ -80,6 +80,19 @@ export interface LaneEntry {
    * from the environment.
    */
   commandTemplate: string;
+  /**
+   * Optional human-friendly label shown in the UI instead of the raw command.
+   * Populated from the `{cmd, alias}` object form of `commandTemplate` in the
+   * on-disk compact config.
+   */
+  alias?: string;
+  /**
+   * When the on-disk compact entry defined a `commandTemplate` array, each
+   * worktree entry carries the full menu here so the lane-scope [c] picker
+   * can switch the active template without re-reading disk. `commandTemplate`
+   * above is whichever variant is currently active.
+   */
+  availableCommands?: Array<{ cmd: string; alias?: string }>;
   /** Auto-remedy rules — see RemedyEngine in the daemon. */
   remedies?: Remedy[];
 }
@@ -199,12 +212,15 @@ function runnerPath(name: string): string {
 // Round-trip behavior is pinned by ./__tests__/runner-store-compact.test.ts.
 //
 // `commandTemplate` may be a single string OR an array of command variants.
+// Each variant can also be an object `{ cmd, alias? }` — the alias is a
+// human-friendly label shown in the UI instead of the raw shell command.
 // When it is an array, the cross-product of commands × worktrees is expanded.
 // Ephemeral ports are NOT stored — they are dynamically allocated by the daemon
 // port allocator (keyed by entryWindowName) on every start.
 //
 // Single-command shape:  { commandTemplate, packagePath, ..., worktrees: [{id, root, branch?}] }
 // Multi-command shape:   { commandTemplate: [cmd0, cmd1], ..., worktrees: [{ids:[id0,id1], root, branch?}] }
+// Aliased variant:       { cmd: "...", alias: "staging backend" } (in place of any string above)
 
 export function normalizeLane(raw: any): LaneConfig {
   const rawMode = raw.mode;

@@ -73,7 +73,10 @@ describe("compact/expand round-trip", () => {
     expect(out.map((e) => e.worktree).sort()).toEqual(["/work/repo-1", "/work/repo-2"]);
   });
 
-  test("multi-command group: N worktrees × M commands produces N*M entries", () => {
+  test("multi-command compact input: one entry per worktree, menu on each", () => {
+    // Entries with distinct commandTemplates in one compactable group now
+    // round-trip to one entry per worktree. The full cmd list is preserved as
+    // `availableCommands` so the [l][c] picker can switch without re-read.
     const input = [
       makeEntry({ id: "w1",   worktree: "/w1", targetDir: "/w1", commandTemplate: "pnpm run dev" }),
       makeEntry({ id: "w1-1", worktree: "/w1", targetDir: "/w1", commandTemplate: "pnpm run build" }),
@@ -81,12 +84,15 @@ describe("compact/expand round-trip", () => {
       makeEntry({ id: "w2-1", worktree: "/w2", targetDir: "/w2", commandTemplate: "pnpm run build" }),
     ];
     const out = roundTrip(input);
-    expect(out).toHaveLength(4);
-    // Expand iterates cmds outer, worktrees inner — all cmd[0] first, then cmd[1].
-    // Ids: cmdIdx=0 uses bare basename; cmdIdx=1 appends "-1".
-    expect(out.map((e) => e.id)).toEqual(["w1", "w2", "w1-1", "w2-1"]);
-    expect(out.filter((e) => e.commandTemplate === "pnpm run dev")).toHaveLength(2);
-    expect(out.filter((e) => e.commandTemplate === "pnpm run build")).toHaveLength(2);
+    expect(out).toHaveLength(2);
+    expect(out.map((e) => e.id).sort()).toEqual(["w1", "w2"]);
+    // Active cmd is the first one (activeCmdIdx defaults to 0)
+    expect(out.every((e) => e.commandTemplate === "pnpm run dev")).toBe(true);
+    // Menu is attached to each entry
+    for (const e of out) {
+      expect(e.availableCommands).toBeDefined();
+      expect(e.availableCommands!.map((c) => c.cmd)).toEqual(["pnpm run dev", "pnpm run build"]);
+    }
   });
 
   test("shared remedies across a group are preserved; divergent remedies force per-entry storage", () => {
@@ -134,6 +140,59 @@ describe("compact/expand round-trip", () => {
     const ids = out.map((e) => e.id);
     expect(ids.indexOf("soloA")).toBeLessThan(ids.indexOf("g1"));
     expect(ids.indexOf("g2")).toBeLessThan(ids.indexOf("soloB"));
+  });
+
+  test("alias on a command variant is preserved in the menu", () => {
+    // User-authored {cmd, alias} object form: alias becomes a UI label.
+    // Under the menu model the entries all carry the full alias-bearing menu.
+    const input = [
+      makeEntry({ id: "w1",   worktree: "/w1", targetDir: "/w1", commandTemplate: "pnpm run dev" }),
+      makeEntry({ id: "w1-1", worktree: "/w1", targetDir: "/w1", commandTemplate: "pnpm run build", alias: "build" }),
+      makeEntry({ id: "w2",   worktree: "/w2", targetDir: "/w2", commandTemplate: "pnpm run dev" }),
+      makeEntry({ id: "w2-1", worktree: "/w2", targetDir: "/w2", commandTemplate: "pnpm run build", alias: "build" }),
+    ];
+    const compact = compactEntries(input);
+    expect(compact.length).toBe(1);
+    const cmdTpl = (compact[0] as any).commandTemplate;
+    expect(Array.isArray(cmdTpl)).toBe(true);
+    expect(cmdTpl[0]).toBe("pnpm run dev");
+    expect(cmdTpl[1]).toEqual({ cmd: "pnpm run build", alias: "build" });
+
+    const out = roundTrip(input);
+    expect(out).toHaveLength(2);
+    expect(out.every((e) => e.availableCommands?.length === 2)).toBe(true);
+    expect(out[0]!.availableCommands![1]).toEqual({ cmd: "pnpm run build", alias: "build" });
+  });
+
+  test("activeCmdIdx round-trips: picking a non-default cmd persists across load", () => {
+    // Start with a menu-backed entry whose active cmd is index 1 (alias "build").
+    const menu = [{ cmd: "pnpm run dev" }, { cmd: "pnpm run build", alias: "build" }];
+    const input = [
+      makeEntry({ id: "w1", worktree: "/w1", targetDir: "/w1",
+        commandTemplate: "pnpm run build", alias: "build", availableCommands: menu }),
+      makeEntry({ id: "w2", worktree: "/w2", targetDir: "/w2",
+        commandTemplate: "pnpm run build", alias: "build", availableCommands: menu }),
+    ];
+    const compact = compactEntries(input);
+    expect(compact.length).toBe(1);
+    expect((compact[0] as any).activeCmdIdx).toBe(1);
+
+    const out = roundTrip(input);
+    expect(out.every((e) => e.commandTemplate === "pnpm run build")).toBe(true);
+    expect(out.every((e) => e.alias === "build")).toBe(true);
+  });
+
+  test("single-command group with alias emits {cmd, alias} object form", () => {
+    const input = [
+      makeEntry({ id: "w1", worktree: "/w1", targetDir: "/w1", commandTemplate: "long cmd", alias: "staging" }),
+      makeEntry({ id: "w2", worktree: "/w2", targetDir: "/w2", commandTemplate: "long cmd", alias: "staging" }),
+    ];
+    const compact = compactEntries(input);
+    expect(compact.length).toBe(1);
+    expect((compact[0] as any).commandTemplate).toEqual({ cmd: "long cmd", alias: "staging" });
+
+    const out = roundTrip(input);
+    expect(out.every((e) => e.alias === "staging")).toBe(true);
   });
 
   test("collision detection: duplicate basenames get a salt suffix, not a silent alias", () => {
