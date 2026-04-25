@@ -123,6 +123,51 @@ const TREE: Record<string, CommandNode> = {
         fn: "pullCommand",
         context: "worktree",
       },
+      push: {
+        description: "Push current branch to origin/<branch>, fixing wrong upstream",
+        module: "./commands/git/push.ts",
+        fn: "pushCommand",
+        context: "worktree",
+        subcommands: {
+          force: {
+            description: "Push with --force-with-lease (after rebase/amend)",
+            module: "./commands/git/push.ts",
+            fn: "forcePushCommand",
+            context: "worktree",
+          },
+        },
+      },
+      upstream: {
+        description: "Fix branch upstream to track origin/<branch>",
+        module: "./commands/git/push.ts",
+        fn: "upstreamCommand",
+        context: "worktree",
+      },
+    },
+  },
+
+  mr: {
+    description: "Merge request operations (GitLab) — `pr` works too",
+    aliases: ["pr"],
+    subcommands: {
+      open: {
+        description: "Open a bare MR on the current branch via glab",
+        module: "./commands/mr.ts",
+        fn: "openCommand",
+        context: "worktree",
+      },
+      describe: {
+        description: "Draft an MR description with an agent (streams to stdout)",
+        module: "./commands/mr.ts",
+        fn: "describeCommand",
+        context: "worktree",
+      },
+      ship: {
+        description: "All-in-one: push + describe + open (the daily driver)",
+        module: "./commands/mr.ts",
+        fn: "shipCommand",
+        context: "worktree",
+      },
     },
   },
 
