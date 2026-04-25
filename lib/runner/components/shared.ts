@@ -89,7 +89,10 @@ export const STATUS_ICON: Record<EntryState, string> = {
 export function entryCommandLabel(entry: LaneEntry): string {
   const defaultCmd = `${entry.pm} run ${entry.script}`;
   const hasCustomCmd = entry.commandTemplate !== defaultCmd;
+  // Prefer a user-supplied alias over the raw command — aliases exist
+  // precisely to give long shell commands a readable label.
+  const cmdLabel = entry.alias ?? (hasCustomCmd ? entry.commandTemplate : entry.script);
   return entry.packageLabel !== "root"
-    ? `${entry.packageLabel} · ${hasCustomCmd ? entry.commandTemplate : entry.script}`
-    : (hasCustomCmd ? entry.commandTemplate : entry.script);
+    ? `${entry.packageLabel} · ${cmdLabel}`
+    : cmdLabel;
 }

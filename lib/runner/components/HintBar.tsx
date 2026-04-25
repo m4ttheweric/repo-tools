@@ -37,7 +37,7 @@ export function HintBar({ mode }: { mode: HintBarMode }) {
     <column gap={0}>
       <ScopeTitle name="lane" />
       <row gap={1}><Cmd k="a" l="add" /><Cmd k="r" l="remove" /><Cmd k="p" l="port" /><Cmd k="m" l="mode" /></row>
-      <row gap={1}><Cmd k="z" l="pause" /><Cmd k="w" l="spread" /></row>
+      <row gap={1}><Cmd k="z" l="pause" /><Cmd k="w" l="spread" /><Cmd k="c" l="cmd" /></row>
       <row gap={1}><Cmd k="esc" l="back" /></row>
     </column>
   );

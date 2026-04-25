@@ -324,6 +324,13 @@ const TREE: Record<string, CommandNode> = {
     hidden: true,
   },
 
+  "pick-cmd-template": {
+    description: "Command template picker for a lane entry (used by runner)",
+    module: "./commands/pick-cmd-template.ts",
+    fn: "pickCmdTemplate",
+    hidden: true,
+  },
+
   update: {
     description: "Update rt to the latest version via Homebrew",
     module: "./commands/update.ts",

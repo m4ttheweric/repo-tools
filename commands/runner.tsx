@@ -227,7 +227,12 @@ export interface RunnerUIState {
   entryStates:   Map<string, EntryState>;
   /** Keyed by proxyWindowName(laneId); true = proxy is running. */
   proxyStates:   Record<string, boolean>;
-  enrichment:    Record<string, string>;
+  /**
+   * Per-entry branch label, split into a left/right pair so the runner can
+   * pin status icons to the right edge while the title clips on overflow.
+   * Keyed by `${laneId}:${entryId}`.
+   */
+  enrichment:    Record<string, { leading: string; trailing: string }>;
   inputValue:    string;
   toast:         string | null;
   /** Monotonically incrementing counter used to animate the "starting" spinner. */
@@ -290,7 +295,7 @@ function buildEditorCmd(filePath: string): { editorCmd: string; hint: string } {
 
 // ─── Enrichment ───────────────────────────────────────────────────────────────
 
-async function fetchEnrichment(lanes: LaneConfig[]): Promise<Record<string, string>> {
+async function fetchEnrichment(lanes: LaneConfig[]): Promise<Record<string, { leading: string; trailing: string }>> {
   const targets: { key: string; branch: string; worktree: string }[] = [];
   for (const lane of lanes) {
     for (const entry of lane.entries) {
@@ -301,8 +306,10 @@ async function fetchEnrichment(lanes: LaneConfig[]): Promise<Record<string, stri
   }
   if (targets.length === 0) return {};
 
+  const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
   try {
-    const { formatBranchLabel } = await import("../lib/enrich.ts");
+    const { formatBranchLabelParts } = await import("../lib/enrich.ts");
 
     // Primary: daemon in-memory cache (fast, always up-to-date after a refresh)
     const response = await daemonQuery("cache:read", { branches: targets.map((t) => t.branch) });
@@ -320,18 +327,23 @@ async function fetchEnrichment(lanes: LaneConfig[]): Promise<Record<string, stri
       } catch { /* no disk cache */ }
     }
 
-    const result: Record<string, string> = {};
+    const result: Record<string, { leading: string; trailing: string }> = {};
     for (const { key, branch, worktree } of targets) {
       const e = daemonCache[branch] ?? diskCache[branch];
-      const raw = e
-        ? formatBranchLabel({ path: worktree, dirName: worktree.split("/").pop() ?? worktree, branch, linearId: e.linearId || null, ticket: e.ticket ?? null, mr: e.mr ?? null })
-        : branch;
-      result[key] = raw.replace(/\x1b\[[0-9;]*m/g, "");
+      if (e) {
+        const parts = formatBranchLabelParts({
+          path: worktree, dirName: worktree.split("/").pop() ?? worktree,
+          branch, linearId: e.linearId || null, ticket: e.ticket ?? null, mr: e.mr ?? null,
+        });
+        result[key] = { leading: stripAnsi(parts.leading), trailing: stripAnsi(parts.trailing) };
+      } else {
+        result[key] = { leading: branch, trailing: "" };
+      }
     }
     return result;
   } catch {
-    const result: Record<string, string> = {};
-    for (const { key, branch } of targets) result[key] = branch;
+    const result: Record<string, { leading: string; trailing: string }> = {};
+    for (const { key, branch } of targets) result[key] = { leading: branch, trailing: "" };
     return result;
   }
 }
