@@ -22,12 +22,15 @@ import * as sync from "../commands/sync.ts";
 import * as workspace from "../commands/workspace.ts";
 import * as attach from "../commands/attach.ts";
 import * as pickLane from "../commands/pick-lane.ts";
+import * as pickCmdTemplate from "../commands/pick-cmd-template.ts";
+import * as mr from "../commands/mr.ts";
 import * as x from "../commands/x.ts";
 import * as gitx from "../commands/gitx.ts";
 import * as rebase from "../commands/git/rebase.ts";
 import * as reset from "../commands/git/reset.ts";
 import * as backup from "../commands/git/backup.ts";
 import * as pull from "../commands/git/pull.ts";
+import * as push from "../commands/git/push.ts";
 import * as runner from "../commands/runner.tsx";
 import * as status from "../commands/status.tsx";
 import * as mrStatus from "../commands/mr-status.tsx";
@@ -53,12 +56,15 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/workspace.ts": workspace,
   "./commands/attach.ts": attach,
   "./commands/pick-lane.ts": pickLane,
+  "./commands/pick-cmd-template.ts": pickCmdTemplate,
+  "./commands/mr.ts": mr,
   "./commands/x.ts": x,
   "./commands/gitx.ts": gitx,
   "./commands/git/rebase.ts": rebase,
   "./commands/git/reset.ts": reset,
   "./commands/git/backup.ts": backup,
   "./commands/git/pull.ts": pull,
+  "./commands/git/push.ts": push,
   "./commands/runner.tsx": runner,
   "./commands/status.tsx": status,
   "./commands/mr-status.tsx": mrStatus,

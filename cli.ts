@@ -382,6 +382,13 @@ const TREE: Record<string, CommandNode> = {
     requiresTTY: true,
   },
 
+  nav: {
+    description: "Navigate filesystem with fzf — descend folders, open files",
+    module: "./commands/nav.ts",
+    fn: "navigate",
+    requiresTTY: true,
+  },
+
   code: {
     description: "Open a worktree in your preferred editor",
     module: "./commands/code.ts",
