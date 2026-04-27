@@ -36,7 +36,7 @@ export interface MRConfig {
   /** Freeform extra guidance appended to the assembled prompt. */
   inline?: string;
 
-  /** Agent CLI override. Defaults to `{ cli: "claude", args: ["-p"] }`. */
+  /** Agent CLI override. Defaults are agent-aware, e.g. Claude `-p`, Codex `exec -`. */
   agent?: {
     cli?: string;
     args?: string[];

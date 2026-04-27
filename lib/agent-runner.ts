@@ -2,7 +2,8 @@
  * Generic agent runner — pipe a prompt into a CLI agent via stdin,
  * stream its stdout to the caller while also capturing it for return.
  *
- * Default: `claude -p`. Override via `cli` / `args` for other agents.
+ * Default: `claude -p`. Agent-aware defaults cover Codex (`codex exec -`);
+ * override via `cli` / `args` for other agents.
  *
  * Intentionally minimal — no prompt assembly, no config reading. Callers
  * build the prompt string; this just runs the CLI and streams.
@@ -29,6 +30,11 @@ export interface AgentOptions {
   stderrStream?: NodeJS.WritableStream;
 }
 
+export interface AgentInvocation {
+  cli: string;
+  args: string[];
+}
+
 export interface AgentResult {
   stdout: string;
   stderr: string;
@@ -36,9 +42,22 @@ export interface AgentResult {
   exitCode: number | null;
 }
 
-export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
+function defaultArgsForAgent(cli: string): string[] {
+  const name = cli.split("/").pop() ?? cli;
+  if (name === "codex") return ["exec", "-"];
+  return ["-p"];
+}
+
+export function resolveAgentInvocation(opts: Pick<AgentOptions, "cli" | "args">): AgentInvocation {
   const cli = opts.cli ?? "claude";
-  const args = opts.args ?? ["-p"];
+  return {
+    cli,
+    args: opts.args ?? defaultArgsForAgent(cli),
+  };
+}
+
+export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
+  const { cli, args } = resolveAgentInvocation(opts);
 
   return new Promise<AgentResult>((resolve, reject) => {
     const child = spawn(cli, args, {
