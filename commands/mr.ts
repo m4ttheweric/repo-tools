@@ -18,7 +18,7 @@ import {
   resolveConfigPath,
   type MRConfig,
 } from "../lib/mr-config.ts";
-import { runAgent } from "../lib/agent-runner.ts";
+import { resolveAgentInvocation, runAgent } from "../lib/agent-runner.ts";
 import { pushCommand } from "./git/push.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
 
@@ -257,8 +257,10 @@ async function generateDescription(opts: GenerateOpts): Promise<string> {
     return fullPrompt;
   }
 
-  const cli = config.agent?.cli ?? "claude";
-  const cliArgs = config.agent?.args ?? ["-p"];
+  const { cli, args: cliArgs } = resolveAgentInvocation({
+    cli: config.agent?.cli,
+    args: config.agent?.args,
+  });
   process.stderr.write(`  ${dim}agent:    ${cli} ${cliArgs.join(" ")}${reset}\n\n`);
 
   const result = await runAgent({

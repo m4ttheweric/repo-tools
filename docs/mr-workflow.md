@@ -64,7 +64,7 @@ rt mr describe --target main         # override target for the diff base
 ```
 
 **Agent** defaults to `claude -p`. Override via `mr.json`'s `agent` block
-(e.g. `cursor-agent`).
+(e.g. `cursor-agent` or `codex`).
 
 **Diff cap** defaults to 80KB; oversized diffs get truncated with a marker.
 Raise via `agent.maxDiffKb` in `mr.json`.
@@ -123,8 +123,8 @@ defaults; the agent-related fields only matter for `describe` / `create`.
 
   // Agent override
   "agent": {
-    "cli": "claude",         // default
-    "args": ["-p"],          // default
+    "cli": "claude",         // default; "codex" uses args ["exec", "-"]
+    "args": ["-p"],          // optional override
     "maxDiffKb": 80          // default diff-truncation cap
   }
 }
@@ -167,10 +167,12 @@ Matched via `git ls-files -- <glob>` from the repo root, so:
 ### Agent invocation
 
 The agent runner ([lib/agent-runner.ts](../lib/agent-runner.ts)) spawns the
-configured CLI with the assembled prompt piped on stdin. Default:
+configured CLI with the assembled prompt piped on stdin. Defaults are
+agent-aware:
 
 ```
 claude -p < <assembled-prompt>
+codex exec - < <assembled-prompt>
 ```
 
 Stdout streams live to your terminal and is simultaneously captured for the
@@ -247,7 +249,7 @@ consumers — `open --description-file -`, `tee`, your editor — get clean inpu
 | `<branch> has not been pushed yet` | `open` can't find `origin/<branch>` | Run `rt git push` first (or use `rt mr ship`). |
 | `no commits between origin/<target> and <branch>` | Branch is up to date with target | Commit something, rebase off a stale target, or pick a different `--target`. |
 | `prompt not found: ...` (yellow) | A `prompts[]` path didn't resolve | Fix the path, or remove it from `mr.json`. |
-| `agent exited <N>` | The CLI (`claude` / `cursor-agent`) failed | Check CLI auth; try the command directly with the prompt piped in. |
+| `agent exited <N>` | The CLI (`claude` / `cursor-agent` / `codex`) failed | Check CLI auth; try the command directly with the prompt piped in. |
 | `glab exited <N>` | glab rejected the MR | Read the stderr — usually a project-rule violation (missing template fields, invalid target). |
 
 ---
