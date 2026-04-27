@@ -38,6 +38,10 @@ interface GroupState {
   /** Current set of iids this group is watching. */
   iids:         Set<number>;
   connection:   "connecting" | "connected" | "disconnected" | "reconnecting";
+  /** GitLab project path (e.g. "group/proj"). Needed by resolveDiscussion. */
+  projectPath:  string;
+  /** Numeric GitLab project id. Resolved lazily on first discussions fetch. */
+  projectId:    number | null;
 }
 
 const providers = new Map<string, GitLabProvider>();
@@ -196,6 +200,8 @@ function createGroupForRepo(
     branchByIid,
     iids:         new Set(initialIids),
     connection:   "connecting",
+    projectPath,
+    projectId:    null,
   };
 
   state.group = createDashboard({
@@ -300,8 +306,136 @@ export function getActions(repoName: string, iid: number): MRDashboardActions | 
   }
 }
 
+/**
+ * Cache of (projectPath, projectId) resolved for repos without a live group.
+ * Lets the discussions handlers run against merged/closed MRs whose live
+ * ActionCable subscription was never set up (or was disposed).
+ */
+const ephemeralCtx = new Map<string, { projectPath: string; projectId: number | null }>();
+
+/**
+ * Provider + project identifiers for a repo. Tries the live-group fast path
+ * first; if no group exists and `repoPath` is provided, builds an ephemeral
+ * `GitLabProvider` from the repo's git remote so REST-only operations
+ * (discussions read/resolve/reply) keep working on MRs without a subscription.
+ *
+ * `projectPathOverride` lets callers supply the canonical project path
+ * directly — useful when a repo's git remote URL has been redirected/renamed
+ * since clone time and the API would 404 on the stale path. Pass the path
+ * extracted from a cached MR's webUrl when available.
+ *
+ * Throws with a specific reason when no provider can be produced. Callers
+ * surface the message so the UI can show which step failed
+ * (missing token, unparseable remote, REST 404, …).
+ */
+export async function getRepoContext(
+  repoName: string,
+  repoPath?: string,
+  projectPathOverride?: string,
+): Promise<{ provider: GitLabProvider; projectPath: string; projectId: number }> {
+  const state = groups.get(repoName);
+  let provider = providers.get(repoName) ?? null;
+
+  // Live-group fast path — but only when the caller didn't override projectPath.
+  // If they did, fall through to the ephemeral path so we use the canonical path.
+  if (state && provider && !projectPathOverride) {
+    if (state.projectId !== null) {
+      return { provider, projectPath: state.projectPath, projectId: state.projectId };
+    }
+    const id = await fetchProjectId(provider, state.projectPath);
+    state.projectId = id;
+    return { provider, projectPath: state.projectPath, projectId: id };
+  }
+
+  // Provider not yet built — construct from git remote.
+  if (!provider) {
+    if (!repoPath) {
+      throw new Error(`repo "${repoName}" not in ~/.rt/repos.json (run rt repo add)`);
+    }
+    const secrets = loadSecrets();
+    if (!secrets.gitlabToken) {
+      throw new Error("missing gitlabToken in ~/.rt/secrets.json (run rt secret set gitlabToken <pat>)");
+    }
+    const remoteUrl = getRemoteUrl(repoPath);
+    if (!remoteUrl) {
+      throw new Error(`could not read git remote.origin.url in ${repoPath}`);
+    }
+    const remote = parseRemoteUrl(remoteUrl);
+    if (!remote) {
+      throw new Error(`could not parse remote URL "${remoteUrl}"`);
+    }
+    provider = new GitLabProvider(remote.host, secrets.gitlabToken);
+    providers.set(repoName, provider);
+  }
+
+  // Pick projectPath: explicit override > previously-cached ephemeral > git remote.
+  let projectPath: string | null = projectPathOverride ?? null;
+  if (!projectPath) {
+    const cached = ephemeralCtx.get(repoName);
+    if (cached) projectPath = cached.projectPath;
+  }
+  if (!projectPath && repoPath) {
+    const remoteUrl = getRemoteUrl(repoPath);
+    const remote = remoteUrl ? parseRemoteUrl(remoteUrl) : null;
+    if (remote) projectPath = remote.projectPath;
+  }
+  if (!projectPath) {
+    throw new Error(`could not determine projectPath for ${repoName}`);
+  }
+
+  // Reuse cached projectId only when the path matches.
+  const cached = ephemeralCtx.get(repoName);
+  if (cached && cached.projectPath === projectPath && cached.projectId !== null) {
+    return { provider, projectPath, projectId: cached.projectId };
+  }
+
+  const projectId = await fetchProjectId(provider, projectPath);
+  ephemeralCtx.set(repoName, { projectPath, projectId });
+  return { provider, projectPath, projectId };
+}
+
+/**
+ * GitLab MR webUrls always reflect the project's canonical path:
+ *   https://<host>/<group>/<sub>/<project>/-/merge_requests/<iid>
+ * Returns the path between the host and `/-/merge_requests/`, or null if the
+ * URL doesn't match the pattern.
+ */
+export function projectPathFromMrWebUrl(webUrl: string | null | undefined): string | null {
+  if (!webUrl) return null;
+  const m = /^https?:\/\/[^/]+\/(.+?)\/-\/merge_requests\//.exec(webUrl);
+  return m ? m[1]! : null;
+}
+
+async function fetchProjectId(provider: GitLabProvider, projectPath: string): Promise<number> {
+  // restRequest does NOT prepend /api/v4 — it just appends path to baseURL.
+  const apiPath = `/api/v4/projects/${encodeURIComponent(projectPath)}`;
+  let res: Response;
+  try {
+    res = await provider.restRequest("GET", apiPath);
+  } catch (err) {
+    throw new Error(`GitLab ${apiPath} lookup failed: ${String(err)}`);
+  }
+  if (!res.ok) {
+    throw new Error(`GitLab ${apiPath} returned ${res.status} ${res.statusText}`);
+  }
+  const body = (await res.json()) as { id?: number };
+  if (typeof body.id !== "number") {
+    throw new Error(`GitLab ${apiPath} response missing numeric id`);
+  }
+  return body.id;
+}
+
 export function getAggregatedConnection(): "connected" | "connecting" | "disconnected" {
   return aggregatedConnection();
+}
+
+/**
+ * Numeric id of the authenticated GitLab user, or null if not yet resolved.
+ * Used by the discussions poller so new-comment notifications can skip the
+ * user's own replies.
+ */
+export function getCurrentUserId(): number | null {
+  return userId;
 }
 
 export function disposeAllMRSubscriptions(): void {
