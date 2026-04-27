@@ -43,6 +43,7 @@ import {
   getAggregatedConnection,
   type MRSubscriptionEnv,
 } from "./daemon/mr-subscriptions.ts";
+import { checkAndPark } from "./daemon/parking-lot.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -76,6 +77,7 @@ import { createPortsHandlers }     from "./daemon/handlers/ports.ts";
 import { createGroupsHandlers }    from "./daemon/handlers/groups.ts";
 import { createWorkspaceHandlers } from "./daemon/handlers/workspace.ts";
 import { createMRHandlers }        from "./daemon/handlers/mr.ts";
+import { createParkingLotHandlers } from "./daemon/handlers/parking-lot.ts";
 import { createDiscussionHandlers } from "./daemon/handlers/discussions.ts";
 import { startDiscussionsPoller, stopDiscussionsPoller } from "./daemon/discussions-poller.ts";
 
@@ -540,6 +542,13 @@ async function refreshCacheImpl(): Promise<void> {
     // Check for state transitions and fire notifications
     checkAndNotify(cache.entries, portCacheRef.ports, log);
 
+    // Auto-park worktrees whose MRs just merged/closed.
+    try {
+      checkAndPark({ cache, repoIndex: loadRepoIndex, log });
+    } catch (err) {
+      log(`parking-lot: check failed: ${err}`);
+    }
+
     // Broadcast to WebSocket clients
     broadcast("status", await handleCommand("tray:status", {}));
 
@@ -589,6 +598,7 @@ const routedHandlers: HandlerMap = {
   ...createGroupsHandlers(handlerCtx),
   ...createWorkspaceHandlers(handlerCtx),
   ...createMRHandlers(),
+  ...createParkingLotHandlers(handlerCtx),
   ...createDiscussionHandlers(handlerCtx, broadcast),
 };
 

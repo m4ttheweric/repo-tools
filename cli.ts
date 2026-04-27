@@ -409,6 +409,32 @@ const TREE: Record<string, CommandNode> = {
     },
   },
 
+  park: {
+    description: "Auto-park worktrees when their MR merges or closes",
+    subcommands: {
+      status: {
+        description: "Show whether auto-park is enabled + worktree bindings",
+        module: "./commands/parking-lot.ts",
+        fn: "statusCommand",
+      },
+      enable: {
+        description: "Turn on auto-park",
+        module: "./commands/parking-lot.ts",
+        fn: "enableCommand",
+      },
+      disable: {
+        description: "Turn off auto-park (daemon scans become no-ops)",
+        module: "./commands/parking-lot.ts",
+        fn: "disableCommand",
+      },
+      scan: {
+        description: "Run the park check immediately against the live cache",
+        module: "./commands/parking-lot.ts",
+        fn: "scanCommand",
+      },
+    },
+  },
+
   daemon: {
     description: "Manage the rt background daemon",
     subcommands: {
