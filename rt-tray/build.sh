@@ -67,6 +67,25 @@ else
     echo "  ⚠ AppIcon.icns not found — notifications will show a default icon"
 fi
 
+# Convert notification sounds (mp3 → caf). UNNotificationSound only accepts
+# AIFF/WAV/CAF and requires the file inside the app bundle's Resources/ dir
+# (or ~/Library/Sounds, /Library/Sounds, /System/Library/Sounds).
+SOUNDS_SRC="$SCRIPT_DIR/../sounds"
+if [ -d "$SOUNDS_SRC" ]; then
+    for mp3 in "$SOUNDS_SRC"/*.mp3; do
+        [ -f "$mp3" ] || continue
+        base=$(basename "$mp3" .mp3)
+        out="$APP_BUNDLE/Contents/Resources/$base.caf"
+        if afconvert -d LEI16@44100 -f caff "$mp3" "$out" 2>/dev/null; then
+            echo "  ✓ $base.caf"
+        else
+            echo "  ⚠ afconvert failed for $base.mp3"
+        fi
+    done
+else
+    echo "  ⚠ sounds/ not found — notifications will fall back to system default"
+fi
+
 # Copy tray binary
 cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
