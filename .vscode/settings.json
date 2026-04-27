@@ -1,2 +1,4 @@
 {
+    "editor.guides.indentation": true,
+    "editor.guides.bracketPairs": false
 }
