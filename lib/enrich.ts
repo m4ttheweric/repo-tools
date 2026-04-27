@@ -119,19 +119,30 @@ function hexToAnsi(hex: string): string {
 const DEFAULT_BRANCHES = new Set(["master", "main", "develop", "development", "staging", "production"]);
 
 /**
- * Build a full label string for a branch picker option.
- * Everything is in the label so it's always visible.
- *
- * When the branch is a Linear ticket branch (linearId extracted) AND ticket
- * data is available, the branch name is dropped entirely — it's just a
- * machine-readable encoding of the ticket. Show the ticket title instead.
- *
- * Format (ticket branch):   `dirname · Ticket Title [In Progress] · ✓ ◉`
- * Format (normal branch):   `dirname · branch · ✓ ◉`
+ * A split label: `leading` is the dir + branch/title text (grows, clips on
+ * overflow), `trailing` is the right-edge metadata (icons, state tags) that
+ * the runner pins to the right of the row so it never gets truncated off.
  */
-export function formatBranchLabel(eb: EnrichedBranch): string {
+export interface BranchLabelParts {
+  leading: string;
+  trailing: string;
+}
+
+/**
+ * Build the split-label form used by the runner's row layout.
+ *
+ * Runner rows render as `<leading> <spacer flex=1> <trailing>`, so the trailing
+ * bit stays anchored to the right edge and the leading bit is what clips when
+ * the title is longer than the row width. Putting icons/state tags into
+ * `trailing` keeps them visible regardless of title length.
+ *
+ * Format (ticket branch):   leading = "dirname · Title [In Progress]"
+ *                           trailing = "✓ ◉"
+ * Format (normal branch):   leading = "dirname · branch"
+ *                           trailing = "✓ ◉ DEV-123"   (or "[Local Only]")
+ */
+export function formatBranchLabelParts(eb: EnrichedBranch): BranchLabelParts {
   const sep = `${dim} · ${reset}`;
-  const parts: string[] = [eb.dirName];
 
   // MR pipeline + state icons
   const iconParts: string[] = [];
@@ -145,42 +156,45 @@ export function formatBranchLabel(eb: EnrichedBranch): string {
   }
 
   const isDefault = DEFAULT_BRANCHES.has(eb.branch);
-  // Branch is a ticket branch when we have both the linearId and ticket data.
   const isTicketBranch = !!(eb.linearId && eb.ticket);
 
   if (isTicketBranch) {
-    // Replace the branch name with the ticket title — the branch slug is redundant
     let status = "";
     if (eb.ticket!.stateName) {
       const color = eb.ticket!.stateColor ? hexToAnsi(eb.ticket!.stateColor) : dim;
       status = ` ${color}[${eb.ticket!.stateName}]${reset}`;
     }
-    const title = eb.ticket!.title.length > 40
-      ? eb.ticket!.title.slice(0, 39) + "…"
-      : eb.ticket!.title;
-    parts.push(`${title}${status}`);
-    if (iconParts.length > 0) parts.push(iconParts.join(" "));
-  } else {
-    // Branch name is meaningful — show it
-    if (eb.branch) {
-      const branchDisplay = eb.branch.length > 40 ? eb.branch.slice(0, 39) + "…" : eb.branch;
-      parts.push(`${dim}${branchDisplay}${reset}`);
-    }
-
-    // Append MR icons + Linear ID fallback (when ticket not yet fetched)
-    const infoParts: string[] = [...iconParts];
-    if (eb.linearId) infoParts.push(eb.linearId);
-
-    if (infoParts.length > 0) {
-      parts.push(infoParts.join(" "));
-    } else if (isDefault) {
-      parts.push(`${dim}[main branch]${reset}`);
-    } else {
-      parts.push(`${dim}[Local Only]${reset}`);
-    }
+    return {
+      leading:  `${eb.dirName}${sep}${eb.ticket!.title}${status}`,
+      trailing: iconParts.join(" "),
+    };
   }
 
-  return parts.join(sep);
+  // Normal branch: name is meaningful; keep it in `leading`.
+  const leading = eb.branch
+    ? `${eb.dirName}${sep}${dim}${eb.branch}${reset}`
+    : eb.dirName;
+
+  const infoParts: string[] = [...iconParts];
+  if (eb.linearId) infoParts.push(eb.linearId);
+  const trailing = infoParts.length > 0
+    ? infoParts.join(" ")
+    : (isDefault ? `${dim}[main branch]${reset}` : `${dim}[Local Only]${reset}`);
+
+  return { leading, trailing };
+}
+
+/**
+ * Flat-string label for picker (fzf) inputs where the selection layer can't
+ * consume a split shape. Just joins the parts with the standard separator.
+ *
+ * Format (ticket branch):   `dirname · Ticket Title [In Progress] · ✓ ◉`
+ * Format (normal branch):   `dirname · branch · ✓ ◉`
+ */
+export function formatBranchLabel(eb: EnrichedBranch): string {
+  const sep = `${dim} · ${reset}`;
+  const { leading, trailing } = formatBranchLabelParts(eb);
+  return trailing ? `${leading}${sep}${trailing}` : leading;
 }
 
 // ─── Public enrichment API ───────────────────────────────────────────────────
