@@ -40,6 +40,7 @@ import {
   initMRSubscriptions,
   reconcileMRSubscriptions,
   disposeAllMRSubscriptions,
+  getAggregatedConnection,
   type MRSubscriptionEnv,
 } from "./daemon/mr-subscriptions.ts";
 
@@ -75,6 +76,8 @@ import { createPortsHandlers }     from "./daemon/handlers/ports.ts";
 import { createGroupsHandlers }    from "./daemon/handlers/groups.ts";
 import { createWorkspaceHandlers } from "./daemon/handlers/workspace.ts";
 import { createMRHandlers }        from "./daemon/handlers/mr.ts";
+import { createDiscussionHandlers } from "./daemon/handlers/discussions.ts";
+import { startDiscussionsPoller, stopDiscussionsPoller } from "./daemon/discussions-poller.ts";
 
 interface DiskCache {
   entries: Record<string, CacheEntry>;
@@ -586,6 +589,7 @@ const routedHandlers: HandlerMap = {
   ...createGroupsHandlers(handlerCtx),
   ...createWorkspaceHandlers(handlerCtx),
   ...createMRHandlers(),
+  ...createDiscussionHandlers(handlerCtx, broadcast),
 };
 
 async function handleCommand(cmd: string, payload: any): Promise<any> {
@@ -751,6 +755,13 @@ function startApiServer(): void {
       open(ws) {
         wsClients.add(ws);
         log(`api: WebSocket client connected (${wsClients.size} total)`);
+        try {
+          ws.send(JSON.stringify({
+            type: "mr:status",
+            data: { connection: getAggregatedConnection() },
+            timestamp: Date.now(),
+          }));
+        } catch { /* client gone */ }
       },
       close(ws) {
         wsClients.delete(ws);
@@ -781,6 +792,7 @@ function cleanup(): void {
   try { proxyManager.stopAll(); } catch { /* */ }
   try { cleanupAllWatchers(); } catch { /* */ }
   try { disposeAllMRSubscriptions(); } catch { /* */ }
+  try { stopDiscussionsPoller(); } catch { /* */ }
   try { attachServer.closeAll(); } catch { /* */ }
   try { globalRemedyWatcher?.close(); } catch { /* */ }
 
@@ -889,6 +901,9 @@ export function startDaemon(): void {
       log(`mr-subscriptions: init failed: ${err}`);
     });
   }, 7000);
+
+  // Background sweep for new MR comments → `discussions:new-comments` events.
+  startDiscussionsPoller({ ctx: handlerCtx, broadcast, log });
 
   // Schedule port scanning (lightweight — every 30s)
   setTimeout(() => refreshPortCache(), 2000); // initial scan after 2s

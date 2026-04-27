@@ -7,6 +7,7 @@
  */
 
 import type { FSWatcher } from "fs";
+import type { Discussion } from "@workforge/glance-sdk";
 import type { ProcessManager } from "../process-manager.ts";
 import type { StateStore } from "../state-store.ts";
 import type { RemedyEngine } from "../remedy-engine.ts";
@@ -30,6 +31,14 @@ export interface CacheEntry {
    * refreshAllMRs pass.
    */
   repoName?: string;
+  /**
+   * Discussion threads for this MR. Populated lazily on first `discussions:read`
+   * and refreshed on `discussions:refresh` or after a resolve/reply mutation.
+   * Absent until the user opens the Reviews sub-view.
+   */
+  discussions?: Discussion[];
+  /** Unix-ms of the last successful discussions fetch; used for TTL. */
+  discussionsFetchedAt?: number;
 }
 
 /** Ring-buffer event pushed whenever a remedy fires; drained by UI polling. */

@@ -7,12 +7,27 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import { render, Box, Text, useInput } from "ink";
+import { highlight, supportsLanguage } from "cli-highlight";
 import { Badge, Spinner, StatusMessage } from "@inkjs/ui";
 import { ScrollableList } from "../lib/ScrollableList.tsx";
-import type { MRDashboardProps, Reviewer, PipelineJob, Pipeline } from "@workforge/glance-sdk";
-import { getReviewDisplayState } from "@workforge/glance-sdk";
+import type {
+  MRDashboardProps,
+  Reviewer,
+  PipelineJob,
+  Pipeline,
+  Discussion,
+  ReviewerSummary,
+} from "@workforge/glance-sdk";
+import { getReviewDisplayState, getReviewerSummaries } from "@workforge/glance-sdk";
 import type { PortEntry } from "../lib/port-scanner.ts";
-import { mrActions, subscribeToDaemon, type DaemonMRActions } from "../lib/daemon-client.ts";
+import {
+  mrActions,
+  subscribeToDaemon,
+  fetchDiscussions,
+  setDiscussionResolved,
+  replyToDiscussion,
+  type DaemonMRActions,
+} from "../lib/daemon-client.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -547,6 +562,640 @@ export function MRDetailView({
   );
 }
 
+// ─── Reviews Sub-View ───────────────────────────────────────────────────────
+
+export interface DiscussionsState {
+  /** iid this snapshot is for, so cross-MR stale data can't leak into the view. */
+  iid:         number | null;
+  loading:     boolean;
+  error:       string | null;
+  discussions: Discussion[] | null;
+  fetchedAt:   number | null;
+}
+
+export const INITIAL_DISCUSSIONS_STATE: DiscussionsState = {
+  iid: null,
+  loading: false,
+  error: null,
+  discussions: null,
+  fetchedAt: null,
+};
+
+/**
+ * Combine assigned reviewers with anyone else who authored a comment thread.
+ * The sdk's `getReviewerSummaries` only covers assigned reviewers; we add
+ * synthesized rows for drive-by commenters (a GitLab reality — any participant
+ * can leave review comments without being formally assigned).
+ *
+ * Threads with no human notes (pure GitLab system actions like resolve toggles
+ * or label changes) are filtered out — they aren't comments.
+ *
+ * MR author is excluded — their own notes aren't reviews.
+ */
+/**
+ * GitLab SDK uses two scoped ID formats:
+ *   MRDashboardProps.author.id  → "gitlab:<numeric>"
+ *   NoteAuthor.id (discussions) → "gitlab:user:<numeric>"
+ * Strip everything except the trailing numeric segment for comparisons.
+ */
+function numericGitLabId(id: string): string {
+  return id.split(":").pop() ?? id;
+}
+
+export function buildAllCommenterSummaries(
+  mr: MRDashboardProps,
+  discussions: Discussion[],
+): ReviewerSummary[] {
+  const userDiscussions = discussions.filter((d) => d.notes.some((n) => !n.system));
+
+  const assigned = getReviewerSummaries({ reviewers: mr.reviews.reviewers }, userDiscussions);
+  const assignedNums = new Set(assigned.map((s) => numericGitLabId(s.reviewer.id)));
+  const authorNum = numericGitLabId(mr.author.id);
+
+  const extras = new Map<string, { reviewer: Reviewer; threads: Discussion[] }>();
+  for (const disc of userDiscussions) {
+    for (const note of disc.notes) {
+      if (note.system) continue;
+      const num = numericGitLabId(note.author.id);
+      if (assignedNums.has(num)) continue;
+      if (num === authorNum) continue;
+      if (/^group_\d+_bot_/.test(note.author.username)) continue;
+
+      let entry = extras.get(num);
+      if (!entry) {
+        entry = {
+          reviewer: {
+            id:           note.author.id,
+            username:     note.author.username,
+            name:         note.author.name,
+            avatarUrl:    note.author.avatarUrl,
+            reviewState:  null,
+          },
+          threads: [],
+        };
+        extras.set(num, entry);
+      }
+      if (!entry.threads.some((t) => t.id === disc.id)) entry.threads.push(disc);
+    }
+  }
+
+  const extraSummaries: ReviewerSummary[] = [];
+  for (const { reviewer, threads } of extras.values()) {
+    extraSummaries.push({ reviewer, commentCount: threads.length, discussions: threads });
+  }
+
+  return [...assigned, ...extraSummaries];
+}
+
+const REVIEW_STATE_LABEL: Record<string, string> = {
+  approved:          "Approved",
+  commented:         "Commented",
+  changes_requested: "Requested changes",
+  reviewing:         "Reviewing",
+  awaiting_review:   "Awaiting",
+};
+
+const REVIEW_STATE_COLOR: Record<string, string> = {
+  approved:          "green",
+  commented:         "cyan",
+  changes_requested: "red",
+  reviewing:         "yellow",
+  awaiting_review:   "gray",
+};
+
+function reviewerStateText(summary: ReviewerSummary): { label: string; color: string } {
+  // Assigned reviewers have a reviewState; drive-by commenters get "Commented".
+  if (summary.reviewer.reviewState) {
+    const display = getReviewDisplayState(summary.reviewer.reviewState);
+    return { label: REVIEW_STATE_LABEL[display] ?? display, color: REVIEW_STATE_COLOR[display] ?? "gray" };
+  }
+  return { label: "Commented", color: "cyan" };
+}
+
+function resolvedSummary(threads: Discussion[]): string | null {
+  const resolvable = threads.filter((t) => t.resolvable);
+  if (resolvable.length === 0) return null;
+  const resolved = resolvable.filter((t) => t.resolved).length;
+  if (resolved === resolvable.length) return "all resolved";
+  return `${resolved}/${resolvable.length} resolved`;
+}
+
+function ReviewerRow({
+  summary,
+  focused,
+}: {
+  summary: ReviewerSummary;
+  focused: boolean;
+}) {
+  const { label, color } = reviewerStateText(summary);
+  const n = summary.commentCount;
+  const commentLabel = n === 0 ? "No comments" : `${n} comment${n === 1 ? "" : "s"}`;
+  const resolved = resolvedSummary(summary.discussions);
+
+  return (
+    <Box gap={1}>
+      <Text color={focused ? "cyan" : undefined}>{focused ? "▸" : " "}</Text>
+      <Text bold={focused}>{summary.reviewer.username || summary.reviewer.name}</Text>
+      <Text dimColor>/</Text>
+      <Text color={color}>{label}</Text>
+      <Text dimColor>/</Text>
+      <Text dimColor>{commentLabel}</Text>
+      {resolved && (
+        <>
+          <Text dimColor>·</Text>
+          <Text dimColor>({resolved})</Text>
+        </>
+      )}
+    </Box>
+  );
+}
+
+export function ReviewsView({
+  mr,
+  state,
+  focusedReviewerIndex,
+  summaries,
+}: {
+  mr: MRDashboardProps;
+  state: DiscussionsState;
+  focusedReviewerIndex: number;
+  summaries: ReviewerSummary[];
+}) {
+  return (
+    <Box flexDirection="column" paddingLeft={1}>
+      {/* Header */}
+      <Box gap={1} marginBottom={1}>
+        <Text dimColor>!{mr.iid}</Text>
+        <Text dimColor>·</Text>
+        <Text bold>Reviews</Text>
+        {state.loading && <Spinner label="loading discussions" />}
+      </Box>
+
+      {state.error && (
+        <Box marginBottom={1}>
+          <StatusMessage variant="error">{state.error}</StatusMessage>
+        </Box>
+      )}
+
+      {!state.loading && !state.error && summaries.length === 0 && (
+        <Text dimColor>No reviewers or comments yet.</Text>
+      )}
+
+      {summaries.map((s, i) => (
+        <ReviewerRow
+          key={s.reviewer.id}
+          summary={s}
+          focused={i === focusedReviewerIndex}
+        />
+      ))}
+    </Box>
+  );
+}
+
+// ─── Editor integration for replies ─────────────────────────────────────────
+
+const REPLY_EDITOR_HINT =
+  "\n\n# Write your reply above. Lines starting with '#' will be ignored.\n" +
+  "# Save and quit to send. Close without saving (or leave empty) to cancel.\n";
+
+/**
+ * Suspend the terminal's raw mode, open the user's `$EDITOR` on a tempfile,
+ * and return the user's reply body (or null if they bailed/saved nothing).
+ * Falls back to `vi` if `$EDITOR` and `$VISUAL` are both unset.
+ */
+async function openEditorForReply(): Promise<string | null> {
+  const os   = await import("os");
+  const path = await import("path");
+  const fs   = await import("fs/promises");
+  const { spawn } = await import("child_process");
+
+  const tmpFile = path.join(os.tmpdir(), `rt-reply-${Date.now()}.md`);
+  await fs.writeFile(tmpFile, REPLY_EDITOR_HINT);
+
+  const editor = process.env.VISUAL || process.env.EDITOR || "vi";
+
+  const prevRaw = process.stdin.isTTY ? (process.stdin as any).isRaw === true : false;
+  if (process.stdin.isTTY) (process.stdin as any).setRawMode?.(false);
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(editor, [tmpFile], { stdio: "inherit" });
+      child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`editor exited ${code}`))));
+      child.on("error", reject);
+    });
+  } finally {
+    if (process.stdin.isTTY && prevRaw) (process.stdin as any).setRawMode?.(true);
+  }
+
+  const raw = await fs.readFile(tmpFile, "utf8");
+  await fs.unlink(tmpFile).catch(() => {});
+  const body = raw
+    .split("\n")
+    .filter((line) => !line.startsWith("#"))
+    .join("\n")
+    .trim();
+  return body.length > 0 ? body : null;
+}
+
+// ─── Comment Thread View ────────────────────────────────────────────────────
+
+export interface FileGroup {
+  /** Display label — file path or "General" for un-anchored threads. */
+  path:    string;
+  threads: Discussion[];
+}
+
+/**
+ * Group the discussions authored by one reviewer by file path. Threads whose
+ * first note has no position land in a synthetic "General" bucket at the top,
+ * matching how GitLab surfaces MR-level vs. line-anchored comments.
+ */
+export function groupThreadsByFile(threads: Discussion[]): FileGroup[] {
+  const general: Discussion[] = [];
+  const byFile = new Map<string, Discussion[]>();
+
+  for (const thread of threads) {
+    const firstWithPos = thread.notes.find((n) => n.position);
+    const path = firstWithPos?.position?.newPath ?? firstWithPos?.position?.oldPath ?? null;
+    if (!path) {
+      general.push(thread);
+      continue;
+    }
+    const list = byFile.get(path) ?? [];
+    list.push(thread);
+    byFile.set(path, list);
+  }
+
+  const groups: FileGroup[] = [];
+  if (general.length > 0) groups.push({ path: "General", threads: general });
+  for (const [path, threads] of byFile) groups.push({ path, threads });
+  return groups;
+}
+
+/**
+ * Collapse long paths to their last few segments so the sidebar stays readable.
+ * Returns the original string for "General" or paths already short enough.
+ */
+function shortenPath(p: string, maxSegments = 2): string {
+  if (!p.includes("/")) return p;
+  const parts = p.split("/");
+  if (parts.length <= maxSegments) return p;
+  return `…/${parts.slice(-maxSegments).join("/")}`;
+}
+
+function FileSidebar({
+  groups,
+  focusedFileIndex,
+}: {
+  groups: FileGroup[];
+  focusedFileIndex: number;
+}) {
+  return (
+    <Box flexDirection="column" width="30%" paddingRight={1} flexShrink={0}>
+      <Text dimColor>Files</Text>
+      {groups.map((g, i) => {
+        const focused = i === focusedFileIndex;
+        const count = g.threads.length;
+        return (
+          <Box key={g.path} gap={1}>
+            <Text color={focused ? "cyan" : undefined}>{focused ? "▸" : " "}</Text>
+            <Box flexGrow={1} overflow="hidden">
+              <Text bold={focused} wrap="truncate-start">{shortenPath(g.path, 1)}</Text>
+            </Box>
+            <Text dimColor>[{count}]</Text>
+          </Box>
+        );
+      })}
+    </Box>
+  );
+}
+
+// ─── Inline markdown renderer ────────────────────────────────────────────────
+
+/** Vibrant theme — terminal default colors are too muted to read at a glance. */
+const HL_THEME = {
+  keyword:    (s: string) => `\x1b[38;5;213m${s}\x1b[0m`, // pink
+  built_in:   (s: string) => `\x1b[38;5;75m${s}\x1b[0m`,  // blue
+  type:       (s: string) => `\x1b[38;5;117m${s}\x1b[0m`, // cyan
+  class:      (s: string) => `\x1b[38;5;117m${s}\x1b[0m`, // cyan
+  literal:    (s: string) => `\x1b[38;5;215m${s}\x1b[0m`, // orange
+  number:     (s: string) => `\x1b[38;5;215m${s}\x1b[0m`, // orange
+  string:     (s: string) => `\x1b[38;5;186m${s}\x1b[0m`, // yellow
+  comment:    (s: string) => `\x1b[2m${s}\x1b[0m`,        // dim
+  function:   (s: string) => `\x1b[38;5;121m${s}\x1b[0m`, // green
+  title:      (s: string) => `\x1b[38;5;121m${s}\x1b[0m`, // green (function names)
+  attr:       (s: string) => `\x1b[38;5;117m${s}\x1b[0m`, // cyan
+  property:   (s: string) => `\x1b[38;5;117m${s}\x1b[0m`, // cyan
+  symbol:     (s: string) => `\x1b[38;5;111m${s}\x1b[0m`, // light blue
+  variable:   (s: string) => `\x1b[38;5;231m${s}\x1b[0m`, // bright white
+  params:     (s: string) => `\x1b[38;5;229m${s}\x1b[0m`, // soft yellow
+  // diff-specific
+  addition:   (s: string) => `\x1b[38;5;120m${s}\x1b[0m`, // green
+  deletion:   (s: string) => `\x1b[38;5;203m${s}\x1b[0m`, // red
+} as any;
+
+/** Restrict auto-detect to common languages — highlight.js default is too aggressive
+ *  and frequently misclassifies short snippets as exotic langs. */
+const HL_LANGS = [
+  "typescript", "javascript", "tsx", "jsx", "json", "bash", "shell",
+  "css", "scss", "html", "xml", "go", "python", "ruby", "sql",
+  "yaml", "diff", "markdown", "rust", "java",
+];
+
+function highlightCode(code: string, lang: string): string {
+  const l = lang.trim().toLowerCase();
+  try {
+    if (l && supportsLanguage(l)) {
+      return highlight(code, { language: l, ignoreIllegals: true, theme: HL_THEME });
+    }
+    // No language or unsupported — auto-detect from the common subset.
+    return highlight(code, { languageSubset: HL_LANGS, ignoreIllegals: true, theme: HL_THEME });
+  } catch {
+    return code;
+  }
+}
+
+type InlineSpan =
+  | { k: "text";   t: string }
+  | { k: "bold";   t: string }
+  | { k: "italic"; t: string }
+  | { k: "code";   t: string }
+  | { k: "link";   t: string };
+
+function parseInline(s: string): InlineSpan[] {
+  const out: InlineSpan[] = [];
+  const re = /\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+)`|\[([^\]]+)\]\([^)]+\)/g;
+  let last = 0, m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    if (m.index > last) out.push({ k: "text", t: s.slice(last, m.index) });
+    if      (m[1] != null) out.push({ k: "bold",   t: m[1] });
+    else if (m[2] != null) out.push({ k: "italic", t: m[2] });
+    else if (m[3] != null) out.push({ k: "code",   t: m[3] });
+    else if (m[4] != null) out.push({ k: "link",   t: m[4] });
+    last = m.index + m[0].length;
+  }
+  if (last < s.length) out.push({ k: "text", t: s.slice(last) });
+  return out;
+}
+
+function InlineLine({ text, bold: boldAll }: { text: string; bold?: boolean }) {
+  const spans = parseInline(text);
+  return (
+    <Text wrap="wrap">
+      {spans.map((sp, i) => {
+        if (sp.k === "bold")   return <Text key={i} bold>{sp.t}</Text>;
+        if (sp.k === "italic") return <Text key={i} italic>{sp.t}</Text>;
+        if (sp.k === "code")   return <Text key={i} color="cyan">{"`"}{sp.t}{"`"}</Text>;
+        if (sp.k === "link")   return <Text key={i} underline>{sp.t}</Text>;
+        return <Text key={i} bold={boldAll}>{sp.t}</Text>;
+      })}
+    </Text>
+  );
+}
+
+type Block =
+  | { type: "para";    lines: string[] }
+  | { type: "code";    lang: string; lines: string[] }
+  | { type: "suggest"; lines: string[] }
+  | { type: "quote";   lines: string[] }
+  | { type: "heading"; level: number; text: string }
+  | { type: "bullet";  items: string[] }
+  | { type: "hr" };
+
+function parseBlocks(body: string): Block[] {
+  const lines = body.split("\n");
+  const blocks: Block[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]!;
+    const fence = line.match(/^```(.*)/);
+    if (fence) {
+      const lang = fence[1]?.trim() ?? "";
+      const isSuggest = lang.startsWith("suggestion:");
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i]!.startsWith("```")) {
+        codeLines.push(lines[i]!);
+        i++;
+      }
+      i++;
+      blocks.push(isSuggest
+        ? { type: "suggest", lines: codeLines }
+        : { type: "code", lang, lines: codeLines });
+      continue;
+    }
+    const h = line.match(/^(#{1,6})\s+(.*)/);
+    if (h) { blocks.push({ type: "heading", level: h[1]!.length, text: h[2]! }); i++; continue; }
+    if (line.match(/^>[ \t]/)) {
+      const qs: string[] = [];
+      while (i < lines.length && lines[i]!.match(/^>[ \t]?/)) {
+        qs.push(lines[i]!.replace(/^>[ \t]?/, ""));
+        i++;
+      }
+      blocks.push({ type: "quote", lines: qs });
+      continue;
+    }
+    if (line.match(/^[-*] /)) {
+      const items: string[] = [];
+      while (i < lines.length && lines[i]!.match(/^[-*] /)) {
+        items.push(lines[i]!.slice(2));
+        i++;
+      }
+      blocks.push({ type: "bullet", items });
+      continue;
+    }
+    if (line.match(/^-{3,}$|^\*{3,}$/)) { blocks.push({ type: "hr" }); i++; continue; }
+    if (line.trim() === "") { i++; continue; }
+    const paraLines: string[] = [];
+    while (
+      i < lines.length &&
+      lines[i]!.trim() !== "" &&
+      !lines[i]!.match(/^```|^#{1,6} |^>[ \t]|^[-*] |^-{3,}$|^\*{3,}$/)
+    ) { paraLines.push(lines[i]!); i++; }
+    if (paraLines.length) blocks.push({ type: "para", lines: paraLines });
+  }
+  return blocks;
+}
+
+function Markdown({ children }: { children: string }) {
+  const blocks = parseBlocks(children);
+  return (
+    <Box flexDirection="column">
+      {blocks.map((b, bi) => {
+        if (b.type === "heading") {
+          return (
+            <Box key={bi} marginTop={bi > 0 ? 1 : 0}>
+              <InlineLine text={b.text} bold />
+            </Box>
+          );
+        }
+        if (b.type === "para") {
+          return (
+            <Box key={bi} marginTop={bi > 0 ? 1 : 0}>
+              <InlineLine text={b.lines.join(" ")} />
+            </Box>
+          );
+        }
+        if (b.type === "code") {
+          return (
+            <Box key={bi} flexDirection="column" marginTop={1} paddingLeft={2}>
+              <Text>{highlightCode(b.lines.join("\n"), b.lang)}</Text>
+            </Box>
+          );
+        }
+        if (b.type === "suggest") {
+          return (
+            <Box key={bi} flexDirection="column" marginTop={1}>
+              <Text color="yellow" bold>Suggestion:</Text>
+              <Box flexDirection="column" paddingLeft={2}>
+                <Text>{highlightCode(b.lines.join("\n"), "diff")}</Text>
+              </Box>
+            </Box>
+          );
+        }
+        if (b.type === "quote") {
+          return (
+            <Box key={bi} flexDirection="column" marginTop={bi > 0 ? 1 : 0}>
+              {b.lines.map((l, li) => (
+                <Box key={li} gap={1}>
+                  <Text color="cyan">│</Text>
+                  <InlineLine text={l} />
+                </Box>
+              ))}
+            </Box>
+          );
+        }
+        if (b.type === "bullet") {
+          return (
+            <Box key={bi} flexDirection="column" marginTop={bi > 0 ? 1 : 0}>
+              {b.items.map((item, ii) => (
+                <Box key={ii} gap={1}>
+                  <Text dimColor>•</Text>
+                  <InlineLine text={item} />
+                </Box>
+              ))}
+            </Box>
+          );
+        }
+        if (b.type === "hr") {
+          return <Text key={bi} dimColor>────────────────────</Text>;
+        }
+        return null;
+      })}
+    </Box>
+  );
+}
+
+function ThreadBody({ thread }: { thread: Discussion }) {
+  const nonSystem = thread.notes.filter((n) => !n.system);
+  if (nonSystem.length === 0) {
+    return <Text dimColor>System-only thread.</Text>;
+  }
+  return (
+    <Box flexDirection="column">
+      {nonSystem.map((note, i) => (
+        <Box key={note.id} flexDirection="column" marginTop={i === 0 ? 0 : 1}>
+          <Box gap={1}>
+            <Text bold color="cyan">@{note.author.username}</Text>
+            <Text dimColor>·</Text>
+            <Text dimColor>{timeAgo(note.createdAt)}</Text>
+            {i === 0 && note.position?.newLine && (
+              <>
+                <Text dimColor>·</Text>
+                <Text dimColor>L{note.position.newLine}</Text>
+              </>
+            )}
+          </Box>
+          <Markdown>{note.body}</Markdown>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+export function CommentView({
+  mr,
+  reviewerName,
+  groups,
+  focusedFileIndex,
+  focusedThreadIndex,
+  actionState,
+}: {
+  mr: MRDashboardProps;
+  reviewerName: string;
+  groups: FileGroup[];
+  focusedFileIndex: number;
+  focusedThreadIndex: number;
+  actionState: ActionState;
+}) {
+  const group = groups[focusedFileIndex];
+  const thread = group?.threads[focusedThreadIndex];
+  const threadCount = group?.threads.length ?? 0;
+  const resolved = thread?.resolved === true;
+  const resolvable = thread?.resolvable === true;
+
+  return (
+    <Box flexDirection="column" paddingLeft={1}>
+      {/* Header */}
+      <Box gap={1} marginBottom={1}>
+        <Text dimColor>!{mr.iid}</Text>
+        <Text dimColor>·</Text>
+        <Text bold>Comments from {reviewerName}</Text>
+      </Box>
+
+      {groups.length === 0 ? (
+        <Text dimColor>No comments from this reviewer.</Text>
+      ) : (
+        <Box flexDirection="row">
+          <FileSidebar groups={groups} focusedFileIndex={focusedFileIndex} />
+
+          {/* Right pane */}
+          <Box flexDirection="column" flexGrow={1} paddingLeft={1} borderStyle="single" borderLeft paddingRight={1} overflow="hidden">
+            {/* Chrome */}
+            <Box gap={1}>
+              <Box flexGrow={1} overflow="hidden">
+                <Text bold wrap="truncate-start">{group?.path}</Text>
+              </Box>
+              <Text dimColor>/</Text>
+              <Text dimColor>💬 {threadCount > 0 ? focusedThreadIndex + 1 : 0}/{threadCount}</Text>
+              {resolvable && (
+                <>
+                  <Text dimColor>·</Text>
+                  <Text color={resolved ? "green" : "yellow"}>
+                    {resolved ? "resolved" : "unresolved"}
+                  </Text>
+                </>
+              )}
+            </Box>
+
+            <Box marginTop={1}>
+              {thread ? <ThreadBody thread={thread} /> : <Text dimColor>No thread.</Text>}
+            </Box>
+
+            {actionState.loading && (
+              <Box marginTop={1}>
+                <Spinner label={actionState.loading} />
+              </Box>
+            )}
+            {actionState.result && (
+              <Box marginTop={1}>
+                <StatusMessage variant={actionState.result.ok ? "success" : "error"}>
+                  {actionState.result.message}
+                </StatusMessage>
+              </Box>
+            )}
+            {actionState.confirm && (
+              <Box marginTop={1}>
+                <Text color="yellow" bold>press [{actionState.confirm.key}] again to confirm</Text>
+              </Box>
+            )}
+          </Box>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
 // ─── Action Bar ─────────────────────────────────────────────────────────────
 
 function ActionBarView({
@@ -904,6 +1553,18 @@ function LiveDashboard({
   const [hasLiveData, setHasLiveData] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [detailView, setDetailView] = useState(false);
+  const [reviewsView, setReviewsView] = useState(false);
+  const [focusedReviewerIndex, setFocusedReviewerIndex] = useState(0);
+  const [discussionsState, setDiscussionsState] = useState<DiscussionsState>(INITIAL_DISCUSSIONS_STATE);
+  const [commentView, setCommentView] = useState(false);
+  const [focusedReviewerId, setFocusedReviewerId] = useState<string | null>(null);
+  const [focusedFileIndex, setFocusedFileIndex] = useState(0);
+  const [focusedThreadIndex, setFocusedThreadIndex] = useState(0);
+  const [commentToast, setCommentToast] = useState<{
+    iid:    number;
+    text:   string;
+    shownAt: number;
+  } | null>(null);
   const [pipelineView, setPipelineView] = useState(false);
   const [pipelineFromList, setPipelineFromList] = useState(false); // entered via p from list, skip card on esc
   const [jobLogView, setJobLogView] = useState(false);
@@ -952,6 +1613,14 @@ function LiveDashboard({
       return () => clearTimeout(t);
     }
   }, [actionState.result]);
+
+  // Auto-dismiss new-comment toasts after 8s
+  useEffect(() => {
+    if (commentToast) {
+      const t = setTimeout(() => setCommentToast(null), 8000);
+      return () => clearTimeout(t);
+    }
+  }, [commentToast]);
 
   // Clear confirmation after 3s of inactivity
   useEffect(() => {
@@ -1223,6 +1892,148 @@ function LiveDashboard({
       return;
     }
 
+    // Compute current reviewer summaries once — used by both Reviews and Comment views.
+    const reviewerSummaries: ReviewerSummary[] = focusedMR
+      && discussionsState.iid === focusedMR.iid
+      && discussionsState.discussions
+      ? buildAllCommenterSummaries(focusedMR, discussionsState.discussions)
+      : [];
+
+    // ── Comment View (split-pane per-reviewer threads) ────────────────────
+    if (commentView) {
+      const reviewerSummary = reviewerSummaries.find((s) => s.reviewer.id === focusedReviewerId);
+      const fileGroups = reviewerSummary ? groupThreadsByFile(reviewerSummary.discussions) : [];
+      const currentGroup  = fileGroups[focusedFileIndex];
+      const currentThread = currentGroup?.threads[focusedThreadIndex];
+      const repoName      = focusedEntry?.[1]?.repoName;
+
+      if (key.escape || key.delete || input === "b") {
+        setCommentView(false);
+        resetAction();
+        return;
+      }
+      if (key.upArrow) {
+        setFocusedFileIndex((i) => {
+          const next = Math.max(i - 1, 0);
+          if (next !== i) setFocusedThreadIndex(0);
+          return next;
+        });
+        resetAction();
+      }
+      if (key.downArrow) {
+        setFocusedFileIndex((i) => {
+          const next = Math.min(i + 1, Math.max(fileGroups.length - 1, 0));
+          if (next !== i) setFocusedThreadIndex(0);
+          return next;
+        });
+        resetAction();
+      }
+      if (key.leftArrow) {
+        setFocusedThreadIndex((i) => Math.max(i - 1, 0));
+        resetAction();
+      }
+      if (key.rightArrow) {
+        const max = Math.max((currentGroup?.threads.length ?? 0) - 1, 0);
+        setFocusedThreadIndex((i) => Math.min(i + 1, max));
+        resetAction();
+      }
+      // Resolve / unresolve the current thread (with confirm — matches [m] merge).
+      if (input === "R" && currentThread?.resolvable && focusedMR && repoName) {
+        const iid = focusedMR.iid;
+        const discussionId = currentThread.id;
+        const wantResolved = !currentThread.resolved;
+        const label = wantResolved ? "Resolve thread" : "Unresolve thread";
+        const loadingLabel = wantResolved ? "Resolving…" : "Unresolving…";
+        executeAction("R", label, loadingLabel, async () => {
+          const snap = await setDiscussionResolved(repoName, iid, discussionId, wantResolved);
+          setDiscussionsState({
+            iid, loading: false, error: null,
+            discussions: snap.discussions, fetchedAt: snap.fetchedAt,
+          });
+        });
+      }
+      // Reply: open $EDITOR, post body on save.
+      if (input === "c" && currentThread && focusedMR && repoName) {
+        const iid = focusedMR.iid;
+        const discussionId = currentThread.id;
+        setActionState({ loading: "Opening editor…", result: null, confirm: null });
+        openEditorForReply()
+          .then(async (body) => {
+            if (!body) {
+              setActionState({ loading: null, result: { ok: true, message: "Reply cancelled" }, confirm: null });
+              return;
+            }
+            setActionState({ loading: "Posting reply…", result: null, confirm: null });
+            try {
+              const snap = await replyToDiscussion(repoName, iid, discussionId, body);
+              setDiscussionsState({
+                iid, loading: false, error: null,
+                discussions: snap.discussions, fetchedAt: snap.fetchedAt,
+              });
+              setActionState({ loading: null, result: { ok: true, message: "Reply posted" }, confirm: null });
+            } catch (e: any) {
+              setActionState({ loading: null, result: { ok: false, message: e.message || "Reply failed" }, confirm: null });
+            }
+          })
+          .catch((e: any) => {
+            setActionState({ loading: null, result: { ok: false, message: e.message || "Editor failed" }, confirm: null });
+          });
+      }
+      if (input === "o" && focusedMR?.webUrl) {
+        import("child_process").then(({ execSync }) => {
+          execSync(`open ${JSON.stringify(focusedMR.webUrl)}`, { stdio: "ignore" });
+        });
+      }
+      if (input === "q" && !actionState.confirm) process.exit(0);
+      return;
+    }
+
+    // ── Reviews Sub-View ──────────────────────────────────────────────────
+    if (reviewsView) {
+      if (key.escape || key.delete || input === "b") {
+        setReviewsView(false);
+        resetAction();
+        return;
+      }
+      const summaries = reviewerSummaries;
+      if (key.downArrow) {
+        setFocusedReviewerIndex((i) => Math.min(i + 1, Math.max(summaries.length - 1, 0)));
+        resetAction();
+      }
+      if (key.upArrow) {
+        setFocusedReviewerIndex((i) => Math.max(i - 1, 0));
+        resetAction();
+      }
+      // Enter: drill into the selected reviewer's comments
+      if (key.return) {
+        const selected = summaries[focusedReviewerIndex];
+        if (selected && selected.discussions.length > 0) {
+          setFocusedReviewerId(selected.reviewer.id);
+          setFocusedFileIndex(0);
+          setFocusedThreadIndex(0);
+          setCommentView(true);
+          resetAction();
+          return;
+        }
+      }
+      // Manual refresh
+      if (input === "r" && focusedMR && focusedEntry?.[1]?.repoName) {
+        const repoName = focusedEntry[1].repoName;
+        const iid = focusedMR.iid;
+        setDiscussionsState((s) => ({ ...s, loading: true, error: null }));
+        fetchDiscussions(repoName, iid, { force: true })
+          .then((snap) => setDiscussionsState({ iid, loading: false, error: null, discussions: snap.discussions, fetchedAt: snap.fetchedAt }))
+          .catch((e: any) => setDiscussionsState((s) => ({ ...s, loading: false, error: e.message || "failed to fetch discussions" })));
+      }
+      if (input === "o" && focusedMR?.webUrl) {
+        import("child_process").then(({ execSync }) => {
+          execSync(`open ${JSON.stringify(focusedMR.webUrl)}`, { stdio: "ignore" });
+        });
+      }
+      if (input === "q" && !actionState.confirm) process.exit(0);
+      return;
+    }
+
     // ── MR Detail View ────────────────────────────────────────────────────
     if (detailView) {
       if (key.escape || key.delete || input === "b") {
@@ -1234,6 +2045,24 @@ function LiveDashboard({
       if (input === "p" && focusedMR?.pipeline) {
         setPipelineFromList(false);
         openPipelineView();
+        return;
+      }
+      // Arrow down: enter Reviews sub-view (lazy-fetch discussions on entry)
+      if (key.downArrow && focusedMR && focusedEntry?.[1]?.repoName) {
+        const repoName = focusedEntry[1].repoName;
+        const iid = focusedMR.iid;
+        setReviewsView(true);
+        setFocusedReviewerIndex(0);
+        // Reset snapshot if it's for a different MR
+        if (discussionsState.iid !== iid) {
+          setDiscussionsState({ iid, loading: true, error: null, discussions: null, fetchedAt: null });
+        } else {
+          setDiscussionsState((s) => ({ ...s, loading: true, error: null }));
+        }
+        fetchDiscussions(repoName, iid)
+          .then((snap) => setDiscussionsState({ iid, loading: false, error: null, discussions: snap.discussions, fetchedAt: snap.fetchedAt }))
+          .catch((e: any) => setDiscussionsState((s) => ({ ...s, iid, loading: false, error: e.message || "failed to fetch discussions" })));
+        resetAction();
         return;
       }
     }
@@ -1266,7 +2095,35 @@ function LiveDashboard({
       const mr = focusedMR;
 
       if (input === "m" && mr.mergeButton.visible && !mr.mergeButton.disabled) {
-        executeAction("m", "Merge", "Merging…", () => focusedActions.merge().then(() => {}));
+        const targetIid = mr.iid;
+        executeAction("m", "Merge", "Merging…", async () => {
+          await focusedActions.merge();
+          // The daemon will broadcast the canonical merged state on its next
+          // push, but that can lag a few seconds. Flip local state now so the
+          // detail view stops advertising merge/approve/auto-merge buttons
+          // for an MR that's already gone.
+          setData((prev) => {
+            const branches = { ...prev.branches };
+            for (const [branch, entry] of Object.entries(branches)) {
+              if (entry.mr?.iid !== targetIid) continue;
+              branches[branch] = {
+                ...entry,
+                mr: {
+                  ...entry.mr,
+                  status: "merged",
+                  state: "merged",
+                  isMerging: false,
+                  mergeButton:     { ...entry.mr.mergeButton,     visible: false },
+                  autoMergeButton: { ...entry.mr.autoMergeButton, visible: false },
+                  rebaseButton:    { ...entry.mr.rebaseButton,    visible: false },
+                  blockers: { ...entry.mr.blockers, any: false, hasMergeError: false, mergeError: null },
+                },
+                fetchedAt: Date.now(),
+              };
+            }
+            return { ...prev, branches };
+          });
+        });
       }
       if (input === "r" && mr.rebaseButton.visible) {
         executeAction("r", "Rebase", "Rebasing…", () => focusedActions.rebase());
@@ -1387,6 +2244,29 @@ function LiveDashboard({
         if (c === "connected" || c === "connecting" || c === "disconnected") {
           setConnection(c);
         }
+      } else if (ev.type === "discussions:update") {
+        const iid = ev.data?.iid as number | undefined;
+        const discussions = ev.data?.discussions as Discussion[] | undefined;
+        const fetchedAt = ev.data?.fetchedAt as number | undefined;
+        if (typeof iid !== "number" || !discussions || typeof fetchedAt !== "number") return;
+        // Only overwrite if the broadcast is for the MR we're currently viewing.
+        setDiscussionsState((s) => {
+          if (s.iid !== iid) return s;
+          return { iid, loading: false, error: null, discussions, fetchedAt };
+        });
+      } else if (ev.type === "discussions:new-comments") {
+        const iid      = ev.data?.iid      as number | undefined;
+        const mrTitle  = ev.data?.mrTitle  as string | undefined;
+        const newNotes = ev.data?.newNotes as Array<{ authorUser: string; body: string }> | undefined;
+        if (typeof iid !== "number" || !newNotes || newNotes.length === 0) return;
+        const first = newNotes[0]!;
+        const preview = first.body.split("\n")[0]!.slice(0, 60);
+        const extra = newNotes.length > 1 ? ` (+${newNotes.length - 1})` : "";
+        setCommentToast({
+          iid,
+          text: `💬 !${iid} ${mrTitle ? `(${mrTitle.slice(0, 40)}) ` : ""}— @${first.authorUser}: ${preview}${extra}`,
+          shownAt: Date.now(),
+        });
       }
     }, {
       onStatusChange: (s) => {
@@ -1409,8 +2289,12 @@ function LiveDashboard({
     ? "esc back · ↑↓ scroll · r retry · o open · q quit"
     : pipelineView
     ? "esc back · ↑↓ navigate · enter view log · r retry · o open · q quit"
+    : commentView
+    ? "esc back · ↑↓ file · ←→ thread · R resolve · c reply · o open · q quit"
+    : reviewsView
+    ? "esc back · ↑↓ navigate · enter view · r refresh · o open · q quit"
     : detailView
-    ? "esc back · p pipeline · o open · q quit"
+    ? "esc back · ↓ reviews · p pipeline · o open · q quit"
     : null;
 
   return (
@@ -1427,7 +2311,9 @@ function LiveDashboard({
           <Text dimColor>{focusedIndex + 1}/{activeBranches.length}</Text>
         )}
         <Box flexGrow={1} />
-        {viewHints ? (
+        {commentToast ? (
+          <Text color="yellow" wrap="truncate">{commentToast.text}</Text>
+        ) : viewHints ? (
           <Text dimColor wrap="truncate">{viewHints}</Text>
         ) : localCount > 0 ? (
           <Text dimColor>{localCount} local-only</Text>
@@ -1462,6 +2348,36 @@ function LiveDashboard({
               focusedJobIndex={focusedJobIndex}
               actionState={actionState}
               breadcrumb={breadcrumb}
+            />
+          );
+        }
+        if (commentView && focusedMR) {
+          const summaries = discussionsState.iid === focusedMR.iid && discussionsState.discussions
+            ? buildAllCommenterSummaries(focusedMR, discussionsState.discussions)
+            : [];
+          const reviewerSummary = summaries.find((s) => s.reviewer.id === focusedReviewerId);
+          const groups = reviewerSummary ? groupThreadsByFile(reviewerSummary.discussions) : [];
+          return (
+            <CommentView
+              mr={focusedMR}
+              reviewerName={reviewerSummary?.reviewer.name || reviewerSummary?.reviewer.username || "Reviewer"}
+              groups={groups}
+              focusedFileIndex={focusedFileIndex}
+              focusedThreadIndex={focusedThreadIndex}
+              actionState={actionState}
+            />
+          );
+        }
+        if (reviewsView && focusedMR) {
+          const summaries = discussionsState.iid === focusedMR.iid && discussionsState.discussions
+            ? buildAllCommenterSummaries(focusedMR, discussionsState.discussions)
+            : [];
+          return (
+            <ReviewsView
+              mr={focusedMR}
+              state={discussionsState}
+              focusedReviewerIndex={focusedReviewerIndex}
+              summaries={summaries}
             />
           );
         }

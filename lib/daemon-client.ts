@@ -29,10 +29,12 @@ export interface DaemonResponse {
 const REQUEST_TIMEOUT_MS = 2000;
 
 let _lastQueryWasRefused = false;
+let _lastQueryTimedOut   = false;
 
 async function trySocketQuery(
   cmd: string,
   payload?: Record<string, any>,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<DaemonResponse | null> {
   if (!existsSync(DAEMON_SOCK_PATH)) return null;
 
@@ -44,15 +46,18 @@ async function trySocketQuery(
       method: hasBody ? "POST" : "GET",
       headers: hasBody ? { "Content-Type": "application/json" } : undefined,
       body: hasBody ? JSON.stringify(payload) : undefined,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     } as any);
 
     _lastQueryWasRefused = false;
+    _lastQueryTimedOut   = false;
     return (await response.json()) as DaemonResponse;
   } catch (err) {
     const code = (err as any)?.code ?? "";
+    const name = (err as any)?.name ?? "";
     const msg  = err instanceof Error ? err.message : "";
     _lastQueryWasRefused = code === "ECONNREFUSED" || msg.includes("ECONNREFUSED") || msg.includes("Connection refused");
+    _lastQueryTimedOut   = name === "TimeoutError" || name === "AbortError" || msg.includes("timed out");
     return null;
   }
 }
@@ -114,9 +119,10 @@ function warnDaemonDown(): void {
 export async function daemonQuery(
   cmd: string,
   payload?: Record<string, any>,
+  timeoutMs?: number,
 ): Promise<DaemonResponse | null> {
   // 1. Try HTTP request over Unix socket
-  const result = await trySocketQuery(cmd, payload);
+  const result = await trySocketQuery(cmd, payload, timeoutMs);
   if (result !== null) return result;
 
   // 2. Check if user opted in
@@ -133,13 +139,23 @@ export async function daemonQuery(
   if (restarted) {
     // Retry once after short delay
     await Bun.sleep(300);
-    const retryResult = await trySocketQuery(cmd, payload);
+    const retryResult = await trySocketQuery(cmd, payload, timeoutMs);
     if (retryResult !== null) return retryResult;
   }
 
   // 5. Restart failed → warn (once per session)
   warnDaemonDown();
   return null;
+}
+
+/**
+ * True if the last `daemonQuery` returned null because the request timed out
+ * (as opposed to the daemon being genuinely down). Used by action callers so
+ * they can surface "timed out — verify on GitLab" instead of the misleading
+ * "daemon unavailable".
+ */
+export function lastQueryTimedOut(): boolean {
+  return _lastQueryTimedOut;
 }
 
 /**
@@ -177,10 +193,16 @@ export interface DaemonMRActions {
   fetchJobTrace:    (jobId: number) => Promise<string>;
 }
 
+// MR actions hit GitLab through the daemon, so the IPC call must wait out the
+// underlying API round-trip. 2s (the default IPC timeout) is too short — a
+// real-world merge regularly takes 3–10s and the client would throw
+// "daemon unavailable" even though the merge succeeded on the server.
+const MR_ACTION_TIMEOUT_MS = 30_000;
+
 export function mrActions(repoName: string, iid: number): DaemonMRActions {
   const fire = async (action: string, args: any[] = []): Promise<void> => {
-    const res = await daemonQuery("mr:action", { repoName, iid, action, args });
-    if (!res) throw new Error("daemon unavailable");
+    const res = await daemonQuery("mr:action", { repoName, iid, action, args }, MR_ACTION_TIMEOUT_MS);
+    if (!res) throw new Error(lastQueryTimedOut() ? `${action} timed out — verify on GitLab` : "daemon unavailable");
     if (!res.ok) throw new Error(res.error || `${action} failed`);
   };
 
@@ -197,18 +219,88 @@ export function mrActions(repoName: string, iid: number): DaemonMRActions {
     requestReReview:  (uid)  => fire("requestReReview", [uid]),
 
     fetchJobDetail: async (jobId, pipelineId) => {
-      const res = await daemonQuery("mr:fetch-job-detail", { repoName, iid, jobId, pipelineId });
-      if (!res) throw new Error("daemon unavailable");
+      const res = await daemonQuery("mr:fetch-job-detail", { repoName, iid, jobId, pipelineId }, MR_ACTION_TIMEOUT_MS);
+      if (!res) throw new Error(lastQueryTimedOut() ? "fetchJobDetail timed out" : "daemon unavailable");
       if (!res.ok) throw new Error(res.error || "fetchJobDetail failed");
       return res.data;
     },
     fetchJobTrace: async (jobId) => {
-      const res = await daemonQuery("mr:fetch-job-trace", { repoName, iid, jobId });
-      if (!res) throw new Error("daemon unavailable");
+      const res = await daemonQuery("mr:fetch-job-trace", { repoName, iid, jobId }, MR_ACTION_TIMEOUT_MS);
+      if (!res) throw new Error(lastQueryTimedOut() ? "fetchJobTrace timed out" : "daemon unavailable");
       if (!res.ok) throw new Error(res.error || "fetchJobTrace failed");
       return res.data as string;
     },
   };
+}
+
+// ─── Discussions facade ──────────────────────────────────────────────────────
+
+import type { Discussion } from "@workforge/glance-sdk";
+
+export interface DiscussionsSnapshot {
+  discussions: Discussion[];
+  /** Unix-ms timestamp of the fetch that produced this snapshot. */
+  fetchedAt:   number;
+}
+
+// Discussion fetches hit GitLab REST; allow the same 30s window as mr:action
+// so slow/busy instances don't surface spurious timeouts.
+const DISCUSSIONS_TIMEOUT_MS = 30_000;
+
+/**
+ * Read the discussions (comment threads) for an MR. The daemon serves from its
+ * cache when fresh; otherwise it fetches from GitLab and broadcasts
+ * `discussions:update` so other subscribers see the new data.
+ *
+ * Pass `force: true` to bypass the daemon's TTL and always re-fetch.
+ */
+export async function fetchDiscussions(
+  repoName: string,
+  iid: number,
+  opts?: { force?: boolean },
+): Promise<DiscussionsSnapshot> {
+  const res = await daemonQuery(
+    "discussions:read",
+    { repoName, iid, force: opts?.force === true },
+    DISCUSSIONS_TIMEOUT_MS,
+  );
+  if (!res) throw new Error(lastQueryTimedOut() ? "discussions timed out" : "daemon unavailable");
+  if (!res.ok) throw new Error(res.error || "discussions:read failed");
+  return res.data as DiscussionsSnapshot;
+}
+
+/** Toggle the resolved state of a discussion thread. Returns the refreshed snapshot. */
+export async function setDiscussionResolved(
+  repoName: string,
+  iid: number,
+  discussionId: string,
+  resolved: boolean,
+): Promise<DiscussionsSnapshot> {
+  const res = await daemonQuery(
+    "discussions:resolve",
+    { repoName, iid, discussionId, resolved },
+    DISCUSSIONS_TIMEOUT_MS,
+  );
+  if (!res) throw new Error(lastQueryTimedOut() ? "resolve timed out" : "daemon unavailable");
+  if (!res.ok) throw new Error(res.error || "discussions:resolve failed");
+  return res.data as DiscussionsSnapshot;
+}
+
+/** Post a reply note into an existing discussion thread. Returns the refreshed snapshot. */
+export async function replyToDiscussion(
+  repoName: string,
+  iid: number,
+  discussionId: string,
+  body: string,
+): Promise<DiscussionsSnapshot> {
+  const res = await daemonQuery(
+    "discussions:reply",
+    { repoName, iid, discussionId, body },
+    DISCUSSIONS_TIMEOUT_MS,
+  );
+  if (!res) throw new Error(lastQueryTimedOut() ? "reply timed out" : "daemon unavailable");
+  if (!res.ok) throw new Error(res.error || "discussions:reply failed");
+  return res.data as DiscussionsSnapshot;
 }
 
 // ─── Daemon event subscription (WebSocket) ───────────────────────────────────
