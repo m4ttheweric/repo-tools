@@ -310,12 +310,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             item.title = "Update Available: \(release.tagName)"
         }
 
-        // Fire native notification
+        // Fire native notification — sound is played manually so the
+        // category→sound mapping stays in one place (NotificationManager).
         let content = UNMutableNotificationContent()
         content.title = "rt Update Available"
         content.body = "\(release.tagName) is available — run: rt update"
-        content.sound = .default
+        content.sound = nil
         content.categoryIdentifier = "UPDATE"
+        NotificationManager.playSound(for: "UPDATE")
 
         let request = UNNotificationRequest(
             identifier: "rt-update-\(release.tagName)",

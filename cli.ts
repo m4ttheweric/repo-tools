@@ -518,6 +518,11 @@ const TREE: Record<string, CommandNode> = {
         fn: "configureNotifications",
         requiresTTY: true,
       },
+      "test-push": {
+        description: "Send a test push notification via rt tray",
+        module: "./commands/settings.ts",
+        fn: "sendTestPushNotification",
+      },
       extension: {
         description: "Install RT Context extension in editors",
         module: "./commands/extension.ts",

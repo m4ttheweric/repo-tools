@@ -103,6 +103,38 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         center.setNotificationCategories(Set(categories))
     }
 
+    // MARK: - Sound selection
+
+    /// Resolve the category → bundled .caf file and play it via NSSound.
+    ///
+    /// We play the sound manually rather than handing it to UNNotificationSound:
+    /// on macOS UNNotificationSound(named:) only resolves files inside
+    /// Contents/Library/Sounds/ or ~/Library/Sounds, which complicates app-bundle
+    /// layout + ends up ignored in practice. NSSound(contentsOf:) reads straight
+    /// from Contents/Resources/.
+    ///
+    /// Falls back to the built-in macOS "Funk" alert if the bundle didn't ship
+    /// the expected .caf (older build, afconvert missing during bundling).
+    static func playSound(for category: String) {
+        let base: String
+        switch category {
+        case "pipeline_passed", "mr_approved", "mr_merged", "mr_ready":
+            base = "positive"
+        case "pipeline_failed", "mr_closed", "merge_conflicts", "merge_error":
+            base = "warning"
+        default:
+            base = "neutral"
+        }
+
+        if let url = Bundle.main.url(forResource: base, withExtension: "caf"),
+           let sound = NSSound(contentsOf: url, byReference: false) {
+            sound.play()
+            return
+        }
+
+        NSSound(named: "Funk")?.play()
+    }
+
     // MARK: - Fire Notification
 
     /// Fire a native macOS notification from a daemon event.
@@ -110,8 +142,12 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         let content = UNMutableNotificationContent()
         content.title = event.title
         content.body = event.message
-        content.sound = .default
+        content.sound = nil  // we play the sound ourselves below
         content.categoryIdentifier = event.category
+
+        // Play the mapped sound immediately — banners are delivered within
+        // milliseconds so this lines up with the visual alert.
+        Self.playSound(for: event.category)
 
         // Stash the URL in userInfo so we can open it on click
         if let url = event.url {
@@ -139,7 +175,7 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .sound])
+        completionHandler([.banner])  // sound is played manually in fire()
     }
 
     /// Handle notification click and action button presses.

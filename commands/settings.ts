@@ -177,6 +177,44 @@ export async function configureNotifications(): Promise<void> {
   console.log("");
 }
 
+// ─── Test push notification ──────────────────────────────────────────────────
+
+export async function sendTestPushNotification(): Promise<void> {
+  const { TRAY_SOCK_PATH } = await import("../lib/daemon-config.ts");
+
+  if (!existsSync(TRAY_SOCK_PATH)) {
+    console.log(`\n  ${yellow}⚠${reset}  rt tray is not running`);
+    console.log(`     ${dim}(no socket at ~/.rt/tray.sock — start the tray app first)${reset}\n`);
+    return;
+  }
+
+  const event = {
+    id: crypto.randomUUID(),
+    title: "rt test notification",
+    message: "If you see this, the tray is wired up correctly.",
+    category: "test",
+    timestamp: Date.now(),
+  };
+
+  try {
+    const response = await fetch("http://localhost/notify", {
+      unix: TRAY_SOCK_PATH,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(event),
+      signal: AbortSignal.timeout(2000),
+    } as any);
+
+    if (response.ok) {
+      console.log(`\n  ${green}✓${reset} Test push sent to rt tray\n`);
+    } else {
+      console.log(`\n  ${red}✗${reset} rt tray returned HTTP ${response.status}\n`);
+    }
+  } catch (e) {
+    console.log(`\n  ${red}✗${reset} Failed to reach rt tray: ${(e as Error).message}\n`);
+  }
+}
+
 // ─── Dev mode toggle ─────────────────────────────────────────────────────────
 
 const DEV_MODE_WRAPPER = `${Bun.env.HOME}/.local/bin/rt`;
