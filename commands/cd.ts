@@ -35,6 +35,9 @@ const SHELL_FUNCTION = [
   `  if [ "$1" = "cd" ]; then`,
   `    local dir`,
   `    dir="$(COLUMNS=$COLUMNS command rt cd "\${@:2}")" && [ -n "$dir" ] && builtin cd "$dir"`,
+  `  elif [ "$1" = "nav" ]; then`,
+  `    local dir`,
+  `    dir="$(COLUMNS=$COLUMNS command rt nav "\${@:2}")" && [ -n "$dir" ] && builtin cd "$dir"`,
   `  elif [ "$1" = "x" ]; then`,
   `    command rt "$@"`,
   `    local rt_cwd`,
@@ -61,8 +64,8 @@ async function ensureShellFunction(): Promise<void> {
     rcContent = readFileSync(rcFile, "utf8");
   } catch { /* no rc file yet */ }
 
-  // Latest version marker: rehashes PATH after `settings dev-mode` toggles.
-  if (rcContent.includes('rt() {') && rcContent.includes('command rt cd') && rcContent.includes('.last-cwd') && rcContent.includes('hash -r')) return;
+  // Latest version marker: includes rt nav cd support.
+  if (rcContent.includes('rt() {') && rcContent.includes('command rt cd') && rcContent.includes('.last-cwd') && rcContent.includes('hash -r') && rcContent.includes('command rt nav')) return;
 
   // Redirect stdout → stderr before showing prompts
   const origWrite = process.stdout.write.bind(process.stdout);
@@ -74,8 +77,12 @@ async function ensureShellFunction(): Promise<void> {
   const hasPreRehashWrapper = rcContent.includes("rt() {") && rcContent.includes(".last-cwd") && !rcContent.includes("hash -r");
   const hasOldFunction = hasLegacyRtcd || hasOldRtWrapper || hasPreRehashWrapper;
 
+  const hasNoNav = rcContent.includes("rt() {") && rcContent.includes("command rt cd") && !rcContent.includes("command rt nav");
+
   if (hasPreRehashWrapper) {
     console.error(`\n  ${yellow}Upgrading rt shell wrapper: auto-rehash after dev-mode toggle${reset}`);
+  } else if (hasNoNav) {
+    console.error(`\n  ${yellow}Upgrading rt shell wrapper: adding rt nav cd support${reset}`);
   } else if (hasOldRtWrapper) {
     console.error(`\n  ${yellow}Upgrading rt shell wrapper: adding rt x auto-cd support${reset}`);
   } else if (hasLegacyRtcd) {
@@ -84,9 +91,11 @@ async function ensureShellFunction(): Promise<void> {
     console.error(`\n  ${yellow}rt cd needs a shell function to change your directory.${reset}`);
   }
 
+  const hasOldFunction2 = hasOldFunction || hasNoNav;
+
   const rcLabel = rcFile.replace(homedir(), "~");
   const install = await inkConfirm({
-    message: hasOldFunction
+    message: hasOldFunction2
       ? `Upgrade rt shell wrapper in ${rcLabel}?`
       : `Add rt cd support to ${rcLabel}?`,
     initialValue: true,
@@ -100,7 +109,7 @@ async function ensureShellFunction(): Promise<void> {
     process.exit(0);
   }
 
-  if (hasOldRtWrapper || hasPreRehashWrapper) {
+  if (hasOldRtWrapper || hasPreRehashWrapper || hasNoNav) {
     rcContent = rcContent
       .replace(/\n?# rt — shell wrapper \(enables rt cd to change directory\)\n?/g, "")
       .replace(/\n?rt\(\) \{[\s\S]*?\n\}\n?/g, "\n");

@@ -68,14 +68,41 @@ const KNOWN_EDITORS: EditorOption[] = [
   { command: "webstorm", label: "WebStorm" },
 ];
 
+// App bundle fallbacks for when the CLI isn't in PATH (macOS only).
+// command is passed directly to execSync, e.g. `open -a "Cursor" "<target>"`.
+const KNOWN_APPS: EditorOption[] = [
+  { command: 'open -a "Cursor"', label: "Cursor" },
+  { command: 'open -a "Visual Studio Code"', label: "VS Code" },
+  { command: 'open -a "Zed"', label: "Zed" },
+  { command: 'open -a "Antigravity"', label: "Antigravity" },
+  { command: 'open -a "Windsurf"', label: "Windsurf" },
+  { command: 'open -a "Sublime Text"', label: "Sublime Text" },
+  { command: 'open -a "WebStorm"', label: "WebStorm" },
+];
+
 function detectInstalledEditors(): EditorOption[] {
-  return KNOWN_EDITORS.filter((e) => {
+  const { existsSync } = require("fs");
+  const { homedir } = require("os");
+  const home = homedir();
+
+  const cliEditors = KNOWN_EDITORS.filter((e) => {
     try {
       execSync(`which ${e.command}`, { stdio: "pipe" });
       return true;
     } catch {
       return false;
     }
+  });
+  if (cliEditors.length > 0) return cliEditors;
+
+  // Fall back to app bundle detection (macOS)
+  return KNOWN_APPS.filter((e) => {
+    const appName = e.command.match(/"(.+)"/)?.[1];
+    if (!appName) return false;
+    return (
+      existsSync(`/Applications/${appName}.app`) ||
+      existsSync(`${home}/Applications/${appName}.app`)
+    );
   });
 }
 
@@ -254,6 +281,23 @@ export function willPrompt(cwd: string): boolean {
   if (resolveEditorSync(prefs, repoName) === null) return true;
   if (resolveWorkspaceSync(cwd, prefs) === null) return true;
   return false;
+}
+
+// ─── Shared opener (used by rt nav) ─────────────────────────────────────────
+
+export async function openDirectoryInEditor(dirPath: string): Promise<void> {
+  const prefs = loadPrefs();
+  const repoName = dirPath.split("/").pop() || "unknown";
+  const editor = await ensureEditor(prefs, repoName);
+  const editorLabel = KNOWN_EDITORS.find(e => e.command === editor)?.label || editor;
+  const target = await resolveWorkspaceTarget(dirPath, prefs);
+  try {
+    execSync(`${editor} "${target}"`, { stdio: "inherit" });
+    console.error(`\n  ${green}✓${reset} Opened ${dirPath.split("/").pop()} in ${editorLabel}`);
+  } catch {
+    console.error(`\n  ${red}Failed to open ${editorLabel}. Is '${editor}' CLI installed?${reset}`);
+    process.exit(1);
+  }
 }
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
