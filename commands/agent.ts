@@ -3,9 +3,11 @@
 /**
  * rt agent — Launch a CLI coding agent in a worktree.
  *
- * Two-step picker:
- *   1. Pick a worktree (context-aware: worktrees if in a known repo, all repos otherwise)
- *   2. Pick an agent (always asks — no preference saved)
+ * Target selection:
+ *   - Default: use the current git repo/worktree when already inside one.
+ *   - --pick/-p: force the repo/worktree picker before launching.
+ *   - --here/-h: use the exact current directory.
+ * Then pick an agent (always asks — no preference saved).
  *
  * Execs the agent CLI with cwd set to the selected path, inheriting stdio.
  */
@@ -13,7 +15,7 @@
 import { execSync, spawn } from "child_process";
 import { homedir } from "os";
 import { dim, green, red, reset } from "../lib/tui.ts";
-import { getRepoIdentity, getKnownRepos } from "../lib/repo.ts";
+import { getRepoRoot, getRepoIdentity, getKnownRepos, type KnownRepo, type RepoIdentity } from "../lib/repo.ts";
 import { pickWorktreeWithSwitch, pickFromAllRepos, isSwitchRepo } from "../lib/pickers.ts";
 
 // ─── Agent detection ─────────────────────────────────────────────────────────
@@ -70,31 +72,51 @@ async function pickAgent(repoName: string): Promise<string> {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-export async function launchAgent(args: string[]): Promise<void> {
-  const here = args.includes("--here") || args.includes("-h");
+export interface AgentTargetDeps {
+  cwd: string;
+  repos: KnownRepo[];
+  identity: RepoIdentity | null;
+  repoRoot: string | null;
+  pickWorktreeWithSwitch: typeof pickWorktreeWithSwitch;
+  pickFromAllRepos: typeof pickFromAllRepos;
+}
 
-  const repos = getKnownRepos();
-  const identity = getRepoIdentity();
+export async function resolveAgentTargetPath(
+  args: string[],
+  deps?: Partial<AgentTargetDeps>,
+): Promise<string> {
+  const here = args.includes("--here") || args.includes("-h");
+  const pickMode = args.includes("--pick") || args.includes("-p");
+  const cwd = deps?.cwd ?? process.cwd();
+
+  if (here) return cwd;
+
+  const identity = deps && "identity" in deps ? deps.identity ?? null : getRepoIdentity();
+  const repoRoot = deps && "repoRoot" in deps
+    ? deps.repoRoot ?? identity?.repoRoot ?? null
+    : identity?.repoRoot ?? getRepoRoot();
+  const repos = deps?.repos ?? getKnownRepos();
   const currentRepo = identity
     ? repos.find(r => r.repoName === identity.repoName) ?? null
     : null;
 
-  let selectedPath: string;
+  if (!pickMode && repoRoot) return repoRoot;
 
-  if (here) {
-    selectedPath = process.cwd();
-  } else if (currentRepo && currentRepo.worktrees.length > 1) {
-    const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot);
-    selectedPath = isSwitchRepo(result)
-      ? await pickFromAllRepos(repos)
+  if (pickMode && currentRepo && currentRepo.worktrees.length > 1) {
+    const result = await (deps?.pickWorktreeWithSwitch ?? pickWorktreeWithSwitch)(currentRepo, identity!.repoRoot);
+    return isSwitchRepo(result)
+      ? await (deps?.pickFromAllRepos ?? pickFromAllRepos)(repos)
       : result;
-  } else if (currentRepo) {
-    selectedPath = identity!.repoRoot;
-  } else {
-    selectedPath = await pickFromAllRepos(repos);
   }
 
-  const selectedRepo = repos.find(r =>
+  return (deps?.pickFromAllRepos ?? pickFromAllRepos)(repos);
+}
+
+export async function launchAgent(args: string[]): Promise<void> {
+  const selectedPath = await resolveAgentTargetPath(args);
+
+  const freshRepos = getKnownRepos();
+  const selectedRepo = freshRepos.find(r =>
     r.worktrees.some(wt => wt.path === selectedPath),
   );
   const repoName = selectedRepo?.repoName || selectedPath.split("/").pop() || "unknown";
