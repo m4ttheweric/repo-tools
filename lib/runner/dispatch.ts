@@ -26,7 +26,7 @@ export type LaneAction =
   | { type: "remove-entry"; laneId: string; entryId: string }
   | { type: "remove-lane";  laneId: string }
   | { type: "toggle-mode";  laneId: string }
-  | { type: "switch-cmd-group"; laneId: string; groupEntryIds: string[] }
+  | { type: "switch-cmd-group"; laneId: string; groupEntryIds: string[]; command: { cmd: string; alias?: string } }
   | { type: "reset" };
 
 /**
@@ -378,25 +378,62 @@ export async function dispatch(action: LaneAction, s: DispatchState): Promise<Di
     }
 
     case "switch-cmd-group": {
-      // Fired from the [l][c] template picker after the state update has already
-      // written the new commandTemplate/alias onto every entry in the group.
-      // Our job: kill the running/warm processes and respawn them with the new
-      // cmd, preserving which entry was active so the proxy keeps pointing at
-      // the same worktree slot. Stopped/crashed entries stay as they are — the
-      // user can [s] them to pick up the new cmd lazily.
+      // Fired from the [l][c] template picker. The picked command travels with
+      // the action so restarts never depend on a just-scheduled UI update having
+      // rendered before dispatch reads state.
       const lane = lanes.find((l) => l.id === action.laneId);
       if (!lane) return {};
       const groupIds = new Set(action.groupEntryIds);
       const preservedActiveId = lane.activeEntryId;
+      const withPickedCommand = (entry: LaneEntry): LaneEntry => {
+        if (!groupIds.has(entry.id)) return entry;
+        const { alias: _drop, ...rest } = entry;
+        return {
+          ...rest,
+          commandTemplate: action.command.cmd,
+          ...(action.command.alias ? { alias: action.command.alias } : {}),
+        };
+      };
+      const selectedLane: LaneConfig = {
+        ...lane,
+        entries: lane.entries.map(withPickedCommand),
+      };
 
-      const toRestart = lane.entries.filter((e) => {
+      const selectionChanged = lane.entries.some((e) => {
+        if (!groupIds.has(e.id)) return false;
+        return e.commandTemplate !== action.command.cmd || e.alias !== action.command.alias;
+      });
+      if (!selectionChanged) return {};
+
+      const commandChanged = lane.entries.some((e) =>
+        groupIds.has(e.id) && e.commandTemplate !== action.command.cmd
+      );
+
+      const toRestart = commandChanged ? selectedLane.entries.filter((e) => {
         if (!groupIds.has(e.id)) return false;
         const st = est(entryWindowName(lane.id, e.id));
         return st === "running" || st === "warm";
-      });
-      if (toRestart.length === 0) return {};
+      }) : [];
 
-      await ensureProxy(lane, initiator);
+      const portFixes = new Map<string, number>();
+      const mutateSelectedCommand = (ls: LaneConfig[]) => ls.map((l) => {
+        if (l.id !== action.laneId) return l;
+        return {
+          ...l,
+          entries: l.entries.map((e) => {
+            const selected = withPickedCommand(e);
+            return portFixes.has(e.id)
+              ? { ...selected, ephemeralPort: portFixes.get(e.id)! }
+              : selected;
+          }),
+        };
+      });
+
+      if (toRestart.length === 0) {
+        return { mutate: mutateSelectedCommand };
+      }
+
+      await ensureProxy(selectedLane, initiator);
 
       // Kill in parallel. process:kill awaits SIGTERM drain daemon-side, so by
       // the time this Promise.all resolves each pid is gone and we can safely
@@ -409,7 +446,6 @@ export async function dispatch(action: LaneAction, s: DispatchState): Promise<Di
       // activating, then issue one group:activate at the end so warm peers get
       // their SIGSTOP after the active one is chosen (avoids a brief window
       // where all N processes are running simultaneously and fighting for CPU).
-      const portFixes = new Map<string, number>();
       for (const entry of toRestart) {
         const win = entryWindowName(lane.id, entry.id);
         let ephemeralPort = entry.ephemeralPort;
@@ -438,7 +474,7 @@ export async function dispatch(action: LaneAction, s: DispatchState): Promise<Di
       // picks its pid as the group leader and SIGSTOPs its warm peers. Proxy
       // upstream updates to the (possibly re-allocated) ephemeral port.
       if (preservedActiveId && toRestart.some((e) => e.id === preservedActiveId)) {
-        const activeEntry = lane.entries.find((e) => e.id === preservedActiveId);
+        const activeEntry = selectedLane.entries.find((e) => e.id === preservedActiveId);
         const activePort = portFixes.get(preservedActiveId) ?? activeEntry?.ephemeralPort;
         await daemonQuery("group:activate", {
           groupId: lane.id,
@@ -451,13 +487,7 @@ export async function dispatch(action: LaneAction, s: DispatchState): Promise<Di
       }
 
       return {
-        mutate: (ls) => ls.map((l) => {
-          if (l.id !== action.laneId) return l;
-          return {
-            ...l,
-            entries: l.entries.map((e) => portFixes.has(e.id) ? { ...e, ephemeralPort: portFixes.get(e.id)! } : e),
-          };
-        }),
+        mutate: mutateSelectedCommand,
       };
     }
 

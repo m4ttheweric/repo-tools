@@ -111,7 +111,7 @@ export function createLaneKeymap(ctx: KeymapContext): KeymapHandlers {
     // [c] switch active command template for the focused group.
     //     Only useful when the group has availableCommands (multi-template).
     //     Spawns a tmux popup with a fuzzy-find picker; on pick, updates every
-    //     entry in the group. User restarts the entries to apply the new cmd.
+    //     entry in the group and restarts any currently running/warm entries.
     c: ({ update }) => {
       exitScope(update);
       const cur = ctx.getCurrentState();
@@ -151,28 +151,15 @@ export function createLaneKeymap(ctx: KeymapContext): KeymapHandlers {
         const idx = Number(content);
         const picked = Number.isFinite(idx) ? menu[idx] : undefined;
         if (!picked) return;
-        ctx.safeUpdate((s) => {
-          const next = s.lanes.map((l) => l.id !== lane.id ? l : {
-            ...l,
-            entries: l.entries.map((e) => {
-              if (!groupEntryIds.has(e.id)) return e;
-              const { alias: _drop, ...rest } = e;
-              return {
-                ...rest,
-                commandTemplate: picked.cmd,
-                ...(picked.alias ? { alias: picked.alias } : {}),
-              };
-            }),
-          });
-          ctx.saveCurrent(next);
-          return { ...s, lanes: next };
-        });
-        // Kick the dispatcher against the fresh state so any running/warm
-        // entries in the group get killed and respawned under the new cmd.
         const fresh = ctx.getCurrentState();
         if (fresh) {
           ctx.doDispatch(
-            { type: "switch-cmd-group", laneId: lane.id, groupEntryIds: [...groupEntryIds] },
+            {
+              type: "switch-cmd-group",
+              laneId: lane.id,
+              groupEntryIds: [...groupEntryIds],
+              command: picked,
+            },
             fresh,
           );
         }
