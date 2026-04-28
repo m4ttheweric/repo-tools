@@ -5,8 +5,9 @@
  * worktrees or command variants) into grouped objects. This file owns that
  * bidirectional transform:
  *
- *   compactEntries(LaneEntry[]) → any[]   (write path, disk-shape)
- *   normalizeEntry(any)         → LaneEntry[]   (read path, single raw entry)
+ *   compactEntries(LaneEntry[]) → any[]   (write path, grouped disk-shape)
+ *   compactLaneEntry(...)       → any | undefined   (write path, singular lane entry)
+ *   normalizeEntry(any)         → LaneEntry[]   (read path, singular raw entry)
  *
  * Round-trip behavior is pinned by [../__tests__/runner-store-compact.test.ts].
  *
@@ -18,7 +19,7 @@
  * Compact shapes:
  *   Single-command:  { commandTemplate, packagePath, ..., worktrees: [{root}] }
  *   Multi-command:   { commandTemplate: [cmd0, cmd1], ..., worktrees: [{root}] }
- *                    (cross-product of cmds × worktrees is expanded on load)
+ *                    (one runtime entry per worktree; commands become a menu)
  *
  * Any command variant (the bare field or an array element) can also be an
  * object `{ cmd, alias? }` — `alias` becomes a UI label and round-trips back
@@ -325,4 +326,20 @@ export function compactEntries(entries: LaneEntry[]): any[] {
     slots.push({ pos, value: soloValue });
   }
   return slots.sort((a, b) => a.pos - b.pos).map((s) => s.value);
+}
+
+/**
+ * Compact a lane's runtime entries into the singular persisted `entry` object.
+ *
+ * A lane is intentionally one service definition across worktrees. Multiple
+ * compacted objects mean the lane contains independent service groups, which
+ * the singular config cannot represent without reintroducing ambiguity.
+ */
+export function compactLaneEntry(entries: LaneEntry[]): any | undefined {
+  const compacted = compactEntries(entries);
+  if (compacted.length === 0) return undefined;
+  if (compacted.length > 1) {
+    throw new Error("runner lane can only persist one entry group");
+  }
+  return compacted[0];
 }
