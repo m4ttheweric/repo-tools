@@ -439,6 +439,12 @@ const TREE: Record<string, CommandNode> = {
         module: "./commands/parking-lot.ts",
         fn: "scanCommand",
       },
+      this: {
+        description: "Park the current worktree now (manual override; ignores enabled flag)",
+        module: "./commands/parking-lot.ts",
+        fn: "parkThisCommand",
+        context: "worktree",
+      },
     },
   },
 

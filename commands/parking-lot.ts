@@ -25,8 +25,10 @@ import {
   saveParkingLotConfig,
   PARKING_LOT_CONFIG_PATH,
 } from "../lib/parking-lot-config.ts";
-import { describeRepoBindings } from "../lib/daemon/parking-lot.ts";
+import { describeRepoBindings, park } from "../lib/daemon/parking-lot.ts";
 import { daemonQuery } from "../lib/daemon-client.ts";
+import { getRepoIdentity } from "../lib/repo.ts";
+import { getCurrentBranch } from "../lib/git-ops.ts";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -53,11 +55,16 @@ export async function statusCommand(): Promise<void> {
   console.log(`    ${dim}config: ${PARKING_LOT_CONFIG_PATH}${reset}`);
   console.log("");
 
-  const repoNames = Object.keys(repos);
-  if (repoNames.length === 0) {
+  const allRepoNames = Object.keys(repos);
+  if (allRepoNames.length === 0) {
     console.log(`  ${dim}no repos tracked — register one with rt from inside a repo${reset}\n`);
     return;
   }
+
+  // Scope to the current repo when invoked from inside one. Outside a repo,
+  // fall through and show every tracked repo.
+  const identity = getRepoIdentity();
+  const repoNames = identity && repos[identity.repoName] ? [identity.repoName] : allRepoNames;
 
   for (const repoName of repoNames) {
     const repoPath = repos[repoName]!;
@@ -112,6 +119,83 @@ export async function disableCommand(): Promise<void> {
   saveParkingLotConfig({ enabled: false });
   console.log(`\n  ${green}✓${reset} auto-park disabled\n`);
   console.log(`  ${dim}daemon scans will no-op until you run: rt parking-lot enable${reset}\n`);
+}
+
+export async function parkThisCommand(): Promise<void> {
+  const identity = getRepoIdentity();
+  if (!identity) {
+    console.log(`  ${red}✗${reset} not in a git repo\n`);
+    process.exit(1);
+  }
+
+  const repos = loadRepos();
+  const repoPath = repos[identity.repoName];
+  if (!repoPath) {
+    console.log(`  ${red}✗${reset} repo "${identity.repoName}" not registered in ~/.rt/repos.json\n`);
+    process.exit(1);
+  }
+
+  const worktreePath = identity.repoRoot;
+  const branch = getCurrentBranch(worktreePath);
+  if (!branch) {
+    console.log(`  ${red}✗${reset} worktree is detached — check out a branch first\n`);
+    process.exit(1);
+  }
+
+  const bindings = describeRepoBindings(identity.repoName, repoPath);
+  const binding = bindings.find(b => b.path === worktreePath);
+  if (!binding || !binding.index) {
+    console.log(`  ${red}✗${reset} no parking-lot index for ${worktreePath}\n`);
+    process.exit(1);
+  }
+
+  const parkBranch = `parking-lot/${binding.index}`;
+  if (branch === parkBranch) {
+    console.log(`  ${dim}already on ${parkBranch} — nothing to park${reset}\n`);
+    return;
+  }
+
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"];
+  let fi = 0;
+  const renderFrame = () => {
+    process.stderr.write(`\r  ${cyan}${frames[fi++ % frames.length]}${reset} ${dim}parking ${branch} → ${parkBranch}…${reset}`);
+  };
+  renderFrame();
+  const spinner = setInterval(renderFrame, 80);
+
+  // Route through the daemon so the work runs off this event loop and the
+  // spinner can actually animate while we await. If the daemon isn't
+  // reachable, fall back to in-process park (spinner will freeze, but the
+  // park still happens).
+  let result: { ok: boolean; action: string; detail?: string };
+  let logs: string[] = [];
+
+  const response = await daemonQuery(
+    "parking-lot:park-this",
+    { worktreePath, repoPath, branch, index: binding.index },
+    60_000,
+  );
+
+  if (response?.ok && response.data?.result) {
+    result = response.data.result as typeof result;
+    logs = (response.data.lines as string[]) ?? [];
+  } else {
+    // Daemon unreachable, doesn't recognize the command (old build), or errored
+    // → in-process fallback. Spinner will freeze, but the park still happens.
+    result = park(worktreePath, repoPath, branch, binding.index, msg => logs.push(msg));
+  }
+
+  clearInterval(spinner);
+  process.stderr.write(`\r\x1b[K`);
+
+  if (result.ok) {
+    const defaultRef = result.detail?.match(/@ (\S+)/)?.[1] ?? "origin/master";
+    console.log(`  ${green}✓${reset} parked ${bold}${branch}${reset} ${dim}→${reset} ${cyan}${parkBranch}${reset} ${dim}@ ${defaultRef}${reset}\n`);
+  } else {
+    for (const line of logs) console.log(`  ${dim}${line}${reset}`);
+    console.log(`  ${red}✗${reset} ${result.action}${result.detail ? ` — ${result.detail}` : ""}\n`);
+    process.exit(1);
+  }
 }
 
 export async function scanCommand(): Promise<void> {
