@@ -104,5 +104,15 @@ export function createNormalKeymap(ctx: KeymapContext): KeymapHandlers {
       const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
       if (entry) ctx.doDispatch({ type: "stop", laneId: lane.id, entryId: entry.id }, state);
     },
+
+    // [t] open shell at entry's working directory (global shortcut)
+    t: ({ state }) => {
+      const li = Math.min(state.laneIdx, state.lanes.length - 1);
+      const lane = state.lanes[li];
+      if (!lane) return;
+      const entry = lane.entries[Math.min(state.entryIdx, lane.entries.length - 1)];
+      if (!entry) return;
+      ctx.openTempPane(process.env.SHELL ?? "zsh", { cwd: entry.targetDir, target: ctx.displayPane(), escToClose: true });
+    },
   };
 }

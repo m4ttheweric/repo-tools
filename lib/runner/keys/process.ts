@@ -1,7 +1,7 @@
 /**
  * Process-scope keymap (entered with [p]).
  *
- * Bindings: add/remove entry, start/activate, warm-all, edit remedy rules,
+ * Bindings: add/remove entry, activate, warm-all, edit remedy rules,
  * edit command template, open shell at entry cwd.
  */
 
@@ -9,11 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import {
-  entryWindowName,
   globalRemedyPath, remediesDir,
 } from "../../runner-store.ts";
 import type { RunResolveResult } from "../../../commands/run.ts";
-import type { LaneAction } from "../dispatch.ts";
 import type { KeymapContext, KeymapHandlers } from "./types.ts";
 import type { RunnerUIState } from "../../../commands/runner.tsx";
 
@@ -62,29 +60,6 @@ export function createProcessKeymap(ctx: KeymapContext, deps: ProcessKeymapDeps)
           void ctx.addResolvedEntry(lane.id, resolved);
         } catch { /* ignore parse errors */ }
       }, 300);
-    },
-
-    // [s] start / restart / respawn / activate
-    s: ({ update }) => {
-      exitScope(update);
-      const state = ctx.getCurrentState();
-      if (!state) return;
-      const li = Math.min(state.laneIdx, state.lanes.length - 1);
-      const lane = state.lanes[li];
-      if (!lane) return;
-      const ei = Math.min(state.entryIdx, lane.entries.length - 1);
-      const entry = lane.entries[ei];
-      if (!entry) return;
-      const win = entryWindowName(lane.id, entry.id);
-      const st = state.entryStates.get(win) ?? "stopped";
-      if (st === "starting" || st === "stopping") return;
-      const action: LaneAction =
-        st === "stopped" ? { type: "spawn",   laneId: lane.id, entryId: entry.id } :
-        st === "crashed" ? { type: "respawn", laneId: lane.id, entryId: entry.id } :
-        (st === "running" && lane.activeEntryId === entry.id)
-          ? { type: "restart",  laneId: lane.id, entryId: entry.id } :
-            { type: "activate", laneId: lane.id, entryId: entry.id };
-      ctx.doDispatch(action, state);
     },
 
     // [w] warm all entries in lane (spawn all, only active runs)
