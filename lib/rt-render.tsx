@@ -326,6 +326,8 @@ export async function filterableSelect(opts: {
   stderr?: boolean;
   /** When set, appends a "↩ {backLabel}" sentinel. Throws BackNavigation when selected. */
   backLabel?: string;
+  /** Use fzf's exact-match mode instead of fuzzy matching. */
+  exact?: boolean;
 }): Promise<string | null> {
   const { spawnSync, execSync } = await import("child_process");
 
@@ -362,6 +364,14 @@ export async function filterableSelect(opts: {
     })
     .join("\n");
 
+  // If the top row is a "go back" sentinel (BACK value, or any caller-injected
+  // option whose label starts with the ↩ arrow), start the cursor on row 2 so
+  // the user lands on a real choice rather than the escape hatch.
+  const firstIsBack =
+    options.length > 1 &&
+    (options[0]!.value === BACK || options[0]!.label.trimStart().startsWith("↩"));
+  const startBindings = firstIsBack ? ["--bind=start:pos(2)"] : [];
+
   const result = spawnSync("fzf", [
     "--ansi",
     // --with-nth renumbers fields: field 1 of the display = original field 2 (label),
@@ -380,6 +390,8 @@ export async function filterableSelect(opts: {
     "--no-mouse",
     // Match the runner's lane-highlight brand color (T.pink).
     `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}`,
+    ...(opts.exact ? ["--exact"] : []),
+    ...startBindings,
   ], {
     input,
     stdio: ["pipe", "pipe", "inherit"],

@@ -125,6 +125,7 @@ export async function switchBranch(): Promise<void> {
   const targetBranch = await filterableSelect({
     message: "Switch branch",
     options,
+    exact: true,
   });
 
   if (!targetBranch || targetBranch === currentBranch) return;
