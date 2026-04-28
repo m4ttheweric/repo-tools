@@ -20,8 +20,15 @@ import type { CommandContext } from "../lib/command-tree.ts";
 import { filterableSelect, BackNavigation } from "../lib/rt-render.tsx";
 import { getKnownRepos } from "../lib/repo-index.ts";
 import { getWorkspacePackages } from "../lib/repo.ts";
-import { appendRunHistory, readRunHistory, type RunHistoryEntry } from "../lib/run-history.ts";
+import {
+  appendRunHistory,
+  readRunHistory,
+  type RunHistoryEntry,
+} from "../lib/run-history.ts";
 import { bold, dim, reset, yellow } from "../lib/tui.ts";
+import { T, toAnsiFg } from "../lib/tui/palette.ts";
+
+const LAST_RUN_SENTINEL = "__rt:last-run__";
 
 export interface RunResolveResult {
   targetDir: string;
@@ -36,10 +43,17 @@ function detectPackageManager(dir: string): string {
   // Check at repo root — that's where lockfiles live in monorepos
   let root = dir;
   try {
-    root = execSync("git rev-parse --show-toplevel", { cwd: dir, encoding: "utf8", stdio: "pipe" }).trim();
-  } catch { /* fallback to dir itself */ }
+    root = execSync("git rev-parse --show-toplevel", {
+      cwd: dir,
+      encoding: "utf8",
+      stdio: "pipe",
+    }).trim();
+  } catch {
+    /* fallback to dir itself */
+  }
 
-  if (existsSync(join(root, "bun.lockb")) || existsSync(join(root, "bun.lock"))) return "bun";
+  if (existsSync(join(root, "bun.lockb")) || existsSync(join(root, "bun.lock")))
+    return "bun";
   if (existsSync(join(root, "pnpm-lock.yaml"))) return "pnpm";
   if (existsSync(join(root, "yarn.lock"))) return "yarn";
   if (existsSync(join(root, "package-lock.json"))) return "npm";
@@ -50,14 +64,19 @@ function getPackageJsonScripts(dir: string): string[] {
   const pkgPath = join(dir, "package.json");
   if (!existsSync(pkgPath)) return [];
   try {
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
+      scripts?: Record<string, string>;
+    };
     return Object.keys(pkg.scripts ?? {});
   } catch {
     return [];
   }
 }
 
-export async function runCommand(args: string[], ctx: CommandContext): Promise<void> {
+export async function runCommand(
+  args: string[],
+  ctx: CommandContext,
+): Promise<void> {
   const resolveOnly = args.includes("--resolve-only");
 
   let worktreePath: string;
@@ -69,7 +88,9 @@ export async function runCommand(args: string[], ctx: CommandContext): Promise<v
     worktreePath = ctx.identity.repoRoot;
     try {
       worktreeBranch = execSync("git rev-parse --abbrev-ref HEAD", {
-        cwd: worktreePath, encoding: "utf8", stdio: "pipe",
+        cwd: worktreePath,
+        encoding: "utf8",
+        stdio: "pipe",
       }).trim();
     } catch {
       worktreeBranch = "";
@@ -78,7 +99,9 @@ export async function runCommand(args: string[], ctx: CommandContext): Promise<v
     // ── Step 1: Pick repo ────────────────────────────────────────────────────
     const knownRepos = getKnownRepos();
     if (knownRepos.length === 0) {
-      process.stderr.write("No known repos. Run rt from inside a git repo to register it.\n");
+      process.stderr.write(
+        "No known repos. Run rt from inside a git repo to register it.\n",
+      );
       process.exit(1);
     }
 
@@ -95,14 +118,20 @@ export async function runCommand(args: string[], ctx: CommandContext): Promise<v
         stderr: true,
       });
 
-      if (!chosen) { process.exit(1); }
+      if (!chosen) {
+        process.exit(1);
+      }
       selectedRepo = knownRepos.find((r) => r.repoName === chosen)!;
     }
 
     // ── Step 2: Pick worktree ────────────────────────────────────────────────
-    const worktrees = selectedRepo.worktrees.filter((wt) => existsSync(wt.path));
+    const worktrees = selectedRepo.worktrees.filter((wt) =>
+      existsSync(wt.path),
+    );
     if (worktrees.length === 0) {
-      process.stderr.write(`No accessible worktrees for ${selectedRepo.repoName}.\n`);
+      process.stderr.write(
+        `No accessible worktrees for ${selectedRepo.repoName}.\n`,
+      );
       process.exit(1);
     }
 
@@ -120,7 +149,9 @@ export async function runCommand(args: string[], ctx: CommandContext): Promise<v
         stderr: true,
       });
 
-      if (!chosen) { process.exit(1); }
+      if (!chosen) {
+        process.exit(1);
+      }
       const wt = worktrees.find((w) => w.path === chosen)!;
       worktreePath = wt.path;
       worktreeBranch = wt.branch;
@@ -153,8 +184,7 @@ export async function runCommand(args: string[], ctx: CommandContext): Promise<v
         ? packages
             .map((p) => ({ p, abs: join(worktreePath, p.path) }))
             .filter(({ abs }) => cwd === abs || cwd.startsWith(abs + "/"))
-            .sort((a, b) => b.abs.length - a.abs.length) // deepest match wins
-            [0]
+            .sort((a, b) => b.abs.length - a.abs.length)[0] // deepest match wins
         : undefined;
 
       if (cwdMatch) {
@@ -166,7 +196,11 @@ export async function runCommand(args: string[], ctx: CommandContext): Promise<v
         const rootPkgJson = join(worktreePath, "package.json");
         const rootScripts = existsSync(rootPkgJson)
           ? Object.keys(
-              (JSON.parse(readFileSync(rootPkgJson, "utf8")) as { scripts?: Record<string, string> }).scripts ?? {},
+              (
+                JSON.parse(readFileSync(rootPkgJson, "utf8")) as {
+                  scripts?: Record<string, string>;
+                }
+              ).scripts ?? {},
             )
           : [];
 
@@ -187,12 +221,16 @@ export async function runCommand(args: string[], ctx: CommandContext): Promise<v
           stderr: true,
           backLabel: "Switch worktree",
         });
-        if (!chosen) { process.exit(1); }
+        if (!chosen) {
+          process.exit(1);
+        }
         packagePath = chosen;
         if (chosen === worktreePath) {
           packageLabel = ".";
         } else {
-          const pkg = packages.find((p) => join(worktreePath, p.path) === chosen);
+          const pkg = packages.find(
+            (p) => join(worktreePath, p.path) === chosen,
+          );
           packageLabel = pkg?.name ?? relative(worktreePath, chosen);
         }
       }
@@ -202,7 +240,9 @@ export async function runCommand(args: string[], ctx: CommandContext): Promise<v
 
     const scripts = getPackageJsonScripts(packagePath);
     if (scripts.length === 0) {
-      process.stderr.write(`No scripts found in ${packagePath}/package.json.\n`);
+      process.stderr.write(
+        `No scripts found in ${packagePath}/package.json.\n`,
+      );
       process.exit(1);
     }
 
@@ -213,25 +253,57 @@ export async function runCommand(args: string[], ctx: CommandContext): Promise<v
 
     let pkgScripts: Record<string, string> = {};
     try {
-      const pkg = JSON.parse(readFileSync(join(packagePath, "package.json"), "utf8")) as { scripts?: Record<string, string> };
+      const pkg = JSON.parse(
+        readFileSync(join(packagePath, "package.json"), "utf8"),
+      ) as { scripts?: Record<string, string> };
       pkgScripts = pkg.scripts ?? {};
-    } catch { /* skip hints */ }
+    } catch {
+      /* skip hints */
+    }
+
+    // Last-run sentinel: most recent history entry whose recorded cwd equals
+    // the package we're about to run in, with the script still present.
+    let lastRun: RunHistoryEntry | undefined;
+    if (ctx.identity) {
+      lastRun = readRunHistory(ctx.identity.dataDir).find(
+        (e) => e.cwd === packagePath && scripts.includes(e.script),
+      );
+    }
+
+    const sentinelOption = lastRun
+      ? [
+          {
+            value: LAST_RUN_SENTINEL,
+            // ▎ leading bar anchors the eye; ↻ tells the user this is a re-run.
+            label: `↻ ${lastRun.script}`,
+            hint: `last run · ${formatAge(lastRun.ts)}`,
+            // Brand pink — same hue as the picker's border. Reads as "part
+            // of the picker chrome" rather than a free-floating chunk.
+            color: toAnsiFg(T.mint),
+          },
+        ]
+      : [];
 
     // Back from script picker → restart at package picker (one level up)
     try {
       const chosen = await filterableSelect({
         message: "Select script",
-        options: scripts.map((s) => ({
-          value: s,
-          label: s,
-          hint: pkgScripts[s]?.slice(0, 60),
-        })),
+        options: [
+          ...sentinelOption,
+          ...scripts.map((s) => ({
+            value: s,
+            label: s,
+            hint: pkgScripts[s]?.slice(0, 60),
+          })),
+        ],
         stderr: true,
         backLabel: packages.length > 1 ? "Switch package" : undefined,
       });
 
-      if (!chosen) { process.exit(1); }
-      selectedScript = chosen;
+      if (!chosen) {
+        process.exit(1);
+      }
+      selectedScript = chosen === LAST_RUN_SENTINEL ? lastRun!.script : chosen;
       break packageLoop;
     } catch (err) {
       if (err instanceof BackNavigation) {
@@ -300,11 +372,18 @@ export async function runCommand(args: string[], ctx: CommandContext): Promise<v
  * merges newest-first, and shows one flat list. The hint tells you where each
  * entry would run; selecting one executes it at the recorded cwd.
  */
-export async function runAgainCommand(_args: string[], _ctx: CommandContext): Promise<void> {
+export async function runAgainCommand(
+  _args: string[],
+  _ctx: CommandContext,
+): Promise<void> {
   const { entries, totalRepos } = loadAllRunHistory();
   if (entries.length === 0) {
-    process.stderr.write(`\n  ${dim}No run history yet${totalRepos > 0 ? "" : " — no repos registered"}.${reset}\n`);
-    process.stderr.write(`  ${dim}Run ${reset}${bold}rt run${reset}${dim} from a repo first — entries will show up here.${reset}\n\n`);
+    process.stderr.write(
+      `\n  ${dim}No run history yet${totalRepos > 0 ? "" : " — no repos registered"}.${reset}\n`,
+    );
+    process.stderr.write(
+      `  ${dim}Run ${reset}${bold}rt run${reset}${dim} from a repo first — entries will show up here.${reset}\n\n`,
+    );
     process.exit(0);
   }
 
@@ -326,7 +405,9 @@ export async function runAgainCommand(_args: string[], _ctx: CommandContext): Pr
   const { entry, dataDir } = picked;
 
   if (!existsSync(entry.cwd)) {
-    process.stderr.write(`\n  ${yellow}skipping — directory no longer exists:${reset} ${entry.cwd}\n\n`);
+    process.stderr.write(
+      `\n  ${yellow}skipping — directory no longer exists:${reset} ${entry.cwd}\n\n`,
+    );
     process.exit(1);
   }
 
@@ -364,7 +445,9 @@ function loadAllRunHistory(): { entries: TaggedEntry[]; totalRepos: number } {
       all.push({ entry, repoName: repo.repoName, dataDir: repo.dataDir });
     }
   }
-  all.sort((a, b) => (a.entry.ts < b.entry.ts ? 1 : a.entry.ts > b.entry.ts ? -1 : 0));
+  all.sort((a, b) =>
+    a.entry.ts < b.entry.ts ? 1 : a.entry.ts > b.entry.ts ? -1 : 0,
+  );
 
   // Dedupe by (cmd, cwd) — keep newest. Because `all` is sorted newest-first,
   // the first occurrence of any (cmd, cwd) pair is the one we keep.
@@ -389,8 +472,12 @@ function formatFlatHint(t: TaggedEntry): string {
   const worktreeName = entry.worktree ? basename(entry.worktree) : "";
   // Prefer worktree name over repo name when they differ (e.g. "assured-wktree-2").
   const where = worktreeName || repoName;
-  const sub = entry.pkg && entry.pkg !== "." && entry.pkg !== "root" ? ` · ${entry.pkg}` : "";
-  const exit = entry.exit == null || entry.exit === 0 ? "" : ` · exit ${entry.exit}`;
+  const sub =
+    entry.pkg && entry.pkg !== "." && entry.pkg !== "root"
+      ? ` · ${entry.pkg}`
+      : "";
+  const exit =
+    entry.exit == null || entry.exit === 0 ? "" : ` · exit ${entry.exit}`;
   return `${age} · ${where}${sub}${exit}`;
 }
 
