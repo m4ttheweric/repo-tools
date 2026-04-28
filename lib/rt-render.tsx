@@ -10,6 +10,7 @@
 
 import React from "react";
 import { render, Box, Text, type Instance } from "ink";
+import { T, toHex } from "./tui/palette.ts";
 import {
   Select,
   MultiSelect,
@@ -24,6 +25,9 @@ export interface SelectOption {
   label: string;
   /** Displayed as dim text after the label (not a native ink-ui prop — rendered manually) */
   hint?: string;
+  /** Optional ANSI SGR color escape (e.g. "\x1b[36m"). Tints the label + hint
+   *  in the fzf renderer; a closing default-fg reset is appended automatically. */
+  color?: string;
 }
 
 // ─── Back Navigation ────────────────────────────────────────────────────────
@@ -108,10 +112,13 @@ export async function select(opts: {
     : opts.options;
 
   // ink-ui's Option type doesn't have `hint`, so we bake it into the label
-  const uiOptions = allOptions.map((o) => ({
-    value: o.value,
-    label: o.hint ? `${o.label}  \x1b[2m${o.hint}\x1b[22m` : o.label,
-  }));
+  const uiOptions = allOptions.map((o) => {
+    const inner = o.hint ? `${o.label}  \x1b[2m${o.hint}\x1b[22m` : o.label;
+    return {
+      value: o.value,
+      label: o.color ? `${o.color}${inner}\x1b[0m` : inner,
+    };
+  });
 
   const value = await prompt<string>(
     (resolve) =>
@@ -344,7 +351,14 @@ export async function filterableSelect(opts: {
       // Keep label/hint as separate tab-delimited fields so --nth=1 scopes search
       // to the label only. --tabstop=1 in the fzf args keeps the tab from
       // expanding to the next 8-column stop and creating a huge visual gap.
-      return `${o.value}\t\x1b[1m${o.label}\x1b[22m${pad}\t  ${o.hint ? `\x1b[2m${o.hint}\x1b[22m` : ""}`;
+      const open = o.color ?? "";
+      const close = o.color ? "\x1b[0m" : "";
+      // For colored rows (e.g. the last-run sentinel), don't apply the dim
+      // attribute to the hint — it would crush contrast against the row's bg.
+      const hint = o.hint
+        ? (o.color ? o.hint : `\x1b[2m${o.hint}\x1b[22m`)
+        : "";
+      return `${o.value}\t${open}\x1b[1m${o.label}\x1b[22m${pad}\t  ${hint}${close}`;
     })
     .join("\n");
 
@@ -364,6 +378,8 @@ export async function filterableSelect(opts: {
     "--prompt=filter: ",
     "--header=enter: select  |: OR  !: exclude",
     "--no-mouse",
+    // Match the runner's lane-highlight brand color (T.pink).
+    `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}`,
   ], {
     input,
     stdio: ["pipe", "pipe", "inherit"],
