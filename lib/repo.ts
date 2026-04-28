@@ -347,19 +347,39 @@ export interface WorkspacePackage {
   path: string;
 }
 
+function readWorkspaceGlobs(repoRoot: string): string[] {
+  const pnpmFile = join(repoRoot, "pnpm-workspace.yaml");
+  if (existsSync(pnpmFile)) {
+    return readFileSync(pnpmFile, "utf8")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith("- "))
+      .map((l) => l.slice(2).trim().replace(/['"]/g, ""));
+  }
+
+  const pkgPath = join(repoRoot, "package.json");
+  if (!existsSync(pkgPath)) return [];
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
+      workspaces?: string[] | { packages?: string[] };
+    };
+    const ws = pkg.workspaces;
+    if (Array.isArray(ws)) return ws;
+    if (ws && Array.isArray(ws.packages)) return ws.packages;
+  } catch {
+    /* fall through */
+  }
+  return [];
+}
+
 /**
- * Parse pnpm-workspace.yaml and discover all workspace packages.
+ * Discover workspace packages from pnpm-workspace.yaml or the `workspaces`
+ * field in root package.json (npm / yarn / bun shape — both the array form
+ * and the yarn-classic `{ packages: [...] }` form).
  */
 export function getWorkspacePackages(repoRoot: string): WorkspacePackage[] {
-  const wsFile = join(repoRoot, "pnpm-workspace.yaml");
-  if (!existsSync(wsFile)) return [];
-
-  const yaml = readFileSync(wsFile, "utf8");
-  const entries = yaml
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.startsWith("- "))
-    .map((l) => l.slice(2).trim().replace(/['"]/g, ""));
+  const entries = readWorkspaceGlobs(repoRoot);
+  if (entries.length === 0) return [];
 
   const packages: WorkspacePackage[] = [];
 
