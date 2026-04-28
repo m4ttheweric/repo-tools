@@ -180,7 +180,7 @@ export interface ParkResult {
   detail?: string;
 }
 
-function park(
+export function park(
   worktreePath: string,
   repoPath: string,
   sourceBranch: string,
