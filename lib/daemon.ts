@@ -41,6 +41,7 @@ import {
   reconcileMRSubscriptions,
   disposeAllMRSubscriptions,
   getAggregatedConnection,
+  getCurrentUserId,
   type MRSubscriptionEnv,
 } from "./daemon/mr-subscriptions.ts";
 import { checkAndPark } from "./daemon/parking-lot.ts";
@@ -540,7 +541,7 @@ async function refreshCacheImpl(): Promise<void> {
     log(`cache: refresh complete (${Object.keys(cache.entries).length} entries)`);
 
     // Check for state transitions and fire notifications
-    checkAndNotify(cache.entries, portCacheRef.ports, log);
+    checkAndNotify(cache.entries, portCacheRef.ports, log, getCurrentUserId());
 
     // Auto-park worktrees whose MRs just merged/closed.
     try {
@@ -944,4 +945,3 @@ export function startDaemon(): void {
 if (import.meta.main) {
   startDaemon();
 }
-

@@ -27,6 +27,7 @@ interface BranchSnapshot {
   pipelineStatus: string | null;
   mrState: string | null;
   approved: boolean;
+  approvedByUserIds: string[];
   conflicts: boolean;
   needsRebase: boolean;
   isReady: boolean;
@@ -344,11 +345,26 @@ interface CacheEntry {
   fetchedAt: number;
 }
 
+function numericUserId(id: unknown): string | null {
+  if (typeof id !== "string" && typeof id !== "number") return null;
+  const match = String(id).match(/(\d+)$/);
+  return match ? match[1]! : null;
+}
+
+function approvedByUserIds(entry: CacheEntry): string[] {
+  const approvers = entry.mr?.reviews?.approvedBy;
+  if (!Array.isArray(approvers)) return [];
+  return approvers
+    .map((u) => numericUserId(u?.id))
+    .filter((id): id is string => id !== null);
+}
+
 function snapshotBranch(entry: CacheEntry): BranchSnapshot {
   return {
     pipelineStatus: entry.mr?.pipeline?.status ?? null,
     mrState: entry.mr?.state ?? null,
     approved: entry.mr?.reviews?.isApproved ?? false,
+    approvedByUserIds: approvedByUserIds(entry),
     conflicts: entry.mr?.blockers?.hasConflicts ?? false,
     needsRebase: entry.mr?.blockers?.needsRebase ?? false,
     isReady: entry.mr?.isReady ?? false,
@@ -357,12 +373,30 @@ function snapshotBranch(entry: CacheEntry): BranchSnapshot {
   };
 }
 
+function shouldNotifyApprovalTransition(
+  was: BranchSnapshot,
+  now: BranchSnapshot,
+  currentUserId: number | null,
+): boolean {
+  if (was.approved || !now.approved) return false;
+
+  const selfId = numericUserId(currentUserId);
+  if (!selfId) return true;
+
+  const previousApprovers = new Set(was.approvedByUserIds ?? []);
+  const selfNewlyApproved = (now.approvedByUserIds ?? []).includes(selfId)
+    && !previousApprovers.has(selfId);
+
+  return !selfNewlyApproved;
+}
+
 function detectBranchTransitions(
   prev: Record<string, BranchSnapshot>,
   current: Record<string, CacheEntry>,
   fired: Set<string>,
   prefs: NotificationPrefs,
   log: (msg: string) => void,
+  currentUserId: number | null,
 ): void {
   for (const [branch, entry] of Object.entries(current)) {
     // If the MR slot is null we have no fresh data — skipping prevents
@@ -440,8 +474,12 @@ function detectBranchTransitions(
       const key = `mr:approved:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: MR approved on ${branch} [was=${was.approved} now=${now.approved}]`);
-        if (isEnabled(prefs, "mr_approved")) notify("MR Approved 👍", branchShort, mrUrl, "mr_approved");
+        if (shouldNotifyApprovalTransition(was, now, currentUserId)) {
+          log(`notify: MR approved on ${branch} [was=${was.approved} now=${now.approved}]`);
+          if (isEnabled(prefs, "mr_approved")) notify("MR Approved 👍", branchShort, mrUrl, "mr_approved");
+        } else {
+          log(`notify: suppressed self-approved MR approved on ${branch}`);
+        }
       } else {
         log(`notify: suppressed duplicate mr_approved on ${branch}`);
       }
@@ -589,13 +627,14 @@ export function checkAndNotify(
   cacheEntries: Record<string, CacheEntry>,
   ports: PortEntry[],
   log: (msg: string) => void,
+  currentUserId: number | null = null,
 ): void {
   const state = loadState();
   const prefs = loadNotificationPrefs();
   const fired = new Set(state.fired);
 
   // Branch transitions
-  detectBranchTransitions(state.branches, cacheEntries, fired, prefs, log);
+  detectBranchTransitions(state.branches, cacheEntries, fired, prefs, log, currentUserId);
 
   // Port staleness
   detectStalePortTransitions(state.ports, ports, prefs, log);
@@ -617,3 +656,8 @@ export function checkAndNotify(
   state.fired = [...fired];
   saveState(state);
 }
+
+export const __test__ = {
+  shouldNotifyApprovalTransition,
+  snapshotBranch,
+};
