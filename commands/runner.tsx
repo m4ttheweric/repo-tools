@@ -2,9 +2,9 @@
 /**
  * rt runner — Rezi-based lane/service runner backed by the rt daemon.
  *
- * Each lane has a canonical port, a daemon-managed proxy, and one or more
- * service entries running on ephemeral ports. The proxy forwards :canonicalPort
- * to whichever entry is currently active.
+ * Each lane has a canonical port, a daemon-managed proxy, and one service
+ * definition expanded across worktree entries on ephemeral ports. The proxy
+ * forwards :canonicalPort to whichever entry is currently active.
  *
  * Architecture: the rt daemon is the source of truth for all process state.
  * ProcessManager, ProxyManager, and ExclusiveGroup daemon units handle
@@ -51,7 +51,7 @@ import {
 import {
   listRunnerConfigs, loadRunnerConfig, saveRunnerConfig, resetRunnerConfig,
   acquireRunnerLock, releaseRunnerLock,
-  nextEntryId, proxyWindowName, entryWindowName,
+  compactEntries, nextEntryId, proxyWindowName, entryWindowName,
   type LaneConfig, type LaneEntry,
 } from "../lib/runner-store.ts";
 import { mergeOptimisticStates } from "../lib/runner/optimistic-state.ts";
@@ -458,10 +458,7 @@ async function runOnce(
     const entryId = nextEntryId(lane.entries);
     const processId = entryWindowName(lane.id, entryId);
 
-    const portRes = await daemonQuery("port:allocate", { label: processId });
-    const ephemeralPort: number = portRes?.ok
-      ? Number((portRes.data as { port: number })?.port)
-      : (10000 + Math.floor(Math.random() * 1000));
+    const templateSource = lane.entries[0];
     const newEntry: LaneEntry = {
       id: entryId,
       targetDir: resolved.targetDir,
@@ -470,14 +467,26 @@ async function runOnce(
       packageLabel: resolved.packageLabel,
       worktree: resolved.worktree,
       branch: resolved.branch,
-      ephemeralPort,
-      commandTemplate: `${resolved.pm} run ${resolved.script}`,
+      ephemeralPort: 0,
+      commandTemplate: templateSource?.commandTemplate ?? `${resolved.pm} run ${resolved.script}`,
+      ...(templateSource?.alias ? { alias: templateSource.alias } : {}),
+      ...(templateSource?.availableCommands ? { availableCommands: templateSource.availableCommands } : {}),
     };
 
     const isFirst = lane.entries.length === 0;
+    if (compactEntries([...lane.entries, newEntry]).length > 1) {
+      showToast("lane already has an entry group — add a new lane for another service", 5000);
+      return;
+    }
+
+    const portRes = await daemonQuery("port:allocate", { label: processId });
+    const ephemeralPort: number = portRes?.ok
+      ? Number((portRes.data as { port: number })?.port)
+      : (10000 + Math.floor(Math.random() * 1000));
+    const entryWithPort = { ...newEntry, ephemeralPort };
     const updatedLane: LaneConfig = {
       ...lane,
-      entries: [...lane.entries, newEntry],
+      entries: [...lane.entries, entryWithPort],
       activeEntryId: isFirst ? entryId : lane.activeEntryId,
     };
 

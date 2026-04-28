@@ -3,6 +3,8 @@
  *
  * Named runner configurations are stored in ~/.rt/runners/<name>.json.
  * Each file contains a LaneConfig[] where every lane knows which repo it belongs to.
+ * On disk, a lane has one singular `entry` service definition. At runtime that
+ * service expands to `entries` — one process row per worktree.
  *
  * Runtime state (process liveness, proxy health) is never persisted here —
  * it lives in the rt daemon (ProcessManager, StateStore, ProxyManager).
@@ -12,9 +14,9 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync,
 import { createHash } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
-import { compactEntries, normalizeEntry, normalizeRemedy } from "./runner-store/compact.ts";
+import { compactEntries, compactLaneEntry, normalizeEntry, normalizeRemedy } from "./runner-store/compact.ts";
 
-export { compactEntries, normalizeEntry };
+export { compactEntries, compactLaneEntry, normalizeEntry };
 
 /** 6-char sha1 prefix of the input — enough to disambiguate a handful of entries. */
 function hashShort(s: string): string {
@@ -98,7 +100,7 @@ export interface LaneEntry {
 }
 
 /**
- * A lane — a canonical port with a proxy and zero or more service entries.
+ * A lane — a canonical port with a proxy and zero or more runtime service rows.
  * The proxy forwards :canonicalPort to the activeEntry's ephemeralPort.
  * Each lane is scoped to a single repo (`repoName`).
  */
@@ -112,7 +114,7 @@ export type LaneMode = "warm" | "single";
 export interface LaneConfig {
   id: string;             // "1", "2", "3" — display number
   canonicalPort: number;  // user-declared, stable, browser-facing
-  entries: LaneEntry[];
+  entries: LaneEntry[];    // runtime expansion of the singular persisted `entry`
   activeEntryId?: string; // which entry the proxy is currently routing to
   repoName: string;       // e.g. "my-repo" — repo this lane is scoped to
   mode: LaneMode;         // how to handle deactivated entries (default: "warm")
@@ -211,21 +213,22 @@ function runnerPath(name: string): string {
 // The compact↔expanded transform lives in ./runner-store/compact.ts.
 // Round-trip behavior is pinned by ./__tests__/runner-store-compact.test.ts.
 //
-// `commandTemplate` may be a single string OR an array of command variants.
+// `entry.commandTemplate` may be a single string OR an array of command variants.
 // Each variant can also be an object `{ cmd, alias? }` — the alias is a
 // human-friendly label shown in the UI instead of the raw shell command.
-// When it is an array, the cross-product of commands × worktrees is expanded.
-// Ephemeral ports are NOT stored — they are dynamically allocated by the daemon
-// port allocator (keyed by entryWindowName) on every start.
+// When it is an array, the commands become a per-entry menu; there is still one
+// runtime entry per worktree. Ephemeral ports are NOT stored — they are
+// dynamically allocated by the daemon port allocator (keyed by entryWindowName)
+// on every start.
 //
-// Single-command shape:  { commandTemplate, packagePath, ..., worktrees: [{id, root, branch?}] }
-// Multi-command shape:   { commandTemplate: [cmd0, cmd1], ..., worktrees: [{ids:[id0,id1], root, branch?}] }
+// Single-command shape:  entry: { commandTemplate, packagePath, ..., worktrees: [{root}] }
+// Multi-command shape:   entry: { commandTemplate: [cmd0, cmd1], ..., worktrees: [{root}] }
 // Aliased variant:       { cmd: "...", alias: "staging backend" } (in place of any string above)
 
 export function normalizeLane(raw: any): LaneConfig {
   const rawMode = raw.mode;
   const mode: LaneMode = rawMode === "single" ? "single" : "warm";
-  const entries: LaneEntry[] = Array.isArray(raw.entries) ? raw.entries.flatMap(normalizeEntry) : [];
+  const entries: LaneEntry[] = raw.entry ? normalizeEntry(raw.entry) : [];
 
   // Detect entry.id basename collisions within a single lane. Process ids are
   // built from lane + entry.id, so a duplicate silently aliases two entries'
@@ -241,8 +244,8 @@ export function normalizeLane(raw: any): LaneConfig {
   }
 
   // `activeWorktree` (path) is the canonical stored form; derive the entry id
-  // from it at load time. Fall back to legacy `activeEntryId` letter for old files.
-  let activeEntryId: string | undefined = raw.activeEntryId ?? undefined;
+  // from it at load time.
+  let activeEntryId: string | undefined;
   if (raw.activeWorktree) {
     const match = entries.find((e) => e.worktree === raw.activeWorktree);
     if (match) activeEntryId = match.id;
@@ -331,11 +334,12 @@ export function saveRunnerConfig(name: string, lanes: LaneConfig[]): boolean {
     writeFileSync(path, JSON.stringify(lanes.map((l) => {
       // Convert activeEntryId back to activeWorktree (path) for storage
       const activeEntry = l.entries.find((e) => e.id === l.activeEntryId);
-      const { activeEntryId: _id, ...laneRest } = l;
+      const { activeEntryId: _id, entries: _entries, ...laneRest } = l;
+      const entry = compactLaneEntry(l.entries);
       return {
         ...laneRest,
         ...(activeEntry?.worktree ? { activeWorktree: activeEntry.worktree } : {}),
-        entries: compactEntries(l.entries),
+        ...(entry !== undefined ? { entry } : {}),
       };
     }), null, 2));
     lastKnownMtimeMs.set(name, fileMtimeMs(path));

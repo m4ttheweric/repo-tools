@@ -203,7 +203,7 @@ describe.skipIf(!SKIP.ok)(`rt runner PTY smoke${SKIP.ok ? "" : ` (skipped: ${(SK
     const runnersDir = join(rtDir, "runners");
     mkdirSync(runnersDir, { recursive: true });
     const smokeConfigPath = join(runnersDir, "smoke.json");
-    // LaneConfig[] — one lane, one entry. The entry's commandTemplate runs
+    // LaneConfig[] — one lane, one singular persisted entry. The commandTemplate runs
     // /bin/sleep so the daemon has a real long-lived process to manage.
     writeFileSync(smokeConfigPath, JSON.stringify([
       {
@@ -212,21 +212,19 @@ describe.skipIf(!SKIP.ok)(`rt runner PTY smoke${SKIP.ok ? "" : ` (skipped: ${(SK
         repoName: "fake-repo",
         mode: "warm",
         activeWorktree: fakeRepoPath,
-        entries: [
-          {
-            id: ENTRY_ID,
-            targetDir: fakeRepoPath,
-            pm: "bun",
-            script: "smoke-sleep",
-            packageLabel: "smoke",
-            worktree: fakeRepoPath,
-            branch: "main",
-            ephemeralPort: 10000 + (process.pid % 1000),
-            // The commandTemplate is what the daemon actually executes. /bin/sleep
-            // is trivially reproducible — no package manager, no network, no disk.
-            commandTemplate: "/bin/sleep 30",
-          },
-        ],
+        entry: {
+          id: ENTRY_ID,
+          targetDir: fakeRepoPath,
+          pm: "bun",
+          script: "smoke-sleep",
+          packageLabel: "smoke",
+          worktree: fakeRepoPath,
+          branch: "main",
+          ephemeralPort: 10000 + (process.pid % 1000),
+          // The commandTemplate is what the daemon actually executes. /bin/sleep
+          // is trivially reproducible — no package manager, no network, no disk.
+          commandTemplate: "/bin/sleep 30",
+        },
       },
     ], null, 2));
 

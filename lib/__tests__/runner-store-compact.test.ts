@@ -1,9 +1,10 @@
 /**
  * Round-trip tests for the compact↔expanded LaneEntry transform.
  *
- * The transform is bidirectional: compactEntries() collapses repetitive entries
- * (same package, different worktrees or command variants) into grouped objects;
- * normalizeLane() expands them back. Round-tripping a runner config through
+ * The transform is bidirectional for a single persisted lane entry:
+ * compactEntries() collapses repetitive runtime entries (same package, different
+ * worktrees or command variants) into grouped objects; normalizeLane() expands
+ * the singular `entry` object back. Round-tripping one compact group through
  * compact→expand must produce an entry set that's functionally identical to
  * the input (modulo runtime-derived fields: branch, ephemeralPort, id).
  *
@@ -40,10 +41,11 @@ function makeEntry(over: Partial<LaneEntry>): LaneEntry {
 /** Round-trip: compact → wrap in a lane-shaped object → normalizeLane → entries. */
 function roundTrip(entries: LaneEntry[]): LaneEntry[] {
   const compact = compactEntries(entries);
+  expect(compact).toHaveLength(1);
   const lane: LaneConfig = normalizeLane({
     id:            "1",
     canonicalPort: 3000,
-    entries:       compact,
+    entry:         compact[0],
     repoName:      "repo",
     mode:          "warm",
   });
@@ -127,19 +129,12 @@ describe("compact/expand round-trip", () => {
     expect(serialized).not.toContain("ephemeralPort");
   });
 
-  test("solo and groupable entries preserve relative order after compact→expand", () => {
-    // Interleaved: solo, group, solo — previously broken by the pos-mixing bug.
-    const soloA = makeEntry({ id: "soloA", packageLabel: "solo-a", script: "a", targetDir: "/soloA", worktree: "/soloA" });
-    const g1    = makeEntry({ id: "g1", worktree: "/g1", targetDir: "/g1" });
-    const g2    = makeEntry({ id: "g2", worktree: "/g2", targetDir: "/g2" });
-    const soloB = makeEntry({ id: "soloB", packageLabel: "solo-b", script: "b", targetDir: "/soloB", worktree: "/soloB" });
+  test("distinct service groups compact to separate objects", () => {
+    const api = makeEntry({ id: "api", packageLabel: "api", script: "dev", targetDir: "/repo/api", worktree: "/repo" });
+    const web = makeEntry({ id: "web", packageLabel: "web", script: "dev", targetDir: "/repo/web", worktree: "/repo" });
 
-    const input = [soloA, g1, g2, soloB];
-    const out = roundTrip(input);
-    // Expanded order: soloA (pos 0), g1+g2 as expanded pair (pos 1), soloB (pos 3)
-    const ids = out.map((e) => e.id);
-    expect(ids.indexOf("soloA")).toBeLessThan(ids.indexOf("g1"));
-    expect(ids.indexOf("g2")).toBeLessThan(ids.indexOf("soloB"));
+    const compact = compactEntries([api, web]);
+    expect(compact).toHaveLength(2);
   });
 
   test("alias on a command variant is preserved in the menu", () => {

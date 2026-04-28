@@ -5,7 +5,7 @@
  *   • saveRunnerConfig / loadRunnerConfig round-trip
  *   • saveRunnerConfig's mtime guard (refuses to clobber external edits)
  *   • acquireRunnerLock / releaseRunnerLock lifecycle
- *   • normalizeLane's legacy/compact input shapes
+ *   • normalizeLane's singular persisted entry shape
  *
  * Isolation strategy: runner-store.ts hard-codes `~/.rt/runners/` via
  * `homedir()`, which Bun does NOT override via runtime `process.env.HOME`
@@ -61,10 +61,10 @@ afterEach(() => {
   rmSync(scratchDir, { recursive: true, force: true });
 });
 
-// ── normalizeLane (legacy/compact input shapes) ─────────────────────────────
+// ── normalizeLane (singular persisted entry shape) ──────────────────────────
 
 describe("normalizeLane — on-disk shape normalization", () => {
-  test("expanded (legacy) entry shape round-trips via save → load", () => {
+  test("expanded entry shape round-trips via save → load", () => {
     const name = track(uniqueName());
 
     const lane: LaneConfig = {
@@ -97,7 +97,7 @@ describe("normalizeLane — on-disk shape normalization", () => {
     expect(loaded[0]!.entries[0]!.commandTemplate).toBe("pnpm run dev");
   });
 
-  test("compact entry shape (worktrees[]) expands on load", () => {
+  test("singular compact entry shape (worktrees[]) expands on load", () => {
     const name = track(uniqueName());
 
     // Hand-craft a raw compact-format file — use writeFileSync directly to
@@ -108,7 +108,7 @@ describe("normalizeLane — on-disk shape normalization", () => {
       canonicalPort: 3001,
       repoName: "r",
       mode: "warm",
-      entries: [{
+      entry: {
         pm: "pnpm",
         script: "dev",
         packagePath: "app",
@@ -118,7 +118,7 @@ describe("normalizeLane — on-disk shape normalization", () => {
           { root: join(scratchDir, "wtA") },
           { root: join(scratchDir, "wtB") },
         ],
-      }],
+      },
     }];
 
     writeFileSync(runnerPath, JSON.stringify(raw, null, 2));
@@ -142,7 +142,7 @@ describe("normalizeLane — on-disk shape normalization", () => {
       canonicalPort: 3002,
       repoName: "r",
       mode: "single",
-      entries: [{
+      entry: {
         pm: "bun",
         script: "dev",
         packagePath: "",
@@ -151,7 +151,7 @@ describe("normalizeLane — on-disk shape normalization", () => {
         worktrees: [
           { root: join(scratchDir, "primary") },
         ],
-      }],
+      },
     }];
     writeFileSync(runnerPath, JSON.stringify(raw, null, 2));
 
@@ -175,7 +175,7 @@ describe("normalizeLane — on-disk shape normalization", () => {
       canonicalPort: 3007,
       repoName: "r",
       mode: "warm",
-      entries: [{
+      entry: {
         pm: "bun",
         script: "dev",
         packagePath: "",
@@ -185,7 +185,7 @@ describe("normalizeLane — on-disk shape normalization", () => {
         worktrees: [
           { root: join(scratchDir, "primary") },
         ],
-      }],
+      },
     }];
     writeFileSync(runnerPath, JSON.stringify(raw, null, 2));
 
@@ -204,7 +204,7 @@ describe("normalizeLane — on-disk shape normalization", () => {
       canonicalPort: 3003,
       repoName: "r",
       mode: "nonsense",
-      entries: [],
+      entry: null,
     }]));
 
     const lanes = loadRunnerConfig(name);
@@ -212,49 +212,43 @@ describe("normalizeLane — on-disk shape normalization", () => {
     expect(lanes[0]!.mode).toBe("warm");
   });
 
-  test("duplicate entry IDs within a lane get a salt suffix on the collider", () => {
-    // NOTE: the spec asked us to test a worktree-sha1-salted suffix for
-    // duplicate entry IDs. That behavior does NOT exist in this branch of
-    // runner-store.ts (normalizeLane does not detect or rewrite duplicates).
-    // We document the current behavior here: duplicates survive the round-trip.
+  test("saveRunnerConfig refuses lanes that need multiple persisted entry groups", () => {
     const name = track(uniqueName());
     const runnerPath = join(RUNNERS_DIR, `${name}.json`);
 
-    writeFileSync(runnerPath, JSON.stringify([{
+    const lane: LaneConfig = {
       id: "1",
       canonicalPort: 3010,
-      repoName: "r",
-      mode: "warm",
       entries: [
         {
-          id: "dup",
-          targetDir: join(scratchDir, "one"),
+          id: "api",
+          targetDir: join(scratchDir, "one", "api"),
           pm: "pnpm",
           script: "dev",
-          packageLabel: "svc",
+          packageLabel: "api",
           worktree: join(scratchDir, "one"),
           branch: "",
+          ephemeralPort: 0,
           commandTemplate: "pnpm run dev",
         },
         {
-          id: "dup",
-          targetDir: join(scratchDir, "two"),
+          id: "web",
+          targetDir: join(scratchDir, "one", "web"),
           pm: "pnpm",
           script: "dev",
-          packageLabel: "svc",
-          worktree: join(scratchDir, "two"),
+          packageLabel: "web",
+          worktree: join(scratchDir, "one"),
           branch: "",
+          ephemeralPort: 0,
           commandTemplate: "pnpm run dev",
         },
       ],
-    }]));
+      repoName: "r",
+      mode: "warm",
+    };
 
-    const lanes = loadRunnerConfig(name);
-    expect(lanes).toHaveLength(1);
-    expect(lanes[0]!.entries).toHaveLength(2);
-    const ids = lanes[0]!.entries.map((e) => e.id);
-    expect(ids[0]).toBe("dup");
-    expect(ids[1]).toMatch(/^dup~[0-9a-f]+$/);
+    expect(saveRunnerConfig(name, [lane])).toBe(false);
+    expect(existsSync(runnerPath)).toBe(false);
   });
 });
 
@@ -286,6 +280,9 @@ describe("saveRunnerConfig / loadRunnerConfig", () => {
 
     const runnerPath = join(RUNNERS_DIR, `${name}.json`);
     expect(existsSync(runnerPath)).toBe(true);
+    const raw = JSON.parse(require("fs").readFileSync(runnerPath, "utf8"));
+    expect(raw[0].entry).toBeDefined();
+    expect(raw[0].entries).toBeUndefined();
 
     const loaded = loadRunnerConfig(name);
     expect(loaded).toHaveLength(1);
