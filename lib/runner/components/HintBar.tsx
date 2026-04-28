@@ -44,7 +44,7 @@ export function HintBar({ mode }: { mode: HintBarMode }) {
   if (mode === "process-scope") return (
     <column gap={0}>
       <ScopeTitle name="process" />
-      <row gap={1}><Cmd k="a" l="add" /><Cmd k="s" l="start" /><Cmd k="w" l="warm" /><Cmd k="↵" l="activate" /></row>
+      <row gap={1}><Cmd k="a" l="add" /><Cmd k="w" l="warm" /><Cmd k="↵" l="activate" /></row>
       <row gap={1}><Cmd k="r" l="remove" /><Cmd k="e" l="cmd" /><Cmd k="t" l="shell" /><Cmd k="f" l="fix rules" /><Cmd k="esc" l="back" /></row>
     </column>
   );
@@ -59,7 +59,7 @@ export function HintBar({ mode }: { mode: HintBarMode }) {
   return (
     <column gap={0}>
       <row gap={1}><Cmd k="l" l="lane" /><Cmd k="p" l="process" /><Cmd k="o" l="open" /></row>
-      <row gap={1}><Cmd k="s" l="start" /><Cmd k="x" l="stop" /><Cmd k="↵" l="activate" /></row>
+      <row gap={1}><Cmd k="s" l="start" /><Cmd k="x" l="stop" /><Cmd k="t" l="shell" /><Cmd k="↵" l="activate" /></row>
       <row gap={1}><Cmd k="q" l="quit" /><Cmd k="!" l="reset" /></row>
     </column>
   );
