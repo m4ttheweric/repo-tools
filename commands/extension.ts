@@ -114,8 +114,6 @@ function findVsix(): string | null {
 // ─── Install ─────────────────────────────────────────────────────────────────
 
 export async function installExtension(): Promise<void> {
-  console.log(`\n  ${bold}${cyan}rt settings extension${reset}\n`);
-
   // 1. Find the vsix
   const vsixPath = findVsix();
   if (!vsixPath) {
