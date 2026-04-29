@@ -57,8 +57,6 @@ function cleanupLaunchdPlist(): boolean {
 // ─── Install ─────────────────────────────────────────────────────────────────
 
 export async function install(_args: string[] = []): Promise<void> {
-  console.log(`\n  ${bold}${cyan}rt daemon install${reset}\n`);
-
   // Persist the install marker so isDaemonInstalled() returns true and the
   // CLI will attempt to reach the daemon (rather than silently no-op).
   markDaemonInstalled();
@@ -118,8 +116,6 @@ export async function install(_args: string[] = []): Promise<void> {
 // ─── Uninstall ───────────────────────────────────────────────────────────────
 
 export async function uninstall(): Promise<void> {
-  console.log(`\n  ${bold}${cyan}rt daemon uninstall${reset}\n`);
-
   // 1. Ask tray to unregister the SMAppService agent (stops launchd supervision).
   const result = await trayQuery("/daemon/stop", "POST");
   if (result?.ok) {
@@ -204,8 +200,6 @@ export async function restart(): Promise<void> {
 // ─── Status ──────────────────────────────────────────────────────────────────
 
 export async function showStatus(): Promise<void> {
-  console.log(`\n  ${bold}${cyan}rt daemon${reset}\n`);
-
   if (!isDaemonInstalled()) {
     console.log(`  ${dim}○${reset} not installed ${dim}(run rt daemon install)${reset}\n`);
     return;
@@ -239,8 +233,6 @@ export function showLogs(): void {
     console.log(`\n  ${dim}no daemon logs yet${reset}\n`);
     return;
   }
-
-  console.log(`\n  ${bold}${cyan}rt daemon logs${reset}\n`);
 
   // Show launchd stderr first — it captures crashes before daemon.log is written
   if (hasStderr) {

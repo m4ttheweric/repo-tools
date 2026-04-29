@@ -410,8 +410,6 @@ export async function syncCommand(
   const cwd = ctx.identity!.repoRoot;
   const dataDir = ctx.identity!.dataDir;
 
-  console.log(`\n  ${bold}${cyan}rt sync${reset}\n`);
-
   syncLog.start(`rt sync  cwd=${cwd}${dryRun ? "  --dry-run" : ""}`);
   let summary;
   try {
@@ -425,5 +423,4 @@ export async function syncCommand(
     process.exit(1);
   }
 
-  console.log("");
 }

@@ -548,7 +548,6 @@ export async function scriptRunner(args: string[]): Promise<void> {
       }
 
       const { filterableSelect } = await import("../lib/rt-render.tsx");
-      console.log(`\n  ${bold}${cyan}rt x edit${reset}\n`);
       const picked = await filterableSelect({
         message: "Select a script to edit",
         options: entries.map((e) => ({
@@ -636,8 +635,6 @@ export async function scriptRunner(args: string[]): Promise<void> {
 
   const entries = listScripts(repoRoot, dataDir);
   const { filterableSelect } = await import("../lib/rt-render.tsx");
-
-  console.log(`\n  ${bold}${cyan}rt x${reset}\n`);
 
   const options = entries.map((e) => ({
     value: e.name,

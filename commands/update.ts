@@ -35,7 +35,6 @@ export async function runUpdate(_args: string[]): Promise<void> {
 
   // Show current version — RT_VERSION is injected at compile time via bun build --define.
   const current = (typeof RT_VERSION !== "undefined" ? RT_VERSION : null) ?? process.env.RT_VERSION ?? "dev";
-  console.log(`\n  ${bold}${cyan}rt update${reset}\n`);
   console.log(`  ${dim}current: ${current}${reset}`);
 
   // Check if there's an update available first (non-blocking)

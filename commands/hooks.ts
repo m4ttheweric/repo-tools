@@ -158,9 +158,6 @@ function restoreHooksPath(repoRoot: string): void {
 // ─── Display ─────────────────────────────────────────────────────────────────
 
 function showStatus(config: HooksConfig, repoName: string): void {
-  console.log("");
-  console.log(`  ${bold}${cyan}rt hooks${reset}  ${dim}(${repoName})${reset}`);
-  console.log("");
 
   if (!config.enabled) {
     console.log(`  ${red}${bold}⏸ all hooks disabled${reset}`);
@@ -267,8 +264,6 @@ export async function toggleHooks(args: string[], ctx: CommandContext): Promise<
   }
 
   const { confirm: inkConfirm, multiselect } = await import("../lib/rt-render.tsx");
-
-  console.log(`\n  ${bold}${cyan}rt hooks${reset}  ${dim}(${repoName})${reset}\n`);
 
   const globalToggle = await inkConfirm({
     message: config.enabled ? "Hooks are ON globally. Keep enabled?" : "Hooks are OFF globally. Re-enable?",

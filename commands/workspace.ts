@@ -108,7 +108,6 @@ export async function workspaceSyncCommand(): Promise<void> {
     const { config, active, watcherCount } = result.data;
     const worktrees = getWorktreePaths(repoRoot);
 
-    console.log(`\n  ${bold}${cyan}rt workspace sync${reset}\n`);
     console.log(`  File:    ${bold}${config.fileName}${reset}`);
     console.log(`  Repo:    ${repoName}`);
     console.log(`  Watcher: ${active ? `${green}active${reset} (${watcherCount} worktrees)` : `${red}stopped${reset}`}`);
@@ -139,7 +138,6 @@ export async function workspaceSyncCommand(): Promise<void> {
   if (isConfigured) {
     // Already configured — just trigger a sync
     const config = existing!.data!.config;
-    console.log(`\n  ${bold}${cyan}rt workspace sync${reset}\n`);
     console.log(`  Syncing ${bold}${config.fileName}${reset}...`);
 
     const result = await daemonQuery("workspace:sync:trigger", { repo: repoName });
@@ -157,8 +155,6 @@ export async function workspaceSyncCommand(): Promise<void> {
   }
 
   // ── First-time init ──────────────────────────────────────────────────────
-  console.log(`\n  ${bold}${cyan}rt workspace sync${reset}\n`);
-
   // Find all workspace files across all worktrees, pick the most recent
   interface Candidate {
     filePath: string;
