@@ -14,6 +14,8 @@
  *   rt parking-lot enable    → turn auto-park on
  *   rt parking-lot disable   → turn auto-park off
  *   rt parking-lot scan      → run the park check once against live cache
+ *   rt park this             → park the current worktree now
+ *   rt park pick             → multi-select worktrees in this repo to park
  */
 
 import { existsSync, readFileSync } from "fs";
@@ -50,7 +52,6 @@ export async function statusCommand(): Promise<void> {
   const config = loadParkingLotConfig();
   const repos  = loadRepos();
 
-  console.log(`\n  ${bold}${cyan}rt park${reset}\n`);
   console.log(`  ${dot(config.enabled)} auto-park ${config.enabled ? `${green}enabled${reset}` : `${dim}disabled${reset}`}`);
   console.log(`    ${dim}config: ${PARKING_LOT_CONFIG_PATH}${reset}`);
   console.log("");
@@ -121,6 +122,60 @@ export async function disableCommand(): Promise<void> {
   console.log(`  ${dim}daemon scans will no-op until you run: rt parking-lot enable${reset}\n`);
 }
 
+interface ParkOutcome {
+  result: { ok: boolean; action: string; detail?: string };
+  logs:   string[];
+}
+
+/**
+ * Park one worktree, animating a spinner with `label` while we wait. Routes
+ * through the daemon so spinner animation isn't blocked by the execSync chain
+ * inside park(); falls back to in-process if the daemon isn't reachable.
+ */
+async function runParkWithSpinner(
+  label: string,
+  worktreePath: string,
+  repoPath: string,
+  branch: string,
+  index: number,
+): Promise<ParkOutcome> {
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"];
+  let fi = 0;
+  const renderFrame = () => {
+    process.stderr.write(`\r  ${cyan}${frames[fi++ % frames.length]}${reset} ${dim}${label}…${reset}`);
+  };
+  renderFrame();
+  const spinner = setInterval(renderFrame, 80);
+
+  let result: ParkOutcome["result"];
+  let logs: string[] = [];
+
+  const response = await daemonQuery(
+    "parking-lot:park-this",
+    { worktreePath, repoPath, branch, index },
+    60_000,
+  );
+
+  if (response?.ok && response.data?.result) {
+    result = response.data.result as typeof result;
+    logs = (response.data.lines as string[]) ?? [];
+  } else {
+    result = park(worktreePath, repoPath, branch, index, msg => logs.push(msg));
+  }
+
+  clearInterval(spinner);
+  process.stderr.write(`\r\x1b[K`);
+
+  return { result, logs };
+}
+
+function relWorktreeName(repoPath: string, worktreePath: string): string {
+  const repoDir = repoPath.replace(/\/[^/]+\/?$/, "");
+  return worktreePath.startsWith(repoDir + "/")
+    ? worktreePath.slice(repoDir.length + 1)
+    : worktreePath;
+}
+
 export async function parkThisCommand(): Promise<void> {
   const identity = getRepoIdentity();
   if (!identity) {
@@ -155,38 +210,10 @@ export async function parkThisCommand(): Promise<void> {
     return;
   }
 
-  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"];
-  let fi = 0;
-  const renderFrame = () => {
-    process.stderr.write(`\r  ${cyan}${frames[fi++ % frames.length]}${reset} ${dim}parking ${branch} → ${parkBranch}…${reset}`);
-  };
-  renderFrame();
-  const spinner = setInterval(renderFrame, 80);
-
-  // Route through the daemon so the work runs off this event loop and the
-  // spinner can actually animate while we await. If the daemon isn't
-  // reachable, fall back to in-process park (spinner will freeze, but the
-  // park still happens).
-  let result: { ok: boolean; action: string; detail?: string };
-  let logs: string[] = [];
-
-  const response = await daemonQuery(
-    "parking-lot:park-this",
-    { worktreePath, repoPath, branch, index: binding.index },
-    60_000,
+  const { result, logs } = await runParkWithSpinner(
+    `parking ${branch} → ${parkBranch}`,
+    worktreePath, repoPath, branch, binding.index,
   );
-
-  if (response?.ok && response.data?.result) {
-    result = response.data.result as typeof result;
-    logs = (response.data.lines as string[]) ?? [];
-  } else {
-    // Daemon unreachable, doesn't recognize the command (old build), or errored
-    // → in-process fallback. Spinner will freeze, but the park still happens.
-    result = park(worktreePath, repoPath, branch, binding.index, msg => logs.push(msg));
-  }
-
-  clearInterval(spinner);
-  process.stderr.write(`\r\x1b[K`);
 
   if (result.ok) {
     const defaultRef = result.detail?.match(/@ (\S+)/)?.[1] ?? "origin/master";
@@ -198,9 +225,88 @@ export async function parkThisCommand(): Promise<void> {
   }
 }
 
-export async function scanCommand(): Promise<void> {
-  console.log(`\n  ${bold}${cyan}rt parking-lot scan${reset}\n`);
+export async function parkPickCommand(): Promise<void> {
+  const identity = getRepoIdentity();
+  if (!identity) {
+    console.log(`  ${red}✗${reset} not in a git repo\n`);
+    process.exit(1);
+  }
 
+  const repos = loadRepos();
+  const repoPath = repos[identity.repoName];
+  if (!repoPath) {
+    console.log(`  ${red}✗${reset} repo "${identity.repoName}" not registered in ~/.rt/repos.json\n`);
+    process.exit(1);
+  }
+
+  const bindings = describeRepoBindings(identity.repoName, repoPath);
+
+  // Eligible: has a branch (not detached), has an index, and isn't already parked.
+  const eligible = bindings.filter(b => {
+    if (b.branch === null || !b.index) return false;
+    if (b.branch === `parking-lot/${b.index}`) return false;
+    return true;
+  });
+
+  if (eligible.length === 0) {
+    console.log(`\n  ${dim}no worktrees to park — all are parked or detached${reset}\n`);
+    return;
+  }
+
+  const widestWt = Math.max(...eligible.map(b => relWorktreeName(repoPath, b.path).length));
+  const options  = eligible.map(b => {
+    const wt = relWorktreeName(repoPath, b.path).padEnd(widestWt);
+    return {
+      value: b.path,
+      label: wt,
+      hint:  `${b.branch} → parking-lot/${b.index}`,
+    };
+  });
+
+  const { filterableMultiselect } = await import("../lib/rt-render.tsx");
+  const selected = await filterableMultiselect({
+    message: `Pick worktrees to park (${identity.repoName})`,
+    options,
+  });
+
+  if (!selected || selected.length === 0) {
+    console.log(`\n  ${dim}nothing selected${reset}\n`);
+    return;
+  }
+
+  const selectedSet = new Set(selected);
+  const targets     = eligible.filter(b => selectedSet.has(b.path));
+
+  console.log("");
+  let okCount   = 0;
+  let failCount = 0;
+
+  for (const b of targets) {
+    const branch     = b.branch!;
+    const parkBranch = `parking-lot/${b.index}`;
+    const wt         = relWorktreeName(repoPath, b.path);
+
+    const { result, logs } = await runParkWithSpinner(
+      `parking ${wt} (${branch} → ${parkBranch})`,
+      b.path, repoPath, branch, b.index,
+    );
+
+    if (result.ok) {
+      const defaultRef = result.detail?.match(/@ (\S+)/)?.[1] ?? "origin/master";
+      console.log(`  ${green}✓${reset} ${dim}${wt}${reset}  ${bold}${branch}${reset} ${dim}→${reset} ${cyan}${parkBranch}${reset} ${dim}@ ${defaultRef}${reset}`);
+      okCount++;
+    } else {
+      for (const line of logs) console.log(`    ${dim}${line}${reset}`);
+      console.log(`  ${red}✗${reset} ${dim}${wt}${reset}  ${result.action}${result.detail ? ` — ${result.detail}` : ""}`);
+      failCount++;
+    }
+  }
+
+  console.log(`\n  ${dim}${okCount} parked${failCount ? `, ${failCount} failed` : ""}${reset}\n`);
+  if (failCount > 0) process.exit(1);
+}
+
+export async function scanCommand(): Promise<void> {
   if (!loadParkingLotConfig().enabled) {
     console.log(`  ${yellow}⚠${reset} auto-park is disabled — scan is a no-op`);
     console.log(`  ${dim}run: rt parking-lot enable${reset}\n`);
