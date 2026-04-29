@@ -167,6 +167,19 @@ function captureGitSnapshot(
   };
 }
 
+/**
+ * Pull a `Title: ...` line off the top of agent output and return the title
+ * plus the body with that line (and any leading blank line) removed.
+ * Returns `{ title: undefined, body: raw }` when no title line is present.
+ */
+function splitTitleAndBody(raw: string): { title?: string; body: string } {
+  const match = raw.match(/^[ \t]*Title:[ \t]*(.+?)[ \t]*\r?\n\r?\n?/);
+  if (!match || !match[1]) return { body: raw };
+  const title = match[1].trim();
+  if (!title) return { body: raw };
+  return { title, body: raw.slice(match[0].length) };
+}
+
 function assemblePrompt(
   prompts: LoadedPrompt[],
   contextFiles: LoadedPrompt[],
@@ -201,9 +214,13 @@ function assemblePrompt(
 
   parts.push(
     `# Task\n\n`
-    + `Write a merge-request description for this branch, following the style `
-    + `and template guidance above. Output ONLY the markdown body of the `
-    + `description — no preamble, no explanation, no surrounding code fence.`,
+    + `Write a merge-request title and description for this branch, following `
+    + `the style and template guidance above.\n\n`
+    + `Output format (strict):\n`
+    + `1. The FIRST line must be exactly: \`Title: <merge request title>\`\n`
+    + `2. Then a single blank line.\n`
+    + `3. Then ONLY the markdown body of the description — no preamble, no `
+    + `explanation, no surrounding code fence.`,
   );
 
   return parts.join("\n\n");
@@ -516,13 +533,16 @@ export async function shipCommand(
   }
 
   // Step 3: create MR with the drafted description.
-  const title = argValue(args, "--title") ?? lastCommitSubject(cwd) ?? branch;
+  // Prefer agent-emitted `Title: ...` line over the last commit subject so
+  // the style/template guidance can shape the title, not just the body.
+  const { title: agentTitle, body } = splitTitleAndBody(description);
+  const title = argValue(args, "--title") ?? agentTitle ?? lastCommitSubject(cwd) ?? branch;
   const draft = args.includes("--no-draft") ? false
     : (args.includes("--draft") || (config.draft ?? false));
 
   const url = await runGlabCreate({
     cwd, branch, target, title, draft, config,
-    description: description.trimEnd(),
+    description: body.trimEnd(),
     dryRun: args.includes("--dry-run"),
     label: "rt mr open",
   });
