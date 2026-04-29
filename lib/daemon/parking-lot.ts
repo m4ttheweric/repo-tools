@@ -258,6 +258,40 @@ export interface ParkingEnv {
 
 const TERMINAL_STATES = new Set(["merged", "closed"]);
 
+// ─── Fast-forward already-parked worktrees ────────────────────────────────────
+
+function isParkedBranch(branch: string): boolean {
+  return /^parking-lot\/\d+$/.test(branch);
+}
+
+function fastForwardParkedWorktrees(
+  repoPath: string,
+  worktrees: WorktreeInfo[],
+  log: (msg: string) => void,
+): void {
+  const parked = worktrees.filter(w => w.branch && isParkedBranch(w.branch));
+  if (parked.length === 0) return;
+
+  const defaultRef = getRemoteDefaultBranch(repoPath) ?? "origin/master";
+  const defaultBranch = defaultRef.replace(/^origin\//, "");
+
+  try {
+    execSync(`git fetch origin "${defaultBranch}"`, { cwd: repoPath, stdio: "pipe" });
+  } catch {
+    return;
+  }
+
+  for (const wt of parked) {
+    if (hasUncommittedChanges(wt.path)) continue;
+    try {
+      execSync(`git merge --ff-only "${defaultRef}"`, { cwd: wt.path, stdio: "pipe" });
+      log(`parking-lot: fast-forwarded ${wt.branch} at ${wt.path} → ${defaultRef}`);
+    } catch {
+      // Branch has diverged or is already up to date — skip silently.
+    }
+  }
+}
+
 export function checkAndPark(env: ParkingEnv): void {
   if (!loadParkingLotConfig().enabled) return;
 
@@ -327,6 +361,19 @@ export function checkAndPark(env: ParkingEnv): void {
   // Persist fresh MR state snapshot so the next tick has something to compare
   // against. Absent branches (stale cache entries removed) are dropped.
   saveState({ mrState: nextMrState, fired: [...fired] });
+
+  // Fast-forward any worktree already sitting on a parking-lot branch.
+  // We do this for every known repo regardless of whether a park transition
+  // fired this tick — these branches substitute for master and must stay current.
+  for (const [repoName, repoPath] of Object.entries(repoIndex)) {
+    if (!existsSync(repoPath)) continue;
+    const worktrees = worktreeByRepo.get(repoPath) ?? listWorktrees(repoPath);
+    try {
+      fastForwardParkedWorktrees(repoPath, worktrees, env.log);
+    } catch (err) {
+      env.log(`parking-lot: ff-sweep failed for ${repoName}: ${String(err)}`);
+    }
+  }
 }
 
 // ─── CLI introspection ───────────────────────────────────────────────────────
