@@ -445,6 +445,13 @@ const TREE: Record<string, CommandNode> = {
         fn: "parkThisCommand",
         context: "worktree",
       },
+      pick: {
+        description: "Pick worktrees in this repo to park (multi-select)",
+        module: "./commands/parking-lot.ts",
+        fn: "parkPickCommand",
+        context: "repo",
+        requiresTTY: true,
+      },
     },
   },
 
