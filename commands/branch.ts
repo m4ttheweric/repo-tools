@@ -16,6 +16,7 @@ import {
   getTeamConfig,
   createIssue,
   fetchMyTodoTickets,
+  claimTicket,
   type LinearTicket,
 } from "../lib/linear.ts";
 import {
@@ -250,7 +251,7 @@ export async function createBranchFlow(args: string[]): Promise<void> {
   const mode = await select({
     message: "Create branch",
     options: [
-      { value: "existing", label: "From existing Linear ticket", hint: "pick from your assigned tickets" },
+      { value: "existing", label: "From existing Linear ticket", hint: "pick from your team's active tickets" },
       { value: "new",      label: "Create new ticket + branch",  hint: "create ticket on your team, then branch" },
       { value: "scratch",  label: "From scratch",                hint: "just enter a branch name" },
     ],
@@ -262,6 +263,14 @@ export async function createBranchFlow(args: string[]): Promise<void> {
 }
 
 async function createFromExistingTicket(apiKey: string): Promise<void> {
+  const teamConfig = getTeamConfig();
+  if (!teamConfig) {
+    console.log(`\n  ${yellow}Linear team not configured${reset}`);
+    console.log(`  ${dim}run: rt settings linear team${reset}\n`);
+    return;
+  }
+  const { teamId } = teamConfig;
+
   const { filterableSelect } = await import("../lib/rt-render.tsx");
 
   const REFRESH = "__refresh__";
@@ -275,7 +284,7 @@ async function createFromExistingTicket(apiKey: string): Promise<void> {
     }, 80);
 
     try {
-      const tickets = await fetchMyTodoTickets(apiKey);
+      const tickets = await fetchMyTodoTickets(apiKey, teamId);
       clearInterval(timer);
       process.stderr.write(`\r\x1b[K`); // erase spinner line
       return tickets;
@@ -289,7 +298,6 @@ async function createFromExistingTicket(apiKey: string): Promise<void> {
   /** Build fzf options list from ticket array. */
   function buildOptions(tickets: LinearTicket[]): Array<{ value: string; label: string; hint: string }> {
     const ticketOptions = tickets
-      .filter((t) => t.branchName)
       .map((t) => {
         const title = t.title.length > 50 ? t.title.slice(0, 49) + "…" : t.title;
         const info = `${title}${t.stateName ? ` [${t.stateName}]` : ""}`;
@@ -311,7 +319,7 @@ async function createFromExistingTicket(apiKey: string): Promise<void> {
 
   while (true) {
     if (tickets.length === 0) {
-      console.log(`  ${yellow}no unstarted/backlog tickets assigned to you${reset}\n`);
+      console.log(`  ${yellow}no active tickets found for your team${reset}\n`);
       // Still offer a refresh in case they just created a ticket
       const retry = await filterableSelect({
         message: "Select a ticket",
@@ -336,9 +344,11 @@ async function createFromExistingTicket(apiKey: string): Promise<void> {
     }
 
     const ticket = tickets.find((t) => t.identifier === selectedId);
-    if (!ticket?.branchName) return;
+    if (!ticket) return;
 
-    await createWithBaseRef(ticket.branchName, ticket);
+    const branchName = ticket.branchName ?? inferBranchName(ticket.identifier, ticket.title);
+    claimTicket(apiKey, ticket.id, teamId).catch(() => {/* best-effort */});
+    await createWithBaseRef(branchName, ticket);
     return;
   }
 }
@@ -409,6 +419,11 @@ async function createFromScratch(): Promise<void> {
 }
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
+
+function inferBranchName(identifier: string, title: string): string {
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50);
+  return `${identifier.toLowerCase()}-${slug}`;
+}
 
 async function createWithBaseRef(branchName: string, ticket?: LinearTicket): Promise<void> {
   const cwd = process.cwd();

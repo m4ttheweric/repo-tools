@@ -72,6 +72,7 @@ export function extractLinearId(branch: string): string | null {
 const GRAPHQL_URL = "https://api.linear.app/graphql";
 
 export interface LinearTicket {
+  id: string;
   identifier: string;
   title: string;
   description: string | null;
@@ -119,6 +120,7 @@ async function linearGraphql(apiKey: string, query: string, variables: Record<st
 function toTicket(raw: Record<string, unknown>): LinearTicket {
   const state = raw.state as { name: string; color: string } | null;
   return {
+    id: raw.id as string,
     identifier: raw.identifier as string,
     title: raw.title as string,
     description: (raw.description as string) ?? null,
@@ -274,14 +276,14 @@ export async function createIssue(
   }
 }
 
-// ─── Fetch assigned tickets ──────────────────────────────────────────────────
+// ─── Fetch team tickets ──────────────────────────────────────────────────────
 
-const MY_TODO_ISSUES_QUERY = `
-  query MyTodoIssues {
-    viewer {
-      assignedIssues(
+const TEAM_ACTIVE_ISSUES_QUERY = `
+  query TeamActiveIssues($teamId: String!) {
+    team(id: $teamId) {
+      issues(
         filter: {
-          state: { type: { in: ["unstarted", "backlog"] } }
+          state: { type: { in: ["unstarted", "backlog", "started"] } }
         }
         first: 50
         orderBy: updatedAt
@@ -295,17 +297,52 @@ const MY_TODO_ISSUES_QUERY = `
   }
 `;
 
-export async function fetchMyTodoTickets(apiKey: string): Promise<LinearTicket[]> {
+export async function fetchMyTodoTickets(apiKey: string, teamId: string): Promise<LinearTicket[]> {
   try {
-    const data = (await linearGraphql(apiKey, MY_TODO_ISSUES_QUERY, {})) as {
-      viewer: {
-        assignedIssues: {
+    const data = (await linearGraphql(apiKey, TEAM_ACTIVE_ISSUES_QUERY, { teamId })) as {
+      team: {
+        issues: {
           nodes: Array<Record<string, unknown>>;
         };
       };
     };
-    return data.viewer.assignedIssues.nodes.map(toTicket);
+    return data.team.issues.nodes.map(toTicket);
   } catch {
     return [];
   }
+}
+
+// ─── Claim ticket (assign to me + mark In Progress) ─────────────────────────
+
+const VIEWER_AND_STATES_QUERY = `
+  query ViewerAndTeamStates($teamId: String!) {
+    viewer { id }
+    team(id: $teamId) {
+      states { nodes { id type } }
+    }
+  }
+`;
+
+const UPDATE_ISSUE_MUTATION = `
+  mutation UpdateIssue($id: String!, $stateId: String!, $assigneeId: String!) {
+    issueUpdate(id: $id, input: { stateId: $stateId, assigneeId: $assigneeId }) {
+      success
+    }
+  }
+`;
+
+export async function claimTicket(apiKey: string, issueId: string, teamId: string): Promise<void> {
+  const data = (await linearGraphql(apiKey, VIEWER_AND_STATES_QUERY, { teamId })) as {
+    viewer: { id: string };
+    team: { states: { nodes: Array<{ id: string; type: string }> } };
+  };
+
+  const startedState = data.team.states.nodes.find((s) => s.type === "started");
+  if (!startedState) throw new Error("No 'started' state found for team");
+
+  await linearGraphql(apiKey, UPDATE_ISSUE_MUTATION, {
+    id: issueId,
+    stateId: startedState.id,
+    assigneeId: data.viewer.id,
+  });
 }
