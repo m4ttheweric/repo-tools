@@ -752,49 +752,16 @@ export function ReviewsView({
   );
 }
 
-// ─── Editor integration for replies ─────────────────────────────────────────
+// ─── Inline reply input ──────────────────────────────────────────────────────
 
-const REPLY_EDITOR_HINT =
-  "\n\n# Write your reply above. Lines starting with '#' will be ignored.\n" +
-  "# Save and quit to send. Close without saving (or leave empty) to cancel.\n";
-
-/**
- * Suspend the terminal's raw mode, open the user's `$EDITOR` on a tempfile,
- * and return the user's reply body (or null if they bailed/saved nothing).
- * Falls back to `vi` if `$EDITOR` and `$VISUAL` are both unset.
- */
-async function openEditorForReply(): Promise<string | null> {
-  const os   = await import("os");
-  const path = await import("path");
-  const fs   = await import("fs/promises");
-  const { spawn } = await import("child_process");
-
-  const tmpFile = path.join(os.tmpdir(), `rt-reply-${Date.now()}.md`);
-  await fs.writeFile(tmpFile, REPLY_EDITOR_HINT);
-
-  const editor = process.env.VISUAL || process.env.EDITOR || "vi";
-
-  const prevRaw = process.stdin.isTTY ? (process.stdin as any).isRaw === true : false;
-  if (process.stdin.isTTY) (process.stdin as any).setRawMode?.(false);
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(editor, [tmpFile], { stdio: "inherit" });
-      child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`editor exited ${code}`))));
-      child.on("error", reject);
-    });
-  } finally {
-    if (process.stdin.isTTY && prevRaw) (process.stdin as any).setRawMode?.(true);
-  }
-
-  const raw = await fs.readFile(tmpFile, "utf8");
-  await fs.unlink(tmpFile).catch(() => {});
-  const body = raw
-    .split("\n")
-    .filter((line) => !line.startsWith("#"))
-    .join("\n")
-    .trim();
-  return body.length > 0 ? body : null;
+function ReplyInputBox({ value }: { value: string }) {
+  const lines = (value + "█").split("\n");
+  return (
+    <Box flexDirection="column" marginTop={1} paddingX={1} borderStyle="round" borderColor="cyan">
+      <Text dimColor>enter send · ctrl+j newline · esc cancel</Text>
+      {lines.map((line, i) => <Text key={i}>{line}</Text>)}
+    </Box>
+  );
 }
 
 // ─── Comment Thread View ────────────────────────────────────────────────────
@@ -1120,6 +1087,7 @@ export function CommentView({
   focusedFileIndex,
   focusedThreadIndex,
   actionState,
+  replyDraft,
 }: {
   mr: MRDashboardProps;
   reviewerName: string;
@@ -1127,6 +1095,7 @@ export function CommentView({
   focusedFileIndex: number;
   focusedThreadIndex: number;
   actionState: ActionState;
+  replyDraft: string | null;
 }) {
   const group = groups[focusedFileIndex];
   const thread = group?.threads[focusedThreadIndex];
@@ -1172,6 +1141,7 @@ export function CommentView({
               {thread ? <ThreadBody thread={thread} /> : <Text dimColor>No thread.</Text>}
             </Box>
 
+            {replyDraft !== null && <ReplyInputBox value={replyDraft} />}
             {actionState.loading && (
               <Box marginTop={1}>
                 <Spinner label={actionState.loading} />
@@ -1588,6 +1558,7 @@ function LiveDashboard({
   type SortMode = "status" | "pipeline" | "approved" | "newest" | "oldest";
   const SORT_CYCLE: SortMode[] = ["status", "pipeline", "approved", "newest", "oldest"];
   const [sortMode, setSortMode] = useState<SortMode>("newest");
+  const [replyDraft, setReplyDraft] = useState<string | null>(null);
   // Build per-iid action facades synchronously from cache entries. Each facade
   // is a thin wrapper that round-trips through the daemon's `mr:action` IPC,
   // so the daemon's GitLabProvider is the only thing talking to upstream.
@@ -1907,6 +1878,35 @@ function LiveDashboard({
       const currentThread = currentGroup?.threads[focusedThreadIndex];
       const repoName      = focusedEntry?.[1]?.repoName;
 
+      // ── Inline reply composition ──────────────────────────────────────
+      if (replyDraft !== null) {
+        if (key.escape) { setReplyDraft(null); return; }
+        if (key.return) {
+          const body = replyDraft.trim();
+          if (body && focusedMR && repoName && currentThread) {
+            const iid = focusedMR.iid;
+            const discussionId = currentThread.id;
+            setReplyDraft(null);
+            setActionState({ loading: "Posting reply…", result: null, confirm: null });
+            replyToDiscussion(repoName, iid, discussionId, body)
+              .then((snap) => {
+                setDiscussionsState({ iid, loading: false, error: null, discussions: snap.discussions, fetchedAt: snap.fetchedAt });
+                setActionState({ loading: null, result: { ok: true, message: "Reply posted" }, confirm: null });
+              })
+              .catch((e: any) => {
+                setActionState({ loading: null, result: { ok: false, message: e.message || "Reply failed" }, confirm: null });
+              });
+          } else if (!body) {
+            setReplyDraft(null);
+          }
+          return;
+        }
+        if (key.ctrl && input === "j") { setReplyDraft((d) => (d ?? "") + "\n"); return; }
+        if (key.backspace || key.delete) { setReplyDraft((d) => (d ?? "").slice(0, -1)); return; }
+        if (input && !key.ctrl && !key.meta) { setReplyDraft((d) => (d ?? "") + input); }
+        return;
+      }
+
       if (key.escape || key.delete || input === "b") {
         setCommentView(false);
         resetAction();
@@ -1952,32 +1952,9 @@ function LiveDashboard({
           });
         });
       }
-      // Reply: open $EDITOR, post body on save.
+      // Reply: open inline compose box.
       if (input === "c" && currentThread && focusedMR && repoName) {
-        const iid = focusedMR.iid;
-        const discussionId = currentThread.id;
-        setActionState({ loading: "Opening editor…", result: null, confirm: null });
-        openEditorForReply()
-          .then(async (body) => {
-            if (!body) {
-              setActionState({ loading: null, result: { ok: true, message: "Reply cancelled" }, confirm: null });
-              return;
-            }
-            setActionState({ loading: "Posting reply…", result: null, confirm: null });
-            try {
-              const snap = await replyToDiscussion(repoName, iid, discussionId, body);
-              setDiscussionsState({
-                iid, loading: false, error: null,
-                discussions: snap.discussions, fetchedAt: snap.fetchedAt,
-              });
-              setActionState({ loading: null, result: { ok: true, message: "Reply posted" }, confirm: null });
-            } catch (e: any) {
-              setActionState({ loading: null, result: { ok: false, message: e.message || "Reply failed" }, confirm: null });
-            }
-          })
-          .catch((e: any) => {
-            setActionState({ loading: null, result: { ok: false, message: e.message || "Editor failed" }, confirm: null });
-          });
+        setReplyDraft("");
       }
       if (input === "o" && focusedMR?.webUrl) {
         import("child_process").then(({ execSync }) => {
@@ -2289,6 +2266,8 @@ function LiveDashboard({
     ? "esc back · ↑↓ scroll · r retry · o open · q quit"
     : pipelineView
     ? "esc back · ↑↓ navigate · enter view log · r retry · o open · q quit"
+    : commentView && replyDraft !== null
+    ? "enter send · ctrl+j newline · esc cancel"
     : commentView
     ? "esc back · ↑↓ file · ←→ thread · R resolve · c reply · o open · q quit"
     : reviewsView
@@ -2365,6 +2344,7 @@ function LiveDashboard({
               focusedFileIndex={focusedFileIndex}
               focusedThreadIndex={focusedThreadIndex}
               actionState={actionState}
+              replyDraft={replyDraft}
             />
           );
         }
