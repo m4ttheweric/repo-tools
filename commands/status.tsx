@@ -24,6 +24,7 @@ import {
   mrActions,
   subscribeToDaemon,
   fetchDiscussions,
+  fetchMRDiffs,
   setDiscussionResolved,
   replyToDiscussion,
   type DaemonMRActions,
@@ -764,6 +765,42 @@ function ReplyInputBox({ value }: { value: string }) {
   );
 }
 
+// ─── Diff hunk helpers ───────────────────────────────────────────────────────
+
+/**
+ * Parse unified diff text and return the hunk that contains `newLine`.
+ * Returns null when the line can't be located (e.g. context-only note).
+ */
+function extractHunk(diffText: string, newLine: number | null): string | null {
+  if (!diffText || newLine === null) return null;
+  const hunks = diffText.split(/(?=^@@)/m);
+  for (const hunk of hunks) {
+    if (!hunk.startsWith("@@")) continue;
+    const m = hunk.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+    if (!m) continue;
+    const start = parseInt(m[1]!, 10);
+    const count = parseInt(m[2] ?? "1", 10);
+    if (newLine >= start && newLine < start + count) return hunk.trimEnd();
+  }
+  return null;
+}
+
+function DiffHunkView({ hunk }: { hunk: string }) {
+  const lines = hunk.split("\n");
+  return (
+    <Box flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1} marginBottom={1}>
+      {lines.map((line, i) => {
+        const color = line.startsWith("+") ? "green"
+          : line.startsWith("-") ? "red"
+          : line.startsWith("@@") ? "cyan"
+          : undefined;
+        const dim = line.startsWith("@@");
+        return <Text key={i} color={color} dimColor={dim}>{line}</Text>;
+      })}
+    </Box>
+  );
+}
+
 // ─── Comment Thread View ────────────────────────────────────────────────────
 
 export interface FileGroup {
@@ -1088,6 +1125,8 @@ export function CommentView({
   focusedThreadIndex,
   actionState,
   replyDraft,
+  diffHunk,
+  diffsLoading,
 }: {
   mr: MRDashboardProps;
   reviewerName: string;
@@ -1096,6 +1135,8 @@ export function CommentView({
   focusedThreadIndex: number;
   actionState: ActionState;
   replyDraft: string | null;
+  diffHunk: string | null;
+  diffsLoading: boolean;
 }) {
   const group = groups[focusedFileIndex];
   const thread = group?.threads[focusedThreadIndex];
@@ -1137,6 +1178,16 @@ export function CommentView({
               )}
             </Box>
 
+            {diffsLoading && (
+              <Box marginTop={1}>
+                <Text dimColor>loading diff…</Text>
+              </Box>
+            )}
+            {!diffsLoading && diffHunk && (
+              <Box marginTop={1}>
+                <DiffHunkView hunk={diffHunk} />
+              </Box>
+            )}
             <Box marginTop={1}>
               {thread ? <ThreadBody thread={thread} /> : <Text dimColor>No thread.</Text>}
             </Box>
@@ -1559,6 +1610,8 @@ function LiveDashboard({
   const SORT_CYCLE: SortMode[] = ["status", "pipeline", "approved", "newest", "oldest"];
   const [sortMode, setSortMode] = useState<SortMode>("newest");
   const [replyDraft, setReplyDraft] = useState<string | null>(null);
+  // null = not fetched yet; diffs=Map means success; diffs=null means fetch failed (degrade silently)
+  const [mrDiffs, setMrDiffs] = useState<{ iid: number; diffs: Map<string, string> | null } | null>(null);
   // Build per-iid action facades synchronously from cache entries. Each facade
   // is a thin wrapper that round-trips through the daemon's `mr:action` IPC,
   // so the daemon's GitLabProvider is the only thing talking to upstream.
@@ -1682,6 +1735,21 @@ function LiveDashboard({
     },
     [actionState.confirm],
   );
+
+  // Fetch MR diffs when entering the comment view; clear when leaving.
+  useEffect(() => {
+    if (!commentView) { setMrDiffs(null); return; }
+    const repoName = focusedEntry?.[1]?.repoName;
+    if (!focusedMR || !repoName) return;
+    const iid = focusedMR.iid;
+    fetchMRDiffs(repoName, iid)
+      .then((list) => {
+        const map = new Map<string, string>();
+        for (const { newPath, diff } of list) map.set(newPath, diff);
+        setMrDiffs({ iid, diffs: map });
+      })
+      .catch(() => { setMrDiffs({ iid, diffs: null }); });
+  }, [commentView, focusedMR?.iid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Input handling
   // Open pipeline view (clears child stack and bridge state)
@@ -2336,6 +2404,12 @@ function LiveDashboard({
             : [];
           const reviewerSummary = summaries.find((s) => s.reviewer.id === focusedReviewerId);
           const groups = reviewerSummary ? groupThreadsByFile(reviewerSummary.discussions) : [];
+          const currentThread = groups[focusedFileIndex]?.threads[focusedThreadIndex];
+          const firstNote = currentThread?.notes[0];
+          const diffHunk = firstNote?.position?.newPath && mrDiffs?.iid === focusedMR.iid && mrDiffs.diffs
+            ? extractHunk(mrDiffs.diffs.get(firstNote.position.newPath) ?? "", firstNote.position.newLine)
+            : null;
+          const diffsLoading = mrDiffs === null || mrDiffs.iid !== focusedMR.iid;
           return (
             <CommentView
               mr={focusedMR}
@@ -2345,6 +2419,8 @@ function LiveDashboard({
               focusedThreadIndex={focusedThreadIndex}
               actionState={actionState}
               replyDraft={replyDraft}
+              diffHunk={diffHunk}
+              diffsLoading={diffsLoading}
             />
           );
         }

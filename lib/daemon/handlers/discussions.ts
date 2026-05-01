@@ -118,6 +118,32 @@ export function createDiscussionHandlers(
       }
     },
 
+    "discussions:diffs": async (payload) => {
+      const repoName = payload?.repoName as string | undefined;
+      const iid      = payload?.iid      as number | undefined;
+      if (!repoName || typeof iid !== "number") {
+        return { ok: false, error: "missing repoName/iid" };
+      }
+
+      const repoPath = ctx.repoIndex()[repoName];
+      try {
+        const repoCtx = await getRepoContext(repoName, repoPath);
+        const secrets = loadSecrets();
+        if (!secrets.gitlabToken) return { ok: false, error: "no gitlabToken in secrets" };
+
+        const encoded = encodeURIComponent(repoCtx.projectPath);
+        const url = `${repoCtx.provider.baseURL}/api/v4/projects/${encoded}/merge_requests/${iid}/diffs?per_page=100`;
+        const res = await fetch(url, { headers: { "PRIVATE-TOKEN": secrets.gitlabToken } });
+        if (!res.ok) return { ok: false, error: `GitLab diffs API: ${res.status}` };
+
+        const raw = await res.json() as Array<{ new_path: string; diff: string }>;
+        const diffs = raw.map((d) => ({ newPath: d.new_path, diff: d.diff }));
+        return { ok: true, data: { diffs } };
+      } catch (err) {
+        return { ok: false, error: String(err) };
+      }
+    },
+
     "discussions:reply": async (payload) => {
       const repoName     = payload?.repoName     as string | undefined;
       const iid          = payload?.iid          as number | undefined;
