@@ -10,10 +10,10 @@
  * never sees a half-written file.
  */
 
-import { existsSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
 
 /** Per-path Doppler config (token + endpoints OR enclave.project + enclave.config). */
 export interface DopplerScopedEntry {
@@ -37,6 +37,24 @@ function dopplerDir(): string {
 
 export function dopplerConfigPath(): string {
   return join(dopplerDir(), ".doppler.yaml");
+}
+
+/**
+ * Write the config atomically: stringify, write to a `.tmp` sibling, then
+ * `renameSync` over the destination. Doppler CLI never sees a half-written
+ * file because rename is atomic on the same filesystem.
+ *
+ * Parent directory is created if missing.
+ */
+export function writeDopplerConfig(config: DopplerConfig): void {
+  const path = dopplerConfigPath();
+  const dir = dopplerDir();
+  mkdirSync(dir, { recursive: true });
+
+  const tmp = path + ".tmp";
+  const yaml = stringify(config);
+  writeFileSync(tmp, yaml);
+  renameSync(tmp, path);
 }
 
 /** Load `~/.doppler/.doppler.yaml`. Returns `{ scoped: {} }` if missing or malformed. */
