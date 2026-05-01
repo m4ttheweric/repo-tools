@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
 const tmpHome = mkdtempSync(join(tmpdir(), "rt-doppler-config-"));
 process.env.HOME = tmpHome;
 
-const { loadDopplerConfig, dopplerConfigPath } =
+const { loadDopplerConfig, dopplerConfigPath, writeDopplerConfig } =
   await import("../doppler-config.ts");
 
 describe("loadDopplerConfig", () => {
@@ -65,5 +65,51 @@ describe("loadDopplerConfig", () => {
     const cfg = loadDopplerConfig();
     expect(Object.keys(cfg.scoped).sort()).toEqual(["/good"]);
     expect(cfg.scoped["/good"]?.token).toBe("secret-good");
+  });
+});
+
+describe("writeDopplerConfig", () => {
+  afterEach(() => {
+    try { rmSync(join(tmpHome, ".doppler"), { recursive: true, force: true }); } catch { /* */ }
+  });
+
+  test("creates the file when missing, including parent dir", () => {
+    writeDopplerConfig({
+      scoped: {
+        "/Users/matt/repo/apps/backend": {
+          "enclave.project": "backend",
+          "enclave.config":  "dev",
+        },
+      },
+    });
+    const cfg = loadDopplerConfig();
+    expect(cfg.scoped["/Users/matt/repo/apps/backend"]).toEqual({
+      "enclave.project": "backend",
+      "enclave.config":  "dev",
+    });
+  });
+
+  test("atomic-replaces an existing file (no .tmp left behind)", () => {
+    mkdirSync(join(tmpHome, ".doppler"), { recursive: true });
+    writeFileSync(dopplerConfigPath(), "scoped:\n  /:\n    token: old\n");
+
+    writeDopplerConfig({
+      scoped: {
+        "/": { token: "new" },
+      },
+    });
+
+    expect(loadDopplerConfig().scoped["/"]?.token).toBe("new");
+    expect(existsSync(dopplerConfigPath() + ".tmp")).toBe(false);
+  });
+
+  test("preserves unknown top-level keys (e.g. fallback)", () => {
+    const original: any = {
+      scoped: { "/": { token: "abc" } },
+      fallback: { foo: "bar" },
+    };
+    writeDopplerConfig(original);
+    const reread = loadDopplerConfig();
+    expect((reread as any).fallback).toEqual({ foo: "bar" });
   });
 });
