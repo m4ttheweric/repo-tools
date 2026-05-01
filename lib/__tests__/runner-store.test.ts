@@ -73,8 +73,6 @@ describe("normalizeLane — on-disk shape normalization", () => {
       entries: [{
         id: "primary",
         targetDir: join(scratchDir, "primary"),
-        pm: "pnpm",
-        script: "dev",
         packageLabel: "api",
         worktree: join(scratchDir, "primary"),
         branch: "main",
@@ -93,6 +91,7 @@ describe("normalizeLane — on-disk shape normalization", () => {
     expect(loaded[0]!.repoName).toBe("my-repo");
     expect(loaded[0]!.mode).toBe("warm");
     expect(loaded[0]!.entries).toHaveLength(1);
+    // id is now derived from worktree basename — input id is dropped on round-trip
     expect(loaded[0]!.entries[0]!.id).toBe("primary");
     expect(loaded[0]!.entries[0]!.commandTemplate).toBe("pnpm run dev");
   });
@@ -109,8 +108,6 @@ describe("normalizeLane — on-disk shape normalization", () => {
       repoName: "r",
       mode: "warm",
       entry: {
-        pm: "pnpm",
-        script: "dev",
         packagePath: "app",
         packageLabel: "web",
         commandTemplate: "pnpm start",
@@ -143,8 +140,6 @@ describe("normalizeLane — on-disk shape normalization", () => {
       repoName: "r",
       mode: "single",
       entry: {
-        pm: "bun",
-        script: "dev",
         packagePath: "",
         packageLabel: "svc",
         commandTemplate: ["bun run dev", "bun run debug"],
@@ -176,8 +171,6 @@ describe("normalizeLane — on-disk shape normalization", () => {
       repoName: "r",
       mode: "warm",
       entry: {
-        pm: "bun",
-        script: "dev",
         packagePath: "",
         packageLabel: "svc",
         commandTemplate: ["bun run dev", { cmd: "bun run debug", alias: "debug" }],
@@ -193,6 +186,31 @@ describe("normalizeLane — on-disk shape normalization", () => {
     const e = lanes[0]!.entries[0]!;
     expect(e.commandTemplate).toBe("bun run debug");
     expect(e.alias).toBe("debug");
+  });
+
+  test("legacy pm/script fields synthesize a commandTemplate when one is missing", () => {
+    // Pre-cleanup configs only carried pm + script; commandTemplate was derived
+    // at runtime as `${pm} run ${script}`. Loader must still handle these.
+    const name = track(uniqueName());
+    const runnerPath = join(RUNNERS_DIR, `${name}.json`);
+
+    const raw = [{
+      id: "1",
+      canonicalPort: 3009,
+      repoName: "r",
+      mode: "warm",
+      entry: {
+        pm: "pnpm",
+        script: "dev",
+        packagePath: "",
+        packageLabel: "svc",
+        worktrees: [{ root: join(scratchDir, "primary") }],
+      },
+    }];
+    writeFileSync(runnerPath, JSON.stringify(raw, null, 2));
+
+    const lanes = loadRunnerConfig(name);
+    expect(lanes[0]!.entries[0]!.commandTemplate).toBe("pnpm run dev");
   });
 
   test("unknown mode coerces to 'warm' (default)", () => {
@@ -223,8 +241,6 @@ describe("normalizeLane — on-disk shape normalization", () => {
         {
           id: "api",
           targetDir: join(scratchDir, "one", "api"),
-          pm: "pnpm",
-          script: "dev",
           packageLabel: "api",
           worktree: join(scratchDir, "one"),
           branch: "",
@@ -234,8 +250,6 @@ describe("normalizeLane — on-disk shape normalization", () => {
         {
           id: "web",
           targetDir: join(scratchDir, "one", "web"),
-          pm: "pnpm",
-          script: "dev",
           packageLabel: "web",
           worktree: join(scratchDir, "one"),
           branch: "",
@@ -263,8 +277,6 @@ describe("saveRunnerConfig / loadRunnerConfig", () => {
       entries: [{
         id: "primary",
         targetDir: join(scratchDir, "primary"),
-        pm: "npm",
-        script: "start",
         packageLabel: "web",
         worktree: join(scratchDir, "primary"),
         branch: "main",

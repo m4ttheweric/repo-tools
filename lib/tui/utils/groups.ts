@@ -34,7 +34,7 @@ export interface Group<T> {
  * const groups = computeGroups(
  *   entries,
  *   (e) => e.commandTemplate,
- *   (firstEntry) => `${firstEntry.packageLabel} · ${firstEntry.script}`,
+ *   (firstEntry) => entryCommandLabel(firstEntry),
  * );
  * // groups = [
  * //   { key: "npm run dev",  label: "my-pkg · dev",  items: [...] },

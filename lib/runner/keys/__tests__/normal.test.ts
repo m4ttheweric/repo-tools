@@ -13,8 +13,6 @@ function makeEntry(overrides: Partial<LaneEntry> = {}): LaneEntry {
   return {
     id: "a",
     targetDir: "/repo/app",
-    pm: "pnpm",
-    script: "dev",
     packageLabel: "app",
     worktree: "/repo",
     branch: "main",
@@ -49,6 +47,7 @@ function makeState(lanes: LaneConfig[]) {
     spinnerFrame: 0,
     runnerName: "test",
     knownRepos: [],
+    daemonReachable: true,
   };
 }
 

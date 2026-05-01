@@ -16,6 +16,8 @@
 import { existsSync, readFileSync } from "fs";
 import { execSync } from "child_process";
 import { join, relative, basename } from "path";
+
+const SHELL = process.env.SHELL ?? "bash";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { filterableSelect, BackNavigation } from "../lib/rt-render.tsx";
 import { getKnownRepos } from "../lib/repo-index.ts";
@@ -32,11 +34,10 @@ const LAST_RUN_SENTINEL = "__rt:last-run__";
 
 export interface RunResolveResult {
   targetDir: string;
-  pm: string;
-  script: string;
   packageLabel: string;
   worktree: string;
   branch: string;
+  commandTemplate: string;
 }
 
 function detectPackageManager(dir: string): string {
@@ -323,11 +324,10 @@ export async function runCommand(
 
   const result: RunResolveResult = {
     targetDir: packagePath,
-    pm,
-    script: selectedScript,
     packageLabel,
     worktree: worktreePath,
     branch: worktreeBranch,
+    commandTemplate: `${pm} run ${selectedScript}`,
   };
 
   if (resolveOnly) {
@@ -339,7 +339,7 @@ export async function runCommand(
   process.stderr.write(`\nRunning: ${cmd}\n`);
   process.stderr.write(`  in: ${packagePath}\n\n`);
 
-  const proc = Bun.spawn(["bash", "-c", cmd], {
+  const proc = Bun.spawn([SHELL, "-c", cmd], {
     cwd: packagePath,
     stdio: ["inherit", "inherit", "inherit"],
   });
@@ -414,7 +414,7 @@ export async function runAgainCommand(
   process.stderr.write(`\nRunning: ${entry.cmd}\n`);
   process.stderr.write(`  in: ${entry.cwd}\n\n`);
 
-  const proc = Bun.spawn(["bash", "-c", entry.cmd], {
+  const proc = Bun.spawn([SHELL, "-c", entry.cmd], {
     cwd: entry.cwd,
     stdio: ["inherit", "inherit", "inherit"],
   });

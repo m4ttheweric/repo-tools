@@ -86,6 +86,7 @@ export async function trayQuery(
 // ─── Auto-recovery ───────────────────────────────────────────────────────────
 
 let hasWarnedThisSession = false;
+let _warningSuppressed = false;
 
 function attemptRestart(): boolean {
   try {
@@ -101,11 +102,21 @@ function attemptRestart(): boolean {
 }
 
 function warnDaemonDown(): void {
-  if (hasWarnedThisSession) return;
+  if (hasWarnedThisSession || _warningSuppressed) return;
   hasWarnedThisSession = true;
   console.error(
     "  \x1b[33m⚠\x1b[0m rt daemon is installed but not running. Run: \x1b[1mrt daemon start\x1b[0m",
   );
+}
+
+/**
+ * Disable the stderr "daemon down" warning emitted by `daemonQuery` when it
+ * gives up after a failed restart attempt. TUI callers (e.g. the runner) must
+ * call this at startup — otherwise the warning bleeds into the rendered
+ * canvas as a stuck line because Ink/Rezi never redraw over stderr writes.
+ */
+export function suppressDaemonDownWarning(): void {
+  _warningSuppressed = true;
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -284,6 +295,21 @@ export async function setDiscussionResolved(
   if (!res) throw new Error(lastQueryTimedOut() ? "resolve timed out" : "daemon unavailable");
   if (!res.ok) throw new Error(res.error || "discussions:resolve failed");
   return res.data as DiscussionsSnapshot;
+}
+
+/** Fetch all file diffs for an MR. Returns `{ newPath, diff }[]` — one entry per changed file. */
+export async function fetchMRDiffs(
+  repoName: string,
+  iid: number,
+): Promise<Array<{ newPath: string; diff: string }>> {
+  const res = await daemonQuery(
+    "discussions:diffs",
+    { repoName, iid },
+    DISCUSSIONS_TIMEOUT_MS,
+  );
+  if (!res) throw new Error(lastQueryTimedOut() ? "diffs timed out" : "daemon unavailable");
+  if (!res.ok) throw new Error(res.error || "discussions:diffs failed");
+  return (res.data as { diffs: Array<{ newPath: string; diff: string }> }).diffs;
 }
 
 /** Post a reply note into an existing discussion thread. Returns the refreshed snapshot. */

@@ -44,7 +44,7 @@ import { tmpdir, homedir } from "node:os";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { CommandContext } from "../lib/command-tree.ts";
-import { daemonQuery, isDaemonRunning } from "../lib/daemon-client.ts";
+import { daemonQuery, isDaemonRunning, suppressDaemonDownWarning } from "../lib/daemon-client.ts";
 import {
   readCurrentBranch, readCurrentBranchAsync, createGitWatcherPool,
 } from "../lib/runner/git-watchers.ts";
@@ -77,6 +77,7 @@ import {
   STATUS_ICON,
   SPINNER_FRAMES,
   entryCommandLabel,
+  commandSummary,
   type EntryState,
 } from "../lib/runner/components/shared.ts";
 import { EntryRow } from "../lib/runner/components/EntryRow.tsx";
@@ -241,6 +242,12 @@ export interface RunnerUIState {
   runnerName:    string;
   /** All known repos, used for repo-pick mode and resolving lane repoRoot. */
   knownRepos:    KnownRepo[];
+  /**
+   * Tracks whether the daemon poll is currently succeeding. Flips false when
+   * the poll round-trips with all-null responses (daemon down or restarting),
+   * and back to true on the first successful poll. Drives the header pill.
+   */
+  daemonReachable: boolean;
 }
 
 // ─── Theme — bubble tea ✨ ───────────────────────────────────────────────────
@@ -421,6 +428,7 @@ async function runOnce(
       spinnerFrame: 0,
       runnerName,
       knownRepos,
+      daemonReachable: true,
     },
     theme: runnerTheme,
     // In the compiled binary, Rezi's worker entry lives on the virtual
@@ -462,13 +470,11 @@ async function runOnce(
     const newEntry: LaneEntry = {
       id: entryId,
       targetDir: resolved.targetDir,
-      pm: resolved.pm,
-      script: resolved.script,
       packageLabel: resolved.packageLabel,
       worktree: resolved.worktree,
       branch: resolved.branch,
       ephemeralPort: 0,
-      commandTemplate: templateSource?.commandTemplate ?? `${resolved.pm} run ${resolved.script}`,
+      commandTemplate: templateSource?.commandTemplate ?? resolved.commandTemplate,
       ...(templateSource?.alias ? { alias: templateSource.alias } : {}),
       ...(templateSource?.availableCommands ? { availableCommands: templateSource.availableCommands } : {}),
     };
@@ -791,6 +797,9 @@ async function runOnce(
         {IS_DEV_MODE && <text style={{ fg: C.peach }}>{"  (dev mode)"}</text>}
         <text style={{ bold: true }}>{"  runner"}</text>
         <text style={{ fg: C.dim }}>{"  "}{s.runnerName}</text>
+        {!s.daemonReachable && (
+          <text style={{ fg: C.peach }}>{"   ⏵ daemon reconnecting…"}</text>
+        )}
       </row>
     );
 
@@ -821,7 +830,7 @@ async function runOnce(
                   <text style={{ fg: isSel ? C.pink : C.dim }}>{isSel ? "❯" : " "}</text>
                   <text style={{ fg: STATUS_COLOR[st] }}>{STATUS_ICON[st]}</text>
                   <text style={{ fg: lane.activeEntryId === e.id ? C.mint : C.white }}>
-                    {e.packageLabel !== "root" ? `${e.packageLabel} · ${e.script}` : e.script}
+                    {entryCommandLabel(e)}
                   </text>
                   {lane.activeEntryId === e.id && <text style={{ fg: C.mint }}>{"← active"}</text>}
                 </row>
@@ -843,7 +852,7 @@ async function runOnce(
         const spreadMode = s.mode as { laneId: string; entryId: string };
         const spreadLane = s.lanes.find((l) => l.id === spreadMode.laneId);
         const spreadEntry = spreadLane?.entries.find((e) => e.id === spreadMode.entryId);
-        const spreadLabel = spreadEntry ? `'${spreadEntry.script}'` : "command";
+        const spreadLabel = spreadEntry ? `'${commandSummary(spreadEntry.commandTemplate)}'` : "command";
         return <text style={{ fg: C.peach }}>{`Spread ${spreadLabel} to all worktrees of ${spreadLane?.repoName ?? ""}?  [y] confirm  [n / Esc] cancel`}</text>;
       }
       if (s.mode.type === "port-input") {
@@ -901,6 +910,12 @@ async function runOnce(
     ]);
 
     if (!appRunning) return; // app may have stopped while we were awaiting
+
+    // Daemon reachability: if every query came back null, treat the daemon as
+    // unreachable for this tick (down or restarting). Any successful response
+    // flips it back. Header pill renders off this flag.
+    const reachable = statesRes !== null || proxyRes !== null || remedyRes !== null;
+    safeUpdate((s) => (s.daemonReachable === reachable ? s : { ...s, daemonReachable: reachable }));
 
     // Surface any remedy fire events as toasts
     if (remedyRes?.ok && Array.isArray(remedyRes.data)) {
@@ -1224,6 +1239,11 @@ export async function showRunner(args: string[], _ctx: CommandContext): Promise<
     console.error("     Start it:  rt daemon start\n");
     process.exit(1);
   }
+
+  // Past the startup gate — we own the screen now. Silence the stderr "daemon
+  // down" warning that daemon-client emits on transient drops; the runner UI
+  // shows a header pill instead, which clears itself when polling recovers.
+  suppressDaemonDownWarning();
 
   // ── Runner config selection (pre-TUI) ─────────────────────────────────────
   let runnerName: string;

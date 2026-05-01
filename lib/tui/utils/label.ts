@@ -83,26 +83,22 @@ export function rowBg(selected: boolean): number | undefined {
 // ─── Command label formatting ─────────────────────────────────────────────────
 
 /**
- * Formats a lane entry's display label from its package/script metadata.
+ * Formats a lane entry's display label from its commandTemplate.
  *
  * Rules:
  *   - If alias is set: shows the alias (scoped with packageLabel if not "root")
- *   - If packageLabel !== "root": shows "packageLabel · script" (or custom cmd)
- *   - If packageLabel === "root": shows just the script (or custom cmd)
- *   - If commandTemplate differs from the default "pm run script": shows the custom command
- *
- * Source: commands/runner.tsx entryCommandLabel (lines 1027-1032)
+ *   - Else: extracts a short script name from `<pm> run <script>` in commandTemplate
+ *   - If packageLabel !== "root": prefixes with "packageLabel · "
+ *   - If extraction fails: shows the raw commandTemplate
  */
 export function entryCommandLabel(entry: {
   packageLabel: string;
-  pm: string;
-  script: string;
   commandTemplate: string;
   alias?: string;
 }): string {
-  const defaultCmd = `${entry.pm} run ${entry.script}`;
-  const hasCustomCmd = entry.commandTemplate !== defaultCmd;
-  const cmdLabel = entry.alias ?? (hasCustomCmd ? entry.commandTemplate : entry.script);
+  const m = entry.commandTemplate.match(/(?:pnpm|npm|bun|yarn|deno)\s+run\s+(\S+)/);
+  const summary = m ? m[1]! : entry.commandTemplate;
+  const cmdLabel = entry.alias ?? summary;
   return entry.packageLabel !== "root"
     ? `${entry.packageLabel} · ${cmdLabel}`
     : cmdLabel;

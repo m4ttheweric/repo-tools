@@ -107,17 +107,18 @@ function expandCompactEntry(raw: any): LaneEntry[] {
     return [normalizeExpandedEntry(raw)];
   }
 
-  const pm           = String(raw.pm ?? "");
-  const script       = String(raw.script ?? "");
   const packagePath  = String(raw.packagePath ?? "");
   const packageLabel = String(raw.packageLabel ?? "");
   const remedies     = Array.isArray(raw.remedies) ? raw.remedies.map(normalizeRemedy) : undefined;
 
-  // Normalise commandTemplate → always { cmd, alias? }[]
+  // Normalise commandTemplate → always { cmd, alias? }[].
+  // Legacy fallback: pre-cleanup configs may have `pm`/`script` instead of an
+  // explicit commandTemplate. Reconstruct it so old files keep loading.
   const rawCmd = raw.commandTemplate;
+  const legacyCmd = raw.pm && raw.script ? `${raw.pm} run ${raw.script}` : "";
   const rawCmds: any[] = Array.isArray(rawCmd)
     ? rawCmd
-    : [rawCmd ?? (pm && script ? `${pm} run ${script}` : "")];
+    : [rawCmd ?? legacyCmd];
   const commands = rawCmds.map(parseCmd);
 
   const activeIdxRaw = Number(raw.activeCmdIdx ?? 0);
@@ -139,8 +140,6 @@ function expandCompactEntry(raw: any): LaneEntry[] {
     entries.push({
       id:              worktreeEntryId(root, 0),
       targetDir,
-      pm,
-      script,
       packageLabel,
       worktree:        root,
       branch:          "",  // populated at runtime by git watcher
@@ -157,16 +156,16 @@ function expandCompactEntry(raw: any): LaneEntry[] {
 
 /** Normalise a plain (already-expanded) entry object. */
 function normalizeExpandedEntry(raw: any): LaneEntry {
-  const pm     = String(raw.pm ?? "");
-  const script = String(raw.script ?? "");
   const worktree = String(raw.worktree ?? "");
   // Derive id from worktree basename if not explicitly stored
   const id = String(raw.id || (worktree ? worktreeEntryId(worktree) : ""));
   // commandTemplate on an expanded entry can also be the object form;
-  // a top-level `alias` field takes precedence if present.
+  // a top-level `alias` field takes precedence if present. Legacy fallback:
+  // synthesize from pm/script if commandTemplate is missing.
+  const legacyCmd = raw.pm && raw.script ? `${raw.pm} run ${raw.script}` : "";
   const parsed = raw.commandTemplate !== undefined
     ? parseCmd(raw.commandTemplate)
-    : { cmd: pm && script ? `${pm} run ${script}` : "" };
+    : { cmd: legacyCmd };
   const alias = typeof raw.alias === "string" && raw.alias ? raw.alias : parsed.alias;
   const availableCommands: Array<{ cmd: string; alias?: string }> | undefined = Array.isArray(raw.availableCommands)
     ? (raw.availableCommands as any[]).map((r): { cmd: string; alias?: string } => {
@@ -177,8 +176,6 @@ function normalizeExpandedEntry(raw: any): LaneEntry {
   return {
     id,
     targetDir:       String(raw.targetDir ?? ""),
-    pm,
-    script,
     packageLabel:    String(raw.packageLabel ?? ""),
     worktree,
     branch:          "",  // populated at runtime
@@ -206,13 +203,13 @@ export function normalizeEntry(raw: any): LaneEntry[] {
 function compactSig(e: LaneEntry): string | null {
   const rel = relativePackagePath(e);
   if (rel === null) return null;
-  return `${e.packageLabel}\x00${e.pm}\x00${e.script}\x00${rel}`;
+  return `${e.packageLabel}\x00${rel}`;
 }
 
 /**
  * Compact a LaneEntry[] back to the concise on-disk format.
  *
- * Groups entries by (packageLabel, pm, script, packagePath). Within each group:
+ * Groups entries by (packageLabel, packagePath). Within each group:
  *   - Collects distinct commandTemplates in order of first appearance.
  *   - Builds a worktrees array; each worktree item uses `ids[]` when there are
  *     multiple command variants, `id` (singular) when there is only one.
@@ -243,22 +240,6 @@ export function compactEntries(entries: LaneEntry[]): any[] {
 
     const encodeCmd = (cmd: string, alias: string | undefined) =>
       alias ? { cmd, alias } : cmd;
-
-    if (group.length === 1) {
-      // True singleton — keep as expanded object, strip ephemeralPort.
-      // Fold `alias` into the object form of commandTemplate so disk shape stays uniform.
-      const { ephemeralPort: _port, alias, commandTemplate, availableCommands, ...rest } = first;
-      const singletonValue: any = { ...rest };
-      if (availableCommands && availableCommands.length > 1) {
-        singletonValue.commandTemplate = availableCommands.map((c) => encodeCmd(c.cmd, c.alias));
-        const activeIdx = availableCommands.findIndex((c) => c.cmd === commandTemplate);
-        if (activeIdx > 0) singletonValue.activeCmdIdx = activeIdx;
-      } else {
-        singletonValue.commandTemplate = encodeCmd(commandTemplate, alias);
-      }
-      slots.push({ pos, value: singletonValue });
-      continue;
-    }
 
     // Worktree entries in the same group now share one active cmd (menu
     // lives on `availableCommands`). Prefer the menu when present; fall
@@ -305,8 +286,6 @@ export function compactEntries(entries: LaneEntry[]): any[] {
         ...(activeCmdIdx !== undefined ? { activeCmdIdx } : {}),
         packagePath:     rel === "." ? "" : rel,
         packageLabel:    first.packageLabel,
-        pm:              first.pm,
-        script:          first.script,
         ...(sharedRemedies ? { remedies: sharedRemedies } : {}),
         worktrees,
       },
