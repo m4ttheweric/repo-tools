@@ -16,7 +16,7 @@
  * See docs/superpowers/specs/2026-04-30-doppler-template-sync-design.md.
  */
 
-import { execSync, spawnSync } from "child_process";
+import { spawnSync } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
@@ -24,6 +24,7 @@ import {
   captureFromActualConfig, loadTemplate, saveTemplate, templatePath,
 } from "../lib/doppler-template.ts";
 import { loadDopplerConfig } from "../lib/doppler-config.ts";
+import { listWorktreeRoots } from "../lib/git-worktrees.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
 
 // ─── rt doppler init ─────────────────────────────────────────────────────────
@@ -106,23 +107,6 @@ export async function syncCommand(
 
   console.log(`\n  ${green}✓${reset} wrote ${bold}${summary.wrote}${reset} entries`);
   console.log(`    ${dim}${summary.unchanged} unchanged, ${summary.overridden} overridden${reset}\n`);
-}
-
-/**
- * Enumerate this repo's worktree roots via `git worktree list --porcelain`.
- * Returns absolute paths.
- */
-function listWorktreeRoots(repoRoot: string): string[] {
-  const out = execSync("git worktree list --porcelain", {
-    cwd: repoRoot, encoding: "utf8", stdio: "pipe",
-  });
-  const roots: string[] = [];
-  for (const line of out.split("\n")) {
-    if (line.startsWith("worktree ")) {
-      roots.push(line.slice("worktree ".length).trim());
-    }
-  }
-  return roots;
 }
 
 // ─── rt doppler status ───────────────────────────────────────────────────────
