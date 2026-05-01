@@ -48,4 +48,22 @@ describe("loadDopplerConfig", () => {
       "enclave.config":  "dev",
     });
   });
+
+  test("filters out non-object scoped entries (null, scalars)", () => {
+    const yaml = [
+      "scoped:",
+      "    /good:",
+      "        token: secret-good",
+      "    /bad-null: null",
+      "    /bad-scalar: 123",
+      "    /bad-string: just-a-string",
+      "",
+    ].join("\n");
+    mkdirSync(join(tmpHome, ".doppler"), { recursive: true });
+    writeFileSync(dopplerConfigPath(), yaml);
+
+    const cfg = loadDopplerConfig();
+    expect(Object.keys(cfg.scoped).sort()).toEqual(["/good"]);
+    expect(cfg.scoped["/good"]?.token).toBe("secret-good");
+  });
 });
