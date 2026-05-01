@@ -86,8 +86,13 @@ Properties:
 
 `~/.doppler/.doppler.yaml` is a shared mutable file used by both Doppler CLI and the reconciler.
 
-- The reconciler reads-modifies-writes inside a flock on the file (or a sentinel `~/.doppler/.rt-doppler.lock`). Doppler CLI doesn't lock, but its writes are quick and atomic at the YAML-write level — collisions are rare and the worst case is a re-read on next tick to converge.
-- Multiple rt daemons (e.g. on different machines via shared home) shouldn't be a real-world concern, but the lock prevents corruption regardless.
+The implementation uses **atomic-rename-only** for write safety: `writeDopplerConfig` writes to `.doppler.yaml.tmp` and `renameSync`s over the destination. Rename is atomic on the same filesystem, so readers (Doppler CLI, the reconciler itself on the next tick) never see a partial write. We deliberately do **not** take a `flock` for the following reasons:
+
+- Doppler CLI itself never holds a lock on the file; adding one in rt would only protect rt-vs-rt races, not rt-vs-Doppler races.
+- The narrow remaining race — user runs `doppler setup -p X -c staging` while a reconciler tick is mid-flight — can in theory lose the user's write. In practice the window is single-digit milliseconds (the reconciler's read-modify-write is microseconds of work, only the YAML stringify + atomic rename takes any time).
+- If the lost-write case ever does happen, the user can detect it via `rt doppler status` showing `ok` instead of `override`, and re-run `doppler setup`. No silent corruption, no inconsistent state.
+
+For users with multiple machines sharing `~/.doppler/.doppler.yaml` (e.g. via a synced home directory), races are still rare and recoverable. If real-world usage shows the race biting users, adding `flock` is an easy follow-up — but doing it preemptively without evidence would be premature.
 
 ## CLI surface
 
