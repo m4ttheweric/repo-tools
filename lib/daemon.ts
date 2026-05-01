@@ -546,7 +546,7 @@ async function refreshCacheImpl(): Promise<void> {
     log(`cache: refresh complete (${Object.keys(cache.entries).length} entries)`);
 
     // Check for state transitions and fire notifications
-    checkAndNotify(cache.entries, portCacheRef.ports, log, getCurrentUserId());
+    checkAndNotify(cache.entries, portCacheRef.ports, log, getCurrentUserId(), loadRepoIndex);
 
     // Auto-park worktrees whose MRs just merged/closed.
     try {
