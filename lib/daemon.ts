@@ -80,6 +80,8 @@ import { createWorkspaceHandlers } from "./daemon/handlers/workspace.ts";
 import { createMRHandlers }        from "./daemon/handlers/mr.ts";
 import { createParkingLotHandlers } from "./daemon/handlers/parking-lot.ts";
 import { createDopplerHandlers } from "./daemon/handlers/doppler.ts";
+import { createAutoFixHandlers } from "./daemon/handlers/auto-fix.ts";
+import { sweepStaleArtifacts as sweepAutoFixArtifacts } from "./daemon/auto-fix.ts";
 import { reconcileForRepo } from "./daemon/doppler-sync.ts";
 import { listWorktreeRoots } from "./git-worktrees.ts";
 import { createDiscussionHandlers } from "./daemon/handlers/discussions.ts";
@@ -546,7 +548,7 @@ async function refreshCacheImpl(): Promise<void> {
     log(`cache: refresh complete (${Object.keys(cache.entries).length} entries)`);
 
     // Check for state transitions and fire notifications
-    checkAndNotify(cache.entries, portCacheRef.ports, log, getCurrentUserId());
+    checkAndNotify(cache.entries, portCacheRef.ports, log, getCurrentUserId(), loadRepoIndex);
 
     // Auto-park worktrees whose MRs just merged/closed.
     try {
@@ -634,6 +636,7 @@ const routedHandlers: HandlerMap = {
   ...createMRHandlers(),
   ...createParkingLotHandlers(handlerCtx),
   ...createDopplerHandlers(handlerCtx),
+  ...createAutoFixHandlers(handlerCtx),
   ...createDiscussionHandlers(handlerCtx, broadcast),
 };
 
@@ -917,6 +920,14 @@ export function startDaemon(): void {
 
   // Discover and watch repos
   refreshWatchedRepos();
+
+  // Auto-fix: sweep any leftover ephemeral worktrees from a previous daemon
+  // process. Cheap (file stats only) and bounded.
+  try {
+    sweepAutoFixArtifacts(loadRepoIndex, log);
+  } catch (err) {
+    log(`auto-fix: stale-sweep failed: ${err}`);
+  }
 
   // Restore workspace sync watchers
   try {
