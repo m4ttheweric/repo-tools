@@ -50,7 +50,16 @@ export function loadDopplerConfig(): DopplerConfig {
     if (!parsed.scoped || typeof parsed.scoped !== "object") {
       return { ...parsed, scoped: {} };
     }
-    return parsed as DopplerConfig;
+    // Validate each scoped value is an object — guards downstream callers
+    // (addScopedEntry, etc.) from null/string/number values that may have
+    // crept in via hand-edits to ~/.doppler/.doppler.yaml.
+    const scoped: Record<string, DopplerScopedEntry> = {};
+    for (const [key, val] of Object.entries(parsed.scoped)) {
+      if (val && typeof val === "object" && !Array.isArray(val)) {
+        scoped[key] = val as DopplerScopedEntry;
+      }
+    }
+    return { ...parsed, scoped };
   } catch {
     return { scoped: {} };
   }
