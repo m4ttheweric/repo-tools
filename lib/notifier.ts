@@ -20,6 +20,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { RT_DIR } from "./daemon-config.ts";
 import type { PortEntry } from "./port-scanner.ts";
+import type { MrSnapshot } from "./daemon/auto-fix-eligibility.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -94,6 +95,10 @@ export const NOTIFICATION_TYPES = [
   { key: "needs_rebase",      label: "Needs rebase",        description: "When your branch falls behind target" },
   { key: "merge_error",       label: "Merge error",         description: "When auto-merge or merge train fails" },
   { key: "stale_port",        label: "Stale processes",     description: "When a dev server has been running 6h+" },
+  { key: "auto_fix_pushed",   label: "Auto-fix pushed",     description: "When rt auto-fix successfully pushed a fix" },
+  { key: "auto_fix_skipped",  label: "Auto-fix skipped",    description: "When rt auto-fix declined to attempt a fix" },
+  { key: "auto_fix_rejected", label: "Auto-fix rejected",   description: "When rt auto-fix's diff was rejected for scope/denylist violation" },
+  { key: "auto_fix_error",    label: "Auto-fix error",      description: "When rt auto-fix errored during a fix attempt" },
 ] as const;
 
 export type NotificationPrefs = Record<string, boolean>;
@@ -345,6 +350,71 @@ interface CacheEntry {
   fetchedAt: number;
 }
 
+function buildMrSnapshot(entry: CacheEntry, currentUserId: string | null): MrSnapshot | null {
+  const mr: any = entry.mr;
+  if (!mr) return null;
+  return {
+    authorIsMe:            !!currentUserId && String(mr.authorId ?? mr.author?.id ?? "") === currentUserId,
+    status:                String(mr.status ?? "opened"),
+    isApproved:            !!mr.reviews?.isApproved,
+    changesRequested:      Array.isArray(mr.reviews?.summaries)
+                             ? mr.reviews.summaries.some((s: any) => s.state === "changes_requested")
+                             : false,
+    pipelineStatus:        String(mr.pipeline?.status ?? ""),
+    pipelineSha:           String(mr.pipeline?.sha ?? mr.pipeline?.ref ?? mr.head?.sha ?? mr.headSha ?? ""),
+    flakeRetriedAndPassed: Array.isArray(mr.pipeline?.jobs)
+                             ? mr.pipeline.jobs.some((j: any) => j.retries?.some?.((r: any) => r.status === "success"))
+                             : false,
+  };
+}
+
+async function maybeFireAutoFix(
+  repoName: string,
+  repoPath: string,
+  entry: CacheEntry,
+  branch: string,
+  currentUserId: string | null,
+  log: (m: string) => void,
+): Promise<void> {
+  const mr = entry.mr;
+  if (!mr) return;
+  const headSha = String(mr.head?.sha ?? mr.headSha ?? mr.pipeline?.sha ?? "");
+  if (!headSha) return;
+  const target  = String(mr.target?.branch ?? mr.targetBranch ?? "main");
+  const snapshot = buildMrSnapshot(entry, currentUserId);
+  if (!snapshot) return;
+
+  const { runAutoFix } = await import("./daemon/auto-fix.ts");
+  const failingJobs = Array.isArray(mr.pipeline?.jobs)
+    ? mr.pipeline.jobs.filter((j: any) => j.status === "failed")
+    : [];
+
+  const jobLogs = failingJobs.map((j: any) => ({
+    name:  String(j.name ?? "job"),
+    trace: String(j.trace ?? "(trace not cached — agent should fetch via project tooling)").slice(0, 2000),
+  }));
+
+  const gitContext = (() => {
+    try {
+      const refSpec = `origin/${target}...${headSha}`;
+      const opts = { cwd: repoPath, encoding: "utf8" as const, stdio: "pipe" as const };
+      return {
+        commits:      execSync(`git log ${refSpec} --pretty=format:"- %h %s" -n 20`, opts).trim(),
+        changedFiles: execSync(`git diff ${refSpec} --name-only`, opts).trim(),
+        diffStat:     execSync(`git diff ${refSpec} --shortstat`, opts).trim(),
+        diff:         execSync(`git diff ${refSpec}`, opts).slice(0, 80 * 1024),
+      };
+    } catch {
+      return { commits: "", changedFiles: "", diffStat: "", diff: "" };
+    }
+  })();
+
+  runAutoFix({
+    repoName, repoPath, branch, sha: headSha, target, mr: snapshot,
+    jobLogs, gitContext, log,
+  }).catch(err => log(`auto-fix: top-level failure: ${err}`));
+}
+
 function numericUserId(id: unknown): string | null {
   if (typeof id !== "string" && typeof id !== "number") return null;
   const match = String(id).match(/(\d+)$/);
@@ -397,6 +467,7 @@ function detectBranchTransitions(
   prefs: NotificationPrefs,
   log: (msg: string) => void,
   currentUserId: number | null,
+  repoIndex: () => Record<string, string>,
 ): void {
   for (const [branch, entry] of Object.entries(current)) {
     // If the MR slot is null we have no fresh data — skipping prevents
@@ -448,6 +519,17 @@ function detectBranchTransitions(
         fired.add(key);
         log(`notify: pipeline failed on ${branch} [was=${was.pipelineStatus} now=${now.pipelineStatus}]`);
         if (isEnabled(prefs, "pipeline_failed")) notify("Pipeline Failed", branchShort, mrUrl, "pipeline_failed");
+
+        // Auto-fix attempt — independent of the user's notification preferences;
+        // gating happens inside runAutoFix's eligibility evaluator.
+        const repos = repoIndex();
+        const repoName = entry.repoName;
+        const repoPath = repoName ? repos[repoName] : undefined;
+        if (repoName && repoPath) {
+          maybeFireAutoFix(repoName, repoPath, entry, branch, numericUserId(currentUserId), log).catch(err =>
+            log(`auto-fix: dispatch failed for ${branch}: ${err}`),
+          );
+        }
       } else {
         log(`notify: suppressed duplicate pipeline_failed on ${branch}`);
       }
@@ -628,13 +710,14 @@ export function checkAndNotify(
   ports: PortEntry[],
   log: (msg: string) => void,
   currentUserId: number | null = null,
+  repoIndex: () => Record<string, string> = () => ({}),
 ): void {
   const state = loadState();
   const prefs = loadNotificationPrefs();
   const fired = new Set(state.fired);
 
   // Branch transitions
-  detectBranchTransitions(state.branches, cacheEntries, fired, prefs, log, currentUserId);
+  detectBranchTransitions(state.branches, cacheEntries, fired, prefs, log, currentUserId, repoIndex);
 
   // Port staleness
   detectStalePortTransitions(state.ports, ports, prefs, log);
