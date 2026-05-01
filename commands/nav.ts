@@ -18,7 +18,6 @@ import { spawnSync } from "child_process";
 import { homedir } from "os";
 import { openDirectoryInEditor } from "./code.ts";
 
-const UP = "__rt_nav_up__";
 
 function tildeify(p: string): string {
   const home = homedir();
@@ -226,10 +225,6 @@ export async function navigate(args: string[]): Promise<void> {
     const atRoot = cwd === "/";
 
     const options: FzfOption[] = [
-      ...(!atRoot
-        ? [{ value: UP, label: "↰ ..", hint: tildeify(dirname(cwd)) }]
-        : []),
-
       ...folders.map((name) => ({
         value: "d:" + name,
         label: "📁 " + name,
@@ -247,8 +242,6 @@ export async function navigate(args: string[]): Promise<void> {
       return;
     }
 
-    // Skip the "↰ .." sentinel for the initial cursor when present and no resume state.
-    const defaultPos = !atRoot && options.length > 1 ? 2 : null;
     const { value: choice, key, query } = await runFzf(
       options,
       tildeify(cwd),
@@ -256,19 +249,17 @@ export async function navigate(args: string[]): Promise<void> {
       undefined,
       resumeQuery,
       resumeValue,
-      defaultPos,
     );
 
     // Clear resume state by default; ctrl-k branches re-set it below.
     resumeQuery = "";
     resumeValue = "";
 
-    // ctrl-k: open action menu on highlighted item (skip on .. and empty rows)
+    // ctrl-k: open action menu on highlighted item (skip on empty rows)
     if (key === "ctrl-k") {
-      if (choice === null || choice === UP) {
-        // No-op, but preserve filter state
+      if (choice === null) {
         resumeQuery = query;
-        resumeValue = choice ?? "";
+        resumeValue = "";
         continue;
       }
       const kind: ItemKind = choice[0] === "d" ? "folder" : "file";
@@ -294,16 +285,6 @@ export async function navigate(args: string[]): Promise<void> {
     }
 
     if (choice === null) return;
-
-    if (choice === UP) {
-      if (key === "ctrl-space") {
-        process.stdout.write = realStdoutWrite;
-        realStdoutWrite(dirname(cwd) + "\n");
-        return;
-      }
-      cwd = dirname(cwd);
-      continue;
-    }
 
     const kind = choice[0];
     const name = choice.slice(2);
