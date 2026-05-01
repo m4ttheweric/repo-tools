@@ -91,8 +91,22 @@ All operations happen inside the daemon process; the user sees nothing in their 
 2. **Create worktree:** `git -C <main-repo-path> worktree add <worktree-path> origin/<branch>` (using the failing branch directly).
 3. **Verify HEAD:** `git -C <worktree-path> rev-parse HEAD` must equal the MR HEAD. Else abort with `rejected: HEAD drifted` and remove the worktree.
 4. **Reconcile Doppler:** call the Doppler-sync reconciler (see prerequisite spec) for this repo. The reconciler walks the template's per-app paths and writes any missing entries to `~/.doppler/.doppler.yaml`. After this step, every app subdir in the new worktree has its Doppler project + config bound.
-5. **Install dependencies:** `bun install` (or whatever the project's install command is — initial implementation hard-codes `bun install`; configurable via `auto-fix.json` later). Bun's content-addressable cache makes this seconds, not minutes, even for a fresh worktree.
+5. **Run setup commands** to bring the worktree to a state where the agent can validate locally. The daemon resolves these in this order:
+   - If `auto-fix.json` has an explicit `setupCommands` array → run each command in order, fail-fast on non-zero exit.
+   - Otherwise, **detect from lockfiles** in the worktree root and run the corresponding install command:
+     - `bun.lock` or `bun.lockb` → `bun install`
+     - `pnpm-lock.yaml` → `pnpm install --frozen-lockfile`
+     - `yarn.lock` → `yarn install --frozen-lockfile`
+     - `package-lock.json` → `npm ci`
+     - `Gemfile.lock` → `bundle install`
+     - `go.sum` → `go mod download`
+     - `requirements.txt` → `pip install -r requirements.txt`
+     - none of the above → skip install (the agent itself can attempt to bootstrap if needed; it has shell access in the worktree).
+   - Lockfile detection picks the **first match** in the order above, which mirrors typical JS-monorepo conventions where multiple lockfiles are uncommon. If multiple are present the user can disambiguate via `setupCommands`.
+   - Setup commands run with the same env the agent will get (Doppler env from the reconciler, etc.).
 6. **Run the agent.**
+
+The daemon **never** detects or runs lint / typecheck / test commands itself. Those are the agent's responsibility — the agent inspects the repo's `package.json` scripts, `Makefile`, README, etc. and decides which validation commands to run before committing. The daemon's job is only to bring the worktree to "deps installed, env ready" state.
 
 ### Teardown steps
 
@@ -194,9 +208,13 @@ If validation rejects the agent's diff (out-of-scope or denylist):
     "lineCap": 200,
     "additionalDenylist": ["src/legacy/**"],
     "allowTestFixes": false,
-    "installCommand": ["bun", "install"]
+    "setupCommands": [
+      ["bun", "install"],
+      ["bun", "run", "gen"]
+    ]
   }
   ```
+  `setupCommands` is optional. When omitted, the daemon detects the install command from lockfiles (see "Run setup commands" above). When set, it overrides detection entirely — useful for monorepos that need multiple bootstrap steps (install + codegen + asset build).
 - `~/.rt/<repo>/auto-fix-log.json` — append-only ring (last 100 entries).
 - `~/.rt/<repo>/auto-fix-notes/<branch>-<sha>.md` — agent stderr / reasoning for skipped/error outcomes.
 - `~/.rt/<repo>/auto-fix.lock` — active lock (deleted on completion).
@@ -235,7 +253,8 @@ The previous design's `auto_fix_unavailable` notification (worktree missing/dirt
 - **User force-pushes during agent run** — daemon's pre-commit HEAD-match check catches it. Tear down, abort.
 - **Daemon crashes mid-run** — stale lock, orphaned worktree on disk. Stale lock cleared on next start; orphaned worktrees pruned by the stale-sweep (anything under `auto-fix-worktrees/` older than 1h gets `git worktree remove --force`). User sees no leftover state.
 - **Two MRs fail simultaneously in the same repo** — first eligible MR claims the per-repo lock; second is queued (most-recent-wins). When the first releases, the queued one re-evaluates from scratch.
-- **`bun install` fails in the ephemeral worktree** — agent reports `RESULT: error` with the install output; counts as an error attempt; user sees notification with the failure reason. Likely cause: a recent dep change the user hasn't pulled into their main checkout's lockfile, or a network/registry issue.
+- **A setup command fails in the ephemeral worktree** — daemon aborts before spawning the agent; logs outcome `setup_failed` with the command that failed and its stderr; counts as an error attempt; user sees notification with the failure reason. Likely causes: a recent dep change with a lockfile not yet pulled, a network/registry issue, or a `setupCommands` override referencing a missing tool.
+- **No lockfile detected and no `setupCommands` configured** — daemon skips the install step entirely. The agent runs in a worktree without `node_modules`. Whether that's fine depends on the failure type (lint-only fixes might work; type-checking won't). The agent is told the setup status in the prompt so it can decide whether to attempt or `RESULT: skipped`.
 - **Doppler sync hasn't run yet for this repo (no template exists)** — the install or validation step that depends on Doppler will fail; agent reports `RESULT: error` with that error. User sees notification, runs `rt doppler init` once, future fixes work.
 - **Disk pressure from accumulated ephemeral worktrees** — the stale sweep handles it (runs every hour). Worktrees during a fix run are typically <30s of life; concurrent worktrees across repos could briefly accumulate but are bounded by the per-repo lock.
 
@@ -244,7 +263,8 @@ The previous design's `auto_fix_unavailable` notification (worktree missing/dirt
 These are the files / modules that will likely change. The implementation plan, written next, will spell out the exact ordering and tests:
 
 - `lib/notifier.ts` — add `auto_fix_pushed`, `auto_fix_skipped`, `auto_fix_rejected` event keys; trigger auto-fix evaluation on the same `pipeline:failed` transition that currently fires the notification (`lib/notifier.ts:440-470`).
-- `lib/auto-fix-config.ts` (new) — read/write `~/.rt/<repo>/auto-fix.json` (caps, denylist additions, enabled flag, install command).
+- `lib/auto-fix-config.ts` (new) — read/write `~/.rt/<repo>/auto-fix.json` (caps, denylist additions, enabled flag, optional `setupCommands` override).
+- `lib/setup-commands.ts` (new) — lockfile detection helper. Pure function: takes a worktree path, returns either the detected install command or `null`. Tested independently of the daemon.
 - `lib/daemon/auto-fix.ts` (new) — core engine: gate evaluator, ephemeral worktree provisioner + teardown, lock manager, agent invocation, post-agent validation, commit/push, log writer, stale-sweep.
 - `lib/daemon/handlers/auto-fix.ts` (new) — IPC handlers for log/notes/config reads and writes (`auto-fix:log:read`, `auto-fix:notes:read`, `auto-fix:config:get`, `auto-fix:config:set`, `auto-fix:status`).
 - `commands/auto-fix.ts` (new) — top-level command surface: `enable`, `disable`, `log`, `notes`, `status`. Wired into `cli.ts`.
