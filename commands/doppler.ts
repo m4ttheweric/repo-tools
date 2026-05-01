@@ -18,6 +18,7 @@
 
 import { execSync } from "child_process";
 import { existsSync } from "fs";
+import { join } from "path";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import {
   captureFromActualConfig, loadTemplate, saveTemplate, templatePath,
@@ -122,4 +123,68 @@ function listWorktreeRoots(repoRoot: string): string[] {
     }
   }
   return roots;
+}
+
+// ─── rt doppler status ───────────────────────────────────────────────────────
+
+interface StatusRow {
+  path:      string;
+  template:  string;          // "<project>/<config>"
+  actual:    string | null;   // null = missing
+  status:    "ok" | "missing" | "overridden";
+}
+
+export async function statusCommand(
+  _args: string[],
+  ctx: CommandContext,
+): Promise<void> {
+  const repoName = ctx.identity!.repoName;
+  const repoRoot = ctx.identity!.repoRoot;
+
+  const template = loadTemplate(repoName);
+  if (template === null || template.length === 0) {
+    console.log(`\n  ${red}no template at${reset} ${dim}${templatePath(repoName)}${reset}`);
+    console.log(`  ${dim}run${reset} ${bold}rt doppler init${reset}\n`);
+    process.exit(1);
+  }
+
+  const dopplerCfg = loadDopplerConfig();
+  const worktreeRoots = listWorktreeRoots(repoRoot);
+
+  console.log(`\n  ${bold}${cyan}rt doppler status${reset} ${dim}(${repoName})${reset}\n`);
+
+  for (const root of worktreeRoots) {
+    const rows: StatusRow[] = [];
+    for (const entry of template) {
+      const absPath = join(root, entry.path);
+      const actual  = dopplerCfg.scoped[absPath];
+      const wantStr = `${entry.project}/${entry.config}`;
+      if (!actual) {
+        rows.push({ path: entry.path, template: wantStr, actual: null, status: "missing" });
+        continue;
+      }
+      const actStr = `${actual["enclave.project"] ?? "?"}/${actual["enclave.config"] ?? "?"}`;
+      if (
+        actual["enclave.project"] === entry.project &&
+        actual["enclave.config"]  === entry.config
+      ) {
+        rows.push({ path: entry.path, template: wantStr, actual: actStr, status: "ok" });
+      } else {
+        rows.push({ path: entry.path, template: wantStr, actual: actStr, status: "overridden" });
+      }
+    }
+
+    const widest = Math.max(...rows.map(r => r.path.length));
+    console.log(`  ${bold}${root}${reset}`);
+    for (const row of rows) {
+      const icon = row.status === "ok"         ? `${green}✓${reset}`
+                : row.status === "missing"     ? `${red}✗${reset}`
+                : /* overridden */               `${yellow}~${reset}`;
+      const label = row.status === "ok"         ? `${dim}${row.template}${reset}`
+                  : row.status === "missing"     ? `${red}missing${reset} ${dim}(want ${row.template})${reset}`
+                  : /* overridden */               `${yellow}override${reset} ${dim}(want ${row.template}, got ${row.actual})${reset}`;
+      console.log(`    ${icon}  ${row.path.padEnd(widest)}  ${label}`);
+    }
+    console.log("");
+  }
 }
