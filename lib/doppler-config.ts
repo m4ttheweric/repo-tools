@@ -82,3 +82,45 @@ export function loadDopplerConfig(): DopplerConfig {
     return { scoped: {} };
   }
 }
+
+/** Read the scoped entry for a path, or `undefined` if absent. */
+export function getScopedEntry(
+  config: DopplerConfig,
+  absolutePath: string,
+): DopplerScopedEntry | undefined {
+  return config.scoped[absolutePath];
+}
+
+/**
+ * Result of attempting to add an entry:
+ * - "wrote"      → entry was missing; we added it
+ * - "unchanged"  → entry already exists with matching project + config
+ * - "overridden" → entry exists but differs from what we wanted; we did NOT modify it
+ *
+ * Mutates `config.scoped` in place when result is "wrote". The caller must
+ * call `writeDopplerConfig(config)` to persist.
+ */
+export type AddScopedResult = "wrote" | "unchanged" | "overridden";
+
+export function addScopedEntry(
+  config: DopplerConfig,
+  absolutePath: string,
+  project: string,
+  configName: string,
+): AddScopedResult {
+  const existing = config.scoped[absolutePath];
+  if (existing === undefined) {
+    config.scoped[absolutePath] = {
+      "enclave.project": project,
+      "enclave.config":  configName,
+    };
+    return "wrote";
+  }
+  if (
+    existing["enclave.project"] === project &&
+    existing["enclave.config"]  === configName
+  ) {
+    return "unchanged";
+  }
+  return "overridden";
+}
