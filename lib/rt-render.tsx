@@ -324,17 +324,14 @@ export async function filterableSelect(opts: {
   message: string;
   options: SelectOption[];
   stderr?: boolean;
-  /** When set, appends a "↩ {backLabel}" sentinel. Throws BackNavigation when selected. */
+  /** When set, shows `ctrl-up: back` in the header and throws BackNavigation on ctrl-up. */
   backLabel?: string;
   /** Use fzf's exact-match mode instead of fuzzy matching. */
   exact?: boolean;
 }): Promise<string | null> {
   const { spawnSync, execSync } = await import("child_process");
 
-  // Prepend back sentinel if backLabel is provided
-  const options = opts.backLabel
-    ? [{ value: BACK, label: `↩ ${opts.backLabel}`, hint: "" }, ...opts.options]
-    : opts.options;
+  const options = opts.options;
 
   let hasFzf = false;
   try {
@@ -350,13 +347,8 @@ export async function filterableSelect(opts: {
   const input = options
     .map((o) => {
       const pad = " ".repeat(labelWidth - o.label.length);
-      // Keep label/hint as separate tab-delimited fields so --nth=1 scopes search
-      // to the label only. --tabstop=1 in the fzf args keeps the tab from
-      // expanding to the next 8-column stop and creating a huge visual gap.
       const open = o.color ?? "";
       const close = o.color ? "\x1b[0m" : "";
-      // For colored rows (e.g. the last-run sentinel), don't apply the dim
-      // attribute to the hint — it would crush contrast against the row's bg.
       const hint = o.hint
         ? (o.color ? o.hint : `\x1b[2m${o.hint}\x1b[22m`)
         : "";
@@ -364,19 +356,12 @@ export async function filterableSelect(opts: {
     })
     .join("\n");
 
-  // If the top row is a "go back" sentinel (BACK value, or any caller-injected
-  // option whose label starts with the ↩ arrow), start the cursor on row 2 so
-  // the user lands on a real choice rather than the escape hatch.
-  const firstIsBack =
-    options.length > 1 &&
-    (options[0]!.value === BACK || options[0]!.label.trimStart().startsWith("↩"));
-  const startBindings = firstIsBack ? ["--bind=start:pos(2)"] : [];
+  const header = opts.backLabel
+    ? "enter: select  |: OR  !: exclude  ctrl-up: back"
+    : "enter: select  |: OR  !: exclude";
 
   const result = spawnSync("fzf", [
     "--ansi",
-    // --with-nth renumbers fields: field 1 of the display = original field 2 (label),
-    // field 2 of the display = original field 3 (hint). --nth operates on the
-    // transformed fields, so --nth=1 restricts search to the label only.
     "--with-nth=2..",
     "--nth=1",
     "--delimiter=\t",
@@ -386,25 +371,35 @@ export async function filterableSelect(opts: {
     "--border=rounded",
     `--border-label= ${opts.message} `,
     "--prompt=filter: ",
-    "--header=enter: select  |: OR  !: exclude",
+    `--header=${header}`,
     "--no-mouse",
-    // Match the runner's lane-highlight brand color (T.pink).
+    "--print-query",
+    "--expect=ctrl-up",
     `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}`,
     ...(opts.exact ? ["--exact"] : []),
-    ...startBindings,
   ], {
     input,
     stdio: ["pipe", "pipe", "inherit"],
     encoding: "utf8",
   });
 
-  if (result.status !== 0 || !result.stdout?.trim()) {
+  if (result.status !== 0) return null;
+
+  // --print-query + --expect always produce 3 lines:
+  //   line 0: query text
+  //   line 1: key pressed ("" for Enter, "ctrl-up" if that key)
+  //   line 2: selected row (tab-delimited)
+  const lines = (result.stdout ?? "").split("\n");
+  const key = lines[1]?.trim() || null;
+  const raw = lines[2]?.trim() ?? "";
+
+  if (key === "ctrl-up") {
+    if (opts.backLabel) throw new BackNavigation();
     return null;
   }
 
-  const value = result.stdout.trim().split("\t")[0]!;
-  if (value === BACK) throw new BackNavigation();
-  return value;
+  if (!raw) return null;
+  return raw.split("\t")[0]!;
 }
 
 // ─── Step Runner ─────────────────────────────────────────────────────────────
