@@ -234,19 +234,21 @@ try {
 }
 
 // Resolve the user's full PATH once at startup.
-// Strategy: use `zsh -lc` (login shell, no interactive) — fast because it
-// sources .zprofile/.zlogin but skips Oh My Zsh compinit (~28s overhead).
+// Strategy: use `$SHELL -ilc` (interactive login). Sources .zprofile AND
+// .zshrc, which is where most users actually put their PATH exports
+// (bun, ~/.local/bin, etc.). Slower than `-lc` due to compinit/OMZ, but
+// the daemon is long-running so the one-time cost is irrelevant.
 // Then layer in an explicit NVM resolution so nvm-managed tools (node, pnpm,
 // etc.) are included regardless of how the daemon was launched.
 {
   const shell = process.env.SHELL ?? "/bin/zsh";
   let resolvedPath = process.env.PATH ?? ""; // baseline
 
-  // 1. Login shell profile (fast: no compinit, no OMZ theme)
+  // 1. Interactive login shell — sources both .zprofile and .zshrc.
   try {
-    resolvedPath = execSync(`${shell} -lc 'echo $PATH' 2>/dev/null`, {
+    resolvedPath = execSync(`${shell} -ilc 'echo $PATH' 2>/dev/null`, {
       encoding: "utf8",
-      timeout: 8000,
+      timeout: 30000,
     }).trim() || resolvedPath;
   } catch { /* timeout or shell error — keep baseline */ }
 
