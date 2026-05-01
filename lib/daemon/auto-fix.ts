@@ -306,3 +306,214 @@ export function resetWorktree(worktreePath: string, preAgentSha: string): void {
     execSync(`git -C "${worktreePath}" clean -fd`, { stdio: "pipe" });
   } catch { /* best-effort */ }
 }
+
+import { runAgent, resolveAgentInvocation } from "../agent-runner.ts";
+import { evaluateEligibility, type MrSnapshot } from "./auto-fix-eligibility.ts";
+import {
+  assembleAutoFixPrompt, parseAgentResult, type JobLog, type GitContext,
+} from "./auto-fix-agent-protocol.ts";
+import { acquireLock, releaseLock } from "../auto-fix-lock.ts";
+import { appendLogEntry, writeNotes } from "../auto-fix-log.ts";
+
+const COOLDOWN_MS  = 5 * 60 * 1000;
+const ATTEMPT_CAP  = 2;
+
+// ─── In-memory inflight + queue ──────────────────────────────────────────────
+
+const inflight = new Set<string>();
+const queued = new Map<string, AutoFixContext>();
+
+// ─── AutoFixContext + outcomes ───────────────────────────────────────────────
+
+export interface AutoFixContext {
+  repoName:       string;
+  repoPath:       string;
+  branch:         string;
+  sha:            string;
+  target:         string;
+  mr:             MrSnapshot;
+  jobLogs:        JobLog[];
+  gitContext:     GitContext;
+  log:            (msg: string) => void;
+  notify?:        (kind: "auto_fix_pushed" | "auto_fix_skipped" | "auto_fix_rejected", details: string) => void;
+}
+
+export type AutoFixOutcome =
+  | { kind: "ineligible";    reason: string }
+  | { kind: "queued"                       }
+  | { kind: "fixed";         commitSha: string; summary: string }
+  | { kind: "skipped";       reason: string }
+  | { kind: "error";         error: string }
+  | { kind: "rejected_diff"; reason: string };
+
+// ─── Orchestrator ────────────────────────────────────────────────────────────
+
+/**
+ * Top-level entry. Fire-and-forget safe — caller does not need to await.
+ * Per-repo serialization via in-memory inflight set + queue (most-recent-wins).
+ */
+export async function runAutoFix(ctx: AutoFixContext): Promise<AutoFixOutcome> {
+  const { repoName, log } = ctx;
+
+  if (inflight.has(repoName)) {
+    queued.set(repoName, ctx);
+    log(`auto-fix: ${repoName} in flight; queued ${ctx.branch}@${ctx.sha.slice(0, 8)}`);
+    return { kind: "queued" };
+  }
+  inflight.add(repoName);
+
+  try {
+    return await runOnce(ctx);
+  } finally {
+    inflight.delete(repoName);
+    const next = queued.get(repoName);
+    if (next) {
+      queued.delete(repoName);
+      runAutoFix(next).catch(err => log(`auto-fix: queued retry failed: ${err}`));
+    }
+  }
+}
+
+async function runOnce(ctx: AutoFixContext): Promise<AutoFixOutcome> {
+  const { repoName, repoPath, branch, sha, target, mr, log } = ctx;
+  const startedAt = Date.now();
+
+  // ── Eligibility ─────────────────────────────────────────────────────────
+  const eligibility = evaluateEligibility({
+    repoName, branch, headSha: sha, mr,
+    now: startedAt, cooldownMs: COOLDOWN_MS, attemptCap: ATTEMPT_CAP,
+  });
+  if (!eligibility.eligible) {
+    log(`auto-fix: ineligible — ${eligibility.reason}`);
+    return { kind: "ineligible", reason: eligibility.reason };
+  }
+
+  // ── Lock ────────────────────────────────────────────────────────────────
+  if (!acquireLock(repoName, { branch, sha })) {
+    log(`auto-fix: lock held; skipping`);
+    return { kind: "ineligible", reason: "lock held by another process" };
+  }
+
+  try {
+    // ── Provision ───────────────────────────────────────────────────────
+    const prov = await provisionWorktree({ repoName, repoPath, branch, sha, log });
+    if (!prov.ok) {
+      const out: AutoFixOutcome = { kind: "error", error: prov.error };
+      finalize(ctx, startedAt, out);
+      return out;
+    }
+    const wtPath = prov.worktreePath;
+
+    try {
+      // ── Run agent ───────────────────────────────────────────────────
+      const cfg = loadAutoFixConfig(repoName);
+      const denylistForPrompt = [...DEFAULT_DENYLIST, ...cfg.additionalDenylist];
+      const prompt = assembleAutoFixPrompt({
+        branch, target,
+        jobLogs: ctx.jobLogs, gitContext: ctx.gitContext,
+        fileCap: cfg.fileCap, lineCap: cfg.lineCap,
+        denylist: denylistForPrompt,
+        allowTestFixes: cfg.allowTestFixes,
+      });
+
+      log(`auto-fix: spawning agent in ${wtPath}`);
+      const agentRes = await runAgent({
+        ...resolveAgentInvocation({}),
+        prompt, cwd: wtPath,
+      });
+      const result = parseAgentResult(agentRes.stdout);
+
+      if (result.kind === "skipped") {
+        writeNotes(repoName, branch, sha, `# Auto-fix skipped\n\nReason: ${result.reason}\n\n## Agent stdout (tail)\n\n\`\`\`\n${tail(agentRes.stdout, 4000)}\n\`\`\``);
+        const out: AutoFixOutcome = { kind: "skipped", reason: result.reason };
+        finalize(ctx, startedAt, out);
+        return out;
+      }
+      if (result.kind === "error" || result.kind === "unrecognized") {
+        const note = result.kind === "error" ? result.note : "agent exited without RESULT line";
+        writeNotes(repoName, branch, sha, `# Auto-fix error\n\nReason: ${note}\n\n## Agent stdout (tail)\n\n\`\`\`\n${tail(agentRes.stdout, 4000)}\n\`\`\``);
+        const out: AutoFixOutcome = { kind: "error", error: note };
+        finalize(ctx, startedAt, out);
+        return out;
+      }
+
+      // result.kind === "fixed" — validate the diff before committing.
+      const diff = captureWorktreeDiff(wtPath);
+      const validation = validateDiff(diff,
+        { fileCap: cfg.fileCap, lineCap: cfg.lineCap },
+        cfg.additionalDenylist,
+      );
+      if (!validation.ok) {
+        const reason = validation.reason === "empty"      ? "agent reported fixed but produced no diff"
+                     : validation.reason === "denylist"   ? `denied path ${validation.offendingPath}`
+                     : /* scope */                           `${validation.violation.kind}=${validation.violation.actual}>${validation.violation.cap}`;
+        resetWorktree(wtPath, sha);
+        writeNotes(repoName, branch, sha, `# Auto-fix rejected\n\nReason: ${reason}\n\nFiles touched:\n${diff.files.map(f => `- ${f}`).join("\n")}\n\nDiff stats: ${diff.insertions} insertions, ${diff.deletions} deletions.\n`);
+        const out: AutoFixOutcome = { kind: "rejected_diff", reason };
+        finalize(ctx, startedAt, out);
+        return out;
+      }
+
+      // Verify HEAD didn't drift mid-agent (third party push).
+      const stillHead = execSync(`git -C "${wtPath}" rev-parse HEAD`, {
+        encoding: "utf8", stdio: "pipe",
+      }).trim();
+      if (stillHead !== sha) {
+        resetWorktree(wtPath, sha);
+        const out: AutoFixOutcome = { kind: "error", error: "HEAD drifted during agent run" };
+        finalize(ctx, startedAt, out);
+        return out;
+      }
+
+      const commit = await commitAndPush(
+        { worktreePath: wtPath, branch, sha, summary: result.summary || "auto-fix" },
+        log,
+      );
+      if (!commit.ok) {
+        const out: AutoFixOutcome = { kind: "error", error: `commit/push failed: ${commit.error}` };
+        finalize(ctx, startedAt, out);
+        return out;
+      }
+
+      const out: AutoFixOutcome = { kind: "fixed", commitSha: commit.newCommitSha, summary: result.summary };
+      finalize(ctx, startedAt, out);
+      return out;
+    } finally {
+      await teardownWorktree(repoPath, wtPath, log);
+    }
+  } finally {
+    releaseLock(repoName);
+  }
+}
+
+// ─── Finalize: log + notify ──────────────────────────────────────────────────
+
+function finalize(ctx: AutoFixContext, startedAt: number, outcome: AutoFixOutcome): void {
+  const { repoName, branch, sha, log, notify } = ctx;
+  const durationMs = Date.now() - startedAt;
+
+  if (outcome.kind === "fixed") {
+    appendLogEntry(repoName, {
+      branch, sha, attemptedAt: startedAt, outcome: "fixed", durationMs,
+      commitSha: outcome.commitSha, reason: outcome.summary,
+    });
+    log(`auto-fix: fixed ${branch}@${sha.slice(0, 8)} → ${outcome.commitSha.slice(0, 8)} (${durationMs}ms)`);
+    notify?.("auto_fix_pushed", outcome.summary);
+  } else if (outcome.kind === "skipped") {
+    appendLogEntry(repoName, { branch, sha, attemptedAt: startedAt, outcome: "skipped", durationMs, reason: outcome.reason });
+    log(`auto-fix: skipped ${branch}@${sha.slice(0, 8)} (${outcome.reason})`);
+    notify?.("auto_fix_skipped", outcome.reason);
+  } else if (outcome.kind === "error") {
+    appendLogEntry(repoName, { branch, sha, attemptedAt: startedAt, outcome: "error", durationMs, reason: outcome.error });
+    log(`auto-fix: error ${branch}@${sha.slice(0, 8)} (${outcome.error})`);
+    notify?.("auto_fix_skipped", outcome.error);
+  } else if (outcome.kind === "rejected_diff") {
+    appendLogEntry(repoName, { branch, sha, attemptedAt: startedAt, outcome: "rejected_diff", durationMs, reason: outcome.reason });
+    log(`auto-fix: rejected ${branch}@${sha.slice(0, 8)} (${outcome.reason})`);
+    notify?.("auto_fix_rejected", outcome.reason);
+  }
+}
+
+function tail(s: string, max: number): string {
+  return s.length > max ? s.slice(s.length - max) : s;
+}
