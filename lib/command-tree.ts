@@ -225,7 +225,7 @@ export async function dispatch(
 
   const handler = await resolveHandler(node, baseDir);
 
-  // Retry loop: if the command throws BackNavigation (user picked "↩ back"),
+  // Retry loop: if the command throws BackNavigation (user pressed ctrl-up),
   // go up one level — show the worktree picker for the current repo —
   // then re-run the handler with the new context.
   while (true) {
