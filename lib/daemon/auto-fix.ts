@@ -335,7 +335,7 @@ export interface AutoFixContext {
   jobLogs:        JobLog[];
   gitContext:     GitContext;
   log:            (msg: string) => void;
-  notify?:        (kind: "auto_fix_pushed" | "auto_fix_skipped" | "auto_fix_rejected", details: string) => void;
+  notify?:        (kind: "auto_fix_pushed" | "auto_fix_skipped" | "auto_fix_rejected" | "auto_fix_error", details: string) => void;
 }
 
 export type AutoFixOutcome =
@@ -438,46 +438,52 @@ async function runOnce(ctx: AutoFixContext): Promise<AutoFixOutcome> {
       }
 
       // result.kind === "fixed" — validate the diff before committing.
-      const diff = captureWorktreeDiff(wtPath);
-      const validation = validateDiff(diff,
-        { fileCap: cfg.fileCap, lineCap: cfg.lineCap },
-        cfg.additionalDenylist,
-      );
-      if (!validation.ok) {
-        const reason = validation.reason === "empty"      ? "agent reported fixed but produced no diff"
-                     : validation.reason === "denylist"   ? `denied path ${validation.offendingPath}`
-                     : /* scope */                           `${validation.violation.kind}=${validation.violation.actual}>${validation.violation.cap}`;
-        resetWorktree(wtPath, sha);
-        writeNotes(repoName, branch, sha, `# Auto-fix rejected\n\nReason: ${reason}\n\nFiles touched:\n${diff.files.map(f => `- ${f}`).join("\n")}\n\nDiff stats: ${diff.insertions} insertions, ${diff.deletions} deletions.\n`);
-        const out: AutoFixOutcome = { kind: "rejected_diff", reason };
+      try {
+        const diff = captureWorktreeDiff(wtPath);
+        const validation = validateDiff(diff,
+          { fileCap: cfg.fileCap, lineCap: cfg.lineCap },
+          cfg.additionalDenylist,
+        );
+        if (!validation.ok) {
+          const reason = validation.reason === "empty"      ? "agent reported fixed but produced no diff"
+                       : validation.reason === "denylist"   ? `denied path ${validation.offendingPath}`
+                       : /* scope */                           `${validation.violation.kind}=${validation.violation.actual}>${validation.violation.cap}`;
+          resetWorktree(wtPath, sha);
+          writeNotes(repoName, branch, sha, `# Auto-fix rejected\n\nReason: ${reason}\n\nFiles touched:\n${diff.files.map(f => `- ${f}`).join("\n")}\n\nDiff stats: ${diff.insertions} insertions, ${diff.deletions} deletions.\n`);
+          const out: AutoFixOutcome = { kind: "rejected_diff", reason };
+          finalize(ctx, startedAt, out);
+          return out;
+        }
+
+        // Verify HEAD didn't drift mid-agent (third party push).
+        const stillHead = execSync(`git -C "${wtPath}" rev-parse HEAD`, {
+          encoding: "utf8", stdio: "pipe",
+        }).trim();
+        if (stillHead !== sha) {
+          resetWorktree(wtPath, sha);
+          const out: AutoFixOutcome = { kind: "error", error: "HEAD drifted during agent run" };
+          finalize(ctx, startedAt, out);
+          return out;
+        }
+
+        const commit = await commitAndPush(
+          { worktreePath: wtPath, branch, sha, summary: result.summary || "auto-fix" },
+          log,
+        );
+        if (!commit.ok) {
+          const out: AutoFixOutcome = { kind: "error", error: `commit/push failed: ${commit.error}` };
+          finalize(ctx, startedAt, out);
+          return out;
+        }
+
+        const out: AutoFixOutcome = { kind: "fixed", commitSha: commit.newCommitSha, summary: result.summary };
+        finalize(ctx, startedAt, out);
+        return out;
+      } catch (err: any) {
+        const out: AutoFixOutcome = { kind: "error", error: `post-agent validation/commit threw: ${err.message ?? String(err)}` };
         finalize(ctx, startedAt, out);
         return out;
       }
-
-      // Verify HEAD didn't drift mid-agent (third party push).
-      const stillHead = execSync(`git -C "${wtPath}" rev-parse HEAD`, {
-        encoding: "utf8", stdio: "pipe",
-      }).trim();
-      if (stillHead !== sha) {
-        resetWorktree(wtPath, sha);
-        const out: AutoFixOutcome = { kind: "error", error: "HEAD drifted during agent run" };
-        finalize(ctx, startedAt, out);
-        return out;
-      }
-
-      const commit = await commitAndPush(
-        { worktreePath: wtPath, branch, sha, summary: result.summary || "auto-fix" },
-        log,
-      );
-      if (!commit.ok) {
-        const out: AutoFixOutcome = { kind: "error", error: `commit/push failed: ${commit.error}` };
-        finalize(ctx, startedAt, out);
-        return out;
-      }
-
-      const out: AutoFixOutcome = { kind: "fixed", commitSha: commit.newCommitSha, summary: result.summary };
-      finalize(ctx, startedAt, out);
-      return out;
     } finally {
       await teardownWorktree(repoPath, wtPath, log);
     }
@@ -506,7 +512,7 @@ function finalize(ctx: AutoFixContext, startedAt: number, outcome: AutoFixOutcom
   } else if (outcome.kind === "error") {
     appendLogEntry(repoName, { branch, sha, attemptedAt: startedAt, outcome: "error", durationMs, reason: outcome.error });
     log(`auto-fix: error ${branch}@${sha.slice(0, 8)} (${outcome.error})`);
-    notify?.("auto_fix_skipped", outcome.error);
+    notify?.("auto_fix_error", outcome.error);
   } else if (outcome.kind === "rejected_diff") {
     appendLogEntry(repoName, { branch, sha, attemptedAt: startedAt, outcome: "rejected_diff", durationMs, reason: outcome.reason });
     log(`auto-fix: rejected ${branch}@${sha.slice(0, 8)} (${outcome.reason})`);
