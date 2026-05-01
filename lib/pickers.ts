@@ -130,6 +130,7 @@ export async function pickFromAllRepos(
         if (err instanceof BackNavigation) continue;
         throw err;
       }
+      if (!worktreePath) process.exit(0);
     }
 
     // If caller wants package-level navigation and this is a monorepo, go one
