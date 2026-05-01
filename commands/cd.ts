@@ -142,6 +142,10 @@ export async function worktreePicker(args: string[]): Promise<void> {
     Object.defineProperty(process.stdout, "columns", { value: process.stderr.columns, configurable: true });
   }
 
+  // After any picker exits (ESC or selection), cursor is just below the 2-line
+  // header. Erase it so the terminal is clean.
+  process.once("exit", () => process.stderr.write("\x1b[2A\x1b[0J"));
+
   // ── Parse flags ─────────────────────────────────────────────────────────────────────
   const forceRepo    = args.includes("--repo");
   const wtIdx        = args.indexOf("--worktree");
@@ -200,6 +204,7 @@ export async function worktreePicker(args: string[]): Promise<void> {
   // ── In a plain multi-worktree repo: worktree picker [unchanged] ──────────
   } else if (currentRepo && currentRepo.worktrees.length > 1) {
     const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot, { stderr: true });
+    if (!result) process.exit(0);
     selectedPath = isSwitchRepo(result)
       ? await pickFromAllRepos(repos, { stderr: true, includePackages: true })
       : result;
