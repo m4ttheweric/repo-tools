@@ -486,6 +486,42 @@ const TREE: Record<string, CommandNode> = {
     },
   },
 
+  "auto-fix": {
+    description: "Auto-fix pipeline failures on approved MRs (daemon-driven; this command is read-only inspection + per-repo toggle)",
+    subcommands: {
+      enable: {
+        description: "Enable auto-fix for this repo",
+        module: "./commands/auto-fix.ts",
+        fn: "enableCommand",
+        context: "repo",
+      },
+      disable: {
+        description: "Disable auto-fix for this repo",
+        module: "./commands/auto-fix.ts",
+        fn: "disableCommand",
+        context: "repo",
+      },
+      log: {
+        description: "Show recent auto-fix attempts",
+        module: "./commands/auto-fix.ts",
+        fn: "logCommand",
+        context: "repo",
+      },
+      notes: {
+        description: "Print the most recent notes file for a branch",
+        module: "./commands/auto-fix.ts",
+        fn: "notesCommand",
+        context: "repo",
+      },
+      status: {
+        description: "Show enabled flag, caps, recent attempts, lock holder",
+        module: "./commands/auto-fix.ts",
+        fn: "statusCommand",
+        context: "repo",
+      },
+    },
+  },
+
   daemon: {
     description: "Manage the rt background daemon",
     subcommands: {
