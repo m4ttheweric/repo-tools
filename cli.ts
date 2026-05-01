@@ -455,6 +455,37 @@ const TREE: Record<string, CommandNode> = {
     },
   },
 
+  doppler: {
+    description: "Per-repo Doppler template + sync into ~/.doppler/.doppler.yaml",
+    subcommands: {
+      init: {
+        description: "Capture existing Doppler entries for this repo into a template",
+        module: "./commands/doppler.ts",
+        fn: "initCommand",
+        context: "repo",
+      },
+      sync: {
+        description: "Apply the template across all worktrees (manual trigger)",
+        module: "./commands/doppler.ts",
+        fn: "syncCommand",
+        context: "repo",
+      },
+      status: {
+        description: "Show template vs. actual config per worktree",
+        module: "./commands/doppler.ts",
+        fn: "statusCommand",
+        context: "repo",
+      },
+      edit: {
+        description: "Open the template in $EDITOR",
+        module: "./commands/doppler.ts",
+        fn: "editCommand",
+        context: "repo",
+        requiresTTY: true,
+      },
+    },
+  },
+
   daemon: {
     description: "Manage the rt background daemon",
     subcommands: {
