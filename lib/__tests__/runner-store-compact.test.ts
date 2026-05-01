@@ -18,8 +18,8 @@ import { compactEntries, normalizeLane } from "../runner-store.ts";
 import type { LaneEntry, LaneConfig } from "../runner-store.ts";
 
 /** Fields the transform does NOT preserve (runtime-derived). */
-function stripRuntime(e: LaneEntry): Omit<LaneEntry, "ephemeralPort" | "branch"> {
-  const { ephemeralPort: _p, branch: _b, ...rest } = e;
+function stripRuntime(e: LaneEntry): Omit<LaneEntry, "ephemeralPort" | "branch" | "id"> {
+  const { ephemeralPort: _p, branch: _b, id: _id, ...rest } = e;
   return rest;
 }
 
@@ -27,8 +27,6 @@ function makeEntry(over: Partial<LaneEntry>): LaneEntry {
   return {
     id:              "x",
     targetDir:       "/repo/pkg-a",
-    pm:              "pnpm",
-    script:          "dev",
     packageLabel:    "pkg-a",
     worktree:        "/repo",
     branch:          "main",
@@ -130,8 +128,8 @@ describe("compact/expand round-trip", () => {
   });
 
   test("distinct service groups compact to separate objects", () => {
-    const api = makeEntry({ id: "api", packageLabel: "api", script: "dev", targetDir: "/repo/api", worktree: "/repo" });
-    const web = makeEntry({ id: "web", packageLabel: "web", script: "dev", targetDir: "/repo/web", worktree: "/repo" });
+    const api = makeEntry({ id: "api", packageLabel: "api", targetDir: "/repo/api", worktree: "/repo" });
+    const web = makeEntry({ id: "web", packageLabel: "web", targetDir: "/repo/web", worktree: "/repo" });
 
     const compact = compactEntries([api, web]);
     expect(compact).toHaveLength(2);

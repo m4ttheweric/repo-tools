@@ -68,8 +68,6 @@ export interface GlobalRemedy extends Remedy {
 export interface LaneEntry {
   id: string;              // "a", "b", "c" — stable within the lane
   targetDir: string;       // absolute path to run the command in
-  pm: string;              // package manager: "pnpm", "npm", "bun", etc.
-  script: string;          // script name passed to `pm run`
   packageLabel: string;    // display name, e.g. "backend"
   worktree: string;        // absolute repo root (may differ from targetDir in monorepos)
   branch: string;          // git branch at the time of creation
@@ -78,8 +76,6 @@ export interface LaneEntry {
    * Shell command template used to start the service. `$PORT` is available as
    * an env var so services that take a port flag can use it directly, e.g.:
    *   "pnpm start -p $PORT"
-   * Defaults to `${pm} run ${script}` which works for services that read PORT
-   * from the environment.
    */
   commandTemplate: string;
   /**

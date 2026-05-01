@@ -48,11 +48,10 @@ export function createConfirmSpreadKeymap(ctx: KeymapContext): KeymapHandlers {
         if (!existsSync(targetDir)) continue;
         void ctx.addResolvedEntry(lane.id, {
           targetDir,
-          pm: entry.pm,
-          script: entry.script,
           packageLabel: entry.packageLabel,
           worktree: wt.path,
           branch: wt.branch,
+          commandTemplate: entry.commandTemplate,
         });
         added++;
       }

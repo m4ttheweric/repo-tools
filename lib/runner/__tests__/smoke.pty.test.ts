@@ -215,8 +215,6 @@ describe.skipIf(!SKIP.ok)(`rt runner PTY smoke${SKIP.ok ? "" : ` (skipped: ${(SK
         entry: {
           id: ENTRY_ID,
           targetDir: fakeRepoPath,
-          pm: "bun",
-          script: "smoke-sleep",
           packageLabel: "smoke",
           worktree: fakeRepoPath,
           branch: "main",

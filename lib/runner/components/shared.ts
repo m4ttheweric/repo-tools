@@ -85,13 +85,22 @@ export const STATUS_ICON: Record<EntryState, string> = {
   stopped:  "○",
 };
 
+/**
+ * Extract a short label from a shell command template. Looks for the last
+ * `<pm> run <script>` token (works even when the command has env-var prefixes
+ * like `export X=y && pnpm run dev`) and returns `<script>`. Falls back to the
+ * full template if no `pm run` token is present.
+ */
+export function commandSummary(template: string): string {
+  const m = template.match(/(?:pnpm|npm|bun|yarn|deno)\s+run\s+(\S+)/);
+  return m ? m[1]! : template;
+}
+
 /** Compute the display label for an entry's command (package · script or custom template). */
 export function entryCommandLabel(entry: LaneEntry): string {
-  const defaultCmd = `${entry.pm} run ${entry.script}`;
-  const hasCustomCmd = entry.commandTemplate !== defaultCmd;
   // Prefer a user-supplied alias over the raw command — aliases exist
   // precisely to give long shell commands a readable label.
-  const cmdLabel = entry.alias ?? (hasCustomCmd ? entry.commandTemplate : entry.script);
+  const cmdLabel = entry.alias ?? commandSummary(entry.commandTemplate);
   return entry.packageLabel !== "root"
     ? `${entry.packageLabel} · ${cmdLabel}`
     : cmdLabel;
