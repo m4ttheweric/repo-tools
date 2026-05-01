@@ -185,3 +185,124 @@ export function sweepStaleArtifacts(
     }
   }
 }
+
+import {
+  DEFAULT_DENYLIST,
+  matchesDenylist,
+  enforceScopeCaps,
+  type ScopeCapViolation,
+} from "../auto-fix-denylist.ts";
+
+// ─── Diff validation ─────────────────────────────────────────────────────────
+
+export interface DiffSummary {
+  files: string[];
+  insertions: number;
+  deletions: number;
+}
+
+/** Capture the agent's staged-or-working diff vs HEAD as a structured summary. */
+export function captureWorktreeDiff(worktreePath: string): DiffSummary {
+  const filesOut = execSync(`git -C "${worktreePath}" diff HEAD --name-only`, {
+    encoding: "utf8", stdio: "pipe",
+  });
+  const files = filesOut.split("\n").map(s => s.trim()).filter(Boolean);
+
+  const stat = execSync(`git -C "${worktreePath}" diff HEAD --shortstat`, {
+    encoding: "utf8", stdio: "pipe",
+  });
+  const insertions = parseInt(stat.match(/(\d+) insertion/)?.[1] ?? "0", 10);
+  const deletions  = parseInt(stat.match(/(\d+) deletion/)?.[1]  ?? "0", 10);
+  return { files, insertions, deletions };
+}
+
+export type ValidationResult =
+  | { ok: true }
+  | { ok: false; reason: "empty" }
+  | { ok: false; reason: "denylist"; offendingPath: string }
+  | { ok: false; reason: "scope"; violation: ScopeCapViolation };
+
+/** Validate diff against caps + denylist (default + repo additions). */
+export function validateDiff(
+  diff: DiffSummary,
+  caps: { fileCap: number; lineCap: number },
+  additionalDenylist: string[],
+): ValidationResult {
+  if (diff.files.length === 0) return { ok: false, reason: "empty" };
+
+  const allDeny = [...DEFAULT_DENYLIST, ...additionalDenylist];
+  for (const f of diff.files) {
+    if (matchesDenylist(f, allDeny)) {
+      return { ok: false, reason: "denylist", offendingPath: f };
+    }
+  }
+
+  const violation = enforceScopeCaps({
+    files:   diff.files.length,
+    lines:   diff.insertions + diff.deletions,
+    fileCap: caps.fileCap,
+    lineCap: caps.lineCap,
+  });
+  if (violation) return { ok: false, reason: "scope", violation };
+
+  return { ok: true };
+}
+
+// ─── Commit + push ───────────────────────────────────────────────────────────
+
+export interface CommitInput {
+  worktreePath: string;
+  branch:       string;
+  sha:          string;
+  summary:      string;
+}
+
+export interface CommitResult {
+  ok: true;
+  newCommitSha: string;
+}
+export interface CommitError {
+  ok: false;
+  error: string;
+}
+
+/** Stage everything modified, commit with the structured trailer, push. */
+export async function commitAndPush(
+  input: CommitInput,
+  log: (msg: string) => void,
+): Promise<CommitResult | CommitError> {
+  const { worktreePath, branch, sha, summary } = input;
+  try {
+    execSync(`git -C "${worktreePath}" add -A`, { stdio: "pipe" });
+
+    const subject = `auto-fix: ${summary}`;
+    const body = `\n\nAuto-Fixed-By: rt\nPipeline-Failure-SHA: ${sha}\n`;
+    const message = subject + body;
+
+    execSync(
+      `git -C "${worktreePath}" -c user.email="auto-fix@rt" -c user.name="rt auto-fix" ` +
+      `commit -m ${JSON.stringify(message)}`,
+      { stdio: "pipe" },
+    );
+
+    const newSha = execSync(`git -C "${worktreePath}" rev-parse HEAD`, {
+      encoding: "utf8", stdio: "pipe",
+    }).trim();
+
+    log(`auto-fix: pushing ${branch} (${newSha.slice(0, 8)})`);
+    execSync(`git -C "${worktreePath}" push origin "${branch}"`, { stdio: "pipe" });
+
+    return { ok: true, newCommitSha: newSha };
+  } catch (err: any) {
+    const msg = (err.stderr?.toString() ?? err.message ?? String(err)).slice(0, 300);
+    return { ok: false, error: msg };
+  }
+}
+
+/** Reset the worktree to HEAD and clean untracked files (used on rejected diff). */
+export function resetWorktree(worktreePath: string, preAgentSha: string): void {
+  try {
+    execSync(`git -C "${worktreePath}" reset --hard "${preAgentSha}"`, { stdio: "pipe" });
+    execSync(`git -C "${worktreePath}" clean -fd`, { stdio: "pipe" });
+  } catch { /* best-effort */ }
+}
