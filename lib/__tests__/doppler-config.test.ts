@@ -113,3 +113,77 @@ describe("writeDopplerConfig", () => {
     expect((reread as any).fallback).toEqual({ foo: "bar" });
   });
 });
+
+const { getScopedEntry, addScopedEntry } = await import("../doppler-config.ts");
+
+describe("getScopedEntry", () => {
+  test("returns undefined when path is not present", () => {
+    const cfg: any = { scoped: {} };
+    expect(getScopedEntry(cfg, "/Users/matt/repo/apps/backend")).toBeUndefined();
+  });
+
+  test("returns the entry when present", () => {
+    const cfg: any = {
+      scoped: {
+        "/Users/matt/repo/apps/backend": {
+          "enclave.project": "backend",
+          "enclave.config":  "dev",
+        },
+      },
+    };
+    expect(getScopedEntry(cfg, "/Users/matt/repo/apps/backend")).toEqual({
+      "enclave.project": "backend",
+      "enclave.config":  "dev",
+    });
+  });
+});
+
+describe("addScopedEntry", () => {
+  test("adds an entry when missing and returns 'wrote'", () => {
+    const cfg: any = { scoped: {} };
+    const result = addScopedEntry(cfg, "/repo/apps/backend", "backend", "dev");
+    expect(result).toBe("wrote");
+    expect(cfg.scoped["/repo/apps/backend"]).toEqual({
+      "enclave.project": "backend",
+      "enclave.config":  "dev",
+    });
+  });
+
+  test("leaves existing matching entry alone and returns 'unchanged'", () => {
+    const cfg: any = {
+      scoped: {
+        "/repo/apps/backend": {
+          "enclave.project": "backend",
+          "enclave.config":  "dev",
+        },
+      },
+    };
+    const result = addScopedEntry(cfg, "/repo/apps/backend", "backend", "dev");
+    expect(result).toBe("unchanged");
+  });
+
+  test("leaves a different existing entry alone and returns 'overridden'", () => {
+    const cfg: any = {
+      scoped: {
+        "/repo/apps/backend": {
+          "enclave.project": "backend",
+          "enclave.config":  "staging",
+        },
+      },
+    };
+    const result = addScopedEntry(cfg, "/repo/apps/backend", "backend", "dev");
+    expect(result).toBe("overridden");
+    expect(cfg.scoped["/repo/apps/backend"]["enclave.config"]).toBe("staging");
+  });
+
+  test("an entry with only a token (no enclave.*) returns 'overridden'", () => {
+    const cfg: any = {
+      scoped: {
+        "/repo/apps/backend": { token: "secret-xyz" },
+      },
+    };
+    const result = addScopedEntry(cfg, "/repo/apps/backend", "backend", "dev");
+    // Conservative: any existing entry is treated as a deliberate override.
+    expect(result).toBe("overridden");
+  });
+});
