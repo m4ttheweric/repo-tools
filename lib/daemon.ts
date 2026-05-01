@@ -79,6 +79,8 @@ import { createGroupsHandlers }    from "./daemon/handlers/groups.ts";
 import { createWorkspaceHandlers } from "./daemon/handlers/workspace.ts";
 import { createMRHandlers }        from "./daemon/handlers/mr.ts";
 import { createParkingLotHandlers } from "./daemon/handlers/parking-lot.ts";
+import { createDopplerHandlers } from "./daemon/handlers/doppler.ts";
+import { reconcileForRepo } from "./daemon/doppler-sync.ts";
 import { createDiscussionHandlers } from "./daemon/handlers/discussions.ts";
 import { startDiscussionsPoller, stopDiscussionsPoller } from "./daemon/discussions-poller.ts";
 
@@ -552,6 +554,42 @@ async function refreshCacheImpl(): Promise<void> {
       log(`parking-lot: check failed: ${err}`);
     }
 
+    // Doppler-template reconciliation: keeps ~/.doppler/.doppler.yaml in sync
+    // with each repo's ~/.rt/<repo>/doppler-template.yaml. Cheap (file I/O
+    // only) and additive — never overwrites existing entries.
+    try {
+      const repos = loadRepoIndex();
+      for (const [repoName, repoPath] of Object.entries(repos)) {
+        if (!existsSync(repoPath)) continue;
+        try {
+          const out = execSync("git worktree list --porcelain", {
+            cwd: repoPath, encoding: "utf8", stdio: "pipe",
+          });
+          const worktreeRoots: string[] = [];
+          for (const line of out.split("\n")) {
+            if (line.startsWith("worktree ")) {
+              worktreeRoots.push(line.slice("worktree ".length).trim());
+            }
+          }
+          const summary = await reconcileForRepo({ repoName, worktreeRoots });
+          if (summary.skipped) {
+            if (summary.skipped === "malformed-template") {
+              log(`doppler:sync repo=${repoName} skipped=${summary.skipped}`);
+            }
+            // "no-template" is the silent opt-out case; do not log.
+            continue;
+          }
+          if (summary.wrote > 0 || summary.overridden > 0) {
+            log(`doppler:sync repo=${repoName} wrote=${summary.wrote} overridden=${summary.overridden} unchanged=${summary.unchanged}`);
+          }
+        } catch (err) {
+          log(`doppler:sync repo=${repoName} failed: ${err}`);
+        }
+      }
+    } catch (err) {
+      log(`doppler:sync failed: ${err}`);
+    }
+
     // Broadcast to WebSocket clients
     broadcast("status", await handleCommand("tray:status", {}));
 
@@ -602,6 +640,7 @@ const routedHandlers: HandlerMap = {
   ...createWorkspaceHandlers(handlerCtx),
   ...createMRHandlers(),
   ...createParkingLotHandlers(handlerCtx),
+  ...createDopplerHandlers(handlerCtx),
   ...createDiscussionHandlers(handlerCtx, broadcast),
 };
 
