@@ -6,9 +6,9 @@
 
 ## Summary
 
-When a merge request the user owns has its pipeline transition to `failed`, the daemon should — under tightly controlled conditions — invoke an agent in a **pre-designated agent worktree** to fix the failure, commit, and push. The motivating constraint is that pipeline-fix work is mechanical and interrupting (lint, type, formatter, sometimes a small test), and the user already has a local environment where validation works (Doppler-initialized, `.env` present, dependencies installed). Reusing that environment is cheaper and safer than building a sandbox.
+When a merge request the user owns has its pipeline transition to `failed`, the daemon should — under tightly controlled conditions — invoke an agent in a **dedicated agent worktree managed by rt** to fix the failure, commit, and push. The motivating constraint is that pipeline-fix work is mechanical and interrupting (lint, type, formatter, sometimes a small test), and the agent needs an environment where local validation works (Doppler-initialized, `.env` present, dependencies installed). Reusing the user's manually-set-up environment is cheaper and safer than building a sandbox.
 
-The agent worktree is a one-time setup: the user creates it via `rt auto-fix init`, runs the project's install + auth steps once, and from then on every auto-fix runs there. The user owns its readiness — if Doppler tokens expire or deps drift, the user re-initializes. The daemon never tries to provision auth or guess at setup steps.
+**Provisioning split:** rt creates the worktree at a fixed rt-managed path (`~/.rt/<repo>/agent-worktree/`) when the user runs `rt auto-fix init`. The user is then responsible for the project-specific bring-up — install deps, run `doppler login` / `doppler setup`, copy any local `.env` files, etc. rt does not run those steps because it cannot guess which ones a project needs and cannot hold credentials. After init + bring-up, every auto-fix runs in that worktree. If Doppler tokens expire or deps drift, the user re-runs the bring-up; the daemon never tries to repair the environment itself.
 
 The feature is daemon-driven: there is no explicit `rt fix` command. The daemon watches MR state via the existing `glance-sdk` subscription and acts when every gate passes. When gates don't pass it stays out of the way; in marginal cases (e.g. agent worktree dirty or missing) it sends a single push notification per failing SHA so the user knows it tried.
 
@@ -18,7 +18,7 @@ The feature is daemon-driven: there is no explicit `rt fix` command. The daemon 
 - Never operate on someone else's MR, never mutate someone else's work.
 - Never operate on an MR that's still being actively developed (approval is the proxy).
 - Bound the agent's blast radius via scope caps, path denylist, and an attempt budget.
-- Run inside a dedicated, pre-configured agent worktree that the user maintains.
+- Run inside a dedicated agent worktree that rt creates and manages, while the user handles project-specific bring-up (Doppler auth, install, env files).
 - Never touch the user's other worktrees — main checkout, parked worktrees, feature branches in flight all stay untouched.
 - Prefer staying silent over spamming notifications; a single per-SHA notice is enough.
 
@@ -29,9 +29,9 @@ The feature is daemon-driven: there is no explicit `rt fix` command. The daemon 
 - Re-running flaky pipelines (a different feature; here we just skip flakes).
 - Resolving reviewer comments / `changes_requested` reviews.
 - Modifying CI configuration, lockfiles, or infra paths to make a pipeline pass.
-- Building a hermetic sandbox; the agent runs in the user's pre-configured agent worktree.
-- Provisioning the agent worktree's environment (deps, auth, env files) — that's the user's setup responsibility.
-- Running multiple auto-fixes in parallel — one designated worktree means one fix at a time per repo.
+- Building a hermetic sandbox; the agent runs in the rt-managed agent worktree.
+- Provisioning the agent worktree's *project environment* — deps install, Doppler login, copying `.env` files, and similar bring-up are the user's responsibility. rt creates the worktree itself but cannot run these steps for the user.
+- Running multiple auto-fixes in parallel — one agent worktree means one fix at a time per repo.
 
 ## Trigger
 
@@ -70,7 +70,9 @@ Persisted in `~/.rt/<repo>/auto-fix-log.json`, keyed by `<branch>@<sha>`.
 
 "Clean" means `git -C <worktree> status --porcelain` returns empty: no modified, no staged, no untracked files.
 
-The agent worktree is a single path per repo, recorded in `~/.rt/<repo>/auto-fix.json` under the `worktreePath` field. It is created via `rt auto-fix init` (see CLI surface below) and is the only place auto-fix ever runs.
+The agent worktree lives at a fixed rt-managed path per repo: `~/.rt/<repo>/agent-worktree/`. rt creates it via `git worktree add` when the user runs `rt auto-fix init`, then locks it (`git worktree lock`) so accidental `git worktree remove` from outside rt is rejected. The user does not choose the path — `rt auto-fix init` always uses the same location for a given repo. After rt provisions the worktree, the user does the project-specific bring-up: install deps, run `doppler login` / `doppler setup`, copy any local `.env` files. rt does not run these steps.
+
+The path is also recorded in `~/.rt/<repo>/auto-fix.json` under `worktreePath` for reference, but the value is set by rt at init time, not edited by the user.
 
 On each eligible failure, the daemon checks the agent worktree in order:
 
@@ -174,17 +176,19 @@ If validation rejects the agent's diff (out-of-scope or denylist):
 
 ### Files
 
-- `~/.rt/<repo>/auto-fix.json` — per-repo config including the agent worktree path:
+- `~/.rt/<repo>/agent-worktree/` — the rt-managed agent worktree itself (full git checkout). Created by `rt auto-fix init`, locked via `git worktree lock`.
+- `~/.rt/<repo>/auto-fix.json` — per-repo config:
   ```json
   {
     "enabled": true,
-    "worktreePath": "/Users/matt/code/myrepo-agent",
+    "worktreePath": "/Users/matt/.rt/myrepo/agent-worktree",
     "fileCap": 5,
     "lineCap": 200,
     "additionalDenylist": ["src/legacy/**"],
     "allowTestFixes": false
   }
   ```
+  `worktreePath` is written by `rt auto-fix init` and not user-editable; it always resolves to `~/.rt/<repo>/agent-worktree/`. It's recorded in the config (rather than recomputed each time) so other modules don't need to know the convention.
 - `~/.rt/<repo>/auto-fix-log.json` — append-only ring (last 100 entries).
 - `~/.rt/<repo>/auto-fix-notes/<branch>-<sha>.md` — agent stderr / reasoning for skipped/error outcomes.
 - `~/.rt/<repo>/auto-fix.lock` — active lock (deleted on completion).
@@ -192,20 +196,35 @@ If validation rejects the agent's diff (out-of-scope or denylist):
 ### CLI surface
 
 ```
-rt auto-fix init [<path>]      # create + register the agent worktree (default path: <repo>-agent next to main checkout)
-rt auto-fix status             # show current state: configured? exists? clean? last attempt?
+rt auto-fix init               # provision the rt-managed agent worktree at ~/.rt/<repo>/agent-worktree/
+rt auto-fix status             # show current state: provisioned? exists? clean? last attempt?
 rt auto-fix enable | disable   # toggle per-repo enabled flag
 rt auto-fix reset              # reset the agent worktree to clean state (git reset --hard + clean -fd) — recovery from a stuck run
 rt auto-fix log [<branch>]     # show recent attempts (date, branch, sha, outcome, duration)
 rt auto-fix notes <branch>     # print the most recent notes file for that branch
 ```
 
-`rt auto-fix init` walks the user through:
-1. Create a new worktree at the chosen path (`git worktree add <path> <default-branch>`).
-2. Print clear instructions for what the user needs to do next: install deps, run `doppler login` / `doppler setup`, copy any local-only env files, run `bun typecheck` to verify the environment.
-3. Save `worktreePath` into `auto-fix.json`.
+`rt auto-fix init` does the rt-side work and prints a checklist for the user-side work:
 
-It does **not** run install or auth commands automatically — those are project-specific and the user is the one who knows what's needed. The init command is documentation + bookkeeping; the substantive setup is the user's.
+**rt does:**
+1. Resolve the active repo from the current working directory (uses the existing `CommandContext` identity resolution).
+2. `mkdir -p ~/.rt/<repo>/`.
+3. `git -C <main-checkout> worktree add ~/.rt/<repo>/agent-worktree <default-branch>`.
+4. `git -C ~/.rt/<repo>/agent-worktree worktree lock --reason "rt auto-fix"`.
+5. Write `worktreePath` into `auto-fix.json`.
+
+**rt then prints (does not execute):**
+> Agent worktree created at `~/.rt/<repo>/agent-worktree/`.
+>
+> Now bring up the project environment in that worktree. Run, in that directory:
+> - your install command (e.g. `bun install`)
+> - your auth setup (e.g. `doppler login` then `doppler setup`)
+> - copy any local `.env` files you need
+> - run a quick check (`bun typecheck` or similar) to confirm the environment works
+>
+> When done, run `rt auto-fix status` to verify everything is ready.
+
+The init command takes no path argument. The path is fixed at `~/.rt/<repo>/agent-worktree/` so that every other rt module knows where to find it without consulting config beyond the `worktreePath` field, and so the user never has to remember where they put it.
 
 No `rt auto-fix run` command. Forcing a run circumvents gates we deliberately built. If the user wants to trigger an attempt, they can `git push --force-with-lease` (or just commit) — that resets the attempt counter and the next failure cycle will try again.
 
@@ -231,7 +250,8 @@ Walking through what happens when things go sideways:
 - **Daemon crashes mid-run** — stale lock, possibly partial edits in the agent worktree. Stale lock cleared on next start. Partial edits remain; the next eligible cycle sees a dirty tree, sends an `auto_fix_unavailable` notification, and the user can run `rt auto-fix reset` to clean.
 - **Two MRs fail simultaneously in the same repo** — first eligible MR claims the per-repo lock; second is queued (most-recent-wins). When the first releases, the queued one re-evaluates from scratch.
 - **User forgets to re-init Doppler / install deps after env drift** — the agent will fail to validate locally and emit `RESULT: error` with the underlying error. The user sees the notification, fixes the worktree, next cycle picks up.
-- **User accidentally deletes the agent worktree directory** — `git worktree list` no longer shows it. Daemon emits `auto_fix_unavailable` with the "missing" reason. User runs `rt auto-fix init` to recreate.
+- **User accidentally deletes the agent worktree directory** — `git worktree list` no longer shows it. Daemon emits `auto_fix_unavailable` with the "missing" reason. User runs `rt auto-fix init` to recreate (and re-runs the project bring-up steps, since deps and auth are gone too).
+- **rt's data directory (`~/.rt/<repo>/`) wiped** — same as above; the worktree, config, log, notes are all gone. User restarts from `rt auto-fix init`. The user's actual repo checkouts are unaffected.
 
 ## Worktree invisibility
 
@@ -240,9 +260,11 @@ The agent worktree must be invisible to every other rt command that operates on 
 **Mechanism:** centralize worktree enumeration through a single helper (likely in `lib/git-ops.ts` or a new `lib/worktrees.ts`) that:
 
 1. Calls `git worktree list --porcelain`.
-2. Reads `~/.rt/<repo>/auto-fix.json` and resolves `worktreePath` to an absolute path.
-3. Filters out the agent worktree from the returned list by default.
+2. Filters out any worktree whose path is under `~/.rt/<repo>/agent-worktree/` (the rt-managed location). Because the path is fixed and not user-configurable, the filter is a simple prefix match — no config read needed in hot paths.
+3. Default behavior excludes the agent worktree.
 4. Accepts a `{ includeAgentWorktree: true }` option for the auto-fix engine itself, which is the one caller that does need to see it.
+
+A secondary check against `auto-fix.json`'s `worktreePath` is fine as a belt-and-suspenders, but the prefix filter on `~/.rt/` is the primary defense — no config-read race, no missing-file edge case.
 
 Every existing call site that shells out to `git worktree list` directly is migrated to this helper. The audit list (non-exhaustive — to be confirmed during implementation):
 
@@ -256,7 +278,7 @@ Every existing call site that shells out to `git worktree list` directly is migr
 
 If a call site is missed, the agent worktree leaks into the picker the user is trying to use cleanly. The implementation plan should treat finding-and-migrating these call sites as one of its top tasks, with a verification step that greps for any remaining direct `worktree list` invocations.
 
-The agent worktree is also tagged in `.git/worktrees/<name>/locked` (via `git worktree lock`) when registered, with a reason like `rt auto-fix agent worktree — do not delete manually`. This is a defensive belt: it prevents accidental `git worktree remove` from clobbering it, and any tooling that respects `--locked` flags will skip it. `rt auto-fix init` sets the lock; `rt auto-fix reset` does not unlock it.
+The agent worktree is also tagged via `git worktree lock --reason "rt auto-fix"` when `rt auto-fix init` provisions it. This is a defensive belt: it prevents accidental `git worktree remove` from clobbering it, and any tooling that respects `--locked` flags will skip it. `rt auto-fix init` sets the lock; `rt auto-fix reset` does not unlock it. Removing the worktree intentionally requires `git worktree unlock` first, which is high-friction enough to prevent accidents.
 
 ## Open questions
 
@@ -272,7 +294,7 @@ These are the files / modules that will likely change. The implementation plan, 
 
 - `lib/worktrees.ts` (new) — single source of truth for worktree enumeration. `listWorktrees({ includeAgentWorktree?: boolean })`, `worktreeIsClean(path)`, `worktreeHeadSha(path)`. Default behavior filters out the agent worktree. Every other module that needs a worktree list goes through here.
 - `lib/notifier.ts` — add `auto_fix_pushed`, `auto_fix_skipped`, `auto_fix_unavailable` event keys; trigger auto-fix evaluation on the same `pipeline:failed` transition that currently fires the notification (`lib/notifier.ts:440-470`).
-- `lib/auto-fix-config.ts` (new) — read/write `~/.rt/<repo>/auto-fix.json` (worktree path, caps, denylist additions, enabled flag).
+- `lib/auto-fix-config.ts` (new) — read/write `~/.rt/<repo>/auto-fix.json` (worktree path, caps, denylist additions, enabled flag). Exposes `agentWorktreePath(repo)` returning the conventional `~/.rt/<repo>/agent-worktree/` path so callers don't hardcode the layout.
 - `lib/daemon/auto-fix.ts` (new) — core engine: gate evaluator, agent worktree readiness check, lock manager, agent invocation, post-agent validation, commit/push, log writer.
 - `lib/daemon/handlers/auto-fix.ts` (new) — IPC handlers for log/notes/config reads and writes (`auto-fix:log:read`, `auto-fix:notes:read`, `auto-fix:config:get`, `auto-fix:config:set`, `auto-fix:reset`).
 - `commands/auto-fix.ts` (new) — top-level command surface: `init`, `status`, `enable`, `disable`, `reset`, `log`, `notes`. Wired into `cli.ts`.
