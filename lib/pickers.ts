@@ -57,7 +57,7 @@ export async function pickWorktreeWithSwitch(
   currentPath: string,
   opts?: { stderr?: boolean },
 ): Promise<string | typeof SWITCH_REPO> {
-  const { filterableSelect } = await import("./rt-render.tsx");
+  const { filterableSelect, BackNavigation } = await import("./rt-render.tsx");
 
   if (repo.worktrees.length === 0) return SWITCH_REPO;
 
@@ -69,17 +69,17 @@ export async function pickWorktreeWithSwitch(
     if (opt.value === currentPath) opt.hint = "(current)";
   }
 
-  options.unshift({
-    value: SWITCH_REPO,
-    label: "↩ Switch to a different repo",
-    hint: "",
-  });
-
-  return filterableSelect({
-    message: `${repo.repoName} worktrees`,
-    options,
-    ...(opts?.stderr ? { stderr: true } : {}),
-  });
+  try {
+    return await filterableSelect({
+      message: `${repo.repoName} worktrees`,
+      options,
+      backLabel: "Switch to a different repo",
+      ...(opts?.stderr ? { stderr: true } : {}),
+    }) as string;
+  } catch (err) {
+    if (err instanceof BackNavigation) return SWITCH_REPO;
+    throw err;
+  }
 }
 
 /**
