@@ -16,7 +16,7 @@
  * See docs/superpowers/specs/2026-04-30-doppler-template-sync-design.md.
  */
 
-import { execSync } from "child_process";
+import { execSync, spawnSync } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
@@ -187,4 +187,29 @@ export async function statusCommand(
     }
     console.log("");
   }
+}
+
+// ─── rt doppler edit ─────────────────────────────────────────────────────────
+
+export async function editCommand(
+  _args: string[],
+  ctx: CommandContext,
+): Promise<void> {
+  const repoName = ctx.identity!.repoName;
+  const path = templatePath(repoName);
+
+  if (!existsSync(path)) {
+    console.log(`\n  ${red}no template at${reset} ${dim}${path}${reset}`);
+    console.log(`  ${dim}run${reset} ${bold}rt doppler init${reset} ${dim}first${reset}\n`);
+    process.exit(1);
+  }
+
+  const editor = process.env.EDITOR || "vi";
+  const result = spawnSync(editor, [path], { stdio: "inherit" });
+  if (result.status !== 0) {
+    console.log(`\n  ${yellow}editor exited with status ${result.status}${reset}\n`);
+    process.exit(result.status ?? 1);
+  }
+
+  console.log(`\n  ${dim}run${reset} ${bold}rt doppler sync${reset} ${dim}to apply${reset}\n`);
 }
