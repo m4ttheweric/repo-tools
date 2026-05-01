@@ -6,3 +6,4 @@ dist/
 extensions/vscode/rt-context/package-lock.json
 rt-tray/.build/
 rt-tray/rt-tray.app/
+.worktrees/
