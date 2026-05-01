@@ -5,26 +5,9 @@
  *                  that runs on the daemon's cache-refresh tick.
  */
 
-import { execSync } from "child_process";
 import { reconcileForRepo, type ReconcileSummary } from "../doppler-sync.ts";
+import { listWorktreeRoots } from "../../git-worktrees.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
-
-function listWorktreeRoots(repoPath: string): string[] {
-  try {
-    const out = execSync("git worktree list --porcelain", {
-      cwd: repoPath, encoding: "utf8", stdio: "pipe",
-    });
-    const roots: string[] = [];
-    for (const line of out.split("\n")) {
-      if (line.startsWith("worktree ")) {
-        roots.push(line.slice("worktree ".length).trim());
-      }
-    }
-    return roots;
-  } catch {
-    return [];
-  }
-}
 
 export function createDopplerHandlers(ctx: HandlerContext): HandlerMap {
   return {

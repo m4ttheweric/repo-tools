@@ -81,6 +81,7 @@ import { createMRHandlers }        from "./daemon/handlers/mr.ts";
 import { createParkingLotHandlers } from "./daemon/handlers/parking-lot.ts";
 import { createDopplerHandlers } from "./daemon/handlers/doppler.ts";
 import { reconcileForRepo } from "./daemon/doppler-sync.ts";
+import { listWorktreeRoots } from "./git-worktrees.ts";
 import { createDiscussionHandlers } from "./daemon/handlers/discussions.ts";
 import { startDiscussionsPoller, stopDiscussionsPoller } from "./daemon/discussions-poller.ts";
 
@@ -562,15 +563,7 @@ async function refreshCacheImpl(): Promise<void> {
       for (const [repoName, repoPath] of Object.entries(repos)) {
         if (!existsSync(repoPath)) continue;
         try {
-          const out = execSync("git worktree list --porcelain", {
-            cwd: repoPath, encoding: "utf8", stdio: "pipe",
-          });
-          const worktreeRoots: string[] = [];
-          for (const line of out.split("\n")) {
-            if (line.startsWith("worktree ")) {
-              worktreeRoots.push(line.slice("worktree ".length).trim());
-            }
-          }
+          const worktreeRoots = listWorktreeRoots(repoPath);
           const summary = await reconcileForRepo({ repoName, worktreeRoots });
           if (summary.skipped) {
             if (summary.skipped === "malformed-template") {
