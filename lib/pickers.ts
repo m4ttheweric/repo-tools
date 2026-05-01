@@ -187,41 +187,41 @@ export async function pickPackageWithEscape(
         label: p.name,
         hint: p.path,
       })),
-      // Only offer repo-switching when there's more than one repo tracked
-      ...(hasMultipleRepos
-        ? [{ value: SWITCH_REPO, label: "↩  Switch repo", hint: `${allRepos.length} repos` }]
-        : []),
     ];
+
+    const backLabel = hasMultipleWorktrees
+      ? "Switch worktree"
+      : hasMultipleRepos
+        ? "Switch repo"
+        : undefined;
 
     try {
       const picked = await filterableSelect({
         message: `${repo.repoName}`,
         options,
-        // "Switch worktree" as a back arrow at the top — mirrors rt run's backLabel pattern
-        backLabel: hasMultipleWorktrees ? "Switch worktree" : undefined,
+        backLabel,
         ...(opts?.stderr ? { stderr: true } : {}),
       });
-
-      if (picked === SWITCH_REPO) {
-        return pickFromAllRepos(allRepos, { ...opts, includePackages: true });
-      }
 
       if (!picked) process.exit(1);
       return picked;
 
     } catch (err) {
       if (err instanceof BackNavigation) {
-        // User hit "← Switch worktree".
-        // Use pickWorktreeWithSwitch (adds "↩ Switch to a different repo") only
-        // when there are multiple repos to switch to.
-        if (hasMultipleRepos) {
-          const wtResult = await pickWorktreeWithSwitch(repo, worktreePath, opts);
-          if (isSwitchRepo(wtResult)) {
-            return pickFromAllRepos(allRepos, { ...opts, includePackages: true });
+        if (hasMultipleWorktrees) {
+          // ctrl-up → "Switch worktree"
+          if (hasMultipleRepos) {
+            const wtResult = await pickWorktreeWithSwitch(repo, worktreePath, opts);
+            if (isSwitchRepo(wtResult)) {
+              return pickFromAllRepos(allRepos, { ...opts, includePackages: true });
+            }
+            return wtResult;
+          } else {
+            return await pickWorktreeFromRepo(repo, `${repo.repoName} worktrees`);
           }
-          return wtResult;
-        } else {
-          return await pickWorktreeFromRepo(repo, `${repo.repoName} worktrees`);
+        } else if (hasMultipleRepos) {
+          // ctrl-up → "Switch repo" (no worktrees to switch between)
+          return pickFromAllRepos(allRepos, { ...opts, includePackages: true });
         }
       }
       throw err;
