@@ -47,3 +47,69 @@ describe("doppler-template I/O", () => {
     expect(raw).toContain("project: x");
   });
 });
+
+const { captureFromActualConfig } = await import("../doppler-template.ts");
+
+describe("captureFromActualConfig", () => {
+  test("captures enclave entries under the given worktree path, relative-pathed", () => {
+    const dopplerCfg: any = {
+      scoped: {
+        "/repo/primary": { token: "secret-xxx" },
+        "/repo/primary/apps/backend": {
+          "enclave.project": "backend",
+          "enclave.config":  "dev",
+        },
+        "/repo/primary/apps/frontend": {
+          "enclave.project": "frontend",
+          "enclave.config":  "dev",
+        },
+        "/repo/primary/packages/sidekick": {
+          "enclave.project": "adjuster",
+          "enclave.config":  "dev",
+        },
+        "/repo/wktree-2/apps/backend": {
+          "enclave.project": "backend",
+          "enclave.config":  "dev",
+        },
+      },
+    };
+    const captured = captureFromActualConfig(dopplerCfg, "/repo/primary");
+    expect(captured).toEqual([
+      { path: "apps/backend",       project: "backend",  config: "dev" },
+      { path: "apps/frontend",      project: "frontend", config: "dev" },
+      { path: "packages/sidekick",  project: "adjuster", config: "dev" },
+    ]);
+  });
+
+  test("ignores token-only entries (no enclave fields)", () => {
+    const dopplerCfg: any = {
+      scoped: {
+        "/repo/primary": { token: "secret-xxx" },
+        "/repo/primary/apps/x": {
+          "enclave.project": "x",
+          "enclave.config":  "dev",
+        },
+      },
+    };
+    expect(captureFromActualConfig(dopplerCfg, "/repo/primary")).toEqual([
+      { path: "apps/x", project: "x", config: "dev" },
+    ]);
+  });
+
+  test("returns empty array if no enclave entries exist under the worktree", () => {
+    const dopplerCfg: any = { scoped: { "/": { token: "x" } } };
+    expect(captureFromActualConfig(dopplerCfg, "/repo/primary")).toEqual([]);
+  });
+
+  test("returns entries sorted by path for deterministic output", () => {
+    const dopplerCfg: any = {
+      scoped: {
+        "/repo/primary/zebra":  { "enclave.project": "z", "enclave.config": "dev" },
+        "/repo/primary/alpha":  { "enclave.project": "a", "enclave.config": "dev" },
+        "/repo/primary/middle": { "enclave.project": "m", "enclave.config": "dev" },
+      },
+    };
+    const captured = captureFromActualConfig(dopplerCfg, "/repo/primary");
+    expect(captured.map(e => e.path)).toEqual(["alpha", "middle", "zebra"]);
+  });
+});

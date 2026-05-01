@@ -69,3 +69,30 @@ export function saveTemplate(
   const yaml = stringify(entries);
   writeFileSync(path, yaml);
 }
+
+import type { DopplerConfig } from "./doppler-config.ts";
+
+/**
+ * Walk a loaded Doppler config and capture every `enclave.*` entry under the
+ * given worktree path. Returns relative-pathed template entries, sorted by
+ * path for deterministic output.
+ *
+ * Used by `rt doppler init` to bootstrap a template from whatever the user
+ * already had set up via `make initDoppler` or `doppler setup`.
+ */
+export function captureFromActualConfig(
+  dopplerCfg: DopplerConfig,
+  worktreeRoot: string,
+): DopplerTemplateEntry[] {
+  const prefix = worktreeRoot.endsWith("/") ? worktreeRoot : worktreeRoot + "/";
+  const out: DopplerTemplateEntry[] = [];
+  for (const [absPath, entry] of Object.entries(dopplerCfg.scoped)) {
+    if (!absPath.startsWith(prefix)) continue;
+    const project = entry["enclave.project"];
+    const config  = entry["enclave.config"];
+    if (typeof project !== "string" || typeof config !== "string") continue;
+    out.push({ path: absPath.slice(prefix.length), project, config });
+  }
+  out.sort((a, b) => a.path.localeCompare(b.path));
+  return out;
+}
