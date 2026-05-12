@@ -14,7 +14,7 @@
  */
 
 import {
-  existsSync, readFileSync, writeFileSync, mkdirSync,
+  existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync,
   unlinkSync, watch, statSync, type FSWatcher,
 } from "fs";
 import { join, resolve, dirname, basename } from "path";
@@ -285,6 +285,12 @@ function log(msg: string): void {
   const ts = new Date().toISOString();
   const line = `[${ts}] ${msg}`;
   console.log(line);
+
+  // Persist to disk — daemon runs under launchd with no stdout redirect,
+  // so console.log alone vanishes into the void.
+  try {
+    appendFileSync(DAEMON_LOG_PATH, line + "\n");
+  } catch { /* best-effort */ }
 
   // Self-rotate log
   try {
