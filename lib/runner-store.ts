@@ -114,6 +114,12 @@ export interface LaneConfig {
   activeEntryId?: string; // which entry the proxy is currently routing to
   repoName: string;       // e.g. "my-repo" — repo this lane is scoped to
   mode: LaneMode;         // how to handle deactivated entries (default: "warm")
+  /**
+   * Cloudflare tunnel publishing. Absent ≡ disabled.
+   * When enabled the daemon's TunnelManager includes this lane's
+   * canonicalPort in the generated cloudflared ingress for the active board.
+   */
+  tunnel?: { enabled: boolean };
 }
 
 // ─── ID helpers ──────────────────────────────────────────────────────────────
@@ -254,6 +260,9 @@ export function normalizeLane(raw: any): LaneConfig {
     activeEntryId,
     repoName:      String(raw.repoName ?? ""),
     mode,
+    ...(raw.tunnel && typeof raw.tunnel === "object"
+      ? { tunnel: { enabled: Boolean(raw.tunnel.enabled) } }
+      : {}),
   };
 }
 
