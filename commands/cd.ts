@@ -32,26 +32,34 @@ import { detectShell, shellRcPath } from "../lib/shell-integration.ts";
 
 const SHELL_FUNCTION = [
   `rt() {`,
+  `  # Resolve rt by absolute path when the dev-mode wrapper exists. This bypasses`,
+  `  # zsh's command-hash cache, which otherwise pins rt to whichever binary it`,
+  `  # first found (often Homebrew's compiled rt) and ignores later dev-mode`,
+  `  # swaps until the shell calls 'hash -r' — leading to surprising "I'm in dev`,
+  `  # mode but my changes don't show up" behaviour across shells.`,
+  `  local rt_bin="$HOME/.local/bin/rt"`,
+  `  [ -x "$rt_bin" ] || rt_bin="$(command -v rt 2>/dev/null || echo rt)"`,
+  ``,
   `  if [ "$1" = "cd" ]; then`,
   `    local dir`,
-  `    dir="$(COLUMNS=$COLUMNS command rt cd "\${@:2}")" && [ -n "$dir" ] && builtin cd "$dir"`,
+  `    dir="$(COLUMNS=$COLUMNS "$rt_bin" cd "\${@:2}")" && [ -n "$dir" ] && builtin cd "$dir"`,
   `  elif [ "$1" = "nav" ]; then`,
   `    local dir`,
-  `    dir="$(COLUMNS=$COLUMNS command rt nav "\${@:2}")" && [ -n "$dir" ] && builtin cd "$dir"`,
+  `    dir="$(COLUMNS=$COLUMNS "$rt_bin" nav "\${@:2}")" && [ -n "$dir" ] && builtin cd "$dir"`,
   `  elif [ "$1" = "x" ]; then`,
-  `    command rt "$@"`,
+  `    "$rt_bin" "$@"`,
   `    local rt_cwd`,
   `    rt_cwd="$(cat "$HOME/.rt/.last-cwd" 2>/dev/null)"`,
   `    if [ -n "$rt_cwd" ] && [ "$rt_cwd" != "$PWD" ]; then`,
   `      builtin cd "$rt_cwd"`,
   `    fi`,
   `  elif [ "$1" = "settings" ] && [ "$2" = "dev-mode" ]; then`,
-  `    command rt "$@"`,
-  `    # dev-mode swaps ~/.local/bin/rt in or out — rehash so the next invocation`,
-  `    # resolves to the new wrapper/binary without a terminal restart.`,
+  `    "$rt_bin" "$@"`,
+  `    # dev-mode swaps ~/.local/bin/rt in or out — rehash so any other shell`,
+  `    # (which doesn't go through this function) sees the swap on next 'rt'.`,
   `    hash -r 2>/dev/null`,
   `  else`,
-  `    command rt "$@"`,
+  `    "$rt_bin" "$@"`,
   `  fi`,
   `}`,
 ].join("\n");
@@ -64,8 +72,9 @@ async function ensureShellFunction(): Promise<void> {
     rcContent = readFileSync(rcFile, "utf8");
   } catch { /* no rc file yet */ }
 
-  // Latest version marker: includes rt nav cd support.
-  if (rcContent.includes('rt() {') && rcContent.includes('command rt cd') && rcContent.includes('.last-cwd') && rcContent.includes('hash -r') && rcContent.includes('command rt nav')) return;
+  // Latest version marker: function resolves rt by absolute path, bypassing
+  // zsh's stale-hash issue across shells that didn't run dev-mode locally.
+  if (rcContent.includes('rt() {') && rcContent.includes('local rt_bin') && rcContent.includes('"$rt_bin" nav')) return;
 
   // Redirect stdout → stderr before showing prompts
   const origWrite = process.stdout.write.bind(process.stdout);
@@ -75,14 +84,18 @@ async function ensureShellFunction(): Promise<void> {
   const hasLegacyRtcd = rcContent.includes("rtcd()");
   const hasOldRtWrapper = rcContent.includes("rt() {") && rcContent.includes("command rt cd") && !rcContent.includes(".last-cwd");
   const hasPreRehashWrapper = rcContent.includes("rt() {") && rcContent.includes(".last-cwd") && !rcContent.includes("hash -r");
-  const hasOldFunction = hasLegacyRtcd || hasOldRtWrapper || hasPreRehashWrapper;
-
-  const hasNoNav = rcContent.includes("rt() {") && rcContent.includes("command rt cd") && !rcContent.includes("command rt nav");
+  const hasNoNav = rcContent.includes("rt() {") && rcContent.includes("command rt cd") && !rcContent.includes("command rt nav") && !rcContent.includes('"$rt_bin" nav');
+  // Function exists but uses `command rt` everywhere — vulnerable to the stale
+  // zsh hash-table issue. Anything pre-absolute-path version qualifies.
+  const hasHashCacheBug = rcContent.includes("rt() {") && rcContent.includes("command rt cd") && !rcContent.includes("local rt_bin");
+  const hasOldFunction = hasLegacyRtcd || hasOldRtWrapper || hasPreRehashWrapper || hasHashCacheBug;
 
   if (hasPreRehashWrapper) {
     console.error(`\n  ${yellow}Upgrading rt shell wrapper: auto-rehash after dev-mode toggle${reset}`);
   } else if (hasNoNav) {
     console.error(`\n  ${yellow}Upgrading rt shell wrapper: adding rt nav cd support${reset}`);
+  } else if (hasHashCacheBug) {
+    console.error(`\n  ${yellow}Upgrading rt shell wrapper: resolve dev-mode binary by absolute path${reset}`);
   } else if (hasOldRtWrapper) {
     console.error(`\n  ${yellow}Upgrading rt shell wrapper: adding rt x auto-cd support${reset}`);
   } else if (hasLegacyRtcd) {
@@ -109,7 +122,7 @@ async function ensureShellFunction(): Promise<void> {
     process.exit(0);
   }
 
-  if (hasOldRtWrapper || hasPreRehashWrapper || hasNoNav) {
+  if (hasOldRtWrapper || hasPreRehashWrapper || hasNoNav || hasHashCacheBug) {
     rcContent = rcContent
       .replace(/\n?# rt — shell wrapper \(enables rt cd to change directory\)\n?/g, "")
       .replace(/\n?rt\(\) \{[\s\S]*?\n\}\n?/g, "\n");
