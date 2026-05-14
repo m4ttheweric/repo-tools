@@ -18,6 +18,7 @@ import type { LogBuffer } from "../log-buffer.ts";
 import type { ExclusiveGroup } from "../exclusive-group.ts";
 import type { PortAllocator } from "../port-allocator.ts";
 import type { PortEntry } from "../../port-scanner.ts";
+import type { TunnelManager } from "../tunnel-manager.ts";
 
 /** Daemon-local cache entry shape (mirrors the inline definition in daemon.ts). */
 export interface CacheEntry {
@@ -69,6 +70,8 @@ export interface HandlerContext {
   remedyEngine:   RemedyEngine;
   suspendManager: SuspendManager;
   proxyManager:   ProxyManager;
+  /** Cloudflare tunnel lifecycle (one cloudflared child per runner board). */
+  tunnelManager:  TunnelManager;
   attachServer:   AttachServer;
   logBuffer:      LogBuffer;
   exclusiveGroup: ExclusiveGroup;
