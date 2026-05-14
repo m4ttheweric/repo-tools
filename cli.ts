@@ -331,6 +331,13 @@ const TREE: Record<string, CommandNode> = {
     hidden: true,
   },
 
+  "pick-tunnel": {
+    description: "Interactive setup for the global Cloudflare tunnel config (used by runner)",
+    module: "./commands/pick-tunnel.ts",
+    fn: "showPickTunnel",
+    hidden: true,
+  },
+
   update: {
     description: "Update rt to the latest version via Homebrew",
     module: "./commands/update.ts",
