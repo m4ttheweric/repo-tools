@@ -13,6 +13,7 @@ import { proxyWindowName, type LaneConfig, type LaneEntry } from "../../runner-s
 import type { RunnerUIState } from "../../../commands/runner.tsx";
 import { C, entryCommandLabel } from "./shared.ts";
 import { EntryRow } from "./EntryRow.tsx";
+import { loadTunnelConfig, hostnameFor } from "../../tunnel-config.ts";
 
 /** Compute ordered entry groups keyed by exact commandTemplate. */
 export function computeEntryGroups(entries: LaneEntry[]): { key: string; label: string; entries: LaneEntry[]; menuSize: number }[] {
@@ -48,6 +49,21 @@ export function LaneCard({ lane, li, s }: { lane: LaneConfig; li: number; s: Run
   const proxyUp = s.proxyStates[proxyWindowName(lane.id)] ?? false;
   const modeLabel = (lane.mode ?? "warm") === "single" ? "single" : "warm";
   const title = ` LANE ${lane.id}  ·  ${lane.repoName}  ·  :${lane.canonicalPort}  ·  ${modeLabel}  `;
+
+  let tunnelUrlEl: any = null;
+  if (lane.tunnel?.enabled) {
+    const cfg = loadTunnelConfig();
+    if (cfg) {
+      const host = hostnameFor(cfg, lane.canonicalPort);
+      tunnelUrlEl = (
+        <text key="tunnel" style={{ fg: C.cyan }}>{`  🌐 ${host}`}</text>
+      );
+    } else {
+      tunnelUrlEl = (
+        <text key="tunnel" style={{ fg: C.dim }}>{`  🌐 (not configured — [u][s] to set up)`}</text>
+      );
+    }
+  }
 
   const groups = computeEntryGroups(lane.entries);
 
@@ -103,6 +119,7 @@ export function LaneCard({ lane, li, s }: { lane: LaneConfig; li: number; s: Run
       <row gap={1}>
         <text style={{ fg: proxyUp ? C.mint : C.coral }}>{proxyUp ? "proxy ✓" : "proxy ✗"}</text>
       </row>
+      {tunnelUrlEl}
       {entryElements}
     </box>
   );
