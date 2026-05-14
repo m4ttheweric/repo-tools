@@ -50,11 +50,16 @@ export async function showPickTunnel(): Promise<void> {
   try {
     tunnels = await listTunnels();
   } catch (err) {
-    console.error(`  ✗  ${(err as Error).message}`);
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      console.error("  ✗  cloudflared not found on PATH — install it: brew install cloudflared");
+    } else {
+      console.error(`  ✗  ${(err as Error).message}`);
+    }
     process.exit(1);
   }
   if (tunnels.length === 0) {
-    console.error("  ✗  No Cloudflare tunnels found. Create one first:\n      cloudflared tunnel create matt-laptop");
+    console.error("  ✗  No Cloudflare tunnels found. Create one first:\n      cloudflared tunnel create <my-tunnel>");
     process.exit(1);
   }
 
