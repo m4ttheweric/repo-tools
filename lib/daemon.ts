@@ -33,6 +33,7 @@ import { AttachServer }  from "./daemon/attach-server.ts";
 import { ProcessManager, killGroup } from "./daemon/process-manager.ts";
 import { SuspendManager } from "./daemon/suspend-manager.ts";
 import { ProxyManager }  from "./daemon/proxy-manager.ts";
+import { TunnelManager } from "./daemon/tunnel-manager.ts";
 import { ExclusiveGroup } from "./daemon/exclusive-group.ts";
 import { RemedyEngine }  from "./daemon/remedy-engine.ts";
 import { cleanupAllWatchers, restoreWatchers } from "./daemon/workspace-sync.ts";
@@ -71,6 +72,7 @@ import type { CacheEntry, RemedyEvent, HandlerContext, HandlerMap } from "./daem
 import { createCacheHandlers }     from "./daemon/handlers/cache.ts";
 import { createRemedyHandlers }    from "./daemon/handlers/remedy.ts";
 import { createProxyHandlers }     from "./daemon/handlers/proxy.ts";
+import { createTunnelHandlers }    from "./daemon/handlers/tunnel.ts";
 import { createProcessHandlers }   from "./daemon/handlers/process.ts";
 import { createHooksHandlers }     from "./daemon/handlers/hooks.ts";
 import { createStatusHandlers }    from "./daemon/handlers/status.ts";
@@ -606,6 +608,8 @@ async function refreshCacheImpl(): Promise<void> {
 
 // ─── Socket server ───────────────────────────────────────────────────────────
 
+const tunnelManager  = new TunnelManager({ processManager, log });
+
 /**
  * Extracted-handler map, built once at module load. Every command goes through
  * a single map lookup in handleCommand; only the lifecycle-coupled `shutdown`
@@ -613,6 +617,7 @@ async function refreshCacheImpl(): Promise<void> {
  */
 const handlerCtx: HandlerContext = {
   processManager, stateStore, remedyEngine, suspendManager, proxyManager,
+  tunnelManager,
   attachServer, logBuffer, exclusiveGroup,
   cache, refreshCache, loadCache, flushCache, remedyEvents: remedyEventQueue,
   portAllocator,
@@ -633,6 +638,7 @@ const routedHandlers: HandlerMap = {
   ...createCacheHandlers(handlerCtx),
   ...createRemedyHandlers(handlerCtx),
   ...createProxyHandlers(handlerCtx),
+  ...createTunnelHandlers(handlerCtx),
   ...createProcessHandlers(handlerCtx),
   ...createHooksHandlers(handlerCtx),
   ...createStatusHandlers(handlerCtx),
@@ -844,6 +850,16 @@ function cleanup(): void {
     }
   } catch { /* */ }
   try { proxyManager.stopAll(); } catch { /* */ }
+  // Stop cloudflared tunnels for every active board before we exit so we don't
+  // leave orphans bound to remote ingress.
+  try {
+    for (const { id } of processManager.list()) {
+      if (id.startsWith("tunnel-")) {
+        const boardName = id.slice("tunnel-".length);
+        void tunnelManager.stop(boardName);
+      }
+    }
+  } catch { /* */ }
   try { cleanupAllWatchers(); } catch { /* */ }
   try { disposeAllMRSubscriptions(); } catch { /* */ }
   try { stopDiscussionsPoller(); } catch { /* */ }
