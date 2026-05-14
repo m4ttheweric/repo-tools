@@ -27,18 +27,24 @@ describe("generateIngressYaml", () => {
     expect(yaml).toContain("- service: http_status:404");
   });
 
-  test("includes one rule per enabled lane, in lane.id order", () => {
+  test("includes one rule per enabled lane, in lane.id numeric order (not lex)", () => {
+    // Use IDs where numeric and lexicographic order disagree:
+    //   numeric:  2, 9, 10  → ports 4002, 4009, 4010
+    //   lex:      10, 2, 9  → ports 4010, 4002, 4009
     const yaml = generateIngressYaml(cfg, [
-      lane("2", 4001, true),
-      lane("1", 4000, true),
-      lane("3", 4002, false), // disabled — must be skipped
+      lane("10", 4010, true),
+      lane("9",  4009, true),
+      lane("2",  4002, true),
+      lane("3",  4003, false), // disabled — must be skipped
     ]);
-    const i1 = yaml.indexOf("p4000.m4tthew.dev");
-    const i2 = yaml.indexOf("p4001.m4tthew.dev");
-    const i3 = yaml.indexOf("p4002.m4tthew.dev");
-    expect(i1).toBeGreaterThan(-1);
-    expect(i2).toBeGreaterThan(i1);
-    expect(i3).toBe(-1);
+    const i2  = yaml.indexOf("p4002.m4tthew.dev");
+    const i9  = yaml.indexOf("p4009.m4tthew.dev");
+    const i10 = yaml.indexOf("p4010.m4tthew.dev");
+    const iDisabled = yaml.indexOf("p4003.m4tthew.dev");
+    expect(i2).toBeGreaterThan(-1);
+    expect(i9).toBeGreaterThan(i2);   // 9 after 2 (numeric, not lex which would put 10 first)
+    expect(i10).toBeGreaterThan(i9);  // 10 after 9 (numeric)
+    expect(iDisabled).toBe(-1);
   });
 
   test("each rule maps hostname → http://localhost:<canonicalPort>", () => {
