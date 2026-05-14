@@ -64,7 +64,11 @@ export function createTunnelKeymap(
         return { ...s, lanes: next };
       });
       const newState = !(lane.tunnel?.enabled === true);
-      if (cfg) ctx.showToast(newState ? `🌐 ${hostnameFor(cfg, lane.canonicalPort)}` : `tunnel off for lane ${lane.id}`);
+      if (newState && cfg) {
+        ctx.showToast(`🌐 ${hostnameFor(cfg, lane.canonicalPort)}`);
+      } else if (!newState) {
+        ctx.showToast(`tunnel off for lane ${lane.id}`);
+      }
       exitScope(update);
     },
 

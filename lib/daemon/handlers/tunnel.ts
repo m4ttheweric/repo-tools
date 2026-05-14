@@ -4,7 +4,6 @@
  *   tunnel:apply              — reconcile cloudflared state with the supplied lanes
  *   tunnel:status             — running/stopped + active hostnames
  *   tunnel:stop               — tear down cloudflared for a board
- *   tunnel:list-cf-tunnels    — shell out to `cloudflared tunnel list --output json`
  */
 
 import type { HandlerContext, HandlerMap } from "./types.ts";
@@ -41,20 +40,5 @@ export function createTunnelHandlers(ctx: HandlerContext): HandlerMap {
       }
     },
 
-    "tunnel:list-cf-tunnels": async () => {
-      try {
-        const proc = Bun.spawn(["cloudflared", "tunnel", "list", "--output", "json"], {
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-        const [stdout, code] = await Promise.all([
-          new Response(proc.stdout).text(),
-          proc.exited,
-        ]);
-        if (code !== 0) return { ok: false, error: `cloudflared exited with ${code}` };
-        return { ok: true, data: JSON.parse(stdout) };
-      } catch (err: any) {
-        return { ok: false, error: String(err?.message ?? err) };
-      }
-    },
   };
 }

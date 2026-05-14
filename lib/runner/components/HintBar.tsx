@@ -15,6 +15,7 @@ export type HintBarMode =
   | "lane-scope"
   | "process-scope"
   | "open-scope"
+  | "tunnel-scope"
   | "port-input"
   | "entry-picker"
   | "confirm-reset"
@@ -55,10 +56,17 @@ export function HintBar({ mode }: { mode: HintBarMode }) {
       <row gap={1}><Cmd k="r" l="run" /><Cmd k="i" l="info" /><Cmd k="esc" l="back" /></row>
     </column>
   );
+  if (mode === "tunnel-scope") return (
+    <column gap={0}>
+      <ScopeTitle name="tunnel" />
+      <row gap={1}><Cmd k="t" l="toggle" /><Cmd k="a" l="all" /><Cmd k="s" l="setup" /><Cmd k="c" l="copy" /></row>
+      <row gap={1}><Cmd k="esc" l="back" /></row>
+    </column>
+  );
   // Default top-level hints
   return (
     <column gap={0}>
-      <row gap={1}><Cmd k="l" l="lane" /><Cmd k="p" l="process" /><Cmd k="o" l="open" /></row>
+      <row gap={1}><Cmd k="l" l="lane" /><Cmd k="p" l="process" /><Cmd k="o" l="open" /><Cmd k="u" l="tunnel" /></row>
       <row gap={1}><Cmd k="s" l="start" /><Cmd k="x" l="stop" /><Cmd k="t" l="shell" /><Cmd k="↵" l="activate" /></row>
       <row gap={1}><Cmd k="q" l="quit" /><Cmd k="!" l="reset" /></row>
     </column>
