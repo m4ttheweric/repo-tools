@@ -7,7 +7,7 @@ import type { LaneAction } from "../dispatch.ts";
 import type { KeymapContext, KeymapHandlers } from "./types.ts";
 
 export function createNormalKeymap(ctx: KeymapContext): KeymapHandlers {
-  const enterScope = (scopeMode: "lane-scope" | "process-scope" | "open-scope")
+  const enterScope = (scopeMode: "lane-scope" | "process-scope" | "open-scope" | "tunnel-scope")
     : KeymapHandlers[string] =>
     ({ update }) => {
       update((s) => ({ ...s, mode: { type: scopeMode } }));
@@ -65,6 +65,7 @@ export function createNormalKeymap(ctx: KeymapContext): KeymapHandlers {
     l: enterScope("lane-scope"),
     p: enterScope("process-scope"),
     o: enterScope("open-scope"),
+    u: enterScope("tunnel-scope"),
 
     // Quick-access globals (no scope needed — most common operations)
     s: ({ state }) => {

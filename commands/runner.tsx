@@ -64,6 +64,7 @@ import { createNormalKeymap } from "../lib/runner/keys/normal.ts";
 import { createLaneKeymap } from "../lib/runner/keys/lane.ts";
 import { createProcessKeymap } from "../lib/runner/keys/process.ts";
 import { createOpenKeymap } from "../lib/runner/keys/open.ts";
+import { createTunnelKeymap } from "../lib/runner/keys/tunnel.ts";
 import { createPortKeymap } from "../lib/runner/keys/port.ts";
 import { createPickerKeymap } from "../lib/runner/keys/picker.ts";
 import { createConfirmResetKeymap, createConfirmSpreadKeymap } from "../lib/runner/keys/confirm.ts";
@@ -215,6 +216,7 @@ type Mode =
   | { type: "lane-scope" }
   | { type: "process-scope" }
   | { type: "open-scope" }
+  | { type: "tunnel-scope" }
   | { type: "port-input"; purpose: "edit-port"; laneId: string }
   | { type: "entry-picker"; purpose: "remove"; laneId: string; idx: number }
   | { type: "confirm-reset" }
@@ -1143,11 +1145,16 @@ async function runOnce(
     "lane-scope":      createLaneKeymap(keymapContext),
     "process-scope":   createProcessKeymap(keymapContext, { buildEditorCmd }),
     "open-scope":      createOpenKeymap(keymapContext),
+    "tunnel-scope":    createTunnelKeymap(keymapContext, { boardName: runnerName }),
     "port-input":      createPortKeymap(keymapContext),
     "entry-picker":    createPickerKeymap(keymapContext),
     "confirm-reset":   createConfirmResetKeymap(keymapContext),
     "confirm-spread":  createConfirmSpreadKeymap(keymapContext),
   });
+
+  // Restore previous session's published URLs by syncing cloudflared
+  // with whatever lanes have tunnel.enabled in persisted config.
+  void daemonQuery("tunnel:apply", { boardName: runnerName, lanes: currentLanes });
 
   try {
     await app.run();
@@ -1170,6 +1177,10 @@ async function runOnce(
   clearInterval(enrichTimer);
   clearInterval(spinnerTimer);
   gitWatcherPool.dispose();
+
+  // Tear down cloudflared so closing this runner board doesn't leave a stale
+  // tunnel publishing dev URLs. (Other boards' tunnels keep running.)
+  void daemonQuery("tunnel:stop", { boardName: runnerName });
 
   // ── Lane pane cleanup ─────────────────────────────────────────────────────
   hideMrPane();
