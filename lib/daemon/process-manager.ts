@@ -14,6 +14,8 @@
 import type { StateStore } from "./state-store.ts";
 import type { LogBuffer } from "./log-buffer.ts";
 import type { AttachServer } from "./attach-server.ts";
+import { getDaemonLogger } from "../daemon-logger.ts";
+const log = (await getDaemonLogger()).childLogger("process-manager");
 
 export interface SpawnConfig {
   cmd: string;
@@ -37,10 +39,10 @@ async function evictPort(port: string): Promise<void> {
     const pids = stdout.trim().split("\n").filter(Boolean);
     if (pids.length === 0) return;
     for (const pid of pids) {
-      try { process.kill(Number(pid), 9); } catch { /* already dead */ }
+      try { process.kill(Number(pid), 9); } catch (err) { log.debug({ err }, "evictPort: pid already dead"); }
     }
     await new Promise<void>((r) => setTimeout(r, 150));
-  } catch { /* best-effort */ }
+  } catch (err) { log.debug({ err }, "evictPort: best-effort lsof/kill failed"); }
 }
 
 /**
@@ -130,7 +132,7 @@ export class ProcessManager {
       const hooks = this.outputHooks.get(id);
       if (!hooks) return;
       for (const hook of hooks) {
-        try { hook(chunk); } catch { /* subscriber may have disconnected */ }
+        try { hook(chunk); } catch (err) { log.debug({ err }, "output hook threw — subscriber may have disconnected"); }
       }
     });
   }
@@ -172,7 +174,7 @@ export class ProcessManager {
         const hooks = outputHooks.get(id);
         if (hooks) {
           for (const hook of hooks) {
-            try { hook(chunk); } catch { /* subscriber may have disconnected */ }
+            try { hook(chunk); } catch (err) { log.debug({ err }, "output hook threw — subscriber may have disconnected"); }
           }
         }
       },
