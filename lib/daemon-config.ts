@@ -32,9 +32,11 @@ export const RT_DIR = join(homedir(), ".rt");
 export const DAEMON_CONFIG_PATH = join(RT_DIR, "daemon.json");
 export const DAEMON_SOCK_PATH = join(RT_DIR, "rt.sock");
 export const DAEMON_PID_PATH = join(RT_DIR, "rt.pid");
-export const DAEMON_LOG_PATH = join(RT_DIR, "daemon.log");
-export const DAEMON_STDOUT_LOG_PATH = join(RT_DIR, "daemon-stdout.log");
-export const DAEMON_STDERR_LOG_PATH = join(RT_DIR, "daemon-stderr.log");
+export const LOG_DIR = join(RT_DIR, "logs");
+// pino-roll uses this as the base path; rotated files become daemon.log.YYYY-MM-DD
+export const DAEMON_LOG_PATH = join(LOG_DIR, "daemon.log");
+// NOTE: DAEMON_STDERR_LOG_PATH removed — JS-side stderr is captured by the logger
+// (see lib/daemon.ts startup). Native stderr capture is deferred to the swift-shim.
 export const LAUNCHD_PLIST_PATH = join(
   homedir(), "Library", "LaunchAgents", "com.rt.daemon.plist",
 );
