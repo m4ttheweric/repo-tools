@@ -38,19 +38,18 @@ export interface CreateOptions {
  * pino-roll's default export is async (it stats the dir + sets up the writer).
  */
 export async function createDaemonLogger(opts: CreateOptions): Promise<DaemonLoggerHandle> {
-  // Note: pino-roll strips the last file extension from the base name and appends
-  // its own counter/date suffixes. Using "daemon.log.log" as the file path causes
-  // pino-roll to treat "daemon.log" as the base and ".log" as the extension,
-  // producing rotation files named "daemon.log.YYYY-MM-DD.N.log". This naming
-  // satisfies the "starts with daemon.log" convention expected by callers/tests.
+  // pino-roll naming: <file>.<dateFormat>.<index><extension>
+  // With file=daemon, extension=.log, dateFormat=yyyy-MM-dd, we get
+  // "daemon.2026-05-22.1.log" — clean and globbable as "daemon.*.log".
+  // sync:true makes each write() hit the fd immediately so crash logs land
+  // even when process.exit follows directly.
   const stream = await roll({
-    file: `${opts.logDir}/daemon.log.log`,
+    file: `${opts.logDir}/daemon`,
+    extension: ".log",
     frequency: "daily",
     dateFormat: "yyyy-MM-dd",
     mkdir: true,
     limit: { count: 14 },
-    // sync mode ensures each pino.write() call flushes immediately to the fd,
-    // making log lines available without an explicit async flush step.
     sync: true,
   });
 

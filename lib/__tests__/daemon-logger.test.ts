@@ -18,7 +18,8 @@ afterEach(() => {
 
 function readTodayLog(): string {
   // pino-roll names files: <base>.<YYYY-MM-DD> (using its default frequency:'daily')
-  const files = readdirSync(logDir).filter(f => f.startsWith("daemon.log"));
+  // pino-roll names files: daemon.<YYYY-MM-DD>.<N>.log (config in daemon-logger.ts)
+  const files = readdirSync(logDir).filter(f => /^daemon\..+\.log$/.test(f));
   if (files.length === 0) return "";
   // Newest by name (date sort works for YYYY-MM-DD)
   files.sort().reverse();
