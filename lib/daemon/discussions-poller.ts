@@ -21,6 +21,8 @@
 
 import { refreshDiscussions, type BroadcastFn } from "./discussions-store.ts";
 import type { HandlerContext } from "./handlers/types.ts";
+import { getDaemonLogger } from "../daemon-logger.ts";
+const log = (await getDaemonLogger()).childLogger("discussions");
 
 const POLL_INTERVAL_MS = 90 * 1000;
 
@@ -29,7 +31,6 @@ const TERMINAL_STATES = new Set(["merged", "closed"]);
 export interface PollerEnv {
   ctx:       HandlerContext;
   broadcast: BroadcastFn;
-  log:       (msg: string) => void;
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -54,7 +55,7 @@ async function sweep(env: PollerEnv): Promise<void> {
         await refreshDiscussions({ ctx: env.ctx, broadcast: env.broadcast }, repoName, iid);
       } catch (err) {
         // Expected for MRs without a live subscription yet — keep going.
-        env.log(`discussions-poller: ${repoName}#${iid} refresh failed: ${err}`);
+        log.warn({ err }, `${repoName}#${iid} refresh failed`);
       }
     }
   } finally {
@@ -64,7 +65,7 @@ async function sweep(env: PollerEnv): Promise<void> {
 
 export function startDiscussionsPoller(env: PollerEnv): void {
   if (timer) return;
-  env.log(`discussions-poller: starting (every ${POLL_INTERVAL_MS / 1000}s)`);
+  log.info(`starting (every ${POLL_INTERVAL_MS / 1000}s)`);
   // Kick off a first sweep after a short delay so the daemon finishes
   // initializing subscriptions before we start hitting GitLab.
   setTimeout(() => { sweep(env); }, 10_000);

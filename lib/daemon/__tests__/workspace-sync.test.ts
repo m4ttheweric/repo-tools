@@ -57,12 +57,10 @@ describe("syncWorkspaceFile — deep merge with preserveKeys", () => {
       },
     }));
 
-    const logs: string[] = [];
     const result = syncWorkspaceFile(
       source,
       [source, targetA, targetB],
       ["peacock.color"],
-      (m) => logs.push(m),
     );
 
     expect(result.synced).toBe(2);
@@ -117,20 +115,17 @@ describe("syncWorkspaceFile — deep merge with preserveKeys", () => {
     expect(result.results).toEqual([]);
   });
 
-  test("malformed JSON source logs error and returns { synced: 0 }", () => {
+  test("malformed JSON source returns { synced: 0 }", () => {
     const source = join(tmp, "bad.code-workspace");
     writeFileSync(source, "this is not json {{{");
 
     const target = join(tmp, "t.code-workspace");
     writeFileSync(target, JSON.stringify({ settings: {} }));
 
-    const logs: string[] = [];
-    const result = syncWorkspaceFile(source, [target], [], (m) => logs.push(m));
+    const result = syncWorkspaceFile(source, [target], []);
 
     expect(result.synced).toBe(0);
     expect(result.results).toEqual([]);
-    expect(logs.length).toBeGreaterThan(0);
-    expect(logs[0]).toContain("sync failed");
   });
 });
 

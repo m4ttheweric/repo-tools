@@ -13,6 +13,8 @@ import {
 import { join, resolve, basename, dirname } from "path";
 import { execSync } from "child_process";
 import { RT_DIR } from "../daemon-config.ts";
+import { getDaemonLogger } from "../daemon-logger.ts";
+const log = (await getDaemonLogger()).childLogger("workspace-sync");
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -129,13 +131,12 @@ export function syncWorkspaceFile(
   sourcePath: string,
   targetPaths: string[],
   preserveKeys: string[],
-  logger?: (msg: string) => void,
 ): { synced: number; results: Array<{ path: string; color?: string }> } {
   let source: any;
   try {
     source = parseJsonc(readFileSync(sourcePath, "utf8"));
   } catch (err) {
-    logger?.(`sync failed: cannot parse source ${sourcePath}: ${err}`);
+    log.warn({ err }, `sync failed: cannot parse source ${sourcePath}`);
     return { synced: 0, results: [] };
   }
 
@@ -240,10 +241,9 @@ export function startWatching(
   repoName: string,
   repoPath: string,
   config: WorkspaceSyncConfig,
-  logger: (msg: string) => void,
 ): void {
   // Stop any existing watcher for this repo
-  stopWatching(repoName, logger);
+  stopWatching(repoName);
 
   const worktrees = getWorktreePaths(repoPath);
   const watchers: FSWatcher[] = [];
@@ -269,29 +269,28 @@ export function startWatching(
             sourcePath,
             allTargets,
             config.preserveKeys,
-            logger,
           );
 
           if (synced > 0) {
             config.lastSyncAt = new Date().toISOString();
             config.lastSyncSource = wt;
             saveSyncConfig(repoName, config);
-            logger(`workspace-sync: ${config.fileName} changed in ${basename(wt)} → synced to ${synced} worktree(s)`);
+            log.info(`${config.fileName} changed in ${basename(wt)} → synced to ${synced} worktree(s)`);
           }
         }, 500); // 500ms debounce for atomic writes
       });
 
       watchers.push(watcher);
     } catch (err) {
-      logger(`workspace-sync: failed to watch ${wt}: ${err}`);
+      log.warn({ err }, `failed to watch ${wt}`);
     }
   }
 
   activeWatchers.set(repoName, { config, watchers, repoName });
-  logger(`workspace-sync: watching ${config.fileName} across ${watchers.length} worktree(s) for ${repoName}`);
+  log.info(`watching ${config.fileName} across ${watchers.length} worktree(s) for ${repoName}`);
 }
 
-export function stopWatching(repoName: string, logger?: (msg: string) => void): void {
+export function stopWatching(repoName: string): void {
   const state = activeWatchers.get(repoName);
   if (!state) return;
 
@@ -299,7 +298,7 @@ export function stopWatching(repoName: string, logger?: (msg: string) => void): 
     try { watcher.close(); } catch { /* */ }
   }
   activeWatchers.delete(repoName);
-  logger?.(`workspace-sync: stopped watching for ${repoName}`);
+  log.info(`stopped watching for ${repoName}`);
 }
 
 export function getWatcherStatus(repoName: string): {
@@ -328,13 +327,12 @@ export function cleanupAllWatchers(): void {
 
 export function restoreWatchers(
   repos: Record<string, string>,
-  logger: (msg: string) => void,
 ): void {
   for (const [repoName, repoPath] of Object.entries(repos)) {
     if (!existsSync(repoPath)) continue;
     const config = loadSyncConfig(repoName);
     if (config?.enabled) {
-      startWatching(repoName, repoPath, config, logger);
+      startWatching(repoName, repoPath, config);
     }
   }
 }

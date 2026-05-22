@@ -7,6 +7,7 @@
  */
 
 import type { FSWatcher } from "fs";
+import type { Logger } from "pino";
 import type { Discussion } from "@workforge/glance-sdk";
 import type { ProcessManager } from "../process-manager.ts";
 import type { StateStore } from "../state-store.ts";
@@ -94,7 +95,7 @@ export interface HandlerContext {
   /** Ephemeral port allocator for daemon-managed processes. */
   portAllocator:  PortAllocator;
   /** Daemon logger; handlers write side-effect logs through this. */
-  log:            (msg: string) => void;
+  log:            Logger;
   /** Unix-ms timestamp of daemon startup; read once by status handlers. */
   startedAt:      number;
   /**
