@@ -160,7 +160,7 @@ async function runParkWithSpinner(
     result = response.data.result as typeof result;
     logs = (response.data.lines as string[]) ?? [];
   } else {
-    result = park(worktreePath, repoPath, branch, index, msg => logs.push(msg));
+    result = park(worktreePath, repoPath, branch, index);
   }
 
   clearInterval(spinner);

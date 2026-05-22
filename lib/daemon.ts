@@ -551,7 +551,7 @@ async function refreshCacheImpl(): Promise<void> {
 
     // Auto-park worktrees whose MRs just merged/closed.
     try {
-      checkAndPark({ cache, repoIndex: loadRepoIndex, log: logStr });
+      checkAndPark({ cache, repoIndex: loadRepoIndex });
     } catch (err) {
       log.warn({ err }, "parking-lot check failed");
     }
