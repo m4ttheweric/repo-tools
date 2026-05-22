@@ -20,6 +20,7 @@ import { execSync } from "child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
+import { getDaemonLogger } from "../daemon-logger.ts";
 import { RT_DIR } from "../daemon-config.ts";
 import {
   getCurrentBranch,
@@ -29,6 +30,8 @@ import {
 } from "../git-ops.ts";
 import { loadParkingLotConfig } from "../parking-lot-config.ts";
 import type { CacheEntry, RepoIndex } from "./handlers/types.ts";
+
+const log = (await getDaemonLogger()).childLogger("parking-lot");
 
 // ─── Persistence ─────────────────────────────────────────────────────────────
 
@@ -57,7 +60,9 @@ function saveState(state: ParkingLotState): void {
   try {
     mkdirSync(RT_DIR, { recursive: true });
     writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
-  } catch { /* best-effort */ }
+  } catch (err) {
+    log.debug({ err }, "failed to persist parking-lot state (best-effort)");
+  }
 }
 
 // ─── Worktree → index mapping (per repo) ─────────────────────────────────────
@@ -81,7 +86,9 @@ function saveIndexMap(repoName: string, indexes: IndexMap): void {
   try {
     mkdirSync(join(RT_DIR, repoName), { recursive: true });
     writeFileSync(indexFilePath(repoName), JSON.stringify({ indexes }, null, 2));
-  } catch { /* best-effort */ }
+  } catch (err) {
+    log.debug({ err }, "failed to persist parking-lot index map (best-effort)");
+  }
 }
 
 /**
@@ -148,7 +155,8 @@ function listWorktrees(repoPath: string): WorktreeInfo[] {
     }
     if (curPath) results.push({ path: curPath, branch: curBranch });
     return results;
-  } catch {
+  } catch (err) {
+    log.debug({ err }, "git worktree list failed");
     return [];
   }
 }
@@ -185,7 +193,6 @@ export function park(
   repoPath: string,
   sourceBranch: string,
   index: number,
-  log: (msg: string) => void,
 ): ParkResult {
   const parkBranch = `parking-lot/${index}`;
 
@@ -210,7 +217,7 @@ export function park(
   try {
     if (hasUncommittedChanges(worktreePath)) {
       stashChanges(worktreePath, sourceBranch);
-      log(`parking-lot: stashed uncommitted changes on "${sourceBranch}"`);
+      log.info({ sourceBranch }, `stashed uncommitted changes on "${sourceBranch}"`);
     }
   } catch (err) {
     return { ok: false, action: "stash-failed", detail: String(err) };
@@ -231,7 +238,7 @@ export function park(
       execSync(`git checkout "${parkBranch}"`, { cwd: worktreePath, stdio: "pipe" });
     } else {
       execSync(`git checkout -b "${parkBranch}" "${defaultRef}"`, { cwd: worktreePath, stdio: "pipe" });
-      log(`parking-lot: created ${parkBranch} from ${defaultRef}`);
+      log.info({ parkBranch, defaultRef }, `created ${parkBranch} from ${defaultRef}`);
     }
   } catch (err) {
     return { ok: false, action: "checkout-failed", detail: String(err) };
@@ -253,7 +260,6 @@ export function park(
 export interface ParkingEnv {
   cache:     { entries: Record<string, CacheEntry> };
   repoIndex: () => RepoIndex;
-  log:       (msg: string) => void;
 }
 
 const TERMINAL_STATES = new Set(["merged", "closed"]);
@@ -267,7 +273,6 @@ function isParkedBranch(branch: string): boolean {
 function fastForwardParkedWorktrees(
   repoPath: string,
   worktrees: WorktreeInfo[],
-  log: (msg: string) => void,
 ): void {
   const parked = worktrees.filter(w => w.branch && isParkedBranch(w.branch));
   if (parked.length === 0) return;
@@ -277,7 +282,8 @@ function fastForwardParkedWorktrees(
 
   try {
     execSync(`git fetch origin "${defaultBranch}"`, { cwd: repoPath, stdio: "pipe" });
-  } catch {
+  } catch (err) {
+    log.debug({ err, repoPath }, "fetch failed during ff-sweep, skipping");
     return;
   }
 
@@ -285,9 +291,10 @@ function fastForwardParkedWorktrees(
     if (hasUncommittedChanges(wt.path)) continue;
     try {
       execSync(`git merge --ff-only "${defaultRef}"`, { cwd: wt.path, stdio: "pipe" });
-      log(`parking-lot: fast-forwarded ${wt.branch} at ${wt.path} → ${defaultRef}`);
-    } catch {
-      // Branch has diverged or is already up to date — skip silently.
+      log.info({ branch: wt.branch, worktree: wt.path, defaultRef }, `fast-forwarded ${wt.branch} → ${defaultRef}`);
+    } catch (err) {
+      // Branch has diverged or is already up to date — expected, skip.
+      log.debug({ err, branch: wt.branch, worktree: wt.path }, "ff-only skipped (diverged or already up to date)");
     }
   }
 }
@@ -335,25 +342,25 @@ export function checkAndPark(env: ParkingEnv): void {
     // Find the worktree currently (or most recently per git) bound to this branch.
     const wt = worktrees.find(w => w.branch === branch);
     if (!wt) {
-      env.log(`parking-lot: ${entry.repoName}/${branch} ${mrState} — no matching worktree, skipping`);
+      log.info({ repoName: entry.repoName, branch, mrState }, `${entry.repoName}/${branch} ${mrState} — no matching worktree, skipping`);
       fired.add(fireKey); // don't re-check forever
       continue;
     }
 
     const idx = indexes[wt.path];
     if (!idx) {
-      env.log(`parking-lot: ${entry.repoName}/${branch} ${mrState} — no index for ${wt.path}, skipping`);
+      log.info({ repoName: entry.repoName, branch, mrState, worktree: wt.path }, `${entry.repoName}/${branch} ${mrState} — no index for ${wt.path}, skipping`);
       fired.add(fireKey);
       continue;
     }
 
-    env.log(`parking-lot: ${entry.repoName}/${branch} ${mrState} → parking at ${wt.path} (space ${idx})`);
-    const result = park(wt.path, repoPath, branch, idx, env.log);
+    log.info({ repoName: entry.repoName, branch, mrState, worktree: wt.path, idx }, `${entry.repoName}/${branch} ${mrState} → parking at ${wt.path} (space ${idx})`);
+    const result = park(wt.path, repoPath, branch, idx);
     if (result.ok) {
-      env.log(`parking-lot: ✓ ${result.detail}`);
+      log.info({ result }, `parked: ${result.detail}`);
       fired.add(fireKey);
     } else {
-      env.log(`parking-lot: ✗ ${result.action}${result.detail ? ` — ${result.detail}` : ""}`);
+      log.warn({ result }, `park failed: ${result.action}${result.detail ? ` — ${result.detail}` : ""}`);
       // Don't mark fired on failure — we'll retry next tick.
     }
   }
@@ -369,9 +376,9 @@ export function checkAndPark(env: ParkingEnv): void {
     if (!existsSync(repoPath)) continue;
     const worktrees = worktreeByRepo.get(repoPath) ?? listWorktrees(repoPath);
     try {
-      fastForwardParkedWorktrees(repoPath, worktrees, env.log);
+      fastForwardParkedWorktrees(repoPath, worktrees);
     } catch (err) {
-      env.log(`parking-lot: ff-sweep failed for ${repoName}: ${String(err)}`);
+      log.warn({ err, repoName }, `ff-sweep failed for ${repoName}`);
     }
   }
 }
