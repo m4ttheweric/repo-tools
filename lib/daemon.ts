@@ -956,7 +956,7 @@ export function startDaemon(): void {
   // Auto-fix: sweep any leftover ephemeral worktrees from a previous daemon
   // process. Cheap (file stats only) and bounded.
   try {
-    sweepAutoFixArtifacts(loadRepoIndex, logStr);
+    sweepAutoFixArtifacts(loadRepoIndex);
   } catch (err) {
     log.error({ err }, "auto-fix: stale-sweep failed");
   }

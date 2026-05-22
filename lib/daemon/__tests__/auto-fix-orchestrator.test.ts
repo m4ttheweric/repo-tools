@@ -16,9 +16,7 @@ afterEach(() => {
 
 describe("runAutoFix (orchestrator) — eligibility short-circuit", () => {
   function baseCtx() {
-    const lines: string[] = [];
     return {
-      lines,
       ctx: {
         repoName: REPO,
         repoPath: "/nonexistent",
@@ -36,7 +34,6 @@ describe("runAutoFix (orchestrator) — eligibility short-circuit", () => {
         },
         jobLogs:    [],
         gitContext: { commits: "", changedFiles: "", diffStat: "", diff: "" },
-        log:        (m: string) => { lines.push(m); },
       },
     };
   }

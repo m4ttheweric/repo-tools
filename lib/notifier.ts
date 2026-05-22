@@ -516,7 +516,7 @@ async function maybeFireAutoFix(
 
   runAutoFix({
     repoName, repoPath, branch, sha: headSha, target, mr: snapshot,
-    jobLogs, gitContext, log,
+    jobLogs, gitContext,
   }).catch(err => log(`auto-fix: top-level failure: ${err}`));
 }
 
