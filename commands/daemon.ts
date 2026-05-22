@@ -18,15 +18,15 @@
  *   rt daemon logs        tail daemon log
  */
 
-import { execSync } from "child_process";
-import { existsSync, readFileSync, unlinkSync } from "fs";
-import { bold, cyan, dim, green, yellow, red, reset } from "../lib/tui.ts";
+import { execSync, spawn, spawnSync } from "child_process";
+import { join } from "path";
+import { existsSync, readdirSync, statSync, unlinkSync } from "fs";
+import { bold, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import {
   isDaemonInstalled,
   markDaemonInstalled, markDaemonUninstalled, cleanupDaemonFiles,
   readDaemonPid,
-  DAEMON_LOG_PATH,
-  DAEMON_STDERR_LOG_PATH,
+  LOG_DIR,
   LAUNCHD_PLIST_PATH,
 } from "../lib/daemon-config.ts";
 import { daemonQuery, isDaemonRunning, trayQuery } from "../lib/daemon-client.ts";
@@ -225,35 +225,111 @@ export async function showStatus(): Promise<void> {
 
 // ─── Logs ────────────────────────────────────────────────────────────────────
 
-export function showLogs(): void {
-  const hasMain = existsSync(DAEMON_LOG_PATH);
-  const hasStderr = existsSync(DAEMON_STDERR_LOG_PATH);
+/**
+ * Show daemon logs.
+ *
+ *   rt daemon logs              → open browser-based viewer (logdy)
+ *   rt daemon logs --terminal   → live tail piped through pino-pretty
+ *   rt daemon logs -t           → same as --terminal
+ */
+export async function showLogs(args: string[] = []): Promise<void> {
+  const terminal = args.includes("--terminal") || args.includes("-t");
 
-  if (!hasMain && !hasStderr) {
-    console.log(`\n  ${dim}no daemon logs yet${reset}\n`);
+  if (!existsSync(LOG_DIR)) {
+    console.log(`\n  ${dim}no daemon logs yet — start the daemon first${reset}\n`);
     return;
   }
 
-  // Show launchd stderr first — it captures crashes before daemon.log is written
-  if (hasStderr) {
-    const stderr = readFileSync(DAEMON_STDERR_LOG_PATH, "utf8").trim();
-    if (stderr) {
-      console.log(`  ${bold}launchd stderr${reset} ${dim}(~/.rt/daemon-stderr.log)${reset}`);
-      for (const line of stderr.split("\n").slice(-20)) {
-        console.log(`  ${red}${line}${reset}`);
-      }
-      console.log("");
-    }
+  // pino-roll names files: daemon.YYYY-MM-DD.N.log
+  // Pick the most-recent file by mtime.
+  const candidates = readdirSync(LOG_DIR)
+    .filter(f => /^daemon\..+\.log$/.test(f))
+    .map(f => ({ f, mtime: statSync(join(LOG_DIR, f)).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime);
+  if (candidates.length === 0) {
+    console.log(`\n  ${dim}no daemon log files in ${LOG_DIR}${reset}\n`);
+    return;
+  }
+  const logPath = join(LOG_DIR, candidates[0]!.f);
+
+  if (terminal) {
+    await runTerminalViewer(logPath);
+  } else {
+    await runWebViewer(logPath);
+  }
+}
+
+/**
+ * Live-tail through pino-pretty in the current terminal. Stays attached
+ * until the user Ctrl-Cs.
+ *
+ * Uses a single sh -c pipeline to avoid Bun's stream-as-stdio limitation.
+ */
+async function runTerminalViewer(logPath: string): Promise<void> {
+  console.log(`  ${dim}tailing ${logPath} via pino-pretty (Ctrl-C to stop)${reset}\n`);
+  // Single shell pipeline avoids the Bun child_process stream-as-stdio limitation.
+  const sh = spawn("sh", ["-c", `tail -F ${JSON.stringify(logPath)} | bunx pino-pretty`], {
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+
+  const stop = (code: number) => {
+    try { sh.kill("SIGTERM"); } catch { /* */ }
+    process.exit(code);
+  };
+  process.on("SIGINT", () => stop(0));
+  process.on("SIGTERM", () => stop(0));
+  sh.on("exit", (code) => stop(code ?? 0));
+}
+
+/**
+ * Spawn logdy follow + open browser. Stays attached so user can Ctrl-C.
+ */
+async function runWebViewer(logPath: string): Promise<void> {
+  const which = spawnSync("which", ["logdy"]);
+  if (which.status !== 0) {
+    console.log(`\n  ${yellow}⚠${reset} logdy not installed.`);
+    console.log(`  ${dim}install: ${bold}brew install logdy-network/logdy/logdy${reset}`);
+    console.log(`  ${dim}or use terminal mode: ${bold}rt daemon logs --terminal${reset}\n`);
+    process.exit(1);
   }
 
-  if (hasMain) {
-    const content = readFileSync(DAEMON_LOG_PATH, "utf8");
-    const lines = content.trim().split("\n");
-    const tail = lines.slice(-50);
-    console.log(`  ${bold}daemon log${reset} ${dim}(last ${tail.length} lines — ~/.rt/daemon.log)${reset}`);
-    for (const line of tail) {
-      console.log(`  ${dim}${line}${reset}`);
-    }
-    console.log("");
+  const port = "5544";
+  const url = `http://localhost:${port}`;
+  console.log(`  ${green}●${reset} starting logdy on ${url}`);
+  console.log(`  ${dim}tailing: ${logPath}${reset}`);
+
+  const logdy = spawn("logdy", ["follow", logPath, "--port", port, "--ui-pass", ""], {
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+
+  await waitForPort(Number(port), 2000);
+  spawnSync("open", [url]);
+
+  console.log(`  ${green}✓${reset} viewer running on ${url} — ${dim}Ctrl-C to stop${reset}\n`);
+
+  const stop = (code: number) => {
+    try { logdy.kill("SIGTERM"); } catch { /* */ }
+    process.exit(code);
+  };
+  process.on("SIGINT", () => stop(0));
+  process.on("SIGTERM", () => stop(0));
+  logdy.on("exit", (code) => stop(code ?? 0));
+}
+
+/** Poll TCP connect until the port is accepting connections, up to timeoutMs. */
+async function waitForPort(port: number, timeoutMs: number): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const ok = await new Promise<boolean>((resolve) => {
+      const { Socket } = require("net");
+      const sock: any = new Socket();
+      sock.setTimeout(200);
+      sock.once("connect", () => { sock.destroy(); resolve(true); });
+      sock.once("error",   () => { sock.destroy(); resolve(false); });
+      sock.once("timeout", () => { sock.destroy(); resolve(false); });
+      sock.connect(port, "127.0.0.1");
+    });
+    if (ok) return;
+    await new Promise(r => setTimeout(r, 100));
   }
 }
