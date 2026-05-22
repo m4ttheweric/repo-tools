@@ -244,7 +244,7 @@ try {
     }
   }
   const pruned = portAllocator.pruneToLabels(validLabels);
-  if (pruned > 0) console.error(`[daemon] pruned ${pruned} stale port allocation(s)`);
+  if (pruned > 0) log.info({ pruned }, "pruned stale port allocations");
 } catch {
   // best-effort; don't crash daemon startup on prune failure
 }
@@ -531,8 +531,10 @@ async function refreshCacheImpl(): Promise<void> {
             }).trim();
           } catch { /* no remote */ }
 
-          // Optimized: 3 GraphQL calls for ALL open MRs + 1 Linear batch
-          await refreshAllMRs(branches, remoteUrl, (msg) => log.info(`cache: ${msg}`), repoName);
+          // Optimized: 3 GraphQL calls for ALL open MRs + 1 Linear batch.
+          // The onError callback fires on per-MR enrich failures (GitLab,
+          // Linear) — recoverable, belongs at warn level.
+          await refreshAllMRs(branches, remoteUrl, (msg) => log.warn({ repo: repoName }, msg), repoName);
         }
       } catch (err) {
         log.warn({ err, repo: repoName }, "cache refresh skipped repo");

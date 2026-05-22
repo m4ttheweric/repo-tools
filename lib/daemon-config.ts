@@ -33,7 +33,9 @@ export const DAEMON_CONFIG_PATH = join(RT_DIR, "daemon.json");
 export const DAEMON_SOCK_PATH = join(RT_DIR, "rt.sock");
 export const DAEMON_PID_PATH = join(RT_DIR, "rt.pid");
 export const LOG_DIR = join(RT_DIR, "logs");
-// pino-roll uses this as the base path; rotated files become daemon.log.YYYY-MM-DD
+// pino-roll's actual filename pattern (with extension=".log", dateFormat,
+// frequency:"daily") is `daemon.YYYY-MM-DD.N.log`. DAEMON_LOG_PATH is the
+// base path callers can use to derive the directory or pattern.
 export const DAEMON_LOG_PATH = join(LOG_DIR, "daemon.log");
 // NOTE: DAEMON_STDERR_LOG_PATH removed — JS-side stderr is captured by the logger
 // (see lib/daemon.ts startup). Native stderr capture is deferred to the swift-shim.
