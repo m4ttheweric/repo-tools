@@ -113,8 +113,6 @@ const startedAt = Date.now();
 
 const loggerHandle = await getDaemonLogger();
 const log = loggerHandle.logger;
-/** String-based log adapter for legacy `(msg: string) => void` callback APIs. */
-const logStr = (msg: string) => log.info(msg);
 
 // ─── Daemon units (process management) ───────────────────────────────────────
 
@@ -547,7 +545,7 @@ async function refreshCacheImpl(): Promise<void> {
     log.debug({ count: Object.keys(cache.entries).length }, "cache refresh complete");
 
     // Check for state transitions and fire notifications
-    checkAndNotify(cache.entries, portCacheRef.ports, logStr, getCurrentUserId(), loadRepoIndex);
+    checkAndNotify(cache.entries, portCacheRef.ports, getCurrentUserId(), loadRepoIndex);
 
     // Auto-park worktrees whose MRs just merged/closed.
     try {
@@ -612,7 +610,7 @@ const handlerCtx: HandlerContext = {
   attachServer, logBuffer, exclusiveGroup,
   cache, refreshCache, loadCache, flushCache, remedyEvents: remedyEventQueue,
   portAllocator,
-  log: logStr,
+  log,
   startedAt,
   portCacheRef,
   watchedConfigs,
@@ -623,7 +621,7 @@ const handlerCtx: HandlerContext = {
 };
 
 /** Env bundle for the MR subscription subsystem. */
-const mrSubEnv: MRSubscriptionEnv = { ctx: handlerCtx, log: logStr, broadcast };
+const mrSubEnv: MRSubscriptionEnv = { ctx: handlerCtx, broadcast };
 
 const routedHandlers: HandlerMap = {
   ...createCacheHandlers(handlerCtx),
@@ -964,7 +962,7 @@ export function startDaemon(): void {
   // Restore workspace sync watchers
   try {
     const repos = loadRepoIndex();
-    restoreWatchers(repos, logStr);
+    restoreWatchers(repos);
   } catch (err) {
     log.error({ err }, "workspace-sync: failed to restore watchers");
   }
@@ -991,7 +989,7 @@ export function startDaemon(): void {
   }, 7000);
 
   // Background sweep for new MR comments → `discussions:new-comments` events.
-  startDiscussionsPoller({ ctx: handlerCtx, broadcast, log: logStr });
+  startDiscussionsPoller({ ctx: handlerCtx, broadcast });
 
   // Schedule port scanning (lightweight — every 30s)
   setTimeout(() => refreshPortCache(), 2000); // initial scan after 2s

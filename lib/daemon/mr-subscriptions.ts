@@ -28,6 +28,8 @@ import {
 import { loadSecrets } from "../linear.ts";
 import { parseRemoteUrl } from "../enrich.ts";
 import type { HandlerContext, CacheEntry } from "./handlers/types.ts";
+import { getDaemonLogger } from "../daemon-logger.ts";
+const log = (await getDaemonLogger()).childLogger("mr-subscriptions");
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -53,7 +55,6 @@ let   userIdResolved = false;
 
 export interface MRSubscriptionEnv {
   ctx:       HandlerContext;
-  log:       (msg: string) => void;
   broadcast: (type: string, data: any) => void;
 }
 
@@ -148,19 +149,19 @@ function ensureProvider(env: MRSubscriptionEnv, repoName: string, repoPath: stri
 
   const secrets = loadSecrets();
   if (!secrets.gitlabToken) {
-    env.log(`mr-subscriptions: no gitlabToken; skipping ${repoName}`);
+    log.info(`no gitlabToken; skipping ${repoName}`);
     return null;
   }
 
   const remoteUrl = getRemoteUrl(repoPath);
   if (!remoteUrl) {
-    env.log(`mr-subscriptions: no origin remote for ${repoName}; skipping`);
+    log.info(`no origin remote for ${repoName}; skipping`);
     return null;
   }
 
   const remote = parseRemoteUrl(remoteUrl);
   if (!remote) {
-    env.log(`mr-subscriptions: could not parse remote "${remoteUrl}" for ${repoName}; skipping`);
+    log.info(`could not parse remote "${remoteUrl}" for ${repoName}; skipping`);
     return null;
   }
 
@@ -180,9 +181,9 @@ async function ensureUserId(env: MRSubscriptionEnv): Promise<number | null> {
     const numId = user.id.split(":").pop();
     userId = numId ? parseInt(numId, 10) : null;
     userIdResolved = true;
-    env.log(`mr-subscriptions: resolved userId=${userId}`);
+    log.info(`resolved userId=${userId}`);
   } catch (err) {
-    env.log(`mr-subscriptions: token validation failed: ${err}`);
+    log.warn({ err }, "token validation failed");
   }
   return userId;
 }
@@ -225,7 +226,7 @@ function createGroupForRepo(
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 export async function initMRSubscriptions(env: MRSubscriptionEnv): Promise<void> {
-  env.log("mr-subscriptions: initializing");
+  log.info("initializing");
   await reconcileMRSubscriptions(env);
 }
 
@@ -245,7 +246,7 @@ export async function reconcileMRSubscriptions(env: MRSubscriptionEnv): Promise<
       if (existing) {
         try { existing.group.dispose(); } catch { /* best-effort */ }
         groups.delete(repoName);
-        env.log(`mr-subscriptions: disposed ${repoName} (no tracked MRs)`);
+        log.info(`disposed ${repoName} (no tracked MRs)`);
       }
       continue;
     }
@@ -265,7 +266,7 @@ export async function reconcileMRSubscriptions(env: MRSubscriptionEnv): Promise<
       // Fresh subscription.
       const state = createGroupForRepo(env, repoName, provider, remote.projectPath, desiredIids, branchByIid);
       groups.set(repoName, state);
-      env.log(`mr-subscriptions: created ${repoName} (${desiredIids.length} MRs)`);
+      log.info(`created ${repoName} (${desiredIids.length} MRs)`);
       continue;
     }
 
@@ -277,7 +278,7 @@ export async function reconcileMRSubscriptions(env: MRSubscriptionEnv): Promise<
     if (changed) {
       existing.iids = nextSet;
       existing.group.updateIids(desiredIids);
-      env.log(`mr-subscriptions: reconciled ${repoName} → ${desiredIids.length} MRs`);
+      log.info(`reconciled ${repoName} → ${desiredIids.length} MRs`);
     }
   }
 
@@ -287,7 +288,7 @@ export async function reconcileMRSubscriptions(env: MRSubscriptionEnv): Promise<
       const state = groups.get(repoName);
       try { state?.group.dispose(); } catch { /* best-effort */ }
       groups.delete(repoName);
-      env.log(`mr-subscriptions: disposed ${repoName} (repo removed from index)`);
+      log.info(`disposed ${repoName} (repo removed from index)`);
     }
   }
 

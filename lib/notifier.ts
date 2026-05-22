@@ -25,6 +25,8 @@ import type { MrSnapshot } from "./daemon/auto-fix-eligibility.ts";
 import { loadSecrets } from "./linear.ts";
 import { parseRemoteUrl } from "./enrich.ts";
 import type { JobLog } from "./daemon/auto-fix-agent-protocol.ts";
+import { getDaemonLogger } from "./daemon-logger.ts";
+const log = (await getDaemonLogger()).childLogger("notifier");
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -399,7 +401,6 @@ async function fetchFailingJobTraces(
   repoPath: string,
   failingJobs: any[],
   mr: any,
-  log: (m: string) => void,
 ): Promise<JobLog[]> {
   const fallback: JobLog[] = failingJobs.map((j: any) => ({
     name:  String(j.name ?? "job"),
@@ -443,10 +444,10 @@ async function fetchFailingJobTraces(
       }
       // Bridge: recurse into the downstream pipeline's failing jobs.
       const dsJobs = (detail.downstreamPipeline.jobs ?? []).filter(j => j.status === "failed");
-      const dsLogs = await fetchFailingJobTraces(repoPath, dsJobs, { pipeline: detail.downstreamPipeline }, log);
+      const dsLogs = await fetchFailingJobTraces(repoPath, dsJobs, { pipeline: detail.downstreamPipeline });
       return { name, trace: dsLogs.map(l => `── downstream: ${l.name} ──\n${l.trace}`).join("\n\n") || "(downstream pipeline has no failed jobs)" };
     } catch (err) {
-      log(`auto-fix: trace fetch failed for ${name}: ${err}`);
+      log.warn({ err }, `trace fetch failed for ${name}`);
       return { name, trace: `(trace fetch failed: ${err})` };
     }
   }));
@@ -459,10 +460,9 @@ async function maybeFireAutoFix(
   entry: CacheEntry,
   branch: string,
   currentUserId: string | null,
-  log: (m: string) => void,
 ): Promise<void> {
   const mr: any = entry.mr;
-  if (!mr) { log(`auto-fix: skip ${branch} — no cached MR`); return; }
+  if (!mr) { log.info(`skip ${branch} — no cached MR`); return; }
 
   // SDK's MRDashboardProps projection drops the head SHA, and our WebSocket
   // subscription path overwrites the cache with the bare projection — so we
@@ -476,15 +476,15 @@ async function maybeFireAutoFix(
       }).trim();
       headSha = out.split(/\s+/)[0] ?? "";
     } catch (err) {
-      log(`auto-fix: skip ${branch} — git ls-remote failed: ${err}`);
+      log.warn({ err }, `skip ${branch} — git ls-remote failed`);
       return;
     }
   }
-  if (!headSha) { log(`auto-fix: skip ${branch} — no head sha resolvable`); return; }
+  if (!headSha) { log.info(`skip ${branch} — no head sha resolvable`); return; }
 
   const target  = String(mr.targetBranch ?? "main");
   const snapshot = buildMrSnapshot(entry, currentUserId);
-  if (!snapshot) { log(`auto-fix: skip ${branch} — snapshot build failed`); return; }
+  if (!snapshot) { log.info(`skip ${branch} — snapshot build failed`); return; }
   // buildMrSnapshot uses mr.sha; override with the resolved value.
   snapshot.pipelineSha = headSha;
 
@@ -497,7 +497,7 @@ async function maybeFireAutoFix(
   // the actual trace via API so the agent has the failure output, not just job
   // names. Without this, the agent has nothing to act on and reports "fixed"
   // with no diff (which the validation gate then rejects).
-  const jobLogs = await fetchFailingJobTraces(repoPath, failingJobs, mr, log);
+  const jobLogs = await fetchFailingJobTraces(repoPath, failingJobs, mr);
 
   const gitContext = (() => {
     try {
@@ -517,7 +517,7 @@ async function maybeFireAutoFix(
   runAutoFix({
     repoName, repoPath, branch, sha: headSha, target, mr: snapshot,
     jobLogs, gitContext,
-  }).catch(err => log(`auto-fix: top-level failure: ${err}`));
+  }).catch(err => log.error({ err }, "top-level failure"));
 }
 
 function numericUserId(id: unknown): string | null {
@@ -570,7 +570,6 @@ function detectBranchTransitions(
   current: Record<string, CacheEntry>,
   fired: Set<string>,
   prefs: NotificationPrefs,
-  log: (msg: string) => void,
   currentUserId: number | null,
   repoIndex: () => Record<string, string>,
 ): void {
@@ -591,10 +590,10 @@ function detectBranchTransitions(
       const key = `mr:merged:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: MR merged on ${branch} [was=${was.mrState} now=${now.mrState}]`);
+        log.info(`MR merged on ${branch} [was=${was.mrState} now=${now.mrState}]`);
         if (isEnabled(prefs, "mr_merged")) notify("MR Merged 🎉", branchShort, mrUrl, "mr_merged");
       } else {
-        log(`notify: suppressed duplicate MR merged on ${branch}`);
+        log.debug(`suppressed duplicate MR merged on ${branch}`);
       }
     }
 
@@ -603,10 +602,10 @@ function detectBranchTransitions(
       const key = `mr:closed:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: MR closed on ${branch} [was=${was.mrState} now=${now.mrState}]`);
+        log.info(`MR closed on ${branch} [was=${was.mrState} now=${now.mrState}]`);
         if (isEnabled(prefs, "mr_closed")) notify("MR Closed", branchShort, mrUrl, "mr_closed");
       } else {
-        log(`notify: suppressed duplicate MR closed on ${branch}`);
+        log.debug(`suppressed duplicate MR closed on ${branch}`);
       }
     }
 
@@ -622,7 +621,7 @@ function detectBranchTransitions(
       const key = `pipeline:failed:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: pipeline failed on ${branch} [was=${was.pipelineStatus} now=${now.pipelineStatus}]`);
+        log.info(`pipeline failed on ${branch} [was=${was.pipelineStatus} now=${now.pipelineStatus}]`);
         if (isEnabled(prefs, "pipeline_failed")) notify("Pipeline Failed", branchShort, mrUrl, "pipeline_failed");
 
         // Auto-fix attempt — independent of the user's notification preferences;
@@ -631,12 +630,12 @@ function detectBranchTransitions(
         const repoName = entry.repoName;
         const repoPath = repoName ? repos[repoName] : undefined;
         if (repoName && repoPath) {
-          maybeFireAutoFix(repoName, repoPath, entry, branch, numericUserId(currentUserId), log).catch(err =>
-            log(`auto-fix: dispatch failed for ${branch}: ${err}`),
+          maybeFireAutoFix(repoName, repoPath, entry, branch, numericUserId(currentUserId)).catch(err =>
+            log.error({ err }, `dispatch failed for ${branch}`),
           );
         }
       } else {
-        log(`notify: suppressed duplicate pipeline_failed on ${branch}`);
+        log.debug(`suppressed duplicate pipeline_failed on ${branch}`);
       }
     }
 
@@ -649,10 +648,10 @@ function detectBranchTransitions(
       const key = `pipeline:success:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: pipeline passed on ${branch} [was=${was.pipelineStatus} now=${now.pipelineStatus}]`);
+        log.info(`pipeline passed on ${branch} [was=${was.pipelineStatus} now=${now.pipelineStatus}]`);
         if (isEnabled(prefs, "pipeline_passed")) notify("Pipeline Passed ✓", branchShort, mrUrl, "pipeline_passed");
       } else {
-        log(`notify: suppressed duplicate pipeline_passed on ${branch}`);
+        log.debug(`suppressed duplicate pipeline_passed on ${branch}`);
       }
     }
 
@@ -662,13 +661,13 @@ function detectBranchTransitions(
       if (!fired.has(key)) {
         fired.add(key);
         if (shouldNotifyApprovalTransition(was, now, currentUserId)) {
-          log(`notify: MR approved on ${branch} [was=${was.approved} now=${now.approved}]`);
+          log.info(`MR approved on ${branch} [was=${was.approved} now=${now.approved}]`);
           if (isEnabled(prefs, "mr_approved")) notify("MR Approved 👍", branchShort, mrUrl, "mr_approved");
         } else {
-          log(`notify: suppressed self-approved MR approved on ${branch}`);
+          log.debug(`suppressed self-approved MR approved on ${branch}`);
         }
       } else {
-        log(`notify: suppressed duplicate mr_approved on ${branch}`);
+        log.debug(`suppressed duplicate mr_approved on ${branch}`);
       }
     }
 
@@ -677,10 +676,10 @@ function detectBranchTransitions(
       const key = `mr:conflicts:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: merge conflicts on ${branch} [was=${was.conflicts} now=${now.conflicts}]`);
+        log.info(`merge conflicts on ${branch} [was=${was.conflicts} now=${now.conflicts}]`);
         if (isEnabled(prefs, "merge_conflicts")) notify("Merge Conflicts", branchShort, mrUrl, "merge_conflicts");
       } else {
-        log(`notify: suppressed duplicate merge_conflicts on ${branch}`);
+        log.debug(`suppressed duplicate merge_conflicts on ${branch}`);
       }
     }
 
@@ -689,10 +688,10 @@ function detectBranchTransitions(
       const key = `mr:ready:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: MR ready to merge on ${branch} [was=${was.isReady} now=${now.isReady}]`);
+        log.info(`MR ready to merge on ${branch} [was=${was.isReady} now=${now.isReady}]`);
         if (isEnabled(prefs, "mr_ready")) notify("Ready to Merge ✓", branchShort, mrUrl, "mr_ready");
       } else {
-        log(`notify: suppressed duplicate mr_ready on ${branch}`);
+        log.debug(`suppressed duplicate mr_ready on ${branch}`);
       }
     }
 
@@ -701,10 +700,10 @@ function detectBranchTransitions(
       const key = `mr:rebase:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: needs rebase on ${branch} [was=${was.needsRebase} now=${now.needsRebase}]`);
+        log.info(`needs rebase on ${branch} [was=${was.needsRebase} now=${now.needsRebase}]`);
         if (isEnabled(prefs, "needs_rebase")) notify("Needs Rebase", branchShort, mrUrl, "needs_rebase");
       } else {
-        log(`notify: suppressed duplicate needs_rebase on ${branch}`);
+        log.debug(`suppressed duplicate needs_rebase on ${branch}`);
       }
     }
 
@@ -713,10 +712,10 @@ function detectBranchTransitions(
       const key = `mr:merge_error:${branch}`;
       if (!fired.has(key)) {
         fired.add(key);
-        log(`notify: merge error on ${branch}: ${now.mergeError} [was=${was.mergeError}]`);
+        log.info(`merge error on ${branch}: ${now.mergeError} [was=${was.mergeError}]`);
         if (isEnabled(prefs, "merge_error")) notify("Merge Error", `${branchShort}: ${now.mergeError}`, mrUrl, "merge_error");
       } else {
-        log(`notify: suppressed duplicate merge_error on ${branch}`);
+        log.debug(`suppressed duplicate merge_error on ${branch}`);
       }
     }
 
@@ -724,31 +723,31 @@ function detectBranchTransitions(
     // Log every clear so over-notification can be traced.
     if (was.pipelineStatus === "failed" && now.pipelineStatus !== "failed") {
       if (fired.delete(`pipeline:failed:${branch}`))
-        log(`notify: cleared pipeline:failed key for ${branch} (pipeline now ${now.pipelineStatus})`);
+        log.debug(`cleared pipeline:failed key for ${branch} (pipeline now ${now.pipelineStatus})`);
     }
     if (was.pipelineStatus === "success" && now.pipelineStatus !== "success") {
       if (fired.delete(`pipeline:success:${branch}`))
-        log(`notify: cleared pipeline:success key for ${branch} (pipeline now ${now.pipelineStatus})`);
+        log.debug(`cleared pipeline:success key for ${branch} (pipeline now ${now.pipelineStatus})`);
     }
     if (was.approved && !now.approved) {
       if (fired.delete(`mr:approved:${branch}`))
-        log(`notify: cleared mr:approved key for ${branch}`);
+        log.debug(`cleared mr:approved key for ${branch}`);
     }
     if (was.conflicts && !now.conflicts) {
       if (fired.delete(`mr:conflicts:${branch}`))
-        log(`notify: cleared mr:conflicts key for ${branch}`);
+        log.debug(`cleared mr:conflicts key for ${branch}`);
     }
     if (was.isReady && !now.isReady) {
       if (fired.delete(`mr:ready:${branch}`))
-        log(`notify: cleared mr:ready key for ${branch}`);
+        log.debug(`cleared mr:ready key for ${branch}`);
     }
     if (was.needsRebase && !now.needsRebase) {
       if (fired.delete(`mr:rebase:${branch}`))
-        log(`notify: cleared mr:rebase key for ${branch}`);
+        log.debug(`cleared mr:rebase key for ${branch}`);
     }
     if (was.mergeError && !now.mergeError) {
       if (fired.delete(`mr:merge_error:${branch}`))
-        log(`notify: cleared mr:merge_error key for ${branch}`);
+        log.debug(`cleared mr:merge_error key for ${branch}`);
     }
   }
 }
@@ -759,7 +758,6 @@ function detectStalePortTransitions(
   portState: Record<string, PortSnapshot>,
   currentPorts: PortEntry[],
   prefs: NotificationPrefs,
-  log: (msg: string) => void,
 ): void {
   const now = Date.now();
   const currentKeys = new Set<string>();
@@ -788,7 +786,7 @@ function detectStalePortTransitions(
     if (age > STALE_PORT_THRESHOLD_MS && !snapshot.staleNotified) {
       snapshot.staleNotified = true;
       const hours = Math.round(age / (60 * 60 * 1000));
-      log(`notify: stale port ${entry.command} on :${entry.port} (${hours}h)`);
+      log.info(`stale port ${entry.command} on :${entry.port} (${hours}h)`);
       if (isEnabled(prefs, "stale_port")) {
         notify(
           "Stale Process",
@@ -813,7 +811,6 @@ function detectStalePortTransitions(
 export function checkAndNotify(
   cacheEntries: Record<string, CacheEntry>,
   ports: PortEntry[],
-  log: (msg: string) => void,
   currentUserId: number | null = null,
   repoIndex: () => Record<string, string> = () => ({}),
 ): void {
@@ -822,10 +819,10 @@ export function checkAndNotify(
   const fired = new Set(state.fired);
 
   // Branch transitions
-  detectBranchTransitions(state.branches, cacheEntries, fired, prefs, log, currentUserId, repoIndex);
+  detectBranchTransitions(state.branches, cacheEntries, fired, prefs, currentUserId, repoIndex);
 
   // Port staleness
-  detectStalePortTransitions(state.ports, ports, prefs, log);
+  detectStalePortTransitions(state.ports, ports, prefs);
 
   // Update state with current snapshots.
   // When entry.mr is null (API failure or branch has no MR), keep the

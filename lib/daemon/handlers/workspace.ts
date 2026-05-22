@@ -51,7 +51,6 @@ export function createWorkspaceHandlers(ctx: HandlerContext): HandlerMap {
         sourcePath || join(repoPath, fileName),
         targetPaths,
         config.preserveKeys,
-        ctx.log,
       );
 
       config.lastSyncAt = new Date().toISOString();
@@ -59,7 +58,7 @@ export function createWorkspaceHandlers(ctx: HandlerContext): HandlerMap {
       saveSyncConfig(repo, config);
 
       // Start watching
-      startWatching(repo, repoPath, config, ctx.log);
+      startWatching(repo, repoPath, config);
 
       return { ok: true, data: result };
     },
@@ -68,7 +67,7 @@ export function createWorkspaceHandlers(ctx: HandlerContext): HandlerMap {
       const { repo } = payload as { repo: string };
       if (!repo) return { ok: false, error: "missing repo" };
 
-      stopWatching(repo, ctx.log);
+      stopWatching(repo);
 
       // Disable config
       const config = loadSyncConfig(repo);
@@ -119,7 +118,7 @@ export function createWorkspaceHandlers(ctx: HandlerContext): HandlerMap {
       if (!latestPath) return { ok: false, error: "no workspace files found" };
 
       const targetPaths = worktrees.map(wt => join(wt, config.fileName));
-      const result = syncWorkspaceFile(latestPath, targetPaths, config.preserveKeys, ctx.log);
+      const result = syncWorkspaceFile(latestPath, targetPaths, config.preserveKeys);
 
       config.lastSyncAt = new Date().toISOString();
       config.lastSyncSource = latestPath;
