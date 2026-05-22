@@ -4,7 +4,7 @@
 
 **Goal:** Replace the daemon's handrolled `log(msg)` with pino (JSON, daily rotation, 14-day retention, crash-safe), audit silent catches in four high-suspicion modules, and ship `rt daemon logs` as a browser viewer powered by logdy.
 
-**Architecture:** Single pino root logger in `lib/daemon-logger.ts` writes JSON to `~/.rt/logs/daemon.log.YYYY-MM-DD` via pino-roll. Submodules use `childLogger("<name>")` for module-stamped output. `uncaughtException` + `unhandledRejection` handlers + a `process.stderr.write` interceptor capture everything bun-side. `rt daemon logs` spawns `logdy follow <today's-file> --port 5544` and `open`s the browser; `--terminal` falls back to `tail -F | bunx pino-pretty`.
+**Architecture:** Single pino root logger in `lib/daemon-logger.ts` writes JSON to `~/.rt/logs/daemon.YYYY-MM-DD.N.log` via pino-roll. Submodules use `childLogger("<name>")` for module-stamped output. `uncaughtException` + `unhandledRejection` handlers + a `process.stderr.write` interceptor capture everything bun-side. `rt daemon logs` spawns `logdy follow <today's-file> --port 5544` and `open`s the browser; `--terminal` falls back to `tail -F | bunx pino-pretty`.
 
 **Tech Stack:** Bun, TypeScript, pino, pino-roll, pino-pretty, logdy (brew-installed binary, not bundled).
 
@@ -49,7 +49,7 @@ Expected: `package.json` `dependencies` gains `pino`, `pino-roll`, `pino-pretty`
 Run:
 ```bash
 bun -e 'import pino from "pino"; console.log("pino ok:", typeof pino)'
-bun -e 'import { createStream } from "pino-roll"; console.log("pino-roll ok:", typeof createStream)'
+bun -e 'import roll from "pino-roll"; console.log("pino-roll ok:", typeof createStream)'
 ```
 
 Expected: `pino ok: function` and `pino-roll ok: function`.
@@ -79,7 +79,7 @@ export const DAEMON_STDERR_LOG_PATH = join(RT_DIR, "daemon-stderr.log");
 Replace with:
 ```ts
 export const LOG_DIR = join(RT_DIR, "logs");
-// pino-roll uses this as the base path; rotated files become daemon.log.YYYY-MM-DD
+// pino-roll uses this as the base path; rotated files become daemon.YYYY-MM-DD.N.log
 export const DAEMON_LOG_PATH = join(LOG_DIR, "daemon.log");
 // NOTE: DAEMON_STDERR_LOG_PATH removed — JS-side stderr is captured by the logger
 // (see lib/daemon.ts startup). Native stderr capture is deferred to the swift-shim.
@@ -250,7 +250,7 @@ Create `lib/daemon-logger.ts`:
  */
 
 import pino, { type Logger } from "pino";
-import { createStream } from "pino-roll";
+import roll from "pino-roll";
 import { LOG_DIR } from "./daemon-config.ts";
 
 export interface DaemonLoggerHandle {
@@ -272,7 +272,7 @@ export interface CreateOptions {
  * pino-roll's createStream is async (it stats the dir + sets up the writer).
  */
 export async function createDaemonLogger(opts: CreateOptions): Promise<DaemonLoggerHandle> {
-  const stream = await createStream({
+  const stream = await roll({
     file: `${opts.logDir}/daemon.log`,
     frequency: "daily",
     mkdir: true,
@@ -584,8 +584,7 @@ sleep 5
 ls -la ~/.rt/logs/ 2>&1
 echo "---"
 # Today's file:
-DATE=$(date +%Y-%m-%d)
-tail -5 ~/.rt/logs/daemon.log.$DATE 2>&1
+tail -5 ~/.rt/logs/daemon.*.log 2>&1
 ```
 
 Expected: `~/.rt/logs/` directory exists; `daemon.log.<today>` is being written; tail shows JSON lines like `{"level":30,"time":...,"pid":...,"msg":"daemon ready"}`.
@@ -666,8 +665,7 @@ For each match, remove the `log:` field from the object literal.
 bun --bun tsc --noEmit -p . 2>&1 | grep -E "(daemon\.ts|auto-fix)" | head -10
 curl --unix-socket ~/.rt/tray.sock -s -X POST http://localhost/daemon/restart
 sleep 5
-DATE=$(date +%Y-%m-%d)
-grep '"module":"auto-fix"' ~/.rt/logs/daemon.log.$DATE | tail -3
+grep '"module":"auto-fix"' ~/.rt/logs/daemon.*.log | tail -3
 ```
 
 Expected: At least if auto-fix has fired, you see `"module":"auto-fix"` lines. (If nothing has fired, that's fine — just confirm daemon is running.)
@@ -719,8 +717,7 @@ Update any callsites that pass `log`.
 bun --bun tsc --noEmit -p . 2>&1 | grep "tunnel-manager" | head -10
 curl --unix-socket ~/.rt/tray.sock -s -X POST http://localhost/daemon/restart
 sleep 5
-DATE=$(date +%Y-%m-%d)
-grep '"module":"tunnel"' ~/.rt/logs/daemon.log.$DATE | tail -3 || echo "(no tunnel activity, daemon is ok)"
+grep '"module":"tunnel"' ~/.rt/logs/daemon.*.log | tail -3 || echo "(no tunnel activity, daemon is ok)"
 ```
 
 - [ ] **Step 5: Commit**
@@ -754,8 +751,7 @@ const log = (await getDaemonLogger()).childLogger("parking-lot");
 bun --bun tsc --noEmit -p . 2>&1 | grep "parking-lot" | head -10
 curl --unix-socket ~/.rt/tray.sock -s -X POST http://localhost/daemon/restart
 sleep 5
-DATE=$(date +%Y-%m-%d)
-grep '"module":"parking-lot"' ~/.rt/logs/daemon.log.$DATE | tail -3 || echo "(no parking-lot activity)"
+grep '"module":"parking-lot"' ~/.rt/logs/daemon.*.log | tail -3 || echo "(no parking-lot activity)"
 ```
 
 - [ ] **Step 5: Commit**
@@ -789,8 +785,7 @@ const log = (await getDaemonLogger()).childLogger("process-manager");
 bun --bun tsc --noEmit -p . 2>&1 | grep "process-manager" | head -10
 curl --unix-socket ~/.rt/tray.sock -s -X POST http://localhost/daemon/restart
 sleep 5
-DATE=$(date +%Y-%m-%d)
-grep '"module":"process-manager"' ~/.rt/logs/daemon.log.$DATE | tail -3 || echo "(no process-manager activity)"
+grep '"module":"process-manager"' ~/.rt/logs/daemon.*.log | tail -3 || echo "(no process-manager activity)"
 ```
 
 - [ ] **Step 5: Commit**
@@ -830,8 +825,7 @@ Pattern: drop `log` from constructor/factory args; add the `import { getDaemonLo
 bun --bun tsc --noEmit -p . 2>&1 | head -30
 curl --unix-socket ~/.rt/tray.sock -s -X POST http://localhost/daemon/restart
 sleep 5
-DATE=$(date +%Y-%m-%d)
-tail -20 ~/.rt/logs/daemon.log.$DATE
+tail -20 ~/.rt/logs/daemon.*.log
 ```
 
 Expected: Clean type-check, daemon runs, log shows module-stamped lines from multiple modules.
@@ -876,30 +870,22 @@ Find `export function showLogs(): void {` near line 228 and replace the entire f
 export async function showLogs(args: string[] = []): Promise<void> {
   const terminal = args.includes("--terminal") || args.includes("-t");
 
-  // Find today's log file (pino-roll names them daemon.log.YYYY-MM-DD).
-  const today = new Date().toISOString().slice(0, 10);
-  const todayPath = join(LOG_DIR, `daemon.log.${today}`);
-
+  // pino-roll names files: daemon.YYYY-MM-DD.N.log
+  // Pick the most-recent file by mtime (works whether or not today's daemon
+  // has been started yet).
   if (!existsSync(LOG_DIR)) {
     console.log(`\n  ${dim}no daemon logs yet — start the daemon first${reset}\n`);
     return;
   }
-
-  // Resolve a real file to point logdy/tail at. If today's file doesn't
-  // exist (daemon just started, no rotation tick), fall back to the most
-  // recent daemon.log.* by mtime.
-  let logPath = todayPath;
-  if (!existsSync(logPath)) {
-    const candidates = readdirSync(LOG_DIR)
-      .filter(f => f.startsWith("daemon.log."))
-      .map(f => ({ f, mtime: statSync(join(LOG_DIR, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime);
-    if (candidates.length === 0) {
-      console.log(`\n  ${dim}no daemon log files in ${LOG_DIR}${reset}\n`);
-      return;
-    }
-    logPath = join(LOG_DIR, candidates[0]!.f);
+  const candidates = readdirSync(LOG_DIR)
+    .filter(f => /^daemon\..+\.log$/.test(f))
+    .map(f => ({ f, mtime: statSync(join(LOG_DIR, f)).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime);
+  if (candidates.length === 0) {
+    console.log(`\n  ${dim}no daemon log files in ${LOG_DIR}${reset}\n`);
+    return;
   }
+  const logPath = join(LOG_DIR, candidates[0]!.f);
 
   if (terminal) {
     await runTerminalViewer(logPath);
@@ -1058,15 +1044,14 @@ git commit -m "feat(rt-daemon-logs): web viewer via logdy + terminal mode via pi
 ```bash
 curl --unix-socket ~/.rt/tray.sock -s -X POST http://localhost/daemon/restart
 sleep 5
-DATE=$(date +%Y-%m-%d)
 echo "=== last 20 log lines ==="
-tail -20 ~/.rt/logs/daemon.log.$DATE | bunx pino-pretty
+tail -20 ~/.rt/logs/daemon.*.log | bunx pino-pretty
 echo ""
 echo "=== module distribution ==="
-grep -oE '"module":"[^"]+"' ~/.rt/logs/daemon.log.$DATE | sort | uniq -c | sort -rn
+grep -oE '"module":"[^"]+"' ~/.rt/logs/daemon.*.log | sort | uniq -c | sort -rn
 echo ""
 echo "=== level distribution ==="
-grep -oE '"level":[0-9]+' ~/.rt/logs/daemon.log.$DATE | sort | uniq -c
+grep -oE '"level":[0-9]+' ~/.rt/logs/daemon.*.log | sort | uniq -c
 ```
 
 Expected:
@@ -1088,8 +1073,7 @@ curl --unix-socket ~/.rt/rt.sock -s -X POST "http://localhost/nonexistent-comman
 
 Then check:
 ```bash
-DATE=$(date +%Y-%m-%d)
-tail -5 ~/.rt/logs/daemon.log.$DATE | bunx pino-pretty
+tail -5 ~/.rt/logs/daemon.*.log | bunx pino-pretty
 ```
 
 Expected: An error-level entry recently logged with stack info.
@@ -1099,8 +1083,7 @@ Expected: An error-level entry recently logged with stack info.
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.rt.daemon
 sleep 5
-DATE=$(date +%Y-%m-%d)
-grep -E '(shutting down|daemon ready)' ~/.rt/logs/daemon.log.$DATE | tail -4 | bunx pino-pretty
+grep -E '(shutting down|daemon ready)' ~/.rt/logs/daemon.*.log | tail -4 | bunx pino-pretty
 ```
 
 Expected: One "shutting down" line, then "daemon ready" for the new instance. No fatal lines from the SIGTERM handler.
