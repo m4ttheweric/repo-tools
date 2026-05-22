@@ -339,6 +339,11 @@ export async function runCommand(
   process.stderr.write(`\nRunning: ${cmd}\n`);
   process.stderr.write(`  in: ${packagePath}\n\n`);
 
+  // Survive TTY Ctrl-C so the post-exit history append below actually runs.
+  // SIGINT is delivered to the whole foreground process group; the child gets
+  // it independently and exits — we just need the parent not to die first.
+  process.on("SIGINT", () => {});
+
   const proc = Bun.spawn([SHELL, "-c", cmd], {
     cwd: packagePath,
     stdio: ["inherit", "inherit", "inherit"],

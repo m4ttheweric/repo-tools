@@ -131,8 +131,17 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
     },
 
     "ports": async (payload) => {
-      // Return cached port data, optionally filtered by repo
+      // Return cached port data, optionally filtered by repo.
+      // `refresh: true` forces a fresh scan first (used by `rt port` so the
+      // CLI never shows the 30s-stale cache).
       const repoFilter = payload?.repo as string | undefined;
+      const shouldRefresh = payload?.refresh === true;
+      if (shouldRefresh) {
+        const { scanListeningPorts } = await import("../../port-scanner.ts");
+        ctx.portCacheRef.ports = scanListeningPorts();
+        ctx.portCacheRef.updatedAt = Date.now();
+        ctx.log(`ports: on-demand refresh — ${ctx.portCacheRef.ports.length} listening ports`);
+      }
       let ports = ctx.portCacheRef.ports;
       if (repoFilter) {
         ports = ports.filter(p => p.repo === repoFilter);

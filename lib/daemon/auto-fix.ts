@@ -83,9 +83,12 @@ export async function provisionWorktree(
     }
 
     log(`auto-fix: git worktree add → ${wtPath} from origin/${branch}`);
+    // Disable git hooks for provisioning. Husky's post-checkout fails in fresh
+    // worktrees (the `_/` shim isn't materialized until `husky install` runs),
+    // and the agent's setupCommands will install whatever it needs later.
     execSync(
-      `git -C "${repoPath}" fetch origin "${branch}" && ` +
-      `git -C "${repoPath}" worktree add "${wtPath}" "origin/${branch}"`,
+      `git -C "${repoPath}" -c core.hooksPath=/dev/null fetch origin "${branch}" && ` +
+      `git -C "${repoPath}" -c core.hooksPath=/dev/null worktree add "${wtPath}" "origin/${branch}"`,
       { stdio: "pipe" },
     );
 
@@ -118,10 +121,11 @@ export async function provisionWorktree(
 
     for (const cmd of commands) {
       const [bin, ...args] = cmd;
-      log(`auto-fix: running setup: ${bin} ${args.join(" ")}`);
+      log(`auto-fix: running setup: ${bin} ${args.join(" ")} (PATH chars=${(process.env.PATH ?? "").length})`);
       try {
         execSync(`${bin} ${args.map(a => JSON.stringify(a)).join(" ")}`, {
           cwd: wtPath, stdio: "pipe", timeout: 5 * 60_000,
+          env: { ...process.env, PATH: process.env.PATH ?? "" },
         });
       } catch (err: any) {
         await teardownWorktree(repoPath, wtPath, log);

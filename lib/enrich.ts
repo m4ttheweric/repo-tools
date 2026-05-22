@@ -48,15 +48,22 @@ export interface EnrichedBranch {
   branch: string;
   linearId: string | null;
   ticket: LinearTicket | null;
-  mr: MRDashboardProps | null;
+  mr: MRInfo | null;
 }
 
 // ─── PullRequest → MRDashboardProps ──────────────────────────────────────────
 
-function toMRInfo(pr: PullRequest): MRDashboardProps {
+/**
+ * Cached MR shape: MRDashboardProps plus the head commit `sha`, which the
+ * SDK's dashboard projection drops but the auto-fix engine needs to verify
+ * the failed pipeline ran on the current HEAD.
+ */
+export type MRInfo = MRDashboardProps & { sha: string | null };
+
+function toMRInfo(pr: PullRequest): MRInfo {
   // Delegates to glance-sdk ≥ 0.7.6, which uses mergeabilityChecks as a stable
   // source for `conflicts` (fixes GitLab's async boolean flapping).
-  return getMRDashboardProps(pr, "idle");
+  return { ...getMRDashboardProps(pr, "idle"), sha: pr.sha };
 }
 
 // ─── Disk cache (~/.rt/branch-cache.json) ────────────────────────────────────
@@ -66,7 +73,7 @@ const CACHE_PATH = join(homedir(), ".rt", "branch-cache.json");
 interface CacheEntry {
   ticket: LinearTicket | null;
   linearId: string;
-  mr: MRDashboardProps | null;
+  mr: MRInfo | null;
   fetchedAt: number;
   repoName?: string;
 }

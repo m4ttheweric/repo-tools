@@ -12,13 +12,19 @@
 
 import { execSync } from "child_process";
 import { bold, cyan, dim, green, yellow, red, reset } from "../lib/tui.ts";
+import { withInlineSpinner } from "../lib/tui/inline-spinner.ts";
 import { scanListeningPorts, type PortEntry } from "../lib/port-scanner.ts";
 
 // ─── Data fetching ───────────────────────────────────────────────────────────
 
 async function getPortData(): Promise<{ entries: PortEntry[]; source: "daemon" | "direct" }> {
   const { daemonQuery } = await import("../lib/daemon-client.ts");
-  const result = await daemonQuery("ports");
+  // refresh: true → daemon re-scans before returning, so we never serve the
+  // 30s-stale cache on a direct CLI invocation. A fresh scan does an lsof per
+  // listening PID, so allow more than the default 2s.
+  const result = await withInlineSpinner("scanning ports…", () =>
+    daemonQuery("ports", { refresh: true }, 15_000),
+  );
 
   if (result?.ok && result.data?.ports) {
     return { entries: result.data.ports as PortEntry[], source: "daemon" };
@@ -26,7 +32,10 @@ async function getPortData(): Promise<{ entries: PortEntry[]; source: "daemon" |
 
   // Fallback to direct scan
   console.log(`  ${dim}(daemon not available, scanning directly...)${reset}`);
-  return { entries: scanListeningPorts(), source: "direct" };
+  return {
+    entries: await withInlineSpinner("scanning ports…", async () => scanListeningPorts()),
+    source: "direct",
+  };
 }
 
 // ─── Display ─────────────────────────────────────────────────────────────────

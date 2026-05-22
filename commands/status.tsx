@@ -123,16 +123,43 @@ function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 
+// One shared 80ms interval drives every spinner in the dashboard. With N
+// running pipelines, the old per-card setInterval produced N×12.5 renders/s
+// for 12+ hours — enough churn to OOM the JS heap. Sharing the ticker (and
+// only running it while at least one subscriber is active) keeps render
+// volume flat as the number of running pipelines grows.
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+let spinnerFrame = 0;
+let spinnerInterval: ReturnType<typeof setInterval> | null = null;
+const spinnerSubs = new Set<(f: number) => void>();
+
+function startSpinnerTicker() {
+  if (spinnerInterval) return;
+  spinnerInterval = setInterval(() => {
+    spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
+    for (const cb of spinnerSubs) cb(spinnerFrame);
+  }, 80);
+}
+
+function stopSpinnerTicker() {
+  if (!spinnerInterval) return;
+  clearInterval(spinnerInterval);
+  spinnerInterval = null;
+}
+
 /** Animated spinner character — only ticks when a pipeline is running. */
 function useSpinnerChar(active: boolean): string {
-  const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-  const [frame, setFrame] = useState(0);
+  const [frame, setFrame] = useState(spinnerFrame);
   useEffect(() => {
     if (!active) return;
-    const t = setInterval(() => setFrame(f => (f + 1) % FRAMES.length), 80);
-    return () => clearInterval(t);
+    spinnerSubs.add(setFrame);
+    startSpinnerTicker();
+    return () => {
+      spinnerSubs.delete(setFrame);
+      if (spinnerSubs.size === 0) stopSpinnerTicker();
+    };
   }, [active]);
-  return FRAMES[frame]!;
+  return SPINNER_FRAMES[frame]!;
 }
 
 /** Reactive terminal width — triggers re-render on resize. */
@@ -2267,20 +2294,24 @@ function LiveDashboard({
         const mrs = ev.data?.mrs as Record<string, MRDashboardProps> | undefined;
         if (!mrs) return;
         setData((prev) => {
-          const newBranches = { ...prev.branches };
-          let changed = false;
+          // Bail out early if every incoming MR is byte-identical to what
+          // we already have — avoids cloning `branches` and re-rendering the
+          // whole tree on no-op broadcasts (which compound badly over hours).
+          let newBranches: Record<string, CacheEntry> | null = null;
           for (const [iidStr, mrProps] of Object.entries(mrs)) {
             const iid = Number(iidStr);
             const info = iidToBranch.get(iid);
             if (!info) continue;
+            const existing = prev.branches[info.branch]?.mr;
+            if (existing && JSON.stringify(existing) === JSON.stringify(mrProps)) continue;
+            if (!newBranches) newBranches = { ...prev.branches };
             newBranches[info.branch] = {
               ...(newBranches[info.branch] ?? info.entry),
               mr: mrProps,
               fetchedAt: Date.now(),
             };
-            changed = true;
           }
-          if (!changed) return prev;
+          if (!newBranches) return prev;
           return { ...prev, branches: newBranches, source: "live" as const };
         });
         setHasLiveData(true);
