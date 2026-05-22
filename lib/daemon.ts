@@ -14,17 +14,19 @@
  */
 
 import {
-  existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync,
+  existsSync, readFileSync, writeFileSync, mkdirSync,
   unlinkSync, watch, statSync, type FSWatcher,
 } from "fs";
 import { join, resolve, dirname, basename } from "path";
 import { execSync } from "child_process";
 
 import {
-  RT_DIR, DAEMON_SOCK_PATH, DAEMON_PID_PATH, DAEMON_LOG_PATH,
+  RT_DIR, DAEMON_SOCK_PATH, DAEMON_PID_PATH,
   API_PORT,
   readDaemonPid,
 } from "./daemon-config.ts";
+
+import { getDaemonLogger, installCrashHandlers } from "./daemon-logger.ts";
 
 import { StateStore }    from "./daemon/state-store.ts";
 import { PortAllocator } from "./daemon/port-allocator.ts";
@@ -52,7 +54,6 @@ import { checkAndPark } from "./daemon/parking-lot.ts";
 const MR_REFRESH_INTERVAL_MS = 5 * 60 * 1000;      // 5 minutes
 const PORT_SCAN_INTERVAL_MS = 30 * 1000;             // 30 seconds
 const HOOKS_SCAN_INTERVAL_MS = 60 * 1000;            // 60 seconds (fallback for stale watchers)
-const LOG_MAX_BYTES = 10 * 1024 * 1024;              // 10MB
 const REPOS_JSON_PATH = join(RT_DIR, "repos.json");
 const CACHE_PATH = join(RT_DIR, "branch-cache.json");
 
@@ -104,6 +105,16 @@ const portCacheRef: { ports: PortEntry[]; updatedAt: number } = { ports: [], upd
 const refreshStatusRef = { lastRefreshAt: 0 };
 const watchedConfigs = new Map<string, FSWatcher>();
 const startedAt = Date.now();
+
+// ─── Logging ─────────────────────────────────────────────────────────────────
+// Pino-backed structured logger. See lib/daemon-logger.ts. Top-level await
+// initializes the singleton before any other startup code runs, so `log` is
+// always usable from sync contexts (including catch blocks).
+
+const loggerHandle = await getDaemonLogger();
+const log = loggerHandle.logger;
+/** String-based log adapter for legacy `(msg: string) => void` callback APIs. */
+const logStr = (msg: string) => log.info(msg);
 
 // ─── Daemon units (process management) ───────────────────────────────────────
 
@@ -160,7 +171,7 @@ const remedyEngine = new RemedyEngine({
   onMatch: (id, remedy, pattern) => {
     const cmdPreview = remedy.cmds.join(" && ");
     processManager.emitNotice(id, matchBanner(remedy.name, pattern, cmdPreview));
-    log(`remedy: ▸ "${remedy.name}" matched for ${id} (pattern: ${pattern})`);
+    log.info({ remedy: remedy.name, id, pattern }, "remedy matched");
   },
   onFire: (id, remedy, success) => {
     remedyEventQueue.push({ id, name: remedy.name, success, firedAt: Date.now() });
@@ -168,7 +179,7 @@ const remedyEngine = new RemedyEngine({
     broadcast("remedy", { id, name: remedy.name, success });
     const willRestart = success && remedy.thenRestart !== false;
     processManager.emitNotice(id, fireBanner(remedy.name, success, willRestart));
-    log(`remedy: ${success ? "✓" : "✗"} "${remedy.name}" fired for ${id}`);
+    log.info({ remedy: remedy.name, id, success }, "remedy fired");
   },
 });
 
@@ -191,9 +202,9 @@ const GLOBAL_REMEDY_DEBOUNCE_MS = 100;
 
 try {
   remedyEngine.reloadGlobals(loadGlobalRemedies());
-  log("remedy: global rules loaded");
+  log.info("remedy: global rules loaded");
 } catch (err) {
-  log(`remedy: could not load global rules at startup (${String(err)}) — starting empty`);
+  log.warn({ err }, "remedy: could not load global rules at startup");
 }
 
 (function watchGlobalRemedies() {
@@ -210,14 +221,14 @@ try {
         try {
           const rules = loadGlobalRemedies();
           remedyEngine.reloadGlobals(rules);
-          log(`remedy: hot-reloaded ${rules.length} global rule(s) from _global.json`);
+          log.info({ count: rules.length }, "remedy: hot-reloaded global rules");
         } catch (err) {
-          log(`remedy: parse failed — retaining previous rules (${String(err)})`);
+          log.error({ err }, "remedy: parse failed; retaining previous rules");
         }
       }, GLOBAL_REMEDY_DEBOUNCE_MS);
     });
   } catch (err) {
-    log(`remedy: could not watch global remedy dir (${String(err)})`);
+    log.warn({ err }, "remedy: could not watch global dir");
   }
 })();
 
@@ -284,33 +295,7 @@ try {
   const hasTool = (name: string) => pathEntries.some(p => {
     try { return Bun.file(`${p}/${name}`).size > 0; } catch { return false; }
   });
-  log(`PATH resolved (${pathEntries.length} entries, pnpm=${hasTool("pnpm") ? "✓" : "✗"} doppler=${hasTool("doppler") ? "✓" : "✗"})`);
-}
-
-// ─── Logging ─────────────────────────────────────────────────────────────────
-
-function log(msg: string): void {
-  const ts = new Date().toISOString();
-  const line = `[${ts}] ${msg}`;
-  console.log(line);
-
-  // Persist to disk — daemon runs under launchd with no stdout redirect,
-  // so console.log alone vanishes into the void.
-  try {
-    appendFileSync(DAEMON_LOG_PATH, line + "\n");
-  } catch { /* best-effort */ }
-
-  // Self-rotate log
-  try {
-    const stat = statSync(DAEMON_LOG_PATH);
-    if (stat.size > LOG_MAX_BYTES) {
-      const content = readFileSync(DAEMON_LOG_PATH, "utf8");
-      // Keep last 20% of the file
-      const keepFrom = Math.floor(content.length * 0.8);
-      writeFileSync(DAEMON_LOG_PATH, content.slice(keepFrom));
-      log("log rotated (exceeded 10MB)");
-    }
-  } catch { /* no log file yet, that's fine */ }
+  log.info({ entries: pathEntries.length, hasPnpm: hasTool("pnpm"), hasDoppler: hasTool("doppler") }, "PATH resolved");
 }
 
 // ─── Cache ───────────────────────────────────────────────────────────────────
@@ -328,7 +313,7 @@ function flushCache(): void {
   try {
     writeFileSync(CACHE_PATH, JSON.stringify(cache, null, 2));
   } catch (err) {
-    log(`cache flush failed: ${err}`);
+    log.error({ err }, "cache flush failed");
   }
 }
 
@@ -392,7 +377,7 @@ function checkAndRepairHooksPath(repoName: string, repoPath: string): boolean {
       cwd: repoPath,
       stdio: "pipe",
     });
-    log(`hooks-guard: repaired core.hooksPath for ${repoName} (was: ${currentHooksPath})`);
+    log.warn({ repo: repoName, was: currentHooksPath }, "hooks-guard repaired core.hooksPath");
     return true;
   } catch {
     // git config core.hooksPath not set — check if it should be
@@ -401,7 +386,7 @@ function checkAndRepairHooksPath(repoName: string, repoPath: string): boolean {
         cwd: repoPath,
         stdio: "pipe",
       });
-      log(`hooks-guard: set core.hooksPath for ${repoName} (was unset)`);
+      log.info({ repo: repoName }, "hooks-guard set core.hooksPath");
       return true;
     } catch {
       return false;
@@ -438,7 +423,7 @@ function startWatchingRepo(repoName: string, repoPath: string): void {
   });
 
   watchedConfigs.set(configPath, watcher);
-  log(`watching: ${repoName} (${gitDir}/${configFile})`);
+  log.info({ repo: repoName, file: `${gitDir}/${configFile}` }, "watching repo");
 
   // Initial check
   checkAndRepairHooksPath(repoName, repoPath);
@@ -458,12 +443,12 @@ function refreshPortCache(): void {
   try {
     portCacheRef.ports = scanListeningPorts();
     portCacheRef.updatedAt = Date.now();
-    log(`ports: scanned ${portCacheRef.ports.length} listening ports matching known repos`);
+    log.info({ count: portCacheRef.ports.length }, "ports scanned");
 
     // Broadcast to WebSocket clients
     broadcast("ports", { ports: portCacheRef.ports, updatedAt: portCacheRef.updatedAt });
   } catch (err) {
-    log(`ports: scan failed: ${err}`);
+    log.error({ err }, "port scan failed");
   }
 }
 
@@ -484,7 +469,7 @@ function refreshCache(): Promise<void> {
 }
 
 async function refreshCacheImpl(): Promise<void> {
-  log("cache: starting background refresh");
+  log.debug("cache: starting background refresh");
 
   try {
     // Dynamic import to avoid loading heavy deps if not needed
@@ -549,26 +534,26 @@ async function refreshCacheImpl(): Promise<void> {
           } catch { /* no remote */ }
 
           // Optimized: 3 GraphQL calls for ALL open MRs + 1 Linear batch
-          await refreshAllMRs(branches, remoteUrl, (msg) => log(`cache: ${msg}`), repoName);
+          await refreshAllMRs(branches, remoteUrl, (msg) => log.info(`cache: ${msg}`), repoName);
         }
       } catch (err) {
-        log(`cache: skipping ${repoName} due to error: ${err}`);
+        log.warn({ err, repo: repoName }, "cache refresh skipped repo");
       }
     }
 
     // Reload cache from disk (enrichBranches writes to disk)
     loadCache();
     refreshStatusRef.lastRefreshAt = Date.now();
-    log(`cache: refresh complete (${Object.keys(cache.entries).length} entries)`);
+    log.debug({ count: Object.keys(cache.entries).length }, "cache refresh complete");
 
     // Check for state transitions and fire notifications
-    checkAndNotify(cache.entries, portCacheRef.ports, log, getCurrentUserId(), loadRepoIndex);
+    checkAndNotify(cache.entries, portCacheRef.ports, logStr, getCurrentUserId(), loadRepoIndex);
 
     // Auto-park worktrees whose MRs just merged/closed.
     try {
-      checkAndPark({ cache, repoIndex: loadRepoIndex, log });
+      checkAndPark({ cache, repoIndex: loadRepoIndex, log: logStr });
     } catch (err) {
-      log(`parking-lot: check failed: ${err}`);
+      log.warn({ err }, "parking-lot check failed");
     }
 
     // Doppler-template reconciliation: keeps ~/.doppler/.doppler.yaml in sync
@@ -583,20 +568,20 @@ async function refreshCacheImpl(): Promise<void> {
           const summary = await reconcileForRepo({ repoName, worktreeRoots });
           if (summary.skipped) {
             if (summary.skipped === "malformed-template") {
-              log(`doppler:sync repo=${repoName} skipped=${summary.skipped}`);
+              log.debug({ repo: repoName, skipped: summary.skipped }, "doppler sync skipped");
             }
             // "no-template" is the silent opt-out case; do not log.
             continue;
           }
           if (summary.wrote > 0 || summary.overridden > 0) {
-            log(`doppler:sync repo=${repoName} wrote=${summary.wrote} overridden=${summary.overridden} unchanged=${summary.unchanged}`);
+            log.info({ repo: repoName, ...summary }, "doppler sync");
           }
         } catch (err) {
-          log(`doppler:sync repo=${repoName} failed: ${err}`);
+          log.error({ err, repo: repoName }, "doppler sync failed");
         }
       }
     } catch (err) {
-      log(`doppler:sync failed: ${err}`);
+      log.error({ err }, "doppler sync failed");
     }
 
     // Broadcast to WebSocket clients
@@ -605,16 +590,16 @@ async function refreshCacheImpl(): Promise<void> {
     // Reconcile live MR subscriptions against the freshly-loaded cache.
     // Adds/removes watchers for MRs that appeared/disappeared since last tick.
     reconcileMRSubscriptions(mrSubEnv).catch((err) => {
-      log(`mr-subscriptions: reconcile failed: ${err}`);
+      log.error({ err }, "mr-subscriptions: reconcile failed");
     });
   } catch (err) {
-    log(`cache: refresh failed: ${err}`);
+    log.error({ err }, "cache refresh failed");
   }
 }
 
 // ─── Socket server ───────────────────────────────────────────────────────────
 
-const tunnelManager  = new TunnelManager({ processManager, log });
+const tunnelManager  = new TunnelManager({ processManager, log: logStr });
 
 /**
  * Extracted-handler map, built once at module load. Every command goes through
@@ -627,7 +612,7 @@ const handlerCtx: HandlerContext = {
   attachServer, logBuffer, exclusiveGroup,
   cache, refreshCache, loadCache, flushCache, remedyEvents: remedyEventQueue,
   portAllocator,
-  log,
+  log: logStr,
   startedAt,
   portCacheRef,
   watchedConfigs,
@@ -638,7 +623,7 @@ const handlerCtx: HandlerContext = {
 };
 
 /** Env bundle for the MR subscription subsystem. */
-const mrSubEnv: MRSubscriptionEnv = { ctx: handlerCtx, log, broadcast };
+const mrSubEnv: MRSubscriptionEnv = { ctx: handlerCtx, log: logStr, broadcast };
 
 const routedHandlers: HandlerMap = {
   ...createCacheHandlers(handlerCtx),
@@ -664,7 +649,7 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
 
   switch (cmd) {
     case "shutdown":
-      log("received shutdown command");
+      log.info("received shutdown command");
       cleanup();
       setTimeout(() => process.exit(0), 100);
       return { ok: true, message: "shutting down" };
@@ -700,7 +685,7 @@ function startSocketServer(): void {
     },
   });
 
-  log(`socket server listening on ${DAEMON_SOCK_PATH}`);
+  log.info({ path: DAEMON_SOCK_PATH }, "socket server listening");
 }
 
 // ─── REST API + WebSocket server ─────────────────────────────────────────────
@@ -826,7 +811,7 @@ function startApiServer(): void {
     websocket: {
       open(ws) {
         wsClients.add(ws);
-        log(`api: WebSocket client connected (${wsClients.size} total)`);
+        log.debug({ total: wsClients.size }, "ws client connected");
         try {
           ws.send(JSON.stringify({
             type: "mr:status",
@@ -837,7 +822,7 @@ function startApiServer(): void {
       },
       close(ws) {
         wsClients.delete(ws);
-        log(`api: WebSocket client disconnected (${wsClients.size} total)`);
+        log.debug({ total: wsClients.size }, "ws client disconnected");
       },
       message(_ws, _msg) {
         // Clients don't send messages — this is a broadcast-only stream
@@ -845,7 +830,7 @@ function startApiServer(): void {
     },
   });
 
-  log(`api server listening on http://localhost:${API_PORT}`);
+  log.info({ port: API_PORT }, "api server listening");
 }
 
 // ─── Lifecycle ───────────────────────────────────────────────────────────────
@@ -901,13 +886,17 @@ function cleanup(): void {
     try { if (existsSync(path)) unlinkSync(path); } catch { /* */ }
   }
 
-  log("daemon stopped");
+  log.info("daemon stopped");
 }
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
 export function startDaemon(): void {
   mkdirSync(RT_DIR, { recursive: true });
+
+  // Wire uncaughtException + unhandledRejection through pino. Must run BEFORE
+  // any async work that could throw uncaught.
+  installCrashHandlers(loggerHandle);
 
   // ── Self-healing startup ────────────────────────────────────────────────────
   // If a previous daemon process is still alive (orphan from a failed restart),
@@ -919,20 +908,20 @@ export function startDaemon(): void {
     try {
       process.kill(previousPid, 0); // throws if not alive
       process.kill(previousPid, "SIGTERM");
-      log(`evicted stale daemon process (pid ${previousPid})`);
+      log.warn({ pid: previousPid }, "evicted stale daemon process");
       // Brief pause so the old process can exit and release any shared resources
       Bun.sleepSync(300);
     } catch { /* process not found — nothing to evict */ }
   }
   // ───────────────────────────────────────────────────────────────────────────
 
-  log("daemon starting");
+  log.info("daemon starting");
   writePidFile();
 
   // Surface invalid state transitions so drift in VALID_TRANSITIONS shows up
   // in the daemon log instead of being silently permitted.
   stateStore.onInvalidTransition((id, prev, next) => {
-    log(`stateStore: invalid transition for "${id}": ${prev} → ${next}`);
+    log.warn({ id, prev, next }, "stateStore: invalid transition");
   });
 
   // On restart, most children are gone — but warm (SIGSTOP'd) processes survive
@@ -944,13 +933,13 @@ export function startDaemon(): void {
       process.kill(pid, 0); // probe — throws if pid is no longer live
       killGroup(pid, "SIGCONT");
       killGroup(pid, "SIGKILL");
-      log(`reaped orphan process for "${id}" (pid ${pid})`);
+      log.warn({ id, pid }, "reaped orphan process");
     } catch { /* pid already gone */ }
   }
 
   // Load cache from disk
   loadCache();
-  log(`cache: loaded ${Object.keys(cache.entries).length} entries from disk`);
+  log.info({ count: Object.keys(cache.entries).length }, "cache loaded from disk");
 
   // Start socket server (Unix socket for CLI/tray)
   startSocketServer();
@@ -967,23 +956,23 @@ export function startDaemon(): void {
   // Auto-fix: sweep any leftover ephemeral worktrees from a previous daemon
   // process. Cheap (file stats only) and bounded.
   try {
-    sweepAutoFixArtifacts(loadRepoIndex, log);
+    sweepAutoFixArtifacts(loadRepoIndex, logStr);
   } catch (err) {
-    log(`auto-fix: stale-sweep failed: ${err}`);
+    log.error({ err }, "auto-fix: stale-sweep failed");
   }
 
   // Restore workspace sync watchers
   try {
     const repos = loadRepoIndex();
-    restoreWatchers(repos, log);
+    restoreWatchers(repos, logStr);
   } catch (err) {
-    log(`workspace-sync: failed to restore watchers: ${err}`);
+    log.error({ err }, "workspace-sync: failed to restore watchers");
   }
 
   // Watch repos.json for changes (new repos added)
   if (existsSync(REPOS_JSON_PATH)) {
     watch(REPOS_JSON_PATH, () => {
-      log("repos.json changed — refreshing watched repos");
+      log.info("repos.json changed; refreshing watched repos");
       refreshWatchedRepos();
     });
   }
@@ -997,12 +986,12 @@ export function startDaemon(): void {
   // refreshCacheImpl picks up the slack from there.
   setTimeout(() => {
     initMRSubscriptions(mrSubEnv).catch((err) => {
-      log(`mr-subscriptions: init failed: ${err}`);
+      log.error({ err }, "mr-subscriptions: init failed");
     });
   }, 7000);
 
   // Background sweep for new MR comments → `discussions:new-comments` events.
-  startDiscussionsPoller({ ctx: handlerCtx, broadcast, log });
+  startDiscussionsPoller({ ctx: handlerCtx, broadcast, log: logStr });
 
   // Schedule port scanning (lightweight — every 30s)
   setTimeout(() => refreshPortCache(), 2000); // initial scan after 2s
@@ -1019,14 +1008,20 @@ export function startDaemon(): void {
   }, HOOKS_SCAN_INTERVAL_MS);
 
   // Graceful shutdown on all termination signals
-  process.on("SIGTERM", () => { cleanup(); process.exit(0); });
-  process.on("SIGINT",  () => { cleanup(); process.exit(0); });
+  const gracefulExit = (signal: NodeJS.Signals) => {
+    log.info({ signal }, "received signal; shutting down");
+    cleanup();
+    loggerHandle.flush?.();
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => gracefulExit("SIGTERM"));
+  process.on("SIGINT",  () => gracefulExit("SIGINT"));
   // SIGHUP: sent when the parent process exits (e.g. launchd session ends, or
   // a tray-spawned daemon's parent tray is killed).  Treat it as a clean stop.
-  process.on("SIGHUP",  () => { cleanup(); process.exit(0); });
+  process.on("SIGHUP",  () => gracefulExit("SIGHUP"));
 
 
-  log(`daemon ready (pid: ${process.pid})`);
+  log.info({ pid: process.pid }, "daemon ready");
 }
 
 // Auto-run when executed directly (source mode: bun run lib/daemon.ts)
