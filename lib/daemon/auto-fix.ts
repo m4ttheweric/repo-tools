@@ -22,6 +22,11 @@ import { join } from "path";
 import { reconcileForRepo } from "./doppler-sync.ts";
 import { detectInstallCommand } from "../setup-commands.ts";
 import { loadAutoFixConfig } from "../auto-fix-config.ts";
+import { getDaemonLogger } from "../daemon-logger.ts";
+
+// Top-level await — module load waits for the logger singleton to be ready,
+// then exposes a sync `log` for use in any context (including sync catches).
+const log = (await getDaemonLogger()).childLogger("auto-fix");
 
 // ─── Paths ───────────────────────────────────────────────────────────────────
 
@@ -47,7 +52,6 @@ export interface ProvisionInput {
   repoPath:  string;
   branch:    string;
   sha:       string;
-  log:       (msg: string) => void;
 }
 
 export interface ProvisionResult {
@@ -68,7 +72,7 @@ export interface ProvisionError {
 export async function provisionWorktree(
   input: ProvisionInput,
 ): Promise<ProvisionResult | ProvisionError> {
-  const { repoName, repoPath, branch, sha, log } = input;
+  const { repoName, repoPath, branch, sha } = input;
   const wtPath = ephemeralWorktreePath(repoName, branch, sha);
 
   try {
@@ -78,11 +82,11 @@ export async function provisionWorktree(
     if (existsSync(wtPath)) {
       try {
         execSync(`git -C "${repoPath}" worktree remove --force "${wtPath}"`, { stdio: "pipe" });
-      } catch { /* not registered; just delete dir */ }
-      try { rmSync(wtPath, { recursive: true, force: true }); } catch { /* */ }
+      } catch (err) { log.debug({ err }, "stale worktree not registered; deleting dir directly"); }
+      try { rmSync(wtPath, { recursive: true, force: true }); } catch (err) { log.debug({ err }, "rmSync of stale worktree dir failed"); }
     }
 
-    log(`auto-fix: git worktree add → ${wtPath} from origin/${branch}`);
+    log.info({ wtPath, branch }, "git worktree add");
     // Disable git hooks for provisioning. Husky's post-checkout fails in fresh
     // worktrees (the `_/` shim isn't materialized until `husky install` runs),
     // and the agent's setupCommands will install whatever it needs later.
@@ -97,7 +101,7 @@ export async function provisionWorktree(
       encoding: "utf8", stdio: "pipe",
     }).trim();
     if (head !== sha) {
-      await teardownWorktree(repoPath, wtPath, log);
+      await teardownWorktree(repoPath, wtPath);
       return { ok: false, error: `HEAD drifted (worktree=${head.slice(0,8)} expected=${sha.slice(0,8)})` };
     }
 
@@ -107,9 +111,9 @@ export async function provisionWorktree(
         repoName,
         worktreeRoots: [wtPath],
       });
-      log(`auto-fix: doppler:sync wrote=${summary.wrote} unchanged=${summary.unchanged}`);
+      log.info({ wrote: summary.wrote, unchanged: summary.unchanged }, "doppler sync");
     } catch (err) {
-      log(`auto-fix: doppler:sync failed (continuing): ${err}`);
+      log.warn({ err }, "doppler sync failed (continuing)");
     }
 
     // Run setup commands.
@@ -121,21 +125,21 @@ export async function provisionWorktree(
 
     for (const cmd of commands) {
       const [bin, ...args] = cmd;
-      log(`auto-fix: running setup: ${bin} ${args.join(" ")} (PATH chars=${(process.env.PATH ?? "").length})`);
+      log.info({ bin, args, pathLen: (process.env.PATH ?? "").length }, "running setup command");
       try {
         execSync(`${bin} ${args.map(a => JSON.stringify(a)).join(" ")}`, {
           cwd: wtPath, stdio: "pipe", timeout: 5 * 60_000,
           env: { ...process.env, PATH: process.env.PATH ?? "" },
         });
       } catch (err: any) {
-        await teardownWorktree(repoPath, wtPath, log);
+        await teardownWorktree(repoPath, wtPath);
         return { ok: false, error: `setup ${bin} failed: ${(err.stderr?.toString() ?? err.message ?? "").slice(0, 200)}` };
       }
     }
 
     return { ok: true, worktreePath: wtPath };
   } catch (err: any) {
-    await teardownWorktree(repoPath, wtPath, log);
+    await teardownWorktree(repoPath, wtPath);
     return { ok: false, error: `provision: ${err.message ?? String(err)}` };
   }
 }
@@ -144,15 +148,14 @@ export async function provisionWorktree(
 export async function teardownWorktree(
   repoPath: string,
   worktreePath: string,
-  log: (msg: string) => void,
 ): Promise<void> {
   if (!existsSync(worktreePath)) return;
   try {
     execSync(`git -C "${repoPath}" worktree remove --force "${worktreePath}"`, { stdio: "pipe" });
-    log(`auto-fix: removed worktree ${worktreePath}`);
+    log.info({ worktreePath }, "removed worktree");
   } catch (err: any) {
-    log(`auto-fix: worktree remove failed (${err.message}); rm -rf instead`);
-    try { rmSync(worktreePath, { recursive: true, force: true }); } catch { /* */ }
+    log.warn({ err, worktreePath }, "worktree remove failed; falling back to rm -rf");
+    try { rmSync(worktreePath, { recursive: true, force: true }); } catch (rmErr) { log.debug({ err: rmErr, worktreePath }, "rmSync fallback also failed"); }
   }
 }
 
@@ -166,7 +169,6 @@ export async function teardownWorktree(
  */
 export function sweepStaleArtifacts(
   repoIndex: () => Record<string, string>,
-  log: (msg: string) => void,
 ): void {
   const STALE_AGE_MS = 60 * 60 * 1000;
   const now = Date.now();
@@ -181,11 +183,11 @@ export function sweepStaleArtifacts(
       let age: number;
       try { age = now - statSync(path).mtimeMs; } catch { continue; }
       if (age < STALE_AGE_MS) continue;
-      log(`auto-fix: sweeping stale worktree ${path} (age=${Math.round(age / 60_000)}m)`);
+      log.info({ path, ageMinutes: Math.round(age / 60_000) }, "sweeping stale worktree");
       try {
         execSync(`git -C "${repoPath}" worktree remove --force "${path}"`, { stdio: "pipe" });
-      } catch { /* */ }
-      try { rmSync(path, { recursive: true, force: true }); } catch { /* */ }
+      } catch (err) { log.debug({ err, path }, "worktree remove during sweep failed; will rm -rf"); }
+      try { rmSync(path, { recursive: true, force: true }); } catch (err) { log.warn({ err, path }, "rmSync during stale sweep failed"); }
     }
   }
 }
@@ -273,7 +275,6 @@ export interface CommitError {
 /** Stage everything modified, commit with the structured trailer, push. */
 export async function commitAndPush(
   input: CommitInput,
-  log: (msg: string) => void,
 ): Promise<CommitResult | CommitError> {
   const { worktreePath, branch, sha, summary } = input;
   try {
@@ -293,7 +294,7 @@ export async function commitAndPush(
       encoding: "utf8", stdio: "pipe",
     }).trim();
 
-    log(`auto-fix: pushing ${branch} (${newSha.slice(0, 8)})`);
+    log.info({ branch, sha: newSha.slice(0, 8) }, "pushing branch");
     execSync(`git -C "${worktreePath}" push origin "${branch}"`, { stdio: "pipe" });
 
     return { ok: true, newCommitSha: newSha };
@@ -308,7 +309,7 @@ export function resetWorktree(worktreePath: string, preAgentSha: string): void {
   try {
     execSync(`git -C "${worktreePath}" reset --hard "${preAgentSha}"`, { stdio: "pipe" });
     execSync(`git -C "${worktreePath}" clean -fd`, { stdio: "pipe" });
-  } catch { /* best-effort */ }
+  } catch (err) { log.debug({ err, worktreePath }, "resetWorktree best-effort reset failed"); }
 }
 
 import { runAgent, resolveAgentInvocation } from "../agent-runner.ts";
@@ -338,7 +339,6 @@ export interface AutoFixContext {
   mr:             MrSnapshot;
   jobLogs:        JobLog[];
   gitContext:     GitContext;
-  log:            (msg: string) => void;
   notify?:        (kind: "auto_fix_pushed" | "auto_fix_skipped" | "auto_fix_rejected" | "auto_fix_error", details: string) => void;
 }
 
@@ -357,11 +357,11 @@ export type AutoFixOutcome =
  * Per-repo serialization via in-memory inflight set + queue (most-recent-wins).
  */
 export async function runAutoFix(ctx: AutoFixContext): Promise<AutoFixOutcome> {
-  const { repoName, log } = ctx;
+  const { repoName } = ctx;
 
   if (inflight.has(repoName)) {
     queued.set(repoName, ctx);
-    log(`auto-fix: ${repoName} in flight; queued ${ctx.branch}@${ctx.sha.slice(0, 8)}`);
+    log.info({ repoName, branch: ctx.branch, sha: ctx.sha.slice(0, 8) }, "in flight; queued");
     return { kind: "queued" };
   }
   inflight.add(repoName);
@@ -373,13 +373,13 @@ export async function runAutoFix(ctx: AutoFixContext): Promise<AutoFixOutcome> {
     const next = queued.get(repoName);
     if (next) {
       queued.delete(repoName);
-      runAutoFix(next).catch(err => log(`auto-fix: queued retry failed: ${err}`));
+      runAutoFix(next).catch(err => log.error({ err, repoName }, "queued retry failed"));
     }
   }
 }
 
 async function runOnce(ctx: AutoFixContext): Promise<AutoFixOutcome> {
-  const { repoName, repoPath, branch, sha, target, mr, log } = ctx;
+  const { repoName, repoPath, branch, sha, target, mr } = ctx;
   const startedAt = Date.now();
 
   // ── Eligibility ─────────────────────────────────────────────────────────
@@ -388,19 +388,19 @@ async function runOnce(ctx: AutoFixContext): Promise<AutoFixOutcome> {
     now: startedAt, cooldownMs: COOLDOWN_MS, attemptCap: ATTEMPT_CAP,
   });
   if (!eligibility.eligible) {
-    log(`auto-fix: ineligible — ${eligibility.reason}`);
+    log.info({ repoName, reason: eligibility.reason }, "ineligible");
     return { kind: "ineligible", reason: eligibility.reason };
   }
 
   // ── Lock ────────────────────────────────────────────────────────────────
   if (!acquireLock(repoName, { branch, sha })) {
-    log(`auto-fix: lock held; skipping`);
+    log.info({ repoName }, "lock held; skipping");
     return { kind: "ineligible", reason: "lock held by another process" };
   }
 
   try {
     // ── Provision ───────────────────────────────────────────────────────
-    const prov = await provisionWorktree({ repoName, repoPath, branch, sha, log });
+    const prov = await provisionWorktree({ repoName, repoPath, branch, sha });
     if (!prov.ok) {
       const out: AutoFixOutcome = { kind: "error", error: prov.error };
       finalize(ctx, startedAt, out);
@@ -420,7 +420,7 @@ async function runOnce(ctx: AutoFixContext): Promise<AutoFixOutcome> {
         allowTestFixes: cfg.allowTestFixes,
       });
 
-      log(`auto-fix: spawning agent in ${wtPath}`);
+      log.info({ wtPath }, "spawning agent");
       const agentRes = await runAgent({
         ...resolveAgentInvocation({}),
         prompt, cwd: wtPath,
@@ -472,7 +472,6 @@ async function runOnce(ctx: AutoFixContext): Promise<AutoFixOutcome> {
 
         const commit = await commitAndPush(
           { worktreePath: wtPath, branch, sha, summary: result.summary || "auto-fix" },
-          log,
         );
         if (!commit.ok) {
           const out: AutoFixOutcome = { kind: "error", error: `commit/push failed: ${commit.error}` };
@@ -489,7 +488,7 @@ async function runOnce(ctx: AutoFixContext): Promise<AutoFixOutcome> {
         return out;
       }
     } finally {
-      await teardownWorktree(repoPath, wtPath, log);
+      await teardownWorktree(repoPath, wtPath);
     }
   } finally {
     releaseLock(repoName);
@@ -499,7 +498,7 @@ async function runOnce(ctx: AutoFixContext): Promise<AutoFixOutcome> {
 // ─── Finalize: log + notify ──────────────────────────────────────────────────
 
 function finalize(ctx: AutoFixContext, startedAt: number, outcome: AutoFixOutcome): void {
-  const { repoName, branch, sha, log, notify } = ctx;
+  const { repoName, branch, sha, notify } = ctx;
   const durationMs = Date.now() - startedAt;
 
   if (outcome.kind === "fixed") {
@@ -507,19 +506,19 @@ function finalize(ctx: AutoFixContext, startedAt: number, outcome: AutoFixOutcom
       branch, sha, attemptedAt: startedAt, outcome: "fixed", durationMs,
       commitSha: outcome.commitSha, reason: outcome.summary,
     });
-    log(`auto-fix: fixed ${branch}@${sha.slice(0, 8)} → ${outcome.commitSha.slice(0, 8)} (${durationMs}ms)`);
+    log.info({ repoName, branch, sha: sha.slice(0, 8), commitSha: outcome.commitSha.slice(0, 8), durationMs }, "fixed");
     notify?.("auto_fix_pushed", outcome.summary);
   } else if (outcome.kind === "skipped") {
     appendLogEntry(repoName, { branch, sha, attemptedAt: startedAt, outcome: "skipped", durationMs, reason: outcome.reason });
-    log(`auto-fix: skipped ${branch}@${sha.slice(0, 8)} (${outcome.reason})`);
+    log.info({ repoName, branch, sha: sha.slice(0, 8), reason: outcome.reason, durationMs }, "skipped");
     notify?.("auto_fix_skipped", outcome.reason);
   } else if (outcome.kind === "error") {
     appendLogEntry(repoName, { branch, sha, attemptedAt: startedAt, outcome: "error", durationMs, reason: outcome.error });
-    log(`auto-fix: error ${branch}@${sha.slice(0, 8)} (${outcome.error})`);
+    log.warn({ repoName, branch, sha: sha.slice(0, 8), error: outcome.error, durationMs }, "error");
     notify?.("auto_fix_error", outcome.error);
   } else if (outcome.kind === "rejected_diff") {
     appendLogEntry(repoName, { branch, sha, attemptedAt: startedAt, outcome: "rejected_diff", durationMs, reason: outcome.reason });
-    log(`auto-fix: rejected ${branch}@${sha.slice(0, 8)} (${outcome.reason})`);
+    log.warn({ repoName, branch, sha: sha.slice(0, 8), reason: outcome.reason, durationMs }, "rejected diff");
     notify?.("auto_fix_rejected", outcome.reason);
   }
 }
