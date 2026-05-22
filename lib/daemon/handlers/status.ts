@@ -140,7 +140,7 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
         const { scanListeningPorts } = await import("../../port-scanner.ts");
         ctx.portCacheRef.ports = scanListeningPorts();
         ctx.portCacheRef.updatedAt = Date.now();
-        ctx.log.info(`ports: on-demand refresh — ${ctx.portCacheRef.ports.length} listening ports`);
+        ctx.log.info({ count: ctx.portCacheRef.ports.length }, "ports: on-demand refresh");
       }
       let ports = ctx.portCacheRef.ports;
       if (repoFilter) {

@@ -219,7 +219,7 @@ export async function showStatus(): Promise<void> {
   }
 
   console.log(`    ${dim}config: ~/.rt/daemon.json${reset}`);
-  console.log(`    ${dim}logs: ~/.rt/daemon.log${reset}`);
+  console.log(`    ${dim}logs: ~/.rt/logs/ ${reset}${dim}(view with: rt daemon logs)${reset}`);
   console.log("");
 }
 

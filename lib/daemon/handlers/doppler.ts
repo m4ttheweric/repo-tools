@@ -28,7 +28,7 @@ export function createDopplerHandlers(ctx: HandlerContext): HandlerMap {
         const worktreeRoots = listWorktreeRoots(path);
         const summary = await reconcileForRepo({ repoName: name, worktreeRoots });
         results[name] = summary;
-        ctx.log.info(`doppler:sync repo=${name} wrote=${summary.wrote} overridden=${summary.overridden} unchanged=${summary.unchanged}${summary.skipped ? ` skipped=${summary.skipped}` : ""}`);
+        ctx.log.info({ repo: name, ...summary }, "doppler sync");
       }
 
       return { ok: true, data: { results } };
