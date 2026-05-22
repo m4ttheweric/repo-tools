@@ -18,6 +18,8 @@ import type { ProcessManager } from "./process-manager.ts";
 import type { LaneConfig } from "../runner-store.ts";
 import { loadTunnelConfig, runtimeYamlPath } from "../tunnel-config.ts";
 import { generateIngressYaml } from "../tunnel-ingress.ts";
+import { getDaemonLogger } from "../daemon-logger.ts";
+const log = (await getDaemonLogger()).childLogger("tunnel");
 
 export type TunnelStatus =
   | { state: "stopped" }
@@ -25,7 +27,6 @@ export type TunnelStatus =
 
 export interface TunnelManagerDeps {
   processManager: Pick<ProcessManager, "spawn" | "kill" | "getProcess" | "getSpawnConfig">;
-  log: (msg: string) => void;
 }
 
 /** Daemon process id used to register the cloudflared child for a board. */
@@ -49,7 +50,7 @@ export class TunnelManager {
       const id = tunnelProcessId(boardName);
       if (this.deps.processManager.getSpawnConfig(id)) {
         await this.deps.processManager.kill(id);
-        this.deps.log(`tunnel: stopped cloudflared for board ${boardName} (no lanes enabled)`);
+        log.info(`stopped cloudflared for board ${boardName} (no lanes enabled)`);
       }
       this.lastHostnames.delete(boardName);
       return;
@@ -69,13 +70,15 @@ export class TunnelManager {
     const running = this.deps.processManager.getProcess(id);
     if (running) {
       try { process.kill(running.pid as number, "SIGHUP"); } catch (err) {
-        this.deps.log(`tunnel: SIGHUP failed for board ${boardName}: ${err}`);
+        // SIGHUP can fail if the process exited between getProcess() and kill() —
+        // this is expected when cloudflared restarted on its own.
+        log.debug({ err }, `SIGHUP failed for board ${boardName} (process may have already exited)`);
       }
-      this.deps.log(`tunnel: reloaded cloudflared for board ${boardName}`);
+      log.info(`reloaded cloudflared for board ${boardName}`);
     } else {
       const cmd = `cloudflared tunnel --no-autoupdate --config ${shellEscape(yamlPath)} run`;
       await this.deps.processManager.spawn(id, cmd, { cwd: process.env.HOME ?? "/" });
-      this.deps.log(`tunnel: spawned cloudflared for board ${boardName}`);
+      log.info(`spawned cloudflared for board ${boardName}`);
     }
 
     this.lastHostnames.set(boardName, enabledLanes.map((l) =>

@@ -48,7 +48,7 @@ describe("TunnelManager", () => {
     saveTunnelConfig(cfg);
     const { TunnelManager } = await import("../tunnel-manager.ts");
     const pm = fakeProcessManager();
-    const mgr = new TunnelManager({ processManager: pm as any, log: () => {} });
+    const mgr = new TunnelManager({ processManager: pm as any });
     await mgr.apply("board1", []);
     expect(pm.calls.find((c) => c.kind === "spawn")).toBeUndefined();
   });
@@ -58,7 +58,7 @@ describe("TunnelManager", () => {
     saveTunnelConfig(cfg);
     const { TunnelManager } = await import("../tunnel-manager.ts");
     const pm = fakeProcessManager();
-    const mgr = new TunnelManager({ processManager: pm as any, log: () => {} });
+    const mgr = new TunnelManager({ processManager: pm as any });
     await mgr.apply("board1", [
       { id: "1", canonicalPort: 4000, entries: [], repoName: "r", mode: "warm",
         tunnel: { enabled: true } },
@@ -88,7 +88,7 @@ describe("TunnelManager", () => {
       killSignals.push(sig);
     };
     try {
-      const mgr = new TunnelManager({ processManager: pm as any, log: () => {} });
+      const mgr = new TunnelManager({ processManager: pm as any });
       const lanes = [{ id: "1", canonicalPort: 4000, entries: [], repoName: "r", mode: "warm",
         tunnel: { enabled: true } }] as any;
       await mgr.apply("board1", lanes);
@@ -106,7 +106,7 @@ describe("TunnelManager", () => {
     saveTunnelConfig(cfg);
     const { TunnelManager } = await import("../tunnel-manager.ts");
     const pm = fakeProcessManager();
-    const mgr = new TunnelManager({ processManager: pm as any, log: () => {} });
+    const mgr = new TunnelManager({ processManager: pm as any });
     await mgr.apply("board1", [
       { id: "1", canonicalPort: 4000, entries: [], repoName: "r", mode: "warm",
         tunnel: { enabled: true } } as any,
@@ -122,7 +122,7 @@ describe("TunnelManager", () => {
     // Do NOT save config first
     const { TunnelManager } = await import("../tunnel-manager.ts");
     const pm = fakeProcessManager();
-    const mgr = new TunnelManager({ processManager: pm as any, log: () => {} });
+    const mgr = new TunnelManager({ processManager: pm as any });
     await expect(mgr.apply("board1", [
       { id: "1", canonicalPort: 4000, entries: [], repoName: "r", mode: "warm",
         tunnel: { enabled: true } } as any,
