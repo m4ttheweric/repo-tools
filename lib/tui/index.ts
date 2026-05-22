@@ -28,6 +28,9 @@ export { KeyBadge, CmdLabel, Cmd } from "./atoms/key-badge.tsx";
 export { SectionLabel, Sep, Pipe, Divider, GroupHeader } from "./atoms/section-label.tsx";
 export { PortLabel, StateLabel } from "./atoms/port-label.tsx";
 
+// ─── Procedural CLI helpers ───────────────────────────────────────────────────
+export { withInlineSpinner } from "./inline-spinner.ts";
+
 // ─── Hooks (Ink / React only) ─────────────────────────────────────────────────
 export { useSpinnerFrame } from "./hooks/use-spinner.ts";
 export { useToast, type ToastController } from "./hooks/use-toast.ts";

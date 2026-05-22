@@ -18,9 +18,13 @@
 import { execSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
+import { GitLabProvider } from "@workforge/glance-sdk";
 import { RT_DIR } from "./daemon-config.ts";
 import type { PortEntry } from "./port-scanner.ts";
 import type { MrSnapshot } from "./daemon/auto-fix-eligibility.ts";
+import { loadSecrets } from "./linear.ts";
+import { parseRemoteUrl } from "./enrich.ts";
+import type { JobLog } from "./daemon/auto-fix-agent-protocol.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -353,19 +357,100 @@ interface CacheEntry {
 function buildMrSnapshot(entry: CacheEntry, currentUserId: string | null): MrSnapshot | null {
   const mr: any = entry.mr;
   if (!mr) return null;
+  // `mr.state` is the MR lifecycle (opened/closed/merged); `mr.status` is the
+  // GitLab mergeability gate (blocked/can_be_merged/...). Eligibility cares
+  // about lifecycle — a pipeline-failed MR is mr.status="blocked" by design,
+  // which is exactly when we want to fix it.
+  const headSha = String(mr.sha ?? "");
   return {
-    authorIsMe:            !!currentUserId && String(mr.authorId ?? mr.author?.id ?? "") === currentUserId,
-    status:                String(mr.status ?? "opened"),
+    authorIsMe:            !!currentUserId && numericTail(mr.author?.id ?? mr.authorId ?? "") === currentUserId,
+    status:                String(mr.state ?? "opened"),
     isApproved:            !!mr.reviews?.isApproved,
     changesRequested:      Array.isArray(mr.reviews?.summaries)
                              ? mr.reviews.summaries.some((s: any) => s.state === "changes_requested")
                              : false,
     pipelineStatus:        String(mr.pipeline?.status ?? ""),
-    pipelineSha:           String(mr.pipeline?.sha ?? mr.pipeline?.ref ?? mr.head?.sha ?? mr.headSha ?? ""),
+    // SDK's Pipeline type carries no `sha` — collapse to head SHA. The
+    // running→failed transition gate is the real protection against acting
+    // on stale failures.
+    pipelineSha:           headSha,
     flakeRetriedAndPassed: Array.isArray(mr.pipeline?.jobs)
                              ? mr.pipeline.jobs.some((j: any) => j.retries?.some?.((r: any) => r.status === "success"))
                              : false,
   };
+}
+
+function numericTail(id: unknown): string {
+  const m = String(id).match(/(\d+)$/);
+  return m ? m[1]! : "";
+}
+
+const TRACE_TAIL_BYTES = 6_000;     // last N bytes per job — error is at the tail
+const TRACE_FETCH_TIMEOUT = 15_000; // per-job ceiling, in ms
+
+function numericId(scopedId: unknown): number | null {
+  if (typeof scopedId !== "string" && typeof scopedId !== "number") return null;
+  const m = String(scopedId).match(/(\d+)$/);
+  return m ? Number(m[1]) : null;
+}
+
+/** Fetch actual job trace text from GitLab. Returns the fallback string on any failure. */
+async function fetchFailingJobTraces(
+  repoPath: string,
+  failingJobs: any[],
+  mr: any,
+  log: (m: string) => void,
+): Promise<JobLog[]> {
+  const fallback: JobLog[] = failingJobs.map((j: any) => ({
+    name:  String(j.name ?? "job"),
+    trace: "(trace fetch unavailable)",
+  }));
+
+  if (failingJobs.length === 0) return [];
+
+  let remoteUrl: string | undefined;
+  try {
+    remoteUrl = execSync("git config --get remote.origin.url", {
+      cwd: repoPath, encoding: "utf8", stdio: "pipe",
+    }).trim();
+  } catch { /* no remote */ }
+  if (!remoteUrl) return fallback;
+
+  const remote = parseRemoteUrl(remoteUrl);
+  if (!remote) return fallback;
+
+  const secrets = loadSecrets();
+  if (!secrets.gitlabToken) return fallback;
+
+  const provider = new GitLabProvider(remote.host, secrets.gitlabToken);
+  const pipelineId = numericId(mr.pipeline?.id);
+
+  const fetched = await Promise.all(failingJobs.map(async (j: any): Promise<JobLog> => {
+    const name = String(j.name ?? "job");
+    const jobId = numericId(j.id);
+    if (jobId == null) return { name, trace: "(no job id)" };
+
+    try {
+      const detail = await Promise.race([
+        provider.fetchJobDetail(remote.projectPath, jobId, pipelineId ?? undefined),
+        new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error("trace fetch timeout")), TRACE_FETCH_TIMEOUT)),
+      ]);
+      if (detail.type === "trace") {
+        // Tail of the trace — errors are always at the end.
+        const tail = detail.content.slice(-TRACE_TAIL_BYTES);
+        return { name, trace: tail };
+      }
+      // Bridge: recurse into the downstream pipeline's failing jobs.
+      const dsJobs = (detail.downstreamPipeline.jobs ?? []).filter(j => j.status === "failed");
+      const dsLogs = await fetchFailingJobTraces(repoPath, dsJobs, { pipeline: detail.downstreamPipeline }, log);
+      return { name, trace: dsLogs.map(l => `── downstream: ${l.name} ──\n${l.trace}`).join("\n\n") || "(downstream pipeline has no failed jobs)" };
+    } catch (err) {
+      log(`auto-fix: trace fetch failed for ${name}: ${err}`);
+      return { name, trace: `(trace fetch failed: ${err})` };
+    }
+  }));
+  return fetched;
 }
 
 async function maybeFireAutoFix(
@@ -376,23 +461,43 @@ async function maybeFireAutoFix(
   currentUserId: string | null,
   log: (m: string) => void,
 ): Promise<void> {
-  const mr = entry.mr;
-  if (!mr) return;
-  const headSha = String(mr.head?.sha ?? mr.headSha ?? mr.pipeline?.sha ?? "");
-  if (!headSha) return;
-  const target  = String(mr.target?.branch ?? mr.targetBranch ?? "main");
+  const mr: any = entry.mr;
+  if (!mr) { log(`auto-fix: skip ${branch} — no cached MR`); return; }
+
+  // SDK's MRDashboardProps projection drops the head SHA, and our WebSocket
+  // subscription path overwrites the cache with the bare projection — so we
+  // can't rely on mr.sha being present. Look it up directly: origin is what
+  // the pipeline actually ran on.
+  let headSha = String(mr.sha ?? "");
+  if (!headSha) {
+    try {
+      const out = execSync(`git -C "${repoPath}" ls-remote origin "refs/heads/${branch}"`, {
+        encoding: "utf8", stdio: "pipe",
+      }).trim();
+      headSha = out.split(/\s+/)[0] ?? "";
+    } catch (err) {
+      log(`auto-fix: skip ${branch} — git ls-remote failed: ${err}`);
+      return;
+    }
+  }
+  if (!headSha) { log(`auto-fix: skip ${branch} — no head sha resolvable`); return; }
+
+  const target  = String(mr.targetBranch ?? "main");
   const snapshot = buildMrSnapshot(entry, currentUserId);
-  if (!snapshot) return;
+  if (!snapshot) { log(`auto-fix: skip ${branch} — snapshot build failed`); return; }
+  // buildMrSnapshot uses mr.sha; override with the resolved value.
+  snapshot.pipelineSha = headSha;
 
   const { runAutoFix } = await import("./daemon/auto-fix.ts");
   const failingJobs = Array.isArray(mr.pipeline?.jobs)
     ? mr.pipeline.jobs.filter((j: any) => j.status === "failed")
     : [];
 
-  const jobLogs = failingJobs.map((j: any) => ({
-    name:  String(j.name ?? "job"),
-    trace: String(j.trace ?? "(trace not cached — agent should fetch via project tooling)").slice(0, 2000),
-  }));
+  // Cached PipelineJob has no `trace` field — the SDK never includes it. Fetch
+  // the actual trace via API so the agent has the failure output, not just job
+  // names. Without this, the agent has nothing to act on and reports "fixed"
+  // with no diff (which the validation gate then rejects).
+  const jobLogs = await fetchFailingJobTraces(repoPath, failingJobs, mr, log);
 
   const gitContext = (() => {
     try {

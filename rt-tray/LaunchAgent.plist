@@ -26,6 +26,13 @@
     <key>ThrottleInterval</key>
     <integer>10</integer>
 
+    <!-- ProcessType=Interactive defaults ExitTimeOut to 5s, which is too tight
+         for cleanup() (close API/WS server, drain 8+ websockets, tear down
+         tunnels/children, flush 900KB cache). Without this override launchd
+         escalates SIGTERM → SIGKILL and the "daemon stopped" line never lands. -->
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+
     <!-- NOTE: StandardOutPath/StandardErrorPath intentionally omitted.
          macOS 26 broke $(HOME) expansion in SMAppService-registered plists,
          causing EX_CONFIG / spawn failed. The daemon binary redirects its

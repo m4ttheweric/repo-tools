@@ -56,7 +56,7 @@ const LOG_MAX_BYTES = 10 * 1024 * 1024;              // 10MB
 const REPOS_JSON_PATH = join(RT_DIR, "repos.json");
 const CACHE_PATH = join(RT_DIR, "branch-cache.json");
 
-import type { ServerWebSocket } from "bun";
+import type { Server, ServerWebSocket } from "bun";
 
 import { scanListeningPorts, type PortEntry } from "./port-scanner.ts";
 
@@ -272,6 +272,12 @@ try {
   } catch { /* nvm not installed or failed */ }
 
   processManager.userPath = resolvedPath || process.env.PATH;
+
+  // Also overlay the resolved PATH onto the daemon's own env so direct
+  // execSync calls outside ProcessManager (auto-fix provisioning, setup
+  // commands, agent invocations) inherit pnpm/doppler/bun without
+  // re-resolving the shell themselves.
+  if (resolvedPath) process.env.PATH = resolvedPath;
 
   // Log so we can verify key tools are present after restarts
   const pathEntries = resolvedPath.split(":");
@@ -674,7 +680,7 @@ function startSocketServer(): void {
     try { unlinkSync(DAEMON_SOCK_PATH); } catch { /* */ }
   }
 
-  Bun.serve({
+  socketServer = Bun.serve({
     unix: DAEMON_SOCK_PATH,
     async fetch(req) {
       try {
@@ -735,6 +741,12 @@ const REST_ROUTES: Record<string, { cmd: string; method: string }> = {
 
 const wsClients = new Set<ServerWebSocket<unknown>>();
 
+// `Server<any>` matches the inferred type Bun.serve() returns for these
+// configs (the websocket data type is unconstrained). Don't narrow further —
+// it makes server.upgrade() require an explicit data arg.
+let socketServer: Server<any> | undefined;
+let apiServer: Server<any> | undefined;
+
 /** Broadcast an event to all connected WebSocket clients. */
 export function broadcast(type: string, data: any): void {
   if (wsClients.size === 0) return;
@@ -745,7 +757,7 @@ export function broadcast(type: string, data: any): void {
 }
 
 function startApiServer(): void {
-  Bun.serve({
+  apiServer = Bun.serve({
     port: API_PORT,
     async fetch(req, server) {
       const url = new URL(req.url);
@@ -843,6 +855,15 @@ function writePidFile(): void {
 }
 
 function cleanup(): void {
+  // Stop accepting new traffic first, and force-close all in-flight
+  // connections (including the WebSocket broadcast set). Without this, Bun
+  // keeps the event loop alive draining sockets and launchd's 5s ExitTimeOut
+  // (ProcessType=Interactive default) escalates SIGTERM → SIGKILL before
+  // "daemon stopped" can be written.
+  try { socketServer?.stop(true); } catch { /* */ }
+  try { apiServer?.stop(true); } catch { /* */ }
+  wsClients.clear();
+
   // Kill all managed processes and stop proxy/attach servers
   try {
     for (const { id } of processManager.list()) {
