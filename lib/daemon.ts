@@ -599,7 +599,7 @@ async function refreshCacheImpl(): Promise<void> {
 
 // ─── Socket server ───────────────────────────────────────────────────────────
 
-const tunnelManager  = new TunnelManager({ processManager, log: logStr });
+const tunnelManager  = new TunnelManager({ processManager });
 
 /**
  * Extracted-handler map, built once at module load. Every command goes through
