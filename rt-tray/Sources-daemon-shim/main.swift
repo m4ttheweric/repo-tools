@@ -45,6 +45,21 @@ guard FileManager.default.fileExists(atPath: daemonEntry) else {
     die("daemon source not found at \(daemonEntry)")
 }
 
+// Redirect fd 2 to ~/.rt/logs/daemon-stderr.log so bun's native panics
+// (segfaults, ASan output, runtime asserts) land in a file instead of /dev/null.
+// pino captures JS-side stderr separately — this only catches what bypasses JS.
+// The shim runs BEFORE bun, so it's the only place we can dup fd 2 before any
+// code that might crash.
+let logsDir = "\(home)/.rt/logs"
+try? FileManager.default.createDirectory(
+    atPath: logsDir,
+    withIntermediateDirectories: true
+)
+// "a" (append) — preserve prior crash output until the user clears it.
+// freopen returns NULL on failure; we ignore failure so a permissions issue
+// doesn't blackhole the daemon — stderr stays pointed at its inherited fd.
+_ = freopen("\(logsDir)/daemon-stderr.log", "a", stderr)
+
 // Forward any args launchd passes (e.g. "--daemon")
 let forwarded = Array(CommandLine.arguments.dropFirst())
 let execArgs = ["bun", "run", daemonEntry] + forwarded

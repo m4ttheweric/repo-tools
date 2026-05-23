@@ -20,7 +20,7 @@
 
 import { execSync, spawn, spawnSync } from "child_process";
 import { join } from "path";
-import { existsSync, readdirSync, statSync, unlinkSync } from "fs";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "fs";
 import { bold, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import {
   isDaemonInstalled,
@@ -238,6 +238,21 @@ export async function showLogs(args: string[] = []): Promise<void> {
   if (!existsSync(LOG_DIR)) {
     console.log(`\n  ${dim}no daemon logs yet — start the daemon first${reset}\n`);
     return;
+  }
+
+  // Surface captured native stderr first — these are bun panics/asserts that
+  // bypassed the JS-side interceptor and were caught by the swift-shim's
+  // freopen of fd 2. If non-empty, the most recent crash leads the output.
+  const stderrPath = join(LOG_DIR, "daemon-stderr.log");
+  if (existsSync(stderrPath)) {
+    const content = readFileSync(stderrPath, "utf8").trim();
+    if (content) {
+      console.log(`\n  ${red}${bold}native stderr${reset} ${dim}(${stderrPath})${reset}`);
+      for (const line of content.split("\n").slice(-20)) {
+        console.log(`  ${red}${line}${reset}`);
+      }
+      console.log("");
+    }
   }
 
   // pino-roll names files: daemon.YYYY-MM-DD.N.log
