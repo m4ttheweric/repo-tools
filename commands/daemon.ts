@@ -303,7 +303,7 @@ async function runWebViewer(logPath: string): Promise<void> {
   const which = spawnSync("which", ["logdy"]);
   if (which.status !== 0) {
     console.log(`\n  ${yellow}⚠${reset} logdy not installed.`);
-    console.log(`  ${dim}install: ${bold}brew install logdy-network/logdy/logdy${reset}`);
+    console.log(`  ${dim}install: ${bold}brew install logdy${reset}`);
     console.log(`  ${dim}or use terminal mode: ${bold}rt daemon logs --terminal${reset}\n`);
     process.exit(1);
   }
@@ -313,9 +313,12 @@ async function runWebViewer(logPath: string): Promise<void> {
   console.log(`  ${green}●${reset} starting logdy on ${url}`);
   console.log(`  ${dim}tailing: ${logPath}${reset}`);
 
-  const logdy = spawn("logdy", ["follow", logPath, "--port", port, "--ui-pass", ""], {
-    stdio: ["ignore", "inherit", "inherit"],
-  });
+  const logdy = spawn("logdy", [
+    "follow", logPath,
+    "--port", port,
+    "--ui-pass", "",
+    "--no-analytics",
+  ], { stdio: ["ignore", "inherit", "inherit"] });
 
   await waitForPort(Number(port), 2000);
   spawnSync("open", [url]);
