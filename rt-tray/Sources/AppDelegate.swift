@@ -1,6 +1,7 @@
 import AppKit
 import UserNotifications
 import ServiceManagement
+import Network
 
 // MARK: - AppDelegate
 
@@ -139,6 +140,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         stopItem.target = self
         statusMenu.addItem(stopItem)
 
+        let logsItem = NSMenuItem(title: "View Daemon Logs…", action: #selector(viewDaemonLogs), keyEquivalent: "l")
+        logsItem.target = self
+        statusMenu.addItem(logsItem)
+
         // Shown only when SMAppService says approval is required.
         let approveItem = NSMenuItem(title: "Approve Daemon in Login Items…", action: #selector(openLoginItemsSettings), keyEquivalent: "")
         approveItem.target = self
@@ -271,6 +276,72 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openLoginItemsSettings() {
         SMAppService.openSystemSettingsLoginItems()
+    }
+
+    /// Open the logdy-based daemon log viewer in the user's default browser.
+    /// If logdy is already serving on :5544 (e.g. previous click), just opens
+    /// the URL. Otherwise spawns `rt daemon logs` via a login shell so it
+    /// picks up the user's PATH (rt-tray inherits launchd's minimal PATH).
+    @objc private func viewDaemonLogs() {
+        let url = URL(string: "http://localhost:5544")!
+        Task { @MainActor in
+            if await self.isLogdyUp() {
+                NSWorkspace.shared.open(url)
+                return
+            }
+            self.spawnRtDaemonLogs()
+            // Poll until logdy answers, up to ~4s, then open.
+            for _ in 0..<20 {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                if await self.isLogdyUp() {
+                    NSWorkspace.shared.open(url)
+                    return
+                }
+            }
+            // Fallback: open the URL anyway — user sees a connection error if
+            // logdy never came up (e.g. logdy not installed).
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    /// Probe localhost:5544 with a short TCP connect.
+    private func isLogdyUp() async -> Bool {
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            let host = "127.0.0.1"
+            let port: UInt16 = 5544
+            let conn = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+            var resumed = false
+            conn.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    if !resumed { resumed = true; cont.resume(returning: true) }
+                    conn.cancel()
+                case .failed, .cancelled:
+                    if !resumed { resumed = true; cont.resume(returning: false) }
+                default: break
+                }
+            }
+            conn.start(queue: .global())
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
+                if !resumed { resumed = true; cont.resume(returning: false) }
+                conn.cancel()
+            }
+        }
+    }
+
+    /// Spawn `rt daemon logs` detached via a login shell so it inherits the
+    /// user's PATH (rt is at ~/.local/bin/rt or wherever the user installed).
+    /// Logdy stays running in the background after this method returns.
+    private func spawnRtDaemonLogs() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        task.arguments = ["-lc", "exec rt daemon logs >/dev/null 2>&1"]
+        do {
+            try task.run()
+            NSLog("rt-tray: spawned `rt daemon logs` (pid \(task.processIdentifier))")
+        } catch {
+            NSLog("rt-tray: failed to spawn rt daemon logs: \(error)")
+        }
     }
 
     @objc private func toggleLoginItem(_ sender: NSMenuItem) {
