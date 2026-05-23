@@ -275,32 +275,31 @@ export async function showLogs(args: string[] = []): Promise<void> {
 }
 
 /**
- * Live-tail through `hl` (Rust JSON log viewer) in the current terminal.
- * Stays attached until the user Ctrl-Cs.
+ * Open the log in `lnav` (interactive TUI with auto-detected pino support,
+ * level coloring, filtering, search, jump-to-error). Stays attached until
+ * the user quits lnav with `q`.
  *
- * hl reads pino JSON natively, colors by level, hides hostname/pid noise,
- * and supports its own -F follow mode (no `tail -F` pipe needed).
+ * lnav is the best off-the-shelf TUI for structured logs in 2025:
+ *   /text   — search
+ *   f       — filter by regex
+ *   e / E   — jump to next/prev error-level entry
+ *   :filter-in WRN  — only show warnings
+ *   q       — quit
  *
- * Falls back to `bunx pino-pretty` if hl isn't installed.
+ * Falls back to `bunx pino-pretty` if lnav isn't installed.
  */
 async function runTerminalViewer(logPath: string): Promise<void> {
-  const hasHl = spawnSync("which", ["hl"]).status === 0;
+  const hasLnav = spawnSync("which", ["lnav"]).status === 0;
 
   let viewer: ReturnType<typeof spawn>;
-  if (hasHl) {
-    console.log(`  ${dim}tailing ${logPath} via hl (Ctrl-C to stop)${reset}\n`);
-    // hl: hide redundant constant fields, force color (--color=always), expand
-    // err objects with stack traces (--expansion always).
-    viewer = spawn("hl", [
-      "-F", logPath,
-      "--color", "always",
-      "--hide", "hostname",
-      "--hide", "pid",
-      "--hide", "level",
-    ], { stdio: ["ignore", "inherit", "inherit"] });
+  if (hasLnav) {
+    // lnav is a full TUI — inherit stdin so keystrokes reach it.
+    viewer = spawn("lnav", [logPath], {
+      stdio: "inherit",
+    });
   } else {
     console.log(`  ${dim}tailing ${logPath} via pino-pretty (Ctrl-C to stop)${reset}`);
-    console.log(`  ${dim}for a nicer view: ${bold}brew install pamburus/tap/hl${reset}\n`);
+    console.log(`  ${dim}for a nicer interactive view: ${bold}brew install lnav${reset}\n`);
     // sh -c pipeline avoids Bun's stream-as-stdio limitation between two spawns.
     viewer = spawn("sh", ["-c", `tail -F ${JSON.stringify(logPath)} | bunx pino-pretty`], {
       stdio: ["ignore", "inherit", "inherit"],
