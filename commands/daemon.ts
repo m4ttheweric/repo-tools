@@ -421,6 +421,9 @@ async function runWebViewer(logPath: string): Promise<void> {
     "--ui-pass", "",
     "--no-analytics",
     "--config", configPath,
+    // --full-read backfills existing file content; without it logdy only
+    // tails lines added after launch. Capped by settings.maxMessages.
+    "--full-read",
   ], { stdio: ["ignore", "inherit", "inherit"] });
 
   await waitForPort(Number(port), 2000);
