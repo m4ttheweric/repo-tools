@@ -39,7 +39,7 @@ describe("daemon-logger", () => {
     logger.info("hello world");
     await flush(logger);
     const content = readTodayLog();
-    expect(content).toContain('"level":30');
+    expect(content).toContain('"level":"info"');
     expect(content).toContain('"msg":"hello world"');
   });
 

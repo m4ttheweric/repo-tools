@@ -58,6 +58,11 @@ export async function createDaemonLogger(opts: CreateOptions): Promise<DaemonLog
       level: opts.level ?? "info",
       // pino's default ISO timestamp + level + pid + hostname
       timestamp: pino.stdTimeFunctions.isoTime,
+      // Emit string levels ("info"/"warn"/"error"/"fatal") instead of numeric
+      // (30/40/50/60). Numeric is pino's default but most viewers (hl, lnav,
+      // logdy column-detection) recognize string levels automatically; numeric
+      // requires per-tool config. The cost is ~3 bytes per line.
+      formatters: { level: (label) => ({ level: label }) },
       // Standard err serializer captures .message, .stack, .type, .code
       serializers: { err: pino.stdSerializers.err },
     },

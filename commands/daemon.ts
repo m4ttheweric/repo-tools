@@ -275,25 +275,45 @@ export async function showLogs(args: string[] = []): Promise<void> {
 }
 
 /**
- * Live-tail through pino-pretty in the current terminal. Stays attached
- * until the user Ctrl-Cs.
+ * Live-tail through `hl` (Rust JSON log viewer) in the current terminal.
+ * Stays attached until the user Ctrl-Cs.
  *
- * Uses a single sh -c pipeline to avoid Bun's stream-as-stdio limitation.
+ * hl reads pino JSON natively, colors by level, hides hostname/pid noise,
+ * and supports its own -F follow mode (no `tail -F` pipe needed).
+ *
+ * Falls back to `bunx pino-pretty` if hl isn't installed.
  */
 async function runTerminalViewer(logPath: string): Promise<void> {
-  console.log(`  ${dim}tailing ${logPath} via pino-pretty (Ctrl-C to stop)${reset}\n`);
-  // Single shell pipeline avoids the Bun child_process stream-as-stdio limitation.
-  const sh = spawn("sh", ["-c", `tail -F ${JSON.stringify(logPath)} | bunx pino-pretty`], {
-    stdio: ["ignore", "inherit", "inherit"],
-  });
+  const hasHl = spawnSync("which", ["hl"]).status === 0;
+
+  let viewer: ReturnType<typeof spawn>;
+  if (hasHl) {
+    console.log(`  ${dim}tailing ${logPath} via hl (Ctrl-C to stop)${reset}\n`);
+    // hl: hide redundant constant fields, force color (--color=always), expand
+    // err objects with stack traces (--expansion always).
+    viewer = spawn("hl", [
+      "-F", logPath,
+      "--color", "always",
+      "--hide", "hostname",
+      "--hide", "pid",
+      "--hide", "level",
+    ], { stdio: ["ignore", "inherit", "inherit"] });
+  } else {
+    console.log(`  ${dim}tailing ${logPath} via pino-pretty (Ctrl-C to stop)${reset}`);
+    console.log(`  ${dim}for a nicer view: ${bold}brew install pamburus/tap/hl${reset}\n`);
+    // sh -c pipeline avoids Bun's stream-as-stdio limitation between two spawns.
+    viewer = spawn("sh", ["-c", `tail -F ${JSON.stringify(logPath)} | bunx pino-pretty`], {
+      stdio: ["ignore", "inherit", "inherit"],
+    });
+  }
 
   const stop = (code: number) => {
-    try { sh.kill("SIGTERM"); } catch { /* */ }
+    try { viewer.kill("SIGTERM"); } catch { /* */ }
     process.exit(code);
   };
   process.on("SIGINT", () => stop(0));
   process.on("SIGTERM", () => stop(0));
-  sh.on("exit", (code) => stop(code ?? 0));
+  viewer.on("exit", (code) => stop(code ?? 0));
 }
 
 /**
