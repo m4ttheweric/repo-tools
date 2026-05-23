@@ -20,7 +20,7 @@
 
 import { execSync, spawn, spawnSync } from "child_process";
 import { join } from "path";
-import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "fs";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { bold, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import {
   isDaemonInstalled,
@@ -316,6 +316,53 @@ async function runTerminalViewer(logPath: string): Promise<void> {
 }
 
 /**
+ * logdy UI config that breaks pino JSON lines into proper columns instead
+ * of dumping the raw line into one cell. Written to ~/.rt/ on first invocation.
+ *
+ * Schema: https://logdy.dev/docs/reference/code — each column's `code` is a
+ * TypeScript handler `(line: Message) => CellHandler`; logdy auto-parses
+ * JSON-per-line into `line.json`.
+ */
+const LOGDY_PINO_COLUMNS_JSON = JSON.stringify(
+  {
+    columns: [
+      {
+        name: "time",
+        code:
+          '(line) => { const t = line.json?.time; if (!t) return { text: "" }; ' +
+          'const d = new Date(t); ' +
+          'const pad = (n, w=2) => String(n).padStart(w, "0"); ' +
+          'return { text: `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(),3)}` }; }',
+      },
+      {
+        name: "level",
+        code: '(line) => ({ text: line.json?.level ?? "" })',
+      },
+      {
+        name: "module",
+        code: '(line) => ({ text: line.json?.module ?? "" })',
+      },
+      {
+        name: "msg",
+        code: '(line) => ({ text: line.json?.msg ?? line.content })',
+      },
+      {
+        name: "fields",
+        // Everything except the well-known pino base fields.
+        code:
+          '(line) => { const j = line.json; if (!j) return { text: "" }; ' +
+          'const { level, time, pid, hostname, module, msg, ...rest } = j; ' +
+          'const keys = Object.keys(rest); ' +
+          'if (keys.length === 0) return { text: "" }; ' +
+          'return { text: JSON.stringify(rest), isJson: true }; }',
+      },
+    ],
+  },
+  null,
+  2,
+);
+
+/**
  * Spawn logdy follow + open browser. Stays attached so user can Ctrl-C.
  */
 async function runWebViewer(logPath: string): Promise<void> {
@@ -325,6 +372,14 @@ async function runWebViewer(logPath: string): Promise<void> {
     console.log(`  ${dim}install: ${bold}brew install logdy${reset}`);
     console.log(`  ${dim}or use terminal mode: ${bold}rt daemon logs --terminal${reset}\n`);
     process.exit(1);
+  }
+
+  // Materialize the column config once; rewrite if it changed (so edits to
+  // LOGDY_PINO_COLUMNS_JSON above propagate without manual cache busting).
+  const configPath = join(LOG_DIR, "..", "logdy-pino-columns.json");
+  const existing = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
+  if (existing !== LOGDY_PINO_COLUMNS_JSON) {
+    writeFileSync(configPath, LOGDY_PINO_COLUMNS_JSON);
   }
 
   const port = "5544";
@@ -337,6 +392,7 @@ async function runWebViewer(logPath: string): Promise<void> {
     "--port", port,
     "--ui-pass", "",
     "--no-analytics",
+    "--config", configPath,
   ], { stdio: ["ignore", "inherit", "inherit"] });
 
   await waitForPort(Number(port), 2000);
