@@ -330,12 +330,41 @@ async function runTerminalViewer(logPath: string): Promise<void> {
  * parsed object (different versions expose it as `line.json` or
  * `line.json_content` — we use a defensive helper).
  */
-const PINO_PARSE_MIDDLEWARE =
-  '(line) => { try { line.json_content = JSON.parse(line.content); } catch(e) {} return line; }';
+// IMPORTANT: logdy wraps each handler as `let fn = ${ts.transpile(code)}`.
+// TypeScript's transpiler can emit prelude statements (e.g. `var _a, _b;` for
+// nullish-coalescing helpers in ES5 mode), which would break the wrap with a
+// syntax error and silently empty the columns array. To stay safe we use
+// plain ES5-style code in every handler: function expressions, `||` instead
+// of `??`, manual object iteration instead of destructure-rest, no template
+// literals.
 
-// Helper inlined into each handler — picks up whichever field name the
-// current logdy version uses.
-const J = '(line.json_content ?? line.json ?? {})';
+const PINO_PARSE_MIDDLEWARE =
+  'function(line){try{line.json_content=JSON.parse(line.content);}catch(e){}return line;}';
+
+const HANDLER_TIME = [
+  'function(line){',
+  '  var j=line.json_content||line.json||{};',
+  '  if(!j.time) return {text:""};',
+  '  var d=new Date(j.time);',
+  '  function p(n,w){var s=String(n);while(s.length<(w||2)) s="0"+s; return s;}',
+  '  return {text:p(d.getHours())+":"+p(d.getMinutes())+":"+p(d.getSeconds())+"."+p(d.getMilliseconds(),3)};',
+  '}',
+].join("");
+
+const HANDLER_LEVEL = 'function(line){return {text:(line.json_content||line.json||{}).level||""};}';
+const HANDLER_MODULE = 'function(line){return {text:(line.json_content||line.json||{}).module||""};}';
+const HANDLER_MSG = 'function(line){return {text:(line.json_content||line.json||{}).msg||line.content};}';
+
+const HANDLER_FIELDS = [
+  'function(line){',
+  '  var j=line.json_content||line.json||{};',
+  '  var skip={level:1,time:1,pid:1,hostname:1,module:1,msg:1};',
+  '  var rest={}, has=false;',
+  '  for(var k in j){ if(!skip[k]){ rest[k]=j[k]; has=true; } }',
+  '  if(!has) return {text:""};',
+  '  return {text:JSON.stringify(rest),isJson:true};',
+  '}',
+].join("");
 
 const LOGDY_PINO_COLUMNS_JSON = JSON.stringify(
   {
@@ -346,60 +375,15 @@ const LOGDY_PINO_COLUMNS_JSON = JSON.stringify(
       leftColWidth: 200,
       drawerColWidth: 480,
       middlewares: [
-        {
-          id: "pino-parse",
-          name: "Parse pino JSON",
-          handlerTsCode: PINO_PARSE_MIDDLEWARE,
-        },
+        { id: "pino-parse", name: "Parse pino JSON", handlerTsCode: PINO_PARSE_MIDDLEWARE },
       ],
     },
     columns: [
-      {
-        id: "time",
-        name: "time",
-        idx: 0,
-        width: 110,
-        handlerTsCode:
-          `(line) => { const j = ${J}; const t = j.time; if (!t) return { text: "" }; ` +
-          'const d = new Date(t); ' +
-          'const pad = (n, w=2) => String(n).padStart(w, "0"); ' +
-          'return { text: `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(),3)}` }; }',
-      },
-      {
-        id: "level",
-        name: "level",
-        idx: 1,
-        width: 70,
-        faceted: true,
-        handlerTsCode: `(line) => ({ text: ${J}.level ?? "" })`,
-      },
-      {
-        id: "module",
-        name: "module",
-        idx: 2,
-        width: 140,
-        faceted: true,
-        handlerTsCode: `(line) => ({ text: ${J}.module ?? "" })`,
-      },
-      {
-        id: "msg",
-        name: "msg",
-        idx: 3,
-        width: 520,
-        handlerTsCode: `(line) => ({ text: ${J}.msg ?? line.content })`,
-      },
-      {
-        id: "fields",
-        name: "fields",
-        idx: 4,
-        width: 320,
-        handlerTsCode:
-          `(line) => { const j = ${J}; ` +
-          'const { level, time, pid, hostname, module, msg, ...rest } = j; ' +
-          'const keys = Object.keys(rest); ' +
-          'if (keys.length === 0) return { text: "" }; ' +
-          'return { text: JSON.stringify(rest), isJson: true }; }',
-      },
+      { id: "time",   name: "time",   idx: 0, width: 110, handlerTsCode: HANDLER_TIME },
+      { id: "level",  name: "level",  idx: 1, width:  70, faceted: true, handlerTsCode: HANDLER_LEVEL },
+      { id: "module", name: "module", idx: 2, width: 140, faceted: true, handlerTsCode: HANDLER_MODULE },
+      { id: "msg",    name: "msg",    idx: 3, width: 520, handlerTsCode: HANDLER_MSG },
+      { id: "fields", name: "fields", idx: 4, width: 320, handlerTsCode: HANDLER_FIELDS },
     ],
   },
   null,
