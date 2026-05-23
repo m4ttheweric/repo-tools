@@ -329,16 +329,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Spawn `rt daemon logs` detached via a login shell so it inherits the
-    /// user's PATH (rt is at ~/.local/bin/rt or wherever the user installed).
-    /// Logdy stays running in the background after this method returns.
+    /// Spawn `rt daemon logs` detached. Prefers the dev wrapper at
+    /// ~/.local/bin/rt over the brew-installed binary (which may lag the
+    /// source tree by a release cycle). Falls back to a login-shell PATH
+    /// lookup if neither exists.
+    ///
+    /// Logdy stays running in the background after this method returns;
+    /// it's killed only if the user Ctrl-Cs the spawned rt OR the rt-tray
+    /// app group is terminated.
     private func spawnRtDaemonLogs() {
+        let home = NSHomeDirectory()
+        let candidates = [
+            "\(home)/.local/bin/rt",
+            "/opt/homebrew/bin/rt",
+            "/usr/local/bin/rt",
+        ]
+        let rtBin = candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        task.arguments = ["-lc", "exec rt daemon logs >/dev/null 2>&1"]
+        if let rtBin = rtBin {
+            task.executableURL = URL(fileURLWithPath: rtBin)
+            task.arguments = ["daemon", "logs"]
+            NSLog("rt-tray: spawning \(rtBin) daemon logs")
+        } else {
+            // Last-resort PATH lookup via login shell.
+            task.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            task.arguments = ["-lc", "exec rt daemon logs"]
+            NSLog("rt-tray: no rt binary found in known locations; falling back to PATH lookup")
+        }
+        // Redirect both stdio to /dev/null so the spawned process doesn't
+        // inherit our pipe endpoints (which would EPIPE on next write once
+        // rt-tray collects them).
+        task.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
+        task.standardError = FileHandle(forWritingAtPath: "/dev/null")
         do {
             try task.run()
-            NSLog("rt-tray: spawned `rt daemon logs` (pid \(task.processIdentifier))")
+            NSLog("rt-tray: spawned rt daemon logs (pid \(task.processIdentifier))")
         } catch {
             NSLog("rt-tray: failed to spawn rt daemon logs: \(error)")
         }
