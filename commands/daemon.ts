@@ -319,38 +319,82 @@ async function runTerminalViewer(logPath: string): Promise<void> {
  * logdy UI config that breaks pino JSON lines into proper columns instead
  * of dumping the raw line into one cell. Written to ~/.rt/ on first invocation.
  *
- * Schema: https://logdy.dev/docs/reference/code — each column's `code` is a
- * TypeScript handler `(line: Message) => CellHandler`; logdy auto-parses
- * JSON-per-line into `line.json`.
+ * Schema (verified against logdy v0.17):
+ *   - top-level: `name`, `settings`, `columns`
+ *   - settings: { maxMessages, entriesOrder, leftColWidth, drawerColWidth,
+ *                 middlewares: [...] }
+ *   - columns:  { id, name, idx, width, hidden?, faceted?, handlerTsCode? }
+ *   - handlerTsCode is TS source: `(line: Message) => CellHandler`
+ *
+ * logdy parses each JSON line automatically; handlers access fields via the
+ * parsed object (different versions expose it as `line.json` or
+ * `line.json_content` — we use a defensive helper).
  */
+const PINO_PARSE_MIDDLEWARE =
+  '(line) => { try { line.json_content = JSON.parse(line.content); } catch(e) {} return line; }';
+
+// Helper inlined into each handler — picks up whichever field name the
+// current logdy version uses.
+const J = '(line.json_content ?? line.json ?? {})';
+
 const LOGDY_PINO_COLUMNS_JSON = JSON.stringify(
   {
+    name: "rt-daemon pino",
+    settings: {
+      maxMessages: 10000,
+      entriesOrder: "desc",
+      leftColWidth: 200,
+      drawerColWidth: 480,
+      middlewares: [
+        {
+          id: "pino-parse",
+          name: "Parse pino JSON",
+          handlerTsCode: PINO_PARSE_MIDDLEWARE,
+        },
+      ],
+    },
     columns: [
       {
+        id: "time",
         name: "time",
-        code:
-          '(line) => { const t = line.json?.time; if (!t) return { text: "" }; ' +
+        idx: 0,
+        width: 110,
+        handlerTsCode:
+          `(line) => { const j = ${J}; const t = j.time; if (!t) return { text: "" }; ` +
           'const d = new Date(t); ' +
           'const pad = (n, w=2) => String(n).padStart(w, "0"); ' +
           'return { text: `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(),3)}` }; }',
       },
       {
+        id: "level",
         name: "level",
-        code: '(line) => ({ text: line.json?.level ?? "" })',
+        idx: 1,
+        width: 70,
+        faceted: true,
+        handlerTsCode: `(line) => ({ text: ${J}.level ?? "" })`,
       },
       {
+        id: "module",
         name: "module",
-        code: '(line) => ({ text: line.json?.module ?? "" })',
+        idx: 2,
+        width: 140,
+        faceted: true,
+        handlerTsCode: `(line) => ({ text: ${J}.module ?? "" })`,
       },
       {
+        id: "msg",
         name: "msg",
-        code: '(line) => ({ text: line.json?.msg ?? line.content })',
+        idx: 3,
+        width: 520,
+        handlerTsCode: `(line) => ({ text: ${J}.msg ?? line.content })`,
       },
       {
+        id: "fields",
         name: "fields",
-        // Everything except the well-known pino base fields.
-        code:
-          '(line) => { const j = line.json; if (!j) return { text: "" }; ' +
+        idx: 4,
+        width: 320,
+        handlerTsCode:
+          `(line) => { const j = ${J}; ` +
           'const { level, time, pid, hostname, module, msg, ...rest } = j; ' +
           'const keys = Object.keys(rest); ' +
           'if (keys.length === 0) return { text: "" }; ' +
