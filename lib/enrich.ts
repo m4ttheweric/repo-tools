@@ -55,8 +55,7 @@ export interface EnrichedBranch {
 
 /**
  * Cached MR shape: MRDashboardProps plus the head commit `sha`, which the
- * SDK's dashboard projection drops but the auto-fix engine needs to verify
- * the failed pipeline ran on the current HEAD.
+ * SDK's dashboard projection drops.
  */
 export type MRInfo = MRDashboardProps & { sha: string | null };
 

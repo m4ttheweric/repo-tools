@@ -18,13 +18,8 @@
 import { execSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
-import { GitLabProvider } from "@workforge/glance-sdk";
 import { RT_DIR } from "./daemon-config.ts";
 import type { PortEntry } from "./port-scanner.ts";
-import type { MrSnapshot } from "./daemon/auto-fix-eligibility.ts";
-import { loadSecrets } from "./linear.ts";
-import { parseRemoteUrl } from "./enrich.ts";
-import type { JobLog } from "./daemon/auto-fix-agent-protocol.ts";
 import { getDaemonLogger } from "./daemon-logger.ts";
 const log = (await getDaemonLogger()).childLogger("notifier");
 
@@ -101,10 +96,6 @@ export const NOTIFICATION_TYPES = [
   { key: "needs_rebase",      label: "Needs rebase",        description: "When your branch falls behind target" },
   { key: "merge_error",       label: "Merge error",         description: "When auto-merge or merge train fails" },
   { key: "stale_port",        label: "Stale processes",     description: "When a dev server has been running 6h+" },
-  { key: "auto_fix_pushed",   label: "Auto-fix pushed",     description: "When rt auto-fix successfully pushed a fix" },
-  { key: "auto_fix_skipped",  label: "Auto-fix skipped",    description: "When rt auto-fix declined to attempt a fix" },
-  { key: "auto_fix_rejected", label: "Auto-fix rejected",   description: "When rt auto-fix's diff was rejected for scope/denylist violation" },
-  { key: "auto_fix_error",    label: "Auto-fix error",      description: "When rt auto-fix errored during a fix attempt" },
 ] as const;
 
 export type NotificationPrefs = Record<string, boolean>;
@@ -356,170 +347,6 @@ interface CacheEntry {
   fetchedAt: number;
 }
 
-function buildMrSnapshot(entry: CacheEntry, currentUserId: string | null): MrSnapshot | null {
-  const mr: any = entry.mr;
-  if (!mr) return null;
-  // `mr.state` is the MR lifecycle (opened/closed/merged); `mr.status` is the
-  // GitLab mergeability gate (blocked/can_be_merged/...). Eligibility cares
-  // about lifecycle — a pipeline-failed MR is mr.status="blocked" by design,
-  // which is exactly when we want to fix it.
-  const headSha = String(mr.sha ?? "");
-  return {
-    authorIsMe:            !!currentUserId && numericTail(mr.author?.id ?? mr.authorId ?? "") === currentUserId,
-    status:                String(mr.state ?? "opened"),
-    isApproved:            !!mr.reviews?.isApproved,
-    changesRequested:      Array.isArray(mr.reviews?.summaries)
-                             ? mr.reviews.summaries.some((s: any) => s.state === "changes_requested")
-                             : false,
-    pipelineStatus:        String(mr.pipeline?.status ?? ""),
-    // SDK's Pipeline type carries no `sha` — collapse to head SHA. The
-    // running→failed transition gate is the real protection against acting
-    // on stale failures.
-    pipelineSha:           headSha,
-    flakeRetriedAndPassed: Array.isArray(mr.pipeline?.jobs)
-                             ? mr.pipeline.jobs.some((j: any) => j.retries?.some?.((r: any) => r.status === "success"))
-                             : false,
-  };
-}
-
-function numericTail(id: unknown): string {
-  const m = String(id).match(/(\d+)$/);
-  return m ? m[1]! : "";
-}
-
-const TRACE_TAIL_BYTES = 6_000;     // last N bytes per job — error is at the tail
-const TRACE_FETCH_TIMEOUT = 15_000; // per-job ceiling, in ms
-
-function numericId(scopedId: unknown): number | null {
-  if (typeof scopedId !== "string" && typeof scopedId !== "number") return null;
-  const m = String(scopedId).match(/(\d+)$/);
-  return m ? Number(m[1]) : null;
-}
-
-/** Fetch actual job trace text from GitLab. Returns the fallback string on any failure. */
-async function fetchFailingJobTraces(
-  repoPath: string,
-  failingJobs: any[],
-  mr: any,
-): Promise<JobLog[]> {
-  const fallback: JobLog[] = failingJobs.map((j: any) => ({
-    name:  String(j.name ?? "job"),
-    trace: "(trace fetch unavailable)",
-  }));
-
-  if (failingJobs.length === 0) return [];
-
-  let remoteUrl: string | undefined;
-  try {
-    remoteUrl = execSync("git config --get remote.origin.url", {
-      cwd: repoPath, encoding: "utf8", stdio: "pipe",
-    }).trim();
-  } catch { /* no remote */ }
-  if (!remoteUrl) return fallback;
-
-  const remote = parseRemoteUrl(remoteUrl);
-  if (!remote) return fallback;
-
-  const secrets = loadSecrets();
-  if (!secrets.gitlabToken) return fallback;
-
-  const provider = new GitLabProvider(remote.host, secrets.gitlabToken);
-  const pipelineId = numericId(mr.pipeline?.id);
-
-  const fetched = await Promise.all(failingJobs.map(async (j: any): Promise<JobLog> => {
-    const name = String(j.name ?? "job");
-    const jobId = numericId(j.id);
-    if (jobId == null) return { name, trace: "(no job id)" };
-
-    try {
-      const detail = await Promise.race([
-        provider.fetchJobDetail(remote.projectPath, jobId, pipelineId ?? undefined),
-        new Promise<never>((_, rej) =>
-          setTimeout(() => rej(new Error("trace fetch timeout")), TRACE_FETCH_TIMEOUT)),
-      ]);
-      if (detail.type === "trace") {
-        // Tail of the trace — errors are always at the end.
-        const tail = detail.content.slice(-TRACE_TAIL_BYTES);
-        return { name, trace: tail };
-      }
-      // Bridge: recurse into the downstream pipeline's failing jobs.
-      const dsJobs = (detail.downstreamPipeline.jobs ?? []).filter(j => j.status === "failed");
-      const dsLogs = await fetchFailingJobTraces(repoPath, dsJobs, { pipeline: detail.downstreamPipeline });
-      return { name, trace: dsLogs.map(l => `── downstream: ${l.name} ──\n${l.trace}`).join("\n\n") || "(downstream pipeline has no failed jobs)" };
-    } catch (err) {
-      log.warn({ err }, `trace fetch failed for ${name}`);
-      return { name, trace: `(trace fetch failed: ${err})` };
-    }
-  }));
-  return fetched;
-}
-
-async function maybeFireAutoFix(
-  repoName: string,
-  repoPath: string,
-  entry: CacheEntry,
-  branch: string,
-  currentUserId: string | null,
-): Promise<void> {
-  const mr: any = entry.mr;
-  if (!mr) { log.info(`skip ${branch} — no cached MR`); return; }
-
-  // SDK's MRDashboardProps projection drops the head SHA, and our WebSocket
-  // subscription path overwrites the cache with the bare projection — so we
-  // can't rely on mr.sha being present. Look it up directly: origin is what
-  // the pipeline actually ran on.
-  let headSha = String(mr.sha ?? "");
-  if (!headSha) {
-    try {
-      const out = execSync(`git -C "${repoPath}" ls-remote origin "refs/heads/${branch}"`, {
-        encoding: "utf8", stdio: "pipe",
-      }).trim();
-      headSha = out.split(/\s+/)[0] ?? "";
-    } catch (err) {
-      log.warn({ err }, `skip ${branch} — git ls-remote failed`);
-      return;
-    }
-  }
-  if (!headSha) { log.info(`skip ${branch} — no head sha resolvable`); return; }
-
-  const target  = String(mr.targetBranch ?? "main");
-  const snapshot = buildMrSnapshot(entry, currentUserId);
-  if (!snapshot) { log.info(`skip ${branch} — snapshot build failed`); return; }
-  // buildMrSnapshot uses mr.sha; override with the resolved value.
-  snapshot.pipelineSha = headSha;
-
-  const { runAutoFix } = await import("./daemon/auto-fix.ts");
-  const failingJobs = Array.isArray(mr.pipeline?.jobs)
-    ? mr.pipeline.jobs.filter((j: any) => j.status === "failed")
-    : [];
-
-  // Cached PipelineJob has no `trace` field — the SDK never includes it. Fetch
-  // the actual trace via API so the agent has the failure output, not just job
-  // names. Without this, the agent has nothing to act on and reports "fixed"
-  // with no diff (which the validation gate then rejects).
-  const jobLogs = await fetchFailingJobTraces(repoPath, failingJobs, mr);
-
-  const gitContext = (() => {
-    try {
-      const refSpec = `origin/${target}...${headSha}`;
-      const opts = { cwd: repoPath, encoding: "utf8" as const, stdio: "pipe" as const };
-      return {
-        commits:      execSync(`git log ${refSpec} --pretty=format:"- %h %s" -n 20`, opts).trim(),
-        changedFiles: execSync(`git diff ${refSpec} --name-only`, opts).trim(),
-        diffStat:     execSync(`git diff ${refSpec} --shortstat`, opts).trim(),
-        diff:         execSync(`git diff ${refSpec}`, opts).slice(0, 80 * 1024),
-      };
-    } catch {
-      return { commits: "", changedFiles: "", diffStat: "", diff: "" };
-    }
-  })();
-
-  runAutoFix({
-    repoName, repoPath, branch, sha: headSha, target, mr: snapshot,
-    jobLogs, gitContext,
-  }).catch(err => log.error({ err }, "top-level failure"));
-}
-
 function numericUserId(id: unknown): string | null {
   if (typeof id !== "string" && typeof id !== "number") return null;
   const match = String(id).match(/(\d+)$/);
@@ -571,7 +398,6 @@ function detectBranchTransitions(
   fired: Set<string>,
   prefs: NotificationPrefs,
   currentUserId: number | null,
-  repoIndex: () => Record<string, string>,
 ): void {
   for (const [branch, entry] of Object.entries(current)) {
     // If the MR slot is null we have no fresh data — skipping prevents
@@ -624,16 +450,6 @@ function detectBranchTransitions(
         log.info(`pipeline failed on ${branch} [was=${was.pipelineStatus} now=${now.pipelineStatus}]`);
         if (isEnabled(prefs, "pipeline_failed")) notify("Pipeline Failed", branchShort, mrUrl, "pipeline_failed");
 
-        // Auto-fix attempt — independent of the user's notification preferences;
-        // gating happens inside runAutoFix's eligibility evaluator.
-        const repos = repoIndex();
-        const repoName = entry.repoName;
-        const repoPath = repoName ? repos[repoName] : undefined;
-        if (repoName && repoPath) {
-          maybeFireAutoFix(repoName, repoPath, entry, branch, numericUserId(currentUserId)).catch(err =>
-            log.error({ err }, `dispatch failed for ${branch}`),
-          );
-        }
       } else {
         log.debug(`suppressed duplicate pipeline_failed on ${branch}`);
       }
@@ -812,14 +628,13 @@ export function checkAndNotify(
   cacheEntries: Record<string, CacheEntry>,
   ports: PortEntry[],
   currentUserId: number | null = null,
-  repoIndex: () => Record<string, string> = () => ({}),
 ): void {
   const state = loadState();
   const prefs = loadNotificationPrefs();
   const fired = new Set(state.fired);
 
   // Branch transitions
-  detectBranchTransitions(state.branches, cacheEntries, fired, prefs, currentUserId, repoIndex);
+  detectBranchTransitions(state.branches, cacheEntries, fired, prefs, currentUserId);
 
   // Port staleness
   detectStalePortTransitions(state.ports, ports, prefs);
