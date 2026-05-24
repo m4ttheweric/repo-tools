@@ -83,8 +83,6 @@ import { createWorkspaceHandlers } from "./daemon/handlers/workspace.ts";
 import { createMRHandlers }        from "./daemon/handlers/mr.ts";
 import { createParkingLotHandlers } from "./daemon/handlers/parking-lot.ts";
 import { createDopplerHandlers } from "./daemon/handlers/doppler.ts";
-import { createAutoFixHandlers } from "./daemon/handlers/auto-fix.ts";
-import { sweepStaleArtifacts as sweepAutoFixArtifacts } from "./daemon/auto-fix.ts";
 import { reconcileForRepo } from "./daemon/doppler-sync.ts";
 import { listWorktreeRoots } from "./git-worktrees.ts";
 import { createDiscussionHandlers } from "./daemon/handlers/discussions.ts";
@@ -283,9 +281,9 @@ try {
   processManager.userPath = resolvedPath || process.env.PATH;
 
   // Also overlay the resolved PATH onto the daemon's own env so direct
-  // execSync calls outside ProcessManager (auto-fix provisioning, setup
-  // commands, agent invocations) inherit pnpm/doppler/bun without
-  // re-resolving the shell themselves.
+  // execSync calls outside ProcessManager (setup commands, agent
+  // invocations) inherit pnpm/doppler/bun without re-resolving the shell
+  // themselves.
   if (resolvedPath) process.env.PATH = resolvedPath;
 
   // Log so we can verify key tools are present after restarts
@@ -547,7 +545,7 @@ async function refreshCacheImpl(): Promise<void> {
     log.debug({ count: Object.keys(cache.entries).length }, "cache refresh complete");
 
     // Check for state transitions and fire notifications
-    checkAndNotify(cache.entries, portCacheRef.ports, getCurrentUserId(), loadRepoIndex);
+    checkAndNotify(cache.entries, portCacheRef.ports, getCurrentUserId());
 
     // Auto-park worktrees whose MRs just merged/closed.
     try {
@@ -639,7 +637,6 @@ const routedHandlers: HandlerMap = {
   ...createMRHandlers(),
   ...createParkingLotHandlers(handlerCtx),
   ...createDopplerHandlers(handlerCtx),
-  ...createAutoFixHandlers(handlerCtx),
   ...createDiscussionHandlers(handlerCtx, broadcast),
 };
 
@@ -952,14 +949,6 @@ export function startDaemon(): void {
 
   // Discover and watch repos
   refreshWatchedRepos();
-
-  // Auto-fix: sweep any leftover ephemeral worktrees from a previous daemon
-  // process. Cheap (file stats only) and bounded.
-  try {
-    sweepAutoFixArtifacts(loadRepoIndex);
-  } catch (err) {
-    log.error({ err }, "auto-fix: stale-sweep failed");
-  }
 
   // Restore workspace sync watchers
   try {

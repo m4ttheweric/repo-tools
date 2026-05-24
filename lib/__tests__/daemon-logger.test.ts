@@ -45,11 +45,11 @@ describe("daemon-logger", () => {
 
   it("childLogger stamps module field on every line", async () => {
     const { childLogger } = await createDaemonLogger({ logDir, level: "info" });
-    const log = childLogger("auto-fix");
+    const log = childLogger("parking-lot");
     log.info("something happened");
     await flush(log);
     const content = readTodayLog();
-    expect(content).toContain('"module":"auto-fix"');
+    expect(content).toContain('"module":"parking-lot"');
     expect(content).toContain('"msg":"something happened"');
   });
 
