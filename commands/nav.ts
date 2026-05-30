@@ -237,8 +237,24 @@ export async function navigate(args: string[]): Promise<void> {
       })),
     ];
 
+    // Empty directory: nothing to descend into. Instead of dead-ending (which
+    // would print no path and leave the shell wrapper with nowhere to cd),
+    // surface a notice so the user can land here or back out.
     if (options.length === 0) {
-      console.error(`  ${tildeify(cwd)} is empty`);
+      const { value: choice, key } = await runFzf(
+        [{ value: "__cd_here__", label: "📭 empty folder", hint: "" }],
+        tildeify(cwd),
+        "enter: cd here  ctrl-up: up  esc: cancel",
+        "ctrl-up",
+      );
+      if (key === "ctrl-up") {
+        if (!atRoot) cwd = dirname(cwd);
+        continue;
+      }
+      if (choice === null) return; // esc — cancel without cd
+      // enter on the notice → cd into this (empty) directory
+      process.stdout.write = realStdoutWrite;
+      realStdoutWrite(cwd + "\n");
       return;
     }
 
