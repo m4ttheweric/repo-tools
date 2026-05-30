@@ -6,9 +6,9 @@
  *   hooks:watch   — ensure the daemon is watching the repo's .git/config
  */
 
-import { readFileSync } from "fs";
 import { join } from "path";
-import { RT_DIR } from "../../daemon-config.ts";
+import { repoDataDir } from "../../rt-paths.ts";
+import { readJson } from "../../json-store.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 
 export function createHooksHandlers(ctx: HandlerContext): HandlerMap {
@@ -16,13 +16,8 @@ export function createHooksHandlers(ctx: HandlerContext): HandlerMap {
     "hooks:status": async (payload) => {
       const repoName = payload?.repo;
       if (!repoName) return { ok: false, error: "missing repo" };
-      const hooksJson = join(RT_DIR, repoName, "hooks.json");
-      try {
-        const config = JSON.parse(readFileSync(hooksJson, "utf8"));
-        return { ok: true, data: config };
-      } catch {
-        return { ok: true, data: null };
-      }
+      const hooksJson = join(repoDataDir(repoName), "hooks.json");
+      return { ok: true, data: readJson<unknown>(hooksJson, null) };
     },
 
     "hooks:repair": async (payload) => {

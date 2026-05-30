@@ -471,7 +471,7 @@ async function wizard(repoRoot: string, dataDir: string): Promise<void> {
     message: "Save scope",
     options: [
       { label: "team", value: "team", hint: ".rt/scripts/ — git-tracked, shared" },
-      { label: "user", value: "user", hint: "~/.rt/<repo>/scripts/ — local only" },
+      { label: "user", value: "user", hint: "~/.rt/repos/<repo>/scripts/ — local only" },
     ],
   }) as "team" | "user";
 

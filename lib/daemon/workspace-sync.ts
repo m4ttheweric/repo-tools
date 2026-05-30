@@ -12,7 +12,8 @@ import {
 } from "fs";
 import { join, resolve, basename, dirname } from "path";
 import { execSync } from "child_process";
-import { RT_DIR } from "../daemon-config.ts";
+import { repoDataDir } from "../rt-paths.ts";
+import { readJson, writeJson } from "../json-store.ts";
 import { getDaemonLogger } from "../daemon-logger.ts";
 const log = (await getDaemonLogger()).childLogger("workspace-sync");
 
@@ -45,23 +46,17 @@ function parseJsonc(text: string): any {
 // ─── Config persistence ─────────────────────────────────────────────────────
 
 function configPath(repoName: string): string {
-  return join(RT_DIR, repoName, "workspace-sync.json");
+  return join(repoDataDir(repoName), "workspace-sync.json");
 }
 
 export function loadSyncConfig(repoName: string): WorkspaceSyncConfig | null {
-  try {
-    const raw = JSON.parse(readFileSync(configPath(repoName), "utf8"));
-    if (!raw.enabled) return null;
-    return raw as WorkspaceSyncConfig;
-  } catch {
-    return null;
-  }
+  const raw = readJson<WorkspaceSyncConfig | null>(configPath(repoName), null);
+  if (!raw || !raw.enabled) return null;
+  return raw;
 }
 
 export function saveSyncConfig(repoName: string, config: WorkspaceSyncConfig): void {
-  const dir = join(RT_DIR, repoName);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(configPath(repoName), JSON.stringify(config, null, 2));
+  writeJson(configPath(repoName), config);
 }
 
 // ─── Git exclude management ─────────────────────────────────────────────────

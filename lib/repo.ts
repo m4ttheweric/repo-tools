@@ -7,8 +7,8 @@
 
 import { execSync } from "child_process";
 import { existsSync, readdirSync, readFileSync, mkdirSync } from "fs";
-import { homedir } from "os";
 import { basename, join, resolve } from "path";
+import { repoDataDir } from "./rt-paths.ts";
 
 // ─── Re-exports ──────────────────────────────────────────────────────────────
 
@@ -63,7 +63,7 @@ export function getRepoIdentity(): RepoIdentity | null {
   // commands (mr, open) gate themselves on remoteUrl/baseUrl being non-empty.
   const remoteUrl = getRemoteUrl();
   const repoName = remoteUrl ? deriveRepoName(remoteUrl) : basename(repoRoot);
-  const dataDir = join(homedir(), ".rt", repoName);
+  const dataDir = repoDataDir(repoName);
   mkdirSync(dataDir, { recursive: true });
 
   updateRepoIndex(repoName, repoRoot);

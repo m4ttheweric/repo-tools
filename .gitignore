@@ -7,3 +7,6 @@ extensions/vscode/rt-context/package-lock.json
 rt-tray/.build/
 rt-tray/rt-tray.app/
 .worktrees/
+
+# Local-only superpowers spec/plan notes (untracked)
+.local-dev/

@@ -2,7 +2,7 @@
  * Per-repo Doppler template — the source of truth for which app subdir of a
  * worktree maps to which Doppler project + config.
  *
- * Path: ~/.rt/<repo>/doppler-template.yaml. Format is a flat list of objects:
+ * Path: ~/.rt/repos/<repo>/doppler-template.yaml. Format is a flat list of objects:
  *   - { path: apps/backend,  project: backend,  config: dev }
  *   - { path: apps/frontend, project: frontend, config: dev }
  *
@@ -12,9 +12,9 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { homedir } from "os";
 import { join } from "path";
 import { parse, stringify } from "yaml";
+import { repoDataDir } from "./rt-paths.ts";
 
 export interface DopplerTemplateEntry {
   /** Path relative to the worktree root (e.g. "apps/backend"). */
@@ -25,13 +25,8 @@ export interface DopplerTemplateEntry {
   config: string;
 }
 
-/** Resolve ~/.rt at call time so tests can override HOME before importing. */
-function rtDir(): string {
-  return join(process.env.HOME ?? homedir(), ".rt");
-}
-
 export function templatePath(repoName: string): string {
-  return join(rtDir(), repoName, "doppler-template.yaml");
+  return join(repoDataDir(repoName), "doppler-template.yaml");
 }
 
 /** Load the template. Returns `null` if missing or malformed. */
@@ -65,7 +60,7 @@ export function saveTemplate(
   entries: DopplerTemplateEntry[],
 ): void {
   const path = templatePath(repoName);
-  mkdirSync(join(rtDir(), repoName), { recursive: true });
+  mkdirSync(repoDataDir(repoName), { recursive: true });
   const yaml = stringify(entries);
   writeFileSync(path, yaml);
 }
