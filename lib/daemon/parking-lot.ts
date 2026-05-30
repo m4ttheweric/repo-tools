@@ -7,7 +7,7 @@
  * absent), then fast-forward that branch to the remote default branch.
  *
  * Worktree → parking-lot index mapping is per-repo, 1-based, primary worktree
- * first, persisted at `~/.rt/<repoName>/parking-lot.json` so indexes stay
+ * first, persisted at `~/.rt/repos/<repoName>/parking-lot.json` so indexes stay
  * stable across worktree adds/removes. New worktrees claim the next unused
  * positive integer.
  *
@@ -17,11 +17,13 @@
  */
 
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync } from "fs";
 import { join } from "path";
 
 import { getDaemonLogger } from "../daemon-logger.ts";
 import { RT_DIR } from "../daemon-config.ts";
+import { repoDataDir } from "../rt-paths.ts";
+import { readJson, writeJson } from "../json-store.ts";
 import {
   getCurrentBranch,
   getRemoteDefaultBranch,
@@ -45,21 +47,16 @@ interface ParkingLotState {
 }
 
 function loadState(): ParkingLotState {
-  try {
-    const raw = JSON.parse(readFileSync(STATE_PATH, "utf8"));
-    return {
-      mrState: raw?.mrState ?? {},
-      fired:   Array.isArray(raw?.fired) ? raw.fired : [],
-    };
-  } catch {
-    return { mrState: {}, fired: [] };
-  }
+  const raw = readJson<Partial<ParkingLotState>>(STATE_PATH, {});
+  return {
+    mrState: raw?.mrState ?? {},
+    fired:   Array.isArray(raw?.fired) ? raw.fired : [],
+  };
 }
 
 function saveState(state: ParkingLotState): void {
   try {
-    mkdirSync(RT_DIR, { recursive: true });
-    writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+    writeJson(STATE_PATH, state);
   } catch (err) {
     log.debug({ err }, "failed to persist parking-lot state (best-effort)");
   }
@@ -70,22 +67,17 @@ function saveState(state: ParkingLotState): void {
 interface IndexMap { [worktreePath: string]: number; }
 
 function indexFilePath(repoName: string): string {
-  return join(RT_DIR, repoName, "parking-lot.json");
+  return join(repoDataDir(repoName), "parking-lot.json");
 }
 
 function loadIndexMap(repoName: string): IndexMap {
-  try {
-    const raw = JSON.parse(readFileSync(indexFilePath(repoName), "utf8"));
-    return raw?.indexes ?? {};
-  } catch {
-    return {};
-  }
+  const raw = readJson<{ indexes?: IndexMap }>(indexFilePath(repoName), {});
+  return raw?.indexes ?? {};
 }
 
 function saveIndexMap(repoName: string, indexes: IndexMap): void {
   try {
-    mkdirSync(join(RT_DIR, repoName), { recursive: true });
-    writeFileSync(indexFilePath(repoName), JSON.stringify({ indexes }, null, 2));
+    writeJson(indexFilePath(repoName), { indexes });
   } catch (err) {
     log.debug({ err }, "failed to persist parking-lot index map (best-effort)");
   }

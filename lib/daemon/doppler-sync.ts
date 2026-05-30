@@ -1,6 +1,6 @@
 /**
  * Doppler-sync reconciler — keeps `~/.doppler/.doppler.yaml` consistent with
- * each repo's `~/.rt/<repo>/doppler-template.yaml` across all worktrees.
+ * each repo's `~/.rt/repos/<repo>/doppler-template.yaml` across all worktrees.
  *
  * Called once per cache-refresh tick by the daemon (`refreshCacheImpl` in
  * `lib/daemon.ts`) and on demand by `rt doppler sync`. The reconciler is

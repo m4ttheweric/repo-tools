@@ -15,11 +15,11 @@ describe("doppler-template I/O", () => {
   const repo = "test-repo";
 
   afterEach(() => {
-    try { rmSync(join(tmpHome, ".rt", repo), { recursive: true, force: true }); } catch { /* */ }
+    try { rmSync(join(tmpHome, ".rt", "repos", repo), { recursive: true, force: true }); } catch { /* */ }
   });
 
-  test("templatePath is ~/.rt/<repo>/doppler-template.yaml", () => {
-    expect(templatePath(repo)).toBe(join(tmpHome, ".rt", repo, "doppler-template.yaml"));
+  test("templatePath is ~/.rt/repos/<repo>/doppler-template.yaml", () => {
+    expect(templatePath(repo)).toBe(join(tmpHome, ".rt", "repos", repo, "doppler-template.yaml"));
   });
 
   test("loadTemplate returns null when the file is missing", () => {
@@ -27,7 +27,7 @@ describe("doppler-template I/O", () => {
   });
 
   test("loadTemplate returns null on malformed YAML", () => {
-    mkdirSync(join(tmpHome, ".rt", repo), { recursive: true });
+    mkdirSync(join(tmpHome, ".rt", "repos", repo), { recursive: true });
     writeFileSync(templatePath(repo), "this: is: not: valid: yaml::");
     expect(loadTemplate(repo)).toBeNull();
   });

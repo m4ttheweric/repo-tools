@@ -15,7 +15,7 @@ describe("reconcileIndexMap", () => {
   const repo = "test-repo";
 
   afterEach(() => {
-    try { rmSync(join(tmpHome, ".rt", repo), { recursive: true, force: true }); } catch { /* */ }
+    try { rmSync(join(tmpHome, ".rt", "repos", repo), { recursive: true, force: true }); } catch { /* */ }
   });
 
   test("primary worktree gets index 1; later worktrees get 2,3,… in list order", () => {
@@ -75,7 +75,7 @@ describe("reconcileIndexMap", () => {
   });
 
   test("pre-existing hand-edited file is respected (primary claims 1 if free)", () => {
-    const dir = join(tmpHome, ".rt", repo);
+    const dir = join(tmpHome, ".rt", "repos", repo);
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
     // User manually assigned wktree-9 to 9. Primary should still claim 1.
     __test__.saveIndexMap(repo, { "/repo/wktree-9": 9 });

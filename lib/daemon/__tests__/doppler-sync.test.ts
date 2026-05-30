@@ -90,9 +90,9 @@ describe("reconcileForRepo", () => {
   });
 
   test("returns skipped=malformed-template if template can't parse", async () => {
-    mkdirSync(join(tmpHome, ".rt", REPO), { recursive: true });
+    mkdirSync(join(tmpHome, ".rt", "repos", REPO), { recursive: true });
     writeFileSync(
-      join(tmpHome, ".rt", REPO, "doppler-template.yaml"),
+      join(tmpHome, ".rt", "repos", REPO, "doppler-template.yaml"),
       "[invalid yaml::",
     );
 

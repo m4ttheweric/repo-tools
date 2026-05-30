@@ -6,9 +6,11 @@
  */
 
 import { execSync } from "child_process";
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { repoDataDir } from "./rt-paths.ts";
+import { readJson, writeJson } from "./json-store.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -30,11 +32,7 @@ function repoIndexPath(): string {
 }
 
 function loadRepoIndex(): RepoIndex {
-  try {
-    return JSON.parse(readFileSync(repoIndexPath(), "utf8"));
-  } catch {
-    return {};
-  }
+  return readJson<RepoIndex>(repoIndexPath(), {});
 }
 
 export function updateRepoIndex(repoName: string, repoRoot: string): void {
@@ -51,7 +49,7 @@ export function updateRepoIndex(repoName: string, repoRoot: string): void {
     index[repoName] = repoRoot;
   }
   try {
-    writeFileSync(repoIndexPath(), JSON.stringify(index, null, 2));
+    writeJson(repoIndexPath(), index);
   } catch { /* best effort */ }
 }
 
@@ -104,7 +102,7 @@ export function getKnownRepos(): KnownRepo[] {
     repos.push({
       repoName,
       worktrees: worktrees.filter(w => !w.isBare && existsSync(w.path)),
-      dataDir: join(homedir(), ".rt", repoName),
+      dataDir: repoDataDir(repoName),
     });
   }
 

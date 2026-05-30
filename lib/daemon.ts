@@ -25,6 +25,7 @@ import {
   API_PORT,
   readDaemonPid,
 } from "./daemon-config.ts";
+import { repoDataDir } from "./rt-paths.ts";
 
 import { getDaemonLogger, installCrashHandlers } from "./daemon-logger.ts";
 
@@ -352,7 +353,7 @@ function resolveGitConfigPath(repoPath: string): string | null {
 // ─── Hooks guard ─────────────────────────────────────────────────────────────
 
 function checkAndRepairHooksPath(repoName: string, repoPath: string): boolean {
-  const dataDir = join(RT_DIR, repoName);
+  const dataDir = repoDataDir(repoName);
   const hooksJson = join(dataDir, "hooks.json");
   const shimsDir = join(dataDir, "hooks");
 
@@ -366,7 +367,11 @@ function checkAndRepairHooksPath(repoName: string, repoPath: string): boolean {
       stdio: "pipe",
     }).trim();
 
-    if (currentHooksPath.includes(".rt")) return false; // already pointing to shims
+    // Repair unless hooksPath points EXACTLY at this repo's shims dir. The old
+    // check accepted any path merely containing ".rt", so it never repaired a
+    // stale-but-".rt" path — e.g. the pre-repos/ location ~/.rt/<repo>/hooks
+    // after the move to ~/.rt/repos/<repo>/hooks. Compare resolved paths.
+    if (resolve(currentHooksPath) === resolve(shimsDir)) return false;
 
     // Hooks path was clobbered — re-apply
     execSync(`git config core.hooksPath "${shimsDir}"`, {
@@ -555,7 +560,7 @@ async function refreshCacheImpl(): Promise<void> {
     }
 
     // Doppler-template reconciliation: keeps ~/.doppler/.doppler.yaml in sync
-    // with each repo's ~/.rt/<repo>/doppler-template.yaml. Cheap (file I/O
+    // with each repo's ~/.rt/repos/<repo>/doppler-template.yaml. Cheap (file I/O
     // only) and additive — never overwrites existing entries.
     try {
       const repos = loadRepoIndex();
