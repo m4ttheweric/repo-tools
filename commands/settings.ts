@@ -8,6 +8,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { dirname } from "path";
 import { spawnSync } from "child_process";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import {
@@ -285,10 +286,18 @@ function enableDevMode(sourcePath: string): void {
   // Ensure ~/.local/bin exists
   mkdirSync(`${Bun.env.HOME}/.local/bin`, { recursive: true });
 
-  // Write wrapper script
+  // Write wrapper script. Use the absolute bun path (not bare `bun`) and
+  // prepend the common tool dirs to PATH so the wrapper works even when
+  // launched without the user's interactive PATH — e.g. rt-tray spawns
+  // `rt daemon logs` under launchd, whose PATH is only
+  // /usr/bin:/bin:/usr/sbin:/sbin. Without this, both `bun` (the wrapper's
+  // own interpreter) and the tools cli.ts shells out to (logdy, lnav, bunx)
+  // fail to resolve, so the log viewer never starts.
+  const bunDir = dirname(bunPath);
   const wrapper = [
     `#!/bin/zsh`,
-    `exec bun run "${sourcePath}/cli.ts" "$@"`,
+    `export PATH="${bunDir}:/opt/homebrew/bin:/usr/local/bin:$PATH"`,
+    `exec "${bunPath}" run "${sourcePath}/cli.ts" "$@"`,
   ].join("\n") + "\n";
   writeFileSync(DEV_MODE_WRAPPER, wrapper, { mode: 0o755 });
 }
