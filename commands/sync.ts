@@ -40,6 +40,22 @@ function git(args: string, cwd: string): string {
   return execSync(`git ${args}`, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
 }
 
+/**
+ * rt sync only makes sense against a remote: it fetches origin, rebases onto
+ * origin/master, and pushes. A local-only repo (never pushed / no origin) has
+ * nothing to sync, so print a clear hint and bail cleanly instead of letting
+ * `git fetch origin` blow up with "fatal: 'origin' does not appear to be a git
+ * repository".
+ */
+function ensureOriginRemote(cwd: string): boolean {
+  const r = spawnSync("git", ["remote", "get-url", "origin"], { cwd, stdio: "pipe" });
+  if (r.status === 0) return true;
+  console.log(`\n  ${yellow}no origin remote — nothing to sync${reset}`);
+  console.log(`  ${dim}rt sync fetches, rebases onto origin/master, and pushes.${reset}`);
+  console.log(`  ${dim}add a remote with: ${bold}git remote add origin <url>${reset}\n`);
+  return false;
+}
+
 /** Non-blocking git command — allows spinners to animate. */
 function gitAsync(args: string, cwd: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -392,6 +408,7 @@ export async function syncAllCommand(
 ): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const repoName = ctx.identity!.repoName;
+  if (!ensureOriginRemote(ctx.identity!.repoRoot)) return;
   syncLog.start(`rt sync all  repo=${repoName}${dryRun ? "  --dry-run" : ""}`);
   try {
     await syncAll(repoName, { dryRun });
@@ -409,6 +426,8 @@ export async function syncCommand(
   // Single worktree sync
   const cwd = ctx.identity!.repoRoot;
   const dataDir = ctx.identity!.dataDir;
+
+  if (!ensureOriginRemote(cwd)) return;
 
   syncLog.start(`rt sync  cwd=${cwd}${dryRun ? "  --dry-run" : ""}`);
   let summary;

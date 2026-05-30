@@ -164,8 +164,14 @@ export async function worktreePicker(args: string[]): Promise<void> {
   const wtIdx        = args.indexOf("--worktree");
   const wtBranch     = wtIdx !== -1 ? args[wtIdx + 1] : undefined;
 
-  const repos        = getKnownRepos();
+  // getRepoIdentity() registers the current repo in the index (via
+  // updateRepoIndex) as a side effect, so it MUST run before getKnownRepos().
+  // Otherwise a repo you just entered — especially a local-only repo seen for
+  // the first time — is absent from `repos`, currentRepo resolves to null, and
+  // rt cd wrongly falls through to the global all-repos picker instead of
+  // recognizing where you are.
   const identity     = getRepoIdentity();
+  const repos        = getKnownRepos();
   const currentRepo  = identity
     ? repos.find((r) => r.repoName === identity.repoName) ?? null
     : null;
