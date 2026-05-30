@@ -37,6 +37,18 @@ export function parseRemoteUrl(url: string): { host: string; projectPath: string
   return null;
 }
 
+/**
+ * True when a git remote points at a GitLab host (gitlab.com or a self-hosted
+ * gitlab.* instance). MR enrichment is GitLab-only — without this gate, GitHub
+ * (and other) remotes get a GitLab GraphQL query fired at the wrong host, which
+ * fails with a 422 on every refresh and floods the daemon log with warnings.
+ * This is the single source of truth for the GitLab check across the CLI and
+ * daemon; keep provider selection routed through it.
+ */
+export function isGitLabRemote(url: string | undefined): boolean {
+  return !!url && /gitlab\./i.test(url);
+}
+
 // ─── EnrichedBranch type ─────────────────────────────────────────────────────
 
 /** Re-export for downstream consumers */
@@ -296,7 +308,7 @@ async function fetchAndCache(
   // ── Step 1: Fetch GitLab MR data via glance-sdk (already batched) ──
   let mrMap = new Map<string, PullRequest | null>();
 
-  if (secrets.gitlabToken && remoteUrl) {
+  if (secrets.gitlabToken && remoteUrl && isGitLabRemote(remoteUrl)) {
     const remote = parseRemoteUrl(remoteUrl);
     if (remote) {
       try {
@@ -395,7 +407,7 @@ export async function refreshAllMRs(
   let mrsByBranch = new Map<string, PullRequest | null>();
   let mrFetchSucceeded = false;
 
-  if (secrets.gitlabToken && remoteUrl) {
+  if (secrets.gitlabToken && remoteUrl && isGitLabRemote(remoteUrl)) {
     const remote = parseRemoteUrl(remoteUrl);
     if (remote) {
       try {

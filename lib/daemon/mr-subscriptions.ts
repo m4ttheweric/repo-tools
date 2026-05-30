@@ -26,7 +26,7 @@ import {
   type MRDashboardProps,
 } from "@workforge/glance-sdk";
 import { loadSecrets } from "../linear.ts";
-import { parseRemoteUrl } from "../enrich.ts";
+import { parseRemoteUrl, isGitLabRemote } from "../enrich.ts";
 import type { HandlerContext, CacheEntry } from "./handlers/types.ts";
 import { getDaemonLogger } from "../daemon-logger.ts";
 const log = (await getDaemonLogger()).childLogger("mr-subscriptions");
@@ -156,6 +156,11 @@ function ensureProvider(env: MRSubscriptionEnv, repoName: string, repoPath: stri
   const remoteUrl = getRemoteUrl(repoPath);
   if (!remoteUrl) {
     log.info(`no origin remote for ${repoName}; skipping`);
+    return null;
+  }
+
+  if (!isGitLabRemote(remoteUrl)) {
+    log.info(`remote "${remoteUrl}" for ${repoName} is not GitLab; skipping MR polling`);
     return null;
   }
 
