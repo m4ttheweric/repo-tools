@@ -3,7 +3,7 @@
  * rt mr describe / rt pr describe — draft a description with an agent (streams to stdout).
  * rt mr ship / rt pr ship         — composite: push + describe + open. The all-in-one.
  *
- * Config lives at ~/.rt/<repo>/mr.json. All three commands share the same
+ * Config lives at ~/.rt/repos/<repo>/mr.json. All three commands share the same
  * helpers (`generateDescription`, `runGlabCreate`) so behavior is consistent
  * whether a user chains atoms by hand or runs the composite.
  */
@@ -18,6 +18,7 @@ import {
   resolveConfigPath,
   type MRConfig,
 } from "../lib/mr-config.ts";
+import { isGitLabRemote } from "../lib/enrich.ts";
 import { resolveAgentInvocation, runAgent } from "../lib/agent-runner.ts";
 import { pushCommand } from "./git/push.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
@@ -31,10 +32,6 @@ function argValue(args: string[], flag: string): string | undefined {
 }
 
 // ─── Platform / git helpers ──────────────────────────────────────────────────
-
-function isGitLab(remoteUrl: string | undefined): boolean {
-  return !!remoteUrl && /gitlab\./i.test(remoteUrl);
-}
 
 function isGitHub(remoteUrl: string | undefined): boolean {
   return !!remoteUrl && /github\.com/i.test(remoteUrl);
@@ -85,7 +82,7 @@ function platformGate(remoteUrl: string | undefined): void {
     console.error(`\n  ${yellow}GitHub not supported yet — use ${bold}gh pr create${reset}${yellow} for now${reset}\n`);
     process.exit(1);
   }
-  if (!isGitLab(remoteUrl)) {
+  if (!isGitLabRemote(remoteUrl)) {
     console.error(`\n  ${red}remote does not look like GitLab: ${dim}${remoteUrl}${reset}\n`);
     process.exit(1);
   }
