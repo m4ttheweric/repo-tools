@@ -194,6 +194,34 @@ describe("respawn", () => {
   test("respawn throws for unknown id", async () => {
     await expect(pm.respawn("nonexistent")).rejects.toThrow();
   });
+
+  // Regression: respawning a still-running process used to transition
+  // running → starting (illegal) and let the old process's exited handler
+  // race in and delete the freshly-spawned process, orphaning the runner and
+  // marking it crashed. This drove the daemon's restart loop. respawn() now
+  // kills + awaits exit first, and the exited handler is guarded by identity.
+  test("respawn of a RUNNING process is clean (no invalid transition, no orphan)", async () => {
+    const invalid: Array<{ prev: string; next: string }> = [];
+    stateStore.onInvalidTransition((_id, prev, next) => invalid.push({ prev, next }));
+
+    await pm.spawn("p1", "sleep 30", { cwd: "/tmp" });
+    expect(stateStore.getState("p1")).toBe("running");
+    const firstPid = pm.getProcess("p1")?.pid;
+    expect(firstPid).toBeGreaterThan(0);
+
+    await pm.respawn("p1");
+
+    // Let any stale exited handler from the old process fire.
+    await sleep(300);
+
+    expect(invalid).toEqual([]);                       // no running → starting
+    expect(stateStore.getState("p1")).toBe("running"); // not clobbered to crashed
+    const secondProc = pm.getProcess("p1");
+    expect(secondProc?.pid).toBeGreaterThan(0);         // new process still tracked
+    expect(secondProc?.pid).not.toBe(firstPid);         // and it is a new process
+
+    await pm.kill("p1");
+  });
 });
 
 // ── env / cwd ─────────────────────────────────────────────────────────────────

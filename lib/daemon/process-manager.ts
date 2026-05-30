@@ -207,6 +207,12 @@ export class ProcessManager {
 
     // Handle process exit
     void proc.exited.then((exitCode) => {
+      // Guard against a stale handler clobbering a newer process. If this id
+      // was respawned, the map now holds a different proc; deleting it here
+      // would orphan the live runner and falsely mark it crashed (this was
+      // the root cause of the daemon's restart loop). Only act if we're still
+      // the active process for this id.
+      if (this.processes.get(id)?.proc !== proc) return;
       this.processes.delete(id);
       const state = exitCode === 0 ? "stopped" : "crashed";
       this.stateStore.setState(id, state);
@@ -253,9 +259,29 @@ export class ProcessManager {
     this.attachServer.close(id);
   }
 
+  /**
+   * Restart a managed process using its saved spawn config.
+   *
+   * Kills the existing process and awaits its exit BEFORE spawning the
+   * replacement, rather than letting spawn() blindly SIGKILL it. Two reasons:
+   *   1. State machine: spawn() transitions the id to "starting", which is only
+   *      legal from stopped/crashed (see VALID_TRANSITIONS in state-store.ts).
+   *      Restarting a still-"running" process logged "stateStore: invalid
+   *      transition (running → starting)" warnings on every remedy-triggered
+   *      restart.
+   *   2. Correctness: the prior process's exited handler runs asynchronously and
+   *      marks the id crashed/stopped. Awaiting kill() ensures that handler has
+   *      already fired before we spawn the replacement, so it can't race with
+   *      and clobber the new process. (The exited handler is also now guarded
+   *      by proc identity as a second line of defense.)
+   *
+   * kill() is a no-op (just sets state to "stopped") when no live process
+   * exists, so this stays correct for restarting an already-exited process.
+   */
   async respawn(id: string): Promise<void> {
     const config = this.spawnConfigs.get(id);
     if (!config) throw new Error(`ProcessManager: no spawn config for id "${id}"`);
+    await this.kill(id);
     await this.spawn(id, config.cmd, { cwd: config.cwd, env: config.env });
   }
 
