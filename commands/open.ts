@@ -23,10 +23,17 @@ function getCurrentBranch(): string {
 }
 
 function getBaseUrl(): { baseUrl: string; repoName: string } {
-  const remote = execSync("git config --get remote.origin.url", {
-    encoding: "utf8",
-    stdio: "pipe",
-  }).trim();
+  let remote: string;
+  try {
+    remote = execSync("git remote get-url origin", {
+      encoding: "utf8",
+      stdio: "pipe",
+    }).trim();
+  } catch {
+    console.log(`\n  ${yellow}this repo has no origin remote — nothing to open${reset}`);
+    console.log(`  ${dim}add one with: git remote add origin <url>${reset}\n`);
+    process.exit(1);
+  }
 
   // SSH: git@gitlab.com:org/repo.git → https://gitlab.com/org/repo
   const sshMatch = /^git@([^:]+):(.+?)(?:\.git)?$/.exec(remote);

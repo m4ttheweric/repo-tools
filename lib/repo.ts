@@ -8,7 +8,7 @@
 import { execSync } from "child_process";
 import { existsSync, readdirSync, readFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
-import { join, resolve } from "path";
+import { basename, join, resolve } from "path";
 
 // ─── Re-exports ──────────────────────────────────────────────────────────────
 
@@ -57,10 +57,12 @@ export function getRepoIdentity(): RepoIdentity | null {
   const repoRoot = getRepoRoot();
   if (!repoRoot) return null;
 
+  // A repo is identified by its origin remote when it has one. Local-only repos
+  // (no remote) still get an identity derived from the repo root's directory
+  // name so local commands (run, commit, nav, code) work. Remote-oriented
+  // commands (mr, open) gate themselves on remoteUrl/baseUrl being non-empty.
   const remoteUrl = getRemoteUrl();
-  if (!remoteUrl) return null;
-
-  const repoName = deriveRepoName(remoteUrl);
+  const repoName = remoteUrl ? deriveRepoName(remoteUrl) : basename(repoRoot);
   const dataDir = join(homedir(), ".rt", repoName);
   mkdirSync(dataDir, { recursive: true });
 
@@ -70,8 +72,8 @@ export function getRepoIdentity(): RepoIdentity | null {
     repoName,
     repoRoot,
     dataDir,
-    remoteUrl,
-    baseUrl: deriveBaseUrl(remoteUrl),
+    remoteUrl: remoteUrl ?? "",
+    baseUrl: remoteUrl ? deriveBaseUrl(remoteUrl) : "",
   };
 }
 
