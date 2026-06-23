@@ -4,10 +4,11 @@ import { statusDotClass, type Session } from "../lib/sessions.ts";
 
 /**
  * Horizontal tab strip — one tab per session (status dot + label + close ✕).
- * The active tab uses the terminal's background + a bright top accent so it
- * reads as "selected" and visually merges into the console below; inactive tabs
- * are dim. A trailing ＋ opens the package-command picker. Single row, scrolls
- * horizontally on overflow so it never pushes the terminal off-screen.
+ * The active tab is filled with the terminal's background (bold, bright text) so
+ * it reads as selected and merges into the console below; inactive tabs sit flat
+ * on the lighter strip with dim text. A trailing ＋ opens the package-command
+ * picker. Single row, scrolls horizontally on overflow so it never pushes the
+ * terminal off-screen.
  */
 export function SessionTabs({
   sessions,
@@ -33,10 +34,10 @@ export function SessionTabs({
             aria-selected={active}
             onClick={() => onSelect(s.id)}
             title={s.cmd || s.label}
-            className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-t-md border-t-2 px-2.5 py-1 text-xs transition-colors ${
+            className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-t-md px-2.5 py-1 text-xs transition-colors ${
               active
-                ? "border-sel-blue bg-background font-medium text-foreground"
-                : "border-transparent text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground"
+                ? "bg-background font-medium text-foreground"
+                : "text-muted-foreground/60 hover:bg-muted/30 hover:text-foreground"
             }`}
           >
             <span className={`size-2 shrink-0 rounded-full ${statusDotClass(s.state)}`} />
