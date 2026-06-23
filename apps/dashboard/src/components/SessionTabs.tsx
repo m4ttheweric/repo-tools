@@ -1,38 +1,68 @@
 // apps/dashboard/src/components/SessionTabs.tsx
+import { X, Plus } from "lucide-react";
 import { statusDotClass, type Session } from "../lib/sessions.ts";
 
 /**
- * Horizontal tab strip — one tab per session (status dot + label). Single row,
- * scrolls horizontally on overflow so it never pushes the terminal off-screen.
- * The dots double as the at-a-glance running/stopped overview when collapsed.
+ * Horizontal tab strip — one tab per session (status dot + label + close ✕).
+ * The active tab uses the terminal's background + a bright top accent so it
+ * reads as "selected" and visually merges into the console below; inactive tabs
+ * are dim. A trailing ＋ opens the package-command picker. Single row, scrolls
+ * horizontally on overflow so it never pushes the terminal off-screen.
  */
 export function SessionTabs({
   sessions,
   activeId,
   onSelect,
+  onClose,
+  onPickCommand,
 }: {
   sessions: Session[];
   activeId: string | null;
   onSelect: (id: string) => void;
+  onClose: (id: string) => void;
+  onPickCommand: () => void;
 }) {
   return (
-    <div className="flex gap-1 overflow-x-auto px-2 pt-2 [scrollbar-width:none]">
+    <div className="flex items-stretch gap-1 overflow-x-auto px-2 pt-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {sessions.map((s) => {
         const active = s.id === activeId;
         return (
-          <button
+          <div
             key={s.id}
+            role="tab"
+            aria-selected={active}
             onClick={() => onSelect(s.id)}
             title={s.cmd || s.label}
-            className={`flex shrink-0 items-center gap-1.5 rounded-t-md px-2.5 py-1 text-xs ${
-              active ? "bg-card text-foreground" : "bg-muted/50 text-muted-foreground hover:bg-muted"
+            className={`flex shrink-0 cursor-pointer items-center gap-1.5 rounded-t-md border-t-2 px-2.5 py-1 text-xs transition-colors ${
+              active
+                ? "border-sel-blue bg-background font-medium text-foreground"
+                : "border-transparent text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground"
             }`}
           >
-            <span className={`size-2 rounded-full ${statusDotClass(s.state)}`} />
-            {s.label}
-          </button>
+            <span className={`size-2 shrink-0 rounded-full ${statusDotClass(s.state)}`} />
+            <span className="max-w-[12rem] truncate">{s.label}</span>
+            <button
+              onClick={(e) => { e.stopPropagation(); onClose(s.id); }}
+              aria-label={`Close ${s.label}`}
+              title="Close tab"
+              className="ml-0.5 rounded p-0.5 text-muted-foreground/50 hover:bg-muted/60 hover:text-foreground"
+            >
+              <X className="size-3" />
+            </button>
+          </div>
         );
       })}
+      <button
+        onClick={onPickCommand}
+        aria-label="Run a package command"
+        title="Run a package command"
+        className="flex shrink-0 items-center self-end rounded-t-md px-2 py-1 text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground"
+      >
+        <Plus className="size-3.5" />
+      </button>
+      {sessions.length === 0 && (
+        <span className="self-center px-2 text-[11px] text-muted-foreground/50">no sessions yet</span>
+      )}
     </div>
   );
 }
