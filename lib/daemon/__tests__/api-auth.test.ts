@@ -34,6 +34,12 @@ describe("needsToken", () => {
   test("preflight (OPTIONS) never requires a token", () => {
     expect(needsToken("OPTIONS", "/api/processes/p1/stop")).toBe(false);
   });
+
+  test("endpoint mutations require a token", () => {
+    expect(needsToken("POST", "/api/endpoints/map")).toBe(true);
+    expect(needsToken("POST", "/api/endpoints/unmap")).toBe(true);
+    expect(needsToken("GET", "/api/endpoints")).toBe(false);
+  });
 });
 
 describe("tokenOk", () => {

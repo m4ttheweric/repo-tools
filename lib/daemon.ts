@@ -113,6 +113,7 @@ import { createDopplerHandlers } from "./daemon/handlers/doppler.ts";
 import { reconcileForRepo } from "./daemon/doppler-sync.ts";
 import { listWorktreeRoots } from "./git-worktrees.ts";
 import { createDiscussionHandlers } from "./daemon/handlers/discussions.ts";
+import { createEndpointHandlers }  from "./daemon/handlers/endpoints.ts";
 import { startDiscussionsPoller, stopDiscussionsPoller } from "./daemon/discussions-poller.ts";
 
 interface DiskCache {
@@ -650,6 +651,7 @@ const handlerCtx: HandlerContext = {
   checkAndRepairHooksPath,
   startWatchingRepo,
   refreshStatusRef,
+  repoDataDirOf: (repo) => repoDataDir(repo),
 };
 
 /** Env bundle for the MR subscription subsystem. */
@@ -670,6 +672,7 @@ const routedHandlers: HandlerMap = {
   ...createParkingLotHandlers(handlerCtx),
   ...createDopplerHandlers(handlerCtx),
   ...createDiscussionHandlers(handlerCtx, broadcast),
+  ...createEndpointHandlers(handlerCtx),
 };
 
 async function handleCommand(cmd: string, payload: any): Promise<any> {
@@ -733,6 +736,9 @@ const API_INDEX = {
     { method: "GET",  path: "/api/processes",        description: "Enriched list of all managed processes across repos (state, pid, timing, repo/worktree)" },
     { method: "POST", path: "/api/processes",         description: "Launch a command in a worktree { cwd, cmd, label? } (requires X-RT-Token)" },
     { method: "GET",  path: "/api/worktrees/commands", description: "Runnable packages + scripts for a worktree (?path=...), monorepo-aware" },
+    { method: "GET",  path: "/api/endpoints",       description: "Declared canonical endpoints + active state for a repo (?repo=)" },
+    { method: "POST", path: "/api/endpoints/map",   description: "Map a forward endpoint to a process { repo, port, processId, upstreamPort } (X-RT-Token)" },
+    { method: "POST", path: "/api/endpoints/unmap", description: "Unmap a forward endpoint { repo, port } (X-RT-Token)" },
     { method: "POST", path: "/api/processes/:id/start",   description: "Start a process via its stored config (requires X-RT-Token)" },
     { method: "POST", path: "/api/processes/:id/stop",    description: "Stop a process (requires X-RT-Token)" },
     { method: "POST", path: "/api/processes/:id/restart", description: "Restart a process (requires X-RT-Token)" },
@@ -882,6 +888,18 @@ function startApiServer(): void {
         if (url.pathname === "/api/worktrees/commands" && req.method === "GET") {
           const result = await handleCommand("worktree:commands", { path: url.searchParams.get("path") });
           return Response.json(result, { headers: corsHeaders });
+        }
+
+        // Canonical endpoints
+        if (url.pathname === "/api/endpoints" && req.method === "GET") {
+          const repo = url.searchParams.get("repo") ?? "";
+          return Response.json(await handleCommand("endpoints:list", { repo }), { headers: corsHeaders });
+        }
+        if (url.pathname === "/api/endpoints/map" && req.method === "POST") {
+          return Response.json(await handleCommand("endpoints:map", await req.json()), { headers: corsHeaders });
+        }
+        if (url.pathname === "/api/endpoints/unmap" && req.method === "POST") {
+          return Response.json(await handleCommand("endpoints:unmap", await req.json()), { headers: corsHeaders });
         }
 
         // Open an interactive terminal session (login shell) in a worktree

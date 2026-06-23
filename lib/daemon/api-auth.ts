@@ -17,6 +17,7 @@ export function needsToken(method: string, pathname: string): boolean {
   if (method === "POST" && pathname === "/api/processes") return true; // launch a command
   if (method === "POST" && pathname === "/api/terminals") return true; // open a shell session
   if (method === "POST" && CONTROL_PATH.test(pathname)) return true;
+  if (method === "POST" && (pathname === "/api/endpoints/map" || pathname === "/api/endpoints/unmap")) return true;
   return false;
 }
 
