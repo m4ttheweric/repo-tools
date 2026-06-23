@@ -115,6 +115,8 @@ export interface HandlerContext {
   startWatchingRepo:       (repoName: string, repoPath: string) => void;
   /** Holder for the last cache-refresh timestamp (0 = never). */
   refreshStatusRef:        { lastRefreshAt: number };
+  /** Resolve a repo's local data dir (~/.rt/repos/<repo>); injected for testability. */
+  repoDataDirOf: (repo: string) => string;
 }
 
 export type Handler    = (payload: any) => Promise<any>;
