@@ -4,7 +4,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { listWorktreeRoots } from "../git-worktrees.ts";
+import { listWorktreeRoots, listWorktrees } from "../git-worktrees.ts";
 
 let tmpRoot: string;
 
@@ -53,5 +53,39 @@ describe("listWorktreeRoots", () => {
     // Git still lists the worktree in porcelain output until pruned;
     // listWorktreeRoots must filter the missing dir out.
     expect(listWorktreeRoots(repo)).toEqual([repo]);
+  });
+});
+
+describe("listWorktrees", () => {
+  test("returns empty array for a non-git directory", () => {
+    expect(listWorktrees(tmpRoot)).toEqual([]);
+  });
+
+  test("returns path and branch for the primary worktree", () => {
+    const repo = mkdtempSync(join(tmpRoot, "repo-"));
+    initRepo(repo);
+    const result = listWorktrees(repo);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.path).toBe(repo);
+    // default branch is main or master depending on git config
+    expect(["main", "master"]).toContain(result[0]!.branch);
+  });
+
+  test("includes linked worktrees with their branch names", () => {
+    const repo = mkdtempSync(join(tmpRoot, "repo-"));
+    initRepo(repo);
+    const linked = join(tmpRoot, "linked");
+    execSync(`git -C "${repo}" worktree add -q "${linked}" -b feat/x`);
+    const byPath = Object.fromEntries(listWorktrees(repo).map((w) => [w.path, w.branch]));
+    expect(byPath[linked]).toBe("feat/x");
+  });
+
+  test("filters out worktrees whose directory was removed externally", () => {
+    const repo = mkdtempSync(join(tmpRoot, "repo-"));
+    initRepo(repo);
+    const linked = join(tmpRoot, "linked-removed");
+    execSync(`git -C "${repo}" worktree add -q "${linked}" -b feat/y`);
+    rmSync(linked, { recursive: true, force: true });
+    expect(listWorktrees(repo).map((w) => w.path)).toEqual([repo]);
   });
 });

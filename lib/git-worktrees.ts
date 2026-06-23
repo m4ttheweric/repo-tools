@@ -38,3 +38,44 @@ export function listWorktreeRoots(repoPath: string): string[] {
   }
   return roots;
 }
+
+/** A worktree root paired with the branch checked out there (empty if detached). */
+export interface WorktreeRef {
+  path: string;
+  branch: string;
+}
+
+/**
+ * Enumerate worktrees for a repo as {path, branch} pairs. Like
+ * listWorktreeRoots but also resolves the branch from the porcelain `branch
+ * refs/heads/<name>` line (empty string when the worktree is detached).
+ * Paths are filtered to those that exist on disk; returns [] on any git error.
+ */
+export function listWorktrees(repoPath: string): WorktreeRef[] {
+  let out: string;
+  try {
+    out = execSync("git worktree list --porcelain", {
+      cwd: repoPath, encoding: "utf8", stdio: "pipe",
+    });
+  } catch {
+    return [];
+  }
+  const refs: WorktreeRef[] = [];
+  let path: string | null = null;
+  let branch = "";
+  const flush = () => {
+    if (path && existsSync(path)) refs.push({ path, branch });
+    path = null;
+    branch = "";
+  };
+  for (const line of out.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      flush();
+      path = line.slice("worktree ".length).trim();
+    } else if (line.startsWith("branch ")) {
+      branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
+    }
+  }
+  flush();
+  return refs;
+}

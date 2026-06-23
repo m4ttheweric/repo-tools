@@ -19,6 +19,7 @@ import {
 } from "fs";
 import { join, resolve, dirname, basename } from "path";
 import { execSync } from "child_process";
+import { randomUUID } from "crypto";
 
 import {
   RT_DIR, DAEMON_SOCK_PATH, DAEMON_PID_PATH,
@@ -34,6 +35,10 @@ import { PortAllocator } from "./daemon/port-allocator.ts";
 import { LogBuffer }     from "./daemon/log-buffer.ts";
 import { AttachServer }  from "./daemon/attach-server.ts";
 import { ProcessManager, killGroup } from "./daemon/process-manager.ts";
+import { wireProcessEvents } from "./daemon/process-events.ts";
+import { matchProcessApiRoute } from "./daemon/api-routes.ts";
+import { needsToken, tokenOk } from "./daemon/api-auth.ts";
+import { openLogStream, handleLogStreamControl, handleAttachMessage } from "./daemon/log-stream.ts";
 import { SuspendManager } from "./daemon/suspend-manager.ts";
 import { ProxyManager }  from "./daemon/proxy-manager.ts";
 import { TunnelManager } from "./daemon/tunnel-manager.ts";
@@ -56,6 +61,26 @@ const MR_REFRESH_INTERVAL_MS = 5 * 60 * 1000;      // 5 minutes
 const PORT_SCAN_INTERVAL_MS = 30 * 1000;             // 30 seconds
 const HOOKS_SCAN_INTERVAL_MS = 60 * 1000;            // 60 seconds (fallback for stale watchers)
 const REPOS_JSON_PATH = join(RT_DIR, "repos.json");
+
+/**
+ * Local token gating mutating :9401 routes. Generated once and persisted to
+ * ~/.rt/api-token (0600) so trusted local clients (CLI, GUI) can read it.
+ */
+const API_TOKEN_PATH = join(RT_DIR, "api-token");
+let apiToken = "";
+function loadOrCreateApiToken(): void {
+  try {
+    if (existsSync(API_TOKEN_PATH)) {
+      const existing = readFileSync(API_TOKEN_PATH, "utf8").trim();
+      if (existing) { apiToken = existing; return; }
+    }
+  } catch { /* fall through to regenerate */ }
+  apiToken = randomUUID();
+  try {
+    mkdirSync(RT_DIR, { recursive: true });
+    writeFileSync(API_TOKEN_PATH, apiToken, { mode: 0o600 });
+  } catch { /* best-effort; token still enforced in-memory this run */ }
+}
 const CACHE_PATH = join(RT_DIR, "branch-cache.json");
 
 import type { Server, ServerWebSocket } from "bun";
@@ -703,17 +728,32 @@ const API_INDEX = {
     { method: "GET",  path: "/api/cache",           description: "All branch cache entries (MR, Linear, pipeline)" },
     { method: "GET",  path: "/api/cache/:branch",   description: "Single branch cache entry" },
     { method: "GET",  path: "/api/repos",           description: "Tracked repos with worktrees and watched status" },
+    { method: "GET",  path: "/api/processes",        description: "Enriched list of all managed processes across repos (state, pid, timing, repo/worktree)" },
+    { method: "POST", path: "/api/processes",         description: "Launch a command in a worktree { cwd, cmd, label? } (requires X-RT-Token)" },
+    { method: "GET",  path: "/api/worktrees/commands", description: "Runnable packages + scripts for a worktree (?path=...), monorepo-aware" },
+    { method: "POST", path: "/api/processes/:id/start",   description: "Start a process via its stored config (requires X-RT-Token)" },
+    { method: "POST", path: "/api/processes/:id/stop",    description: "Stop a process (requires X-RT-Token)" },
+    { method: "POST", path: "/api/processes/:id/restart", description: "Restart a process (requires X-RT-Token)" },
     { method: "GET",  path: "/api/notifications",   description: "Pending notifications (drains queue)" },
     { method: "POST", path: "/api/refresh",         description: "Trigger a background cache refresh" },
     { method: "POST", path: "/api/hooks/:repo/repair", description: "Repair hooks path for a repo" },
     { method: "POST", path: "/api/shutdown",        description: "Gracefully stop the daemon" },
   ],
   websocket_events: [
-    { type: "status",       description: "Full daemon status — after each cache refresh (~5 min)" },
-    { type: "ports",        description: "Full port list — after each port scan (~30s)" },
-    { type: "notification", description: "Notification event — when a transition fires" },
-    { type: "remedy",       description: "Remedy fire event — when an auto-remedy triggers" },
+    { type: "status",         description: "Full daemon status — after each cache refresh (~5 min)" },
+    { type: "ports",          description: "Full port list — after each port scan (~30s)" },
+    { type: "notification",   description: "Notification event — when a transition fires" },
+    { type: "remedy",         description: "Remedy fire event — when an auto-remedy triggers" },
+    { type: "process:changed", description: "Process state transition { id, from, to, pid?, exitCode? }" },
   ],
+  log_stream: {
+    path: `ws://localhost:${API_PORT}/ws/processes/:id/logs`,
+    description: "Read-only per-process log tail: replays recent history, then streams live output",
+  },
+  auth: {
+    header: "X-RT-Token",
+    description: "Required on mutating routes (process control, shutdown). Token at ~/.rt/api-token.",
+  },
 };
 
 const REST_ROUTES: Record<string, { cmd: string; method: string }> = {
@@ -726,7 +766,20 @@ const REST_ROUTES: Record<string, { cmd: string; method: string }> = {
   "/api/shutdown":      { cmd: "shutdown", method: "POST" },
 };
 
-const wsClients = new Set<ServerWebSocket<unknown>>();
+/**
+ * Per-connection data on the :9401 WebSocket. "broadcast" sockets receive the
+ * event stream; "logs" sockets are a read-only tail of one process's output;
+ * "attach" sockets are bidirectional — output tail + keystroke input + resize
+ * (an interactive terminal). "attach" is token-gated on upgrade because input
+ * is arbitrary code execution.
+ */
+interface ApiWSData {
+  kind: "broadcast" | "logs" | "attach";
+  id?: string;
+  unsub?: () => void;
+}
+
+const wsClients = new Set<ServerWebSocket<ApiWSData>>();
 
 // `Server<any>` matches the inferred type Bun.serve() returns for these
 // configs (the websocket data type is unconstrained). Don't narrow further —
@@ -744,14 +797,39 @@ export function broadcast(type: string, data: any): void {
 }
 
 function startApiServer(): void {
-  apiServer = Bun.serve({
+  loadOrCreateApiToken();
+  apiServer = Bun.serve<ApiWSData, never>({
     port: API_PORT,
+    // Bind to loopback only — never expose the control surface on the LAN.
+    hostname: "127.0.0.1",
     async fetch(req, server) {
       const url = new URL(req.url);
 
-      // WebSocket upgrade
+      // WebSocket upgrade — broadcast channel
       if (url.pathname === "/ws") {
-        if (server.upgrade(req)) return undefined as any;
+        if (server.upgrade(req, { data: { kind: "broadcast" } })) return undefined as any;
+        return new Response("WebSocket upgrade failed", { status: 400 });
+      }
+
+      // WebSocket upgrade — read-only per-process log tail
+      const logMatch = url.pathname.match(/^\/ws\/processes\/([^/]+)\/logs$/);
+      if (logMatch) {
+        const id = decodeURIComponent(logMatch[1]!);
+        if (server.upgrade(req, { data: { kind: "logs", id } })) return undefined as any;
+        return new Response("WebSocket upgrade failed", { status: 400 });
+      }
+
+      // WebSocket upgrade — bidirectional interactive attach (terminal).
+      // Token-gated: writing to a PTY is arbitrary code execution, so unlike the
+      // read-only log tail this requires the local token (injected by the dev
+      // proxy on the upgrade request; browsers can't set WS headers themselves).
+      const attachMatch = url.pathname.match(/^\/ws\/processes\/([^/]+)\/attach$/);
+      if (attachMatch) {
+        if (!tokenOk(req.headers.get("x-rt-token"), apiToken)) {
+          return new Response("unauthorized", { status: 401 });
+        }
+        const id = decodeURIComponent(attachMatch[1]!);
+        if (server.upgrade(req, { data: { kind: "attach", id } })) return undefined as any;
         return new Response("WebSocket upgrade failed", { status: 400 });
       }
 
@@ -764,6 +842,12 @@ function startApiServer(): void {
 
       if (req.method === "OPTIONS") {
         return new Response(null, { status: 204, headers: corsHeaders });
+      }
+
+      // Gate mutating routes behind the local token (CORS is *, so this is the
+      // CSRF defense against a malicious page driving control endpoints).
+      if (needsToken(req.method, url.pathname) && !tokenOk(req.headers.get("x-rt-token"), apiToken)) {
+        return Response.json({ ok: false, error: "unauthorized" }, { status: 401, headers: corsHeaders });
       }
 
       try {
@@ -783,6 +867,31 @@ function startApiServer(): void {
         if (url.pathname.startsWith("/api/hooks/") && url.pathname.endsWith("/repair") && req.method === "POST") {
           const repo = decodeURIComponent(url.pathname.slice("/api/hooks/".length, -"/repair".length));
           const result = await handleCommand("hooks:repair", { repo });
+          return Response.json(result, { headers: corsHeaders });
+        }
+
+        // Launch a command in a worktree/package
+        if (url.pathname === "/api/processes" && req.method === "POST") {
+          const body = await req.json().catch(() => ({}));
+          return Response.json(await handleCommand("process:create", body), { headers: corsHeaders });
+        }
+
+        // Discover a worktree's runnable packages + scripts
+        if (url.pathname === "/api/worktrees/commands" && req.method === "GET") {
+          const result = await handleCommand("worktree:commands", { path: url.searchParams.get("path") });
+          return Response.json(result, { headers: corsHeaders });
+        }
+
+        // Open an interactive terminal session (login shell) in a worktree
+        if (url.pathname === "/api/terminals" && req.method === "POST") {
+          const body = await req.json().catch(() => ({}));
+          return Response.json(await handleCommand("terminal:create", body), { headers: corsHeaders });
+        }
+
+        // Process control + introspection surface (/api/processes...)
+        const procRoute = matchProcessApiRoute(req.method, url.pathname);
+        if (procRoute) {
+          const result = await handleCommand(procRoute.cmd, procRoute.payload);
           return Response.json(result, { headers: corsHeaders });
         }
 
@@ -812,6 +921,18 @@ function startApiServer(): void {
     },
     websocket: {
       open(ws) {
+        const data = ws.data as { kind?: string; id?: string; unsub?: () => void };
+        // Log tail (read-only) and attach (bidirectional) share the same output
+        // path: replay history, then forward live PTY output. Attach adds an
+        // input path in message() below.
+        if ((data?.kind === "logs" || data?.kind === "attach") && data.id) {
+          data.unsub = openLogStream(data.id, {
+            getReplay: (id) => logBuffer.getLastLines(id),
+            subscribe: (id, cb) => processManager.subscribeToOutput(id, cb),
+            send: (d) => { try { ws.send(d); } catch { /* client gone */ } },
+          });
+          return;
+        }
         wsClients.add(ws);
         log.debug({ total: wsClients.size }, "ws client connected");
         try {
@@ -823,11 +944,43 @@ function startApiServer(): void {
         } catch { /* client gone */ }
       },
       close(ws) {
+        const data = ws.data as { kind?: string; unsub?: () => void };
+        if (data?.kind === "logs" || data?.kind === "attach") {
+          // Detach only — the process (e.g. a shell session) keeps running so
+          // the user can reconnect later and replay its history.
+          try { data.unsub?.(); } catch { /* */ }
+          return;
+        }
         wsClients.delete(ws);
         log.debug({ total: wsClients.size }, "ws client disconnected");
       },
-      message(_ws, _msg) {
-        // Clients don't send messages — this is a broadcast-only stream
+      message(ws, msg) {
+        const data = ws.data as { kind?: string; id?: string };
+        if (!data?.id) return;
+        const id = data.id;
+        // Log clients may send one control message — a resize — so the PTY
+        // matches the viewer's terminal grid and TUIs (turbo, start:lite) stop
+        // wrapping their in-place redraws.
+        if (data.kind === "logs") {
+          handleLogStreamControl(msg as string | Uint8Array, {
+            resize: (cols, rows) => {
+              try { processManager.getTerminal(id)?.resize(cols, rows); } catch { /* gone */ }
+            },
+          });
+          return;
+        }
+        // Attach clients are bidirectional: binary frames are keystrokes written
+        // to the PTY, string frames are control (resize).
+        if (data.kind === "attach") {
+          handleAttachMessage(msg as string | Uint8Array, {
+            resize: (cols, rows) => {
+              try { processManager.getTerminal(id)?.resize(cols, rows); } catch { /* gone */ }
+            },
+            input: (bytes) => {
+              try { processManager.getTerminal(id)?.write(bytes); } catch { /* gone */ }
+            },
+          });
+        }
       },
     },
   });
@@ -951,6 +1104,15 @@ export function startDaemon(): void {
 
   // Wire notification broadcasts to WebSocket clients
   onNotification(broadcast);
+
+  // Wire process state transitions to WebSocket clients as `process:changed`
+  // so external consumers get live updates instead of polling process:states.
+  wireProcessEvents({
+    onStateChange: (cb) => stateStore.onStateChange(cb),
+    pidOf: (id) => stateStore.getPid(id),
+    exitCodeOf: (id) => processManager.getExitCode(id),
+    broadcast,
+  });
 
   // Discover and watch repos
   refreshWatchedRepos();
