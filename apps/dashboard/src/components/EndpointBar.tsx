@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ChevronsUpDown, X } from "lucide-react";
+import { Copy, ChevronsUpDown, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -11,7 +11,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { fetchEndpoints, mapEndpoint, unmapEndpoint } from "../lib/api.ts";
+import { fetchEndpoints, mapEndpoint, unmapEndpoint, enableBounce, disableBounce } from "../lib/api.ts";
 import type { CanonicalEndpoint, EndpointState, ProcessRecord } from "../lib/types.ts";
 
 export function EndpointBar({ repo, processes }: { repo: string; processes: ProcessRecord[] }) {
@@ -34,7 +34,8 @@ export function EndpointBar({ repo, processes }: { repo: string; processes: Proc
   }, [reload]);
 
   const forward = endpoints.filter((e) => e.mode === "forward");
-  if (forward.length === 0) return null;
+  const bounce = endpoints.filter((e) => e.mode === "bounce");
+  if (forward.length === 0 && bounce.length === 0) return null;
 
   return (
     <div className="mb-2 flex flex-wrap gap-2">
@@ -74,6 +75,49 @@ export function EndpointBar({ repo, processes }: { repo: string; processes: Proc
                     .catch((e) => alert(`map failed: ${e}`))
                 }
               />
+            )}
+          </div>
+        );
+      })}
+      {bounce.map((e) => {
+        const on = state.bounceEnabled.includes(e.port);
+        const snippet = `http://localhost:${e.port}/callback?${e.returnParam ?? "rt_return"}=<app-origin>`;
+        return (
+          <div
+            key={e.port}
+            className="flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1 text-xs"
+          >
+            <Badge variant="outline">:{e.port}</Badge>
+            <span className="text-muted-foreground">{e.name} (bounce)</span>
+            <Button
+              size="sm"
+              variant={on ? "default" : "ghost"}
+              className="h-5 px-1.5 text-xs"
+              onClick={() =>
+                (on
+                  ? disableBounce({ repo, port: e.port })
+                  : enableBounce({ repo, port: e.port })
+                )
+                  .then(reload)
+                  .catch((err) => alert(`bounce ${on ? "disable" : "enable"} failed: ${err}`))
+              }
+            >
+              {on ? "on" : "off"}
+            </Button>
+            {on && (
+              <>
+                <code className="font-mono text-[11px] text-muted-foreground">{snippet}</code>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-5 px-1 text-xs"
+                  aria-label="Copy redirect_uri"
+                  title="Copy redirect_uri"
+                  onClick={() => navigator.clipboard.writeText(snippet)}
+                >
+                  <Copy className="size-3" />
+                </Button>
+              </>
             )}
           </div>
         );
