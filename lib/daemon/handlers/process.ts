@@ -25,7 +25,7 @@ import { listWorktrees } from "../../git-worktrees.ts";
 import { buildProcessRecords } from "../process-records.ts";
 import type { WorktreeInfo } from "../resolve-worktree.ts";
 import { discoverWorktreeCommands, deriveProcessId, detectPackageManager, buildRunCommand } from "../worktree-commands.ts";
-import { buildPortlessCommand } from "../portless.ts";
+import { buildPortlessCommand, deriveAppName, portlessUrl, worktreeBranchPrefix } from "../portless.ts";
 
 export function createProcessHandlers(ctx: HandlerContext): HandlerMap {
   return {
@@ -75,6 +75,7 @@ export function createProcessHandlers(ctx: HandlerContext): HandlerMap {
       try { ctx.logBuffer.remove(id); }      catch { /* */ }
       try { ctx.processManager.remove(id); } catch { /* */ }
       try { ctx.stateStore.remove(id); }     catch { /* */ }
+      try { ctx.portAllocator.releaseByLabel(id); } catch { /* */ }
       return { ok: true };
     },
 
@@ -242,18 +243,28 @@ export function createProcessHandlers(ctx: HandlerContext): HandlerMap {
       };
       if (!cwd || (!cmd && !script)) return { ok: false, error: "missing cwd and (cmd or script)" };
       const baseCmd = script ? buildRunCommand(detectPackageManager(cwd), script) : cmd!;
+      const id = deriveProcessId(cwd, label ?? script ?? cmd!);
 
-      // portless is the default front door (worktree-aware .localhost URLs).
-      // Honor an explicit opt-out, and degrade gracefully if it isn't installed.
+      // portless default: rt owns the app port (--app-port) and name (--name) so
+      // it knows the upstream port and can construct a stable, no-port URL.
       const wantPortless = portless !== false;
       const available = ctx.portlessAvailable();
       let runCmd = baseCmd;
       let portlessState: "on" | "off" | "unavailable" = "off";
-      if (wantPortless && available) { runCmd = buildPortlessCommand(baseCmd); portlessState = "on"; }
-      else if (wantPortless && !available) { portlessState = "unavailable"; }
+      const env: Record<string, string> = {};
+      if (wantPortless && available) {
+        const port = ctx.portAllocator.allocate(id);
+        const name = deriveAppName(cwd);
+        const url = portlessUrl(name, worktreeBranchPrefix(cwd));
+        runCmd = buildPortlessCommand(baseCmd, { appPort: port, name });
+        env.PORT = String(port);
+        env.PORTLESS_URL = url;
+        portlessState = "on";
+      } else if (wantPortless && !available) {
+        portlessState = "unavailable";
+      }
 
-      const id = deriveProcessId(cwd, label ?? script ?? cmd!);
-      await ctx.processManager.spawn(id, runCmd, { cwd });
+      await ctx.processManager.spawn(id, runCmd, { cwd, env });
       ctx.remedyEngine.onSpawn(id, cwd, runCmd);
       return { ok: true, data: { id, portless: portlessState } };
     },

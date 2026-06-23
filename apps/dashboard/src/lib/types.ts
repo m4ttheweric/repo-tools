@@ -16,6 +16,10 @@ export interface ProcessRecord {
   repo?: string;
   worktree?: string;
   branch?: string;
+  /** Portless proxy URL (no port appended). Present when portless is active. */
+  url?: string;
+  /** App port portless forwards to. */
+  port?: number;
 }
 
 export interface RepoWorktree {

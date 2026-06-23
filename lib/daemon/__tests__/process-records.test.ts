@@ -35,6 +35,7 @@ describe("buildProcessRecords", () => {
       cmd: "npm run dev",
       cwd: "/repos/acme-primary/apps/portal",
       env: { PORT: "10001" },
+      kind: undefined,
       state: "running",
       pid: 4242,
       startedAt: 1000,
@@ -42,6 +43,8 @@ describe("buildProcessRecords", () => {
       repo: "acme",
       worktree: "/repos/acme-primary",
       branch: "main",
+      url: undefined,
+      port: 10001,
     });
   });
 
@@ -65,5 +68,25 @@ describe("buildProcessRecords", () => {
       WORKTREES,
     );
     expect(records[0]?.state).toBe("stopped");
+  });
+
+  test("exposes portless url/port from the process env", () => {
+    const recs = buildProcessRecords(
+      [{ id: "p1", config: { cmd: "x", cwd: "/a/wt/app", env: { PORT: "10001", PORTLESS_URL: "https://app.localhost" } }, startedAt: 1 }],
+      () => "running",
+      () => 123,
+      [],
+    );
+    expect(recs[0].url).toBe("https://app.localhost");
+    expect(recs[0].port).toBe(10001);
+  });
+
+  test("url/port absent when env has no portless vars", () => {
+    const recs = buildProcessRecords(
+      [{ id: "p1", config: { cmd: "x", cwd: "/a" }, startedAt: 1 }],
+      () => "running", () => undefined, [],
+    );
+    expect(recs[0].url).toBeUndefined();
+    expect(recs[0].port).toBeUndefined();
   });
 });

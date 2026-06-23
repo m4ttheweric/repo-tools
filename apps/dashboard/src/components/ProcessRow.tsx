@@ -38,6 +38,9 @@ export function ProcessRow({ p, now }: { p: ProcessRecord; now: number }) {
         <div className="min-w-0 flex-1">
           <div className="font-mono text-xs text-foreground">{p.id}</div>
           <div className="truncate font-mono text-[11px] text-muted-foreground" title={p.cmd}>{p.cmd}</div>
+          {p.url && (
+            <a href={p.url} target="_blank" rel="noreferrer" className="truncate font-mono text-[11px] text-sel-blue hover:underline">{p.url}</a>
+          )}
         </div>
         <div className="w-20 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
           {p.state === "running" && p.startedAt ? uptime(p.startedAt, now) : ""}
