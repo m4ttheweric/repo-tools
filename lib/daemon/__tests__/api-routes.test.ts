@@ -27,6 +27,11 @@ describe("matchProcessApiRoute", () => {
       .toEqual({ cmd: "process:respawn", payload: { id: "p1" } });
   });
 
+  test("POST /api/processes/:id/remove -> process:remove", () => {
+    expect(matchProcessApiRoute("POST", "/api/processes/p1/remove"))
+      .toEqual({ cmd: "process:remove", payload: { id: "p1" } });
+  });
+
   test("decodes a url-encoded id", () => {
     expect(matchProcessApiRoute("POST", "/api/processes/a%2Fb/stop"))
       .toEqual({ cmd: "process:stop", payload: { id: "a/b" } });

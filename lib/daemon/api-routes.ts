@@ -7,6 +7,7 @@
  *   POST /api/processes/:id/start    -> process:respawn   (start via stored config)
  *   POST /api/processes/:id/restart  -> process:respawn
  *   POST /api/processes/:id/stop     -> process:stop      (kill)
+ *   POST /api/processes/:id/remove   -> process:remove    (drop bookkeeping; caller kills first)
  */
 
 export interface ApiRouteMatch {
@@ -18,6 +19,7 @@ const CONTROL_ACTIONS: Record<string, string> = {
   start: "process:respawn",
   restart: "process:respawn",
   stop: "process:stop",
+  remove: "process:remove",
 };
 
 export function matchProcessApiRoute(method: string, pathname: string): ApiRouteMatch | null {

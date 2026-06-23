@@ -11,6 +11,7 @@ describe("needsToken", () => {
     expect(needsToken("POST", "/api/processes/p1/stop")).toBe(true);
     expect(needsToken("POST", "/api/processes/p1/start")).toBe(true);
     expect(needsToken("POST", "/api/processes/p1/restart")).toBe(true);
+    expect(needsToken("POST", "/api/processes/p1/remove")).toBe(true);
   });
 
   test("creating a process requires a token", () => {
