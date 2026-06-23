@@ -31,6 +31,10 @@ export interface ProcessRecord {
   repo?: string;
   worktree?: string;
   branch?: string;
+  /** Portless proxy URL for this process (no port appended). Present when portless is active. */
+  url?: string;
+  /** App port portless forwards to (the port the dev server listens on). */
+  port?: number;
 }
 
 export function buildProcessRecords(
@@ -41,11 +45,13 @@ export function buildProcessRecords(
 ): ProcessRecord[] {
   return processes.map((p) => {
     const wt = resolveWorktree(p.config.cwd, worktrees);
+    const env = p.config.env;
+    const portNum = env?.PORT ? Number(env.PORT) : undefined;
     return {
       id: p.id,
       cmd: p.config.cmd,
       cwd: p.config.cwd,
-      env: p.config.env,
+      env,
       kind: p.config.kind,
       state: stateOf(p.id),
       pid: pidOf(p.id),
@@ -54,6 +60,8 @@ export function buildProcessRecords(
       repo: wt?.repo,
       worktree: wt?.path,
       branch: wt?.branch,
+      url: env?.PORTLESS_URL,
+      port: Number.isFinite(portNum) ? portNum : undefined,
     };
   });
 }

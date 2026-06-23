@@ -12,12 +12,14 @@ import { createProcessHandlers } from "../handlers/process.ts";
 
 function ctxWith() {
   const spawned: any[] = [];
+  const released: string[] = [];
   return {
-    spawned,
+    spawned, released,
     ctx: {
       processManager: { async spawn(id: string, cmd: string, opts: any) { spawned.push({ id, cmd, opts }); } },
       remedyEngine: { onSpawn() {} },
       portlessAvailable: () => false,
+      portAllocator: { allocate: (_label: string) => 10001, releaseByLabel: (label: string) => released.push(label) },
     },
   };
 }
@@ -29,7 +31,9 @@ describe("process:create", () => {
     const res = await handlers["process:create"]!({ cwd: "/a/assured-wktree-2", cmd: "vite", label: "dev" });
     expect(res.ok).toBe(true);
     expect(res.data.id).toBe("assured-wktree-2:dev");
-    expect(spawned).toEqual([{ id: "assured-wktree-2:dev", cmd: "vite", opts: { cwd: "/a/assured-wktree-2" } }]);
+    expect(spawned[0].id).toBe("assured-wktree-2:dev");
+    expect(spawned[0].cmd).toBe("vite");
+    expect(spawned[0].opts.cwd).toBe("/a/assured-wktree-2");
   });
 
   test("runs a named script through the detected package manager", async () => {
@@ -54,13 +58,17 @@ describe("process:create", () => {
     expect((await handlers["process:create"]!({ cwd: "/a" })).ok).toBe(false);
   });
 
-  test("wraps the command in portless by default when available", async () => {
-    const { ctx, spawned } = ctxWith();
-    const handlers = createProcessHandlers({ ...ctx, portlessAvailable: () => true } as any);
-    const res = await handlers["process:create"]!({ cwd: "/a/wt", cmd: "vite", label: "dev" });
-    expect(res.ok).toBe(true);
-    expect(res.data.portless).toBe("on");
-    expect(spawned[0].cmd).toBe("portless run vite");
+  test("with portless: passes --name + --app-port and stashes PORT/PORTLESS_URL", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-create-"));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "adjuster" }));
+    try {
+      const { ctx, spawned } = ctxWith();
+      const handlers = createProcessHandlers({ ...ctx, portlessAvailable: () => true } as any);
+      const res = await handlers["process:create"]!({ cwd: dir, cmd: "vite", label: "dev" });
+      expect(res.data.portless).toBe("on");
+      expect(spawned[0].cmd).toBe("portless run --name adjuster --app-port 10001 vite");
+      expect(spawned[0].opts.env).toEqual({ PORT: "10001", PORTLESS_URL: "https://adjuster.localhost" });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   test("falls back to a plain run when portless is unavailable", async () => {
