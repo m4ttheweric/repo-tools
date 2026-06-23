@@ -1,6 +1,6 @@
 // apps/dashboard/src/components/WorktreeCard.tsx
-import { useEffect, useMemo, useState } from "react";
-import { SquareChevronRight, SquareTerminal, ChevronDown, ChevronRight } from "lucide-react";
+import { useMemo, useState } from "react";
+import { SquareTerminal, ChevronDown, ChevronRight } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { CommandDialog } from "@/components/ui/command";
@@ -8,7 +8,7 @@ import { SessionTabs } from "./SessionTabs.tsx";
 import { SessionTerminal } from "./SessionTerminal.tsx";
 import { SessionControlBar } from "./SessionControlBar.tsx";
 import { CommandPalette } from "./CommandPalette.tsx";
-import { createProcess, createTerminal, fetchWorktreeCommands } from "../lib/api.ts";
+import { controlProcess, createProcess, createTerminal, fetchWorktreeCommands, removeProcess } from "../lib/api.ts";
 import { basename } from "../lib/format.ts";
 import { sessionsForWorktree } from "../lib/sessions.ts";
 import type { FlatCommand } from "../lib/commands.ts";
@@ -38,11 +38,12 @@ export function WorktreeCard({
 
   const sessions = useMemo(() => sessionsForWorktree(processes), [processes]);
 
-  // Keep activeId valid: default to the first session; clear when none remain.
-  useEffect(() => {
-    if (sessions.length === 0) { if (activeId) setActiveId(null); return; }
-    if (!activeId || !sessions.some((s) => s.id === activeId)) setActiveId(sessions[0]!.id);
-  }, [sessions, activeId]);
+  // Derive the active session (don't force-reset activeId in an effect — that
+  // races a just-launched id that hasn't appeared in the polled list yet and
+  // bounces focus back to the previous tab). A freshly-selected id sticks; once
+  // its session arrives, `active` resolves to it. Falls back to the first
+  // session when the selected one is gone (e.g. closed).
+  const active = sessions.find((s) => s.id === activeId) ?? sessions[0] ?? null;
 
   const selectAndExpand = (id: string) => { setActiveId(id); onExpand(worktree.path); };
 
@@ -56,6 +57,18 @@ export function WorktreeCard({
       alert(`failed to open terminal: ${e}`);
     } finally {
       setOpeningTerminal(false);
+    }
+  };
+
+  // Close a tab entirely: kill the session if running, then drop its bookkeeping
+  // so the tab disappears (for both shells and dev commands).
+  const closeSession = async (id: string) => {
+    try {
+      await controlProcess(id, "stop");
+      await removeProcess(id);
+      onLaunched();
+    } catch (e) {
+      alert(`close failed: ${e}`);
     }
   };
 
@@ -84,8 +97,6 @@ export function WorktreeCard({
     }
   };
 
-  const active = sessions.find((s) => s.id === activeId) ?? null;
-
   return (
     <Card className="gap-0 overflow-hidden py-0">
       <div className="flex items-center justify-between px-4 py-2">
@@ -98,35 +109,27 @@ export function WorktreeCard({
           <span className="font-medium text-foreground">{basename(worktree.path)}</span>
           {worktree.branch && <span className="text-sel-violet">{worktree.branch}</span>}
         </button>
-        <div className="flex items-center gap-1">
-          <Button size="icon-sm" variant="ghost" onClick={() => onPaletteOpenChange(true)} aria-label="Run a command" title="Run a command">
-            <SquareChevronRight />
-          </Button>
-          <Button size="icon-sm" variant="ghost" onClick={openTerminal} disabled={openingTerminal} aria-label="New terminal" title="New terminal">
-            <SquareTerminal />
-          </Button>
-        </div>
+        <Button size="sm" variant="ghost" className="gap-1.5" onClick={openTerminal} disabled={openingTerminal}>
+          <SquareTerminal /> New Terminal Session
+        </Button>
       </div>
 
-      {sessions.length > 0 && expanded && (
-        <div className="dark border-t border-border bg-background">
-          <SessionTabs sessions={sessions} activeId={activeId} onSelect={setActiveId} />
-          {active && <SessionControlBar session={active} now={now} onChanged={onLaunched} />}
-          {active && <SessionTerminal key={active.id} id={active.id} />}
+      {/* Console: the tab strip is always visible (the at-a-glance overview);
+          the control bar + terminal mount only when this card is expanded, so
+          collapsing unmounts the terminal and closes its attach socket. */}
+      <div className="dark border-t border-border bg-background">
+        <div className="bg-card">
+          <SessionTabs
+            sessions={sessions}
+            activeId={active?.id ?? null}
+            onSelect={expanded ? setActiveId : selectAndExpand}
+            onClose={closeSession}
+            onPickCommand={() => onPaletteOpenChange(true)}
+          />
         </div>
-      )}
-
-      {sessions.length > 0 && !expanded && (
-        <div className="dark border-t border-border bg-background">
-          <SessionTabs sessions={sessions} activeId={activeId} onSelect={selectAndExpand} />
-        </div>
-      )}
-
-      {sessions.length === 0 && (
-        <div className="border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
-          no sessions — use the run or terminal buttons
-        </div>
-      )}
+        {expanded && active && <SessionControlBar session={active} now={now} onChanged={onLaunched} />}
+        {expanded && active && <SessionTerminal key={active.id} id={active.id} />}
+      </div>
 
       <CommandDialog
         open={paletteOpen}

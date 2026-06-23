@@ -18,6 +18,12 @@ export async function controlProcess(id: string, action: ControlAction): Promise
   await json(res);
 }
 
+/** Drop a process's tab entirely (bookkeeping removal). Kill it first if running. */
+export async function removeProcess(id: string): Promise<void> {
+  const res = await fetch(`/api/processes/${encodeURIComponent(id)}/remove`, { method: "POST" });
+  await json(res);
+}
+
 export async function fetchRepos(): Promise<RepoInfo[]> {
   const res = await fetch("/api/repos");
   const repos = (await json(res)).data.repos as Record<string, { path: string; worktrees: RepoInfo["worktrees"] }>;

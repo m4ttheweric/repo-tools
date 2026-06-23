@@ -6,8 +6,9 @@ import { isLive, type Session } from "../lib/sessions.ts";
 
 /**
  * Control strip above the active session's terminal. Command sessions get
- * Start/Restart/Stop + meta (state, cmd, portless URL); shell sessions get Kill.
- * Rendered inside the card's `.dark` console region, so it uses dark tokens.
+ * Start/Restart/Stop + meta (state, cmd, portless URL); shell sessions show meta
+ * only (they're closed via the tab's ✕). Rendered inside the card's `.dark`
+ * console region, so it uses dark tokens.
  */
 export function SessionControlBar({
   session,
@@ -50,17 +51,13 @@ export function SessionControlBar({
           </>
         )}
       </span>
-      <span className="flex shrink-0 gap-1.5">
-        {session.kind === "command" ? (
-          <>
-            {!live && <Button size="xs" variant="outline" disabled={busy} onClick={() => run("start")}>Start</Button>}
-            {live && <Button size="xs" variant="outline" disabled={busy || session.state === "stopping"} onClick={() => run("restart")}>Restart</Button>}
-            {live && <Button size="xs" variant="destructive" disabled={busy} onClick={() => run("stop")}>Stop</Button>}
-          </>
-        ) : (
-          <Button size="xs" variant="destructive" disabled={busy} onClick={() => run("stop")}>Kill</Button>
-        )}
-      </span>
+      {session.kind === "command" && (
+        <span className="flex shrink-0 gap-1.5">
+          {!live && <Button size="xs" variant="secondary" disabled={busy} onClick={() => run("start")}>Start</Button>}
+          {live && <Button size="xs" variant="secondary" disabled={busy || session.state === "stopping"} onClick={() => run("restart")}>Restart</Button>}
+          {live && <Button size="xs" variant="destructive" disabled={busy} onClick={() => run("stop")}>Stop</Button>}
+        </span>
+      )}
     </div>
   );
 }
