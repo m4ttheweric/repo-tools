@@ -90,9 +90,18 @@ Palette source of truth: https://github.com/jan-warchol/selenized
 - **The attach socket is token-gated** (PTY input = arbitrary code execution).
   The Vite `/ws` proxy injects `x-rt-token` on the upgrade (`proxyReqWs`) because
   browsers can't set WS headers. The read-only `/logs` socket stays open.
-- Closing a terminal panel **detaches** (the shell keeps running, reattach
-  replays scrollback); **Kill** stops the session. Terminal sessions are normal
-  managed processes, so they survive daemon reconnect and reload.
+- Sessions render as **tabs** per worktree (`SessionTabs` + `SessionControlBar` +
+  `SessionTerminal`, hosted by `WorktreeCard`; one card expanded at a time).
+  Collapsing a card unmounts the terminal (closes its attach socket) — never
+  hide it with `display:none`. The active tab must read as clearly selected
+  (top accent + merges into the terminal bg).
+- A tab's **✕ closes it**: kill-then-remove via `POST /api/processes/:id/remove`
+  (token-gated; maps to the daemon's `process:remove`). Command sessions also
+  keep Start/Restart/Stop in the control bar. Don't reintroduce a top-right
+  "Kill" — closing is a tab affordance.
+- Don't force-reset the active-tab id in an effect off the polled session list —
+  it races a just-launched id and bounces focus to the previous tab. Derive the
+  active session (`find(activeId) ?? sessions[0]`) so a freshly-selected id sticks.
 
 ## Engineering
 
