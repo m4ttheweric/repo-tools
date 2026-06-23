@@ -52,3 +52,15 @@ export interface ProcessChangedEvent {
   pid?: number;
   exitCode?: number;
 }
+
+export interface CanonicalEndpoint {
+  port: number;
+  name: string;
+  mode: "forward" | "bounce";
+  returnParam?: string;
+}
+
+export interface EndpointState {
+  forward: Record<string, string>;
+  bounceEnabled: number[];
+}

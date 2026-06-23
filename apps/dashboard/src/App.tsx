@@ -3,6 +3,7 @@ import { useProcesses } from "./hooks/useProcesses.ts";
 import { useRepos } from "./hooks/useRepos.ts";
 import { WorktreeCard } from "./components/WorktreeCard.tsx";
 import { ProcessRow } from "./components/ProcessRow.tsx";
+import { EndpointBar } from "./components/EndpointBar.tsx";
 import { Button } from "@/components/ui/button";
 
 export function App() {
@@ -67,6 +68,7 @@ export function App() {
         {repos.map((r) => (
           <section key={r.repo}>
             <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">{r.repo}</h2>
+            <EndpointBar repo={r.repo} processes={processes.filter((p) => p.repo === r.repo)} />
             <div className="space-y-3">
               {r.worktrees.map((wt) => (
                 <WorktreeCard
