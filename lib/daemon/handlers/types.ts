@@ -20,6 +20,7 @@ import type { ExclusiveGroup } from "../exclusive-group.ts";
 import type { PortAllocator } from "../port-allocator.ts";
 import type { PortEntry } from "../../port-scanner.ts";
 import type { TunnelManager } from "../tunnel-manager.ts";
+import type { BounceManager } from "../bounce-manager.ts";
 
 /** Daemon-local cache entry shape (mirrors the inline definition in daemon.ts). */
 export interface CacheEntry {
@@ -117,6 +118,10 @@ export interface HandlerContext {
   refreshStatusRef:        { lastRefreshAt: number };
   /** Resolve a repo's local data dir (~/.rt/repos/<repo>); injected for testability. */
   repoDataDirOf: (repo: string) => string;
+  /** Hosts bounce (302 redirect relay) endpoints; parallel to proxyManager. */
+  bounceManager: BounceManager;
+  /** Live allowlist of a repo's running-process origins, for the bounce guard. */
+  liveOriginsFor: (repo: string) => () => Set<string>;
 }
 
 export type Handler    = (payload: any) => Promise<any>;

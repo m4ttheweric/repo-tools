@@ -115,6 +115,11 @@ import { listWorktreeRoots } from "./git-worktrees.ts";
 import { createDiscussionHandlers } from "./daemon/handlers/discussions.ts";
 import { createEndpointHandlers }  from "./daemon/handlers/endpoints.ts";
 import { startDiscussionsPoller, stopDiscussionsPoller } from "./daemon/discussions-poller.ts";
+import { BounceManager } from "./daemon/bounce-manager.ts";
+import { restoreEndpoints } from "./daemon/endpoint-restore.ts";
+import { bounceEndpointId } from "./daemon/handlers/endpoints.ts";
+import { loadEndpoints, loadEndpointState } from "./endpoints-config.ts";
+import { describeRecords } from "./daemon/handlers/process.ts";
 
 interface DiskCache {
   entries: Record<string, CacheEntry>;
@@ -149,6 +154,7 @@ const attachServer   = new AttachServer({ logBuffer });
 const processManager = new ProcessManager({ stateStore, logBuffer, attachServer });
 const suspendManager = new SuspendManager({ processManager, stateStore });
 const proxyManager   = new ProxyManager();
+const bounceManager  = new BounceManager();
 const exclusiveGroup = new ExclusiveGroup({ suspendManager, stateStore });
 
 // ─── Remedy engine (auto-detect errors → run fix → restart) ─────────────────
@@ -652,6 +658,21 @@ const handlerCtx: HandlerContext = {
   startWatchingRepo,
   refreshStatusRef,
   repoDataDirOf: (repo) => repoDataDir(repo),
+  bounceManager,
+  // Placeholder; overwritten immediately below after the literal is closed.
+  liveOriginsFor: (_repo: string) => () => new Set<string>(),
+};
+
+// liveOriginsFor closes over handlerCtx (to see fresh process state per call),
+// so it must be assigned after the literal rather than inside it.
+handlerCtx.liveOriginsFor = (repo: string) => () => {
+  const origins = new Set<string>();
+  for (const rec of describeRecords(handlerCtx)) {
+    if (rec.repo === repo && rec.state === "running" && rec.url) {
+      try { origins.add(new URL(rec.url).origin); } catch { /* skip bad url */ }
+    }
+  }
+  return origins;
 };
 
 /** Env bundle for the MR subscription subsystem. */
@@ -737,8 +758,10 @@ const API_INDEX = {
     { method: "POST", path: "/api/processes",         description: "Launch a command in a worktree { cwd, cmd, label? } (requires X-RT-Token)" },
     { method: "GET",  path: "/api/worktrees/commands", description: "Runnable packages + scripts for a worktree (?path=...), monorepo-aware" },
     { method: "GET",  path: "/api/endpoints",       description: "Declared canonical endpoints + active state for a repo (?repo=)" },
-    { method: "POST", path: "/api/endpoints/map",   description: "Map a forward endpoint to a process { repo, port, processId, upstreamPort } (X-RT-Token)" },
-    { method: "POST", path: "/api/endpoints/unmap", description: "Unmap a forward endpoint { repo, port } (X-RT-Token)" },
+    { method: "POST", path: "/api/endpoints/map",            description: "Map a forward endpoint to a process { repo, port, processId, upstreamPort } (X-RT-Token)" },
+    { method: "POST", path: "/api/endpoints/unmap",          description: "Unmap a forward endpoint { repo, port } (X-RT-Token)" },
+    { method: "POST", path: "/api/endpoints/bounce-enable",  description: "Enable a bounce relay on a declared bounce port { repo, port } (X-RT-Token)" },
+    { method: "POST", path: "/api/endpoints/bounce-disable", description: "Disable a bounce relay { repo, port } (X-RT-Token)" },
     { method: "POST", path: "/api/processes/:id/start",   description: "Start a process via its stored config (requires X-RT-Token)" },
     { method: "POST", path: "/api/processes/:id/stop",    description: "Stop a process (requires X-RT-Token)" },
     { method: "POST", path: "/api/processes/:id/restart", description: "Restart a process (requires X-RT-Token)" },
@@ -901,6 +924,12 @@ function startApiServer(): void {
         if (url.pathname === "/api/endpoints/unmap" && req.method === "POST") {
           return Response.json(await handleCommand("endpoints:unmap", await req.json()), { headers: corsHeaders });
         }
+        if (url.pathname === "/api/endpoints/bounce-enable" && req.method === "POST") {
+          return Response.json(await handleCommand("endpoints:bounce-enable", await req.json()), { headers: corsHeaders });
+        }
+        if (url.pathname === "/api/endpoints/bounce-disable" && req.method === "POST") {
+          return Response.json(await handleCommand("endpoints:bounce-disable", await req.json()), { headers: corsHeaders });
+        }
 
         // Open an interactive terminal session (login shell) in a worktree
         if (url.pathname === "/api/terminals" && req.method === "POST") {
@@ -1031,6 +1060,7 @@ function cleanup(): void {
     }
   } catch { /* */ }
   try { proxyManager.stopAll(); } catch { /* */ }
+  try { bounceManager.stopAll(); } catch { /* */ }
   // Stop cloudflared tunnels for every active board before we exit so we don't
   // leave orphans bound to remote ingress.
   try {
@@ -1143,6 +1173,34 @@ export function startDaemon(): void {
     restoreWatchers(repos);
   } catch (err) {
     log.error({ err }, "workspace-sync: failed to restore watchers");
+  }
+
+  // Restore canonical endpoints (forward proxies + bounce relays) that were
+  // active before this daemon restart. In-memory servers do not survive restarts.
+  try {
+    const restored = restoreEndpoints({
+      repos: Object.keys(loadRepoIndex()),
+      loadEndpoints: (repo) => loadEndpoints(repoDataDir(repo)),
+      loadState: (repo) => loadEndpointState(repoDataDir(repo)),
+      upstreamPortOf: (id) => {
+        if (stateStore.getState(id) !== "running") return undefined;
+        const p = Number(processManager.getSpawnConfig(id)?.env?.PORT);
+        return Number.isFinite(p) ? p : undefined;
+      },
+      startForward: (proxyId, canonicalPort, upstreamPort) => {
+        try { proxyManager.start(proxyId, canonicalPort, upstreamPort, "endpoint:restore"); } catch { /* already bound */ }
+      },
+      startBounce: (bounceId, canonicalPort, returnParam) => {
+        // bounceId encodes the repo as the middle segment: "bounce:<repo>:<port>"
+        const repo = bounceId.split(":")[1] ?? "";
+        try {
+          bounceManager.start(bounceId, canonicalPort, { returnParam, allowedOrigins: handlerCtx.liveOriginsFor(repo) });
+        } catch { /* already bound */ }
+      },
+    });
+    log.info({ restored }, "restored canonical endpoints");
+  } catch (err) {
+    log.error({ err }, "endpoint restore failed");
   }
 
   // Watch repos.json for changes (new repos added)

@@ -3,7 +3,7 @@ import { describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { createEndpointHandlers, endpointProxyId } from "../handlers/endpoints.ts";
+import { createEndpointHandlers, endpointProxyId, bounceEndpointId } from "../handlers/endpoints.ts";
 
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "rt-eph-"));
@@ -63,6 +63,56 @@ describe("endpoints:unmap", () => {
       expect(proxyCalls).toContainEqual(["stop", endpointProxyId("r", 4000)]);
       const after = await handlers["endpoints:list"]!({ repo: "r" });
       expect(after.data.state.forward).toEqual({});
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("endpoints:bounce-enable / disable", () => {
+  function bounceSetup() {
+    const dir = mkdtempSync(join(tmpdir(), "rt-eph-"));
+    writeFileSync(join(dir, "endpoints.json"), JSON.stringify({
+      endpoints: [{ port: 4001, name: "auth", mode: "bounce", returnParam: "rt_return" }],
+    }));
+    const calls: any[] = [];
+    const ctx = {
+      repoDataDirOf: () => dir,
+      proxyManager: { start() {}, stop() {} },
+      bounceManager: {
+        start: (id: string, port: number, _deps: any) => calls.push(["start", id, port]),
+        stop: (id: string) => calls.push(["stop", id]),
+      },
+      liveOriginsFor: () => () => new Set<string>(),
+    };
+    return { dir, calls, handlers: createEndpointHandlers(ctx as any) };
+  }
+
+  test("enable starts a bounce and records the port", async () => {
+    const { dir, calls, handlers } = bounceSetup();
+    try {
+      const res = await handlers["endpoints:bounce-enable"]!({ repo: "r", port: 4001 });
+      expect(res.ok).toBe(true);
+      expect(calls).toEqual([["start", bounceEndpointId("r", 4001), 4001]]);
+      const after = await handlers["endpoints:list"]!({ repo: "r" });
+      expect(after.data.state.bounceEnabled).toEqual([4001]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("enable rejects an unknown or non-bounce port", async () => {
+    const { dir, handlers } = bounceSetup();
+    try {
+      expect((await handlers["endpoints:bounce-enable"]!({ repo: "r", port: 9999 })).ok).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("disable stops the bounce and clears the port", async () => {
+    const { dir, calls, handlers } = bounceSetup();
+    try {
+      await handlers["endpoints:bounce-enable"]!({ repo: "r", port: 4001 });
+      const res = await handlers["endpoints:bounce-disable"]!({ repo: "r", port: 4001 });
+      expect(res.ok).toBe(true);
+      expect(calls).toContainEqual(["stop", bounceEndpointId("r", 4001)]);
+      const after = await handlers["endpoints:list"]!({ repo: "r" });
+      expect(after.data.state.bounceEnabled).toEqual([]);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
