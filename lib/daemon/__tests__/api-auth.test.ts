@@ -40,6 +40,11 @@ describe("needsToken", () => {
     expect(needsToken("POST", "/api/endpoints/unmap")).toBe(true);
     expect(needsToken("GET", "/api/endpoints")).toBe(false);
   });
+
+  test("bounce mutations require a token", () => {
+    expect(needsToken("POST", "/api/endpoints/bounce-enable")).toBe(true);
+    expect(needsToken("POST", "/api/endpoints/bounce-disable")).toBe(true);
+  });
 });
 
 describe("tokenOk", () => {

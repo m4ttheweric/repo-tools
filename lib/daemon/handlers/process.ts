@@ -27,6 +27,27 @@ import type { WorktreeInfo } from "../resolve-worktree.ts";
 import { discoverWorktreeCommands, deriveProcessId, detectPackageManager, buildRunCommand } from "../worktree-commands.ts";
 import { buildPortlessCommand, deriveAppName, portlessUrl, worktreeBranchPrefix } from "../portless.ts";
 
+/**
+ * Return all process records enriched with repo, worktree, url, and port.
+ * Used by other handler modules (e.g. liveOriginsFor in daemon.ts) that need
+ * a live snapshot of running processes without going through IPC.
+ */
+export function describeRecords(ctx: HandlerContext) {
+  const repos = ctx.repoIndex();
+  const worktrees: WorktreeInfo[] = [];
+  for (const [repo, repoPath] of Object.entries(repos)) {
+    for (const wt of listWorktrees(repoPath)) {
+      worktrees.push({ repo, path: wt.path, branch: wt.branch });
+    }
+  }
+  return buildProcessRecords(
+    ctx.processManager.list(),
+    (id) => ctx.stateStore.getState(id),
+    (id) => ctx.stateStore.getPid(id),
+    worktrees,
+  );
+}
+
 export function createProcessHandlers(ctx: HandlerContext): HandlerMap {
   return {
     // ── Low-level primitives ────────────────────────────────────────────────
