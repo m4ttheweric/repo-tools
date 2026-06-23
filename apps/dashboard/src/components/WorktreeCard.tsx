@@ -1,5 +1,5 @@
 // apps/dashboard/src/components/WorktreeCard.tsx
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { SquareChevronRight, SquareTerminal, ChevronDown, ChevronRight } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -36,7 +36,7 @@ export function WorktreeCard({
   const [openingTerminal, setOpeningTerminal] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
 
-  const sessions = sessionsForWorktree(processes);
+  const sessions = useMemo(() => sessionsForWorktree(processes), [processes]);
 
   // Keep activeId valid: default to the first session; clear when none remain.
   useEffect(() => {
