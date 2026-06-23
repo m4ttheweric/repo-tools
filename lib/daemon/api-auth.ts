@@ -8,7 +8,7 @@
  * open for convenience.
  */
 
-const CONTROL_PATH = /^\/api\/processes\/[^/]+\/(start|restart|stop)$/;
+const CONTROL_PATH = /^\/api\/processes\/[^/]+\/(start|restart|stop|remove)$/;
 
 /** True when a request mutates state and must present the local token. */
 export function needsToken(method: string, pathname: string): boolean {
