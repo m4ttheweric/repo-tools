@@ -117,6 +117,7 @@ import { createEndpointHandlers }  from "./daemon/handlers/endpoints.ts";
 import { startDiscussionsPoller, stopDiscussionsPoller } from "./daemon/discussions-poller.ts";
 import { BounceManager } from "./daemon/bounce-manager.ts";
 import { restoreEndpoints } from "./daemon/endpoint-restore.ts";
+import { reconcileForwardForProcess } from "./daemon/forward-reconcile.ts";
 import { bounceEndpointId } from "./daemon/handlers/endpoints.ts";
 import { loadEndpoints, loadEndpointState } from "./endpoints-config.ts";
 import { describeRecords } from "./daemon/handlers/process.ts";
@@ -1203,6 +1204,27 @@ export function startDaemon(): void {
   } catch (err) {
     log.error({ err }, "endpoint restore failed");
   }
+
+  // Lazily (re)bind forward proxies when a process reaches "running". This
+  // handles the daemon-restart case: restoreEndpoints skips forward mappings
+  // whose target process is not yet running, so we bind them here when the
+  // process finally starts up.
+  stateStore.onStateChange((id, _prev, next) => {
+    if (next !== "running") return;
+    reconcileForwardForProcess(id, {
+      repos: Object.keys(loadRepoIndex()),
+      loadEndpoints: (repo) => loadEndpoints(repoDataDir(repo)),
+      loadState: (repo) => loadEndpointState(repoDataDir(repo)),
+      upstreamPortOf: (pid) => {
+        if (stateStore.getState(pid) !== "running") return undefined;
+        const p = Number(processManager.getSpawnConfig(pid)?.env?.PORT);
+        return Number.isFinite(p) ? p : undefined;
+      },
+      startForward: (proxyId, canonicalPort, upstreamPort) => {
+        try { proxyManager.start(proxyId, canonicalPort, upstreamPort, "endpoint:reconcile"); } catch { /* already bound */ }
+      },
+    });
+  });
 
   // Watch repos.json for changes (new repos added)
   if (existsSync(REPOS_JSON_PATH)) {
