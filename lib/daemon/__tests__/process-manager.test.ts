@@ -136,6 +136,23 @@ describe("kill", () => {
     await expect(pm.kill("p1")).resolves.toBeUndefined();
   });
 
+  test("intentional kill does not transition through crashed", async () => {
+    const transitions: string[] = [];
+    stateStore.onStateChange((_id, _prev, next) => transitions.push(next));
+    await pm.spawn("p1", "sleep 30", { cwd: "/tmp" });
+    await pm.kill("p1");
+    await sleep(200); // let any stray exited handler settle
+    expect(transitions).not.toContain("crashed");
+    expect(stateStore.getState("p1")).toBe("stopped");
+  });
+
+  test("intentional kill leaves no exitCode (clean stop, not a crash)", async () => {
+    await pm.spawn("p1", "sleep 30", { cwd: "/tmp" });
+    await pm.kill("p1");
+    await sleep(200);
+    expect(pm.getExitCode("p1")).toBeUndefined();
+  });
+
   test("kill reaps grandchildren (detached pgroup)", async () => {
     // bash backgrounds two long sleepers then waits on them. Without the
     // detached-pgroup fix, killing bash alone leaves the sleepers orphaned
@@ -261,6 +278,56 @@ describe("getProcess and getTerminal", () => {
     await pm.spawn("p1", "sleep 10", { cwd: "/tmp" });
     const term = pm.getTerminal("p1");
     expect(term).toBeDefined();
+    await pm.kill("p1");
+  });
+});
+
+// ── record enrichment (startedAt / exitCode) ───────────────────────────────────
+
+describe("record enrichment", () => {
+  test("list() records startedAt for a spawned process", async () => {
+    const before = Date.now();
+    await pm.spawn("p1", "sleep 10", { cwd: "/tmp" });
+    const entry = pm.list().find((e) => e.id === "p1");
+    expect(entry?.startedAt).toBeGreaterThanOrEqual(before);
+    expect(entry?.startedAt).toBeLessThanOrEqual(Date.now());
+    await pm.kill("p1");
+  });
+
+  test("list() records exitCode after a non-zero exit", async () => {
+    await pm.spawn("p1", "exit 3", { cwd: "/tmp" });
+    await sleep(300);
+    const entry = pm.list().find((e) => e.id === "p1");
+    expect(entry?.exitCode).toBe(3);
+  });
+
+  test("list() records exitCode 0 after a clean exit", async () => {
+    await pm.spawn("p1", "exit 0", { cwd: "/tmp" });
+    await sleep(300);
+    const entry = pm.list().find((e) => e.id === "p1");
+    expect(entry?.exitCode).toBe(0);
+  });
+
+  test("getExitCode returns the last exit code", async () => {
+    await pm.spawn("p1", "exit 2", { cwd: "/tmp" });
+    await sleep(300);
+    expect(pm.getExitCode("p1")).toBe(2);
+  });
+
+  test("respawn clears the prior exitCode and refreshes startedAt", async () => {
+    await pm.spawn("p1", "exit 1", { cwd: "/tmp" });
+    await sleep(300);
+    expect(pm.list().find((e) => e.id === "p1")?.exitCode).toBe(1);
+
+    const before = Date.now();
+    await pm.respawn("p1"); // respawns "exit 1" — but startedAt must refresh and exitCode reset to undefined at spawn time
+    const entry = pm.list().find((e) => e.id === "p1");
+    expect(entry?.startedAt).toBeGreaterThanOrEqual(before);
+    // exitCode is cleared at spawn; it may be repopulated once the respawned
+    // process exits, so assert against a freshly-spawned long-lived process instead.
+    await pm.kill("p1");
+    await pm.spawn("p1", "sleep 10", { cwd: "/tmp" });
+    expect(pm.list().find((e) => e.id === "p1")?.exitCode).toBeUndefined();
     await pm.kill("p1");
   });
 });

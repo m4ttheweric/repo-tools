@@ -25,5 +25,8 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  // apps/* are standalone sub-projects (their own tsconfig, build, and path
+  // aliases); the root project type-checks the rt CLI/daemon only.
+  "exclude": ["apps"]
 }

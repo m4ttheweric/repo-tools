@@ -21,6 +21,8 @@ export interface SpawnConfig {
   cmd: string;
   cwd: string;
   env?: Record<string, string>;
+  /** "terminal" = an interactive shell session the GUI renders as a live terminal. */
+  kind?: "terminal";
 }
 
 /**
@@ -77,6 +79,10 @@ interface ManagedProcess {
 export class ProcessManager {
   private processes = new Map<string, ManagedProcess>();
   private spawnConfigs = new Map<string, SpawnConfig>();
+  /** Unix-ms of the most recent spawn for an id. Survives exit; reset on respawn. */
+  private startedAt = new Map<string, number>();
+  /** Exit code of the most recent run. Set on exit, cleared at next spawn. */
+  private exitCodes = new Map<string, number>();
   private stateStore: StateStore;
   private logBuffer: LogBuffer;
   private attachServer: AttachServer;
@@ -137,7 +143,7 @@ export class ProcessManager {
     });
   }
 
-  async spawn(id: string, cmd: string, opts: { cwd: string; env?: Record<string, string> }): Promise<void> {
+  async spawn(id: string, cmd: string, opts: { cwd: string; env?: Record<string, string>; kind?: "terminal" }): Promise<void> {
     // Signal to pollers that a spawn is in progress
     this.stateStore.setState(id, "starting");
 
@@ -159,8 +165,12 @@ export class ProcessManager {
     if (opts.env?.PORT) await evictPort(opts.env.PORT);
 
     // Save config for respawn before spawning
-    const config: SpawnConfig = { cmd, cwd: opts.cwd, env: opts.env };
+    const config: SpawnConfig = { cmd, cwd: opts.cwd, env: opts.env, kind: opts.kind };
     this.spawnConfigs.set(id, config);
+
+    // Record start time and clear any prior exit code for this run.
+    this.startedAt.set(id, Date.now());
+    this.exitCodes.delete(id);
 
     // Capture references for the data closure
     const logBuffer = this.logBuffer;
@@ -181,7 +191,12 @@ export class ProcessManager {
     });
 
     const pathEnv = this.userPath ? { PATH: this.userPath } : {};
-    const mergedEnv = { ...process.env, ...pathEnv, ...opts.env } as Record<string, string>;
+    // Every process runs under a PTY, so advertise a real terminal type. The
+    // daemon itself is launched without TERM; without this a shell sees no
+    // terminal, disables its line editor (ZLE), and backspace/arrows break.
+    // Defaults only — a caller's own TERM/COLORTERM still wins.
+    const termEnv = { TERM: "xterm-256color", COLORTERM: "truecolor" };
+    const mergedEnv = { ...termEnv, ...process.env, ...pathEnv, ...opts.env } as Record<string, string>;
 
     const proc = Bun.spawn(["bash", "-c", cmd], {
       terminal,
@@ -214,8 +229,17 @@ export class ProcessManager {
       // the active process for this id.
       if (this.processes.get(id)?.proc !== proc) return;
       this.processes.delete(id);
-      const state = exitCode === 0 ? "stopped" : "crashed";
-      this.stateStore.setState(id, state);
+      // A deliberate kill() already moved the state to "stopping" before
+      // signalling. The signal makes the child exit non-zero (e.g. 143 for
+      // SIGTERM), but that is an intentional stop, not a crash — finalize as
+      // "stopped" with no exit code. Only a spontaneous exit (state still
+      // "running") is classified by its code: 0 → stopped, non-zero → crashed.
+      if (this.stateStore.getState(id) === "stopping") {
+        this.stateStore.setState(id, "stopped");
+      } else {
+        this.exitCodes.set(id, exitCode);
+        this.stateStore.setState(id, exitCode === 0 ? "stopped" : "crashed");
+      }
       // Attach socket intentionally NOT closed on crash — user can still read error output.
       // It will be closed at the top of the next spawn() call for this id.
     });
@@ -294,8 +318,13 @@ export class ProcessManager {
     return this.processes.get(id)?.proc;
   }
 
-  list(): { id: string; config: SpawnConfig }[] {
-    return Array.from(this.spawnConfigs.entries()).map(([id, config]) => ({ id, config }));
+  list(): { id: string; config: SpawnConfig; startedAt?: number; exitCode?: number }[] {
+    return Array.from(this.spawnConfigs.entries()).map(([id, config]) => ({
+      id,
+      config,
+      startedAt: this.startedAt.get(id),
+      exitCode: this.exitCodes.get(id),
+    }));
   }
 
   /** Return the stored spawn config for `id`, if any. */
@@ -303,10 +332,17 @@ export class ProcessManager {
     return this.spawnConfigs.get(id);
   }
 
+  /** Exit code of the most recent run for `id`, or undefined if still running / never ran. */
+  getExitCode(id: string): number | undefined {
+    return this.exitCodes.get(id);
+  }
+
   /** Remove all record of a process. Does not kill the running process. */
   remove(id: string): void {
     this.processes.delete(id);
     this.spawnConfigs.delete(id);
     this.outputHooks.delete(id);
+    this.startedAt.delete(id);
+    this.exitCodes.delete(id);
   }
 }

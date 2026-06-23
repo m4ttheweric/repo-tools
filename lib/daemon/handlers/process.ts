@@ -10,7 +10,8 @@
  *   process:start       process:stop       process:restart
  *
  * Introspection:
- *   process:list   process:state   process:states   process:logs   process:attach-info
+ *   process:list   process:describe   process:state   process:states
+ *   process:logs   process:attach-info
  *
  * Suspend/resume (SIGSTOP/SIGCONT for warm lanes):
  *   process:suspend     process:resume
@@ -20,6 +21,10 @@ import { existsSync } from "fs";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 import { proxyWindowName } from "../../runner-store.ts";
 import { diag } from "../../diag-log.ts";
+import { listWorktrees } from "../../git-worktrees.ts";
+import { buildProcessRecords } from "../process-records.ts";
+import type { WorktreeInfo } from "../resolve-worktree.ts";
+import { discoverWorktreeCommands, deriveProcessId, detectPackageManager, buildRunCommand } from "../worktree-commands.ts";
 
 export function createProcessHandlers(ctx: HandlerContext): HandlerMap {
   return {
@@ -172,6 +177,28 @@ export function createProcessHandlers(ctx: HandlerContext): HandlerMap {
     "process:list":   async () => ({ ok: true, data: ctx.processManager.list() }),
     "process:states": async () => ({ ok: true, data: ctx.stateStore.getAll() }),
 
+    /**
+     * Enriched, external-consumer view: every managed process merged with its
+     * live state/pid and the repo/worktree its cwd resolves to. This is the
+     * shape a GUI dashboard renders; `process:list` stays lean for the CLI.
+     */
+    "process:describe": async () => {
+      const repos = ctx.repoIndex();
+      const worktrees: WorktreeInfo[] = [];
+      for (const [repo, repoPath] of Object.entries(repos)) {
+        for (const wt of listWorktrees(repoPath)) {
+          worktrees.push({ repo, path: wt.path, branch: wt.branch });
+        }
+      }
+      const records = buildProcessRecords(
+        ctx.processManager.list(),
+        (id) => ctx.stateStore.getState(id),
+        (id) => ctx.stateStore.getPid(id),
+        worktrees,
+      );
+      return { ok: true, data: records };
+    },
+
     "process:state": async (payload) => {
       const { id } = payload as { id: string };
       if (!id) return { ok: false, error: "missing id" };
@@ -191,6 +218,56 @@ export function createProcessHandlers(ctx: HandlerContext): HandlerMap {
       const hasSocket  = existsSync(socketPath);
       const state      = ctx.stateStore.getState(id) ?? "stopped";
       return { ok: true, data: { socketPath: hasSocket ? socketPath : null, state } };
+    },
+
+    // ── Launch (self-service, no rt runner needed) ──────────────────────────
+
+    /** List a worktree's runnable packages + scripts (monorepo-aware). */
+    "worktree:commands": async (payload) => {
+      const { path } = payload as { path?: string };
+      if (!path) return { ok: false, error: "missing path" };
+      return { ok: true, data: { packages: discoverWorktreeCommands(path) } };
+    },
+
+    /**
+     * Launch in a worktree/package. Prefer `script` (run through the package
+     * manager so node_modules/.bin is on PATH — running the raw script body
+     * directly fails with "command not found" for local bins like turbo/vite).
+     * `cmd` is a raw-command escape hatch.
+     */
+    "process:create": async (payload) => {
+      const { cwd, cmd, script, label } = payload as {
+        cwd: string; cmd?: string; script?: string; label?: string;
+      };
+      if (!cwd || (!cmd && !script)) return { ok: false, error: "missing cwd and (cmd or script)" };
+      const runCmd = script ? buildRunCommand(detectPackageManager(cwd), script) : cmd!;
+      const id = deriveProcessId(cwd, label ?? script ?? cmd!);
+      await ctx.processManager.spawn(id, runCmd, { cwd });
+      ctx.remedyEngine.onSpawn(id, cwd, runCmd);
+      return { ok: true, data: { id } };
+    },
+
+    /**
+     * Open an interactive terminal session: a login shell under a PTY, in the
+     * given cwd. The GUI attaches bidirectionally over /ws/processes/:id/attach
+     * and gets a real terminal — run anything (claude, vim, git, …). Tagged
+     * kind:"terminal" so consumers render it as a session, not a dev process.
+     */
+    "terminal:create": async (payload) => {
+      const { cwd } = payload as { cwd?: string };
+      if (!cwd) return { ok: false, error: "missing cwd" };
+      const shell = process.env.SHELL || "/bin/zsh";
+      const base = cwd.replace(/\/+$/, "").split("/").pop() || "term";
+      // Unique id per session: term:<dir>:<n>, n = max existing index + 1.
+      const prefix = `term:${base}:`;
+      const used = ctx.processManager.list()
+        .map((p) => p.id)
+        .filter((id) => id.startsWith(prefix))
+        .map((id) => Number(id.slice(prefix.length)))
+        .filter((n) => Number.isInteger(n));
+      const id = `${prefix}${(used.length ? Math.max(...used) : 0) + 1}`;
+      await ctx.processManager.spawn(id, `${shell} -il`, { cwd, kind: "terminal" });
+      return { ok: true, data: { id } };
     },
 
     // ── Suspend/resume ──────────────────────────────────────────────────────
