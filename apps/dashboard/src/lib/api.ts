@@ -1,4 +1,4 @@
-import type { ProcessRecord, RepoInfo, WorktreePackage } from "./types.ts";
+import type { CanonicalEndpoint, EndpointState, ProcessRecord, RepoInfo, WorktreePackage } from "./types.ts";
 
 async function json(res: Response): Promise<any> {
   const d = await res.json();
@@ -48,4 +48,17 @@ export async function createTerminal(cwd: string): Promise<string> {
     body: JSON.stringify({ cwd }),
   });
   return (await json(res)).data.id as string;
+}
+
+export async function fetchEndpoints(repo: string): Promise<{ endpoints: CanonicalEndpoint[]; state: EndpointState }> {
+  const res = await fetch(`/api/endpoints?repo=${encodeURIComponent(repo)}`);
+  return (await json(res)).data;
+}
+
+export async function mapEndpoint(input: { repo: string; port: number; processId: string; upstreamPort: number }): Promise<void> {
+  await json(await fetch("/api/endpoints/map", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) }));
+}
+
+export async function unmapEndpoint(input: { repo: string; port: number }): Promise<void> {
+  await json(await fetch("/api/endpoints/unmap", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) }));
 }
