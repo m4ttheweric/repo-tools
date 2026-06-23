@@ -10,6 +10,9 @@ export function App() {
   const { processes, connected, error, refresh } = useProcesses();
   const { repos, error: reposError, refresh: refreshRepos } = useRepos();
   const [now, setNow] = useState(() => Date.now());
+  // Exactly one worktree card may be expanded at a time, so only one terminal
+  // is ever on screen and the page does not grow down. null = all collapsed.
+  const [expandedWorktree, setExpandedWorktree] = useState<string | null>(null);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -77,6 +80,8 @@ export function App() {
                   processes={byWorktree.get(wt.path) ?? []}
                   now={now}
                   onLaunched={reload}
+                  expanded={expandedWorktree === wt.path}
+                  onExpand={setExpandedWorktree}
                 />
               ))}
             </div>
