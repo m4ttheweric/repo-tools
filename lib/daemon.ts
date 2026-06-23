@@ -1184,6 +1184,7 @@ export function startDaemon(): void {
       loadState: (repo) => loadEndpointState(repoDataDir(repo)),
       upstreamPortOf: (id) => {
         if (stateStore.getState(id) !== "running") return undefined;
+        // rt assigns a stable app port (--app-port) reused on respawn, so the stored env.PORT is the live upstream.
         const p = Number(processManager.getSpawnConfig(id)?.env?.PORT);
         return Number.isFinite(p) ? p : undefined;
       },
