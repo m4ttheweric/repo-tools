@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ChevronsUpDown, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,17 +18,20 @@ export function EndpointBar({ repo, processes }: { repo: string; processes: Proc
   const [endpoints, setEndpoints] = useState<CanonicalEndpoint[]>([]);
   const [state, setState] = useState<EndpointState>({ forward: {}, bounceEnabled: [] });
 
-  const reload = () =>
-    fetchEndpoints(repo)
-      .then((d) => {
-        setEndpoints(d.endpoints);
-        setState(d.state);
-      })
-      .catch(() => {});
+  const reload = useCallback(
+    () =>
+      fetchEndpoints(repo)
+        .then((d) => {
+          setEndpoints(d.endpoints);
+          setState(d.state);
+        })
+        .catch(() => {}),
+    [repo],
+  );
 
   useEffect(() => {
     reload();
-  }, [repo]);
+  }, [reload]);
 
   const forward = endpoints.filter((e) => e.mode === "forward");
   if (forward.length === 0) return null;
@@ -53,7 +56,11 @@ export function EndpointBar({ repo, processes }: { repo: string; processes: Proc
                 className="h-5 gap-1 px-1.5 text-xs"
                 aria-label={`Unmap ${target.id}`}
                 title={`Unmap ${target.id}`}
-                onClick={() => unmapEndpoint({ repo, port: e.port }).then(reload)}
+                onClick={() =>
+                  unmapEndpoint({ repo, port: e.port })
+                    .then(reload)
+                    .catch((e) => alert(`unmap failed: ${e}`))
+                }
               >
                 <span className="font-mono text-foreground">{target.id}</span>
                 <X className="size-3 text-muted-foreground" />
@@ -62,7 +69,9 @@ export function EndpointBar({ repo, processes }: { repo: string; processes: Proc
               <PickProcess
                 processes={mappable}
                 onPick={(p) =>
-                  mapEndpoint({ repo, port: e.port, processId: p.id, upstreamPort: p.port! }).then(reload)
+                  mapEndpoint({ repo, port: e.port, processId: p.id, upstreamPort: p.port! })
+                    .then(reload)
+                    .catch((e) => alert(`map failed: ${e}`))
                 }
               />
             )}
@@ -112,9 +121,7 @@ function PickProcess({
                   }}
                 >
                   <span className="font-mono">{p.id}</span>
-                  {p.port && (
-                    <span className="ml-auto text-muted-foreground">:{p.port}</span>
-                  )}
+                  <span className="ml-auto text-muted-foreground">:{p.port}</span>
                 </CommandItem>
               ))}
             </CommandGroup>
