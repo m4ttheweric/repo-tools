@@ -834,6 +834,11 @@ function startApiServer(): void {
     port: API_PORT,
     // Bind to loopback only — never expose the control surface on the LAN.
     hostname: "127.0.0.1",
+    // Raise the request idle timeout off Bun's 10s default. Long-lived clients
+    // (the terminal attach WS, the log-stream WS) are idle between keystrokes /
+    // output and were being reaped every 10s ("[Bun.serve]: request timed out").
+    // 255 is the server max; the websocket block below sets its own larger one.
+    idleTimeout: 255,
     async fetch(req, server) {
       const url = new URL(req.url);
 
@@ -970,6 +975,10 @@ function startApiServer(): void {
       }
     },
     websocket: {
+      // Keep terminal/log sockets alive: an idle terminal sends nothing for long
+      // stretches. 960 is Bun's per-socket max; combined with the default pings
+      // this stops idle WS connections from being closed out from under the GUI.
+      idleTimeout: 960,
       open(ws) {
         const data = ws.data as { kind?: string; id?: string; unsub?: () => void };
         // Log tail (read-only) and attach (bidirectional) share the same output
