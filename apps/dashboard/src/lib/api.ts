@@ -62,3 +62,11 @@ export async function mapEndpoint(input: { repo: string; port: number; processId
 export async function unmapEndpoint(input: { repo: string; port: number }): Promise<void> {
   await json(await fetch("/api/endpoints/unmap", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) }));
 }
+
+export async function enableBounce(input: { repo: string; port: number }): Promise<void> {
+  await json(await fetch("/api/endpoints/bounce-enable", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) }));
+}
+
+export async function disableBounce(input: { repo: string; port: number }): Promise<void> {
+  await json(await fetch("/api/endpoints/bounce-disable", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) }));
+}
