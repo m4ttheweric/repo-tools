@@ -30,9 +30,43 @@ describe("loadEndpoints", () => {
     const d = tmp();
     try {
       writeFileSync(join(d, "endpoints.json"), JSON.stringify({
-        endpoints: [{ port: 4000, name: "ok", mode: "forward" }, { port: 1.5, name: "bad", mode: "nope" }],
+        endpoints: [
+          { port: 4000, name: "ok", mode: "forward" },
+          { port: 1.5, name: "badport", mode: "forward" },
+          { port: 4001, name: "badmode", mode: "nope" },
+        ],
       }));
       expect(loadEndpoints(d)).toEqual([{ port: 4000, name: "ok", mode: "forward" }]);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+  test("bounce endpoints get default returnParam when not provided", () => {
+    const d = tmp();
+    try {
+      writeFileSync(join(d, "endpoints.json"), JSON.stringify({
+        endpoints: [{ port: 4001, name: "auth", mode: "bounce" }],
+      }));
+      const result = loadEndpoints(d);
+      expect(result).toEqual([{ port: 4001, name: "auth", mode: "bounce", returnParam: "rt_return" }]);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+  test("bounce endpoints preserve explicit returnParam", () => {
+    const d = tmp();
+    try {
+      writeFileSync(join(d, "endpoints.json"), JSON.stringify({
+        endpoints: [{ port: 4002, name: "auth2", mode: "bounce", returnParam: "back" }],
+      }));
+      const result = loadEndpoints(d);
+      expect(result).toEqual([{ port: 4002, name: "auth2", mode: "bounce", returnParam: "back" }]);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+  test("forward endpoints have no returnParam key", () => {
+    const d = tmp();
+    try {
+      writeFileSync(join(d, "endpoints.json"), JSON.stringify({
+        endpoints: [{ port: 4000, name: "app", mode: "forward" }],
+      }));
+      const result = loadEndpoints(d);
+      expect("returnParam" in result[0]).toBe(false);
     } finally { rmSync(d, { recursive: true, force: true }); }
   });
 });

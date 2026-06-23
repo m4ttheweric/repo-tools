@@ -24,12 +24,25 @@ export interface EndpointState {
 export function loadEndpoints(dataDir: string): CanonicalEndpoint[] {
   const raw = readJson<{ endpoints?: unknown }>(join(dataDir, "endpoints.json"), {});
   const list = Array.isArray(raw.endpoints) ? raw.endpoints : [];
-  return list.filter((e: any): e is CanonicalEndpoint =>
-    e && Number.isInteger(e.port) && typeof e.name === "string" && (e.mode === "forward" || e.mode === "bounce"),
-  ).map((e: any) => ({
-    port: e.port, name: e.name, mode: e.mode,
-    ...(e.mode === "bounce" ? { returnParam: typeof e.returnParam === "string" ? e.returnParam : "rt_return" } : {}),
-  }));
+  return list.reduce<CanonicalEndpoint[]>((acc, e: unknown) => {
+    if (!e || typeof e !== "object") return acc;
+    const obj = e as Record<string, unknown>;
+    const port = obj.port;
+    const name = obj.name;
+    const mode = obj.mode;
+    if (!Number.isInteger(port) || typeof name !== "string" || (mode !== "forward" && mode !== "bounce")) {
+      return acc;
+    }
+    const endpoint: CanonicalEndpoint = {
+      port: port as number,
+      name: name as string,
+      mode: mode as "forward" | "bounce",
+    };
+    if (mode === "bounce") {
+      endpoint.returnParam = typeof obj.returnParam === "string" ? obj.returnParam : "rt_return";
+    }
+    return [...acc, endpoint];
+  }, []);
 }
 
 export function loadEndpointState(dataDir: string): EndpointState {
