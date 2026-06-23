@@ -41,6 +41,7 @@ describe("process:create", () => {
       const res = await handlers["process:create"]!({ cwd: dir, script: "gentypes" });
       expect(res.ok).toBe(true);
       expect(spawned[0].cmd).toBe("pnpm run gentypes"); // NOT the raw script body
+      expect(res.data.portless).toBe("unavailable");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
