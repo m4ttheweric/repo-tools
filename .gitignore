@@ -10,3 +10,6 @@ rt-tray/rt-tray.app/
 
 # Local-only superpowers spec/plan notes (untracked)
 .local-dev/
+
+# superpowers scratch (SDD ledger/briefs/diffs, brainstorming companion)
+.superpowers/
