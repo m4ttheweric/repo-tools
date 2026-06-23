@@ -54,6 +54,7 @@ import {
   type MRSubscriptionEnv,
 } from "./daemon/mr-subscriptions.ts";
 import { checkAndPark } from "./daemon/parking-lot.ts";
+import { portlessAvailable } from "./daemon/portless.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -640,6 +641,7 @@ const handlerCtx: HandlerContext = {
   attachServer, logBuffer, exclusiveGroup,
   cache, refreshCache, loadCache, flushCache, remedyEvents: remedyEventQueue,
   portAllocator,
+  portlessAvailable: () => portlessAvailable(),
   log,
   startedAt,
   portCacheRef,

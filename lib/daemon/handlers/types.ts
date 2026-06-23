@@ -94,6 +94,8 @@ export interface HandlerContext {
 
   /** Ephemeral port allocator for daemon-managed processes. */
   portAllocator:  PortAllocator;
+  /** Whether the portless CLI is available (injected for testability). */
+  portlessAvailable: () => boolean;
   /** Daemon logger; handlers write side-effect logs through this. */
   log:            Logger;
   /** Unix-ms timestamp of daemon startup; read once by status handlers. */

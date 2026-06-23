@@ -17,6 +17,7 @@ function ctxWith() {
     ctx: {
       processManager: { async spawn(id: string, cmd: string, opts: any) { spawned.push({ id, cmd, opts }); } },
       remedyEngine: { onSpawn() {} },
+      portlessAvailable: () => false,
     },
   };
 }
@@ -26,7 +27,8 @@ describe("process:create", () => {
     const { ctx, spawned } = ctxWith();
     const handlers = createProcessHandlers(ctx as any);
     const res = await handlers["process:create"]!({ cwd: "/a/acme-wktree-2", cmd: "vite", label: "dev" });
-    expect(res).toEqual({ ok: true, data: { id: "acme-wktree-2:dev" } });
+    expect(res.ok).toBe(true);
+    expect(res.data.id).toBe("acme-wktree-2:dev");
     expect(spawned).toEqual([{ id: "acme-wktree-2:dev", cmd: "vite", opts: { cwd: "/a/acme-wktree-2" } }]);
   });
 
@@ -49,6 +51,31 @@ describe("process:create", () => {
     const handlers = createProcessHandlers(ctx as any);
     expect((await handlers["process:create"]!({ script: "dev" })).ok).toBe(false);
     expect((await handlers["process:create"]!({ cwd: "/a" })).ok).toBe(false);
+  });
+
+  test("wraps the command in portless by default when available", async () => {
+    const { ctx, spawned } = ctxWith();
+    const handlers = createProcessHandlers({ ...ctx, portlessAvailable: () => true } as any);
+    const res = await handlers["process:create"]!({ cwd: "/a/wt", cmd: "vite", label: "dev" });
+    expect(res.ok).toBe(true);
+    expect(res.data.portless).toBe("on");
+    expect(spawned[0].cmd).toBe("portless run vite");
+  });
+
+  test("falls back to a plain run when portless is unavailable", async () => {
+    const { ctx, spawned } = ctxWith();
+    const handlers = createProcessHandlers({ ...ctx, portlessAvailable: () => false } as any);
+    const res = await handlers["process:create"]!({ cwd: "/a/wt", cmd: "vite", label: "dev" });
+    expect(res.data.portless).toBe("unavailable");
+    expect(spawned[0].cmd).toBe("vite");
+  });
+
+  test("portless:false runs plain even when available", async () => {
+    const { ctx, spawned } = ctxWith();
+    const handlers = createProcessHandlers({ ...ctx, portlessAvailable: () => true } as any);
+    const res = await handlers["process:create"]!({ cwd: "/a/wt", cmd: "vite", portless: false });
+    expect(res.data.portless).toBe("off");
+    expect(spawned[0].cmd).toBe("vite");
   });
 });
 

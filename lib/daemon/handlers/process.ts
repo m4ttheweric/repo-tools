@@ -25,6 +25,7 @@ import { listWorktrees } from "../../git-worktrees.ts";
 import { buildProcessRecords } from "../process-records.ts";
 import type { WorktreeInfo } from "../resolve-worktree.ts";
 import { discoverWorktreeCommands, deriveProcessId, detectPackageManager, buildRunCommand } from "../worktree-commands.ts";
+import { buildPortlessCommand } from "../portless.ts";
 
 export function createProcessHandlers(ctx: HandlerContext): HandlerMap {
   return {
@@ -236,15 +237,25 @@ export function createProcessHandlers(ctx: HandlerContext): HandlerMap {
      * `cmd` is a raw-command escape hatch.
      */
     "process:create": async (payload) => {
-      const { cwd, cmd, script, label } = payload as {
-        cwd: string; cmd?: string; script?: string; label?: string;
+      const { cwd, cmd, script, label, portless } = payload as {
+        cwd: string; cmd?: string; script?: string; label?: string; portless?: boolean;
       };
       if (!cwd || (!cmd && !script)) return { ok: false, error: "missing cwd and (cmd or script)" };
-      const runCmd = script ? buildRunCommand(detectPackageManager(cwd), script) : cmd!;
+      const baseCmd = script ? buildRunCommand(detectPackageManager(cwd), script) : cmd!;
+
+      // portless is the default front door (worktree-aware .localhost URLs).
+      // Honor an explicit opt-out, and degrade gracefully if it isn't installed.
+      const wantPortless = portless !== false;
+      const available = ctx.portlessAvailable();
+      let runCmd = baseCmd;
+      let portlessState: "on" | "off" | "unavailable" = "off";
+      if (wantPortless && available) { runCmd = buildPortlessCommand(baseCmd); portlessState = "on"; }
+      else if (wantPortless && !available) { portlessState = "unavailable"; }
+
       const id = deriveProcessId(cwd, label ?? script ?? cmd!);
       await ctx.processManager.spawn(id, runCmd, { cwd });
       ctx.remedyEngine.onSpawn(id, cwd, runCmd);
-      return { ok: true, data: { id } };
+      return { ok: true, data: { id, portless: portlessState } };
     },
 
     /**
