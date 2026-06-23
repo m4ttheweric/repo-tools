@@ -16,10 +16,13 @@ function ctxWith() {
   return {
     spawned, released,
     ctx: {
-      processManager: { async spawn(id: string, cmd: string, opts: any) { spawned.push({ id, cmd, opts }); } },
-      remedyEngine: { onSpawn() {} },
+      processManager: { async spawn(id: string, cmd: string, opts: any) { spawned.push({ id, cmd, opts }); }, remove() {} },
+      remedyEngine: { onSpawn() {}, unregister() {} },
       portlessAvailable: () => false,
       portAllocator: { allocate: (_label: string) => 10001, releaseByLabel: (label: string) => released.push(label) },
+      attachServer: { close() {} },
+      logBuffer: { remove() {} },
+      stateStore: { remove() {} },
     },
   };
 }
@@ -85,6 +88,16 @@ describe("process:create", () => {
     const res = await handlers["process:create"]!({ cwd: "/a/wt", cmd: "vite", portless: false });
     expect(res.data.portless).toBe("off");
     expect(spawned[0].cmd).toBe("vite");
+  });
+});
+
+describe("process:remove", () => {
+  test("releases the allocated port and returns ok", async () => {
+    const { ctx, released } = ctxWith();
+    const handlers = createProcessHandlers(ctx as any);
+    const res = await handlers["process:remove"]!({ id: "wt:dev" });
+    expect(res.ok).toBe(true);
+    expect(released).toContain("wt:dev");
   });
 });
 
