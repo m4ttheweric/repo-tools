@@ -17,6 +17,7 @@ export function SessionTerminal({ id }: { id: string }) {
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    setConnected(false);
 
     const term = new Terminal({
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -64,7 +65,7 @@ export function SessionTerminal({ id }: { id: string }) {
 
   return (
     <div style={{ backgroundColor: THEME.background }}>
-      {!connected && <div className="px-3 pt-1 text-[11px] text-[#72898f]">connecting…</div>}
+      {!connected && <div className="px-3 pt-1 text-[11px]" style={{ color: THEME.white }}>connecting…</div>}
       <div ref={hostRef} className="h-96 px-2 pb-2" />
     </div>
   );

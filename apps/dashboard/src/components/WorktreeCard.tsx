@@ -108,8 +108,8 @@ export function WorktreeCard({
         </div>
       </div>
 
-      {sessions.length > 0 && (
-        <div className="dark border-t border-border bg-background" style={{ display: expanded ? undefined : "none" }}>
+      {sessions.length > 0 && expanded && (
+        <div className="dark border-t border-border bg-background">
           <SessionTabs sessions={sessions} activeId={activeId} onSelect={setActiveId} />
           {active && <SessionControlBar session={active} now={now} onChanged={onLaunched} />}
           {active && <SessionTerminal key={active.id} id={active.id} />}
