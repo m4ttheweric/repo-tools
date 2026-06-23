@@ -30,7 +30,11 @@ export function createEndpointHandlers(ctx: HandlerContext): HandlerMap {
       const ep = loadEndpoints(dir).find((e) => e.port === port && e.mode === "forward");
       if (!ep) return { ok: false, error: `no forward endpoint declared on port ${port}` };
 
-      ctx.proxyManager.start(endpointProxyId(repo, port), port, upstreamPort, `endpoint:${repo}`);
+      try {
+        ctx.proxyManager.start(endpointProxyId(repo, port), port, upstreamPort, `endpoint:${repo}`);
+      } catch (err) {
+        return { ok: false, error: `port ${port} already in use (${err})` };
+      }
       const state = loadEndpointState(dir);
       state.forward[String(port)] = processId;
       saveEndpointState(dir, state);

@@ -259,6 +259,7 @@ export function createProcessHandlers(ctx: HandlerContext): HandlerMap {
       let portlessState: "on" | "off" | "unavailable" = "off";
       const env: Record<string, string> = {};
       if (wantPortless && available) {
+        ctx.portAllocator.releaseByLabel(id);
         const port = ctx.portAllocator.allocate(id);
         const name = deriveAppName(cwd);
         const url = portlessUrl(name, worktreeBranchPrefix(cwd));
