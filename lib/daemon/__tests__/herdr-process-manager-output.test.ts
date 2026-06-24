@@ -14,8 +14,8 @@ describe("subscribeToOutput (poll diff)", () => {
       let buf = "line1\n";
       const client = {
         async call(m: string) {
-          // Mock returns { text: buf } matching the real socket shape fallback path
-          return m === "pane.read" ? { text: buf } : {};
+          // Mock returns the real socket shape for pane.read
+          return m === "pane.read" ? { type: "pane_read", read: { text: buf } } : {};
         },
         async available() { return true; },
       } as any;

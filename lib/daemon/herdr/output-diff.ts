@@ -1,7 +1,7 @@
 /**
  * Returns the part of `cur` that was appended after the longest common prefix
- * shared with `prev`. If `cur` is shorter than `prev` (truncation or rewrite),
- * returns `cur` in full so callers always get something observable.
+ * shared with `prev`. On divergence or truncation, returns cur.slice(commonPrefixLen)
+ * — i.e. whatever follows the longest common prefix (often "" when cur is a prefix of prev).
  */
 export function appendedSuffix(prev: string, cur: string): string {
   let i = 0;
