@@ -11,12 +11,21 @@
 import type { ProcessManager } from "./process-manager.ts";
 import type { StateStore } from "./state-store.ts";
 
+/**
+ * Minimal shape that both ProcessManager (sync, returns Bun.Subprocess which
+ * has .pid) and HerdrProcessManager (async, returns { pid }) satisfy.
+ */
+interface GetProcessLike {
+  getProcess(id: string): { pid?: number } | undefined | Promise<{ pid?: number } | undefined>;
+  kill(id: string): Promise<void>;
+}
+
 export class SuspendManager {
-  private processManager: ProcessManager;
+  private processManager: ProcessManager & GetProcessLike;
   private stateStore: StateStore;
 
   constructor(deps: { processManager: ProcessManager; stateStore: StateStore }) {
-    this.processManager = deps.processManager;
+    this.processManager = deps.processManager as ProcessManager & GetProcessLike;
     this.stateStore = deps.stateStore;
   }
 
@@ -56,7 +65,8 @@ export class SuspendManager {
   }
 
   async suspend(processId: string): Promise<void> {
-    const proc = this.processManager.getProcess(processId);
+    // await handles both the sync (ProcessManager) and async (HerdrProcessManager) variants.
+    const proc = await this.processManager.getProcess(processId);
     if (!proc?.pid) return;
 
     const pids = await this.getDescendants(proc.pid);
@@ -65,7 +75,8 @@ export class SuspendManager {
   }
 
   async resume(processId: string): Promise<void> {
-    const proc = this.processManager.getProcess(processId);
+    // await handles both the sync (ProcessManager) and async (HerdrProcessManager) variants.
+    const proc = await this.processManager.getProcess(processId);
     if (!proc?.pid) return;
 
     const pids = await this.getDescendants(proc.pid);
