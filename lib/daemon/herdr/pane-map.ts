@@ -35,7 +35,8 @@ export class PaneMap {
   all(): PaneRef[] { return [...this.byId.values()]; }
   reconcile(livePaneIds: Set<string>): string[] {
     const dropped: string[] = [];
-    for (const [id, ref] of this.byId) if (!livePaneIds.has(ref.paneId)) { this.byId.delete(id); dropped.push(id); }
+    for (const [id, ref] of this.byId) if (!livePaneIds.has(ref.paneId)) dropped.push(id);
+    for (const id of dropped) this.byId.delete(id);
     if (dropped.length) this.persist();
     return dropped;
   }

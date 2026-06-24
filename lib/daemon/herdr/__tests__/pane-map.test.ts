@@ -42,4 +42,17 @@ describe("PaneMap", () => {
       expect(m.get("dead")).toBeUndefined();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  test("reconcile persists the drop (gone in a fresh instance)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-pm-"));
+    try {
+      const m = new PaneMap(dir);
+      m.set(ref({ id: "alive", paneId: "w3:p1" }));
+      m.set(ref({ id: "dead", paneId: "w3:p9" }));
+      m.reconcile(new Set(["w3:p1"]));
+      const fresh = new PaneMap(dir);
+      expect(fresh.get("alive")).toBeDefined();
+      expect(fresh.get("dead")).toBeUndefined();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });
