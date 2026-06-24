@@ -21,26 +21,31 @@ export class HerdrProcessManager {
 
   async spawn(id: string, cmd: string, opts: { cwd: string; env?: Record<string, string>; kind?: "terminal" }): Promise<void> {
     this.stateStore.setState(id, "starting");
-    // Create a fresh workspace/pane for this cwd, then run the command in it.
-    // (Probe confirmed workspace.create returns root_pane{pane_id,terminal_id,workspace_id}.)
-    const ws = await this.client.call("workspace.create", { cwd: opts.cwd, label: id, focus: false, env: opts.env });
-    const paneId = ws.root_pane.pane_id as string;
-    await this.client.call("pane.run", { pane_id: paneId, text: cmd });
-    const ref: PaneRef = {
-      id, workspaceId: ws.root_pane.workspace_id, paneId, terminalId: ws.root_pane.terminal_id,
-      cwd: opts.cwd, cmd, env: opts.env, port: opts.env?.PORT ? Number(opts.env.PORT) : undefined, startedAt: this.now(),
-    };
-    this.paneMap.set(ref);
-    this.stateStore.setPid(id, undefined);
-    this.stateStore.setState(id, "running");
+    try {
+      // Create a fresh workspace/pane for this cwd, then run the command in it.
+      // (Probe confirmed workspace.create returns root_pane{pane_id,terminal_id,workspace_id}.)
+      const ws = await this.client.call("workspace.create", { cwd: opts.cwd, label: id, focus: false, env: opts.env });
+      const paneId = ws.root_pane.pane_id as string;
+      await this.client.call("pane.run", { pane_id: paneId, text: cmd });
+      const ref: PaneRef = {
+        id, workspaceId: ws.root_pane.workspace_id, paneId, terminalId: ws.root_pane.terminal_id,
+        cwd: opts.cwd, cmd, env: opts.env, port: opts.env?.PORT ? Number(opts.env.PORT) : undefined, startedAt: this.now(),
+      };
+      this.paneMap.set(ref);
+      this.stateStore.setPid(id, undefined);
+      this.stateStore.setState(id, "running");
+    } catch (err) {
+      this.stateStore.setState(id, "stopped");
+      throw err;
+    }
   }
 
   async kill(id: string): Promise<void> {
     const ref = this.paneMap.get(id);
     this.stateStore.setState(id, "stopping");
     if (ref) { try { await this.client.call("pane.close", { pane_id: ref.paneId }); } catch { /* gone */ } }
-    this.paneMap.delete(id);
     this.stateStore.setState(id, "stopped");
+    this.paneMap.delete(id);
   }
 
   async respawn(id: string): Promise<void> {
