@@ -67,7 +67,7 @@ export class TunnelManager {
     writeFileSync(yamlPath, yaml);
 
     const id = tunnelProcessId(boardName);
-    const running = this.deps.processManager.getProcess(id);
+    const running = await this.deps.processManager.getProcess(id);
     if (running) {
       try { process.kill(running.pid as number, "SIGHUP"); } catch (err) {
         // SIGHUP can fail if the process exited between getProcess() and kill() —
@@ -85,9 +85,9 @@ export class TunnelManager {
       `${cfg.hostnamePrefix}${l.canonicalPort}.${cfg.baseDomain}`));
   }
 
-  status(boardName: string): TunnelStatus {
+  async status(boardName: string): Promise<TunnelStatus> {
     const id = tunnelProcessId(boardName);
-    const running = this.deps.processManager.getProcess(id);
+    const running = await this.deps.processManager.getProcess(id);
     if (!running) return { state: "stopped" };
     return {
       state: "running",

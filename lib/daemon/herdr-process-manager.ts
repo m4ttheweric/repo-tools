@@ -35,6 +35,7 @@ export class HerdrProcessManager {
       const ref: PaneRef = {
         id, workspaceId: ws.root_pane.workspace_id, paneId, terminalId: ws.root_pane.terminal_id,
         cwd: opts.cwd, cmd, env: opts.env, port: opts.env?.PORT ? Number(opts.env.PORT) : undefined, startedAt: this.now(),
+        kind: opts.kind,
       };
       this.paneMap.set(ref);
       this.stateStore.setPid(id, undefined);
