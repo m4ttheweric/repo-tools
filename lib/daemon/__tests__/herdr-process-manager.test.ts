@@ -39,6 +39,24 @@ describe("HerdrProcessManager.spawn", () => {
       expect(pm.list().map((p) => p.id)).toEqual(["backend:start"]);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  test("on a herdr failure, leaves no map entry and ends in stopped, rethrowing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-fail-"));
+    try {
+      const client = {
+        async call(method: string) {
+          if (method === "workspace.create") return { root_pane: { pane_id: "w9:p1", terminal_id: "t", workspace_id: "w9" }, workspace: { workspace_id: "w9" } };
+          if (method === "pane.run") throw new Error("herdr boom");
+          return {};
+        },
+        async available() { return true; },
+      } as any;
+      const pm = new HerdrProcessManager({ client, paneMap: new PaneMap(dir), stateStore: new StateStore(dir), now: () => 1 });
+      await expect(pm.spawn("x", "boom", { cwd: "/tmp" })).rejects.toThrow("herdr boom");
+      expect(pm.getSpawnConfig("x")).toBeUndefined();
+      expect((pm as any).stateStore.getState("x")).toBe("stopped");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });
 
 describe("HerdrProcessManager.kill", () => {
