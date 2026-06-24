@@ -71,3 +71,48 @@ describe("HerdrProcessManager.kill", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe("HerdrProcessManager.getProcess", () => {
+  test("returns the herdr foreground pid from the nested process_info shape", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-gp-"));
+    try {
+      const client = {
+        async call(m: string, _p?: any) {
+          if (m === "workspace.create") return { root_pane: { pane_id: "w9:p1", terminal_id: "t", workspace_id: "w9" }, workspace: { workspace_id: "w9" } };
+          if (m === "pane.send_text" || m === "pane.send_keys") return { type: "ok" };
+          if (m === "pane.process_info") return { process_info: { foreground_processes: [{ pid: 4242 }], shell_pid: 1 } };
+          return {};
+        },
+        async available() { return true; },
+      } as any;
+      const pm = new HerdrProcessManager({ client, paneMap: new PaneMap(dir), stateStore: new StateStore(dir), now: () => 1 });
+      await pm.spawn("x", "sleep 9", { cwd: "/tmp" });
+      expect(await pm.getProcess("x")).toEqual({ pid: 4242 });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("falls back to shell_pid when no foreground_processes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-gp2-"));
+    try {
+      const client = {
+        async call(m: string, _p?: any) {
+          if (m === "workspace.create") return { root_pane: { pane_id: "w9:p1", terminal_id: "t", workspace_id: "w9" }, workspace: { workspace_id: "w9" } };
+          if (m === "pane.send_text" || m === "pane.send_keys") return { type: "ok" };
+          if (m === "pane.process_info") return { process_info: { foreground_processes: [], shell_pid: 999 } };
+          return {};
+        },
+        async available() { return true; },
+      } as any;
+      const pm = new HerdrProcessManager({ client, paneMap: new PaneMap(dir), stateStore: new StateStore(dir), now: () => 1 });
+      await pm.spawn("x", "sleep 9", { cwd: "/tmp" });
+      expect(await pm.getProcess("x")).toEqual({ pid: 999 });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("returns undefined for an unknown id", async () => {
+    const { pm, dir } = harness();
+    try {
+      expect(await pm.getProcess("nonexistent")).toBeUndefined();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
