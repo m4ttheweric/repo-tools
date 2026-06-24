@@ -30,7 +30,8 @@ export class HerdrProcessManager {
       // (Probe confirmed workspace.create returns root_pane{pane_id,terminal_id,workspace_id}.)
       const ws = await this.client.call("workspace.create", { cwd: opts.cwd, label: id, focus: false, env: opts.env });
       const paneId = ws.root_pane.pane_id as string;
-      await this.client.call("pane.run", { pane_id: paneId, text: cmd });
+      await this.client.call("pane.send_text", { pane_id: paneId, text: cmd });
+      await this.client.call("pane.send_keys", { pane_id: paneId, keys: ["enter"] });
       const ref: PaneRef = {
         id, workspaceId: ws.root_pane.workspace_id, paneId, terminalId: ws.root_pane.terminal_id,
         cwd: opts.cwd, cmd, env: opts.env, port: opts.env?.PORT ? Number(opts.env.PORT) : undefined, startedAt: this.now(),
