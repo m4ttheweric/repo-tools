@@ -232,7 +232,7 @@ export async function textInput(opts: {
  * Show a filterable multi-select using fzf.
  * Selected items are shown in a preview pane at the top so you can always
  * see what you've picked, even when filtering.
- * Falls back to standard multiselect if fzf is not installed.
+ * fzf is a hard dependency — exits with an install hint if it's missing.
  */
 export async function filterableMultiselect(opts: {
   message: string;
@@ -240,17 +240,9 @@ export async function filterableMultiselect(opts: {
   initialValues?: string[];
   stderr?: boolean;
 }): Promise<string[] | null> {
-  const { spawnSync, execSync } = await import("child_process");
-
-  let hasFzf = false;
-  try {
-    execSync("which fzf", { stdio: "pipe" });
-    hasFzf = true;
-  } catch {}
-
-  if (!hasFzf) {
-    return multiselect(opts);
-  }
+  const { spawnSync } = await import("child_process");
+  const { ensureFzf } = await import("./fzf.ts");
+  ensureFzf();
 
   const labelWidth = Math.max(...opts.options.map((o) => o.label.length));
   const input = opts.options
@@ -318,7 +310,7 @@ export async function filterableMultiselect(opts: {
 
 /**
  * Show a filterable single-select using fzf.
- * Falls back to standard select if fzf is not installed.
+ * fzf is a hard dependency — exits with an install hint if it's missing.
  */
 export async function filterableSelect(opts: {
   message: string;
@@ -329,19 +321,11 @@ export async function filterableSelect(opts: {
   /** Use fzf's exact-match mode instead of fuzzy matching. */
   exact?: boolean;
 }): Promise<string | null> {
-  const { spawnSync, execSync } = await import("child_process");
+  const { spawnSync } = await import("child_process");
+  const { ensureFzf } = await import("./fzf.ts");
+  ensureFzf();
 
   const options = opts.options;
-
-  let hasFzf = false;
-  try {
-    execSync("which fzf", { stdio: "pipe" });
-    hasFzf = true;
-  } catch {}
-
-  if (!hasFzf) {
-    return select({ ...opts, options });
-  }
 
   const labelWidth = Math.max(...options.map((o) => o.label.length));
   const input = options
@@ -400,6 +384,98 @@ export async function filterableSelect(opts: {
 
   if (!raw) return null;
   return raw.split("\t")[0]!;
+}
+
+/**
+ * Like filterableSelect, but returns both the selected value and the fzf exit key.
+ *
+ * Use this when you need to distinguish between Enter and other keys
+ * (e.g., Shift+Enter for an alternate action on the selected item).
+ *
+ * extraExpect keys are added to --expect; when one fires, the result's `key`
+ * field is set to that key name (e.g. "shift-enter"). For a normal Enter press,
+ * `key` is "".
+ */
+export async function filterableSelectWithKey(opts: {
+  message: string;
+  options: SelectOption[];
+  stderr?: boolean;
+  /** When set, shows `ctrl-up: back` in the header and throws BackNavigation on ctrl-up. */
+  backLabel?: string;
+  /** Extra keys to listen for via --expect. Header is updated to show the hint. */
+  extraExpect?: string[];
+  /** Hint text for the first extra key, shown in the header. e.g. "shift-enter: variations" */
+  extraHint?: string;
+  /** Use fzf's exact-match mode instead of fuzzy matching. */
+  exact?: boolean;
+}): Promise<{ value: string; key: string } | null> {
+  const { spawnSync } = await import("child_process");
+  const { ensureFzf } = await import("./fzf.ts");
+  ensureFzf();
+
+  const options = opts.options;
+
+  const labelWidth = Math.max(...options.map((o) => o.label.length));
+  const input = options
+    .map((o) => {
+      const pad = " ".repeat(labelWidth - o.label.length);
+      const open = o.color ?? "";
+      const close = o.color ? "\x1b[0m" : "";
+      const hint = o.hint
+        ? (o.color ? o.hint : `\x1b[2m${o.hint}\x1b[22m`)
+        : "";
+      return `${o.value}\t${open}\x1b[1m${o.label}\x1b[22m${pad}\t  ${hint}${close}`;
+    })
+    .join("\n");
+
+  const headerParts = ["enter: select  |: OR  !: exclude"];
+  if (opts.extraHint) headerParts.push(opts.extraHint);
+  if (opts.backLabel) headerParts.push("ctrl-up: back");
+  const header = headerParts.join("  ");
+
+  const extraKeys = opts.extraExpect ?? [];
+  const expectKeys = ["ctrl-up", ...extraKeys];
+
+  const result = spawnSync("fzf", [
+    "--ansi",
+    "--with-nth=2..",
+    "--nth=1",
+    "--delimiter=\t",
+    "--tabstop=1",
+    "--height=~100%",
+    "--layout=reverse",
+    "--border=rounded",
+    `--border-label= ${opts.message} `,
+    "--prompt=filter: ",
+    `--header=${header}`,
+    "--no-mouse",
+    "--print-query",
+    `--expect=${expectKeys.join(",")}`,
+    `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}`,
+    ...(opts.exact ? ["--exact"] : []),
+  ], {
+    input,
+    stdio: ["pipe", "pipe", "inherit"],
+    encoding: "utf8",
+  });
+
+  if (result.status !== 0) return null;
+
+  // --print-query + --expect always produce 3 lines:
+  //   line 0: query text
+  //   line 1: key pressed ("" for Enter, "ctrl-up"/"shift-enter" etc.)
+  //   line 2: selected row (tab-delimited)
+  const lines = (result.stdout ?? "").split("\n");
+  const key = lines[1]?.trim() || "";
+  const raw = lines[2]?.trim() ?? "";
+
+  if (key === "ctrl-up") {
+    if (opts.backLabel) throw new BackNavigation();
+    return null;
+  }
+
+  if (!raw) return null;
+  return { value: raw.split("\t")[0]!, key };
 }
 
 // ─── Step Runner ─────────────────────────────────────────────────────────────
