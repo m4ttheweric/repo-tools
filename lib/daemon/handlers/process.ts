@@ -205,7 +205,19 @@ export function createProcessHandlers(ctx: HandlerContext): HandlerMap {
      * live state/pid and the repo/worktree its cwd resolves to. This is the
      * shape a GUI dashboard renders; `process:list` stays lean for the CLI.
      */
-    "process:describe": async () => ({ ok: true, data: describeRecords(ctx) }),
+    "process:describe": async () => {
+      if (typeof (ctx.processManager as any).describe === "function") {
+        const repos = ctx.repoIndex();
+        const worktrees: WorktreeInfo[] = [];
+        for (const [repo, repoPath] of Object.entries(repos)) {
+          for (const wt of listWorktrees(repoPath)) {
+            worktrees.push({ repo, path: wt.path, branch: wt.branch });
+          }
+        }
+        return { ok: true, data: await (ctx.processManager as any).describe(worktrees) };
+      }
+      return { ok: true, data: describeRecords(ctx) };
+    },
 
     "process:state": async (payload) => {
       const { id } = payload as { id: string };

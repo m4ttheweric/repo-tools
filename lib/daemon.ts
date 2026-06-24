@@ -55,6 +55,9 @@ import {
 } from "./daemon/mr-subscriptions.ts";
 import { checkAndPark } from "./daemon/parking-lot.ts";
 import { portlessAvailable } from "./daemon/portless.ts";
+import { HerdrClient } from "./daemon/herdr/client.ts";
+import { PaneMap } from "./daemon/herdr/pane-map.ts";
+import { HerdrProcessManager } from "./daemon/herdr-process-manager.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -148,11 +151,18 @@ const log = loggerHandle.logger;
 
 // ─── Daemon units (process management) ───────────────────────────────────────
 
-const stateStore     = new StateStore();
-const portAllocator  = new PortAllocator();
-const logBuffer      = new LogBuffer();
-const attachServer   = new AttachServer({ logBuffer });
-const processManager = new ProcessManager({ stateStore, logBuffer, attachServer });
+const stateStore    = new StateStore();
+const portAllocator = new PortAllocator();
+const logBuffer     = new LogBuffer();
+const attachServer  = new AttachServer({ logBuffer });
+
+const useHerdr = process.env.RT_PROCESS_BACKEND === "herdr";
+const herdrClient  = useHerdr ? new HerdrClient() : null;
+const herdrPaneMap = useHerdr ? new PaneMap() : null;
+const processManager: any = useHerdr
+  ? new HerdrProcessManager({ client: herdrClient!, paneMap: herdrPaneMap!, stateStore })
+  : new ProcessManager({ stateStore, logBuffer, attachServer });
+
 const suspendManager = new SuspendManager({ processManager, stateStore });
 const proxyManager   = new ProxyManager();
 const bounceManager  = new BounceManager();
@@ -215,9 +225,9 @@ const remedyEngine = new RemedyEngine({
 });
 
 // Wire circular reference: AttachServer needs ProcessManager for output subscriptions
-attachServer.setProcessManager(processManager);
+if (!useHerdr) attachServer.setProcessManager(processManager);
 // Wire SuspendManager into ProcessManager so kill() can resume warm processes
-processManager.suspendManager = suspendManager;
+if (!useHerdr) processManager.suspendManager = suspendManager;
 
 // ─── Global remedy file watcher ──────────────────────────────────────────────
 // Load at startup, then hot-reload whenever ~/.rt/remedies/_global.json changes.
@@ -809,6 +819,10 @@ interface ApiWSData {
   kind: "broadcast" | "logs" | "attach";
   id?: string;
   unsub?: () => void;
+  /** Herdr attach path: the Bun.Terminal bridging `herdr terminal attach`. */
+  term?: any;
+  /** Herdr attach path: the herdr-attach child process to kill on close. */
+  herdrProc?: ReturnType<typeof Bun.spawn>;
 }
 
 const wsClients = new Set<ServerWebSocket<ApiWSData>>();
@@ -980,11 +994,42 @@ function startApiServer(): void {
       // this stops idle WS connections from being closed out from under the GUI.
       idleTimeout: 960,
       open(ws) {
-        const data = ws.data as { kind?: string; id?: string; unsub?: () => void };
+        const data = ws.data as ApiWSData;
         // Log tail (read-only) and attach (bidirectional) share the same output
         // path: replay history, then forward live PTY output. Attach adds an
         // input path in message() below.
         if ((data?.kind === "logs" || data?.kind === "attach") && data.id) {
+          if (useHerdr) {
+            // Herdr path: spawn `herdr terminal attach <terminalId>` under a
+            // fresh PTY and bridge its I/O to this WS connection.
+            const id = data.id;
+            const ref = herdrPaneMap!.get(id);
+            if (!ref) {
+              // Unknown id — send an error frame and let the client close.
+              try { ws.send(JSON.stringify({ type: "error", data: `no herdr pane for id ${id}` })); } catch { /* */ }
+              return;
+            }
+            const userPath: string = (processManager.userPath as string | undefined) ?? process.env.PATH ?? "";
+            const herdrBin = userPath
+              .split(":")
+              .map((d: string) => `${d}/herdr`)
+              .find((p: string) => { try { return Bun.file(p).size > 0; } catch { return false; } })
+              ?? `${process.env.HOME}/.local/bin/herdr`;
+            const herdrEnv = { ...process.env, PATH: userPath } as Record<string, string>;
+            const term = new Bun.Terminal({
+              data(_t: any, chunk: Uint8Array) {
+                try { ws.send(chunk); } catch { /* client gone */ }
+              },
+            });
+            const proc = Bun.spawn([herdrBin, "terminal", "attach", ref.terminalId], {
+              terminal: term,
+              cwd: ref.cwd,
+              env: herdrEnv,
+            });
+            data.term = term;
+            data.herdrProc = proc;
+            return;
+          }
           data.unsub = openLogStream(data.id, {
             getReplay: (id) => logBuffer.getLastLines(id),
             subscribe: (id, cb) => processManager.subscribeToOutput(id, cb),
@@ -1003,34 +1048,53 @@ function startApiServer(): void {
         } catch { /* client gone */ }
       },
       close(ws) {
-        const data = ws.data as { kind?: string; unsub?: () => void };
+        const data = ws.data as ApiWSData;
         if (data?.kind === "logs" || data?.kind === "attach") {
-          // Detach only — the process (e.g. a shell session) keeps running so
-          // the user can reconnect later and replay its history.
-          try { data.unsub?.(); } catch { /* */ }
+          if (useHerdr) {
+            // Dispose the herdr attach bridge — the herdr pane keeps running.
+            try { data.term?.kill(); } catch { /* */ }
+            try { data.herdrProc?.kill(); } catch { /* */ }
+          } else {
+            // Detach only — the process (e.g. a shell session) keeps running so
+            // the user can reconnect later and replay its history.
+            try { data.unsub?.(); } catch { /* */ }
+          }
           return;
         }
         wsClients.delete(ws);
         log.debug({ total: wsClients.size }, "ws client disconnected");
       },
       message(ws, msg) {
-        const data = ws.data as { kind?: string; id?: string };
+        const data = ws.data as ApiWSData;
         if (!data?.id) return;
         const id = data.id;
         // Log clients may send one control message — a resize — so the PTY
         // matches the viewer's terminal grid and TUIs (turbo, start:lite) stop
         // wrapping their in-place redraws.
         if (data.kind === "logs") {
-          handleLogStreamControl(msg as string | Uint8Array, {
-            resize: (cols, rows) => {
-              try { processManager.getTerminal(id)?.resize(cols, rows); } catch { /* gone */ }
-            },
-          });
+          if (useHerdr) {
+            handleLogStreamControl(msg as string | Uint8Array, {
+              resize: (cols, rows) => { try { data.term?.resize(cols, rows); } catch { /* gone */ } },
+            });
+          } else {
+            handleLogStreamControl(msg as string | Uint8Array, {
+              resize: (cols, rows) => {
+                try { processManager.getTerminal(id)?.resize(cols, rows); } catch { /* gone */ }
+              },
+            });
+          }
           return;
         }
         // Attach clients are bidirectional: binary frames are keystrokes written
         // to the PTY, string frames are control (resize).
         if (data.kind === "attach") {
+          if (useHerdr) {
+            handleAttachMessage(msg as string | Uint8Array, {
+              resize: (cols, rows) => { try { data.term?.resize(cols, rows); } catch { /* gone */ } },
+              input: (bytes) => { try { data.term?.write(bytes); } catch { /* gone */ } },
+            });
+            return;
+          }
           handleAttachMessage(msg as string | Uint8Array, {
             resize: (cols, rows) => {
               try { processManager.getTerminal(id)?.resize(cols, rows); } catch { /* gone */ }
@@ -1139,17 +1203,24 @@ export function startDaemon(): void {
     log.warn({ id, prev, next }, "stateStore: invalid transition");
   });
 
-  // On restart, most children are gone — but warm (SIGSTOP'd) processes survive
-  // as orphans reparented to init. Reap any whose pid we still have recorded:
-  // SIGCONT (so the pgroup can actually handle signals) then SIGKILL.
-  const orphans = stateStore.reconcileAfterRestart();
-  for (const { id, pid } of orphans) {
-    try {
-      process.kill(pid, 0); // probe — throws if pid is no longer live
-      killGroup(pid, "SIGCONT");
-      killGroup(pid, "SIGKILL");
-      log.warn({ id, pid }, "reaped orphan process");
-    } catch { /* pid already gone */ }
+  if (useHerdr) {
+    // Herdr backend: reconcile the pane map against live herdr panes on boot.
+    processManager.reconcileOnBoot().catch((err: unknown) => {
+      log.error({ err }, "herdr: reconcileOnBoot failed");
+    });
+  } else {
+    // On restart, most children are gone — but warm (SIGSTOP'd) processes survive
+    // as orphans reparented to init. Reap any whose pid we still have recorded:
+    // SIGCONT (so the pgroup can actually handle signals) then SIGKILL.
+    const orphans = stateStore.reconcileAfterRestart();
+    for (const { id, pid } of orphans) {
+      try {
+        process.kill(pid, 0); // probe — throws if pid is no longer live
+        killGroup(pid, "SIGCONT");
+        killGroup(pid, "SIGKILL");
+        log.warn({ id, pid }, "reaped orphan process");
+      } catch { /* pid already gone */ }
+    }
   }
 
   // Load cache from disk
