@@ -5,6 +5,7 @@ import type { StateStore } from "./state-store.ts";
 import { paneToRecord, type HerdrPane } from "./herdr/records.ts";
 import type { ProcessRecord } from "./process-records.ts";
 import type { WorktreeInfo } from "./resolve-worktree.ts";
+import { appendedSuffix } from "./herdr/output-diff.ts";
 
 export interface HerdrPMConfig { cmd: string; cwd: string; env?: Record<string, string>; kind?: "terminal" }
 
@@ -84,14 +85,52 @@ export class HerdrProcessManager {
 
   getExitCode(_id: string): number | undefined { return undefined; }
 
-  // Filled in Tasks 8-9 (output feed + write/resize). Stubs keep consumers compiling.
+  private lastText = new Map<string, string>();
+  private pollTimers = new Map<string, ReturnType<typeof setInterval>>();
+
+  private async pollOutput(id: string): Promise<void> {
+    const ref = this.paneMap.get(id);
+    if (!ref) return;
+    let text = "";
+    try {
+      const r = await this.client.call("pane.read", { pane_id: ref.paneId, source: "recent_unwrapped" });
+      // Socket response shape: { type: "pane_read", read: { text: "...", ... } }
+      // Fallback: r.text for mock clients in tests, or r itself if string.
+      text = typeof r === "string" ? r : (r?.read?.text ?? r?.text ?? "");
+    } catch { return; }
+    const prev = this.lastText.get(id) ?? "";
+    const appended = appendedSuffix(prev, text);
+    this.lastText.set(id, text);
+    if (appended) {
+      const bytes = new TextEncoder().encode(appended);
+      for (const cb of this.outputHooks.get(id) ?? []) { try { cb(bytes); } catch { /* best-effort */ } }
+    }
+  }
+
   subscribeToOutput(id: string, cb: (chunk: Uint8Array) => void): () => void {
     if (!this.outputHooks.has(id)) this.outputHooks.set(id, new Set());
     this.outputHooks.get(id)!.add(cb);
-    return () => { this.outputHooks.get(id)?.delete(cb); };
+    if (!this.pollTimers.has(id)) {
+      this.pollTimers.set(id, setInterval(() => void this.pollOutput(id), 1000));
+    }
+    return () => {
+      const set = this.outputHooks.get(id);
+      set?.delete(cb);
+      if (set && set.size === 0) {
+        clearInterval(this.pollTimers.get(id)!);
+        this.pollTimers.delete(id);
+        this.outputHooks.delete(id);
+        this.lastText.delete(id);
+      }
+    };
   }
+
+  emitNotice(id: string, text: string): void {
+    const bytes = new TextEncoder().encode(text);
+    for (const cb of this.outputHooks.get(id) ?? []) { try { cb(bytes); } catch { /* best-effort */ } }
+  }
+
   getTerminal(_id: string): undefined { return undefined; }
-  emitNotice(_id: string, _text: string): void { /* TODO Task 8 */ }
 
   private normalizePane(p: any): HerdrPane {
     return {
