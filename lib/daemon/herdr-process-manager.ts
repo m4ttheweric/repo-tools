@@ -2,6 +2,9 @@
 import type { HerdrClient } from "./herdr/client.ts";
 import { PaneMap, type PaneRef } from "./herdr/pane-map.ts";
 import type { StateStore } from "./state-store.ts";
+import { paneToRecord, type HerdrPane } from "./herdr/records.ts";
+import type { ProcessRecord } from "./process-records.ts";
+import type { WorktreeInfo } from "./resolve-worktree.ts";
 
 export interface HerdrPMConfig { cmd: string; cwd: string; env?: Record<string, string>; kind?: "terminal" }
 
@@ -89,4 +92,27 @@ export class HerdrProcessManager {
   }
   getTerminal(_id: string): undefined { return undefined; }
   emitNotice(_id: string, _text: string): void { /* TODO Task 8 */ }
+
+  private normalizePane(p: any): HerdrPane {
+    return {
+      paneId: p.pane_id, terminalId: p.terminal_id, workspaceId: p.workspace_id,
+      cwd: p.cwd ?? p.foreground_cwd ?? "", agentStatus: p.agent_status ?? "unknown",
+      foregroundCmd: p.foreground_cmd ?? p.command,
+    };
+  }
+  private refByPaneId(paneId: string) { return this.paneMap.all().find((r) => r.paneId === paneId); }
+
+  async describe(worktrees: WorktreeInfo[]): Promise<ProcessRecord[]> {
+    const res = await this.client.call("pane.list").catch(() => ({ panes: [] }));
+    const panes: any[] = res?.panes ?? [];
+    return panes.map((p) => { const np = this.normalizePane(p); return paneToRecord(np, this.refByPaneId(np.paneId), worktrees); });
+  }
+
+  async reconcileOnBoot(): Promise<void> {
+    const res = await this.client.call("pane.list").catch(() => ({ panes: [] }));
+    const live = new Set<string>((res?.panes ?? []).map((p: any) => p.pane_id));
+    const dropped = this.paneMap.reconcile(live);
+    for (const r of this.paneMap.all()) this.stateStore.setState(r.id, "running");
+    for (const id of dropped) this.stateStore.setState(id, "stopped");
+  }
 }
