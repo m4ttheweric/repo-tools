@@ -1126,12 +1126,17 @@ function cleanup(): void {
   try { apiServer?.stop(true); } catch { /* */ }
   wsClients.clear();
 
-  // Kill all managed processes and stop proxy/attach servers
-  try {
-    for (const { id } of processManager.list()) {
-      try { processManager.kill(id).catch(() => {}); } catch { /* */ }
-    }
-  } catch { /* */ }
+  // Kill all managed processes and stop proxy/attach servers.
+  // Under the herdr backend, processes live in herdr and MUST survive daemon
+  // restarts (they are re-adopted on the next boot via reconcileOnBoot), so we
+  // do NOT close their panes here — closing would defeat the whole point.
+  if (!useHerdr) {
+    try {
+      for (const { id } of processManager.list()) {
+        try { processManager.kill(id).catch(() => {}); } catch { /* */ }
+      }
+    } catch { /* */ }
+  }
   try { proxyManager.stopAll(); } catch { /* */ }
   try { bounceManager.stopAll(); } catch { /* */ }
   // Stop cloudflared tunnels for every active board before we exit so we don't
