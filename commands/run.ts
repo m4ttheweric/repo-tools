@@ -19,7 +19,12 @@ import { join, relative, basename } from "path";
 
 const SHELL = process.env.SHELL ?? "bash";
 import type { CommandContext } from "../lib/command-tree.ts";
-import { filterableSelect, BackNavigation } from "../lib/rt-render.tsx";
+import {
+  filterableSelect,
+  filterableSelectWithKey,
+  BackNavigation,
+  textInput,
+} from "../lib/rt-render.tsx";
 import { getKnownRepos } from "../lib/repo-index.ts";
 import { getWorkspacePackages } from "../lib/repo.ts";
 import {
@@ -27,6 +32,12 @@ import {
   readRunHistory,
   type RunHistoryEntry,
 } from "../lib/run-history.ts";
+import {
+  loadVariations,
+  saveVariation,
+  variationKey,
+  type Variation,
+} from "../lib/variations.ts";
 import { bold, dim, reset, yellow } from "../lib/tui.ts";
 import { T, toAnsiFg } from "../lib/tui/palette.ts";
 
@@ -82,11 +93,13 @@ export async function runCommand(
 
   let worktreePath: string;
   let worktreeBranch: string;
+  let dataDir: string | undefined;
 
   if (ctx.identity) {
     // Dispatcher already resolved repo + worktree via --repo flag or cwd detection.
     // Jump straight to package → script selection.
     worktreePath = ctx.identity.repoRoot;
+    dataDir = ctx.identity.dataDir;
     try {
       worktreeBranch = execSync("git rev-parse --abbrev-ref HEAD", {
         cwd: worktreePath,
@@ -157,6 +170,8 @@ export async function runCommand(
       worktreePath = wt.path;
       worktreeBranch = wt.branch;
     }
+
+    dataDir = selectedRepo!.dataDir;
   }
 
   // ── Step 3 + 4: Pick package → script (with back-navigation) ───────────────
@@ -167,6 +182,7 @@ export async function runCommand(
   let packageLabel: string;
   let selectedScript: string;
   let skipCwdDetection = false;
+  let customCommand: string | undefined;
 
   // Loop: back from script picker restarts at package picker
   packageLoop: while (true) {
@@ -287,7 +303,7 @@ export async function runCommand(
 
     // Back from script picker → restart at package picker (one level up)
     try {
-      const chosen = await filterableSelect({
+      const result = await filterableSelectWithKey({
         message: "Select script",
         options: [
           ...sentinelOption,
@@ -299,12 +315,88 @@ export async function runCommand(
         ],
         stderr: true,
         backLabel: packages.length > 1 ? "Switch package" : undefined,
+        extraExpect: ["shift-enter"],
+        extraHint: "shift-enter: variations",
       });
 
-      if (!chosen) {
+      if (!result) {
         process.exit(1);
       }
-      selectedScript = chosen === LAST_RUN_SENTINEL ? lastRun!.script : chosen;
+
+      const scriptName =
+        result.value === LAST_RUN_SENTINEL ? lastRun!.script : result.value;
+
+      if (result.key === "shift-enter") {
+        // ── Variations sub-picker ──────────────────────────────────────────
+        const existing = dataDir
+          ? (loadVariations(dataDir)[variationKey(packagePath, scriptName)] ?? [])
+          : [];
+
+        const ADD_SENTINEL = "__rt:add-variation__";
+
+        try {
+          const varResult = await filterableSelectWithKey({
+            message: `Variation for "${scriptName}"`,
+            options: [
+              ...existing.map((v) => ({
+                value: v.command,
+                label: v.name,
+                hint: v.command.slice(0, 60),
+              })),
+              { value: ADD_SENTINEL, label: "+ Add variation…", hint: "" },
+            ],
+            stderr: true,
+            backLabel: "Back to scripts",
+            extraExpect: [],
+          });
+
+          if (!varResult) {
+            process.exit(1);
+          }
+
+          if (varResult.value === ADD_SENTINEL) {
+            // Prompt for name
+            const name = await textInput({
+              message: "Variation name",
+              placeholder: "e.g. with debug",
+              stderr: true,
+            });
+            if (!name) process.exit(1);
+
+            // Prompt for command, defaulting to the base command
+            const baseCmd = `${pm} run ${scriptName}`;
+            const command = await textInput({
+              message: "Command",
+              defaultValue: baseCmd,
+              stderr: true,
+            });
+            if (!command) process.exit(1);
+
+            if (dataDir) {
+              saveVariation(dataDir, packagePath, scriptName, { name, command });
+            }
+
+            selectedScript = scriptName;
+            customCommand = command;
+            break packageLoop;
+          }
+
+          // Existing variation selected — use its command directly
+          selectedScript = scriptName;
+          customCommand = varResult.value;
+          break packageLoop;
+        } catch (err) {
+          if (err instanceof BackNavigation) {
+            // Back to script picker (one level up from variations)
+            process.stderr.write("\x1b[2J\x1b[H");
+            continue packageLoop;
+          }
+          throw err;
+        }
+      }
+
+      // Normal Enter — run the base command
+      selectedScript = scriptName;
       break packageLoop;
     } catch (err) {
       if (err instanceof BackNavigation) {
@@ -335,7 +427,7 @@ export async function runCommand(
     return;
   }
 
-  const cmd = `${pm} run ${selectedScript}`;
+  const cmd = customCommand ?? `${pm} run ${selectedScript}`;
   process.stderr.write(`\nRunning: ${cmd}\n`);
   process.stderr.write(`  in: ${packagePath}\n\n`);
 
