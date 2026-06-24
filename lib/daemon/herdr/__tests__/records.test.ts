@@ -12,6 +12,8 @@ describe("herdrAgentStatusToState", () => {
     expect(herdrAgentStatusToState("working")).toBe("running");
     expect(herdrAgentStatusToState("done")).toBe("stopped");
     expect(herdrAgentStatusToState("idle")).toBe("stopped");
+    expect(herdrAgentStatusToState("blocked")).toBe("running");
+    expect(herdrAgentStatusToState("unknown")).toBe("running");
   });
 });
 
