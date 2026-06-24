@@ -1004,11 +1004,10 @@ function startApiServer(): void {
             // fresh PTY and bridge its I/O to this WS connection.
             const id = data.id;
             const ref = herdrPaneMap!.get(id);
-            if (!ref) {
-              // Unknown id — send an error frame and let the client close.
-              try { ws.send(JSON.stringify({ type: "error", data: `no herdr pane for id ${id}` })); } catch { /* */ }
-              return;
-            }
+            // rt-launched panes resolve their terminalId via the map; panes
+            // created directly in herdr surface from describe() with their
+            // terminalId AS the record id, so fall back to the id itself.
+            const terminalId = ref?.terminalId ?? id;
             const userPath: string = (processManager.userPath as string | undefined) ?? process.env.PATH ?? "";
             const herdrBin = userPath
               .split(":")
@@ -1021,9 +1020,9 @@ function startApiServer(): void {
                 try { ws.send(chunk); } catch { /* client gone */ }
               },
             });
-            const proc = Bun.spawn([herdrBin, "terminal", "attach", ref.terminalId], {
+            const proc = Bun.spawn([herdrBin, "terminal", "attach", terminalId], {
               terminal: term,
-              cwd: ref.cwd,
+              ...(ref?.cwd ? { cwd: ref.cwd } : {}),
               env: herdrEnv,
             });
             data.term = term;
