@@ -33,4 +33,20 @@ describe("paneToRecord", () => {
     expect(r.branch).toBe("parking-lot/2");
     expect(r.state).toBe("running");
   });
+  test("threads kind through from the ref to the record", () => {
+    const ref = { id: "shell:1", workspaceId: "w3", paneId: "w3:p1", terminalId: "term_a",
+      cwd: "/repo/wt2/apps/backend", cmd: "zsh", startedAt: 0, kind: "terminal" as const };
+    const r = paneToRecord(pane(), ref, wt);
+    expect(r.kind).toBe("terminal");
+  });
+  test("kind is undefined when ref carries no kind", () => {
+    const ref = { id: "backend:start", workspaceId: "w3", paneId: "w3:p1", terminalId: "term_a",
+      cwd: "/repo/wt2/apps/backend", cmd: "pnpm start", startedAt: 5 };
+    const r = paneToRecord(pane(), ref, wt);
+    expect(r.kind).toBeUndefined();
+  });
+  test("kind is undefined when ref is absent", () => {
+    const r = paneToRecord(pane(), undefined, wt);
+    expect(r.kind).toBeUndefined();
+  });
 });

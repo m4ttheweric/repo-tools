@@ -5,6 +5,7 @@ import { join } from "path";
 export interface PaneRef {
   id: string; workspaceId: string; paneId: string; terminalId: string;
   cwd: string; cmd: string; env?: Record<string, string>; port?: number; startedAt: number;
+  kind?: "terminal";
 }
 
 export class PaneMap {

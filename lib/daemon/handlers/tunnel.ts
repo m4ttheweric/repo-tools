@@ -26,7 +26,7 @@ export function createTunnelHandlers(ctx: HandlerContext): HandlerMap {
     "tunnel:status": async (payload) => {
       const { boardName } = payload as { boardName?: string };
       if (!boardName) return { ok: false, error: "missing boardName" };
-      return { ok: true, data: ctx.tunnelManager.status(boardName) };
+      return { ok: true, data: await ctx.tunnelManager.status(boardName) };
     },
 
     "tunnel:stop": async (payload) => {

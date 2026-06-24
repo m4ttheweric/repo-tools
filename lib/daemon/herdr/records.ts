@@ -31,5 +31,6 @@ export function paneToRecord(pane: HerdrPane, ref: PaneRef | undefined, worktree
     worktree: wt?.path,
     branch: wt?.branch,
     port: ref?.port,
+    kind: ref?.kind,
   };
 }
