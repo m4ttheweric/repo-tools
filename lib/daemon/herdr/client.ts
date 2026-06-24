@@ -13,20 +13,22 @@ class UnixSocketTransport implements HerdrTransport {
   constructor(private socketPath: string) {}
   async request(line: string): Promise<string> {
     let buf = "";
+    let settled = false;
     let resolve!: (s: string) => void;
     let reject!: (e: unknown) => void;
     const done = new Promise<string>((res, rej) => { resolve = res; reject = rej; });
+    const decoder = new TextDecoder();
     const sock = await Bun.connect({
       unix: this.socketPath,
       socket: {
         open(s) { s.write(line); },
         data(_s, d) {
-          buf += new TextDecoder().decode(d);
+          buf += decoder.decode(d);
           const nl = buf.indexOf("\n");
-          if (nl >= 0) resolve(buf.slice(0, nl));
+          if (nl >= 0 && !settled) { settled = true; resolve(buf.slice(0, nl)); }
         },
-        error(_s, e) { reject(e); },
-        close() { if (!buf.includes("\n")) reject(new Error("herdr socket closed")); },
+        error(_s, e) { if (!settled) { settled = true; reject(e); } },
+        close() { if (!settled) { settled = true; reject(new Error("herdr socket closed")); } },
       },
     });
     try { return await done; } finally { try { sock.end(); } catch { /* */ } }
