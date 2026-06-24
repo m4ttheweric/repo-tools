@@ -364,7 +364,7 @@ export async function runCommand(
             if (!name) process.exit(1);
 
             // Prompt for command, defaulting to the base command
-            const baseCmd = `${pm} run ${scriptName}`;
+            const baseCmd = `${detectPackageManager(packagePath)} run ${scriptName}`;
             const command = await textInput({
               message: "Command",
               defaultValue: baseCmd,
