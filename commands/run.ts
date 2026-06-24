@@ -419,7 +419,7 @@ export async function runCommand(
     packageLabel,
     worktree: worktreePath,
     branch: worktreeBranch,
-    commandTemplate: `${pm} run ${selectedScript}`,
+    commandTemplate: customCommand ?? `${pm} run ${selectedScript}`,
   };
 
   if (resolveOnly) {
