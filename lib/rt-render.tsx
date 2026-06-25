@@ -390,10 +390,10 @@ export async function filterableSelect(opts: {
  * Like filterableSelect, but returns both the selected value and the fzf exit key.
  *
  * Use this when you need to distinguish between Enter and other keys
- * (e.g., Shift+Enter for an alternate action on the selected item).
+ * (e.g., Alt+Enter for an alternate action on the selected item).
  *
  * extraExpect keys are added to --expect; when one fires, the result's `key`
- * field is set to that key name (e.g. "shift-enter"). For a normal Enter press,
+ * field is set to that key name (e.g. "alt-enter"). For a normal Enter press,
  * `key` is "".
  */
 export async function filterableSelectWithKey(opts: {
@@ -404,7 +404,7 @@ export async function filterableSelectWithKey(opts: {
   backLabel?: string;
   /** Extra keys to listen for via --expect. Header is updated to show the hint. */
   extraExpect?: string[];
-  /** Hint text for the first extra key, shown in the header. e.g. "shift-enter: variations" */
+  /** Hint text for the first extra key, shown in the header. e.g. "alt-enter: variations" */
   extraHint?: string;
   /** Use fzf's exact-match mode instead of fuzzy matching. */
   exact?: boolean;
@@ -463,7 +463,7 @@ export async function filterableSelectWithKey(opts: {
 
   // --print-query + --expect always produce 3 lines:
   //   line 0: query text
-  //   line 1: key pressed ("" for Enter, "ctrl-up"/"shift-enter" etc.)
+  //   line 1: key pressed ("" for Enter, "ctrl-up"/"alt-enter" etc.)
   //   line 2: selected row (tab-delimited)
   const lines = (result.stdout ?? "").split("\n");
   const key = lines[1]?.trim() || "";

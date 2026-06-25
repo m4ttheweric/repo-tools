@@ -315,8 +315,8 @@ export async function runCommand(
         ],
         stderr: true,
         backLabel: packages.length > 1 ? "Switch package" : undefined,
-        extraExpect: ["shift-enter"],
-        extraHint: "shift-enter: variations",
+        extraExpect: ["alt-enter"],
+        extraHint: "alt-enter: variations",
       });
 
       if (!result) {
@@ -326,7 +326,7 @@ export async function runCommand(
       const scriptName =
         result.value === LAST_RUN_SENTINEL ? lastRun!.script : result.value;
 
-      if (result.key === "shift-enter") {
+      if (result.key === "alt-enter") {
         // ── Variations sub-picker ──────────────────────────────────────────
         const existing = dataDir
           ? (loadVariations(dataDir)[variationKey(packagePath, scriptName)] ?? [])
