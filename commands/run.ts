@@ -101,9 +101,11 @@ interface ScriptSelection {
 async function selectPackageAndScript(
   worktreePath: string,
   dataDir: string | undefined,
+  contextLabel?: string,
 ): Promise<ScriptSelection | null> {
   const { runNavPicker } = await import("../lib/navigate.ts");
   const packages = getWorkspacePackages(worktreePath);
+  const label = contextLabel ? `${contextLabel}` : "";
   let cameFromScript = false;
 
   while (true) {
@@ -163,7 +165,7 @@ async function selectPackageAndScript(
               hint: p.path,
             })),
           ],
-          message: "Select package",
+          message: label ? `Select package — ${label}` : "Select package",
           headerParts: [
             "enter: select",
             "ctrl-up: back to worktree",
@@ -245,7 +247,9 @@ async function selectPackageAndScript(
           hint: pkgScripts[s]?.slice(0, 60),
         })),
       ],
-      message: "Select script",
+      message: label
+        ? `Select script — ${label} · ${packageLabel === "." ? "root" : packageLabel}`
+        : "Select script",
       headerParts: [
         "enter: run",
         "alt-enter: variations",
@@ -379,7 +383,8 @@ export async function runCommand(
       worktreeBranch = "";
     }
 
-    const sel = await selectPackageAndScript(worktreePath, dataDir);
+    const ctxLabel = `${ctx.identity!.repoName} / ${worktreeBranch}`;
+    const sel = await selectPackageAndScript(worktreePath, dataDir, ctxLabel);
     if (sel) {
       packagePath = sel.packagePath;
       packageLabel = sel.packageLabel;
@@ -484,7 +489,10 @@ export async function runCommand(
 
         // ── Package + script ────────────────────────────────────────────
         while (true) {
-          const sel = await selectPackageAndScript(worktreePath, dataDir);
+          const wtCtx = worktrees.length > 1
+            ? `${selectedRepo.repoName} / ${worktreeBranch}`
+            : selectedRepo.repoName;
+          const sel = await selectPackageAndScript(worktreePath, dataDir, wtCtx);
           if (!sel) {
             process.stderr.write("\x1b[2J\x1b[H");
             if (worktrees.length > 1) break; // re-show worktree picker
