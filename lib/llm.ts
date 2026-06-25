@@ -139,8 +139,9 @@ export async function llmSummarize(text: string, maxChars: number): Promise<stri
     "Example: 'Darkness factor headlight source' → darkness-headlight",
   ].join("\n");
 
-  // Give the model a few extra tokens as buffer — we then strip and truncate.
-  const result = await llmPrompt(SYSTEM, text, { maxTokens: maxChars + 4 });
+  // Floor at 20 tokens — very small values cause some models to produce nothing.
+  const numPredict = Math.max(maxChars + 4, 20);
+  const result = await llmPrompt(SYSTEM, text, { maxTokens: numPredict });
 
   // Post-process: lowercase, strip non-slug chars, collapse hyphens, trim to length
   const slug = result

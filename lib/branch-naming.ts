@@ -172,7 +172,7 @@ async function resolveLlmSlug(title: string, maxChars: number): Promise<string> 
   } catch (err) {
     if (err instanceof LlmUnavailableError || err instanceof LlmEmptyResponseError) {
       // Fall back to mechanical slug, truncated to maxChars
-      process.stderr.write(`  ${dim}llm unavailable, using mechanical slug${reset}\n`);
+      process.stderr.write(`  ${dim}llm unavailable (${err.message}), using mechanical slug${reset}\n`);
       return mechanicalSlug(title).slice(0, maxChars);
     }
     throw err;
