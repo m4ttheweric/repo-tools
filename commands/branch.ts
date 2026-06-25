@@ -17,6 +17,8 @@ import {
   createIssue,
   fetchMyTodoTickets,
   claimTicket,
+  extractLinearId,
+  fetchTicket,
   type LinearTicket,
 } from "../lib/linear.ts";
 import {
@@ -54,13 +56,32 @@ export async function renameBranch(): Promise<void> {
     return;
   }
 
+  // Try to resolve a template-based default from the current branch's ticket
+  let defaultName = currentBranch;
+  const linearId = extractLinearId(currentBranch);
+  if (linearId) {
+    const secrets = loadSecrets();
+    if (secrets.linearApiKey) {
+      try {
+        const ticket = await fetchTicket(secrets.linearApiKey, linearId);
+        if (ticket) {
+          const identity = getRepoIdentity();
+          const namingConfig = identity ? loadBranchNamingConfig(identity.dataDir) : null;
+          defaultName = await resolveBranchName(ticket, namingConfig);
+        }
+      } catch {
+        // Ticket fetch or template resolution failed — keep current name as default
+      }
+    }
+  }
+
   const { textInput } = await import("../lib/rt-render.tsx");
 
   let newName: string;
   try {
     newName = await textInput({
       message: "Rename branch",
-      defaultValue: currentBranch,
+      defaultValue: defaultName,
       placeholder: "feature/new-name",
     });
   } catch {
