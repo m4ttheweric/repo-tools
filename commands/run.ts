@@ -439,13 +439,24 @@ export async function runCommand(
           worktreeBranch = worktrees[0]!.branch;
         } else {
           const { runNavPicker } = await import("../lib/navigate.ts");
+          const { enrichBranches, formatBranchLabel } = await import("../lib/enrich.ts");
+          let remoteUrl: string | undefined;
+          try {
+            remoteUrl = execSync("git config --get remote.origin.url", {
+              cwd: worktrees[0]!.path, encoding: "utf8", stdio: "pipe",
+            }).trim();
+          } catch { /* no remote */ }
+          const enriched = await enrichBranches(
+            worktrees.map((wt) => ({ path: wt.path, branch: wt.branch })),
+            remoteUrl,
+          );
           const wtResult = await runNavPicker({
-            options: worktrees.map((wt) => ({
-              value: wt.path,
-              label: wt.branch,
-              hint: wt.path,
+            options: enriched.map((eb) => ({
+              value: eb.path,
+              label: formatBranchLabel(eb),
+              hint: "",
             })),
-            message: "Select worktree",
+            message: `${selectedRepo.repoName} worktrees`,
             headerParts: [
               "enter: select",
               "ctrl-up: back to repo",
