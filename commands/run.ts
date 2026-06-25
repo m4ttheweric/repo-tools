@@ -383,7 +383,7 @@ export async function runCommand(
       worktreeBranch = "";
     }
 
-    const ctxLabel = `${ctx.identity!.repoName} / ${worktreeBranch}`;
+    const ctxLabel = `${ctx.identity!.repoName} / ${basename(worktreePath)}`;
     const sel = await selectPackageAndScript(worktreePath, dataDir, ctxLabel);
     if (sel) {
       packagePath = sel.packagePath;
@@ -490,7 +490,7 @@ export async function runCommand(
         // ── Package + script ────────────────────────────────────────────
         while (true) {
           const wtCtx = worktrees.length > 1
-            ? `${selectedRepo.repoName} / ${worktreeBranch}`
+            ? `${selectedRepo.repoName} / ${basename(worktreePath)}`
             : selectedRepo.repoName;
           const sel = await selectPackageAndScript(worktreePath, dataDir, wtCtx);
           if (!sel) {
