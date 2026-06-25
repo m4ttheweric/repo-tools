@@ -124,12 +124,11 @@ export async function llmPrompt(
 export async function llmSummarize(text: string, maxChars: number): Promise<string> {
   const prompt = `Turn this ticket title into a short hyphenated branch slug (${maxChars} chars max). Output only the slug:\n\n"${text}"`;
 
-  // Give the model enough tokens to produce the slug plus a little buffer.
-  const numPredict = Math.max(maxChars + 16, 40);
+  // Don't set num_predict — thinking models (qwen3.6) use tokens for
+  // internal reasoning and need unconstrained budget to produce content.
   const result = await llmPrompt(
     "Reply with only a short hyphenated slug. No explanation.",
     prompt,
-    { maxTokens: numPredict },
   );
 
   // Post-process: lowercase, strip non-slug chars, collapse hyphens, trim to length
