@@ -62,6 +62,13 @@ export async function renameBranch(): Promise<void> {
   if (linearId) {
     const secrets = loadSecrets();
     if (secrets.linearApiKey) {
+      // Animated spinner — Linear fetch + LLM can take a moment
+      const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"];
+      let fi = 0;
+      const spinnerTimer = setInterval(() => {
+        process.stderr.write(`\r  ${dim}${frames[fi++ % frames.length]} resolving branch name…${reset}`);
+      }, 80);
+
       try {
         const ticket = await fetchTicket(secrets.linearApiKey, linearId);
         if (ticket) {
@@ -72,6 +79,9 @@ export async function renameBranch(): Promise<void> {
       } catch {
         // Ticket fetch or template resolution failed — keep current name as default
       }
+
+      clearInterval(spinnerTimer);
+      process.stderr.write("\r\x1b[K"); // clear the spinner line
     }
   }
 
