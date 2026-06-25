@@ -249,7 +249,7 @@ async function selectPackageAndScript(
       headerParts: [
         "enter: run",
         "alt-enter: variations",
-        ...(packages.length > 1 ? ["ctrl-up: back"] : []),
+        "ctrl-up: back",
       ],
       expectKeys: ["alt-enter"],
     });
@@ -262,8 +262,12 @@ async function selectPackageAndScript(
         : scriptResult.value!;
 
     if (scriptResult.key === "ctrl-up") {
-      cameFromScript = true;
-      continue; // back to package section
+      if (packages.length > 1) {
+        cameFromScript = true;
+        continue; // back to package section
+      }
+      // Single package (or root): back to caller
+      return null;
     }
 
     if (scriptResult.key === "alt-enter") {
