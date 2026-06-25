@@ -48,7 +48,13 @@ function mechanicalSlug(title: string): string {
 }
 
 function slugifyTitle(title: string, maxLen = 50): string {
-  return mechanicalSlug(title).slice(0, maxLen);
+  const slug = mechanicalSlug(title);
+  return slug.length <= maxLen ? slug : truncateAtDash(slug, maxLen);
+}
+
+function truncateAtDash(slug: string, maxChars: number): string {
+  const lastDash = slug.lastIndexOf("-", maxChars);
+  return lastDash > 0 ? slug.slice(0, lastDash) : slug.slice(0, maxChars);
 }
 
 // ─── Variable names (for error messages) ─────────────────────────────────────
@@ -171,9 +177,10 @@ async function resolveLlmSlug(title: string, maxChars: number): Promise<string> 
     return await llmSummarize(title, maxChars);
   } catch (err) {
     if (err instanceof LlmUnavailableError || err instanceof LlmEmptyResponseError) {
-      // Fall back to mechanical slug, truncated to maxChars
+      // Fall back to mechanical slug, truncated to maxChars at a word boundary
       process.stderr.write(`  ${dim}llm unavailable (${err.message}), using mechanical slug${reset}\n`);
-      return mechanicalSlug(title).slice(0, maxChars);
+      const slug = mechanicalSlug(title);
+      return slug.length <= maxChars ? slug : truncateAtDash(slug, maxChars);
     }
     throw err;
   }

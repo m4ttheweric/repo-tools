@@ -138,7 +138,14 @@ export async function llmSummarize(text: string, maxChars: number): Promise<stri
     .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "");
 
-  return slug.slice(0, maxChars);
+  return truncateAtWordBoundary(slug, maxChars);
+}
+
+function truncateAtWordBoundary(slug: string, maxChars: number): string {
+  if (slug.length <= maxChars) return slug;
+  const lastDash = slug.lastIndexOf("-", maxChars);
+  // If a dash exists within the limit, cut there; otherwise take the first word
+  return lastDash > 0 ? slug.slice(0, lastDash) : slug.slice(0, maxChars);
 }
 
 /**
