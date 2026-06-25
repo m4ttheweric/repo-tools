@@ -17,6 +17,7 @@ import { join, dirname, resolve } from "path";
 import { spawnSync } from "child_process";
 import { homedir } from "os";
 import { openDirectoryInEditor } from "./code.ts";
+import { runNavPicker, type NavOption } from "../lib/navigate.ts";
 
 
 function tildeify(p: string): string {
@@ -52,115 +53,22 @@ function listEntries(dir: string): { folders: string[]; files: string[] } {
   return { folders, files };
 }
 
-interface FzfOption {
-  value: string;
-  label: string;
-  hint: string;
-}
-
-function findResumePosition(
-  options: FzfOption[],
-  query: string,
-  value: string,
-): number | null {
-  if (!value) return null;
-  if (!query) {
-    const idx = options.findIndex((o) => o.value === value);
-    return idx >= 0 ? idx + 1 : null;
-  }
-  const input = options.map((o) => o.value).join("\n");
-  const result = spawnSync("fzf", ["--filter", query], {
-    input,
-    encoding: "utf8",
-  });
-  if (!result.stdout) return null;
-  const lines = result.stdout.split("\n").filter(Boolean);
-  const idx = lines.findIndex((line) => line === value);
-  return idx >= 0 ? idx + 1 : null;
-}
-
-async function runFzf(
-  options: FzfOption[],
-  message: string,
-  header = "enter: open  ctrl-k: actions  ctrl-o: editor  ctrl-up: up  ctrl-space: cd selected  ctrl-h: cd here",
-  expectKeys = "ctrl-k,ctrl-o,ctrl-up,ctrl-space,ctrl-h",
-  initialQuery = "",
-  resumeValue = "",
-  initialPos: number | null = null,
-): Promise<{ value: string | null; key: string | null; query: string }> {
-  const { spawnSync: sp } = await import("child_process");
-  const labelWidth = Math.max(...options.map((o) => o.label.length));
-  const input = options
-    .map((o) => {
-      const pad = " ".repeat(labelWidth - o.label.length);
-      return `${o.value}\t\x1b[1m${o.label}\x1b[22m${pad}\t  ${o.hint ? `\x1b[2m${o.hint}\x1b[22m` : ""}`;
-    })
-    .join("\n");
-
-  const resumePos = resumeValue
-    ? findResumePosition(options, initialQuery, resumeValue)
-    : null;
-  const cursorPos = resumePos ?? initialPos;
-
-  const args = [
-    "--ansi",
-    "--with-nth=2..",
-    "--nth=1",
-    "--delimiter=\t",
-    "--tabstop=1",
-    "--height=~100%",
-    "--layout=reverse",
-    "--border=rounded",
-    `--border-label= ${message} `,
-    "--prompt=filter: ",
-    `--header=${header}`,
-    "--no-mouse",
-    "--print-query",
-    ...(initialQuery ? [`--query=${initialQuery}`] : []),
-    ...(cursorPos !== null ? [`--bind=load:pos(${cursorPos})`] : []),
-    ...(expectKeys ? [`--expect=${expectKeys}`] : []),
-  ];
-
-  const result = sp("fzf", args, {
-    input,
-    stdio: ["pipe", "pipe", "inherit"],
-    encoding: "utf8",
-  });
-
-  // --print-query always prints the query as the first line, even on cancel.
-  const stdout = result.stdout ?? "";
-  const lines = stdout.replace(/\n$/, "").split("\n");
-  const query = lines[0] ?? "";
-
-  if (result.status !== 0) {
-    return { value: null, key: null, query };
-  }
-
-  let key: string | null = null;
-  let raw: string;
-  if (expectKeys) {
-    key = lines[1]?.trim() || null;
-    raw = lines[2]?.trim() ?? "";
-  } else {
-    raw = lines[1]?.trim() ?? "";
-  }
-  const value = raw.split("\t")[0] ?? null;
-  return { value: value || null, key, query };
-}
-
 type ItemKind = "file" | "folder";
 
 async function pickOpenWith(target: string, kind: ItemKind): Promise<boolean> {
   const name = target.split("/").pop() || target;
   const defaultLabel = kind === "folder" ? "Finder" : "Default app";
-  const options: FzfOption[] = [
+  const options: NavOption[] = [
     { value: "nvim", label: "nvim", hint: "nvim" },
     { value: "code", label: "VS Code", hint: "code" },
     { value: "cursor", label: "Cursor", hint: "cursor" },
     { value: "open", label: defaultLabel, hint: "open" },
   ];
-  const { value: app } = await runFzf(options, `Open ${name} with`, "esc: cancel", "");
-  if (!app) return false;
+  const result = await runNavPicker({
+    options, message: `Open ${name} with`, header: "esc: cancel", expectKeys: [],
+  });
+  if (!result) return false;
+  const { value: app } = result;
 
   spawnSync(app, [target], { stdio: "inherit" });
   return true;
@@ -168,7 +76,7 @@ async function pickOpenWith(target: string, kind: ItemKind): Promise<boolean> {
 
 async function runActionMenu(target: string, kind: ItemKind): Promise<{ exit: boolean }> {
   const name = target.split("/").pop() || target;
-  const options: FzfOption[] = [
+  const options: NavOption[] = [
     { value: "open-with", label: "Open with…", hint: "" },
     { value: "reveal", label: "Reveal in Finder", hint: kind === "file" ? "open -R" : "open" },
     ...(kind === "file"
@@ -180,8 +88,11 @@ async function runActionMenu(target: string, kind: ItemKind): Promise<{ exit: bo
       : []),
   ];
 
-  const { value: action } = await runFzf(options, `Actions for ${name}`, "esc: cancel", "");
-  if (!action) return { exit: false };
+  const result = await runNavPicker({
+    options, message: `Actions for ${name}`, header: "esc: cancel", expectKeys: [],
+  });
+  if (!result) return { exit: false };
+  const { value: action } = result;
 
   switch (action) {
     case "open-with":
@@ -224,7 +135,7 @@ export async function navigate(args: string[]): Promise<void> {
     const { folders, files } = listEntries(cwd);
     const atRoot = cwd === "/";
 
-    const options: FzfOption[] = [
+    const options: NavOption[] = [
       ...folders.map((name) => ({
         value: "d:" + name,
         label: "📁 " + name,
@@ -241,12 +152,14 @@ export async function navigate(args: string[]): Promise<void> {
     // would print no path and leave the shell wrapper with nowhere to cd),
     // surface a notice so the user can land here or back out.
     if (options.length === 0) {
-      const { value: choice, key } = await runFzf(
-        [{ value: "__cd_here__", label: "📭 empty folder", hint: "" }],
-        tildeify(cwd),
-        "enter: cd here  ctrl-up: up  esc: cancel",
-        "ctrl-up",
-      );
+      const result = await runNavPicker({
+        options: [{ value: "__cd_here__", label: "📭 empty folder", hint: "" }],
+        message: tildeify(cwd),
+        header: "enter: cd here  ctrl-up: up  esc: cancel",
+        expectKeys: [],
+      });
+      if (!result) return; // esc
+      const { value: choice, key } = result;
       if (key === "ctrl-up") {
         if (!atRoot) cwd = dirname(cwd);
         continue;
@@ -258,14 +171,16 @@ export async function navigate(args: string[]): Promise<void> {
       return;
     }
 
-    const { value: choice, key, query } = await runFzf(
+    const result = await runNavPicker({
       options,
-      tildeify(cwd),
-      undefined,
-      undefined,
-      resumeQuery,
-      resumeValue,
-    );
+      message: tildeify(cwd),
+      header: "enter: open  ctrl-k: actions  ctrl-o: editor  ctrl-up: up  ctrl-space: cd selected  ctrl-h: cd here",
+      expectKeys: ["ctrl-k", "ctrl-o", "ctrl-space", "ctrl-h"],
+      initialQuery: resumeQuery,
+      resumeValue: resumeValue || undefined,
+    });
+    if (!result) return;
+    const { value: choice, key, query } = result;
 
     // Clear resume state by default; ctrl-k branches re-set it below.
     resumeQuery = "";

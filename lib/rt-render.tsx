@@ -395,6 +395,10 @@ export async function filterableSelect(opts: {
  * extraExpect keys are added to --expect; when one fires, the result's `key`
  * field is set to that key name (e.g. "alt-enter"). For a normal Enter press,
  * `key` is "".
+ *
+ * Ctrl-up: when `backLabel` is set, throws BackNavigation (existing behavior).
+ * When `backLabel` is NOT set, returns `{ value, key: "ctrl-up" }` so callers
+ * can handle back-navigation inline.
  */
 export async function filterableSelectWithKey(opts: {
   message: string;
@@ -409,73 +413,35 @@ export async function filterableSelectWithKey(opts: {
   /** Use fzf's exact-match mode instead of fuzzy matching. */
   exact?: boolean;
 }): Promise<{ value: string; key: string } | null> {
-  const { spawnSync } = await import("child_process");
-  const { ensureFzf } = await import("./fzf.ts");
-  ensureFzf();
-
-  const options = opts.options;
-
-  const labelWidth = Math.max(...options.map((o) => o.label.length));
-  const input = options
-    .map((o) => {
-      const pad = " ".repeat(labelWidth - o.label.length);
-      const open = o.color ?? "";
-      const close = o.color ? "\x1b[0m" : "";
-      const hint = o.hint
-        ? (o.color ? o.hint : `\x1b[2m${o.hint}\x1b[22m`)
-        : "";
-      return `${o.value}\t${open}\x1b[1m${o.label}\x1b[22m${pad}\t  ${hint}${close}`;
-    })
-    .join("\n");
+  const { runNavPicker } = await import("./navigate.ts");
 
   const headerParts = ["enter: select  |: OR  !: exclude"];
   if (opts.extraHint) headerParts.push(opts.extraHint);
   if (opts.backLabel) headerParts.push("ctrl-up: back");
-  const header = headerParts.join("  ");
 
-  const extraKeys = opts.extraExpect ?? [];
-  const expectKeys = ["ctrl-up", ...extraKeys];
-
-  const result = spawnSync("fzf", [
-    "--ansi",
-    "--with-nth=2..",
-    "--nth=1",
-    "--delimiter=\t",
-    "--tabstop=1",
-    "--height=~100%",
-    "--layout=reverse",
-    "--border=rounded",
-    `--border-label= ${opts.message} `,
-    "--prompt=filter: ",
-    `--header=${header}`,
-    "--no-mouse",
-    "--print-query",
-    `--expect=${expectKeys.join(",")}`,
-    `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}`,
-    ...(opts.exact ? ["--exact"] : []),
-  ], {
-    input,
-    stdio: ["pipe", "pipe", "inherit"],
-    encoding: "utf8",
+  const result = await runNavPicker({
+    options: opts.options.map((o) => ({
+      value: o.value,
+      label: o.label,
+      hint: o.hint,
+      color: o.color,
+    })),
+    message: opts.message,
+    headerParts,
+    expectKeys: opts.extraExpect ?? [],
+    exact: opts.exact,
   });
 
-  if (result.status !== 0) return null;
+  if (!result) return null;
 
-  // --print-query + --expect always produce 3 lines:
-  //   line 0: query text
-  //   line 1: key pressed ("" for Enter, "ctrl-up"/"alt-enter" etc.)
-  //   line 2: selected row (tab-delimited)
-  const lines = (result.stdout ?? "").split("\n");
-  const key = lines[1]?.trim() || "";
-  const raw = lines[2]?.trim() ?? "";
-
-  if (key === "ctrl-up") {
+  if (result.key === "ctrl-up") {
     if (opts.backLabel) throw new BackNavigation();
-    return null;
+    // Without backLabel, return the key so callers can handle ctrl-up inline
+    return { value: result.value!, key: "ctrl-up" };
   }
 
-  if (!raw) return null;
-  return { value: raw.split("\t")[0]!, key };
+  if (!result.value) return null;
+  return { value: result.value, key: result.key };
 }
 
 // ─── Step Runner ─────────────────────────────────────────────────────────────
