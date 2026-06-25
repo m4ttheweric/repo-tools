@@ -21,12 +21,10 @@ const SHELL = process.env.SHELL ?? "bash";
 import type { CommandContext } from "../lib/command-tree.ts";
 import {
   filterableSelect,
-  filterableSelectWithKey,
-  BackNavigation,
   textInput,
 } from "../lib/rt-render.tsx";
 import { getKnownRepos } from "../lib/repo-index.ts";
-import { getWorkspacePackages } from "../lib/repo.ts";
+import { getWorkspacePackages, type KnownRepo } from "../lib/repo.ts";
 import {
   appendRunHistory,
   readRunHistory,
@@ -85,6 +83,268 @@ function getPackageJsonScripts(dir: string): string[] {
   }
 }
 
+// ─── Package + script helper ────────────────────────────────────────────────
+
+interface ScriptSelection {
+  packagePath: string;
+  packageLabel: string;
+  selectedScript: string;
+  customCommand: string | undefined;
+}
+
+/**
+ * Package → script → variations picker loop.
+ *
+ * Returns null when the user backs out of the package picker (ctrl-up).
+ * Returns ScriptSelection when a script (or variation) is selected.
+ */
+async function selectPackageAndScript(
+  worktreePath: string,
+  dataDir: string | undefined,
+): Promise<ScriptSelection | null> {
+  const { runNavPicker } = await import("../lib/navigate.ts");
+  const packages = getWorkspacePackages(worktreePath);
+  let cameFromScript = false;
+
+  while (true) {
+    let packagePath: string;
+    let packageLabel: string;
+
+    // ── Package selection ──────────────────────────────────────────────────
+
+    if (packages.length === 0) {
+      packagePath = worktreePath;
+      packageLabel = "root";
+    } else if (packages.length === 1) {
+      packagePath = join(worktreePath, packages[0]!.path);
+      packageLabel = packages[0]!.name;
+    } else {
+      // CWD auto-detection — skipped when coming back from script picker
+      const cwd = process.cwd();
+      const cwdMatch =
+        !cameFromScript
+          ? packages
+              .map((p) => ({ p, abs: join(worktreePath, p.path) }))
+              .filter(({ abs }) => cwd === abs || cwd.startsWith(abs + "/"))
+              .sort((a, b) => b.abs.length - a.abs.length)[0]
+          : undefined;
+
+      if (cwdMatch) {
+        packagePath = cwdMatch.abs;
+        packageLabel = cwdMatch.p.name;
+        process.stderr.write(`  ↳ package: ${packageLabel} (from cwd)\n`);
+      } else {
+        // Manual package picker
+        const rootPkgJson = join(worktreePath, "package.json");
+        const rootScripts = existsSync(rootPkgJson)
+          ? Object.keys(
+              (
+                JSON.parse(readFileSync(rootPkgJson, "utf8")) as {
+                  scripts?: Record<string, string>;
+                }
+              ).scripts ?? {},
+            )
+          : [];
+
+        const pkgResult = await runNavPicker({
+          options: [
+            ...(rootScripts.length > 0
+              ? [
+                  {
+                    value: worktreePath,
+                    label: "(root)",
+                    hint: "workspace root",
+                  },
+                ]
+              : []),
+            ...packages.map((p) => ({
+              value: join(worktreePath, p.path),
+              label: p.name,
+              hint: p.path,
+            })),
+          ],
+          message: "Select package",
+          headerParts: [
+            "enter: select",
+            "ctrl-up: back to worktree",
+            "esc: cancel",
+          ],
+        });
+
+        if (!pkgResult) process.exit(1);
+        if (pkgResult.key === "ctrl-up") return null; // back to worktree
+
+        packagePath = pkgResult.value!;
+        if (packagePath === worktreePath) {
+          packageLabel = ".";
+        } else {
+          const pkg = packages.find(
+            (p) => join(worktreePath, p.path) === packagePath,
+          );
+          packageLabel = pkg?.name ?? relative(worktreePath, packagePath);
+        }
+      }
+    }
+
+    cameFromScript = false;
+
+    // ── Script selection ───────────────────────────────────────────────────
+
+    const scripts = getPackageJsonScripts(packagePath);
+    if (scripts.length === 0) {
+      process.stderr.write(
+        `No scripts found in ${packagePath}/package.json.\n`,
+      );
+      process.exit(1);
+    }
+
+    if (scripts.length === 1) {
+      return {
+        packagePath,
+        packageLabel,
+        selectedScript: scripts[0]!,
+        customCommand: undefined,
+      };
+    }
+
+    let pkgScripts: Record<string, string> = {};
+    try {
+      const pkg = JSON.parse(
+        readFileSync(join(packagePath, "package.json"), "utf8"),
+      ) as { scripts?: Record<string, string> };
+      pkgScripts = pkg.scripts ?? {};
+    } catch {
+      /* skip hints */
+    }
+
+    // Last-run sentinel
+    let lastRun: RunHistoryEntry | undefined;
+    if (dataDir) {
+      lastRun = readRunHistory(dataDir).find(
+        (e) => e.cwd === packagePath && scripts.includes(e.script),
+      );
+    }
+
+    const sentinelOption = lastRun
+      ? [
+          {
+            value: LAST_RUN_SENTINEL,
+            label: `↻ ${lastRun.script}`,
+            hint: `last run · ${formatAge(lastRun.ts)}`,
+            color: toAnsiFg(T.mint),
+          },
+        ]
+      : [];
+
+    const scriptResult = await runNavPicker({
+      options: [
+        ...sentinelOption,
+        ...scripts.map((s) => ({
+          value: s,
+          label: s,
+          hint: pkgScripts[s]?.slice(0, 60),
+        })),
+      ],
+      message: "Select script",
+      headerParts: [
+        "enter: run",
+        "alt-enter: variations",
+        ...(packages.length > 1 ? ["ctrl-up: back"] : []),
+      ],
+      expectKeys: ["alt-enter"],
+    });
+
+    if (!scriptResult) process.exit(1);
+
+    const scriptName =
+      scriptResult.value === LAST_RUN_SENTINEL
+        ? lastRun!.script
+        : scriptResult.value!;
+
+    if (scriptResult.key === "ctrl-up") {
+      cameFromScript = true;
+      continue; // back to package section
+    }
+
+    if (scriptResult.key === "alt-enter") {
+      // ── Variations sub-picker ────────────────────────────────────────────
+      const existing = dataDir
+        ? (loadVariations(dataDir)[variationKey(packagePath, scriptName)] ?? [])
+        : [];
+
+      const ADD_SENTINEL = "__rt:add-variation__";
+
+      while (true) {
+        const varResult = await runNavPicker({
+          options: [
+            ...existing.map((v) => ({
+              value: v.command,
+              label: v.name,
+              hint: v.command.slice(0, 60),
+            })),
+            { value: ADD_SENTINEL, label: "+ Add variation…", hint: "" },
+          ],
+          message: `Variation for "${scriptName}"`,
+          headerParts: ["enter: select", "ctrl-up: back to scripts", "esc: cancel"],
+          expectKeys: [],
+        });
+
+        if (!varResult) process.exit(1);
+        if (varResult.key === "ctrl-up") break; // back to script picker
+
+        if (varResult.value === ADD_SENTINEL) {
+          const name = await textInput({
+            message: "Variation name",
+            placeholder: "e.g. with debug",
+            stderr: true,
+          });
+          if (!name) process.exit(1);
+
+          const baseCmd = `${detectPackageManager(packagePath)} run ${scriptName}`;
+          const command = await textInput({
+            message: "Command",
+            defaultValue: baseCmd,
+            stderr: true,
+          });
+          if (!command) process.exit(1);
+
+          if (dataDir) {
+            saveVariation(dataDir, packagePath, scriptName, { name, command });
+          }
+
+          return {
+            packagePath,
+            packageLabel,
+            selectedScript: scriptName,
+            customCommand: command,
+          };
+        }
+
+        // Existing variation selected
+        return {
+          packagePath,
+          packageLabel,
+          selectedScript: scriptName,
+          customCommand: varResult.value!,
+        };
+      }
+
+      // Back from variations → re-show script picker (skip package)
+      continue;
+    }
+
+    // Normal Enter — run the base command
+    return {
+      packagePath,
+      packageLabel,
+      selectedScript: scriptName,
+      customCommand: undefined,
+    };
+  }
+}
+
+// ─── Entry ──────────────────────────────────────────────────────────────────
+
 export async function runCommand(
   args: string[],
   ctx: CommandContext,
@@ -94,6 +354,10 @@ export async function runCommand(
   let worktreePath: string;
   let worktreeBranch: string;
   let dataDir: string | undefined;
+  let packagePath = "";
+  let packageLabel = "";
+  let selectedScript = "";
+  let customCommand: string | undefined;
 
   if (ctx.identity) {
     // Dispatcher already resolved repo + worktree via --repo flag or cwd detection.
@@ -109,8 +373,22 @@ export async function runCommand(
     } catch {
       worktreeBranch = "";
     }
+
+    // Package + script loop
+    while (true) {
+      const sel = await selectPackageAndScript(worktreePath, dataDir);
+      if (!sel) {
+        process.stderr.write("\x1b[2J\x1b[H");
+        continue;
+      }
+      packagePath = sel.packagePath;
+      packageLabel = sel.packageLabel;
+      selectedScript = sel.selectedScript;
+      customCommand = sel.customCommand;
+      break;
+    }
   } else {
-    // ── Step 1: Pick repo ────────────────────────────────────────────────────
+    // ── Full picker chain: repo → worktree → package → script ──────────────
     const knownRepos = getKnownRepos();
     if (knownRepos.length === 0) {
       process.stderr.write(
@@ -119,294 +397,83 @@ export async function runCommand(
       process.exit(1);
     }
 
-    let selectedRepo = knownRepos.length === 1 ? knownRepos[0]! : undefined;
+    let selectedRepo: KnownRepo | undefined =
+      knownRepos.length === 1 ? knownRepos[0]! : undefined;
 
-    if (!selectedRepo) {
-      const chosen = await filterableSelect({
-        message: "Select repo",
-        options: knownRepos.map((r) => ({
-          value: r.repoName,
-          label: r.repoName,
-          hint: `${r.worktrees.length} worktrees`,
-        })),
-        stderr: true,
-      });
-
-      if (!chosen) {
-        process.exit(1);
-      }
-      selectedRepo = knownRepos.find((r) => r.repoName === chosen)!;
-    }
-
-    // ── Step 2: Pick worktree ────────────────────────────────────────────────
-    const worktrees = selectedRepo.worktrees.filter((wt) =>
-      existsSync(wt.path),
-    );
-    if (worktrees.length === 0) {
-      process.stderr.write(
-        `No accessible worktrees for ${selectedRepo.repoName}.\n`,
-      );
-      process.exit(1);
-    }
-
-    if (worktrees.length === 1) {
-      worktreePath = worktrees[0]!.path;
-      worktreeBranch = worktrees[0]!.branch;
-    } else {
-      const chosen = await filterableSelect({
-        message: "Select worktree",
-        options: worktrees.map((wt) => ({
-          value: wt.path,
-          label: wt.branch,
-          hint: wt.path,
-        })),
-        stderr: true,
-      });
-
-      if (!chosen) {
-        process.exit(1);
-      }
-      const wt = worktrees.find((w) => w.path === chosen)!;
-      worktreePath = wt.path;
-      worktreeBranch = wt.branch;
-    }
-
-    dataDir = selectedRepo!.dataDir;
-  }
-
-  // ── Step 3 + 4: Pick package → script (with back-navigation) ───────────────
-
-  const packages = getWorkspacePackages(worktreePath);
-
-  let packagePath: string;
-  let packageLabel: string;
-  let selectedScript: string;
-  let skipCwdDetection = false;
-  let customCommand: string | undefined;
-
-  // Loop: back from script picker restarts at package picker
-  packageLoop: while (true) {
-    if (packages.length === 0) {
-      packagePath = worktreePath;
-      packageLabel = "root";
-    } else if (packages.length === 1) {
-      packagePath = join(worktreePath, packages[0]!.path);
-      packageLabel = packages[0]!.name;
-    } else {
-      // ── CWD auto-detection ─────────────────────────────────────────────────
-      // If the user is inside a known package directory, select it automatically.
-      // Skipped when coming back from the script picker.
-      const cwd = process.cwd();
-      const cwdMatch = !skipCwdDetection
-        ? packages
-            .map((p) => ({ p, abs: join(worktreePath, p.path) }))
-            .filter(({ abs }) => cwd === abs || cwd.startsWith(abs + "/"))
-            .sort((a, b) => b.abs.length - a.abs.length)[0] // deepest match wins
-        : undefined;
-
-      if (cwdMatch) {
-        packagePath = cwdMatch.abs;
-        packageLabel = cwdMatch.p.name;
-        process.stderr.write(`  ↳ package: ${packageLabel} (from cwd)\n`);
-      } else {
-        // ── Manual picker ────────────────────────────────────────────────────
-        const rootPkgJson = join(worktreePath, "package.json");
-        const rootScripts = existsSync(rootPkgJson)
-          ? Object.keys(
-              (
-                JSON.parse(readFileSync(rootPkgJson, "utf8")) as {
-                  scripts?: Record<string, string>;
-                }
-              ).scripts ?? {},
-            )
-          : [];
-
-        const options = [
-          ...(rootScripts.length > 0
-            ? [{ value: worktreePath, label: "(root)", hint: "workspace root" }]
-            : []),
-          ...packages.map((p) => ({
-            value: join(worktreePath, p.path),
-            label: p.name,
-            hint: p.path,
+    repoLoop: while (true) {
+      // ── Repo picker ─────────────────────────────────────────────────────
+      if (!selectedRepo) {
+        const { runNavPicker } = await import("../lib/navigate.ts");
+        const repoResult = await runNavPicker({
+          options: knownRepos.map((r) => ({
+            value: r.repoName,
+            label: r.repoName,
+            hint: `${r.worktrees.length} worktrees`,
           })),
-        ];
-
-        const chosen = await filterableSelect({
-          message: "Select package",
-          options,
-          stderr: true,
-          backLabel: "Switch worktree",
+          message: "Select repo",
+          headerParts: ["enter: select", "esc: cancel"],
         });
-        if (!chosen) {
-          process.exit(1);
-        }
-        packagePath = chosen;
-        if (chosen === worktreePath) {
-          packageLabel = ".";
-        } else {
-          const pkg = packages.find(
-            (p) => join(worktreePath, p.path) === chosen,
-          );
-          packageLabel = pkg?.name ?? relative(worktreePath, chosen);
-        }
+        if (!repoResult) process.exit(1);
+        selectedRepo = knownRepos.find((r) => r.repoName === repoResult.value)!;
       }
-    }
 
-    // ── Pick script ────────────────────────────────────────────────────────────
-
-    const scripts = getPackageJsonScripts(packagePath);
-    if (scripts.length === 0) {
-      process.stderr.write(
-        `No scripts found in ${packagePath}/package.json.\n`,
+      const worktrees = selectedRepo.worktrees.filter((wt) =>
+        existsSync(wt.path),
       );
-      process.exit(1);
-    }
-
-    if (scripts.length === 1) {
-      selectedScript = scripts[0]!;
-      break packageLoop;
-    }
-
-    let pkgScripts: Record<string, string> = {};
-    try {
-      const pkg = JSON.parse(
-        readFileSync(join(packagePath, "package.json"), "utf8"),
-      ) as { scripts?: Record<string, string> };
-      pkgScripts = pkg.scripts ?? {};
-    } catch {
-      /* skip hints */
-    }
-
-    // Last-run sentinel: most recent history entry whose recorded cwd equals
-    // the package we're about to run in, with the script still present.
-    let lastRun: RunHistoryEntry | undefined;
-    if (ctx.identity) {
-      lastRun = readRunHistory(ctx.identity.dataDir).find(
-        (e) => e.cwd === packagePath && scripts.includes(e.script),
-      );
-    }
-
-    const sentinelOption = lastRun
-      ? [
-          {
-            value: LAST_RUN_SENTINEL,
-            // ▎ leading bar anchors the eye; ↻ tells the user this is a re-run.
-            label: `↻ ${lastRun.script}`,
-            hint: `last run · ${formatAge(lastRun.ts)}`,
-            // Brand pink — same hue as the picker's border. Reads as "part
-            // of the picker chrome" rather than a free-floating chunk.
-            color: toAnsiFg(T.mint),
-          },
-        ]
-      : [];
-
-    // Back from script picker → restart at package picker (one level up)
-    try {
-      const result = await filterableSelectWithKey({
-        message: "Select script",
-        options: [
-          ...sentinelOption,
-          ...scripts.map((s) => ({
-            value: s,
-            label: s,
-            hint: pkgScripts[s]?.slice(0, 60),
-          })),
-        ],
-        stderr: true,
-        backLabel: packages.length > 1 ? "Switch package" : undefined,
-        extraExpect: ["alt-enter"],
-        extraHint: "alt-enter: variations",
-      });
-
-      if (!result) {
+      if (worktrees.length === 0) {
+        process.stderr.write(
+          `No accessible worktrees for ${selectedRepo.repoName}.\n`,
+        );
         process.exit(1);
       }
 
-      const scriptName =
-        result.value === LAST_RUN_SENTINEL ? lastRun!.script : result.value;
-
-      if (result.key === "alt-enter") {
-        // ── Variations sub-picker ──────────────────────────────────────────
-        const existing = dataDir
-          ? (loadVariations(dataDir)[variationKey(packagePath, scriptName)] ?? [])
-          : [];
-
-        const ADD_SENTINEL = "__rt:add-variation__";
-
-        try {
-          const varResult = await filterableSelectWithKey({
-            message: `Variation for "${scriptName}"`,
-            options: [
-              ...existing.map((v) => ({
-                value: v.command,
-                label: v.name,
-                hint: v.command.slice(0, 60),
-              })),
-              { value: ADD_SENTINEL, label: "+ Add variation…", hint: "" },
+      worktreeLoop: while (true) {
+        // ── Worktree picker ──────────────────────────────────────────────
+        if (worktrees.length === 1) {
+          worktreePath = worktrees[0]!.path;
+          worktreeBranch = worktrees[0]!.branch;
+        } else {
+          const { runNavPicker } = await import("../lib/navigate.ts");
+          const wtResult = await runNavPicker({
+            options: worktrees.map((wt) => ({
+              value: wt.path,
+              label: wt.branch,
+              hint: wt.path,
+            })),
+            message: "Select worktree",
+            headerParts: [
+              "enter: select",
+              "ctrl-up: back to repo",
+              "esc: cancel",
             ],
-            stderr: true,
-            backLabel: "Back to scripts",
-            extraExpect: [],
           });
-
-          if (!varResult) {
-            process.exit(1);
-          }
-
-          if (varResult.value === ADD_SENTINEL) {
-            // Prompt for name
-            const name = await textInput({
-              message: "Variation name",
-              placeholder: "e.g. with debug",
-              stderr: true,
-            });
-            if (!name) process.exit(1);
-
-            // Prompt for command, defaulting to the base command
-            const baseCmd = `${detectPackageManager(packagePath)} run ${scriptName}`;
-            const command = await textInput({
-              message: "Command",
-              defaultValue: baseCmd,
-              stderr: true,
-            });
-            if (!command) process.exit(1);
-
-            if (dataDir) {
-              saveVariation(dataDir, packagePath, scriptName, { name, command });
-            }
-
-            selectedScript = scriptName;
-            customCommand = command;
-            break packageLoop;
-          }
-
-          // Existing variation selected — use its command directly
-          selectedScript = scriptName;
-          customCommand = varResult.value;
-          break packageLoop;
-        } catch (err) {
-          if (err instanceof BackNavigation) {
-            // Back to script picker (one level up from variations)
+          if (!wtResult) process.exit(1);
+          if (wtResult.key === "ctrl-up") {
             process.stderr.write("\x1b[2J\x1b[H");
-            continue packageLoop;
+            selectedRepo = undefined;
+            break worktreeLoop;
           }
-          throw err;
+          const wt = worktrees.find((w) => w.path === wtResult.value)!;
+          worktreePath = wt.path;
+          worktreeBranch = wt.branch;
+        }
+
+        dataDir = selectedRepo.dataDir;
+
+        // ── Package + script ────────────────────────────────────────────
+        while (true) {
+          const sel = await selectPackageAndScript(worktreePath, dataDir);
+          if (!sel) {
+            process.stderr.write("\x1b[2J\x1b[H");
+            break; // back to worktree picker
+          }
+          packagePath = sel.packagePath;
+          packageLabel = sel.packageLabel;
+          selectedScript = sel.selectedScript;
+          customCommand = sel.customCommand;
+          break repoLoop; // exit all loops → run command
         }
       }
-
-      // Normal Enter — run the base command
-      selectedScript = scriptName;
-      break packageLoop;
-    } catch (err) {
-      if (err instanceof BackNavigation) {
-        // Go back one level: show the full package picker
-        skipCwdDetection = true;
-        process.stderr.write("\x1b[2J\x1b[H");
-        process.stderr.write(`  ↳ back to package selection\n`);
-        continue packageLoop;
-      }
-      throw err;
     }
   }
 
