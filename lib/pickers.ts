@@ -213,12 +213,15 @@ export async function pickPackageWithEscape(
           // ctrl-up → "Switch worktree"
           if (hasMultipleRepos) {
             const wtResult = await pickWorktreeWithSwitch(repo, worktreePath, opts);
+            if (!wtResult) process.exit(0); // esc
             if (isSwitchRepo(wtResult)) {
               return pickFromAllRepos(allRepos, { ...opts, includePackages: true });
             }
-            worktreePath = wtResult as string;
+            worktreePath = wtResult;
           } else {
-            worktreePath = await pickWorktreeFromRepo(repo, `${repo.repoName} worktrees`);
+            const newPath = await pickWorktreeFromRepo(repo, `${repo.repoName} worktrees`);
+            if (!newPath) process.exit(0); // esc
+            worktreePath = newPath;
           }
           // Re-enter the loop with the new worktree's packages
           packages = getWorkspacePackages(worktreePath);
