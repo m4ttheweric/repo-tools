@@ -65,15 +65,20 @@ export async function renameBranch(): Promise<void> {
       const { withInlineSpinner } = await import("../lib/tui/inline-spinner.ts");
 
       try {
-        defaultName = await withInlineSpinner("resolving branch name…", async () => {
-          const ticket = await fetchTicket(secrets.linearApiKey, linearId);
-          if (ticket) {
-            const identity = getRepoIdentity();
-            const namingConfig = identity ? loadBranchNamingConfig(identity.dataDir) : null;
-            return await resolveBranchName(ticket, namingConfig);
-          }
-          return currentBranch;
-        });
+        const ticket = await withInlineSpinner(
+          `looking up ticket ${linearId}…`,
+          () => fetchTicket(secrets.linearApiKey, linearId),
+        );
+
+        if (ticket) {
+          const identity = getRepoIdentity();
+          const namingConfig = identity ? loadBranchNamingConfig(identity.dataDir) : null;
+
+          defaultName = await withInlineSpinner(
+            "generating branch name…",
+            () => resolveBranchName(ticket, namingConfig),
+          );
+        }
       } catch {
         // Ticket fetch or template resolution failed — keep current name as default
       }
