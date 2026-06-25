@@ -21,9 +21,16 @@ describe("variations", () => {
   });
 
   describe("variationKey", () => {
-    test("joins package path and script with colon", () => {
-      expect(variationKey("/abs/path/to/pkg", "dev")).toBe(
-        "/abs/path/to/pkg:dev",
+    test("joins repo-relative package path and script with colon", () => {
+      // packagePath is absolute; variationKey computes relative(repoRoot, packagePath)
+      expect(variationKey("/repo", "/repo/pkg/a", "dev")).toBe(
+        "pkg/a:dev",
+      );
+    });
+
+    test("uses '.' for the root package (packagePath === repoRoot)", () => {
+      expect(variationKey("/repo", "/repo", "build")).toBe(
+        ".:build",
       );
     });
   });
@@ -43,38 +50,38 @@ describe("variations", () => {
 
   describe("saveVariation + loadVariations roundtrip", () => {
     test("saves and loads a single variation", () => {
-      saveVariation(dataDir, "/pkg/a", "dev", {
+      saveVariation(dataDir, "/repo", "/repo/pkg/a", "dev", {
         name: "debug",
         command: "DEBUG=1 pnpm run dev",
       });
 
       const all = loadVariations(dataDir);
-      expect(all["/pkg/a:dev"]).toEqual([
+      expect(all["pkg/a:dev"]).toEqual([
         { name: "debug", command: "DEBUG=1 pnpm run dev" },
       ]);
     });
 
     test("appends to existing variations for the same key", () => {
-      saveVariation(dataDir, "/pkg/a", "dev", {
+      saveVariation(dataDir, "/repo", "/repo/pkg/a", "dev", {
         name: "debug",
         command: "DEBUG=1 pnpm run dev",
       });
-      saveVariation(dataDir, "/pkg/a", "dev", {
+      saveVariation(dataDir, "/repo", "/repo/pkg/a", "dev", {
         name: "inspect",
         command: "pnpm run dev -- --inspect",
       });
 
       const all = loadVariations(dataDir);
-      expect(all["/pkg/a:dev"]).toHaveLength(2);
-      expect(all["/pkg/a:dev"]![1]!.name).toBe("inspect");
+      expect(all["pkg/a:dev"]).toHaveLength(2);
+      expect(all["pkg/a:dev"]![1]!.name).toBe("inspect");
     });
 
     test("stores variations for different keys independently", () => {
-      saveVariation(dataDir, "/pkg/a", "dev", {
+      saveVariation(dataDir, "/repo", "/repo/pkg/a", "dev", {
         name: "debug",
         command: "DEBUG=1 pnpm run dev",
       });
-      saveVariation(dataDir, "/pkg/b", "start", {
+      saveVariation(dataDir, "/repo", "/repo/pkg/b", "start", {
         name: "verbose",
         command: "VERBOSE=1 pnpm start",
       });

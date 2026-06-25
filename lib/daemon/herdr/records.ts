@@ -6,6 +6,8 @@ import type { PaneRef } from "./pane-map.ts";
 export interface HerdrPane {
   paneId: string; terminalId: string; workspaceId: string;
   cwd: string; agentStatus: string; foregroundCmd?: string;
+  /** The agent running in the pane (herdr reports e.g. "claude"), if any. */
+  agent?: string;
 }
 
 export function herdrAgentStatusToState(s: string): ProcessState {
@@ -32,5 +34,6 @@ export function paneToRecord(pane: HerdrPane, ref: PaneRef | undefined, worktree
     branch: wt?.branch,
     port: ref?.port,
     kind: ref?.kind,
+    agent: pane.agent,
   };
 }

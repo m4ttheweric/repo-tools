@@ -318,10 +318,31 @@ const VIEWER_AND_STATES_QUERY = `
   query ViewerAndTeamStates($teamId: String!) {
     viewer { id }
     team(id: $teamId) {
-      states { nodes { id type } }
+      states { nodes { id type position } }
     }
   }
 `;
+
+interface WorkflowState {
+  id: string;
+  type: string;
+  position: number;
+}
+
+/**
+ * Pick the workflow state to move a ticket into when it's claimed ("In Progress").
+ *
+ * Linear lets many workflow states share `type: "started"` (e.g. ClaimView has
+ * "In Progress", "Code Review", "Ready for Merge", … all typed `started`). The
+ * raw API order is arbitrary, so picking the *first* started state can land a
+ * freshly-claimed ticket in "Ready for Merge". The entry point into the started
+ * group is the one with the lowest `position`, so choose that.
+ */
+export function pickStartedState<T extends WorkflowState>(states: T[]): T | null {
+  const started = states.filter((s) => s.type === "started");
+  if (started.length === 0) return null;
+  return started.reduce((lowest, s) => (s.position < lowest.position ? s : lowest));
+}
 
 const UPDATE_ISSUE_MUTATION = `
   mutation UpdateIssue($id: String!, $stateId: String!, $assigneeId: String!) {
@@ -334,10 +355,10 @@ const UPDATE_ISSUE_MUTATION = `
 export async function claimTicket(apiKey: string, issueId: string, teamId: string): Promise<void> {
   const data = (await linearGraphql(apiKey, VIEWER_AND_STATES_QUERY, { teamId })) as {
     viewer: { id: string };
-    team: { states: { nodes: Array<{ id: string; type: string }> } };
+    team: { states: { nodes: WorkflowState[] } };
   };
 
-  const startedState = data.team.states.nodes.find((s) => s.type === "started");
+  const startedState = pickStartedState(data.team.states.nodes);
   if (!startedState) throw new Error("No 'started' state found for team");
 
   await linearGraphql(apiKey, UPDATE_ISSUE_MUTATION, {

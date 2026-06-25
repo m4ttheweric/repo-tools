@@ -183,17 +183,21 @@ export interface ParkResult {
 export function park(
   worktreePath: string,
   repoPath: string,
-  sourceBranch: string,
+  sourceBranch: string | null,
   index: number,
 ): ParkResult {
   const parkBranch = `parking-lot/${index}`;
 
-  // 1. Confirm the worktree is still on the branch we expect. If the user
-  //    has already switched away, bail — they've moved on and don't want us
-  //    clobbering their current state.
+  // 1. Confirm the worktree is still in the state we expect. `sourceBranch` is
+  //    null when parking a detached worktree (e.g. a herdr warm-pool entry) —
+  //    in that case we expect it to still be detached. Either way, if the user
+  //    has switched away, bail rather than clobber their current state.
   const current = getCurrentBranch(worktreePath);
   if (current !== sourceBranch) {
-    return { ok: false, action: "skip", detail: `worktree is on "${current}", not "${sourceBranch}"` };
+    const detail = sourceBranch
+      ? `worktree is on "${current}", not "${sourceBranch}"`
+      : `worktree is no longer detached (on "${current}")`;
+    return { ok: false, action: "skip", detail };
   }
 
   // 2. Refuse to touch the parking-lot branch if another worktree already
@@ -205,11 +209,15 @@ export function park(
   }
 
   // 3. Stash if dirty, using the GitHub Desktop-compatible marker so the
-  //    existing rt / GitHub Desktop flows can find it later.
+  //    existing rt / GitHub Desktop flows can find it later. A detached
+  //    worktree has no source branch to key the stash to, so fall back to the
+  //    parking-lot slot — that's where the worktree is headed and keeps the
+  //    stash recoverable (rather than labeling it "<null>").
+  const stashLabel = sourceBranch ?? parkBranch;
   try {
     if (hasUncommittedChanges(worktreePath)) {
-      stashChanges(worktreePath, sourceBranch);
-      log.info({ sourceBranch }, `stashed uncommitted changes on "${sourceBranch}"`);
+      stashChanges(worktreePath, stashLabel);
+      log.info({ stashLabel }, `stashed uncommitted changes on "${stashLabel}"`);
     }
   } catch (err) {
     return { ok: false, action: "stash-failed", detail: String(err) };
@@ -244,7 +252,25 @@ export function park(
     return { ok: false, action: "ff-failed", detail: String(err) };
   }
 
-  return { ok: true, action: "parked", detail: `${sourceBranch} → ${parkBranch} @ ${defaultRef}` };
+  return { ok: true, action: "parked", detail: `${sourceBranch ?? "(detached)"} → ${parkBranch} @ ${defaultRef}` };
+}
+
+/**
+ * Whether a worktree binding can be manually parked onto its slot.
+ *
+ * Parkable = it has an allocated slot index and isn't already sitting on that
+ * `parking-lot/<index>` branch. Both feature-branch worktrees and detached
+ * worktrees (branch === null, e.g. herdr warm-pool entries) qualify — parking a
+ * detached worktree claims it onto a clean slot branch off origin/master.
+ *
+ * Note this is the manual-park predicate. Auto-park (checkAndPark) is
+ * deliberately narrower: it only fires on MR open→terminal transitions, which
+ * detached worktrees never have, so they are never auto-parked.
+ */
+export function isParkable(binding: WorktreeBinding): boolean {
+  if (!binding.index) return false;
+  if (binding.branch === `parking-lot/${binding.index}`) return false;
+  return true;
 }
 
 // ─── Transition detection (called after each cache refresh) ──────────────────
