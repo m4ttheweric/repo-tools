@@ -81,6 +81,8 @@ export async function llmPrompt(
 ): Promise<string> {
   const config = loadLlmConfig();
 
+  if (!config.model) throw new LlmUnavailableError("no model configured");
+
   const prompt = `<|system|>\n${system}\n<|user|>\n${user}\n<|assistant|>\n`;
 
   let response: Response;
