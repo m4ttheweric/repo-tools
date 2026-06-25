@@ -122,22 +122,15 @@ export async function llmPrompt(
  * On failure, throws — callers should catch and fall back to a mechanical slug.
  */
 export async function llmSummarize(text: string, maxChars: number): Promise<string> {
-  const SYSTEM = [
-    "You produce a very short hyphenated branch-name slug from a ticket title.",
-    "Rules:",
-    "- Output ONLY the slug, nothing else.",
-    "- Use 2-4 key words, hyphenated.",
-    "- Drop articles (a, an, the), drop verbs, drop prepositions.",
-    "- Lowercase only.",
-    "- Keep it descriptive but tight.",
-    "Example: 'Add damage photos to the claim view' → damage-photos-claim",
-    "Example: 'Fix timeout in billing export' → billing-timeout-fix",
-    "Example: 'Darkness factor headlight source' → darkness-headlight",
-  ].join("\n");
+  const prompt = `Turn this ticket title into a short hyphenated branch slug (${maxChars} chars max). Output only the slug:\n\n"${text}"`;
 
-  // Floor at 20 tokens — very small values cause some models to produce nothing.
-  const numPredict = Math.max(maxChars + 4, 20);
-  const result = await llmPrompt(SYSTEM, text, { maxTokens: numPredict });
+  // Give the model enough tokens to produce the slug plus a little buffer.
+  const numPredict = Math.max(maxChars + 16, 40);
+  const result = await llmPrompt(
+    "Reply with only a short hyphenated slug. No explanation.",
+    prompt,
+    { maxTokens: numPredict },
+  );
 
   // Post-process: lowercase, strip non-slug chars, collapse hyphens, trim to length
   const slug = result
