@@ -362,11 +362,13 @@ export async function runCommand(
   let selectedScript = "";
   let customCommand: string | undefined;
 
-  if (ctx.identity) {
-    // Dispatcher already resolved repo + worktree via --repo flag or cwd detection.
-    // Jump straight to package → script selection.
-    worktreePath = ctx.identity.repoRoot;
-    dataDir = ctx.identity.dataDir;
+  // If the dispatcher resolved a worktree, try that first.  On ctrl-up
+  // from the package picker, fall through to the full picker chain so
+  // the user can choose a different worktree.
+  let useResolved = !!ctx.identity;
+  if (useResolved) {
+    worktreePath = ctx.identity!.repoRoot;
+    dataDir = ctx.identity!.dataDir;
     try {
       worktreeBranch = execSync("git rev-parse --abbrev-ref HEAD", {
         cwd: worktreePath,
@@ -377,20 +379,19 @@ export async function runCommand(
       worktreeBranch = "";
     }
 
-    // Package + script loop
-    while (true) {
-      const sel = await selectPackageAndScript(worktreePath, dataDir);
-      if (!sel) {
-        process.stderr.write("\x1b[2J\x1b[H");
-        continue;
-      }
+    const sel = await selectPackageAndScript(worktreePath, dataDir);
+    if (sel) {
       packagePath = sel.packagePath;
       packageLabel = sel.packageLabel;
       selectedScript = sel.selectedScript;
       customCommand = sel.customCommand;
-      break;
+    } else {
+      // User backed out — fall through to full picker chain
+      useResolved = false;
     }
-  } else {
+  }
+
+  if (!useResolved) {
     // ── Full picker chain: repo → worktree → package → script ──────────────
     const knownRepos = getKnownRepos();
     if (knownRepos.length === 0) {
