@@ -491,3 +491,75 @@ export async function toggleDevMode(args: string[]): Promise<void> {
 
   console.log("");
 }
+
+// ─── LLM setup ───────────────────────────────────────────────────────────────
+
+export async function configureLlm(): Promise<void> {
+  const { select, textInput } = await import("../lib/rt-render.tsx");
+  const {
+    listOllamaModels,
+    loadLlmConfig,
+    saveLlmConfig,
+    llmPrompt,
+  } = await import("../lib/llm.ts");
+
+  const config = loadLlmConfig();
+
+  // Step 1: Verify Ollama is reachable and list models
+  console.log(`\n  ${dim}checking Ollama at ${config.url}…${reset}`);
+
+  let models: Array<{ name: string; size: string }>;
+  try {
+    models = await listOllamaModels(config.url);
+  } catch (err) {
+    console.log(`\n  ${red}✗${reset} cannot reach Ollama at ${config.url}`);
+    console.log(`  ${dim}make sure Ollama is running (ollama serve)${reset}\n`);
+    return;
+  }
+
+  if (models.length === 0) {
+    console.log(`\n  ${yellow}!${reset} no models found`);
+    console.log(`  ${dim}pull one first: ollama pull qwen3:4b${reset}\n`);
+    return;
+  }
+
+  // Step 2: Pick a model
+  const currentModel = config.model;
+  const options = models.map(m => ({
+    value: m.name,
+    label: `${m.name}  ${dim}(${m.size})${reset}`,
+    hint: m.name === currentModel ? "current" : "",
+  }));
+
+  const selected = await select({
+    message: "Select LLM model",
+    options,
+  });
+
+  if (!selected) return;
+
+  saveLlmConfig({ model: selected });
+
+  // Step 3: Offer test prompt
+  console.log(`  ${green}✓${reset} model set to ${bold}${selected}${reset}`);
+
+  try {
+    const test = await select({
+      message: "Send a test prompt?",
+      options: [
+        { value: "yes", label: "Yes, test the model", hint: "sends a quick hello" },
+        { value: "no",  label: "Skip", hint: "" },
+      ],
+    });
+    if (test === "yes") {
+      console.log(`\n  ${dim}testing…${reset}`);
+      const response = await llmPrompt(
+        "You are a helpful assistant. Reply concisely.",
+        "Say hello and confirm you are working.",
+      );
+      console.log(`  ${green}✓${reset} response: ${dim}${response.slice(0, 120)}${reset}\n`);
+    }
+  } catch (err) {
+    console.log(`  ${yellow}!${reset} test failed: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+}
