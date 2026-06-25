@@ -173,8 +173,8 @@ export async function pickPackageWithEscape(
 ): Promise<string> {
   const { filterableSelect, BackNavigation } = await import("./rt-render.tsx");
 
-  const packages = getWorkspacePackages(worktreePath);
-  const currentBranch = repo.worktrees.find((wt) => wt.path === worktreePath)?.branch ?? "";
+  let packages = getWorkspacePackages(worktreePath);
+  let currentBranch = repo.worktrees.find((wt) => wt.path === worktreePath)?.branch ?? "";
   const hasMultipleWorktrees = repo.worktrees.length > 1;
 
   // Loop: BackNavigation from the worktree picker returns here
@@ -216,10 +216,14 @@ export async function pickPackageWithEscape(
             if (isSwitchRepo(wtResult)) {
               return pickFromAllRepos(allRepos, { ...opts, includePackages: true });
             }
-            return wtResult;
+            worktreePath = wtResult as string;
           } else {
-            return await pickWorktreeFromRepo(repo, `${repo.repoName} worktrees`);
+            worktreePath = await pickWorktreeFromRepo(repo, `${repo.repoName} worktrees`);
           }
+          // Re-enter the loop with the new worktree's packages
+          packages = getWorkspacePackages(worktreePath);
+          currentBranch = repo.worktrees.find((wt) => wt.path === worktreePath)?.branch ?? "";
+          continue;
         } else if (hasMultipleRepos) {
           // ctrl-up → "Switch repo" (no worktrees to switch between)
           return pickFromAllRepos(allRepos, { ...opts, includePackages: true });
