@@ -43,41 +43,6 @@ const DEFAULT_BRANCH_NAMES = new Set(["master", "main", "develop", "development"
 // ─── Exported handlers (called by command tree dispatcher) ───────────────────
 // The dispatcher handles: screen clearing, breadcrumbs, requireIdentity, pickers
 
-// ─── Rename branch ────────────────────────────────────────────────────────────
-
-export async function renameBranch(): Promise<void> {
-  const cwd = process.cwd();
-  const currentBranch = getCurrentBranch(cwd);
-
-  if (!currentBranch) {
-    console.log(`\n  ${yellow}not on a branch${reset}\n`);
-    return;
-  }
-
-  const { textInput } = await import("../lib/rt-render.tsx");
-
-  let newName: string;
-  try {
-    newName = await textInput({
-      message: "Rename branch",
-      defaultValue: currentBranch,
-      placeholder: "feature/new-name",
-    });
-  } catch {
-    return;
-  }
-
-  if (!newName.trim() || newName.trim() === currentBranch) return;
-
-  try {
-    execSync(`git branch -m "${newName.trim()}"`, { cwd, stdio: "pipe" });
-    console.log(`\n  ${green}✓${reset} renamed ${dim}${currentBranch}${reset} → ${bold}${newName.trim()}${reset}\n`);
-    daemonQuery("cache:refresh").catch(() => {});
-  } catch (err) {
-    console.log(`\n  ${red}✗${reset} failed: ${err instanceof Error ? err.message : String(err)}\n`);
-  }
-}
-
 // ─── Switch branch ───────────────────────────────────────────────────────────
 
 export async function switchBranch(): Promise<void> {
