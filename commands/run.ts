@@ -266,8 +266,7 @@ async function selectPackageAndScript(
         cameFromScript = true;
         continue; // back to package section
       }
-      // Single package (or root): back to caller
-      return null;
+      return null; // back to caller (ascends via path in outer loop)
     }
 
     if (scriptResult.key === "alt-enter") {
@@ -407,6 +406,7 @@ export async function runCommand(
     repoLoop: while (true) {
       // ── Repo picker ─────────────────────────────────────────────────────
       if (!selectedRepo) {
+        if (knownRepos.length === 1) process.exit(0); // back-propagated past last level
         const { runNavPicker } = await import("../lib/navigate.ts");
         const repoResult = await runNavPicker({
           options: knownRepos.map((r) => ({
@@ -469,7 +469,10 @@ export async function runCommand(
           const sel = await selectPackageAndScript(worktreePath, dataDir);
           if (!sel) {
             process.stderr.write("\x1b[2J\x1b[H");
-            break; // back to worktree picker
+            if (worktrees.length > 1) break; // re-show worktree picker
+            // Only 1 worktree — propagate up to repo
+            selectedRepo = undefined;
+            break worktreeLoop;
           }
           packagePath = sel.packagePath;
           packageLabel = sel.packageLabel;

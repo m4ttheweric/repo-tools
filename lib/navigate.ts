@@ -206,3 +206,24 @@ export async function runNavPicker(
 
   return parseNavOutput(result.stdout ?? "");
 }
+
+// ─── Navigation path tracker ────────────────────────────────────────────────
+
+/**
+ * Tracks which picker levels were interactive (user saw a picker) vs
+ * auto-selected (only one option).  Used by ctrl-up to propagate past
+ * levels that have nothing to show on the way back up.
+ *
+ *     const path = new NavPath();
+ *
+ *     // At each level:
+ *     if (autoSelect) { path.enter(false); }
+ *     else {
+ *       result = await runNavPicker(...);
+ *       if (result.key === "ctrl-up") {
+ *         const backTo = path.ascend();
+ *         // backTo is now the number of levels to go up
+ *       }
+ *       path.enter(true);
+ *     }
+ */
