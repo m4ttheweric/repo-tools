@@ -6,6 +6,7 @@ import { branchCache, branchListCache } from './cache';
 import { daemonQuery } from './daemonClient';
 import { getSecret } from './secrets';
 import { scheduleUpdate, openLinearUrl } from './statusBar';
+import { resolveBranchName, loadBranchNamingConfig } from './branchNaming';
 import {
   listAllBranches,
   getWorktreeBranches,
@@ -21,8 +22,9 @@ import {
   getGitApi,
   findWorkspaceRepo,
   getRemoteUrl,
+  resolveDataDir,
 } from './git';
-import type { BranchInfo } from './types';
+import type { BranchInfo, GitRepository } from './types';
 
 export async function showBranchSwitcher(context: vscode.ExtensionContext): Promise<void> {
   const gitApi = getGitApi();
@@ -344,7 +346,7 @@ export async function showBranchSwitcher(context: vscode.ExtensionContext): Prom
     if (!selected) return;
 
     if (selected.isLinearCreate) {
-      await handleLinearCreate(context, cwd, currentBranch, maxLen);
+      await handleLinearCreate(context, repo, cwd, currentBranch, maxLen);
       return;
     }
 
@@ -373,6 +375,7 @@ export async function showBranchSwitcher(context: vscode.ExtensionContext): Prom
 
 async function handleLinearCreate(
   context: vscode.ExtensionContext,
+  repo: GitRepository,
   cwd: string,
   currentBranch: string | null,
   maxLen: number,
@@ -395,22 +398,34 @@ async function handleLinearCreate(
     return;
   }
 
+  const dataDir = resolveDataDir(repo);
+  const namingConfig = dataDir ? loadBranchNamingConfig(dataDir) : null;
+
   const ticketItems = tickets
-    .filter((t) => t.branchName)
     .map((t) => {
       let title = t.title;
       if (maxLen > 0 && title.length > maxLen) title = title.slice(0, maxLen - 1) + '…';
+      const branchName = (() => {
+        try {
+          return resolveBranchName(t, namingConfig);
+        } catch {
+          return `${t.identifier.toLowerCase()}-${title
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-|-$/g, '')}`;
+        }
+      })();
       return {
         label: `$(bookmark) ${t.identifier}: ${title}`,
         description: t.stateName ?? undefined,
-        detail: `$(git-branch) ${t.branchName}`,
-        branchName: t.branchName!,
+        detail: `$(git-branch) ${branchName}`,
+        branchName,
         ticket: t,
       };
     });
 
   if (!ticketItems.length) {
-    vscode.window.showInformationMessage('No tickets with a suggested branch name found.');
+    vscode.window.showInformationMessage('No tickets found.');
     return;
   }
 

@@ -1,41 +1,21 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { homedir } from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type { BranchInfo, WorktreeEntry, GitExtensionExports, GitAPI, GitRepository } from './types';
+import { parseWorktreePorcelain } from './worktreeParse';
 
 const execFileAsync = promisify(execFile);
 
 // ── Worktree helpers ──
 
-const WORKTREE_LINE_RE = /^(.+?)\s+[0-9a-f]+\s+\[(.+?)\]\s*$/;
-const WORKTREE_BARE_RE = /^(.+?)\s+[0-9a-f]+\s+\(bare\)\s*$/;
-
 export async function listWorktrees(cwd: string): Promise<WorktreeEntry[]> {
   const currentFolder = await getRepoRootName();
 
   try {
-    const { stdout } = await execFileAsync('git', ['worktree', 'list'], { cwd });
-    const entries: WorktreeEntry[] = [];
-
-    for (const line of stdout.split('\n')) {
-      if (!line.trim()) continue;
-      if (WORKTREE_BARE_RE.test(line)) continue;
-
-      const m = WORKTREE_LINE_RE.exec(line);
-      if (!m) continue;
-
-      const dirPath = m[1]!;
-      const name = path.basename(dirPath);
-      entries.push({
-        dirPath,
-        name,
-        branch: m[2]!,
-        isCurrent: name === currentFolder,
-      });
-    }
-
-    return entries;
+    const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], { cwd });
+    return parseWorktreePorcelain(stdout, currentFolder);
   } catch {
     return [];
   }
@@ -321,4 +301,22 @@ export async function getRepoRootName(): Promise<string> {
   }
 
   return path.basename(cwd);
+}
+
+/**
+ * Resolve the rt per-repo data directory for the given repo.
+ * Mirrors the CLI's deriveRepoName logic.
+ */
+export function resolveDataDir(repo: GitRepository): string | null {
+  const remoteUrl = getRemoteUrl(repo);
+  if (!remoteUrl) return null;
+
+  const repoName = remoteUrl
+    .replace(/^git@[^:]+:/, "")
+    .replace(/^https?:\/\/[^/]+\//, "")
+    .replace(/\.git$/, "")
+    .split("/")
+    .pop() || "unknown";
+
+  return path.join(homedir(), ".rt", "repos", repoName);
 }
