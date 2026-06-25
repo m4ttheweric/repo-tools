@@ -401,8 +401,14 @@ export async function runCommand(
       process.exit(1);
     }
 
-    let selectedRepo: KnownRepo | undefined =
-      knownRepos.length === 1 ? knownRepos[0]! : undefined;
+    // If we fell through from a resolved context, start at the worktree
+    // picker for that repo rather than re-asking which repo.
+    const resolvedRepoName = ctx.identity?.repoName;
+    let selectedRepo: KnownRepo | undefined = resolvedRepoName
+      ? knownRepos.find((r) => r.repoName === resolvedRepoName)
+      : knownRepos.length === 1
+        ? knownRepos[0]!
+        : undefined;
 
     repoLoop: while (true) {
       // ── Repo picker ─────────────────────────────────────────────────────
