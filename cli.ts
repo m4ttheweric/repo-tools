@@ -72,7 +72,7 @@ const TREE: Record<string, CommandNode> = {
         },
       },
       branch: {
-        description: "Branch management (switch, create, rename, clean)",
+        description: "Branch management (switch, create, clean)",
         subcommands: {
           switch: {
             description: "Checkout with stash handling",
@@ -87,13 +87,6 @@ const TREE: Record<string, CommandNode> = {
             fn: "createBranchFlow",
             context: "worktree",
             aliases: ["new"],
-          },
-          rename: {
-            description: "Rename the current branch",
-            module: "./commands/branch.ts",
-            fn: "renameBranch",
-            context: "worktree",
-            aliases: ["mv"],
           },
           clean: {
             description: "Delete stale branches interactively",
@@ -195,7 +188,7 @@ const TREE: Record<string, CommandNode> = {
 
   // Aliases — rt branch and rt commit still work as before
   branch: {
-    description: "Branch management (switch, create, rename, clean)",
+    description: "Branch management (switch, create, clean)",
     subcommands: {
       switch: {
         description: "Checkout with stash handling",
@@ -210,13 +203,6 @@ const TREE: Record<string, CommandNode> = {
         fn: "createBranchFlow",
         context: "worktree",
         aliases: ["new"],
-      },
-      rename: {
-        description: "Rename the current branch",
-        module: "./commands/branch.ts",
-        fn: "renameBranch",
-        context: "worktree",
-        aliases: ["mv"],
       },
       clean: {
         description: "Delete stale branches interactively",

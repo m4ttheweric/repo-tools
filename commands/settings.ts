@@ -495,7 +495,7 @@ export async function toggleDevMode(args: string[]): Promise<void> {
 // ─── LLM setup ───────────────────────────────────────────────────────────────
 
 export async function configureLlm(): Promise<void> {
-  const { select, textInput } = await import("../lib/rt-render.tsx");
+  const { select } = await import("../lib/rt-render.tsx");
   const {
     listOllamaModels,
     loadLlmConfig,
