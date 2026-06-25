@@ -35,6 +35,8 @@ export interface ProcessRecord {
   url?: string;
   /** App port portless forwards to (the port the dev server listens on). */
   port?: number;
+  /** Agent running in a herdr pane (e.g. "claude"); used as the display label. */
+  agent?: string;
 }
 
 export function buildProcessRecords(

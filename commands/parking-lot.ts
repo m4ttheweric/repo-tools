@@ -27,7 +27,7 @@ import {
   saveParkingLotConfig,
   PARKING_LOT_CONFIG_PATH,
 } from "../lib/parking-lot-config.ts";
-import { describeRepoBindings, park } from "../lib/daemon/parking-lot.ts";
+import { describeRepoBindings, isParkable, park } from "../lib/daemon/parking-lot.ts";
 import { daemonQuery } from "../lib/daemon-client.ts";
 import { getRepoIdentity } from "../lib/repo.ts";
 import { getCurrentBranch } from "../lib/git-ops.ts";
@@ -136,7 +136,7 @@ async function runParkWithSpinner(
   label: string,
   worktreePath: string,
   repoPath: string,
-  branch: string,
+  branch: string | null,
   index: number,
 ): Promise<ParkOutcome> {
   const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"];
@@ -191,11 +191,9 @@ export async function parkThisCommand(): Promise<void> {
   }
 
   const worktreePath = identity.repoRoot;
+  // A null branch means the worktree is detached (a warm-pool entry) — that's
+  // parkable too: we claim it onto its clean parking-lot/N slot.
   const branch = getCurrentBranch(worktreePath);
-  if (!branch) {
-    console.log(`  ${red}✗${reset} worktree is detached — check out a branch first\n`);
-    process.exit(1);
-  }
 
   const bindings = describeRepoBindings(identity.repoName, repoPath);
   const binding = bindings.find(b => b.path === worktreePath);
@@ -210,14 +208,15 @@ export async function parkThisCommand(): Promise<void> {
     return;
   }
 
+  const from = branch ?? "(detached)";
   const { result, logs } = await runParkWithSpinner(
-    `parking ${branch} → ${parkBranch}`,
+    `parking ${from} → ${parkBranch}`,
     worktreePath, repoPath, branch, binding.index,
   );
 
   if (result.ok) {
     const defaultRef = result.detail?.match(/@ (\S+)/)?.[1] ?? "origin/master";
-    console.log(`  ${green}✓${reset} parked ${bold}${branch}${reset} ${dim}→${reset} ${cyan}${parkBranch}${reset} ${dim}@ ${defaultRef}${reset}\n`);
+    console.log(`  ${green}✓${reset} parked ${bold}${from}${reset} ${dim}→${reset} ${cyan}${parkBranch}${reset} ${dim}@ ${defaultRef}${reset}\n`);
   } else {
     for (const line of logs) console.log(`  ${dim}${line}${reset}`);
     console.log(`  ${red}✗${reset} ${result.action}${result.detail ? ` — ${result.detail}` : ""}\n`);
@@ -241,15 +240,12 @@ export async function parkPickCommand(): Promise<void> {
 
   const bindings = describeRepoBindings(identity.repoName, repoPath);
 
-  // Eligible: has a branch (not detached), has an index, and isn't already parked.
-  const eligible = bindings.filter(b => {
-    if (b.branch === null || !b.index) return false;
-    if (b.branch === `parking-lot/${b.index}`) return false;
-    return true;
-  });
+  // Eligible: has a slot index and isn't already on it. Detached worktrees
+  // (warm-pool entries) qualify — see isParkable.
+  const eligible = bindings.filter(isParkable);
 
   if (eligible.length === 0) {
-    console.log(`\n  ${dim}no worktrees to park — all are parked or detached${reset}\n`);
+    console.log(`\n  ${dim}no worktrees to park — all are already parked${reset}\n`);
     return;
   }
 
@@ -259,7 +255,7 @@ export async function parkPickCommand(): Promise<void> {
     return {
       value: b.path,
       label: wt,
-      hint:  `${b.branch} → parking-lot/${b.index}`,
+      hint:  `${b.branch ?? "(detached)"} → parking-lot/${b.index}`,
     };
   });
 
@@ -282,18 +278,19 @@ export async function parkPickCommand(): Promise<void> {
   let failCount = 0;
 
   for (const b of targets) {
-    const branch     = b.branch!;
+    const branch     = b.branch;
+    const from       = branch ?? "(detached)";
     const parkBranch = `parking-lot/${b.index}`;
     const wt         = relWorktreeName(repoPath, b.path);
 
     const { result, logs } = await runParkWithSpinner(
-      `parking ${wt} (${branch} → ${parkBranch})`,
+      `parking ${wt} (${from} → ${parkBranch})`,
       b.path, repoPath, branch, b.index,
     );
 
     if (result.ok) {
       const defaultRef = result.detail?.match(/@ (\S+)/)?.[1] ?? "origin/master";
-      console.log(`  ${green}✓${reset} ${dim}${wt}${reset}  ${bold}${branch}${reset} ${dim}→${reset} ${cyan}${parkBranch}${reset} ${dim}@ ${defaultRef}${reset}`);
+      console.log(`  ${green}✓${reset} ${dim}${wt}${reset}  ${bold}${from}${reset} ${dim}→${reset} ${cyan}${parkBranch}${reset} ${dim}@ ${defaultRef}${reset}`);
       okCount++;
     } else {
       for (const line of logs) console.log(`    ${dim}${line}${reset}`);

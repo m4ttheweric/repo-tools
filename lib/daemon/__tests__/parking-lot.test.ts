@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { execFileSync } from "child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { findDesktopStash, getCurrentBranch, hasUncommittedChanges } from "../../git-ops.ts";
 
 // The module reads RT_DIR at import time via daemon-config.ts, which pins to
 // the user's home ~/.rt. To avoid writing into the real ~/.rt during tests we
@@ -9,7 +11,7 @@ import { join } from "path";
 const tmpHome = mkdtempSync(join(tmpdir(), "rt-parking-"));
 process.env.HOME = tmpHome;
 
-const { __test__ } = await import("../parking-lot.ts");
+const { __test__, isParkable, park } = await import("../parking-lot.ts");
 
 describe("reconcileIndexMap", () => {
   const repo = "test-repo";
@@ -85,5 +87,73 @@ describe("reconcileIndexMap", () => {
     expect(map["/repo/primary"]).toBe(1);
     expect(map["/repo/wktree-9"]).toBe(9);
     expect(map["/repo/wktree-new"]).toBe(2);
+  });
+});
+
+describe("isParkable", () => {
+  // Detached worktrees (e.g. herdr warm-pool entries) have no branch but still
+  // get a slot index — they should be parkable so the user can claim them onto
+  // their parking-lot/N branch manually.
+  test("a detached worktree with an allocated slot is parkable", () => {
+    expect(isParkable({ path: "/r/wt", branch: null, index: 5 })).toBe(true);
+  });
+
+  test("a worktree on a feature branch is parkable", () => {
+    expect(isParkable({ path: "/r/wt", branch: "feature/x", index: 2 })).toBe(true);
+  });
+
+  test("a worktree already on its parking-lot slot is not parkable", () => {
+    expect(isParkable({ path: "/r/wt", branch: "parking-lot/3", index: 3 })).toBe(false);
+  });
+
+  test("a worktree with no allocated slot is not parkable", () => {
+    expect(isParkable({ path: "/r/wt", branch: null, index: 0 })).toBe(false);
+  });
+});
+
+describe("park (detached worktree)", () => {
+  let root: string;
+  let primary: string;
+  let wt: string;
+
+  beforeEach(() => {
+    // Resolve symlinks (macOS /var → /private/var) so paths match git output.
+    root = realpathSync(mkdtempSync(join(tmpdir(), "rt-park-detached-")));
+    const origin = join(root, "origin.git");
+    mkdirSync(origin);
+    execFileSync("git", ["init", "--bare", "-b", "master", origin], { stdio: "pipe" });
+    execFileSync("git", ["clone", origin, "primary"], { cwd: root, stdio: "pipe" });
+    primary = join(root, "primary");
+    const g = (args: string[]) => execFileSync("git", args, { cwd: primary, stdio: "pipe" });
+    g(["config", "user.email", "t@example.com"]);
+    g(["config", "user.name", "Test"]);
+    writeFileSync(join(primary, "README.md"), "hi\n");
+    g(["add", "."]);
+    g(["commit", "-m", "init"]);
+    g(["push", "origin", "master"]);
+    // A linked worktree in detached HEAD — the warm-pool shape.
+    wt = join(root, "wt5");
+    g(["worktree", "add", "--detach", wt, "HEAD"]);
+  });
+
+  afterEach(() => {
+    try { rmSync(root, { recursive: true, force: true }); } catch { /* */ }
+  });
+
+  test("parks a clean detached worktree onto its slot branch", () => {
+    const result = park(wt, primary, null, 5);
+    expect(result.ok).toBe(true);
+    expect(getCurrentBranch(wt)).toBe("parking-lot/5");
+  });
+
+  test("stashes a dirty detached worktree under the slot branch, not <null>", () => {
+    writeFileSync(join(wt, "scratch.txt"), "wip\n");
+    const result = park(wt, primary, null, 5);
+    expect(result.ok).toBe(true);
+    expect(getCurrentBranch(wt)).toBe("parking-lot/5");
+    expect(hasUncommittedChanges(wt)).toBe(false);
+    // The stash must be recoverable by the slot branch name. The pre-fix code
+    // passed sourceBranch=null straight through, labeling the stash "<null>".
+    expect(findDesktopStash(wt, "parking-lot/5")).not.toBeNull();
   });
 });

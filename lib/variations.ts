@@ -2,14 +2,18 @@
  * Per-repo script variations for rt run.
  *
  * Storage: <dataDir>/variations.json — a single JSON object keyed by
- * `absolutePackagePath:scriptName`, each value an array of {name, command}.
+ * `repoRelativePath:scriptName`, each value an array of {name, command}.
+ *
+ * Keys use repo-relative paths so variations are shared across worktrees
+ * (worktree roots differ, but the relative package path within the repo
+ * is stable).
  *
  * Best-effort I/O — silently swallows errors so a broken/missing file
  * never blocks the user's actual command invocation.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, relative } from "path";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -28,8 +32,14 @@ function variationsPath(dataDir: string): string {
 
 // ─── Keys ───────────────────────────────────────────────────────────────────
 
-export function variationKey(packagePath: string, script: string): string {
-  return `${packagePath}:${script}`;
+/**
+ * Build a worktree-independent key from the repo root and absolute package
+ * path.  Uses a repo-relative path so that the same package accessed from
+ * different worktrees maps to the same key.
+ */
+export function variationKey(repoRoot: string, packagePath: string, script: string): string {
+  const rel = relative(repoRoot, packagePath) || ".";
+  return `${rel}:${script}`;
 }
 
 // ─── Read ───────────────────────────────────────────────────────────────────
@@ -58,12 +68,13 @@ export function loadVariations(
 
 export function saveVariation(
   dataDir: string,
+  repoRoot: string,
   packagePath: string,
   script: string,
   variation: Variation,
 ): void {
   const path = variationsPath(dataDir);
-  const key = variationKey(packagePath, script);
+  const key = variationKey(repoRoot, packagePath, script);
 
   const all = loadVariations(dataDir);
   const list = all[key] ?? [];

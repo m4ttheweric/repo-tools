@@ -276,7 +276,7 @@ async function selectPackageAndScript(
     if (scriptResult.key === "alt-enter") {
       // ── Variations sub-picker ────────────────────────────────────────────
       const existing = dataDir
-        ? (loadVariations(dataDir)[variationKey(packagePath, scriptName)] ?? [])
+        ? (loadVariations(dataDir)[variationKey(worktreePath, packagePath, scriptName)] ?? [])
         : [];
 
       const ADD_SENTINEL = "__rt:add-variation__";
@@ -316,7 +316,7 @@ async function selectPackageAndScript(
           if (!command) process.exit(1);
 
           if (dataDir) {
-            saveVariation(dataDir, packagePath, scriptName, { name, command });
+            saveVariation(dataDir, worktreePath, packagePath, scriptName, { name, command });
           }
 
           return {

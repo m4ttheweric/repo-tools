@@ -24,12 +24,14 @@ export function createParkingLotHandlers(ctx: HandlerContext): HandlerMap {
 
     "parking-lot:park-this": async (payload: any) => {
       const { worktreePath, repoPath, branch, index } = payload ?? {};
-      if (!worktreePath || !repoPath || !branch || typeof index !== "number") {
+      // `branch` is intentionally optional — null/undefined means the worktree
+      // is detached (a warm-pool entry being claimed onto its slot).
+      if (!worktreePath || !repoPath || typeof index !== "number") {
         return { ok: false, error: "missing payload fields" };
       }
 
       try {
-        const result = park(worktreePath, repoPath, branch, index);
+        const result = park(worktreePath, repoPath, branch ?? null, index);
         return { ok: true, data: { result, lines: [] } };
       } catch (err) {
         return { ok: false, error: String(err) };

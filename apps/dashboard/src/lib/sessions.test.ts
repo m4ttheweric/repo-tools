@@ -24,6 +24,12 @@ describe("sessionLabel", () => {
   test("shell label is 'shell N' from the term:<dir>:<n> id", () => {
     expect(sessionLabel(rec({ id: "term:portal:2", kind: "terminal" }))).toBe("shell 2");
   });
+  test("prefers the herdr agent name over a raw term_ id", () => {
+    expect(sessionLabel(rec({ id: "term_655065a87e0714a", agent: "claude" }))).toBe("claude");
+  });
+  test("bare herdr pane with no agent reads 'terminal', not the raw id", () => {
+    expect(sessionLabel(rec({ id: "term_65501f0f20e422a" }))).toBe("terminal");
+  });
 });
 
 describe("statusDotClass", () => {
@@ -48,6 +54,15 @@ describe("sessionsForWorktree", () => {
     const out = sessionsForWorktree(recs);
     expect(out.map((s) => s.id)).toEqual(["w:dev", "w:build", "term:w:1"]);
     expect(out.map((s) => s.kind)).toEqual(["command", "command", "shell"]);
+  });
+
+  test("numbers duplicate labels within a worktree (claude 1, claude 2); singletons unnumbered", () => {
+    const out = sessionsForWorktree([
+      rec({ id: "term_aaa", agent: "claude", state: "running" }),
+      rec({ id: "term_bbb", agent: "claude", state: "running" }),
+      rec({ id: "term_ccc", agent: "codex", state: "running" }),
+    ]);
+    expect(out.map((s) => s.label)).toEqual(["claude 1", "claude 2", "codex"]);
   });
 
   test("carries through state, cmd, url, startedAt, exitCode", () => {

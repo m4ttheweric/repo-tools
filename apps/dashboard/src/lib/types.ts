@@ -20,6 +20,8 @@ export interface ProcessRecord {
   url?: string;
   /** App port portless forwards to. */
   port?: number;
+  /** Agent running in a herdr pane (e.g. "claude"); preferred tab label. */
+  agent?: string;
 }
 
 export interface RepoWorktree {

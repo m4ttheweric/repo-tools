@@ -139,6 +139,7 @@ export class HerdrProcessManager {
       paneId: p.pane_id, terminalId: p.terminal_id, workspaceId: p.workspace_id,
       cwd: p.cwd ?? p.foreground_cwd ?? "", agentStatus: p.agent_status ?? "unknown",
       foregroundCmd: p.foreground_cmd ?? p.command,
+      agent: p.agent,
     };
   }
   private refByPaneId(paneId: string) { return this.paneMap.all().find((r) => r.paneId === paneId); }

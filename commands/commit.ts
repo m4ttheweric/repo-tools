@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { writeFileSync, unlinkSync } from "node:fs";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { textInput } from "../lib/rt-render.tsx";
+import { ensureFzf } from "../lib/fzf.ts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -167,6 +168,7 @@ function runFilePicker(
   files: ChangedFile[],
   initiallyStaged: Set<string>,
 ): string[] | null {
+  ensureFzf();
   const pipe = deltaPipeCmd();
   const { cmd: previewCmd, cleanup: cleanupPreview } = buildPreviewCmd(cwd, pipe);
 
