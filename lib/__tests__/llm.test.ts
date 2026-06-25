@@ -1,4 +1,4 @@
-import { describe, test, expect, afterEach, beforeEach } from "bun:test";
+import { describe, test, expect, afterEach, beforeEach, mock } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 
@@ -85,5 +85,111 @@ describe("saveLlmConfig", () => {
     saveLlmConfig({ model: "llama3:8b" });
     const config = loadLlmConfig();
     expect(config.model).toBe("llama3:8b");
+  });
+});
+
+describe("llmPrompt", () => {
+  test("calls Ollama /api/generate with correct payload", async () => {
+    const { saveLlmConfig } = await import("../llm.ts");
+    saveLlmConfig({
+      url: "http://localhost:12345",
+      model: "test-model",
+      timeoutMs: 5000,
+    });
+
+    // Mock fetch
+    const origFetch = globalThis.fetch;
+    let capturedBody: string | null = null;
+    globalThis.fetch = mock(async (url, init) => {
+      capturedBody = init?.body as string;
+      return new Response(
+        JSON.stringify({ response: "hello from llm" }),
+        { status: 200 },
+      );
+    });
+
+    try {
+      const { llmPrompt } = await import("../llm.ts");
+      const result = await llmPrompt("you are helpful", "say hi", { maxTokens: 10 });
+      expect(result).toBe("hello from llm");
+      expect(capturedBody).not.toBeNull();
+      const parsed = JSON.parse(capturedBody!);
+      expect(parsed.model).toBe("test-model");
+      expect(parsed.prompt).toContain("you are helpful");
+      expect(parsed.prompt).toContain("say hi");
+      expect(parsed.stream).toBe(false);
+      expect(parsed.options.num_predict).toBe(10);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  test("throws LlmUnavailableError on connection refused", async () => {
+    const { saveLlmConfig } = await import("../llm.ts");
+    saveLlmConfig({ url: "http://localhost:12346", model: "x", timeoutMs: 500 });
+
+    // Re-import to pick up new config
+    const { llmPrompt } = await import("../llm.ts");
+    await expect(llmPrompt("s", "u")).rejects.toThrow("LLM unavailable");
+  });
+
+  test("throws LlmUnavailableError on timeout", async () => {
+    const { saveLlmConfig } = await import("../llm.ts");
+    saveLlmConfig({ url: "http://localhost:12346", model: "x", timeoutMs: 100 });
+
+    const { llmPrompt } = await import("../llm.ts");
+    await expect(llmPrompt("s", "u")).rejects.toThrow("LLM unavailable");
+  });
+
+  test("throws LlmEmptyResponseError when model returns empty", async () => {
+    const { saveLlmConfig } = await import("../llm.ts");
+    saveLlmConfig({ url: "http://localhost:12345", model: "x", timeoutMs: 5000 });
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ response: "" }), { status: 200 }),
+    );
+    try {
+      const { llmPrompt } = await import("../llm.ts");
+      await expect(llmPrompt("s", "u")).rejects.toThrow("empty response");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+describe("listOllamaModels", () => {
+  test("returns model list from Ollama /api/tags", async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mock(async (url) => {
+      if (String(url).includes("/api/tags")) {
+        return new Response(
+          JSON.stringify({
+            models: [
+              { name: "qwen3:4b", size: 2411728896 },
+              { name: "codellama:7b", size: 3945367808 },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+    try {
+      const { listOllamaModels } = await import("../llm.ts");
+      const models = await listOllamaModels("http://localhost:11434");
+      expect(models).toHaveLength(2);
+      expect(models[0]!.name).toBe("qwen3:4b");
+      expect(models[1]!.name).toBe("codellama:7b");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  test("throws LlmUnavailableError when Ollama is down", async () => {
+    const { listOllamaModels } = await import("../llm.ts");
+    await expect(
+      listOllamaModels("http://localhost:12346"),
+    ).rejects.toThrow("LLM unavailable");
   });
 });
