@@ -56,11 +56,6 @@ export function saveLlmConfig(partial: Partial<LlmConfig>): void {
 
 // ─── Ollama API ──────────────────────────────────────────────────────────────
 
-interface OllamaGenerateResponse {
-  response: string;
-  done: boolean;
-}
-
 interface OllamaTagsResponse {
   models: Array<{ name: string; size: number }>;
 }
@@ -83,16 +78,17 @@ export async function llmPrompt(
 
   if (!config.model) throw new LlmUnavailableError("no model configured");
 
-  const prompt = `<|system|>\n${system}\n<|user|>\n${user}\n<|assistant|>\n`;
-
   let response: Response;
   try {
-    response = await fetch(`${config.url}/api/generate`, {
+    response = await fetch(`${config.url}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: config.model,
-        prompt,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
         stream: false,
         options: opts?.maxTokens ? { num_predict: opts.maxTokens } : undefined,
       }),
@@ -107,8 +103,8 @@ export async function llmPrompt(
     throw new LlmUnavailableError(`HTTP ${response.status}`);
   }
 
-  const json = (await response.json()) as OllamaGenerateResponse;
-  const text = (json.response ?? "").trim();
+  const json = (await response.json()) as { message?: { content?: string } };
+  const text = (json.message?.content ?? "").trim();
 
   if (!text) throw new LlmEmptyResponseError();
 

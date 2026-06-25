@@ -103,7 +103,7 @@ describe("llmPrompt", () => {
     globalThis.fetch = mock(async (url, init) => {
       capturedBody = init?.body as string;
       return new Response(
-        JSON.stringify({ response: "hello from llm" }),
+        JSON.stringify({ message: { content: "hello from llm" } }),
         { status: 200 },
       );
     });
@@ -115,8 +115,10 @@ describe("llmPrompt", () => {
       expect(capturedBody).not.toBeNull();
       const parsed = JSON.parse(capturedBody!);
       expect(parsed.model).toBe("test-model");
-      expect(parsed.prompt).toContain("you are helpful");
-      expect(parsed.prompt).toContain("say hi");
+      expect(parsed.messages[0].role).toBe("system");
+      expect(parsed.messages[0].content).toBe("you are helpful");
+      expect(parsed.messages[1].role).toBe("user");
+      expect(parsed.messages[1].content).toBe("say hi");
       expect(parsed.stream).toBe(false);
       expect(parsed.options.num_predict).toBe(10);
     } finally {
@@ -147,7 +149,7 @@ describe("llmPrompt", () => {
 
     const origFetch = globalThis.fetch;
     globalThis.fetch = mock(async () =>
-      new Response(JSON.stringify({ response: "" }), { status: 200 }),
+      new Response(JSON.stringify({ message: { content: "" } }), { status: 200 }),
     );
     try {
       const { llmPrompt } = await import("../llm.ts");
