@@ -62,26 +62,21 @@ export async function renameBranch(): Promise<void> {
   if (linearId) {
     const secrets = loadSecrets();
     if (secrets.linearApiKey) {
-      // Animated spinner — Linear fetch + LLM can take a moment
-      const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"];
-      let fi = 0;
-      const spinnerTimer = setInterval(() => {
-        process.stderr.write(`\r  ${dim}${frames[fi++ % frames.length]} resolving branch name…${reset}`);
-      }, 80);
+      const { withInlineSpinner } = await import("../lib/tui/inline-spinner.ts");
 
       try {
-        const ticket = await fetchTicket(secrets.linearApiKey, linearId);
-        if (ticket) {
-          const identity = getRepoIdentity();
-          const namingConfig = identity ? loadBranchNamingConfig(identity.dataDir) : null;
-          defaultName = await resolveBranchName(ticket, namingConfig);
-        }
+        defaultName = await withInlineSpinner("resolving branch name…", async () => {
+          const ticket = await fetchTicket(secrets.linearApiKey, linearId);
+          if (ticket) {
+            const identity = getRepoIdentity();
+            const namingConfig = identity ? loadBranchNamingConfig(identity.dataDir) : null;
+            return await resolveBranchName(ticket, namingConfig);
+          }
+          return currentBranch;
+        });
       } catch {
         // Ticket fetch or template resolution failed — keep current name as default
       }
-
-      clearInterval(spinnerTimer);
-      process.stderr.write("\r\x1b[K"); // clear the spinner line
     }
   }
 
