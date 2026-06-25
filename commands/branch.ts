@@ -35,11 +35,48 @@ import {
   type BranchInfo,
 } from "../lib/git-ops.ts";
 import { daemonQuery } from "../lib/daemon-client.ts";
+import { resolveBranchName, loadBranchNamingConfig } from "../lib/branch-naming.ts";
+import { getRepoIdentity } from "../lib/repo.ts";
 
 const DEFAULT_BRANCH_NAMES = new Set(["master", "main", "develop", "development", "staging", "production"]);
 
 // ─── Exported handlers (called by command tree dispatcher) ───────────────────
 // The dispatcher handles: screen clearing, breadcrumbs, requireIdentity, pickers
+
+// ─── Rename branch ────────────────────────────────────────────────────────────
+
+export async function renameBranch(): Promise<void> {
+  const cwd = process.cwd();
+  const currentBranch = getCurrentBranch(cwd);
+
+  if (!currentBranch) {
+    console.log(`\n  ${yellow}not on a branch${reset}\n`);
+    return;
+  }
+
+  const { textInput } = await import("../lib/rt-render.tsx");
+
+  let newName: string;
+  try {
+    newName = await textInput({
+      message: "Rename branch",
+      defaultValue: currentBranch,
+      placeholder: "feature/new-name",
+    });
+  } catch {
+    return;
+  }
+
+  if (!newName.trim() || newName.trim() === currentBranch) return;
+
+  try {
+    execSync(`git branch -m "${newName.trim()}"`, { cwd, stdio: "pipe" });
+    console.log(`\n  ${green}✓${reset} renamed ${dim}${currentBranch}${reset} → ${bold}${newName.trim()}${reset}\n`);
+    daemonQuery("cache:refresh").catch(() => {});
+  } catch (err) {
+    console.log(`\n  ${red}✗${reset} failed: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+}
 
 // ─── Switch branch ───────────────────────────────────────────────────────────
 
@@ -346,9 +383,15 @@ async function createFromExistingTicket(apiKey: string): Promise<void> {
     const ticket = tickets.find((t) => t.identifier === selectedId);
     if (!ticket) return;
 
-    const branchName = ticket.branchName ?? inferBranchName(ticket.identifier, ticket.title);
+    const identity = getRepoIdentity();
+    const namingConfig = identity ? loadBranchNamingConfig(identity.dataDir) : null;
+    const branchName = await resolveBranchName(ticket, namingConfig);
     claimTicket(apiKey, ticket.id, teamId).catch(() => {/* best-effort */});
-    await createWithBaseRef(branchName, ticket);
+
+    const finalName = await confirmBranchName(branchName);
+    if (!finalName) return;
+
+    await createWithBaseRef(finalName, ticket);
     return;
   }
 }
@@ -390,13 +433,14 @@ async function createNewTicketAndBranch(apiKey: string): Promise<void> {
 
     console.log(`  ${green}✓${reset} created ${bold}${ticket.identifier}${reset}: ${ticket.title}`);
 
-    if (!ticket.branchName) {
-      console.log(`  ${yellow}!${reset} no suggested branch name from Linear`);
-      console.log(`  ${dim}ticket created but branch not created${reset}\n`);
-      return;
-    }
+    const identity = getRepoIdentity();
+    const namingConfig = identity ? loadBranchNamingConfig(identity.dataDir) : null;
+    const branchName = await resolveBranchName(ticket, namingConfig);
 
-    await createWithBaseRef(ticket.branchName, ticket);
+    const finalName = await confirmBranchName(branchName);
+    if (!finalName) return;
+
+    await createWithBaseRef(finalName, ticket);
   } catch (err) {
     console.log(`  ${red}✗${reset} ${err instanceof Error ? err.message : String(err)}\n`);
   }
@@ -417,12 +461,20 @@ async function createFromScratch(): Promise<void> {
 
   await createBranchDirect(branchName.trim(), startPoint);
 }
-
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
-function inferBranchName(identifier: string, title: string): string {
-  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50);
-  return `${identifier.toLowerCase()}-${slug}`;
+async function confirmBranchName(defaultName: string): Promise<string | null> {
+  const { textInput } = await import("../lib/rt-render.tsx");
+  try {
+    const name = await textInput({
+      message: "Branch name",
+      defaultValue: defaultName,
+      placeholder: "feature/my-branch",
+    });
+    return name.trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 async function createWithBaseRef(branchName: string, ticket?: LinearTicket): Promise<void> {
