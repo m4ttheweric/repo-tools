@@ -111,15 +111,33 @@ function detectInstalledEditors(): EditorOption[] {
 // Both the async entry point and willPrompt() call these — no drift possible.
 
 /**
+ * Validates that a saved/known editor command can actually be launched.
+ * Two forms exist:
+ *   - app-bundle commands like `open -a "Antigravity"` → check the .app exists
+ *   - CLI commands like `code` / `cursor` → `which` the binary
+ * `which`-ing a full `open -a "App"` string fails (which tries to resolve the
+ * args as commands too), which silently dropped saved app-bundle prefs.
+ */
+function isEditorCommandAvailable(command: string): boolean {
+  const appMatch = command.match(/^open\s+-a\s+"(.+)"\s*$/);
+  if (appMatch) {
+    const appName = appMatch[1]!;
+    const home = homedir();
+    return existsSync(`/Applications/${appName}.app`)
+      || existsSync(`${home}/Applications/${appName}.app`);
+  }
+  const binary = command.trim().split(/\s+/)[0]!;
+  try { execSync(`which ${binary}`, { stdio: "pipe" }); return true; } catch { return false; }
+}
+
+/**
  * Returns the editor command if it can be determined without an interactive
  * picker (saved pref or exactly one editor installed). Returns null if a
  * picker is required.
  */
 export function resolveEditorSync(prefs: Prefs, repoName: string): string | null {
   const saved = prefs.editors[repoName];
-  if (saved) {
-    try { execSync(`which ${saved}`, { stdio: "pipe" }); return saved; } catch {}
-  }
+  if (saved && isEditorCommandAvailable(saved)) return saved;
   const installed = detectInstalledEditors();
   if (installed.length === 1) return installed[0]!.command;
   return null; // 0 = will error, 2+ = picker needed
@@ -283,18 +301,72 @@ export function willPrompt(cwd: string): boolean {
   return false;
 }
 
+// ─── Editor launch (with app-bundle fallback) ───────────────────────────────
+
+function editorLabelFor(command: string): string {
+  return KNOWN_EDITORS.find(e => e.command === command)?.label
+    || KNOWN_APPS.find(a => a.command === command)?.label
+    || command;
+}
+
+/**
+ * If a bare-CLI editor command (e.g. `cursor`) is missing or broken but the
+ * matching IDE is installed as an app bundle, returns the `open -a "App"`
+ * command to launch it. Returns null when no app-bundle fallback applies
+ * (already an app-bundle launch, unknown editor, or app not installed).
+ *
+ * This is what keeps `rt code` doing its one job — opening an IDE — even when
+ * the `cursor` on PATH is the cursor-agent shim, which is a dead end.
+ */
+export function appBundleFallback(editorCommand: string): string | null {
+  if (/^open\s+-a\s+/.test(editorCommand)) return null; // already an app launch
+  const binary = editorCommand.trim().split(/\s+/)[0]!;
+  const label = KNOWN_EDITORS.find(e => e.command === binary)?.label;
+  if (!label) return null;
+  const app = KNOWN_APPS.find(a => a.label === label);
+  const appName = app?.command.match(/"(.+)"/)?.[1];
+  if (!appName) return null;
+  const home = homedir();
+  const exists = existsSync(`/Applications/${appName}.app`)
+    || existsSync(`${home}/Applications/${appName}.app`);
+  return exists ? app!.command : null;
+}
+
+/**
+ * Launches `target` in `editor`. If a bare-CLI editor fails but its IDE is
+ * installed as an app, retries via the app bundle. Returns the command that
+ * actually opened the editor, or null if every attempt failed.
+ */
+function launchEditor(editor: string, target: string): string | null {
+  try {
+    execSync(`${editor} "${target}"`, { stdio: "inherit" });
+    return editor;
+  } catch {
+    const fallback = appBundleFallback(editor);
+    if (!fallback) return null;
+    try {
+      execSync(`${fallback} "${target}"`, { stdio: "inherit" });
+      return fallback;
+    } catch {
+      return null;
+    }
+  }
+}
+
 // ─── Shared opener (used by rt nav) ─────────────────────────────────────────
 
 export async function openDirectoryInEditor(dirPath: string): Promise<void> {
   const prefs = loadPrefs();
   const repoName = dirPath.split("/").pop() || "unknown";
   const editor = await ensureEditor(prefs, repoName);
-  const editorLabel = KNOWN_EDITORS.find(e => e.command === editor)?.label || editor;
+  const editorLabel = editorLabelFor(editor);
   const target = await resolveWorkspaceTarget(dirPath, prefs);
-  try {
-    execSync(`${editor} "${target}"`, { stdio: "inherit" });
+
+  const used = launchEditor(editor, target);
+  if (used) {
+    if (used !== editor) { prefs.editors[repoName] = used; savePrefs(prefs); }
     console.error(`\n  ${green}✓${reset} Opened ${dirPath.split("/").pop()} in ${editorLabel}`);
-  } catch {
+  } else {
     console.error(`\n  ${red}Failed to open ${editorLabel}. Is '${editor}' CLI installed?${reset}`);
     process.exit(1);
   }
@@ -335,17 +407,18 @@ export async function openInEditor(args: string[]): Promise<void> {
   const repoName = selectedRepo?.repoName || selectedPath.split("/").pop() || "unknown";
 
   const editor = await ensureEditor(prefs, repoName);
-  const editorLabel = KNOWN_EDITORS.find(e => e.command === editor)?.label || editor;
+  const editorLabel = editorLabelFor(editor);
 
   const target = await resolveWorkspaceTarget(selectedPath, prefs);
 
-  try {
-    execSync(`${editor} "${target}"`, { stdio: "inherit" });
+  const used = launchEditor(editor, target);
+  if (used) {
+    if (used !== editor) { prefs.editors[repoName] = used; savePrefs(prefs); }
     const label = target.endsWith(".code-workspace")
       ? target.split("/").pop()
       : selectedPath.split("/").pop();
     console.log(`\n  ${green}✓${reset} Opened ${label} in ${editorLabel}`);
-  } catch {
+  } else {
     console.log(`\n  ${red}Failed to open ${editorLabel}. Is '${editor}' CLI installed?${reset}`);
     console.log(`  ${dim}You can reset your editor preference by deleting ~/.rt/workspace-prefs.json${reset}\n`);
     process.exit(1);
