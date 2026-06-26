@@ -13,7 +13,7 @@
  * Used by rt runner's [a] handler to add a new process to a lane.
  */
 
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
 import { join, relative, basename } from "path";
 
@@ -24,6 +24,8 @@ import {
   textInput,
 } from "../lib/rt-render.tsx";
 import { getKnownRepos } from "../lib/repo-index.ts";
+import { rtDir } from "../lib/rt-paths.ts";
+import { ensureHistoryHook } from "../lib/shell-integration.ts";
 import { getWorkspacePackages, type KnownRepo } from "../lib/repo.ts";
 import {
   appendRunHistory,
@@ -358,6 +360,10 @@ export async function runCommand(
 ): Promise<void> {
   const resolveOnly = args.includes("--resolve-only");
 
+  // Best-effort: ensure the shell history hook is installed so up-arrow
+  // replays the actual command instead of "rt run".
+  try { ensureHistoryHook(); } catch { /* don't block on setup */ }
+
   let worktreePath: string;
   let worktreeBranch: string;
   let dataDir: string | undefined;
@@ -531,6 +537,23 @@ export async function runCommand(
   process.stderr.write(`\nRunning: ${cmd}\n`);
   process.stderr.write(`  in: ${packagePath}\n\n`);
 
+  // Write the resolved command so a shell precmd hook can inject it into
+  // shell history — pressing up arrow replays e.g. "cd packages/web && npm run test"
+  // instead of "rt run".  Include a cd prefix when the target dir differs from CWD.
+  try {
+    const cwd = process.cwd();
+    const shellCmd =
+      packagePath === cwd
+        ? cmd
+        : (() => {
+            const rel = relative(cwd, packagePath);
+            // Use relative when it's a clean subdirectory path; absolute otherwise.
+            const cdTarget = rel && !rel.startsWith("..") ? rel : packagePath;
+            return `(cd ${cdTarget} && ${cmd})`;
+          })();
+    writeFileSync(join(rtDir(), "last-run-command"), shellCmd + "\n");
+  } catch { /* best-effort */ }
+
   // Survive TTY Ctrl-C so the post-exit history append below actually runs.
   // SIGINT is delivered to the whole foreground process group; the child gets
   // it independently and exits — we just need the parent not to die first.
@@ -610,6 +633,21 @@ export async function runAgainCommand(
 
   process.stderr.write(`\nRunning: ${entry.cmd}\n`);
   process.stderr.write(`  in: ${entry.cwd}\n\n`);
+
+  // Write the resolved command so a shell precmd hook can inject it into
+  // shell history — pressing up arrow replays the actual command.
+  try {
+    const cwd = process.cwd();
+    const shellCmd =
+      entry.cwd === cwd
+        ? entry.cmd
+        : (() => {
+            const rel = relative(cwd, entry.cwd);
+            const cdTarget = rel && !rel.startsWith("..") ? rel : entry.cwd;
+            return `(cd ${cdTarget} && ${entry.cmd})`;
+          })();
+    writeFileSync(join(rtDir(), "last-run-command"), shellCmd + "\n");
+  } catch { /* best-effort */ }
 
   const proc = Bun.spawn([SHELL, "-c", entry.cmd], {
     cwd: entry.cwd,
