@@ -25,12 +25,6 @@ import { dispatch, type CommandNode } from "./lib/command-tree.ts";
 // command names, descriptions, and structure. Handlers are lazy-loaded.
 
 const TREE: Record<string, CommandNode> = {
-  x: {
-    description: "Script runner (setup → commands → teardown)",
-    module: "./commands/x.ts",
-    fn: "scriptRunner",
-  },
-
   git: {
     description: "Git operations (rebase, reset, branch, commit, backup)",
     subcommands: {
