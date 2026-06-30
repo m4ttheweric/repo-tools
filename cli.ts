@@ -274,45 +274,10 @@ const TREE: Record<string, CommandNode> = {
     requiresTTY: true,
   },
 
-  attach: {
-    description: "Attach terminal to a daemon-managed process",
-    module: "./commands/attach.ts",
-    fn: "attachProcess",
-    requiresTTY: true,
-  },
-
-  runner: {
-    description: "Multiplexed service runner dashboard",
-    module: "./commands/runner.tsx",
-    fn: "showRunner",
-    fullscreen: true,
-  },
-
   port: {
     description: "Port scanner + killer (zero-config, daemon-powered)",
     module: "./commands/port.ts",
     fn: "portScanner",
-  },
-
-  proxy: {
-    description: "Pause/resume daemon-managed reverse proxies",
-    subcommands: {
-      list: {
-        description: "Show all registered proxies and their state",
-        module: "./commands/proxy.ts",
-        fn: "listCommand",
-      },
-      pause: {
-        description: "Pause a proxy by port, picker if no port, or --all",
-        module: "./commands/proxy.ts",
-        fn: "pauseCommand",
-      },
-      resume: {
-        description: "Resume a paused proxy by port, picker if no port, or --all",
-        module: "./commands/proxy.ts",
-        fn: "resumeCommand",
-      },
-    },
   },
 
   status: {
@@ -321,35 +286,6 @@ const TREE: Record<string, CommandNode> = {
     fn: "showStatus",
     context: "repo",
     fullscreen: true,
-  },
-
-  "mr-status": {
-    description: "MR status card for a branch (used by runner info pane)",
-    module: "./commands/mr-status.tsx",
-    fn: "showMrStatus",
-    fullscreen: true,
-    hidden: true,
-  },
-
-  "pick-lane": {
-    description: "Repo + port picker for adding a runner lane (used by runner)",
-    module: "./commands/pick-lane.ts",
-    fn: "pickLane",
-    hidden: true,
-  },
-
-  "pick-cmd-template": {
-    description: "Command template picker for a lane entry (used by runner)",
-    module: "./commands/pick-cmd-template.ts",
-    fn: "pickCmdTemplate",
-    hidden: true,
-  },
-
-  "pick-tunnel": {
-    description: "Interactive setup for the global Cloudflare tunnel config (used by runner)",
-    module: "./commands/pick-tunnel.ts",
-    fn: "showPickTunnel",
-    hidden: true,
   },
 
   update: {
