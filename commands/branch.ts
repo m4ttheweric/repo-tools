@@ -16,6 +16,7 @@ import {
   getTeamConfig,
   createIssue,
   fetchMyTodoTickets,
+  searchTickets,
   claimTicket,
   extractLinearId,
   fetchTicket,
@@ -339,90 +340,129 @@ async function createFromExistingTicket(apiKey: string): Promise<void> {
   }
   const { teamId } = teamConfig;
 
-  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const { runNavPicker } = await import("../lib/navigate.ts");
 
   const REFRESH = "__refresh__";
+  const SEARCH = "__search__";
+  const SEARCH_AGAIN = "__search_again__";
 
-  /** Fetch tickets with an inline spinner written to stderr. */
-  async function loadTickets(): Promise<LinearTicket[]> {
+  const truncate = (s: string) => (s.length > 50 ? s.slice(0, 49) + "…" : s);
+  const ticketOption = (t: LinearTicket) => ({
+    value: t.identifier,
+    label: `${t.identifier}  ${cyan}${truncate(t.title)}${t.stateName ? ` [${t.stateName}]` : ""}${reset}`,
+    hint: "",
+  });
+
+  /** Run an async fetch behind an inline stderr spinner that erases itself. */
+  async function withSpinner<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> {
     const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠣", "⠏"];
     let fi = 0;
     const timer = setInterval(() => {
-      process.stderr.write(`\r  ${dim}${frames[fi++ % frames.length]} fetching tickets…${reset}`);
+      process.stderr.write(`\r  ${dim}${frames[fi++ % frames.length]} ${label}${reset}`);
     }, 80);
-
     try {
-      const tickets = await fetchMyTodoTickets(apiKey, teamId);
+      return await fn();
+    } catch {
+      return fallback;
+    } finally {
       clearInterval(timer);
       process.stderr.write(`\r\x1b[K`); // erase spinner line
-      return tickets;
-    } catch {
-      clearInterval(timer);
-      process.stderr.write(`\r\x1b[K`);
-      return [];
     }
   }
 
-  /** Build fzf options list from ticket array. */
-  function buildOptions(tickets: LinearTicket[]): Array<{ value: string; label: string; hint: string }> {
-    const ticketOptions = tickets
-      .map((t) => {
-        const title = t.title.length > 50 ? t.title.slice(0, 49) + "…" : t.title;
-        const info = `${title}${t.stateName ? ` [${t.stateName}]` : ""}`;
-        return {
-          value: t.identifier,
-          label: `${t.identifier}  ${cyan}${info}${reset}`,
-          hint: "",
-        };
-      });
+  const loadTickets = () => withSpinner("fetching your tickets…", () => fetchMyTodoTickets(apiKey, teamId), []);
 
-    return [
-      { value: REFRESH, label: `${dim}↻  Refresh tickets${reset}`, hint: "" },
-      ...ticketOptions,
-    ];
-  }
-
-  // Initial load
-  let tickets = await loadTickets();
-
-  while (true) {
-    if (tickets.length === 0) {
-      console.log(`  ${yellow}no active tickets found for your team${reset}\n`);
-      // Still offer a refresh in case they just created a ticket
-      const retry = await filterableSelect({
-        message: "Select a ticket",
-        options: [{ value: REFRESH, label: `${dim}↻  Refresh tickets${reset}`, hint: "" }],
-      });
-      if (!retry || retry !== REFRESH) return;
-      tickets = await loadTickets();
-      continue;
-    }
-
-    const options = buildOptions(tickets);
-    const selectedId = await filterableSelect({
-      message: "Select a ticket",
-      options,
-    });
-
-    if (!selectedId) return; // ESC / cancelled
-
-    if (selectedId === REFRESH) {
-      tickets = await loadTickets();
-      continue;
-    }
-
-    const ticket = tickets.find((t) => t.identifier === selectedId);
-    if (!ticket) return;
-
+  /** Create a branch from the picked ticket. Only claim (assign + In Progress) for your own tickets. */
+  async function branchFromTicket(ticket: LinearTicket, opts: { claim: boolean }): Promise<void> {
     const identity = getRepoIdentity();
     const namingConfig = identity ? loadBranchNamingConfig(identity.dataDir) : null;
     const branchName = await resolveBranchName(ticket, namingConfig);
-    claimTicket(apiKey, ticket.id, teamId).catch(() => {/* best-effort */});
+    if (opts.claim) claimTicket(apiKey, ticket.id, teamId).catch(() => {/* best-effort */});
 
     const finalName = await confirmBranchName(branchName);
     if (!finalName) return;
-
     await createWithBaseRef(finalName, ticket);
+  }
+
+  /** Live search across all of Linear; returns the picked ticket (any team/assignee/state) or null. */
+  async function searchAndPick(seedTerm: string): Promise<LinearTicket | null> {
+    let term = seedTerm.trim();
+    while (true) {
+      if (!term) {
+        const { textInput } = await import("../lib/rt-render.tsx");
+        try {
+          term = (await textInput({ message: "Search Linear", placeholder: "ticket number or keywords" })).trim();
+        } catch {
+          return null; // cancelled
+        }
+        if (!term) return null;
+      }
+
+      const results = await withSpinner(`searching “${term}”…`, () => searchTickets(apiKey, term), [] as LinearTicket[]);
+      if (results.length === 0) {
+        console.log(`  ${yellow}no tickets match “${term}”${reset}`);
+        term = ""; // re-prompt
+        continue;
+      }
+
+      const res = await runNavPicker({
+        message: `Results for “${term}”`,
+        options: [
+          { value: SEARCH_AGAIN, label: `${dim}🔎  Search again…${reset}`, hint: "" },
+          ...results.map(ticketOption),
+        ],
+        captureQueryOnNoMatch: true,
+      });
+
+      if (!res || res.key === "ctrl-up") return null; // ESC / back to the ticket list
+      if (!res.value) {
+        // Typed a fresh query in the results box that matched nothing → search it.
+        if (res.query.trim()) { term = res.query.trim(); continue; }
+        return null;
+      }
+      if (res.value === SEARCH_AGAIN) { term = ""; continue; }
+
+      const picked = results.find((t) => t.identifier === res.value);
+      if (picked) return picked;
+      return null;
+    }
+  }
+
+  let tickets = await loadTickets();
+
+  while (true) {
+    const res = await runNavPicker({
+      message: tickets.length ? "Select a ticket" : "No tickets assigned to you — type to search",
+      options: [
+        { value: SEARCH,  label: `${dim}🔎  Search all tickets…${reset}`, hint: "branch off any ticket by number or keyword" },
+        { value: REFRESH, label: `${dim}↻  Refresh${reset}`, hint: "" },
+        ...tickets.map(ticketOption),
+      ],
+      captureQueryOnNoMatch: true,
+    });
+
+    if (!res || res.key === "ctrl-up") return; // ESC / back to the mode picker
+
+    // Typed a query that matched none of your tickets → fall through to live search.
+    if (!res.value) {
+      const q = res.query.trim();
+      if (!q) return;
+      const ticket = await searchAndPick(q);
+      if (ticket) { await branchFromTicket(ticket, { claim: false }); return; }
+      continue;
+    }
+
+    if (res.value === REFRESH) { tickets = await loadTickets(); continue; }
+
+    if (res.value === SEARCH) {
+      const ticket = await searchAndPick(res.query.trim());
+      if (ticket) { await branchFromTicket(ticket, { claim: false }); return; }
+      continue;
+    }
+
+    const ticket = tickets.find((t) => t.identifier === res.value);
+    if (!ticket) return;
+    await branchFromTicket(ticket, { claim: true });
     return;
   }
 }

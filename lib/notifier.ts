@@ -35,6 +35,8 @@ interface BranchSnapshot {
   isReady: boolean;
   mergeError: string | null;
   ticketState: string | null;
+  /** GitLab detailed_merge_status (e.g. "mergeable", "unchecked", "not_approved"). */
+  statusDetail: string | null;
 }
 
 interface PortSnapshot {
@@ -361,6 +363,28 @@ function approvedByUserIds(entry: CacheEntry): string[] {
     .filter((id): id is string => id !== null);
 }
 
+/**
+ * GitLab detailed_merge_status values that mean "GitLab is still recomputing
+ * mergeability" rather than a settled answer. The SDK's optimistic `isReady`
+ * flips true during these windows (ignoring approvals), and GitLab enters them
+ * on every push, pipeline event, comment, or target-branch advance. We treat
+ * them as not-ready so a transient re-check never reads as "ready to merge".
+ */
+const READY_TRANSITIONAL = new Set(["checking", "unchecked", "approvals_syncing"]);
+
+/**
+ * Strict readiness for notification purposes: the MR is open, GitLab has
+ * *settled* on "mergeable", and approvals are satisfied. This deliberately
+ * ignores the SDK's optimistic `entry.mr.isReady`, which reports true during
+ * transitional merge-status windows even for unreviewed MRs — the source of
+ * repeated false "Ready to Merge" alerts.
+ */
+function isReadyForNotification(entry: CacheEntry): boolean {
+  return entry.mr?.state === "opened"
+    && entry.mr?.statusDetail === "mergeable"
+    && (entry.mr?.reviews?.isApproved ?? false);
+}
+
 function snapshotBranch(entry: CacheEntry): BranchSnapshot {
   return {
     pipelineStatus: entry.mr?.pipeline?.status ?? null,
@@ -369,10 +393,22 @@ function snapshotBranch(entry: CacheEntry): BranchSnapshot {
     approvedByUserIds: approvedByUserIds(entry),
     conflicts: entry.mr?.blockers?.hasConflicts ?? false,
     needsRebase: entry.mr?.blockers?.needsRebase ?? false,
-    isReady: entry.mr?.isReady ?? false,
+    isReady: isReadyForNotification(entry),
     mergeError: entry.mr?.blockers?.mergeError ?? null,
     ticketState: entry.ticket?.stateName ?? null,
+    statusDetail: entry.mr?.statusDetail ?? null,
   };
+}
+
+/**
+ * Whether to re-arm the "ready to merge" alert (clear its fired key) after
+ * readiness was lost. Only re-arm on a *genuine* regression — not while GitLab
+ * is transiently re-checking. Re-arming on transient flaps is what caused the
+ * same MR to re-notify every few minutes.
+ */
+function shouldRearmReady(was: BranchSnapshot, now: BranchSnapshot): boolean {
+  if (!was.isReady || now.isReady) return false;
+  return !READY_TRANSITIONAL.has(now.statusDetail ?? "");
 }
 
 function shouldNotifyApprovalTransition(
@@ -553,9 +589,9 @@ function detectBranchTransitions(
       if (fired.delete(`mr:conflicts:${branch}`))
         log.debug(`cleared mr:conflicts key for ${branch}`);
     }
-    if (was.isReady && !now.isReady) {
+    if (shouldRearmReady(was, now)) {
       if (fired.delete(`mr:ready:${branch}`))
-        log.debug(`cleared mr:ready key for ${branch}`);
+        log.debug(`cleared mr:ready key for ${branch} (statusDetail=${now.statusDetail})`);
     }
     if (was.needsRebase && !now.needsRebase) {
       if (fired.delete(`mr:rebase:${branch}`))
@@ -626,7 +662,7 @@ function detectStalePortTransitions(
 
 export function checkAndNotify(
   cacheEntries: Record<string, CacheEntry>,
-  ports: PortEntry[],
+  ports?: PortEntry[],
   currentUserId: number | null = null,
 ): void {
   const state = loadState();
@@ -636,8 +672,10 @@ export function checkAndNotify(
   // Branch transitions
   detectBranchTransitions(state.branches, cacheEntries, fired, prefs, currentUserId);
 
-  // Port staleness
-  detectStalePortTransitions(state.ports, ports, prefs);
+  // Port staleness (skipped when called from real-time MR update path)
+  if (ports) {
+    detectStalePortTransitions(state.ports, ports, prefs);
+  }
 
   // Update state with current snapshots.
   // When entry.mr is null (API failure or branch has no MR), keep the
@@ -660,4 +698,5 @@ export function checkAndNotify(
 export const __test__ = {
   shouldNotifyApprovalTransition,
   snapshotBranch,
+  shouldRearmReady,
 };

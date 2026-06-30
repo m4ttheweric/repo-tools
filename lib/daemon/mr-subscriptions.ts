@@ -29,6 +29,7 @@ import { loadSecrets } from "../linear.ts";
 import { parseRemoteUrl, isGitLabRemote } from "../enrich.ts";
 import type { HandlerContext, CacheEntry } from "./handlers/types.ts";
 import { getDaemonLogger } from "../daemon-logger.ts";
+import { checkAndNotify } from "../notifier.ts";
 const log = (await getDaemonLogger()).childLogger("mr-subscriptions");
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -138,6 +139,9 @@ function onGroupUpdate(
   if (mutated) {
     ctx.flushCache();
     env.broadcast("mr:update", { repoName, mrs: emitted });
+    // Trigger transition detection immediately so tray notifications fire
+    // in real time instead of waiting for the next 5-minute poll cycle.
+    checkAndNotify(ctx.cache.entries, undefined, userId);
   }
 }
 

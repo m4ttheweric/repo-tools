@@ -4,7 +4,8 @@
  * rt nav — Filesystem navigator using fzf.
  *
  * Browse folders and files. Selecting a folder descends into it; selecting a
- * file opens it in its default app. "→ cd here" cds to the displayed directory.
+ * file opens it in its default app and stays open (like a persistent Finder).
+ * "→ cd here" cds to the displayed directory. esc quits.
  * ctrl-o on a folder opens it in your code editor. ctrl-up goes up a directory.
  * ctrl-k opens an action menu on the highlighted item (Open with…, Reveal in
  * Finder, Quick Look, Copy path, Open terminal here).
@@ -174,7 +175,7 @@ export async function navigate(args: string[]): Promise<void> {
     const result = await runNavPicker({
       options,
       message: tildeify(cwd),
-      header: "enter: open  ctrl-k: actions  ctrl-o: editor  ctrl-up: up  ctrl-space: cd selected  ctrl-h: cd here",
+      header: "enter: open  ctrl-k: actions  ctrl-o: editor  ctrl-up: up  ctrl-space: cd selected  ctrl-h: cd here  esc: quit",
       expectKeys: ["ctrl-k", "ctrl-o", "ctrl-space", "ctrl-h"],
       initialQuery: resumeQuery,
       resumeValue: resumeValue || undefined,
@@ -243,6 +244,6 @@ export async function navigate(args: string[]): Promise<void> {
     }
 
     spawnSync("open", [target], { stdio: "inherit" });
-    return;
+    continue;
   }
 }

@@ -278,14 +278,21 @@ export async function createIssue(
 
 // ─── Fetch team tickets ──────────────────────────────────────────────────────
 
-const TEAM_ACTIVE_ISSUES_QUERY = `
-  query TeamActiveIssues($teamId: String!) {
+// Tickets eligible for branch creation: assigned to the viewer, on the
+// configured team, in any not-yet-done state. Scoped to `assignee.isMe` so the
+// list is your own small set rather than the whole team's backlog — the old
+// query fetched the entire team's active issues capped at 50 by recency, which
+// silently dropped your own older tickets behind the team's churn. Capped high
+// (Linear's max page size) and ordered by recency for good measure.
+const MY_TEAM_TODO_ISSUES_QUERY = `
+  query MyTeamTodoIssues($teamId: String!) {
     team(id: $teamId) {
       issues(
         filter: {
+          assignee: { isMe: { eq: true } }
           state: { type: { in: ["unstarted", "backlog", "started"] } }
         }
-        first: 50
+        first: 250
         orderBy: updatedAt
       ) {
         nodes {
@@ -299,7 +306,7 @@ const TEAM_ACTIVE_ISSUES_QUERY = `
 
 export async function fetchMyTodoTickets(apiKey: string, teamId: string): Promise<LinearTicket[]> {
   try {
-    const data = (await linearGraphql(apiKey, TEAM_ACTIVE_ISSUES_QUERY, { teamId })) as {
+    const data = (await linearGraphql(apiKey, MY_TEAM_TODO_ISSUES_QUERY, { teamId })) as {
       team: {
         issues: {
           nodes: Array<Record<string, unknown>>;
@@ -307,6 +314,37 @@ export async function fetchMyTodoTickets(apiKey: string, teamId: string): Promis
       };
     };
     return data.team.issues.nodes.map(toTicket);
+  } catch {
+    return [];
+  }
+}
+
+const SEARCH_ISSUES_FOR_BRANCH_QUERY = `
+  query SearchIssuesForBranch($term: String!) {
+    searchIssues(term: $term, first: 25) {
+      nodes {
+        id identifier title description url branchName
+        state { name color }
+      }
+    }
+  }
+`;
+
+/**
+ * Full-text search across every issue the viewer can see — any team, any
+ * assignee, any state. Powers the branch picker's live-search fallback so you
+ * can branch off a ticket that isn't in your own active list (a teammate's
+ * ticket, an unassigned one, or one in another team). Matches identifiers
+ * ("ACME-2256"), bare numbers ("2256"), and title/description text.
+ */
+export async function searchTickets(apiKey: string, term: string): Promise<LinearTicket[]> {
+  const trimmed = term.trim();
+  if (!trimmed) return [];
+  try {
+    const data = (await linearGraphql(apiKey, SEARCH_ISSUES_FOR_BRANCH_QUERY, { term: trimmed })) as {
+      searchIssues: { nodes: Array<Record<string, unknown>> };
+    };
+    return data.searchIssues.nodes.map(toTicket);
   } catch {
     return [];
   }

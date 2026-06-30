@@ -404,7 +404,7 @@ const TREE: Record<string, CommandNode> = {
   },
 
   nav: {
-    description: "Navigate filesystem with fzf — descend folders, open files",
+    description: "Navigate filesystem with fzf — persistent picker, esc to quit",
     module: "./commands/nav.ts",
     fn: "navigate",
     requiresTTY: true,
