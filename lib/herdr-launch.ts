@@ -38,8 +38,15 @@ function splitPane(parentPaneId: string): string {
   return newId;
 }
 
+function shellQuote(s: string): string {
+  // If the string is clean (no special chars), return as-is
+  if (/^[a-zA-Z0-9_./:@=-]+$/.test(s)) return s;
+  // Otherwise wrap in single quotes, escaping internal single quotes
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
 function runInPane(paneId: string, command: string, cwd: string): void {
-  const fullCmd = `cd ${cwd} && ${command}`;
+  const fullCmd = `cd ${shellQuote(cwd)} && ${command}`;
   execSync(`herdr pane run ${paneId} ${JSON.stringify(fullCmd)}`, { stdio: "pipe" });
 }
 

@@ -38,8 +38,15 @@ import {
   variationKey,
   type Variation,
 } from "../lib/variations.ts";
-import { bold, dim, reset, yellow } from "../lib/tui.ts";
+import { bold, dim, reset, yellow, green, magenta } from "../lib/tui.ts";
 import { T, toAnsiFg } from "../lib/tui/palette.ts";
+import {
+  isInsideHerdr,
+  launchInHerdr,
+  launchFallback,
+  type LaunchItem,
+} from "../lib/herdr-launch.ts";
+import { savePreset } from "../lib/run-presets.ts";
 
 const LAST_RUN_SENTINEL = "__rt:last-run__";
 
@@ -94,21 +101,36 @@ interface ScriptSelection {
   customCommand: string | undefined;
 }
 
+interface QueuedItem {
+  packageRelPath: string;
+  packagePath: string;
+  packageLabel: string;
+  script: string;
+  command: string;
+  variationName?: string;
+}
+
+/** Sentinel returned when the picker loop built and launched a queue. */
+const QUEUE_LAUNCHED = Symbol("queue-launched");
+
 /**
  * Package → script → variations picker loop.
  *
  * Returns null when the user backs out of the package picker (ctrl-up).
  * Returns ScriptSelection when a script (or variation) is selected.
+ * Returns QUEUE_LAUNCHED when the user built a multi-pick queue and launched it.
  */
 async function selectPackageAndScript(
   worktreePath: string,
   dataDir: string | undefined,
   contextLabel?: string,
-): Promise<ScriptSelection | null> {
+  queue?: QueuedItem[],
+): Promise<ScriptSelection | typeof QUEUE_LAUNCHED | null> {
   const { runNavPicker } = await import("../lib/navigate.ts");
   const packages = getWorkspacePackages(worktreePath);
   const label = contextLabel ? `${contextLabel}` : "";
   let cameFromScript = false;
+  const q: QueuedItem[] = queue ?? [];
 
   while (true) {
     let packagePath: string;
@@ -123,10 +145,10 @@ async function selectPackageAndScript(
       packagePath = join(worktreePath, packages[0]!.path);
       packageLabel = packages[0]!.name;
     } else {
-      // CWD auto-detection — skipped when coming back from script picker
+      // CWD auto-detection — skipped when coming back from script picker or when queue active
       const cwd = process.cwd();
       const cwdMatch =
-        !cameFromScript
+        !cameFromScript && q.length === 0
           ? packages
               .map((p) => ({ p, abs: join(worktreePath, p.path) }))
               .filter(({ abs }) => cwd === abs || cwd.startsWith(abs + "/"))
@@ -150,33 +172,122 @@ async function selectPackageAndScript(
             )
           : [];
 
+        // ── Queue display options (prepended when queue is active) ─────────
+        const LAUNCH_ALL_SENTINEL = "__rt:launch-all__";
+        const SAVE_PRESET_SENTINEL = "__rt:save-preset__";
+        const QUEUED_PREFIX = "__queued:";
+
+        const queueOptions: Array<{ value: string; label: string; hint: string; color?: string }> = [];
+        if (q.length > 0) {
+          for (let i = 0; i < q.length; i++) {
+            const qi = q[i]!;
+            const varSuffix = qi.variationName ? ` ${magenta}(${qi.variationName})${reset}` : "";
+            queueOptions.push({
+              value: `${QUEUED_PREFIX}${i}__`,
+              label: `${green}✓${reset} ${qi.packageLabel} > ${qi.script}${varSuffix}`,
+              hint: "",
+            });
+          }
+          queueOptions.push({ value: "__rt:sep1__", label: "──────────────", hint: "" });
+          queueOptions.push({
+            value: LAUNCH_ALL_SENTINEL,
+            label: `Launch all (${q.length} queued)`,
+            hint: "",
+            color: toAnsiFg(T.mint),
+          });
+        }
+
+        const packageOptions = [
+          ...(rootScripts.length > 0
+            ? [
+                {
+                  value: worktreePath,
+                  label: "(root)",
+                  hint: "workspace root",
+                },
+              ]
+            : []),
+          ...packages.map((p) => ({
+            value: join(worktreePath, p.path),
+            label: p.name,
+            hint: p.path,
+          })),
+        ];
+
+        const presetOption = q.length >= 2
+          ? [
+              { value: "__rt:sep2__", label: "──────────────", hint: "" },
+              { value: SAVE_PRESET_SENTINEL, label: "Save as preset...", hint: "" },
+            ]
+          : [];
+
+        const queueHeaderParts = q.length > 0
+          ? [
+              "enter: select",
+              "ctrl-x: dequeue last",
+              "ctrl-up: back to worktree",
+              "esc: cancel",
+            ]
+          : [
+              "enter: select",
+              "ctrl-up: back to worktree",
+              "esc: cancel",
+            ];
+
         const pkgResult = await runNavPicker({
-          options: [
-            ...(rootScripts.length > 0
-              ? [
-                  {
-                    value: worktreePath,
-                    label: "(root)",
-                    hint: "workspace root",
-                  },
-                ]
-              : []),
-            ...packages.map((p) => ({
-              value: join(worktreePath, p.path),
-              label: p.name,
-              hint: p.path,
-            })),
-          ],
+          options: [...queueOptions, ...packageOptions, ...presetOption],
           message: label ? `Select package — ${label}` : "Select package",
-          headerParts: [
-            "enter: select",
-            "ctrl-up: back to worktree",
-            "esc: cancel",
-          ],
+          headerParts: queueHeaderParts,
+          expectKeys: q.length > 0 ? ["ctrl-x"] : [],
         });
 
         if (!pkgResult) process.exit(1);
         if (pkgResult.key === "ctrl-up") return null; // back to worktree
+
+        // ── ctrl-x: dequeue last item ──────────────────────────────────────
+        if (pkgResult.key === "ctrl-x" && q.length > 0) {
+          const removed = q.pop()!;
+          process.stderr.write(`  ${dim}dequeued: ${removed.packageLabel} > ${removed.script}${reset}\n`);
+          cameFromScript = true; // re-show picker
+          continue;
+        }
+
+        // ── Sentinel handling ──────────────────────────────────────────────
+        const val = pkgResult.value ?? "";
+
+        // Queued item rows are display-only -- re-show picker
+        if (val.startsWith(QUEUED_PREFIX) || val === "__rt:sep1__" || val === "__rt:sep2__") {
+          cameFromScript = true;
+          continue;
+        }
+
+        // Launch all
+        if (val === LAUNCH_ALL_SENTINEL) {
+          return QUEUE_LAUNCHED;
+        }
+
+        // Save as preset then launch
+        if (val === SAVE_PRESET_SENTINEL && dataDir) {
+          const name = await textInput({
+            message: "Preset name",
+            placeholder: "e.g. backend-lite",
+            stderr: true,
+          });
+          if (name) {
+            savePreset(dataDir, {
+              name,
+              entries: q.map((qi) => ({
+                packageRelPath: qi.packageRelPath,
+                packageLabel: qi.packageLabel,
+                script: qi.script,
+                variationName: qi.variationName,
+                command: qi.variationName ? qi.command : undefined,
+              })),
+            });
+            process.stderr.write(`  ${green}✓${reset} ${dim}saved preset "${name}"${reset}\n`);
+          }
+          return QUEUE_LAUNCHED;
+        }
 
         packagePath = pkgResult.value!;
         if (packagePath === worktreePath) {
@@ -240,6 +351,20 @@ async function selectPackageAndScript(
         ]
       : [];
 
+    const scriptHeaderParts = q.length > 0
+      ? [
+          "enter: queue",
+          "tab: queue",
+          "alt-enter: variations",
+          "ctrl-up: back",
+        ]
+      : [
+          "enter: run",
+          "tab: queue",
+          "alt-enter: variations",
+          "ctrl-up: back",
+        ];
+
     const scriptResult = await runNavPicker({
       options: [
         ...sentinelOption,
@@ -252,12 +377,8 @@ async function selectPackageAndScript(
       message: label
         ? `Select script — ${label} · ${packageLabel === "." ? "root" : packageLabel}`
         : "Select script",
-      headerParts: [
-        "enter: run",
-        "alt-enter: variations",
-        "ctrl-up: back",
-      ],
-      expectKeys: ["alt-enter"],
+      headerParts: scriptHeaderParts,
+      expectKeys: ["alt-enter", "tab"],
     });
 
     if (!scriptResult) process.exit(1);
@@ -275,6 +396,30 @@ async function selectPackageAndScript(
       return null; // back to caller (ascends via path in outer loop)
     }
 
+    // ── Helper: build a QueuedItem for the current selection ─────────────
+    const pm = detectPackageManager(packagePath);
+    const pkgRelPath = packagePath === worktreePath ? "." : relative(worktreePath, packagePath);
+
+    const enqueue = (cmd: string, variationName?: string): void => {
+      q.push({
+        packageRelPath: pkgRelPath,
+        packagePath,
+        packageLabel,
+        script: scriptName,
+        command: cmd,
+        variationName,
+      });
+      const varSuffix = variationName ? ` (${variationName})` : "";
+      process.stderr.write(`  ${green}+${reset} ${dim}queued: ${packageLabel} > ${scriptName}${varSuffix}${reset}\n`);
+    };
+
+    // ── Tab key or Enter-with-queue: queue the base script ──────────────
+    if (scriptResult.key === "tab" || (scriptResult.key === "" && q.length > 0)) {
+      enqueue(`${pm} run ${scriptName}`);
+      cameFromScript = true;
+      continue; // bounce to package picker
+    }
+
     if (scriptResult.key === "alt-enter") {
       // ── Variations sub-picker ────────────────────────────────────────────
       const existing = dataDir
@@ -282,6 +427,10 @@ async function selectPackageAndScript(
         : [];
 
       const ADD_SENTINEL = "__rt:add-variation__";
+
+      const varHeaderParts = q.length > 0
+        ? ["enter: queue", "tab: queue", "ctrl-up: back to scripts", "esc: cancel"]
+        : ["enter: select", "tab: queue", "ctrl-up: back to scripts", "esc: cancel"];
 
       while (true) {
         const varResult = await runNavPicker({
@@ -291,11 +440,11 @@ async function selectPackageAndScript(
               label: v.name,
               hint: v.command.slice(0, 60),
             })),
-            { value: ADD_SENTINEL, label: "+ Add variation…", hint: "" },
+            { value: ADD_SENTINEL, label: "+ Add variation...", hint: "" },
           ],
           message: `Variation for "${scriptName}"`,
-          headerParts: ["enter: select", "ctrl-up: back to scripts", "esc: cancel"],
-          expectKeys: [],
+          headerParts: varHeaderParts,
+          expectKeys: ["tab"],
         });
 
         if (!varResult) process.exit(1);
@@ -309,7 +458,7 @@ async function selectPackageAndScript(
           });
           if (!name) process.exit(1);
 
-          const baseCmd = `${detectPackageManager(packagePath)} run ${scriptName}`;
+          const baseCmd = `${pm} run ${scriptName}`;
           const command = await textInput({
             message: "Command",
             defaultValue: baseCmd,
@@ -321,6 +470,13 @@ async function selectPackageAndScript(
             saveVariation(dataDir, worktreePath, packagePath, scriptName, { name, command });
           }
 
+          // Tab or Enter-with-queue: queue the new variation
+          if (varResult.key === "tab" || q.length > 0) {
+            enqueue(command, name);
+            cameFromScript = true;
+            break; // back to packages
+          }
+
           return {
             packagePath,
             packageLabel,
@@ -330,6 +486,15 @@ async function selectPackageAndScript(
         }
 
         // Existing variation selected
+        const varName = existing.find((v) => v.command === varResult.value)?.name;
+
+        // Tab or Enter-with-queue: queue the variation
+        if (varResult.key === "tab" || q.length > 0) {
+          enqueue(varResult.value!, varName);
+          cameFromScript = true;
+          break; // back to packages
+        }
+
         return {
           packagePath,
           packageLabel,
@@ -342,13 +507,39 @@ async function selectPackageAndScript(
       continue;
     }
 
-    // Normal Enter — run the base command
+    // Normal Enter with empty queue — run the base command (unchanged solo behavior)
     return {
       packagePath,
       packageLabel,
       selectedScript: scriptName,
       customCommand: undefined,
     };
+  }
+}
+
+// ─── Queue launch ──────────────────────────────────────────────────────────
+
+async function launchQueue(
+  queue: QueuedItem[],
+  worktreePath: string,
+): Promise<void> {
+  if (queue.length === 0) return;
+
+  const items: LaunchItem[] = queue.map((qi) => {
+    const cwd = qi.packagePath;
+    const varSuffix = qi.variationName ? ` (${qi.variationName})` : "";
+    return {
+      label: `${qi.packageLabel} > ${qi.script}${varSuffix}`,
+      command: qi.command,
+      cwd,
+    };
+  });
+
+  process.stderr.write(`\n`);
+  if (isInsideHerdr()) {
+    await launchInHerdr(items);
+  } else {
+    launchFallback(items);
   }
 }
 
@@ -371,6 +562,7 @@ export async function runCommand(
   let packageLabel = "";
   let selectedScript = "";
   let customCommand: string | undefined;
+  const queue: QueuedItem[] = [];
 
   // If the dispatcher resolved a worktree, try that first.  On ctrl-up
   // from the package picker, fall through to the full picker chain so
@@ -390,7 +582,12 @@ export async function runCommand(
     }
 
     const ctxLabel = `${ctx.identity!.repoName} / ${basename(worktreePath)}`;
-    const sel = await selectPackageAndScript(worktreePath, dataDir, ctxLabel);
+    const sel = await selectPackageAndScript(worktreePath, dataDir, ctxLabel, queue);
+    if (sel === QUEUE_LAUNCHED) {
+      // Queue was built and user chose "Launch all" -- launch and exit
+      await launchQueue(queue, worktreePath);
+      return;
+    }
     if (sel) {
       packagePath = sel.packagePath;
       packageLabel = sel.packageLabel;
@@ -498,7 +695,11 @@ export async function runCommand(
           const wtCtx = worktrees.length > 1
             ? `${selectedRepo.repoName} / ${basename(worktreePath)}`
             : selectedRepo.repoName;
-          const sel = await selectPackageAndScript(worktreePath, dataDir, wtCtx);
+          const sel = await selectPackageAndScript(worktreePath, dataDir, wtCtx, queue);
+          if (sel === QUEUE_LAUNCHED) {
+            await launchQueue(queue, worktreePath);
+            return;
+          }
           if (!sel) {
             process.stderr.write("\x1b[2J\x1b[H");
             if (worktrees.length > 1) break; // re-show worktree picker
