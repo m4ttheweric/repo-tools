@@ -20,9 +20,6 @@ import * as run from "../commands/run.ts";
 import * as settings from "../commands/settings.ts";
 import * as sync from "../commands/sync.ts";
 import * as workspace from "../commands/workspace.ts";
-import * as attach from "../commands/attach.ts";
-import * as pickLane from "../commands/pick-lane.ts";
-import * as pickCmdTemplate from "../commands/pick-cmd-template.ts";
 import * as mr from "../commands/mr.ts";
 import * as x from "../commands/x.ts";
 import * as gitx from "../commands/gitx.ts";
@@ -31,9 +28,7 @@ import * as reset from "../commands/git/reset.ts";
 import * as backup from "../commands/git/backup.ts";
 import * as pull from "../commands/git/pull.ts";
 import * as push from "../commands/git/push.ts";
-import * as runner from "../commands/runner.tsx";
 import * as status from "../commands/status.tsx";
-import * as mrStatus from "../commands/mr-status.tsx";
 import * as cd from "../commands/cd.ts";
 import * as code from "../commands/code.ts";
 import * as version from "../commands/version.ts";
@@ -41,8 +36,6 @@ import * as update from "../commands/update.ts";
 import * as doppler from "../commands/doppler.ts";
 import * as nav from "../commands/nav.ts";
 import * as parkingLot from "../commands/parking-lot.ts";
-import * as pickTunnel from "../commands/pick-tunnel.ts";
-import * as proxy from "../commands/proxy.ts";
 
 export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/branch.ts": branch,
@@ -59,9 +52,6 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/settings.ts": settings,
   "./commands/sync.ts": sync,
   "./commands/workspace.ts": workspace,
-  "./commands/attach.ts": attach,
-  "./commands/pick-lane.ts": pickLane,
-  "./commands/pick-cmd-template.ts": pickCmdTemplate,
   "./commands/mr.ts": mr,
   "./commands/x.ts": x,
   "./commands/gitx.ts": gitx,
@@ -70,9 +60,7 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/git/backup.ts": backup,
   "./commands/git/pull.ts": pull,
   "./commands/git/push.ts": push,
-  "./commands/runner.tsx": runner,
   "./commands/status.tsx": status,
-  "./commands/mr-status.tsx": mrStatus,
   "./commands/cd.ts": cd,
   "./commands/code.ts": code,
   "./commands/version.ts": version,
@@ -80,6 +68,4 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/doppler.ts": doppler,
   "./commands/nav.ts": nav,
   "./commands/parking-lot.ts": parkingLot,
-  "./commands/pick-tunnel.ts": pickTunnel,
-  "./commands/proxy.ts": proxy,
 };
