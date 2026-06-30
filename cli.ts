@@ -229,12 +229,17 @@ const TREE: Record<string, CommandNode> = {
     context: "worktree",
   },
 
-  build: {
-    description: "Interactive turbo build selector",
-    module: "./commands/build-select.ts",
-    fn: "buildSelect",
-    context: "worktree",
-    requiresTTY: true,
+  turbo: {
+    description: "Turborepo operations",
+    subcommands: {
+      build: {
+        description: "Interactive turbo build selector",
+        module: "./commands/build-select.ts",
+        fn: "buildSelect",
+        context: "worktree",
+        requiresTTY: true,
+      },
+    },
   },
 
   hooks: {
