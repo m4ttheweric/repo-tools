@@ -21,7 +21,6 @@ import * as settings from "../commands/settings.ts";
 import * as sync from "../commands/sync.ts";
 import * as workspace from "../commands/workspace.ts";
 import * as mr from "../commands/mr.ts";
-import * as gitx from "../commands/gitx.ts";
 import * as rebase from "../commands/git/rebase.ts";
 import * as reset from "../commands/git/reset.ts";
 import * as backup from "../commands/git/backup.ts";
@@ -52,7 +51,6 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/sync.ts": sync,
   "./commands/workspace.ts": workspace,
   "./commands/mr.ts": mr,
-  "./commands/gitx.ts": gitx,
   "./commands/git/rebase.ts": rebase,
   "./commands/git/reset.ts": reset,
   "./commands/git/backup.ts": backup,
