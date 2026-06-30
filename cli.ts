@@ -222,13 +222,6 @@ const TREE: Record<string, CommandNode> = {
     },
   },
 
-  gitx: {
-    description: "Git passthrough in rt-resolved directory",
-    module: "./commands/gitx.ts",
-    fn: "gitPassthrough",
-    context: "worktree",
-  },
-
   turbo: {
     description: "Turborepo operations",
     subcommands: {
