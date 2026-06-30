@@ -22,7 +22,9 @@ function getCurrentBranch(): string {
   }).trim();
 }
 
-function getBaseUrl(): { baseUrl: string; repoName: string } {
+type Forge = "github" | "gitlab";
+
+function getBaseUrl(): { baseUrl: string; repoName: string; forge: Forge } {
   let remote: string;
   try {
     remote = execSync("git remote get-url origin", {
@@ -38,15 +40,19 @@ function getBaseUrl(): { baseUrl: string; repoName: string } {
   // SSH: git@gitlab.com:org/repo.git → https://gitlab.com/org/repo
   const sshMatch = /^git@([^:]+):(.+?)(?:\.git)?$/.exec(remote);
   if (sshMatch) {
+    const host = sshMatch[1]!;
     const repoName = sshMatch[2]!.split("/").pop() || sshMatch[2]!;
-    return { baseUrl: `https://${sshMatch[1]}/${sshMatch[2]}`, repoName };
+    const forge: Forge = host.includes("github") ? "github" : "gitlab";
+    return { baseUrl: `https://${host}/${sshMatch[2]}`, repoName, forge };
   }
 
   // HTTPS: https://gitlab.com/org/repo.git → same
   const httpsMatch = /^https?:\/\/([^/]+)\/(.+?)(?:\.git)?$/.exec(remote);
   if (httpsMatch) {
+    const host = httpsMatch[1]!;
     const repoName = httpsMatch[2]!.split("/").pop() || httpsMatch[2]!;
-    return { baseUrl: `https://${httpsMatch[1]}/${httpsMatch[2]}`, repoName };
+    const forge: Forge = host.includes("github") ? "github" : "gitlab";
+    return { baseUrl: `https://${host}/${httpsMatch[2]}`, repoName, forge };
   }
 
   throw new Error(`could not parse remote URL: ${remote}`);
@@ -65,17 +71,25 @@ function openUrl(url: string): void {
 
 export async function openMR(): Promise<void> {
   const branch = getCurrentBranch();
-  const { baseUrl, repoName } = getBaseUrl();
-  const url = `${baseUrl}/-/merge_requests?scope=all&search=${encodeURIComponent(branch)}`;
+  const { repoName, forge } = getBaseUrl();
 
   console.log(`\n  ${dim}${repoName} · ${branch}${reset}`);
-  openUrl(url);
+
+  const cmd = forge === "github" ? "gh pr view --web" : "glab mr view --web";
+  try {
+    execSync(cmd, { stdio: "pipe" });
+  } catch {
+    console.log(`  ${yellow}no open ${forge === "github" ? "PR" : "MR"} found for this branch${reset}\n`);
+  }
 }
 
 export async function openPipeline(): Promise<void> {
   const branch = getCurrentBranch();
-  const { baseUrl, repoName } = getBaseUrl();
-  const url = `${baseUrl}/-/pipelines?ref=${encodeURIComponent(branch)}`;
+  const { baseUrl, repoName, forge } = getBaseUrl();
+
+  const url = forge === "github"
+    ? `${baseUrl}/actions?query=branch%3A${encodeURIComponent(branch)}`
+    : `${baseUrl}/-/pipelines?ref=${encodeURIComponent(branch)}`;
 
   console.log(`\n  ${dim}${repoName} · ${branch}${reset}`);
   openUrl(url);
