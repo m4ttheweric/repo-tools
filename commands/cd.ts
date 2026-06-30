@@ -38,7 +38,9 @@ const SHELL_FUNCTION = [
   `  # swaps until the shell calls 'hash -r' — leading to surprising "I'm in dev`,
   `  # mode but my changes don't show up" behaviour across shells.`,
   `  local rt_bin="$HOME/.local/bin/rt"`,
-  `  [ -x "$rt_bin" ] || rt_bin="$(command -v rt 2>/dev/null || echo rt)"`,
+  `  # whence -p (zsh) / type -P (bash): PATH-only lookup, skips this function`,
+  `  [ -x "$rt_bin" ] || rt_bin="$(whence -p rt 2>/dev/null || type -P rt 2>/dev/null)"`,
+  `  [ -x "$rt_bin" ] || { echo "rt: binary not found in PATH" >&2; return 1; }`,
   ``,
   `  if [ "$1" = "cd" ]; then`,
   `    local dir`,
@@ -72,9 +74,8 @@ async function ensureShellFunction(): Promise<void> {
     rcContent = readFileSync(rcFile, "utf8");
   } catch { /* no rc file yet */ }
 
-  // Latest version marker: function resolves rt by absolute path, bypassing
-  // zsh's stale-hash issue across shells that didn't run dev-mode locally.
-  if (rcContent.includes('rt() {') && rcContent.includes('local rt_bin') && rcContent.includes('"$rt_bin" nav')) return;
+  // Latest version marker: whence -p / type -P PATH-only lookup (fixes FUNCNEST recursion)
+  if (rcContent.includes('rt() {') && rcContent.includes('whence -p rt') && rcContent.includes('"$rt_bin" nav')) return;
 
   // Redirect stdout → stderr before showing prompts
   const origWrite = process.stdout.write.bind(process.stdout);
@@ -88,9 +89,13 @@ async function ensureShellFunction(): Promise<void> {
   // Function exists but uses `command rt` everywhere — vulnerable to the stale
   // zsh hash-table issue. Anything pre-absolute-path version qualifies.
   const hasHashCacheBug = rcContent.includes("rt() {") && rcContent.includes("command rt cd") && !rcContent.includes("local rt_bin");
-  const hasOldFunction = hasLegacyRtcd || hasOldRtWrapper || hasPreRehashWrapper || hasHashCacheBug;
+  // Uses command -v which returns the function name in zsh, causing infinite recursion
+  const hasFuncnestBug = rcContent.includes("rt() {") && rcContent.includes("command -v rt") && !rcContent.includes("whence -p rt");
+  const hasOldFunction = hasLegacyRtcd || hasOldRtWrapper || hasPreRehashWrapper || hasHashCacheBug || hasFuncnestBug;
 
-  if (hasPreRehashWrapper) {
+  if (hasFuncnestBug) {
+    console.error(`\n  ${yellow}Upgrading rt shell wrapper: fix FUNCNEST recursion in zsh${reset}`);
+  } else if (hasPreRehashWrapper) {
     console.error(`\n  ${yellow}Upgrading rt shell wrapper: auto-rehash after dev-mode toggle${reset}`);
   } else if (hasNoNav) {
     console.error(`\n  ${yellow}Upgrading rt shell wrapper: adding rt nav cd support${reset}`);
@@ -122,7 +127,7 @@ async function ensureShellFunction(): Promise<void> {
     process.exit(0);
   }
 
-  if (hasOldRtWrapper || hasPreRehashWrapper || hasNoNav || hasHashCacheBug) {
+  if (hasOldRtWrapper || hasPreRehashWrapper || hasNoNav || hasHashCacheBug || hasFuncnestBug) {
     rcContent = rcContent
       .replace(/\n?# rt — shell wrapper \(enables rt cd to change directory\)\n?/g, "")
       .replace(/\n?rt\(\) \{[\s\S]*?\n\}\n?/g, "\n");
