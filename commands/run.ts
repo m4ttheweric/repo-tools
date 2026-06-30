@@ -46,7 +46,7 @@ import {
   launchFallback,
   type LaunchItem,
 } from "../lib/herdr-launch.ts";
-import { savePreset } from "../lib/run-presets.ts";
+import { findPreset, loadPresets, savePreset, type Preset } from "../lib/run-presets.ts";
 
 const LAST_RUN_SENTINEL = "__rt:last-run__";
 
@@ -175,6 +175,7 @@ async function selectPackageAndScript(
         // ── Queue display options (prepended when queue is active) ─────────
         const LAUNCH_ALL_SENTINEL = "__rt:launch-all__";
         const SAVE_PRESET_SENTINEL = "__rt:save-preset__";
+        const PRESET_PREFIX = "__rt:preset:";
         const QUEUED_PREFIX = "__queued:";
 
         const queueOptions: Array<{ value: string; label: string; hint: string; color?: string }> = [];
@@ -197,6 +198,20 @@ async function selectPackageAndScript(
           });
         }
 
+        // ── Saved presets (shown above packages, only outside an active queue) ──
+        const presets = dataDir && q.length === 0 ? loadPresets(dataDir) : [];
+        const savedPresetOptions = presets.length > 0
+          ? [
+              ...presets.map((p) => ({
+                value: `${PRESET_PREFIX}${p.name}__`,
+                label: p.name,
+                hint: p.entries.map((e) => `${e.packageLabel}:${e.script}`).join(" + "),
+                color: yellow,
+              })),
+              { value: "__rt:sep3__", label: "──────────────", hint: "" },
+            ]
+          : [];
+
         const packageOptions = [
           ...(rootScripts.length > 0
             ? [
@@ -214,7 +229,7 @@ async function selectPackageAndScript(
           })),
         ];
 
-        const presetOption = q.length >= 2
+        const savePresetOption = q.length >= 2
           ? [
               { value: "__rt:sep2__", label: "──────────────", hint: "" },
               { value: SAVE_PRESET_SENTINEL, label: "Save as preset...", hint: "" },
@@ -235,7 +250,7 @@ async function selectPackageAndScript(
             ];
 
         const pkgResult = await runNavPicker({
-          options: [...queueOptions, ...packageOptions, ...presetOption],
+          options: [...queueOptions, ...savedPresetOptions, ...packageOptions, ...savePresetOption],
           message: label ? `Select package — ${label}` : "Select package",
           headerParts: queueHeaderParts,
           expectKeys: q.length > 0 ? ["ctrl-x"] : [],
@@ -256,7 +271,7 @@ async function selectPackageAndScript(
         const val = pkgResult.value ?? "";
 
         // Queued item rows are display-only -- re-show picker
-        if (val.startsWith(QUEUED_PREFIX) || val === "__rt:sep1__" || val === "__rt:sep2__") {
+        if (val.startsWith(QUEUED_PREFIX) || val === "__rt:sep1__" || val === "__rt:sep2__" || val === "__rt:sep3__") {
           cameFromScript = true;
           continue;
         }
@@ -264,6 +279,18 @@ async function selectPackageAndScript(
         // Launch all
         if (val === LAUNCH_ALL_SENTINEL) {
           return QUEUE_LAUNCHED;
+        }
+
+        // Saved preset selected — resolve against this worktree and launch
+        if (val.startsWith(PRESET_PREFIX) && dataDir) {
+          const presetName = val.slice(PRESET_PREFIX.length, -2); // strip prefix + trailing "__"
+          const preset = findPreset(dataDir, presetName);
+          if (preset) {
+            await launchPreset(preset, worktreePath);
+            return QUEUE_LAUNCHED; // signal "already launched" — q is empty, launchQueue() is a no-op
+          }
+          cameFromScript = true;
+          continue;
         }
 
         // Save as preset then launch
@@ -543,6 +570,22 @@ async function launchQueue(
   }
 }
 
+/** Resolve a saved preset's entries against the current worktree and launch them. */
+async function launchPreset(preset: Preset, worktreePath: string): Promise<void> {
+  const items: LaunchItem[] = preset.entries.map((e) => ({
+    label: `${e.packageLabel} → ${e.script}${e.variationName ? ` (${e.variationName})` : ""}`,
+    command: e.command ?? `${detectPackageManager(join(worktreePath, e.packageRelPath))} run ${e.script}`,
+    cwd: join(worktreePath, e.packageRelPath),
+  }));
+
+  process.stderr.write(`\n  preset ${bold}${preset.name}${reset}\n\n`);
+  if (isInsideHerdr()) {
+    await launchInHerdr(items);
+  } else {
+    launchFallback(items);
+  }
+}
+
 // ─── Entry ──────────────────────────────────────────────────────────────────
 
 export async function runCommand(
@@ -571,6 +614,17 @@ export async function runCommand(
   if (useResolved) {
     worktreePath = ctx.identity!.repoRoot;
     dataDir = ctx.identity!.dataDir;
+
+    // ── Preset direct invoke: `rt run <preset-name>` ──────────────────────
+    const presetArg = args.find((a) => !a.startsWith("-") && a !== "again");
+    if (presetArg) {
+      const preset = findPreset(dataDir, presetArg);
+      if (preset) {
+        await launchPreset(preset, worktreePath);
+        return;
+      }
+    }
+
     try {
       worktreeBranch = execSync("git rev-parse --abbrev-ref HEAD", {
         cwd: worktreePath,
