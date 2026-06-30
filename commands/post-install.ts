@@ -15,10 +15,10 @@
  */
 
 import { spawnSync } from "child_process";
-import { existsSync, readdirSync, mkdirSync, rmSync, cpSync } from "fs";
+import { existsSync, readFileSync, readdirSync, mkdirSync, rmSync, cpSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
-import { installShellIntegration } from "../lib/shell-integration.ts";
+import { installShellIntegration, detectShell, shellRcPath } from "../lib/shell-integration.ts";
 
 const HOME = homedir();
 
