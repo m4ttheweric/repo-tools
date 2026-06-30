@@ -202,6 +202,36 @@ async function checkTccAccess(): Promise<void> {
   } catch { /* daemon not reachable — skip silently */ }
 }
 
+// ─── 6. Shell wrapper repair ─────────────────────────────────────────────────
+
+/**
+ * The v0.x shell wrapper used `command -v rt` to resolve the binary path.
+ * In zsh, `command -v rt` returns the function name (not the binary path),
+ * so rt_bin="rt" and every call recurses until FUNCNEST blows up.
+ * Replace the broken line with whence -p / type -P (PATH-only lookup).
+ */
+function repairShellWrapper(): void {
+  const shell = detectShell();
+  const rcPath = shellRcPath(shell);
+  if (!rcPath) return;
+
+  let content: string;
+  try { content = readFileSync(rcPath, "utf8"); } catch { return; }
+
+  if (!content.includes("rt() {") || !content.includes("command -v rt") || content.includes("whence -p rt")) return;
+
+  const broken = '  [ -x "$rt_bin" ] || rt_bin="$(command -v rt 2>/dev/null || echo rt)"';
+  const fixed = [
+    '  # whence -p (zsh) / type -P (bash): PATH-only lookup, skips this function',
+    '  [ -x "$rt_bin" ] || rt_bin="$(whence -p rt 2>/dev/null || type -P rt 2>/dev/null)"',
+    '  [ -x "$rt_bin" ] || { echo "rt: binary not found in PATH" >&2; return 1; }',
+  ].join("\n");
+
+  content = content.replace(broken, fixed);
+  writeFileSync(rcPath, content);
+  ok("shell wrapper", "repaired FUNCNEST recursion bug");
+}
+
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
 /**
@@ -260,6 +290,7 @@ export async function runPostInstall(): Promise<void> {
 
   await installDaemon();
   installShellIntegrationStep();
+  repairShellWrapper();
 
   await checkTccAccess();
 
