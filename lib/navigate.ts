@@ -52,6 +52,14 @@ export interface NavPickerOpts {
   exact?: boolean;
   /** Custom fzf color overrides (appended to default pink border). */
   colorOverrides?: string;
+  /**
+   * When true, a no-match accept (fzf exit 1 — the user typed a query that
+   * matched nothing and pressed Enter) resolves to a NavResult with
+   * `value: null` and the typed `query`, instead of null. Lets callers offer a
+   * live-search fallback on the typed text. Esc / Ctrl-C (exit 130) still
+   * returns null.
+   */
+  captureQueryOnNoMatch?: boolean;
 }
 
 // ─── Input builder ──────────────────────────────────────────────────────────
@@ -202,7 +210,15 @@ export async function runNavPicker(
     encoding: "utf8",
   });
 
-  if (result.status !== 0) return null;
+  if (result.status !== 0) {
+    // Exit 1 = "no match": the user typed a query nothing matched and pressed
+    // Enter. --print-query still emits the query on stdout, so callers that opt
+    // in can fall back to a live search on the typed text. Esc/Ctrl-C is 130.
+    if (opts.captureQueryOnNoMatch && result.status === 1) {
+      return parseNavOutput(result.stdout ?? "");
+    }
+    return null;
+  }
 
   return parseNavOutput(result.stdout ?? "");
 }
