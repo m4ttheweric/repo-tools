@@ -38,6 +38,11 @@ import * as cd from "../commands/cd.ts";
 import * as code from "../commands/code.ts";
 import * as version from "../commands/version.ts";
 import * as update from "../commands/update.ts";
+import * as doppler from "../commands/doppler.ts";
+import * as nav from "../commands/nav.ts";
+import * as parkingLot from "../commands/parking-lot.ts";
+import * as pickTunnel from "../commands/pick-tunnel.ts";
+import * as proxy from "../commands/proxy.ts";
 
 export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/branch.ts": branch,
@@ -72,4 +77,9 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/code.ts": code,
   "./commands/version.ts": version,
   "./commands/update.ts": update,
+  "./commands/doppler.ts": doppler,
+  "./commands/nav.ts": nav,
+  "./commands/parking-lot.ts": parkingLot,
+  "./commands/pick-tunnel.ts": pickTunnel,
+  "./commands/proxy.ts": proxy,
 };
