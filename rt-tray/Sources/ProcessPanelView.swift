@@ -189,6 +189,9 @@ struct ProcessRowView: View {
     let process: SystemProcess
     @ObservedObject var columnSettings: ColumnSettings
 
+    @State private var showingOutput = false
+    @State private var paneOutput: String = ""
+
     var body: some View {
         HStack(spacing: 0) {
             if process.isRunaway {
@@ -279,6 +282,16 @@ struct ProcessRowView: View {
             Button("Copy Info") {
                 copyInfo(process)
             }
+            if HerdrBridge.shared.isAvailable,
+               let pane = HerdrBridge.shared.findPane(forPid: process.pid, cwd: process.cwd) {
+                Divider()
+                Button("Focus in Herdr") {
+                    HerdrBridge.shared.focusPane(pane)
+                }
+                Button("Read Output") {
+                    showPaneOutput(pane.paneId)
+                }
+            }
             Divider()
             // Column visibility submenu
             Menu("Columns") {
@@ -289,6 +302,37 @@ struct ProcessRowView: View {
                     ))
                 }
             }
+        }
+        .onTapGesture(count: 2) {
+            guard HerdrBridge.shared.isAvailable,
+                  let pane = HerdrBridge.shared.findPane(forPid: process.pid, cwd: process.cwd) else { return }
+            HerdrBridge.shared.focusPane(pane)
+        }
+        .sheet(isPresented: $showingOutput) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Process Output: \(process.command) (PID \(process.pid))")
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                    Button("Close") { showingOutput = false }
+                        .buttonStyle(.borderless)
+                }
+                ScrollView {
+                    Text(paneOutput)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding()
+            .frame(width: 600, height: 300)
+        }
+    }
+
+    private func showPaneOutput(_ paneId: String) {
+        if let output = HerdrBridge.shared.readPaneOutput(paneId) {
+            paneOutput = output
+            showingOutput = true
         }
     }
 
