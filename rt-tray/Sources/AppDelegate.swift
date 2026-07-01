@@ -2,6 +2,7 @@ import AppKit
 import UserNotifications
 import ServiceManagement
 import Network
+import SwiftUI
 
 // MARK: - AppDelegate
 
@@ -19,6 +20,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // ── Polling timers ──────────────────────────────────────────────────────
     private var statusTimer: Timer?
     private var notificationTimer: Timer?
+
+    // ── Process panel ──────────────────────────────────────────────────────
+    private var processPopover: NSPopover?
 
     // ── State ───────────────────────────────────────────────────────────────
     private var lastDaemonStatus: DaemonStatus?
@@ -128,6 +132,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         portsLine.isEnabled = false
         portsLine.isHidden = true
         statusMenu.addItem(portsLine)
+
+        let processesItem = NSMenuItem(title: "Show Processes\u{2026}", action: #selector(showProcessPanel), keyEquivalent: "p")
+        processesItem.target = self
+        statusMenu.addItem(processesItem)
 
         statusMenu.addItem(NSMenuItem.separator())
 
@@ -390,6 +398,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func checkForUpdates() {
         updateChecker.checkForUpdates(userInitiated: true)
+    }
+
+    @objc private func showProcessPanel() {
+        if processPopover == nil {
+            let popover = NSPopover()
+            popover.contentViewController = NSHostingController(rootView: ProcessPanelView())
+            popover.behavior = .transient
+            processPopover = popover
+        }
+
+        if let popover = processPopover {
+            if popover.isShown {
+                popover.performClose(nil)
+            } else if let button = statusItem.button {
+                // Close the menu first, then show the popover
+                statusMenu.cancelTracking()
+                DispatchQueue.main.async {
+                    popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                }
+            }
+        }
     }
 
     // MARK: - Auto-Update
