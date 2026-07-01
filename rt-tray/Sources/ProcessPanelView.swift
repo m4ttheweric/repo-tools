@@ -288,22 +288,58 @@ struct ProcessPanelView: View {
 // MARK: - Outline Item Wrappers (reference types for NSOutlineView)
 
 final class OutlineGroupItem: NSObject {
-    let group: RepoGroup
-    let processItems: [OutlineProcessItem]
+    var group: RepoGroup
+    var processItems: [OutlineProcessItem]
 
     init(_ group: RepoGroup) {
         self.group = group
         self.processItems = group.processes.map { OutlineProcessItem($0) }
     }
+
+    func updateData(from group: RepoGroup) {
+        self.group = group
+        let newProcs = group.processes
+        let existingByPid = Dictionary(uniqueKeysWithValues: processItems.map { ($0.process.pid, $0) })
+        var updated: [OutlineProcessItem] = []
+        for proc in newProcs {
+            if let existing = existingByPid[proc.pid] {
+                existing.updateData(from: proc)
+                updated.append(existing)
+            } else {
+                updated.append(OutlineProcessItem(proc))
+            }
+        }
+        processItems = updated
+    }
+
+    var processFingerprint: Set<Int> {
+        Set(processItems.map { $0.process.pid })
+    }
 }
 
 final class OutlineProcessItem: NSObject {
-    let process: SystemProcess
-    let childItems: [OutlineProcessItem]
+    var process: SystemProcess
+    var childItems: [OutlineProcessItem]
 
     init(_ process: SystemProcess) {
         self.process = process
         self.childItems = (process.children ?? []).map { OutlineProcessItem($0) }
+    }
+
+    func updateData(from proc: SystemProcess) {
+        self.process = proc
+        let newChildren = proc.children ?? []
+        let existingByPid = Dictionary(uniqueKeysWithValues: childItems.map { ($0.process.pid, $0) })
+        var updated: [OutlineProcessItem] = []
+        for child in newChildren {
+            if let existing = existingByPid[child.pid] {
+                existing.updateData(from: child)
+                updated.append(existing)
+            } else {
+                updated.append(OutlineProcessItem(child))
+            }
+        }
+        childItems = updated
     }
 }
 
@@ -323,7 +359,7 @@ struct ProcessOutlineView: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
+        scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
 
@@ -353,6 +389,9 @@ struct ProcessOutlineView: NSViewRepresentable {
             tableColumn.width = defaultW
             tableColumn.headerCell.alignment = alignment
 
+            let defaultAscending = (col != .cpu && col != .memory)
+            tableColumn.sortDescriptorPrototype = NSSortDescriptor(key: col.rawValue, ascending: defaultAscending)
+
             outlineView.addTableColumn(tableColumn)
         }
 
@@ -377,9 +416,6 @@ struct ProcessOutlineView: NSViewRepresentable {
         coordinator.controller = controller
         coordinator.currentKillingGroup = killingGroup
 
-        let newItems = groups.map { OutlineGroupItem($0) }
-        coordinator.groupItems = newItems
-
         guard let outlineView = coordinator.outlineView else { return }
 
         for col in ProcessColumn.allCases {
@@ -389,17 +425,14 @@ struct ProcessOutlineView: NSViewRepresentable {
             }
         }
 
-        outlineView.reloadData()
+        let structureChanged = coordinator.updateItems(from: groups)
+        coordinator.applySortToItems()
 
-        for item in newItems {
-            if !coordinator.collapsedGroups.contains(item.group.name) {
-                outlineView.expandItem(item)
-                for procItem in item.processItems {
-                    if coordinator.expandedProcessPids.contains(procItem.process.pid) {
-                        outlineView.expandItem(procItem)
-                    }
-                }
-            }
+        if structureChanged {
+            outlineView.reloadData()
+            coordinator.restoreExpansion()
+        } else {
+            outlineView.reloadItem(nil, reloadChildren: true)
         }
 
         var indexSet = IndexSet()
@@ -438,6 +471,35 @@ struct ProcessOutlineView: NSViewRepresentable {
         var collapsedGroups: Set<String> = []
         var expandedProcessPids: Set<Int> = []
         var currentKillingGroup: String?
+        var activeSortColumn: ProcessColumn? = nil
+        var activeSortAscending: Bool = true
+
+        /// Updates items in-place when possible, returns true if the tree structure changed.
+        func updateItems(from groups: [RepoGroup]) -> Bool {
+            let oldNames = groupItems.map { $0.group.name }
+            let newNames = groups.map { $0.name }
+
+            if oldNames != newNames {
+                groupItems = groups.map { OutlineGroupItem($0) }
+                return true
+            }
+
+            let existingByName = Dictionary(uniqueKeysWithValues: groupItems.map { ($0.group.name, $0) })
+            for group in groups {
+                guard let existing = existingByName[group.name] else {
+                    groupItems = groups.map { OutlineGroupItem($0) }
+                    return true
+                }
+                let oldPids = existing.processFingerprint
+                let newPids = Set(group.processes.map { $0.pid })
+                if oldPids != newPids {
+                    groupItems = groups.map { OutlineGroupItem($0) }
+                    return true
+                }
+                existing.updateData(from: group)
+            }
+            return false
+        }
 
         // MARK: Data Source
 
@@ -517,6 +579,84 @@ struct ProcessOutlineView: NSViewRepresentable {
             }
         }
 
+        // MARK: Sorting
+
+        func outlineView(_ outlineView: NSOutlineView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
+            guard let descriptor = outlineView.sortDescriptors.first,
+                  let key = descriptor.key,
+                  let column = ProcessColumn(rawValue: key) else {
+                activeSortColumn = nil
+                return
+            }
+            activeSortColumn = column
+            activeSortAscending = descriptor.ascending
+            applySortToItems()
+
+            isSyncing = true
+            defer { isSyncing = false }
+            outlineView.reloadData()
+            restoreExpansion()
+        }
+
+        func applySortToItems() {
+            guard let column = activeSortColumn else { return }
+            let ascending = activeSortAscending
+            for group in groupItems {
+                group.processItems.sort { a, b in
+                    let cmp = Self.compareProcesses(a.process, b.process, by: column)
+                    return ascending ? cmp == .orderedAscending : cmp == .orderedDescending
+                }
+            }
+        }
+
+        func restoreExpansion() {
+            guard let outlineView = outlineView else { return }
+            for item in groupItems {
+                if !collapsedGroups.contains(item.group.name) {
+                    outlineView.expandItem(item)
+                    for procItem in item.processItems {
+                        if expandedProcessPids.contains(procItem.process.pid) {
+                            outlineView.expandItem(procItem)
+                        }
+                    }
+                }
+            }
+        }
+
+        private static func compareProcesses(_ a: SystemProcess, _ b: SystemProcess,
+                                              by column: ProcessColumn) -> ComparisonResult {
+            switch column {
+            case .command:
+                return a.command.localizedCaseInsensitiveCompare(b.command)
+            case .cpu:
+                let av = a.totalCpuPercent ?? a.cpuPercent
+                let bv = b.totalCpuPercent ?? b.cpuPercent
+                return av < bv ? .orderedAscending : av > bv ? .orderedDescending : .orderedSame
+            case .memory:
+                let av = a.totalRssKb ?? a.rssKb
+                let bv = b.totalRssKb ?? b.rssKb
+                return av < bv ? .orderedAscending : av > bv ? .orderedDescending : .orderedSame
+            case .port:
+                let av = a.port ?? 0
+                let bv = b.port ?? 0
+                return av < bv ? .orderedAscending : av > bv ? .orderedDescending : .orderedSame
+            case .branch:
+                return (a.branch ?? "").localizedCaseInsensitiveCompare(b.branch ?? "")
+            case .linearTicket:
+                return (a.linearTicket ?? "").localizedCaseInsensitiveCompare(b.linearTicket ?? "")
+            case .pid:
+                return a.pid < b.pid ? .orderedAscending : a.pid > b.pid ? .orderedDescending : .orderedSame
+            case .uptime:
+                return a.uptime.compare(b.uptime)
+            case .worktree:
+                return a.relativeDir.localizedCaseInsensitiveCompare(b.relativeDir)
+            case .cwd:
+                return a.cwd.localizedCaseInsensitiveCompare(b.cwd)
+            case .fullCommand:
+                return a.fullCommand.localizedCaseInsensitiveCompare(b.fullCommand)
+            }
+        }
+
         // MARK: Group Row View
 
         private func makeGroupView(_ group: OutlineGroupItem) -> NSView {
@@ -559,7 +699,7 @@ struct ProcessOutlineView: NSViewRepresentable {
                 killingLabel.textColor = .secondaryLabelColor
                 stack.addArrangedSubview(killingLabel)
             } else {
-                let killButton = NSButton(title: "Kill All", target: self, action: #selector(killGroupClicked(_:)))
+                let killButton = HoverButton(title: "Kill All", target: self, action: #selector(killGroupClicked(_:)))
                 killButton.isBordered = false
                 killButton.font = .systemFont(ofSize: 10, weight: .medium)
                 killButton.contentTintColor = .systemRed
@@ -799,6 +939,33 @@ final class ProcessOutlineNSView: NSOutlineView {
             selectRowIndexes(IndexSet(integer: clickedRow), byExtendingSelection: false)
         }
         return super.menu(for: event)
+    }
+}
+
+// MARK: - Hover Button (borderless NSButton with hover background)
+
+private final class HoverButton: NSButton {
+    private var trackingArea: NSTrackingArea?
+    var hoverColor: NSColor = NSColor.systemRed.withAlphaComponent(0.1)
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea { removeTrackingArea(existing) }
+        let area = NSTrackingArea(rect: bounds,
+                                  options: [.mouseEnteredAndExited, .activeAlways],
+                                  owner: self)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        wantsLayer = true
+        layer?.backgroundColor = hoverColor.cgColor
+        layer?.cornerRadius = 4
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        layer?.backgroundColor = nil
     }
 }
 

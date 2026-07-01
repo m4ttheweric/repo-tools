@@ -22,9 +22,9 @@ describe("SystemProcessScanner", () => {
     const { parseProcessList } = await import("../system-process-scanner.ts");
 
     const psOutput = [
-      "  PID  %CPU   RSS      ELAPSED COMM             ARGS",
-      "12345  45.2 102400     1:30:00 node             node server.js",
-      "12346   0.1  51200        5:00 zsh              -zsh",
+      "  PID  PPID  %CPU   RSS      ELAPSED COMM             ARGS",
+      "12345     1  45.2 102400     1:30:00 node             node server.js",
+      "12346     1   0.1  51200        5:00 zsh              -zsh",
     ].join("\n");
 
     const repos = { myrepo: "/Users/test/repos/myrepo" };
@@ -47,8 +47,8 @@ describe("SystemProcessScanner", () => {
     const { parseProcessList } = await import("../system-process-scanner.ts");
 
     const psOutput = [
-      "  PID  %CPU   RSS      ELAPSED COMM             ARGS",
-      "99999   5.0  20000       10:00 node             node random.js",
+      "  PID  PPID  %CPU   RSS      ELAPSED COMM             ARGS",
+      "99999     1   5.0  20000       10:00 node             node random.js",
     ].join("\n");
 
     const repos = { myrepo: "/Users/test/repos/myrepo" };
@@ -60,12 +60,41 @@ describe("SystemProcessScanner", () => {
     expect(result).toHaveLength(0);
   });
 
+  test("includes processes in a parent directory of a tracked repo (max 2 levels above)", async () => {
+    const { parseProcessList } = await import("../system-process-scanner.ts");
+
+    const psOutput = [
+      "  PID  PPID  %CPU   RSS      ELAPSED COMM             ARGS",
+      "10001     1   2.0  30000        5:00 grep             grep -r TODO .",
+      "10002     1   1.0  20000        3:00 find             find . -name *.ts",
+      "10003     1   0.5  10000        1:00 node             node script.js",
+    ].join("\n");
+
+    const repos = {
+      myrepo: "/Users/test/repos/myrepo",
+      other: "/Users/test/repos/other",
+    };
+    const cwdMap = new Map<number, string>([
+      [10001, "/Users/test/repos"],           // 1 level above both repos
+      [10002, "/Users/test"],                 // 2 levels above both repos
+      [10003, "/Users"],                      // 3 levels above -- too far
+    ]);
+
+    const result = parseProcessList(psOutput, repos, cwdMap);
+
+    expect(result).toHaveLength(2);
+    expect(result[0]!.pid).toBe(10001);
+    expect(result[0]!.relativeDir).toBe("(parent)");
+    expect(result[1]!.pid).toBe(10002);
+    expect(result[1]!.relativeDir).toBe("(parent)");
+  });
+
   test("filters out macOS .app bundle processes", async () => {
     const { parseProcessList } = await import("../system-process-scanner.ts");
 
     const psOutput = [
-      "  PID  %CPU   RSS      ELAPSED COMM             ARGS",
-      "55555  10.0  80000       30:00 Cursor           /Applications/Cursor.app/Contents/MacOS/Cursor",
+      "  PID  PPID  %CPU   RSS      ELAPSED COMM             ARGS",
+      "55555     1  10.0  80000       30:00 Cursor           /Applications/Cursor.app/Contents/MacOS/Cursor",
     ].join("\n");
 
     const repos = { myrepo: "/Users/test/repos/myrepo" };
