@@ -117,7 +117,7 @@ export function buildWorktreeMap(
   return map;
 }
 
-function matchCwdToRepo(
+export function matchCwdToRepo(
   cwd: string,
   repos: Record<string, string>,
   worktreeMap: Map<string, { repo: string; branch: string }>,
