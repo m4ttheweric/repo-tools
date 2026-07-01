@@ -22,6 +22,7 @@ import {
 
 export interface SystemProcess {
   pid: number;
+  ppid: number;
   command: string;
   fullCommand: string;
   cpuPercent: number;
@@ -37,6 +38,7 @@ export interface SystemProcess {
   isRunaway: boolean;
   runawayDurationMs: number | null;
   firstSeen: number;
+  children?: SystemProcess[];
 }
 
 interface ProcessSample {
@@ -82,31 +84,37 @@ export function parseProcessList(
   psOutput: string,
   repos: Record<string, string>,
   cwdMap: Map<number, string>,
-): Omit<SystemProcess, "port" | "linearTicket" | "isRunaway" | "runawayDurationMs" | "firstSeen">[] {
+): Omit<SystemProcess, "port" | "linearTicket" | "isRunaway" | "runawayDurationMs" | "firstSeen" | "children">[] {
   const worktreeMap = buildWorktreeMap(repos);
   const lines = psOutput.trim().split("\n");
   if (lines.length <= 1) return [];
 
-  const results: Omit<SystemProcess, "port" | "linearTicket" | "isRunaway" | "runawayDurationMs" | "firstSeen">[] = [];
+  const results: Omit<SystemProcess, "port" | "linearTicket" | "isRunaway" | "runawayDurationMs" | "firstSeen" | "children">[] = [];
 
   for (const line of lines.slice(1)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
-    // Parse: PID  %CPU  RSS  ELAPSED  COMM  ARGS...
-    // Use fixed-position extraction since args can contain spaces
-    const match = trimmed.match(/^(\d+)\s+([\d.]+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.*)/);
+    // Parse: PID  PPID  %CPU  RSS  ELAPSED  COMM  ARGS...
+    const match = trimmed.match(/^(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.*)/);
     if (!match) continue;
 
     const pid = parseInt(match[1]!, 10);
-    const cpuPercent = parseFloat(match[2]!);
-    const rssKb = parseInt(match[3]!, 10);
-    const uptime = match[4]!;
-    const command = match[5]!;
-    const fullCommand = match[6]!;
+    const ppid = parseInt(match[2]!, 10);
+    const cpuPercent = parseFloat(match[3]!);
+    const rssKb = parseInt(match[4]!, 10);
+    const uptime = match[5]!;
+    const command = match[6]!;
+    const fullCommand = match[7]!;
 
     // Filter .app bundle processes
     if (fullCommand.includes(".app/Contents/")) continue;
+
+    // Filter login shells unconditionally (they're herdr/terminal pane shells, not user processes).
+    // Filter non-login shells only when idle (0% CPU).
+    if (command.startsWith("-")) continue;
+    const idleShells = ["zsh", "bash", "fish", "sh"];
+    if (idleShells.includes(command) && cpuPercent === 0) continue;
 
     const cwd = cwdMap.get(pid);
     if (!cwd) continue;
@@ -116,6 +124,7 @@ export function parseProcessList(
 
     results.push({
       pid,
+      ppid,
       command,
       fullCommand,
       cpuPercent,
@@ -133,37 +142,30 @@ export function parseProcessList(
 }
 
 function getAllRepoPids(repos: Record<string, string>): Map<number, string> {
-  // Get all PIDs and their cwds via a single ps + lsof pass
   const cwdMap = new Map<number, string>();
   const repoPaths = Object.values(repos);
   if (repoPaths.length === 0) return cwdMap;
 
   try {
-    // Get all non-kernel PIDs
-    const psOut = execSync("ps -axo pid= 2>/dev/null", {
-      encoding: "utf8", stdio: "pipe", timeout: 5000,
+    // Single lsof call to get cwds for ALL processes at once.
+    // -d cwd selects only the cwd file descriptor, -Fpn emits pid + name fields.
+    // Output looks like: p1234\nn/Users/matt/repos/foo\np5678\nn/other/path\n
+    const out = execSync("lsof -d cwd -Fpn 2>/dev/null", {
+      encoding: "utf8", stdio: "pipe", timeout: 10000,
     });
-    const pids = psOut.trim().split("\n").map(p => parseInt(p.trim(), 10)).filter(Boolean);
 
-    // Batch lsof for cwds — one call for all PIDs is much faster than per-PID
-    for (const pid of pids) {
-      try {
-        const out = execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null`, {
-          encoding: "utf8", stdio: "pipe", timeout: 2000,
-        });
-        for (const line of out.split("\n")) {
-          if (line.startsWith("n") && line.length > 1 && line[1] === "/") {
-            const cwd = line.slice(1);
-            // Quick prefix check before adding to map
-            if (repoPaths.some(rp => cwd === rp || cwd.startsWith(rp + "/"))) {
-              cwdMap.set(pid, cwd);
-            }
-            break;
-          }
+    let currentPid = 0;
+    for (const line of out.split("\n")) {
+      if (line.startsWith("p")) {
+        currentPid = parseInt(line.slice(1), 10);
+      } else if (line.startsWith("n") && currentPid > 0) {
+        const cwd = line.slice(1);
+        if (repoPaths.some(rp => cwd === rp || cwd.startsWith(rp + "/"))) {
+          cwdMap.set(currentPid, cwd);
         }
-      } catch { /* pid died mid-scan, skip */ }
+      }
     }
-  } catch { /* ps failed, return empty */ }
+  } catch { /* lsof failed, return empty */ }
 
   return cwdMap;
 }
@@ -201,7 +203,7 @@ export class SystemProcessScanner {
     let psOutput: string;
     try {
       psOutput = execSync(
-        `ps -p ${pidList} -o pid=,pcpu=,rss=,etime=,comm=,args= 2>/dev/null`,
+        `ps -p ${pidList} -o pid=,ppid=,pcpu=,rss=,etime=,comm=,args= 2>/dev/null`,
         { encoding: "utf8", stdio: "pipe", timeout: 5000 },
       );
     } catch {

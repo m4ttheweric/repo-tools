@@ -10,6 +10,9 @@ let package = Package(
         .executableTarget(
             name: "rt-tray",
             path: "Sources",
+            swiftSettings: [
+                .define("DEBUG", .when(configuration: .debug)),
+            ],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("UserNotifications"),
