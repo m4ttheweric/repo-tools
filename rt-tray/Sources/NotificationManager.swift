@@ -229,4 +229,5 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
 extension Notification.Name {
     static let showProcessPanel = Notification.Name("showProcessPanel")
+    static let detachProcessPanel = Notification.Name("detachProcessPanel")
 }

@@ -225,6 +225,11 @@ struct ProcessPanelView: View {
                 action: { controller.refresh() }
             )
             .help("Refresh")
+
+            PanelButton(label: nil, icon: "arrow.up.left.and.arrow.down.right", action: {
+                NotificationCenter.default.post(name: .detachProcessPanel, object: nil)
+            })
+            .help("Open in window")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
