@@ -15,8 +15,7 @@ import { T, toHex } from "./tui/palette.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-/** Sentinel value prefix for separator options. */
-export const NAV_SEPARATOR_PREFIX = "__nav:sep:";
+const NAV_SEPARATOR_PREFIX = "__nav:sep:";
 
 export interface NavOption {
   value: string;
@@ -57,8 +56,6 @@ export interface NavPickerOpts {
   exact?: boolean;
   /** Custom fzf color overrides (appended to default pink border). */
   colorOverrides?: string;
-  /** Extra raw fzf arguments appended to the arg list. */
-  extraArgs?: string[];
   /**
    * When true, a no-match accept (fzf exit 1 — the user typed a query that
    * matched nothing and pressed Enter) resolves to a NavResult with
@@ -145,7 +142,6 @@ export function buildNavArgs(opts: NavPickerOpts): string[] {
           "--bind", `up:up+transform:[[ {1} == ${NAV_SEPARATOR_PREFIX}* ]] && echo up`,
         ]
       : []),
-    ...(opts.extraArgs ?? []),
   ];
 }
 
