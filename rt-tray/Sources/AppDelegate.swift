@@ -417,7 +417,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showProcessPanel() {
         if processPopover == nil {
             let popover = NSPopover()
-            popover.contentSize = NSSize(width: 700, height: 500)
+            popover.contentSize = NSSize(width: 900, height: 600)
             popover.contentViewController = NSHostingController(rootView: ProcessPanelView())
             popover.behavior = .transient
             popover.delegate = self
@@ -452,7 +452,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
             styleMask: [.titled, .closable, .resizable, .miniaturizable],
             backing: .buffered,
             defer: false

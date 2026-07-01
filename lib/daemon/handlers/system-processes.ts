@@ -1,9 +1,12 @@
 import type { HandlerMap, HandlerContext } from "./types.ts";
 import type { SystemProcessScanner, SystemProcess } from "../system-process-scanner.ts";
 
-function shortName(command: string): string {
-  const last = command.split("/").pop() ?? command;
-  return last || command;
+function shortName(proc: SystemProcess): string {
+  // Use fullCommand (complete argv) to get the real binary name,
+  // since macOS truncates the comm field at ~16 chars
+  const argv0 = proc.fullCommand.split(" ")[0] ?? proc.command;
+  const base = argv0.split("/").pop() ?? argv0;
+  return base || proc.command;
 }
 
 function flattenSingleChildChains(node: SystemProcess): SystemProcess {
@@ -12,20 +15,20 @@ function flattenSingleChildChains(node: SystemProcess): SystemProcess {
   const crumbs: string[] = [];
   let current = node;
   while (current.children?.length === 1) {
-    crumbs.push(shortName(current.command));
+    crumbs.push(shortName(current));
     current = current.children[0]!;
   }
 
   if (crumbs.length > 0) {
     return {
       ...current,
-      command: [...crumbs, shortName(current.command)].join(" › "),
+      command: [...crumbs, shortName(current)].join(" › "),
       pid: node.pid,
       ppid: node.ppid,
     };
   }
 
-  return { ...node, command: shortName(node.command) };
+  return { ...node, command: shortName(node) };
 }
 
 function buildProcessTree(flat: SystemProcess[]): SystemProcess[] {

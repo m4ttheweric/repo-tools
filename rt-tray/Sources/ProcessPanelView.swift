@@ -177,7 +177,8 @@ struct ProcessPanelView: View {
             Divider()
             footerBar
         }
-        .frame(width: 700, height: 500)
+        .frame(minWidth: 600, idealWidth: 900, maxWidth: .infinity,
+               minHeight: 400, idealHeight: 600, maxHeight: .infinity)
         .onAppear { controller.startPolling() }
         .onDisappear { controller.stopPolling() }
     }
@@ -539,7 +540,12 @@ struct ProcessOutlineView: NSViewRepresentable {
         }
 
         func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
-            return item is OutlineGroupItem ? 26 : 22
+            if item is OutlineGroupItem { return 26 }
+            if let proc = item as? OutlineProcessItem,
+               proc.process.command.contains(" › ") {
+                return 34
+            }
+            return 22
         }
 
         func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
@@ -785,19 +791,49 @@ struct ProcessOutlineView: NSViewRepresentable {
                 stack.addArrangedSubview(dot)
             }
 
-            let label = NSTextField(labelWithString: proc.command)
+            // Split breadcrumb chain (e.g. "bun › node › foo") into ancestry + leaf
+            let parts = proc.command.components(separatedBy: " › ")
+            let leafName = parts.last ?? proc.command
+            let ancestryParts = parts.dropLast()
+
+            let nameStack = NSStackView()
+            nameStack.orientation = .vertical
+            nameStack.alignment = .leading
+            nameStack.spacing = 1
+            nameStack.edgeInsets = NSEdgeInsets(top: 2, left: 0, bottom: 0, right: 0)
+            nameStack.translatesAutoresizingMaskIntoConstraints = false
+
+            if !ancestryParts.isEmpty {
+                let chainText = ancestryParts.joined(separator: " \u{2192} ")
+                let chainLabel = NSTextField(labelWithString: chainText)
+                chainLabel.setContentHuggingPriority(.required, for: .vertical)
+                chainLabel.font = .systemFont(ofSize: 9.5, weight: .regular)
+                chainLabel.textColor = .secondaryLabelColor
+                chainLabel.lineBreakMode = .byTruncatingTail
+                chainLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                nameStack.addArrangedSubview(chainLabel)
+            }
+
+            let leafRow = NSStackView()
+            leafRow.orientation = .horizontal
+            leafRow.spacing = 4
+
+            let label = NSTextField(labelWithString: leafName)
             label.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
             label.lineBreakMode = .byTruncatingTail
             label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            stack.addArrangedSubview(label)
+            leafRow.addArrangedSubview(label)
 
             if isParent {
                 let countLabel = NSTextField(labelWithString: "+\(proc.childCount)")
                 countLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
                 countLabel.textColor = .secondaryLabelColor
                 countLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
-                stack.addArrangedSubview(countLabel)
+                leafRow.addArrangedSubview(countLabel)
             }
+
+            nameStack.addArrangedSubview(leafRow)
+            stack.addArrangedSubview(nameStack)
 
             cell.addSubview(stack)
             cell.textField = label

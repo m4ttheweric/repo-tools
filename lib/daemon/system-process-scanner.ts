@@ -110,11 +110,13 @@ export function parseProcessList(
     // Filter .app bundle processes
     if (fullCommand.includes(".app/Contents/")) continue;
 
-    // Filter login shells unconditionally (they're herdr/terminal pane shells, not user processes).
-    // Filter non-login shells only when idle (0% CPU).
+    // Filter shells: check both comm and fullCommand since macOS truncates comm at ~16 chars
     if (command.startsWith("-")) continue;
-    const idleShells = ["zsh", "bash", "fish", "sh"];
-    if (idleShells.includes(command) && cpuPercent === 0) continue;
+    const shellBins = ["zsh", "bash", "fish", "sh"];
+    const fullArgv0 = fullCommand.split(" ")[0] ?? "";
+    const fullBase = fullArgv0.split("/").pop() ?? "";
+    const isShell = shellBins.includes(command) || shellBins.includes(fullBase);
+    if (isShell && cpuPercent === 0) continue;
 
     const cwd = cwdMap.get(pid);
     if (!cwd) continue;
