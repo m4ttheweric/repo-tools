@@ -52,6 +52,8 @@ export interface NavPickerOpts {
   exact?: boolean;
   /** Custom fzf color overrides (appended to default pink border). */
   colorOverrides?: string;
+  /** Extra raw fzf arguments appended to the arg list. */
+  extraArgs?: string[];
   /**
    * When true, a no-match accept (fzf exit 1 — the user typed a query that
    * matched nothing and pressed Enter) resolves to a NavResult with
@@ -126,6 +128,7 @@ export function buildNavArgs(opts: NavPickerOpts): string[] {
     `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}${opts.colorOverrides ?? ""}`,
     ...(opts.initialQuery ? [`--query=${opts.initialQuery}`] : []),
     ...(opts.exact ? ["--exact"] : []),
+    ...(opts.extraArgs ?? []),
   ];
 }
 

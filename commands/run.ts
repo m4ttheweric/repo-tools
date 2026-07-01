@@ -264,6 +264,9 @@ async function selectPackageAndScript(
           headerParts: queueHeaderParts,
           expectKeys: q.length > 0 ? ["ctrl-x"] : [],
           initialPos: cursorPos,
+          extraArgs: q.length > 0
+            ? ["--bind", "focus:transform:[[ {1} == __rt:sep* ]] && echo down"]
+            : [],
         });
 
         if (!pkgResult) process.exit(1);
