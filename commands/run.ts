@@ -195,6 +195,13 @@ async function selectPackageAndScript(
             hint: "",
             color: toAnsiFg(T.mint),
           });
+          if (q.length >= 2) {
+            queueOptions.push({
+              value: SAVE_PRESET_SENTINEL,
+              label: "Save as preset...",
+              hint: "",
+            });
+          }
         }
 
         // ── Saved presets (shown above packages, only outside an active queue) ──
@@ -228,12 +235,6 @@ async function selectPackageAndScript(
           })),
         ];
 
-        const savePresetOption = q.length >= 2
-          ? [
-              { value: "__rt:sep2__", label: "──────────────", hint: "" },
-              { value: SAVE_PRESET_SENTINEL, label: "Save as preset...", hint: "" },
-            ]
-          : [];
 
         const queueHeaderParts = q.length > 0
           ? [
@@ -248,7 +249,7 @@ async function selectPackageAndScript(
             ];
 
         const pkgResult = await runNavPicker({
-          options: [...queueOptions, ...savedPresetOptions, ...packageOptions, ...savePresetOption],
+          options: [...queueOptions, ...savedPresetOptions, ...packageOptions],
           message: label ? `Select package — ${label}` : "Select package",
           headerParts: queueHeaderParts,
           expectKeys: q.length > 0 ? ["ctrl-x"] : [],
@@ -269,7 +270,7 @@ async function selectPackageAndScript(
         const val = pkgResult.value ?? "";
 
         // Queued item rows are display-only -- re-show picker
-        if (val.startsWith(QUEUED_PREFIX) || val === "__rt:sep2__" || val === "__rt:sep3__") {
+        if (val.startsWith(QUEUED_PREFIX) || val === "__rt:sep3__") {
           cameFromScript = true;
           continue;
         }
