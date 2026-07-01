@@ -26,7 +26,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var processWindow: NSWindow?
 
     // ── State ───────────────────────────────────────────────────────────────
-    private var lastDaemonStatus: DaemonStatus?
     private var currentHealth: DaemonHealth = .unknown
     private let updateChecker = UpdateChecker.shared
 
@@ -80,8 +79,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-
-        guard statusItem.button != nil else { return }
         updateMenuBarTitle(status: .unknown)
 
         statusMenu = NSMenu()
@@ -272,8 +269,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             setHealth(.starting)
 
-            // Let DaemonLifecycle handle the full restart — it sets intentionalStop
-            // before terminating so the crash-recovery handler doesn't race with us.
             daemonLifecycle.restartDaemon()
 
             // Poll until it comes back (up to 8s)
@@ -290,7 +285,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func stopDaemon() {
         Task { @MainActor in
-            await daemonClient.sendShutdown()
+            // Unregister from launchd — the agent has KeepAlive=true, so an
+            // HTTP shutdown alone would be undone by a launchd restart.
+            // Unregistering makes launchd SIGTERM the daemon and keep it down.
+            daemonLifecycle.stopDaemon()
             try? await Task.sleep(nanoseconds: 500_000_000)
             setHealth(.down)
         }
@@ -329,24 +327,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Probe localhost:5544 with a short TCP connect.
     private func isLogdyUp() async -> Bool {
         return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-            let host = "127.0.0.1"
-            let port: UInt16 = 5544
-            let conn = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+            let conn = NWConnection(host: "127.0.0.1", port: 5544, using: .tcp)
+            // Serialize resume checks — the state handler and the timeout run on
+            // independent queues, and racing them can double-resume (a crash).
+            let guardQueue = DispatchQueue(label: "rt.logdy-probe")
             var resumed = false
+            let finish: (Bool) -> Void = { result in
+                guardQueue.sync {
+                    guard !resumed else { return }
+                    resumed = true
+                    conn.cancel()
+                    cont.resume(returning: result)
+                }
+            }
             conn.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    if !resumed { resumed = true; cont.resume(returning: true) }
-                    conn.cancel()
-                case .failed, .cancelled:
-                    if !resumed { resumed = true; cont.resume(returning: false) }
+                    finish(true)
+                case .failed:
+                    finish(false)
                 default: break
                 }
             }
             conn.start(queue: .global())
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) {
-                if !resumed { resumed = true; cont.resume(returning: false) }
-                conn.cancel()
+                finish(false)
             }
         }
     }
@@ -382,8 +387,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Redirect both stdio to /dev/null so the spawned process doesn't
         // inherit our pipe endpoints (which would EPIPE on next write once
         // rt-tray collects them).
-        task.standardOutput = FileHandle(forWritingAtPath: "/dev/null")
-        task.standardError = FileHandle(forWritingAtPath: "/dev/null")
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
         do {
             try task.run()
             NSLog("rt-tray: spawned rt daemon logs (pid \(task.processIdentifier))")
@@ -427,7 +432,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let popover = processPopover {
             if popover.isShown {
                 popover.performClose(nil)
-            } else if let button = statusItem.button {
+            } else if statusItem.button != nil {
                 statusMenu.cancelTracking()
                 // Detach menu so it doesn't reopen over the popover
                 statusItem.menu = nil
@@ -514,17 +519,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var isRefreshing = false
 
+    /// Main-actor so `isRefreshing` and all menu/UI mutations are serialized;
+    /// the daemon queries themselves still run off-main across the awaits.
+    @MainActor
     private func refreshStatus() async {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
 
         guard let status = await daemonClient.queryTrayStatus() else {
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                if self.currentHealth != .starting {
-                    self.setHealth(.down)
-                }
+            if currentHealth != .starting {
+                setHealth(.down)
             }
             return
         }
@@ -537,13 +542,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.lastDaemonStatus = status
-            self.currentHealth = health
-            self.updateMenuBarTitle(status: health)
-            self.updateMenuItems(with: status)
-        }
+        currentHealth = health
+        updateMenuBarTitle(status: health)
+        updateMenuItems(with: status)
     }
 
     private func drainPendingNotifications() async {

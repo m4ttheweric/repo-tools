@@ -41,15 +41,6 @@ class DaemonClient {
         return response.data
     }
 
-    func sendShutdown() async {
-        let _: SimpleResponse? = await query("shutdown")
-    }
-
-    func sendCommand(_ cmd: String) async -> Bool {
-        guard let response: SimpleResponse = await query(cmd) else { return false }
-        return response.ok
-    }
-
     func querySystemProcesses() async -> SystemProcessData? {
         guard let response: SystemProcessResponse = await query("system-processes") else { return nil }
         return response.ok ? response.data : nil
@@ -77,7 +68,6 @@ class DaemonClient {
         case "tray:status": path = "/api/status"
         case "ping":        path = "/api/status"
         case "notifications": path = "/api/notifications"
-        case "shutdown":    path = "/api/shutdown"
         case "system-processes": path = "/api/processes/system"
         default:            path = "/api/\(command)"
         }
@@ -85,7 +75,6 @@ class DaemonClient {
         guard let url = URL(string: "http://127.0.0.1:\(Self.apiPort)\(path)") else { return nil }
 
         var request = URLRequest(url: url)
-        request.httpMethod = (command == "shutdown") ? "POST" : "GET"
         request.timeoutInterval = 2
 
         do {
@@ -215,11 +204,6 @@ struct PingResponse: Decodable {
     let ok: Bool
     let uptime: Int?
     let pid: Int?
-}
-
-struct SimpleResponse: Decodable {
-    let ok: Bool
-    let message: String?
 }
 
 struct TrayStatusResponse: Decodable {

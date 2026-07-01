@@ -130,7 +130,16 @@ class ColumnSettings: ObservableObject {
     func save() {
         let keys = visibleColumns.map(\.rawValue)
         guard let data = try? JSONEncoder().encode(keys) else { return }
-        try? data.write(to: URL(fileURLWithPath: Self.configPath))
+        let url = URL(fileURLWithPath: Self.configPath)
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        do {
+            try data.write(to: url)
+        } catch {
+            NSLog("rt-tray: failed to save column settings: \(error)")
+        }
     }
 
     func toggle(_ column: ProcessColumn) {

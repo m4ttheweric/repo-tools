@@ -200,9 +200,9 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             }
 
         case "VIEW_PIPELINE":
-            // Open the MR URL (pipeline is accessed from there)
+            // Append /pipelines to the MR URL to land on its Pipelines tab;
+            // fall back to the MR itself if the composed URL is invalid.
             if let urlStr = url, let urlObj = URL(string: urlStr) {
-                // Append /-/pipelines to the MR URL to go directly to pipeline
                 let pipelineURL = URL(string: urlStr + "/pipelines") ?? urlObj
                 NSWorkspace.shared.open(pipelineURL)
             }

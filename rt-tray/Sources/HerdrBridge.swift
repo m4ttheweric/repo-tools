@@ -62,20 +62,29 @@ struct HerdrPane {
 class HerdrBridge {
     static let shared = HerdrBridge()
 
+    private let cacheLock = NSLock()
     private var _isAvailable: Bool?
     private var lastCheck: Date?
 
+    /// Read from both the main thread (context menus) and detached tasks
+    /// (focus/read-output), so the cache is guarded by a lock.
     var isAvailable: Bool {
         // Cache for 30 seconds so hovering the context menu doesn't stat
         // the socket (or shell out) on every render.
+        cacheLock.lock()
         if let cached = _isAvailable,
            let last = lastCheck,
            Date().timeIntervalSince(last) < 30 {
+            cacheLock.unlock()
             return cached
         }
+        cacheLock.unlock()
+
         let result = checkAvailable()
+        cacheLock.lock()
         _isAvailable = result
         lastCheck = Date()
+        cacheLock.unlock()
         return result
     }
 

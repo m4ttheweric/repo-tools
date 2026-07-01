@@ -38,10 +38,10 @@ class TrayServer {
             listener?.newConnectionHandler = { [weak self] connection in
                 self?.handleConnection(connection)
             }
-            listener?.stateUpdateHandler = { state in
+            listener?.stateUpdateHandler = { [socketPath] state in
                 switch state {
                 case .ready:
-                    NSLog("rt-tray: server listening on \(self.socketPath)")
+                    NSLog("rt-tray: server listening on \(socketPath)")
                 case .failed(let error):
                     NSLog("rt-tray: server failed: \(error)")
                 default:
