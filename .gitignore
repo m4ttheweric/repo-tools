@@ -13,3 +13,7 @@ rt-tray/rt-tray.app/
 
 # superpowers scratch (SDD ledger/briefs/diffs, brainstorming companion)
 .superpowers/
+
+# E2E test artifacts
+e2e/artifacts/*
+!e2e/artifacts/.gitkeep

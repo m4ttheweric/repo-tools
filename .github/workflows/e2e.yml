@@ -1,0 +1,41 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  e2e:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build rt binary
+        run: bun build --compile ./cli.ts --outfile dist/rt --define 'RT_VERSION="e2e-test"'
+
+      - name: Codesign binary (ad-hoc with JIT entitlements)
+        run: |
+          codesign --remove-signature dist/rt
+          codesign --force --sign - --entitlements scripts/entitlements.plist dist/rt
+
+      - name: Run e2e tests
+        run: bun test --preload ./e2e/setup.ts --timeout 60000 e2e/
+        env:
+          RT_BINARY: ${{ github.workspace }}/dist/rt
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-debug
+          path: e2e/artifacts/
+          retention-days: 7
