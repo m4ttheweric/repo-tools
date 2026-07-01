@@ -280,8 +280,13 @@ async function selectPackageAndScript(
         // ── Sentinel handling ──────────────────────────────────────────────
         const val = pkgResult.value ?? "";
 
-        // Queued item rows are display-only -- re-show picker
+        // Queued/separator rows are display-only -- re-show with cursor past them
         if (val.startsWith(QUEUED_PREFIX) || val === "__rt:sep1__" || val === "__rt:sep3__") {
+          const hitIdx = allPkgOptions.findIndex((o) => o.value === val);
+          const nextReal = allPkgOptions.findIndex(
+            (o, i) => i > hitIdx && !o.value.startsWith(QUEUED_PREFIX) && o.value !== "__rt:sep1__" && o.value !== "__rt:sep3__",
+          );
+          cursorPos = nextReal >= 0 ? nextReal + 1 : null;
           cameFromScript = true;
           continue;
         }
