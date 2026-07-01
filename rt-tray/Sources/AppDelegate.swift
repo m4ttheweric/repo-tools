@@ -23,6 +23,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // ── Process panel ──────────────────────────────────────────────────────
     private var processPopover: NSPopover?
+    private var processWindow: NSWindow?
 
     // ── State ───────────────────────────────────────────────────────────────
     private var lastDaemonStatus: DaemonStatus?
@@ -42,6 +43,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(showProcessPanel),
             name: .showProcessPanel,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(detachProcessPanel),
+            name: .detachProcessPanel,
             object: nil
         )
 
@@ -432,6 +439,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    @objc private func detachProcessPanel() {
+        processPopover?.performClose(nil)
+        statusItem.menu = statusMenu
+
+        if let window = processWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "rt processes"
+        window.contentViewController = NSHostingController(rootView: ProcessPanelView())
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        processWindow = window
     }
 
     // MARK: - Auto-Update
