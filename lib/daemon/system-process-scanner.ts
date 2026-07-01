@@ -10,6 +10,9 @@
  */
 
 import { execSync } from "child_process";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
 import {
   loadRepoIndex,
   buildWorktreeMap,
@@ -62,6 +65,17 @@ export interface ScannerConfig {
   cpuThreshold?: number;
   sustainMs?: number;
   graceMs?: number;
+}
+
+const RUNAWAY_CONFIG_PATH = join(homedir(), ".rt", "runaway-config.json");
+
+export function loadRunawayConfig(): ScannerConfig {
+  try {
+    if (!existsSync(RUNAWAY_CONFIG_PATH)) return {};
+    return JSON.parse(readFileSync(RUNAWAY_CONFIG_PATH, "utf8"));
+  } catch {
+    return {};
+  }
 }
 
 export function parseProcessList(
@@ -160,10 +174,12 @@ export class SystemProcessScanner {
   private config: Required<ScannerConfig>;
 
   constructor(config: ScannerConfig = {}) {
+    const diskConfig = loadRunawayConfig();
+    const merged = { ...diskConfig, ...config };
     this.config = {
-      cpuThreshold: config.cpuThreshold ?? DEFAULT_CPU_THRESHOLD,
-      sustainMs: config.sustainMs ?? DEFAULT_SUSTAIN_MS,
-      graceMs: config.graceMs ?? DEFAULT_GRACE_MS,
+      cpuThreshold: merged.cpuThreshold ?? DEFAULT_CPU_THRESHOLD,
+      sustainMs: merged.sustainMs ?? DEFAULT_SUSTAIN_MS,
+      graceMs: merged.graceMs ?? DEFAULT_GRACE_MS,
     };
   }
 
