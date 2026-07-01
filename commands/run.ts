@@ -239,13 +239,12 @@ async function selectPackageAndScript(
         const queueHeaderParts = q.length > 0
           ? [
               "enter: select",
-              "ctrl-x: dequeue last",
-              "ctrl-up: back to worktree",
+              "ctrl-x: dequeue",
               "esc: cancel",
             ]
           : [
               "enter: select",
-              "ctrl-up: back to worktree",
+              "ctrl-up: back",
               "esc: cancel",
             ];
 
@@ -456,8 +455,8 @@ async function selectPackageAndScript(
       const ADD_SENTINEL = "__rt:add-variation__";
 
       const varHeaderParts = q.length > 0
-        ? ["enter: queue", "tab: queue", "ctrl-up: back to scripts", "esc: cancel"]
-        : ["enter: select", "tab: queue", "ctrl-up: back to scripts", "esc: cancel"];
+        ? ["enter: queue", "tab: queue", "ctrl-up: back"]
+        : ["enter: run", "tab: queue", "ctrl-up: back"];
 
       while (true) {
         const varResult = await runNavPicker({
