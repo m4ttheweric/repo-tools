@@ -55,11 +55,17 @@ export async function launchInHerdr(items: LaunchItem[]): Promise<void> {
 
   const selfPaneId = getSelfPaneId();
 
-  for (const item of items) {
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]!;
     try {
-      const newPaneId = splitPane(selfPaneId);
-      runInPane(newPaneId, item.command, item.cwd);
-      process.stderr.write(`  ${green}▸${reset} ${item.label} ${dim}(${newPaneId})${reset}\n`);
+      if (i === 0) {
+        runInPane(selfPaneId, item.command, item.cwd);
+        process.stderr.write(`  ${green}▸${reset} ${item.label} ${dim}(${selfPaneId})${reset}\n`);
+      } else {
+        const newPaneId = splitPane(selfPaneId);
+        runInPane(newPaneId, item.command, item.cwd);
+        process.stderr.write(`  ${green}▸${reset} ${item.label} ${dim}(${newPaneId})${reset}\n`);
+      }
     } catch (err) {
       process.stderr.write(`  ${red}✗${reset} ${item.label}: ${err}\n`);
     }
