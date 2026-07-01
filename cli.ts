@@ -516,6 +516,11 @@ const TREE: Record<string, CommandNode> = {
         module: "./commands/settings.ts",
         fn: "sendTestPushNotification",
       },
+      runaway: {
+        description: "Configure runaway process detection thresholds",
+        module: "./commands/settings.ts",
+        fn: "configureRunaway",
+      },
       extension: {
         description: "Install RT Context extension in editors",
         module: "./commands/extension.ts",

@@ -50,11 +50,62 @@ class DaemonClient {
         return response.ok
     }
 
-    // MARK: - HTTP over Unix Socket
+    func querySystemProcesses() async -> SystemProcessData? {
+        guard let response: SystemProcessResponse = await query("system-processes") else { return nil }
+        return response.ok ? response.data : nil
+    }
 
-    /// Perform an HTTP GET request over the daemon's Unix socket.
-    /// Uses raw TCP via Network.framework since URLSession doesn't support UDS.
+    // MARK: - Query (HTTP API with Unix socket fallback)
+
+    /// Query the daemon. Tries the HTTP API on :9401 first (reliable, uses
+    /// URLSession), falls back to the Unix socket if the TCP port is unreachable.
     private func query<T: Decodable>(_ command: String) async -> T? {
+        // Primary: HTTP API on localhost:9401 (URLSession, robust)
+        if let result: T = await queryHTTP(command) {
+            return result
+        }
+        // Fallback: Unix socket (NWConnection, can get stuck)
+        return await querySocket(command)
+    }
+
+    private static let apiPort = 9401
+
+    /// HTTP GET via URLSession to localhost:9401. Fast, reliable, no NWConnection issues.
+    private func queryHTTP<T: Decodable>(_ command: String) async -> T? {
+        let path: String
+        switch command {
+        case "tray:status": path = "/api/status"
+        case "ping":        path = "/api/status"
+        case "notifications": path = "/api/notifications"
+        case "shutdown":    path = "/api/shutdown"
+        case "system-processes": path = "/api/processes/system"
+        default:            path = "/api/\(command)"
+        }
+
+        guard let url = URL(string: "http://127.0.0.1:\(Self.apiPort)\(path)") else { return nil }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = (command == "shutdown") ? "POST" : "GET"
+        request.timeoutInterval = 2
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+            do {
+                return try JSONDecoder().decode(T.self, from: data)
+            } catch {
+                let preview = String(data: data.prefix(500), encoding: .utf8) ?? "<binary>"
+                let msg = "rt-tray: decode \(command) failed: \(error)\nResponse preview: \(preview)\n"
+                try? msg.write(toFile: NSHomeDirectory() + "/.rt/tray-decode-error.log", atomically: true, encoding: .utf8)
+                return nil
+            }
+        } catch {
+            return nil
+        }
+    }
+
+    /// Fallback: HTTP over Unix socket via NWConnection.
+    private func querySocket<T: Decodable>(_ command: String) async -> T? {
         guard FileManager.default.fileExists(atPath: socketPath) else { return nil }
 
         return await withCheckedContinuation { continuation in
@@ -63,8 +114,6 @@ class DaemonClient {
             params.defaultProtocolStack.transportProtocol = NWProtocolTCP.Options()
             let connection = NWConnection(to: endpoint, using: params)
 
-            // Serial queue guards `completed` — prevents the timeout and NW callbacks
-            // from racing to call continuation.resume() more than once (fatal crash).
             let guard_q = DispatchQueue(label: "rt.query.\(command)")
             var completed = false
             var hasReachedReady = false
@@ -77,7 +126,6 @@ class DaemonClient {
                 }
             }
 
-            // Timeout after 2 seconds
             DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
                 complete(nil)
             }
@@ -86,7 +134,6 @@ class DaemonClient {
                 switch state {
                 case .ready:
                     guard_q.sync { hasReachedReady = true }
-                    // Send HTTP GET request
                     let request = "GET /\(command) HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
                     guard let data = request.data(using: .utf8) else {
                         complete(nil)
@@ -97,7 +144,6 @@ class DaemonClient {
                             complete(nil)
                             return
                         }
-                        // Read response
                         self.readFullResponse(connection: connection) { responseData in
                             guard let responseData = responseData,
                                   let jsonBody = self.extractJSONBody(from: responseData) else {
@@ -108,17 +154,12 @@ class DaemonClient {
                                 let decoded = try JSONDecoder().decode(T.self, from: jsonBody)
                                 complete(decoded)
                             } catch {
-                                NSLog("rt-tray: JSON decode error for /\(command): \(error)")
                                 complete(nil)
                             }
                         }
                     })
 
                 case .failed:
-                    // Only treat as error if we never reached .ready.
-                    // After .ready, the server's "Connection: close" fires .failed
-                    // (POSIX error 50) but the response data is already buffered
-                    // and will be delivered via readFullResponse.
                     let wasReady = guard_q.sync { hasReachedReady }
                     if !wasReady {
                         complete(nil)
@@ -144,13 +185,10 @@ class DaemonClient {
                 accumulated.append(content)
             }
             if isComplete {
-                // Server closed connection (normal for Connection: close)
                 completion(accumulated.isEmpty ? nil : accumulated)
             } else if error != nil {
-                // Connection error — return whatever we have
                 completion(accumulated.isEmpty ? nil : accumulated)
             } else {
-                // Keep reading
                 self.readFullResponse(connection: connection, buffer: accumulated, completion: completion)
             }
         }
@@ -159,19 +197,14 @@ class DaemonClient {
     /// Extract the JSON body from an HTTP response (skip headers).
     private func extractJSONBody(from data: Data) -> Data? {
         guard let str = String(data: data, encoding: .utf8) else { return nil }
-
-        // Find the blank line separating headers from body
         if let range = str.range(of: "\r\n\r\n") {
             let body = String(str[range.upperBound...])
             return body.data(using: .utf8)
         }
-
-        // Fallback: try to find JSON directly
         if let jsonStart = str.firstIndex(of: "{") {
             let body = String(str[jsonStart...])
             return body.data(using: .utf8)
         }
-
         return nil
     }
 }

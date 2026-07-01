@@ -309,7 +309,7 @@ function fastForwardParkedWorktrees(
     if (hasUncommittedChanges(wt.path)) continue;
     try {
       execSync(`git merge --ff-only "${defaultRef}"`, { cwd: wt.path, stdio: "pipe" });
-      log.info({ branch: wt.branch, worktree: wt.path, defaultRef }, `fast-forwarded ${wt.branch} → ${defaultRef}`);
+      log.debug({ branch: wt.branch, worktree: wt.path, defaultRef }, `fast-forwarded ${wt.branch} → ${defaultRef}`);
     } catch (err) {
       // Branch has diverged or is already up to date — expected, skip.
       log.debug({ err, branch: wt.branch, worktree: wt.path }, "ff-only skipped (diverged or already up to date)");
