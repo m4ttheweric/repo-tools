@@ -36,6 +36,10 @@ async function trySocketQuery(
   payload?: Record<string, any>,
   timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<DaemonResponse | null> {
+  // Reset per-query flags up front so a missing-socket early return doesn't
+  // leave a previous query's timeout/refused state visible to callers.
+  _lastQueryWasRefused = false;
+  _lastQueryTimedOut   = false;
   if (!existsSync(DAEMON_SOCK_PATH)) return null;
 
   try {
@@ -88,14 +92,17 @@ export async function trayQuery(
 let hasWarnedThisSession = false;
 let _warningSuppressed = false;
 
-function attemptRestart(): boolean {
+async function attemptRestart(): Promise<boolean> {
   try {
     const config = getDaemonConfig();
     if (!config) return false;
 
-    // Ask the tray app to start the daemon (fire-and-forget)
-    trayQuery("/daemon/start", "POST");
-    return true;
+    // Ask the tray app to start the daemon. Await it — an unawaited POST may
+    // never leave the socket before a short-lived CLI process exits, and a
+    // null response (tray socket absent / request failed) means no restart
+    // actually happened.
+    const res = await trayQuery("/daemon/start", "POST");
+    return res !== null;
   } catch {
     return false;
   }
@@ -146,7 +153,7 @@ export async function daemonQuery(
   if (existsSync(DAEMON_SOCK_PATH) && !_lastQueryWasRefused) return null;
 
   // 4. Socket is gone → daemon is genuinely not running. Attempt restart.
-  const restarted = attemptRestart();
+  const restarted = await attemptRestart();
   if (restarted) {
     // Retry once after short delay
     await Bun.sleep(300);

@@ -34,12 +34,17 @@ export class LlmEmptyResponseError extends Error {
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-export const LLM_CONFIG_PATH = join(rtDir(), "llm.json");
+// HOME is resolved at call time (see rt-paths.ts), so the path must be too —
+// a module-load constant would pin the file to whatever HOME was at import.
+export function llmConfigPath(): string {
+  return join(rtDir(), "llm.json");
+}
 
 export function loadLlmConfig(): LlmConfig {
   try {
-    if (existsSync(LLM_CONFIG_PATH)) {
-      const raw = JSON.parse(readFileSync(LLM_CONFIG_PATH, "utf8"));
+    const path = llmConfigPath();
+    if (existsSync(path)) {
+      const raw = JSON.parse(readFileSync(path, "utf8"));
       return { ...DEFAULT_CONFIG, ...raw };
     }
   } catch { /* malformed JSON — use defaults */ }
@@ -51,7 +56,7 @@ export function saveLlmConfig(partial: Partial<LlmConfig>): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const current = loadLlmConfig();
   const merged = { ...current, ...partial };
-  writeFileSync(LLM_CONFIG_PATH, JSON.stringify(merged, null, 2));
+  writeFileSync(llmConfigPath(), JSON.stringify(merged, null, 2));
 }
 
 // ─── Ollama API ──────────────────────────────────────────────────────────────
@@ -63,10 +68,10 @@ interface OllamaTagsResponse {
 /**
  * Send a prompt to the configured local LLM via Ollama.
  *
- * Uses Ollama's /api/generate endpoint with raw mode (no chat template).
- * The prompt is formatted as a simple system + user message block.
+ * Uses Ollama's /api/chat endpoint with a system + user message pair.
  *
- * @throws {LlmUnavailableError} if Ollama is unreachable or times out
+ * @throws {LlmUnavailableError} if Ollama is unreachable, times out, or
+ *   returns a non-OK / non-JSON response
  * @throws {LlmEmptyResponseError} if the model returns an empty string
  */
 export async function llmPrompt(
@@ -103,7 +108,14 @@ export async function llmPrompt(
     throw new LlmUnavailableError(`HTTP ${response.status}`);
   }
 
-  const json = (await response.json()) as { message?: { content?: string } };
+  let json: { message?: { content?: string } };
+  try {
+    json = (await response.json()) as { message?: { content?: string } };
+  } catch {
+    // 200 with a non-JSON body (proxy, captive portal) — keep the documented
+    // error contract so callers' fallbacks still engage.
+    throw new LlmUnavailableError("invalid JSON response");
+  }
   const text = (json.message?.content ?? "").trim();
 
   if (!text) throw new LlmEmptyResponseError();
@@ -114,10 +126,8 @@ export async function llmPrompt(
 /**
  * Generate a short, descriptive slug from `text` using the local LLM.
  *
- * The system prompt instructs the model to produce a compact hyphenated slug
- * (no articles, no verbs, just key nouns). `maxChars` controls the approximate
- * output length by setting `num_predict` to `maxChars + 4` (buffer for
- * punctuation / spacing that we then strip).
+ * The prompt instructs the model to produce a compact hyphenated slug; the
+ * result is post-processed and truncated to `maxChars` at a word boundary.
  *
  * On failure, throws — callers should catch and fall back to a mechanical slug.
  */

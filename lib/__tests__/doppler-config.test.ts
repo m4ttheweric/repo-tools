@@ -1,10 +1,18 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
+const origHome = process.env.HOME;
 const tmpHome = mkdtempSync(join(tmpdir(), "rt-doppler-config-"));
 process.env.HOME = tmpHome;
+
+// bun test runs every file in one shared process — restore HOME so later
+// test files (and their per-test HOME juggling) don't inherit the temp dir.
+afterAll(() => {
+  process.env.HOME = origHome;
+  rmSync(tmpHome, { recursive: true, force: true });
+});
 
 const { loadDopplerConfig, dopplerConfigPath, writeDopplerConfig } =
   await import("../doppler-config.ts");

@@ -339,8 +339,10 @@ export async function softResetCommand(
   ctx: CommandContext,
 ): Promise<void> {
   const cwd = ctx.identity!.repoRoot;
-  git("reset --soft HEAD", cwd);
-  console.log(`  ${green}✓${reset} soft reset to HEAD\n`);
+  // `reset --soft HEAD` is a no-op (--soft touches neither index nor
+  // worktree); a mixed reset is what actually unstages.
+  git("reset HEAD", cwd);
+  console.log(`  ${green}✓${reset} soft reset to HEAD (unstaged)\n`);
 }
 
 /** rt git reset hard — hard reset to HEAD (discard all changes) */

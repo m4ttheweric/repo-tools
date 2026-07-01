@@ -134,6 +134,10 @@ export function installCrashHandlers(handle: DaemonLoggerHandle): void {
       // If anything in the logger fails, fall back to the original stderr.
       return origWrite(chunk, ...rest);
     }
+    // write(chunk, encoding?, cb?) — invoke the completion callback so callers
+    // (and piped streams) waiting on it don't hang forever.
+    const cb = rest[rest.length - 1];
+    if (typeof cb === "function") cb();
     return true;
   }) as typeof process.stderr.write;
 }

@@ -158,18 +158,6 @@ function setHooksPath(repoRoot: string, dataDir: string): void {
   }
 }
 
-/**
- * Restore core.hooksPath to .husky (the default).
- */
-function restoreHooksPath(repoRoot: string): void {
-  try {
-    execSync('git config core.hooksPath ".husky"', {
-      cwd: repoRoot,
-      stdio: "pipe",
-    });
-  } catch { /* ignore */ }
-}
-
 // ─── Display ─────────────────────────────────────────────────────────────────
 
 function showStatus(config: HooksConfig, repoName: string): void {

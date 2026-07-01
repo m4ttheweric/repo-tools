@@ -107,8 +107,7 @@ function detectInstalledEditors(): EditorOption[] {
 }
 
 // ─── Sync resolvers (no prompts) ────────────────────────────────────────────
-// These are the single source of truth for "can we resolve without a picker?"
-// Both the async entry point and willPrompt() call these — no drift possible.
+// The single source of truth for "can we resolve without a picker?"
 
 /**
  * Validates that a saved/known editor command can actually be launched.
@@ -282,23 +281,9 @@ async function pickWithCurrentUntracked(
   }
 
   const { pickWorktreeFromRepo } = await import("../lib/repo.ts");
-  return pickWorktreeFromRepo(selectedRepo, `${selectedRepo.repoName} worktrees`);
-}
-
-// ─── Picker pre-flight check ─────────────────────────────────────────────────
-
-/**
- * Returns true if opening `rt code` for the given directory would require
- * showing an interactive picker.
- *
- * Calls the same sync resolvers used by openInEditor — shared logic, no drift.
- */
-export function willPrompt(cwd: string): boolean {
-  const prefs = loadPrefs();
-  const repoName = cwd.split("/").pop() || "unknown";
-  if (resolveEditorSync(prefs, repoName) === null) return true;
-  if (resolveWorkspaceSync(cwd, prefs) === null) return true;
-  return false;
+  const wtPath = await pickWorktreeFromRepo(selectedRepo, `${selectedRepo.repoName} worktrees`);
+  if (!wtPath) process.exit(0); // Esc on worktree picker
+  return wtPath;
 }
 
 // ─── Editor launch (with app-bundle fallback) ───────────────────────────────

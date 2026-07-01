@@ -11,7 +11,7 @@
  *   - rt git restore (interactive restore from any backup)
  */
 
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -47,7 +47,7 @@ export function createBackup(operation: string, cwd: string): string {
     .replace(/\.\d+Z$/, "");
   const backupRef = `${BACKUP_PREFIX}${operation}/${branch}/${ts}`;
 
-  execSync(`git branch "${backupRef}"`, { cwd, stdio: "pipe" });
+  execFileSync("git", ["branch", backupRef], { cwd, stdio: "pipe" });
   return backupRef;
 }
 
@@ -97,7 +97,7 @@ export function listBackupsForBranch(cwd: string, branch: string): BackupBranch[
  * Performs a `git reset --hard <backup-ref>`.
  */
 export function restoreFromBackup(backupRef: string, cwd: string): void {
-  execSync(`git reset --hard "${backupRef}"`, { cwd, stdio: "pipe" });
+  execFileSync("git", ["reset", "--hard", backupRef], { cwd, stdio: "pipe" });
 }
 
 // ─── Cleanup ─────────────────────────────────────────────────────────────────

@@ -78,8 +78,16 @@ export async function openMR(): Promise<void> {
   const cmd = forge === "github" ? "gh pr view --web" : "glab mr view --web";
   try {
     execSync(cmd, { stdio: "pipe" });
-  } catch {
-    console.log(`  ${yellow}no open ${forge === "github" ? "PR" : "MR"} found for this branch${reset}\n`);
+  } catch (err) {
+    // Don't blame every failure on a missing MR — a missing/unauthenticated
+    // CLI fails the same way, so surface what the tool actually said.
+    console.log(`  ${yellow}no open ${forge === "github" ? "PR" : "MR"} found for this branch${reset}`);
+    const stderr =
+      err instanceof Error && "stderr" in err
+        ? String((err as Error & { stderr: unknown }).stderr).trim()
+        : "";
+    if (stderr) console.log(`  ${dim}${stderr.split("\n")[0]}${reset}`);
+    console.log("");
   }
 }
 

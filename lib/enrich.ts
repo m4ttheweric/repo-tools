@@ -307,6 +307,7 @@ async function fetchAndCache(
 
   // ── Step 1: Fetch GitLab MR data via glance-sdk (already batched) ──
   let mrMap = new Map<string, PullRequest | null>();
+  let mrFetchSucceeded = false;
 
   if (secrets.gitlabToken && remoteUrl && isGitLabRemote(remoteUrl)) {
     const remote = parseRemoteUrl(remoteUrl);
@@ -316,6 +317,7 @@ async function fetchAndCache(
         const branchNames = branches.map(b => b.branch).filter(b => b !== "");
         if (branchNames.length > 0) {
           mrMap = await provider.fetchPullRequestsByBranches(remote.projectPath, branchNames);
+          mrFetchSucceeded = true;
         }
       } catch { /* GitLab fetch failed — continue without MR data */ }
     }
@@ -346,25 +348,36 @@ async function fetchAndCache(
   )];
 
   let ticketMap = new Map<string, LinearTicket>();
+  let ticketFetchSucceeded = true;
   if (uniqueIds.length > 0 && secrets.linearApiKey) {
-    ticketMap = await fetchTicketsBatch(secrets.linearApiKey, uniqueIds);
+    try {
+      ticketMap = await fetchTicketsBatch(secrets.linearApiKey, uniqueIds);
+    } catch { ticketFetchSucceeded = false; }
   }
 
   // ── Step 4: Assemble results ──
+  // Mirrors refreshAllMRs: a failed (or skipped — missing secrets) fetch must
+  // preserve existing cache entries, not clobber them with nulls; and entries
+  // must keep their repoName, which rt status needs to bind MR actions.
   const results: EnrichedBranch[] = branches.map((b, idx) => {
     const dirName = b.path.split("/").pop() || b.path;
     const { linearId } = branchLinearIds[idx]!;
+    const existing = diskCache.entries[b.branch];
 
     const pr = mrMap.get(b.branch) ?? null;
-    const mr = pr ? toMRInfo(pr) : null;
-    const ticket = linearId ? (ticketMap.get(linearId.toUpperCase()) ?? null) : null;
+    const mr = mrFetchSucceeded ? (pr ? toMRInfo(pr) : null) : (existing?.mr ?? null);
+    const freshTicket = linearId ? (ticketMap.get(linearId.toUpperCase()) ?? null) : null;
+    const ticket = ticketFetchSucceeded && linearId
+      ? freshTicket
+      : (existing?.ticket ?? freshTicket);
 
     // Update disk cache
     diskCache.entries[b.branch] = {
       ticket,
-      linearId: linearId || "",
+      linearId: linearId || existing?.linearId || "",
       mr,
-      fetchedAt: Date.now(),
+      fetchedAt: mrFetchSucceeded ? Date.now() : (existing?.fetchedAt ?? Date.now()),
+      repoName: existing?.repoName,
     };
 
     return { path: b.path, dirName, branch: b.branch, linearId, ticket, mr };

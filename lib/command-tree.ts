@@ -195,6 +195,7 @@ export async function dispatch(
         process.chdir(repo.worktrees[0]!.path);
       } else {
         const selected = await pickWorktreeFromRepo(repo, `${repoFlag} worktrees`);
+        if (!selected) process.exit(0); // Esc on worktree picker
         process.chdir(selected);
       }
       ctx.identity = getRepoIdentity()!;

@@ -8,10 +8,11 @@
  *  - Can't delete the current branch
  *  - Can't delete default branches (main, master, develop, etc.)
  *  - Warns before deleting branches with open MRs
- *  - Dry-run by default; --force to actually delete
+ *  - --dry-run/-n previews without deleting
+ *  - --force/-f skips the open-MR warning and force-deletes (-D) directly
  */
 
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { bold, cyan, dim, green, yellow, red, reset, blue } from "../lib/tui.ts";
 import {
   listAllBranches,
@@ -46,7 +47,7 @@ function timeAgo(epochSec: number): string {
 function deleteBranch(cwd: string, branch: string, force: boolean): boolean {
   const flag = force ? "-D" : "-d";
   try {
-    execSync(`git branch ${flag} "${branch}"`, { cwd, stdio: "pipe" });
+    execFileSync("git", ["branch", flag, branch], { cwd, stdio: "pipe" });
     return true;
   } catch {
     return false;
@@ -186,7 +187,7 @@ export async function cleanBranches(args: string[], ctx: CommandContext): Promis
   console.log("");
   if (dryRun) {
     console.log(`  ${dim}dry run: ${deleted} branch${deleted !== 1 ? "es" : ""} would be deleted${reset}`);
-    console.log(`  ${dim}run with --force to delete${reset}`);
+    console.log(`  ${dim}re-run without --dry-run to delete${reset}`);
   } else {
     console.log(`  ${green}✓${reset} ${deleted} deleted${failed > 0 ? `  ${red}${failed} failed${reset}` : ""}`);
   }

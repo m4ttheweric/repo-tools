@@ -9,7 +9,7 @@
  * Uses the rt daemon for instant cache reads when available.
  */
 
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
 import { green, yellow, red, reset, bold, dim, cyan } from "../lib/tui.ts";
 import {
   loadSecrets,
@@ -61,14 +61,14 @@ export async function renameBranch(): Promise<void> {
   let defaultName = currentBranch;
   const linearId = extractLinearId(currentBranch);
   if (linearId) {
-    const secrets = loadSecrets();
-    if (secrets.linearApiKey) {
+    const linearApiKey = loadSecrets().linearApiKey;
+    if (linearApiKey) {
       const { withInlineSpinner } = await import("../lib/tui/inline-spinner.ts");
 
       try {
         const ticket = await withInlineSpinner(
           `looking up ticket ${linearId}…`,
-          () => fetchTicket(secrets.linearApiKey, linearId),
+          () => fetchTicket(linearApiKey, linearId),
         );
 
         if (ticket) {
@@ -102,7 +102,7 @@ export async function renameBranch(): Promise<void> {
   if (!newName.trim() || newName.trim() === currentBranch) return;
 
   try {
-    execSync(`git branch -m "${newName.trim()}"`, { cwd, stdio: "pipe" });
+    execFileSync("git", ["branch", "-m", newName.trim()], { cwd, stdio: "pipe" });
     console.log(`\n  ${green}✓${reset} renamed ${dim}${currentBranch}${reset} → ${bold}${newName.trim()}${reset}\n`);
     daemonQuery("cache:refresh").catch(() => {});
   } catch (err) {
@@ -262,7 +262,7 @@ export async function switchBranch(): Promise<void> {
       const remoteName = "origin";
       fetchRemoteBranch(cwd, remoteName, targetBranch);
       // checkout -b creates a local branch tracking the remote
-      execSync(`git checkout -b "${targetBranch}" "${remoteName}/${targetBranch}"`, {
+      execFileSync("git", ["checkout", "-b", targetBranch, `${remoteName}/${targetBranch}`], {
         cwd, stdio: "pipe",
       });
     } else {
@@ -377,11 +377,13 @@ async function createFromExistingTicket(apiKey: string): Promise<void> {
     const identity = getRepoIdentity();
     const namingConfig = identity ? loadBranchNamingConfig(identity.dataDir) : null;
     const branchName = await resolveBranchName(ticket, namingConfig);
-    if (opts.claim) claimTicket(apiKey, ticket.id, teamId).catch(() => {/* best-effort */});
 
     const finalName = await confirmBranchName(branchName);
     if (!finalName) return;
     await createWithBaseRef(finalName, ticket);
+    // Claim only after the branch actually exists — cancelling the name prompt
+    // must not reassign the ticket or move it to In Progress.
+    if (opts.claim) claimTicket(apiKey, ticket.id, teamId).catch(() => {/* best-effort */});
   }
 
   /** Live search across all of Linear; returns the picked ticket (any team/assignee/state) or null. */

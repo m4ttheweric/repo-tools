@@ -23,10 +23,10 @@
  *   3c. esc → abort
  */
 
-import { execSync, spawnSync } from "child_process";
+import { execSync, execFileSync, spawnSync } from "child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, unlinkSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { textInput } from "../lib/rt-render.tsx";
@@ -100,14 +100,27 @@ function fileLabel(f: ChangedFile): string {
   return `${icon}  ${f.path}`;
 }
 
-/** Discard working-tree changes via `git checkout HEAD -- <paths>`.
- *  This is the exact command GitHub Desktop uses
- *  (app/src/lib/git/checkout.ts:checkoutPaths). */
-function discardWorkingTreeChanges(cwd: string, paths: string[]): void {
-  execSync(
-    `git checkout HEAD -- ${paths.map((p) => JSON.stringify(p)).join(" ")}`,
-    { cwd, stdio: "pipe" },
+/** Discard changes. Tracked paths go through `git checkout HEAD -- <paths>` —
+ *  the exact command GitHub Desktop uses
+ *  (app/src/lib/git/checkout.ts:checkoutPaths). Untracked paths are unknown to
+ *  HEAD (checkout would fail on them), so they are deleted instead, matching
+ *  Desktop's discard behavior for new files. */
+function discardWorkingTreeChanges(cwd: string, files: ChangedFile[], paths: string[]): void {
+  const untracked = new Set(
+    files.filter((f) => f.rawStatus === "??").map((f) => f.path),
   );
+  const toCheckout = paths.filter((p) => !untracked.has(p));
+  const toDelete = paths.filter((p) => untracked.has(p));
+
+  if (toCheckout.length > 0) {
+    execFileSync("git", ["checkout", "HEAD", "--", ...toCheckout], {
+      cwd,
+      stdio: "pipe",
+    });
+  }
+  for (const p of toDelete) {
+    rmSync(join(cwd, p), { recursive: true, force: true });
+  }
 }
 
 /** Inline confirmation before discarding. Mirrors GitHub Desktop's
@@ -187,6 +200,7 @@ function buildPreviewCmd(
   writeFileSync(scriptPath, `#!/usr/bin/env bash\n${script}\n`, { mode: 0o755 });
 
   const cleanup = () => {
+    process.removeListener("exit", cleanup);
     try { unlinkSync(scriptPath); } catch { /* already gone — ignore */ }
   };
 
@@ -279,9 +293,10 @@ function runFilePicker(
 
   cleanupPreview();
 
-  // With --expect, fzf prints the exit key on the first line (empty string for enter).
-  // Subsequent lines are the selected items: "<xy>:<path>\t<label>"
-  const lines = result.stdout.trim().split("\n");
+  // With --expect, fzf prints the exit key on the first line (empty string for
+  // enter). Only strip the trailing newline — a full trim() would eat the empty
+  // key line and shift the first selected file into the exitKey slot.
+  const lines = result.stdout.replace(/\n$/, "").split("\n");
   const exitKey = lines[0] ?? "";
 
   const paths = lines
@@ -313,7 +328,10 @@ function syncStagingArea(
   const toUnstage: string[] = [];
 
   for (const f of allFiles) {
-    if (selectedPaths.has(f.path) && !f.isStaged) {
+    // hasUnstaged covers partially-staged files (e.g. "MM"): the file is
+    // already in the index, but its newest edits are not — GitHub Desktop
+    // commits the full file content for checked files, so re-add it.
+    if (selectedPaths.has(f.path) && (!f.isStaged || f.hasUnstaged)) {
       toAdd.push(f.path);
     } else if (!selectedPaths.has(f.path) && previouslyStaged.has(f.path)) {
       toUnstage.push(f.path);
@@ -321,17 +339,14 @@ function syncStagingArea(
   }
 
   if (toAdd.length > 0) {
-    execSync(`git add -- ${toAdd.map((p) => JSON.stringify(p)).join(" ")}`, {
-      cwd,
-      stdio: "pipe",
-    });
+    execFileSync("git", ["add", "--", ...toAdd], { cwd, stdio: "pipe" });
   }
 
   if (toUnstage.length > 0) {
-    execSync(
-      `git restore --staged -- ${toUnstage.map((p) => JSON.stringify(p)).join(" ")}`,
-      { cwd, stdio: "pipe" },
-    );
+    execFileSync("git", ["restore", "--staged", "--", ...toUnstage], {
+      cwd,
+      stdio: "pipe",
+    });
   }
 }
 
@@ -374,7 +389,16 @@ export async function commitFlow(_args: string[], ctx: CommandContext): Promise<
         continue;
       }
 
-      discardWorkingTreeChanges(cwd, result.paths);
+      try {
+        discardWorkingTreeChanges(cwd, files, result.paths);
+      } catch (err) {
+        const stderr =
+          err instanceof Error && "stderr" in err
+            ? String((err as Error & { stderr: unknown }).stderr)
+            : String(err);
+        process.stderr.write(`  \x1b[31mdiscard failed:\x1b[0m ${stderr.trim()}\n`);
+        continue;
+      }
       const label = result.paths.length === 1 ? result.paths[0] : `${result.paths.length} files`;
       process.stderr.write(`  \x1b[32mdiscarded\x1b[0m ${label}\n`);
       // Loop back — next iteration rebuilds the file list from fresh git status
@@ -402,7 +426,8 @@ export async function commitFlow(_args: string[], ctx: CommandContext): Promise<
     });
 
     if (!message.trim()) {
-      // User submitted empty message — unstage everything we just staged and abort
+      // User submitted empty message — abort without committing. The staging
+      // changes from step 4 are left in place (index now matches the selection).
       process.stderr.write("\n  \x1b[33mempty message — commit aborted\x1b[0m\n\n");
       process.exit(0);
     }

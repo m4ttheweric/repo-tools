@@ -89,7 +89,7 @@ describe("saveLlmConfig", () => {
 });
 
 describe("llmPrompt", () => {
-  test("calls Ollama /api/generate with correct payload", async () => {
+  test("calls Ollama /api/chat with correct payload", async () => {
     const { saveLlmConfig } = await import("../llm.ts");
     saveLlmConfig({
       url: "http://localhost:12345",
@@ -106,7 +106,7 @@ describe("llmPrompt", () => {
         JSON.stringify({ message: { content: "hello from llm" } }),
         { status: 200 },
       );
-    });
+    }) as unknown as typeof fetch;
 
     try {
       const { llmPrompt } = await import("../llm.ts");
@@ -150,7 +150,7 @@ describe("llmPrompt", () => {
     const origFetch = globalThis.fetch;
     globalThis.fetch = mock(async () =>
       new Response(JSON.stringify({ message: { content: "" } }), { status: 200 }),
-    );
+    ) as unknown as typeof fetch;
     try {
       const { llmPrompt } = await import("../llm.ts");
       await expect(llmPrompt("s", "u")).rejects.toThrow("empty response");
@@ -176,7 +176,7 @@ describe("listOllamaModels", () => {
         );
       }
       return new Response("not found", { status: 404 });
-    });
+    }) as unknown as typeof fetch;
     try {
       const { listOllamaModels } = await import("../llm.ts");
       const models = await listOllamaModels("http://localhost:11434");

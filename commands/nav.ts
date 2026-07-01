@@ -68,8 +68,10 @@ async function pickOpenWith(target: string, kind: ItemKind): Promise<boolean> {
   const result = await runNavPicker({
     options, message: `Open ${name} with`, header: "esc: cancel", expectKeys: [],
   });
-  if (!result) return false;
-  const { value: app } = result;
+  // ctrl-up is always in fzf's --expect (it means "back" everywhere in rt) —
+  // treat it as cancel here, not as accepting the highlighted row.
+  if (!result || !result.value || result.key === "ctrl-up") return false;
+  const app = result.value;
 
   spawnSync(app, [target], { stdio: "inherit" });
   return true;
@@ -92,7 +94,8 @@ async function runActionMenu(target: string, kind: ItemKind): Promise<{ exit: bo
   const result = await runNavPicker({
     options, message: `Actions for ${name}`, header: "esc: cancel", expectKeys: [],
   });
-  if (!result) return { exit: false };
+  // ctrl-up means "back", not "run the highlighted action" (see pickOpenWith).
+  if (!result || result.key === "ctrl-up") return { exit: false };
   const { value: action } = result;
 
   switch (action) {

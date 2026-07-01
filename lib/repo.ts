@@ -210,8 +210,9 @@ export async function pickWorktree(prompt: string): Promise<string> {
 
 /**
  * Pick a worktree from a specific repo (enriched with Linear ticket info).
+ * Returns null when the picker is cancelled (Esc / Ctrl-C).
  */
-export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string, opts?: { backLabel?: string }): Promise<string> {
+export async function pickWorktreeFromRepo(repo: KnownRepo, prompt?: string, opts?: { backLabel?: string }): Promise<string | null> {
   const { filterableSelect } = await import("./rt-render.tsx");
   const { enrichBranches, formatBranchLabel } = await import("./enrich.ts");
 
@@ -386,7 +387,9 @@ export function getWorkspacePackages(repoRoot: string): WorkspacePackage[] {
   const packages: WorkspacePackage[] = [];
 
   for (const entry of entries) {
-    const baseDir = entry.replace("/*", "").replace("/**", "");
+    // Strip "/**" before "/*" — the shorter pattern would otherwise eat the
+    // first two chars of "/**" (e.g. "packages/**" → "packages*").
+    const baseDir = entry.replace("/**", "").replace("/*", "");
     const fullDir = join(repoRoot, baseDir);
 
     if (!existsSync(fullDir)) continue;

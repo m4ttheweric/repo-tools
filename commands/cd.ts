@@ -161,8 +161,12 @@ export async function worktreePicker(args: string[]): Promise<void> {
   }
 
   // After any picker exits (ESC or selection), cursor is just below the 2-line
-  // header. Erase it so the terminal is clean.
-  process.once("exit", () => process.stderr.write("\x1b[2A\x1b[0J"));
+  // header. Erase it so the terminal is clean — but only on success: error
+  // paths exit(1) after printing a message ("no worktree found matching …"),
+  // and the erase would wipe exactly those two lines.
+  process.once("exit", (code) => {
+    if (code === 0) process.stderr.write("\x1b[2A\x1b[0J");
+  });
 
   // ── Parse flags ─────────────────────────────────────────────────────────────────────
   const forceRepo    = args.includes("--repo");
@@ -198,6 +202,7 @@ export async function worktreePicker(args: string[]): Promise<void> {
       const pickedRepoName = repos.length === 1
         ? repos[0]!.repoName
         : await filterableSelect({ message: "Pick a repo", options: repoOptions, stderr: true });
+      if (!pickedRepoName) process.exit(0); // Esc on repo picker
       const pickedRepo = repos.find((r) => r.repoName === pickedRepoName)!;
 
       // Try to resolve the worktree in that repo; fall back to picker

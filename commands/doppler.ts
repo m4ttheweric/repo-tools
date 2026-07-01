@@ -188,8 +188,13 @@ export async function editCommand(
     process.exit(1);
   }
 
-  const editor = process.env.EDITOR || "vi";
-  const result = spawnSync(editor, [path], { stdio: "inherit" });
+  // EDITOR commonly carries flags (e.g. "code --wait") — split into argv.
+  const [editor = "vi", ...editorArgs] = (process.env.EDITOR || "vi").split(/\s+/);
+  const result = spawnSync(editor, [...editorArgs, path], { stdio: "inherit" });
+  if (result.error) {
+    console.log(`\n  ${yellow}could not launch editor "${editor}": ${result.error.message}${reset}\n`);
+    process.exit(1);
+  }
   if (result.status !== 0) {
     console.log(`\n  ${yellow}editor exited with status ${result.status}${reset}\n`);
     process.exit(result.status ?? 1);
