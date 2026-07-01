@@ -33,6 +33,7 @@ export { withInlineSpinner } from "./inline-spinner.ts";
 
 // ─── Hooks (Ink / React only) ─────────────────────────────────────────────────
 export { useSpinnerFrame } from "./hooks/use-spinner.ts";
+export { useTerminalWidth } from "./hooks/use-terminal-width.ts";
 export { useToast, type ToastController } from "./hooks/use-toast.ts";
 export { createSafeUpdater } from "./hooks/use-safe-update.ts";
 

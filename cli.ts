@@ -274,7 +274,7 @@ const TREE: Record<string, CommandNode> = {
 
   status: {
     description: "Live branch dashboard with MR actions, pipeline & review status",
-    module: "./commands/status.tsx",
+    module: "./commands/status/index.tsx",
     fn: "showStatus",
     context: "repo",
     fullscreen: true,
