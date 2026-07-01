@@ -47,6 +47,7 @@ import {
   type LaunchItem,
 } from "../lib/herdr-launch.ts";
 import { findPreset, loadPresets, savePreset, type Preset } from "../lib/run-presets.ts";
+import { navSeparator } from "../lib/navigate.ts";
 
 const LAST_RUN_SENTINEL = "__rt:last-run__";
 
@@ -202,7 +203,7 @@ async function selectPackageAndScript(
             hint: "",
             color: toAnsiFg(T.mint),
           });
-          queueOptions.push({ value: "__rt:sep1__", label: "──────────────", hint: "" });
+          queueOptions.push(navSeparator());
         }
 
         // ── Saved presets (shown above packages, only outside an active queue) ──
@@ -215,7 +216,7 @@ async function selectPackageAndScript(
                 hint: p.entries.map((e) => `${e.packageLabel}:${e.script}`).join(" + "),
                 color: yellow,
               })),
-              { value: "__rt:sep3__", label: "──────────────", hint: "" },
+              navSeparator(),
             ]
           : [];
 
@@ -264,12 +265,6 @@ async function selectPackageAndScript(
           headerParts: queueHeaderParts,
           expectKeys: q.length > 0 ? ["ctrl-x"] : [],
           initialPos: cursorPos,
-          extraArgs: q.length > 0
-            ? [
-                "--bind", "down:down+transform:[[ {1} == __rt:sep* ]] && echo down",
-                "--bind", "up:up+transform:[[ {1} == __rt:sep* ]] && echo up",
-              ]
-            : [],
         });
 
         if (!pkgResult) process.exit(1);
@@ -286,13 +281,8 @@ async function selectPackageAndScript(
         // ── Sentinel handling ──────────────────────────────────────────────
         const val = pkgResult.value ?? "";
 
-        // Queued/separator rows are display-only -- re-show with cursor past them
-        if (val.startsWith(QUEUED_PREFIX) || val === "__rt:sep1__" || val === "__rt:sep3__") {
-          const hitIdx = allPkgOptions.findIndex((o) => o.value === val);
-          const nextReal = allPkgOptions.findIndex(
-            (o, i) => i > hitIdx && !o.value.startsWith(QUEUED_PREFIX) && o.value !== "__rt:sep1__" && o.value !== "__rt:sep3__",
-          );
-          cursorPos = nextReal >= 0 ? nextReal + 1 : null;
+        // Queued item rows are display-only -- re-show picker
+        if (val.startsWith(QUEUED_PREFIX)) {
           cameFromScript = true;
           continue;
         }
