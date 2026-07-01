@@ -12,9 +12,9 @@
  */
 
 import { existsSync, readdirSync } from "fs";
-import { execSync } from "child_process";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 import type { PortEntry } from "../../port-scanner.ts";
+import { listWorktrees } from "../../git-worktrees.ts";
 import { drainNotifications, peekNotifications } from "../../notifier.ts";
 
 export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
@@ -100,30 +100,8 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
 
       for (const [repoName, repoPath] of Object.entries(repos)) {
         if (!existsSync(repoPath)) continue;
-
-        const worktrees: Array<{ path: string; branch: string }> = [];
-        try {
-          const output = execSync("git worktree list --porcelain", {
-            cwd: repoPath, encoding: "utf8", stdio: "pipe",
-          });
-          let currentPath = "";
-          let currentBranch = "";
-          for (const line of output.split("\n")) {
-            if (line.startsWith("worktree ")) {
-              if (currentPath && currentBranch) {
-                worktrees.push({ path: currentPath, branch: currentBranch });
-              }
-              currentPath = line.replace("worktree ", "").trim();
-              currentBranch = "";
-            } else if (line.startsWith("branch ")) {
-              currentBranch = line.replace("branch refs/heads/", "").trim();
-            }
-          }
-          if (currentPath && currentBranch) {
-            worktrees.push({ path: currentPath, branch: currentBranch });
-          }
-        } catch { /* git command failed */ }
-
+        // Detached worktrees have no branch — omit them from the listing.
+        const worktrees = listWorktrees(repoPath).filter((w) => w.branch);
         detailed[repoName] = { path: repoPath, worktrees };
       }
 

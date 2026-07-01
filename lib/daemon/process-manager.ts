@@ -157,7 +157,15 @@ export class ProcessManager {
     // Signal the whole pgroup so any grandchildren go with it.
     const existing = this.processes.get(id);
     if (existing) {
-      killGroup(existing.proc.pid, "SIGKILL");
+      try {
+        killGroup(existing.proc.pid, "SIGKILL");
+      } catch (err) {
+        // macOS returns EPERM for a pgroup whose only member is a zombie
+        // (child exited but not yet reaped). Signal the child directly —
+        // a no-op if it's already gone — instead of failing the spawn.
+        try { existing.proc.kill(9); } catch { /* already gone */ }
+        log.debug({ err, id }, "spawn: pgroup kill failed; direct-signalled child");
+      }
       this.processes.delete(id);
     }
 
@@ -266,11 +274,26 @@ export class ProcessManager {
     // Signal the whole pgroup, not just the immediate child — otherwise
     // grandchildren (webpack/vite workers spawned by the user's dev command)
     // survive as orphans reparented to pid 1 and keep holding their ports.
-    killGroup(managed.proc.pid, "SIGTERM");
+    try {
+      killGroup(managed.proc.pid, "SIGTERM");
+    } catch (err) {
+      // macOS returns EPERM for a pgroup whose only member is a zombie (the
+      // child exited between our state check and the signal). Signal the
+      // child directly instead of throwing — the exited await below resolves
+      // immediately in that case.
+      try { managed.proc.kill("SIGTERM"); } catch { /* already gone */ }
+      log.debug({ err, id }, "kill: pgroup signal failed; direct-signalled child");
+    }
 
-    // Fallback SIGKILL after 5 seconds — also pgroup-scoped.
+    // Fallback SIGKILL after 5 seconds — also pgroup-scoped. Runs inside a
+    // timer, so a pgroup-signal failure must be caught here (it would
+    // otherwise surface as an uncaught exception, not a rejected kill()).
     const killTimeout = setTimeout(() => {
-      killGroup(managed.proc.pid, "SIGKILL");
+      try {
+        killGroup(managed.proc.pid, "SIGKILL");
+      } catch {
+        try { managed.proc.kill(9); } catch { /* already gone */ }
+      }
     }, 5000);
 
     await managed.proc.exited;

@@ -7,7 +7,7 @@
  */
 
 import type { HandlerContext, HandlerMap } from "./types.ts";
-import type { LaneConfig } from "../../runner-store.ts";
+import type { LaneConfig } from "../lane-config.ts";
 
 export function createTunnelHandlers(ctx: HandlerContext): HandlerMap {
   return {

@@ -15,8 +15,8 @@
 import { writeFileSync, mkdirSync } from "fs";
 import { dirname } from "path";
 import type { ProcessManager } from "./process-manager.ts";
-import type { LaneConfig } from "../runner-store.ts";
-import { loadTunnelConfig, runtimeYamlPath } from "../tunnel-config.ts";
+import type { LaneConfig } from "./lane-config.ts";
+import { loadTunnelConfig, runtimeYamlPath, hostnameFor } from "../tunnel-config.ts";
 import { generateIngressYaml } from "../tunnel-ingress.ts";
 import { getDaemonLogger } from "../daemon-logger.ts";
 const log = (await getDaemonLogger()).childLogger("tunnel");
@@ -81,8 +81,7 @@ export class TunnelManager {
       log.info(`spawned cloudflared for board ${boardName}`);
     }
 
-    this.lastHostnames.set(boardName, enabledLanes.map((l) =>
-      `${cfg.hostnamePrefix}${l.canonicalPort}.${cfg.baseDomain}`));
+    this.lastHostnames.set(boardName, enabledLanes.map((l) => hostnameFor(cfg, l.canonicalPort)));
   }
 
   async status(boardName: string): Promise<TunnelStatus> {

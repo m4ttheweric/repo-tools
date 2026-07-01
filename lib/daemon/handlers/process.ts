@@ -19,7 +19,7 @@
 
 import { existsSync } from "fs";
 import type { HandlerContext, HandlerMap } from "./types.ts";
-import { proxyWindowName } from "../../runner-store.ts";
+import { proxyWindowName } from "../lane-config.ts";
 import { diag } from "../../diag-log.ts";
 import { listWorktrees } from "../../git-worktrees.ts";
 import { buildProcessRecords } from "../process-records.ts";
