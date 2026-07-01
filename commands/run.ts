@@ -314,8 +314,9 @@ async function selectPackageAndScript(
           continue;
         }
 
-        // Save as preset then launch
+        // Save as preset, then ask whether to run it now
         if (val === SAVE_PRESET_SENTINEL && dataDir) {
+          const { confirm } = await import("../lib/rt-render.tsx");
           const name = await textInput({
             message: "Preset name",
             placeholder: "e.g. backend-lite",
@@ -332,9 +333,17 @@ async function selectPackageAndScript(
                 command: qi.variationName ? qi.command : undefined,
               })),
             });
-            process.stderr.write(`  ${green}✓${reset} ${dim}saved preset "${name}"${reset}\n`);
+            process.stderr.write(`  ${green}✓${reset} ${dim}saved preset "${name}"${reset}\n\n`);
+            const runNow = await confirm({
+              message: `Run "${name}" now?`,
+              initialValue: true,
+              stderr: true,
+            });
+            if (runNow) return QUEUE_LAUNCHED;
           }
-          return QUEUE_LAUNCHED;
+          // User cancelled name or declined to run -- back to picker
+          cameFromScript = true;
+          continue;
         }
 
         packagePath = pkgResult.value!;
