@@ -15,12 +15,17 @@ import { T, toHex } from "./tui/palette.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
+/** Sentinel value prefix for separator options. */
+export const NAV_SEPARATOR_PREFIX = "__nav:sep:";
+
 export interface NavOption {
   value: string;
   label: string;
   hint?: string;
   /** Optional ANSI SGR color escape (e.g. "\x1b[36m") applied to label + hint. */
   color?: string;
+  /** Marks this option as a visual separator. The cursor skips over it and selecting it re-shows the picker. */
+  separator?: boolean;
 }
 
 export interface NavResult {
@@ -62,6 +67,12 @@ export interface NavPickerOpts {
    * returns null.
    */
   captureQueryOnNoMatch?: boolean;
+}
+
+/** Create a separator NavOption. The value is auto-generated; the cursor auto-skips it. */
+let sepCounter = 0;
+export function navSeparator(label = "──────────────"): NavOption {
+  return { value: `${NAV_SEPARATOR_PREFIX}${sepCounter++}__`, label, hint: "", separator: true };
 }
 
 // ─── Input builder ──────────────────────────────────────────────────────────
@@ -128,6 +139,12 @@ export function buildNavArgs(opts: NavPickerOpts): string[] {
     `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}${opts.colorOverrides ?? ""}`,
     ...(opts.initialQuery ? [`--query=${opts.initialQuery}`] : []),
     ...(opts.exact ? ["--exact"] : []),
+    ...(opts.options.some((o) => o.separator)
+      ? [
+          "--bind", `down:down+transform:[[ {1} == ${NAV_SEPARATOR_PREFIX}* ]] && echo down`,
+          "--bind", `up:up+transform:[[ {1} == ${NAV_SEPARATOR_PREFIX}* ]] && echo up`,
+        ]
+      : []),
     ...(opts.extraArgs ?? []),
   ];
 }
@@ -194,36 +211,52 @@ export async function runNavPicker(
 ): Promise<NavResult | null> {
   ensureFzf();
 
-  const input = formatNavInput(opts.options);
-  const args = buildNavArgs(opts);
+  let currentPos = opts.initialPos ?? null;
 
-  // Resolve cursor position: resumeValue wins over initialPos
-  const cursorPos =
-    (opts.resumeValue
-      ? findResumePosition(opts.options, opts.initialQuery ?? "", opts.resumeValue)
-      : null) ?? opts.initialPos ?? null;
+  // Retry loop: if the user selects a separator, re-show with cursor past it
+  while (true) {
+    const input = formatNavInput(opts.options);
+    const args = buildNavArgs(opts);
 
-  if (cursorPos !== null) {
-    args.push(`--bind=load:pos(${cursorPos})`);
-  }
+    // Resolve cursor position: resumeValue wins over initialPos/currentPos
+    const cursorPos =
+      (opts.resumeValue
+        ? findResumePosition(opts.options, opts.initialQuery ?? "", opts.resumeValue)
+        : null) ?? currentPos ?? null;
 
-  const result = spawnSync("fzf", args, {
-    input,
-    stdio: ["pipe", "pipe", "inherit"],
-    encoding: "utf8",
-  });
-
-  if (result.status !== 0) {
-    // Exit 1 = "no match": the user typed a query nothing matched and pressed
-    // Enter. --print-query still emits the query on stdout, so callers that opt
-    // in can fall back to a live search on the typed text. Esc/Ctrl-C is 130.
-    if (opts.captureQueryOnNoMatch && result.status === 1) {
-      return parseNavOutput(result.stdout ?? "");
+    if (cursorPos !== null) {
+      args.push(`--bind=load:pos(${cursorPos})`);
     }
-    return null;
-  }
 
-  return parseNavOutput(result.stdout ?? "");
+    const result = spawnSync("fzf", args, {
+      input,
+      stdio: ["pipe", "pipe", "inherit"],
+      encoding: "utf8",
+    });
+
+    if (result.status !== 0) {
+      if (opts.captureQueryOnNoMatch && result.status === 1) {
+        return parseNavOutput(result.stdout ?? "");
+      }
+      return null;
+    }
+
+    const parsed = parseNavOutput(result.stdout ?? "");
+
+    // If a separator was selected, re-show with cursor on the next real item
+    if (parsed.value?.startsWith(NAV_SEPARATOR_PREFIX)) {
+      const hitIdx = opts.options.findIndex((o) => o.value === parsed.value);
+      const nextReal = opts.options.findIndex(
+        (o, i) => i > hitIdx && !o.separator,
+      );
+      currentPos = nextReal >= 0 ? nextReal + 1 : null;
+      // Clear resumeValue so it doesn't override our computed position
+      opts = { ...opts, resumeValue: undefined };
+      continue;
+    }
+
+    return parsed;
+  }
 }
 
 // ─── Navigation path tracker ────────────────────────────────────────────────
