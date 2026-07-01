@@ -202,6 +202,7 @@ async function selectPackageAndScript(
               hint: "",
             });
           }
+          queueOptions.push({ value: "__rt:sep1__", label: "──────────────", hint: "" });
         }
 
         // ── Saved presets (shown above packages, only outside an active queue) ──
@@ -280,7 +281,7 @@ async function selectPackageAndScript(
         const val = pkgResult.value ?? "";
 
         // Queued item rows are display-only -- re-show picker
-        if (val.startsWith(QUEUED_PREFIX) || val === "__rt:sep3__") {
+        if (val.startsWith(QUEUED_PREFIX) || val === "__rt:sep1__" || val === "__rt:sep3__") {
           cameFromScript = true;
           continue;
         }
