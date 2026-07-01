@@ -38,6 +38,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         startPolling()
         setupAutoUpdate()
 
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showProcessPanel),
+            name: .showProcessPanel,
+            object: nil
+        )
+
         // Register the daemon as a LaunchAgent. Idempotent — if already
         // registered, this is a no-op. If the user hasn't approved it yet,
         // status flips to .requiresApproval and the menu surfaces a prompt.
@@ -479,7 +486,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let health: DaemonHealth = status.pendingNotifications > 0 ? .warning : .healthy
+        var health: DaemonHealth = status.pendingNotifications > 0 ? .warning : .healthy
+
+        // Check for runaway processes — shift to warning if any detected
+        if let procData = await daemonClient.querySystemProcesses() {
+            let hasRunaway = procData.processes.contains { $0.isRunaway }
+            if hasRunaway {
+                health = .warning
+            }
+        }
+
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.lastDaemonStatus = status

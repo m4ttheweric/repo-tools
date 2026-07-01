@@ -46,10 +46,10 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             options: [.foreground, .destructive]
         )
 
-        let killProcess = UNNotificationAction(
-            identifier: "KILL_PROCESS",
-            title: "Kill Process",
-            options: .destructive
+        let showProcesses = UNNotificationAction(
+            identifier: "SHOW_PROCESSES",
+            title: "Show Processes",
+            options: .foreground
         )
 
         let categories: [UNNotificationCategory] = [
@@ -95,7 +95,12 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             ),
             UNNotificationCategory(
                 identifier: "stale_port",
-                actions: [killProcess],
+                actions: [showProcesses],
+                intentIdentifiers: []
+            ),
+            UNNotificationCategory(
+                identifier: "runaway_process",
+                actions: [showProcesses],
                 intentIdentifiers: []
             ),
         ]
@@ -120,7 +125,7 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         switch category {
         case "pipeline_passed", "mr_approved", "mr_merged", "mr_ready":
             base = "positive"
-        case "pipeline_failed", "mr_closed", "merge_conflicts", "merge_error":
+        case "pipeline_failed", "mr_closed", "merge_conflicts", "merge_error", "runaway_process":
             base = "warning"
         default:
             base = "neutral"
@@ -209,10 +214,8 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 NSWorkspace.shared.open(urlObj)
             }
 
-        case "KILL_PROCESS":
-            // TODO: Extract PID from notification and kill it
-            // For now, just dismiss
-            NSLog("rt-tray: kill process action — not yet implemented")
+        case "SHOW_PROCESSES":
+            NotificationCenter.default.post(name: .showProcessPanel, object: nil)
 
         default:
             break
@@ -220,4 +223,10 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
         completionHandler()
     }
+}
+
+// MARK: - Notification.Name
+
+extension Notification.Name {
+    static let showProcessPanel = Notification.Name("showProcessPanel")
 }
