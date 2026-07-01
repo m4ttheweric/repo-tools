@@ -21,8 +21,8 @@ export function isInsideHerdr(): boolean {
 function getSelfPaneId(): string {
   const raw = execSync("herdr pane list", { encoding: "utf8", stdio: "pipe" });
   const parsed = JSON.parse(raw);
-  const panes: Array<{ pane_id: string; is_focused: boolean }> = parsed.result?.panes ?? parsed.panes ?? [];
-  const focused = panes.find((p) => p.is_focused);
+  const panes: Array<{ pane_id: string; focused: boolean }> = parsed.result?.panes ?? parsed.panes ?? [];
+  const focused = panes.find((p) => p.focused);
   if (!focused) throw new Error("Could not determine focused herdr pane");
   return focused.pane_id;
 }
