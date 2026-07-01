@@ -162,6 +162,10 @@ function getAllRepoPids(repos: Record<string, string>): Map<number, string> {
         const cwd = line.slice(1);
         if (repoPaths.some(rp => cwd === rp || cwd.startsWith(rp + "/"))) {
           cwdMap.set(currentPid, cwd);
+        } else if (repoPaths.some(rp =>
+          rp.startsWith(cwd + "/") && rp.slice(cwd.length + 1).split("/").length <= 2
+        )) {
+          cwdMap.set(currentPid, cwd);
         }
       }
     }
