@@ -5,7 +5,7 @@
  *
  * Source:
  *   - commands/runner.tsx entryCommandLabel, rowBg (lines 1027-1032, 1055)
- *   - commands/status.tsx truncate, rpad, lpad, timeAgo (lines 90-104, 384-390)
+ *   - commands/status truncate, rpad, lpad, timeAgo
  */
 
 import { C } from "../theme.ts";

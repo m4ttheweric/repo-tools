@@ -26,7 +26,7 @@ import * as reset from "../commands/git/reset.ts";
 import * as backup from "../commands/git/backup.ts";
 import * as pull from "../commands/git/pull.ts";
 import * as push from "../commands/git/push.ts";
-import * as status from "../commands/status.tsx";
+import * as status from "../commands/status/index.tsx";
 import * as cd from "../commands/cd.ts";
 import * as code from "../commands/code.ts";
 import * as version from "../commands/version.ts";
@@ -56,7 +56,7 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/git/backup.ts": backup,
   "./commands/git/pull.ts": pull,
   "./commands/git/push.ts": push,
-  "./commands/status.tsx": status,
+  "./commands/status/index.tsx": status,
   "./commands/cd.ts": cd,
   "./commands/code.ts": code,
   "./commands/version.ts": version,
