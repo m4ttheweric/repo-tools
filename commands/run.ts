@@ -189,12 +189,6 @@ async function selectPackageAndScript(
               hint: "",
             });
           }
-          queueOptions.push({
-            value: LAUNCH_ALL_SENTINEL,
-            label: `Launch all (${q.length} queued)`,
-            hint: "",
-            color: toAnsiFg(T.mint),
-          });
           if (q.length >= 2) {
             queueOptions.push({
               value: SAVE_PRESET_SENTINEL,
@@ -202,6 +196,12 @@ async function selectPackageAndScript(
               hint: "",
             });
           }
+          queueOptions.push({
+            value: LAUNCH_ALL_SENTINEL,
+            label: `Launch all (${q.length} queued)`,
+            hint: "",
+            color: toAnsiFg(T.mint),
+          });
           queueOptions.push({ value: "__rt:sep1__", label: "──────────────", hint: "" });
         }
 
