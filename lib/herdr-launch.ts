@@ -27,9 +27,16 @@ function getSelfPaneId(): string {
   return focused.pane_id;
 }
 
+function pickSplitDirection(): "right" | "down" {
+  const cols = process.stdout.columns ?? 80;
+  const rows = process.stdout.rows ?? 24;
+  return cols >= rows * 2 ? "right" : "down";
+}
+
 function splitPane(parentPaneId: string): string {
+  const direction = pickSplitDirection();
   const raw = execSync(
-    `herdr pane split ${parentPaneId} --direction right --no-focus`,
+    `herdr pane split ${parentPaneId} --direction ${direction} --no-focus`,
     { encoding: "utf8", stdio: "pipe" },
   );
   const parsed = JSON.parse(raw);
