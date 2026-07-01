@@ -170,6 +170,14 @@ export async function startInteractive(
     ...opts.env,
   };
 
+  // Termwright doesn't propagate cwd to the child process. Wrap the
+  // command in `bash -c 'cd <cwd> && exec <binary> ...'` so the child
+  // starts in the right directory.
+  const rtCmd = [RT_BINARY, ...opts.args]
+    .map((a) => `'${a.replace(/'/g, "'\\''")}'`)
+    .join(" ");
+  const wrappedCmd = `cd '${cwd}' && exec ${rtCmd}`;
+
   const proc = Bun.spawn(
     [
       TERMWRIGHT,
@@ -181,8 +189,9 @@ export async function startInteractive(
       "--rows",
       String(rows),
       "--",
-      RT_BINARY,
-      ...opts.args,
+      "bash",
+      "-c",
+      wrappedCmd,
     ],
     {
       env,

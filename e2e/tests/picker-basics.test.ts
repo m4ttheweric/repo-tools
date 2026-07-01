@@ -45,11 +45,12 @@ describe("picker basics", () => {
     await session.waitForIdle();
     await session.press("Enter");
 
-    // "mr" is a branch node -- its picker shows open/describe/ship
-    await session.waitForText("open", 5000);
+    // "mr" is a branch node -- its picker shows open/describe/ship.
+    // Wait for "ship" specifically since "open" also appears in the
+    // top-level picker and could match during the transition.
+    await session.waitForText("ship", 5000);
     const screen = await session.screen();
     expect(screen).toContain("describe");
-    expect(screen).toContain("ship");
     expect(screen).not.toContain("version");
   }, 15_000);
 
