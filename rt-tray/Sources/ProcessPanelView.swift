@@ -293,6 +293,7 @@ struct ProcessRowView: View {
     }
 
     private func killProcess(_ pid: Int, force: Bool = false) {
+        guard pid > 1 else { return }
         let signal: Int32 = force ? SIGKILL : SIGTERM
         // Kill the process group (same pattern as ProcessManager.killGroup)
         let pgid = -Int32(pid)
