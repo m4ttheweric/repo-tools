@@ -472,7 +472,7 @@ function startWatchingRepo(repoName: string, repoPath: string): void {
   });
 
   watchedConfigs.set(configPath, watcher);
-  log.info({ repo: repoName, file: `${gitDir}/${configFile}` }, "watching repo");
+  log.debug({ repo: repoName, file: `${gitDir}/${configFile}` }, "watching repo");
 
   // Initial check
   checkAndRepairHooksPath(repoName, repoPath);
@@ -492,7 +492,7 @@ function refreshPortCache(): void {
   try {
     portCacheRef.ports = scanListeningPorts();
     portCacheRef.updatedAt = Date.now();
-    log.info({ count: portCacheRef.ports.length }, "ports scanned");
+    log.debug({ count: portCacheRef.ports.length }, "ports scanned");
 
     // Broadcast to WebSocket clients
     broadcast("ports", { ports: portCacheRef.ports, updatedAt: portCacheRef.updatedAt });

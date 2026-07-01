@@ -26,7 +26,17 @@ class UpdateChecker {
 
     // MARK: - Public
 
+    var isDevBuild: Bool {
+        #if DEBUG
+        return true
+        #else
+        return currentVersion == "dev"
+        #endif
+    }
+
     func startPeriodicChecks() {
+        if isDevBuild { return }
+
         // Initial check after 30s (don't slow launch)
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
             self?.checkForUpdates()

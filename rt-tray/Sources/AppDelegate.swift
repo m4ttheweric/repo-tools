@@ -410,8 +410,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showProcessPanel() {
         if processPopover == nil {
             let popover = NSPopover()
+            popover.contentSize = NSSize(width: 700, height: 500)
             popover.contentViewController = NSHostingController(rootView: ProcessPanelView())
             popover.behavior = .transient
+            popover.delegate = self
             processPopover = popover
         }
 
@@ -419,10 +421,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if popover.isShown {
                 popover.performClose(nil)
             } else if let button = statusItem.button {
-                // Close the menu first, then show the popover
                 statusMenu.cancelTracking()
-                DispatchQueue.main.async {
+                // Detach menu so it doesn't reopen over the popover
+                statusItem.menu = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    guard let self, let button = self.statusItem.button else { return }
+                    NSApp.activate(ignoringOtherApps: true)
                     popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                    popover.contentViewController?.view.window?.makeKey()
                 }
             }
         }
@@ -442,6 +448,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let item = statusMenu.item(withTag: 300) {
             item.title = "Update Available: \(release.tagName)"
         }
+
+        if updateChecker.isDevBuild { return }
 
         // Fire native notification — sound is played manually so the
         // category→sound mapping stays in one place (NotificationManager).
@@ -472,11 +480,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var isRefreshing = false
+
     private func refreshStatus() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
         guard let status = await daemonClient.queryTrayStatus() else {
-            // Don't overwrite "starting" with "down" during startup.
-            // Dispatch to main — NSMenu/NSMenuItem must only be touched on the main thread,
-            // and this async func may resume on the cooperative thread pool after its await.
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 if self.currentHealth != .starting {
@@ -488,10 +499,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         var health: DaemonHealth = status.pendingNotifications > 0 ? .warning : .healthy
 
-        // Check for runaway processes — shift to warning if any detected
         if let procData = await daemonClient.querySystemProcesses() {
-            let hasRunaway = procData.processes.contains { $0.isRunaway }
-            if hasRunaway {
+            if procData.processes.contains(where: { $0.isRunaway }) {
                 health = .warning
             }
         }
@@ -539,6 +548,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hours = minutes / 60
         let remainingMinutes = minutes % 60
         return "\(hours)h \(remainingMinutes)m"
+    }
+}
+
+// MARK: - NSPopoverDelegate
+
+extension AppDelegate: NSPopoverDelegate {
+    func popoverDidClose(_ notification: Notification) {
+        // Re-attach the menu so the status item works normally again
+        statusItem.menu = statusMenu
     }
 }
 

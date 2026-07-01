@@ -2,6 +2,7 @@ import Foundation
 
 struct SystemProcess: Codable, Identifiable {
     let pid: Int
+    let ppid: Int
     let command: String
     let fullCommand: String
     let cpuPercent: Double
@@ -17,11 +18,23 @@ struct SystemProcess: Codable, Identifiable {
     let isRunaway: Bool
     let runawayDurationMs: Int?
     let firstSeen: Double
+    let children: [SystemProcess]?
+    let totalCpuPercent: Double?
+    let totalRssKb: Int?
 
     var id: Int { pid }
 
+    var hasChildren: Bool {
+        !(children ?? []).isEmpty
+    }
+
+    var childCount: Int {
+        (children ?? []).count
+    }
+
     var memoryMB: String {
-        let mb = Double(rssKb) / 1024.0
+        let kb = totalRssKb ?? rssKb
+        let mb = Double(kb) / 1024.0
         if mb >= 1024 {
             return String(format: "%.1f GB", mb / 1024.0)
         }
@@ -29,14 +42,24 @@ struct SystemProcess: Codable, Identifiable {
     }
 
     var cpuFormatted: String {
-        if cpuPercent >= 100 {
-            return String(format: "%.0f%%", cpuPercent)
+        let cpu = totalCpuPercent ?? cpuPercent
+        if cpu >= 100 {
+            return String(format: "%.0f%%", cpu)
         }
-        return String(format: "%.1f%%", cpuPercent)
+        return String(format: "%.1f%%", cpu)
     }
 
     var portFormatted: String {
-        port.map { ":\($0)" } ?? "---"
+        port.map { ":\($0)" } ?? ""
+    }
+
+    // Flat list of all PIDs in this tree (self + all descendants)
+    var allPids: [Int] {
+        var pids = [pid]
+        for child in children ?? [] {
+            pids.append(contentsOf: child.allPids)
+        }
+        return pids
     }
 }
 
@@ -58,7 +81,6 @@ struct RepoGroup: Identifiable {
     var id: String { name }
 }
 
-// Column visibility configuration
 enum ProcessColumn: String, CaseIterable, Codable {
     case command = "Command"
     case cpu = "CPU %"
@@ -74,9 +96,9 @@ enum ProcessColumn: String, CaseIterable, Codable {
 
     var defaultVisible: Bool {
         switch self {
-        case .command, .cpu, .memory, .port, .branch, .linearTicket:
+        case .command, .cpu, .memory, .branch:
             return true
-        case .pid, .uptime, .worktree, .cwd, .fullCommand:
+        case .port, .linearTicket, .pid, .uptime, .worktree, .cwd, .fullCommand:
             return false
         }
     }
@@ -113,7 +135,6 @@ class ColumnSettings: ObservableObject {
 
     func toggle(_ column: ProcessColumn) {
         if visibleColumns.contains(column) {
-            // Don't allow removing all columns
             if visibleColumns.count > 1 {
                 visibleColumns.remove(column)
             }
