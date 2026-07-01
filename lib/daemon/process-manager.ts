@@ -72,7 +72,7 @@ export function killGroup(pid: number | undefined, signal: NodeJS.Signals): void
 
 interface ManagedProcess {
   proc: ReturnType<typeof Bun.spawn>;
-  terminal: ReturnType<typeof Bun.Terminal>;
+  terminal: InstanceType<typeof Bun.Terminal>;
   config: SpawnConfig;
 }
 
@@ -187,7 +187,7 @@ export class ProcessManager {
     const terminal = new Bun.Terminal({
       cols: 220,
       rows: 50,
-      data(_term: ReturnType<typeof Bun.Terminal>, chunk: Uint8Array) {
+      data(_term: InstanceType<typeof Bun.Terminal>, chunk: Uint8Array) {
         logBuffer.append(id, chunk);
         const hooks = outputHooks.get(id);
         if (hooks) {
@@ -332,7 +332,7 @@ export class ProcessManager {
     await this.spawn(id, config.cmd, { cwd: config.cwd, env: config.env });
   }
 
-  getTerminal(id: string): ReturnType<typeof Bun.Terminal> | undefined {
+  getTerminal(id: string): InstanceType<typeof Bun.Terminal> | undefined {
     return this.processes.get(id)?.terminal;
   }
 

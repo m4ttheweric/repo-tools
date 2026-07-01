@@ -77,8 +77,8 @@ describe("buildProcessRecords", () => {
       () => 123,
       [],
     );
-    expect(recs[0].url).toBe("https://app.localhost");
-    expect(recs[0].port).toBe(10001);
+    expect(recs[0]!.url).toBe("https://app.localhost");
+    expect(recs[0]!.port).toBe(10001);
   });
 
   test("url/port absent when env has no portless vars", () => {
@@ -86,7 +86,7 @@ describe("buildProcessRecords", () => {
       [{ id: "p1", config: { cmd: "x", cwd: "/a" }, startedAt: 1 }],
       () => "running", () => undefined, [],
     );
-    expect(recs[0].url).toBeUndefined();
-    expect(recs[0].port).toBeUndefined();
+    expect(recs[0]!.url).toBeUndefined();
+    expect(recs[0]!.port).toBeUndefined();
   });
 });

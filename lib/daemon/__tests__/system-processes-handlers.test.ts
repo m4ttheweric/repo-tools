@@ -6,6 +6,7 @@ import type { SystemProcess } from "../system-process-scanner.ts";
 function makeProcess(overrides: Partial<SystemProcess> = {}): SystemProcess {
   return {
     pid: 1234,
+    ppid: 1,
     command: "node",
     fullCommand: "node server.js",
     cpuPercent: 12.5,

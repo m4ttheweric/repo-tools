@@ -23,7 +23,7 @@ const RT_DIR = join(homedir(), ".rt");
 
 interface ActiveServer {
   listener: ReturnType<typeof Bun.listen>;
-  terminal: ReturnType<typeof Bun.Terminal>;
+  terminal: InstanceType<typeof Bun.Terminal>;
 }
 
 export class AttachServer {
@@ -46,7 +46,7 @@ export class AttachServer {
     return join(this.dataDir, `attach-${id}.sock`);
   }
 
-  open(id: string, terminal: ReturnType<typeof Bun.Terminal>): void {
+  open(id: string, terminal: InstanceType<typeof Bun.Terminal>): void {
     // Close any existing server for this id
     this.close(id);
 
