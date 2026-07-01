@@ -265,7 +265,10 @@ async function selectPackageAndScript(
           expectKeys: q.length > 0 ? ["ctrl-x"] : [],
           initialPos: cursorPos,
           extraArgs: q.length > 0
-            ? ["--bind", "focus:transform:[[ {1} == __rt:sep* ]] && echo down"]
+            ? [
+                "--bind", "down:down+transform:[[ {1} == __rt:sep* ]] && echo down",
+                "--bind", "up:up+transform:[[ {1} == __rt:sep* ]] && echo up",
+              ]
             : [],
         });
 
