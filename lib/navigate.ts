@@ -124,7 +124,7 @@ export function buildNavArgs(opts: NavPickerOpts): string[] {
     "--nth=1",
     "--delimiter=\t",
     "--tabstop=1",
-    "--height=~100%",
+    process.env.RT_FZF_ALT_SCREEN ? "--height=100%" : "--height=~100%",
     "--layout=reverse",
     "--border=rounded",
     `--border-label= ${opts.message} `,
