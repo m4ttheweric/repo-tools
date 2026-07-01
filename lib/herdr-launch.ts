@@ -54,7 +54,9 @@ function shellQuote(s: string): string {
 
 function runInPane(paneId: string, command: string, cwd: string): void {
   const fullCmd = `cd ${shellQuote(cwd)} && ${command}`;
-  execSync(`herdr pane run ${paneId} ${JSON.stringify(fullCmd)}`, { stdio: "pipe" });
+  // shellQuote, not JSON.stringify: JSON's double quotes still let the outer
+  // shell expand $VAR/$(...)/backticks inside the user's command string.
+  execSync(`herdr pane run ${paneId} ${shellQuote(fullCmd)}`, { stdio: "pipe" });
 }
 
 export async function launchInHerdr(items: LaunchItem[]): Promise<void> {

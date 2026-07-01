@@ -45,7 +45,9 @@ function remoteBranchExists(branch: string, cwd: string): boolean {
 }
 
 function commitsAhead(targetRef: string, cwd: string): number {
-  const r = spawnSync("git", ["rev-list", "--count", `${targetRef}...HEAD`], {
+  // Two-dot: commits on HEAD that aren't on the target. Three-dot would count
+  // the symmetric difference, so upstream-only commits would read as "ahead".
+  const r = spawnSync("git", ["rev-list", "--count", `${targetRef}..HEAD`], {
     cwd, stdio: "pipe", encoding: "utf8",
   });
   if (r.status !== 0) return 0;
@@ -154,10 +156,13 @@ function collectContextFiles(config: MRConfig, cwd: string): LoadedPrompt[] {
 function captureGitSnapshot(
   branch: string, target: string, cwd: string, maxDiffBytes: number,
 ) {
+  // Three-dot for diff (= diff since merge-base), two-dot for log (branch-only
+  // commits — three-dot log would include upstream commits in the prompt).
   const ref = `origin/${target}...HEAD`;
+  const logRef = `origin/${target}..HEAD`;
   return {
     branch, target,
-    commits: gitCapture(["log", ref, "--pretty=format:- %h %s", "-n", "20"], cwd).trim(),
+    commits: gitCapture(["log", logRef, "--pretty=format:- %h %s", "-n", "20"], cwd).trim(),
     changedFiles: gitCapture(["diff", "--name-only", ref], cwd).trim(),
     diffStat: gitCapture(["diff", "--stat", ref], cwd).trim(),
     diff: truncate(gitCapture(["diff", ref], cwd), maxDiffBytes),
@@ -503,10 +508,13 @@ export async function shipCommand(
     process.exit(1);
   }
 
-  // Step 1: push. pushCommand exits the process on failure, so if we reach
-  // the next line the push succeeded (or was up-to-date). --dry-run flows
-  // through to pushCommand too — the whole composite becomes a rehearsal.
-  await pushCommand(args, ctx);
+  // Step 1: push. pushCommand exits the process on hard failure and returns
+  // false when the user cancels the diverged-branch prompt — stop there so we
+  // don't create an MR from the stale remote state the user just declined to
+  // update. --dry-run flows through (returns true) — the whole composite
+  // becomes a rehearsal.
+  const pushed = await pushCommand(args, ctx);
+  if (!pushed) return;
 
   if (commitsAhead(`origin/${target}`, cwd) === 0) {
     console.error(`\n  ${red}no commits between ${bold}origin/${target}${reset}${red} and ${bold}${branch}${reset}\n`);

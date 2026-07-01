@@ -120,7 +120,7 @@ export async function workspaceSyncCommand(): Promise<void> {
     for (const wt of worktrees) {
       const filePath = join(wt, config.fileName);
       const color = getPeacockColor(filePath);
-      const isHere = cwd.startsWith(wt);
+      const isHere = cwd === wt || cwd.startsWith(wt + "/");
       console.log(`    ${basename(wt).padEnd(20)} ${colorDot(color)} ${color || dim + "no color" + reset}${isHere ? `  ${dim}(you are here)${reset}` : ""}`);
     }
     console.log();
@@ -145,7 +145,8 @@ export async function workspaceSyncCommand(): Promise<void> {
       const { synced, results } = result.data || { synced: 0, results: [] };
       console.log(`  ${green}✓${reset} ${synced} worktree(s) synced (peacock preserved)\n`);
       for (const r of results) {
-        console.log(`    ${basename(r.path).padEnd(20)} ${colorDot(r.color)} ${r.color || ""}`);
+        // r.path is the workspace *file* path — the worktree is its dirname.
+        console.log(`    ${basename(dirname(r.path)).padEnd(20)} ${colorDot(r.color)} ${r.color || ""}`);
       }
     } else {
       console.log(`  ${red}✗${reset} Sync failed: ${result?.error || "daemon not available"}`);

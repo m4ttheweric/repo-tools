@@ -51,8 +51,10 @@ export async function prompt<T>(
 ): Promise<T> {
   return new Promise<T>((outerResolve) => {
     let instance: Instance | undefined;
+    let settled = false;
 
     const resolve = (value: T) => {
+      settled = true;
       if (instance) {
         instance.unmount();
       }
@@ -67,7 +69,10 @@ export async function prompt<T>(
     });
 
     instance.waitUntilExit().then(() => {
-      // If we get here without resolve called, the user cancelled (process.exit)
+      // exitOnCtrlC only unmounts — Ink never calls process.exit. Reaching
+      // here without resolve means the user hit Ctrl-C: exit (128+SIGINT)
+      // instead of leaving the returned promise pending forever.
+      if (!settled) process.exit(130);
     });
   });
 }
@@ -384,64 +389,6 @@ export async function filterableSelect(opts: {
 
   if (!raw) return null;
   return raw.split("\t")[0]!;
-}
-
-/**
- * Like filterableSelect, but returns both the selected value and the fzf exit key.
- *
- * Use this when you need to distinguish between Enter and other keys
- * (e.g., Alt+Enter for an alternate action on the selected item).
- *
- * extraExpect keys are added to --expect; when one fires, the result's `key`
- * field is set to that key name (e.g. "alt-enter"). For a normal Enter press,
- * `key` is "".
- *
- * Ctrl-up: when `backLabel` is set, throws BackNavigation (existing behavior).
- * When `backLabel` is NOT set, returns `{ value, key: "ctrl-up" }` so callers
- * can handle back-navigation inline.
- */
-export async function filterableSelectWithKey(opts: {
-  message: string;
-  options: SelectOption[];
-  stderr?: boolean;
-  /** When set, shows `ctrl-up: back` in the header and throws BackNavigation on ctrl-up. */
-  backLabel?: string;
-  /** Extra keys to listen for via --expect. Header is updated to show the hint. */
-  extraExpect?: string[];
-  /** Hint text for the first extra key, shown in the header. e.g. "alt-enter: variations" */
-  extraHint?: string;
-  /** Use fzf's exact-match mode instead of fuzzy matching. */
-  exact?: boolean;
-}): Promise<{ value: string; key: string } | null> {
-  const { runNavPicker } = await import("./navigate.ts");
-
-  const headerParts = ["enter: select  |: OR  !: exclude"];
-  if (opts.extraHint) headerParts.push(opts.extraHint);
-  if (opts.backLabel) headerParts.push("ctrl-up: back");
-
-  const result = await runNavPicker({
-    options: opts.options.map((o) => ({
-      value: o.value,
-      label: o.label,
-      hint: o.hint,
-      color: o.color,
-    })),
-    message: opts.message,
-    headerParts,
-    expectKeys: opts.extraExpect ?? [],
-    exact: opts.exact,
-  });
-
-  if (!result) return null;
-
-  if (result.key === "ctrl-up") {
-    if (opts.backLabel) throw new BackNavigation();
-    // Without backLabel, return the key so callers can handle ctrl-up inline
-    return { value: result.value!, key: "ctrl-up" };
-  }
-
-  if (!result.value) return null;
-  return { value: result.value, key: result.key };
 }
 
 // ─── Step Runner ─────────────────────────────────────────────────────────────

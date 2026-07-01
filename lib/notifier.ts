@@ -15,7 +15,7 @@
  * Called at the end of each daemon cache refresh cycle.
  */
 
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { RT_DIR } from "./daemon-config.ts";
@@ -260,28 +260,27 @@ function resolveTerminalNotifier(): string | false {
   return _terminalNotifierPath;
 }
 
-function escapeShell(s: string): string {
-  return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+/** Escape for embedding inside an AppleScript double-quoted string literal. */
+function escapeAppleScript(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-/** Direct notification via terminal-notifier or osascript (no queue) */
+/** Direct notification via terminal-notifier or osascript (no queue).
+ *  argv-array spawning — message content includes branch names and error
+ *  text, which must never pass through a shell ($, backticks, quotes). */
 function notifyFallback(title: string, message: string, url?: string): void {
   try {
     const tnPath = resolveTerminalNotifier();
     if (tnPath) {
-      const args = [
-        `-title "rt"`,
-        `-subtitle ${escapeShell(title)}`,
-        `-message ${escapeShell(message)}`,
-        `-group "rt"`,
-      ];
-      if (url) args.push(`-open ${escapeShell(url)}`);
-      execSync(`${escapeShell(tnPath)} ${args.join(" ")}`, { stdio: "pipe", timeout: 5000 });
+      const args = ["-title", "rt", "-subtitle", title, "-message", message, "-group", "rt"];
+      if (url) args.push("-open", url);
+      execFileSync(tnPath, args, { stdio: "pipe", timeout: 5000 });
     } else {
       // osascript fallback
       const body = `${title}: ${message}`;
-      execSync(
-        `osascript -e 'display notification ${escapeShell(body)} with title "rt"'`,
+      execFileSync(
+        "osascript",
+        ["-e", `display notification "${escapeAppleScript(body)}" with title "rt"`],
         { stdio: "pipe", timeout: 5000 },
       );
     }
@@ -333,13 +332,9 @@ export function notify(
         }
       }, 10_000);
     }
-  }).catch(() => {
-    // Push errored — fallback immediately
-    const idx = notificationQueue.findIndex(n => n.id === event.id);
-    if (idx !== -1) notificationQueue.splice(idx, 1);
-    flushQueue();
-    notifyFallback(title, message, url);
   });
+  // (No .catch needed: pushToTray's body is fully wrapped in try/catch and
+  // resolves false on failure — it can never reject.)
 }
 
 // ─── Branch transition detection ─────────────────────────────────────────────

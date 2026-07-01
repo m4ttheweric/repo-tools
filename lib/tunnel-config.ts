@@ -11,6 +11,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import { rtDir } from "./rt-paths.ts";
 
 export interface TunnelConfig {
   /** Stable cloudflared tunnel UUID. */
@@ -29,7 +30,9 @@ export interface TunnelConfig {
 }
 
 function tunnelsDir(): string {
-  return join(process.env.HOME ?? "", ".rt", "tunnels");
+  // rtDir() falls back to homedir() when HOME is unset (launchd contexts) —
+  // `HOME ?? ""` would silently produce a cwd-relative ".rt/tunnels".
+  return join(rtDir(), "tunnels");
 }
 
 function configPath(): string {

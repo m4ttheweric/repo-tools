@@ -47,7 +47,7 @@ import {
   type LaunchItem,
 } from "../lib/herdr-launch.ts";
 import { findPreset, loadPresets, savePreset, type Preset } from "../lib/run-presets.ts";
-import { navSeparator } from "../lib/navigate.ts";
+import { navSeparator, type NavOption } from "../lib/navigate.ts";
 
 const LAST_RUN_SENTINEL = "__rt:last-run__";
 
@@ -162,16 +162,7 @@ async function selectPackageAndScript(
         process.stderr.write(`  ↳ package: ${packageLabel} (from cwd)\n`);
       } else {
         // Manual package picker
-        const rootPkgJson = join(worktreePath, "package.json");
-        const rootScripts = existsSync(rootPkgJson)
-          ? Object.keys(
-              (
-                JSON.parse(readFileSync(rootPkgJson, "utf8")) as {
-                  scripts?: Record<string, string>;
-                }
-              ).scripts ?? {},
-            )
-          : [];
+        const rootScripts = getPackageJsonScripts(worktreePath);
 
         // ── Queue display options (prepended when queue is active) ─────────
         const LAUNCH_ALL_SENTINEL = "__rt:launch-all__";
@@ -179,7 +170,7 @@ async function selectPackageAndScript(
         const PRESET_PREFIX = "__rt:preset:";
         const QUEUED_PREFIX = "__queued:";
 
-        const queueOptions: Array<{ value: string; label: string; hint: string; color?: string }> = [];
+        const queueOptions: NavOption[] = [];
         if (q.length > 0) {
           for (let i = 0; i < q.length; i++) {
             const qi = q[i]!;
@@ -361,10 +352,25 @@ async function selectPackageAndScript(
     }
 
     if (scripts.length === 1) {
+      const only = scripts[0]!;
+      // With a queue active, returning would discard the queued items (the
+      // caller only launches the queue on QUEUE_LAUNCHED) — queue it instead.
+      if (q.length > 0) {
+        q.push({
+          packageRelPath: packagePath === worktreePath ? "." : relative(worktreePath, packagePath),
+          packagePath,
+          packageLabel,
+          script: only,
+          command: `${detectPackageManager(packagePath)} run ${only}`,
+        });
+        process.stderr.write(`  ${green}+${reset} ${dim}queued: ${packageLabel} > ${only}${reset}\n`);
+        cameFromScript = true;
+        continue;
+      }
       return {
         packagePath,
         packageLabel,
-        selectedScript: scripts[0]!,
+        selectedScript: only,
         customCommand: undefined,
       };
     }
@@ -573,7 +579,10 @@ async function launchQueue(
   if (queue.length === 0) return;
 
   const items: LaunchItem[] = queue.map((qi) => {
-    const cwd = qi.packagePath;
+    // Re-resolve against the launch worktree (like launchPreset does) — the
+    // queue can be carried across a worktree switch, and qi.packagePath still
+    // points into the worktree where the item was queued.
+    const cwd = join(worktreePath, qi.packageRelPath);
     const varSuffix = qi.variationName ? ` (${qi.variationName})` : "";
     return {
       label: `${qi.packageLabel} > ${qi.script}${varSuffix}`,
@@ -618,8 +627,11 @@ export async function runCommand(
   // replays the actual command instead of "rt run".
   try { ensureHistoryHook(); } catch { /* don't block on setup */ }
 
-  let worktreePath: string;
-  let worktreeBranch: string;
+  // Definite-assignment asserted: every path to the build-result section
+  // assigns both (resolved-context branch or picker loops), but tsc can't
+  // follow the labeled `break repoLoop` flow.
+  let worktreePath!: string;
+  let worktreeBranch!: string;
   let dataDir: string | undefined;
   let packagePath = "";
   let packageLabel = "";
@@ -923,6 +935,10 @@ export async function runAgainCommand(
           })();
     writeFileSync(join(rtDir(), "last-run-command"), shellCmd + "\n");
   } catch { /* best-effort */ }
+
+  // Survive TTY Ctrl-C so the post-exit history append below actually runs
+  // (same as runCommand — SIGINT goes to the whole foreground process group).
+  process.on("SIGINT", () => {});
 
   const proc = Bun.spawn([SHELL, "-c", entry.cmd], {
     cwd: entry.cwd,

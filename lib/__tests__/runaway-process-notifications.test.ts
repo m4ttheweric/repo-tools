@@ -1,10 +1,11 @@
-import { describe, expect, test, spyOn, afterEach } from "bun:test";
+import { describe, expect, test, spyOn, afterEach, mock } from "bun:test";
 import * as notifier from "../notifier.ts";
 import type { SystemProcess } from "../daemon/system-process-scanner.ts";
 
 function makeProcess(overrides: Partial<SystemProcess> = {}): SystemProcess {
   return {
     pid: 1234,
+    ppid: 1,
     command: "node",
     fullCommand: "node server.js",
     cpuPercent: 95,
@@ -26,7 +27,9 @@ function makeProcess(overrides: Partial<SystemProcess> = {}): SystemProcess {
 
 describe("checkRunawayProcesses", () => {
   afterEach(() => {
-    // Restore any spies installed by a test so they don't leak.
+    // Restore any spies installed by a test so they don't leak — the in-test
+    // mockRestore() calls are skipped when an assertion fails first.
+    mock.restore();
   });
 
   test("notifies and marks notified for a newly-detected runaway process", () => {

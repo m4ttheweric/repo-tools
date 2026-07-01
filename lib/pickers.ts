@@ -70,12 +70,16 @@ export async function pickWorktreeWithSwitch(
   }
 
   try {
-    return await filterableSelect({
+    const picked = await filterableSelect({
       message: `${repo.repoName} worktrees`,
       options,
       backLabel: "Switch to a different repo",
       ...(opts?.stderr ? { stderr: true } : {}),
-    }) as string;
+    });
+    // Esc/Ctrl-C → null; exit cleanly rather than leaking null through the
+    // string return type (callers do selectedPath.split(...) etc.).
+    if (!picked) process.exit(0);
+    return picked;
   } catch (err) {
     if (err instanceof BackNavigation) return SWITCH_REPO;
     throw err;
@@ -116,7 +120,7 @@ export async function pickFromAllRepos(
     }
 
     // Resolve worktree path (or auto-select if only one)
-    let worktreePath: string;
+    let worktreePath: string | null;
     if (selectedRepo.worktrees.length === 1) {
       worktreePath = selectedRepo.worktrees[0]!.path;
     } else {

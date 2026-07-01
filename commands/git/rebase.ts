@@ -122,14 +122,6 @@ function commitsBehind(target: string, cwd: string): number {
   }
 }
 
-/**
- * Check if a rebase is currently in progress.
- */
-function isRebaseInProgress(cwd: string): boolean {
-  const { ok } = gitSafe("rebase --show-current-patch", cwd);
-  return ok;
-}
-
 // ─── Core rebase logic ───────────────────────────────────────────────────────
 
 /**
@@ -363,14 +355,32 @@ export async function rebaseOnto(opts: RebaseOptions): Promise<RebaseResult> {
       };
     }
 
-    // All conflicts matched rules — resolve them
-    for (const { file, rule } of matched) {
-      const flag = rule.strategy === "theirs" ? "--theirs" : "--ours";
-      git(`checkout ${flag} -- "${file}"`, cwd);
-      git(`add "${file}"`, cwd);
-      allResolvedFiles.push(file);
-      triggeredRules.add(rule);
-      log(`    ${green}✓${reset} ${dim}auto-resolved${reset} ${file} ${dim}(${rule.strategy})${reset}\n`, quiet);
+    // All conflicts matched rules — resolve them. A failing checkout (e.g.
+    // delete/modify conflict where the chosen side has no version of the
+    // file) must abort the rebase like every other unresolvable case, not
+    // die mid-rebase with the repo left in a conflicted state.
+    try {
+      for (const { file, rule } of matched) {
+        const flag = rule.strategy === "theirs" ? "--theirs" : "--ours";
+        git(`checkout ${flag} -- "${file}"`, cwd);
+        git(`add "${file}"`, cwd);
+        allResolvedFiles.push(file);
+        triggeredRules.add(rule);
+        log(`    ${green}✓${reset} ${dim}auto-resolved${reset} ${file} ${dim}(${rule.strategy})${reset}\n`, quiet);
+      }
+    } catch (err) {
+      git("rebase --abort", cwd);
+      return {
+        status: "error",
+        branch,
+        target,
+        commitsBehind: behind,
+        resolvedFiles: allResolvedFiles,
+        unresolvedFiles: matched.map((m) => m.file),
+        postResolveSteps: [],
+        backupBranch,
+        error: `auto-resolve failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
 
     // Continue the rebase
@@ -380,6 +390,7 @@ export async function rebaseOnto(opts: RebaseOptions): Promise<RebaseResult> {
       stdio: "pipe",
       env: { ...process.env, GIT_EDITOR: "true" },
     });
+    syncLog.cmd(["rebase", "--continue"], cwd, contResult.status, contResult.stdout ?? "", contResult.stderr ?? "");
 
     if (contResult.status === 0) {
       rebaseActive = false;

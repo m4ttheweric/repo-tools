@@ -8,7 +8,7 @@
  * for full interoperability with GitHub Desktop and worktree-context.
  */
 
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -129,7 +129,7 @@ export function hasUncommittedChanges(cwd: string): boolean {
  */
 export function stashChanges(cwd: string, branch: string): void {
   const message = `!!GitHub_Desktop<${branch}>`;
-  execSync(`git stash push -u -m "${message}"`, { cwd, stdio: "pipe" });
+  execFileSync("git", ["stash", "push", "-u", "-m", message], { cwd, stdio: "pipe" });
 }
 
 /**
@@ -155,31 +155,34 @@ export function findDesktopStash(cwd: string, branch: string): DesktopStashEntry
 
 /** Pop a specific stash entry by name (e.g. "stash@{0}"). */
 export function popStash(cwd: string, stashName: string): void {
-  execSync(`git stash pop "${stashName}"`, { cwd, stdio: "pipe" });
+  execFileSync("git", ["stash", "pop", stashName], { cwd, stdio: "pipe" });
 }
 
 /** Drop a specific stash entry by name without applying it. */
 export function dropStash(cwd: string, stashName: string): void {
-  execSync(`git stash drop "${stashName}"`, { cwd, stdio: "pipe" });
+  execFileSync("git", ["stash", "drop", stashName], { cwd, stdio: "pipe" });
 }
 
 // ─── Checkout / Branch creation ──────────────────────────────────────────────
+// argv-array spawning throughout: branch names may legally contain $,
+// backticks, and quotes, which double-quoted shell interpolation would
+// expand or choke on.
 
 /** Checkout an existing branch. */
 export function checkoutBranch(cwd: string, branch: string): void {
-  execSync(`git checkout "${branch}"`, { cwd, stdio: "pipe" });
+  execFileSync("git", ["checkout", branch], { cwd, stdio: "pipe" });
 }
 
 /** Create a new branch and check it out. */
 export function createBranch(cwd: string, branch: string, startPoint?: string): void {
   const args = ["checkout", "-b", branch];
   if (startPoint) args.push(startPoint);
-  execSync(`git ${args.map(a => `"${a}"`).join(" ")}`, { cwd, stdio: "pipe" });
+  execFileSync("git", args, { cwd, stdio: "pipe" });
 }
 
 /** Fetch a specific remote branch. */
 export function fetchRemoteBranch(cwd: string, remote: string, branch: string): void {
-  execSync(`git fetch "${remote}" "${branch}"`, { cwd, stdio: "pipe" });
+  execFileSync("git", ["fetch", remote, branch], { cwd, stdio: "pipe" });
 }
 
 /** Detect whether origin/main or origin/master exists. */

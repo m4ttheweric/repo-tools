@@ -114,14 +114,15 @@ function installExtensions(): void {
       const cliPath = join(appDir, pattern.appName, "Contents/Resources/app/bin", pattern.cliBinary);
       if (!existsSync(cliPath)) continue;
 
-      try {
-        spawnSync(cliPath, ["--install-extension", vsix, "--force"], {
-          stdio: "pipe",
-          timeout: 30_000,
-        });
+      // spawnSync doesn't throw on non-zero exit or timeout — check the result.
+      const result = spawnSync(cliPath, ["--install-extension", vsix, "--force"], {
+        stdio: "pipe",
+        timeout: 30_000,
+      });
+      if (result.status === 0 && !result.error) {
         ok(`rt-context → ${pattern.displayName}`);
         installedCount++;
-      } catch {
+      } else {
         fail(`rt-context → ${pattern.displayName}`, "install failed");
       }
     }
@@ -227,8 +228,11 @@ function repairShellWrapper(): void {
     '  [ -x "$rt_bin" ] || { echo "rt: binary not found in PATH" >&2; return 1; }',
   ].join("\n");
 
-  content = content.replace(broken, fixed);
-  writeFileSync(rcPath, content);
+  const repaired = content.replace(broken, fixed);
+  // Exact-string replace: if the rc line differs (hand-edited whitespace),
+  // nothing changed — don't rewrite the file or claim a repair happened.
+  if (repaired === content) return;
+  writeFileSync(rcPath, repaired);
   ok("shell wrapper", "repaired FUNCNEST recursion bug");
 }
 

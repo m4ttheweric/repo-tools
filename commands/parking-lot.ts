@@ -28,7 +28,7 @@ import {
   PARKING_LOT_CONFIG_PATH,
 } from "../lib/parking-lot-config.ts";
 import { describeRepoBindings, isParkable, park } from "../lib/daemon/parking-lot.ts";
-import { daemonQuery } from "../lib/daemon-client.ts";
+import { daemonQuery, lastQueryTimedOut } from "../lib/daemon-client.ts";
 import { getRepoIdentity } from "../lib/repo.ts";
 import { getCurrentBranch } from "../lib/git-ops.ts";
 
@@ -159,6 +159,15 @@ async function runParkWithSpinner(
   if (response?.ok && response.data?.result) {
     result = response.data.result as typeof result;
     logs = (response.data.lines as string[]) ?? [];
+  } else if (response === null && lastQueryTimedOut()) {
+    // The daemon accepted the park but didn't answer within the timeout — it
+    // may still be executing in this worktree. Running a second park
+    // concurrently risks duplicate stashes and index.lock contention.
+    result = {
+      ok: false,
+      action: "skip",
+      detail: "daemon park timed out — check the worktree state before retrying",
+    };
   } else {
     result = park(worktreePath, repoPath, branch, index);
   }

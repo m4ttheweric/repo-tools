@@ -11,7 +11,6 @@ import {
   createBackup,
   listBackups,
   restoreFromBackup,
-  deleteBackup,
   type BackupBranch,
 } from "../../lib/git-backup.ts";
 import type { CommandContext } from "../../lib/command-tree.ts";

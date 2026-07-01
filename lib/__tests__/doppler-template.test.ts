@@ -1,12 +1,20 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
 // Pin HOME to a tmpdir BEFORE importing the module under test, since
 // daemon-config.ts reads RT_DIR at import time from the user's home.
+const origHome = process.env.HOME;
 const tmpHome = mkdtempSync(join(tmpdir(), "rt-doppler-template-"));
 process.env.HOME = tmpHome;
+
+// bun test runs every file in one shared process — restore HOME so later
+// test files (and their per-test HOME juggling) don't inherit the temp dir.
+afterAll(() => {
+  process.env.HOME = origHome;
+  rmSync(tmpHome, { recursive: true, force: true });
+});
 
 const { loadTemplate, saveTemplate, templatePath } =
   await import("../doppler-template.ts");

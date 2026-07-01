@@ -88,6 +88,9 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       resolve({ stdout, stderr, ok: code === 0, exitCode: code });
     });
 
+    // Swallow stdin stream errors (EPIPE when the child dies before reading
+    // the prompt) — the meaningful failure surfaces via error/close above.
+    child.stdin.on("error", () => {});
     child.stdin.end(opts.prompt);
   });
 }

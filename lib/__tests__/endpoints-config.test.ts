@@ -66,7 +66,7 @@ describe("loadEndpoints", () => {
         endpoints: [{ port: 4000, name: "app", mode: "forward" }],
       }));
       const result = loadEndpoints(d);
-      expect("returnParam" in result[0]).toBe(false);
+      expect("returnParam" in result[0]!).toBe(false);
     } finally { rmSync(d, { recursive: true, force: true }); }
   });
 });

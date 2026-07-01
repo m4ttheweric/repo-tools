@@ -83,24 +83,25 @@ export function matchRule(
   filePath: string,
   rules: AutoResolveRule[],
 ): AutoResolveRule | null {
-  // Lazy-load picomatch — it's a fast glob matcher.
-  // Falls back to basic matching if not available.
-  let matcher: (glob: string, path: string) => boolean;
-
-  try {
-    // Bun supports the picomatch API via built-in Bun.Glob
-    matcher = (glob, path) => new Bun.Glob(glob).match(path);
-  } catch {
-    // Fallback: exact match + simple ** prefix matching
-    matcher = (glob, path) => {
-      if (glob === path) return true;
-      if (glob.startsWith("**/")) {
-        const suffix = glob.slice(3);
-        return path.endsWith(suffix) || path.includes(`/${suffix}`);
-      }
-      return false;
-    };
-  }
+  // Bun.Glob can throw at match time on an invalid pattern (hand-edited
+  // sync.json) — catch per call so a bad rule degrades to basic matching
+  // instead of blowing up mid-rebase. (The previous try/catch wrapped only
+  // the closure *creation*, which can never throw.)
+  const basicMatch = (glob: string, path: string): boolean => {
+    if (glob === path) return true;
+    if (glob.startsWith("**/")) {
+      const suffix = glob.slice(3);
+      return path.endsWith(suffix) || path.includes(`/${suffix}`);
+    }
+    return false;
+  };
+  const matcher = (glob: string, path: string): boolean => {
+    try {
+      return new Bun.Glob(glob).match(path);
+    } catch {
+      return basicMatch(glob, path);
+    }
+  };
 
   for (const rule of rules) {
     const globs = Array.isArray(rule.glob) ? rule.glob : [rule.glob];

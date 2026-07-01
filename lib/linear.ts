@@ -10,8 +10,8 @@
  * API keys stored in ~/.rt/secrets.json
  */
 
-import { readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { join, dirname } from "path";
 import { homedir } from "os";
 
 // ─── Secrets ─────────────────────────────────────────────────────────────────
@@ -36,6 +36,7 @@ export function loadSecrets(): Secrets {
 export function saveSecret(key: keyof Secrets, value: string): void {
   const secrets = loadSecrets();
   secrets[key] = value;
+  mkdirSync(dirname(SECRETS_PATH), { recursive: true });
   writeFileSync(SECRETS_PATH, JSON.stringify(secrets, null, 2));
 }
 

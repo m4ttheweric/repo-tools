@@ -426,18 +426,22 @@ async function runWebViewer(logPath: string): Promise<void> {
     "--full-read",
   ], { stdio: ["ignore", "inherit", "inherit"] });
 
-  await waitForPort(Number(port), 2000);
-  spawnSync("open", [url]);
-
-  console.log(`  ${green}✓${reset} viewer running on ${url} — ${dim}Ctrl-C to stop${reset}\n`);
-
   const stop = (code: number) => {
     try { logdy.kill("SIGTERM"); } catch { /* */ }
     process.exit(code);
   };
   process.on("SIGINT", () => stop(0));
   process.on("SIGTERM", () => stop(0));
+  // Attach before awaiting anything — if logdy exits instantly (e.g. the port
+  // is already bound by another process), a listener attached after
+  // waitForPort would miss the event and we'd hang pointing the browser at
+  // whatever service answered on the port.
   logdy.on("exit", (code) => stop(code ?? 0));
+
+  await waitForPort(Number(port), 2000);
+  spawnSync("open", [url]);
+
+  console.log(`  ${green}✓${reset} viewer running on ${url} — ${dim}Ctrl-C to stop${reset}\n`);
 }
 
 /** Poll TCP connect until the port is accepting connections, up to timeoutMs. */

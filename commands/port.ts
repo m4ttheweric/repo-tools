@@ -114,7 +114,9 @@ function displayPorts(entries: PortEntry[]): void {
 
 function killByPort(port: number): void {
   try {
-    const output = execSync(`lsof -i :${port} -P -n 2>/dev/null`, {
+    // -sTCP:LISTEN: only kill the listener — plain `-i :port` also matches
+    // clients connected to the port (browser tabs, curl, etc.).
+    const output = execSync(`lsof -iTCP:${port} -sTCP:LISTEN -P -n 2>/dev/null`, {
       encoding: "utf8", stdio: "pipe",
     });
     const lines = output.trim().split("\n").filter(Boolean);

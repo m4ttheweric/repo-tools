@@ -9,7 +9,7 @@
  * when pull.ff is unset, also matching Desktop.
  */
 
-import { spawnSync, execSync } from "child_process";
+import { spawnSync } from "child_process";
 import { bold, cyan, dim, green, red, reset, yellow } from "../../lib/tui.ts";
 import { getCurrentBranch, hasUncommittedChanges } from "../../lib/git-ops.ts";
 import type { CommandContext } from "../../lib/command-tree.ts";

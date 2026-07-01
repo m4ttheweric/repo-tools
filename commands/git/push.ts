@@ -130,11 +130,13 @@ interface PushOptions {
   force: boolean;
 }
 
+/** Returns false when the user cancelled at the diverged-branch prompt;
+ *  true when the push ran (or --dry-run rehearsed it). Hard failures exit. */
 async function runPush(
   args: string[],
   ctx: CommandContext,
   opts: PushOptions,
-): Promise<void> {
+): Promise<boolean> {
   const cwd = ctx.identity!.repoRoot;
   const dryRun = args.includes("--dry-run");
   const noVerify = args.includes("--no-verify");
@@ -164,7 +166,7 @@ async function runPush(
         });
         if (choice !== "force") {
           console.log(`\n  ${dim}cancelled${reset}\n`);
-          return;
+          return false;
         }
         force = true;
       } else {
@@ -198,13 +200,13 @@ async function runPush(
 
   if (dryRun) {
     console.log(`  ${yellow}--dry-run — not running${reset}\n`);
-    return;
+    return true;
   }
 
   const r = spawnSync("git", gitArgs, { cwd, stdio: "inherit" });
   if (r.status === 0) {
     console.log(`\n  ${green}✓${reset} pushed ${bold}${branch}${reset} to ${remote}/${branch}\n`);
-    return;
+    return true;
   }
   process.exit(r.status ?? 1);
 }
@@ -212,13 +214,13 @@ async function runPush(
 export async function pushCommand(
   args: string[],
   ctx: CommandContext,
-): Promise<void> {
+): Promise<boolean> {
   return runPush(args, ctx, { force: false });
 }
 
 export async function forcePushCommand(
   args: string[],
   ctx: CommandContext,
-): Promise<void> {
+): Promise<boolean> {
   return runPush(args, ctx, { force: true });
 }

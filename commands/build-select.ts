@@ -151,8 +151,10 @@ export async function buildSelect(args: string[], ctx: CommandContext): Promise<
       cwd: root,
       stdio: "inherit",
     });
-    saveHistory(dataDir, selectedPackages);
   } catch {
     process.exit(1);
   }
+  // Outside the try — a history-write failure must not turn a green build
+  // into exit 1.
+  try { saveHistory(dataDir, selectedPackages); } catch { /* best-effort */ }
 }

@@ -32,30 +32,39 @@ export async function setLinearToken(): Promise<void> {
   const { textInput } = await import("../lib/rt-render.tsx");
   const secrets = loadSecrets();
 
+  // try scopes the prompt only — a failed *save* must surface as an error,
+  // not masquerade as "keeping existing key".
+  let linearKey: string;
   try {
-    const linearKey = await textInput({
+    linearKey = await textInput({
       message: "Linear API key (lin_api_...)",
       placeholder: secrets.linearApiKey
         ? "••• (already set, leave empty to keep)"
         : "lin_api_...",
     });
-
-    if (!linearKey.trim()) {
-      if (secrets.linearApiKey) {
-        console.log(`  ${dim}keeping existing Linear API key${reset}`);
-      } else {
-        console.log(`  ${yellow}no key entered${reset}`);
-      }
-      return;
-    }
-
-    saveSecret("linearApiKey", linearKey.trim());
-    console.log(`\n  ${green}✓${reset} Linear API key saved\n`);
   } catch {
     if (secrets.linearApiKey) {
       console.log(`  ${dim}keeping existing Linear API key${reset}`);
     }
+    return;
   }
+
+  if (!linearKey.trim()) {
+    if (secrets.linearApiKey) {
+      console.log(`  ${dim}keeping existing Linear API key${reset}`);
+    } else {
+      console.log(`  ${yellow}no key entered${reset}`);
+    }
+    return;
+  }
+
+  try {
+    saveSecret("linearApiKey", linearKey.trim());
+  } catch (err) {
+    console.log(`\n  ${red}✗ failed to save Linear API key: ${err instanceof Error ? err.message : String(err)}${reset}\n`);
+    process.exit(1);
+  }
+  console.log(`\n  ${green}✓${reset} Linear API key saved\n`);
 }
 
 // ─── GitLab token ────────────────────────────────────────────────────────────
@@ -64,30 +73,39 @@ export async function setGitlabToken(): Promise<void> {
   const { textInput } = await import("../lib/rt-render.tsx");
   const secrets = loadSecrets();
 
+  // try scopes the prompt only — a failed *save* must surface as an error,
+  // not masquerade as "keeping existing token".
+  let gitlabToken: string;
   try {
-    const gitlabToken = await textInput({
+    gitlabToken = await textInput({
       message: "GitLab personal access token",
       placeholder: secrets.gitlabToken
         ? "••• (already set, leave empty to keep)"
         : "glpat-...",
     });
-
-    if (!gitlabToken.trim()) {
-      if (secrets.gitlabToken) {
-        console.log(`  ${dim}keeping existing GitLab token${reset}`);
-      } else {
-        console.log(`  ${yellow}no token entered${reset}`);
-      }
-      return;
-    }
-
-    saveSecret("gitlabToken", gitlabToken.trim());
-    console.log(`\n  ${green}✓${reset} GitLab token saved\n`);
   } catch {
     if (secrets.gitlabToken) {
       console.log(`  ${dim}keeping existing GitLab token${reset}`);
     }
+    return;
   }
+
+  if (!gitlabToken.trim()) {
+    if (secrets.gitlabToken) {
+      console.log(`  ${dim}keeping existing GitLab token${reset}`);
+    } else {
+      console.log(`  ${yellow}no token entered${reset}`);
+    }
+    return;
+  }
+
+  try {
+    saveSecret("gitlabToken", gitlabToken.trim());
+  } catch (err) {
+    console.log(`\n  ${red}✗ failed to save GitLab token: ${err instanceof Error ? err.message : String(err)}${reset}\n`);
+    process.exit(1);
+  }
+  console.log(`\n  ${green}✓${reset} GitLab token saved\n`);
 }
 
 // ─── Linear team ─────────────────────────────────────────────────────────────
@@ -138,7 +156,6 @@ async function pickAndSaveTeam(apiKey: string): Promise<{ teamId: string; teamKe
 // ─── Notification preferences ────────────────────────────────────────────────
 
 export async function configureNotifications(): Promise<void> {
-  const { execSync } = await import("child_process");
   const { filterableMultiselect } = await import("../lib/rt-render.tsx");
 
   const prefs = loadNotificationPrefs();
@@ -390,9 +407,17 @@ function swapDaemonToShim(): DaemonSwapResult {
     return { status: "already" }; // already swapped previously
   }
   renameSync(DAEMON_LIVE_PATH, DAEMON_REAL_BACKUP);
-  // Hard-link (not rename) — we want to keep the shim in its canonical slot too
+  // Clone (not rename) — we want to keep the shim in its canonical slot too
   // so repeated toggles don't need rt-tray rebuilds.
-  spawnSync("cp", ["-c", DAEMON_SHIM_PATH, DAEMON_LIVE_PATH]); // APFS clone
+  const cp = spawnSync("cp", ["-c", DAEMON_SHIM_PATH, DAEMON_LIVE_PATH]); // APFS clone
+  if (cp.status !== 0 || cp.error) {
+    // Roll back so the daemon slot isn't left empty for launchd to crash-loop on.
+    renameSync(DAEMON_REAL_BACKUP, DAEMON_LIVE_PATH);
+    return {
+      status: "unavailable",
+      reason: `cp -c failed: ${cp.error?.message ?? (cp.stderr?.toString().trim() || `exit ${cp.status}`)}`,
+    };
+  }
   return { status: "swapped" };
 }
 

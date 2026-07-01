@@ -88,18 +88,6 @@ function hasDivergedFromRemote(branch: string, cwd: string): boolean {
   return mergeBase !== localSha && mergeBase !== remoteSha;
 }
 
-/**
- * Check if there are commits to push.
- */
-function hasUnpushedCommits(branch: string, cwd: string): boolean {
-  try {
-    const count = git(`rev-list --count origin/${branch}..HEAD`, cwd);
-    return parseInt(count, 10) > 0;
-  } catch {
-    return false;
-  }
-}
-
 // ─── Single-branch sync ─────────────────────────────────────────────────────
 
 async function syncBranch(
@@ -110,7 +98,6 @@ async function syncBranch(
   // Guard: rebase-in-progress takes priority — getCurrentBranch returns null
   // during a rebase, which would cause a confusing "detached HEAD" error later.
   try {
-    const { spawnSync } = await import("child_process");
     const r = spawnSync("git", ["rebase", "--show-current-patch"], {
       cwd, stdio: "pipe",
     });
@@ -258,6 +245,7 @@ async function syncBranch(
 
   // 4. Push if anything changed
   let pushed = false;
+  let pushError: string | undefined;
   if (needsPush && !opts.dryRun) {
     try {
       await steps.run("pushing…", () =>
@@ -268,12 +256,14 @@ async function syncBranch(
       syncLog.cmd(`push --force-with-lease origin ${branch}`, cwd, 0, "", "");
     } catch (err: any) {
       syncLog.cmd(`push --force-with-lease origin ${branch}`, cwd, 1, "", String(err));
-      // steps.run already printed the ✗ error line
+      // steps.run already printed the ✗ error line — but the summary must
+      // still count this branch as failed, not silently "synced".
+      pushError = `push failed: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
 
-  syncLog.worktreeEnd(branch, undefined);
-  return { branch, worktree: cwd, resetResult, rebaseResult, pushed };
+  syncLog.worktreeEnd(branch, pushError);
+  return { branch, worktree: cwd, resetResult, rebaseResult, pushed, error: pushError };
 }
 
 // ─── Multi-worktree sync ─────────────────────────────────────────────────────
@@ -349,12 +339,19 @@ async function syncAll(
   for (const wt of syncable) {
     console.log(`  ${bold}${wt.repoName}${reset} ${dim}(${wt.branch})${reset}`);
 
-    // We need to resolve the dataDir for each repo
+    // We need to resolve the dataDir for each repo. The daemon-cached path may
+    // be stale (worktree removed on disk) — a chdir throw must not abort the
+    // whole loop, and the cwd restore must survive any error.
     const { getRepoIdentity } = await import("../lib/repo.ts");
     const origCwd = process.cwd();
-    process.chdir(wt.path);
-    const identity = getRepoIdentity();
-    process.chdir(origCwd);
+    let identity: ReturnType<typeof getRepoIdentity> = null;
+    try {
+      process.chdir(wt.path);
+      identity = getRepoIdentity();
+    } catch { /* fall through to the !identity skip below */ }
+    finally {
+      process.chdir(origCwd);
+    }
 
     if (!identity) {
       console.log(`    ${yellow}⚠ could not resolve identity — skipping${reset}`);
