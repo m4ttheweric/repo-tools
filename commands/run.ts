@@ -248,11 +248,21 @@ async function selectPackageAndScript(
               "esc: cancel",
             ];
 
+        const allPkgOptions = [...queueOptions, ...savedPresetOptions, ...packageOptions];
+
+        let cursorPos: number | null = null;
+        if (q.length >= 2) {
+          cursorPos = queueOptions.findIndex((o) => o.value === LAUNCH_ALL_SENTINEL) + 1;
+        } else if (q.length === 1) {
+          cursorPos = queueOptions.length + savedPresetOptions.length + 1;
+        }
+
         const pkgResult = await runNavPicker({
-          options: [...queueOptions, ...savedPresetOptions, ...packageOptions],
+          options: allPkgOptions,
           message: label ? `Select package — ${label}` : "Select package",
           headerParts: queueHeaderParts,
           expectKeys: q.length > 0 ? ["ctrl-x"] : [],
+          initialPos: cursorPos,
         });
 
         if (!pkgResult) process.exit(1);
