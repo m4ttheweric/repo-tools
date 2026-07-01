@@ -58,12 +58,15 @@ import { portlessAvailable } from "./daemon/portless.ts";
 import { HerdrClient } from "./daemon/herdr/client.ts";
 import { PaneMap } from "./daemon/herdr/pane-map.ts";
 import { HerdrProcessManager } from "./daemon/herdr-process-manager.ts";
+import { SystemProcessScanner } from "./daemon/system-process-scanner.ts";
+import { createSystemProcessHandlers } from "./daemon/handlers/system-processes.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const MR_REFRESH_INTERVAL_MS = 5 * 60 * 1000;      // 5 minutes
 const PORT_SCAN_INTERVAL_MS = 30 * 1000;             // 30 seconds
 const HOOKS_SCAN_INTERVAL_MS = 60 * 1000;            // 60 seconds (fallback for stale watchers)
+const SYSTEM_PROCESS_SCAN_INTERVAL_MS = 10 * 1000;   // 10 seconds
 const REPOS_JSON_PATH = join(RT_DIR, "repos.json");
 
 /**
@@ -91,7 +94,7 @@ import type { Server, ServerWebSocket } from "bun";
 
 import { scanListeningPorts, type PortEntry } from "./port-scanner.ts";
 
-import { checkAndNotify, onNotification } from "./notifier.ts";
+import { checkAndNotify, onNotification, checkRunawayProcesses } from "./notifier.ts";
 import {
   listRunnerConfigs, loadRunnerConfig, entryWindowName,
   loadGlobalRemedies, globalRemedyPath,
@@ -167,6 +170,7 @@ const suspendManager = new SuspendManager({ processManager, stateStore });
 const proxyManager   = new ProxyManager();
 const bounceManager  = new BounceManager();
 const exclusiveGroup = new ExclusiveGroup({ suspendManager, stateStore });
+const systemProcessScanner = new SystemProcessScanner();
 
 // ─── Remedy engine (auto-detect errors → run fix → restart) ─────────────────
 
@@ -497,6 +501,25 @@ function refreshPortCache(): void {
   }
 }
 
+function refreshSystemProcesses(): void {
+  try {
+    const processes = systemProcessScanner.scan(portCacheRef.ports);
+    broadcast("system-processes", {
+      processes,
+      updatedAt: Date.now(),
+    });
+
+    // Check for new runaways to notify about
+    checkRunawayProcesses(
+      processes,
+      (pid) => systemProcessScanner.markRunawayNotified(pid),
+      (pid) => systemProcessScanner.isRunawayNotified(pid),
+    );
+  } catch (err) {
+    log.error({ err }, "system process scan failed");
+  }
+}
+
 // ─── Cache refresh ───────────────────────────────────────────────────────────
 //
 // Coalesce concurrent callers: the 5-minute timer and `cache:refresh` IPC both
@@ -705,6 +728,7 @@ const routedHandlers: HandlerMap = {
   ...createDopplerHandlers(handlerCtx),
   ...createDiscussionHandlers(handlerCtx, broadcast),
   ...createEndpointHandlers(handlerCtx),
+  ...createSystemProcessHandlers(systemProcessScanner, handlerCtx),
 };
 
 async function handleCommand(cmd: string, payload: any): Promise<any> {
@@ -766,6 +790,7 @@ const API_INDEX = {
     { method: "GET",  path: "/api/cache/:branch",   description: "Single branch cache entry" },
     { method: "GET",  path: "/api/repos",           description: "Tracked repos with worktrees and watched status" },
     { method: "GET",  path: "/api/processes",        description: "Enriched list of all managed processes across repos (state, pid, timing, repo/worktree)" },
+    { method: "GET",  path: "/api/processes/system", description: "All repo-associated processes with CPU, memory, ports, runaway status" },
     { method: "POST", path: "/api/processes",         description: "Launch a command in a worktree { cwd, cmd, label? } (requires X-RT-Token)" },
     { method: "GET",  path: "/api/worktrees/commands", description: "Runnable packages + scripts for a worktree (?path=...), monorepo-aware" },
     { method: "GET",  path: "/api/endpoints",       description: "Declared canonical endpoints + active state for a repo (?repo=)" },
@@ -787,6 +812,7 @@ const API_INDEX = {
     { type: "notification",   description: "Notification event — when a transition fires" },
     { type: "remedy",         description: "Remedy fire event — when an auto-remedy triggers" },
     { type: "process:changed", description: "Process state transition { id, from, to, pid?, exitCode? }" },
+    { type: "system-processes", description: "Repo processes with CPU/memory — after each 10s scan" },
   ],
   log_stream: {
     path: `ws://localhost:${API_PORT}/ws/processes/:id/logs`,
@@ -806,6 +832,7 @@ const REST_ROUTES: Record<string, { cmd: string; method: string }> = {
   "/api/notifications": { cmd: "notifications", method: "GET" },
   "/api/refresh":       { cmd: "cache:refresh", method: "POST" },
   "/api/shutdown":      { cmd: "shutdown", method: "POST" },
+  "/api/processes/system": { cmd: "system-processes", method: "GET" },
 };
 
 /**
@@ -1337,6 +1364,10 @@ export function startDaemon(): void {
   // Schedule port scanning (lightweight — every 30s)
   setTimeout(() => refreshPortCache(), 2000); // initial scan after 2s
   setInterval(() => refreshPortCache(), PORT_SCAN_INTERVAL_MS);
+
+  // Schedule system process scanning (every 10s)
+  setTimeout(() => refreshSystemProcesses(), 3000);  // initial scan after 3s
+  setInterval(() => refreshSystemProcesses(), SYSTEM_PROCESS_SCAN_INTERVAL_MS);
 
   // Periodic hooks scan — belt-and-suspenders fallback in case a directory
   // watcher ever misses a write (e.g. watcher limit hit, FS edge-case).

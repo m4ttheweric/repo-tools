@@ -20,6 +20,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { RT_DIR } from "./daemon-config.ts";
 import type { PortEntry } from "./port-scanner.ts";
+import type { SystemProcess } from "./daemon/system-process-scanner.ts";
 import { getDaemonLogger } from "./daemon-logger.ts";
 const log = (await getDaemonLogger()).childLogger("notifier");
 
@@ -98,6 +99,7 @@ export const NOTIFICATION_TYPES = [
   { key: "needs_rebase",      label: "Needs rebase",        description: "When your branch falls behind target" },
   { key: "merge_error",       label: "Merge error",         description: "When auto-merge or merge train fails" },
   { key: "stale_port",        label: "Stale processes",     description: "When a dev server has been running 6h+" },
+  { key: "runaway_process",   label: "Runaway processes",   description: "When a process is pegged at high CPU for 5+ minutes" },
 ] as const;
 
 export type NotificationPrefs = Record<string, boolean>;
@@ -655,6 +657,37 @@ function detectStalePortTransitions(
     if (!currentKeys.has(key)) {
       delete portState[key];
     }
+  }
+}
+
+// ─── Runaway process detection ──────────────────────────────────────────────
+
+export function checkRunawayProcesses(
+  processes: SystemProcess[],
+  markNotified: (pid: number) => void,
+  isNotified: (pid: number) => boolean,
+): void {
+  const prefs = loadNotificationPrefs();
+  if (!isEnabled(prefs, "runaway_process")) return;
+
+  for (const proc of processes) {
+    if (!proc.isRunaway) continue;
+    if (isNotified(proc.pid)) continue;
+
+    const durationMin = proc.runawayDurationMs
+      ? Math.round(proc.runawayDurationMs / 60_000)
+      : 0;
+
+    const branchInfo = proc.branch ? ` (branch: ${proc.branch})` : "";
+
+    notify(
+      "Runaway Process",
+      `${proc.command} in ${proc.repo}${branchInfo} at ${Math.round(proc.cpuPercent)}% CPU for ${durationMin || "<1"} minutes`,
+      undefined,
+      "runaway_process",
+    );
+
+    markNotified(proc.pid);
   }
 }
 
