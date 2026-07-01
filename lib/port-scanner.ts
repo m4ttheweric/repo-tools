@@ -117,7 +117,7 @@ export function buildWorktreeMap(
   return map;
 }
 
-function matchCwdToRepo(
+export function matchCwdToRepo(
   cwd: string,
   repos: Record<string, string>,
   worktreeMap: Map<string, { repo: string; branch: string }>,
@@ -136,6 +136,20 @@ function matchCwdToRepo(
       const relativeDir = cwd === repoPath ? "." : cwd.slice(repoPath.length + 1);
       return { repo: repoName, worktree: repoPath, branch: null, relativeDir };
     }
+  }
+
+  // Check if cwd is a close parent of any repo (max 2 levels above)
+  let closestParent: { name: string; depth: number } | null = null;
+  for (const [repoName, repoPath] of Object.entries(repos)) {
+    if (repoPath.startsWith(cwd + "/")) {
+      const depth = repoPath.slice(cwd.length + 1).split("/").length;
+      if (depth <= 2 && (!closestParent || depth < closestParent.depth)) {
+        closestParent = { name: repoName, depth };
+      }
+    }
+  }
+  if (closestParent) {
+    return { repo: closestParent.name, worktree: null, branch: null, relativeDir: "(parent)" };
   }
 
   return { repo: null, worktree: null, branch: null, relativeDir: cwd };

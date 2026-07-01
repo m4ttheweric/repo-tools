@@ -2,6 +2,7 @@ import AppKit
 import UserNotifications
 import ServiceManagement
 import Network
+import SwiftUI
 
 // MARK: - AppDelegate
 
@@ -20,6 +21,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusTimer: Timer?
     private var notificationTimer: Timer?
 
+    // ── Process panel ──────────────────────────────────────────────────────
+    private var processPopover: NSPopover?
+
     // ── State ───────────────────────────────────────────────────────────────
     private var lastDaemonStatus: DaemonStatus?
     private var currentHealth: DaemonHealth = .unknown
@@ -33,6 +37,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupTrayServer()
         startPolling()
         setupAutoUpdate()
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showProcessPanel),
+            name: .showProcessPanel,
+            object: nil
+        )
 
         // Register the daemon as a LaunchAgent. Idempotent — if already
         // registered, this is a no-op. If the user hasn't approved it yet,
@@ -128,6 +139,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         portsLine.isEnabled = false
         portsLine.isHidden = true
         statusMenu.addItem(portsLine)
+
+        let processesItem = NSMenuItem(title: "Show Processes\u{2026}", action: #selector(showProcessPanel), keyEquivalent: "p")
+        processesItem.target = self
+        statusMenu.addItem(processesItem)
 
         statusMenu.addItem(NSMenuItem.separator())
 
@@ -392,6 +407,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateChecker.checkForUpdates(userInitiated: true)
     }
 
+    @objc private func showProcessPanel() {
+        if processPopover == nil {
+            let popover = NSPopover()
+            popover.contentSize = NSSize(width: 700, height: 500)
+            popover.contentViewController = NSHostingController(rootView: ProcessPanelView())
+            popover.behavior = .transient
+            popover.delegate = self
+            processPopover = popover
+        }
+
+        if let popover = processPopover {
+            if popover.isShown {
+                popover.performClose(nil)
+            } else if let button = statusItem.button {
+                statusMenu.cancelTracking()
+                // Detach menu so it doesn't reopen over the popover
+                statusItem.menu = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    guard let self, let button = self.statusItem.button else { return }
+                    NSApp.activate(ignoringOtherApps: true)
+                    popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                    popover.contentViewController?.view.window?.makeKey()
+                }
+            }
+        }
+    }
+
     // MARK: - Auto-Update
 
     private func setupAutoUpdate() {
@@ -406,6 +448,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let item = statusMenu.item(withTag: 300) {
             item.title = "Update Available: \(release.tagName)"
         }
+
+        if updateChecker.isDevBuild { return }
 
         // Fire native notification — sound is played manually so the
         // category→sound mapping stays in one place (NotificationManager).
@@ -436,11 +480,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var isRefreshing = false
+
     private func refreshStatus() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
         guard let status = await daemonClient.queryTrayStatus() else {
-            // Don't overwrite "starting" with "down" during startup.
-            // Dispatch to main — NSMenu/NSMenuItem must only be touched on the main thread,
-            // and this async func may resume on the cooperative thread pool after its await.
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 if self.currentHealth != .starting {
@@ -450,7 +497,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let health: DaemonHealth = status.pendingNotifications > 0 ? .warning : .healthy
+        var health: DaemonHealth = status.pendingNotifications > 0 ? .warning : .healthy
+
+        if let procData = await daemonClient.querySystemProcesses() {
+            if procData.processes.contains(where: { $0.isRunaway }) {
+                health = .warning
+            }
+        }
+
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.lastDaemonStatus = status
@@ -494,6 +548,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hours = minutes / 60
         let remainingMinutes = minutes % 60
         return "\(hours)h \(remainingMinutes)m"
+    }
+}
+
+// MARK: - NSPopoverDelegate
+
+extension AppDelegate: NSPopoverDelegate {
+    func popoverDidClose(_ notification: Notification) {
+        // Re-attach the menu so the status item works normally again
+        statusItem.menu = statusMenu
     }
 }
 
