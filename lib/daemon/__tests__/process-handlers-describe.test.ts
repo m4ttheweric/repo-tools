@@ -46,7 +46,7 @@ describe("process:describe", () => {
       exitCode: undefined,
     }];
     const handlers = createProcessHandlers(ctxWith(processes, { p1: "running" }, { p1: 999 }) as any);
-    const res = await handlers["process:describe"]({});
+    const res = await handlers["process:describe"]!({});
     expect(res.ok).toBe(true);
     expect(res.data).toHaveLength(1);
     const r = res.data[0];
