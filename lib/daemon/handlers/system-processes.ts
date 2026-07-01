@@ -1,6 +1,33 @@
 import type { HandlerMap, HandlerContext } from "./types.ts";
 import type { SystemProcessScanner, SystemProcess } from "../system-process-scanner.ts";
 
+function shortName(command: string): string {
+  const last = command.split("/").pop() ?? command;
+  return last || command;
+}
+
+function flattenSingleChildChains(node: SystemProcess): SystemProcess {
+  node.children = (node.children ?? []).map(flattenSingleChildChains);
+
+  const crumbs: string[] = [];
+  let current = node;
+  while (current.children?.length === 1) {
+    crumbs.push(shortName(current.command));
+    current = current.children[0]!;
+  }
+
+  if (crumbs.length > 0) {
+    return {
+      ...current,
+      command: [...crumbs, shortName(current.command)].join(" › "),
+      pid: node.pid,
+      ppid: node.ppid,
+    };
+  }
+
+  return { ...node, command: shortName(node.command) };
+}
+
 function buildProcessTree(flat: SystemProcess[]): SystemProcess[] {
   const byPid = new Map<number, SystemProcess>();
   for (const proc of flat) {
@@ -17,7 +44,8 @@ function buildProcessTree(flat: SystemProcess[]): SystemProcess[] {
     }
   }
 
-  // Aggregate children's CPU/memory into parent for the summary display
+  const flattened = roots.map(flattenSingleChildChains);
+
   function sumTree(node: SystemProcess): { cpu: number; rss: number } {
     let cpu = node.cpuPercent;
     let rss = node.rssKb;
@@ -29,14 +57,13 @@ function buildProcessTree(flat: SystemProcess[]): SystemProcess[] {
     return { cpu, rss };
   }
 
-  // Attach aggregate stats so the UI can show "claude 0.3% (total 0.5%)"
-  for (const root of roots) {
+  for (const root of flattened) {
     const total = sumTree(root);
     (root as any).totalCpuPercent = total.cpu;
     (root as any).totalRssKb = total.rss;
   }
 
-  return roots;
+  return flattened;
 }
 
 export function createSystemProcessHandlers(
