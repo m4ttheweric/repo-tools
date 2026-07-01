@@ -8,7 +8,8 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
-import { dirname } from "path";
+import { dirname, join } from "path";
+import { homedir } from "os";
 import { spawnSync } from "child_process";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import {
@@ -176,6 +177,63 @@ export async function configureNotifications(): Promise<void> {
   console.log(`\n  ${green}✓${reset} ${enabledCount}/${totalCount} notification types enabled`);
 
   console.log("");
+}
+
+// ─── Runaway process detection thresholds ────────────────────────────────────
+
+const RUNAWAY_CONFIG_PATH = join(homedir(), ".rt", "runaway-config.json");
+
+export async function configureRunaway(args: string[]): Promise<void> {
+  const field = args[0];
+  const value = args[1];
+
+  let config: Record<string, number> = {};
+  try {
+    if (existsSync(RUNAWAY_CONFIG_PATH)) {
+      config = JSON.parse(readFileSync(RUNAWAY_CONFIG_PATH, "utf8"));
+    }
+  } catch { /* fresh */ }
+
+  if (!field) {
+    console.log(`\n  ${bold}Runaway process detection${reset}\n`);
+    console.log(`  ${dim}cpu-threshold${reset}  ${config.cpuThreshold ?? 80}%`);
+    console.log(`  ${dim}sustain-min${reset}    ${(config.sustainMs ?? 300_000) / 60_000} minutes`);
+    console.log(`  ${dim}grace-min${reset}      ${(config.graceMs ?? 120_000) / 60_000} minutes`);
+    console.log(`\n  ${dim}usage: rt settings runaway <field> <value>${reset}\n`);
+    return;
+  }
+
+  if (!value) {
+    console.log(`  ${red}missing value${reset}`);
+    return;
+  }
+
+  const num = parseFloat(value);
+  if (isNaN(num)) {
+    console.log(`  ${red}value must be a number${reset}`);
+    return;
+  }
+
+  switch (field) {
+    case "cpu-threshold":
+      config.cpuThreshold = num;
+      break;
+    case "sustain-min":
+      config.sustainMs = num * 60_000;
+      break;
+    case "grace-min":
+      config.graceMs = num * 60_000;
+      break;
+    default:
+      console.log(`  ${red}unknown field: ${field}${reset}`);
+      console.log(`  ${dim}fields: cpu-threshold, sustain-min, grace-min${reset}`);
+      return;
+  }
+
+  mkdirSync(dirname(RUNAWAY_CONFIG_PATH), { recursive: true });
+  writeFileSync(RUNAWAY_CONFIG_PATH, JSON.stringify(config, null, 2));
+  console.log(`  ${green}✓${reset} saved to ${dim}${RUNAWAY_CONFIG_PATH}${reset}`);
+  console.log(`  ${dim}restart daemon to apply: rt daemon restart${reset}`);
 }
 
 // ─── Test push notification ──────────────────────────────────────────────────
