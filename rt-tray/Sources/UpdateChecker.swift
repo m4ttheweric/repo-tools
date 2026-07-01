@@ -4,17 +4,20 @@ import AppKit
 /// Checks for new rt releases on GitHub and notifies the user.
 ///
 /// Polls `https://api.github.com/repos/m4ttheweric/repo-tools/releases/latest`
-/// on launch and every 6 hours. Compares the release tag against the embedded
-/// build version. When a newer version is found, fires a native macOS notification
-/// and updates the menu item — prompting the user to run `rt update`.
+/// on launch and every 6 hours. Compares the release tag against the installed
+/// rt CLI version. When a newer version is found, fires a native macOS notification
+/// and updates the menu item -- prompting the user to run `rt update`.
 class UpdateChecker {
 
     static let shared = UpdateChecker()
 
-    /// The build version from Info.plist (set by build.sh at build time).
-    private var currentVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
-    }
+    /// Cached CLI version (resolved once via `rt --version`, falls back to bundle version).
+    private lazy var currentVersion: String = {
+        if let cliVersion = Self.resolveCliVersion() {
+            return cliVersion
+        }
+        return Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+    }()
 
     private let repoOwner = "m4ttheweric"
     private let repoName = "repo-tools"
@@ -30,12 +33,22 @@ class UpdateChecker {
         #if DEBUG
         return true
         #else
+        if Self.isCliDevMode { return true }
         return currentVersion == "dev"
         #endif
     }
 
+    /// The CLI is in dev mode when ~/.local/bin/rt exists (the dev-mode wrapper).
+    private static var isCliDevMode: Bool {
+        let home = NSHomeDirectory()
+        return FileManager.default.fileExists(atPath: home + "/.local/bin/rt")
+    }
+
     func startPeriodicChecks() {
-        if isDevBuild { return }
+        if isDevBuild {
+            NSLog("rt-tray: skipping update checks (dev build)")
+            return
+        }
 
         // Initial check after 30s (don't slow launch)
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
@@ -48,7 +61,7 @@ class UpdateChecker {
         }
     }
 
-    /// Background check — silent, skips dev builds, only fires callback if newer version found.
+    /// Background check -- silent, skips dev builds, only fires callback if newer version found.
     func checkForUpdates() {
         checkForUpdates(userInitiated: false)
     }
@@ -130,8 +143,34 @@ class UpdateChecker {
         alert.runModal()
     }
 
+    /// Shells out to the Homebrew-installed rt binary for its version string.
+    private static func resolveCliVersion() -> String? {
+        let paths = ["/opt/homebrew/bin/rt", "/usr/local/bin/rt"]
+        guard let rtPath = paths.first(where: { FileManager.default.fileExists(atPath: $0) }) else { return nil }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: rtPath)
+        proc.arguments = ["--version"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            guard proc.terminationStatus == 0 else { return nil }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let raw = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty else { return nil }
+            let version = raw.hasPrefix("v") ? String(raw.dropFirst()) : raw
+            NSLog("rt-tray: resolved CLI version: %@", version)
+            return version
+        } catch {
+            return nil
+        }
+    }
+
     private func isNewerVersion(_ remote: String, than local: String) -> Bool {
-        if local == "dev" { return false } // dev builds never auto-update
+        if local == "dev" { return false }
         let remoteParts = remote.split(separator: ".").compactMap { Int($0) }
         let localParts = local.split(separator: ".").compactMap { Int($0) }
 
