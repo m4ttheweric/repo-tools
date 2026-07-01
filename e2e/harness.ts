@@ -39,7 +39,6 @@ async function run(
 
   const env: Record<string, string> = {
     HOME: home,
-    CI: "true",
     PATH: `${join(RT_BINARY, "..")}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`,
     TERM: "xterm-256color",
     ...opts.env,
@@ -47,6 +46,7 @@ async function run(
 
   if (opts.skipSetup) {
     env.RT_SKIP_SETUP = "1";
+    env.CI = "true";
   }
 
   const proc = Bun.spawn([RT_BINARY, ...args], {
