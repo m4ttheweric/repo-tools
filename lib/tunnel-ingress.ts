@@ -7,7 +7,7 @@
  * generated file when debugging.
  */
 
-import type { LaneConfig } from "./runner-store.ts";
+import type { LaneConfig } from "./daemon/lane-config.ts";
 import type { TunnelConfig } from "./tunnel-config.ts";
 import { hostnameFor } from "./tunnel-config.ts";
 

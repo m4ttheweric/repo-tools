@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { generateIngressYaml } from "../tunnel-ingress.ts";
-import type { LaneConfig } from "../runner-store.ts";
+import type { LaneConfig } from "../daemon/lane-config.ts";
 import type { TunnelConfig } from "../tunnel-config.ts";
 
 const cfg: TunnelConfig = {

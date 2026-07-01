@@ -8,7 +8,35 @@
  * open for convenience.
  */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
+import { randomUUID } from "crypto";
+import { RT_DIR } from "../daemon-config.ts";
+
 const CONTROL_PATH = /^\/api\/processes\/[^/]+\/(start|restart|stop|remove)$/;
+
+/** Where the local API token is persisted (0600) for trusted local clients. */
+export const API_TOKEN_PATH = join(RT_DIR, "api-token");
+
+/**
+ * Load the local token gating mutating :9401 routes, generating and persisting
+ * a fresh one on first run. Trusted local clients (CLI, GUI) read the file;
+ * if persisting fails the token is still enforced in-memory for this run.
+ */
+export function loadOrCreateApiToken(tokenPath: string = API_TOKEN_PATH): string {
+  try {
+    if (existsSync(tokenPath)) {
+      const existing = readFileSync(tokenPath, "utf8").trim();
+      if (existing) return existing;
+    }
+  } catch { /* fall through to regenerate */ }
+  const token = randomUUID();
+  try {
+    mkdirSync(RT_DIR, { recursive: true });
+    writeFileSync(tokenPath, token, { mode: 0o600 });
+  } catch { /* best-effort; token still enforced in-memory this run */ }
+  return token;
+}
 
 /** True when a request mutates state and must present the local token. */
 export function needsToken(method: string, pathname: string): boolean {

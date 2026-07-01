@@ -19,8 +19,8 @@
 
 import type { ProcessManager } from "./process-manager.ts";
 import type { StateStore }     from "./state-store.ts";
-import type { Remedy }         from "../runner-store.ts";
-import type { GlobalRemedy }   from "../runner-store.ts";
+import type { Remedy }         from "./remedy-config.ts";
+import type { GlobalRemedy }   from "./remedy-config.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

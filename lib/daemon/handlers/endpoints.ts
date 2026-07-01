@@ -58,10 +58,14 @@ export function createEndpointHandlers(ctx: HandlerContext): HandlerMap {
       const dir = ctx.repoDataDirOf(repo);
       const ep = loadEndpoints(dir).find((e) => e.port === port && e.mode === "bounce");
       if (!ep) return { ok: false, error: `no bounce endpoint declared on port ${port}` };
-      ctx.bounceManager.start(bounceEndpointId(repo, port), port, {
-        returnParam: ep.returnParam ?? "rt_return",
-        allowedOrigins: ctx.liveOriginsFor(repo),
-      });
+      try {
+        ctx.bounceManager.start(bounceEndpointId(repo, port), port, {
+          returnParam: ep.returnParam ?? "rt_return",
+          allowedOrigins: ctx.liveOriginsFor(repo),
+        });
+      } catch (err) {
+        return { ok: false, error: `port ${port} already in use (${err})` };
+      }
       const state = loadEndpointState(dir);
       if (!state.bounceEnabled.includes(port)) state.bounceEnabled.push(port);
       saveEndpointState(dir, state);

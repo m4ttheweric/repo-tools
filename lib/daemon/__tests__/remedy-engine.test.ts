@@ -20,7 +20,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { RemedyEngine } from "../remedy-engine.ts";
 import { StateStore } from "../state-store.ts";
-import type { Remedy, GlobalRemedy } from "../../runner-store.ts";
+import type { Remedy, GlobalRemedy } from "../remedy-config.ts";
 
 interface Sub { id: string; cb: (chunk: Uint8Array) => void; active: boolean }
 
