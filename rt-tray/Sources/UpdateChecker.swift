@@ -61,14 +61,10 @@ class UpdateChecker {
         }
     }
 
-    /// Background check -- silent, skips dev builds, only fires callback if newer version found.
-    func checkForUpdates() {
-        checkForUpdates(userInitiated: false)
-    }
-
     /// Check for updates.
     /// - Parameter userInitiated: When true, always shows a result dialog (update available or up to date).
-    func checkForUpdates(userInitiated: Bool) {
+    ///   Background checks (the default) are silent and only fire the callback when a newer version is found.
+    func checkForUpdates(userInitiated: Bool = false) {
         let urlString = "https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest"
         guard let url = URL(string: urlString) else { return }
 
