@@ -50,6 +50,11 @@ class DaemonClient {
         return response.ok
     }
 
+    func querySystemProcesses() async -> SystemProcessData? {
+        guard let response: SystemProcessResponse = await query("system-processes") else { return nil }
+        return response.ok ? response.data : nil
+    }
+
     // MARK: - HTTP over Unix Socket
 
     /// Perform an HTTP GET request over the daemon's Unix socket.
