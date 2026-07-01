@@ -189,7 +189,6 @@ async function selectPackageAndScript(
               hint: "",
             });
           }
-          queueOptions.push({ value: "__rt:sep1__", label: "──────────────", hint: "" });
           queueOptions.push({
             value: LAUNCH_ALL_SENTINEL,
             label: `Launch all (${q.length} queued)`,
@@ -270,7 +269,7 @@ async function selectPackageAndScript(
         const val = pkgResult.value ?? "";
 
         // Queued item rows are display-only -- re-show picker
-        if (val.startsWith(QUEUED_PREFIX) || val === "__rt:sep1__" || val === "__rt:sep2__" || val === "__rt:sep3__") {
+        if (val.startsWith(QUEUED_PREFIX) || val === "__rt:sep2__" || val === "__rt:sep3__") {
           cameFromScript = true;
           continue;
         }
