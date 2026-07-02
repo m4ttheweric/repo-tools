@@ -13,8 +13,6 @@ import { join } from "path";
 import { randomUUID } from "crypto";
 import { RT_DIR } from "../daemon-config.ts";
 
-const CONTROL_PATH = /^\/api\/processes\/[^/]+\/(start|restart|stop|remove)$/;
-
 /** Where the local API token is persisted (0600) for trusted local clients. */
 export const API_TOKEN_PATH = join(RT_DIR, "api-token");
 
@@ -42,9 +40,6 @@ export function loadOrCreateApiToken(tokenPath: string = API_TOKEN_PATH): string
 export function needsToken(method: string, pathname: string): boolean {
   if (method === "OPTIONS") return false;
   if (pathname === "/api/shutdown") return true;
-  if (method === "POST" && pathname === "/api/processes") return true; // launch a command
-  if (method === "POST" && pathname === "/api/terminals") return true; // open a shell session
-  if (method === "POST" && CONTROL_PATH.test(pathname)) return true;
   return false;
 }
 

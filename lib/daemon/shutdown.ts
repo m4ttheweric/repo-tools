@@ -11,27 +11,18 @@ import { clearWsClients } from "./api-server.ts";
 import { cleanupAllWatchers } from "./workspace-sync.ts";
 import { disposeAllMRSubscriptions } from "./mr-subscriptions.ts";
 import { stopDiscussionsPoller } from "./discussions-poller.ts";
-import type { AttachServer } from "./attach-server.ts";
 import type { HooksGuard } from "./hooks-guard.ts";
 
 export interface ShutdownDeps {
   /** Mutable holder — daemon.ts assigns the servers after boot. */
   servers: { socket?: Server<any>; api?: Server<any> };
-  useHerdr: boolean;
-  /** ProcessManager or HerdrProcessManager (structural: list/kill). */
-  processManager: any;
-  attachServer: AttachServer;
   hooksGuard: HooksGuard;
-  stopGlobalRemedyWatcher: () => void;
   flushCache: () => void;
   log: Logger;
 }
 
 export function createCleanup(deps: ShutdownDeps): () => void {
-  const {
-    servers, useHerdr, processManager, attachServer, hooksGuard,
-    stopGlobalRemedyWatcher, flushCache, log,
-  } = deps;
+  const { servers, hooksGuard, flushCache, log } = deps;
 
   return function cleanup(): void {
     // Stop accepting new traffic first, and force-close all in-flight
@@ -43,22 +34,9 @@ export function createCleanup(deps: ShutdownDeps): () => void {
     try { servers.api?.stop(true); } catch { /* */ }
     clearWsClients();
 
-    // Kill all managed processes and stop the attach server.
-    // Under the herdr backend, processes live in herdr and MUST survive daemon
-    // restarts (they are re-adopted on the next boot via reconcileOnBoot), so we
-    // do NOT close their panes here — closing would defeat the whole point.
-    if (!useHerdr) {
-      try {
-        for (const { id } of processManager.list()) {
-          try { processManager.kill(id).catch(() => {}); } catch { /* */ }
-        }
-      } catch { /* */ }
-    }
     try { cleanupAllWatchers(); } catch { /* */ }
     try { disposeAllMRSubscriptions(); } catch { /* */ }
     try { stopDiscussionsPoller(); } catch { /* */ }
-    try { attachServer.closeAll(); } catch { /* */ }
-    try { stopGlobalRemedyWatcher(); } catch { /* */ }
     try { hooksGuard.closeAll(); } catch { /* */ }
 
     flushCache();
