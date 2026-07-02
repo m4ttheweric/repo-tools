@@ -265,6 +265,7 @@ export function startApiServer(deps: ApiServerDeps): Server<any> {
         const result = await handleCommand(route.cmd, payload);
         return Response.json(result, { headers: corsHeaders });
       } catch (err) {
+        log.error({ err, url: req.url }, "api request failed");
         return Response.json({ ok: false, error: String(err) }, { status: 500, headers: corsHeaders });
       }
     },

@@ -188,6 +188,22 @@ const mrSubEnv: MRSubscriptionEnv = { ctx: handlerCtx, broadcast };
 const routedHandlers = buildRoutedHandlers({ ctx: handlerCtx, broadcast, systemProcessScanner });
 
 async function handleCommand(cmd: string, payload: any): Promise<any> {
+  const t0 = Date.now();
+  try {
+    const result = await routeCommand(cmd, payload);
+    if (result && result.ok === false) {
+      log.warn({ cmd, error: result.error, durationMs: Date.now() - t0 }, "command rejected");
+    } else {
+      log.debug({ cmd, durationMs: Date.now() - t0 }, "command handled");
+    }
+    return result;
+  } catch (err) {
+    log.error({ err, cmd, durationMs: Date.now() - t0 }, "command failed");
+    throw err;
+  }
+}
+
+async function routeCommand(cmd: string, payload: any): Promise<any> {
   const routed = routedHandlers[cmd];
   if (routed) return routed(payload);
 
