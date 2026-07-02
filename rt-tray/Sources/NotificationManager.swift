@@ -19,9 +19,9 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     func requestPermission() {
         center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if let error = error {
-                NSLog("rt-tray: notification auth error: \(error)")
+                TrayLog.error("notification auth error", ["err": String(describing: error)])
             }
-            NSLog("rt-tray: notification permission \(granted ? "granted" : "denied")")
+            TrayLog.info("notification permission \(granted ? "granted" : "denied")")
         }
     }
 
@@ -167,7 +167,7 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
         center.add(request) { error in
             if let error = error {
-                NSLog("rt-tray: notification error: \(error)")
+                TrayLog.error("notification error", ["err": String(describing: error)])
             }
         }
     }

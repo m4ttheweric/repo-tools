@@ -46,7 +46,7 @@ class UpdateChecker {
 
     func startPeriodicChecks() {
         if isDevBuild {
-            NSLog("rt-tray: skipping update checks (dev build)")
+            TrayLog.info("skipping update checks (dev build)")
             return
         }
 
@@ -79,7 +79,7 @@ class UpdateChecker {
                   error == nil,
                   let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
-                NSLog("rt-tray: update check failed: \(error?.localizedDescription ?? "unknown")")
+                TrayLog.warn("update check failed", ["err": error?.localizedDescription ?? "unknown"])
                 if userInitiated {
                     DispatchQueue.main.async {
                         self.showAlert(title: "Update Check Failed",
@@ -96,14 +96,14 @@ class UpdateChecker {
 
                 DispatchQueue.main.async {
                     if isNewer {
-                        NSLog("rt-tray: update available: \(release.tagName) (current: \(self.currentVersion))")
+                        TrayLog.info("update available", ["remote": release.tagName, "current": self.currentVersion])
                         self.latestRelease = release
                         self.onUpdateAvailable?(release)
                         if userInitiated {
                             self.showRunUpdateAlert(release: release)
                         }
                     } else {
-                        NSLog("rt-tray: up to date (\(self.currentVersion))")
+                        TrayLog.info("up to date (\(self.currentVersion))")
                         if userInitiated {
                             let current = self.currentVersion == "dev" ? "dev build" : "v\(self.currentVersion)"
                             self.showAlert(title: "You're up to date",
@@ -112,7 +112,7 @@ class UpdateChecker {
                     }
                 }
             } catch {
-                NSLog("rt-tray: failed to decode release: \(error)")
+                TrayLog.warn("failed to decode release", ["err": String(describing: error)])
                 if userInitiated {
                     DispatchQueue.main.async {
                         self.showAlert(title: "Update Check Failed",
@@ -144,25 +144,11 @@ class UpdateChecker {
         let paths = ["/opt/homebrew/bin/rt", "/usr/local/bin/rt"]
         guard let rtPath = paths.first(where: { FileManager.default.fileExists(atPath: $0) }) else { return nil }
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: rtPath)
-        proc.arguments = ["--version"]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = FileHandle.nullDevice
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            guard proc.terminationStatus == 0 else { return nil }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let raw = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !raw.isEmpty else { return nil }
-            let version = raw.hasPrefix("v") ? String(raw.dropFirst()) : raw
-            NSLog("rt-tray: resolved CLI version: %@", version)
-            return version
-        } catch {
-            return nil
-        }
+        guard let data = TrayLog.runLogged(rtPath, ["--version"], label: "rt --version") else { return nil }
+        guard let raw = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else { return nil }
+        let version = raw.hasPrefix("v") ? String(raw.dropFirst()) : raw
+        return version
     }
 
     private func isNewerVersion(_ remote: String, than local: String) -> Bool {

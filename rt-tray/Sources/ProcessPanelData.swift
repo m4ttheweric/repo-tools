@@ -138,7 +138,7 @@ class ColumnSettings: ObservableObject {
         do {
             try data.write(to: url)
         } catch {
-            NSLog("rt-tray: failed to save column settings: \(error)")
+            TrayLog.warn("failed to save column settings", ["err": String(describing: error)])
         }
     }
 

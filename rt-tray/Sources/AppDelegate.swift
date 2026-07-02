@@ -377,24 +377,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let rtBin = rtBin {
             task.executableURL = URL(fileURLWithPath: rtBin)
             task.arguments = ["daemon", "logs"]
-            NSLog("rt-tray: spawning \(rtBin) daemon logs")
         } else {
             // Last-resort PATH lookup via login shell.
             task.executableURL = URL(fileURLWithPath: "/bin/zsh")
             task.arguments = ["-lc", "exec rt daemon logs"]
-            NSLog("rt-tray: no rt binary found in known locations; falling back to PATH lookup")
+            TrayLog.warn("no rt binary found in known locations; falling back to PATH lookup")
         }
-        // Redirect both stdio to /dev/null so the spawned process doesn't
-        // inherit our pipe endpoints (which would EPIPE on next write once
-        // rt-tray collects them).
-        task.standardOutput = FileHandle.nullDevice
-        task.standardError = FileHandle.nullDevice
-        do {
-            try task.run()
-            NSLog("rt-tray: spawned rt daemon logs (pid \(task.processIdentifier))")
-        } catch {
-            NSLog("rt-tray: failed to spawn rt daemon logs: \(error)")
-        }
+        TrayLog.spawnLoggedDetached(task, label: "rt daemon logs")
     }
 
     @objc private func toggleLoginItem(_ sender: NSMenuItem) {
@@ -407,7 +396,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 sender.state = .on
             }
         } catch {
-            NSLog("rt-tray: login item toggle failed: \(error)")
+            TrayLog.error("login item toggle failed", ["err": String(describing: error)])
         }
     }
 

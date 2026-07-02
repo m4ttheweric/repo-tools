@@ -23,9 +23,9 @@ class DaemonLifecycle {
     func startDaemon() {
         do {
             try service.register()
-            NSLog("rt-tray: daemon registered with launchd (status=\(statusString))")
+            TrayLog.info("daemon registered with launchd", ["status": statusString])
         } catch {
-            NSLog("rt-tray: SMAppService.register() failed: \(error)")
+            TrayLog.error("SMAppService.register() failed", ["err": String(describing: error)])
         }
     }
 
@@ -34,9 +34,9 @@ class DaemonLifecycle {
     func stopDaemon() {
         do {
             try service.unregister()
-            NSLog("rt-tray: daemon unregistered from launchd")
+            TrayLog.info("daemon unregistered from launchd")
         } catch {
-            NSLog("rt-tray: SMAppService.unregister() failed: \(error)")
+            TrayLog.error("SMAppService.unregister() failed", ["err": String(describing: error)])
         }
     }
 
@@ -47,24 +47,17 @@ class DaemonLifecycle {
     /// unregister/register if kickstart isn't available.
     func restartDaemon() {
         let label = "com.rt.daemon"
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        task.arguments = ["kickstart", "-k", "gui/\(getuid())/\(label)"]
-        do {
-            try task.run()
-            task.waitUntilExit()
-            if task.terminationStatus == 0 {
-                NSLog("rt-tray: daemon kickstarted")
-                return
-            }
-        } catch {
-            NSLog("rt-tray: kickstart failed: \(error) — falling back to re-register")
+        if TrayLog.runLogged("/bin/launchctl", ["kickstart", "-k", "gui/\(getuid())/\(label)"],
+                             label: "launchctl kickstart") != nil {
+            TrayLog.info("daemon kickstarted")
+            return
         }
 
         // Fallback: full unregister + register cycle
+        TrayLog.warn("kickstart failed; falling back to re-register")
         try? service.unregister()
         do { try service.register() } catch {
-            NSLog("rt-tray: re-register after kickstart failure also failed: \(error)")
+            TrayLog.error("re-register after kickstart failure also failed", ["err": String(describing: error)])
         }
     }
 
