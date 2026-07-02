@@ -453,8 +453,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         window.title = "rt processes"
         window.contentViewController = NSHostingController(rootView: ProcessPanelView(isDetached: true))
-        window.isReleasedWhenClosed = false
+        // Setting contentViewController shrinks the window to the SwiftUI
+        // view's fitting size (its 600x400 minimum); re-apply the intended
+        // size after. The autosave name then keeps the user's own size and
+        // position across pop-outs, once one exists.
+        window.setContentSize(NSSize(width: 1000, height: 700))
         window.center()
+        window.setFrameAutosaveName("rt-process-panel")
+        window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         processWindow = window
