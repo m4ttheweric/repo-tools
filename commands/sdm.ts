@@ -1,0 +1,326 @@
+/**
+ * rt sdm: StrongDM connections.
+ *
+ *   rt sdm                          picker then guided connect
+ *   rt sdm connect <key> [--duration 8h] [--reason "..."]
+ *   rt sdm status                   CLI health + connected tunnels
+ *   rt sdm login                    run sdm login (browser SAML)
+ *   rt sdm refresh                  re-run connectors, bust the cache
+ *   rt sdm connectors               list connectors + last-run status
+ *   rt sdm connectors test <name>   run one connector, validate, print
+ *   rt sdm connectors init <name>   scaffold a new connector
+ *
+ * The daemon serves the connector catalog when running (10-minute cache);
+ * everything falls back to in-process execution when it is not.
+ */
+
+import type { CommandContext } from "../lib/command-tree.ts";
+import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
+import {
+  connectResource,
+  fetchAccessCatalog,
+  getSdmSnapshot,
+  loginSdm,
+  requestAccess,
+  resourceNeedsAccessRequest,
+  SDM_INSTALL_URL,
+} from "../lib/sdm/core.ts";
+import {
+  connectorsDir,
+  discoverConnections,
+  listConnectorFiles,
+  runConnector,
+  scaffoldConnector,
+  type CatalogResult,
+  type DiscoveredConnection,
+} from "../lib/sdm/connectors.ts";
+import { loadSdmState, recordRecent, type RecentEntry } from "../lib/sdm/state.ts";
+import { runGuidedConnect, type GuidedTarget } from "../lib/sdm/flow.ts";
+import { probeQuery, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS } from "../lib/sdm/verify.ts";
+import { buildPickerOptions } from "../lib/sdm/picker.ts";
+
+const USAGE = `${bold}rt sdm${reset} StrongDM connections
+
+  rt sdm                          pick a connection and connect
+  rt sdm connect <key> [--duration 8h] [--reason "..."]
+  rt sdm status                   CLI health + connected tunnels
+  rt sdm login                    run sdm login
+  rt sdm refresh                  re-run connectors, bust the cache
+  rt sdm connectors               list connectors
+  rt sdm connectors test <name>   run one connector and validate
+  rt sdm connectors init <name>   scaffold a new connector
+`;
+
+export async function run(args: string[], _ctx: CommandContext): Promise<void> {
+  const [sub, ...rest] = args;
+  if (!sub) return pickerCommand();
+  if (sub === "connect") return connectCommand(rest);
+  if (sub === "status") return statusCommand();
+  if (sub === "login") return loginCommand();
+  if (sub === "refresh") return refreshCommand();
+  if (sub === "connectors") return connectorsCommand(rest);
+  console.log(USAGE);
+  process.exitCode = 1;
+}
+
+// ── Catalog access (daemon-first, in-process fallback) ──────────────────────
+
+async function getCatalog(refresh = false): Promise<CatalogResult> {
+  const { daemonQuery } = await import("../lib/daemon-client.ts");
+  const result = await daemonQuery("sdm:catalog", refresh ? { refresh: true } : undefined, 45_000);
+  if (result?.ok && Array.isArray((result as any).connections)) {
+    const r = result as any;
+    return { connections: r.connections, errors: r.errors ?? [], fromCache: r.fromCache ?? false };
+  }
+  return discoverConnections({ refresh });
+}
+
+// ── Guided flow wiring (real prompts, real sdm) ──────────────────────────────
+
+function streamLine(line: string): void {
+  process.stderr.write(`  ${dim}${line}${reset}\n`);
+}
+
+async function guidedConnect(target: GuidedTarget, opts: { duration?: string; reason?: string; interactive: boolean }): Promise<void> {
+  const { select, textInput, confirm } = await import("../lib/rt-render.tsx");
+  const result = await runGuidedConnect(target, opts, {
+    getSnapshot: f => getSdmSnapshot(f),
+    needsAccessRequest: async resource => {
+      const catalog = await fetchAccessCatalog();
+      return catalog.ok ? resourceNeedsAccessRequest(catalog.output, resource) : false;
+    },
+    requestAccess,
+    connect: connectResource,
+    verify: url => verifyWithRetries(() => probeQuery(url, VERIFY_ATTEMPT_TIMEOUT_MS)),
+    login: loginSdm,
+    promptDuration: async def => {
+      const all = [
+        { value: "8h", label: "8 hours" },
+        { value: "4h", label: "4 hours" },
+        { value: "1h", label: "1 hour" },
+      ];
+      // select() has no initialValue option; ordering puts the default first.
+      const options = [...all.filter(o => o.value === def), ...all.filter(o => o.value !== def)];
+      return select({ message: "Access duration", options });
+    },
+    promptReason: async def => textInput({ message: "Reason (org-visible)", defaultValue: def }),
+    confirmProduction: async t =>
+      confirm({ message: `${red}${bold}PRODUCTION${reset} ${t.label}. Connect anyway?`, initialValue: false }),
+    confirmLogin: async () => confirm({ message: "StrongDM is not authenticated. Run sdm login now?", initialValue: true }),
+    onLine: streamLine,
+    recordRecent: t =>
+      void recordRecent({
+        key: t.key, label: t.label, sdmResource: t.sdmResource,
+        tier: t.tier, production: t.production, reasonSuggestion: t.reasonSuggestion, db: t.db,
+      }),
+  });
+
+  if (result.outcome === "connected") {
+    const dbInfo = target.db ? ` ${dim}(${target.db.database ?? "postgres"}/${target.db.schema ?? "public"})${reset}` : "";
+    console.log(`\n${green}✓${reset} ${bold}${target.label}${reset} ready at ${cyan}${result.address}${reset}${dbInfo}`);
+    console.log(`  ${dim}verified in ${result.verify.latencyMs}ms (${result.verify.attempts} attempt${result.verify.attempts === 1 ? "" : "s"})${reset}`);
+    return;
+  }
+  if (result.outcome === "aborted") {
+    console.log(`${yellow}aborted:${reset} ${result.reason}`);
+    process.exitCode = 1;
+    return;
+  }
+  console.error(`${red}✗ ${result.stage} failed:${reset} ${result.error}`);
+  if (result.hint) console.error(`  ${dim}${result.hint}${reset}`);
+  process.exitCode = 1;
+}
+
+function toTarget(c: DiscoveredConnection | RecentEntry): GuidedTarget {
+  return {
+    key: c.key, label: c.label, sdmResource: c.sdmResource,
+    tier: c.tier, production: c.production,
+    reasonSuggestion: c.reasonSuggestion, db: c.db,
+  };
+}
+
+// ── Subcommands ──────────────────────────────────────────────────────────────
+
+async function pickerCommand(): Promise<void> {
+  if (!process.stdout.isTTY) {
+    console.error("rt sdm needs a terminal. Use `rt sdm connect <key> --duration --reason` for scripts.");
+    process.exitCode = 1;
+    return;
+  }
+  const { withInlineSpinner } = await import("../lib/tui/inline-spinner.ts");
+  const catalog = await withInlineSpinner("discovering connections…", () => getCatalog());
+  const recents = loadSdmState().recents;
+
+  for (const e of catalog.errors) {
+    console.error(`${yellow}connector ${e.connector} failed:${reset} ${dim}${e.error}${reset}`);
+  }
+  if (catalog.connections.length === 0 && recents.length === 0) {
+    console.log(`${bold}No sdm connections discovered.${reset}
+
+Connectors are executables in ${cyan}${connectorsDir()}${reset} that print
+connections as JSON when run with the argument ${bold}discover${reset}.
+
+Start with a template:  ${bold}rt sdm connectors init my-org${reset}
+Validate it:            ${bold}rt sdm connectors test my-org${reset}
+StrongDM CLI install:   ${dim}${SDM_INSTALL_URL}${reset}`);
+    return;
+  }
+
+  const { runNavPicker } = await import("../lib/navigate.ts");
+  const options = buildPickerOptions(catalog.connections, recents);
+  const picked = await runNavPicker({ options, message: "sdm connections" });
+  if (!picked || !picked.value) return;
+
+  const target =
+    catalog.connections.find(c => c.key === picked.value) ??
+    recents.find(r => r.key === picked.value);
+  if (!target) {
+    console.error(`${red}unknown selection:${reset} ${picked.value}`);
+    process.exitCode = 1;
+    return;
+  }
+  await guidedConnect(toTarget(target), { interactive: true });
+}
+
+async function connectCommand(rest: string[]): Promise<void> {
+  const flags: { duration?: string; reason?: string } = {};
+  const positional: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === "--duration") flags.duration = rest[++i];
+    else if (rest[i] === "--reason") flags.reason = rest[++i];
+    else positional.push(rest[i]!);
+  }
+  const key = positional[0];
+  if (!key) {
+    console.error("usage: rt sdm connect <key> [--duration 8h] [--reason \"...\"]");
+    process.exitCode = 1;
+    return;
+  }
+  const catalog = await getCatalog();
+  const target =
+    catalog.connections.find(c => c.key === key) ??
+    loadSdmState().recents.find(r => r.key === key);
+  if (!target) {
+    console.error(`${red}unknown connection key:${reset} ${key} ${dim}(rt sdm refresh to re-discover)${reset}`);
+    process.exitCode = 1;
+    return;
+  }
+  const interactive = process.stdout.isTTY && !(flags.duration && flags.reason);
+  await guidedConnect(toTarget(target), { ...flags, interactive });
+}
+
+async function statusCommand(): Promise<void> {
+  const snapshot = await getSdmSnapshot(true);
+  if (snapshot.health.status !== "ok") {
+    console.log(`${red}sdm:${reset} ${snapshot.health.status} ${dim}${snapshot.health.message ?? ""}${reset}`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`${green}sdm: authenticated${reset}`);
+  const connected = [...snapshot.resources.entries()].filter(([, s]) => s.connected);
+  if (connected.length === 0) {
+    console.log(`${dim}no tunnels connected${reset}`);
+    return;
+  }
+  for (const [name, s] of connected) {
+    const expiry = s.expiry ? ` ${dim}until ${s.expiry}${reset}` : "";
+    console.log(`  ${green}●${reset} ${name} ${cyan}${s.address ?? ""}${reset}${expiry}`);
+  }
+}
+
+async function loginCommand(): Promise<void> {
+  console.log(`${dim}running sdm login (your browser will open for SAML)…${reset}`);
+  const r = await loginSdm(streamLine);
+  if (r.ok) {
+    console.log(`${green}✓ logged in${reset}`);
+  } else {
+    console.error(`${red}✗ ${r.error}${reset}`);
+    process.exitCode = 1;
+  }
+}
+
+async function refreshCommand(): Promise<void> {
+  const catalog = await getCatalog(true);
+  const byConnector = new Map<string, number>();
+  for (const c of catalog.connections) {
+    byConnector.set(c.connector, (byConnector.get(c.connector) ?? 0) + 1);
+  }
+  for (const [name, count] of byConnector) {
+    console.log(`  ${green}●${reset} ${name}: ${count} connection${count === 1 ? "" : "s"}`);
+  }
+  for (const e of catalog.errors) {
+    console.log(`  ${red}✗${reset} ${e.connector}: ${dim}${e.error}${reset}`);
+  }
+  const total = catalog.connections.length;
+  console.log(`${bold}${total} connection${total === 1 ? "" : "s"}${reset} from ${byConnector.size} connector${byConnector.size === 1 ? "" : "s"}`);
+  if (total === 0 && catalog.errors.length === 0) {
+    console.log(`${dim}no connectors installed; run: rt sdm connectors init <name>${reset}`);
+  }
+}
+
+async function connectorsCommand(rest: string[]): Promise<void> {
+  const [action, name] = rest;
+
+  if (action === "init") {
+    if (!name) {
+      console.error("usage: rt sdm connectors init <name>");
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      const path = scaffoldConnector(name);
+      console.log(`${green}✓${reset} created ${cyan}${path}${reset}`);
+      console.log(`  edit it, then validate with: ${bold}rt sdm connectors test ${name}${reset}`);
+    } catch (e) {
+      console.error(`${red}✗ ${(e as Error).message}${reset}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (action === "test") {
+    if (!name) {
+      console.error("usage: rt sdm connectors test <name>");
+      process.exitCode = 1;
+      return;
+    }
+    const file = listConnectorFiles().find(f => f.split("/").pop()!.replace(/\.[^.]+$/, "") === name);
+    if (!file) {
+      console.error(`${red}✗ no connector named ${name} in ${connectorsDir()}${reset}`);
+      process.exitCode = 1;
+      return;
+    }
+    const r = await runConnector(file);
+    if (!r.ok) {
+      console.error(`${red}✗ ${r.error}${reset}`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`${green}✓ valid${reset} (${r.output.connections.length} connections)`);
+    for (const c of r.output.connections) {
+      console.log(`  ${c.id}  ${dim}${c.sdmResource}  ${c.tier ?? ""}${reset}`);
+    }
+    return;
+  }
+
+  if (action !== undefined) {
+    console.error("usage: rt sdm connectors [test <name> | init <name>]");
+    process.exitCode = 1;
+    return;
+  }
+
+  const files = listConnectorFiles();
+  if (files.length === 0) {
+    console.log(`${dim}no connectors in ${connectorsDir()}${reset}`);
+    console.log(`scaffold one: ${bold}rt sdm connectors init <name>${reset}`);
+    return;
+  }
+  const catalog = await getCatalog();
+  for (const file of files) {
+    const cname = file.split("/").pop()!.replace(/\.[^.]+$/, "");
+    const err = catalog.errors.find(e => e.connector === cname);
+    const count = catalog.connections.filter(c => c.connector === cname).length;
+    if (err) console.log(`  ${red}✗${reset} ${cname} ${dim}${err.error}${reset}`);
+    else console.log(`  ${green}●${reset} ${cname} ${dim}${count} connection${count === 1 ? "" : "s"}${reset}`);
+  }
+}
