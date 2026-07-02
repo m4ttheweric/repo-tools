@@ -11,7 +11,7 @@
  * that governs the rest of sdm resolution.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { rtDir } from "../rt-paths.ts";
 import { LlmEmptyResponseError, LlmUnavailableError } from "../llm.ts";
@@ -128,4 +128,32 @@ export function suggestionsPath(): string {
 export function writeSuggestions(records: SuggestionRecord[], path = suggestionsPath()): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(records, null, 2) + "\n");
+}
+
+function isSuggestionRecord(v: unknown): v is SuggestionRecord {
+  if (typeof v !== "object" || v === null) return false;
+  const r = v as Record<string, unknown>;
+  return (
+    typeof r.key === "string" &&
+    typeof r.slug === "string" &&
+    typeof r.env === "string" &&
+    (r.resource === null || typeof r.resource === "string") &&
+    typeof r.reasoning === "string"
+  );
+}
+
+/**
+ * Guarded read of suggestions.json, same convention as loadSdmState: a
+ * missing file, corrupt JSON, or a shape that doesn't look like
+ * SuggestionRecord[] all fall back to no suggestions rather than throwing.
+ * Individual malformed entries are dropped rather than sinking the rest.
+ */
+export function readSuggestions(path = suggestionsPath()): SuggestionRecord[] {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    if (Array.isArray(parsed)) return parsed.filter(isSuggestionRecord);
+  } catch {
+    // Missing or corrupt suggestions file: suggestions are best-effort.
+  }
+  return [];
 }
