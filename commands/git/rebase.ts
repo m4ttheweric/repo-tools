@@ -499,7 +499,7 @@ export async function rebaseOnto(opts: RebaseOptions): Promise<RebaseResult> {
 
 /**
  * Shared rebase handler that applies escalation flow on conflict.
- * Returns via process.exit() — never returns normally.
+ * Always exits via process.exit(); does not return normally.
  */
 async function runRebaseWithEscalation(
   args: string[],
