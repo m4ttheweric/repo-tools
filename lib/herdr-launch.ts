@@ -18,7 +18,11 @@ export function isInsideHerdr(): boolean {
   return process.env.HERDR_ENV === "1";
 }
 
-function getSelfPaneId(): string {
+export function getSelfPaneId(): string {
+  // HERDR_PANE_ID is set by herdr itself and is authoritative; the focused-pane
+  // lookup below is a fallback for older herdr versions that don't set it.
+  const fromEnv = process.env.HERDR_PANE_ID;
+  if (fromEnv) return fromEnv;
   const raw = execSync("herdr pane list", { encoding: "utf8", stdio: "pipe" });
   const parsed = JSON.parse(raw);
   const panes: Array<{ pane_id: string; focused: boolean }> = parsed.result?.panes ?? parsed.panes ?? [];
@@ -45,7 +49,7 @@ function splitPane(parentPaneId: string): string {
   return newId;
 }
 
-function shellQuote(s: string): string {
+export function shellQuote(s: string): string {
   // If the string is clean (no special chars), return as-is
   if (/^[a-zA-Z0-9_./:@=-]+$/.test(s)) return s;
   // Otherwise wrap in single quotes, escaping internal single quotes
