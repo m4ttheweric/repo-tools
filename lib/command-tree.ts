@@ -17,6 +17,7 @@ import { bold, cyan, dim, reset, yellow } from "./tui.ts";
 import { resolve, join } from "path";
 import { existsSync } from "fs";
 import { homedir } from "os";
+import { logCommand } from "./cli-logger.ts";
 
 // Dev mode is active when ~/.local/bin/rt exists (the wrapper script pointing
 // at local source). Same detection used by commands/version.ts.
@@ -230,11 +231,31 @@ export async function dispatch(
   // go up one level — show the worktree picker for the current repo —
   // then re-run the handler with the new context.
   while (true) {
+    const t0 = Date.now();
     try {
       await handler(rest, ctx);
+      logCommand({
+        command: commandLabel,
+        args: rest,
+        cwd: process.cwd(),
+        repo: ctx.identity?.repoName,
+        durationMs: Date.now() - t0,
+        outcome: "ok",
+      });
       break;
     } catch (err) {
-      if (!(err instanceof BackNavigation) || !ctx.identity) throw err;
+      if (!(err instanceof BackNavigation) || !ctx.identity) {
+        logCommand({
+          command: commandLabel,
+          args: rest,
+          cwd: process.cwd(),
+          repo: ctx.identity?.repoName,
+          durationMs: Date.now() - t0,
+          outcome: "error",
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
 
       process.stderr.write("\x1b[2J\x1b[H");
       if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
