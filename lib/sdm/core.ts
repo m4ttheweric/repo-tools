@@ -1,0 +1,139 @@
+/**
+ * Org-agnostic StrongDM CLI mechanics: pure output parsers here; the spawn
+ * wrapper, snapshot cache, and command helpers are added below them.
+ *
+ * The sdm CLI has no JSON output; everything is column-text parsing. The
+ * pure functions are kept side-effect free so they test against captured
+ * output verbatim.
+ */
+
+export interface SdmResourceState {
+  connected: boolean;
+  address: string | null;
+  expiry: string | null;
+}
+
+export interface SdmHealth {
+  status: "ok" | "not-installed" | "not-authenticated" | "error";
+  message: string | null;
+}
+
+export interface SdmSnapshot {
+  health: SdmHealth;
+  resources: Map<string, SdmResourceState>;
+}
+
+export type SdmFailureCode = "not-authenticated" | "no-access" | "other";
+
+export const SDM_INSTALL_URL = "https://www.strongdm.com/docs/cli/";
+
+const HEADER_FIRST_COL = new Set(["DATASOURCE", "CLUSTER", "WEBSITE", "SERVER"]);
+
+export function parseSdmStatus(output: string): Map<string, SdmResourceState> {
+  const resources = new Map<string, SdmResourceState>();
+  for (const line of output.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const cols = trimmed.split(/\s{2,}/);
+    if (cols.length < 2) continue;
+    const name = cols[0]!;
+    if (HEADER_FIRST_COL.has(name)) continue;
+    const statusRaw = (cols[1] ?? "").toLowerCase();
+    const connected = statusRaw.includes("connected") && !statusRaw.includes("not connected");
+    const addressCol = cols[2] ?? "";
+    // sdm binds tunnels on loopback; anything else in this column is not a
+    // usable local address (some rows carry the remote endpoint instead).
+    const addressToken = addressCol.split(/\s+/)[0] ?? "";
+    const address = addressToken.startsWith("127.") ? addressToken : null;
+    const expiryMatch = trimmed.match(/ until (.+)$/);
+    resources.set(name, { connected, address, expiry: expiryMatch?.[1] ?? null });
+  }
+  return resources;
+}
+
+function catalogRows(output: string): Array<{ name: string; cols: string[] }> {
+  const rows: Array<{ name: string; cols: string[] }> = [];
+  for (const line of output.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const cols = trimmed.split(/\s{2,}/);
+    if (cols.length < 2 || !/^rs-[0-9a-f]+$/i.test(cols[0]!)) continue;
+    rows.push({ name: cols[1]!.trim(), cols });
+  }
+  return rows;
+}
+
+export function catalogResourceNames(output: string): string[] {
+  return catalogRows(output).map(r => r.name);
+}
+
+export function resourceNeedsAccessRequest(catalogOutput: string, resource: string): boolean {
+  const row = catalogRows(catalogOutput).find(r => r.name === resource);
+  if (!row) return false;
+  return row.cols.some(c => c.trim().toLowerCase() === "available");
+}
+
+const NOT_AUTHENTICATED: SdmHealth = {
+  status: "not-authenticated",
+  message: "StrongDM CLI is not authenticated: run `sdm login` and try again.",
+};
+
+export function interpretSdmStatus(
+  spawnErrorCode: string | null,
+  exitCode: number | null,
+  output: string,
+): SdmHealth {
+  if (spawnErrorCode === "ENOENT") {
+    return { status: "not-installed", message: `StrongDM CLI not found. Install it from ${SDM_INSTALL_URL}.` };
+  }
+  if (spawnErrorCode === "ETIMEDOUT") {
+    return { status: "error", message: "StrongDM CLI did not respond in time." };
+  }
+  if (spawnErrorCode) {
+    return { status: "error", message: `Error running sdm (${spawnErrorCode}).` };
+  }
+  const lower = output.toLowerCase();
+  const loggedOutText =
+    lower.includes("not authenticated") || lower.includes("please log in") || lower.includes("please login");
+  if (exitCode !== 0) {
+    if (loggedOutText || /\blog ?in\b/.test(lower)) return NOT_AUTHENTICATED;
+    return {
+      status: "error",
+      message: output.trim().slice(0, 200) || `sdm status exited with code ${exitCode}.`,
+    };
+  }
+  // A logged-out CLI can exit 0 with a banner; the table header is the
+  // reliable signal that a real status listing came back.
+  const hasTableHeader = /\b(datasource|cluster|website|server)\b/i.test(output);
+  if (loggedOutText || !hasTableHeader) return NOT_AUTHENTICATED;
+  return { status: "ok", message: null };
+}
+
+export function classifySdmFailure(output: string): SdmFailureCode {
+  const lower = output.toLowerCase();
+  if (
+    lower.includes("not authenticated") ||
+    lower.includes("please log in") ||
+    lower.includes("please login") ||
+    lower.includes("sdm login") ||
+    (lower.includes("token") && lower.includes("expired"))
+  ) {
+    return "not-authenticated";
+  }
+  if (/cannot find datasource|no resources matched|access denied|not authorized|permission denied/i.test(output)) {
+    return "no-access";
+  }
+  return "other";
+}
+
+export function buildSdmSnapshot(
+  spawnErrorCode: string | null,
+  exitCode: number | null,
+  output: string,
+): SdmSnapshot {
+  const health = interpretSdmStatus(spawnErrorCode, exitCode, output);
+  return {
+    health,
+    resources: health.status === "ok" ? parseSdmStatus(output) : new Map(),
+  };
+}
