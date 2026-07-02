@@ -37,9 +37,16 @@ async function run(
 ): Promise<RunResult> {
   const home = opts.home ?? createTestHome().path;
 
+  // Connector scaffolds (rt sdm connectors init) run via `#!/usr/bin/env bun`,
+  // so bun's own directory must be on PATH for the spawned rt binary's
+  // children to find it. process.execPath is the running bun binary itself,
+  // which resolves correctly whether bun was installed via the bun installer
+  // (~/.bun/bin) or Homebrew (/opt/homebrew/bin) -- unlike a hardcoded guess.
+  const bunDir = join(process.execPath, "..");
+
   const env: Record<string, string> = {
     HOME: home,
-    PATH: `${join(RT_BINARY, "..")}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`,
+    PATH: `${join(RT_BINARY, "..")}:${bunDir}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`,
     TERM: "xterm-256color",
     ...opts.env,
   };
