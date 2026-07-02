@@ -47,11 +47,14 @@ interface CommandLog {
   cwd: string;
   repo?: string;
   durationMs: number;
-  outcome: "ok" | "error";
+  outcome: "ok" | "error" | "cancelled";
   error?: string;
+  stack?: string;
+  exitCode?: number;
 }
 
 export function logCommand(entry: CommandLog): void {
+  finalized = true;
   try {
     if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
 
@@ -72,4 +75,67 @@ export function logCommand(entry: CommandLog): void {
       pruneOldLogs();
     }
   } catch { /* logging must never break a command */ }
+}
+
+// ─── Invocation-level coverage ───────────────────────────────────────────────
+// dispatch() logs the happy path and thrown errors, but ~100 command paths
+// terminate via process.exit() and never return to it. The exit hook below
+// writes the record for those, so every invocation is logged no matter how
+// it ends. `finalized` prevents double-writes when dispatch already logged.
+
+let current: { command: string; args: string[]; t0: number } | null = null;
+let finalized = false;
+
+/** Called by dispatch() once the command label is resolved. */
+export function beginCommand(command: string, args: string[]): void {
+  if (current) {
+    current.command = command;
+    current.args = args;
+  }
+}
+
+/**
+ * Install process-level hooks: an exit hook that records any invocation not
+ * already logged (captures every process.exit() path), plus crash handlers
+ * that persist uncaught exception / rejection stacks. Call ONCE at CLI entry,
+ * never for the --daemon path (the daemon has its own pino crash handlers).
+ */
+export function installCliLogging(argv: string[]): void {
+  current = {
+    command: argv.length ? argv.join(" ") : "(picker)",
+    args: [],
+    t0: Date.now(),
+  };
+
+  process.on("exit", (code) => {
+    if (finalized || !current) return;
+    logCommand({
+      command: current.command,
+      args: current.args,
+      cwd: process.cwd(),
+      durationMs: Date.now() - current.t0,
+      outcome: code === 0 ? "ok" : code === 130 ? "cancelled" : "error",
+      exitCode: code,
+    });
+  });
+
+  const crash = (kind: string) => (err: unknown) => {
+    if (!finalized && current) {
+      logCommand({
+        command: current.command,
+        args: current.args,
+        cwd: process.cwd(),
+        durationMs: Date.now() - current.t0,
+        outcome: "error",
+        error: `${kind}: ${err instanceof Error ? err.message : String(err)}`,
+        stack: err instanceof Error ? err.stack : undefined,
+        exitCode: 1,
+      });
+    }
+    // Preserve default behavior: print the failure and exit nonzero.
+    console.error(err);
+    process.exit(1);
+  };
+  process.on("uncaughtException", crash("uncaughtException"));
+  process.on("unhandledRejection", crash("unhandledRejection"));
 }

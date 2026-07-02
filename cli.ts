@@ -553,6 +553,14 @@ const _RT_VERSION = (typeof RT_VERSION !== "undefined" ? RT_VERSION : null) ?? p
 const args = process.argv.slice(2);
 const baseDir = import.meta.dir; // resolve module paths relative to cli.ts
 
+// Invocation logging + crash capture for every CLI entry path, including the
+// ~100 process.exit() sites that never return to dispatch(). The daemon path
+// is excluded — it installs its own pino crash handlers.
+if (args[0] !== "--daemon") {
+  const { installCliLogging } = await import("./lib/cli-logger.ts");
+  installCliLogging(args);
+}
+
 if (args[0] === "--version" || args[0] === "-V") {
   console.log(`rt ${_RT_VERSION}`);
 } else if (args[0] === "--daemon") {

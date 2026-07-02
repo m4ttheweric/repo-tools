@@ -17,7 +17,7 @@ import { bold, cyan, dim, reset, yellow } from "./tui.ts";
 import { resolve, join } from "path";
 import { existsSync } from "fs";
 import { homedir } from "os";
-import { logCommand } from "./cli-logger.ts";
+import { beginCommand, logCommand } from "./cli-logger.ts";
 
 // Dev mode is active when ~/.local/bin/rt exists (the wrapper script pointing
 // at local source). Same detection used by commands/version.ts.
@@ -168,6 +168,7 @@ export async function dispatch(
   // Context resolution
   const ctx: CommandContext = {};
   const commandLabel = breadcrumb.slice(1).concat(resolvedName).join(" ");
+  beginCommand(commandLabel, rest);
 
   // Extract --repo <name> flag if present (allows callers to pre-select the repo
   // but still trigger the worktree picker)
@@ -253,6 +254,7 @@ export async function dispatch(
           durationMs: Date.now() - t0,
           outcome: "error",
           error: err instanceof Error ? err.message : String(err),
+          stack: err instanceof Error ? err.stack : undefined,
         });
         throw err;
       }
