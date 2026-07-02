@@ -6,6 +6,9 @@ import { paneToRecord, type HerdrPane } from "./herdr/records.ts";
 import type { ProcessRecord } from "./process-records.ts";
 import type { WorktreeInfo } from "./resolve-worktree.ts";
 import { appendedSuffix } from "./herdr/output-diff.ts";
+import { getDaemonLogger } from "../daemon-logger.ts";
+
+const log = (await getDaemonLogger()).childLogger("herdr-process");
 
 export interface HerdrPMConfig { cmd: string; cwd: string; env?: Record<string, string>; kind?: "terminal" }
 
@@ -40,8 +43,10 @@ export class HerdrProcessManager {
       this.paneMap.set(ref);
       this.stateStore.setPid(id, undefined);
       this.stateStore.setState(id, "running");
+      log.debug({ id, paneId, cwd: opts.cwd }, "pane spawned");
     } catch (err) {
       this.stateStore.setState(id, "stopped");
+      log.error({ err, id, cmd, cwd: opts.cwd }, "pane spawn failed");
       throw err;
     }
   }
@@ -155,6 +160,11 @@ export class HerdrProcessManager {
     const live = new Set<string>((res?.panes ?? []).map((p: any) => p.pane_id));
     const dropped = this.paneMap.reconcile(live);
     for (const r of this.paneMap.all()) this.stateStore.setState(r.id, "running");
-    for (const id of dropped) this.stateStore.setState(id, "stopped");
+    for (const id of dropped) {
+      this.stateStore.setState(id, "stopped");
+      // A pane that vanished between daemon runs may have crashed — herdr
+      // gives us no exit code, so this warn is the only durable trace.
+      log.warn({ id }, "pane gone at reconcile; marked stopped");
+    }
   }
 }
