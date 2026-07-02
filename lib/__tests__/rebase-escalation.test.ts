@@ -9,6 +9,7 @@ import {
   buildConflictBundle,
   renderAgentTask,
   renderHumanReport,
+  resolveEscalationMode,
   verifyRebaseCompleted,
   writeTaskFile,
 } from "../rebase-escalation.ts";
@@ -151,5 +152,25 @@ describe("verifyRebaseCompleted", () => {
     sh("git rebase --abort", repo);
     sh("git checkout -q master", repo);
     expect(verifyRebaseCompleted(repo, "feature", "master")).toBe("wrong-branch");
+  });
+});
+
+describe("resolveEscalationMode", () => {
+  test("--json wins regardless of TTY", () => {
+    expect(resolveEscalationMode(["--json"], true)).toBe("json");
+    expect(resolveEscalationMode(["--json"], false)).toBe("json");
+  });
+
+  test("non-TTY without --json is off (historic behavior preserved)", () => {
+    expect(resolveEscalationMode([], false)).toBe("off");
+  });
+
+  test("--no-agent forces off even on a TTY", () => {
+    expect(resolveEscalationMode(["--no-agent"], true)).toBe("off");
+  });
+
+  test("interactive on a TTY by default", () => {
+    expect(resolveEscalationMode([], true)).toBe("interactive");
+    expect(resolveEscalationMode(["--agent"], true)).toBe("interactive");
   });
 });

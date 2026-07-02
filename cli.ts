@@ -173,7 +173,7 @@ const TREE: Record<string, CommandNode> = {
   },
 
   sync: {
-    description: "Sync branches: rebase onto master + push (daily routine)",
+    description: "Sync branches: rebase onto master + push (daily routine); on conflict, --json/--agent/--no-agent control escalation",
     module: "./commands/sync.ts",
     fn: "syncCommand",
     context: "worktree",

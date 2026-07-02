@@ -15,6 +15,17 @@ import { join } from "path";
 
 import type { RebaseResult } from "../commands/git/rebase.ts";
 import { getCurrentBranch, hasUncommittedChanges } from "./git-ops.ts";
+import { syncLog } from "./sync-log.ts";
+import {
+  AGENT_WAIT_TIMEOUT_MS,
+  herdrAvailable,
+  readPane,
+  sendTask,
+  spawnAgentPane,
+  startClaude,
+  waitAgentIdle,
+} from "./herdr-agent.ts";
+import { bold, cyan, dim, green, red, reset, yellow } from "./tui.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -154,4 +165,157 @@ export function verifyRebaseCompleted(cwd: string, branch: string, target: strin
   if (getCurrentBranch(cwd) !== branch) return "wrong-branch";
   if (gitOk(["merge-base", "--is-ancestor", target, "HEAD"], cwd)) return "completed";
   return "agent-aborted";
+}
+
+// ─── Escalation flow ─────────────────────────────────────────────────────────
+
+/**
+ * Decide how (or whether) to escalate a paused rebase, from the raw argv and
+ * whether we're attached to a TTY. --json always wins (agents pipe rt sync
+ * and need a deterministic contract, not a prompt). Off-TTY without --json
+ * preserves historic behavior: abort, exit 1, no prompt.
+ */
+export function resolveEscalationMode(args: string[], isTTY: boolean): "json" | "interactive" | "off" {
+  if (args.includes("--json")) return "json";
+  if (!isTTY || args.includes("--no-agent")) return "off";
+  return "interactive";
+}
+
+function abortRebase(cwd: string): void {
+  spawnSync("git", ["rebase", "--abort"], { cwd, stdio: "pipe" });
+}
+
+/**
+ * Turn a paused rebase into a resolution: JSON contract for agent callers,
+ * or an interactive prompt (abort / hand to a herdr Claude pane / leave
+ * paused for manual resolution). Returns the process exit code.
+ */
+export async function runEscalationFlow(opts: {
+  cwd: string;
+  dataDir: string;
+  repoName: string;
+  result: RebaseResult;
+  mode: "interactive" | "json";
+  autoYes: boolean;
+  push: boolean;
+}): Promise<number> {
+  const { cwd, result } = opts;
+  const bundle = buildConflictBundle(result, cwd);
+
+  if (opts.mode === "json") {
+    syncLog.phase("escalation", { mode: "json", files: bundle.unresolvedFiles });
+    console.log(JSON.stringify(bundle, null, 2));
+    return 3;
+  }
+
+  const agentPossible = herdrAvailable();
+  let choice: string;
+  if (opts.autoYes && agentPossible) {
+    choice = "agent";
+  } else {
+    const { select } = await import("./rt-render.tsx");
+    const options = [
+      { value: "abort", label: "abort the rebase", hint: "default, same as before" },
+      ...(agentPossible
+        ? [{ value: "agent", label: "resolve with a Claude agent in a herdr pane" }]
+        : []),
+      { value: "manual", label: "leave the rebase paused and resolve manually" },
+    ];
+    choice = await select({
+      message: `${bundle.unresolvedFiles.length} conflict${bundle.unresolvedFiles.length !== 1 ? "s" : ""} need resolution`,
+      options,
+    });
+  }
+
+  syncLog.phase("escalation", { mode: "interactive", choice, files: bundle.unresolvedFiles });
+
+  if (choice === "abort") {
+    abortRebase(cwd);
+    if (bundle.backupBranch) {
+      console.log(`  ${dim}rebase aborted; backup at ${bundle.backupBranch}${reset}`);
+    }
+    return 1;
+  }
+
+  if (choice === "manual") {
+    console.log(renderHumanReport(bundle));
+    return 1;
+  }
+
+  // choice === "agent"
+  try {
+    const taskPath = writeTaskFile(opts.dataDir, renderAgentTask(bundle, cwd));
+    const pane = spawnAgentPane({
+      cwd,
+      label: `rebase ${bundle.branch}`,
+      repoName: opts.repoName,
+    });
+    startClaude(pane, cwd);
+    sendTask(pane, taskPath);
+    syncLog.phase("escalation-agent", { pane: pane.paneId, taskPath });
+
+    console.log(
+      `\n  ${cyan}agent resolving conflicts in pane ${bold}${pane.paneId}${reset}${cyan}…${reset} ${dim}(Ctrl+C to detach)${reset}`,
+    );
+
+    const onSigint = () => {
+      console.log(
+        `\n  ${yellow}detached${reset} ${dim}agent still working in pane ${pane.paneId}.` +
+          ` when it finishes: git push --force-with-lease origin ${bundle.branch}${reset}\n`,
+      );
+      process.exit(130);
+    };
+    process.on("SIGINT", onSigint);
+    let waitResult: "idle" | "timeout";
+    try {
+      waitResult = await waitAgentIdle(pane, AGENT_WAIT_TIMEOUT_MS);
+    } finally {
+      process.removeListener("SIGINT", onSigint);
+    }
+
+    if (waitResult === "timeout") {
+      console.log(`\n  ${red}✗${reset} agent did not finish within 10 minutes; nothing was pushed`);
+      console.log(`  ${dim}pane ${pane.paneId} is still open. backup: ${bundle.backupBranch}${reset}\n`);
+      syncLog.phase("escalation-verdict", { verdict: "timeout" });
+      return 1;
+    }
+
+    const verdict = verifyRebaseCompleted(cwd, bundle.branch, bundle.target);
+    syncLog.phase("escalation-verdict", { verdict });
+
+    if (verdict === "completed") {
+      if (opts.push) {
+        const pushRes = spawnSync(
+          "git",
+          ["push", "--force-with-lease", "origin", bundle.branch],
+          { cwd, encoding: "utf8", stdio: "pipe" },
+        );
+        syncLog.cmd(`push --force-with-lease origin ${bundle.branch}`, cwd, pushRes.status ?? 1, pushRes.stdout ?? "", pushRes.stderr ?? "");
+        if (pushRes.status !== 0) {
+          console.log(`\n  ${red}✗ rebase completed but push failed:${reset} ${(pushRes.stderr ?? "").trim()}\n`);
+          return 1;
+        }
+      }
+      console.log(`\n  ${green}✓${reset} agent resolved the conflicts; ${bold}${bundle.branch}${reset} rebased${opts.push ? " and pushed" : ""}\n`);
+      return 0;
+    }
+
+    if (verdict === "agent-aborted") {
+      console.log(`\n  ${yellow}agent aborted the rebase.${reset} last pane output:\n`);
+      console.log(readPane(pane, 40));
+      console.log(`  ${dim}backup: ${bundle.backupBranch}${reset}\n`);
+      return 1;
+    }
+
+    console.log(`\n  ${red}✗ verification failed (${verdict}); nothing was pushed${reset}`);
+    console.log(`  ${dim}inspect pane ${pane.paneId}. backup: ${bundle.backupBranch}${reset}\n`);
+    return 1;
+  } catch (err) {
+    // Herdr tooling failed after the user chose escalation. Never abort their
+    // paused rebase on a tooling failure; degrade to the manual ending.
+    syncLog.phase("escalation-error", { error: String(err) });
+    console.log(`\n  ${yellow}could not hand off to an agent (${err instanceof Error ? err.message : err})${reset}`);
+    console.log(renderHumanReport(bundle));
+    return 1;
+  }
 }
