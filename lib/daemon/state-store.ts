@@ -7,9 +7,10 @@
  * (though reconcileAfterRestart() resets all non-stopped states on boot).
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { loadPersistedState, hydratePersistedState } from "./persisted-state.ts";
 
 export type ProcessState = "running" | "warm" | "crashed" | "stopped" | "starting" | "stopping";
 
@@ -46,22 +47,19 @@ export class StateStore {
   }
 
   private load(): void {
-    try {
-      if (existsSync(this.persistPath)) {
-        const raw = JSON.parse(readFileSync(this.persistPath, "utf8"));
-        for (const [id, value] of Object.entries(raw)) {
-          // Support both legacy `{id: state}` and current `{id: {state, pid?}}`.
-          if (typeof value === "string") {
-            this.states.set(id, { state: value as ProcessState });
-          } else if (value && typeof value === "object" && "state" in value) {
-            const v = value as { state: ProcessState; pid?: number };
-            this.states.set(id, { state: v.state, pid: v.pid });
-          }
+    const raw = loadPersistedState<Record<string, unknown>>(this.persistPath);
+    if (!raw) return;
+    hydratePersistedState(this.persistPath, () => {
+      for (const [id, value] of Object.entries(raw)) {
+        // Support both legacy `{id: state}` and current `{id: {state, pid?}}`.
+        if (typeof value === "string") {
+          this.states.set(id, { state: value as ProcessState });
+        } else if (value && typeof value === "object" && "state" in value) {
+          const v = value as { state: ProcessState; pid?: number };
+          this.states.set(id, { state: v.state, pid: v.pid });
         }
       }
-    } catch {
-      // start fresh
-    }
+    });
   }
 
   private persist(): void {

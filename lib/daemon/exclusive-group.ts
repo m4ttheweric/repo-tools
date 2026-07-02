@@ -8,11 +8,12 @@
  * daemon restarts.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import type { SuspendManager } from "./suspend-manager.ts";
 import type { StateStore } from "./state-store.ts";
+import { loadPersistedState, hydratePersistedState } from "./persisted-state.ts";
 
 interface GroupRecord {
   members: string[];
@@ -37,28 +38,25 @@ export class ExclusiveGroup {
   }
 
   private load(): void {
-    try {
-      if (existsSync(this.persistPath)) {
-        const raw = JSON.parse(readFileSync(this.persistPath, "utf8"));
-        // Support both formats:
-        //   array: [{id, members, active|activeId}, ...]
-        //   object: {groupId: {members, active}, ...}
-        const entries: [string, GroupRecord][] = Array.isArray(raw)
-          ? raw.map((r: any) => [
-              String(r.id),
-              { members: r.members ?? [], active: r.active ?? r.activeId ?? null },
-            ])
-          : Object.entries(raw as Record<string, any>).map(([k, v]: [string, any]) => [
-              k,
-              { members: v.members ?? [], active: v.active ?? v.activeId ?? null },
-            ]);
-        for (const [groupId, record] of entries) {
-          this.groups.set(groupId, record);
-        }
+    const raw = loadPersistedState<unknown>(this.persistPath);
+    if (!raw) return;
+    hydratePersistedState(this.persistPath, () => {
+      // Support both formats:
+      //   array: [{id, members, active|activeId}, ...]
+      //   object: {groupId: {members, active}, ...}
+      const entries: [string, GroupRecord][] = Array.isArray(raw)
+        ? raw.map((r: any) => [
+            String(r.id),
+            { members: r.members ?? [], active: r.active ?? r.activeId ?? null },
+          ])
+        : Object.entries(raw as Record<string, any>).map(([k, v]: [string, any]) => [
+            k,
+            { members: v.members ?? [], active: v.active ?? v.activeId ?? null },
+          ]);
+      for (const [groupId, record] of entries) {
+        this.groups.set(groupId, record);
       }
-    } catch {
-      // start fresh
-    }
+    });
   }
 
   private persist(): void {

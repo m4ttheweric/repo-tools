@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { loadPersistedState, hydratePersistedState } from "../persisted-state.ts";
 
 export interface PaneRef {
   id: string; workspaceId: string; paneId: string; terminalId: string;
@@ -17,12 +18,11 @@ export class PaneMap {
   }
   private get path(): string { return join(this.dataDir, "herdr-panes.json"); }
   private load(): void {
-    try {
-      if (existsSync(this.path)) {
-        const raw = JSON.parse(readFileSync(this.path, "utf8")) as PaneRef[];
-        for (const r of raw) if (r && r.id) this.byId.set(r.id, r);
-      }
-    } catch { /* start fresh */ }
+    const raw = loadPersistedState<PaneRef[]>(this.path);
+    if (!raw) return;
+    hydratePersistedState(this.path, () => {
+      for (const r of raw) if (r && r.id) this.byId.set(r.id, r);
+    });
   }
   private persist(): void {
     try {

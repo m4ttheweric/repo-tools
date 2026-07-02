@@ -9,9 +9,10 @@
  * Scanning starts at 10000.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { loadPersistedState, hydratePersistedState } from "./persisted-state.ts";
 
 const START_PORT = 10000;
 const END_PORT   = 65535;
@@ -30,19 +31,16 @@ export class PortAllocator {
   }
 
   private load(): void {
-    try {
-      if (existsSync(this.persistPath)) {
-        const raw = JSON.parse(readFileSync(this.persistPath, "utf8")) as Record<string, string>;
-        for (const [portStr, label] of Object.entries(raw)) {
-          const port = Number(portStr);
-          if (Number.isInteger(port) && port > 0) {
-            this.allocated.set(port, label);
-          }
+    const raw = loadPersistedState<Record<string, string>>(this.persistPath);
+    if (!raw) return;
+    hydratePersistedState(this.persistPath, () => {
+      for (const [portStr, label] of Object.entries(raw)) {
+        const port = Number(portStr);
+        if (Number.isInteger(port) && port > 0) {
+          this.allocated.set(port, label);
         }
       }
-    } catch {
-      // start fresh
-    }
+    });
   }
 
   private persist(): void {

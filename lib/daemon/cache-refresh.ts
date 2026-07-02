@@ -79,7 +79,9 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
                 branches.push({ path: repoPath, branch: trimmed });
               }
             }
-          } catch { /* git command failed */ }
+          } catch (err) {
+            log.warn({ err, repo: repoPath }, "local branch listing failed");
+          }
 
           if (branches.length > 0) {
             // Get remote URL
