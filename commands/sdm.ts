@@ -6,6 +6,8 @@
  *   rt sdm login [--manual] [--visible]   log in (default: browser popup flow)
  *   rt sdm refresh [--suggest]       re-run connectors, bust the cache (--suggest drafts
  *                                    LLM suggestions for unresolved gaps into suggestions.json)
+ *   rt sdm map                       print the resolved mapping (provenance per connection)
+ *                                    plus unresolved gaps and any --suggest suggestions
  *   rt sdm connectors [test|init <name>]  list/validate/scaffold connectors
  *
  * The daemon serves the connector catalog when running (10-minute cache);
@@ -36,6 +38,7 @@ import {
   type UnresolvedGap,
 } from "../lib/sdm/connectors.ts";
 import { loadSdmState, recordRecent, type RecentEntry } from "../lib/sdm/state.ts";
+import type { SuggestionRecord } from "../lib/sdm/suggest.ts";
 import { runGuidedConnect, type GuidedTarget } from "../lib/sdm/flow.ts";
 import { probeQuery, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS } from "../lib/sdm/verify.ts";
 import { buildPickerOptions } from "../lib/sdm/picker.ts";
@@ -393,6 +396,65 @@ export async function refreshCmd(args: string[] = []): Promise<void> {
     const records = await suggestForGaps(catalog.unresolved ?? [], { llm: llmPrompt });
     writeSuggestions(records);
     console.log(`${bold}${records.length} suggestion${records.length === 1 ? "" : "s"} written${reset}; review with ${cyan}rt sdm map${reset}`);
+  }
+}
+
+/**
+ * Pure formatter for `rt sdm map`: resolved connections with their
+ * `resolution.source` provenance, then a "Needs mapping" block for every
+ * unresolved gap with its candidates and any suggestion matching it by
+ * `key` (written by `rt sdm refresh --suggest`). No console writes, so this
+ * is unit-testable without a terminal.
+ */
+export function formatMap(
+  connections: DiscoveredConnection[],
+  unresolved: UnresolvedGap[],
+  suggestions: SuggestionRecord[],
+): string[] {
+  const lines: string[] = [];
+
+  lines.push(`${bold}Resolved${reset}`);
+  if (connections.length === 0) {
+    lines.push(`  ${dim}none${reset}`);
+  } else {
+    for (const c of connections) {
+      const provenance = c.resolution ? c.resolution.source : "unspecified";
+      lines.push(`  ${green}●${reset} ${c.label} ${cyan}${c.sdmResource}${reset} ${dim}(${provenance})${reset}`);
+    }
+  }
+
+  lines.push("");
+  lines.push(`${bold}Needs mapping${reset}`);
+  if (unresolved.length === 0) {
+    lines.push(`  ${dim}none${reset}`);
+  } else {
+    for (const gap of unresolved) {
+      lines.push(`  ${yellow}✗${reset} ${gap.label} ${dim}(${gap.slug} ${gap.env}, ${gap.source})${reset}`);
+      if (gap.candidates.length > 0) {
+        lines.push(`    candidates: ${dim}${gap.candidates.join(", ")}${reset}`);
+      }
+      const suggestion = suggestions.find(s => s.key === gap.key);
+      if (suggestion) {
+        const resource = suggestion.resource ?? "null";
+        lines.push(`    suggestion: ${cyan}${resource}${reset} ${dim}${suggestion.reasoning}${reset}`);
+      }
+    }
+  }
+
+  return lines;
+}
+
+/**
+ * `rt sdm map`: the audit view. Fetches the catalog (daemon-first, same as
+ * every other subcommand) and any suggestions drafted by a prior
+ * `rt sdm refresh --suggest`, then prints formatMap's lines.
+ */
+export async function mapCmd(): Promise<void> {
+  const catalog = await getCatalog();
+  const { readSuggestions } = await import("../lib/sdm/suggest.ts");
+  const suggestions = readSuggestions();
+  for (const line of formatMap(catalog.connections, catalog.unresolved ?? [], suggestions)) {
+    console.log(line);
   }
 }
 

@@ -295,6 +295,11 @@ const TREE: Record<string, CommandNode> = {
         module: "./commands/sdm.ts",
         fn: "refreshCmd",
       },
+      map: {
+        description: "Show the resolved SDM mapping with provenance and gaps",
+        module: "./commands/sdm.ts",
+        fn: "mapCmd",
+      },
       connectors: {
         description: "List connectors (or: connectors test <name> / init <name>)",
         module: "./commands/sdm.ts",
