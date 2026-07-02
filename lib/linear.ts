@@ -23,6 +23,7 @@ interface Secrets {
   gitlabToken?: string;
   linearTeamId?: string;
   linearTeamKey?: string;
+  sdmEmail?: string;
 }
 
 export function loadSecrets(): Secrets {

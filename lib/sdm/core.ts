@@ -8,7 +8,9 @@
  */
 
 import { spawn } from "node:child_process";
-import { homedir } from "node:os";
+import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 
 export interface SdmResourceState {
   connected: boolean;
@@ -403,4 +405,94 @@ export async function loginSdm(onLine: (line: string) => void): Promise<{ ok: bo
   const result = await loginSdmWith(runSdmLoginInteractive, onLine);
   if (result.ok) invalidateSdmSnapshotCache();
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Browser-driven login: URL-capture runner
+// ---------------------------------------------------------------------------
+
+// Inlined rather than imported from browser-login.ts: that module imports
+// from this one (Task 4), so importing extractLoginUrl here would cycle.
+// http is accepted too (sdm's output is trusted regardless of scheme, and it
+// lets a local fake-IdP integration test drive this over plain http).
+const AUTH_URL_RE = /(https?:\/\/\S*auth-confirm-native\/\S+)/;
+
+export interface LoginUrlCapture {
+  urlPromise: Promise<string>;
+  donePromise: Promise<RunSdmResult>;
+  cancel(): void;
+}
+
+/**
+ * Spawn `sdm login` for browser-driven login. A temp PATH dir shadows `open`
+ * with a no-op so sdm does not launch the user's default browser (rt drives a
+ * dedicated profile instead); SDM_EMAIL skips the email prompt and a piped
+ * newline accepts the App Domain default. urlPromise resolves when sdm prints
+ * the auth URL; donePromise resolves when sdm exits (after the browser reaches
+ * auth/complete). Nothing here logs the URL or email.
+ */
+export function startLoginCapture(
+  email: string | null,
+  onLine: (line: string) => void,
+): LoginUrlCapture {
+  const shimDir = mkdtempSync(join(tmpdir(), "rt-sdm-open-"));
+  const shim = join(shimDir, "open");
+  writeFileSync(shim, "#!/bin/bash\nexit 0\n");
+  chmodSync(shim, 0o755);
+
+  const env = {
+    ...sdmEnv(),
+    PATH: `${shimDir}:${sdmEnv().PATH ?? ""}`,
+    ...(email ? { SDM_EMAIL: email } : {}),
+  };
+  const proc = spawn(sdmBin(), ["login"], { stdio: ["pipe", "pipe", "pipe"], env });
+  proc.stdin?.on("error", () => {}); // writing to a killed child raises EPIPE
+  proc.stdin?.write("\n"); // accept the App Domain bracketed default
+  proc.stdin?.end();
+
+  let resolveUrl!: (u: string) => void;
+  let rejectUrl!: (e: Error) => void;
+  const urlPromise = new Promise<string>((res, rej) => {
+    resolveUrl = res;
+    rejectUrl = rej;
+  });
+  let urlSeen = false;
+  let output = "";
+
+  const handle = (d: Buffer) => {
+    const s = String(d);
+    output += s;
+    for (const line of s.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      onLine(trimmed);
+      if (!urlSeen) {
+        const u = AUTH_URL_RE.exec(trimmed)?.[1];
+        if (u) {
+          urlSeen = true;
+          resolveUrl(u);
+        }
+      }
+    }
+  };
+  proc.stdout?.on("data", handle);
+  proc.stderr?.on("data", handle);
+
+  const donePromise = new Promise<RunSdmResult>(resolve => {
+    proc.on("error", err => {
+      if (!urlSeen) rejectUrl(err as Error);
+      resolve({ ok: false, output: String(err), spawnErrorCode: (err as NodeJS.ErrnoException).code ?? "EUNKNOWN", exitCode: null });
+    });
+    proc.on("close", code => {
+      rmSync(shimDir, { recursive: true, force: true });
+      if (!urlSeen) rejectUrl(new Error("sdm login exited before printing an auth URL"));
+      resolve({ ok: code === 0, output, spawnErrorCode: null, exitCode: code });
+    });
+  });
+
+  return {
+    urlPromise,
+    donePromise,
+    cancel: () => proc.kill("SIGKILL"),
+  };
 }

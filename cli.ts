@@ -273,8 +273,34 @@ const TREE: Record<string, CommandNode> = {
   },
 
   sdm: {
-    description: "StrongDM connections: pick, connect, verify (connect/status/login/refresh/connectors)",
-    module: "./commands/sdm.ts",
+    description: "StrongDM connections: pick, connect, verify",
+    subcommands: {
+      connect: {
+        description: "Pick a connection and connect (or connect <key> directly)",
+        module: "./commands/sdm.ts",
+        fn: "connectCmd",
+      },
+      status: {
+        description: "CLI auth health + connected tunnels",
+        module: "./commands/sdm.ts",
+        fn: "statusCmd",
+      },
+      login: {
+        description: "Log in to StrongDM (browser popup; --manual for terminal, --visible to watch)",
+        module: "./commands/sdm.ts",
+        fn: "loginCmd",
+      },
+      refresh: {
+        description: "Re-run connectors and refresh the connection cache",
+        module: "./commands/sdm.ts",
+        fn: "refreshCmd",
+      },
+      connectors: {
+        description: "List connectors (or: connectors test <name> / init <name>)",
+        module: "./commands/sdm.ts",
+        fn: "connectorsCmd",
+      },
+    },
   },
 
   status: {

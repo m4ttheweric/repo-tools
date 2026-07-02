@@ -31,4 +31,18 @@ describe("createCdpDispatcher", () => {
     const id1 = JSON.parse(sent[1]!).id;
     expect(id0).not.toBe(id1);
   });
+
+  test("rejectAllPending fails every in-flight request, and is idempotent", async () => {
+    const d = createCdpDispatcher(() => {});
+    const p1 = d.request("A");
+    const p2 = d.request("B");
+    d.rejectAllPending(new Error("CDP socket closed"));
+    await expect(p1).rejects.toThrow("CDP socket closed");
+    await expect(p2).rejects.toThrow("CDP socket closed");
+    // Idempotent: calling again (nothing pending) must not throw.
+    expect(() => d.rejectAllPending(new Error("again"))).not.toThrow();
+    // Also a no-op, not a throw, when nothing was ever pending.
+    const empty = createCdpDispatcher(() => {});
+    expect(() => empty.rejectAllPending(new Error("no pending"))).not.toThrow();
+  });
 });

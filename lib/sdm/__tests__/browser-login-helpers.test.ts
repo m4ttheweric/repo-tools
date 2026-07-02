@@ -4,6 +4,7 @@ import {
   extractLoginUrl,
   classifyLoginNav,
   CHROME_CANDIDATES,
+  type LoginNav,
 } from "../browser-login.ts";
 
 describe("detectChrome", () => {
@@ -37,7 +38,7 @@ describe("extractLoginUrl", () => {
 });
 
 describe("classifyLoginNav", () => {
-  test.each<[string, string]>([
+  test.each<[string, LoginNav]>([
     ["https://app.strongdm.com/app/auth/complete/", "complete"],
     ["https://app.rippling.com/sign-in/identity-verification/select", "needs-user"],
     ["https://app.rippling.com/sign-in", "needs-user"],
@@ -45,6 +46,6 @@ describe("classifyLoginNav", () => {
     ["https://app.rippling.com/apps_sso_direct/Custom_1_abc", "progressing"],
     ["https://app.strongdm.com/auth-confirm-native/abc", "progressing"],
   ])("%s -> %s", (url, expected) => {
-    expect(classifyLoginNav(url)).toBe(expected as any);
+    expect(classifyLoginNav(url)).toBe(expected);
   });
 });

@@ -43,7 +43,16 @@ export function createCdpDispatcher(sendRaw: (json: string) => void) {
     listeners.set(event, arr);
   }
 
-  return { handleMessage, request, on };
+  // Fails every in-flight request so a dead socket (Chrome killed, window
+  // closed mid-click) can never leave a `cdp.send(...)` awaiting forever.
+  // Idempotent: pending is cleared after the first call, so a second call
+  // (or one with nothing pending) just iterates an empty map.
+  function rejectAllPending(err: Error): void {
+    for (const resolver of pending.values()) resolver(undefined, { message: err.message });
+    pending.clear();
+  }
+
+  return { handleMessage, request, on, rejectAllPending };
 }
 
 export interface CdpSocket {
@@ -62,6 +71,10 @@ export async function connectCdp(webSocketDebuggerUrl: string): Promise<CdpSocke
   const ws = new WebSocket(webSocketDebuggerUrl);
   const dispatcher = createCdpDispatcher(json => ws.send(json));
   ws.addEventListener("message", e => dispatcher.handleMessage(e.data as string));
+  // If Chrome dies or the user closes the window mid-flow, the socket closes
+  // without ever answering pending requests; without this, an in-flight
+  // `cdp.send(...)` would hang forever and hold the sdm subprocess open.
+  ws.addEventListener("close", () => dispatcher.rejectAllPending(new Error("CDP socket closed")));
   await new Promise<void>((resolve, reject) => {
     ws.addEventListener("open", () => resolve());
     ws.addEventListener("error", () => reject(new Error("CDP websocket failed to open")));
