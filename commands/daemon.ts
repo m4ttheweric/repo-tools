@@ -255,22 +255,26 @@ export async function showLogs(args: string[] = []): Promise<void> {
     }
   }
 
-  // pino-roll names files: daemon.YYYY-MM-DD.N.log
-  // Pick the most-recent file by mtime, plus the most-recent CLI command log
-  // (cli.YYYY-MM-DD.log, written by lib/cli-logger.ts) so one viewer covers
-  // both the daemon and rt command invocations.
-  const newest = (re: RegExp) => readdirSync(LOG_DIR)
-    .filter(f => re.test(f))
-    .map(f => ({ f, mtime: statSync(join(LOG_DIR, f)).mtimeMs }))
-    .sort((a, b) => b.mtime - a.mtime)[0]?.f;
-
-  const daemonLog = newest(/^daemon\..+\.log$/);
-  if (!daemonLog) {
-    console.log(`\n  ${dim}no daemon log files in ${LOG_DIR}${reset}\n`);
+  // Convention: every surface appends to ~/.rt/logs/<surface>.YYYY-MM-DD[.N].log
+  // (daemon via pino-roll, cli via lib/cli-logger.ts, tray via TrayLog, ...).
+  // Follow the newest file per surface — new surfaces show up in the viewer
+  // automatically, nothing to register.
+  const SURFACE_LOG_RE = /^([a-z][a-z-]*)\.\d{4}-\d{2}-\d{2}(\.\d+)?\.log$/;
+  const newestPerSurface = new Map<string, { f: string; mtime: number }>();
+  for (const f of readdirSync(LOG_DIR)) {
+    const surface = SURFACE_LOG_RE.exec(f)?.[1];
+    if (!surface) continue;
+    const mtime = statSync(join(LOG_DIR, f)).mtimeMs;
+    const prev = newestPerSurface.get(surface);
+    if (!prev || mtime > prev.mtime) newestPerSurface.set(surface, { f, mtime });
+  }
+  if (newestPerSurface.size === 0) {
+    console.log(`\n  ${dim}no log files in ${LOG_DIR} — start the daemon first${reset}\n`);
     return;
   }
-  const cliLog = newest(/^cli\.\d{4}-\d{2}-\d{2}\.log$/);
-  const logPaths = [daemonLog, ...(cliLog ? [cliLog] : [])].map(f => join(LOG_DIR, f));
+  const logPaths = [...newestPerSurface.values()]
+    .sort((a, b) => b.mtime - a.mtime)
+    .map(({ f }) => join(LOG_DIR, f));
 
   if (terminal) {
     await runTerminalViewer(logPaths);
