@@ -1,16 +1,19 @@
 /**
- * rt git rebase — Smart rebase with auto-resolve rules.
+ * rt git rebase — Smart rebase with auto-resolve rules and escalation flow.
  *
  * Rebases the current branch onto origin/master (or origin/main) with:
  *   - Auto-backup before rebase (rt-backup/rebase/<branch>/<timestamp>)
  *   - Auto-resolve rules for known-trivial conflicts (lockfiles, generated files)
  *   - Per-rule postResolve steps (e.g. "pnpm install" after lockfile resolve)
- *   - Auto-abort if any conflict can't be resolved by rules
+ *   - Conflict escalation to agent on demand (same as rt sync)
  *
  * Usage:
  *   rt git rebase                 rebase onto origin/default-branch
  *   rt git rebase --onto=main     explicit target
  *   rt git rebase --dry-run       show what would happen
+ *   rt git rebase --json          on conflict: emit a JSON conflict bundle, exit 3, leave rebase paused
+ *   rt git rebase --agent         on conflict: skip the prompt, hand straight to a Claude agent in herdr
+ *   rt git rebase --no-agent      never offer agent escalation (abort on conflict, as before)
  *
  * Programmatic API (used by rt sync):
  *   rebaseOnto(cwd, opts) → RebaseResult
@@ -495,18 +498,30 @@ export async function rebaseOnto(opts: RebaseOptions): Promise<RebaseResult> {
 // ─── CLI handlers ────────────────────────────────────────────────────────────
 
 /**
- * Default handler: rt git rebase (no subcommand)
- * Rebases onto auto-detected default branch.
+ * Shared rebase handler that applies escalation flow on conflict.
+ * Returns via process.exit() — never returns normally.
  */
-export async function rebaseCommand(
+async function runRebaseWithEscalation(
   args: string[],
   ctx: CommandContext,
+  target?: string,
 ): Promise<void> {
   const cwd = ctx.identity!.repoRoot;
   const dataDir = ctx.identity!.dataDir;
   const dryRun = args.includes("--dry-run");
 
-  const result = await rebaseOnto({ cwd, dataDir, dryRun });
+  const { resolveEscalationMode, runEscalationFlow } = await import("../../lib/rebase-escalation.ts");
+  const isTTY = Boolean(process.stdout.isTTY && process.stdin.isTTY);
+  const mode = resolveEscalationMode(args, isTTY);
+
+  const result = await rebaseOnto({
+    cwd,
+    dataDir,
+    target,
+    dryRun,
+    quiet: mode === "json",
+    onConflict: mode === "off" ? "abort" : "pause",
+  });
 
   if (result.status === "error") {
     console.error(`\n  ${red}${result.error}${reset}\n`);
@@ -514,10 +529,33 @@ export async function rebaseCommand(
   }
 
   if (result.status === "conflict") {
-    process.exit(1);
+    if (mode === "off" || !result.rebaseInProgress) {
+      process.exit(1);
+    }
+    const exitCode = await runEscalationFlow({
+      cwd,
+      dataDir,
+      repoName: ctx.identity!.repoName,
+      result,
+      mode,
+      autoYes: args.includes("--agent"),
+      push: false,
+    });
+    process.exit(exitCode);
   }
 
   console.log("");
+}
+
+/**
+ * Default handler: rt git rebase (no subcommand)
+ * Rebases onto auto-detected default branch.
+ */
+export async function rebaseCommand(
+  args: string[],
+  ctx: CommandContext,
+): Promise<void> {
+  await runRebaseWithEscalation(args, ctx);
 }
 
 /**
@@ -528,26 +566,10 @@ export async function ontoCommand(
   args: string[],
   ctx: CommandContext,
 ): Promise<void> {
-  const cwd = ctx.identity!.repoRoot;
-  const dataDir = ctx.identity!.dataDir;
-  const dryRun = args.includes("--dry-run");
   const target = args.find((a) => !a.startsWith("-"));
-
   if (!target) {
     console.error(`\n  ${yellow}usage: rt git rebase onto <branch>${reset}\n`);
     process.exit(1);
   }
-
-  const result = await rebaseOnto({ cwd, dataDir, target, dryRun });
-
-  if (result.status === "error") {
-    console.error(`\n  ${red}${result.error}${reset}\n`);
-    process.exit(1);
-  }
-
-  if (result.status === "conflict") {
-    process.exit(1);
-  }
-
-  console.log("");
+  await runRebaseWithEscalation(args, ctx, target);
 }
