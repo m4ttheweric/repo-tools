@@ -243,7 +243,12 @@ async function statusCommand(): Promise<void> {
 }
 
 async function loginCommand(): Promise<void> {
-  console.log(`${dim}running sdm login (your browser will open for SAML)…${reset}`);
+  if (!process.stdin.isTTY) {
+    console.error("sdm login is interactive (App Domain and email prompts); run it from a terminal.");
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`${dim}running sdm login (answer its prompts here; your browser will open for SAML)…${reset}`);
   const r = await loginSdm(streamLine);
   if (r.ok) {
     console.log(`${green}✓ logged in${reset}`);

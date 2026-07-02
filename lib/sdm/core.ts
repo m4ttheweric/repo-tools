@@ -332,7 +332,57 @@ export async function connectResource(
 
 export type RunSdm = typeof runSdmCommand;
 
-/** Seam for tests; production loginSdm binds the real runSdmCommand. */
+/**
+ * `sdm login` is prompt-driven (App Domain, email) even when already
+ * authenticated, so it must not run with stdin ignored: the prompt hits EOF
+ * and the login fails. In a terminal the right answer is full interactivity:
+ * inherit stdio so the user answers prompts directly and sees SAML progress,
+ * while we only enforce the timeout. Callers must ensure a TTY first.
+ * Output cannot be captured with inherited stdio; the user already saw it.
+ */
+export function runSdmLoginInteractive(
+  args: string[],
+  _onLine: (line: string) => void,
+  opts: { timeoutMs?: number } = {},
+): Promise<RunSdmResult> {
+  return new Promise(resolve => {
+    let settled = false;
+    let timedOut = false;
+    const settle = (r: RunSdmResult) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(r);
+    };
+    const proc = spawn(sdmBin(), args, { stdio: "inherit", env: sdmEnv() });
+    const timer = opts.timeoutMs
+      ? setTimeout(() => {
+          timedOut = true;
+          proc.kill("SIGKILL");
+        }, opts.timeoutMs)
+      : null;
+    proc.on("error", err => {
+      const code = (err as NodeJS.ErrnoException).code ?? "EUNKNOWN";
+      settle({
+        ok: false,
+        output: code === "ENOENT" ? `StrongDM CLI not found. Install it from ${SDM_INSTALL_URL}.` : `Error running sdm (${code}).`,
+        spawnErrorCode: code,
+        exitCode: null,
+      });
+    });
+    proc.on("close", code =>
+      settle({
+        ok: code === 0 && !timedOut,
+        output: "",
+        timedOut,
+        spawnErrorCode: timedOut ? "ETIMEDOUT" : null,
+        exitCode: code,
+      }),
+    );
+  });
+}
+
+/** Seam for tests; production loginSdm binds the real interactive runner. */
 export async function loginSdmWith(
   run: RunSdm,
   onLine: (line: string) => void,
@@ -345,12 +395,12 @@ export async function loginSdmWith(
       error: "Login timed out. Complete the SAML flow in your browser, or run `sdm login` in a terminal.",
     };
   }
-  return { ok: false, error: `Login failed: ${result.output.trim() || "unknown error"}` };
+  return { ok: false, error: `Login failed: ${result.output.trim() || "the sdm CLI reported the details above"}` };
 }
 
-/** Spawn `sdm login`; the CLI opens the default browser for SAML itself. */
+/** Run `sdm login` interactively in the user's terminal; sdm opens the browser for SAML. */
 export async function loginSdm(onLine: (line: string) => void): Promise<{ ok: boolean; error?: string }> {
-  const result = await loginSdmWith(runSdmCommand, onLine);
+  const result = await loginSdmWith(runSdmLoginInteractive, onLine);
   if (result.ok) invalidateSdmSnapshotCache();
   return result;
 }

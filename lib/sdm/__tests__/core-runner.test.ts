@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "path";
 import {
   runSdmCommand,
+  runSdmLoginInteractive,
   getSdmSnapshot,
   invalidateSdmSnapshotCache,
   loginSdmWith,
@@ -96,5 +97,23 @@ describe("loginSdmWith", () => {
     await loginSdmWith(run, () => {});
     expect(seenArgs).toEqual(["login"]);
     expect(seenTimeout).toBeGreaterThanOrEqual(120_000);
+  });
+});
+
+describe("runSdmLoginInteractive", () => {
+  test("missing binary maps to ENOENT with install message", async () => {
+    process.env.RT_SDM_BIN = "/nonexistent/sdm-not-here";
+    const r = await runSdmLoginInteractive(["login"], () => {});
+    expect(r.ok).toBe(false);
+    expect(r.spawnErrorCode).toBe("ENOENT");
+    expect(r.output).toContain("strongdm.com");
+  });
+
+  test("kills a hung login at the timeout", async () => {
+    const start = Date.now();
+    const r = await runSdmLoginInteractive(["sleep"], () => {}, { timeoutMs: 300 });
+    expect(r.ok).toBe(false);
+    expect(r.timedOut).toBe(true);
+    expect(Date.now() - start).toBeLessThan(3_000);
   });
 });
