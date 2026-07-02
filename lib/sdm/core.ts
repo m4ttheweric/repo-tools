@@ -7,6 +7,9 @@
  * output verbatim.
  */
 
+import { spawn } from "node:child_process";
+import { homedir } from "node:os";
+
 export interface SdmResourceState {
   connected: boolean;
   address: string | null;
@@ -136,4 +139,218 @@ export function buildSdmSnapshot(
     health,
     resources: health.status === "ok" ? parseSdmStatus(output) : new Map(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// CLI runner
+// ---------------------------------------------------------------------------
+
+function sdmBin(): string {
+  return process.env.RT_SDM_BIN ?? "sdm";
+}
+
+/**
+ * PATH fixup so daemon-spawned invocations (minimal launchd env) still find
+ * a Homebrew- or vendor-installed sdm.
+ */
+export function sdmEnv(): NodeJS.ProcessEnv {
+  const home = homedir();
+  const extra = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    `${home}/.sdm/bin`,
+    `${home}/.local/bin`,
+    "/usr/bin",
+    "/bin",
+  ].join(":");
+  return { ...process.env, PATH: `${extra}:${process.env.PATH ?? ""}` };
+}
+
+export interface RunSdmResult {
+  ok: boolean;
+  output: string;
+  timedOut?: boolean;
+  spawnErrorCode: string | null;
+  exitCode: number | null;
+}
+
+export function runSdmCommand(
+  args: string[],
+  onLine: (line: string) => void,
+  opts: { timeoutMs?: number } = {},
+): Promise<RunSdmResult> {
+  return new Promise(resolve => {
+    let settled = false;
+    let timedOut = false;
+    let killTimer: NodeJS.Timeout | null = null;
+    const settle = (r: RunSdmResult) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      resolve(r);
+    };
+    const proc = spawn(sdmBin(), args, { stdio: ["ignore", "pipe", "pipe"], env: sdmEnv() });
+    const timer = opts.timeoutMs
+      ? setTimeout(() => {
+          timedOut = true;
+          proc.stdout?.destroy();
+          proc.stderr?.destroy();
+          proc.kill(9); // SIGKILL
+          // Safeguard: if process doesn't exit within 1s, force settle
+          killTimer = setTimeout(() => {
+            settle({
+              ok: false,
+              output,
+              timedOut: true,
+              spawnErrorCode: "ETIMEDOUT",
+              exitCode: null,
+            });
+          }, 1000);
+        }, opts.timeoutMs)
+      : null;
+    let output = "";
+    const handle = (d: Buffer) => {
+      const s = String(d);
+      output += s;
+      for (const line of s.split("\n")) if (line.trim()) onLine(line.trim());
+    };
+    proc.stdout?.on("data", handle);
+    proc.stderr?.on("data", handle);
+    proc.on("error", err =>
+      settle({
+        ok: false,
+        output,
+        spawnErrorCode: (err as NodeJS.ErrnoException).code ?? "EUNKNOWN",
+        exitCode: null,
+      }),
+    );
+    proc.on("close", code =>
+      settle({
+        ok: code === 0 && !timedOut,
+        output,
+        timedOut,
+        spawnErrorCode: timedOut ? "ETIMEDOUT" : null,
+        exitCode: code,
+      }),
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot + catalog caches
+// ---------------------------------------------------------------------------
+
+const SDM_STATUS_TIMEOUT_MS = 15_000;
+const SNAPSHOT_CACHE_MS = 5_000;
+let snapshotCache: { at: number; snapshot: SdmSnapshot } | null = null;
+
+export function invalidateSdmSnapshotCache(): void {
+  snapshotCache = null;
+}
+
+/**
+ * One `sdm status` spawn feeds both CLI health and per-resource state.
+ * 5s cache absorbs back-to-back callers; mutations invalidate explicitly.
+ * A transient error gets one retry so a cold blip does not stick.
+ */
+export async function getSdmSnapshot(force = false): Promise<SdmSnapshot> {
+  if (!force && snapshotCache && Date.now() - snapshotCache.at < SNAPSHOT_CACHE_MS) {
+    return snapshotCache.snapshot;
+  }
+  let r = await runSdmCommand(["status"], () => {}, { timeoutMs: SDM_STATUS_TIMEOUT_MS });
+  let snapshot = buildSdmSnapshot(r.spawnErrorCode, r.exitCode, r.output);
+  if (snapshot.health.status === "error") {
+    r = await runSdmCommand(["status"], () => {}, { timeoutMs: SDM_STATUS_TIMEOUT_MS });
+    snapshot = buildSdmSnapshot(r.spawnErrorCode, r.exitCode, r.output);
+  }
+  snapshotCache = { at: Date.now(), snapshot };
+  return snapshot;
+}
+
+const SDM_CATALOG_TIMEOUT_MS = 15_000;
+const SDM_CATALOG_CACHE_MS = 10 * 60_000;
+let catalogCache: { at: number; output: string } | null = null;
+
+export function invalidateSdmCatalogCache(): void {
+  catalogCache = null;
+}
+
+export async function fetchAccessCatalog(force = false): Promise<{ ok: boolean; output: string }> {
+  if (!force && catalogCache && Date.now() - catalogCache.at < SDM_CATALOG_CACHE_MS) {
+    return { ok: true, output: catalogCache.output };
+  }
+  const r = await runSdmCommand(["access", "catalog"], () => {}, { timeoutMs: SDM_CATALOG_TIMEOUT_MS });
+  if (r.ok) catalogCache = { at: Date.now(), output: r.output };
+  return { ok: r.ok, output: r.output };
+}
+
+// ---------------------------------------------------------------------------
+// Mutations: access, connect, login
+// ---------------------------------------------------------------------------
+
+const SDM_ACCESS_TIMEOUT_MS = 60_000;
+const SDM_CONNECT_TIMEOUT_MS = 60_000;
+// SAML happens in the user's browser and takes as long as it takes; only a
+// truly wedged CLI should trip this.
+const SDM_LOGIN_TIMEOUT_MS = 180_000;
+
+/**
+ * Org-visible mutation: callers MUST have collected duration and reason from
+ * a human before calling this. Never invoke it with synthesized values.
+ */
+export async function requestAccess(
+  resource: string,
+  duration: string,
+  reason: string,
+  onLine: (line: string) => void,
+): Promise<{ ok: boolean; error?: string; code?: SdmFailureCode }> {
+  const r = await runSdmCommand(
+    ["access", "to", resource, "--duration", duration, "--reason", reason],
+    onLine,
+    { timeoutMs: SDM_ACCESS_TIMEOUT_MS },
+  );
+  if (!r.ok) {
+    return { ok: false, error: `Access request failed: ${r.output.trim()}`, code: classifySdmFailure(r.output) };
+  }
+  invalidateSdmSnapshotCache();
+  invalidateSdmCatalogCache();
+  return { ok: true };
+}
+
+export async function connectResource(
+  resource: string,
+  onLine: (line: string) => void,
+): Promise<{ ok: boolean; error?: string; code?: SdmFailureCode }> {
+  const r = await runSdmCommand(["connect", resource], onLine, { timeoutMs: SDM_CONNECT_TIMEOUT_MS });
+  if (!r.ok && !r.output.includes("already connected")) {
+    return { ok: false, error: `Connect failed: ${r.output.trim()}`, code: classifySdmFailure(r.output) };
+  }
+  invalidateSdmSnapshotCache();
+  return { ok: true };
+}
+
+export type RunSdm = typeof runSdmCommand;
+
+/** Seam for tests; production loginSdm binds the real runSdmCommand. */
+export async function loginSdmWith(
+  run: RunSdm,
+  onLine: (line: string) => void,
+): Promise<{ ok: boolean; error?: string }> {
+  const result = await run(["login"], onLine, { timeoutMs: SDM_LOGIN_TIMEOUT_MS });
+  if (result.ok) return { ok: true };
+  if (result.timedOut) {
+    return {
+      ok: false,
+      error: "Login timed out. Complete the SAML flow in your browser, or run `sdm login` in a terminal.",
+    };
+  }
+  return { ok: false, error: `Login failed: ${result.output.trim() || "unknown error"}` };
+}
+
+/** Spawn `sdm login`; the CLI opens the default browser for SAML itself. */
+export async function loginSdm(onLine: (line: string) => void): Promise<{ ok: boolean; error?: string }> {
+  const result = await loginSdmWith(runSdmCommand, onLine);
+  if (result.ok) invalidateSdmSnapshotCache();
+  return result;
 }
