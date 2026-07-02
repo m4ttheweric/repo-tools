@@ -452,7 +452,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.title = "rt processes"
-        window.contentViewController = NSHostingController(rootView: ProcessPanelView())
+        window.contentViewController = NSHostingController(rootView: ProcessPanelView(isDetached: true))
         window.isReleasedWhenClosed = false
         window.center()
         window.makeKeyAndOrderFront(nil)

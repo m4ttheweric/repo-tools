@@ -3,7 +3,7 @@ import Combine
 
 // MARK: - ProcessPanelController
 
-struct KillStatus: Equatable {
+struct PanelStatus: Equatable {
     let text: String
     let isError: Bool
 }
@@ -35,7 +35,12 @@ class ProcessPanelController: ObservableObject {
     /// Real pids (not just row pids) currently being killed; rows dim while
     /// any of their pids are in here.
     @Published var killingPids: Set<Int> = []
-    @Published var killStatus: KillStatus? = nil
+    /// Footer status line (kill progress, copy confirmations, herdr
+    /// lookup failures). Every user action lands feedback here.
+    @Published var status: PanelStatus? = nil
+    /// True when the most recent daemon query returned nothing, so the
+    /// empty state can say "daemon unreachable" instead of "no processes".
+    @Published var lastRefreshFailed = false
     /// Bumped whenever repoGroups content changes; the outline view skips
     /// reloads for any SwiftUI update that doesn't carry a new version.
     @Published var dataVersion = 0
@@ -79,7 +84,7 @@ class ProcessPanelController: ObservableObject {
         pollTimer = nil
     }
 
-    func refresh() {
+    func refresh(userInitiated: Bool = false) {
         isRefreshing = true
         Task {
             let data = await daemonClient.querySystemProcesses()
@@ -87,7 +92,13 @@ class ProcessPanelController: ObservableObject {
                 self.isLoading = false
                 self.isRefreshing = false
                 if let data = data {
+                    self.lastRefreshFailed = false
                     self.applySnapshot(data)
+                } else {
+                    self.lastRefreshFailed = true
+                    if userInitiated {
+                        self.setStatus("Couldn't reach the rt daemon", isError: true)
+                    }
                 }
             }
         }
@@ -112,8 +123,22 @@ class ProcessPanelController: ObservableObject {
                 totalCpu: procs.reduce(0) { $0 + ($1.totalCpuPercent ?? $1.cpuPercent) }
             )
         }.sorted { $0.name < $1.name }
+        pruneStaleViewState()
         lastUpdated = Date(timeIntervalSince1970: data.updatedAt / 1000)
         dataVersion += 1
+    }
+
+    /// A snapshot can drop the filtered repo or selected rows entirely
+    /// (e.g. their processes exited); a filter pointing at a vanished repo
+    /// would show an empty table with no chip highlighted.
+    private func pruneStaleViewState() {
+        if let selected = selectedRepo, !repoGroups.contains(where: { $0.name == selected }) {
+            selectedRepo = nil
+        }
+        let stale = selection.filter { findProcess($0) == nil }
+        if !stale.isEmpty {
+            selection.subtract(stale)
+        }
     }
 
     // MARK: Kill actions
@@ -249,7 +274,7 @@ class ProcessPanelController: ObservableObject {
                 totalCpu: procs.reduce(0) { $0 + ($1.totalCpuPercent ?? $1.cpuPercent) }
             )
         }
-        selection = selection.filter { findProcess($0) != nil }
+        pruneStaleViewState()
         dataVersion += 1
     }
 
@@ -303,49 +328,64 @@ class ProcessPanelController: ObservableObject {
     private func setStatus(_ text: String, isError: Bool, sticky: Bool = false) {
         statusGeneration += 1
         let generation = statusGeneration
-        killStatus = KillStatus(text: text, isError: isError)
+        status = PanelStatus(text: text, isError: isError)
         guard !sticky else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
             if self?.statusGeneration == generation {
-                self?.killStatus = nil
+                self?.status = nil
             }
         }
     }
 
     // MARK: Info / herdr actions
 
-    func copyProcessInfo(_ proc: SystemProcess) {
-        let info = [
-            "PID: \(proc.pid)",
-            "Command: \(proc.fullCommand)",
-            "CWD: \(proc.cwd)",
-            proc.branch.map { "Branch: \($0)" },
-            proc.port.map { "Port: \($0)" },
-            "CPU: \(proc.cpuFormatted)",
-            "Memory: \(proc.memoryMB)",
-            "Uptime: \(proc.uptime)",
-        ].compactMap { $0 }.joined(separator: "\n")
+    func copyProcessInfo(_ procs: [SystemProcess]) {
+        let info = procs.map { proc in
+            [
+                "PID: \(proc.pid)",
+                "Command: \(proc.fullCommand)",
+                "CWD: \(proc.cwd)",
+                proc.branch.map { "Branch: \($0)" },
+                proc.port.map { "Port: \($0)" },
+                "CPU: \(proc.cpuFormatted)",
+                "Memory: \(proc.memoryMB)",
+                "Uptime: \(proc.uptime)",
+            ].compactMap { $0 }.joined(separator: "\n")
+        }.joined(separator: "\n\n")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(info, forType: .string)
+        setStatus("Copied info for \(describe(procs))", isError: false)
     }
 
     func herdrFocusProcess(_ proc: SystemProcess) {
         Task.detached {
-            if let pane = HerdrBridge.shared.findPane(forPid: proc.pid, cwd: proc.cwd) {
-                HerdrBridge.shared.focusPane(pane)
+            guard let pane = HerdrBridge.shared.findPane(forPid: proc.pid, cwd: proc.cwd) else {
+                await MainActor.run {
+                    self.setStatus("No herdr pane found for \(proc.leafName)", isError: true)
+                }
+                return
             }
+            HerdrBridge.shared.focusPane(pane)
         }
     }
 
-    func herdrReadOutput(_ proc: SystemProcess) {
+    func herdrCopyOutput(_ proc: SystemProcess) {
         Task.detached {
-            if let pane = HerdrBridge.shared.findPane(forPid: proc.pid, cwd: proc.cwd) {
-                if let output = HerdrBridge.shared.readPaneOutput(pane.paneId) {
-                    await MainActor.run {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(output, forType: .string)
-                    }
+            guard let pane = HerdrBridge.shared.findPane(forPid: proc.pid, cwd: proc.cwd) else {
+                await MainActor.run {
+                    self.setStatus("No herdr pane found for \(proc.leafName)", isError: true)
                 }
+                return
+            }
+            let output = HerdrBridge.shared.readPaneOutput(pane.paneId)
+            await MainActor.run {
+                guard let output else {
+                    self.setStatus("Couldn't read \(proc.leafName)'s pane", isError: true)
+                    return
+                }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(output, forType: .string)
+                self.setStatus("Copied recent output from \(proc.leafName)", isError: false)
             }
         }
     }

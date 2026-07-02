@@ -4,6 +4,10 @@ import AppKit
 // MARK: - Main View
 
 struct ProcessPanelView: View {
+    /// True when hosted in the standalone window, where the pop-out
+    /// button would be a no-op pointing at itself.
+    var isDetached: Bool = false
+
     @StateObject private var controller = ProcessPanelController()
     @StateObject private var columnSettings = ColumnSettings()
     @State private var showColumnPicker = false
@@ -33,16 +37,22 @@ struct ProcessPanelView: View {
 
     private var headerBar: some View {
         HStack(spacing: 6) {
-            PanelChip("All", selected: controller.selectedRepo == nil) {
-                controller.selectedRepo = nil
-            }
-            ForEach(controller.repoNames, id: \.self) { repo in
-                PanelChip(repo, selected: controller.selectedRepo == repo) {
-                    controller.selectedRepo = repo
+            // Scrolls so a long repo list can never push the action
+            // cluster off the right edge.
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    PanelChip("All", selected: controller.selectedRepo == nil) {
+                        controller.selectedRepo = nil
+                    }
+                    ForEach(controller.repoNames, id: \.self) { repo in
+                        PanelChip(repo, selected: controller.selectedRepo == repo) {
+                            controller.selectedRepo = repo
+                        }
+                    }
                 }
             }
 
-            Spacer()
+            Spacer(minLength: 12)
 
             if !controller.selection.isEmpty {
                 PanelButton(
@@ -51,13 +61,14 @@ struct ProcessPanelView: View {
                     role: .destructive,
                     action: { controller.killSelected() }
                 )
+                .help("Kill the selected processes")
             }
 
-            Text("\(controller.totalProcessCount) processes")
+            Text(processCountText)
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            PanelButton(label: nil, icon: "line.3.horizontal.decrease", action: {
+            PanelButton(label: nil, icon: "slider.horizontal.3", action: {
                 showColumnPicker.toggle()
             })
             .help("Configure columns")
@@ -69,17 +80,24 @@ struct ProcessPanelView: View {
                 label: nil,
                 icon: "arrow.clockwise",
                 isLoading: controller.isRefreshing,
-                action: { controller.refresh() }
+                action: { controller.refresh(userInitiated: true) }
             )
             .help("Refresh")
 
-            PanelButton(label: nil, icon: "arrow.up.left.and.arrow.down.right", action: {
-                NotificationCenter.default.post(name: .detachProcessPanel, object: nil)
-            })
-            .help("Open in window")
+            if !isDetached {
+                PanelButton(label: nil, icon: "arrow.up.left.and.arrow.down.right", action: {
+                    NotificationCenter.default.post(name: .detachProcessPanel, object: nil)
+                })
+                .help("Open in window")
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    private var processCountText: String {
+        let count = controller.totalProcessCount
+        return count == 1 ? "1 process" : "\(count) processes"
     }
 
     private var columnPickerView: some View {
@@ -94,6 +112,9 @@ struct ProcessPanelView: View {
                 ))
                 .font(.caption)
                 .toggleStyle(.checkbox)
+                // ColumnSettings.toggle refuses to hide the last column;
+                // disable the checkbox so that isn't a silent no-op.
+                .disabled(columnSettings.visibleColumns == [col])
             }
         }
         .padding(12)
@@ -116,12 +137,24 @@ struct ProcessPanelView: View {
 
     private var emptyState: some View {
         VStack(spacing: 8) {
-            Image(systemName: "checkmark.circle")
-                .font(.title)
-                .foregroundColor(.secondary)
-            Text("No processes running")
-                .font(.caption)
-                .foregroundColor(.secondary)
+            if controller.lastRefreshFailed {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.title)
+                    .foregroundColor(.secondary)
+                Text("Can't reach the rt daemon")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                PanelButton(label: "Retry", icon: "arrow.clockwise", action: {
+                    controller.refresh(userInitiated: true)
+                })
+            } else {
+                Image(systemName: "checkmark.circle")
+                    .font(.title)
+                    .foregroundColor(.secondary)
+                Text("No processes running")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -132,7 +165,7 @@ struct ProcessPanelView: View {
                 .font(.caption2)
                 .foregroundColor(.secondary)
             Spacer()
-            if let status = controller.killStatus {
+            if let status = controller.status {
                 Text(status.text)
                     .font(.caption2)
                     .foregroundColor(status.isError ? .red : .secondary)
@@ -141,7 +174,7 @@ struct ProcessPanelView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .animation(.easeInOut(duration: 0.2), value: controller.killStatus)
+        .animation(.easeInOut(duration: 0.2), value: controller.status)
     }
 }
 
@@ -165,9 +198,10 @@ struct PanelChip: View {
             Text(label)
                 .font(.caption)
                 .padding(.horizontal, 8)
-                .padding(.vertical, 3)
+                .padding(.vertical, 4)
                 .background(chipBackground)
                 .cornerRadius(4)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
         .onHover { isHovering = $0 }
@@ -175,7 +209,7 @@ struct PanelChip: View {
 
     private var chipBackground: Color {
         if selected {
-            return Color.accentColor.opacity(0.2)
+            return Color.accentColor.opacity(isHovering ? 0.28 : 0.2)
         }
         if isHovering {
             return Color.primary.opacity(0.06)
@@ -200,13 +234,18 @@ struct PanelButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 3) {
+                // Fixed slot: the spinner and the icon it replaces render
+                // at slightly different sizes, which otherwise makes the
+                // whole header shuffle on every refresh.
                 if isLoading {
                     ProgressView()
                         .controlSize(.small)
                         .scaleEffect(0.7)
+                        .frame(width: 14, height: 14)
                 } else if let icon = icon {
                     Image(systemName: icon)
                         .font(.caption)
+                        .frame(width: 14, height: 14)
                 }
                 if let label = label {
                     Text(label)
@@ -214,10 +253,11 @@ struct PanelButton: View {
                 }
             }
             .foregroundColor(foregroundColor)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
             .background(isHovering ? hoverBackground : Color.clear)
             .cornerRadius(4)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
         .disabled(isLoading)
@@ -227,7 +267,7 @@ struct PanelButton: View {
     private var foregroundColor: Color {
         if isLoading { return .secondary }
         if role == .destructive { return .red }
-        return .secondary
+        return isHovering ? .primary : .secondary
     }
 
     private var hoverBackground: Color {
