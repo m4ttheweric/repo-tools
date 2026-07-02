@@ -26,15 +26,19 @@ import {
   connectorsDir,
   discoverConnections,
   listConnectorFiles,
+  resolveConnection,
   runConnector,
   scaffoldConnector,
   type CatalogResult,
   type DiscoveredConnection,
+  type ResolveConnectionResult,
+  type UnresolvedGap,
 } from "../lib/sdm/connectors.ts";
 import { loadSdmState, recordRecent, type RecentEntry } from "../lib/sdm/state.ts";
 import { runGuidedConnect, type GuidedTarget } from "../lib/sdm/flow.ts";
 import { probeQuery, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS } from "../lib/sdm/verify.ts";
 import { buildPickerOptions } from "../lib/sdm/picker.ts";
+import { isProbablyUrl } from "../lib/sdm/url.ts";
 
 // `sdm` is a branch node in the command tree (cli.ts); each subcommand below
 // is a leaf pointing at one of these exported functions.
@@ -57,6 +61,23 @@ async function getCatalog(refresh = false): Promise<CatalogResult> {
     return { connections, errors, fromCache: r.fromCache ?? false };
   }
   return discoverConnections({ refresh });
+}
+
+/**
+ * Resolve a pasted ticket URL to a connection or a gap. Daemon-first (it
+ * already holds a warm connector cache); when the daemon is unreachable this
+ * falls back to running connectors in-process. An authoritative "no opinion"
+ * from a reachable daemon is trusted as-is, not retried in-process.
+ */
+async function resolveUrl(url: string): Promise<ResolveConnectionResult | null> {
+  const { daemonQuery } = await import("../lib/daemon-client.ts");
+  const result = await daemonQuery("sdm:resolve", { url }, 45_000);
+  if (result?.ok) {
+    const r = result as any;
+    if (!r.connection && !r.unresolved) return null;
+    return { connector: r.connection?.connector ?? r.unresolved?.connector ?? "", connection: r.connection, unresolved: r.unresolved };
+  }
+  return resolveConnection(url);
 }
 
 // ── Guided flow wiring (real prompts, real sdm) ──────────────────────────────
@@ -165,7 +186,7 @@ StrongDM CLI install:   ${dim}${SDM_INSTALL_URL}${reset}`);
   }
 
   const { runNavPicker } = await import("../lib/navigate.ts");
-  const options = buildPickerOptions(catalog.connections, recents);
+  const options = buildPickerOptions(catalog.connections, recents, catalog.unresolved);
   const picked = await runNavPicker({ options, message: "sdm connections" });
   if (!picked || !picked.value) return;
 
@@ -181,8 +202,68 @@ StrongDM CLI install:   ${dim}${SDM_INSTALL_URL}${reset}`);
 }
 
 /**
+ * Handle a gap the connector could not cleanly resolve to a read-write
+ * primary. Never connects a read-only or ambiguous resource silently: the
+ * read-only alt requires an explicit interactive yes, and every other case
+ * exits 1 with the pin-it-yourself hint instead of guessing.
+ */
+async function handleUnresolvedGap(
+  gap: UnresolvedGap,
+  flags: { duration?: string; reason?: string },
+  interactive: boolean,
+): Promise<void> {
+  if (gap.source === "none" && gap.readOnlyAlt) {
+    console.log(
+      `${yellow}Only a read-only replica (${gap.readOnlyAlt}) exists for ${gap.label} (${gap.slug} ${gap.env}); it can't back local dev.${reset}`,
+    );
+    if (process.stdin.isTTY) {
+      const { confirm } = await import("../lib/rt-render.tsx");
+      const yes = await confirm({ message: "Browse it read-only instead?", initialValue: false });
+      if (yes) {
+        const target: GuidedTarget = {
+          key: gap.key, label: `${gap.label} (read-only)`, sdmResource: gap.readOnlyAlt, tier: gap.tier,
+        };
+        await guidedConnect(target, { ...flags, interactive });
+        return;
+      }
+    }
+    process.exitCode = 1;
+    return;
+  }
+
+  console.error(`${red}couldn't resolve ${gap.label} to one StrongDM resource${reset} ${dim}(${gap.source})${reset}`);
+  if (gap.candidates.length > 0) {
+    console.error(`  candidates: ${dim}${gap.candidates.join(", ")}${reset}`);
+  }
+  console.error(`  ${dim}edit ~/.rt/sdm/acme-overrides.json to pin a resource${reset}`);
+  process.exitCode = 1;
+}
+
+/**
+ * `rt sdm connect <url>` for a pasted Linear-ticket deployment URL: resolve
+ * it (daemon-first, in-process fallback) and connect the read-write primary,
+ * or explain honestly why it can't.
+ */
+async function connectUrl(url: string, flags: { duration?: string; reason?: string }): Promise<void> {
+  const interactive = process.stdin.isTTY && !(flags.duration && flags.reason);
+  const result = await resolveUrl(url);
+
+  if (result?.connection) {
+    await guidedConnect(toTarget(result.connection), { ...flags, interactive });
+    return;
+  }
+  if (result?.unresolved) {
+    await handleUnresolvedGap(result.unresolved, flags, interactive);
+    return;
+  }
+  console.error(`${red}couldn't identify a StrongDM resource from that URL:${reset} ${url}`);
+  process.exitCode = 1;
+}
+
+/**
  * `rt sdm connect` with no key opens the connection picker; `rt sdm connect
- * <key> [--duration 8h] [--reason "..."]` connects directly (scriptable).
+ * <key> [--duration 8h] [--reason "..."]` connects directly (scriptable);
+ * `rt sdm connect <url>` resolves a pasted ticket URL first.
  */
 export async function connectCmd(rest: string[], _ctx?: CommandContext): Promise<void> {
   const flags: { duration?: string; reason?: string } = {};
@@ -197,6 +278,7 @@ export async function connectCmd(rest: string[], _ctx?: CommandContext): Promise
   }
   const key = positional[0];
   if (!key) return pickAndConnect();
+  if (isProbablyUrl(key)) return connectUrl(key, flags);
   const catalog = await getCatalog();
   const target =
     catalog.connections.find(c => c.key === key) ??
