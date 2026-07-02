@@ -22,7 +22,6 @@ import { existsSync, mkdirSync, watch, writeFileSync } from "fs";
 import type { Server } from "bun";
 
 import { RT_DIR, DAEMON_PID_PATH } from "./daemon-config.ts";
-import { repoDataDir } from "./rt-paths.ts";
 import { getDaemonLogger, installCrashHandlers, redirectNativeStderr } from "./daemon-logger.ts";
 import { onNotification } from "./notifier.ts";
 
@@ -35,9 +34,6 @@ import { HerdrClient } from "./daemon/herdr/client.ts";
 import { PaneMap } from "./daemon/herdr/pane-map.ts";
 import { HerdrProcessManager } from "./daemon/herdr-process-manager.ts";
 import { SuspendManager } from "./daemon/suspend-manager.ts";
-import { ProxyManager }  from "./daemon/proxy-manager.ts";
-import { TunnelManager } from "./daemon/tunnel-manager.ts";
-import { BounceManager } from "./daemon/bounce-manager.ts";
 import { ExclusiveGroup } from "./daemon/exclusive-group.ts";
 import { SystemProcessScanner } from "./daemon/system-process-scanner.ts";
 
@@ -52,7 +48,6 @@ import { createHooksGuard } from "./daemon/hooks-guard.ts";
 import { buildRoutedHandlers } from "./daemon/command-router.ts";
 import { startSocketServer } from "./daemon/socket-server.ts";
 import { startApiServer, broadcast } from "./daemon/api-server.ts";
-import { restoreEndpointsOnBoot, wireForwardReconcile, type EndpointWiringDeps } from "./daemon/endpoint-wiring.ts";
 import { startPollers } from "./daemon/pollers.ts";
 import { wireProcessEvents } from "./daemon/process-events.ts";
 import { portlessAvailable } from "./daemon/portless.ts";
@@ -64,7 +59,6 @@ import {
 } from "./daemon/mr-subscriptions.ts";
 import { startDiscussionsPoller } from "./daemon/discussions-poller.ts";
 import { createCleanup, installSignalHandlers } from "./daemon/shutdown.ts";
-import { describeRecords } from "./daemon/handlers/process.ts";
 import type { HandlerContext } from "./daemon/handlers/types.ts";
 import type { PortEntry } from "./port-scanner.ts";
 
@@ -91,11 +85,8 @@ const processManager: any = useHerdr
   : new ProcessManager({ stateStore, logBuffer, attachServer });
 
 const suspendManager = new SuspendManager({ processManager, stateStore });
-const proxyManager   = new ProxyManager();
-const bounceManager  = new BounceManager();
 const exclusiveGroup = new ExclusiveGroup({ suspendManager, stateStore });
 const systemProcessScanner = new SystemProcessScanner();
-const tunnelManager  = new TunnelManager({ processManager });
 
 // ─── Remedy engine (auto-detect errors → run fix → restart) ─────────────────
 
@@ -149,22 +140,8 @@ const refreshCache = createCacheRefresher({
 
 // ─── Handler context + command routing ───────────────────────────────────────
 
-/** Live allowlist of a repo's running-process origins, for the bounce guard. */
-function liveOriginsFor(repo: string): () => Set<string> {
-  return () => {
-    const origins = new Set<string>();
-    for (const rec of describeRecords(handlerCtx)) {
-      if (rec.repo === repo && rec.state === "running" && rec.url) {
-        try { origins.add(new URL(rec.url).origin); } catch { /* skip bad url */ }
-      }
-    }
-    return origins;
-  };
-}
-
 const handlerCtx: HandlerContext = {
-  processManager, stateStore, remedyEngine, suspendManager, proxyManager,
-  tunnelManager,
+  processManager, stateStore, remedyEngine, suspendManager,
   attachServer, logBuffer, exclusiveGroup,
   cache, refreshCache, loadCache, flushCache, remedyEvents,
   portAllocator,
@@ -177,9 +154,6 @@ const handlerCtx: HandlerContext = {
   checkAndRepairHooksPath: hooksGuard.checkAndRepairHooksPath,
   startWatchingRepo: hooksGuard.startWatchingRepo,
   refreshStatusRef,
-  repoDataDirOf: (repo) => repoDataDir(repo),
-  bounceManager,
-  liveOriginsFor,
 };
 
 /** Env bundle for the MR subscription subsystem. */
@@ -233,9 +207,8 @@ async function routeCommand(cmd: string, payload: any): Promise<any> {
 const servers: { socket?: Server<any>; api?: Server<any> } = {};
 
 const cleanup = createCleanup({
-  servers, useHerdr, processManager, proxyManager, bounceManager,
-  tunnelManager, attachServer, hooksGuard, stopGlobalRemedyWatcher,
-  flushCache, log,
+  servers, useHerdr, processManager, attachServer, hooksGuard,
+  stopGlobalRemedyWatcher, flushCache, log,
 });
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
@@ -299,19 +272,6 @@ export function startDaemon(): void {
   } catch (err) {
     log.error({ err }, "workspace-sync: failed to restore watchers");
   }
-
-  // Restore canonical endpoints (forward proxies + bounce relays) that were
-  // active before this daemon restart, and lazily (re)bind forward proxies as
-  // their target processes come up.
-  const endpointDeps: EndpointWiringDeps = {
-    stateStore, processManager, proxyManager, bounceManager,
-    repoIndex: loadRepoIndex,
-    repoDataDirOf: (repo) => repoDataDir(repo),
-    liveOriginsFor,
-    log,
-  };
-  restoreEndpointsOnBoot(endpointDeps);
-  wireForwardReconcile(endpointDeps);
 
   // Watch repos.json for changes (new repos added)
   if (existsSync(REPOS_JSON_PATH)) {

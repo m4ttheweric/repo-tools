@@ -34,11 +34,6 @@ const API_INDEX = {
     { method: "POST", path: "/api/processes",         description: "Launch a command in a worktree { cwd, cmd, label? } (requires X-RT-Token)" },
     { method: "POST", path: "/api/terminals",         description: "Open an interactive terminal session (login shell) in a worktree { cwd } (requires X-RT-Token)" },
     { method: "GET",  path: "/api/worktrees/commands", description: "Runnable packages + scripts for a worktree (?path=...), monorepo-aware" },
-    { method: "GET",  path: "/api/endpoints",       description: "Declared canonical endpoints + active state for a repo (?repo=)" },
-    { method: "POST", path: "/api/endpoints/map",            description: "Map a forward endpoint to a process { repo, port, processId, upstreamPort } (X-RT-Token)" },
-    { method: "POST", path: "/api/endpoints/unmap",          description: "Unmap a forward endpoint { repo, port } (X-RT-Token)" },
-    { method: "POST", path: "/api/endpoints/bounce-enable",  description: "Enable a bounce relay on a declared bounce port { repo, port } (X-RT-Token)" },
-    { method: "POST", path: "/api/endpoints/bounce-disable", description: "Disable a bounce relay { repo, port } (X-RT-Token)" },
     { method: "POST", path: "/api/processes/:id/start",   description: "Start a process via its stored config (requires X-RT-Token)" },
     { method: "POST", path: "/api/processes/:id/stop",    description: "Stop a process (requires X-RT-Token)" },
     { method: "POST", path: "/api/processes/:id/restart", description: "Restart a process (requires X-RT-Token)" },
@@ -211,24 +206,6 @@ export function startApiServer(deps: ApiServerDeps): Server<any> {
         if (url.pathname === "/api/worktrees/commands" && req.method === "GET") {
           const result = await handleCommand("worktree:commands", { path: url.searchParams.get("path") });
           return Response.json(result, { headers: corsHeaders });
-        }
-
-        // Canonical endpoints
-        if (url.pathname === "/api/endpoints" && req.method === "GET") {
-          const repo = url.searchParams.get("repo") ?? "";
-          return Response.json(await handleCommand("endpoints:list", { repo }), { headers: corsHeaders });
-        }
-        if (url.pathname === "/api/endpoints/map" && req.method === "POST") {
-          return Response.json(await handleCommand("endpoints:map", await req.json()), { headers: corsHeaders });
-        }
-        if (url.pathname === "/api/endpoints/unmap" && req.method === "POST") {
-          return Response.json(await handleCommand("endpoints:unmap", await req.json()), { headers: corsHeaders });
-        }
-        if (url.pathname === "/api/endpoints/bounce-enable" && req.method === "POST") {
-          return Response.json(await handleCommand("endpoints:bounce-enable", await req.json()), { headers: corsHeaders });
-        }
-        if (url.pathname === "/api/endpoints/bounce-disable" && req.method === "POST") {
-          return Response.json(await handleCommand("endpoints:bounce-disable", await req.json()), { headers: corsHeaders });
         }
 
         // Open an interactive terminal session (login shell) in a worktree

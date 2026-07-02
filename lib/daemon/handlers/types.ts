@@ -13,14 +13,11 @@ import type { ProcessManager } from "../process-manager.ts";
 import type { StateStore } from "../state-store.ts";
 import type { RemedyEngine } from "../remedy-engine.ts";
 import type { SuspendManager } from "../suspend-manager.ts";
-import type { ProxyManager } from "../proxy-manager.ts";
 import type { AttachServer } from "../attach-server.ts";
 import type { LogBuffer } from "../log-buffer.ts";
 import type { ExclusiveGroup } from "../exclusive-group.ts";
 import type { PortAllocator } from "../port-allocator.ts";
 import type { PortEntry } from "../../port-scanner.ts";
-import type { TunnelManager } from "../tunnel-manager.ts";
-import type { BounceManager } from "../bounce-manager.ts";
 
 /** Daemon-local cache entry shape (mirrors the inline definition in daemon.ts). */
 export interface CacheEntry {
@@ -71,9 +68,6 @@ export interface HandlerContext {
   stateStore:     StateStore;
   remedyEngine:   RemedyEngine;
   suspendManager: SuspendManager;
-  proxyManager:   ProxyManager;
-  /** Cloudflare tunnel lifecycle (one cloudflared child per runner board). */
-  tunnelManager:  TunnelManager;
   attachServer:   AttachServer;
   logBuffer:      LogBuffer;
   exclusiveGroup: ExclusiveGroup;
@@ -116,12 +110,6 @@ export interface HandlerContext {
   startWatchingRepo:       (repoName: string, repoPath: string) => void;
   /** Holder for the last cache-refresh timestamp (0 = never). */
   refreshStatusRef:        { lastRefreshAt: number };
-  /** Resolve a repo's local data dir (~/.rt/repos/<repo>); injected for testability. */
-  repoDataDirOf: (repo: string) => string;
-  /** Hosts bounce (302 redirect relay) endpoints; parallel to proxyManager. */
-  bounceManager: BounceManager;
-  /** Live allowlist of a repo's running-process origins, for the bounce guard. */
-  liveOriginsFor: (repo: string) => () => Set<string>;
 }
 
 export type Handler    = (payload: any) => Promise<any>;

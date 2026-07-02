@@ -11,9 +11,6 @@ import { clearWsClients } from "./api-server.ts";
 import { cleanupAllWatchers } from "./workspace-sync.ts";
 import { disposeAllMRSubscriptions } from "./mr-subscriptions.ts";
 import { stopDiscussionsPoller } from "./discussions-poller.ts";
-import type { ProxyManager } from "./proxy-manager.ts";
-import type { BounceManager } from "./bounce-manager.ts";
-import type { TunnelManager } from "./tunnel-manager.ts";
 import type { AttachServer } from "./attach-server.ts";
 import type { HooksGuard } from "./hooks-guard.ts";
 
@@ -23,9 +20,6 @@ export interface ShutdownDeps {
   useHerdr: boolean;
   /** ProcessManager or HerdrProcessManager (structural: list/kill). */
   processManager: any;
-  proxyManager: ProxyManager;
-  bounceManager: BounceManager;
-  tunnelManager: TunnelManager;
   attachServer: AttachServer;
   hooksGuard: HooksGuard;
   stopGlobalRemedyWatcher: () => void;
@@ -35,9 +29,8 @@ export interface ShutdownDeps {
 
 export function createCleanup(deps: ShutdownDeps): () => void {
   const {
-    servers, useHerdr, processManager, proxyManager, bounceManager,
-    tunnelManager, attachServer, hooksGuard, stopGlobalRemedyWatcher,
-    flushCache, log,
+    servers, useHerdr, processManager, attachServer, hooksGuard,
+    stopGlobalRemedyWatcher, flushCache, log,
   } = deps;
 
   return function cleanup(): void {
@@ -50,7 +43,7 @@ export function createCleanup(deps: ShutdownDeps): () => void {
     try { servers.api?.stop(true); } catch { /* */ }
     clearWsClients();
 
-    // Kill all managed processes and stop proxy/attach servers.
+    // Kill all managed processes and stop the attach server.
     // Under the herdr backend, processes live in herdr and MUST survive daemon
     // restarts (they are re-adopted on the next boot via reconcileOnBoot), so we
     // do NOT close their panes here — closing would defeat the whole point.
@@ -61,18 +54,6 @@ export function createCleanup(deps: ShutdownDeps): () => void {
         }
       } catch { /* */ }
     }
-    try { proxyManager.stopAll(); } catch { /* */ }
-    try { bounceManager.stopAll(); } catch { /* */ }
-    // Stop cloudflared tunnels for every active board before we exit so we
-    // don't leave orphans bound to remote ingress.
-    try {
-      for (const { id } of processManager.list()) {
-        if (id.startsWith("tunnel-")) {
-          const boardName = id.slice("tunnel-".length);
-          void tunnelManager.stop(boardName);
-        }
-      }
-    } catch { /* */ }
     try { cleanupAllWatchers(); } catch { /* */ }
     try { disposeAllMRSubscriptions(); } catch { /* */ }
     try { stopDiscussionsPoller(); } catch { /* */ }
