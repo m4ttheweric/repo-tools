@@ -1,7 +1,8 @@
 /**
  * Builds the fzf option list: Recent group first (top item preselected by
- * position), then tier groups in canonical order. Duplication between Recent
- * and a tier group is intentional; both rows carry the same key.
+ * position), then tier groups in canonical order. A connection shown in
+ * Recent is promoted out of its tier group, so every connection appears
+ * exactly once (no confusing duplicate rows when filtering).
  */
 
 import { navSeparator, type NavOption } from "../navigate.ts";
@@ -42,13 +43,16 @@ export function buildPickerOptions(
   const options: NavOption[] = [];
 
   const recentRows = recents.slice(0, MAX_RECENT_ROWS);
+  const recentKeys = new Set(recentRows.map(r => r.key));
   if (recentRows.length > 0) {
     options.push(navSeparator("Recent"));
     for (const r of recentRows) options.push(row(r.key, r.label, r.sdmResource, r.tier));
   }
 
+  // Skip connections already shown under Recent so they aren't listed twice.
   const byTier = new Map<string, DiscoveredConnection[]>();
   for (const c of connections) {
+    if (recentKeys.has(c.key)) continue;
     const tier = c.tier ?? "";
     if (!byTier.has(tier)) byTier.set(tier, []);
     byTier.get(tier)!.push(c);
