@@ -5,8 +5,8 @@
     "rt": "./cli.ts"
   },
   "scripts": {
-    "test": "bun test lib/daemon/__tests__",
-    "test:watch": "bun test --watch lib/daemon/__tests__",
+    "test": "bun test lib",
+    "test:watch": "bun test --watch lib",
     "test:e2e": "bun test --preload ./e2e/setup.ts --timeout 60000 e2e/",
     "test:all": "bun test lib/daemon/__tests__ && bun test --preload ./e2e/setup.ts --timeout 60000 e2e/"
   },
