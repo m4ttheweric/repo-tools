@@ -51,6 +51,8 @@ const REST_ROUTES: Record<string, { cmd: string; method: string }> = {
   "/api/refresh":       { cmd: "cache:refresh", method: "POST" },
   "/api/shutdown":      { cmd: "shutdown", method: "POST" },
   "/api/processes/system": { cmd: "system-processes", method: "GET" },
+  "/api/sdm/recents":   { cmd: "sdm:recents", method: "GET" },
+  "/api/sdm/reconnect": { cmd: "sdm:reconnect", method: "POST" },
 };
 
 /** Per-connection data on the :9401 WebSocket broadcast channel. */
