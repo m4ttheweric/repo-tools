@@ -423,7 +423,12 @@ struct ProcessOutlineView: NSViewRepresentable {
             case .pid:
                 return a.pid < b.pid ? .orderedAscending : a.pid > b.pid ? .orderedDescending : .orderedSame
             case .uptime:
-                return a.uptime.compare(b.uptime)
+                // The uptime string isn't ordered ("9m" > "10m" lexically);
+                // firstSeen is. Later firstSeen = shorter uptime, so the
+                // comparison inverts.
+                return a.firstSeen > b.firstSeen ? .orderedAscending
+                     : a.firstSeen < b.firstSeen ? .orderedDescending
+                     : .orderedSame
             case .worktree:
                 return a.relativeDir.localizedCaseInsensitiveCompare(b.relativeDir)
             case .cwd:
@@ -537,11 +542,19 @@ struct ProcessOutlineView: NSViewRepresentable {
             cell.textField?.font = font
             cell.textField?.textColor = isKilling(proc) ? .tertiaryLabelColor : color
             cell.textField?.alignment = alignment
+            // Text columns truncate freely (paths, branches, full commands);
+            // numeric columns never do, so skip the tooltip noise there.
+            cell.toolTip = (alignment == .left && !text.isEmpty) ? text : nil
             return cell
         }
 
         private func makeCommandCell(_ proc: SystemProcess, isParent: Bool) -> NSView {
             let cell = NSTableCellView()
+            // The command column truncates first; the tooltip carries the
+            // full invocation.
+            cell.toolTip = proc.fullCommand
+
+            let killing = isKilling(proc)
 
             let stack = NSStackView()
             stack.orientation = .horizontal
@@ -557,6 +570,7 @@ struct ProcessOutlineView: NSViewRepresentable {
                 dot.translatesAutoresizingMaskIntoConstraints = false
                 dot.widthAnchor.constraint(equalToConstant: 6).isActive = true
                 dot.heightAnchor.constraint(equalToConstant: 6).isActive = true
+                dot.toolTip = runawayTooltip(proc)
                 stack.addArrangedSubview(dot)
             }
 
@@ -577,7 +591,7 @@ struct ProcessOutlineView: NSViewRepresentable {
                 let chainLabel = NSTextField(labelWithString: chainText)
                 chainLabel.setContentHuggingPriority(.required, for: .vertical)
                 chainLabel.font = .systemFont(ofSize: 9.5, weight: .regular)
-                chainLabel.textColor = .secondaryLabelColor
+                chainLabel.textColor = killing ? .tertiaryLabelColor : .secondaryLabelColor
                 chainLabel.lineBreakMode = .byTruncatingTail
                 chainLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
                 nameStack.addArrangedSubview(chainLabel)
@@ -586,8 +600,6 @@ struct ProcessOutlineView: NSViewRepresentable {
             let leafRow = NSStackView()
             leafRow.orientation = .horizontal
             leafRow.spacing = 4
-
-            let killing = isKilling(proc)
 
             let label = NSTextField(labelWithString: leafName)
             label.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
@@ -607,7 +619,7 @@ struct ProcessOutlineView: NSViewRepresentable {
             if isParent {
                 let countLabel = NSTextField(labelWithString: "+\(proc.childCount)")
                 countLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
-                countLabel.textColor = .secondaryLabelColor
+                countLabel.textColor = killing ? .tertiaryLabelColor : .secondaryLabelColor
                 countLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
                 leafRow.addArrangedSubview(countLabel)
             }
@@ -625,6 +637,14 @@ struct ProcessOutlineView: NSViewRepresentable {
             return cell
         }
 
+        /// Matches the daemon's definition: flagged after sustained high CPU.
+        private func runawayTooltip(_ proc: SystemProcess) -> String {
+            guard let ms = proc.runawayDurationMs else { return "Runaway process: sustained high CPU" }
+            let mins = ms / 60_000
+            let duration = mins >= 60 ? "\(mins / 60)h \(mins % 60)m" : "\(mins)m"
+            return "Runaway process: high CPU for \(duration)"
+        }
+
         private func cellConfig(_ proc: SystemProcess, _ column: ProcessColumn)
             -> (String, NSFont, NSColor, NSTextAlignment) {
             let mono = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
@@ -636,7 +656,10 @@ struct ProcessOutlineView: NSViewRepresentable {
             case .command:
                 return (proc.command, mono, primary, .left)
             case .cpu:
-                return (proc.cpuFormatted, mono, proc.cpuPercent > 80 ? .systemOrange : primary, .right)
+                // Warn on the same value the cell displays (tree total when
+                // present), not the row's own share of it.
+                let cpu = proc.totalCpuPercent ?? proc.cpuPercent
+                return (proc.cpuFormatted, mono, cpu > 80 ? .systemOrange : primary, .right)
             case .memory:
                 return (proc.memoryMB, mono, primary, .right)
             case .port:
@@ -665,8 +688,22 @@ struct ProcessOutlineView: NSViewRepresentable {
             guard let outlineView = outlineView else { return }
 
             let clickedRow = outlineView.clickedRow
-            guard clickedRow >= 0,
-                  let clickedItem = outlineView.item(atRow: clickedRow) as? OutlineProcessItem
+            guard clickedRow >= 0 else { return }
+
+            // Group headers get their own menu, mirroring the header's
+            // Kill All button so the action is also right-click reachable.
+            if let groupItem = outlineView.item(atRow: clickedRow) as? OutlineGroupItem {
+                let count = groupItem.group.processes.count
+                let title = "Kill All in \(groupItem.group.name) (\(count))"
+                let killAllItem = NSMenuItem(title: title,
+                                             action: #selector(contextKillGroup(_:)), keyEquivalent: "")
+                killAllItem.target = self
+                killAllItem.representedObject = groupItem.group.name
+                menu.addItem(killAllItem)
+                return
+            }
+
+            guard let clickedItem = outlineView.item(atRow: clickedRow) as? OutlineProcessItem
             else { return }
 
             // Right-clicking selects the clicked row (see ProcessOutlineNSView),
@@ -703,23 +740,25 @@ struct ProcessOutlineView: NSViewRepresentable {
             }
 
             let forceTitle = targets.count == 1
-                ? "Force Kill (SIGKILL)" : "Force Kill \(targets.count) (SIGKILL)"
+                ? "Force Kill (SIGKILL)" : "Force Kill \(targets.count) Processes (SIGKILL)"
             let forceItem = NSMenuItem(title: forceTitle,
                                        action: #selector(contextForceKill(_:)), keyEquivalent: "")
             forceItem.target = self
             forceItem.representedObject = targets
             menu.addItem(forceItem)
 
-            // Info/herdr actions operate on a single process only.
-            guard targets.count == 1, let processItem = targets.first else { return }
-
             menu.addItem(NSMenuItem.separator())
 
-            let copyItem = NSMenuItem(title: "Copy Info",
+            let copyTitle = targets.count == 1
+                ? "Copy Info" : "Copy Info (\(targets.count) Processes)"
+            let copyItem = NSMenuItem(title: copyTitle,
                                       action: #selector(contextCopyInfo(_:)), keyEquivalent: "")
             copyItem.target = self
-            copyItem.representedObject = processItem
+            copyItem.representedObject = targets
             menu.addItem(copyItem)
+
+            // Herdr actions operate on a single process only.
+            guard targets.count == 1, let processItem = targets.first else { return }
 
             if HerdrBridge.shared.isAvailable {
                 menu.addItem(NSMenuItem.separator())
@@ -730,8 +769,8 @@ struct ProcessOutlineView: NSViewRepresentable {
                 focusItem.representedObject = processItem
                 menu.addItem(focusItem)
 
-                let readItem = NSMenuItem(title: "Read Output",
-                                          action: #selector(contextHerdrReadOutput(_:)), keyEquivalent: "")
+                let readItem = NSMenuItem(title: "Copy Recent Output",
+                                          action: #selector(contextHerdrCopyOutput(_:)), keyEquivalent: "")
                 readItem.target = self
                 readItem.representedObject = processItem
                 menu.addItem(readItem)
@@ -760,9 +799,16 @@ struct ProcessOutlineView: NSViewRepresentable {
             controller?.killProcesses(targets.map(\.process), scope: .tree)
         }
 
+        @objc private func contextKillGroup(_ sender: NSMenuItem) {
+            guard let name = sender.representedObject as? String,
+                  let item = groupItems.first(where: { $0.group.name == name }) else { return }
+            controller?.killAllInGroup(item.group)
+        }
+
         @objc private func contextCopyInfo(_ sender: NSMenuItem) {
-            guard let item = sender.representedObject as? OutlineProcessItem else { return }
-            controller?.copyProcessInfo(item.process)
+            let targets = menuTargets(sender)
+            guard !targets.isEmpty else { return }
+            controller?.copyProcessInfo(targets.map(\.process))
         }
 
         @objc private func contextHerdrFocus(_ sender: NSMenuItem) {
@@ -770,9 +816,9 @@ struct ProcessOutlineView: NSViewRepresentable {
             controller?.herdrFocusProcess(item.process)
         }
 
-        @objc private func contextHerdrReadOutput(_ sender: NSMenuItem) {
+        @objc private func contextHerdrCopyOutput(_ sender: NSMenuItem) {
             guard let item = sender.representedObject as? OutlineProcessItem else { return }
-            controller?.herdrReadOutput(item.process)
+            controller?.herdrCopyOutput(item.process)
         }
     }
 }
@@ -783,7 +829,11 @@ final class ProcessOutlineNSView: NSOutlineView {
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         let clickedRow = row(at: point)
-        if clickedRow >= 0 && !selectedRowIndexes.contains(clickedRow) {
+        // Process rows only: selectRowIndexes bypasses shouldSelectItem, so
+        // without the type check a group-header right-click would select the
+        // unselectable header row and wipe the user's multi-selection.
+        if clickedRow >= 0 && !selectedRowIndexes.contains(clickedRow)
+            && item(atRow: clickedRow) is OutlineProcessItem {
             selectRowIndexes(IndexSet(integer: clickedRow), byExtendingSelection: false)
         }
         return super.menu(for: event)
@@ -798,6 +848,15 @@ private final class HoverButton: NSButton {
     /// Repo-group key for kill actions — looked up by name at click time so a
     /// rebuilt `groupItems` array can't misroute the click (unlike an index tag).
     var groupName: String?
+
+    // Borderless buttons size to their text exactly; breathing room keeps
+    // the hover mask (and click target) from hugging the label.
+    override var intrinsicContentSize: NSSize {
+        var size = super.intrinsicContentSize
+        size.width += 12
+        size.height += 6
+        return size
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
