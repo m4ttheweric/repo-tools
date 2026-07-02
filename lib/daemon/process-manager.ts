@@ -25,6 +25,16 @@ export interface SpawnConfig {
   kind?: "terminal";
 }
 
+const CRASH_TAIL_LINES = 80;
+const CRASH_TAIL_MAX_BYTES = 8 * 1024;
+const ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z]|\][^\x07]*(?:\x07|\x1b\\))/g;
+
+/** PTY tail for the crash log line: ANSI stripped, byte-capped from the end. */
+function crashTail(lines: string[]): string {
+  const text = lines.join("\n").replace(ANSI_RE, "");
+  return text.length > CRASH_TAIL_MAX_BYTES ? text.slice(-CRASH_TAIL_MAX_BYTES) : text;
+}
+
 /**
  * Evict any process currently bound to `port`. Covers the TIME_WAIT / stuck
  * process case where the previous tenant hasn't released the socket yet.
@@ -237,6 +247,7 @@ export class ProcessManager {
       // the active process for this id.
       if (this.processes.get(id)?.proc !== proc) return;
       this.processes.delete(id);
+      const uptimeMs = Date.now() - (this.startedAt.get(id) ?? Date.now());
       // A deliberate kill() already moved the state to "stopping" before
       // signalling. The signal makes the child exit non-zero (e.g. 143 for
       // SIGTERM), but that is an intentional stop, not a crash — finalize as
@@ -244,9 +255,21 @@ export class ProcessManager {
       // "running") is classified by its code: 0 → stopped, non-zero → crashed.
       if (this.stateStore.getState(id) === "stopping") {
         this.stateStore.setState(id, "stopped");
+        log.debug({ id, pid: proc.pid, uptimeMs }, "process stopped");
       } else {
         this.exitCodes.set(id, exitCode);
         this.stateStore.setState(id, exitCode === 0 ? "stopped" : "crashed");
+        if (exitCode === 0) {
+          log.debug({ id, pid: proc.pid, uptimeMs }, "process exited cleanly");
+        } else {
+          // Snapshot the output tail now — the ring buffer is RAM-only and
+          // cleared at the top of the next spawn(), so this is the only
+          // durable record of what the process printed before dying.
+          log.warn({
+            id, pid: proc.pid, exitCode, uptimeMs, cmd: config.cmd,
+            output: crashTail(this.logBuffer.getLastLines(id, CRASH_TAIL_LINES)),
+          }, "process crashed");
+        }
       }
       // Attach socket intentionally NOT closed on crash — user can still read error output.
       // It will be closed at the top of the next spawn() call for this id.
