@@ -111,24 +111,11 @@ class HerdrBridge {
     }
 
     /// Runs a herdr subcommand and returns its stdout, or nil on failure.
+    /// Failures (spawn error or nonzero exit) are logged with stderr by
+    /// TrayLog.runLogged so a broken herdr integration leaves a trace.
     @discardableResult
     private func run(_ arguments: [String]) -> Data? {
-        let task = Process()
-        let outPipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: herdrPath())
-        task.arguments = arguments
-        task.standardOutput = outPipe
-        task.standardError = FileHandle.nullDevice
-
-        do {
-            try task.run()
-        } catch {
-            return nil
-        }
-        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
-        guard task.terminationStatus == 0 else { return nil }
-        return data
+        TrayLog.runLogged(herdrPath(), arguments, label: "herdr \(arguments.first ?? "")")
     }
 
     private func listPanes() -> [HerdrPaneListEntry] {

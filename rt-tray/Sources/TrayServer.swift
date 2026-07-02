@@ -41,16 +41,16 @@ class TrayServer {
             listener?.stateUpdateHandler = { [socketPath] state in
                 switch state {
                 case .ready:
-                    NSLog("rt-tray: server listening on \(socketPath)")
+                    TrayLog.info("server listening on \(socketPath)")
                 case .failed(let error):
-                    NSLog("rt-tray: server failed: \(error)")
+                    TrayLog.error("server failed", ["err": String(describing: error)])
                 default:
                     break
                 }
             }
             listener?.start(queue: queue)
         } catch {
-            NSLog("rt-tray: failed to start tray server: \(error)")
+            TrayLog.error("failed to start tray server", ["err": String(describing: error)])
         }
     }
 
@@ -105,7 +105,7 @@ class TrayServer {
                         return
                     }
                 }
-                self.sendResponse(connection: connection, status: 400, body: "{\"ok\":false,\"error\":\"invalid body\"}")
+                self.sendResponse(connection: connection, status: 400, body: "{\"ok\":false,\"error\":\"invalid body\"}", path: path)
 
             } else if method == "GET" && path == "/health" {
                 self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true,\"app\":\"rt-tray\"}")
@@ -147,7 +147,7 @@ class TrayServer {
                         }
                     } catch {
                         // Best-effort — proceed to register even if this fails.
-                        NSLog("rt-tray: mainApp.unregister failed: \(error)")
+                        TrayLog.warn("mainApp.unregister failed", ["err": String(describing: error)])
                     }
                     // Let BTM settle before the re-register.
                     Thread.sleep(forTimeInterval: 1.0)
@@ -166,11 +166,11 @@ class TrayServer {
                     }
                 }
                 if ok {
-                    NSLog("rt-tray: login-item reset — status=\(statusAfter)")
+                    TrayLog.info("login-item reset", ["status": statusAfter])
                     self.sendResponse(connection: connection, status: 200,
                                       body: "{\"ok\":true,\"status\":\"\(statusAfter)\"}")
                 } else {
-                    NSLog("rt-tray: login-item reset failed: \(errMsg)")
+                    TrayLog.error("login-item reset failed", ["err": errMsg])
                     self.sendResponse(connection: connection, status: 500,
                                       body: "{\"ok\":false,\"error\":\"\(errMsg)\"}")
                 }
@@ -187,7 +187,7 @@ class TrayServer {
                 self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true,\"status\":\"\(statusStr)\"}")
 
             } else {
-                self.sendResponse(connection: connection, status: 404, body: "{\"ok\":false,\"error\":\"not found\"}")
+                self.sendResponse(connection: connection, status: 404, body: "{\"ok\":false,\"error\":\"not found\"}", path: path)
             }
         }
     }
@@ -231,7 +231,12 @@ class TrayServer {
         }
     }
 
-    private func sendResponse(connection: NWConnection, status: Int, body: String) {
+    private func sendResponse(connection: NWConnection, status: Int, body: String, path: String? = nil) {
+        // Central error-visibility seam: every non-2xx reply from any route,
+        // present or future, leaves a trace.
+        if status >= 400 {
+            TrayLog.warn("request failed", ["status": status, "path": path ?? "(unparsed)", "body": body])
+        }
         let statusText: String
         switch status {
         case 200: statusText = "OK"

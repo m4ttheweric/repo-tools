@@ -84,8 +84,7 @@ class DaemonClient {
                 return try JSONDecoder().decode(T.self, from: data)
             } catch {
                 let preview = String(data: data.prefix(500), encoding: .utf8) ?? "<binary>"
-                let msg = "rt-tray: decode \(command) failed: \(error)\nResponse preview: \(preview)\n"
-                try? msg.write(toFile: NSHomeDirectory() + "/.rt/tray-decode-error.log", atomically: true, encoding: .utf8)
+                TrayLog.error("decode \(command) failed", ["err": String(describing: error), "preview": preview])
                 return nil
             }
         } catch {
