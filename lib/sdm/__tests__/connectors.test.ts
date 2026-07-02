@@ -1,6 +1,6 @@
-import { describe, test, expect, beforeEach, afterAll } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync, rmSync, existsSync } from "fs";
-import { join } from "path";
+import { describe, test, expect, beforeEach, afterEach, afterAll } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, chmodSync, rmSync, existsSync } from "fs";
+import { dirname, join } from "path";
 import { tmpdir } from "os";
 import {
   listConnectorFiles,
@@ -10,11 +10,26 @@ import {
   resolveConnection,
   invalidateCatalogCache,
   scaffoldConnector,
+  catalogCachePath,
 } from "../connectors.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "rt-sdm-connectors-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
-beforeEach(() => invalidateCatalogCache());
+
+// Every test gets an isolated HOME so catalogCachePath() (~/.rt/sdm/catalog-cache.json)
+// never touches the real developer machine and no test's persisted cache can
+// leak into another test's.
+const origHome = process.env.HOME;
+let testHome: string;
+beforeEach(() => {
+  invalidateCatalogCache();
+  testHome = mkdtempSync(join(tmpdir(), "rt-sdm-home-"));
+  process.env.HOME = testHome;
+});
+afterEach(() => {
+  process.env.HOME = origHome;
+  rmSync(testHome, { recursive: true, force: true });
+});
 
 function writeConnector(name: string, body: string): string {
   const p = join(dir, name);
@@ -149,6 +164,113 @@ describe("discoverConnections", () => {
     } finally {
       rmSync(dirA, { recursive: true, force: true });
       rmSync(dirB, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("discoverConnections persistent cache", () => {
+  test("first discover writes catalog-cache.json", async () => {
+    const freshDir = mkdtempSync(join(tmpdir(), "rt-sdm-persist-"));
+    try {
+      writeFileSync(join(freshDir, "good"), `#!/bin/bash\necho '${GOOD_JSON}'\n`);
+      chmodSync(join(freshDir, "good"), 0o755);
+
+      const r = await discoverConnections({ dir: freshDir });
+      expect(r.connections.map(c => c.key)).toEqual(["good:one", "good:two"]);
+
+      const raw = JSON.parse(readFileSync(catalogCachePath(), "utf8"));
+      expect(typeof raw.builtAt).toBe("number");
+      expect(raw.result.connections.map((c: { key: string }) => c.key)).toEqual(["good:one", "good:two"]);
+    } finally {
+      rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a cold in-memory cache still returns the persisted connections within TTL", async () => {
+    const freshDir = mkdtempSync(join(tmpdir(), "rt-sdm-persist-"));
+    try {
+      writeFileSync(join(freshDir, "good"), `#!/bin/bash\necho '${GOOD_JSON}'\n`);
+      chmodSync(join(freshDir, "good"), 0o755);
+
+      const first = await discoverConnections({ dir: freshDir });
+      expect(first.fromCache).toBe(false);
+
+      // Empty the connectors dir and drop the in-memory cache, simulating a
+      // fresh CLI process starting cold while sdm/gitlab is briefly unreachable.
+      rmSync(join(freshDir, "good"));
+      invalidateCatalogCache();
+
+      const second = await discoverConnections({ dir: freshDir });
+      expect(second.fromCache).toBe(true);
+      expect(second.connections.map(c => c.key)).toEqual(["good:one", "good:two"]);
+    } finally {
+      rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+
+  test("refresh bypasses the persisted cache and rewrites it", async () => {
+    const freshDir = mkdtempSync(join(tmpdir(), "rt-sdm-persist-"));
+    try {
+      writeFileSync(join(freshDir, "good"), `#!/bin/bash\necho '${GOOD_JSON}'\n`);
+      chmodSync(join(freshDir, "good"), 0o755);
+      await discoverConnections({ dir: freshDir });
+
+      const otherJson = JSON.stringify({
+        version: 1,
+        connections: [{ id: "three", label: "Three", sdmResource: "example-three", tier: "staging" }],
+      });
+      writeFileSync(join(freshDir, "good"), `#!/bin/bash\necho '${otherJson}'\n`);
+
+      const refreshed = await discoverConnections({ dir: freshDir, refresh: true });
+      expect(refreshed.fromCache).toBe(false);
+      expect(refreshed.connections.map(c => c.key)).toEqual(["good:three"]);
+
+      const raw = JSON.parse(readFileSync(catalogCachePath(), "utf8"));
+      expect(raw.result.connections.map((c: { key: string }) => c.key)).toEqual(["good:three"]);
+    } finally {
+      rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+
+  test("an empty/all-error discover does not overwrite an existing good cache file", async () => {
+    const freshDir = mkdtempSync(join(tmpdir(), "rt-sdm-persist-"));
+    try {
+      writeFileSync(join(freshDir, "good"), `#!/bin/bash\necho '${GOOD_JSON}'\n`);
+      chmodSync(join(freshDir, "good"), 0o755);
+      await discoverConnections({ dir: freshDir });
+      const before = readFileSync(catalogCachePath(), "utf8");
+
+      rmSync(join(freshDir, "good"));
+      writeFileSync(join(freshDir, "bad"), "#!/bin/bash\nexit 1\n");
+      chmodSync(join(freshDir, "bad"), 0o755);
+
+      // refresh:true forces a real run against the now-all-error dir instead
+      // of serving the still-fresh in-memory/persisted good result.
+      const r = await discoverConnections({ dir: freshDir, refresh: true });
+      expect(r.connections).toHaveLength(0);
+      expect(r.errors).toHaveLength(1);
+
+      const after = readFileSync(catalogCachePath(), "utf8");
+      expect(after).toEqual(before);
+    } finally {
+      rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a corrupt cache file is ignored and falls through to running connectors", async () => {
+    const freshDir = mkdtempSync(join(tmpdir(), "rt-sdm-persist-"));
+    try {
+      writeFileSync(join(freshDir, "good"), `#!/bin/bash\necho '${GOOD_JSON}'\n`);
+      chmodSync(join(freshDir, "good"), 0o755);
+
+      mkdirSync(dirname(catalogCachePath()), { recursive: true });
+      writeFileSync(catalogCachePath(), "not json");
+
+      const r = await discoverConnections({ dir: freshDir });
+      expect(r.fromCache).toBe(false);
+      expect(r.connections.map(c => c.key)).toEqual(["good:one", "good:two"]);
+    } finally {
+      rmSync(freshDir, { recursive: true, force: true });
     }
   });
 });

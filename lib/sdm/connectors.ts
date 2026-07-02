@@ -7,9 +7,10 @@
  */
 
 import { spawn } from "node:child_process";
-import { accessSync, constants, mkdirSync, readdirSync, statSync, writeFileSync, existsSync, chmodSync } from "node:fs";
+import { accessSync, constants, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { rtDir } from "../rt-paths.ts";
 import { sdmEnv } from "./core.ts";
 import { validateConnectorOutput, type ConnectorConnection, type ConnectorOutput, type UnresolvedEntry } from "./protocol.ts";
 
@@ -170,6 +171,55 @@ export function invalidateCatalogCache(): void {
   catalogCache.clear();
 }
 
+/** ~/.rt/sdm/catalog-cache.json: the on-disk mirror of the in-memory catalogCache. */
+export function catalogCachePath(): string {
+  return join(rtDir(), "sdm", "catalog-cache.json");
+}
+
+interface PersistedCatalogCache {
+  /** The resolved directory this cache was built from; a mismatch is a miss,
+   * mirroring the in-memory cache's per-directory scoping. */
+  dir: string;
+  builtAt: number;
+  result: CatalogResult;
+}
+
+/**
+ * Guarded read of the on-disk catalog cache, same convention as state.ts: a
+ * missing file, corrupt JSON, or a shape that doesn't look like a
+ * CatalogResult all fall through to running connectors fresh.
+ */
+function readCatalogCacheFile(path = catalogCachePath()): PersistedCatalogCache | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    if (
+      typeof parsed?.dir === "string" &&
+      typeof parsed?.builtAt === "number" &&
+      parsed?.result &&
+      Array.isArray(parsed.result.connections) &&
+      Array.isArray(parsed.result.errors)
+    ) {
+      return parsed as PersistedCatalogCache;
+    }
+  } catch {
+    // Missing or corrupt cache file: fall through to running connectors.
+  }
+  return null;
+}
+
+/**
+ * Never overwrite the file with an empty/all-error result: a transient sdm
+ * outage (connectors all failing) would otherwise blank a previously-good
+ * picker for every cold CLI start until the outage clears.
+ */
+function writeCatalogCacheFile(dir: string, builtAt: number, result: CatalogResult): void {
+  if (result.connections.length === 0) return;
+  const path = catalogCachePath();
+  mkdirSync(dirname(path), { recursive: true });
+  const payload: PersistedCatalogCache = { dir, builtAt, result };
+  writeFileSync(path, JSON.stringify(payload, null, 2) + "\n");
+}
+
 export async function discoverConnections(
   opts: { refresh?: boolean; dir?: string; timeoutMs?: number } = {},
 ): Promise<CatalogResult> {
@@ -177,6 +227,13 @@ export async function discoverConnections(
   const cached = catalogCache.get(cacheKey);
   if (!opts.refresh && cached && Date.now() - cached.at < CATALOG_CACHE_MS) {
     return { ...cached.result, fromCache: true };
+  }
+  if (!opts.refresh) {
+    const persisted = readCatalogCacheFile();
+    if (persisted && persisted.dir === cacheKey && Date.now() - persisted.builtAt < CATALOG_CACHE_MS) {
+      catalogCache.set(cacheKey, { at: persisted.builtAt, result: persisted.result });
+      return { ...persisted.result, fromCache: true };
+    }
   }
   const connections: DiscoveredConnection[] = [];
   const errors: ConnectorRunError[] = [];
@@ -196,7 +253,9 @@ export async function discoverConnections(
     }
   }
   const result: CatalogResult = { connections, errors, unresolved, fromCache: false };
-  catalogCache.set(cacheKey, { at: Date.now(), result });
+  const builtAt = Date.now();
+  catalogCache.set(cacheKey, { at: builtAt, result });
+  writeCatalogCacheFile(cacheKey, builtAt, result);
   return result;
 }
 
