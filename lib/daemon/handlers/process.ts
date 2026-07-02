@@ -19,7 +19,6 @@
 
 import { existsSync } from "fs";
 import type { HandlerContext, HandlerMap } from "./types.ts";
-import { proxyWindowName } from "../lane-config.ts";
 import { diag } from "../../diag-log.ts";
 import { listWorktrees } from "../../git-worktrees.ts";
 import { buildProcessRecords } from "../process-records.ts";
@@ -123,25 +122,7 @@ export function createProcessHandlers(ctx: HandlerContext): HandlerMap {
         catch { /* group may not exist yet */ }
       }
 
-      // 3. Point proxy upstream to the new ephemeral port
       const ephemeralPort = Number(env?.PORT ?? 0);
-      if (groupId && canonicalPort && ephemeralPort) {
-        const proxyId = proxyWindowName(groupId);
-        try {
-          ctx.proxyManager.setUpstream(proxyId, ephemeralPort);
-        } catch (err) {
-          // No proxy exists yet — create it now so the process is reachable via
-          // the canonical port. This is the recovery path when a proxy has been
-          // lost but the runner still expects it to exist.
-          diag("process.start.proxy.missing", id, { proxyId, canonicalPort, ephemeralPort, err: String(err) });
-          try {
-            ctx.proxyManager.start(proxyId, canonicalPort, ephemeralPort, "daemon:recovery");
-            diag("process.start.proxy.recreated", id, { proxyId, canonicalPort, ephemeralPort });
-          } catch (err2) {
-            diag("process.start.proxy.recreate.failed", id, { proxyId, err: String(err2) });
-          }
-        }
-      }
 
       ctx.remedyEngine.onSpawn(id, cwd, cmd);
       diag("process.start.end", id, { ephemeralPort });
@@ -149,15 +130,10 @@ export function createProcessHandlers(ctx: HandlerContext): HandlerMap {
     },
 
     "process:stop": async (payload) => {
-      const { id, stopProxy, groupId } =
-        payload as { id: string; stopProxy?: boolean; groupId?: string };
+      const { id } = payload as { id: string };
       if (!id) return { ok: false, error: "missing id" };
 
       await ctx.processManager.kill(id);
-
-      if (stopProxy && groupId) {
-        ctx.proxyManager.stop(proxyWindowName(groupId));
-      }
       return { ok: true };
     },
 
@@ -185,11 +161,7 @@ export function createProcessHandlers(ctx: HandlerContext): HandlerMap {
         catch { /* group may not exist yet */ }
       }
 
-      // 4. Point proxy upstream to the new ephemeral port
       const ephemeralPort = Number(env?.PORT ?? 0);
-      if (groupId && canonicalPort && ephemeralPort) {
-        ctx.proxyManager.setUpstream(proxyWindowName(groupId), ephemeralPort);
-      }
 
       ctx.remedyEngine.onSpawn(id, cwd, cmd);
       return { ok: true, data: { ephemeralPort } };
