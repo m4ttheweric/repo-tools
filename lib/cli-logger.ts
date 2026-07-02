@@ -53,6 +53,34 @@ interface CommandLog {
   exitCode?: number;
 }
 
+/**
+ * Returns a copy of args with the value following any `--reason` flag
+ * replaced by "[redacted]" (also handles the `--reason=value` form). Reason
+ * text is free-form and often sensitive (e.g. `rt sdm connect`), so it must
+ * never reach the on-disk CLI log. This only affects what gets logged --
+ * the real args passed to command handlers are never touched.
+ */
+export function redactSensitiveArgs(args: string[]): string[] {
+  const result: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--reason") {
+      result.push(arg);
+      if (i + 1 < args.length) {
+        result.push("[redacted]");
+        i++;
+      }
+      continue;
+    }
+    if (arg.startsWith("--reason=")) {
+      result.push("--reason=[redacted]");
+      continue;
+    }
+    result.push(arg);
+  }
+  return result;
+}
+
 export function logCommand(entry: CommandLog): void {
   finalized = true;
   try {
@@ -61,6 +89,7 @@ export function logCommand(entry: CommandLog): void {
     const line = JSON.stringify({
       time: new Date().toISOString(),
       ...entry,
+      args: redactSensitiveArgs(entry.args),
     }) + "\n";
 
     const fd = openSync(logPath(), "a");
@@ -101,8 +130,12 @@ export function beginCommand(command: string, args: string[]): void {
  * never for the --daemon path (the daemon has its own pino crash handlers).
  */
 export function installCliLogging(argv: string[]): void {
+  // Redact before joining: this seeds `current.command` for the window before
+  // beginCommand() runs, so a crash in that window must not bake --reason
+  // text into the on-disk log via the joined command string.
+  const safeArgv = redactSensitiveArgs(argv);
   current = {
-    command: argv.length ? argv.join(" ") : "(picker)",
+    command: safeArgv.length ? safeArgv.join(" ") : "(picker)",
     args: [],
     t0: Date.now(),
   };
