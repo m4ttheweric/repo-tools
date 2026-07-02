@@ -14,7 +14,7 @@ import {
   type SdmFailureCode,
   type SdmSnapshot,
 } from "../../sdm/core.ts";
-import { discoverConnections, type CatalogResult } from "../../sdm/connectors.ts";
+import { discoverConnections, resolveConnection, type CatalogResult, type ResolveConnectionResult } from "../../sdm/connectors.ts";
 import { probeQuery, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS, type VerifyOutcome } from "../../sdm/verify.ts";
 import { loadSdmState, recordRecent, type RecentEntry, type SdmState } from "../../sdm/state.ts";
 import { runGuidedConnect } from "../../sdm/flow.ts";
@@ -27,6 +27,7 @@ export interface SdmHandlerDeps {
   connect: (resource: string, onLine: (l: string) => void) => Promise<{ ok: boolean; error?: string; code?: SdmFailureCode }>;
   verify: (url: string) => Promise<VerifyOutcome>;
   recordRecent: (entry: Omit<RecentEntry, "lastConnectedAt">) => SdmState;
+  resolveConnection: (url: string) => Promise<ResolveConnectionResult | null>;
 }
 
 const realDeps: SdmHandlerDeps = {
@@ -40,6 +41,7 @@ const realDeps: SdmHandlerDeps = {
   connect: connectResource,
   verify: url => verifyWithRetries(() => probeQuery(url, VERIFY_ATTEMPT_TIMEOUT_MS)),
   recordRecent: entry => recordRecent(entry),
+  resolveConnection: url => resolveConnection(url),
 };
 
 function serializeSnapshot(snapshot: SdmSnapshot) {
@@ -59,6 +61,13 @@ export function createSdmHandlers(ctx: HandlerContext, deps: SdmHandlerDeps = re
         }
       }
       return { ok: true, connections: result.connections, errors: result.errors, fromCache: result.fromCache };
+    },
+
+    "sdm:resolve": async (payload: { url?: string } = {}) => {
+      const url = payload.url ?? "";
+      if (!url) return { ok: false, error: "sdm:resolve requires a url" };
+      const result = await deps.resolveConnection(url);
+      return { ok: true, connection: result?.connection, unresolved: result?.unresolved };
     },
 
     "sdm:snapshot": async (payload: { force?: boolean } = {}) => {

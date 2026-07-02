@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { createSdmHandlers, type SdmHandlerDeps } from "../handlers/sdm.ts";
 import type { HandlerContext } from "../handlers/types.ts";
 import type { SdmSnapshot } from "../../sdm/core.ts";
+import type { ResolveConnectionResult } from "../../sdm/connectors.ts";
 
 const ctx = { log: { info: () => {}, warn: () => {}, debug: () => {} } } as unknown as HandlerContext;
 
@@ -32,6 +33,7 @@ function makeDeps(overrides: Partial<SdmHandlerDeps> = {}): SdmHandlerDeps {
     connect: async () => ({ ok: true }),
     verify: async () => ({ ok: true, attempts: 1, latencyMs: 12, lastError: null }),
     recordRecent: () => ({ version: 1, recents: [] }),
+    resolveConnection: async () => null,
     ...overrides,
   };
 }
@@ -87,5 +89,48 @@ describe("sdm handlers", () => {
     const r = await h["sdm:reconnect"]!({ key: "nope:missing" });
     expect(r.ok).toBe(false);
     expect(r.error).toContain("unknown");
+  });
+
+  test("sdm:resolve returns a resolved connection", async () => {
+    const resolved: ResolveConnectionResult = {
+      connector: "demo",
+      connection: { id: "a", label: "A", sdmResource: "example-a", key: "demo:a", connector: "demo" },
+    };
+    const h = createSdmHandlers(ctx, makeDeps({ resolveConnection: async () => resolved }));
+    const r = await h["sdm:resolve"]!({ url: "https://example.com/a" });
+    expect(r.ok).toBe(true);
+    expect(r.connection?.sdmResource).toBe("example-a");
+    expect(r.unresolved).toBeUndefined();
+  });
+
+  test("sdm:resolve returns an unresolved gap", async () => {
+    const resolved: ResolveConnectionResult = {
+      connector: "demo",
+      unresolved: {
+        id: "b", label: "B", slug: "b", env: "staging", source: "ambiguous",
+        candidates: ["example-b-staging", "example-b2-staging"], key: "demo:b", connector: "demo",
+      },
+    };
+    const h = createSdmHandlers(ctx, makeDeps({ resolveConnection: async () => resolved }));
+    const r = await h["sdm:resolve"]!({ url: "https://example.com/b" });
+    expect(r.ok).toBe(true);
+    expect(r.connection).toBeUndefined();
+    expect(r.unresolved?.source).toBe("ambiguous");
+    expect(r.unresolved?.candidates).toEqual(["example-b-staging", "example-b2-staging"]);
+  });
+
+  test("sdm:resolve returns neither when no connector has an opinion", async () => {
+    const h = createSdmHandlers(ctx, makeDeps({ resolveConnection: async () => null }));
+    const r = await h["sdm:resolve"]!({ url: "https://example.com/unknown" });
+    expect(r.ok).toBe(true);
+    expect(r.connection).toBeUndefined();
+    expect(r.unresolved).toBeUndefined();
+  });
+
+  test("sdm:resolve rejects a missing url", async () => {
+    const h = createSdmHandlers(ctx, makeDeps());
+    const r = await h["sdm:resolve"]!({});
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("url");
   });
 });
