@@ -320,16 +320,46 @@ export async function requestAccess(
   return { ok: true };
 }
 
-export async function connectResource(
+// `sdm connect` issued immediately after an access grant can race the local
+// client's datasource-list refresh and fail with "error loading datasources";
+// the identical command succeeds seconds later. Retry only that
+// known-transient failure, briefly, so first connects stop failing.
+const TRANSIENT_CONNECT_WAITS_MS = [1_000, 2_000];
+
+export function isTransientSdmConnectFailure(output: string): boolean {
+  return /error loading datasources/i.test(output);
+}
+
+/** Seam for tests; production connectResource binds the real runSdmCommand. */
+export async function connectResourceWith(
+  run: RunSdm,
   resource: string,
   onLine: (line: string) => void,
+  opts: { waitsMs?: number[]; sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<{ ok: boolean; error?: string; code?: SdmFailureCode }> {
-  const r = await runSdmCommand(["connect", resource], onLine, { timeoutMs: SDM_CONNECT_TIMEOUT_MS });
+  const waits = opts.waitsMs ?? TRANSIENT_CONNECT_WAITS_MS;
+  const sleep = opts.sleep ?? (ms => new Promise<void>(r => setTimeout(r, ms)));
+  const attempt = () => run(["connect", resource], onLine, { timeoutMs: SDM_CONNECT_TIMEOUT_MS });
+  let r = await attempt();
+  for (const wait of waits) {
+    if (r.ok || r.output.includes("already connected")) break;
+    if (!isTransientSdmConnectFailure(r.output)) break;
+    onLine(`SDM hit a transient error (datasource list still refreshing); retrying in ${wait / 1000}s...`);
+    await sleep(wait);
+    r = await attempt();
+  }
   if (!r.ok && !r.output.includes("already connected")) {
     return { ok: false, error: `Connect failed: ${r.output.trim() || "unknown error"}`, code: classifySdmFailure(r.output) };
   }
   invalidateSdmSnapshotCache();
   return { ok: true };
+}
+
+export function connectResource(
+  resource: string,
+  onLine: (line: string) => void,
+): Promise<{ ok: boolean; error?: string; code?: SdmFailureCode }> {
+  return connectResourceWith(runSdmCommand, resource, onLine);
 }
 
 export type RunSdm = typeof runSdmCommand;

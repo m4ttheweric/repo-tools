@@ -6,6 +6,8 @@ import {
   getSdmSnapshot,
   invalidateSdmSnapshotCache,
   loginSdmWith,
+  connectResourceWith,
+  isTransientSdmConnectFailure,
   type RunSdm,
 } from "../core.ts";
 
@@ -97,6 +99,61 @@ describe("loginSdmWith", () => {
     await loginSdmWith(run, () => {});
     expect(seenArgs).toEqual(["login"]);
     expect(seenTimeout).toBeGreaterThanOrEqual(120_000);
+  });
+});
+
+describe("connectResourceWith", () => {
+  // A run seam that replays a scripted list of outputs, one per attempt, and
+  // records how many times it was called. Exhausted scripts keep returning the
+  // last entry (mirrors a persistently-failing sdm connect).
+  const mkRun = (outputs: Array<{ ok: boolean; output: string }>) => {
+    let calls = 0;
+    const run: RunSdm = (async (_args, onLine) => {
+      const o = outputs[Math.min(calls, outputs.length - 1)]!;
+      calls++;
+      if (o.output) onLine(o.output);
+      return { ok: o.ok, output: o.output, spawnErrorCode: null, exitCode: o.ok ? 0 : 1 };
+    }) as RunSdm;
+    return { run, calls: () => calls };
+  };
+  const noSleep = async () => {};
+
+  test("isTransientSdmConnectFailure matches only the datasource-refresh race", () => {
+    expect(isTransientSdmConnectFailure("error loading datasources")).toBe(true);
+    expect(isTransientSdmConnectFailure("access denied")).toBe(false);
+  });
+
+  test("retries the transient 'error loading datasources' race, then succeeds", async () => {
+    const { run, calls } = mkRun([
+      { ok: false, output: "error loading datasources" },
+      { ok: true, output: "connected" },
+    ]);
+    const r = await connectResourceWith(run, "acme-x-prod", () => {}, { waitsMs: [1, 2], sleep: noSleep });
+    expect(r.ok).toBe(true);
+    expect(calls()).toBe(2);
+  });
+
+  test("gives up after exhausting retries on a persistent transient failure", async () => {
+    const { run, calls } = mkRun([{ ok: false, output: "error loading datasources" }]);
+    const r = await connectResourceWith(run, "acme-x-prod", () => {}, { waitsMs: [1, 2], sleep: noSleep });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("error loading datasources");
+    expect(calls()).toBe(3); // initial attempt + two retries
+  });
+
+  test("does not retry a non-transient failure", async () => {
+    const { run, calls } = mkRun([{ ok: false, output: "access denied" }]);
+    const r = await connectResourceWith(run, "acme-x-prod", () => {}, { waitsMs: [1, 2], sleep: noSleep });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("no-access");
+    expect(calls()).toBe(1);
+  });
+
+  test("treats 'already connected' output as success without retrying", async () => {
+    const { run, calls } = mkRun([{ ok: false, output: "already connected" }]);
+    const r = await connectResourceWith(run, "acme-x-prod", () => {}, { waitsMs: [1, 2], sleep: noSleep });
+    expect(r.ok).toBe(true);
+    expect(calls()).toBe(1);
   });
 });
 
