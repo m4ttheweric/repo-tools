@@ -611,8 +611,14 @@ struct ProcessOutlineView: NSViewRepresentable {
             if killing { label.textColor = .tertiaryLabelColor }
             leafRow.addArrangedSubview(label)
 
+            if proc.isClaudeCode {
+                leafRow.addArrangedSubview(makeBadge("\u{273B} claude", color: Self.claudeCoral,
+                                                     tooltip: "Claude Code session", dimmed: killing))
+            }
+
             if currentHerdrPids.contains(proc.pid) {
-                leafRow.addArrangedSubview(makeHerdrBadge(dimmed: killing))
+                leafRow.addArrangedSubview(makeBadge("herdr", color: .systemPurple,
+                                                     tooltip: "Running in a herdr pane", dimmed: killing))
             }
 
             if killing {
@@ -644,19 +650,22 @@ struct ProcessOutlineView: NSViewRepresentable {
             return cell
         }
 
-        private func makeHerdrBadge(dimmed: Bool) -> NSView {
+        /// Claude's coral brand color (#D97757), used for the Claude Code badge.
+        private static let claudeCoral = NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1)
+
+        private func makeBadge(_ text: String, color: NSColor,
+                               tooltip: String, dimmed: Bool) -> NSView {
             let badge = NSView()
             badge.wantsLayer = true
-            badge.layer?.backgroundColor = NSColor.systemPurple
+            badge.layer?.backgroundColor = color
                 .withAlphaComponent(dimmed ? 0.08 : 0.15).cgColor
             badge.layer?.cornerRadius = 3
             badge.translatesAutoresizingMaskIntoConstraints = false
-            badge.toolTip = "Running in a herdr pane"
+            badge.toolTip = tooltip
 
-            let label = NSTextField(labelWithString: "herdr")
+            let label = NSTextField(labelWithString: text)
             label.font = .systemFont(ofSize: 9, weight: .medium)
-            label.textColor = dimmed
-                ? NSColor.systemPurple.withAlphaComponent(0.4) : .systemPurple
+            label.textColor = dimmed ? color.withAlphaComponent(0.4) : color
             label.setContentCompressionResistancePriority(.required, for: .horizontal)
             label.translatesAutoresizingMaskIntoConstraints = false
             badge.addSubview(label)
