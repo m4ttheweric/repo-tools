@@ -35,8 +35,10 @@
 
     <!-- NOTE: StandardOutPath/StandardErrorPath intentionally omitted.
          macOS 26 broke $(HOME) expansion in SMAppService-registered plists,
-         causing EX_CONFIG / spawn failed. The daemon binary redirects its
-         own output to ~/.rt/daemon.log and ~/.rt/daemon-stderr.log directly. -->
+         causing EX_CONFIG / spawn failed. The daemon self-redirects fd 2 to
+         ~/.rt/logs/daemon-stderr.log at startup (redirectNativeStderr in
+         lib/daemon-logger.ts); JSON logs go to ~/.rt/logs/daemon.<date>.log
+         via pino. -->
 
     <key>LimitLoadToSessionType</key>
     <string>Aqua</string>

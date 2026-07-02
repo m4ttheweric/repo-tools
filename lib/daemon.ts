@@ -23,7 +23,7 @@ import type { Server } from "bun";
 
 import { RT_DIR, DAEMON_PID_PATH } from "./daemon-config.ts";
 import { repoDataDir } from "./rt-paths.ts";
-import { getDaemonLogger, installCrashHandlers } from "./daemon-logger.ts";
+import { getDaemonLogger, installCrashHandlers, redirectNativeStderr } from "./daemon-logger.ts";
 import { onNotification } from "./notifier.ts";
 
 import { StateStore }    from "./daemon/state-store.ts";
@@ -243,8 +243,10 @@ const cleanup = createCleanup({
 export function startDaemon(): void {
   mkdirSync(RT_DIR, { recursive: true });
 
-  // Wire uncaughtException + unhandledRejection through pino. Must run BEFORE
+  // Capture native panics (bypass JS entirely) at the fd level, then wire
+  // uncaughtException + unhandledRejection through pino. Must run BEFORE
   // any async work that could throw uncaught.
+  redirectNativeStderr();
   installCrashHandlers(loggerHandle);
 
   // If a previous daemon process is still alive (orphan from a failed
