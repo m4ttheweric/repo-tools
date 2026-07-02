@@ -48,6 +48,8 @@ export interface RebaseResult {
   postResolveSteps: string[];
   /** Backup branch created before rebase. */
   backupBranch: string | null;
+  /** True when status is "conflict" and the rebase was left paused (onConflict: "pause"). */
+  rebaseInProgress?: boolean;
   /** Error message if status is "error". */
   error?: string;
 }
@@ -67,6 +69,8 @@ export interface RebaseOptions {
   quiet?: boolean;
   /** If true, skip git fetch (caller already fetched). */
   skipFetch?: boolean;
+  /** What to do when conflicts can't be auto-resolved. Default "abort" preserves historic behavior. */
+  onConflict?: "abort" | "pause";
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -334,10 +338,23 @@ export async function rebaseOnto(opts: RebaseOptions): Promise<RebaseResult> {
     const { matched, unmatched } = classifyConflicts(conflicted, rules);
 
     if (unmatched.length > 0) {
-      // Can't auto-resolve — abort
       log(`\n  ${red}✗${reset} ${unmatched.length} unresolvable conflict${unmatched.length !== 1 ? "s" : ""}:\n`, quiet);
       for (const f of unmatched) {
         log(`    ${red}•${reset} ${f}\n`, quiet);
+      }
+      if (opts.onConflict === "pause") {
+        log(`  ${dim}rebase left paused for escalation${reset}\n`, quiet);
+        return {
+          status: "conflict",
+          branch,
+          target,
+          commitsBehind: behind,
+          resolvedFiles: allResolvedFiles,
+          unresolvedFiles: unmatched,
+          postResolveSteps: [],
+          backupBranch,
+          rebaseInProgress: true,
+        };
       }
       git("rebase --abort", cwd);
       if (backupBranch) {
