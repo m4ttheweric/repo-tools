@@ -142,7 +142,7 @@ function toTarget(c: DiscoveredConnection | RecentEntry): GuidedTarget {
 // ── Subcommands ──────────────────────────────────────────────────────────────
 
 async function pickerCommand(): Promise<void> {
-  if (!process.stdout.isTTY) {
+  if (!process.stdin.isTTY) {
     console.error("rt sdm needs a terminal. Use `rt sdm connect <key> --duration --reason` for scripts.");
     process.exitCode = 1;
     return;
@@ -205,7 +205,7 @@ async function connectCommand(rest: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const interactive = process.stdout.isTTY && !(flags.duration && flags.reason);
+  const interactive = process.stdin.isTTY && !(flags.duration && flags.reason);
   await guidedConnect(toTarget(target), { ...flags, interactive });
 }
 
