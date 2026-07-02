@@ -13,9 +13,11 @@ function flattenSingleChildChains(node: SystemProcess): SystemProcess {
   node.children = (node.children ?? []).map(flattenSingleChildChains);
 
   const crumbs: string[] = [];
+  const chainPids: number[] = [];
   let current = node;
   while (current.children?.length === 1) {
     crumbs.push(shortName(current));
+    chainPids.push(current.pid);
     current = current.children[0]!;
   }
 
@@ -25,6 +27,10 @@ function flattenSingleChildChains(node: SystemProcess): SystemProcess {
       command: [...crumbs, shortName(current)].join(" › "),
       pid: node.pid,
       ppid: node.ppid,
+      // The row shows the chain root's pid; keep every collapsed pid so
+      // kill actions can signal the whole chain, not just the root.
+      // current may itself be an already-flattened chain — merge its pids.
+      chainPids: [...chainPids, ...(current.chainPids ?? [current.pid])],
     };
   }
 

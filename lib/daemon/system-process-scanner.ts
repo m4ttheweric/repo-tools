@@ -42,6 +42,9 @@ export interface SystemProcess {
   runawayDurationMs: number | null;
   firstSeen: number;
   children?: SystemProcess[];
+  /** Pids collapsed into this row (chain root → leaf) when single-child
+   *  chains are flattened for display; absent on unflattened rows. */
+  chainPids?: number[];
 }
 
 interface ProcessSample {

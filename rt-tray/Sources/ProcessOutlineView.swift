@@ -70,8 +70,9 @@ final class OutlineProcessItem: NSObject {
 struct ProcessOutlineView: NSViewRepresentable {
     let groups: [RepoGroup]
     let visibleColumns: Set<ProcessColumn>
-    let killingGroup: String?
+    let killingPids: Set<Int>
     let selection: Set<Int>
+    let dataVersion: Int
     let controller: ProcessPanelController
 
     func makeCoordinator() -> Coordinator {
@@ -129,41 +130,56 @@ struct ProcessOutlineView: NSViewRepresentable {
         return scrollView
     }
 
+    // SwiftUI calls this for EVERY published change on the controller
+    // (refresh spinner flips, selection sync, kill progress). Reloading the
+    // outline each time rebuilds every cell — visible as flicker and lost
+    // hover states — so each concern below only touches the view when its
+    // own input actually changed.
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         let coordinator = context.coordinator
         coordinator.isSyncing = true
         defer { coordinator.isSyncing = false }
 
         coordinator.controller = controller
-        coordinator.currentKillingGroup = killingGroup
-
         guard let outlineView = coordinator.outlineView else { return }
 
-        for col in ProcessColumn.allCases {
-            let id = NSUserInterfaceItemIdentifier(col.rawValue)
-            if let tableCol = outlineView.tableColumn(withIdentifier: id) {
-                tableCol.isHidden = !visibleColumns.contains(col)
+        if coordinator.lastVisibleColumns != visibleColumns {
+            coordinator.lastVisibleColumns = visibleColumns
+            for col in ProcessColumn.allCases {
+                let id = NSUserInterfaceItemIdentifier(col.rawValue)
+                if let tableCol = outlineView.tableColumn(withIdentifier: id) {
+                    tableCol.isHidden = !visibleColumns.contains(col)
+                }
             }
         }
 
-        let structureChanged = coordinator.updateItems(from: groups)
-        coordinator.applySortToItems()
+        let oldKillingPids = coordinator.currentKillingPids
+        coordinator.currentKillingPids = killingPids
 
-        if structureChanged {
-            outlineView.reloadData()
-            coordinator.restoreExpansion()
-        } else {
-            outlineView.reloadItem(nil, reloadChildren: true)
-        }
-
-        var indexSet = IndexSet()
-        for row in 0..<outlineView.numberOfRows {
-            if let processItem = outlineView.item(atRow: row) as? OutlineProcessItem,
-               selection.contains(processItem.process.pid) {
-                indexSet.insert(row)
+        if coordinator.lastDataVersion != dataVersion {
+            coordinator.lastDataVersion = dataVersion
+            let structureChanged = coordinator.updateItems(from: groups)
+            coordinator.applySortToItems()
+            if structureChanged {
+                outlineView.reloadData()
+                coordinator.restoreExpansion()
+            } else {
+                outlineView.reloadItem(nil, reloadChildren: true)
             }
+        } else if oldKillingPids != killingPids {
+            coordinator.reloadRows(affectedBy: oldKillingPids.symmetricDifference(killingPids))
         }
-        outlineView.selectRowIndexes(indexSet, byExtendingSelection: false)
+
+        if coordinator.selectedPids() != selection {
+            var indexSet = IndexSet()
+            for row in 0..<outlineView.numberOfRows {
+                if let processItem = outlineView.item(atRow: row) as? OutlineProcessItem,
+                   selection.contains(processItem.process.pid) {
+                    indexSet.insert(row)
+                }
+            }
+            outlineView.selectRowIndexes(indexSet, byExtendingSelection: false)
+        }
     }
 
     private func columnSpec(_ col: ProcessColumn) -> (CGFloat, CGFloat, NSTextAlignment) {
@@ -191,7 +207,9 @@ struct ProcessOutlineView: NSViewRepresentable {
         var isSyncing = false
         var collapsedGroups: Set<String> = []
         var expandedProcessPids: Set<Int> = []
-        var currentKillingGroup: String?
+        var currentKillingPids: Set<Int> = []
+        var lastDataVersion = -1
+        var lastVisibleColumns: Set<ProcessColumn>? = nil
         var activeSortColumn: ProcessColumn? = nil
         var activeSortAscending: Bool = true
 
@@ -278,14 +296,43 @@ struct ProcessOutlineView: NSViewRepresentable {
         }
 
         func outlineViewSelectionDidChange(_ notification: Notification) {
-            guard !isSyncing, let outlineView = outlineView else { return }
+            guard !isSyncing else { return }
+            controller?.selection = selectedPids()
+        }
+
+        func selectedPids() -> Set<Int> {
+            guard let outlineView = outlineView else { return [] }
             var pids = Set<Int>()
             for row in outlineView.selectedRowIndexes {
                 if let item = outlineView.item(atRow: row) as? OutlineProcessItem {
                     pids.insert(item.process.pid)
                 }
             }
-            controller?.selection = pids
+            return pids
+        }
+
+        /// Redraws only the rows whose killing state could have flipped,
+        /// plus their group headers (spinner ↔ Kill All button).
+        func reloadRows(affectedBy changedPids: Set<Int>) {
+            guard let outlineView = outlineView, !changedPids.isEmpty else { return }
+            for group in groupItems {
+                var groupAffected = false
+                func visit(_ item: OutlineProcessItem) {
+                    if !changedPids.isDisjoint(with: item.process.selfPids) {
+                        groupAffected = true
+                        outlineView.reloadItem(item, reloadChildren: false)
+                    }
+                    item.childItems.forEach(visit)
+                }
+                group.processItems.forEach(visit)
+                if groupAffected {
+                    outlineView.reloadItem(group, reloadChildren: false)
+                }
+            }
+        }
+
+        func isKilling(_ proc: SystemProcess) -> Bool {
+            !currentKillingPids.isDisjoint(with: proc.selfPids)
         }
 
         func outlineViewItemDidExpand(_ notification: Notification) {
@@ -415,7 +462,10 @@ struct ProcessOutlineView: NSViewRepresentable {
             spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
             stack.addArrangedSubview(spacer)
 
-            if currentKillingGroup == group.group.name {
+            let groupIsKilling = group.group.processes.contains {
+                !currentKillingPids.isDisjoint(with: $0.allPids)
+            }
+            if groupIsKilling {
                 let progress = NSProgressIndicator()
                 progress.style = .spinning
                 progress.controlSize = .small
@@ -485,7 +535,7 @@ struct ProcessOutlineView: NSViewRepresentable {
             let (text, font, color, alignment) = cellConfig(proc, column)
             cell.textField?.stringValue = text
             cell.textField?.font = font
-            cell.textField?.textColor = color
+            cell.textField?.textColor = isKilling(proc) ? .tertiaryLabelColor : color
             cell.textField?.alignment = alignment
             return cell
         }
@@ -537,11 +587,22 @@ struct ProcessOutlineView: NSViewRepresentable {
             leafRow.orientation = .horizontal
             leafRow.spacing = 4
 
+            let killing = isKilling(proc)
+
             let label = NSTextField(labelWithString: leafName)
             label.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
             label.lineBreakMode = .byTruncatingTail
             label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            if killing { label.textColor = .tertiaryLabelColor }
             leafRow.addArrangedSubview(label)
+
+            if killing {
+                let killingLabel = NSTextField(labelWithString: "Killing…")
+                killingLabel.font = .systemFont(ofSize: 9.5, weight: .medium)
+                killingLabel.textColor = .systemRed
+                killingLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+                leafRow.addArrangedSubview(killingLabel)
+            }
 
             if isParent {
                 let countLabel = NSTextField(labelWithString: "+\(proc.childCount)")
@@ -605,30 +666,52 @@ struct ProcessOutlineView: NSViewRepresentable {
 
             let clickedRow = outlineView.clickedRow
             guard clickedRow >= 0,
-                  let processItem = outlineView.item(atRow: clickedRow) as? OutlineProcessItem
+                  let clickedItem = outlineView.item(atRow: clickedRow) as? OutlineProcessItem
             else { return }
 
-            let proc = processItem.process
+            // Right-clicking selects the clicked row (see ProcessOutlineNSView),
+            // so a multi-selection containing it is the target set for kills.
+            var targets = outlineView.selectedRowIndexes.compactMap {
+                outlineView.item(atRow: $0) as? OutlineProcessItem
+            }
+            if !targets.contains(where: { $0 === clickedItem }) {
+                targets = [clickedItem]
+            }
 
-            let killItem = NSMenuItem(title: "Kill Process", action: #selector(contextKillProcess(_:)), keyEquivalent: "")
+            let killTitle = targets.count == 1
+                ? "Kill Process" : "Kill \(targets.count) Processes"
+            let killItem = NSMenuItem(title: killTitle,
+                                      action: #selector(contextKillProcess(_:)), keyEquivalent: "")
             killItem.target = self
-            killItem.representedObject = processItem
+            killItem.representedObject = targets
             menu.addItem(killItem)
 
-            if proc.hasChildren {
+            // Tree kill only makes sense when descendants add pids beyond
+            // the rows themselves (chain pids already die with the row).
+            let selfPidCount = targets.flatMap { $0.process.selfPids }.count
+            let treePids = targets.flatMap { $0.process.allPids }
+            if treePids.count > selfPidCount {
+                let treeTitle = targets.count == 1
+                    ? "Kill Process Tree (\(treePids.count))"
+                    : "Kill \(targets.count) Process Trees (\(treePids.count))"
                 let treeItem = NSMenuItem(
-                    title: "Kill Process Tree (\(proc.allPids.count))",
+                    title: treeTitle,
                     action: #selector(contextKillTree(_:)), keyEquivalent: "")
                 treeItem.target = self
-                treeItem.representedObject = processItem
+                treeItem.representedObject = targets
                 menu.addItem(treeItem)
             }
 
-            let forceItem = NSMenuItem(title: "Force Kill (SIGKILL)",
+            let forceTitle = targets.count == 1
+                ? "Force Kill (SIGKILL)" : "Force Kill \(targets.count) (SIGKILL)"
+            let forceItem = NSMenuItem(title: forceTitle,
                                        action: #selector(contextForceKill(_:)), keyEquivalent: "")
             forceItem.target = self
-            forceItem.representedObject = processItem
+            forceItem.representedObject = targets
             menu.addItem(forceItem)
+
+            // Info/herdr actions operate on a single process only.
+            guard targets.count == 1, let processItem = targets.first else { return }
 
             menu.addItem(NSMenuItem.separator())
 
@@ -655,19 +738,26 @@ struct ProcessOutlineView: NSViewRepresentable {
             }
         }
 
+        private func menuTargets(_ sender: NSMenuItem) -> [OutlineProcessItem] {
+            sender.representedObject as? [OutlineProcessItem] ?? []
+        }
+
         @objc private func contextKillProcess(_ sender: NSMenuItem) {
-            guard let item = sender.representedObject as? OutlineProcessItem else { return }
-            controller?.killProcess(item.process.pid)
+            let targets = menuTargets(sender)
+            guard !targets.isEmpty else { return }
+            controller?.killProcesses(targets.map(\.process))
         }
 
         @objc private func contextForceKill(_ sender: NSMenuItem) {
-            guard let item = sender.representedObject as? OutlineProcessItem else { return }
-            controller?.killProcess(item.process.pid, force: true)
+            let targets = menuTargets(sender)
+            guard !targets.isEmpty else { return }
+            controller?.killProcesses(targets.map(\.process), force: true)
         }
 
         @objc private func contextKillTree(_ sender: NSMenuItem) {
-            guard let item = sender.representedObject as? OutlineProcessItem else { return }
-            controller?.killProcessTree(item.process)
+            let targets = menuTargets(sender)
+            guard !targets.isEmpty else { return }
+            controller?.killProcesses(targets.map(\.process), scope: .tree)
         }
 
         @objc private func contextCopyInfo(_ sender: NSMenuItem) {

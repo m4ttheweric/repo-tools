@@ -18,14 +18,22 @@ struct SystemProcess: Codable, Identifiable {
     let isRunaway: Bool
     let runawayDurationMs: Int?
     let firstSeen: Double
-    let children: [SystemProcess]?
+    var children: [SystemProcess]?
     let totalCpuPercent: Double?
     let totalRssKb: Int?
+    // Pids collapsed into this row when the daemon flattens single-child
+    // chains for display ("doppler › node" is two real processes).
+    let chainPids: [Int]?
 
     var id: Int { pid }
 
     var hasChildren: Bool {
         !(children ?? []).isEmpty
+    }
+
+    // Last segment of a breadcrumb command chain ("bun › node › foo" → "foo")
+    var leafName: String {
+        command.components(separatedBy: " › ").last ?? command
     }
 
     var childCount: Int {
@@ -53,9 +61,14 @@ struct SystemProcess: Codable, Identifiable {
         port.map { ":\($0)" } ?? ""
     }
 
+    // Every real pid this row represents (a breadcrumb row is a whole chain)
+    var selfPids: [Int] {
+        chainPids ?? [pid]
+    }
+
     // Flat list of all PIDs in this tree (self + all descendants)
     var allPids: [Int] {
-        var pids = [pid]
+        var pids = selfPids
         for child in children ?? [] {
             pids.append(contentsOf: child.allPids)
         }

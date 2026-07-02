@@ -105,8 +105,9 @@ struct ProcessPanelView: View {
         ProcessOutlineView(
             groups: controller.filteredGroups,
             visibleColumns: columnSettings.visibleColumns,
-            killingGroup: controller.killingGroup,
+            killingPids: controller.killingPids,
             selection: controller.selection,
+            dataVersion: controller.dataVersion,
             controller: controller
         )
     }
@@ -131,9 +132,16 @@ struct ProcessPanelView: View {
                 .font(.caption2)
                 .foregroundColor(.secondary)
             Spacer()
+            if let status = controller.killStatus {
+                Text(status.text)
+                    .font(.caption2)
+                    .foregroundColor(status.isError ? .red : .secondary)
+                    .transition(.opacity)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+        .animation(.easeInOut(duration: 0.2), value: controller.killStatus)
     }
 }
 

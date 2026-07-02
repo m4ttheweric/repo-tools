@@ -93,4 +93,43 @@ describe("system-processes handler", () => {
     expect(res.ok).toBe(true);
     expect(res.data.processes).toEqual([]);
   });
+
+  test("flattened single-child chain keeps every pid in chainPids", async () => {
+    const doppler = makeProcess({ pid: 345, ppid: 1, fullCommand: "/opt/homebrew/bin/doppler run" });
+    const node = makeProcess({ pid: 406, ppid: 345, fullCommand: "node server.js" });
+    const handlers = setup([doppler, node]);
+
+    const res = await handlers["system-processes"]!({});
+
+    expect(res.data.processes).toHaveLength(1);
+    const row = res.data.processes[0];
+    expect(row.command).toBe("doppler › node");
+    expect(row.pid).toBe(345);
+    expect(row.chainPids).toEqual([345, 406]);
+  });
+
+  test("three-deep chain collects all pids in order", async () => {
+    const bun = makeProcess({ pid: 10, ppid: 1, fullCommand: "bun run dev" });
+    const sh = makeProcess({ pid: 20, ppid: 10, fullCommand: "/bin/sh -c foo" });
+    const node = makeProcess({ pid: 30, ppid: 20, fullCommand: "node index.js" });
+    const handlers = setup([bun, sh, node]);
+
+    const res = await handlers["system-processes"]!({});
+
+    expect(res.data.processes).toHaveLength(1);
+    expect(res.data.processes[0].chainPids).toEqual([10, 20, 30]);
+  });
+
+  test("unflattened processes have no chainPids", async () => {
+    const parent = makeProcess({ pid: 100, ppid: 1, fullCommand: "node parent.js" });
+    const childA = makeProcess({ pid: 101, ppid: 100, fullCommand: "node a.js" });
+    const childB = makeProcess({ pid: 102, ppid: 100, fullCommand: "node b.js" });
+    const handlers = setup([parent, childA, childB]);
+
+    const res = await handlers["system-processes"]!({});
+
+    expect(res.data.processes).toHaveLength(1);
+    expect(res.data.processes[0].chainPids).toBeUndefined();
+    expect(res.data.processes[0].children).toHaveLength(2);
+  });
 });
