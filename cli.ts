@@ -29,7 +29,7 @@ const TREE: Record<string, CommandNode> = {
     description: "Git operations (rebase, reset, branch, commit, backup)",
     subcommands: {
       rebase: {
-        description: "Smart rebase onto origin/master with auto-resolve",
+        description: "Smart rebase onto origin/master with auto-resolve; on conflict, --json/--agent/--no-agent control escalation (--agent needs a TTY and a running herdr)",
         module: "./commands/git/rebase.ts",
         fn: "rebaseCommand",
         context: "worktree",
@@ -173,7 +173,7 @@ const TREE: Record<string, CommandNode> = {
   },
 
   sync: {
-    description: "Sync branches: rebase onto master + push (daily routine); on conflict, --json/--agent/--no-agent control escalation",
+    description: "Sync branches: rebase onto master + push (daily routine); on conflict, --json/--agent/--no-agent control escalation (--agent needs a TTY and a running herdr)",
     module: "./commands/sync.ts",
     fn: "syncCommand",
     context: "worktree",

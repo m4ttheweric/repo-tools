@@ -213,6 +213,11 @@ export async function runEscalationFlow(opts: {
   if (opts.autoYes && agentPossible) {
     choice = "agent";
   } else {
+    if (opts.autoYes && !agentPossible) {
+      // --agent asked to skip the prompt entirely, but there's no herdr to hand
+      // off to... say so once instead of silently falling through to the prompt.
+      console.log(`  ${yellow}--agent requested but herdr is not reachable... falling back to the prompt${reset}`);
+    }
     const { select } = await import("./rt-render.tsx");
     const options = [
       { value: "abort", label: "abort the rebase", hint: "default, same as before" },
@@ -222,7 +227,7 @@ export async function runEscalationFlow(opts: {
       { value: "manual", label: "leave the rebase paused and resolve manually" },
     ];
     choice = await select({
-      message: `${bundle.unresolvedFiles.length} conflict${bundle.unresolvedFiles.length !== 1 ? "s" : ""} need resolution`,
+      message: `${bundle.unresolvedFiles.length} conflict${bundle.unresolvedFiles.length !== 1 ? "s" : ""} need${bundle.unresolvedFiles.length !== 1 ? "" : "s"} resolution`,
       options,
     });
   }
@@ -275,6 +280,7 @@ export async function runEscalationFlow(opts: {
 
     if (waitResult === "timeout") {
       console.log(`\n  ${red}✗${reset} agent did not finish within 10 minutes; nothing was pushed`);
+      console.log(readPane(pane, 40));
       console.log(`  ${dim}pane ${pane.paneId} is still open. backup: ${bundle.backupBranch}${reset}\n`);
       syncLog.phase("escalation-verdict", { verdict: "timeout" });
       return 1;
@@ -308,6 +314,7 @@ export async function runEscalationFlow(opts: {
     }
 
     console.log(`\n  ${red}✗ verification failed (${verdict}); nothing was pushed${reset}`);
+    console.log(readPane(pane, 40));
     console.log(`  ${dim}inspect pane ${pane.paneId}. backup: ${bundle.backupBranch}${reset}\n`);
     return 1;
   } catch (err) {
