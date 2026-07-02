@@ -311,7 +311,7 @@ export async function requestAccess(
     { timeoutMs: SDM_ACCESS_TIMEOUT_MS },
   );
   if (!r.ok) {
-    return { ok: false, error: `Access request failed: ${r.output.trim()}`, code: classifySdmFailure(r.output) };
+    return { ok: false, error: `Access request failed: ${r.output.trim() || "unknown error"}`, code: classifySdmFailure(r.output) };
   }
   invalidateSdmSnapshotCache();
   invalidateSdmCatalogCache();
@@ -324,7 +324,7 @@ export async function connectResource(
 ): Promise<{ ok: boolean; error?: string; code?: SdmFailureCode }> {
   const r = await runSdmCommand(["connect", resource], onLine, { timeoutMs: SDM_CONNECT_TIMEOUT_MS });
   if (!r.ok && !r.output.includes("already connected")) {
-    return { ok: false, error: `Connect failed: ${r.output.trim()}`, code: classifySdmFailure(r.output) };
+    return { ok: false, error: `Connect failed: ${r.output.trim() || "unknown error"}`, code: classifySdmFailure(r.output) };
   }
   invalidateSdmSnapshotCache();
   return { ok: true };

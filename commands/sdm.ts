@@ -70,7 +70,15 @@ async function getCatalog(refresh = false): Promise<CatalogResult> {
   const result = await daemonQuery("sdm:catalog", refresh ? { refresh: true } : undefined, 45_000);
   if (result?.ok && Array.isArray((result as any).connections)) {
     const r = result as any;
-    return { connections: r.connections, errors: r.errors ?? [], fromCache: r.fromCache ?? false };
+    const connections = r.connections as DiscoveredConnection[];
+    const errors = r.errors ?? [];
+    // A daemon stuck on a bad PATH (e.g. launchd with no bun) can report ok
+    // with zero connections and every connector erroring. Trusting that
+    // would mask a working in-process discovery, so fall back instead.
+    if (connections.length === 0 && errors.length > 0) {
+      return discoverConnections({ refresh });
+    }
+    return { connections, errors, fromCache: r.fromCache ?? false };
   }
   return discoverConnections({ refresh });
 }
@@ -104,8 +112,11 @@ async function guidedConnect(target: GuidedTarget, opts: { duration?: string; re
       return select({ message: "Access duration", options });
     },
     promptReason: async def => textInput({ message: "Reason (org-visible)", defaultValue: def }),
-    confirmProduction: async t =>
-      confirm({ message: `${red}${bold}PRODUCTION${reset} ${t.label}. Connect anyway?`, initialValue: false }),
+    confirmProduction: async t => {
+      console.error(`${red}${bold}PRODUCTION${reset} ${t.label}`);
+      const input = await textInput({ message: `Type "${t.label}" to confirm` });
+      return input.trim() === t.label;
+    },
     confirmLogin: async () => confirm({ message: "StrongDM is not authenticated. Run sdm login now?", initialValue: true }),
     onLine: streamLine,
     recordRecent: t =>
@@ -186,9 +197,12 @@ async function connectCommand(rest: string[]): Promise<void> {
   const flags: { duration?: string; reason?: string } = {};
   const positional: string[] = [];
   for (let i = 0; i < rest.length; i++) {
-    if (rest[i] === "--duration") flags.duration = rest[++i];
-    else if (rest[i] === "--reason") flags.reason = rest[++i];
-    else positional.push(rest[i]!);
+    const arg = rest[i]!;
+    if (arg === "--duration") flags.duration = rest[++i];
+    else if (arg === "--reason") flags.reason = rest[++i];
+    else if (arg.startsWith("--duration=")) flags.duration = arg.slice("--duration=".length);
+    else if (arg.startsWith("--reason=")) flags.reason = arg.slice("--reason=".length);
+    else positional.push(arg);
   }
   const key = positional[0];
   if (!key) {

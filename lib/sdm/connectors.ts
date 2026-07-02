@@ -8,7 +8,8 @@
 import { spawn } from "node:child_process";
 import { accessSync, constants, mkdirSync, readdirSync, statSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { sdmEnv } from "./core.ts";
 import { validateConnectorOutput, type ConnectorConnection, type ConnectorOutput } from "./protocol.ts";
 
 export interface ConnectorRunError {
@@ -57,6 +58,20 @@ export function listConnectorFiles(dir = connectorsDir()): string[] {
   return files;
 }
 
+/**
+ * Env for a spawned connector. The daemon runs under launchd, which hands
+ * out a minimal PATH with no bun on it, so a `#!/usr/bin/env bun` connector
+ * would exit 127 with the raw env. Layer sdmEnv()'s Homebrew/local-bin
+ * prepend with bun's own install dir and the directory of the runtime
+ * actually executing this code, so discovery works from the daemon, the CLI,
+ * and any bun install method.
+ */
+function connectorEnv(): NodeJS.ProcessEnv {
+  const base = sdmEnv();
+  const extra = [join(homedir(), ".bun", "bin"), dirname(process.execPath)].join(":");
+  return { ...base, PATH: `${extra}:${base.PATH ?? ""}`, RT_SDM_PROTOCOL: "1" };
+}
+
 export function runConnector(
   filePath: string,
   opts: { timeoutMs?: number } = {},
@@ -75,7 +90,7 @@ export function runConnector(
     };
     const proc = spawn(filePath, ["discover"], {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, RT_SDM_PROTOCOL: "1" },
+      env: connectorEnv(),
     });
     let stdout = "";
     let stderr = "";
