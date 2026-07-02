@@ -1,13 +1,25 @@
 import { describe, test, expect } from "bun:test";
 import { buildPickerOptions } from "../picker.ts";
-import type { DiscoveredConnection } from "../connectors.ts";
+import type { DiscoveredConnection, UnresolvedGap } from "../connectors.ts";
 import type { RecentEntry } from "../state.ts";
+import { dim } from "../../ansi.ts";
 
 const conn = (id: string, tier?: string): DiscoveredConnection => ({
   id, label: id, sdmResource: `example-${id}`, tier, key: `demo:${id}`, connector: "demo",
 });
 const recent = (id: string): RecentEntry => ({
   key: `demo:${id}`, label: id, sdmResource: `example-${id}`, lastConnectedAt: "2026-07-01T00:00:00.000Z",
+});
+const gap = (overrides: Partial<UnresolvedGap> = {}): UnresolvedGap => ({
+  id: "gamma-labs",
+  label: "Gamma Labs",
+  slug: "gamma",
+  env: "labs",
+  source: "none",
+  candidates: [],
+  key: "demo:gamma-labs",
+  connector: "demo",
+  ...overrides,
 });
 
 describe("buildPickerOptions", () => {
@@ -51,5 +63,62 @@ describe("buildPickerOptions", () => {
     expect(options[0]!.label).toBe("Other");
     expect(options[1]!.value).toBe("demo:x");
     expect(options[1]!.hint).toContain("example-x");
+  });
+
+  test("an unresolved gap appends a dimmed 'Needs mapping' group after the tiers", () => {
+    const options = buildPickerOptions(
+      [conn("d", "development")],
+      [],
+      [gap({ source: "none", readOnlyAlt: "gamma-labs-read-only" })],
+    );
+    const tail = options.slice(-2);
+    expect(tail[0]!.separator).toBe(true);
+    expect(tail[0]!.label).toBe("Needs mapping");
+    const gapRow = tail[1]!;
+    expect(gapRow.separator).toBeFalsy();
+    expect(gapRow.value).toBe("");
+    expect(gapRow.label).toBe("Gamma Labs");
+    expect(gapRow.color).toBe(dim);
+    expect(gapRow.hint).toBe("only read-only gamma-labs-read-only");
+  });
+
+  test("no unresolved arg: no 'Needs mapping' group appears (existing behavior unchanged)", () => {
+    const options = buildPickerOptions([conn("d", "development")], []);
+    expect(options.some(o => o.label === "Needs mapping")).toBe(false);
+  });
+
+  test("empty unresolved array: no 'Needs mapping' group appears", () => {
+    const options = buildPickerOptions([conn("d", "development")], [], []);
+    expect(options.some(o => o.label === "Needs mapping")).toBe(false);
+  });
+
+  test("source 'none' without readOnlyAlt hints 'no StrongDM resource'", () => {
+    const options = buildPickerOptions([], [], [gap({ source: "none", readOnlyAlt: undefined })]);
+    const gapRow = options[options.length - 1]!;
+    expect(gapRow.hint).toBe("no StrongDM resource");
+  });
+
+  test("source 'ambiguous' hints the candidate list", () => {
+    const options = buildPickerOptions(
+      [],
+      [],
+      [gap({ source: "ambiguous", candidates: ["acme-gamma-labs", "acme-gamma-labs-2"] })],
+    );
+    const gapRow = options[options.length - 1]!;
+    expect(gapRow.hint).toBe("candidates: acme-gamma-labs, acme-gamma-labs-2");
+  });
+
+  test("multiple gaps each get their own row under one 'Needs mapping' separator", () => {
+    const options = buildPickerOptions(
+      [],
+      [],
+      [gap({ id: "a", label: "Gap A", source: "none" }), gap({ id: "b", label: "Gap B", source: "ambiguous", candidates: ["x"] })],
+    );
+    const seps = options.filter(o => o.separator);
+    expect(seps).toHaveLength(1);
+    expect(seps[0]!.label).toBe("Needs mapping");
+    const rows = options.filter(o => !o.separator);
+    expect(rows.map(r => r.label)).toEqual(["Gap A", "Gap B"]);
+    expect(rows.every(r => r.value === "")).toBe(true);
   });
 });

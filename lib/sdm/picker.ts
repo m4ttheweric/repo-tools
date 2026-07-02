@@ -5,8 +5,9 @@
  * exactly once (no confusing duplicate rows when filtering).
  */
 
+import { dim } from "../ansi.ts";
 import { navSeparator, type NavOption } from "../navigate.ts";
-import type { DiscoveredConnection } from "./connectors.ts";
+import type { DiscoveredConnection, UnresolvedGap } from "./connectors.ts";
 import type { RecentEntry } from "./state.ts";
 
 export const TIER_LABELS: Record<string, string> = {
@@ -36,9 +37,21 @@ function row(key: string, label: string, sdmResource: string, tier?: string): Na
   };
 }
 
+/** Non-selectable row for a gap the connector couldn't resolve; value: "" is a picker no-op. */
+function gapRow(gap: UnresolvedGap): NavOption {
+  const hint =
+    gap.source === "none"
+      ? gap.readOnlyAlt
+        ? `only read-only ${gap.readOnlyAlt}`
+        : "no StrongDM resource"
+      : `candidates: ${gap.candidates.join(", ")}`;
+  return { value: "", label: gap.label, hint, color: dim };
+}
+
 export function buildPickerOptions(
   connections: DiscoveredConnection[],
   recents: RecentEntry[],
+  unresolved?: UnresolvedGap[],
 ): NavOption[] {
   const options: NavOption[] = [];
 
@@ -69,5 +82,11 @@ export function buildPickerOptions(
     const group = byTier.get(tier)!.slice().sort((a, b) => a.label.localeCompare(b.label));
     for (const c of group) options.push(row(c.key, c.label, c.sdmResource, c.tier));
   }
+
+  if (unresolved?.length) {
+    options.push(navSeparator("Needs mapping"));
+    for (const g of unresolved) options.push(gapRow(g));
+  }
+
   return options;
 }
