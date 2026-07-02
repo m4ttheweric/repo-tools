@@ -17,6 +17,9 @@ import pino, { type Logger } from "pino";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — no types shipped; the JS API is well-tested.
 import roll from "pino-roll";
+import { dlopen, suffix, FFIType } from "bun:ffi";
+import { mkdirSync, openSync, closeSync } from "fs";
+import { join } from "path";
 import { LOG_DIR } from "./daemon-config.ts";
 
 export interface DaemonLoggerHandle {
@@ -95,6 +98,33 @@ export async function getDaemonLogger(): Promise<DaemonLoggerHandle> {
     });
   }
   return cached;
+}
+
+// ─── Native stderr capture ───────────────────────────────────────────────────
+
+/**
+ * Point fd 2 at ~/.rt/logs/daemon-stderr.log so native output that bypasses
+ * JS entirely (bun panics, segfault reports, runtime asserts) is captured no
+ * matter how the daemon was launched. The launchd plist cannot do this
+ * (macOS 26 broke $(HOME) expansion in SMAppService plists) and the dev shim
+ * only covers source mode — self-redirection makes capture a property of the
+ * daemon process itself. JS-side stderr never reaches fd 2 anyway: the
+ * installCrashHandlers interceptor routes it into the JSON log first.
+ */
+export function redirectNativeStderr(): void {
+  if (process.platform !== "darwin") return;
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+    const fd = openSync(join(LOG_DIR, "daemon-stderr.log"), "a");
+    const libc = dlopen(`libSystem.${suffix}`, {
+      dup2: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+    });
+    libc.symbols.dup2(fd, 2);
+    closeSync(fd); // fd 2 now holds the file description
+    libc.close();
+  } catch {
+    // Non-fatal: stderr stays wherever the launcher pointed it.
+  }
 }
 
 // ─── Crash handler installer ─────────────────────────────────────────────────
