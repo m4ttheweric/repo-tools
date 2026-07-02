@@ -38,6 +38,9 @@ class ProcessPanelController: ObservableObject {
     /// Footer status line (kill progress, copy confirmations, herdr
     /// lookup failures). Every user action lands feedback here.
     @Published var status: PanelStatus? = nil
+    /// Row pids confirmed to be running inside a herdr pane; the command
+    /// cell badges these. Updated asynchronously after each snapshot.
+    @Published var herdrRowPids: Set<Int> = []
     /// True when the most recent daemon query returned nothing, so the
     /// empty state can say "daemon unreachable" instead of "no processes".
     @Published var lastRefreshFailed = false
@@ -126,6 +129,39 @@ class ProcessPanelController: ObservableObject {
         pruneStaleViewState()
         lastUpdated = Date(timeIntervalSince1970: data.updatedAt / 1000)
         dataVersion += 1
+        refreshHerdrBadges()
+    }
+
+    /// Herdr membership needs shell-outs (pane list + process-info per
+    /// pane), so it resolves off-main and lands as a second, later update.
+    private func refreshHerdrBadges() {
+        let groups = repoGroups
+        Task.detached { [weak self] in
+            let roots = HerdrBridge.shared.paneRootPids()
+            let marked = Self.herdrRows(in: groups, roots: roots)
+            await MainActor.run { [weak self] in
+                guard let self, self.herdrRowPids != marked else { return }
+                self.herdrRowPids = marked
+                self.dataVersion += 1
+            }
+        }
+    }
+
+    /// A row is herdr-owned when one of its own pids is a pane's shell or
+    /// foreground process, or its direct parent is (a server started from a
+    /// pane shell). Only the tree root matches, keeping badges quiet;
+    /// descendants are implied.
+    private static func herdrRows(in groups: [RepoGroup], roots: Set<Int>) -> Set<Int> {
+        guard !roots.isEmpty else { return [] }
+        var marked = Set<Int>()
+        func visit(_ proc: SystemProcess) {
+            if !roots.isDisjoint(with: proc.selfPids) || roots.contains(proc.ppid) {
+                marked.insert(proc.pid)
+            }
+            (proc.children ?? []).forEach(visit)
+        }
+        groups.flatMap(\.processes).forEach(visit)
+        return marked
     }
 
     /// A snapshot can drop the filtered repo or selected rows entirely
