@@ -256,21 +256,26 @@ export async function showLogs(args: string[] = []): Promise<void> {
   }
 
   // pino-roll names files: daemon.YYYY-MM-DD.N.log
-  // Pick the most-recent file by mtime.
-  const candidates = readdirSync(LOG_DIR)
-    .filter(f => /^daemon\..+\.log$/.test(f))
+  // Pick the most-recent file by mtime, plus the most-recent CLI command log
+  // (cli.YYYY-MM-DD.log, written by lib/cli-logger.ts) so one viewer covers
+  // both the daemon and rt command invocations.
+  const newest = (re: RegExp) => readdirSync(LOG_DIR)
+    .filter(f => re.test(f))
     .map(f => ({ f, mtime: statSync(join(LOG_DIR, f)).mtimeMs }))
-    .sort((a, b) => b.mtime - a.mtime);
-  if (candidates.length === 0) {
+    .sort((a, b) => b.mtime - a.mtime)[0]?.f;
+
+  const daemonLog = newest(/^daemon\..+\.log$/);
+  if (!daemonLog) {
     console.log(`\n  ${dim}no daemon log files in ${LOG_DIR}${reset}\n`);
     return;
   }
-  const logPath = join(LOG_DIR, candidates[0]!.f);
+  const cliLog = newest(/^cli\.\d{4}-\d{2}-\d{2}\.log$/);
+  const logPaths = [daemonLog, ...(cliLog ? [cliLog] : [])].map(f => join(LOG_DIR, f));
 
   if (terminal) {
-    await runTerminalViewer(logPath);
+    await runTerminalViewer(logPaths);
   } else {
-    await runWebViewer(logPath);
+    await runWebViewer(logPaths);
   }
 }
 
@@ -288,20 +293,21 @@ export async function showLogs(args: string[] = []): Promise<void> {
  *
  * Falls back to `bunx pino-pretty` if lnav isn't installed.
  */
-async function runTerminalViewer(logPath: string): Promise<void> {
+async function runTerminalViewer(logPaths: string[]): Promise<void> {
   const hasLnav = spawnSync("which", ["lnav"]).status === 0;
 
   let viewer: ReturnType<typeof spawn>;
   if (hasLnav) {
     // lnav is a full TUI — inherit stdin so keystrokes reach it.
-    viewer = spawn("lnav", [logPath], {
+    viewer = spawn("lnav", logPaths, {
       stdio: "inherit",
     });
   } else {
-    console.log(`  ${dim}tailing ${logPath} via pino-pretty (Ctrl-C to stop)${reset}`);
+    console.log(`  ${dim}tailing ${logPaths.join(", ")} via pino-pretty (Ctrl-C to stop)${reset}`);
     console.log(`  ${dim}for a nicer interactive view: ${bold}brew install lnav${reset}\n`);
     // sh -c pipeline avoids Bun's stream-as-stdio limitation between two spawns.
-    viewer = spawn("sh", ["-c", `tail -F ${JSON.stringify(logPath)} | bunx pino-pretty`], {
+    const quoted = logPaths.map(p => JSON.stringify(p)).join(" ");
+    viewer = spawn("sh", ["-c", `tail -F ${quoted} | bunx pino-pretty`], {
       stdio: ["ignore", "inherit", "inherit"],
     });
   }
@@ -351,14 +357,17 @@ const HANDLER_TIME = [
   '}',
 ].join("");
 
-const HANDLER_LEVEL = 'function(line){return {text:(line.json_content||line.json||{}).level||""};}';
-const HANDLER_MODULE = 'function(line){return {text:(line.json_content||line.json||{}).module||""};}';
-const HANDLER_MSG = 'function(line){return {text:(line.json_content||line.json||{}).msg||line.content};}';
+// CLI command-log lines (cli.YYYY-MM-DD.log) carry {command, outcome} instead
+// of pino's {level, module, msg} — each handler falls back so both file
+// shapes render in the same columns.
+const HANDLER_LEVEL = 'function(line){var j=line.json_content||line.json||{};return {text:j.level||j.outcome||""};}';
+const HANDLER_MODULE = 'function(line){var j=line.json_content||line.json||{};return {text:j.module||(j.command!==undefined?"cli":"")};}';
+const HANDLER_MSG = 'function(line){var j=line.json_content||line.json||{};return {text:j.msg||(j.command!==undefined?"rt "+j.command:line.content)};}';
 
 const HANDLER_FIELDS = [
   'function(line){',
   '  var j=line.json_content||line.json||{};',
-  '  var skip={level:1,time:1,pid:1,hostname:1,module:1,msg:1};',
+  '  var skip={level:1,time:1,pid:1,hostname:1,module:1,msg:1,command:1,outcome:1};',
   '  var rest={}, has=false;',
   '  for(var k in j){ if(!skip[k]){ rest[k]=j[k]; has=true; } }',
   '  if(!has) return {text:""};',
@@ -393,7 +402,7 @@ const LOGDY_PINO_COLUMNS_JSON = JSON.stringify(
 /**
  * Spawn logdy follow + open browser. Stays attached so user can Ctrl-C.
  */
-async function runWebViewer(logPath: string): Promise<void> {
+async function runWebViewer(logPaths: string[]): Promise<void> {
   const which = spawnSync("which", ["logdy"]);
   if (which.status !== 0) {
     console.log(`\n  ${yellow}⚠${reset} logdy not installed.`);
@@ -413,10 +422,10 @@ async function runWebViewer(logPath: string): Promise<void> {
   const port = "5544";
   const url = `http://localhost:${port}`;
   console.log(`  ${green}●${reset} starting logdy on ${url}`);
-  console.log(`  ${dim}tailing: ${logPath}${reset}`);
+  console.log(`  ${dim}tailing: ${logPaths.join(", ")}${reset}`);
 
   const logdy = spawn("logdy", [
-    "follow", logPath,
+    "follow", ...logPaths,
     "--port", port,
     "--ui-pass", "",
     "--no-analytics",
