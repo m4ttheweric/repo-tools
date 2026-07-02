@@ -97,6 +97,34 @@ describe("discoverConnections", () => {
       rmSync(freshDir, { recursive: true, force: true });
     }
   });
+
+  test("cache is scoped per directory", async () => {
+    const dirA = mkdtempSync(join(tmpdir(), "rt-sdm-disc-a-"));
+    const dirB = mkdtempSync(join(tmpdir(), "rt-sdm-disc-b-"));
+    try {
+      writeFileSync(join(dirA, "alpha"), `#!/bin/bash\necho '${GOOD_JSON}'\n`);
+      chmodSync(join(dirA, "alpha"), 0o755);
+
+      const otherJson = JSON.stringify({
+        version: 1,
+        connections: [{ id: "three", label: "Three", sdmResource: "example-three", tier: "staging" }],
+      });
+      writeFileSync(join(dirB, "beta"), `#!/bin/bash\necho '${otherJson}'\n`);
+      chmodSync(join(dirB, "beta"), 0o755);
+
+      const a = await discoverConnections({ dir: dirA });
+      expect(a.connections.map(c => c.key)).toEqual(["alpha:one", "alpha:two"]);
+      expect(a.fromCache).toBe(false);
+
+      // Discovering dir B within the TTL must not return dir A's cached result.
+      const b = await discoverConnections({ dir: dirB });
+      expect(b.fromCache).toBe(false);
+      expect(b.connections.map(c => c.key)).toEqual(["beta:three"]);
+    } finally {
+      rmSync(dirA, { recursive: true, force: true });
+      rmSync(dirB, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("scaffoldConnector", () => {
