@@ -71,6 +71,21 @@ describe("runConnector", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("timed out");
   });
+
+  test("succeeds when process.env.PATH lacks bun (daemon's minimal launchd PATH)", async () => {
+    const p = join(dir, "bun-connector");
+    writeFileSync(p, `#!/usr/bin/env bun\nprocess.stdout.write(${JSON.stringify(GOOD_JSON)});\n`);
+    chmodSync(p, 0o755);
+    const savedPath = process.env.PATH;
+    try {
+      process.env.PATH = "/usr/bin:/bin";
+      const r = await runConnector(p);
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.output.connections).toHaveLength(2);
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  });
 });
 
 describe("discoverConnections", () => {

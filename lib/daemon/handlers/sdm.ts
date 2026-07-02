@@ -50,8 +50,13 @@ export function createSdmHandlers(ctx: HandlerContext, deps: SdmHandlerDeps = re
   return {
     "sdm:catalog": async (payload: { refresh?: boolean } = {}) => {
       const result = await deps.discover({ refresh: payload.refresh });
-      for (const e of result.errors) {
-        ctx.log.warn({ connector: e.connector, err: e.error }, "sdm connector failed");
+      // Cached hits already got warned about on the run that produced them;
+      // re-warning on every cached hit would spam the log for a connector
+      // that keeps failing while the 10-minute cache is still warm.
+      if (!result.fromCache) {
+        for (const e of result.errors) {
+          ctx.log.warn({ connector: e.connector, err: e.error }, "sdm connector failed");
+        }
       }
       return { ok: true, connections: result.connections, errors: result.errors, fromCache: result.fromCache };
     },
@@ -83,7 +88,10 @@ export function createSdmHandlers(ctx: HandlerContext, deps: SdmHandlerDeps = re
         throw new Error("prompt reached in promptless reconnect");
       };
       const result = await runGuidedConnect(
-        { key: entry.key, label: entry.label, sdmResource: entry.sdmResource, production: entry.production, db: entry.db },
+        {
+          key: entry.key, label: entry.label, sdmResource: entry.sdmResource,
+          tier: entry.tier, production: entry.production, reasonSuggestion: entry.reasonSuggestion, db: entry.db,
+        },
         { interactive: false },
         {
           getSnapshot: deps.getSnapshot,

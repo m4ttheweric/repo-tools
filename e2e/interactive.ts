@@ -158,6 +158,13 @@ export async function startInteractive(
   const cwd = opts.cwd ?? opts.home;
   const socketPath = join(opts.home, `.tw-${process.pid}-${++nextId}.sock`);
 
+  // Connector scaffolds (rt sdm connectors init) run via `#!/usr/bin/env bun`,
+  // so bun's own directory must be on PATH for the spawned rt binary's
+  // children to find it. process.execPath is the running bun binary itself,
+  // which resolves correctly whether bun was installed via the bun installer
+  // (~/.bun/bin) or Homebrew (/opt/homebrew/bin) -- unlike a hardcoded guess.
+  const bunDir = join(process.execPath, "..");
+
   const env: Record<string, string> = {
     // HERDR_* must never reach the binary under test: rt's herdr-launch path
     // would drive the developer's live herdr session (split panes, type into
@@ -168,7 +175,7 @@ export async function startInteractive(
       ),
     ),
     HOME: opts.home,
-    PATH: `${join(RT_BINARY, "..")}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`,
+    PATH: `${join(RT_BINARY, "..")}:${bunDir}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`,
     TERM: "xterm-256color",
     RT_SKIP_SETUP: "1",
     RT_FZF_ALT_SCREEN: "1",

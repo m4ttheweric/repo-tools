@@ -29,6 +29,8 @@ const API_INDEX = {
     { method: "POST", path: "/api/refresh",         description: "Trigger a background cache refresh" },
     { method: "POST", path: "/api/hooks/:repo/repair", description: "Repair hooks path for a repo" },
     { method: "POST", path: "/api/shutdown",        description: "Gracefully stop the daemon" },
+    { method: "GET",  path: "/api/sdm/recents",     description: "Recent StrongDM connections with live connected state" },
+    { method: "POST", path: "/api/sdm/reconnect",   description: "Reconnect a StrongDM recent (promptless; fails if an access request is needed)" },
   ],
   websocket_events: [
     { type: "status",         description: "Full daemon status — after each cache refresh (~5 min)" },
@@ -38,7 +40,7 @@ const API_INDEX = {
   ],
   auth: {
     header: "X-RT-Token",
-    description: "Required on mutating routes (shutdown). Token at ~/.rt/api-token.",
+    description: "Required on mutating routes (shutdown, sdm reconnect). Token at ~/.rt/api-token.",
   },
 };
 

@@ -24,6 +24,7 @@ function makeDeps(overrides: Partial<SdmHandlerDeps> = {}): SdmHandlerDeps {
       version: 1,
       recents: [{
         key: "demo:alpha", label: "Alpha", sdmResource: "example-alpha-staging",
+        tier: "staging", reasonSuggestion: "investigating alpha staging data",
         lastConnectedAt: "2026-07-01T00:00:00.000Z",
       }],
     }),
@@ -67,10 +68,18 @@ describe("sdm handlers", () => {
   });
 
   test("sdm:reconnect connects, verifies, and returns the address", async () => {
-    const h = createSdmHandlers(ctx, makeDeps());
+    let recorded: any;
+    const h = createSdmHandlers(ctx, makeDeps({
+      recordRecent: entry => {
+        recorded = entry;
+        return { version: 1, recents: [] };
+      },
+    }));
     const r = await h["sdm:reconnect"]!({ key: "demo:alpha" });
     expect(r.ok).toBe(true);
     expect(r.address).toBe("127.0.0.1:15432");
+    expect(recorded.tier).toBe("staging");
+    expect(recorded.reasonSuggestion).toBe("investigating alpha staging data");
   });
 
   test("sdm:reconnect rejects an unknown key", async () => {
