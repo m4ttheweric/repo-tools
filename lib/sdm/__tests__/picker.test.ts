@@ -11,19 +11,32 @@ const recent = (id: string): RecentEntry => ({
 });
 
 describe("buildPickerOptions", () => {
-  test("recents first (max 3), then tiers in canonical order", () => {
+  test("recents first, then tiers in canonical order, no duplicate rows", () => {
     const options = buildPickerOptions(
       [conn("p", "production"), conn("s", "staging"), conn("d", "development"), conn("q", "qa")],
-      [recent("s"), recent("q"), recent("d"), recent("p")],
+      [recent("q")],
     );
     const labels = options.map(o => (o.separator ? `--${o.label}` : o.value));
+    // q is promoted to Recent and dropped from the QA group (which then vanishes).
     expect(labels).toEqual([
-      "--Recent", "demo:s", "demo:q", "demo:d",
+      "--Recent", "demo:q",
       "--Development", "demo:d",
-      "--QA", "demo:q",
       "--Staging", "demo:s",
       "--Production", "demo:p",
     ]);
+    // Every connection key appears exactly once across the whole list.
+    const keys = options.filter(o => !o.separator).map(o => o.value);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  test("recents cap at 3; a 4th recent still appears once, in its tier", () => {
+    const options = buildPickerOptions(
+      [conn("a", "qa"), conn("b", "qa"), conn("c", "qa"), conn("d", "qa")],
+      [recent("a"), recent("b"), recent("c"), recent("d")],
+    );
+    const keys = options.filter(o => !o.separator).map(o => o.value);
+    expect(keys.filter(k => k === "demo:d")).toHaveLength(1);
+    expect(new Set(keys).size).toBe(keys.length);
   });
 
   test("unknown tiers group after known ones, alphabetically", () => {
