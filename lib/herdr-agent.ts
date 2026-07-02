@@ -97,6 +97,19 @@ export function sendTask(pane: PaneRef, taskFilePath: string): void {
   const message = `Read ${taskFilePath} and complete the task it describes.`;
   const r = spawnSync("herdr", ["pane", "run", pane.paneId, message], { stdio: "pipe", env: process.env });
   if (r.status !== 0) throw new Error("herdr pane run (task) failed");
+
+  if (waitAgentWorking(pane, 5_000) === "working") return;
+
+  // The real Claude Code TUI can absorb the Enter bundled into "pane run"'s
+  // paste into the composer instead of submitting it, leaving the task typed
+  // but never sent. A follow-up Enter keypress submits whatever is sitting
+  // in the composer.
+  const nudge = spawnSync("herdr", ["pane", "send-keys", pane.paneId, "Enter"], { stdio: "pipe", env: process.env });
+  if (nudge.status !== 0) throw new Error("herdr pane send-keys (Enter nudge) failed");
+
+  if (waitAgentWorking(pane, 10_000) === "working") return;
+
+  throw new Error("agent never picked up the task");
 }
 
 // Synchronous (unlike waitAgentIdle): this wait is short (default 15s) and
