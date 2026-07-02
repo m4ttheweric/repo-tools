@@ -1,11 +1,13 @@
 import { describe, test, expect, beforeEach, afterAll } from "bun:test";
-import { mkdtempSync, writeFileSync, chmodSync, rmSync, existsSync } from "fs";
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import {
   listConnectorFiles,
   runConnector,
+  runConnectorResolve,
   discoverConnections,
+  resolveConnection,
   invalidateCatalogCache,
   scaffoldConnector,
 } from "../connectors.ts";
@@ -17,6 +19,15 @@ beforeEach(() => invalidateCatalogCache());
 function writeConnector(name: string, body: string): string {
   const p = join(dir, name);
   writeFileSync(p, `#!/bin/bash\n${body}\n`);
+  chmodSync(p, 0o755);
+  return p;
+}
+
+const FAKE_CONNECTOR = join(import.meta.dir, "fixtures", "fake-connector.ts");
+
+function installFakeConnector(name: string, targetDir = dir): string {
+  const p = join(targetDir, name);
+  writeFileSync(p, readFileSync(FAKE_CONNECTOR));
   chmodSync(p, 0o755);
   return p;
 }
@@ -138,6 +149,106 @@ describe("discoverConnections", () => {
     } finally {
       rmSync(dirA, { recursive: true, force: true });
       rmSync(dirB, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("runConnectorResolve", () => {
+  test("resolves a url to a connection", async () => {
+    const p = installFakeConnector("resolver-good");
+    const r = await runConnectorResolve(p, "https://example.com/resolve-me/thing");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.output.connections).toHaveLength(1);
+      expect(r.output.connections[0]!.id).toBe("res1");
+    }
+  });
+
+  test("resolves a url to an unresolved gap", async () => {
+    const p = installFakeConnector("resolver-ambiguous");
+    const r = await runConnectorResolve(p, "https://example.com/ambiguous/thing");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.output.connections).toHaveLength(0);
+      expect(r.output.unresolved).toHaveLength(1);
+      expect(r.output.unresolved![0]!.source).toBe("ambiguous");
+    }
+  });
+
+  test("no match yields empty output", async () => {
+    const p = installFakeConnector("resolver-none");
+    const r = await runConnectorResolve(p, "https://example.com/nope");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.output.connections).toHaveLength(0);
+      expect(r.output.unresolved ?? []).toHaveLength(0);
+    }
+  });
+});
+
+describe("discoverConnections unresolved passthrough", () => {
+  test("stamps connector and key onto unresolved gaps", async () => {
+    const freshDir = mkdtempSync(join(tmpdir(), "rt-sdm-disc-unresolved-"));
+    try {
+      installFakeConnector("fake", freshDir);
+      const r = await discoverConnections({ dir: freshDir });
+      expect(r.unresolved).toHaveLength(1);
+      expect(r.unresolved![0]).toMatchObject({ id: "gap1", connector: "fake", key: "fake:gap1" });
+    } finally {
+      rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("resolveConnection", () => {
+  test("returns the resolved connection from the matching connector", async () => {
+    const freshDir = mkdtempSync(join(tmpdir(), "rt-sdm-resolve-"));
+    try {
+      installFakeConnector("only", freshDir);
+      const r = await resolveConnection("https://example.com/resolve-me/thing", { dir: freshDir });
+      expect(r).not.toBeNull();
+      expect(r?.connector).toBe("only");
+      expect(r?.connection?.id).toBe("res1");
+      expect(r?.connection?.key).toBe("only:res1");
+      expect(r?.unresolved).toBeUndefined();
+    } finally {
+      rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+
+  test("returns an unresolved gap when a connector recognizes but cannot resolve the url", async () => {
+    const freshDir = mkdtempSync(join(tmpdir(), "rt-sdm-resolve-amb-"));
+    try {
+      installFakeConnector("only", freshDir);
+      const r = await resolveConnection("https://example.com/ambiguous/thing", { dir: freshDir });
+      expect(r).not.toBeNull();
+      expect(r?.connection).toBeUndefined();
+      expect(r?.unresolved?.key).toBe("only:res-amb");
+    } finally {
+      rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+
+  test("returns null when no connector recognizes the url", async () => {
+    const freshDir = mkdtempSync(join(tmpdir(), "rt-sdm-resolve-none-"));
+    try {
+      installFakeConnector("only", freshDir);
+      const r = await resolveConnection("https://example.com/nope", { dir: freshDir });
+      expect(r).toBeNull();
+    } finally {
+      rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+
+  test("tries connectors in order and stops at the first that yields a result", async () => {
+    const freshDir = mkdtempSync(join(tmpdir(), "rt-sdm-resolve-order-"));
+    try {
+      installFakeConnector("a-first", freshDir);
+      installFakeConnector("b-second", freshDir);
+      const r = await resolveConnection("https://example.com/resolve-me/thing", { dir: freshDir });
+      expect(r?.connector).toBe("a-first");
+    } finally {
+      rmSync(freshDir, { recursive: true, force: true });
     }
   });
 });
