@@ -225,10 +225,10 @@ async function handleUnresolvedGap(
   interactive: boolean,
 ): Promise<void> {
   if (gap.source === "none" && gap.readOnlyAlt) {
-    console.log(
+    console.error(
       `${yellow}Only a read-only replica (${gap.readOnlyAlt}) exists for ${gap.label} (${gap.slug} ${gap.env}); it can't back local dev.${reset}`,
     );
-    if (process.stdin.isTTY) {
+    if (interactive) {
       const { confirm } = await import("../lib/rt-render.tsx");
       const yes = await confirm({ message: "Browse it read-only instead?", initialValue: false });
       if (yes) {
@@ -394,8 +394,12 @@ export async function refreshCmd(args: string[] = []): Promise<void> {
     const { suggestForGaps, writeSuggestions } = await import("../lib/sdm/suggest.ts");
     const { llmPrompt } = await import("../lib/llm.ts");
     const records = await suggestForGaps(catalog.unresolved ?? [], { llm: llmPrompt });
-    writeSuggestions(records);
-    console.log(`${bold}${records.length} suggestion${records.length === 1 ? "" : "s"} written${reset}; review with ${cyan}rt sdm map${reset}`);
+    if (records.length > 0) {
+      writeSuggestions(records);
+      console.log(`${bold}${records.length} suggestion${records.length === 1 ? "" : "s"} written${reset}; review with ${cyan}rt sdm map${reset}`);
+    } else {
+      console.log(`${dim}LLM produced no suggestions (unavailable or no gaps); kept existing suggestions.json${reset}`);
+    }
   }
 }
 
@@ -435,7 +439,7 @@ export function formatMap(
       }
       const suggestion = suggestions.find(s => s.key === gap.key);
       if (suggestion) {
-        const resource = suggestion.resource ?? "null";
+        const resource = suggestion.resource ?? "(declined)";
         lines.push(`    suggestion: ${cyan}${resource}${reset} ${dim}${suggestion.reasoning}${reset}`);
       }
     }

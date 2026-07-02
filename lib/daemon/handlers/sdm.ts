@@ -65,7 +65,7 @@ export function createSdmHandlers(ctx: HandlerContext, deps: SdmHandlerDeps = re
 
     "sdm:resolve": async (payload: { url?: string } = {}) => {
       const url = payload.url ?? "";
-      if (!url) return { ok: false, error: "sdm:resolve requires a url" };
+      if (!url.trim()) return { ok: false, error: "sdm:resolve requires a url" };
       const result = await deps.resolveConnection(url);
       return { ok: true, connection: result?.connection, unresolved: result?.unresolved, errors: result?.errors ?? [] };
     },

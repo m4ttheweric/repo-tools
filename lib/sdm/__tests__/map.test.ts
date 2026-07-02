@@ -76,4 +76,11 @@ describe("formatMap", () => {
     expect(lines).toContain("Resolved");
     expect(lines).toContain("Needs mapping");
   });
+
+  test("a gap with a null-resource suggestion (declined) shows friendly copy, not the literal null", () => {
+    const declinedSuggestion: SuggestionRecord = { ...suggestion, resource: null, reasoning: "no candidate matched" };
+    const lines = formatMap([], [gap], [declinedSuggestion]).join("\n");
+    expect(lines).toContain("(declined)");
+    expect(lines).not.toMatch(/suggestion:.*\bnull\b/);
+  });
 });

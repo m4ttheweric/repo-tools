@@ -165,4 +165,18 @@ describe("sdm handlers", () => {
     expect(r.ok).toBe(false);
     expect(r.error).toContain("url");
   });
+
+  test("sdm:resolve rejects a whitespace-only url", async () => {
+    let called = false;
+    const h = createSdmHandlers(ctx, makeDeps({
+      resolveConnection: async () => {
+        called = true;
+        return null;
+      },
+    }));
+    const r = await h["sdm:resolve"]!({ url: "   " });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("url");
+    expect(called).toBe(false);
+  });
 });
