@@ -159,8 +159,13 @@ export async function startInteractive(
   const socketPath = join(opts.home, `.tw-${process.pid}-${++nextId}.sock`);
 
   const env: Record<string, string> = {
+    // HERDR_* must never reach the binary under test: rt's herdr-launch path
+    // would drive the developer's live herdr session (split panes, type into
+    // the focused pane) instead of staying inside the test sandbox.
     ...Object.fromEntries(
-      Object.entries(process.env).filter((e): e is [string, string] => e[1] != null),
+      Object.entries(process.env).filter(
+        (e): e is [string, string] => e[1] != null && !e[0].startsWith("HERDR_"),
+      ),
     ),
     HOME: opts.home,
     PATH: `${join(RT_BINARY, "..")}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`,
