@@ -108,6 +108,55 @@ export async function setGitlabToken(): Promise<void> {
   console.log(`\n  ${green}✓${reset} GitLab token saved\n`);
 }
 
+// ─── StrongDM email ──────────────────────────────────────────────────────────
+
+export async function setSdmEmail(args: string[]): Promise<void> {
+  const secrets = loadSecrets();
+  const fromArgs = args.find(a => !a.startsWith("--"))?.trim();
+
+  let email: string;
+  if (fromArgs) {
+    email = fromArgs;
+  } else if (!process.stdin.isTTY) {
+    console.log(`\n  ${red}✗ no email given and no terminal to prompt in${reset}`);
+    console.log(`  ${dim}usage: rt settings sdm-email <email>${reset}\n`);
+    process.exitCode = 1;
+    return;
+  } else {
+    const { textInput } = await import("../lib/rt-render.tsx");
+    try {
+      email = await textInput({
+        message: "StrongDM account email",
+        placeholder: secrets.sdmEmail
+          ? "••• (already set, leave empty to keep)"
+          : "you@example.com",
+      });
+    } catch {
+      if (secrets.sdmEmail) {
+        console.log(`  ${dim}keeping existing StrongDM email${reset}`);
+      }
+      return;
+    }
+  }
+
+  if (!email.trim()) {
+    if (secrets.sdmEmail) {
+      console.log(`  ${dim}keeping existing StrongDM email${reset}`);
+    } else {
+      console.log(`  ${yellow}no email entered${reset}`);
+    }
+    return;
+  }
+
+  try {
+    saveSecret("sdmEmail", email.trim());
+  } catch (err) {
+    console.log(`\n  ${red}✗ failed to save StrongDM email: ${err instanceof Error ? err.message : String(err)}${reset}\n`);
+    process.exit(1);
+  }
+  console.log(`\n  ${green}✓${reset} StrongDM email saved\n`);
+}
+
 // ─── Linear team ─────────────────────────────────────────────────────────────
 
 export async function setLinearTeam(): Promise<void> {

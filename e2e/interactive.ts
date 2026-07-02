@@ -242,17 +242,24 @@ export async function startInteractive(
     },
 
     async waitForText(text: string, timeoutMs = 5000): Promise<void> {
-      await twSend(socketPath, "wait_for_text", {
-        text,
-        timeout_ms: timeoutMs,
-      });
+      // The transport socket timeout must outlast the logical wait, or a wait
+      // longer than the default 15s dies at the socket layer before the text
+      // can appear.
+      await twSend(
+        socketPath,
+        "wait_for_text",
+        { text, timeout_ms: timeoutMs },
+        timeoutMs + 5000,
+      );
     },
 
     async waitForIdle(idleMs = 500, timeoutMs = 5000): Promise<void> {
-      await twSend(socketPath, "wait_for_idle", {
-        idle_ms: idleMs,
-        timeout_ms: timeoutMs,
-      });
+      await twSend(
+        socketPath,
+        "wait_for_idle",
+        { idle_ms: idleMs, timeout_ms: timeoutMs },
+        timeoutMs + 5000,
+      );
     },
 
     async stop(): Promise<void> {

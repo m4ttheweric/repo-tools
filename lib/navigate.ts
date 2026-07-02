@@ -124,7 +124,9 @@ export function buildNavArgs(opts: NavPickerOpts): string[] {
     "--nth=1",
     "--delimiter=\t",
     "--tabstop=1",
-    process.env.RT_FZF_ALT_SCREEN ? "--height=100%" : "--height=~100%",
+    // Fill the terminal: "~100%" sizes the box to the content and leaves dead
+    // space below on a tall terminal. "100%" uses the full height either way.
+    "--height=100%",
     "--layout=reverse",
     "--border=rounded",
     `--border-label= ${opts.message} `,

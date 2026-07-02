@@ -1,14 +1,11 @@
 /**
- * rt sdm: StrongDM connections.
+ * rt sdm: StrongDM connections. `sdm` is a branch node (cli.ts); subcommands:
  *
- *   rt sdm                          picker then guided connect
- *   rt sdm connect <key> [--duration 8h] [--reason "..."]
+ *   rt sdm connect [<key>] [--duration 8h] [--reason "..."]  picker, or connect a key
  *   rt sdm status                   CLI health + connected tunnels
- *   rt sdm login                    run sdm login (browser SAML)
+ *   rt sdm login [--manual] [--visible]   log in (default: browser popup flow)
  *   rt sdm refresh                  re-run connectors, bust the cache
- *   rt sdm connectors               list connectors + last-run status
- *   rt sdm connectors test <name>   run one connector, validate, print
- *   rt sdm connectors init <name>   scaffold a new connector
+ *   rt sdm connectors [test|init <name>]  list/validate/scaffold connectors
  *
  * The daemon serves the connector catalog when running (10-minute cache);
  * everything falls back to in-process execution when it is not.
@@ -39,29 +36,8 @@ import { runGuidedConnect, type GuidedTarget } from "../lib/sdm/flow.ts";
 import { probeQuery, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS } from "../lib/sdm/verify.ts";
 import { buildPickerOptions } from "../lib/sdm/picker.ts";
 
-const USAGE = `${bold}rt sdm${reset} StrongDM connections
-
-  rt sdm                          pick a connection and connect
-  rt sdm connect <key> [--duration 8h] [--reason "..."]
-  rt sdm status                   CLI health + connected tunnels
-  rt sdm login                    run sdm login
-  rt sdm refresh                  re-run connectors, bust the cache
-  rt sdm connectors               list connectors
-  rt sdm connectors test <name>   run one connector and validate
-  rt sdm connectors init <name>   scaffold a new connector
-`;
-
-export async function run(args: string[], _ctx: CommandContext): Promise<void> {
-  const [sub, ...rest] = args;
-  if (!sub) return pickerCommand();
-  if (sub === "connect") return connectCommand(rest);
-  if (sub === "status") return statusCommand();
-  if (sub === "login") return loginCommand();
-  if (sub === "refresh") return refreshCommand();
-  if (sub === "connectors") return connectorsCommand(rest);
-  console.log(USAGE);
-  process.exitCode = 1;
-}
+// `sdm` is a branch node in the command tree (cli.ts); each subcommand below
+// is a leaf pointing at one of these exported functions.
 
 // ── Catalog access (daemon-first, in-process fallback) ──────────────────────
 
@@ -100,7 +76,18 @@ async function guidedConnect(target: GuidedTarget, opts: { duration?: string; re
     requestAccess,
     connect: connectResource,
     verify: url => verifyWithRetries(() => probeQuery(url, VERIFY_ATTEMPT_TIMEOUT_MS)),
-    login: loginSdm,
+    login: async (onLine) => {
+      const { runBrowserLogin } = await import("../lib/sdm/browser-login.ts");
+      const r = await runBrowserLogin({ onLine });
+      if (r.outcome === "authenticated") return { ok: true };
+      if (r.outcome === "needs-manual") {
+        if (!process.stdin.isTTY) {
+          return { ok: false, error: `${r.reason} Run \`rt sdm login --manual\` in a terminal first.` };
+        }
+        return loginSdm(onLine); // no Chrome: terminal flow
+      }
+      return { ok: false, error: r.error };
+    },
     promptDuration: async def => {
       const all = [
         { value: "8h", label: "8 hours" },
@@ -152,9 +139,9 @@ function toTarget(c: DiscoveredConnection | RecentEntry): GuidedTarget {
 
 // ── Subcommands ──────────────────────────────────────────────────────────────
 
-async function pickerCommand(): Promise<void> {
+async function pickAndConnect(): Promise<void> {
   if (!process.stdin.isTTY) {
-    console.error("rt sdm needs a terminal. Use `rt sdm connect <key> --duration --reason` for scripts.");
+    console.error("rt sdm connect needs a terminal. Use `rt sdm connect <key> --duration --reason` for scripts.");
     process.exitCode = 1;
     return;
   }
@@ -193,7 +180,11 @@ StrongDM CLI install:   ${dim}${SDM_INSTALL_URL}${reset}`);
   await guidedConnect(toTarget(target), { interactive: true });
 }
 
-async function connectCommand(rest: string[]): Promise<void> {
+/**
+ * `rt sdm connect` with no key opens the connection picker; `rt sdm connect
+ * <key> [--duration 8h] [--reason "..."]` connects directly (scriptable).
+ */
+export async function connectCmd(rest: string[], _ctx?: CommandContext): Promise<void> {
   const flags: { duration?: string; reason?: string } = {};
   const positional: string[] = [];
   for (let i = 0; i < rest.length; i++) {
@@ -205,11 +196,7 @@ async function connectCommand(rest: string[]): Promise<void> {
     else positional.push(arg);
   }
   const key = positional[0];
-  if (!key) {
-    console.error("usage: rt sdm connect <key> [--duration 8h] [--reason \"...\"]");
-    process.exitCode = 1;
-    return;
-  }
+  if (!key) return pickAndConnect();
   const catalog = await getCatalog();
   const target =
     catalog.connections.find(c => c.key === key) ??
@@ -223,7 +210,7 @@ async function connectCommand(rest: string[]): Promise<void> {
   await guidedConnect(toTarget(target), { ...flags, interactive });
 }
 
-async function statusCommand(): Promise<void> {
+export async function statusCmd(): Promise<void> {
   const snapshot = await getSdmSnapshot(true);
   if (snapshot.health.status !== "ok") {
     console.log(`${red}sdm:${reset} ${snapshot.health.status} ${dim}${snapshot.health.message ?? ""}${reset}`);
@@ -242,23 +229,54 @@ async function statusCommand(): Promise<void> {
   }
 }
 
-async function loginCommand(): Promise<void> {
-  if (!process.stdin.isTTY) {
-    console.error("sdm login is interactive (App Domain and email prompts); run it from a terminal.");
-    process.exitCode = 1;
-    return;
-  }
-  console.log(`${dim}running sdm login (answer its prompts here; your browser will open for SAML)…${reset}`);
+async function runManualLogin(): Promise<void> {
   const r = await loginSdm(streamLine);
-  if (r.ok) {
-    console.log(`${green}✓ logged in${reset}`);
-  } else {
-    console.error(`${red}✗ ${r.error}${reset}`);
-    process.exitCode = 1;
-  }
+  if (r.ok) console.log(`${green}✓ logged in${reset}`);
+  else { console.error(`${red}✗ ${r.error}${reset}`); process.exitCode = 1; }
 }
 
-async function refreshCommand(): Promise<void> {
+export async function loginCmd(args: string[]): Promise<void> {
+  const manual = args.includes("--manual");
+  const visible = args.includes("--visible");
+
+  if (manual) {
+    if (!process.stdin.isTTY) {
+      console.error("sdm login --manual is interactive; run it from a terminal.");
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`${dim}running sdm login (answer its prompts here; your browser will open for SAML)...${reset}`);
+    await runManualLogin();
+    return;
+  }
+
+  console.log(`${dim}logging in to StrongDM${visible ? " (window will show)" : " (silent)"}...${reset}`);
+  const { runBrowserLogin } = await import("../lib/sdm/browser-login.ts");
+  const outcome = await runBrowserLogin({ visible, onLine: streamLine });
+  if (outcome.outcome === "authenticated") {
+    console.log(`${green}✓ logged in${reset}`);
+    return;
+  }
+  if (outcome.outcome === "needs-manual") {
+    if (!process.stdin.isTTY) {
+      // No "Falling back..." here: with no TTY the fallback cannot actually
+      // run (runManualLogin needs a terminal), so saying it would be
+      // contradicted immediately by the guidance on the next line.
+      console.error(`${yellow}${outcome.reason}${reset}`);
+      console.error("Run `rt sdm login --manual` in a terminal.");
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`${yellow}${outcome.reason} Falling back to terminal login.${reset}`);
+    await runManualLogin();
+    return;
+  }
+  console.error(`${red}✗ login failed:${reset} ${outcome.error}`);
+  console.error(`  ${dim}try \`rt sdm login --visible\` to watch, or \`--manual\` for the terminal flow${reset}`);
+  process.exitCode = 1;
+}
+
+export async function refreshCmd(): Promise<void> {
   const catalog = await getCatalog(true);
   const byConnector = new Map<string, number>();
   for (const c of catalog.connections) {
@@ -277,7 +295,7 @@ async function refreshCommand(): Promise<void> {
   }
 }
 
-async function connectorsCommand(rest: string[]): Promise<void> {
+export async function connectorsCmd(rest: string[]): Promise<void> {
   const [action, name] = rest;
 
   if (action === "init") {
