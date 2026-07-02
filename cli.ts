@@ -272,6 +272,11 @@ const TREE: Record<string, CommandNode> = {
     fn: "portScanner",
   },
 
+  sdm: {
+    description: "StrongDM connections: pick, connect, verify (connect/status/login/refresh/connectors)",
+    module: "./commands/sdm.ts",
+  },
+
   status: {
     description: "Live branch dashboard with MR actions, pipeline & review status",
     module: "./commands/status/index.tsx",

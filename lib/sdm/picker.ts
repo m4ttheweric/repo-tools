@@ -1,0 +1,69 @@
+/**
+ * Builds the fzf option list: Recent group first (top item preselected by
+ * position), then tier groups in canonical order. Duplication between Recent
+ * and a tier group is intentional; both rows carry the same key.
+ */
+
+import { navSeparator, type NavOption } from "../navigate.ts";
+import type { DiscoveredConnection } from "./connectors.ts";
+import type { RecentEntry } from "./state.ts";
+
+export const TIER_LABELS: Record<string, string> = {
+  development: "Development",
+  qa: "QA",
+  staging: "Staging",
+  production: "Production",
+};
+
+const TIER_ORDER = ["development", "qa", "staging", "production"];
+
+const TIER_COLOR: Record<string, string> = {
+  development: "\x1b[32m",
+  qa: "\x1b[35m",
+  staging: "\x1b[33m",
+  production: "\x1b[31m",
+};
+
+const MAX_RECENT_ROWS = 3;
+
+function row(key: string, label: string, sdmResource: string, tier?: string): NavOption {
+  return {
+    value: key,
+    label,
+    hint: tier ? `${sdmResource}  ${tier}` : sdmResource,
+    color: tier ? TIER_COLOR[tier] : undefined,
+  };
+}
+
+export function buildPickerOptions(
+  connections: DiscoveredConnection[],
+  recents: RecentEntry[],
+): NavOption[] {
+  const options: NavOption[] = [];
+
+  const recentRows = recents.slice(0, MAX_RECENT_ROWS);
+  if (recentRows.length > 0) {
+    options.push(navSeparator("Recent"));
+    for (const r of recentRows) options.push(row(r.key, r.label, r.sdmResource, r.tier));
+  }
+
+  const byTier = new Map<string, DiscoveredConnection[]>();
+  for (const c of connections) {
+    const tier = c.tier ?? "";
+    if (!byTier.has(tier)) byTier.set(tier, []);
+    byTier.get(tier)!.push(c);
+  }
+  const tiers = [...byTier.keys()].sort((a, b) => {
+    const ia = TIER_ORDER.indexOf(a);
+    const ib = TIER_ORDER.indexOf(b);
+    if (ia !== -1 || ib !== -1) return (ia === -1 ? TIER_ORDER.length : ia) - (ib === -1 ? TIER_ORDER.length : ib);
+    return a.localeCompare(b);
+  });
+
+  for (const tier of tiers) {
+    options.push(navSeparator(tier === "" ? "Other" : (TIER_LABELS[tier] ?? tier)));
+    const group = byTier.get(tier)!.slice().sort((a, b) => a.label.localeCompare(b.label));
+    for (const c of group) options.push(row(c.key, c.label, c.sdmResource, c.tier));
+  }
+  return options;
+}
