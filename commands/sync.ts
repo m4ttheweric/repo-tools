@@ -10,8 +10,11 @@
  *
  * Usage:
  *   rt sync                  sync current worktree
- *   rt sync all               sync all worktrees with open MRs
- *   rt sync --dry-run         show what would happen
+ *   rt sync all              sync all worktrees with open MRs
+ *   rt sync --dry-run        show what would happen
+ *   rt sync --json           on conflict: emit a JSON conflict bundle, exit 3, leave rebase paused
+ *   rt sync --agent          on conflict: skip the prompt, hand straight to a Claude agent in herdr
+ *   rt sync --no-agent       never offer agent escalation (abort on conflict, as before)
  */
 
 import { exec, execSync, spawnSync } from "child_process";
@@ -93,7 +96,7 @@ function hasDivergedFromRemote(branch: string, cwd: string): boolean {
 async function syncBranch(
   cwd: string,
   dataDir: string,
-  opts: { dryRun?: boolean; quiet?: boolean },
+  opts: { dryRun?: boolean; quiet?: boolean; onConflict?: "abort" | "pause" },
 ): Promise<SyncSummary> {
   // Guard: rebase-in-progress takes priority — getCurrentBranch returns null
   // during a rebase, which would cause a confusing "detached HEAD" error later.
@@ -166,24 +169,32 @@ async function syncBranch(
   const steps = createStepRunner();
 
   // 1. Fetch once (rebase/reset will skip their own fetch)
-  try {
-    await steps.run("fetching origin…", () => gitAsync("fetch origin", cwd), {
-      done: "origin fetched",
-    });
-  } catch (err) {
-    return {
-      branch,
-      worktree: cwd,
-      resetResult: null,
-      rebaseResult: null,
-      pushed: false,
-      error: `fetch failed: ${err}`,
-    };
+  if (opts.quiet) {
+    try {
+      await gitAsync("fetch origin", cwd);
+    } catch (err) {
+      return { branch, worktree: cwd, resetResult: null, rebaseResult: null, pushed: false, error: `fetch failed: ${err}` };
+    }
+  } else {
+    try {
+      await steps.run("fetching origin…", () => gitAsync("fetch origin", cwd), {
+        done: "origin fetched",
+      });
+    } catch (err) {
+      return {
+        branch,
+        worktree: cwd,
+        resetResult: null,
+        rebaseResult: null,
+        pushed: false,
+        error: `fetch failed: ${err}`,
+      };
+    }
   }
 
   // 2. Check if diverged from origin/your-branch (GitLab rebase scenario)
   if (hasDivergedFromRemote(branch, cwd)) {
-    steps.log(`diverged from origin/${branch} — syncing with remote first`, "warn");
+    if (!opts.quiet) steps.log(`diverged from origin/${branch} — syncing with remote first`, "warn");
 
     if (opts.dryRun) {
       steps.log(`would reset to origin/${branch}`);
@@ -223,19 +234,24 @@ async function syncBranch(
     dryRun: opts.dryRun,
     quiet: opts.quiet,
     skipFetch: true,
+    onConflict: opts.onConflict ?? "abort",
   });
 
   syncLog.phase("rebase-onto", rebaseResult as unknown as Record<string, unknown>);
 
   if (rebaseResult.status === "error" || rebaseResult.status === "conflict") {
-    syncLog.worktreeEnd(branch, rebaseResult.status === "error" ? rebaseResult.error : "unresolvable conflicts");
+    const paused = rebaseResult.status === "conflict" && rebaseResult.rebaseInProgress;
+    syncLog.worktreeEnd(
+      branch,
+      rebaseResult.status === "error" ? rebaseResult.error : paused ? "conflicts (paused for escalation)" : "unresolvable conflicts",
+    );
     return {
       branch,
       worktree: cwd,
       resetResult,
       rebaseResult,
       pushed: false,
-      error: rebaseResult.status === "error" ? rebaseResult.error : "unresolvable conflicts",
+      error: rebaseResult.status === "error" ? rebaseResult.error : paused ? undefined : "unresolvable conflicts",
     };
   }
 
@@ -248,10 +264,14 @@ async function syncBranch(
   let pushError: string | undefined;
   if (needsPush && !opts.dryRun) {
     try {
-      await steps.run("pushing…", () =>
-        gitAsync(`push --force-with-lease origin ${branch}`, cwd),
-        { done: "pushed" },
-      );
+      if (opts.quiet) {
+        await gitAsync(`push --force-with-lease origin ${branch}`, cwd);
+      } else {
+        await steps.run("pushing…", () =>
+          gitAsync(`push --force-with-lease origin ${branch}`, cwd),
+          { done: "pushed" },
+        );
+      }
       pushed = true;
       syncLog.cmd(`push --force-with-lease origin ${branch}`, cwd, 0, "", "");
     } catch (err: any) {
@@ -370,6 +390,7 @@ async function syncAll(
     const summary = await syncBranch(wt.path, identity.dataDir, {
       dryRun: opts.dryRun,
       quiet: false,
+      onConflict: "abort",
     });
     summaries.push(summary);
     console.log("");
@@ -419,17 +440,39 @@ export async function syncCommand(
   ctx: CommandContext,
 ): Promise<void> {
   const dryRun = args.includes("--dry-run");
-
-  // Single worktree sync
   const cwd = ctx.identity!.repoRoot;
   const dataDir = ctx.identity!.dataDir;
+  const repoName = ctx.identity!.repoName;
 
   if (!ensureOriginRemote(cwd)) return;
 
-  syncLog.start(`rt sync  cwd=${cwd}${dryRun ? "  --dry-run" : ""}`);
+  const { resolveEscalationMode, runEscalationFlow } = await import("../lib/rebase-escalation.ts");
+  const isTTY = Boolean(process.stdout.isTTY && process.stdin.isTTY);
+  const mode = resolveEscalationMode(args, isTTY);
+
+  syncLog.start(`rt sync  cwd=${cwd}${dryRun ? "  --dry-run" : ""}${mode !== "off" ? `  escalation=${mode}` : ""}`);
   let summary;
   try {
-    summary = await syncBranch(cwd, dataDir, { dryRun });
+    summary = await syncBranch(cwd, dataDir, {
+      dryRun,
+      quiet: mode === "json",
+      onConflict: mode === "off" ? "abort" : "pause",
+    });
+
+    const paused =
+      summary.rebaseResult?.status === "conflict" && summary.rebaseResult.rebaseInProgress;
+    if (paused && mode !== "off") {
+      const exitCode = await runEscalationFlow({
+        cwd,
+        dataDir,
+        repoName,
+        result: summary.rebaseResult!,
+        mode,
+        autoYes: args.includes("--agent"),
+        push: true,
+      });
+      process.exit(exitCode);
+    }
   } finally {
     syncLog.end();
   }
@@ -438,5 +481,4 @@ export async function syncCommand(
     console.error(`\n  ${red}${summary.error}${reset}\n`);
     process.exit(1);
   }
-
 }
