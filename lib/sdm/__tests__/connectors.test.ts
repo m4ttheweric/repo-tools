@@ -39,10 +39,18 @@ function writeConnector(name: string, body: string): string {
 }
 
 const FAKE_CONNECTOR = join(import.meta.dir, "fixtures", "fake-connector.ts");
+const BROKEN_CONNECTOR = join(import.meta.dir, "fixtures", "fake-connector-broken.ts");
 
 function installFakeConnector(name: string, targetDir = dir): string {
   const p = join(targetDir, name);
   writeFileSync(p, readFileSync(FAKE_CONNECTOR));
+  chmodSync(p, 0o755);
+  return p;
+}
+
+function installBrokenConnector(name: string, targetDir = dir): string {
+  const p = join(targetDir, name);
+  writeFileSync(p, readFileSync(BROKEN_CONNECTOR));
   chmodSync(p, 0o755);
   return p;
 }
@@ -369,6 +377,38 @@ describe("resolveConnection", () => {
       installFakeConnector("b-second", freshDir);
       const r = await resolveConnection("https://example.com/resolve-me/thing", { dir: freshDir });
       expect(r?.connector).toBe("a-first");
+    } finally {
+      rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+
+  test("collects a run error and returns it when no connector resolves the url", async () => {
+    const freshDir = mkdtempSync(join(tmpdir(), "rt-sdm-resolve-err-"));
+    try {
+      installBrokenConnector("broken", freshDir);
+      const r = await resolveConnection("https://example.com/anything", { dir: freshDir });
+      expect(r).not.toBeNull();
+      expect(r?.connection).toBeUndefined();
+      expect(r?.unresolved).toBeUndefined();
+      expect(r?.errors).toHaveLength(1);
+      expect(r?.errors?.[0]!.connector).toBe("broken");
+      expect(r?.errors?.[0]!.error).toContain("simulated resolve failure");
+    } finally {
+      rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps an earlier connector's run error alongside a later connector's match", async () => {
+    const freshDir = mkdtempSync(join(tmpdir(), "rt-sdm-resolve-err-order-"));
+    try {
+      installBrokenConnector("a-broken", freshDir);
+      installFakeConnector("b-good", freshDir);
+      const r = await resolveConnection("https://example.com/resolve-me/thing", { dir: freshDir });
+      expect(r).not.toBeNull();
+      expect(r?.connector).toBe("b-good");
+      expect(r?.connection?.id).toBe("res1");
+      expect(r?.errors).toHaveLength(1);
+      expect(r?.errors?.[0]!.connector).toBe("a-broken");
     } finally {
       rmSync(freshDir, { recursive: true, force: true });
     }

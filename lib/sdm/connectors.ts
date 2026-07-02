@@ -263,31 +263,44 @@ export interface ResolveConnectionResult {
   connector: string;
   connection?: DiscoveredConnection;
   unresolved?: UnresolvedGap;
+  // Optional so existing hand-built ResolveConnectionResult literals (daemon
+  // deps in tests) stay back-compatible; resolveConnection itself always
+  // populates it, empty array or not. A connector whose resolve run failed
+  // (nonzero exit, bad JSON, spawn failure...) lands here instead of being
+  // silently skipped, so a daemon-degraded caller can tell "no opinion" apart
+  // from "every connector errored".
+  errors?: ConnectorRunError[];
 }
 
 /**
  * Ask each connector in turn to resolve a url, returning the first one that
  * has an opinion (a resolved connection or an unresolved gap). A url belongs
  * to exactly one org, so the first connector to answer wins; connectors that
- * error or have no opinion are skipped in favor of the next.
+ * error or have no opinion are skipped in favor of the next, but a run error
+ * is still collected into `errors` on whatever result is finally returned.
  */
 export async function resolveConnection(
   url: string,
   opts: { dir?: string; timeoutMs?: number } = {},
 ): Promise<ResolveConnectionResult | null> {
+  const errors: ConnectorRunError[] = [];
   for (const file of listConnectorFiles(opts.dir)) {
     const connector = basename(file).replace(/\.[^.]+$/, "");
     const r = await runConnectorResolve(file, url, { timeoutMs: opts.timeoutMs });
-    if (!r.ok) continue;
+    if (!r.ok) {
+      errors.push({ connector, error: r.error });
+      continue;
+    }
     const connection = r.output.connections[0];
     if (connection) {
-      return { connector, connection: { ...connection, connector, key: `${connector}:${connection.id}` } };
+      return { connector, connection: { ...connection, connector, key: `${connector}:${connection.id}` }, errors };
     }
     const gap = r.output.unresolved?.[0];
     if (gap) {
-      return { connector, unresolved: { ...gap, connector, key: `${connector}:${gap.id}` } };
+      return { connector, unresolved: { ...gap, connector, key: `${connector}:${gap.id}` }, errors };
     }
   }
+  if (errors.length > 0) return { connector: "", errors };
   return null;
 }
 

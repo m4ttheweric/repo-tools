@@ -60,14 +60,14 @@ export function createSdmHandlers(ctx: HandlerContext, deps: SdmHandlerDeps = re
           ctx.log.warn({ connector: e.connector, err: e.error }, "sdm connector failed");
         }
       }
-      return { ok: true, connections: result.connections, errors: result.errors, fromCache: result.fromCache };
+      return { ok: true, connections: result.connections, errors: result.errors, fromCache: result.fromCache, unresolved: result.unresolved ?? [] };
     },
 
     "sdm:resolve": async (payload: { url?: string } = {}) => {
       const url = payload.url ?? "";
       if (!url) return { ok: false, error: "sdm:resolve requires a url" };
       const result = await deps.resolveConnection(url);
-      return { ok: true, connection: result?.connection, unresolved: result?.unresolved };
+      return { ok: true, connection: result?.connection, unresolved: result?.unresolved, errors: result?.errors ?? [] };
     },
 
     "sdm:snapshot": async (payload: { force?: boolean } = {}) => {
