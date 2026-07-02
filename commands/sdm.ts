@@ -4,7 +4,8 @@
  *   rt sdm connect [<key>] [--duration 8h] [--reason "..."]  picker, or connect a key
  *   rt sdm status                   CLI health + connected tunnels
  *   rt sdm login [--manual] [--visible]   log in (default: browser popup flow)
- *   rt sdm refresh                  re-run connectors, bust the cache
+ *   rt sdm refresh [--suggest]       re-run connectors, bust the cache (--suggest drafts
+ *                                    LLM suggestions for unresolved gaps into suggestions.json)
  *   rt sdm connectors [test|init <name>]  list/validate/scaffold connectors
  *
  * The daemon serves the connector catalog when running (10-minute cache);
@@ -366,7 +367,9 @@ export async function loginCmd(args: string[]): Promise<void> {
   process.exitCode = 1;
 }
 
-export async function refreshCmd(): Promise<void> {
+export async function refreshCmd(args: string[] = []): Promise<void> {
+  const suggest = args.includes("--suggest");
+
   const catalog = await getCatalog(true);
   const byConnector = new Map<string, number>();
   for (const c of catalog.connections) {
@@ -382,6 +385,14 @@ export async function refreshCmd(): Promise<void> {
   console.log(`${bold}${total} connection${total === 1 ? "" : "s"}${reset} from ${byConnector.size} connector${byConnector.size === 1 ? "" : "s"}`);
   if (total === 0 && catalog.errors.length === 0) {
     console.log(`${dim}no connectors installed; run: rt sdm connectors init <name>${reset}`);
+  }
+
+  if (suggest) {
+    const { suggestForGaps, writeSuggestions } = await import("../lib/sdm/suggest.ts");
+    const { llmPrompt } = await import("../lib/llm.ts");
+    const records = await suggestForGaps(catalog.unresolved ?? [], { llm: llmPrompt });
+    writeSuggestions(records);
+    console.log(`${bold}${records.length} suggestion${records.length === 1 ? "" : "s"} written${reset}; review with ${cyan}rt sdm map${reset}`);
   }
 }
 
