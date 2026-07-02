@@ -21,7 +21,10 @@ export interface PaneRef {
 export const AGENT_WAIT_TIMEOUT_MS = 10 * 60_000;
 
 const SOCKET_FALLBACK = join(homedir(), ".config", "herdr", "herdr.sock");
-const CLAUDE_READY_TIMEOUT_MS = 15_000;
+// 15s was too tight for a cold claude start and matched against the ASCII
+// ">" prompt, which Claude Code never renders (it draws "❯"); herdr's own
+// agent-status detection is rendering-agnostic, so use that instead.
+const CLAUDE_READY_TIMEOUT_MS = 60_000;
 
 // env is passed explicitly (not left to the spawnSync default) because Bun
 // resolves the executable path from a startup snapshot of the environment
@@ -84,7 +87,7 @@ export function startClaude(pane: PaneRef, cwd: string): void {
 
   const wait = spawnSync(
     "herdr",
-    ["wait", "output", pane.paneId, "--match", ">", "--timeout", String(CLAUDE_READY_TIMEOUT_MS)],
+    ["wait", "agent-status", pane.paneId, "--status", "idle", "--timeout", String(CLAUDE_READY_TIMEOUT_MS)],
     { stdio: "pipe", env: process.env },
   );
   if (wait.status !== 0) throw new Error("claude did not become ready in the pane");
@@ -94,6 +97,17 @@ export function sendTask(pane: PaneRef, taskFilePath: string): void {
   const message = `Read ${taskFilePath} and complete the task it describes.`;
   const r = spawnSync("herdr", ["pane", "run", pane.paneId, message], { stdio: "pipe", env: process.env });
   if (r.status !== 0) throw new Error("herdr pane run (task) failed");
+}
+
+// Synchronous (unlike waitAgentIdle): this wait is short (default 15s) and
+// runs before the long idle wait, not across a Ctrl+C-able window.
+export function waitAgentWorking(pane: PaneRef, timeoutMs = 15_000): "working" | "timeout" {
+  const r = spawnSync(
+    "herdr",
+    ["wait", "agent-status", pane.paneId, "--status", "working", "--timeout", String(timeoutMs)],
+    { stdio: "pipe", env: process.env },
+  );
+  return r.status === 0 ? "working" : "timeout";
 }
 
 export async function waitAgentIdle(

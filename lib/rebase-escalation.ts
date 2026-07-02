@@ -24,6 +24,7 @@ import {
   spawnAgentPane,
   startClaude,
   waitAgentIdle,
+  waitAgentWorking,
 } from "./herdr-agent.ts";
 import { bold, cyan, dim, green, red, reset, yellow } from "./tui.ts";
 
@@ -252,6 +253,12 @@ export async function runEscalationFlow(opts: {
     });
     startClaude(pane, cwd);
     sendTask(pane, taskPath);
+    // herdr reports the pane's agent idle from the moment claude is ready, so
+    // waiting for idle right after sendTask can return before claude ever
+    // picks up the task; wait for the working transition first.
+    if (waitAgentWorking(pane) === "timeout") {
+      throw new Error("agent never picked up the task");
+    }
     syncLog.phase("escalation-agent", { pane: pane.paneId, taskPath });
 
     console.log(
