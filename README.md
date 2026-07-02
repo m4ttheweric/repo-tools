@@ -113,15 +113,11 @@ Shell alias added by install:
 rtcd                      # cd into a picked worktree (wraps rt cd)
 ```
 
-### Runner
+### Run
 
 ```bash
-rt runner                 # Multiplexed service runner dashboard (fullscreen TUI)
-rt attach                 # Attach terminal to a daemon-managed process
 rt run                    # Interactive script runner — repo → worktree → package → script
 ```
-
-The runner dashboard manages multiple long-running processes across worktrees with live output streaming and port tracking.
 
 ### Branch
 

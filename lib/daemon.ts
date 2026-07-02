@@ -25,21 +25,9 @@ import { RT_DIR, DAEMON_PID_PATH } from "./daemon-config.ts";
 import { getDaemonLogger, installCrashHandlers, redirectNativeStderr } from "./daemon-logger.ts";
 import { onNotification } from "./notifier.ts";
 
-import { StateStore }    from "./daemon/state-store.ts";
-import { PortAllocator } from "./daemon/port-allocator.ts";
-import { LogBuffer }     from "./daemon/log-buffer.ts";
-import { AttachServer }  from "./daemon/attach-server.ts";
-import { ProcessManager } from "./daemon/process-manager.ts";
-import { HerdrClient } from "./daemon/herdr/client.ts";
-import { PaneMap } from "./daemon/herdr/pane-map.ts";
-import { HerdrProcessManager } from "./daemon/herdr-process-manager.ts";
-import { SuspendManager } from "./daemon/suspend-manager.ts";
-import { ExclusiveGroup } from "./daemon/exclusive-group.ts";
 import { SystemProcessScanner } from "./daemon/system-process-scanner.ts";
 
-import { evictStaleDaemon, reapOrphanProcesses } from "./daemon/boot-reconcile.ts";
-import { collectRunnerPortLabels } from "./daemon/lane-config.ts";
-import { createWiredRemedyEngine, startGlobalRemedyWatcher } from "./daemon/remedy-wiring.ts";
+import { evictStaleDaemon } from "./daemon/boot-reconcile.ts";
 import { resolveUserPath } from "./daemon/user-path.ts";
 import { createBranchCache } from "./daemon/branch-cache.ts";
 import { createCacheRefresher } from "./daemon/cache-refresh.ts";
@@ -49,8 +37,6 @@ import { buildRoutedHandlers } from "./daemon/command-router.ts";
 import { startSocketServer } from "./daemon/socket-server.ts";
 import { startApiServer, broadcast } from "./daemon/api-server.ts";
 import { startPollers } from "./daemon/pollers.ts";
-import { wireProcessEvents } from "./daemon/process-events.ts";
-import { portlessAvailable } from "./daemon/portless.ts";
 import { restoreWatchers } from "./daemon/workspace-sync.ts";
 import {
   initMRSubscriptions,
@@ -70,50 +56,16 @@ import type { PortEntry } from "./port-scanner.ts";
 const loggerHandle = await getDaemonLogger();
 const log = loggerHandle.logger;
 
-// ─── Daemon units (process management) ───────────────────────────────────────
+// ─── Daemon units ────────────────────────────────────────────────────────────
 
-const stateStore    = new StateStore();
-const portAllocator = new PortAllocator();
-const logBuffer     = new LogBuffer();
-const attachServer  = new AttachServer({ logBuffer });
-
-const useHerdr = process.env.RT_PROCESS_BACKEND === "herdr";
-const herdrClient  = useHerdr ? new HerdrClient() : null;
-const herdrPaneMap = useHerdr ? new PaneMap() : null;
-const processManager: any = useHerdr
-  ? new HerdrProcessManager({ client: herdrClient!, paneMap: herdrPaneMap!, stateStore })
-  : new ProcessManager({ stateStore, logBuffer, attachServer });
-
-const suspendManager = new SuspendManager({ processManager, stateStore });
-const exclusiveGroup = new ExclusiveGroup({ suspendManager, stateStore });
 const systemProcessScanner = new SystemProcessScanner();
 
-// ─── Remedy engine (auto-detect errors → run fix → restart) ─────────────────
-
-const { remedyEngine, remedyEvents } = createWiredRemedyEngine({
-  processManager, stateStore, broadcast, log,
-});
-const stopGlobalRemedyWatcher = startGlobalRemedyWatcher({ remedyEngine, log });
-
-// Wire circular reference: AttachServer needs ProcessManager for output subscriptions
-if (!useHerdr) attachServer.setProcessManager(processManager);
-// Wire SuspendManager into ProcessManager so kill() can resume warm processes
-if (!useHerdr) processManager.suspendManager = suspendManager;
-
-// Prune orphaned port allocations left by removed runner entries or crashed
-// daemon restarts (labels derived from persisted runner configs).
-try {
-  const pruned = portAllocator.pruneToLabels(collectRunnerPortLabels());
-  if (pruned > 0) log.info({ pruned }, "pruned stale port allocations");
-} catch { /* best-effort; don't crash daemon startup on prune failure */ }
-
 // Resolve the user's full PATH once at startup, and overlay it onto the
-// daemon's own env so direct execSync calls outside ProcessManager (setup
-// commands, agent invocations) inherit pnpm/doppler/bun without re-resolving
-// the shell themselves.
+// daemon's own env so direct execSync calls (setup commands, agent
+// invocations) inherit pnpm/doppler/bun without re-resolving the shell
+// themselves.
 {
   const resolvedPath = resolveUserPath(log);
-  processManager.userPath = resolvedPath || process.env.PATH;
   if (resolvedPath) process.env.PATH = resolvedPath;
 }
 
@@ -141,11 +93,7 @@ const refreshCache = createCacheRefresher({
 // ─── Handler context + command routing ───────────────────────────────────────
 
 const handlerCtx: HandlerContext = {
-  processManager, stateStore, remedyEngine, suspendManager,
-  attachServer, logBuffer, exclusiveGroup,
-  cache, refreshCache, loadCache, flushCache, remedyEvents,
-  portAllocator,
-  portlessAvailable: () => portlessAvailable(),
+  cache, refreshCache, loadCache, flushCache,
   log,
   startedAt,
   portCacheRef,
@@ -206,10 +154,7 @@ async function routeCommand(cmd: string, payload: any): Promise<any> {
 // it makes server.upgrade() require an explicit data arg.
 const servers: { socket?: Server<any>; api?: Server<any> } = {};
 
-const cleanup = createCleanup({
-  servers, useHerdr, processManager, attachServer, hooksGuard,
-  stopGlobalRemedyWatcher, flushCache, log,
-});
+const cleanup = createCleanup({ servers, hooksGuard, flushCache, log });
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
@@ -229,39 +174,15 @@ export function startDaemon(): void {
   log.info("daemon starting");
   writeFileSync(DAEMON_PID_PATH, String(process.pid));
 
-  // Surface invalid state transitions so drift in VALID_TRANSITIONS shows up
-  // in the daemon log instead of being silently permitted.
-  stateStore.onInvalidTransition((id, prev, next) => {
-    log.warn({ id, prev, next }, "stateStore: invalid transition");
-  });
-
-  if (useHerdr) {
-    // Herdr backend: reconcile the pane map against live herdr panes on boot.
-    processManager.reconcileOnBoot().catch((err: unknown) => {
-      log.error({ err }, "herdr: reconcileOnBoot failed");
-    });
-  } else {
-    reapOrphanProcesses(stateStore, log);
-  }
-
   loadCache();
   log.info({ count: Object.keys(cache.entries).length }, "cache loaded from disk");
 
   // Socket server (Unix socket for CLI/tray) + REST/WS server (external clients)
   servers.socket = startSocketServer({ handleCommand, log });
-  servers.api = startApiServer({ handleCommand, log, useHerdr, herdrPaneMap, processManager, logBuffer });
+  servers.api = startApiServer({ handleCommand, log });
 
   // Wire notification broadcasts to WebSocket clients
   onNotification(broadcast);
-
-  // Wire process state transitions to WebSocket clients as `process:changed`
-  // so external consumers get live updates instead of polling process:states.
-  wireProcessEvents({
-    onStateChange: (cb) => stateStore.onStateChange(cb),
-    pidOf: (id) => stateStore.getPid(id),
-    exitCodeOf: (id) => processManager.getExitCode(id),
-    broadcast,
-  });
 
   // Discover and watch repos
   hooksGuard.refreshWatchedRepos();
