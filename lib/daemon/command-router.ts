@@ -15,6 +15,7 @@ import { createMRHandlers }        from "./handlers/mr.ts";
 import { createParkingLotHandlers } from "./handlers/parking-lot.ts";
 import { createDiscussionHandlers } from "./handlers/discussions.ts";
 import { createSystemProcessHandlers } from "./handlers/system-processes.ts";
+import { createSdmHandlers } from "./handlers/sdm.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
 
 export function buildRoutedHandlers(opts: {
@@ -32,5 +33,6 @@ export function buildRoutedHandlers(opts: {
     ...createParkingLotHandlers(ctx),
     ...createDiscussionHandlers(ctx, broadcast),
     ...createSystemProcessHandlers(systemProcessScanner, ctx),
+    ...createSdmHandlers(ctx),
   };
 }

@@ -40,6 +40,7 @@ export function loadOrCreateApiToken(tokenPath: string = API_TOKEN_PATH): string
 export function needsToken(method: string, pathname: string): boolean {
   if (method === "OPTIONS") return false;
   if (pathname === "/api/shutdown") return true;
+  if (pathname === "/api/sdm/reconnect") return true;
   return false;
 }
 

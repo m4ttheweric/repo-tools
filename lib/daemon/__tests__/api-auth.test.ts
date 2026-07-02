@@ -19,6 +19,14 @@ describe("needsToken", () => {
   test("preflight (OPTIONS) never requires a token", () => {
     expect(needsToken("OPTIONS", "/api/shutdown")).toBe(false);
   });
+
+  test("sdm reconnect requires a token", () => {
+    expect(needsToken("POST", "/api/sdm/reconnect")).toBe(true);
+  });
+
+  test("sdm recents does not require a token", () => {
+    expect(needsToken("GET", "/api/sdm/recents")).toBe(false);
+  });
 });
 
 describe("tokenOk", () => {
