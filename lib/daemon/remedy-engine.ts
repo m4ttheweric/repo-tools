@@ -21,6 +21,9 @@ import type { ProcessManager } from "./process-manager.ts";
 import type { StateStore }     from "./state-store.ts";
 import type { Remedy }         from "./remedy-config.ts";
 import type { GlobalRemedy }   from "./remedy-config.ts";
+import { getDaemonLogger } from "../daemon-logger.ts";
+
+const log = (await getDaemonLogger()).childLogger("remedy");
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -372,7 +375,11 @@ export class RemedyEngine {
       clearTimeout(timeout);
 
       const code = proc.exitCode ?? 1;
-      if (code !== 0) return false; // stop on first failure
+      if (code !== 0) {
+        // Output already streamed to the attach pane; this is the durable trace.
+        log.warn({ id, cmd, cwd, exitCode: code }, "fix command failed; stopping remedy");
+        return false;
+      }
     }
     return true;
   }

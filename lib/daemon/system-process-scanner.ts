@@ -10,6 +10,9 @@
  */
 
 import { execSync } from "child_process";
+import { getDaemonLogger } from "./../daemon-logger.ts";
+
+const log = (await getDaemonLogger()).childLogger("process-scan");
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -171,7 +174,9 @@ function getAllRepoPids(repos: Record<string, string>): Map<number, string> {
         }
       }
     }
-  } catch { /* lsof failed, return empty */ }
+  } catch (err) {
+    log.warn({ err }, "lsof scan failed; returning empty cwd map");
+  }
 
   return cwdMap;
 }
