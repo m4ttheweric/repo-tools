@@ -40,6 +40,12 @@ struct SystemProcess: Codable, Identifiable {
         (children ?? []).count
     }
 
+    /// Exact name match anywhere in the breadcrumb chain, so a collapsed
+    /// "claude › node" row counts but "claude-ish" wrappers don't.
+    var isClaudeCode: Bool {
+        command.components(separatedBy: " › ").contains("claude")
+    }
+
     var memoryMB: String {
         let kb = totalRssKb ?? rssKb
         let mb = Double(kb) / 1024.0
