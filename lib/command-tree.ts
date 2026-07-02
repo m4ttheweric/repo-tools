@@ -11,6 +11,8 @@
  *
  * Direct args still work: `rt branch switch` traverses silently.
  * No args at a branch node → shows picker.
+ * ctrl-up at a subtree picker goes up one tree level (root picker exits,
+ * same as Esc). Tree back-nav never crosses into a running command.
  */
 
 import { bold, cyan, dim, reset, yellow } from "./tui.ts";
@@ -87,7 +89,12 @@ export async function dispatch(
   args: string[],
   breadcrumb: string[] = ["rt"],
   baseDir?: string,
+  rootTree?: Record<string, CommandNode>,
 ): Promise<void> {
+  // The root tree is threaded through recursion so picker back-nav can derive
+  // any parent level from the breadcrumb alone (works even when the user
+  // arrived via direct args and never saw the parent picker).
+  const root = rootTree ?? tree;
   const [name, ...rest] = args;
 
   // No args or unknown → show picker for this level
@@ -111,9 +118,15 @@ export async function dispatch(
     process.stderr.write("\x1b[2J\x1b[H");
 
     const selected = await showPicker(tree, breadcrumb);
+    if (selected === BACK) {
+      const parentBreadcrumb = breadcrumb.slice(0, -1);
+      const parentTree = walkTree(root, parentBreadcrumb.slice(1));
+      if (!parentTree) throw new Error(`cannot resolve parent tree for: ${breadcrumb.join(" › ")}`);
+      return dispatch(parentTree, [], parentBreadcrumb, baseDir, root);
+    }
     if (!selected) process.exit(0);
 
-    return dispatch(tree, [selected, ...rest], breadcrumb, baseDir);
+    return dispatch(tree, [selected, ...rest], breadcrumb, baseDir, root);
   }
 
   // Node found — is it a branch or a leaf?
@@ -131,7 +144,7 @@ export async function dispatch(
       // Recurse: either the arg is a known subcommand, or this node has no
       // handler of its own so any arg must be a subcommand (yields the usual
       // "unknown command" message if it's bogus).
-      return dispatch(node.subcommands, rest, [...breadcrumb, resolvedName], baseDir);
+      return dispatch(node.subcommands, rest, [...breadcrumb, resolvedName], baseDir, root);
     }
 
     // Node has its own handler — run it directly, passing rest through as args
@@ -147,9 +160,10 @@ export async function dispatch(
       process.stderr.write("\x1b[2J\x1b[H");
 
       const selected = await showPicker(node.subcommands, [...breadcrumb, resolvedName]);
+      if (selected === BACK) return dispatch(tree, [], breadcrumb, baseDir, root);
       if (!selected) return;
 
-      return dispatch(node.subcommands, [selected], [...breadcrumb, resolvedName], baseDir);
+      return dispatch(node.subcommands, [selected], [...breadcrumb, resolvedName], baseDir, root);
     }
   }
 
@@ -324,27 +338,54 @@ function showUsage(tree: Record<string, CommandNode>, breadcrumb: string[]): voi
   console.error("");
 }
 
+/** Sentinel: the user pressed ctrl-up at a subtree picker. */
+const BACK: unique symbol = Symbol("back");
+
 async function showPicker(
   tree: Record<string, CommandNode>,
   breadcrumb: string[],
-): Promise<string | null> {
+): Promise<string | typeof BACK | null> {
   const { filterableSelect } = await import("./rt-render.tsx");
 
   const visible = Object.entries(tree).filter(([_, n]) => !n.hidden);
 
-  const selected = await filterableSelect({
-    message: breadcrumb.join(" › "),
-    options: visible.map(([name, node]) => ({
-      value: name,
-      label: name,
-      hint: node.description,
-    })),
-  });
-
-  return selected || null;
+  try {
+    const selected = await filterableSelect({
+      message: breadcrumb.join(" › "),
+      options: visible.map(([name, node]) => ({
+        value: name,
+        label: name,
+        hint: node.description,
+      })),
+      // Below the root, ctrl-up backs up one tree level. Caught right here so
+      // it can never be confused with a leaf handler's BackNavigation (which
+      // dispatch interprets as "re-pick worktree context").
+      backLabel: breadcrumb.length > 1 ? breadcrumb[breadcrumb.length - 2] : undefined,
+    });
+    return selected || null;
+  } catch (err) {
+    if (err instanceof BackNavigation) return BACK;
+    throw err;
+  }
 }
 
 // ─── Resolution ──────────────────────────────────────────────────────────────
+
+/**
+ * Walk from the root tree down a path of canonical node names (a breadcrumb
+ * minus the leading "rt"), returning that level's subcommand map.
+ * Returns null if any segment is missing or isn't a branch node.
+ */
+export function walkTree(
+  root: Record<string, CommandNode>,
+  path: string[],
+): Record<string, CommandNode> | null {
+  let current: Record<string, CommandNode> | undefined = root;
+  for (const name of path) {
+    current = current ? resolveNode(current, name)?.subcommands : undefined;
+  }
+  return current ?? null;
+}
 
 function resolveNode(tree: Record<string, CommandNode>, name: string): CommandNode | null {
   // Direct match
