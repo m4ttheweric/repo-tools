@@ -11,6 +11,7 @@ import {
   spawnAgentPane,
   startClaude,
   waitAgentIdle,
+  waitAgentWorking,
 } from "../herdr-agent.ts";
 
 let binDir: string;
@@ -119,16 +120,17 @@ describe("spawnAgentPane", () => {
 });
 
 describe("startClaude / sendTask / readPane", () => {
-  test("startClaude runs claude in the worktree and waits for the prompt", () => {
-    setResponse("wait-output", { result: {} });
+  test("startClaude runs claude in the worktree and waits for an idle agent", () => {
+    setExit("wait-agent-status", 0);
     startClaude({ paneId: "w1:p9" }, "/tmp/x");
     const log = calls();
     expect(log.some((c) => c.startsWith("pane run w1:p9") && c.includes("claude"))).toBe(true);
-    expect(log.some((c) => c.startsWith("wait output w1:p9"))).toBe(true);
+    expect(log.some((c) => c.startsWith("wait agent-status w1:p9 --status idle"))).toBe(true);
+    expect(log.some((c) => c.startsWith("wait output"))).toBe(false);
   });
 
-  test("startClaude throws when the claude prompt never appears", () => {
-    setExit("wait-output", 1);
+  test("startClaude throws when the agent never becomes idle", () => {
+    setExit("wait-agent-status", 1);
     expect(() => startClaude({ paneId: "w1:p9" }, "/tmp/x")).toThrow();
   });
 
@@ -159,5 +161,20 @@ describe("waitAgentIdle", () => {
 
   test("AGENT_WAIT_TIMEOUT_MS is ten minutes", () => {
     expect(AGENT_WAIT_TIMEOUT_MS).toBe(10 * 60_000);
+  });
+});
+
+describe("waitAgentWorking", () => {
+  test("returns working when herdr exits 0", () => {
+    setExit("wait-agent-status", 0);
+    const result = waitAgentWorking({ paneId: "w1:p9" }, 1000);
+    expect(result).toBe("working");
+    expect(calls().some((c) => c.startsWith("wait agent-status w1:p9 --status working"))).toBe(true);
+  });
+
+  test("returns timeout when herdr exits non-zero", () => {
+    setExit("wait-agent-status", 1);
+    const result = waitAgentWorking({ paneId: "w1:p9" }, 1000);
+    expect(result).toBe("timeout");
   });
 });
