@@ -36,6 +36,7 @@ export function startSocketServer(opts: {
         const result = await handleCommand(cmd, payload);
         return Response.json(result);
       } catch (err) {
+        log.error({ err, url: req.url }, "socket request failed");
         return Response.json({ ok: false, error: String(err) }, { status: 500 });
       }
     },
