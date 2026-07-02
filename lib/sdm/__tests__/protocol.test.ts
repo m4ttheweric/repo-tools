@@ -56,4 +56,28 @@ describe("validateConnectorOutput", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("connections");
   });
+
+  test("accepts resolution on a connection", () => {
+    const r = validateConnectorOutput({ version: 1, connections: [
+      { id: "a", label: "A", sdmResource: "x", resolution: { source: "exact", candidates: ["x"] } }] });
+    expect(r.ok).toBe(true);
+  });
+
+  test("rejects a bad resolution.source", () => {
+    const r = validateConnectorOutput({ version: 1, connections: [
+      { id: "a", label: "A", sdmResource: "x", resolution: { source: "guessed" } }] });
+    expect(r.ok).toBe(false);
+  });
+
+  test("accepts unresolved entries", () => {
+    const r = validateConnectorOutput({ version: 1, connections: [], unresolved: [
+      { id: "g", label: "G", slug: "s", env: "qa", source: "none", candidates: [] }] });
+    expect(r.ok).toBe(true);
+  });
+
+  test("rejects unresolved with a bad env", () => {
+    const r = validateConnectorOutput({ version: 1, connections: [], unresolved: [
+      { id: "g", label: "G", slug: "s", env: "prod-ish", source: "none", candidates: [] }] });
+    expect(r.ok).toBe(false);
+  });
 });

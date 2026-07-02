@@ -7,6 +7,27 @@
  * pinpoint the offending connection and field.
  */
 
+export type EnvKey = "dev" | "qa" | "labs" | "staging" | "prod";
+
+export interface Resolution {
+  source: "exact" | "override";
+  candidates?: string[];
+  readOnlyAlt?: string;
+}
+
+export interface UnresolvedEntry {
+  id: string;
+  label: string;
+  slug: string;
+  env: EnvKey;
+  tier?: string;
+  source: "ambiguous" | "none";
+  candidates: string[];
+  readOnlyAlt?: string;
+  note?: string;
+  url?: string;
+}
+
 export interface ConnectorConnection {
   id: string;
   label: string;
@@ -14,6 +35,7 @@ export interface ConnectorConnection {
   tier?: string;
   production?: boolean;
   reasonSuggestion?: string;
+  resolution?: Resolution;
   db?: { database?: string; schema?: string; user?: string };
   meta?: Record<string, string>;
 }
@@ -21,6 +43,7 @@ export interface ConnectorConnection {
 export interface ConnectorOutput {
   version: 1;
   connections: ConnectorConnection[];
+  unresolved?: UnresolvedEntry[];
 }
 
 export type ValidationResult =
@@ -63,6 +86,23 @@ export function validateConnectorOutput(raw: unknown): ValidationResult {
     if (c.production !== undefined && typeof c.production !== "boolean") {
       return { ok: false, error: `${path}.production: expected boolean` };
     }
+    if (c.resolution !== undefined) {
+      if (!isRecord(c.resolution)) return { ok: false, error: `${path}.resolution: expected an object` };
+      const source = c.resolution.source;
+      if (typeof source !== "string" || !["exact", "override"].includes(source)) {
+        return { ok: false, error: `${path}.resolution.source: expected "exact" or "override"` };
+      }
+      if (c.resolution.candidates !== undefined) {
+        if (!Array.isArray(c.resolution.candidates)) return { ok: false, error: `${path}.resolution.candidates: expected an array` };
+        for (let j = 0; j < c.resolution.candidates.length; j++) {
+          if (typeof c.resolution.candidates[j] !== "string") {
+            return { ok: false, error: `${path}.resolution.candidates[${j}]: expected string` };
+          }
+        }
+      }
+      const err = optionalStringField(c.resolution, "readOnlyAlt", `${path}.resolution`);
+      if (err) return { ok: false, error: err };
+    }
     if (c.db !== undefined) {
       if (!isRecord(c.db)) return { ok: false, error: `${path}.db: expected an object` };
       for (const key of ["database", "schema", "user"] as const) {
@@ -77,5 +117,40 @@ export function validateConnectorOutput(raw: unknown): ValidationResult {
       }
     }
   }
+
+  if (raw.unresolved !== undefined) {
+    if (!Array.isArray(raw.unresolved)) return { ok: false, error: "unresolved: expected an array" };
+    const envKeys = ["dev", "qa", "labs", "staging", "prod"];
+    const sourceKeys = ["ambiguous", "none"];
+    for (let i = 0; i < raw.unresolved.length; i++) {
+      const u = raw.unresolved[i];
+      const path = `unresolved[${i}]`;
+      if (!isRecord(u)) return { ok: false, error: `${path}: expected an object` };
+      for (const key of ["id", "label", "slug"] as const) {
+        if (!nonEmptyString(u[key])) return { ok: false, error: `${path}.${key}: expected non-empty string` };
+      }
+      const env = u.env;
+      if (typeof env !== "string" || !envKeys.includes(env)) {
+        return { ok: false, error: `${path}.env: expected one of ${envKeys.map((k) => `"${k}"`).join(", ")}` };
+      }
+      const err = optionalStringField(u, "tier", path);
+      if (err) return { ok: false, error: err };
+      const source = u.source;
+      if (typeof source !== "string" || !sourceKeys.includes(source)) {
+        return { ok: false, error: `${path}.source: expected "ambiguous" or "none"` };
+      }
+      if (!Array.isArray(u.candidates)) return { ok: false, error: `${path}.candidates: expected an array` };
+      for (let j = 0; j < u.candidates.length; j++) {
+        if (typeof u.candidates[j] !== "string") {
+          return { ok: false, error: `${path}.candidates[${j}]: expected string` };
+        }
+      }
+      for (const key of ["readOnlyAlt", "note", "url"] as const) {
+        const err = optionalStringField(u, key, path);
+        if (err) return { ok: false, error: err };
+      }
+    }
+  }
+
   return { ok: true, output: raw as unknown as ConnectorOutput };
 }
