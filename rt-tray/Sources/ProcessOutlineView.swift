@@ -71,6 +71,7 @@ struct ProcessOutlineView: NSViewRepresentable {
     let groups: [RepoGroup]
     let visibleColumns: Set<ProcessColumn>
     let killingPids: Set<Int>
+    let herdrPids: Set<Int>
     let selection: Set<Int>
     let dataVersion: Int
     let controller: ProcessPanelController
@@ -141,6 +142,7 @@ struct ProcessOutlineView: NSViewRepresentable {
         defer { coordinator.isSyncing = false }
 
         coordinator.controller = controller
+        coordinator.currentHerdrPids = herdrPids
         guard let outlineView = coordinator.outlineView else { return }
 
         if coordinator.lastVisibleColumns != visibleColumns {
@@ -208,6 +210,7 @@ struct ProcessOutlineView: NSViewRepresentable {
         var collapsedGroups: Set<String> = []
         var expandedProcessPids: Set<Int> = []
         var currentKillingPids: Set<Int> = []
+        var currentHerdrPids: Set<Int> = []
         var lastDataVersion = -1
         var lastVisibleColumns: Set<ProcessColumn>? = nil
         var activeSortColumn: ProcessColumn? = nil
@@ -608,6 +611,10 @@ struct ProcessOutlineView: NSViewRepresentable {
             if killing { label.textColor = .tertiaryLabelColor }
             leafRow.addArrangedSubview(label)
 
+            if currentHerdrPids.contains(proc.pid) {
+                leafRow.addArrangedSubview(makeHerdrBadge(dimmed: killing))
+            }
+
             if killing {
                 let killingLabel = NSTextField(labelWithString: "Killing…")
                 killingLabel.font = .systemFont(ofSize: 9.5, weight: .medium)
@@ -635,6 +642,31 @@ struct ProcessOutlineView: NSViewRepresentable {
                 stack.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
             ])
             return cell
+        }
+
+        private func makeHerdrBadge(dimmed: Bool) -> NSView {
+            let badge = NSView()
+            badge.wantsLayer = true
+            badge.layer?.backgroundColor = NSColor.systemPurple
+                .withAlphaComponent(dimmed ? 0.08 : 0.15).cgColor
+            badge.layer?.cornerRadius = 3
+            badge.translatesAutoresizingMaskIntoConstraints = false
+            badge.toolTip = "Running in a herdr pane"
+
+            let label = NSTextField(labelWithString: "herdr")
+            label.font = .systemFont(ofSize: 9, weight: .medium)
+            label.textColor = dimmed
+                ? NSColor.systemPurple.withAlphaComponent(0.4) : .systemPurple
+            label.setContentCompressionResistancePriority(.required, for: .horizontal)
+            label.translatesAutoresizingMaskIntoConstraints = false
+            badge.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: badge.leadingAnchor, constant: 4),
+                label.trailingAnchor.constraint(equalTo: badge.trailingAnchor, constant: -4),
+                label.topAnchor.constraint(equalTo: badge.topAnchor, constant: 1),
+                label.bottomAnchor.constraint(equalTo: badge.bottomAnchor, constant: -1),
+            ])
+            return badge
         }
 
         /// Matches the daemon's definition: flagged after sustained high CPU.

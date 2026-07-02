@@ -65,6 +65,8 @@ class HerdrBridge {
     private let cacheLock = NSLock()
     private var _isAvailable: Bool?
     private var lastCheck: Date?
+    private var _paneRootPids: Set<Int>?
+    private var lastRootsFetch: Date?
 
     /// Read from both the main thread (context menus) and detached tasks
     /// (focus/read-output), so the cache is guarded by a lock.
@@ -133,6 +135,35 @@ class HerdrBridge {
             return nil
         }
         return envelope.result?.processInfo
+    }
+
+    /// Pids that root each pane's content: the pane shell plus its current
+    /// foreground processes. Verified membership (herdr reported the pid),
+    /// never inferred from cwd. Costs one `pane list` plus one
+    /// `process-info` per pane, hence the cache; call off-main.
+    func paneRootPids(maxAge: TimeInterval = 15) -> Set<Int> {
+        cacheLock.lock()
+        if let cached = _paneRootPids, let last = lastRootsFetch,
+           Date().timeIntervalSince(last) < maxAge {
+            cacheLock.unlock()
+            return cached
+        }
+        cacheLock.unlock()
+
+        guard isAvailable else { return [] }
+        var roots = Set<Int>()
+        for entry in listPanes() {
+            guard let info = processInfo(forPane: entry.paneId) else { continue }
+            if let shell = info.shellPid { roots.insert(shell) }
+            for fg in info.foregroundProcesses ?? [] {
+                if let pid = fg.pid { roots.insert(pid) }
+            }
+        }
+        cacheLock.lock()
+        _paneRootPids = roots
+        lastRootsFetch = Date()
+        cacheLock.unlock()
+        return roots
     }
 
     /// Finds the herdr pane running the given PID, if any.

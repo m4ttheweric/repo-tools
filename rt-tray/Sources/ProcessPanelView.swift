@@ -127,6 +127,7 @@ struct ProcessPanelView: View {
             groups: controller.filteredGroups,
             visibleColumns: columnSettings.visibleColumns,
             killingPids: controller.killingPids,
+            herdrPids: controller.herdrRowPids,
             selection: controller.selection,
             dataVersion: controller.dataVersion,
             controller: controller
