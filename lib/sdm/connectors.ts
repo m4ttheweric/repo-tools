@@ -8,7 +8,7 @@
 import { spawn } from "node:child_process";
 import { accessSync, constants, mkdirSync, readdirSync, statSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { validateConnectorOutput, type ConnectorConnection, type ConnectorOutput } from "./protocol.ts";
 
 export interface ConnectorRunError {
@@ -62,32 +62,38 @@ export function runConnector(
   opts: { timeoutMs?: number } = {},
 ): Promise<{ ok: true; output: ConnectorOutput } | { ok: false; error: string }> {
   const timeoutMs = opts.timeoutMs ?? CONNECTOR_TIMEOUT_MS;
-  return new Promise(resolve => {
+  return new Promise(promiseResolve => {
     let settled = false;
     let timedOut = false;
+    let killTimer: NodeJS.Timeout | null = null;
     const settle = (r: { ok: true; output: ConnectorOutput } | { ok: false; error: string }) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(r);
+      if (killTimer) clearTimeout(killTimer);
+      promiseResolve(r);
     };
     const proc = spawn(filePath, ["discover"], {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, RT_SDM_PROTOCOL: "1" },
-      detached: true,
     });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        if (proc.pid) process.kill(-proc.pid, "SIGKILL");
-      } catch {
-        // Process already exited, will settle when close event fires
-      }
-    }, timeoutMs);
     let stdout = "";
     let stderr = "";
     proc.stdout?.on("data", d => (stdout += String(d)));
     proc.stderr?.on("data", d => (stderr += String(d)));
+    const timer = setTimeout(() => {
+      timedOut = true;
+      // Killing only the direct child can still hang forever: a grandchild
+      // (e.g. a bash fixture's `sleep`) can inherit the stdout/stderr pipes
+      // and hold their write end open, so "close" never fires on proc. Destroy
+      // the streams and kill the direct child, then force-settle on a guard
+      // timer instead of waiting on "close". No process-group/detached kill
+      // needed, so a parent Ctrl-C still reaches this child normally.
+      proc.stdout?.destroy();
+      proc.stderr?.destroy();
+      proc.kill(9); // SIGKILL
+      killTimer = setTimeout(() => settle({ ok: false, error: `timed out after ${timeoutMs}ms` }), 1000);
+    }, timeoutMs);
     proc.on("error", err => settle({ ok: false, error: `spawn failed: ${(err as Error).message}` }));
     proc.on("close", code => {
       if (timedOut) return settle({ ok: false, error: `timed out after ${timeoutMs}ms` });
@@ -107,17 +113,22 @@ export function runConnector(
   });
 }
 
-let catalogCache: { at: number; result: CatalogResult } | null = null;
+// Keyed by resolved directory so discovery in one dir never serves another
+// dir's cached results (e.g. two callers passing different `dir` within the
+// TTL window).
+const catalogCache = new Map<string, { at: number; result: CatalogResult }>();
 
 export function invalidateCatalogCache(): void {
-  catalogCache = null;
+  catalogCache.clear();
 }
 
 export async function discoverConnections(
   opts: { refresh?: boolean; dir?: string; timeoutMs?: number } = {},
 ): Promise<CatalogResult> {
-  if (!opts.refresh && catalogCache && Date.now() - catalogCache.at < CATALOG_CACHE_MS) {
-    return { ...catalogCache.result, fromCache: true };
+  const cacheKey = resolve(opts.dir ?? connectorsDir());
+  const cached = catalogCache.get(cacheKey);
+  if (!opts.refresh && cached && Date.now() - cached.at < CATALOG_CACHE_MS) {
+    return { ...cached.result, fromCache: true };
   }
   const connections: DiscoveredConnection[] = [];
   const errors: ConnectorRunError[] = [];
@@ -133,7 +144,7 @@ export async function discoverConnections(
     }
   }
   const result: CatalogResult = { connections, errors, fromCache: false };
-  catalogCache = { at: Date.now(), result };
+  catalogCache.set(cacheKey, { at: Date.now(), result });
   return result;
 }
 
