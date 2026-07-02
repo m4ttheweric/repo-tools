@@ -1,8 +1,9 @@
 /**
- * Connector discovery. A connector is any executable in ~/.rt/sdm/connectors/;
- * rt runs `<file> discover` with RT_SDM_PROTOCOL=1 and reads one JSON document
- * from stdout. One bad connector never poisons the rest: its failure is
- * collected into CatalogResult.errors and everyone else still contributes.
+ * Connector discovery and resolution. A connector is any executable in
+ * ~/.rt/sdm/connectors/; rt runs `<file> discover` (and, per-url, `<file>
+ * resolve <url>`) with RT_SDM_PROTOCOL=1 and reads one JSON document from
+ * stdout. One bad connector never poisons the rest: its failure is collected
+ * into CatalogResult.errors and everyone else still contributes.
  */
 
 import { spawn } from "node:child_process";
@@ -10,7 +11,7 @@ import { accessSync, constants, mkdirSync, readdirSync, statSync, writeFileSync,
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { sdmEnv } from "./core.ts";
-import { validateConnectorOutput, type ConnectorConnection, type ConnectorOutput } from "./protocol.ts";
+import { validateConnectorOutput, type ConnectorConnection, type ConnectorOutput, type UnresolvedEntry } from "./protocol.ts";
 
 export interface ConnectorRunError {
   connector: string;
@@ -23,9 +24,19 @@ export interface DiscoveredConnection extends ConnectorConnection {
   connector: string;
 }
 
+/** An unresolved gap reported by a connector, namespaced the same way DiscoveredConnection is. */
+export interface UnresolvedGap extends UnresolvedEntry {
+  key: string;
+  connector: string;
+}
+
 export interface CatalogResult {
   connections: DiscoveredConnection[];
   errors: ConnectorRunError[];
+  // Optional so existing hand-built CatalogResult literals (daemon deps in
+  // tests, the CLI's daemon-passthrough fallback) stay back-compatible;
+  // discoverConnections itself always populates it, empty array or not.
+  unresolved?: UnresolvedGap[];
   fromCache: boolean;
 }
 
@@ -72,8 +83,14 @@ function connectorEnv(): NodeJS.ProcessEnv {
   return { ...base, PATH: `${extra}:${base.PATH ?? ""}`, RT_SDM_PROTOCOL: "1" };
 }
 
-export function runConnector(
+/**
+ * Spawn a connector with an arbitrary command+args (e.g. ["discover"] or
+ * ["resolve", url]) and validate its stdout as a ConnectorOutput. Internal;
+ * runConnector and runConnectorResolve are the thin public callers.
+ */
+function runConnectorCommand(
   filePath: string,
+  args: string[],
   opts: { timeoutMs?: number } = {},
 ): Promise<{ ok: true; output: ConnectorOutput } | { ok: false; error: string }> {
   const timeoutMs = opts.timeoutMs ?? CONNECTOR_TIMEOUT_MS;
@@ -88,7 +105,7 @@ export function runConnector(
       if (killTimer) clearTimeout(killTimer);
       promiseResolve(r);
     };
-    const proc = spawn(filePath, ["discover"], {
+    const proc = spawn(filePath, args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: connectorEnv(),
     });
@@ -128,6 +145,22 @@ export function runConnector(
   });
 }
 
+export function runConnector(
+  filePath: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<{ ok: true; output: ConnectorOutput } | { ok: false; error: string }> {
+  return runConnectorCommand(filePath, ["discover"], opts);
+}
+
+/** Ask a single connector to resolve one url, e.g. `<file> resolve <url>`. */
+export function runConnectorResolve(
+  filePath: string,
+  url: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<{ ok: true; output: ConnectorOutput } | { ok: false; error: string }> {
+  return runConnectorCommand(filePath, ["resolve", url], opts);
+}
+
 // Keyed by resolved directory so discovery in one dir never serves another
 // dir's cached results (e.g. two callers passing different `dir` within the
 // TTL window).
@@ -147,6 +180,7 @@ export async function discoverConnections(
   }
   const connections: DiscoveredConnection[] = [];
   const errors: ConnectorRunError[] = [];
+  const unresolved: UnresolvedGap[] = [];
   for (const file of listConnectorFiles(opts.dir)) {
     const connector = basename(file).replace(/\.[^.]+$/, "");
     const r = await runConnector(file, { timeoutMs: opts.timeoutMs });
@@ -157,10 +191,45 @@ export async function discoverConnections(
     for (const c of r.output.connections) {
       connections.push({ ...c, connector, key: `${connector}:${c.id}` });
     }
+    for (const u of r.output.unresolved ?? []) {
+      unresolved.push({ ...u, connector, key: `${connector}:${u.id}` });
+    }
   }
-  const result: CatalogResult = { connections, errors, fromCache: false };
+  const result: CatalogResult = { connections, errors, unresolved, fromCache: false };
   catalogCache.set(cacheKey, { at: Date.now(), result });
   return result;
+}
+
+export interface ResolveConnectionResult {
+  connector: string;
+  connection?: DiscoveredConnection;
+  unresolved?: UnresolvedGap;
+}
+
+/**
+ * Ask each connector in turn to resolve a url, returning the first one that
+ * has an opinion (a resolved connection or an unresolved gap). A url belongs
+ * to exactly one org, so the first connector to answer wins; connectors that
+ * error or have no opinion are skipped in favor of the next.
+ */
+export async function resolveConnection(
+  url: string,
+  opts: { dir?: string; timeoutMs?: number } = {},
+): Promise<ResolveConnectionResult | null> {
+  for (const file of listConnectorFiles(opts.dir)) {
+    const connector = basename(file).replace(/\.[^.]+$/, "");
+    const r = await runConnectorResolve(file, url, { timeoutMs: opts.timeoutMs });
+    if (!r.ok) continue;
+    const connection = r.output.connections[0];
+    if (connection) {
+      return { connector, connection: { ...connection, connector, key: `${connector}:${connection.id}` } };
+    }
+    const gap = r.output.unresolved?.[0];
+    if (gap) {
+      return { connector, unresolved: { ...gap, connector, key: `${connector}:${gap.id}` } };
+    }
+  }
+  return null;
 }
 
 export const CONNECTOR_TEMPLATE = `#!/usr/bin/env bun
