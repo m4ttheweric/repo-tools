@@ -30,11 +30,28 @@ beforeEach(() => {
   // Fake herdr: record argv, then emit the canned response for the
   // subcommand pair (responses/<arg1>-<arg2>.txt) and exit with its canned
   // status (responses/<arg1>-<arg2>.exit), defaulting to `{}` / exit 0.
+  // responses/<arg1>-<arg2>.exits (one exit code per line) overrides .exit
+  // for callers that need a different code on each successive call to the
+  // same subcommand pair (e.g. sendTask's pickup wait then its nudge wait);
+  // a per-key counter file tracks how many times that key has been hit, and
+  // the sequence's last line repeats once exhausted.
   const fake = `#!/bin/sh
 echo "$@" >> "${binDir}/calls.log"
-resp="${binDir}/responses/$1-$2.txt"
-code="${binDir}/responses/$1-$2.exit"
+key="$1-$2"
+resp="${binDir}/responses/$key.txt"
+code="${binDir}/responses/$key.exit"
+seq="${binDir}/responses/$key.exits"
 if [ -f "$resp" ]; then cat "$resp"; else echo '{}'; fi
+if [ -f "$seq" ]; then
+  count_file="${binDir}/responses/$key.count"
+  n=0
+  if [ -f "$count_file" ]; then n=$(cat "$count_file"); fi
+  n=$((n + 1))
+  echo "$n" > "$count_file"
+  line=$(sed -n "\${n}p" "$seq")
+  if [ -z "$line" ]; then line=$(tail -n1 "$seq"); fi
+  exit "$line"
+fi
 if [ -f "$code" ]; then exit "$(cat "$code")"; fi
 exit 0
 `;
@@ -62,6 +79,12 @@ function setResponse(sub: string, json: unknown): void {
 
 function setExit(sub: string, code: number): void {
   writeFileSync(join(binDir, "responses", `${sub}.exit`), String(code));
+}
+
+// One exit code per successive call to the same subcommand pair; see the
+// fake herdr script's ".exits" handling above.
+function setExitSequence(sub: string, codes: number[]): void {
+  writeFileSync(join(binDir, "responses", `${sub}.exits`), codes.join("\n"));
 }
 
 function calls(): string[] {
@@ -134,11 +157,6 @@ describe("startClaude / sendTask / readPane", () => {
     expect(() => startClaude({ paneId: "w1:p9" }, "/tmp/x")).toThrow();
   });
 
-  test("sendTask references the task file", () => {
-    sendTask({ paneId: "w1:p9" }, "/tmp/task.md");
-    expect(calls().some((c) => c.startsWith("pane run w1:p9") && c.includes("/tmp/task.md"))).toBe(true);
-  });
-
   test("readPane returns pane text", () => {
     writeFileSync(join(binDir, "responses", "pane-read.txt"), "some pane output");
     expect(readPane({ paneId: "w1:p9" }, 10)).toContain("some pane output");
@@ -176,5 +194,30 @@ describe("waitAgentWorking", () => {
     setExit("wait-agent-status", 1);
     const result = waitAgentWorking({ paneId: "w1:p9" }, 1000);
     expect(result).toBe("timeout");
+  });
+});
+
+describe("sendTask", () => {
+  test("returns after the first pickup wait succeeds, without nudging", () => {
+    setExit("wait-agent-status", 0);
+    sendTask({ paneId: "w1:p9" }, "/tmp/task.md");
+    const log = calls();
+    expect(log.some((c) => c.startsWith("pane run w1:p9") && c.includes("/tmp/task.md"))).toBe(true);
+    expect(log.some((c) => c.startsWith("pane send-keys"))).toBe(false);
+  });
+
+  test("nudges with an Enter keypress then succeeds when the first wait times out", () => {
+    setExitSequence("wait-agent-status", [1, 0]);
+    sendTask({ paneId: "w1:p9" }, "/tmp/task.md");
+    const log = calls();
+    expect(log.some((c) => c.startsWith("pane run w1:p9") && c.includes("/tmp/task.md"))).toBe(true);
+    expect(log.some((c) => c.startsWith("pane send-keys w1:p9 Enter"))).toBe(true);
+    expect(log.filter((c) => c.startsWith("wait agent-status w1:p9 --status working")).length).toBe(2);
+  });
+
+  test("throws when both the pickup wait and the post-nudge wait fail", () => {
+    setExit("wait-agent-status", 1);
+    expect(() => sendTask({ paneId: "w1:p9" }, "/tmp/task.md")).toThrow("agent never picked up the task");
+    expect(calls().some((c) => c.startsWith("pane send-keys w1:p9 Enter"))).toBe(true);
   });
 });
