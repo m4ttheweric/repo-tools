@@ -58,7 +58,7 @@ async function getCatalog(refresh = false): Promise<CatalogResult> {
     if (connections.length === 0 && errors.length > 0) {
       return discoverConnections({ refresh });
     }
-    return { connections, errors, fromCache: r.fromCache ?? false };
+    return { connections, errors, fromCache: r.fromCache ?? false, unresolved: r.unresolved ?? [] };
   }
   return discoverConnections({ refresh });
 }
@@ -74,8 +74,16 @@ async function resolveUrl(url: string): Promise<ResolveConnectionResult | null> 
   const result = await daemonQuery("sdm:resolve", { url }, 45_000);
   if (result?.ok) {
     const r = result as any;
-    if (!r.connection && !r.unresolved) return null;
-    return { connector: r.connection?.connector ?? r.unresolved?.connector ?? "", connection: r.connection, unresolved: r.unresolved };
+    if (r.connection || r.unresolved) {
+      return { connector: r.connection?.connector ?? r.unresolved?.connector ?? "", connection: r.connection, unresolved: r.unresolved };
+    }
+    // A daemon stuck on a bad PATH (e.g. launchd with no bun) can report ok
+    // with every connector's resolve run failing, which looks identical to a
+    // genuine "no connector has an opinion" reply unless we check errors.
+    // Trusting that would mask a working in-process resolve, so fall back
+    // instead; a true no-opinion reply (no errors) is trusted as-is.
+    const errors = r.errors ?? [];
+    if (errors.length === 0) return null;
   }
   return resolveConnection(url);
 }

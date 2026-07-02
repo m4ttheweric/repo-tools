@@ -46,6 +46,24 @@ describe("sdm handlers", () => {
     expect(r.connections).toHaveLength(1);
   });
 
+  test("sdm:catalog returns unresolved gaps from discover", async () => {
+    const h = createSdmHandlers(ctx, makeDeps({
+      discover: async () => ({
+        connections: [],
+        errors: [],
+        fromCache: false,
+        unresolved: [{
+          id: "gap1", label: "Gap One", slug: "gap-one", env: "staging", source: "ambiguous",
+          candidates: ["example-a", "example-b"], key: "demo:gap1", connector: "demo",
+        }],
+      }),
+    }));
+    const r = await h["sdm:catalog"]!({});
+    expect(r.ok).toBe(true);
+    expect(r.unresolved).toHaveLength(1);
+    expect(r.unresolved[0].key).toBe("demo:gap1");
+  });
+
   test("sdm:snapshot serializes resources as a plain object", async () => {
     const h = createSdmHandlers(ctx, makeDeps());
     const r = await h["sdm:snapshot"]!({});
@@ -125,6 +143,20 @@ describe("sdm handlers", () => {
     expect(r.ok).toBe(true);
     expect(r.connection).toBeUndefined();
     expect(r.unresolved).toBeUndefined();
+    expect(r.errors).toEqual([]);
+  });
+
+  test("sdm:resolve passes through connector run errors", async () => {
+    const resolved: ResolveConnectionResult = {
+      connector: "",
+      errors: [{ connector: "broken", error: "exited 1: boom" }],
+    };
+    const h = createSdmHandlers(ctx, makeDeps({ resolveConnection: async () => resolved }));
+    const r = await h["sdm:resolve"]!({ url: "https://example.com/boom" });
+    expect(r.ok).toBe(true);
+    expect(r.connection).toBeUndefined();
+    expect(r.unresolved).toBeUndefined();
+    expect(r.errors).toEqual([{ connector: "broken", error: "exited 1: boom" }]);
   });
 
   test("sdm:resolve rejects a missing url", async () => {
