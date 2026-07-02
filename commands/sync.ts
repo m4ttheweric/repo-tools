@@ -452,6 +452,11 @@ export async function syncCommand(
 
   syncLog.start(`rt sync  cwd=${cwd}${dryRun ? "  --dry-run" : ""}${mode !== "off" ? `  escalation=${mode}` : ""}`);
   let summary;
+  // Escalation's exit code is captured, not exited on immediately: in Bun,
+  // process.exit() inside a try skips its finally, which would leave
+  // syncLog.end() unrun and the SESSION block unterminated. Exit only after
+  // the try/finally below has fully completed.
+  let escalationExit: number | null = null;
   try {
     summary = await syncBranch(cwd, dataDir, {
       dryRun,
@@ -462,7 +467,7 @@ export async function syncCommand(
     const paused =
       summary.rebaseResult?.status === "conflict" && summary.rebaseResult.rebaseInProgress;
     if (paused && mode !== "off") {
-      const exitCode = await runEscalationFlow({
+      escalationExit = await runEscalationFlow({
         cwd,
         dataDir,
         repoName,
@@ -471,10 +476,13 @@ export async function syncCommand(
         autoYes: args.includes("--agent"),
         push: true,
       });
-      process.exit(exitCode);
     }
   } finally {
     syncLog.end();
+  }
+
+  if (escalationExit !== null) {
+    process.exit(escalationExit);
   }
 
   if (summary.error) {

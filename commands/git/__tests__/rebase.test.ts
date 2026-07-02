@@ -7,12 +7,19 @@ import { join } from "path";
 import { rebaseOnto } from "../rebase.ts";
 
 let tmpRoot: string;
+let savedSyncLogPath: string | undefined;
 
 beforeEach(() => {
   tmpRoot = realpathSync(mkdtempSync(join(tmpdir(), "rt-rebase-")));
+  // rebaseOnto logs every git command via syncLog; redirect it to a temp
+  // file so these tests never append to the real ~/.rt/sync.log.
+  savedSyncLogPath = process.env.RT_SYNC_LOG_PATH;
+  process.env.RT_SYNC_LOG_PATH = join(tmpRoot, "sync.log");
 });
 
 afterEach(() => {
+  if (savedSyncLogPath === undefined) delete process.env.RT_SYNC_LOG_PATH;
+  else process.env.RT_SYNC_LOG_PATH = savedSyncLogPath;
   try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* */ }
 });
 

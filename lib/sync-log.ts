@@ -22,11 +22,15 @@
 
 import { appendFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 
-const LOG_DIR = join(homedir(), ".rt");
-const LOG_PATH = join(LOG_DIR, "sync.log");
 const MAX_OUTPUT_BYTES = 2048;
+
+// Resolved at write time (not module init) so tests can set
+// RT_SYNC_LOG_PATH after this module is already imported.
+function logPath(): string {
+  return process.env.RT_SYNC_LOG_PATH ?? join(homedir(), ".rt", "sync.log");
+}
 
 function ts(): string {
   return new Date().toISOString();
@@ -41,8 +45,9 @@ function truncate(s: string): string {
 
 function write(line: string): void {
   try {
-    mkdirSync(LOG_DIR, { recursive: true });
-    appendFileSync(LOG_PATH, line + "\n", "utf8");
+    const path = logPath();
+    mkdirSync(dirname(path), { recursive: true });
+    appendFileSync(path, line + "\n", "utf8");
   } catch {
     // Non-fatal — never let logging break a sync operation
   }
@@ -91,14 +96,23 @@ class SyncLogger {
     if (stderr) write(`         err: ${truncate(stderr).replace(/\n/g, "\n              ")}`);
   }
 
-  /** Log the result of a named phase (reset-to-origin, rebase, push, etc.) */
+  /**
+   * Log the result of a named phase (reset-to-origin, rebase, escalation, etc.)
+   * Every key in the record is rendered, so escalation payloads (verdict,
+   * choice, pane, taskPath, ...) survive instead of being discarded in favor
+   * of a synthesized status. "status" is only shown when the record actually
+   * carries one... never invented from the presence of an "error" key.
+   */
   phase(name: string, result: Record<string, unknown>): void {
-    const status = result.status ?? (result.error ? "error" : "ok");
-    const extra = result.error ? `  error: ${result.error}` : "";
-    write(`[${ts()}] PHASE ${name}  status=${status}${extra}`);
-    if (result.backupBranch) write(`         backup: ${result.backupBranch}`);
-    if (result.target) write(`         target: ${result.target}`);
-    if (result.commitsBehind) write(`         behind: ${result.commitsBehind}`);
+    const keys = Object.keys(result);
+    const ordered = keys.includes("status")
+      ? ["status", ...keys.filter((k) => k !== "status")]
+      : keys;
+    const parts = ordered
+      .map((key) => [key, result[key]] as const)
+      .filter(([, value]) => value !== undefined && value !== null)
+      .map(([key, value]) => `${key}=${String(value)}`);
+    write(`[${ts()}] PHASE ${name}  ${parts.join(" ")}`);
   }
 
   /** Log the final outcome of a worktree sync. */
