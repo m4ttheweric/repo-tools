@@ -360,7 +360,7 @@ export interface DaemonSubscription {
  * The daemon's WS endpoint is a plain broadcast fan-out: every message
  * received here is a `{ type, data }` object the daemon pushed via its
  * `broadcast()` helper. Callers filter by `type` (`mr:update`, `mr:status`,
- * `status`, `ports`, `remedy`, `notification`, …).
+ * `status`, `ports`, `notification`, …).
  *
  * Errors are silent by design — the daemon may be down at any moment, and
  * the caller just keeps reading from its disk cache until the socket comes

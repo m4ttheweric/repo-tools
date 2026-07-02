@@ -10,9 +10,9 @@
  *
  * HOME is resolved at CALL time via `process.env.HOME ?? homedir()` so tests can
  * point the whole tree at a temp dir by setting process.env.HOME before calling.
- * This also unifies the two conventions that previously coexisted (most modules
- * used homedir() at module-load time; doppler-template/tunnel-config used
- * process.env.HOME at call time) — a real divergence if the two ever differed.
+ * This also unifies the two conventions that previously coexisted (some modules
+ * used homedir() at module-load time, others process.env.HOME at call time) —
+ * a real divergence if the two ever differed.
  */
 
 import { homedir } from "os";
