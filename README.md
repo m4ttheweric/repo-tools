@@ -215,6 +215,75 @@ rt --version              # Print version (short)
 
 ---
 
+## StrongDM connectors
+
+`rt sdm connect` browses and connects to your StrongDM datasources. rt ships with no hardcoded list; instead you plug in a **connector**: a small executable that discovers your connections and prints them as JSON. Write one per organization (or team, or just yourself), and rt merges the output of every connector it finds.
+
+### Installing a connector
+
+A connector is any executable in `~/.rt/sdm/connectors/`. Scaffold one with:
+
+```bash
+rt sdm connectors init my-org      # writes ~/.rt/sdm/connectors/my-org.ts (a Bun template)
+# edit it to return your real connections, then:
+rt sdm connectors test my-org      # validate the output
+rt sdm connectors                  # list installed connectors and their status
+```
+
+Already have a connector script elsewhere? Symlink it in and make it executable:
+
+```bash
+ln -s "$PWD/my-connector.ts" ~/.rt/sdm/connectors/my-org.ts
+chmod +x ~/.rt/sdm/connectors/my-org.ts
+```
+
+The scaffold is Bun/TypeScript, but a connector can be **any executable**: a shell script, a Python file, a compiled binary. rt only cares about the stdin/stdout contract.
+
+### The contract
+
+rt runs `<connector> discover` (with `RT_SDM_PROTOCOL=1` in the environment) and reads one JSON document from stdout. Anything on stderr is treated as diagnostics.
+
+```json
+{
+  "version": 1,
+  "connections": [
+    {
+      "id": "alpha-staging",
+      "label": "Alpha Staging",
+      "sdmResource": "example-alpha-staging",
+      "tier": "staging",
+      "production": false,
+      "reasonSuggestion": "investigating alpha staging data",
+      "db": { "database": "postgres", "schema": "public", "user": "postgres" }
+    }
+  ]
+}
+```
+
+Field reference:
+
+| field | required | meaning |
+|-------|----------|---------|
+| `id` | yes | stable id within this connector |
+| `label` | yes | shown in the picker |
+| `sdmResource` | yes | exact StrongDM resource name to connect |
+| `tier` | no | `development` / `qa` / `staging` / `production` / anything (groups the picker) |
+| `production` | no | `true` adds a confirm guard before connecting |
+| `reasonSuggestion` | no | prefill for the access-request reason prompt |
+| `db` | no | `{ database, schema, user }` hints used to verify the tunnel after connecting |
+| `meta` | no | free-form `Record<string, string>` passed through |
+
+Only `id`, `label`, and `sdmResource` are required. How you build the list is up to you: fetch an internal catalog, parse a config file, shell out to `sdm access catalog`, or hardcode it.
+
+### Optional hooks
+
+- **`<connector> resolve <url>`** returns the same JSON shape for a single deployment URL. Implement it and `rt sdm connect <url>` can resolve a URL straight to its resource.
+- **`allResources`**: add an `"allResources": ["example-..."]` array to the `discover` output to list every resource you can reach, so the picker shows them all, not only the ones you gave rich metadata.
+
+One bad connector never blocks the others: its error is surfaced and every other connector still contributes.
+
+---
+
 ## RT Context Extension
 
 The `rt-context` VS Code/Cursor extension shows your current worktree, branch, and linked Linear ticket in the status bar. It's installed automatically by Homebrew.
