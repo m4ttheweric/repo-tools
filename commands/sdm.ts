@@ -41,7 +41,7 @@ import { loadSdmState, recordRecent, type RecentEntry } from "../lib/sdm/state.t
 import type { SuggestionRecord } from "../lib/sdm/suggest.ts";
 import { runGuidedConnect, type GuidedTarget } from "../lib/sdm/flow.ts";
 import { probeQuery, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS } from "../lib/sdm/verify.ts";
-import { buildPickerOptions } from "../lib/sdm/picker.ts";
+import { buildPickerOptions, TIER_LABELS } from "../lib/sdm/picker.ts";
 import { buildBrowseConnections } from "../lib/sdm/browse.ts";
 import { isProbablyUrl } from "../lib/sdm/url.ts";
 
@@ -408,13 +408,6 @@ export async function refreshCmd(args: string[] = []): Promise<void> {
 // Canonical tier ordering for the "Resolved" groups, mirroring picker.ts's
 // TIER_ORDER (kept as a local copy: that one is intentionally unexported).
 const MAP_TIER_ORDER = ["development", "qa", "staging", "production"];
-const MAP_TIER_LABELS: Record<string, string> = {
-  development: "Development",
-  qa: "QA",
-  staging: "Staging",
-  production: "Production",
-};
-
 function sortTiers(tiers: string[]): string[] {
   return tiers.slice().sort((a, b) => {
     const ia = MAP_TIER_ORDER.indexOf(a);
@@ -468,7 +461,7 @@ export function formatMap(
       byTier.get(tier)!.push(c);
     }
     for (const tier of sortTiers([...byTier.keys()])) {
-      lines.push(`  ${bold}${tier === "" ? "Other" : (MAP_TIER_LABELS[tier] ?? tier)}${reset}`);
+      lines.push(`  ${bold}${tier === "" ? "Other" : (TIER_LABELS[tier] ?? tier)}${reset}`);
       for (const c of byTier.get(tier)!.slice().sort((a, b) => a.label.localeCompare(b.label))) {
         const provenance = c.resolution ? c.resolution.source : "unspecified";
         lines.push(`  ${green}●${reset} ${c.label}  ${cyan}${c.sdmResource}${reset}  ${dim}(${provenance})${reset}`);
