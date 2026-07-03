@@ -16,10 +16,12 @@
  */
 
 import { bold, cyan, dim, reset, yellow } from "./tui.ts";
+import { spawnSync } from "child_process";
 import { resolve, join } from "path";
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { beginCommand, logCommand } from "./cli-logger.ts";
+import { toHex, T } from "./tui/palette.ts";
 
 // Dev mode is active when ~/.local/bin/rt exists (the wrapper script pointing
 // at local source). Same detection used by commands/version.ts.
@@ -27,6 +29,7 @@ const IS_DEV_MODE = existsSync(join(homedir(), ".local/bin/rt"));
 import type { RepoIdentity } from "./repo.ts";
 import { MODULE_REGISTRY } from "./module-registry.ts";
 import { BackNavigation } from "./rt-render.tsx";
+import type { SelectOption } from "./rt-render.tsx";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -35,6 +38,23 @@ export interface CommandContext {
   identity?: RepoIdentity;
   /** True when identity was auto-detected from cwd (not user-picked). */
   autoResolved?: boolean;
+}
+
+export interface CommandArg {
+  /** Display name shown as the prompt label (e.g. "Duration", "Dry run"). */
+  name: string;
+  /** CLI flag (e.g. "--force", "--duration"). Omit for positional args. */
+  flag?: string;
+  /** Input type: text input, yes/no toggle, or pick from a list. */
+  type: "text" | "boolean" | "select";
+  /** Description shown as a hint below the prompt. */
+  hint?: string;
+  /** Placeholder text for text inputs. */
+  placeholder?: string;
+  /** Default value (string for text/select, boolean for boolean). */
+  default?: string | boolean;
+  /** Options for select type. */
+  options?: SelectOption[];
 }
 
 export interface CommandNode {
@@ -80,6 +100,12 @@ export interface CommandNode {
 
   /** Skip dispatcher header — command manages its own screen. */
   fullscreen?: boolean;
+
+  /**
+   * Declared arguments. When present, alt-enter at the picker opens an
+   * interactive form to collect them before calling the handler.
+   */
+  args?: CommandArg[];
 }
 
 // ─── Dispatcher ──────────────────────────────────────────────────────────────
@@ -97,6 +123,7 @@ export async function dispatch(
   breadcrumb: string[] = ["rt"],
   baseDir?: string,
   rootTree?: Record<string, CommandNode>,
+  withArgs?: boolean,
 ): Promise<void> {
   // The root tree is threaded through recursion so picker back-nav can derive
   // any parent level from the breadcrumb alone (works even when the user
@@ -128,16 +155,16 @@ export async function dispatch(
 
     process.stderr.write("\x1b[2J\x1b[H");
 
-    const selected = await showPicker(tree, breadcrumb);
-    if (selected === BACK) {
+    const picked = await showPicker(tree, breadcrumb);
+    if (picked === BACK) {
       const parentBreadcrumb = breadcrumb.slice(0, -1);
       const parentTree = walkTree(root, parentBreadcrumb.slice(1));
       if (!parentTree) throw new Error(`cannot resolve parent tree for: ${breadcrumb.join(" › ")}`);
       return dispatch(parentTree, [], parentBreadcrumb, baseDir, root);
     }
-    if (!selected) process.exit(0);
+    if (!picked) process.exit(0);
 
-    return dispatch(tree, [selected, ...rest], breadcrumb, baseDir, root);
+    return dispatch(tree, [picked.command, ...rest], breadcrumb, baseDir, root, picked.withArgs);
   }
 
   // Node found — is it a branch or a leaf?
@@ -155,7 +182,7 @@ export async function dispatch(
       // Recurse: either the arg is a known subcommand, or this node has no
       // handler of its own so any arg must be a subcommand (yields the usual
       // "unknown command" message if it's bogus).
-      return dispatch(node.subcommands, rest, [...breadcrumb, resolvedName], baseDir, root);
+      return dispatch(node.subcommands, rest, [...breadcrumb, resolvedName], baseDir, root, withArgs);
     }
 
     // Node has its own handler — run it directly, passing rest through as args
@@ -170,11 +197,11 @@ export async function dispatch(
 
       process.stderr.write("\x1b[2J\x1b[H");
 
-      const selected = await showPicker(node.subcommands, [...breadcrumb, resolvedName]);
-      if (selected === BACK) return dispatch(tree, [], breadcrumb, baseDir, root);
-      if (!selected) return;
+      const picked = await showPicker(node.subcommands, [...breadcrumb, resolvedName]);
+      if (picked === BACK) return dispatch(tree, [], breadcrumb, baseDir, root);
+      if (!picked) return;
 
-      return dispatch(node.subcommands, [selected], [...breadcrumb, resolvedName], baseDir, root);
+      return dispatch(node.subcommands, [picked.command], [...breadcrumb, resolvedName], baseDir, root, picked.withArgs);
     }
   }
 
@@ -249,6 +276,18 @@ export async function dispatch(
       process.stderr.write("\x1b[2J\x1b[H");
       if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
     }
+  }
+
+  // alt-enter at the picker: collect declared args interactively
+  if (withArgs && node.args?.length && process.stdin.isTTY) {
+    const { collectArgs } = await import("./arg-collector.tsx");
+    const formLabel = [...breadcrumb, resolvedName].join(" ");
+    const collected = await collectArgs(formLabel, node.args);
+    if (collected === null) process.exit(0);
+    rest.push(...collected);
+
+    process.stderr.write("\x1b[2J\x1b[H");
+    if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
   }
 
   const handler = await resolveHandler(node, baseDir);
@@ -357,32 +396,72 @@ function showUsage(tree: Record<string, CommandNode>, breadcrumb: string[]): voi
 /** Sentinel: the user pressed ctrl-up at a subtree picker. */
 const BACK: unique symbol = Symbol("back");
 
+interface PickerSelection {
+  command: string;
+  withArgs: boolean;
+}
+
 async function showPicker(
   tree: Record<string, CommandNode>,
   breadcrumb: string[],
-): Promise<string | typeof BACK | null> {
-  const { filterableSelect } = await import("./rt-render.tsx");
+): Promise<PickerSelection | typeof BACK | null> {
+  const { ensureFzf } = await import("./fzf.ts");
+  ensureFzf();
 
   const visible = Object.entries(tree).filter(([_, n]) => isNodeVisible(n, IS_DEV_MODE));
+  const anyHasArgs = visible.some(([_, n]) => n.args?.length);
 
-  try {
-    const selected = await filterableSelect({
-      message: breadcrumb.join(" › "),
-      options: visible.map(([name, node]) => ({
-        value: name,
-        label: name,
-        hint: node.description,
-      })),
-      // Below the root, ctrl-up backs up one tree level. Caught right here so
-      // it can never be confused with a leaf handler's BackNavigation (which
-      // dispatch interprets as "re-pick worktree context").
-      backLabel: breadcrumb.length > 1 ? breadcrumb[breadcrumb.length - 2] : undefined,
-    });
-    return selected || null;
-  } catch (err) {
-    if (err instanceof BackNavigation) return BACK;
-    throw err;
+  const labelWidth = Math.max(...visible.map(([name]) => name.length));
+  const input = visible
+    .map(([name, node]) => {
+      const pad = " ".repeat(labelWidth - name.length);
+      return `${name}\t\x1b[1m${name}\x1b[22m${pad}\t  \x1b[2m${node.description}\x1b[22m`;
+    })
+    .join("\n");
+
+  const headerParts = ["enter: select", "|: OR", "!: exclude"];
+  if (breadcrumb.length > 1) headerParts.push("ctrl-up: back");
+  if (anyHasArgs) headerParts.push("alt-enter: with args");
+
+  const expectKeys = ["ctrl-up"];
+  if (anyHasArgs) expectKeys.push("alt-enter");
+
+  const result = spawnSync("fzf", [
+    "--ansi",
+    "--with-nth=2..",
+    "--nth=1",
+    "--delimiter=\t",
+    "--tabstop=1",
+    process.env.RT_FZF_ALT_SCREEN ? "--height=100%" : "--height=~100%",
+    "--layout=reverse",
+    "--border=rounded",
+    `--border-label= ${breadcrumb.join(" › ")} `,
+    "--prompt=filter: ",
+    `--header=${headerParts.join("  ")}`,
+    "--no-mouse",
+    "--print-query",
+    `--expect=${expectKeys.join(",")}`,
+    `--color=border:${toHex(T.pink)},label:${toHex(T.pink)}`,
+  ], {
+    input,
+    stdio: ["pipe", "pipe", "inherit"],
+    encoding: "utf8",
+  });
+
+  if (result.status !== 0) return null;
+
+  const lines = (result.stdout ?? "").split("\n");
+  const key = lines[1]?.trim() || "";
+  const raw = lines[2]?.trim() ?? "";
+  const value = raw.split("\t")[0] || null;
+
+  if (key === "ctrl-up") {
+    return breadcrumb.length > 1 ? BACK : null;
   }
+
+  if (!value) return null;
+
+  return { command: value, withArgs: key === "alt-enter" };
 }
 
 // ─── Resolution ──────────────────────────────────────────────────────────────
