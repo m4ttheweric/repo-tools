@@ -71,6 +71,13 @@ export interface CommandNode {
   /** Hide from picker (still accessible by name). */
   hidden?: boolean;
 
+  /**
+   * Dev-mode only: hidden from pickers/usage AND unrunnable unless dev mode is
+   * active (~/.local/bin/rt wrapper present), so experimental commands can live
+   * in the tree without shipping in the compiled binary's surface.
+   */
+  devOnly?: boolean;
+
   /** Skip dispatcher header — command manages its own screen. */
   fullscreen?: boolean;
 }
@@ -98,14 +105,18 @@ export async function dispatch(
   const [name, ...rest] = args;
 
   // No args or unknown → show picker for this level
-  const node = name ? resolveNode(tree, name) : null;
+  let node = name ? resolveNode(tree, name) : null;
+  // Dev-only commands are invisible AND unrunnable outside dev mode: null the
+  // node so it falls into the unknown-command path, and isNodeVisible keeps it
+  // out of pickers/usage. The compiled binary never exposes them.
+  if (node && node.devOnly && !IS_DEV_MODE) node = null;
 
   if (!node) {
     if (name) {
       // Unknown command — show help
       const { yellow } = await import("./tui.ts");
       console.error(`\n  ${yellow}unknown command: ${name}${reset}`);
-      console.error(`  ${dim}available: ${Object.keys(tree).filter(k => !tree[k]!.hidden).join(", ")}${reset}\n`);
+      console.error(`  ${dim}available: ${Object.keys(tree).filter(k => isNodeVisible(tree[k]!, IS_DEV_MODE)).join(", ")}${reset}\n`);
       process.exit(1);
     }
 
@@ -328,9 +339,14 @@ function renderHeader(breadcrumb: string[]): void {
   console.error(`  ${parts.join(` ${dim}›${reset} `)}\n`);
 }
 
+/** Visible in pickers/usage: not hidden, and (dev-only nodes) only in dev mode. */
+export function isNodeVisible(node: CommandNode, isDev: boolean): boolean {
+  return !node.hidden && (!node.devOnly || isDev);
+}
+
 function showUsage(tree: Record<string, CommandNode>, breadcrumb: string[]): void {
   renderHeader(breadcrumb);
-  const visible = Object.entries(tree).filter(([_, n]) => !n.hidden);
+  const visible = Object.entries(tree).filter(([_, n]) => isNodeVisible(n, IS_DEV_MODE));
   for (const [name, node] of visible) {
     const padded = name.padEnd(14);
     console.error(`  ${bold}${padded}${reset} ${dim}${node.description}${reset}`);
@@ -347,7 +363,7 @@ async function showPicker(
 ): Promise<string | typeof BACK | null> {
   const { filterableSelect } = await import("./rt-render.tsx");
 
-  const visible = Object.entries(tree).filter(([_, n]) => !n.hidden);
+  const visible = Object.entries(tree).filter(([_, n]) => isNodeVisible(n, IS_DEV_MODE));
 
   try {
     const selected = await filterableSelect({
