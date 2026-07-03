@@ -44,6 +44,7 @@ export interface ConnectorOutput {
   version: 1;
   connections: ConnectorConnection[];
   unresolved?: UnresolvedEntry[];
+  allResources?: string[];
 }
 
 export type ValidationResult =
@@ -148,6 +149,15 @@ export function validateConnectorOutput(raw: unknown): ValidationResult {
       for (const key of ["readOnlyAlt", "note", "url"] as const) {
         const err = optionalStringField(u, key, path);
         if (err) return { ok: false, error: err };
+      }
+    }
+  }
+
+  if (raw.allResources !== undefined) {
+    if (!Array.isArray(raw.allResources)) return { ok: false, error: "allResources: expected an array" };
+    for (let i = 0; i < raw.allResources.length; i++) {
+      if (!nonEmptyString(raw.allResources[i])) {
+        return { ok: false, error: `allResources[${i}]: expected non-empty string` };
       }
     }
   }

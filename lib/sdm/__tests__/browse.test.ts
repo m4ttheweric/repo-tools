@@ -84,4 +84,32 @@ describe("buildBrowseConnections", () => {
     const result = buildBrowseConnections(catalog({ unresolved: [prodGap] }));
     expect(result[0]!.production).toBe(true);
   });
+
+  test("an orphan name present only in catalog.allResources appears as a browse row", () => {
+    const result = buildBrowseConnections(
+      catalog({ allResources: [{ name: "acme-staging-read-write", connector: "acme" }] }),
+    );
+    expect(result.length).toBe(1);
+    const orphan = result[0]!;
+    expect(orphan.label).toBe("staging-read-write");
+    expect(orphan.tier).toBe("staging");
+    expect(orphan.sdmResource).toBe("acme-staging-read-write");
+    expect(orphan.key).toBe("acme:acme-staging-read-write");
+    expect(orphan.connector).toBe("acme");
+  });
+
+  test("a name already present as a primary or candidate is not duplicated by the allResources pass", () => {
+    const result = buildBrowseConnections(
+      catalog({
+        connections: [primary],
+        allResources: [
+          { name: "acme-db-qa", connector: "acme" },
+          { name: "acme-db-qa-read-only", connector: "acme" },
+        ],
+      }),
+    );
+    // primary + its resolution.candidates variant only; no extra orphan rows.
+    expect(result.length).toBe(2);
+    expect(result.find(c => c.sdmResource === "acme-db-qa")).toEqual(primary);
+  });
 });
