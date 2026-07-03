@@ -33,6 +33,9 @@ const TREE: Record<string, CommandNode> = {
         module: "./commands/git/rebase.ts",
         fn: "rebaseCommand",
         context: "worktree",
+        args: [
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Show what would happen without doing it" },
+        ],
         subcommands: {
           onto: {
             description: "Rebase onto a specific branch",
@@ -279,6 +282,10 @@ const TREE: Record<string, CommandNode> = {
         description: "Pick a connection and connect (or connect <key> directly)",
         module: "./commands/sdm.ts",
         fn: "connectCmd",
+        args: [
+          { name: "Duration", flag: "--duration", type: "text", placeholder: "8h", hint: "How long to keep the connection open" },
+          { name: "Reason", flag: "--reason", type: "text", placeholder: "e.g. debugging ticket", hint: "Why you need this connection" },
+        ],
       },
       status: {
         description: "CLI auth health + connected tunnels",
@@ -289,6 +296,10 @@ const TREE: Record<string, CommandNode> = {
         description: "Log in to StrongDM (browser popup; --manual for terminal, --visible to watch)",
         module: "./commands/sdm.ts",
         fn: "loginCmd",
+        args: [
+          { name: "Manual login", flag: "--manual", type: "boolean", default: false, hint: "Use terminal-based login instead of browser popup" },
+          { name: "Show browser", flag: "--visible", type: "boolean", default: false, hint: "Show the browser window during login" },
+        ],
       },
       refresh: {
         description: "Re-run connectors and refresh the connection cache",
@@ -574,6 +585,11 @@ const TREE: Record<string, CommandNode> = {
         module: "./commands/settings.ts",
         fn: "toggleDevMode",
         requiresTTY: true,
+      },
+      "sdm-email": {
+        description: "Set your StrongDM email (skips the browser-login email prompt)",
+        module: "./commands/settings.ts",
+        fn: "setSdmEmail",
       },
       llm: {
         description: "Configure local LLM for branch naming and other features",
