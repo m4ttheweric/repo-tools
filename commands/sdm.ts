@@ -42,6 +42,7 @@ import type { SuggestionRecord } from "../lib/sdm/suggest.ts";
 import { runGuidedConnect, type GuidedTarget } from "../lib/sdm/flow.ts";
 import { probeQuery, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS } from "../lib/sdm/verify.ts";
 import { buildPickerOptions } from "../lib/sdm/picker.ts";
+import { buildBrowseConnections } from "../lib/sdm/browse.ts";
 import { isProbablyUrl } from "../lib/sdm/url.ts";
 
 // `sdm` is a branch node in the command tree (cli.ts); each subcommand below
@@ -197,13 +198,14 @@ StrongDM CLI install:   ${dim}${SDM_INSTALL_URL}${reset}`);
     return;
   }
 
+  const browse = buildBrowseConnections(catalog);
   const { runNavPicker } = await import("../lib/navigate.ts");
-  const options = buildPickerOptions(catalog.connections, recents, catalog.unresolved);
+  const options = buildPickerOptions(browse, recents);
   const picked = await runNavPicker({ options, message: "sdm connections" });
   if (!picked || !picked.value) return;
 
   const target =
-    catalog.connections.find(c => c.key === picked.value) ??
+    browse.find(c => c.key === picked.value) ??
     recents.find(r => r.key === picked.value);
   if (!target) {
     console.error(`${red}unknown selection:${reset} ${picked.value}`);
@@ -291,9 +293,9 @@ export async function connectCmd(rest: string[], _ctx?: CommandContext): Promise
   const key = positional[0];
   if (!key) return pickAndConnect();
   if (isProbablyUrl(key)) return connectUrl(key, flags);
-  const catalog = await getCatalog();
+  const browse = buildBrowseConnections(await getCatalog());
   const target =
-    catalog.connections.find(c => c.key === key) ??
+    browse.find(c => c.key === key) ??
     loadSdmState().recents.find(r => r.key === key);
   if (!target) {
     console.error(`${red}unknown connection key:${reset} ${key} ${dim}(rt sdm refresh to re-discover)${reset}`);
@@ -403,12 +405,50 @@ export async function refreshCmd(args: string[] = []): Promise<void> {
   }
 }
 
+// Canonical tier ordering for the "Resolved" groups, mirroring picker.ts's
+// TIER_ORDER (kept as a local copy: that one is intentionally unexported).
+const MAP_TIER_ORDER = ["development", "qa", "staging", "production"];
+const MAP_TIER_LABELS: Record<string, string> = {
+  development: "Development",
+  qa: "QA",
+  staging: "Staging",
+  production: "Production",
+};
+
+function sortTiers(tiers: string[]): string[] {
+  return tiers.slice().sort((a, b) => {
+    const ia = MAP_TIER_ORDER.indexOf(a);
+    const ib = MAP_TIER_ORDER.indexOf(b);
+    if (ia !== -1 || ib !== -1) return (ia === -1 ? MAP_TIER_ORDER.length : ia) - (ib === -1 ? MAP_TIER_ORDER.length : ib);
+    return a.localeCompare(b);
+  });
+}
+
+/** Compact wrapped list of labels, joined with " · " and wrapped at ~80 cols; never one row per label. */
+function wrapLabelList(labels: string[], indent = "  ", width = 78): string[] {
+  const sep = " · ";
+  const lines: string[] = [];
+  let current = indent;
+  for (const label of labels) {
+    const candidate = current === indent ? current + label : current + sep + label;
+    if (candidate.length > width && current !== indent) {
+      lines.push(current);
+      current = indent + label;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current !== indent) lines.push(current);
+  return lines;
+}
+
 /**
- * Pure formatter for `rt sdm map`: resolved connections with their
- * `resolution.source` provenance, then a "Needs mapping" block for every
- * unresolved gap with its candidates and any suggestion matching it by
- * `key` (written by `rt sdm refresh --suggest`). No console writes, so this
- * is unit-testable without a terminal.
+ * Pure formatter for `rt sdm map`: resolved connections grouped by tier with
+ * their `resolution.source` provenance, then a "Needs mapping" block split
+ * into three actionable buckets (ambiguous / read-only-only / no resource at
+ * all) so the audit reads as a punch list instead of an undifferentiated
+ * wall of gaps. No console writes, so this is unit-testable without a
+ * terminal.
  */
 export function formatMap(
   connections: DiscoveredConnection[],
@@ -417,32 +457,57 @@ export function formatMap(
 ): string[] {
   const lines: string[] = [];
 
-  lines.push(`${bold}Resolved${reset}`);
+  lines.push(`${bold}Resolved (${connections.length})${reset}`);
   if (connections.length === 0) {
     lines.push(`  ${dim}none${reset}`);
   } else {
+    const byTier = new Map<string, DiscoveredConnection[]>();
     for (const c of connections) {
-      const provenance = c.resolution ? c.resolution.source : "unspecified";
-      lines.push(`  ${green}●${reset} ${c.label} ${cyan}${c.sdmResource}${reset} ${dim}(${provenance})${reset}`);
+      const tier = c.tier ?? "";
+      if (!byTier.has(tier)) byTier.set(tier, []);
+      byTier.get(tier)!.push(c);
+    }
+    for (const tier of sortTiers([...byTier.keys()])) {
+      lines.push(`  ${bold}${tier === "" ? "Other" : (MAP_TIER_LABELS[tier] ?? tier)}${reset}`);
+      for (const c of byTier.get(tier)!.slice().sort((a, b) => a.label.localeCompare(b.label))) {
+        const provenance = c.resolution ? c.resolution.source : "unspecified";
+        lines.push(`  ${green}●${reset} ${c.label}  ${cyan}${c.sdmResource}${reset}  ${dim}(${provenance})${reset}`);
+      }
     }
   }
 
   lines.push("");
-  lines.push(`${bold}Needs mapping${reset}`);
+  lines.push(`${bold}Needs mapping (${unresolved.length})${reset}`);
   if (unresolved.length === 0) {
     lines.push(`  ${dim}none${reset}`);
-  } else {
-    for (const gap of unresolved) {
-      lines.push(`  ${yellow}✗${reset} ${gap.label} ${dim}(${gap.slug} ${gap.env}, ${gap.source})${reset}`);
-      if (gap.candidates.length > 0) {
-        lines.push(`    candidates: ${dim}${gap.candidates.join(", ")}${reset}`);
-      }
-      const suggestion = suggestions.find(s => s.key === gap.key);
-      if (suggestion) {
-        const resource = suggestion.resource ?? "(declined)";
-        lines.push(`    suggestion: ${cyan}${resource}${reset} ${dim}${suggestion.reasoning}${reset}`);
-      }
+    return lines;
+  }
+
+  const ambiguous = unresolved.filter(g => g.source === "ambiguous");
+  const readOnlyOnly = unresolved.filter(g => g.source === "none" && g.readOnlyAlt);
+  const noResource = unresolved.filter(g => g.source === "none" && !g.readOnlyAlt);
+
+  lines.push(`  ${bold}${yellow}Ambiguous: pick one, pin in ~/.rt/sdm/assured-overrides.json (${ambiguous.length})${reset}`);
+  for (const gap of ambiguous) {
+    lines.push(`  ⚠ ${gap.label} (${gap.slug} ${gap.env})`);
+    if (gap.candidates.length > 0) {
+      lines.push(`    candidates: ${dim}${gap.candidates.join(" | ")}${reset}`);
     }
+    const suggestion = suggestions.find(s => s.key === gap.key);
+    if (suggestion) {
+      const resource = suggestion.resource ?? "(declined)";
+      lines.push(`    suggestion: ${cyan}${resource}${reset} ${dim}${suggestion.reasoning}${reset}`);
+    }
+  }
+
+  lines.push(`  ${bold}Read-only only: pin if you want browse access (${readOnlyOnly.length})${reset}`);
+  for (const gap of readOnlyOnly) {
+    lines.push(`  ○ ${gap.label} (${gap.slug} ${gap.env})  ${dim}${gap.readOnlyAlt}${reset}`);
+  }
+
+  lines.push(`  ${bold}No StrongDM resource (${noResource.length})${reset}`);
+  if (noResource.length > 0) {
+    lines.push(...wrapLabelList(noResource.map(g => g.label)).map(l => `${dim}${l}${reset}`));
   }
 
   return lines;
