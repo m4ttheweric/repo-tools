@@ -300,6 +300,12 @@ const TREE: Record<string, CommandNode> = {
         module: "./commands/sdm.ts",
         fn: "mapCmd",
       },
+      suggest: {
+        description: "Draft LLM override suggestions for unresolved gaps (dev only)",
+        module: "./commands/sdm.ts",
+        fn: "suggestCmd",
+        devOnly: true,
+      },
       connectors: {
         description: "List connectors (or: connectors test <name> / init <name>)",
         module: "./commands/sdm.ts",
