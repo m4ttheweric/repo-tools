@@ -84,7 +84,7 @@ describe("runBrowserLoginWith", () => {
     const r = await runBrowserLoginWith(deps);
     expect(r).toEqual({
       outcome: "needs-manual",
-      reason: "StrongDM email not set. Run `rt settings sdm-email` (or use `rt sdm login --manual`).",
+      reason: "StrongDM email not set. Run `rt sdm set-email` (or use `rt sdm login --manual`).",
     });
     expect(calls.startLogin).toBe(0);
     expect(calls.launchChrome).toBe(0);

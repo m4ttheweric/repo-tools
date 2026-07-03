@@ -317,6 +317,11 @@ const TREE: Record<string, CommandNode> = {
         fn: "suggestCmd",
         devOnly: true,
       },
+      "set-email": {
+        description: "Set your StrongDM email (skips the browser-login email prompt)",
+        module: "./commands/settings.ts",
+        fn: "setSdmEmail",
+      },
       connectors: {
         description: "List connectors (or: connectors test <name> / init <name>)",
         module: "./commands/sdm.ts",
@@ -585,11 +590,6 @@ const TREE: Record<string, CommandNode> = {
         module: "./commands/settings.ts",
         fn: "toggleDevMode",
         requiresTTY: true,
-      },
-      "sdm-email": {
-        description: "Set your StrongDM email (skips the browser-login email prompt)",
-        module: "./commands/settings.ts",
-        fn: "setSdmEmail",
       },
       llm: {
         description: "Configure local LLM for branch naming and other features",
