@@ -60,7 +60,7 @@ export function createSdmHandlers(ctx: HandlerContext, deps: SdmHandlerDeps = re
           ctx.log.warn({ connector: e.connector, err: e.error }, "sdm connector failed");
         }
       }
-      return { ok: true, connections: result.connections, errors: result.errors, fromCache: result.fromCache, unresolved: result.unresolved ?? [] };
+      return { ok: true, connections: result.connections, errors: result.errors, fromCache: result.fromCache, unresolved: result.unresolved ?? [], allResources: result.allResources ?? [] };
     },
 
     "sdm:resolve": async (payload: { url?: string } = {}) => {

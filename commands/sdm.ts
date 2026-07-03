@@ -63,7 +63,7 @@ async function getCatalog(refresh = false): Promise<CatalogResult> {
     if (connections.length === 0 && errors.length > 0) {
       return discoverConnections({ refresh });
     }
-    return { connections, errors, fromCache: r.fromCache ?? false, unresolved: r.unresolved ?? [] };
+    return { connections, errors, fromCache: r.fromCache ?? false, unresolved: r.unresolved ?? [], allResources: r.allResources ?? [] };
   }
   return discoverConnections({ refresh });
 }
