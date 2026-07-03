@@ -119,7 +119,7 @@ export async function setSdmEmail(args: string[]): Promise<void> {
     email = fromArgs;
   } else if (!process.stdin.isTTY) {
     console.log(`\n  ${red}✗ no email given and no terminal to prompt in${reset}`);
-    console.log(`  ${dim}usage: rt settings sdm-email <email>${reset}\n`);
+    console.log(`  ${dim}usage: rt sdm set-email <email>${reset}\n`);
     process.exitCode = 1;
     return;
   } else {

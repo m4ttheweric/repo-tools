@@ -117,7 +117,7 @@ export async function runBrowserLoginWith(
   if (!email || !email.trim()) {
     return {
       outcome: "needs-manual",
-      reason: "StrongDM email not set. Run `rt settings sdm-email` (or use `rt sdm login --manual`).",
+      reason: "StrongDM email not set. Run `rt sdm set-email` (or use `rt sdm login --manual`).",
     };
   }
   const silentBudget = deps.silentBudgetMs ?? 10_000;
