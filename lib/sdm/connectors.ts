@@ -38,6 +38,11 @@ export interface CatalogResult {
   // tests, the CLI's daemon-passthrough fallback) stay back-compatible;
   // discoverConnections itself always populates it, empty array or not.
   unresolved?: UnresolvedGap[];
+  // Every real resource a connector knows about, stamped with the connector
+  // that reported it, regardless of whether it maps to a connection or gap.
+  // Lets buildBrowseConnections surface orphan resources config never named.
+  // Optional for the same back-compat reason as unresolved above.
+  allResources?: { name: string; connector: string }[];
   fromCache: boolean;
 }
 
@@ -238,6 +243,7 @@ export async function discoverConnections(
   const connections: DiscoveredConnection[] = [];
   const errors: ConnectorRunError[] = [];
   const unresolved: UnresolvedGap[] = [];
+  const allResources: { name: string; connector: string }[] = [];
   for (const file of listConnectorFiles(opts.dir)) {
     const connector = basename(file).replace(/\.[^.]+$/, "");
     const r = await runConnector(file, { timeoutMs: opts.timeoutMs });
@@ -251,8 +257,11 @@ export async function discoverConnections(
     for (const u of r.output.unresolved ?? []) {
       unresolved.push({ ...u, connector, key: `${connector}:${u.id}` });
     }
+    for (const name of r.output.allResources ?? []) {
+      allResources.push({ name, connector });
+    }
   }
-  const result: CatalogResult = { connections, errors, unresolved, fromCache: false };
+  const result: CatalogResult = { connections, errors, unresolved, allResources, fromCache: false };
   const builtAt = Date.now();
   catalogCache.set(cacheKey, { at: builtAt, result });
   writeCatalogCacheFile(cacheKey, builtAt, result);

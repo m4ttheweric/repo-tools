@@ -80,4 +80,22 @@ describe("validateConnectorOutput", () => {
       { id: "g", label: "G", slug: "s", env: "prod-ish", source: "none", candidates: [] }] });
     expect(r.ok).toBe(false);
   });
+
+  test("accepts allResources as an array of non-empty strings", () => {
+    const r = validateConnectorOutput({ version: 1, connections: [], allResources: ["assured-x"] });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.output.allResources).toEqual(["assured-x"]);
+  });
+
+  test("rejects allResources with a non-string entry", () => {
+    const r = validateConnectorOutput({ version: 1, connections: [], allResources: [123] });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("allResources[0]");
+  });
+
+  test("rejects allResources that is not an array", () => {
+    const r = validateConnectorOutput({ version: 1, connections: [], allResources: "x" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("allResources");
+  });
 });

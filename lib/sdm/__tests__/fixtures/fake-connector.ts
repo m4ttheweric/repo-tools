@@ -33,6 +33,7 @@ if (command === "discover") {
         candidates: ["example-a", "example-b"],
       },
     ],
+    allResources: ["example-conn1", "example-a", "example-b", "example-orphan"],
   });
 } else if (command === "resolve") {
   const url = arg ?? "";

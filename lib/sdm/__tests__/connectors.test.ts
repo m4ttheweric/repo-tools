@@ -330,6 +330,24 @@ describe("discoverConnections unresolved passthrough", () => {
   });
 });
 
+describe("discoverConnections allResources passthrough", () => {
+  test("surfaces a connector's allResources stamped with its name", async () => {
+    const freshDir = mkdtempSync(join(tmpdir(), "rt-sdm-disc-allresources-"));
+    try {
+      installFakeConnector("fake", freshDir);
+      const r = await discoverConnections({ dir: freshDir });
+      expect(r.allResources).toEqual([
+        { name: "example-conn1", connector: "fake" },
+        { name: "example-a", connector: "fake" },
+        { name: "example-b", connector: "fake" },
+        { name: "example-orphan", connector: "fake" },
+      ]);
+    } finally {
+      rmSync(freshDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("resolveConnection", () => {
   test("returns the resolved connection from the matching connector", async () => {
     const freshDir = mkdtempSync(join(tmpdir(), "rt-sdm-resolve-"));

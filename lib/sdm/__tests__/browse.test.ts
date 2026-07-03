@@ -84,4 +84,32 @@ describe("buildBrowseConnections", () => {
     const result = buildBrowseConnections(catalog({ unresolved: [prodGap] }));
     expect(result[0]!.production).toBe(true);
   });
+
+  test("an orphan name present only in catalog.allResources appears as a browse row", () => {
+    const result = buildBrowseConnections(
+      catalog({ allResources: [{ name: "assured-staging-read-write", connector: "assured" }] }),
+    );
+    expect(result.length).toBe(1);
+    const orphan = result[0]!;
+    expect(orphan.label).toBe("staging-read-write");
+    expect(orphan.tier).toBe("staging");
+    expect(orphan.sdmResource).toBe("assured-staging-read-write");
+    expect(orphan.key).toBe("assured:assured-staging-read-write");
+    expect(orphan.connector).toBe("assured");
+  });
+
+  test("a name already present as a primary or candidate is not duplicated by the allResources pass", () => {
+    const result = buildBrowseConnections(
+      catalog({
+        connections: [primary],
+        allResources: [
+          { name: "assured-pgr-qa", connector: "assured" },
+          { name: "assured-pgr-qa-read-only", connector: "assured" },
+        ],
+      }),
+    );
+    // primary + its resolution.candidates variant only; no extra orphan rows.
+    expect(result.length).toBe(2);
+    expect(result.find(c => c.sdmResource === "assured-pgr-qa")).toEqual(primary);
+  });
 });

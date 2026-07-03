@@ -10,6 +10,25 @@
 
 import type { CatalogResult, DiscoveredConnection } from "./connectors.ts";
 
+// Same tier vocabulary the picker groups on (lib/sdm/picker.ts TIER_LABELS).
+// Checked in this order, so a name carrying two tokens (unlikely) resolves to
+// the first one listed rather than the last.
+const ENV_TOKEN_TIERS: [token: string, tier: string][] = [
+  ["dev", "development"],
+  ["qa", "qa"],
+  ["labs", "qa"],
+  ["staging", "staging"],
+  ["prod", "production"],
+];
+
+/** Best-effort tier guess for an orphan resource name with no connector-supplied tier. */
+function guessTier(name: string): string | undefined {
+  for (const [token, tier] of ENV_TOKEN_TIERS) {
+    if (new RegExp(`(^|-)${token}($|-)`, "i").test(name)) return tier;
+  }
+  return undefined;
+}
+
 export function buildBrowseConnections(catalog: CatalogResult): DiscoveredConnection[] {
   const byResource = new Map<string, DiscoveredConnection>();
 
@@ -53,6 +72,25 @@ export function buildBrowseConnections(catalog: CatalogResult): DiscoveredConnec
     for (const name of g.candidates) {
       addVariant(name, name.replace(/^assured-/, ""), g.tier, g.connector, g.env === "prod");
     }
+  }
+
+  // Orphans: real resources sdm reports that no config entry (primary or
+  // candidate) ever named, e.g. assured-staging-read-write. Honest browse
+  // means these still show up rather than being invisible to the picker.
+  for (const { name, connector } of catalog.allResources ?? []) {
+    if (byResource.has(name)) continue;
+    const label = name.replace(/^assured-/, "");
+    byResource.set(name, {
+      id: name,
+      key: `${connector}:${name}`,
+      connector,
+      label,
+      sdmResource: name,
+      tier: guessTier(name),
+      production: /(^|-)prod($|-)/i.test(name),
+      reasonSuggestion: `investigating ${label} data`,
+      db: { database: "postgres", schema: "assured", user: "postgres" },
+    });
   }
 
   return [...byResource.values()];
