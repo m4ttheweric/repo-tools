@@ -215,72 +215,49 @@ rt --version              # Print version (short)
 
 ---
 
-## StrongDM connectors
+## StrongDM
 
-`rt sdm connect` browses and connects to your StrongDM datasources. rt ships with no hardcoded list; instead you plug in a **connector**: a small executable that discovers your connections and prints them as JSON. Write one per organization (or team, or just yourself), and rt merges the output of every connector it finds.
-
-### Installing a connector
-
-A connector is any executable in `~/.rt/sdm/connectors/`. Scaffold one with:
+`rt sdm` is a StrongDM auth-and-connect module: it logs you in, lists the datasources you can reach, and connects you fast with friendly names.
 
 ```bash
-rt sdm connectors init my-org      # writes ~/.rt/sdm/connectors/my-org.ts (a Bun template)
-# edit it to return your real connections, then:
-rt sdm connectors test my-org      # validate the output
-rt sdm connectors                  # list installed connectors and their status
+rt sdm connect            # pick a datasource and connect (auto-logs-in if your session expired)
+rt sdm status             # StrongDM auth health + connected tunnels
+rt sdm login              # log in (browser popup, terminal fallback)
+rt sdm set-email <email>  # set the email rt logs in with
+rt sdm refresh            # re-scan the catalog
+rt sdm enrichment [init]  # show or scaffold the enrichment map
 ```
 
-Already have a connector script elsewhere? Symlink it in and make it executable:
+rt reads your resources straight from the StrongDM CLI (`sdm access catalog` + `sdm status`), so there is nothing to configure and no list to maintain. Every real datasource you can reach shows up in the picker. If `rt sdm connect` only shows recents, your session expired; it logs you back in automatically before listing.
+
+### Enrichment (optional, declarative)
+
+Raw StrongDM names (`example-alpha-staging`) work as-is, but you can give them nicer labels, group them by tier, and set connect defaults with a **declarative file you own** at `~/.rt/sdm/enrichment.jsonc`. Nothing runs to enrich; rt just reads this JSON and overlays it on the live catalog.
+
+Scaffold it from your current catalog, then fill in the labels:
 
 ```bash
-ln -s "$PWD/my-connector.ts" ~/.rt/sdm/connectors/my-org.ts
-chmod +x ~/.rt/sdm/connectors/my-org.ts
+rt sdm enrichment init    # writes ~/.rt/sdm/enrichment.jsonc: every resource, blank labels
+rt sdm enrichment         # show the file path + how many resources are enriched vs raw
 ```
 
-The scaffold is Bun/TypeScript, but a connector can be **any executable**: a shell script, a Python file, a compiled binary. rt only cares about the stdin/stdout contract.
-
-### The contract
-
-rt runs `<connector> discover` (with `RT_SDM_PROTOCOL=1` in the environment) and reads one JSON document from stdout. Anything on stderr is treated as diagnostics.
-
-```json
+```jsonc
 {
-  "version": 1,
-  "connections": [
-    {
-      "id": "alpha-staging",
-      "label": "Alpha Staging",
-      "sdmResource": "example-alpha-staging",
-      "tier": "staging",
-      "production": false,
-      "reasonSuggestion": "investigating alpha staging data",
-      "db": { "database": "postgres", "schema": "public", "user": "postgres" }
-    }
-  ]
+  // map a StrongDM resource name to a nicer label + connect metadata
+  "example-alpha-staging": { "label": "alpha staging", "tier": "staging",    "db": { "schema": "public" } },
+  "example-alpha-prod":    { "label": "alpha prod",    "tier": "production", "production": true }
 }
 ```
 
-Field reference:
+| field | meaning |
+|-------|---------|
+| `label` | shown in the picker (defaults to the raw resource name) |
+| `tier` | `development` / `qa` / `staging` / `production` / anything: groups the picker |
+| `production` | `true` adds a confirm guard before connecting |
+| `reasonSuggestion` | prefill for the access-request reason prompt |
+| `db` | `{ database, schema, user }` hints used to verify the tunnel after connecting |
 
-| field | required | meaning |
-|-------|----------|---------|
-| `id` | yes | stable id within this connector |
-| `label` | yes | shown in the picker |
-| `sdmResource` | yes | exact StrongDM resource name to connect |
-| `tier` | no | `development` / `qa` / `staging` / `production` / anything (groups the picker) |
-| `production` | no | `true` adds a confirm guard before connecting |
-| `reasonSuggestion` | no | prefill for the access-request reason prompt |
-| `db` | no | `{ database, schema, user }` hints used to verify the tunnel after connecting |
-| `meta` | no | free-form `Record<string, string>` passed through |
-
-Only `id`, `label`, and `sdmResource` are required. How you build the list is up to you: fetch an internal catalog, parse a config file, shell out to `sdm access catalog`, or hardcode it.
-
-### Optional hooks
-
-- **`<connector> resolve <url>`** returns the same JSON shape for a single deployment URL. Implement it and `rt sdm connect <url>` can resolve a URL straight to its resource.
-- **`allResources`**: add an `"allResources": ["example-..."]` array to the `discover` output to list every resource you can reach, so the picker shows them all, not only the ones you gave rich metadata.
-
-One bad connector never blocks the others: its error is surfaced and every other connector still contributes.
+A resource missing from the file just shows its raw name and connects with Postgres defaults. Keep the file in your own repo and copy or symlink it to `~/.rt/sdm/enrichment.jsonc` to share it with your team.
 
 ---
 
