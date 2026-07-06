@@ -99,6 +99,43 @@ function streamLine(line: string): void {
   process.stderr.write(`  ${dim}${line}${reset}\n`);
 }
 
+/**
+ * Log in to StrongDM: the browser popup first, falling back to the terminal
+ * flow when the popup cannot run (no Chrome, email unset, or non-TTY). Shared
+ * by the guided connect flow and the picker's auth-first check.
+ */
+async function sdmBrowserLogin(onLine: (l: string) => void): Promise<{ ok: boolean; error?: string }> {
+  const { runBrowserLogin } = await import("../lib/sdm/browser-login.ts");
+  const r = await runBrowserLogin({ onLine });
+  if (r.outcome === "authenticated") return { ok: true };
+  if (r.outcome === "needs-manual") {
+    if (!process.stdin.isTTY) {
+      return { ok: false, error: `${r.reason} Run \`rt sdm login --manual\` in a terminal first.` };
+    }
+    return loginSdm(onLine); // no Chrome: terminal flow
+  }
+  return { ok: false, error: r.error };
+}
+
+/**
+ * Auth-first guard for the picker. An expired StrongDM session means the
+ * connector cannot list resources (you would see only recents), so log in
+ * before discovering -- automatically, no confirm, per the connect UX.
+ * Returns true when a login happened, so the caller can bust the stale cache.
+ */
+async function ensureSdmAuth(): Promise<boolean> {
+  const snapshot = await getSdmSnapshot();
+  if (snapshot.health.status !== "not-authenticated") return false;
+  console.error(`${yellow}StrongDM session expired${reset} ${dim}logging in…${reset}`);
+  const r = await sdmBrowserLogin(streamLine);
+  if (r.ok) {
+    console.error(`${green}✓ logged in${reset}`);
+    return true;
+  }
+  console.error(`${red}✗ login failed:${reset} ${r.error ?? "unknown"} ${dim}(showing recents; try \`rt sdm login --manual\`)${reset}`);
+  return false;
+}
+
 async function guidedConnect(target: GuidedTarget, opts: { duration?: string; reason?: string; interactive: boolean }): Promise<void> {
   const { select, textInput, confirm } = await import("../lib/rt-render.tsx");
   const result = await runGuidedConnect(target, opts, {
@@ -110,18 +147,7 @@ async function guidedConnect(target: GuidedTarget, opts: { duration?: string; re
     requestAccess,
     connect: connectResource,
     verify: url => verifyWithRetries(() => probeQuery(url, VERIFY_ATTEMPT_TIMEOUT_MS)),
-    login: async (onLine) => {
-      const { runBrowserLogin } = await import("../lib/sdm/browser-login.ts");
-      const r = await runBrowserLogin({ onLine });
-      if (r.outcome === "authenticated") return { ok: true };
-      if (r.outcome === "needs-manual") {
-        if (!process.stdin.isTTY) {
-          return { ok: false, error: `${r.reason} Run \`rt sdm login --manual\` in a terminal first.` };
-        }
-        return loginSdm(onLine); // no Chrome: terminal flow
-      }
-      return { ok: false, error: r.error };
-    },
+    login: sdmBrowserLogin,
     promptDuration: async def => {
       const all = [
         { value: "8h", label: "8 hours" },
@@ -179,8 +205,12 @@ async function pickAndConnect(): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  // Auth-first: an expired session lists nothing (only recents), so log in
+  // before discovering. Refresh the catalog when we just logged in, since a
+  // stale cache from the logged-out run would still be empty.
+  const loggedIn = await ensureSdmAuth();
   const { withInlineSpinner } = await import("../lib/tui/inline-spinner.ts");
-  const catalog = await withInlineSpinner("discovering connections…", () => getCatalog());
+  const catalog = await withInlineSpinner("discovering connections…", () => getCatalog(loggedIn));
   const recents = loadSdmState().recents;
 
   for (const e of catalog.errors) {
