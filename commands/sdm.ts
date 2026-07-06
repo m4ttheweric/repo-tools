@@ -290,6 +290,9 @@ async function handleUnresolvedGap(
  */
 async function connectUrl(url: string, flags: { duration?: string; reason?: string }): Promise<void> {
   const interactive = process.stdin.isTTY && !(flags.duration && flags.reason);
+  // Auth-first (interactive only): an expired session cannot resolve the URL.
+  // Resolve is not cached, so a fresh session takes effect immediately.
+  if (process.stdin.isTTY) await ensureSdmAuth();
   const result = await resolveUrl(url);
 
   if (result?.connection) {
