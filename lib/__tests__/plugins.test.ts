@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, chmodSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { validateManifest, toCommandNode, ExecFailure, discoverPlugins, loadPluginTree, scaffoldPlugin } from "../plugins.ts";
+import { validateManifest, toCommandNode, ExecFailure, discoverPlugins, loadPluginTree, scaffoldPlugin, deepValidate } from "../plugins.ts";
 
 const valid = {
   name: "my-plugin",
@@ -329,5 +329,56 @@ describe("scaffoldPlugin", () => {
     expect(() => scaffoldPlugin("Bad Name")).toThrow(/kebab-case/);
     scaffoldPlugin("twice");
     expect(() => scaffoldPlugin("twice")).toThrow(/already exists/);
+  });
+});
+
+describe("deepValidate", () => {
+  let home: string;
+  let savedHome: string | undefined;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rt-deepval-"));
+    savedHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = savedHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  function plant(manifest: object, files: Record<string, string>): void {
+    const dir = join(home, ".rt", "plugins", "p");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "plugin.json"), JSON.stringify(manifest));
+    for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+  }
+
+  test("healthy plugin: no problems", async () => {
+    plant(
+      { name: "p", apiVersion: 1, commands: { go: { description: "d", module: "./go.ts" } } },
+      { "go.ts": "export async function run() {}" },
+    );
+    expect(await deepValidate(discoverPlugins()[0]!)).toEqual([]);
+  });
+
+  test("reports missing module file, missing fn export, import failure, missing exec target", async () => {
+    plant(
+      {
+        name: "p", apiVersion: 1,
+        commands: {
+          gone: { description: "d", module: "./gone.ts" },
+          nofn: { description: "d", module: "./nofn.ts", fn: "missing" },
+          broken: { description: "d", module: "./broken.ts" },
+          script: { description: "d", exec: "./nowhere.sh" },
+        },
+      },
+      { "nofn.ts": "export const x = 1;", "broken.ts": 'import "./void.ts";' },
+    );
+    const problems = await deepValidate(discoverPlugins()[0]!);
+    expect(problems.join()).toContain("gone: module ./gone.ts not found");
+    expect(problems.join()).toContain('does not export "missing"');
+    expect(problems.join()).toContain("failed to import");
+    expect(problems.join()).toContain("exec target ./nowhere.sh not found");
   });
 });

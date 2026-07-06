@@ -349,3 +349,46 @@ export async function run(args: string[], ctx: RtCommandContext) {
 
   return dir;
 }
+
+/**
+ * Deep validation for `rt plugin validate`: beyond structure, check that
+ * referenced files exist, modules import cleanly (NOTE: dry import executes
+ * module top-level code), and declared fns are exported.
+ */
+export async function deepValidate(plugin: DiscoveredPlugin): Promise<string[]> {
+  const problems = [...plugin.errors];
+  if (!plugin.manifest) return problems;
+
+  async function walk(node: PluginNode, path: string): Promise<void> {
+    if (node.module) {
+      const modulePath = resolve(plugin.dir, node.module);
+      if (!existsSync(modulePath)) {
+        problems.push(`${path}: module ${node.module} not found`);
+      } else {
+        try {
+          const mod = await import(modulePath);
+          const fnName = node.fn ?? "run";
+          if (typeof mod[fnName] !== "function") {
+            problems.push(`${path}: ${node.module} does not export "${fnName}"`);
+          }
+        } catch (err) {
+          problems.push(`${path}: ${node.module} failed to import: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+    if (node.exec) {
+      const [cmd] = Array.isArray(node.exec) ? node.exec : [node.exec];
+      if (cmd!.includes("/") && !existsSync(resolve(plugin.dir, cmd!))) {
+        problems.push(`${path}: exec target ${cmd} not found`);
+      }
+    }
+    for (const [name, sub] of Object.entries(node.subcommands ?? {})) {
+      await walk(sub, `${path} ${name}`);
+    }
+  }
+
+  for (const [name, node] of Object.entries(plugin.manifest.commands)) {
+    await walk(node, name);
+  }
+  return problems;
+}
