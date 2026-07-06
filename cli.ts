@@ -668,12 +668,22 @@ if (args[0] === "--version" || args[0] === "-V") {
   }
 
   // ── Command dispatch ────────────────────────────────────────────────────
-  if (args[0] === "--help" || args[0] === "-h") {
-    const originalIsTTY = process.stdin.isTTY;
-    Object.defineProperty(process.stdin, "isTTY", { value: false });
-    await dispatch(TREE, [], ["rt"], baseDir);
-    Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY });
-  } else {
-    await dispatch(TREE, args, ["rt"], baseDir);
+  // User plugins merge into the tree at the root; built-ins always win.
+  // ExecFailure propagates a plugin exec target's exit code as rt's own
+  // (dispatch has already logged the error outcome by the time it rethrows).
+  const { loadPluginTree, ExecFailure } = await import("./lib/plugins.ts");
+  const fullTree = loadPluginTree(TREE);
+  try {
+    if (args[0] === "--help" || args[0] === "-h") {
+      const originalIsTTY = process.stdin.isTTY;
+      Object.defineProperty(process.stdin, "isTTY", { value: false });
+      await dispatch(fullTree, [], ["rt"], baseDir);
+      Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY });
+    } else {
+      await dispatch(fullTree, args, ["rt"], baseDir);
+    }
+  } catch (err) {
+    if (err instanceof ExecFailure) process.exit(err.code);
+    throw err;
   }
 }
