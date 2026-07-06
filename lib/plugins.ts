@@ -89,8 +89,12 @@ function validateNode(node: any, path: string, errors: string[]): void {
       : Array.isArray(node.exec) && node.exec.length > 0 && node.exec.every((s: unknown) => typeof s === "string");
     if (!ok) errors.push(`${path}: exec must be a non-empty string or string array`);
   }
-  if (node.aliases !== undefined && (!Array.isArray(node.aliases) || node.aliases.some((a: unknown) => typeof a !== "string"))) {
-    errors.push(`${path}: aliases must be a string array`);
+  if (node.aliases !== undefined) {
+    if (!Array.isArray(node.aliases) || node.aliases.some((a: unknown) => typeof a !== "string")) {
+      errors.push(`${path}: aliases must be a string array`);
+    } else if (node.aliases.some((a: string) => !KEBAB_RE.test(a))) {
+      errors.push(`${path}: aliases must be kebab-case`);
+    }
   }
   if (node.context !== undefined && node.context !== "repo" && node.context !== "worktree") {
     errors.push(`${path}: context must be "repo" or "worktree"`);
@@ -261,6 +265,14 @@ export function discoverPlugins(): DiscoveredPlugin[] {
 }
 
 /**
+ * Names handled by pre-dispatch fast paths in cli.ts (e.g. `if (args[0] ===
+ * "verify")`) rather than by a TREE node. They never appear in `builtins`,
+ * so a plugin could otherwise mount them, show up in help, and then never
+ * actually run since cli.ts intercepts the name first.
+ */
+const RESERVED_FAST_PATHS = ["verify"];
+
+/**
  * Merge plugin commands into the built-in tree. Built-ins always win;
  * plugin-vs-plugin, first by directory sort order wins. Collisions check
  * names AND aliases. Losing commands are not mounted; every skip warns
@@ -278,6 +290,7 @@ export function loadPluginTree(
     claimed.set(name, "built-in");
     for (const alias of node.aliases ?? []) claimed.set(alias, "built-in");
   }
+  for (const name of RESERVED_FAST_PATHS) claimed.set(name, "built-in");
 
   for (const plugin of discoverPlugins()) {
     if (plugin.errors.length) {

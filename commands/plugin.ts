@@ -64,7 +64,7 @@ export async function runValidate(args: string[], _ctx: CommandContext): Promise
     process.exit(1);
   }
   if (plugins.length === 0) {
-    console.log(`\n  ${dim}no plugins installed${reset}\n`);
+    console.log(`\n  ${dim}no plugins installed ... create one with${reset} ${cyan}rt plugin new${reset}\n`);
     return;
   }
 
