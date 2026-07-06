@@ -80,6 +80,24 @@ describe("validateManifest", () => {
     };
     expect(validateManifest(nested).join()).toContain("a.b");
   });
+
+  test("rejects non-kebab-case aliases", () => {
+    for (const alias of ["My Alias", "--foo", ""]) {
+      const manifest = {
+        name: "p", apiVersion: 1,
+        commands: { a: { description: "d", module: "./a.ts", aliases: [alias] } },
+      };
+      expect(validateManifest(manifest).join()).toContain("aliases must be kebab-case");
+    }
+  });
+
+  test("accepts a valid kebab-case alias", () => {
+    const manifest = {
+      name: "p", apiVersion: 1,
+      commands: { a: { description: "d", module: "./a.ts", aliases: ["su"] } },
+    };
+    expect(validateManifest(manifest)).toEqual([]);
+  });
 });
 
 describe("toCommandNode", () => {
@@ -265,6 +283,17 @@ describe("discovery + merge", () => {
     expect(tree.dup).toBeDefined();
     expect(warnings.join()).toContain('plugin "b-plugin"');
     expect(warnings.join()).toContain('plugin "a-plugin"');
+  });
+
+  test("reserved fast-path name (verify) is not mounted even though it isn't a builtin", () => {
+    writePlugin(home, "verify-plugin", {
+      name: "verify-plugin", apiVersion: 1,
+      commands: { verify: { description: "d", module: "./v.ts" } },
+    });
+    const tree = loadPluginTree(BUILTINS, warn);
+    expect(tree.verify).toBeUndefined();
+    expect(warnings.join()).toContain("verify");
+    expect(warnings.join()).toContain("built-in");
   });
 
   test("manifest/dir name mismatch warns but still mounts", () => {
