@@ -1,97 +1,42 @@
 /**
- * SDM-first browse list: expands the config-first catalog (friendly labels
- * for known connections) into one row per REAL StrongDM resource, so `rt sdm
- * connect`'s picker never shows a "needs mapping" gap when the resource
- * itself is perfectly connectable. Every resolved connection's own
- * resolution.candidates and every gap's candidates name real resources that
- * config just hasn't given a friendly primary label to yet; this turns each
- * of those into its own selectable row.
+ * Connection builder: joins the scanner's real StrongDM resources
+ * (lib/sdm/scan.ts) with the user-maintained enrichment overlay
+ * (lib/sdm/enrichment.ts) into the display rows the picker renders. A
+ * resource with no enrichment entry still gets a row, just with its raw
+ * name as the label and no tier, so browse never hides a real resource
+ * behind a missing config mapping.
  */
 
-import type { CatalogResult, DiscoveredConnection } from "./connectors.ts";
+import type { SdmResource } from "./scan.ts";
+import type { EnrichmentEntry } from "./enrichment.ts";
 
-// Same tier vocabulary the picker groups on (lib/sdm/picker.ts TIER_LABELS).
-// Checked in this order, so a name carrying two tokens (unlikely) resolves to
-// the first one listed rather than the last.
-const ENV_TOKEN_TIERS: [token: string, tier: string][] = [
-  ["dev", "development"],
-  ["qa", "qa"],
-  ["labs", "qa"],
-  ["staging", "staging"],
-  ["prod", "production"],
-];
-
-/** Best-effort tier guess for an orphan resource name with no connector-supplied tier. */
-function guessTier(name: string): string | undefined {
-  for (const [token, tier] of ENV_TOKEN_TIERS) {
-    if (new RegExp(`(^|-)${token}($|-)`, "i").test(name)) return tier;
-  }
-  return undefined;
+export interface SdmConnection {
+  key: string;
+  label: string;
+  sdmResource: string;
+  tier?: string;
+  production?: boolean;
+  reasonSuggestion?: string;
+  db?: { database?: string; schema?: string; user?: string };
 }
 
-export function buildBrowseConnections(catalog: CatalogResult): DiscoveredConnection[] {
-  const byResource = new Map<string, DiscoveredConnection>();
-
-  // Primary rows win dedup: kept verbatim, added before any candidate-derived
-  // variant can claim the same sdmResource.
-  for (const c of catalog.connections) {
-    if (!byResource.has(c.sdmResource)) byResource.set(c.sdmResource, c);
-  }
-
-  const addVariant = (
-    name: string,
-    label: string,
-    tier: string | undefined,
-    connector: string,
-    production: boolean,
-  ) => {
-    if (byResource.has(name)) return;
-    byResource.set(name, {
-      id: name,
-      key: `${connector}:${name}`,
-      connector,
-      label,
-      sdmResource: name,
-      tier,
-      production,
-      reasonSuggestion: `investigating ${label} data`,
-      db: { database: "postgres", schema: "acme", user: "postgres" },
-    });
-  };
-
-  for (const c of catalog.connections) {
-    for (const name of c.resolution?.candidates ?? []) {
-      const label = name.startsWith(`${c.sdmResource}-`)
-        ? `${c.label} (${name.slice(c.sdmResource.length + 1)})`
-        : name.replace(/^acme-/, "");
-      addVariant(name, label, c.tier, c.connector, c.production ?? false);
-    }
-  }
-
-  for (const g of catalog.unresolved ?? []) {
-    for (const name of g.candidates) {
-      addVariant(name, name.replace(/^acme-/, ""), g.tier, g.connector, g.env === "prod");
-    }
-  }
-
-  // Orphans: real resources sdm reports that no config entry (primary or
-  // candidate) ever named, e.g. acme-staging-read-write. Honest browse
-  // means these still show up rather than being invisible to the picker.
-  for (const { name, connector } of catalog.allResources ?? []) {
-    if (byResource.has(name)) continue;
-    const label = name.replace(/^acme-/, "");
-    byResource.set(name, {
-      id: name,
-      key: `${connector}:${name}`,
-      connector,
-      label,
-      sdmResource: name,
-      tier: guessTier(name),
-      production: /(^|-)prod($|-)/i.test(name),
-      reasonSuggestion: `investigating ${label} data`,
-      db: { database: "postgres", schema: "acme", user: "postgres" },
-    });
-  }
-
-  return [...byResource.values()];
+export function buildSdmConnections(
+  resources: SdmResource[],
+  enrichment: Record<string, EnrichmentEntry>,
+): SdmConnection[] {
+  return resources
+    .map(r => {
+      const e = enrichment[r.name];
+      const label = e?.label ?? r.name;
+      return {
+        key: `sdm:${r.name}`,
+        label,
+        sdmResource: r.name,
+        tier: e?.tier,
+        production: e?.production ?? false,
+        reasonSuggestion: e?.reasonSuggestion ?? `investigating ${label} data`,
+        db: e?.db,
+      };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
