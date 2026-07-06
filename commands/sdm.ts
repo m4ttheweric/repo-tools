@@ -1,19 +1,19 @@
 /**
  * rt sdm: StrongDM connections. `sdm` is a branch node (cli.ts); subcommands:
  *
- *   rt sdm connect [<key>|<url>] [--duration 8h] [--reason "..."]  SDM-first picker,
- *                                    or connect a key / resolve a deployment URL
+ *   rt sdm connect [<key>] [--duration 8h] [--reason "..."]  SDM-first picker,
+ *                                    or connect a key directly
  *   rt sdm status                   CLI health + connected tunnels
  *   rt sdm login [--manual] [--visible]   log in (default: browser popup flow)
- *   rt sdm refresh                  re-run connectors, bust the cache
- *   rt sdm map                       config-first audit: resolved mapping + unresolved gaps
- *   rt sdm suggest                   (dev only) draft LLM override suggestions for gaps
- *   rt sdm connectors [test|init <name>]  list/validate/scaffold connectors
+ *   rt sdm refresh                  re-scan StrongDM, bust the cache
+ *   rt sdm enrichment [init]        show, or scaffold, the declarative label/tier map
  *
- * The daemon serves the connector catalog when running (10-minute cache);
+ * The daemon serves the resource scan when running (10-minute cache);
  * everything falls back to in-process execution when it is not.
  */
 
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import {
@@ -25,72 +25,30 @@ import {
   resourceNeedsAccessRequest,
   SDM_INSTALL_URL,
 } from "../lib/sdm/core.ts";
-import {
-  connectorsDir,
-  discoverConnections,
-  listConnectorFiles,
-  resolveConnection,
-  runConnector,
-  scaffoldConnector,
-  type CatalogResult,
-  type DiscoveredConnection,
-  type ResolveConnectionResult,
-  type UnresolvedGap,
-} from "../lib/sdm/connectors.ts";
+import { scanSdmResources, type SdmResource } from "../lib/sdm/scan.ts";
+import { buildSdmConnections, type SdmConnection } from "../lib/sdm/browse.ts";
+import { loadEnrichment } from "../lib/sdm/enrichment.ts";
 import { loadSdmState, recordRecent, type RecentEntry } from "../lib/sdm/state.ts";
-import type { SuggestionRecord } from "../lib/sdm/suggest.ts";
 import { runGuidedConnect, type GuidedTarget } from "../lib/sdm/flow.ts";
 import { probeQuery, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS } from "../lib/sdm/verify.ts";
-import { buildPickerOptions, TIER_LABELS } from "../lib/sdm/picker.ts";
-import { buildBrowseConnections } from "../lib/sdm/browse.ts";
-import { isProbablyUrl } from "../lib/sdm/url.ts";
+import { buildPickerOptions } from "../lib/sdm/picker.ts";
 
 // `sdm` is a branch node in the command tree (cli.ts); each subcommand below
 // is a leaf pointing at one of these exported functions.
 
-// ── Catalog access (daemon-first, in-process fallback) ──────────────────────
+// ── Scan access (daemon-first, in-process fallback) ──────────────────────
 
-async function getCatalog(refresh = false): Promise<CatalogResult> {
+async function getScan(refresh = false): Promise<{ resources: SdmResource[]; error?: string }> {
   const { daemonQuery } = await import("../lib/daemon-client.ts");
   const result = await daemonQuery("sdm:catalog", refresh ? { refresh: true } : undefined, 45_000);
-  if (result?.ok && Array.isArray((result as any).connections)) {
+  if (result?.ok && Array.isArray((result as any).resources)) {
     const r = result as any;
-    const connections = r.connections as DiscoveredConnection[];
-    const errors = r.errors ?? [];
-    // A daemon stuck on a bad PATH (e.g. launchd with no bun) can report ok
-    // with zero connections and every connector erroring. Trusting that
-    // would mask a working in-process discovery, so fall back instead.
-    if (connections.length === 0 && errors.length > 0) {
-      return discoverConnections({ refresh });
-    }
-    return { connections, errors, fromCache: r.fromCache ?? false, unresolved: r.unresolved ?? [], allResources: r.allResources ?? [] };
+    return { resources: r.resources as SdmResource[], error: r.error };
   }
-  return discoverConnections({ refresh });
-}
-
-/**
- * Resolve a pasted ticket URL to a connection or a gap. Daemon-first (it
- * already holds a warm connector cache); when the daemon is unreachable this
- * falls back to running connectors in-process. An authoritative "no opinion"
- * from a reachable daemon is trusted as-is, not retried in-process.
- */
-async function resolveUrl(url: string): Promise<ResolveConnectionResult | null> {
-  const { daemonQuery } = await import("../lib/daemon-client.ts");
-  const result = await daemonQuery("sdm:resolve", { url }, 45_000);
-  if (result?.ok) {
-    const r = result as any;
-    if (r.connection || r.unresolved) {
-      return { connector: r.connection?.connector ?? r.unresolved?.connector ?? "", connection: r.connection, unresolved: r.unresolved };
-    }
-    // A daemon stuck on a bad PATH (e.g. launchd with no bun) can report ok
-    // with every connector's resolve run failing, which looks identical to a
-    // genuine "no connector has an opinion" reply unless we check errors.
-    // Trusting that would mask a working in-process resolve, so fall back
-    // instead; a true no-opinion reply (no errors) is trusted as-is.
-    const errors = r.errors ?? [];
-    if (errors.length === 0) return null;
-  }
-  return resolveConnection(url);
+  // Daemon unreachable, or still serving the pre-scan connector shape
+  // (no `resources` array) until it is restarted onto the new handler.
+  const scanned = await scanSdmResources({ refresh });
+  return { resources: scanned.resources, error: scanned.error };
 }
 
 // ── Guided flow wiring (real prompts, real sdm) ──────────────────────────────
@@ -119,8 +77,8 @@ async function sdmBrowserLogin(onLine: (l: string) => void): Promise<{ ok: boole
 
 /**
  * Auth-first guard for the picker. An expired StrongDM session means the
- * connector cannot list resources (you would see only recents), so log in
- * before discovering -- automatically, no confirm, per the connect UX.
+ * scan cannot list resources (you would see only recents), so log in
+ * before scanning -- automatically, no confirm, per the connect UX.
  * Returns true when a login happened, so the caller can bust the stale cache.
  */
 async function ensureSdmAuth(): Promise<boolean> {
@@ -189,7 +147,7 @@ async function guidedConnect(target: GuidedTarget, opts: { duration?: string; re
   process.exitCode = 1;
 }
 
-function toTarget(c: DiscoveredConnection | RecentEntry): GuidedTarget {
+function toTarget(c: SdmConnection | RecentEntry): GuidedTarget {
   return {
     key: c.key, label: c.label, sdmResource: c.sdmResource,
     tier: c.tier, production: c.production,
@@ -206,36 +164,33 @@ async function pickAndConnect(): Promise<void> {
     return;
   }
   // Auth-first: an expired session lists nothing (only recents), so log in
-  // before discovering. Refresh the catalog when we just logged in, since a
-  // stale cache from the logged-out run would still be empty.
+  // before scanning. Refresh the scan when we just logged in, since a stale
+  // cache from the logged-out run would still be empty.
   const loggedIn = await ensureSdmAuth();
   const { withInlineSpinner } = await import("../lib/tui/inline-spinner.ts");
-  const catalog = await withInlineSpinner("discovering connections…", () => getCatalog(loggedIn));
+  const { resources, error } = await withInlineSpinner("scanning StrongDM…", () => getScan(loggedIn));
   const recents = loadSdmState().recents;
 
-  for (const e of catalog.errors) {
-    console.error(`${yellow}connector ${e.connector} failed:${reset} ${dim}${e.error}${reset}`);
-  }
-  if (catalog.connections.length === 0 && recents.length === 0) {
-    console.log(`${bold}No sdm connections discovered.${reset}
+  if (error) console.error(`${yellow}${error}${reset}`);
+  if (resources.length === 0 && recents.length === 0) {
+    console.log(`${bold}No StrongDM resources found.${reset}
 
-Connectors are executables in ${cyan}${connectorsDir()}${reset} that print
-connections as JSON when run with the argument ${bold}discover${reset}.
+rt scans your StrongDM catalog + status directly; there's nothing to configure.
+Make sure you're logged in and have access to at least one postgres resource.
 
-Start with a template:  ${bold}rt sdm connectors init my-org${reset}
-Validate it:            ${bold}rt sdm connectors test my-org${reset}
-StrongDM CLI install:   ${dim}${SDM_INSTALL_URL}${reset}`);
+Nicer labels/tiers:    ${bold}rt sdm enrichment init${reset}
+StrongDM CLI install:  ${dim}${SDM_INSTALL_URL}${reset}`);
     return;
   }
 
-  const browse = buildBrowseConnections(catalog);
+  const connections = buildSdmConnections(resources, loadEnrichment());
   const { runNavPicker } = await import("../lib/navigate.ts");
-  const options = buildPickerOptions(browse, recents);
+  const options = buildPickerOptions(connections, recents);
   const picked = await runNavPicker({ options, message: "sdm connections" });
   if (!picked || !picked.value) return;
 
   const target =
-    browse.find(c => c.key === picked.value) ??
+    connections.find(c => c.key === picked.value) ??
     recents.find(r => r.key === picked.value);
   if (!target) {
     console.error(`${red}unknown selection:${reset} ${picked.value}`);
@@ -246,71 +201,8 @@ StrongDM CLI install:   ${dim}${SDM_INSTALL_URL}${reset}`);
 }
 
 /**
- * Handle a gap the connector could not cleanly resolve to a read-write
- * primary. Never connects a read-only or ambiguous resource silently: the
- * read-only alt requires an explicit interactive yes, and every other case
- * exits 1 with the pin-it-yourself hint instead of guessing.
- */
-async function handleUnresolvedGap(
-  gap: UnresolvedGap,
-  flags: { duration?: string; reason?: string },
-  interactive: boolean,
-): Promise<void> {
-  if (gap.source === "none" && gap.readOnlyAlt) {
-    console.error(
-      `${yellow}Only a read-only replica (${gap.readOnlyAlt}) exists for ${gap.label} (${gap.slug} ${gap.env}); it can't back local dev.${reset}`,
-    );
-    if (interactive) {
-      const { confirm } = await import("../lib/rt-render.tsx");
-      const yes = await confirm({ message: "Browse it read-only instead?", initialValue: false });
-      if (yes) {
-        const target: GuidedTarget = {
-          key: gap.key, label: `${gap.label} (read-only)`, sdmResource: gap.readOnlyAlt, tier: gap.tier,
-        };
-        await guidedConnect(target, { ...flags, interactive });
-        return;
-      }
-    }
-    process.exitCode = 1;
-    return;
-  }
-
-  console.error(`${red}couldn't resolve ${gap.label} to one StrongDM resource${reset} ${dim}(${gap.source})${reset}`);
-  if (gap.candidates.length > 0) {
-    console.error(`  candidates: ${dim}${gap.candidates.join(", ")}${reset}`);
-  }
-  console.error(`  ${dim}edit ~/.rt/sdm/acme-overrides.json to pin a resource${reset}`);
-  process.exitCode = 1;
-}
-
-/**
- * `rt sdm connect <url>` for a pasted Linear-ticket deployment URL: resolve
- * it (daemon-first, in-process fallback) and connect the read-write primary,
- * or explain honestly why it can't.
- */
-async function connectUrl(url: string, flags: { duration?: string; reason?: string }): Promise<void> {
-  const interactive = process.stdin.isTTY && !(flags.duration && flags.reason);
-  // Auth-first (interactive only): an expired session cannot resolve the URL.
-  // Resolve is not cached, so a fresh session takes effect immediately.
-  if (process.stdin.isTTY) await ensureSdmAuth();
-  const result = await resolveUrl(url);
-
-  if (result?.connection) {
-    await guidedConnect(toTarget(result.connection), { ...flags, interactive });
-    return;
-  }
-  if (result?.unresolved) {
-    await handleUnresolvedGap(result.unresolved, flags, interactive);
-    return;
-  }
-  console.error(`${red}couldn't identify a StrongDM resource from that URL:${reset} ${url}`);
-  process.exitCode = 1;
-}
-
-/**
  * `rt sdm connect` with no key opens the connection picker; `rt sdm connect
- * <key> [--duration 8h] [--reason "..."]` connects directly (scriptable);
- * `rt sdm connect <url>` resolves a pasted ticket URL first.
+ * <key> [--duration 8h] [--reason "..."]` connects directly (scriptable).
  */
 export async function connectCmd(rest: string[], _ctx?: CommandContext): Promise<void> {
   const flags: { duration?: string; reason?: string } = {};
@@ -325,10 +217,10 @@ export async function connectCmd(rest: string[], _ctx?: CommandContext): Promise
   }
   const key = positional[0];
   if (!key) return pickAndConnect();
-  if (isProbablyUrl(key)) return connectUrl(key, flags);
-  const browse = buildBrowseConnections(await getCatalog());
+  const { resources } = await getScan();
+  const connections = buildSdmConnections(resources, loadEnrichment());
   const target =
-    browse.find(c => c.key === key) ??
+    connections.find(c => c.key === key) ??
     loadSdmState().recents.find(r => r.key === key);
   if (!target) {
     console.error(`${red}unknown connection key:${reset} ${key} ${dim}(rt sdm refresh to re-discover)${reset}`);
@@ -406,220 +298,53 @@ export async function loginCmd(args: string[]): Promise<void> {
 }
 
 export async function refreshCmd(): Promise<void> {
-  const catalog = await getCatalog(true);
-  const byConnector = new Map<string, number>();
-  for (const c of catalog.connections) {
-    byConnector.set(c.connector, (byConnector.get(c.connector) ?? 0) + 1);
-  }
-  for (const [name, count] of byConnector) {
-    console.log(`  ${green}●${reset} ${name}: ${count} connection${count === 1 ? "" : "s"}`);
-  }
-  for (const e of catalog.errors) {
-    console.log(`  ${red}✗${reset} ${e.connector}: ${dim}${e.error}${reset}`);
-  }
-  const total = catalog.connections.length;
-  console.log(`${bold}${total} connection${total === 1 ? "" : "s"}${reset} from ${byConnector.size} connector${byConnector.size === 1 ? "" : "s"}`);
-  if (total === 0 && catalog.errors.length === 0) {
-    console.log(`${dim}no connectors installed; run: rt sdm connectors init <name>${reset}`);
+  const { resources, error } = await getScan(true);
+  if (error) console.log(`  ${red}✗${reset} ${dim}${error}${reset}`);
+  console.log(`${bold}${resources.length} resource${resources.length === 1 ? "" : "s"}${reset} from StrongDM`);
+  if (resources.length === 0 && !error) {
+    console.log(`${dim}no postgres resources visible; check StrongDM access${reset}`);
   }
 }
 
 /**
- * Dev-only (gated via devOnly in cli.ts): draft LLM override suggestions for the
- * unresolved gaps into ~/.rt/sdm/suggestions.json for human review. The LLM runs
- * ONLY here, never on any connect/resolve/browse path.
+ * Pure formatter for `rt sdm enrichment init`: a JSONC skeleton with one
+ * entry per scanned resource name, ready to fill in labels/tiers. No console
+ * writes, so this is unit-testable without a terminal.
  */
-export async function suggestCmd(): Promise<void> {
-  const catalog = await getCatalog(true);
-  const { suggestForGaps, writeSuggestions } = await import("../lib/sdm/suggest.ts");
-  const { llmPrompt } = await import("../lib/llm.ts");
-  const records = await suggestForGaps(catalog.unresolved ?? [], { llm: llmPrompt });
-  if (records.length > 0) {
-    writeSuggestions(records);
-    console.log(`${bold}${records.length} suggestion${records.length === 1 ? "" : "s"} written${reset}; review with ${cyan}rt sdm map${reset}`);
-  } else {
-    console.log(`${dim}LLM produced no suggestions (unavailable or no gaps); kept existing suggestions.json${reset}`);
-  }
-}
-
-// Canonical tier ordering for the "Resolved" groups, mirroring picker.ts's
-// TIER_ORDER (kept as a local copy: that one is intentionally unexported).
-const MAP_TIER_ORDER = ["development", "qa", "staging", "production"];
-function sortTiers(tiers: string[]): string[] {
-  return tiers.slice().sort((a, b) => {
-    const ia = MAP_TIER_ORDER.indexOf(a);
-    const ib = MAP_TIER_ORDER.indexOf(b);
-    if (ia !== -1 || ib !== -1) return (ia === -1 ? MAP_TIER_ORDER.length : ia) - (ib === -1 ? MAP_TIER_ORDER.length : ib);
-    return a.localeCompare(b);
-  });
-}
-
-/** Compact wrapped list of labels, joined with " · " and wrapped at ~80 cols; never one row per label. */
-function wrapLabelList(labels: string[], indent = "  ", width = 78): string[] {
-  const sep = " · ";
-  const lines: string[] = [];
-  let current = indent;
-  for (const label of labels) {
-    const candidate = current === indent ? current + label : current + sep + label;
-    if (candidate.length > width && current !== indent) {
-      lines.push(current);
-      current = indent + label;
-    } else {
-      current = candidate;
-    }
-  }
-  if (current !== indent) lines.push(current);
-  return lines;
+export function enrichmentSkeleton(names: string[]): string {
+  const lines = [
+    "{",
+    "  // rt sdm enrichment: map a StrongDM resource name to a nicer label/tier/db.",
+    "  // Fill in labels; delete resources you do not care about. Unmapped -> raw name.",
+  ];
+  names.forEach((name, i) => lines.push(`  ${JSON.stringify(name)}: { "label": "", "tier": "" }${i === names.length - 1 ? "" : ","}`));
+  lines.push("}", "");
+  return lines.join("\n");
 }
 
 /**
- * Pure formatter for `rt sdm map`: resolved connections grouped by tier with
- * their `resolution.source` provenance, then a "Needs mapping" block split
- * into three actionable buckets (ambiguous / read-only-only / no resource at
- * all) so the audit reads as a punch list instead of an undifferentiated
- * wall of gaps. No console writes, so this is unit-testable without a
- * terminal.
+ * `rt sdm enrichment`: show how much of the scanned catalog is enriched.
+ * `rt sdm enrichment init`: scaffold ~/.rt/sdm/enrichment.jsonc with one
+ * entry per scanned resource, refusing to clobber an existing file.
  */
-export function formatMap(
-  connections: DiscoveredConnection[],
-  unresolved: UnresolvedGap[],
-  suggestions: SuggestionRecord[],
-): string[] {
-  const lines: string[] = [];
-
-  lines.push(`${bold}Resolved (${connections.length})${reset}`);
-  if (connections.length === 0) {
-    lines.push(`  ${dim}none${reset}`);
-  } else {
-    const byTier = new Map<string, DiscoveredConnection[]>();
-    for (const c of connections) {
-      const tier = c.tier ?? "";
-      if (!byTier.has(tier)) byTier.set(tier, []);
-      byTier.get(tier)!.push(c);
-    }
-    for (const tier of sortTiers([...byTier.keys()])) {
-      lines.push(`  ${bold}${tier === "" ? "Other" : (TIER_LABELS[tier] ?? tier)}${reset}`);
-      for (const c of byTier.get(tier)!.slice().sort((a, b) => a.label.localeCompare(b.label))) {
-        const provenance = c.resolution ? c.resolution.source : "unspecified";
-        lines.push(`  ${green}●${reset} ${c.label}  ${cyan}${c.sdmResource}${reset}  ${dim}(${provenance})${reset}`);
-      }
-    }
-  }
-
-  lines.push("");
-  lines.push(`${bold}Needs mapping (${unresolved.length})${reset}`);
-  if (unresolved.length === 0) {
-    lines.push(`  ${dim}none${reset}`);
-    return lines;
-  }
-
-  const ambiguous = unresolved.filter(g => g.source === "ambiguous");
-  const readOnlyOnly = unresolved.filter(g => g.source === "none" && g.readOnlyAlt);
-  const noResource = unresolved.filter(g => g.source === "none" && !g.readOnlyAlt);
-
-  lines.push(`  ${bold}${yellow}Ambiguous: pick one, pin in ~/.rt/sdm/acme-overrides.json (${ambiguous.length})${reset}`);
-  for (const gap of ambiguous) {
-    lines.push(`  ⚠ ${gap.label} (${gap.slug} ${gap.env})`);
-    if (gap.candidates.length > 0) {
-      lines.push(`    candidates: ${dim}${gap.candidates.join(" | ")}${reset}`);
-    }
-    const suggestion = suggestions.find(s => s.key === gap.key);
-    if (suggestion) {
-      const resource = suggestion.resource ?? "(declined)";
-      lines.push(`    suggestion: ${cyan}${resource}${reset} ${dim}${suggestion.reasoning}${reset}`);
-    }
-  }
-
-  lines.push(`  ${bold}Read-only only: pin if you want browse access (${readOnlyOnly.length})${reset}`);
-  for (const gap of readOnlyOnly) {
-    lines.push(`  ○ ${gap.label} (${gap.slug} ${gap.env})  ${dim}${gap.readOnlyAlt}${reset}`);
-  }
-
-  lines.push(`  ${bold}No StrongDM resource (${noResource.length})${reset}`);
-  if (noResource.length > 0) {
-    lines.push(...wrapLabelList(noResource.map(g => g.label)).map(l => `${dim}${l}${reset}`));
-  }
-
-  return lines;
-}
-
-/**
- * `rt sdm map`: the audit view. Fetches the catalog (daemon-first, same as
- * every other subcommand) and any suggestions drafted by a prior
- * `rt sdm refresh --suggest`, then prints formatMap's lines.
- */
-export async function mapCmd(): Promise<void> {
-  const catalog = await getCatalog();
-  const { readSuggestions } = await import("../lib/sdm/suggest.ts");
-  const suggestions = readSuggestions();
-  for (const line of formatMap(catalog.connections, catalog.unresolved ?? [], suggestions)) {
-    console.log(line);
-  }
-}
-
-export async function connectorsCmd(rest: string[]): Promise<void> {
-  const [action, name] = rest;
-
-  if (action === "init") {
-    if (!name) {
-      console.error("usage: rt sdm connectors init <name>");
+export async function enrichmentCmd(rest: string[]): Promise<void> {
+  const { enrichmentPath, loadEnrichment } = await import("../lib/sdm/enrichment.ts");
+  const path = enrichmentPath();
+  if (rest[0] === "init") {
+    if (existsSync(path)) {
+      console.error(`${yellow}${path} already exists${reset}`);
       process.exitCode = 1;
       return;
     }
-    try {
-      const path = scaffoldConnector(name);
-      console.log(`${green}✓${reset} created ${cyan}${path}${reset}`);
-      console.log(`  edit it, then validate with: ${bold}rt sdm connectors test ${name}${reset}`);
-    } catch (e) {
-      console.error(`${red}✗ ${(e as Error).message}${reset}`);
-      process.exitCode = 1;
-    }
+    const { resources } = await getScan(true);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, enrichmentSkeleton(resources.map(r => r.name)));
+    console.log(`${green}✓${reset} wrote ${cyan}${path}${reset} ${dim}(${resources.length} resources; fill in labels)${reset}`);
     return;
   }
-
-  if (action === "test") {
-    if (!name) {
-      console.error("usage: rt sdm connectors test <name>");
-      process.exitCode = 1;
-      return;
-    }
-    const file = listConnectorFiles().find(f => f.split("/").pop()!.replace(/\.[^.]+$/, "") === name);
-    if (!file) {
-      console.error(`${red}✗ no connector named ${name} in ${connectorsDir()}${reset}`);
-      process.exitCode = 1;
-      return;
-    }
-    const r = await runConnector(file);
-    if (!r.ok) {
-      console.error(`${red}✗ ${r.error}${reset}`);
-      process.exitCode = 1;
-      return;
-    }
-    console.log(`${green}✓ valid${reset} (${r.output.connections.length} connections)`);
-    for (const c of r.output.connections) {
-      console.log(`  ${c.id}  ${dim}${c.sdmResource}  ${c.tier ?? ""}${reset}`);
-    }
-    return;
-  }
-
-  if (action !== undefined) {
-    console.error("usage: rt sdm connectors [test <name> | init <name>]");
-    process.exitCode = 1;
-    return;
-  }
-
-  const files = listConnectorFiles();
-  if (files.length === 0) {
-    console.log(`${dim}no connectors in ${connectorsDir()}${reset}`);
-    console.log(`scaffold one: ${bold}rt sdm connectors init <name>${reset}`);
-    return;
-  }
-  const catalog = await getCatalog();
-  for (const file of files) {
-    const cname = file.split("/").pop()!.replace(/\.[^.]+$/, "");
-    const err = catalog.errors.find(e => e.connector === cname);
-    const count = catalog.connections.filter(c => c.connector === cname).length;
-    if (err) console.log(`  ${red}✗${reset} ${cname} ${dim}${err.error}${reset}`);
-    else console.log(`  ${green}●${reset} ${cname} ${dim}${count} connection${count === 1 ? "" : "s"}${reset}`);
-  }
+  const enr = loadEnrichment(path);
+  const { resources } = await getScan();
+  const enriched = resources.filter(r => enr[r.name]).length;
+  console.log(`${bold}enrichment:${reset} ${cyan}${path}${reset}`);
+  console.log(`  ${enriched}/${resources.length} resources enriched ${dim}(the rest show raw names)${reset}`);
 }

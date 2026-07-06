@@ -7,7 +7,8 @@
 
 import { dim } from "../ansi.ts";
 import { navSeparator, type NavOption } from "../navigate.ts";
-import type { DiscoveredConnection, UnresolvedGap } from "./connectors.ts";
+import type { UnresolvedGap } from "./connectors.ts";
+import type { SdmConnection } from "./browse.ts";
 import type { RecentEntry } from "./state.ts";
 
 export const TIER_LABELS: Record<string, string> = {
@@ -49,7 +50,7 @@ function gapRow(gap: UnresolvedGap): NavOption {
 }
 
 export function buildPickerOptions(
-  connections: DiscoveredConnection[],
+  connections: SdmConnection[],
   recents: RecentEntry[],
   unresolved?: UnresolvedGap[],
 ): NavOption[] {
@@ -63,7 +64,7 @@ export function buildPickerOptions(
   }
 
   // Skip connections already shown under Recent so they aren't listed twice.
-  const byTier = new Map<string, DiscoveredConnection[]>();
+  const byTier = new Map<string, SdmConnection[]>();
   for (const c of connections) {
     if (recentKeys.has(c.key)) continue;
     const tier = c.tier ?? "";

@@ -302,30 +302,19 @@ const TREE: Record<string, CommandNode> = {
         ],
       },
       refresh: {
-        description: "Re-run connectors and refresh the connection cache",
+        description: "Re-scan StrongDM and refresh the resource cache",
         module: "./commands/sdm.ts",
         fn: "refreshCmd",
       },
-      map: {
-        description: "Show the resolved SDM mapping with provenance and gaps",
+      enrichment: {
+        description: "Show or scaffold (init) the declarative enrichment map",
         module: "./commands/sdm.ts",
-        fn: "mapCmd",
-      },
-      suggest: {
-        description: "Draft LLM override suggestions for unresolved gaps (dev only)",
-        module: "./commands/sdm.ts",
-        fn: "suggestCmd",
-        devOnly: true,
+        fn: "enrichmentCmd",
       },
       "set-email": {
         description: "Set your StrongDM email (skips the browser-login email prompt)",
         module: "./commands/settings.ts",
         fn: "setSdmEmail",
-      },
-      connectors: {
-        description: "List connectors (or: connectors test <name> / init <name>)",
-        module: "./commands/sdm.ts",
-        fn: "connectorsCmd",
       },
     },
   },
