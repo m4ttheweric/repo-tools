@@ -66,12 +66,17 @@ export function ensurePluginApiDir(): void {
   }
 }
 
+function todayLocal(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function writePluginLog(plugin: string, level: string, msg: string, data?: object): void {
   if (level === "debug" && process.env.RT_LOG_LEVEL !== "debug") return;
   try {
     const dir = join(rtDir(), "logs");
     mkdirSync(dir, { recursive: true });
-    const day = new Date().toISOString().slice(0, 10);
+    const day = todayLocal();
     const line = JSON.stringify({ time: new Date().toISOString(), level, plugin, msg, ...data }) + "\n";
     appendFileSync(join(dir, `plugins.${day}.log`), line);
   } catch {

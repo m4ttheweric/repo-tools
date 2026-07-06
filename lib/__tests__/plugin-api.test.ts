@@ -6,6 +6,11 @@ import { tmpdir } from "os";
 let home: string;
 let savedHome: string | undefined;
 
+function todayLocal(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "rt-plugin-api-"));
   savedHome = process.env.HOME;
@@ -70,7 +75,7 @@ describe("makeApi.log", () => {
   test("appends JSON lines with plugin attribution", async () => {
     const { makeApi } = await import("../plugin-api.ts");
     makeApi("my-plugin").log.info("hello", { n: 1 });
-    const day = new Date().toISOString().slice(0, 10);
+    const day = todayLocal();
     const line = readFileSync(join(home, ".rt", "logs", `plugins.${day}.log`), "utf8").trim();
     const entry = JSON.parse(line);
     expect(entry).toMatchObject({ level: "info", plugin: "my-plugin", msg: "hello", n: 1 });
@@ -81,7 +86,7 @@ describe("makeApi.log", () => {
     const saved = process.env.RT_LOG_LEVEL;
     delete process.env.RT_LOG_LEVEL;
     makeApi("p").log.debug("quiet");
-    const day = new Date().toISOString().slice(0, 10);
+    const day = todayLocal();
     const file = join(home, ".rt", "logs", `plugins.${day}.log`);
     expect(existsSync(file)).toBe(false);
     process.env.RT_LOG_LEVEL = "debug";
