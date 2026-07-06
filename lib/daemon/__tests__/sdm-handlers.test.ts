@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { createSdmHandlers, type SdmHandlerDeps } from "../handlers/sdm.ts";
 import type { HandlerContext } from "../handlers/types.ts";
 import type { SdmSnapshot } from "../../sdm/core.ts";
-import type { ResolveConnectionResult } from "../../sdm/connectors.ts";
+import type { SdmResource } from "../../sdm/scan.ts";
 
 const ctx = { log: { info: () => {}, warn: () => {}, debug: () => {} } } as unknown as HandlerContext;
 
@@ -15,9 +15,8 @@ function okSnapshot(): SdmSnapshot {
 
 function makeDeps(overrides: Partial<SdmHandlerDeps> = {}): SdmHandlerDeps {
   return {
-    discover: async () => ({
-      connections: [{ id: "a", label: "A", sdmResource: "example-a", key: "demo:a", connector: "demo" }],
-      errors: [],
+    scan: async () => ({
+      resources: [{ name: "example-a", type: "postgres", tags: [] }],
       fromCache: false,
     }),
     getSnapshot: async () => okSnapshot(),
@@ -33,35 +32,41 @@ function makeDeps(overrides: Partial<SdmHandlerDeps> = {}): SdmHandlerDeps {
     connect: async () => ({ ok: true }),
     verify: async () => ({ ok: true, attempts: 1, latencyMs: 12, lastError: null }),
     recordRecent: () => ({ version: 1, recents: [] }),
-    resolveConnection: async () => null,
     ...overrides,
   };
 }
 
 describe("sdm handlers", () => {
-  test("sdm:catalog returns connections and errors", async () => {
-    const h = createSdmHandlers(ctx, makeDeps());
+  test("sdm:catalog passes through resources and fromCache from scan", async () => {
+    const resources: SdmResource[] = [{ name: "example-a", type: "postgres", tags: ["env=staging"] }];
+    const h = createSdmHandlers(ctx, makeDeps({ scan: async () => ({ resources, fromCache: true }) }));
     const r = await h["sdm:catalog"]!({});
     expect(r.ok).toBe(true);
-    expect(r.connections).toHaveLength(1);
+    expect(r.resources).toEqual(resources);
+    expect(r.fromCache).toBe(true);
+    expect(r.error).toBeUndefined();
   });
 
-  test("sdm:catalog returns unresolved gaps from discover", async () => {
+  test("sdm:catalog passes through a scan error", async () => {
     const h = createSdmHandlers(ctx, makeDeps({
-      discover: async () => ({
-        connections: [],
-        errors: [],
-        fromCache: false,
-        unresolved: [{
-          id: "gap1", label: "Gap One", slug: "gap-one", env: "staging", source: "ambiguous",
-          candidates: ["example-a", "example-b"], key: "demo:gap1", connector: "demo",
-        }],
-      }),
+      scan: async () => ({ resources: [], fromCache: false, error: "sdm unavailable" }),
     }));
     const r = await h["sdm:catalog"]!({});
     expect(r.ok).toBe(true);
-    expect(r.unresolved).toHaveLength(1);
-    expect(r.unresolved[0].key).toBe("demo:gap1");
+    expect(r.resources).toEqual([]);
+    expect(r.error).toBe("sdm unavailable");
+  });
+
+  test("sdm:catalog forwards the refresh flag to scan", async () => {
+    let receivedRefresh: boolean | undefined;
+    const h = createSdmHandlers(ctx, makeDeps({
+      scan: async opts => {
+        receivedRefresh = opts?.refresh;
+        return { resources: [], fromCache: false };
+      },
+    }));
+    await h["sdm:catalog"]!({ refresh: true });
+    expect(receivedRefresh).toBe(true);
   });
 
   test("sdm:snapshot serializes resources as a plain object", async () => {
@@ -107,76 +112,5 @@ describe("sdm handlers", () => {
     const r = await h["sdm:reconnect"]!({ key: "nope:missing" });
     expect(r.ok).toBe(false);
     expect(r.error).toContain("unknown");
-  });
-
-  test("sdm:resolve returns a resolved connection", async () => {
-    const resolved: ResolveConnectionResult = {
-      connector: "demo",
-      connection: { id: "a", label: "A", sdmResource: "example-a", key: "demo:a", connector: "demo" },
-    };
-    const h = createSdmHandlers(ctx, makeDeps({ resolveConnection: async () => resolved }));
-    const r = await h["sdm:resolve"]!({ url: "https://example.com/a" });
-    expect(r.ok).toBe(true);
-    expect(r.connection?.sdmResource).toBe("example-a");
-    expect(r.unresolved).toBeUndefined();
-  });
-
-  test("sdm:resolve returns an unresolved gap", async () => {
-    const resolved: ResolveConnectionResult = {
-      connector: "demo",
-      unresolved: {
-        id: "b", label: "B", slug: "b", env: "staging", source: "ambiguous",
-        candidates: ["example-b-staging", "example-b2-staging"], key: "demo:b", connector: "demo",
-      },
-    };
-    const h = createSdmHandlers(ctx, makeDeps({ resolveConnection: async () => resolved }));
-    const r = await h["sdm:resolve"]!({ url: "https://example.com/b" });
-    expect(r.ok).toBe(true);
-    expect(r.connection).toBeUndefined();
-    expect(r.unresolved?.source).toBe("ambiguous");
-    expect(r.unresolved?.candidates).toEqual(["example-b-staging", "example-b2-staging"]);
-  });
-
-  test("sdm:resolve returns neither when no connector has an opinion", async () => {
-    const h = createSdmHandlers(ctx, makeDeps({ resolveConnection: async () => null }));
-    const r = await h["sdm:resolve"]!({ url: "https://example.com/unknown" });
-    expect(r.ok).toBe(true);
-    expect(r.connection).toBeUndefined();
-    expect(r.unresolved).toBeUndefined();
-    expect(r.errors).toEqual([]);
-  });
-
-  test("sdm:resolve passes through connector run errors", async () => {
-    const resolved: ResolveConnectionResult = {
-      connector: "",
-      errors: [{ connector: "broken", error: "exited 1: boom" }],
-    };
-    const h = createSdmHandlers(ctx, makeDeps({ resolveConnection: async () => resolved }));
-    const r = await h["sdm:resolve"]!({ url: "https://example.com/boom" });
-    expect(r.ok).toBe(true);
-    expect(r.connection).toBeUndefined();
-    expect(r.unresolved).toBeUndefined();
-    expect(r.errors).toEqual([{ connector: "broken", error: "exited 1: boom" }]);
-  });
-
-  test("sdm:resolve rejects a missing url", async () => {
-    const h = createSdmHandlers(ctx, makeDeps());
-    const r = await h["sdm:resolve"]!({});
-    expect(r.ok).toBe(false);
-    expect(r.error).toContain("url");
-  });
-
-  test("sdm:resolve rejects a whitespace-only url", async () => {
-    let called = false;
-    const h = createSdmHandlers(ctx, makeDeps({
-      resolveConnection: async () => {
-        called = true;
-        return null;
-      },
-    }));
-    const r = await h["sdm:resolve"]!({ url: "   " });
-    expect(r.ok).toBe(false);
-    expect(r.error).toContain("url");
-    expect(called).toBe(false);
   });
 });

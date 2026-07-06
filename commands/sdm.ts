@@ -41,12 +41,14 @@ import { buildPickerOptions } from "../lib/sdm/picker.ts";
 async function getScan(refresh = false): Promise<{ resources: SdmResource[]; error?: string }> {
   const { daemonQuery } = await import("../lib/daemon-client.ts");
   const result = await daemonQuery("sdm:catalog", refresh ? { refresh: true } : undefined, 45_000);
-  if (result?.ok && Array.isArray((result as any).resources)) {
-    const r = result as any;
-    return { resources: r.resources as SdmResource[], error: r.error };
+  const r = result as any;
+  if (r?.ok && Array.isArray(r.resources) && !r.error) {
+    return { resources: r.resources as SdmResource[] };
   }
-  // Daemon unreachable, or still serving the pre-scan connector shape
-  // (no `resources` array) until it is restarted onto the new handler.
+  // Daemon unreachable, still serving the pre-scan connector shape (no
+  // `resources` array), or reporting a scan error -- a daemon with a broken
+  // PATH can come back ok with an empty/failed scan while the in-process rt,
+  // running with the user's own PATH, succeeds.
   const scanned = await scanSdmResources({ refresh });
   return { resources: scanned.resources, error: scanned.error };
 }

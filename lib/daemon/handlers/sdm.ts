@@ -14,24 +14,23 @@ import {
   type SdmFailureCode,
   type SdmSnapshot,
 } from "../../sdm/core.ts";
-import { discoverConnections, resolveConnection, type CatalogResult, type ResolveConnectionResult } from "../../sdm/connectors.ts";
+import { scanSdmResources, type SdmResource } from "../../sdm/scan.ts";
 import { probeQuery, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS, type VerifyOutcome } from "../../sdm/verify.ts";
 import { loadSdmState, recordRecent, type RecentEntry, type SdmState } from "../../sdm/state.ts";
 import { runGuidedConnect } from "../../sdm/flow.ts";
 
 export interface SdmHandlerDeps {
-  discover: (opts?: { refresh?: boolean }) => Promise<CatalogResult>;
+  scan: (opts?: { refresh?: boolean }) => Promise<{ resources: SdmResource[]; fromCache: boolean; error?: string }>;
   getSnapshot: (force?: boolean) => Promise<SdmSnapshot>;
   loadState: () => SdmState;
   needsAccessRequest: (resource: string) => Promise<boolean>;
   connect: (resource: string, onLine: (l: string) => void) => Promise<{ ok: boolean; error?: string; code?: SdmFailureCode }>;
   verify: (url: string) => Promise<VerifyOutcome>;
   recordRecent: (entry: Omit<RecentEntry, "lastConnectedAt">) => SdmState;
-  resolveConnection: (url: string) => Promise<ResolveConnectionResult | null>;
 }
 
 const realDeps: SdmHandlerDeps = {
-  discover: opts => discoverConnections(opts),
+  scan: opts => scanSdmResources(opts),
   getSnapshot: force => getSdmSnapshot(force),
   loadState: () => loadSdmState(),
   needsAccessRequest: async resource => {
@@ -41,7 +40,6 @@ const realDeps: SdmHandlerDeps = {
   connect: connectResource,
   verify: url => verifyWithRetries(() => probeQuery(url, VERIFY_ATTEMPT_TIMEOUT_MS)),
   recordRecent: entry => recordRecent(entry),
-  resolveConnection: url => resolveConnection(url),
 };
 
 function serializeSnapshot(snapshot: SdmSnapshot) {
@@ -51,23 +49,8 @@ function serializeSnapshot(snapshot: SdmSnapshot) {
 export function createSdmHandlers(ctx: HandlerContext, deps: SdmHandlerDeps = realDeps): HandlerMap {
   return {
     "sdm:catalog": async (payload: { refresh?: boolean } = {}) => {
-      const result = await deps.discover({ refresh: payload.refresh });
-      // Cached hits already got warned about on the run that produced them;
-      // re-warning on every cached hit would spam the log for a connector
-      // that keeps failing while the 10-minute cache is still warm.
-      if (!result.fromCache) {
-        for (const e of result.errors) {
-          ctx.log.warn({ connector: e.connector, err: e.error }, "sdm connector failed");
-        }
-      }
-      return { ok: true, connections: result.connections, errors: result.errors, fromCache: result.fromCache, unresolved: result.unresolved ?? [], allResources: result.allResources ?? [] };
-    },
-
-    "sdm:resolve": async (payload: { url?: string } = {}) => {
-      const url = payload.url ?? "";
-      if (!url.trim()) return { ok: false, error: "sdm:resolve requires a url" };
-      const result = await deps.resolveConnection(url);
-      return { ok: true, connection: result?.connection, unresolved: result?.unresolved, errors: result?.errors ?? [] };
+      const result = await deps.scan({ refresh: payload.refresh });
+      return { ok: true, resources: result.resources, fromCache: result.fromCache, error: result.error };
     },
 
     "sdm:snapshot": async (payload: { force?: boolean } = {}) => {
