@@ -10,8 +10,7 @@ import { spawnSync } from "child_process";
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { join, resolve } from "path";
 import type { CommandArg, CommandNode, CommandContext } from "./command-tree.ts";
-import { makeApi } from "./plugin-api.ts";
-import { ensurePluginApiDir } from "./plugin-api.ts";
+import { makeApi, ensurePluginApiDir } from "./plugin-api.ts";
 import { rtDir } from "./rt-paths.ts";
 
 export interface PluginNode {
@@ -232,8 +231,19 @@ export function pluginsDir(): string {
 export function discoverPlugins(): DiscoveredPlugin[] {
   const root = pluginsDir();
   if (!existsSync(root)) return [];
+  let entries: string[];
+  try {
+    entries = readdirSync(root).sort();
+  } catch (err) {
+    return [{
+      dirName: "(plugins dir)",
+      dir: root,
+      manifest: null,
+      errors: [`cannot read plugins directory: ${err instanceof Error ? err.message : String(err)}`],
+    }];
+  }
   const out: DiscoveredPlugin[] = [];
-  for (const dirName of readdirSync(root).sort()) {
+  for (const dirName of entries) {
     const dir = join(root, dirName);
     const manifestPath = join(dir, "plugin.json");
     if (!existsSync(manifestPath)) continue;
@@ -241,7 +251,7 @@ export function discoverPlugins(): DiscoveredPlugin[] {
     try {
       raw = JSON.parse(readFileSync(manifestPath, "utf8"));
     } catch (err) {
-      out.push({ dirName, dir, manifest: null, errors: [`plugin.json is not valid JSON (${err instanceof Error ? err.message : String(err)})`] });
+      out.push({ dirName, dir, manifest: null, errors: [`plugin.json is unreadable or not valid JSON (${err instanceof Error ? err.message : String(err)})`] });
       continue;
     }
     const errors = validateManifest(raw);

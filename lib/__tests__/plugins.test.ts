@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, chmodSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { validateManifest, toCommandNode, ExecFailure } from "../plugins.ts";
+import { validateManifest, toCommandNode, ExecFailure, discoverPlugins, loadPluginTree } from "../plugins.ts";
 
 const valid = {
   name: "my-plugin",
@@ -188,8 +188,6 @@ describe("toCommandNode", () => {
   });
 });
 
-import { discoverPlugins, loadPluginTree } from "../plugins.ts";
-
 function writePlugin(home: string, dirName: string, manifest: unknown): void {
   const dir = join(home, ".rt", "plugins", dirName);
   mkdirSync(dir, { recursive: true });
@@ -285,5 +283,13 @@ describe("discovery + merge", () => {
     expect(found).toHaveLength(1);
     expect(found[0]!.manifest).toBeNull();
     expect(found[0]!.errors.join()).toContain("apiVersion");
+  });
+
+  test("plugins path that is a file (not a dir) reports an error instead of throwing", () => {
+    mkdirSync(join(home, ".rt"), { recursive: true });
+    writeFileSync(join(home, ".rt", "plugins"), "not a directory");
+    const found = discoverPlugins();
+    expect(found).toHaveLength(1);
+    expect(found[0]!.errors.join()).toContain("cannot read plugins directory");
   });
 });
