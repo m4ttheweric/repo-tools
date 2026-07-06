@@ -158,11 +158,12 @@ export async function startInteractive(
   const cwd = opts.cwd ?? opts.home;
   const socketPath = join(opts.home, `.tw-${process.pid}-${++nextId}.sock`);
 
-  // Connector scaffolds (rt sdm connectors init) run via `#!/usr/bin/env bun`,
-  // so bun's own directory must be on PATH for the spawned rt binary's
-  // children to find it. process.execPath is the running bun binary itself,
-  // which resolves correctly whether bun was installed via the bun installer
-  // (~/.bun/bin) or Homebrew (/opt/homebrew/bin) -- unlike a hardcoded guess.
+  // Some spawned children may exec a script with a `#!/usr/bin/env bun`
+  // shebang, so bun's own directory must be on PATH for the spawned rt
+  // binary's children to find it. process.execPath is the running bun binary
+  // itself, which resolves correctly whether bun was installed via the bun
+  // installer (~/.bun/bin) or Homebrew (/opt/homebrew/bin) -- unlike a
+  // hardcoded guess.
   const bunDir = join(process.execPath, "..");
 
   const env: Record<string, string> = {
