@@ -7,7 +7,7 @@
  */
 
 import { spawnSync } from "child_process";
-import { existsSync, readdirSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import type { CommandArg, CommandNode, CommandContext } from "./command-tree.ts";
 import { makeApi, ensurePluginApiDir } from "./plugin-api.ts";
@@ -302,4 +302,50 @@ export function loadPluginTree(
     }
   }
   return tree;
+}
+
+/** Create ~/.rt/plugins/<name>/ with a starter command, tsconfig, and package.json. */
+export function scaffoldPlugin(name: string): string {
+  if (!KEBAB_RE.test(name)) throw new Error(`plugin name must be kebab-case (got "${name}")`);
+  const dir = join(pluginsDir(), name);
+  if (existsSync(dir)) throw new Error(`${dir} already exists`);
+  ensurePluginApiDir();
+  mkdirSync(dir, { recursive: true });
+
+  writeFileSync(join(dir, "plugin.json"), JSON.stringify({
+    name,
+    apiVersion: 1,
+    commands: {
+      [name]: { description: `Describe what ${name} does`, module: `./${name}.ts` },
+    },
+  }, null, 2) + "\n");
+
+  writeFileSync(join(dir, `${name}.ts`), `import type { RtCommandContext } from "rt-plugin";
+
+export async function run(args: string[], ctx: RtCommandContext) {
+  const runs = ctx.rt.store<number>("runs");
+  const count = ((await runs.get()) ?? 0) + 1;
+  await runs.set(count);
+  console.log(\`hello from ${name} (run #\${count}, args: \${JSON.stringify(args)})\`);
+}
+`);
+
+  writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({
+    compilerOptions: {
+      lib: ["esnext"], module: "esnext", target: "esnext",
+      moduleResolution: "bundler", allowImportingTsExtensions: true,
+      noEmit: true, strict: true, types: ["bun"], skipLibCheck: true,
+    },
+  }, null, 2) + "\n");
+
+  writeFileSync(join(dir, "package.json"), JSON.stringify({
+    name, private: true,
+    devDependencies: {
+      "rt-plugin": "file:../../plugin-api",
+      "@types/bun": "^1.2.0",
+      "typescript": "^5.5.0",
+    },
+  }, null, 2) + "\n");
+
+  return dir;
 }

@@ -588,6 +588,27 @@ const TREE: Record<string, CommandNode> = {
       },
     },
   },
+
+  plugin: {
+    description: "Manage user plugins",
+    subcommands: {
+      new: {
+        description: "Scaffold a new plugin",
+        module: "./commands/plugin.ts",
+        fn: "runNew",
+      },
+      list: {
+        description: "List installed plugins",
+        module: "./commands/plugin.ts",
+        fn: "runList",
+      },
+      validate: {
+        description: "Deep-validate installed plugins",
+        module: "./commands/plugin.ts",
+        fn: "runValidate",
+      },
+    },
+  },
 };
 
 // ─── Entry ───────────────────────────────────────────────────────────────────

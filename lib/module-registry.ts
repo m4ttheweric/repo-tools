@@ -35,6 +35,7 @@ import * as doppler from "../commands/doppler.ts";
 import * as nav from "../commands/nav.ts";
 import * as parkingLot from "../commands/parking-lot.ts";
 import * as sdm from "../commands/sdm.ts";
+import * as plugin from "../commands/plugin.ts";
 
 export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/branch.ts": branch,
@@ -66,4 +67,5 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/nav.ts": nav,
   "./commands/parking-lot.ts": parkingLot,
   "./commands/sdm.ts": sdm,
+  "./commands/plugin.ts": plugin,
 };

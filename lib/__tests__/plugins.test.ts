@@ -1,8 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, chmodSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, chmodSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { validateManifest, toCommandNode, ExecFailure, discoverPlugins, loadPluginTree } from "../plugins.ts";
+import { validateManifest, toCommandNode, ExecFailure, discoverPlugins, loadPluginTree, scaffoldPlugin } from "../plugins.ts";
 
 const valid = {
   name: "my-plugin",
@@ -291,5 +291,43 @@ describe("discovery + merge", () => {
     const found = discoverPlugins();
     expect(found).toHaveLength(1);
     expect(found[0]!.errors.join()).toContain("cannot read plugins directory");
+  });
+});
+
+describe("scaffoldPlugin", () => {
+  let home: string;
+  let savedHome: string | undefined;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rt-scaffold-"));
+    savedHome = process.env.HOME;
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = savedHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("creates a valid, discoverable plugin and the plugin-api dir", () => {
+    const dir = scaffoldPlugin("my-tool");
+    expect(dir).toBe(join(home, ".rt", "plugins", "my-tool"));
+    for (const f of ["plugin.json", "my-tool.ts", "tsconfig.json", "package.json"]) {
+      expect(existsSync(join(dir, f))).toBe(true);
+    }
+    expect(existsSync(join(home, ".rt", "plugin-api", "index.d.ts"))).toBe(true);
+
+    const manifest = JSON.parse(readFileSync(join(dir, "plugin.json"), "utf8"));
+    expect(validateManifest(manifest)).toEqual([]);
+    expect(manifest.commands["my-tool"].module).toBe("./my-tool.ts");
+
+    const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+    expect(pkg.devDependencies["rt-plugin"]).toBe("file:../../plugin-api");
+  });
+
+  test("rejects non-kebab-case names and existing dirs", () => {
+    expect(() => scaffoldPlugin("Bad Name")).toThrow(/kebab-case/);
+    scaffoldPlugin("twice");
+    expect(() => scaffoldPlugin("twice")).toThrow(/already exists/);
   });
 });
