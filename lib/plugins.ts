@@ -6,7 +6,11 @@
  * broken plugin can only ever fail its own command, never rt itself.
  */
 
-import type { CommandArg } from "./command-tree.ts";
+import { spawnSync } from "child_process";
+import { join, resolve } from "path";
+import type { CommandArg, CommandNode, CommandContext } from "./command-tree.ts";
+import { makeApi } from "./plugin-api.ts";
+import { rtDir } from "./rt-paths.ts";
 
 export interface PluginNode {
   description: string;
@@ -136,4 +140,76 @@ export function validateManifest(raw: unknown): string[] {
     }
   }
   return errors;
+}
+
+/** A plugin exec target exited non-zero; carries the child's exit code. */
+export class ExecFailure extends Error {
+  constructor(public readonly code: number, label: string) {
+    super(`${label} exited with code ${code}`);
+  }
+}
+
+export function toCommandNode(pluginName: string, pluginDir: string, node: PluginNode): CommandNode {
+  const out: CommandNode = {
+    description: node.description,
+    aliases: node.aliases,
+    hidden: node.hidden,
+    context: node.context,
+    requiresTTY: node.requiresTTY,
+    fullscreen: node.fullscreen,
+    args: node.args,
+  };
+
+  if (node.subcommands) {
+    out.subcommands = Object.fromEntries(
+      Object.entries(node.subcommands).map(([name, sub]) => [name, toCommandNode(pluginName, pluginDir, sub)]),
+    );
+    return out;
+  }
+
+  if (node.module) {
+    const modulePath = resolve(pluginDir, node.module);
+    const fnName = node.fn ?? "run";
+    out.handler = async (args: string[], ctx: CommandContext) => {
+      let mod: Record<string, unknown>;
+      try {
+        mod = await import(modulePath);
+      } catch (err) {
+        throw new Error(`plugin ${pluginName}: failed to load ${node.module}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const fn = mod[fnName];
+      if (typeof fn !== "function") {
+        throw new Error(`plugin ${pluginName}: ${node.module} does not export "${fnName}"`);
+      }
+      await fn(args, { ...ctx, rt: makeApi(pluginName) });
+    };
+    return out;
+  }
+
+  const spec = node.exec!;
+  const [cmd, ...fixed] = Array.isArray(spec) ? spec : [spec];
+  const resolved = cmd!.includes("/") ? resolve(pluginDir, cmd!) : cmd!;
+  out.handler = async (args: string[], ctx: CommandContext) => {
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      RT_PLUGIN_NAME: pluginName,
+      RT_PLUGIN_DATA_DIR: join(rtDir(), "plugin-data", pluginName),
+    };
+    if (ctx.identity) {
+      env.RT_REPO_NAME = ctx.identity.repoName;
+      env.RT_REPO_ROOT = ctx.identity.repoRoot;
+      env.RT_REPO_DATA_DIR = ctx.identity.dataDir;
+      env.RT_REMOTE_URL = ctx.identity.remoteUrl;
+      env.RT_BASE_URL = ctx.identity.baseUrl;
+      env.RT_AUTO_RESOLVED = ctx.autoResolved ? "1" : "0";
+    }
+    const result = spawnSync(resolved, [...fixed, ...args], { stdio: "inherit", env });
+    if (result.error) {
+      throw new Error(`plugin ${pluginName}: cannot run ${resolved}: ${result.error.message}`);
+    }
+    if (result.status !== 0) {
+      throw new ExecFailure(result.status ?? 1, `plugin ${pluginName}: ${cmd}`);
+    }
+  };
+  return out;
 }

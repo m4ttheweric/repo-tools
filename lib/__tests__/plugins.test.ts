@@ -1,5 +1,8 @@
-import { describe, test, expect } from "bun:test";
-import { validateManifest } from "../plugins.ts";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, chmodSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
+import { validateManifest, toCommandNode, ExecFailure } from "../plugins.ts";
 
 const valid = {
   name: "my-plugin",
@@ -76,5 +79,111 @@ describe("validateManifest", () => {
       commands: { a: { description: "d", subcommands: { b: { description: "e" } } } },
     };
     expect(validateManifest(nested).join()).toContain("a.b");
+  });
+});
+
+describe("toCommandNode", () => {
+  let home: string;
+  let dir: string;
+  let savedHome: string | undefined;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rt-plugins-"));
+    savedHome = process.env.HOME;
+    process.env.HOME = home;
+    dir = join(home, ".rt", "plugins", "test-plugin");
+    mkdirSync(dir, { recursive: true });
+  });
+
+  afterEach(() => {
+    process.env.HOME = savedHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("passes through declarative fields", () => {
+    const node = toCommandNode("test-plugin", dir, {
+      description: "d", module: "./x.ts",
+      aliases: ["a"], hidden: true, context: "worktree", requiresTTY: true, fullscreen: true,
+      args: [{ name: "N", type: "text" }],
+    });
+    expect(node.description).toBe("d");
+    expect(node.aliases).toEqual(["a"]);
+    expect(node.hidden).toBe(true);
+    expect(node.context).toBe("worktree");
+    expect(node.requiresTTY).toBe(true);
+    expect(node.fullscreen).toBe(true);
+    expect(node.args).toHaveLength(1);
+    expect(typeof node.handler).toBe("function");
+  });
+
+  test("module handler imports lazily and injects ctx.rt", async () => {
+    writeFileSync(join(dir, "hello.ts"), `
+      export async function run(args, ctx) {
+        await ctx.rt.store("seen").set({ args, hasIdentity: !!ctx.identity });
+      }
+    `);
+    const node = toCommandNode("test-plugin", dir, { description: "d", module: "./hello.ts" });
+    await node.handler!(["x", "y"], {});
+    const seen = JSON.parse(readFileSync(join(home, ".rt", "plugin-data", "test-plugin", "seen.json"), "utf8"));
+    expect(seen).toEqual({ args: ["x", "y"], hasIdentity: false });
+  });
+
+  test("module handler honors fn and reports missing exports with provenance", async () => {
+    writeFileSync(join(dir, "multi.ts"), `export async function add() {}`);
+    const good = toCommandNode("test-plugin", dir, { description: "d", module: "./multi.ts", fn: "add" });
+    await good.handler!([], {});
+    const bad = toCommandNode("test-plugin", dir, { description: "d", module: "./multi.ts", fn: "nope" });
+    expect(bad.handler!([], {})).rejects.toThrow(/test-plugin.*does not export "nope"/);
+  });
+
+  test("module handler wraps import failures with provenance", async () => {
+    writeFileSync(join(dir, "broken.ts"), `throw new Error("module failed");`);
+    const node = toCommandNode("test-plugin", dir, { description: "d", module: "./broken.ts" });
+    expect(node.handler!([], {})).rejects.toThrow(/test-plugin.*failed to load/);
+  });
+
+  test("subcommands convert recursively", () => {
+    const node = toCommandNode("test-plugin", dir, {
+      description: "d",
+      subcommands: { inner: { description: "e", module: "./x.ts" } },
+    });
+    expect(node.subcommands!.inner!.description).toBe("e");
+    expect(typeof node.subcommands!.inner!.handler).toBe("function");
+    expect(node.handler).toBeUndefined();
+  });
+
+  test("exec handler passes args + RT_* env and succeeds on exit 0", async () => {
+    const script = join(dir, "probe.sh");
+    writeFileSync(script, `#!/bin/sh\necho "$RT_PLUGIN_NAME|$RT_REPO_NAME|$@" > "${dir}/probe.out"\n`);
+    chmodSync(script, 0o755);
+    const node = toCommandNode("test-plugin", dir, { description: "d", exec: "./probe.sh" });
+    await node.handler!(["one", "two"], {
+      identity: { repoName: "r", repoRoot: "/tmp/r", dataDir: "/tmp/d", remoteUrl: "", baseUrl: "" },
+      autoResolved: true,
+    });
+    expect(readFileSync(join(dir, "probe.out"), "utf8").trim()).toBe("test-plugin|r|one two");
+  });
+
+  test("exec handler throws ExecFailure carrying the child's exit code", async () => {
+    const script = join(dir, "fail.sh");
+    writeFileSync(script, `#!/bin/sh\nexit 7\n`);
+    chmodSync(script, 0o755);
+    const node = toCommandNode("test-plugin", dir, { description: "d", exec: "./fail.sh" });
+    try {
+      await node.handler!([], {});
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ExecFailure);
+      expect((err as ExecFailure).code).toBe(7);
+    }
+  });
+
+  test("exec array form prepends fixed args; bare commands use PATH", async () => {
+    const node = toCommandNode("test-plugin", dir, {
+      description: "d",
+      exec: ["sh", "-c", `echo fixed > "${dir}/sh.out"`],
+    });
+    await node.handler!([], {});
+    expect(readFileSync(join(dir, "sh.out"), "utf8").trim()).toBe("fixed");
   });
 });
