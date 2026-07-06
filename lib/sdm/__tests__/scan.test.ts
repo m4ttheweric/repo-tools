@@ -1,0 +1,25 @@
+import { describe, test, expect } from "bun:test";
+import { parseCatalogResources } from "../scan.ts";
+
+const CATALOG = [
+  "ID                     NAME                     PUBLIC   TYPE       AUTH                 ACCESS       TAGS",
+  "rs-3683bf6c68ffb3d7    assured-amfam-staging    true     postgres   Leased Credentials   available    postgres-db=,staging=",
+  "rs-275c2cfc66b6a84e    assured-acg-qa-prod      true     postgres   Leased Credentials   available    production=",
+  "rs-aaaa0000bbbb1111    some-website             true     website    HTTP                 available    web=",
+  "not-a-row",
+].join("\n");
+const STATUS_NAMES = ["assured-dev", "assured-amfam-staging"]; // from getSdmSnapshot().resources.keys()
+
+describe("parseCatalogResources", () => {
+  test("takes name/type/tags from rs- rows, keeps only postgres datasources", () => {
+    const byName = Object.fromEntries(parseCatalogResources(CATALOG, []).map(x => [x.name, x]));
+    expect(byName["assured-amfam-staging"]).toEqual({ name: "assured-amfam-staging", type: "postgres", tags: ["postgres-db=", "staging="] });
+    expect(byName["assured-acg-qa-prod"]!.type).toBe("postgres");
+    expect(byName["some-website"]).toBeUndefined(); // non-postgres filtered out
+  });
+  test("adds status names not already in the catalog, deduped", () => {
+    const names = parseCatalogResources(CATALOG, STATUS_NAMES).map(x => x.name);
+    expect(names).toContain("assured-dev");                 // status-only standing access
+    expect(names.filter(n => n === "assured-amfam-staging")).toHaveLength(1); // deduped
+  });
+});
