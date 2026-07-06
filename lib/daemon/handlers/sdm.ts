@@ -50,6 +50,7 @@ export function createSdmHandlers(ctx: HandlerContext, deps: SdmHandlerDeps = re
   return {
     "sdm:catalog": async (payload: { refresh?: boolean } = {}) => {
       const result = await deps.scan({ refresh: payload.refresh });
+      if (result.error) ctx.log.warn({ err: result.error }, "sdm scan failed");
       return { ok: true, resources: result.resources, fromCache: result.fromCache, error: result.error };
     },
 
