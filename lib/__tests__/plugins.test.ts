@@ -187,3 +187,103 @@ describe("toCommandNode", () => {
     expect(readFileSync(join(dir, "sh.out"), "utf8").trim()).toBe("fixed");
   });
 });
+
+import { discoverPlugins, loadPluginTree } from "../plugins.ts";
+
+function writePlugin(home: string, dirName: string, manifest: unknown): void {
+  const dir = join(home, ".rt", "plugins", dirName);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "plugin.json"), typeof manifest === "string" ? manifest : JSON.stringify(manifest));
+}
+
+describe("discovery + merge", () => {
+  let home: string;
+  let savedHome: string | undefined;
+  let warnings: string[];
+  const warn = (m: string) => warnings.push(m);
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "rt-merge-"));
+    savedHome = process.env.HOME;
+    process.env.HOME = home;
+    warnings = [];
+  });
+
+  afterEach(() => {
+    process.env.HOME = savedHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const BUILTINS = {
+    version: { description: "Show version", aliases: ["v"], handler: async () => {} },
+  };
+
+  test("no plugins dir: returns builtins untouched, no warnings", () => {
+    const tree = loadPluginTree(BUILTINS, warn);
+    expect(Object.keys(tree)).toEqual(["version"]);
+    expect(warnings).toEqual([]);
+  });
+
+  test("valid plugin commands merge into the tree", () => {
+    writePlugin(home, "my-plugin", {
+      name: "my-plugin", apiVersion: 1,
+      commands: { standup: { description: "d", module: "./standup.ts" } },
+    });
+    const tree = loadPluginTree(BUILTINS, warn);
+    expect(tree.standup!.description).toBe("d");
+    expect(warnings).toEqual([]);
+  });
+
+  test("malformed JSON is skipped with a warning; rt keeps working", () => {
+    writePlugin(home, "bad-plugin", "{ not json");
+    writePlugin(home, "good-plugin", {
+      name: "good-plugin", apiVersion: 1,
+      commands: { ok: { description: "d", module: "./ok.ts" } },
+    });
+    const tree = loadPluginTree(BUILTINS, warn);
+    expect(tree.ok).toBeDefined();
+    expect(warnings.join()).toContain('skipping plugin "bad-plugin"');
+  });
+
+  test("built-in name and alias collisions: built-in wins", () => {
+    writePlugin(home, "collide", {
+      name: "collide", apiVersion: 1,
+      commands: {
+        version: { description: "shadow", module: "./v.ts" },
+        mine: { description: "d", module: "./m.ts", aliases: ["v"] },
+      },
+    });
+    const tree = loadPluginTree(BUILTINS, warn);
+    expect(tree.version!.description).toBe("Show version");
+    expect(tree.mine).toBeUndefined();
+    expect(warnings.join()).toContain("collides with built-in");
+  });
+
+  test("plugin-vs-plugin collision: first by dir sort order wins", () => {
+    const cmd = { dup: { description: "d", module: "./x.ts" } };
+    writePlugin(home, "a-plugin", { name: "a-plugin", apiVersion: 1, commands: cmd });
+    writePlugin(home, "b-plugin", { name: "b-plugin", apiVersion: 1, commands: cmd });
+    const tree = loadPluginTree(BUILTINS, warn);
+    expect(tree.dup).toBeDefined();
+    expect(warnings.join()).toContain('plugin "b-plugin"');
+    expect(warnings.join()).toContain('plugin "a-plugin"');
+  });
+
+  test("manifest/dir name mismatch warns but still mounts", () => {
+    writePlugin(home, "dir-name", {
+      name: "other-name", apiVersion: 1,
+      commands: { thing: { description: "d", module: "./t.ts" } },
+    });
+    const tree = loadPluginTree(BUILTINS, warn);
+    expect(tree.thing).toBeDefined();
+    expect(warnings.join()).toContain("differs from directory name");
+  });
+
+  test("discoverPlugins reports validation errors without throwing", () => {
+    writePlugin(home, "wrong-version", { name: "wrong-version", apiVersion: 99, commands: { a: { description: "d", module: "./a.ts" } } });
+    const found = discoverPlugins();
+    expect(found).toHaveLength(1);
+    expect(found[0]!.manifest).toBeNull();
+    expect(found[0]!.errors.join()).toContain("apiVersion");
+  });
+});

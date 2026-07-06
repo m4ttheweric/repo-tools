@@ -7,9 +7,11 @@
  */
 
 import { spawnSync } from "child_process";
+import { existsSync, readdirSync, readFileSync } from "fs";
 import { join, resolve } from "path";
 import type { CommandArg, CommandNode, CommandContext } from "./command-tree.ts";
 import { makeApi } from "./plugin-api.ts";
+import { ensurePluginApiDir } from "./plugin-api.ts";
 import { rtDir } from "./rt-paths.ts";
 
 export interface PluginNode {
@@ -212,4 +214,82 @@ export function toCommandNode(pluginName: string, pluginDir: string, node: Plugi
     }
   };
   return out;
+}
+
+export interface DiscoveredPlugin {
+  dirName: string;
+  dir: string;
+  /** Parsed manifest when structurally valid, else null (see errors). */
+  manifest: PluginManifest | null;
+  errors: string[];
+}
+
+export function pluginsDir(): string {
+  return join(rtDir(), "plugins");
+}
+
+/** Structural discovery: readdir + parse + validate. Never executes plugin code, never throws. */
+export function discoverPlugins(): DiscoveredPlugin[] {
+  const root = pluginsDir();
+  if (!existsSync(root)) return [];
+  const out: DiscoveredPlugin[] = [];
+  for (const dirName of readdirSync(root).sort()) {
+    const dir = join(root, dirName);
+    const manifestPath = join(dir, "plugin.json");
+    if (!existsSync(manifestPath)) continue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(readFileSync(manifestPath, "utf8"));
+    } catch (err) {
+      out.push({ dirName, dir, manifest: null, errors: [`plugin.json is not valid JSON (${err instanceof Error ? err.message : String(err)})`] });
+      continue;
+    }
+    const errors = validateManifest(raw);
+    out.push({ dirName, dir, manifest: errors.length ? null : (raw as PluginManifest), errors });
+  }
+  return out;
+}
+
+/**
+ * Merge plugin commands into the built-in tree. Built-ins always win;
+ * plugin-vs-plugin, first by directory sort order wins. Collisions check
+ * names AND aliases. Losing commands are not mounted; every skip warns
+ * with provenance. A clean setup produces zero output.
+ */
+export function loadPluginTree(
+  builtins: Record<string, CommandNode>,
+  warn: (msg: string) => void = (m) => console.error(`  [rt] ${m}`),
+): Record<string, CommandNode> {
+  ensurePluginApiDir();
+  const tree = { ...builtins };
+
+  const claimed = new Map<string, string>();
+  for (const [name, node] of Object.entries(builtins)) {
+    claimed.set(name, "built-in");
+    for (const alias of node.aliases ?? []) claimed.set(alias, "built-in");
+  }
+
+  for (const plugin of discoverPlugins()) {
+    if (plugin.errors.length) {
+      warn(`skipping plugin "${plugin.dirName}": ${plugin.errors.join("; ")}`);
+      continue;
+    }
+    const manifest = plugin.manifest!;
+    if (manifest.name !== plugin.dirName) {
+      warn(`plugin "${plugin.dirName}": manifest name "${manifest.name}" differs from directory name`);
+    }
+    for (const [name, node] of Object.entries(manifest.commands)) {
+      const names = [name, ...(node.aliases ?? [])];
+      const conflict = names.find((n) => claimed.has(n));
+      if (conflict) {
+        const owner = claimed.get(conflict)!;
+        const what = owner === "built-in" ? "collides with built-in" : `already provided by ${owner}`;
+        warn(`plugin "${manifest.name}": command "${name}" ${what} ("${conflict}") ... not mounted`);
+        continue;
+      }
+      for (const n of names) claimed.set(n, `plugin "${manifest.name}"`);
+      tree[name] = toCommandNode(manifest.name, plugin.dir, node);
+    }
+  }
+  return tree;
 }
