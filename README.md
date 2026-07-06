@@ -215,6 +215,33 @@ rt --version              # Print version (short)
 
 ---
 
+## User plugins
+
+Add your own commands to rt. A plugin is a folder under `~/.rt/plugins/<name>/`
+with a `plugin.json` manifest and TypeScript files (or existing executables).
+Plugin commands get rt's navigation, repo/worktree context resolution, arg
+forms, and logging for free, and a broken plugin can never break rt itself.
+
+```bash
+rt plugin new my-tool     # scaffold + IDE types (autocomplete on ctx.rt.*)
+rt my-tool                # run it: edit ~/.rt/plugins/my-tool/my-tool.ts and rerun
+rt plugin list            # see installed plugins and their health
+rt plugin validate        # deep checks: files exist, modules import, exports match
+```
+
+A command is TypeScript (`"module": "./my-tool.ts"`, gets the injected `ctx.rt`
+API: pick/prompt/confirm, scoped storage, logging) or any executable
+(`"exec": "./scripts/deploy.sh"`, gets `RT_*` env vars). Commands merge into
+the root tree; name collisions are flagged and built-ins always win. Notes:
+
+- Runtime contract: standard library + injected API only (no npm deps in v1).
+- Plugin code runs in-process with rt's privileges. Only install plugin
+  directories you trust; reading a third-party plugin before installing it is
+  reading the code you are about to run.
+- `apiVersion: 1` is required in every manifest.
+
+---
+
 ## StrongDM
 
 `rt sdm` is a StrongDM auth-and-connect module: it logs you in, lists the datasources you can reach, and connects you fast with friendly names.
