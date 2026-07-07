@@ -54,7 +54,9 @@ export function recordRecent(
   const path = opts.path ?? sdmStatePath();
   const now = opts.now ?? (() => new Date());
   const state = loadSdmState(path);
-  const rest = state.recents.filter(r => r.key !== entry.key);
+  // Dedup by resource, not key: the key format changed across models, so an
+  // old-format recent for the same resource must be replaced, not duplicated.
+  const rest = state.recents.filter(r => r.sdmResource !== entry.sdmResource);
   const next: SdmState = {
     version: 1,
     recents: [{ ...entry, lastConnectedAt: now().toISOString() }, ...rest].slice(0, MAX_RECENTS),
