@@ -16,6 +16,8 @@ export interface SdmResourceState {
   connected: boolean;
   address: string | null;
   expiry: string | null;
+  /** The `sdm status` section this row sits under: "datasource" | "cluster" | "website" | "server" (lowercased), or undefined if seen before any header. */
+  kind?: string;
 }
 
 export interface SdmHealth {
@@ -36,13 +38,17 @@ const HEADER_FIRST_COL = new Set(["DATASOURCE", "CLUSTER", "WEBSITE", "SERVER"])
 
 export function parseSdmStatus(output: string): Map<string, SdmResourceState> {
   const resources = new Map<string, SdmResourceState>();
+  // `sdm status` groups rows under section headers (DATASOURCE, CLUSTER,
+  // WEBSITE, SERVER). Track the current section so callers can keep only real
+  // datasources and drop clusters/websites/servers.
+  let section = "";
   for (const line of output.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     const cols = trimmed.split(/\s{2,}/);
     if (cols.length < 2) continue;
     const name = cols[0]!;
-    if (HEADER_FIRST_COL.has(name)) continue;
+    if (HEADER_FIRST_COL.has(name)) { section = name.toLowerCase(); continue; }
     const statusRaw = (cols[1] ?? "").toLowerCase();
     const connected = statusRaw.includes("connected") && !statusRaw.includes("not connected");
     const addressCol = cols[2] ?? "";
@@ -51,7 +57,7 @@ export function parseSdmStatus(output: string): Map<string, SdmResourceState> {
     const addressToken = addressCol.split(/\s+/)[0] ?? "";
     const address = addressToken.startsWith("127.") ? addressToken : null;
     const expiryMatch = trimmed.match(/ until (.+)$/);
-    resources.set(name, { connected, address, expiry: expiryMatch?.[1] ?? null });
+    resources.set(name, { connected, address, expiry: expiryMatch?.[1] ?? null, kind: section || undefined });
   }
   return resources;
 }
