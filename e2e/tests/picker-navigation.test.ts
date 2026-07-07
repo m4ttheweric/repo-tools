@@ -47,7 +47,7 @@ describe("picker navigation", () => {
 
   afterAll(() => cleanup());
 
-  test("subcommand picker: ctrl-up exits cleanly", async () => {
+  test("subcommand picker: ctrl-up navigates back then exits", async () => {
     session = await startInteractive({ args: [], home });
     await session.waitForText("filter:", 8000);
 
@@ -56,6 +56,11 @@ describe("picker navigation", () => {
     await session.press("Enter");
     await session.waitForText("rebase", 5000);
 
+    // ctrl-up at the subcommand picker goes back to the root picker
+    await session.ctrl("up");
+    await session.waitForText("filter:", 5000);
+
+    // ctrl-up at the root picker exits
     await session.ctrl("up");
 
     const code = await session.exitCode;
