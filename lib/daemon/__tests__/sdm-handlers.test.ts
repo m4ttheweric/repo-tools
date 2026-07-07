@@ -31,6 +31,7 @@ function makeDeps(overrides: Partial<SdmHandlerDeps> = {}): SdmHandlerDeps {
     needsAccessRequest: async () => false,
     connect: async () => ({ ok: true }),
     verify: async () => ({ ok: true, attempts: 1, latencyMs: 12, lastError: null }),
+    probeTunnel: async () => ({ ok: true, latencyMs: 5 }),
     recordRecent: () => ({ version: 1, recents: [] }),
     ...overrides,
   };

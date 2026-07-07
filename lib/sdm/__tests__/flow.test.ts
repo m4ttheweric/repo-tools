@@ -26,6 +26,7 @@ function makeDeps(overrides: Partial<GuidedDeps> = {}): { deps: GuidedDeps; call
     requestAccess: async (_r, d, reason) => { calls.push(`access:${d}:${reason}`); return { ok: true }; },
     connect: async () => { calls.push("connect"); return { ok: true }; },
     verify: async url => { calls.push(`verify:${url}`); return { ok: true, attempts: 1, latencyMs: 10, lastError: null }; },
+    probeTunnel: async () => { calls.push("probeTunnel"); return { ok: true, latencyMs: 5 }; },
     login: async () => { calls.push("login"); return { ok: true }; },
     promptDuration: async def => { calls.push("promptDuration"); return def; },
     promptReason: async def => { calls.push("promptReason"); return def; },
@@ -114,9 +115,10 @@ describe("runGuidedConnect", () => {
     if (r.outcome === "failed") expect(r.stage).toBe("verify");
   });
 
-  test("query-dead tunnel surfaces the verify error", async () => {
+  test("verify fails AND the TCP tunnel is down: hard verify failure", async () => {
     const { deps } = makeDeps({
       verify: async () => ({ ok: false, attempts: 5, latencyMs: null, lastError: new Error("handshake refused") }),
+      probeTunnel: async () => ({ ok: false, error: new Error("ECONNREFUSED") }),
     });
     const r = await runGuidedConnect(target, { interactive: true }, deps);
     expect(r.outcome).toBe("failed");
@@ -124,5 +126,20 @@ describe("runGuidedConnect", () => {
       expect(r.stage).toBe("verify");
       expect(r.error).toContain("handshake refused");
     }
+  });
+
+  test("verify fails but the TCP tunnel is up: connected-with-warning, still recorded", async () => {
+    const { deps, calls } = makeDeps({
+      verify: async () => ({ ok: false, attempts: 5, latencyMs: null, lastError: new Error("Connection closed") }),
+      // default probeTunnel returns ok (tunnel reachable)
+    });
+    const r = await runGuidedConnect(target, { interactive: true }, deps);
+    expect(r.outcome).toBe("connected");
+    if (r.outcome === "connected") {
+      expect(r.unverified).toBe(true);
+      expect(r.verify.lastError?.message).toBe("Connection closed");
+    }
+    // A usable tunnel is still recorded as a recent (unlike a hard failure).
+    expect(calls).toContain("recordRecent");
   });
 });

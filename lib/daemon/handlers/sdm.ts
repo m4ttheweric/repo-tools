@@ -15,7 +15,7 @@ import {
   type SdmSnapshot,
 } from "../../sdm/core.ts";
 import { scanSdmResources, type SdmResource } from "../../sdm/scan.ts";
-import { probeQuery, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS, type VerifyOutcome } from "../../sdm/verify.ts";
+import { probeQuery, probeTunnel, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS, type ProbeResult, type VerifyOutcome } from "../../sdm/verify.ts";
 import { loadSdmState, recordRecent, type RecentEntry, type SdmState } from "../../sdm/state.ts";
 import { runGuidedConnect } from "../../sdm/flow.ts";
 
@@ -26,6 +26,7 @@ export interface SdmHandlerDeps {
   needsAccessRequest: (resource: string) => Promise<boolean>;
   connect: (resource: string, onLine: (l: string) => void) => Promise<{ ok: boolean; error?: string; code?: SdmFailureCode }>;
   verify: (url: string) => Promise<VerifyOutcome>;
+  probeTunnel: (address: string) => Promise<ProbeResult>;
   recordRecent: (entry: Omit<RecentEntry, "lastConnectedAt">) => SdmState;
 }
 
@@ -39,6 +40,10 @@ const realDeps: SdmHandlerDeps = {
   },
   connect: connectResource,
   verify: url => verifyWithRetries(() => probeQuery(url, VERIFY_ATTEMPT_TIMEOUT_MS)),
+  probeTunnel: address => {
+    const i = address.lastIndexOf(":");
+    return probeTunnel(address.slice(0, i), Number(address.slice(i + 1)));
+  },
   recordRecent: entry => recordRecent(entry),
 };
 
@@ -92,6 +97,7 @@ export function createSdmHandlers(ctx: HandlerContext, deps: SdmHandlerDeps = re
           requestAccess: never,
           connect: deps.connect,
           verify: deps.verify,
+          probeTunnel: deps.probeTunnel,
           login: never,
           promptDuration: never,
           promptReason: never,
