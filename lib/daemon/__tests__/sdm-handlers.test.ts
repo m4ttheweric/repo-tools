@@ -16,7 +16,7 @@ function okSnapshot(): SdmSnapshot {
 function makeDeps(overrides: Partial<SdmHandlerDeps> = {}): SdmHandlerDeps {
   return {
     scan: async () => ({
-      resources: [{ name: "example-a", type: "postgres", tags: [] }],
+      resources: [{ name: "example-a", type: "postgres", tags: [], standingAccess: false }],
       fromCache: false,
     }),
     getSnapshot: async () => okSnapshot(),
@@ -39,7 +39,7 @@ function makeDeps(overrides: Partial<SdmHandlerDeps> = {}): SdmHandlerDeps {
 
 describe("sdm handlers", () => {
   test("sdm:catalog passes through resources and fromCache from scan", async () => {
-    const resources: SdmResource[] = [{ name: "example-a", type: "postgres", tags: ["env=staging"] }];
+    const resources: SdmResource[] = [{ name: "example-a", type: "postgres", tags: ["env=staging"], standingAccess: false }];
     const h = createSdmHandlers(ctx, makeDeps({ scan: async () => ({ resources, fromCache: true }) }));
     const r = await h["sdm:catalog"]!({});
     expect(r.ok).toBe(true);

@@ -27,17 +27,37 @@ const TIER_COLOR: Record<string, string> = {
 
 const MAX_RECENT_ROWS = 3;
 
-function row(key: string, label: string, sdmResource: string, tier?: string): NavOption {
+// Bright blue for a live tunnel, distinct from the tier palette (green/magenta/
+// yellow/red), so a connected row pops. Applied as the whole-row color.
+const CONNECTED_COLOR = "\x1b[94m";
+
+/**
+ * Left gutter marks connection state at a glance: a filled dot = a live tunnel
+ * right now, a check = standing access (connect with no access request),
+ * blank = on-demand (connecting will prompt for an access request). Kept as
+ * plain text (no inline ANSI) so the picker's column alignment stays correct;
+ * the blue comes from the row color.
+ */
+function row(
+  key: string, label: string, sdmResource: string, tier: string | undefined,
+  connected: boolean, standingAccess: boolean,
+): NavOption {
+  const gutter = connected ? "● " : standingAccess ? "✓ " : "  ";
   return {
     value: key,
-    label,
+    label: `${gutter}${label}`,
     hint: tier ? `${sdmResource}  ${tier}` : sdmResource,
-    color: tier ? TIER_COLOR[tier] : undefined,
+    color: connected ? CONNECTED_COLOR : (tier ? TIER_COLOR[tier] : undefined),
   };
 }
 
-export function buildPickerOptions(connections: SdmConnection[], recents: RecentEntry[]): NavOption[] {
+export function buildPickerOptions(
+  connections: SdmConnection[],
+  recents: RecentEntry[],
+  connectedResources: Set<string> = new Set(),
+): NavOption[] {
   const options: NavOption[] = [];
+  const isLive = (sdmResource: string) => connectedResources.has(sdmResource);
 
   // A connection's stable identity is its sdmResource, not its key: recents
   // recorded under older models carry stale keys/labels for the same resource,
@@ -51,8 +71,8 @@ export function buildPickerOptions(connections: SdmConnection[], recents: Recent
     options.push(navSeparator("Recent"));
     for (const r of recentRows) {
       const cur = byResource.get(r.sdmResource);
-      if (cur) options.push(row(cur.key, cur.label, cur.sdmResource, cur.tier));
-      else options.push(row(r.key, r.label, r.sdmResource, r.tier));
+      if (cur) options.push(row(cur.key, cur.label, cur.sdmResource, cur.tier, isLive(cur.sdmResource), cur.standingAccess ?? false));
+      else options.push(row(r.key, r.label, r.sdmResource, r.tier, isLive(r.sdmResource), false));
     }
   }
 
@@ -74,7 +94,7 @@ export function buildPickerOptions(connections: SdmConnection[], recents: Recent
   for (const tier of tiers) {
     options.push(navSeparator(tier === "" ? "Other" : (TIER_LABELS[tier] ?? tier)));
     const group = byTier.get(tier)!.slice().sort((a, b) => a.label.localeCompare(b.label));
-    for (const c of group) options.push(row(c.key, c.label, c.sdmResource, c.tier));
+    for (const c of group) options.push(row(c.key, c.label, c.sdmResource, c.tier, isLive(c.sdmResource), c.standingAccess ?? false));
   }
 
   return options;

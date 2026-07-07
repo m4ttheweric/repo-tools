@@ -195,9 +195,15 @@ StrongDM CLI install:  ${dim}${SDM_INSTALL_URL}${reset}`);
   }
 
   const connections = buildSdmConnections(resources, loadEnrichment());
+  // Live connection state for the "● connected" badge: a fresh sdm status
+  // snapshot (not the cached scan), so the picker reflects active tunnels now.
+  const snapshot = await getSdmSnapshot();
+  const connected = new Set(
+    [...snapshot.resources].filter(([, s]) => s.connected).map(([name]) => name),
+  );
   const { runNavPicker } = await import("../lib/navigate.ts");
-  const options = buildPickerOptions(connections, recents);
-  const picked = await runNavPicker({ options, message: "sdm connections" });
+  const options = buildPickerOptions(connections, recents, connected);
+  const picked = await runNavPicker({ options, message: "sdm connections   ● connected   ✓ standing access" });
   if (!picked || !picked.value) return;
 
   const target =
