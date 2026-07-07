@@ -147,6 +147,16 @@ rt writes a types-only package to `~/.rt/plugin-api/` (regenerated automatically
 
 If your editor shows red squiggles in a plugin folder, run `bun install` in that folder. Typecheck a plugin any time with `bunx tsc --noEmit` from its folder.
 
+## Letting an agent build your plugin
+
+This repo ships an agent skill at [`skills/rt-create-plugin/`](../skills/rt-create-plugin/SKILL.md) that teaches a coding agent the full authoring loop (scaffold, manifest, handlers, validate, run). To use it with Claude Code, symlink or copy the folder into your skills directory:
+
+```bash
+ln -s /path/to/repo-tools/skills/rt-create-plugin ~/.claude/skills/rt-create-plugin
+```
+
+(Cursor: `~/.cursor/skills/`; other harnesses: wherever they discover skills.) Then ask your agent for the command you want, e.g. "create an rt plugin that adds a `standup` command".
+
 ## Trust model
 
 Plugin code runs in-process with rt's privileges. This is personal tooling for your own machine: only install plugin directories you trust, and read third-party plugin code before installing it, because installing it is agreeing to run it.
