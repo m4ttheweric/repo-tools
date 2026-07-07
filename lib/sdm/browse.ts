@@ -18,6 +18,8 @@ export interface SdmConnection {
   production?: boolean;
   reasonSuggestion?: string;
   db?: { database?: string; schema?: string; user?: string };
+  /** Connectable without an access request (carried from the scan). */
+  standingAccess?: boolean;
 }
 
 export function buildSdmConnections(
@@ -36,6 +38,7 @@ export function buildSdmConnections(
         production: e?.production ?? false,
         reasonSuggestion: e?.reasonSuggestion ?? `investigating ${label} data`,
         db: e?.db,
+        standingAccess: r.standingAccess,
       };
     })
     .sort((a, b) => a.label.localeCompare(b.label));

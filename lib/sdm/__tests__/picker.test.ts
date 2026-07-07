@@ -67,7 +67,7 @@ describe("buildPickerOptions", () => {
     expect(rows).toHaveLength(1);
     // ... and it renders from the CURRENT catalog entry, not the stale recent.
     expect(rows[0]!.value).toBe("demo:q");
-    expect(rows[0]!.label).toBe("q");
+    expect(rows[0]!.label.trim()).toBe("q"); // label carries a state gutter now
     expect(options[0]!.label).toBe("Recent");
   });
 
@@ -79,8 +79,26 @@ describe("buildPickerOptions", () => {
     const options = buildPickerOptions([conn("q", "qa")], [goneRecent]);
     const recentIdx = options.findIndex(o => o.separator && o.label === "Recent");
     expect(options[recentIdx + 1]!.value).toBe("old:gone");
-    expect(options[recentIdx + 1]!.label).toBe("Gone DB");
+    expect(options[recentIdx + 1]!.label.trim()).toBe("Gone DB");
     // The unrelated catalog connection still appears in its tier.
     expect(options.some(o => o.value === "demo:q")).toBe(true);
+  });
+
+  test("gutter marks state: filled dot connected (blue), check standing, blank on-demand", () => {
+    const standing = (id: string, tier: string): SdmConnection => ({ ...conn(id, tier), standingAccess: true });
+    const onDemand = (id: string, tier: string): SdmConnection => ({ ...conn(id, tier), standingAccess: false });
+    const options = buildPickerOptions(
+      [standing("q", "qa"), standing("s", "staging"), onDemand("d", "development")],
+      [],
+      new Set(["example-q"]), // q has a live tunnel right now
+    );
+    const rows = options.filter(o => !o.separator);
+    const q = rows.find(o => o.value === "demo:q")!;
+    const s = rows.find(o => o.value === "demo:s")!;
+    const d = rows.find(o => o.value === "demo:d")!;
+    expect(q.label.startsWith("● ")).toBe(true);  // connected
+    expect(s.label.startsWith("✓ ")).toBe(true);  // standing access, not connected
+    expect(d.label.startsWith("  ")).toBe(true);  // on-demand
+    expect(q.color).toContain("94");              // connected row rendered blue
   });
 });

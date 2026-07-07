@@ -15,6 +15,9 @@ export interface SdmResource {
   name: string;
   type: string;
   tags: string[];
+  /** True when you can connect without an access request: the catalog row has
+   * no "available" (requestable) state, or the resource is already in status. */
+  standingAccess: boolean;
 }
 
 export function parseCatalogResources(catalogOutput: string, statusNames: string[]): SdmResource[] {
@@ -31,12 +34,16 @@ export function parseCatalogResources(catalogOutput: string, statusNames: string
     if (!type.includes("postgres")) continue;
     const last = cols[cols.length - 1]!.trim();
     const tags = /=/.test(last) ? last.split(",").map(t => t.trim()).filter(Boolean) : [];
-    byName.set(name, { name, type, tags });
+    // "available" in any column means the resource must be requested; its
+    // absence means you already have standing access (matches core's
+    // resourceNeedsAccessRequest).
+    const standingAccess = !cols.some(c => c.trim().toLowerCase() === "available");
+    byName.set(name, { name, type, tags, standingAccess });
   }
   // Standing-access / connected datasources (already parsed by getSdmSnapshot)
-  // that the catalog did not list. type/tags unknown -> postgres, no tags.
+  // that the catalog did not list: being in status means you can reach them.
   for (const name of statusNames) {
-    if (name && !byName.has(name)) byName.set(name, { name, type: "postgres", tags: [] });
+    if (name && !byName.has(name)) byName.set(name, { name, type: "postgres", tags: [], standingAccess: true });
   }
   return [...byName.values()];
 }
