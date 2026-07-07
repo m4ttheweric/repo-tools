@@ -22,7 +22,7 @@ describe("loadSdmState", () => {
 });
 
 describe("recordRecent", () => {
-  test("prepends, dedupes by key, and caps", () => {
+  test("prepends, dedupes by resource, and caps", () => {
     const p = join(dir, "state.json");
     const now = () => new Date("2026-07-01T12:00:00Z");
     for (let i = 0; i < MAX_RECENTS + 3; i++) recordRecent(entry(`c${i}`), { path: p, now });
@@ -34,5 +34,18 @@ describe("recordRecent", () => {
     expect(state.recents[0]!.key).toBe("c5");
     expect(state.recents.filter(r => r.key === "c5")).toHaveLength(1);
     expect(state.recents[0]!.lastConnectedAt).toBe("2026-07-01T12:00:00.000Z");
+  });
+
+  test("a new-key connect replaces the old-key recent for the same resource (no dup)", () => {
+    const p = join(dir, "resource-dedup.json");
+    const now = () => new Date("2026-07-01T12:00:00Z");
+    // Old connector-model recent, then reconnect via the new scan model:
+    // different key, same underlying resource.
+    recordRecent({ key: "acme:acme-db-qa", label: "acme-db-qa", sdmResource: "acme-db-qa" }, { path: p, now });
+    const state = recordRecent({ key: "sdm:acme-db-qa", label: "Acme QA", sdmResource: "acme-db-qa" }, { path: p, now });
+    const forResource = state.recents.filter(r => r.sdmResource === "acme-db-qa");
+    expect(forResource).toHaveLength(1);
+    expect(forResource[0]!.key).toBe("sdm:acme-db-qa");
+    expect(forResource[0]!.label).toBe("Acme QA");
   });
 });

@@ -52,4 +52,35 @@ describe("buildPickerOptions", () => {
     expect(options[1]!.value).toBe("demo:x");
     expect(options[1]!.hint).toContain("example-x");
   });
+
+  test("a stale-key recent dedups against the catalog by resource, using the current label/key", () => {
+    // Old-model recent: different key + stale label, but the SAME sdmResource
+    // as a current catalog connection (the real-world dup bug).
+    const staleRecent: RecentEntry = {
+      key: "old:acme-db-qa", label: "acme-db-qa",
+      sdmResource: "example-q", tier: "qa",
+      lastConnectedAt: "2026-07-01T00:00:00.000Z",
+    };
+    const options = buildPickerOptions([conn("q", "qa")], [staleRecent]);
+    const rows = options.filter(o => !o.separator);
+    // Exactly one row for the resource (no duplicate) ...
+    expect(rows).toHaveLength(1);
+    // ... and it renders from the CURRENT catalog entry, not the stale recent.
+    expect(rows[0]!.value).toBe("demo:q");
+    expect(rows[0]!.label).toBe("q");
+    expect(options[0]!.label).toBe("Recent");
+  });
+
+  test("a recent whose resource left the catalog still shows, with its stored values", () => {
+    const goneRecent: RecentEntry = {
+      key: "old:gone", label: "Gone DB", sdmResource: "example-gone", tier: "qa",
+      lastConnectedAt: "2026-07-01T00:00:00.000Z",
+    };
+    const options = buildPickerOptions([conn("q", "qa")], [goneRecent]);
+    const recentIdx = options.findIndex(o => o.separator && o.label === "Recent");
+    expect(options[recentIdx + 1]!.value).toBe("old:gone");
+    expect(options[recentIdx + 1]!.label).toBe("Gone DB");
+    // The unrelated catalog connection still appears in its tier.
+    expect(options.some(o => o.value === "demo:q")).toBe(true);
+  });
 });

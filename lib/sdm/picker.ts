@@ -39,17 +39,27 @@ function row(key: string, label: string, sdmResource: string, tier?: string): Na
 export function buildPickerOptions(connections: SdmConnection[], recents: RecentEntry[]): NavOption[] {
   const options: NavOption[] = [];
 
+  // A connection's stable identity is its sdmResource, not its key: recents
+  // recorded under older models carry stale keys/labels for the same resource,
+  // so dedup by resource and render each recent from the CURRENT catalog entry
+  // (fresh label/tier/key) when the resource is still reachable.
+  const byResource = new Map(connections.map(c => [c.sdmResource, c]));
+
   const recentRows = recents.slice(0, MAX_RECENT_ROWS);
-  const recentKeys = new Set(recentRows.map(r => r.key));
+  const recentResources = new Set(recentRows.map(r => r.sdmResource));
   if (recentRows.length > 0) {
     options.push(navSeparator("Recent"));
-    for (const r of recentRows) options.push(row(r.key, r.label, r.sdmResource, r.tier));
+    for (const r of recentRows) {
+      const cur = byResource.get(r.sdmResource);
+      if (cur) options.push(row(cur.key, cur.label, cur.sdmResource, cur.tier));
+      else options.push(row(r.key, r.label, r.sdmResource, r.tier));
+    }
   }
 
   // Skip connections already shown under Recent so they aren't listed twice.
   const byTier = new Map<string, SdmConnection[]>();
   for (const c of connections) {
-    if (recentKeys.has(c.key)) continue;
+    if (recentResources.has(c.sdmResource)) continue;
     const tier = c.tier ?? "";
     if (!byTier.has(tier)) byTier.set(tier, []);
     byTier.get(tier)!.push(c);
