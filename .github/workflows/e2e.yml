@@ -17,7 +17,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies
-        run: bun install
+        run: |
+          brew install fzf
+          bun install
 
       - name: Cache Cargo
         uses: actions/cache@v4
