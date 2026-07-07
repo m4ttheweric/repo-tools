@@ -26,7 +26,9 @@ export function parseCatalogResources(catalogOutput: string, statusNames: string
     if (cols.length < 4 || !/^rs-[0-9a-f]+$/i.test(cols[0]!)) continue;
     const name = cols[1]!.trim();
     const type = cols[3]!.trim().toLowerCase();
-    if (type !== "postgres") continue; // connect+verify is postgres-oriented
+    // postgres-family only (postgres, aurora-postgres); connect+verify is
+    // postgres-oriented, and this drops AWS/website/cluster catalog rows.
+    if (!type.includes("postgres")) continue;
     const last = cols[cols.length - 1]!.trim();
     const tags = /=/.test(last) ? last.split(",").map(t => t.trim()).filter(Boolean) : [];
     byName.set(name, { name, type, tags });
@@ -91,7 +93,11 @@ export async function scanSdmResources(
     if (cached) return { resources: cached, fromCache: true };
   }
   const [catalog, snapshot] = await Promise.all([fetchAccessCatalog(opts.refresh), getSdmSnapshot(opts.refresh)]);
-  const statusNames = snapshot.health.status === "ok" ? [...snapshot.resources.keys()] : [];
+  // Only fold in DATASOURCE-section status entries: clusters, websites, and
+  // servers are not connectable postgres DBs and must not leak into the picker.
+  const statusNames = snapshot.health.status === "ok"
+    ? [...snapshot.resources.entries()].filter(([, s]) => s.kind === "datasource").map(([name]) => name)
+    : [];
   if (!catalog.ok && snapshot.health.status !== "ok") {
     return { resources: readScanCache() ?? [], fromCache: false, error: catalog.output.trim() || "sdm unavailable" };
   }

@@ -24,10 +24,10 @@ const CATALOG_OUTPUT = [
 ].join("\n");
 
 describe("parseSdmStatus", () => {
-  test("parses connected state, address, and expiry", () => {
+  test("parses connected state, address, expiry, and section kind", () => {
     const m = parseSdmStatus(STATUS_OUTPUT);
     expect(m.get("example-shared-dev")).toEqual({
-      connected: true, address: "127.0.0.1:15432", expiry: null,
+      connected: true, address: "127.0.0.1:15432", expiry: null, kind: "datasource",
     });
     expect(m.get("example-alpha-staging")!.connected).toBe(false);
     expect(m.get("example-bravo-qa")!.expiry).toBe("2026-07-02 03:00:00");
@@ -37,6 +37,23 @@ describe("parseSdmStatus", () => {
     const m = parseSdmStatus("DATASOURCE  STATUS  ADDRESS\nfoo  connected  10.0.0.5:5432");
     expect(m.has("DATASOURCE")).toBe(false);
     expect(m.get("foo")!.address).toBeNull();
+  });
+
+  test("tags each row with its section so non-datasources can be dropped", () => {
+    const out = [
+      "CLUSTER       STATUS            ADDRESS           TYPE",
+      "some-cluster  connected (auto)  127.0.0.1:10070   eksprofile",
+      "",
+      "DATASOURCE    STATUS     ADDRESS",
+      "some-db       connected  127.0.0.1:15432",
+      "",
+      "WEBSITE       STATUS            ADDRESS           TYPE",
+      "some-site     connected (auto)  127.0.0.1:10116   httpNoAuth",
+    ].join("\n");
+    const m = parseSdmStatus(out);
+    expect(m.get("some-cluster")!.kind).toBe("cluster");
+    expect(m.get("some-db")!.kind).toBe("datasource");
+    expect(m.get("some-site")!.kind).toBe("website");
   });
 });
 
