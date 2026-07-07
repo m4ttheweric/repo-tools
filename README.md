@@ -240,6 +240,8 @@ the root tree; name collisions are flagged and built-ins always win. Notes:
   reading the code you are about to run.
 - `apiVersion: 1` is required in every manifest.
 
+Full guide (manifest reference, injected API, exec env vars, troubleshooting): [docs/plugins.md](docs/plugins.md)
+
 ---
 
 ## StrongDM
