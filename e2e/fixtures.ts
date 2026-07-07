@@ -151,4 +151,5 @@ export function ensureShellWrapper(home: string): void {
     "}",
   ].join("\n");
   writeFileSync(join(home, ".zshrc"), content);
+  writeFileSync(join(home, ".bash_profile"), content);
 }
