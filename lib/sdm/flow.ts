@@ -9,7 +9,7 @@
  */
 
 import type { SdmFailureCode, SdmSnapshot } from "./core.ts";
-import { buildPostgresUrl, type VerifyOutcome } from "./verify.ts";
+import { buildPostgresUrl, type ProbeResult, type VerifyOutcome } from "./verify.ts";
 
 export interface GuidedTarget {
   key: string;
@@ -31,6 +31,7 @@ export interface GuidedDeps {
     resource: string, onLine: (l: string) => void,
   ) => Promise<{ ok: boolean; error?: string; code?: SdmFailureCode }>;
   verify: (url: string) => Promise<VerifyOutcome>;
+  probeTunnel: (address: string) => Promise<ProbeResult>;
   login: (onLine: (l: string) => void) => Promise<{ ok: boolean; error?: string }>;
   promptDuration: (def: string) => Promise<string>;
   promptReason: (def: string) => Promise<string>;
@@ -47,7 +48,7 @@ export interface GuidedOptions {
 }
 
 export type GuidedResult =
-  | { outcome: "connected"; address: string; verify: VerifyOutcome }
+  | { outcome: "connected"; address: string; verify: VerifyOutcome; unverified?: boolean }
   | { outcome: "aborted"; reason: string }
   | { outcome: "failed"; stage: "health" | "login" | "access" | "connect" | "verify"; error: string; hint?: string };
 
@@ -122,10 +123,20 @@ export async function runGuidedConnect(
   const url = buildPostgresUrl(address, target.db);
   const verify = await deps.verify(url);
   if (!verify.ok) {
+    // SELECT 1 flaked. A freshly-connected sdm tunnel can leave its first
+    // queries failing transiently ("Connection closed") while the tunnel is up
+    // and usable. Distinguish a dead tunnel from an inconclusive probe: if TCP
+    // is reachable, treat it as connected-with-warning (record + succeed)
+    // rather than a hard failure telling the user to reconnect.
+    const tcp = await deps.probeTunnel(address);
+    if (tcp.ok) {
+      deps.recordRecent(target);
+      return { outcome: "connected", address, verify, unverified: true };
+    }
     return {
       outcome: "failed",
       stage: "verify",
-      error: `Tunnel is up but queries fail: ${verify.lastError?.message ?? "unknown error"}`,
+      error: `Tunnel is not reachable: ${verify.lastError?.message ?? "unknown error"}`,
       hint: "Reconnect with `rt sdm`, or check the resource in the StrongDM app.",
     };
   }

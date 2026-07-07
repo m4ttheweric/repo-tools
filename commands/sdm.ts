@@ -30,7 +30,7 @@ import { buildSdmConnections, type SdmConnection } from "../lib/sdm/browse.ts";
 import { loadEnrichment } from "../lib/sdm/enrichment.ts";
 import { loadSdmState, recordRecent, type RecentEntry } from "../lib/sdm/state.ts";
 import { runGuidedConnect, type GuidedTarget } from "../lib/sdm/flow.ts";
-import { probeQuery, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS } from "../lib/sdm/verify.ts";
+import { probeQuery, probeTunnel, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS } from "../lib/sdm/verify.ts";
 import { buildPickerOptions } from "../lib/sdm/picker.ts";
 
 // `sdm` is a branch node in the command tree (cli.ts); each subcommand below
@@ -107,6 +107,10 @@ async function guidedConnect(target: GuidedTarget, opts: { duration?: string; re
     requestAccess,
     connect: connectResource,
     verify: url => verifyWithRetries(() => probeQuery(url, VERIFY_ATTEMPT_TIMEOUT_MS)),
+    probeTunnel: address => {
+      const i = address.lastIndexOf(":");
+      return probeTunnel(address.slice(0, i), Number(address.slice(i + 1)));
+    },
     login: sdmBrowserLogin,
     promptDuration: async def => {
       const all = [
@@ -136,7 +140,12 @@ async function guidedConnect(target: GuidedTarget, opts: { duration?: string; re
   if (result.outcome === "connected") {
     const dbInfo = target.db ? ` ${dim}(${target.db.database ?? "postgres"}/${target.db.schema ?? "public"})${reset}` : "";
     console.log(`\n${green}✓${reset} ${bold}${target.label}${reset} ready at ${cyan}${result.address}${reset}${dbInfo}`);
-    console.log(`  ${dim}verified in ${result.verify.latencyMs}ms (${result.verify.attempts} attempt${result.verify.attempts === 1 ? "" : "s"})${reset}`);
+    if (result.unverified) {
+      console.log(`  ${yellow}tunnel is up, but a test query did not confirm${reset} ${dim}(${result.verify.lastError?.message ?? "unknown"})${reset}`);
+      console.log(`  ${dim}the connection is likely usable; retry your query, or reconnect if it keeps failing${reset}`);
+    } else {
+      console.log(`  ${dim}verified in ${result.verify.latencyMs}ms (${result.verify.attempts} attempt${result.verify.attempts === 1 ? "" : "s"})${reset}`);
+    }
     return;
   }
   if (result.outcome === "aborted") {
