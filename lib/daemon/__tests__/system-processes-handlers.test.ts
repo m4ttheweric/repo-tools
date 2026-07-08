@@ -19,6 +19,7 @@ function makeProcess(overrides: Partial<SystemProcess> = {}): SystemProcess {
     relativeDir: ".",
     port: null,
     linearTicket: null,
+    packageScript: null,
     isRunaway: false,
     runawayDurationMs: null,
     firstSeen: Date.now(),

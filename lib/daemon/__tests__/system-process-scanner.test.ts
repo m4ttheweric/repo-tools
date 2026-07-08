@@ -107,6 +107,129 @@ describe("SystemProcessScanner", () => {
   });
 });
 
+describe("parseLsofCwdMap", () => {
+  test("keeps processes whose cwd is inside a registered repo root", async () => {
+    const { parseLsofCwdMap } = await import("../system-process-scanner.ts");
+
+    const lsofOutput = [
+      "p111",
+      "n/Users/test/repos/myrepo/apps/backend",
+      "p222",
+      "n/Users/test/elsewhere",
+    ].join("\n");
+
+    const result = parseLsofCwdMap(lsofOutput, ["/Users/test/repos/myrepo"]);
+
+    expect(result.get(111)).toBe("/Users/test/repos/myrepo/apps/backend");
+    expect(result.has(222)).toBe(false);
+  });
+
+  test("keeps processes whose cwd is inside a sibling worktree path", async () => {
+    const { parseLsofCwdMap } = await import("../system-process-scanner.ts");
+
+    // assured-dev registered at .../assured/harry; ron is a sibling worktree
+    const lsofOutput = [
+      "p333",
+      "n/Users/test/gh/assured/ron/apps/backend",
+    ].join("\n");
+
+    const result = parseLsofCwdMap(lsofOutput, [
+      "/Users/test/gh/assured/harry",
+      "/Users/test/gh/assured/ron",
+    ]);
+
+    expect(result.get(333)).toBe("/Users/test/gh/assured/ron/apps/backend");
+  });
+
+  test("keeps close parents of tracked paths (max 2 levels above)", async () => {
+    const { parseLsofCwdMap } = await import("../system-process-scanner.ts");
+
+    const lsofOutput = [
+      "p444",
+      "n/Users/test/repos",
+      "p555",
+      "n/Users",
+    ].join("\n");
+
+    const result = parseLsofCwdMap(lsofOutput, ["/Users/test/repos/myrepo"]);
+
+    expect(result.get(444)).toBe("/Users/test/repos");
+    expect(result.has(555)).toBe(false);
+  });
+});
+
+describe("worktree attribution through parseProcessList", () => {
+  test("attributes a sibling-worktree process to its parent repo and branch", async () => {
+    const { parseProcessList } = await import("../system-process-scanner.ts");
+
+    const psOutput = [
+      "  PID  PPID  %CPU   RSS      ELAPSED COMM             ARGS",
+      "12878     1  99.0 512000  06-07:54:19 node             node wrap.js src/app/server-lite",
+    ].join("\n");
+
+    const repos = { "assured-dev": "/Users/test/gh/assured/harry" };
+    const cwdMap = new Map<number, string>([
+      [12878, "/Users/test/gh/assured/ron/apps/backend"],
+    ]);
+    const worktreeMap = new Map([
+      ["/Users/test/gh/assured/ron", { repo: "assured-dev", branch: "parking-lot/2" }],
+    ]);
+
+    const result = parseProcessList(psOutput, repos, cwdMap, worktreeMap);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.repo).toBe("assured-dev");
+    expect(result[0]!.worktree).toBe("/Users/test/gh/assured/ron");
+    expect(result[0]!.branch).toBe("parking-lot/2");
+    expect(result[0]!.relativeDir).toBe("apps/backend");
+  });
+});
+
+describe("parsePackageScripts", () => {
+  test("composes package manager + lifecycle script from ps eww output", async () => {
+    const { parsePackageScripts } = await import("../system-process-scanner.ts");
+
+    const psOutput = [
+      "12878 /usr/bin/node wrap.js src/app/server-lite SOME_SECRET=hunter2 npm_config_user_agent=pnpm/10.30.3 npm/? node/v22.22.0 darwin arm64 npm_lifecycle_event=start:lite:watch PATH=/usr/bin",
+      "33349 /Users/test/.bun/bin/bun run cli.ts --daemon PATH=/usr/bin HOME=/Users/test",
+    ].join("\n");
+
+    const result = parsePackageScripts(psOutput);
+
+    expect(result.get(12878)).toBe("pnpm start:lite:watch");
+    expect(result.has(33349)).toBe(false);
+  });
+
+  test("handles bun and npm user agents", async () => {
+    const { parsePackageScripts } = await import("../system-process-scanner.ts");
+
+    const psOutput = [
+      "100 /bin/x npm_config_user_agent=bun/1.3.13 npm/? node/v22 darwin npm_lifecycle_event=dev",
+      "200 /bin/y npm_config_user_agent=npm/10.9.2 node/v22.13.0 darwin arm64 npm_lifecycle_event=build:watch",
+    ].join("\n");
+
+    const result = parsePackageScripts(psOutput);
+
+    expect(result.get(100)).toBe("bun dev");
+    expect(result.get(200)).toBe("npm build:watch");
+  });
+
+  test("ignores lifecycle event without a user agent and vice versa", async () => {
+    const { parsePackageScripts } = await import("../system-process-scanner.ts");
+
+    const psOutput = [
+      "300 /bin/x npm_lifecycle_event=dev PATH=/usr/bin",
+      "400 /bin/y npm_config_user_agent=pnpm/10.0.0 npm/? PATH=/usr/bin",
+    ].join("\n");
+
+    const result = parsePackageScripts(psOutput);
+
+    // Without both halves we can't honestly reconstruct an invocation
+    expect(result.has(300)).toBe(false);
+    expect(result.has(400)).toBe(false);
+  });
+});
+
 describe("runaway detection", () => {
   test("flags process as runaway after sustained high CPU", () => {
     const scanner = new SystemProcessScanner({
