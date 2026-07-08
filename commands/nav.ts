@@ -178,8 +178,8 @@ export async function navigate(args: string[]): Promise<void> {
     const result = await runNavPicker({
       options,
       message: tildeify(cwd),
-      header: "enter: open  ctrl-k: actions  ctrl-o: editor  ctrl-up: up  ctrl-space: cd selected  ctrl-h: cd here  esc: quit",
-      expectKeys: ["ctrl-k", "ctrl-o", "ctrl-space", "ctrl-h"],
+      header: "enter: open  ctrl-k: actions  ctrl-o: editor  ctrl-up: up  ctrl-space: cd selected  ctrl-h: cd here  ctrl-f: finder  esc: quit",
+      expectKeys: ["ctrl-k", "ctrl-o", "ctrl-space", "ctrl-h", "ctrl-f"],
       initialQuery: resumeQuery,
       resumeValue: resumeValue || undefined,
     });
@@ -217,6 +217,14 @@ export async function navigate(args: string[]): Promise<void> {
       process.stdout.write = realStdoutWrite;
       realStdoutWrite(cwd + "\n");
       return;
+    }
+
+    // ctrl-f: open current directory in Finder
+    if (key === "ctrl-f") {
+      spawnSync("open", [cwd], { stdio: "inherit" });
+      resumeQuery = query;
+      resumeValue = choice ?? "";
+      continue;
     }
 
     if (choice === null) return;
