@@ -187,6 +187,7 @@ struct ProcessOutlineView: NSViewRepresentable {
     private func columnSpec(_ col: ProcessColumn) -> (CGFloat, CGFloat, NSTextAlignment) {
         switch col {
         case .command:      return (120, 200, .left)
+        case .packageScript: return (90, 160, .left)
         case .cpu:          return (45,  55,  .right)
         case .memory:       return (50,  60,  .right)
         case .port:         return (40,  50,  .right)
@@ -195,6 +196,7 @@ struct ProcessOutlineView: NSViewRepresentable {
         case .pid:          return (40,  55,  .right)
         case .uptime:       return (50,  70,  .right)
         case .worktree:     return (70,  100, .left)
+        case .dir:          return (70,  110, .left)
         case .cwd:          return (80,  120, .left)
         case .fullCommand:  return (80,  150, .left)
         }
@@ -407,6 +409,8 @@ struct ProcessOutlineView: NSViewRepresentable {
             switch column {
             case .command:
                 return a.command.localizedCaseInsensitiveCompare(b.command)
+            case .packageScript:
+                return (a.packageScript ?? "").localizedCaseInsensitiveCompare(b.packageScript ?? "")
             case .cpu:
                 let av = a.totalCpuPercent ?? a.cpuPercent
                 let bv = b.totalCpuPercent ?? b.cpuPercent
@@ -433,6 +437,8 @@ struct ProcessOutlineView: NSViewRepresentable {
                      : a.firstSeen < b.firstSeen ? .orderedDescending
                      : .orderedSame
             case .worktree:
+                return a.worktreeName.localizedCaseInsensitiveCompare(b.worktreeName)
+            case .dir:
                 return a.relativeDir.localizedCaseInsensitiveCompare(b.relativeDir)
             case .cwd:
                 return a.cwd.localizedCaseInsensitiveCompare(b.cwd)
@@ -696,6 +702,8 @@ struct ProcessOutlineView: NSViewRepresentable {
             switch column {
             case .command:
                 return (proc.command, mono, primary, .left)
+            case .packageScript:
+                return (proc.packageScript ?? "", mono, primary, .left)
             case .cpu:
                 // Warn on the same value the cell displays (tree total when
                 // present), not the row's own share of it.
@@ -714,6 +722,8 @@ struct ProcessOutlineView: NSViewRepresentable {
             case .uptime:
                 return (proc.uptime, mono, secondary, .right)
             case .worktree:
+                return (proc.worktreeName, regular, secondary, .left)
+            case .dir:
                 return (proc.relativeDir, regular, secondary, .left)
             case .cwd:
                 return (proc.cwd, regular, secondary, .left)

@@ -10,7 +10,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // ── Menu bar ────────────────────────────────────────────────────────────
     private var statusItem: NSStatusItem!
-    private var statusMenu: NSMenu!
 
     // ── Daemon communication ────────────────────────────────────────────────
     private let daemonClient = DaemonClient()
@@ -51,6 +50,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
+        // Gear-menu actions posted by the panel's status strip
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(restartDaemon), name: .rtRestartDaemon, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(stopDaemon), name: .rtStopDaemon, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(viewDaemonLogs), name: .rtViewDaemonLogs, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(checkForUpdates), name: .rtCheckUpdates, object: nil)
+
         // Register the daemon as a LaunchAgent. Idempotent — if already
         // registered, this is a no-op. If the user hasn't approved it yet,
         // status flips to .requiresApproval and the menu surfaces a prompt.
@@ -81,9 +90,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         updateMenuBarTitle(status: .unknown)
 
-        statusMenu = NSMenu()
-        rebuildMenu()
-        statusItem.menu = statusMenu
+        // Single-view design: any click on the status item toggles the
+        // process popover. All former menu actions live in the panel's
+        // status strip / gear menu.
+        if let button = statusItem.button {
+            button.action = #selector(showProcessPanel)
+            button.target = self
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
     }
 
     /// Update the menu bar button with "rt" text + colored status dot.
@@ -126,138 +140,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         button.attributedTitle = attributed
     }
 
-    // MARK: - Menu Items
-
-    private func rebuildMenu() {
-        statusMenu.removeAllItems()
-
-        // Status line (updated dynamically)
-        let statusLine = NSMenuItem(title: "Daemon: checking…", action: nil, keyEquivalent: "")
-        statusLine.tag = 100
-        statusLine.isEnabled = false
-        statusMenu.addItem(statusLine)
-
-        // Port summary (updated dynamically)
-        let portsLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        portsLine.tag = 101
-        portsLine.isEnabled = false
-        portsLine.isHidden = true
-        statusMenu.addItem(portsLine)
-
-        let processesItem = NSMenuItem(title: "Show Processes\u{2026}", action: #selector(showProcessPanel), keyEquivalent: "p")
-        processesItem.target = self
-        statusMenu.addItem(processesItem)
-
-        statusMenu.addItem(NSMenuItem.separator())
-
-        // Daemon controls
-        let restartItem = NSMenuItem(title: "Restart Daemon", action: #selector(restartDaemon), keyEquivalent: "r")
-        restartItem.target = self
-        statusMenu.addItem(restartItem)
-
-        let stopItem = NSMenuItem(title: "Stop Daemon", action: #selector(stopDaemon), keyEquivalent: "")
-        stopItem.target = self
-        statusMenu.addItem(stopItem)
-
-        let logsItem = NSMenuItem(title: "View Daemon Logs…", action: #selector(viewDaemonLogs), keyEquivalent: "l")
-        logsItem.target = self
-        statusMenu.addItem(logsItem)
-
-        // Shown only when SMAppService says approval is required.
-        let approveItem = NSMenuItem(title: "Approve Daemon in Login Items…", action: #selector(openLoginItemsSettings), keyEquivalent: "")
-        approveItem.target = self
-        approveItem.tag = 150
-        approveItem.isHidden = true
-        statusMenu.addItem(approveItem)
-
-        statusMenu.addItem(NSMenuItem.separator())
-
-        // Login item toggle
-        let loginItem = NSMenuItem(title: "Start at Login", action: #selector(toggleLoginItem(_:)), keyEquivalent: "")
-        loginItem.target = self
-        loginItem.tag = 200
-        loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        statusMenu.addItem(loginItem)
-
-        statusMenu.addItem(NSMenuItem.separator())
-
-        // Updates
-        let updateItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
-        updateItem.target = self
-        updateItem.tag = 300
-        statusMenu.addItem(updateItem)
-
-        statusMenu.addItem(NSMenuItem.separator())
-
-        // Quit
-        let quitItem = NSMenuItem(title: "Quit rt-tray", action: #selector(quitApp), keyEquivalent: "q")
-        quitItem.target = self
-        statusMenu.addItem(quitItem)
-    }
-
-    private func updateMenuItems(with status: DaemonStatus) {
-        if let item = statusMenu.item(withTag: 100) {
-            let uptime = formatUptime(status.uptime)
-            item.title = "Daemon: running · pid \(status.pid) · \(uptime)"
-        }
-
-        if let item = statusMenu.item(withTag: 101) {
-            if status.portsCached > 0 {
-                let repos = status.portsByRepo.map { "\($0.key): \($0.value)" }.joined(separator: ", ")
-                item.title = "Ports: \(status.portsCached) listening (\(repos))"
-                item.isHidden = false
-            } else {
-                item.isHidden = true
-            }
-        }
-
-        if let item = statusMenu.item(withTag: 200) {
-            item.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        }
-        // Daemon is reachable → approval clearly worked, hide the prompt
-        if let item = statusMenu.item(withTag: 150) {
-            item.isHidden = true
-        }
-    }
-
-    private func updateMenuItemsOffline() {
-        if let item = statusMenu.item(withTag: 100) {
-            switch daemonLifecycle.status {
-            case .requiresApproval:
-                item.title = "Daemon: needs approval in Login Items"
-            case .notRegistered, .notFound:
-                item.title = "Daemon: not registered"
-            default:
-                item.title = "Daemon: not running"
-            }
-        }
-        if let item = statusMenu.item(withTag: 101) {
-            item.isHidden = true
-        }
-        if let item = statusMenu.item(withTag: 150) {
-            item.isHidden = daemonLifecycle.status != .requiresApproval
-        }
-    }
-
-    private func updateMenuItemsStarting() {
-        if let item = statusMenu.item(withTag: 100) {
-            item.title = "Daemon: starting…"
-        }
-        if let item = statusMenu.item(withTag: 101) {
-            item.isHidden = true
-        }
-    }
-
     // MARK: - Health Management
 
     private func setHealth(_ health: DaemonHealth) {
         currentHealth = health
         updateMenuBarTitle(status: health)
+        TrayState.shared.health = health
         switch health {
         case .starting:
-            updateMenuItemsStarting()
+            TrayState.shared.statusText = "Daemon: starting…"
+            TrayState.shared.needsApproval = false
         case .down:
-            updateMenuItemsOffline()
+            switch daemonLifecycle.status {
+            case .requiresApproval:
+                TrayState.shared.statusText = "Daemon: needs approval in Login Items"
+            case .notRegistered, .notFound:
+                TrayState.shared.statusText = "Daemon: not registered"
+            default:
+                TrayState.shared.statusText = "Daemon: not running"
+            }
+            TrayState.shared.needsApproval = daemonLifecycle.status == .requiresApproval
         default:
             break
         }
@@ -292,10 +194,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             try? await Task.sleep(nanoseconds: 500_000_000)
             setHealth(.down)
         }
-    }
-
-    @objc private func openLoginItemsSettings() {
-        SMAppService.openSystemSettingsLoginItems()
     }
 
     /// Open the logdy-based daemon log viewer in the user's default browser.
@@ -386,24 +284,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         TrayLog.spawnLoggedDetached(task, label: "rt daemon logs")
     }
 
-    @objc private func toggleLoginItem(_ sender: NSMenuItem) {
-        do {
-            if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
-                sender.state = .off
-            } else {
-                try SMAppService.mainApp.register()
-                sender.state = .on
-            }
-        } catch {
-            TrayLog.error("login item toggle failed", ["err": String(describing: error)])
-        }
-    }
-
-    @objc private func quitApp() {
-        NSApplication.shared.terminate(nil)
-    }
-
     @objc private func checkForUpdates() {
         updateChecker.checkForUpdates(userInitiated: true)
     }
@@ -414,30 +294,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             popover.contentSize = NSSize(width: 900, height: 600)
             popover.contentViewController = NSHostingController(rootView: ProcessPanelView())
             popover.behavior = .transient
-            popover.delegate = self
             processPopover = popover
         }
 
         if let popover = processPopover {
             if popover.isShown {
                 popover.performClose(nil)
-            } else if statusItem.button != nil {
-                statusMenu.cancelTracking()
-                // Detach menu so it doesn't reopen over the popover
-                statusItem.menu = nil
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                    guard let self, let button = self.statusItem.button else { return }
-                    NSApp.activate(ignoringOtherApps: true)
-                    popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-                    popover.contentViewController?.view.window?.makeKey()
-                }
+            } else if let button = statusItem.button {
+                NSApp.activate(ignoringOtherApps: true)
+                popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                popover.contentViewController?.view.window?.makeKey()
             }
         }
     }
 
     @objc private func detachProcessPanel() {
         processPopover?.performClose(nil)
-        statusItem.menu = statusMenu
 
         if let window = processWindow {
             window.makeKeyAndOrderFront(nil)
@@ -476,10 +348,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleUpdateAvailable(_ release: GitHubRelease) {
-        // Update menu item to show available version
-        if let item = statusMenu.item(withTag: 300) {
-            item.title = "Update Available: \(release.tagName)"
-        }
+        // Surface in the panel's gear menu
+        TrayState.shared.updateAvailable = release.tagName
 
         if updateChecker.isDevBuild { return }
 
@@ -539,7 +409,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         currentHealth = health
         updateMenuBarTitle(status: health)
-        updateMenuItems(with: status)
+        TrayState.shared.health = health
+        TrayState.shared.statusText = "Daemon: running · pid \(status.pid) · \(formatUptime(status.uptime))"
+        // Daemon is reachable → approval clearly worked
+        TrayState.shared.needsApproval = false
     }
 
     private func drainPendingNotifications() async {
@@ -576,15 +449,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hours = minutes / 60
         let remainingMinutes = minutes % 60
         return "\(hours)h \(remainingMinutes)m"
-    }
-}
-
-// MARK: - NSPopoverDelegate
-
-extension AppDelegate: NSPopoverDelegate {
-    func popoverDidClose(_ notification: Notification) {
-        // Re-attach the menu so the status item works normally again
-        statusItem.menu = statusMenu
     }
 }
 
