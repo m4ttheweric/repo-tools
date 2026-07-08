@@ -52,6 +52,13 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             options: .foreground
         )
 
+        // No .foreground — killing shouldn't drag the app to the front
+        let killProcesses = UNNotificationAction(
+            identifier: "KILL_PROCESSES",
+            title: "Kill",
+            options: .destructive
+        )
+
         let categories: [UNNotificationCategory] = [
             UNNotificationCategory(
                 identifier: "pipeline_failed",
@@ -100,7 +107,12 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             ),
             UNNotificationCategory(
                 identifier: "runaway_process",
-                actions: [showProcesses],
+                actions: [killProcesses, showProcesses],
+                intentIdentifiers: []
+            ),
+            UNNotificationCategory(
+                identifier: "parked_workload",
+                actions: [killProcesses, showProcesses],
                 intentIdentifiers: []
             ),
         ]
@@ -157,6 +169,11 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         // Stash the URL in userInfo so we can open it on click
         if let url = event.url {
             content.userInfo["url"] = url
+        }
+
+        // Stash pids so the Kill action can target them
+        if let pids = event.pids, !pids.isEmpty {
+            content.userInfo["pids"] = pids
         }
 
         let request = UNNotificationRequest(
@@ -217,11 +234,44 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         case "SHOW_PROCESSES":
             NotificationCenter.default.post(name: .showProcessPanel, object: nil)
 
+        case "KILL_PROCESSES":
+            if let pids = userInfo["pids"] as? [Int], !pids.isEmpty {
+                Self.killPids(pids)
+            }
+
         default:
             break
         }
 
         completionHandler()
+    }
+
+    // MARK: - Kill action
+
+    /// SIGTERM the pids (process group when the pid leads one), then escalate
+    /// survivors to SIGKILL after 5s — same semantics as the process panel.
+    static func killPids(_ pids: [Int]) {
+        TrayLog.info("notification kill action", ["pids": pids])
+        for pid in pids {
+            _ = sendSignal(pid, SIGTERM)
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+            let survivors = pids.filter { kill(Int32($0), 0) == 0 }
+            for pid in survivors {
+                _ = sendSignal(pid, SIGKILL)
+            }
+            if !survivors.isEmpty {
+                TrayLog.warn("notification kill escalated to SIGKILL", ["pids": survivors])
+            }
+        }
+    }
+
+    private static func sendSignal(_ pid: Int, _ signal: Int32) -> Bool {
+        let p = Int32(pid)
+        if getpgid(p) == p, kill(-p, signal) == 0 {
+            return true
+        }
+        return kill(p, signal) == 0
     }
 }
 
