@@ -59,7 +59,24 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             options: .destructive
         )
 
+        let fixKeyboard = UNNotificationAction(
+            identifier: "FIX_KEYBOARD",
+            title: "Show Me How",
+            options: .foreground
+        )
+
+        let dismissKeyboard = UNNotificationAction(
+            identifier: "DISMISS_KEYBOARD",
+            title: "Don't Remind Me",
+            options: []
+        )
+
         let categories: [UNNotificationCategory] = [
+            UNNotificationCategory(
+                identifier: "keyboard_conflict",
+                actions: [fixKeyboard, dismissKeyboard],
+                intentIdentifiers: []
+            ),
             UNNotificationCategory(
                 identifier: "pipeline_failed",
                 actions: [viewPipeline, openMR],
@@ -210,9 +227,16 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         let url = userInfo["url"] as? String
 
         switch response.actionIdentifier {
-        case "OPEN_MR", UNNotificationDefaultActionIdentifier:
-            // Clicked the notification or "Open MR" button
+        case "OPEN_MR":
             if let urlStr = url, let urlObj = URL(string: urlStr) {
+                NSWorkspace.shared.open(urlObj)
+            }
+
+        case UNNotificationDefaultActionIdentifier:
+            let category = response.notification.request.content.categoryIdentifier
+            if category == "keyboard_conflict" {
+                NotificationCenter.default.post(name: .showKeyboardConflict, object: nil)
+            } else if let urlStr = url, let urlObj = URL(string: urlStr) {
                 NSWorkspace.shared.open(urlObj)
             }
 
@@ -238,6 +262,12 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             if let pids = userInfo["pids"] as? [Int], !pids.isEmpty {
                 Self.killPids(pids)
             }
+
+        case "FIX_KEYBOARD":
+            NotificationCenter.default.post(name: .showKeyboardConflict, object: nil)
+
+        case "DISMISS_KEYBOARD":
+            MissionControlCheck.hasShownNotification = true
 
         default:
             break
@@ -280,4 +310,5 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 extension Notification.Name {
     static let showProcessPanel = Notification.Name("showProcessPanel")
     static let detachProcessPanel = Notification.Name("detachProcessPanel")
+    static let showKeyboardConflict = Notification.Name("showKeyboardConflict")
 }
