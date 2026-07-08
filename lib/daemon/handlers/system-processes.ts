@@ -99,6 +99,7 @@ export function createSystemProcessHandlers(
         data: {
           processes: tree,
           updatedAt: Date.now(),
+          ready: scanner.hasCompletedScan,
         },
       };
     },
