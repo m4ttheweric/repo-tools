@@ -156,4 +156,56 @@ describe("park (detached worktree)", () => {
     // passed sourceBranch=null straight through, labeling the stash "<null>".
     expect(findDesktopStash(wt, "parking-lot/5")).not.toBeNull();
   });
+
+  // Spawn a long-lived process with cwd inside the worktree, orphaned to
+  // ppid 1 via double-fork — the shape of a leaked dev server. A direct
+  // Bun.spawn child would be a descendant of the test process, which the
+  // kill logic deliberately protects.
+  function spawnOrphanInWorktree(): number {
+    const out = execFileSync("sh", ["-c", "sleep 300 >/dev/null 2>&1 & echo $!"], {
+      cwd: wt, encoding: "utf8",
+    });
+    return parseInt(out.trim(), 10);
+  }
+
+  function isAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  test("kills a workload process rooted in the worktree when killProcesses is on", async () => {
+    const pid = spawnOrphanInWorktree();
+    try {
+      expect(isAlive(pid)).toBe(true);
+
+      const result = park(wt, primary, null, 5, { killProcesses: true });
+      expect(result.ok).toBe(true);
+
+      // SIGTERM lands before park() returns, but give the exit a moment.
+      const deadline = Date.now() + 3000;
+      while (isAlive(pid) && Date.now() < deadline) {
+        await Bun.sleep(50);
+      }
+      expect(isAlive(pid)).toBe(false);
+    } finally {
+      try { process.kill(pid, "SIGKILL"); } catch { /* already dead */ }
+    }
+  });
+
+  test("leaves worktree processes alone when killProcesses is off", async () => {
+    const pid = spawnOrphanInWorktree();
+    try {
+      const result = park(wt, primary, null, 5);
+      expect(result.ok).toBe(true);
+
+      await Bun.sleep(300);
+      expect(isAlive(pid)).toBe(true);
+    } finally {
+      try { process.kill(pid, "SIGKILL"); } catch { /* already dead */ }
+    }
+  });
 });

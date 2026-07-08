@@ -9,6 +9,7 @@
  */
 
 import { checkAndPark, park } from "../parking-lot.ts";
+import { loadParkingLotConfig } from "../../parking-lot-config.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 
 export function createParkingLotHandlers(ctx: HandlerContext): HandlerMap {
@@ -31,7 +32,9 @@ export function createParkingLotHandlers(ctx: HandlerContext): HandlerMap {
       }
 
       try {
-        const result = park(worktreePath, repoPath, branch ?? null, index);
+        const result = park(worktreePath, repoPath, branch ?? null, index, {
+          killProcesses: loadParkingLotConfig().killProcesses,
+        });
         return { ok: true, data: { result, lines: [] } };
       } catch (err) {
         return { ok: false, error: String(err) };

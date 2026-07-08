@@ -106,7 +106,7 @@ export async function enableCommand(): Promise<void> {
     console.log(`\n  ${dim}auto-park is already enabled${reset}\n`);
     return;
   }
-  saveParkingLotConfig({ enabled: true });
+  saveParkingLotConfig({ ...current, enabled: true });
   console.log(`\n  ${green}✓${reset} auto-park enabled\n`);
   console.log(`  ${dim}the daemon will resume parking worktrees on the next cache refresh${reset}\n`);
 }
@@ -117,7 +117,7 @@ export async function disableCommand(): Promise<void> {
     console.log(`\n  ${dim}auto-park is already disabled${reset}\n`);
     return;
   }
-  saveParkingLotConfig({ enabled: false });
+  saveParkingLotConfig({ ...current, enabled: false });
   console.log(`\n  ${green}✓${reset} auto-park disabled\n`);
   console.log(`  ${dim}daemon scans will no-op until you run: rt parking-lot enable${reset}\n`);
 }
@@ -169,7 +169,9 @@ async function runParkWithSpinner(
       detail: "daemon park timed out — check the worktree state before retrying",
     };
   } else {
-    result = park(worktreePath, repoPath, branch, index);
+    result = park(worktreePath, repoPath, branch, index, {
+      killProcesses: loadParkingLotConfig().killProcesses,
+    });
   }
 
   clearInterval(spinner);
