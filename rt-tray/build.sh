@@ -86,6 +86,16 @@ else
     echo "  ⚠ sounds/ not found — notifications will fall back to system default"
 fi
 
+# Bundle the keyboard-conflict screenshot (shown in the fix-it window)
+MC_SCREENSHOT="$SCRIPT_DIR/mission-control-screenshot.png"
+if [ -f "$MC_SCREENSHOT" ]; then
+    cp "$MC_SCREENSHOT" "$APP_BUNDLE/Contents/Resources/mission-control-screenshot.png"
+    xattr -cr "$APP_BUNDLE/Contents/Resources/mission-control-screenshot.png" 2>/dev/null || true
+    echo "  ✓ mission-control-screenshot.png"
+else
+    echo "  ⚠ mission-control-screenshot.png not found — conflict window will show placeholder"
+fi
+
 # Copy tray binary
 cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 

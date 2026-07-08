@@ -23,6 +23,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // ── Process panel ──────────────────────────────────────────────────────
     private var processPopover: NSPopover?
     private var processWindow: NSWindow?
+    private var keyboardConflictWindow: NSWindow?
 
     // ── State ───────────────────────────────────────────────────────────────
     private var currentHealth: DaemonHealth = .unknown
@@ -59,6 +60,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(viewDaemonLogs), name: .rtViewDaemonLogs, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(checkForUpdates), name: .rtCheckUpdates, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(showKeyboardConflictWindow), name: .showKeyboardConflict, object: nil)
+        checkMissionControlConflict()
 
         // Register the daemon as a LaunchAgent. Idempotent — if already
         // registered, this is a no-op. If the user hasn't approved it yet,
@@ -437,6 +441,64 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         TrayServer.shared.daemonLifecycle = daemonLifecycle
         TrayServer.shared.start()
+    }
+
+    // MARK: - Keyboard Conflict
+
+    private func checkMissionControlConflict() {
+        guard !MissionControlCheck.hasShownNotification else { return }
+        guard MissionControlCheck.isControlUpBoundToMissionControl() else { return }
+
+        TrayLog.info("Mission Control has Control+Up bound -- firing keyboard-conflict notification")
+
+        let content = UNMutableNotificationContent()
+        content.title = "Keyboard Shortcut Conflict"
+        content.body = "Control+Up is reserved by Mission Control. rt needs this key for navigation."
+        content.sound = nil
+        content.categoryIdentifier = "keyboard_conflict"
+        NotificationManager.playSound(for: "keyboard_conflict")
+
+        let request = UNNotificationRequest(
+            identifier: "rt-keyboard-conflict",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    @objc private func showKeyboardConflictWindow() {
+        if let window = keyboardConflictWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: .zero,
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "rt -- Keyboard Shortcut Conflict"
+        let hostingController = NSHostingController(rootView: KeyboardConflictView())
+        window.contentViewController = hostingController
+
+        // Let SwiftUI determine the content size, then position
+        let fittingSize = hostingController.view.fittingSize
+        window.setContentSize(fittingSize)
+
+        if let screen = NSScreen.main {
+            let visibleFrame = screen.visibleFrame
+            let x = visibleFrame.midX - fittingSize.width / 2
+            let y = visibleFrame.maxY - (visibleFrame.height * 0.17) - fittingSize.height
+            window.setFrameOrigin(NSPoint(x: x, y: y))
+        } else {
+            window.center()
+        }
+        window.isReleasedWhenClosed = false
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        keyboardConflictWindow = window
     }
 
     // MARK: - Helpers
