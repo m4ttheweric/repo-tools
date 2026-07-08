@@ -31,6 +31,8 @@ import {
   stashChanges,
 } from "../git-ops.ts";
 import { loadParkingLotConfig } from "../parking-lot-config.ts";
+// Namespace import so tests can spy on the kill step.
+import * as wtKill from "./worktree-process-kill.ts";
 import type { CacheEntry, RepoIndex } from "./handlers/types.ts";
 
 const log = (await getDaemonLogger()).childLogger("parking-lot");
@@ -180,11 +182,18 @@ export interface ParkResult {
   detail?: string;
 }
 
+export interface ParkOptions {
+  /** Kill workload processes rooted in the worktree before parking.
+   *  Callers pass loadParkingLotConfig().killProcesses. */
+  killProcesses?: boolean;
+}
+
 export function park(
   worktreePath: string,
   repoPath: string,
   sourceBranch: string | null,
   index: number,
+  opts: ParkOptions = {},
 ): ParkResult {
   const parkBranch = `parking-lot/${index}`;
 
@@ -206,6 +215,16 @@ export function park(
   const holder = branchCheckedOutElsewhere(repoPath, parkBranch, worktreePath);
   if (holder) {
     return { ok: false, action: "skip", detail: `${parkBranch} is checked out at ${holder}` };
+  }
+
+  // 2.5. The feature is done — stop its workload (dev servers, watchers)
+  //      before touching the tree. Failure here never blocks the park.
+  if (opts.killProcesses) {
+    try {
+      wtKill.killWorktreeProcesses(worktreePath);
+    } catch (err) {
+      log.warn({ err, worktreePath }, "worktree process kill failed; parking anyway");
+    }
   }
 
   // 3. Stash if dirty, using the GitHub Desktop-compatible marker so the
@@ -318,7 +337,8 @@ function fastForwardParkedWorktrees(
 }
 
 export function checkAndPark(env: ParkingEnv): void {
-  if (!loadParkingLotConfig().enabled) return;
+  const config = loadParkingLotConfig();
+  if (!config.enabled) return;
 
   const state = loadState();
   const fired = new Set(state.fired);
@@ -373,7 +393,7 @@ export function checkAndPark(env: ParkingEnv): void {
     }
 
     log.info({ repoName: entry.repoName, branch, mrState, worktree: wt.path, idx }, `${entry.repoName}/${branch} ${mrState} → parking at ${wt.path} (space ${idx})`);
-    const result = park(wt.path, repoPath, branch, idx);
+    const result = park(wt.path, repoPath, branch, idx, { killProcesses: config.killProcesses });
     if (result.ok) {
       log.info({ result }, `parked: ${result.detail}`);
       fired.add(fireKey);

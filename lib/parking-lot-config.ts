@@ -15,14 +15,19 @@ export const PARKING_LOT_CONFIG_PATH = join(RT_DIR, "parking-lot.json");
 
 export interface ParkingLotConfig {
   enabled: boolean;
+  /** Kill workload processes (dev servers, watchers) in a worktree when it parks. */
+  killProcesses: boolean;
 }
 
 export function loadParkingLotConfig(): ParkingLotConfig {
   try {
     const raw = JSON.parse(readFileSync(PARKING_LOT_CONFIG_PATH, "utf8"));
-    return { enabled: raw?.enabled !== false };
+    return {
+      enabled: raw?.enabled !== false,
+      killProcesses: raw?.killProcesses !== false,
+    };
   } catch {
-    return { enabled: true };
+    return { enabled: true, killProcesses: true };
   }
 }
 
