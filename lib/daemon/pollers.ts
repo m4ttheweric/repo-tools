@@ -8,7 +8,7 @@
 import { existsSync } from "fs";
 import type { Logger } from "pino";
 import { scanListeningPorts } from "../port-scanner.ts";
-import { checkRunawayProcesses } from "../notifier.ts";
+import { checkParkedWorkloads, checkRunawayProcesses } from "../notifier.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
 import type { PortCacheRef, RepoIndex } from "./handlers/types.ts";
 
@@ -57,6 +57,11 @@ export function startPollers(deps: PollerDeps): void {
         (pid) => systemProcessScanner.markRunawayNotified(pid),
         (pid) => systemProcessScanner.isRunawayNotified(pid),
       );
+
+      // Flag leftover workloads in parked worktrees (notify-only; Kill is
+      // one click away on the notification). Dedup persists across restarts
+      // via the default file-backed store.
+      checkParkedWorkloads(processes);
     } catch (err) {
       log.error({ err }, "system process scan failed");
     }

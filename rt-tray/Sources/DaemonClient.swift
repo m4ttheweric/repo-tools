@@ -236,4 +236,6 @@ struct NotificationEvent: Decodable {
     let url: String?
     let category: String
     let timestamp: Int
+    // Offending process pids for categories that offer a Kill action
+    let pids: [Int]?
 }
