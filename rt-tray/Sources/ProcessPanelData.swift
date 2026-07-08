@@ -15,6 +15,7 @@ struct SystemProcess: Codable, Identifiable {
     let relativeDir: String
     let port: Int?
     let linearTicket: String?
+    let packageScript: String?
     let isRunaway: Bool
     let runawayDurationMs: Int?
     let firstSeen: Double
@@ -34,6 +35,12 @@ struct SystemProcess: Codable, Identifiable {
     // Last segment of a breadcrumb command chain ("bun › node › foo" → "foo")
     var leafName: String {
         command.components(separatedBy: " › ").last ?? command
+    }
+
+    // Worktree directory name ("/Users/x/gh/assured/ron" → "ron")
+    var worktreeName: String {
+        guard let worktree else { return "" }
+        return worktree.components(separatedBy: "/").last ?? worktree
     }
 
     var childCount: Int {
@@ -90,6 +97,7 @@ struct SystemProcessResponse: Codable {
 struct SystemProcessData: Codable {
     let processes: [SystemProcess]
     let updatedAt: Double
+    let ready: Bool?
 }
 
 struct RepoGroup: Identifiable {
@@ -102,6 +110,7 @@ struct RepoGroup: Identifiable {
 
 enum ProcessColumn: String, CaseIterable, Codable {
     case command = "Command"
+    case packageScript = "Script"
     case cpu = "CPU %"
     case memory = "Memory"
     case port = "Port"
@@ -110,14 +119,15 @@ enum ProcessColumn: String, CaseIterable, Codable {
     case pid = "PID"
     case uptime = "Uptime"
     case worktree = "Worktree"
+    case dir = "Dir"
     case cwd = "CWD"
     case fullCommand = "Full Command"
 
     var defaultVisible: Bool {
         switch self {
-        case .command, .cpu, .memory, .branch:
+        case .command, .packageScript, .cpu, .memory, .branch:
             return true
-        case .port, .linearTicket, .pid, .uptime, .worktree, .cwd, .fullCommand:
+        case .port, .linearTicket, .pid, .uptime, .worktree, .dir, .cwd, .fullCommand:
             return false
         }
     }

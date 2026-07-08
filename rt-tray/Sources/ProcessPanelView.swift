@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ServiceManagement
 
 // MARK: - Main View
 
@@ -10,13 +11,20 @@ struct ProcessPanelView: View {
 
     @StateObject private var controller = ProcessPanelController()
     @StateObject private var columnSettings = ColumnSettings()
+    @ObservedObject private var trayState = TrayState.shared
     @State private var showColumnPicker = false
+    @State private var startAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
         VStack(spacing: 0) {
+            statusStrip
+            if trayState.needsApproval {
+                approvalRow
+            }
+            Divider()
             headerBar
             Divider()
-            if controller.isLoading {
+            if controller.isLoading || !controller.scannerReady {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if controller.filteredGroups.isEmpty {
@@ -31,6 +39,92 @@ struct ProcessPanelView: View {
                minHeight: 400, idealHeight: 600, maxHeight: .infinity)
         .onAppear { controller.startPolling() }
         .onDisappear { controller.stopPolling() }
+    }
+
+    // MARK: - Status Strip
+
+    /// The former tray menu, collapsed into the panel: daemon health +
+    /// status on the left, operational verbs behind a gear on the right.
+    private var statusStrip: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(trayState.healthColor)
+                .frame(width: 9, height: 9)
+            Text(trayState.statusText)
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+
+            Spacer()
+
+            PanelMenu(icon: "gearshape", makeMenu: makeGearMenu)
+                .help("Daemon and app controls")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private func makeGearMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(ActionMenuItem("Restart Daemon") {
+            NotificationCenter.default.post(name: .rtRestartDaemon, object: nil)
+        })
+        menu.addItem(ActionMenuItem("Stop Daemon") {
+            NotificationCenter.default.post(name: .rtStopDaemon, object: nil)
+        })
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem("View Logs…") {
+            NotificationCenter.default.post(name: .rtViewDaemonLogs, object: nil)
+        })
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem("Start at Login", state: startAtLogin ? .on : .off) {
+            toggleStartAtLogin()
+        })
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem(updateMenuTitle) {
+            NotificationCenter.default.post(name: .rtCheckUpdates, object: nil)
+        })
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem("Quit rt-tray") {
+            NSApplication.shared.terminate(nil)
+        })
+        return menu
+    }
+
+    private func toggleStartAtLogin() {
+        do {
+            if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
+            }
+        } catch {
+            TrayLog.error("login item toggle failed", ["err": String(describing: error)])
+        }
+        startAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    private var updateMenuTitle: String {
+        if let tag = trayState.updateAvailable {
+            return "Update Available: \(tag)"
+        }
+        return "Check for Updates…"
+    }
+
+    private var approvalRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundColor(.orange)
+            Text("The rt daemon needs approval to run at login.")
+                .font(.caption)
+            Spacer()
+            PanelButton(label: "Open Login Items…", icon: nil, action: {
+                SMAppService.openSystemSettingsLoginItems()
+            })
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color.orange.opacity(0.08))
     }
 
     // MARK: - Header
@@ -65,7 +159,7 @@ struct ProcessPanelView: View {
             }
 
             Text(processCountText)
-                .font(.caption)
+                .font(.system(size: 12))
                 .foregroundColor(.secondary)
 
             PanelButton(label: nil, icon: "slider.horizontal.3", action: {
@@ -197,11 +291,11 @@ struct PanelChip: View {
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(.caption)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
+                .font(.system(size: 12))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
                 .background(chipBackground)
-                .cornerRadius(4)
+                .cornerRadius(5)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
@@ -216,6 +310,85 @@ struct PanelChip: View {
             return Color.primary.opacity(0.06)
         }
         return Color.clear
+    }
+}
+
+/// A menu trigger dressed as a PanelButton. A plain SwiftUI button (so hover
+/// styling actually renders — SwiftUI's Menu label ignores state changes
+/// under the borderless style) that pops a native NSMenu anchored below it.
+struct PanelMenu: View {
+    let icon: String
+    let makeMenu: () -> NSMenu
+
+    @State private var isHovering = false
+    @State private var anchorView: NSView?
+
+    var body: some View {
+        Button(action: showMenu) {
+            Image(systemName: icon)
+                .font(.system(size: 13))
+                .frame(width: 16, height: 16)
+                .foregroundColor(isHovering ? .primary : .secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(isHovering ? Color.primary.opacity(0.06) : Color.clear)
+                .cornerRadius(4)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .onHover { isHovering = $0 }
+        .background(MenuAnchor { anchorView = $0 })
+    }
+
+    private func showMenu() {
+        let menu = makeMenu()
+        guard let view = anchorView, let window = view.window else {
+            menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+            return
+        }
+        // Screen coordinates (y-up): the menu's top-left lands at the given
+        // point, so aim just under the button's bottom edge.
+        let rectInWindow = view.convert(view.bounds, to: nil)
+        let rectOnScreen = window.convertToScreen(rectInWindow)
+        menu.popUp(
+            positioning: nil,
+            at: NSPoint(x: rectOnScreen.minX, y: rectOnScreen.minY - 4),
+            in: nil
+        )
+    }
+}
+
+/// Invisible NSView that hands its handle back so NSMenu.popUp can anchor
+/// to the SwiftUI button's position.
+private struct MenuAnchor: NSViewRepresentable {
+    let onResolve: (NSView) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { onResolve(view) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+/// NSMenuItem that runs a closure — NSMenu wants target/selector pairs.
+final class ActionMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(_ title: String, state: NSControl.StateValue = .off, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(invoke), keyEquivalent: "")
+        self.target = self
+        self.state = state
+    }
+
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    @objc private func invoke() {
+        handler()
     }
 }
 
@@ -241,21 +414,21 @@ struct PanelButton: View {
                 if isLoading {
                     ProgressView()
                         .controlSize(.small)
-                        .scaleEffect(0.7)
-                        .frame(width: 14, height: 14)
+                        .scaleEffect(0.8)
+                        .frame(width: 16, height: 16)
                 } else if let icon = icon {
                     Image(systemName: icon)
-                        .font(.caption)
-                        .frame(width: 14, height: 14)
+                        .font(.system(size: 13))
+                        .frame(width: 16, height: 16)
                 }
                 if let label = label {
                     Text(label)
-                        .font(.caption2)
+                        .font(.system(size: 12))
                 }
             }
             .foregroundColor(foregroundColor)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
             .background(isHovering ? hoverBackground : Color.clear)
             .cornerRadius(4)
             .contentShape(Rectangle())

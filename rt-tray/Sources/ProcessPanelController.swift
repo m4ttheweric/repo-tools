@@ -44,6 +44,8 @@ class ProcessPanelController: ObservableObject {
     /// True when the most recent daemon query returned nothing, so the
     /// empty state can say "daemon unreachable" instead of "no processes".
     @Published var lastRefreshFailed = false
+    /// False until the daemon's scanner has completed its first pass.
+    @Published var scannerReady = false
     /// Bumped whenever repoGroups content changes; the outline view skips
     /// reloads for any SwiftUI update that doesn't carry a new version.
     @Published var dataVersion = 0
@@ -108,6 +110,8 @@ class ProcessPanelController: ObservableObject {
     }
 
     private func applySnapshot(_ data: SystemProcessData) {
+        scannerReady = data.ready ?? true
+
         // Tombstones exist to mask the daemon's scan lag; once a snapshot no
         // longer contains the pid the daemon has caught up. The age cap
         // guards against pid reuse keeping an unrelated process hidden.
