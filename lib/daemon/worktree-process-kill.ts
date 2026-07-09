@@ -56,10 +56,15 @@ function processNames(proc: KillCandidate): string[] {
   return names;
 }
 
-export function selectKillTargets(
+/**
+ * Pids belonging to AI agent sessions (claude, codex, …) plus everything they
+ * spawned, following live ppid links. Once an agent exits its orphans get
+ * reparented to pid 1, so leftovers from dead sessions are no longer covered.
+ */
+export function agentSessionPids(
   rows: KillCandidate[],
   opts: KillTargetOptions = {},
-): KillCandidate[] {
+): Set<number> {
   const aiNames = new Set([...DEFAULT_AI_AGENT_NAMES, ...(opts.aiAgentNames ?? [])]);
 
   // Roots of protection: AI agent processes and explicitly protected pids.
@@ -86,6 +91,14 @@ export function selectKillTargets(
     protectedPids.add(pid);
     queue.push(...(childrenByPpid.get(pid) ?? []));
   }
+  return protectedPids;
+}
+
+export function selectKillTargets(
+  rows: KillCandidate[],
+  opts: KillTargetOptions = {},
+): KillCandidate[] {
+  const protectedPids = agentSessionPids(rows, opts);
 
   return rows.filter(proc => {
     if (protectedPids.has(proc.pid)) return false;

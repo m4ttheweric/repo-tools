@@ -21,7 +21,7 @@ import { join } from "path";
 import { RT_DIR } from "./daemon-config.ts";
 import type { PortEntry } from "./port-scanner.ts";
 import type { SystemProcess } from "./daemon/system-process-scanner.ts";
-import { selectKillTargets } from "./daemon/worktree-process-kill.ts";
+import { agentSessionPids } from "./daemon/worktree-process-kill.ts";
 import { getDaemonLogger } from "./daemon-logger.ts";
 const log = (await getDaemonLogger()).childLogger("notifier");
 
@@ -104,7 +104,6 @@ export const NOTIFICATION_TYPES = [
   { key: "merge_error",       label: "Merge error",         description: "When auto-merge or merge train fails" },
   { key: "stale_port",        label: "Stale processes",     description: "When a dev server has been running 6h+" },
   { key: "runaway_process",   label: "Runaway processes",   description: "When a process is pegged at high CPU for 5+ minutes" },
-  { key: "parked_workload",   label: "Parked worktree busy", description: "When processes are still running in a parked worktree" },
 ] as const;
 
 export type NotificationPrefs = Record<string, boolean>;
@@ -672,7 +671,16 @@ export function checkRunawayProcesses(
   const prefs = loadNotificationPrefs();
   if (!isEnabled(prefs, "runaway_process")) return;
 
-  const fresh = processes.filter(p => p.isRunaway && !isNotified(p.pid));
+  // AI agent sessions and their live subprocesses burn CPU as part of normal
+  // work — never worth an alert. Deliberately not marked notified: if the
+  // agent exits and the orphan is still runaway, it surfaces then.
+  const agentPids = agentSessionPids(processes.map(p => ({
+    pid: p.pid, ppid: p.ppid, command: p.command, fullCommand: p.fullCommand,
+  })));
+
+  const fresh = processes.filter(p =>
+    p.isRunaway && !isNotified(p.pid) && !agentPids.has(p.pid),
+  );
   if (fresh.length === 0) return;
 
   if (fresh.length === 1) {
@@ -709,125 +717,6 @@ export function checkRunawayProcesses(
 
   for (const proc of fresh) {
     markNotified(proc.pid);
-  }
-}
-
-// ─── Parked-worktree workload sweep ──────────────────────────────────────────
-
-const PARKED_BRANCH_RE = /^parking-lot\/\d+$/;
-const PARKED_NOTIFIED_PATH = join(RT_DIR, "parked-notified.json");
-
-/**
- * Which parked workloads we've already nagged about. Persisted so a daemon
- * restart doesn't re-notify every leftover; keyed pid:command so a recycled
- * pid running something new notifies again. Dead pids are pruned each sweep.
- */
-export interface ParkedNotifiedStore {
-  has(key: string): boolean;
-  add(key: string): void;
-  prune(liveKeys: Set<string>): void;
-}
-
-function fileParkedNotifiedStore(): ParkedNotifiedStore {
-  let keys: Set<string>;
-  try {
-    keys = new Set(JSON.parse(readFileSync(PARKED_NOTIFIED_PATH, "utf8")));
-  } catch {
-    keys = new Set();
-  }
-  const save = () => {
-    try {
-      writeFileSync(PARKED_NOTIFIED_PATH, JSON.stringify([...keys]));
-    } catch { /* best-effort */ }
-  };
-  return {
-    has: (k) => keys.has(k),
-    add: (k) => { keys.add(k); save(); },
-    prune: (live) => {
-      let mutated = false;
-      for (const k of keys) {
-        if (!live.has(k)) { keys.delete(k); mutated = true; }
-      }
-      if (mutated) save();
-    },
-  };
-}
-
-function parkedKey(p: SystemProcess): string {
-  return `${p.pid}:${p.command}`;
-}
-
-/**
- * A parked worktree should be quiet: its feature shipped and park() killed the
- * workload. This sweep catches what park-time killing can't — processes left
- * from parks that predate the kill feature, or parks that happened while the
- * daemon was down. It only notifies (with a Kill action); a process running in
- * a parked worktree may be deliberate, so rt never kills it silently.
- */
-export function checkParkedWorkloads(
-  processes: SystemProcess[],
-  store: ParkedNotifiedStore = fileParkedNotifiedStore(),
-): void {
-  const prefs = loadNotificationPrefs();
-  if (!isEnabled(prefs, "parked_workload")) return;
-
-  // Prune entries for processes that no longer exist, so a future process
-  // that happens to reuse a pid still gets its own notification.
-  store.prune(new Set(processes.map(parkedKey)));
-
-  const parked = processes.filter(p =>
-    p.branch && PARKED_BRANCH_RE.test(p.branch) && !store.has(parkedKey(p)),
-  );
-  if (parked.length === 0) return;
-
-  // Same protection rules as the park-time kill (AI sessions + descendants,
-  // shells, .app processes). Selection runs over the full process list so
-  // ppid links to protectors outside the parked worktree still count.
-  const eligible = new Set(
-    selectKillTargets(processes.map(p => ({
-      pid: p.pid, ppid: p.ppid, command: p.command, fullCommand: p.fullCommand,
-    }))).map(t => t.pid),
-  );
-  const fresh = parked.filter(p => eligible.has(p.pid));
-  if (fresh.length === 0) return;
-
-  log.info(
-    { workloads: fresh.map(p => ({ pid: p.pid, label: p.packageScript ?? p.command, worktree: p.worktree, branch: p.branch })) },
-    `parked-worktree sweep: ${fresh.length} leftover workload(s)`,
-  );
-
-  const label = (p: SystemProcess) => p.packageScript ?? p.command;
-  const wtName = (p: SystemProcess) => (p.worktree ?? p.cwd).split("/").pop() ?? p.repo;
-  const worktrees = new Set(fresh.map(wtName));
-
-  if (fresh.length === 1) {
-    const proc = fresh[0]!;
-    notify(
-      "Parked Worktree Still Busy",
-      `${label(proc)} still running in parked ${wtName(proc)} (${proc.repo})`,
-      undefined,
-      "parked_workload",
-      [proc.pid],
-    );
-  } else {
-    const shown = fresh.slice(0, 2).map(p => `${label(p)} (${wtName(p)})`);
-    const rest = fresh.length - shown.length;
-    const detail = rest > 0 ? `${shown.join(", ")}, +${rest} more` : shown.join(", ");
-    const title = worktrees.size > 1
-      ? `${worktrees.size} Parked Worktrees Still Busy`
-      : "Parked Worktree Still Busy";
-
-    notify(
-      title,
-      `${fresh.length} processes — ${detail}`,
-      undefined,
-      "parked_workload",
-      fresh.map(p => p.pid),
-    );
-  }
-
-  for (const proc of fresh) {
-    store.add(parkedKey(proc));
   }
 }
 

@@ -127,11 +127,6 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 actions: [killProcesses, showProcesses],
                 intentIdentifiers: []
             ),
-            UNNotificationCategory(
-                identifier: "parked_workload",
-                actions: [killProcesses, showProcesses],
-                intentIdentifiers: []
-            ),
         ]
 
         center.setNotificationCategories(Set(categories))

@@ -209,156 +209,51 @@ describe("checkRunawayProcesses kill payload", () => {
   });
 });
 
-describe("checkParkedWorkloads", () => {
+describe("checkRunawayProcesses agent exclusion", () => {
   afterEach(() => {
     mock.restore();
   });
 
-  function memStore(seed: string[] = []): notifier.ParkedNotifiedStore & { keys: Set<string> } {
-    const keys = new Set(seed);
-    return {
-      keys,
-      has: (k: string) => keys.has(k),
-      add: (k: string) => { keys.add(k); },
-      prune: (live: Set<string>) => {
-        for (const k of keys) if (!live.has(k)) keys.delete(k);
-      },
-    };
-  }
-
-  function parkedProcess(overrides: Partial<SystemProcess> = {}): SystemProcess {
-    return makeProcess({
-      isRunaway: false,
-      branch: "parking-lot/2",
-      worktree: "/Users/test/gh/assured/ron",
-      packageScript: "pnpm start:lite:watch",
-      ...overrides,
-    });
-  }
-
-  test("notifies once, with pids, for a workload in a parked worktree", () => {
-    const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ parked_workload: true });
+  test("stays silent for a runaway AI agent process and its descendants", () => {
+    const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ runaway_process: true });
     const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
 
-    const store = memStore();
-    notifier.checkParkedWorkloads([parkedProcess({ pid: 42 })], store);
-
-    expect(notifySpy).toHaveBeenCalledTimes(1);
-    const [title, message, , category, pids] = notifySpy.mock.calls[0]!;
-    expect(title).toBe("Parked Worktree Still Busy");
-    expect(message).toContain("pnpm start:lite:watch");
-    expect(message).toContain("ron");
-    expect(category).toBe("parked_workload");
-    expect(pids).toEqual([42]);
-    expect(store.keys.size).toBe(1);
-
-    // Second sweep with the same store stays silent
-    notifier.checkParkedWorkloads([parkedProcess({ pid: 42 })], store);
-    expect(notifySpy).toHaveBeenCalledTimes(1);
-
-    prefsSpy.mockRestore();
-    notifySpy.mockRestore();
-  });
-
-  test("ignores processes on non-parking branches", () => {
-    const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ parked_workload: true });
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
-
-    notifier.checkParkedWorkloads(
-      [parkedProcess({ branch: "feature/foo" }), parkedProcess({ branch: null })],
-      memStore(),
-    );
-
-    expect(notifySpy).not.toHaveBeenCalled();
-
-    prefsSpy.mockRestore();
-    notifySpy.mockRestore();
-  });
-
-  test("stays silent for AI agent sessions in parked worktrees", () => {
-    const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ parked_workload: true });
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
-
-    notifier.checkParkedWorkloads(
+    const marked: number[] = [];
+    notifier.checkRunawayProcesses(
       [
-        parkedProcess({ pid: 50, command: "claude", fullCommand: "claude", packageScript: null }),
-        // claude's child inherits protection through the ppid link
-        parkedProcess({ pid: 51, ppid: 50, command: "bun", fullCommand: "bun test", packageScript: null }),
+        makeProcess({ pid: 50, command: "claude", fullCommand: "claude" }),
+        // claude's child inherits the exemption through the ppid link
+        makeProcess({ pid: 51, ppid: 50, command: "node", fullCommand: "node server.js" }),
+        // grandchild too
+        makeProcess({ pid: 52, ppid: 51, command: "esbuild", fullCommand: "esbuild --watch" }),
       ],
-      memStore(),
+      (pid) => marked.push(pid),
+      () => false,
     );
 
     expect(notifySpy).not.toHaveBeenCalled();
+    // Not marked notified: if the agent exits and the orphan is still
+    // runaway, the next sweep should surface it.
+    expect(marked).toEqual([]);
 
     prefsSpy.mockRestore();
     notifySpy.mockRestore();
   });
 
-  test("summarizes across worktrees with accurate counts", () => {
-    const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ parked_workload: true });
+  test("still notifies for a runaway orphaned by a dead agent session", () => {
+    const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ runaway_process: true });
     const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
 
-    notifier.checkParkedWorkloads(
-      [
-        parkedProcess({ pid: 1 }),
-        parkedProcess({ pid: 2, worktree: "/Users/test/gh/assured/dobby", branch: "parking-lot/13" }),
-        parkedProcess({ pid: 3, worktree: "/Users/test/gh/assured/dumbledore", branch: "parking-lot/4" }),
-      ],
-      memStore(),
+    // No claude ancestor in the list — the orphan was reparented to pid 1
+    notifier.checkRunawayProcesses(
+      [makeProcess({ pid: 51, ppid: 1, command: "node", fullCommand: "node server.js" })],
+      () => {},
+      () => false,
     );
 
     expect(notifySpy).toHaveBeenCalledTimes(1);
-    const [title, message, , , pids] = notifySpy.mock.calls[0]!;
-    expect(title).toBe("3 Parked Worktrees Still Busy");
-    expect(message).toContain("3 processes");
-    expect(pids?.sort()).toEqual([1, 2, 3]);
 
     prefsSpy.mockRestore();
-    notifySpy.mockRestore();
-  });
-
-  test("counts worktrees, not processes, in the title", () => {
-    const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ parked_workload: true });
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
-
-    // Two chain members in the SAME worktree — one worktree, two processes
-    notifier.checkParkedWorkloads(
-      [parkedProcess({ pid: 1 }), parkedProcess({ pid: 2, command: "doppler", packageScript: null })],
-      memStore(),
-    );
-
-    const [title, message] = notifySpy.mock.calls[0]!;
-    expect(title).toBe("Parked Worktree Still Busy");
-    expect(message).toContain("2 processes");
-
-    prefsSpy.mockRestore();
-    notifySpy.mockRestore();
-  });
-
-  test("prunes dead pids from the store so a restarted process re-notifies", () => {
-    const prefsSpy = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ parked_workload: true });
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
-
-    const store = memStore(["999:node", "42:node"]);
-    notifier.checkParkedWorkloads([parkedProcess({ pid: 42, command: "node" })], store);
-
-    // 42 was already notified (silent); 999 is gone and gets pruned
-    expect(notifySpy).not.toHaveBeenCalled();
-    expect(store.keys.has("999:node")).toBe(false);
-    expect(store.keys.has("42:node")).toBe(true);
-
-    prefsSpy.mockRestore();
-    notifySpy.mockRestore();
-  });
-
-  test("respects the pref toggle", () => {
-    const notifySpy = spyOn(notifier, "notify").mockImplementation(() => {});
-    const prefsOff = spyOn(notifier, "loadNotificationPrefs").mockReturnValue({ parked_workload: false });
-
-    notifier.checkParkedWorkloads([parkedProcess({ pid: 10 })], memStore());
-    expect(notifySpy).not.toHaveBeenCalled();
-
-    prefsOff.mockRestore();
     notifySpy.mockRestore();
   });
 });
@@ -368,10 +263,5 @@ describe("NOTIFICATION_TYPES", () => {
     const entry = notifier.NOTIFICATION_TYPES.find((t) => t.key === "runaway_process");
     expect(entry).toBeDefined();
     expect(entry?.label).toBe("Runaway processes");
-  });
-
-  test("registers the parked_workload category", () => {
-    const entry = notifier.NOTIFICATION_TYPES.find((t) => t.key === "parked_workload");
-    expect(entry).toBeDefined();
   });
 });
