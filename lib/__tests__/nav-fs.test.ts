@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { listEntries, deepList } from "../nav-fs.ts";
@@ -68,5 +68,39 @@ describe("deepList (fallback walk)", () => {
   test("respects maxDepth", () => {
     const { files } = deepList(root, { showHidden: false, maxDepth: 1 }, noFd);
     expect(files).not.toContain("beta/nested/deep.txt");
+  });
+});
+
+describe("deepList (fd path)", () => {
+  let fakeFdPath: string;
+
+  beforeAll(() => {
+    fakeFdPath = join(root, "fake-fd.sh");
+    // Fake fd: prints 5 lines for --type d and 5 for --type f, regardless of
+    // maxResults, so the fd branch must trim to the total cap itself.
+    writeFileSync(
+      fakeFdPath,
+      [
+        "#!/bin/sh",
+        'if echo "$@" | grep -q -- "--type d"; then',
+        "  for i in 1 2 3 4 5; do echo \"dir$i\"; done",
+        'elif echo "$@" | grep -q -- "--type f"; then',
+        "  for i in 1 2 3 4 5; do echo \"file$i\"; done",
+        "fi",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(fakeFdPath, 0o755);
+  });
+
+  test("enforces maxResults as a total cap, folders first", () => {
+    const { folders, files } = deepList(
+      root,
+      { showHidden: false, maxResults: 6 },
+      () => fakeFdPath,
+    );
+    expect(folders.length + files.length).toBeLessThanOrEqual(6);
+    expect(folders.length).toBe(5);
+    expect(files.length).toBe(1);
   });
 });
