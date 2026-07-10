@@ -166,14 +166,23 @@ export async function navigate(args: string[]): Promise<void> {
 
     const modeHint = deepMode ? "ctrl-r: browse" : "ctrl-r: deep jump";
     const upHint = deepMode ? "ctrl-up: browse" : "ctrl-up: up";
+    // Revealed by ctrl-/. Two narrow columns (~44 chars) so the help fits
+    // even in a split-pane terminal; long single lines get truncated by fzf.
+    const helpPairs: Array<[string, string]> = [
+      ["enter: open", "ctrl-k: actions"],
+      ["ctrl-space: cd selected", "ctrl-o: editor"],
+      ["ctrl-h: cd here", "ctrl-f: finder"],
+      [upHint, modeHint],
+      ["esc: quit", hiddenHint],
+      ["", "ctrl-p: preview"],
+    ];
+    const helpHeader = helpPairs
+      .map(([left, right]) => (left.padEnd(25) + right).trimEnd())
+      .join("\n");
     const result = await runNavPicker({
       options,
       message: tildeify(cwd) + (deepMode ? " (deep)" : ""),
-      // Hints stay out of the way until ctrl-/ reveals them. Two lines:
-      // line 1 = navigation, line 2 = tools/toggles.
-      helpHeader:
-        `enter: open  ctrl-space: cd selected  ctrl-h: cd here  ${upHint}  esc: quit\n` +
-        `ctrl-k: actions  ctrl-o: editor  ctrl-f: finder  ${modeHint}  ${hiddenHint}  ctrl-p: preview`,
+      helpHeader,
       expectKeys: ["ctrl-k", "ctrl-o", "ctrl-space", "ctrl-h", "ctrl-f", "ctrl-r", "ctrl-t"],
       initialQuery: resumeQuery,
       resumeValue: resumeValue || undefined,
