@@ -69,6 +69,13 @@ export interface NavPickerOpts {
    * and ctrl-p toggles it. The command sees the value column as {1}.
    */
   preview?: string;
+  /**
+   * Full key-hint text (may be multi-line) revealed on demand. When set, the
+   * visible header collapses to "ctrl-/: commands" and ctrl-/ swaps this text
+   * in via fzf's change-header — all key bindings work either way, only the
+   * hint text is hidden. Ignored if `header`/`headerParts` is set.
+   */
+  helpHeader?: string;
 }
 
 /** Create a separator NavOption. The value is auto-generated; the cursor auto-skips it. */
@@ -118,7 +125,11 @@ const DEFAULT_HEADER = "enter: select  |: OR  !: exclude";
 export function buildNavArgs(opts: NavPickerOpts): string[] {
   const header =
     opts.header ??
-    (opts.headerParts ? opts.headerParts.join("  ") : DEFAULT_HEADER);
+    (opts.headerParts
+      ? opts.headerParts.join("  ")
+      : opts.helpHeader
+        ? "ctrl-/: commands"
+        : DEFAULT_HEADER);
 
   const expectKeys = ["ctrl-up", ...(opts.expectKeys ?? [])];
   const expectStr = expectKeys.join(",");
@@ -155,6 +166,9 @@ export function buildNavArgs(opts: NavPickerOpts): string[] {
           "--preview-window=right,50%,border-rounded",
           "--bind=ctrl-p:toggle-preview",
         ]
+      : []),
+    ...(opts.helpHeader && !opts.header && !opts.headerParts
+      ? [`--bind=ctrl-/:change-header(${opts.helpHeader})`]
       : []),
   ];
 }
