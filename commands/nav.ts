@@ -165,10 +165,11 @@ export async function navigate(args: string[]): Promise<void> {
     }
 
     const modeHint = deepMode ? "ctrl-r: browse" : "ctrl-r: deep jump";
+    const upHint = deepMode ? "ctrl-up: browse" : "ctrl-up: up";
     const result = await runNavPicker({
       options,
       message: tildeify(cwd) + (deepMode ? " (deep)" : ""),
-      header: `enter: open  ctrl-k: actions  ctrl-o: editor  ctrl-up: up  ctrl-space: cd selected  ctrl-h: cd here  ctrl-f: finder  ${modeHint}  ${hiddenHint}  ctrl-p: preview  esc: quit`,
+      header: `enter: open  ctrl-k: actions  ctrl-o: editor  ${upHint}  ctrl-space: cd selected  ctrl-h: cd here  ctrl-f: finder  ${modeHint}  ${hiddenHint}  ctrl-p: preview  esc: quit`,
       expectKeys: ["ctrl-k", "ctrl-o", "ctrl-space", "ctrl-h", "ctrl-f", "ctrl-r", "ctrl-t"],
       initialQuery: resumeQuery,
       resumeValue: resumeValue || undefined,
