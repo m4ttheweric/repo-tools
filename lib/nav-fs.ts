@@ -151,7 +151,9 @@ export function buildPreviewCommand(baseDir: string): string {
   return (
     `v={1}; p=${base}"/\${v#??}"; ` +
     `case "$v" in ` +
-    `d:*) eza -la --color=always "$p" 2>/dev/null || ls -la "$p";; ` +
+    // One entry per line: long-format lines overflow the 50% pane and fzf
+    // truncates (not wraps), which chops off the filenames themselves.
+    `d:*) eza -a1 --color=always "$p" 2>/dev/null || ls -1AF "$p";; ` +
     `*) bat --color=always --style=numbers "$p" 2>/dev/null || head -c 65536 "$p";; ` +
     `esac`
   );
