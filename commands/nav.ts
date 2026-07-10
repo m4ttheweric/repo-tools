@@ -10,48 +10,26 @@
  * ctrl-k opens an action menu on the highlighted item (Open with…, Reveal in
  * Finder, Quick Look, Copy path, Open terminal here).
  *
+ * Dotfiles are hidden by default; ctrl-t toggles showing them. ctrl-r toggles
+ * deep-jump mode, recursively listing everything under the current directory
+ * so you can filter across nested paths. ctrl-p toggles a preview pane
+ * showing the highlighted folder's contents or file's text.
+ *
  * Optional first arg sets the starting directory (defaults to cwd).
  */
 
-import { readdirSync, statSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { spawnSync } from "child_process";
 import { homedir } from "os";
 import { openDirectoryInEditor } from "./code.ts";
 import { runNavPicker, type NavOption } from "../lib/navigate.ts";
-
+import { listEntries, deepList, buildPreviewCommand } from "../lib/nav-fs.ts";
 
 function tildeify(p: string): string {
   const home = homedir();
   if (p === home) return "~";
   if (p.startsWith(home + "/")) return "~" + p.slice(home.length);
   return p;
-}
-
-function listEntries(dir: string): { folders: string[]; files: string[] } {
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return { folders: [], files: [] };
-  }
-  const folders: string[] = [];
-  const files: string[] = [];
-  for (const name of entries) {
-    let isDir: boolean;
-    try {
-      isDir = statSync(join(dir, name)).isDirectory();
-    } catch {
-      continue;
-    }
-    if (isDir) folders.push(name);
-    else files.push(name);
-  }
-  const cmp = (a: string, b: string) =>
-    a.localeCompare(b, undefined, { sensitivity: "base" });
-  folders.sort(cmp);
-  files.sort(cmp);
-  return { folders, files };
 }
 
 type ItemKind = "file" | "folder";
@@ -129,38 +107,47 @@ export async function navigate(args: string[]): Promise<void> {
   const realStdoutWrite = process.stdout.write.bind(process.stdout);
   process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
 
+  const cdAndExit = (path: string) => {
+    process.stdout.write = realStdoutWrite;
+    realStdoutWrite(path + "\n");
+  };
+
   let cwd = resolve(args[0] ?? process.cwd());
-  // Preserved across ctrl-k action-menu round trips so the user's filter and
+  let showHidden = false;
+  let deepMode = false;
+  // Preserved across ctrl-k/ctrl-t/ctrl-f round trips so the user's filter and
   // cursor position survive. Reset on any cwd-changing navigation.
   let resumeQuery = "";
   let resumeValue = "";
 
   while (true) {
-    const { folders, files } = listEntries(cwd);
     const atRoot = cwd === "/";
+    const { folders, files } = deepMode
+      ? deepList(cwd, { showHidden })
+      : listEntries(cwd, showHidden);
 
     const options: NavOption[] = [
-      ...folders.map((name) => ({
-        value: "d:" + name,
-        label: "📁 " + name,
-        hint: "",
-      })),
-      ...files.map((name) => ({
-        value: "f:" + name,
-        label: name,
-        hint: "",
-      })),
+      ...folders.map((name) => ({ value: "d:" + name, label: "📁 " + name, hint: "" })),
+      ...files.map((name) => ({ value: "f:" + name, label: name, hint: "" })),
     ];
 
-    // Empty directory: nothing to descend into. Instead of dead-ending (which
-    // would print no path and leave the shell wrapper with nowhere to cd),
-    // surface a notice so the user can land here or back out.
+    const hiddenHint = showHidden ? "ctrl-t: hide hidden" : "ctrl-t: show hidden";
+
     if (options.length === 0) {
+      // Deep mode with zero results (everything ignored/hidden): fall back to
+      // browse mode rather than rendering an empty picker.
+      if (deepMode) {
+        deepMode = false;
+        continue;
+      }
+      // Empty directory: nothing to descend into. Instead of dead-ending
+      // (which would print no path and leave the shell wrapper with nowhere
+      // to cd), surface a notice so the user can land here or back out.
       const result = await runNavPicker({
         options: [{ value: "__cd_here__", label: "📭 empty folder", hint: "" }],
         message: tildeify(cwd),
-        header: "enter: cd here  ctrl-up: up  esc: cancel",
-        expectKeys: [],
+        header: `enter: cd here  ctrl-up: up  ${hiddenHint}  esc: cancel`,
+        expectKeys: ["ctrl-t"],
       });
       if (!result) return; // esc
       const { value: choice, key } = result;
@@ -168,27 +155,48 @@ export async function navigate(args: string[]): Promise<void> {
         if (!atRoot) cwd = dirname(cwd);
         continue;
       }
+      if (key === "ctrl-t") {
+        showHidden = !showHidden;
+        continue;
+      }
       if (choice === null) return; // esc — cancel without cd
-      // enter on the notice → cd into this (empty) directory
-      process.stdout.write = realStdoutWrite;
-      realStdoutWrite(cwd + "\n");
+      cdAndExit(cwd); // enter on the notice → cd into this (empty) directory
       return;
     }
 
+    const modeHint = deepMode ? "ctrl-r: browse" : "ctrl-r: deep jump";
     const result = await runNavPicker({
       options,
-      message: tildeify(cwd),
-      header: "enter: open  ctrl-k: actions  ctrl-o: editor  ctrl-up: up  ctrl-space: cd selected  ctrl-h: cd here  ctrl-f: finder  esc: quit",
-      expectKeys: ["ctrl-k", "ctrl-o", "ctrl-space", "ctrl-h", "ctrl-f"],
+      message: tildeify(cwd) + (deepMode ? " (deep)" : ""),
+      header: `enter: open  ctrl-k: actions  ctrl-o: editor  ctrl-up: up  ctrl-space: cd selected  ctrl-h: cd here  ctrl-f: finder  ${modeHint}  ${hiddenHint}  ctrl-p: preview  esc: quit`,
+      expectKeys: ["ctrl-k", "ctrl-o", "ctrl-space", "ctrl-h", "ctrl-f", "ctrl-r", "ctrl-t"],
       initialQuery: resumeQuery,
       resumeValue: resumeValue || undefined,
+      preview: buildPreviewCommand(cwd),
     });
     if (!result) return;
     const { value: choice, key, query } = result;
 
-    // Clear resume state by default; ctrl-k branches re-set it below.
+    // Clear resume state by default; round-trip branches re-set it below.
     resumeQuery = "";
     resumeValue = "";
+
+    // ctrl-t: toggle hidden files, preserving filter (cursor value may vanish
+    // from the new list — findResumePosition returns null and that's fine)
+    if (key === "ctrl-t") {
+      showHidden = !showHidden;
+      resumeQuery = query;
+      resumeValue = choice ?? "";
+      continue;
+    }
+
+    // ctrl-r: toggle deep-jump mode. Keep the typed filter (likely still
+    // relevant) but not the cursor value (row set changes entirely).
+    if (key === "ctrl-r") {
+      deepMode = !deepMode;
+      resumeQuery = query;
+      continue;
+    }
 
     // ctrl-k: open action menu on highlighted item (skip on empty rows)
     if (key === "ctrl-k") {
@@ -206,16 +214,19 @@ export async function navigate(args: string[]): Promise<void> {
       continue;
     }
 
-    // ctrl-up: go up regardless of what's selected
+    // ctrl-up: in deep mode, back to browse; otherwise go up a directory
     if (key === "ctrl-up") {
-      if (!atRoot) cwd = dirname(cwd);
+      if (deepMode) {
+        deepMode = false;
+      } else if (!atRoot) {
+        cwd = dirname(cwd);
+      }
       continue;
     }
 
     // ctrl-h: cd to the currently displayed directory
     if (key === "ctrl-h") {
-      process.stdout.write = realStdoutWrite;
-      realStdoutWrite(cwd + "\n");
+      cdAndExit(cwd);
       return;
     }
 
@@ -235,22 +246,24 @@ export async function navigate(args: string[]): Promise<void> {
 
     if (kind === "d") {
       if (key === "ctrl-space") {
-        process.stdout.write = realStdoutWrite;
-        realStdoutWrite(target + "\n");
+        cdAndExit(target);
         return;
       }
       if (key === "ctrl-o") {
         await openDirectoryInEditor(target);
         return;
       }
+      // Descending always lands in browse mode: deep jump is a travel
+      // accelerator, not a permanent view.
       cwd = target;
+      deepMode = false;
       continue;
     }
 
-    // File: ctrl-space cds to its containing directory
+    // File: ctrl-space cds to its containing directory (== cwd in browse
+    // mode; the parent of a nested match in deep mode)
     if (key === "ctrl-space") {
-      process.stdout.write = realStdoutWrite;
-      realStdoutWrite(cwd + "\n");
+      cdAndExit(dirname(target));
       return;
     }
 
