@@ -125,7 +125,7 @@ describe("buildPreviewCommand", () => {
   test("references the fzf value placeholder and both fallbacks", () => {
     const cmd = buildPreviewCommand("/tmp/base");
     expect(cmd).toContain("{1}");
-    expect(cmd).toContain("ls -la");
+    expect(cmd).toContain("ls -1AF");
     expect(cmd).toContain("head -c");
   });
 
