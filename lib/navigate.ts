@@ -64,6 +64,11 @@ export interface NavPickerOpts {
    * returns null.
    */
   captureQueryOnNoMatch?: boolean;
+  /**
+   * fzf --preview command. When set, a right-side preview window is shown
+   * and ctrl-p toggles it. The command sees the value column as {1}.
+   */
+  preview?: string;
 }
 
 /** Create a separator NavOption. The value is auto-generated; the cursor auto-skips it. */
@@ -142,6 +147,13 @@ export function buildNavArgs(opts: NavPickerOpts): string[] {
       ? [
           "--bind", `down:down+transform:[[ {1} == ${NAV_SEPARATOR_PREFIX}* ]] && echo down`,
           "--bind", `up:up+transform:[[ {1} == ${NAV_SEPARATOR_PREFIX}* ]] && echo up`,
+        ]
+      : []),
+    ...(opts.preview
+      ? [
+          `--preview=${opts.preview}`,
+          "--preview-window=right,50%,border-rounded",
+          "--bind=ctrl-p:toggle-preview",
         ]
       : []),
   ];
