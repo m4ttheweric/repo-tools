@@ -16,7 +16,7 @@ export interface DirListing {
 
 export interface DeepListOpts {
   showHidden: boolean;
-  /** Total entry cap. Default 5000. */
+  /** Total entry cap (folders + files combined), enforced on both the fd path and the fallback walk. Default 5000. */
   maxResults?: number;
   /** Fallback-walk depth cap. Default 8. (fd path is capped by maxResults only.) */
   maxDepth?: number;
@@ -79,7 +79,11 @@ export function deepList(
         .filter(Boolean)
         .map((s) => s.replace(/\/$/, ""));
     };
-    return { folders: run("d").sort(cmp), files: run("f").sort(cmp) };
+    const folders = run("d").sort(cmp).slice(0, maxResults);
+    const files = run("f")
+      .sort(cmp)
+      .slice(0, Math.max(0, maxResults - folders.length));
+    return { folders, files };
   }
   return walkFallback(dir, opts.showHidden, opts.maxDepth ?? 8, maxResults);
 }
