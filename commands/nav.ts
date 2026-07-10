@@ -169,7 +169,11 @@ export async function navigate(args: string[]): Promise<void> {
     const result = await runNavPicker({
       options,
       message: tildeify(cwd) + (deepMode ? " (deep)" : ""),
-      header: `enter: open  ctrl-k: actions  ctrl-o: editor  ${upHint}  ctrl-space: cd selected  ctrl-h: cd here  ctrl-f: finder  ${modeHint}  ${hiddenHint}  ctrl-p: preview  esc: quit`,
+      // Two lines: fzf renders multi-line headers; one line truncates on
+      // normal terminal widths. Line 1 = navigation, line 2 = tools/toggles.
+      header:
+        `enter: open  ctrl-space: cd selected  ctrl-h: cd here  ${upHint}  esc: quit\n` +
+        `ctrl-k: actions  ctrl-o: editor  ctrl-f: finder  ${modeHint}  ${hiddenHint}  ctrl-p: preview`,
       expectKeys: ["ctrl-k", "ctrl-o", "ctrl-space", "ctrl-h", "ctrl-f", "ctrl-r", "ctrl-t"],
       initialQuery: resumeQuery,
       resumeValue: resumeValue || undefined,
