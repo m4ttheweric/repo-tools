@@ -2,7 +2,8 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { listEntries, deepList } from "../nav-fs.ts";
+import { spawnSync } from "child_process";
+import { listEntries, deepList, shellQuote, buildPreviewCommand } from "../nav-fs.ts";
 
 let root: string;
 
@@ -102,5 +103,46 @@ describe("deepList (fd path)", () => {
     expect(folders.length + files.length).toBeLessThanOrEqual(6);
     expect(folders.length).toBe(5);
     expect(files.length).toBe(1);
+  });
+});
+
+describe("shellQuote", () => {
+  test("wraps in single quotes and escapes embedded single quotes", () => {
+    expect(shellQuote("plain")).toBe("'plain'");
+    expect(shellQuote("it's")).toBe("'it'\\''s'");
+  });
+});
+
+describe("buildPreviewCommand", () => {
+  test("references the fzf value placeholder and both fallbacks", () => {
+    const cmd = buildPreviewCommand("/tmp/base");
+    expect(cmd).toContain("{1}");
+    expect(cmd).toContain("ls -la");
+    expect(cmd).toContain("cat");
+  });
+
+  test("snippet previews a file with spaces and quotes in the path", () => {
+    const dir = mkdtempSync(join(tmpdir(), "nav-preview-"));
+    const tricky = "it's a dir";
+    mkdirSync(join(dir, tricky));
+    writeFileSync(join(dir, tricky, "hello world.txt"), "PREVIEW_OK");
+    // Simulate fzf: replace {1} with the shell-quoted value column
+    const cmd = buildPreviewCommand(join(dir, tricky)).replace(
+      "{1}",
+      shellQuote("f:hello world.txt"),
+    );
+    const r = spawnSync("sh", ["-c", cmd], { encoding: "utf8" });
+    expect(r.stdout).toContain("PREVIEW_OK");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("snippet previews a directory listing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "nav-preview-"));
+    mkdirSync(join(dir, "sub"));
+    writeFileSync(join(dir, "sub", "marker-file.txt"), "x");
+    const cmd = buildPreviewCommand(dir).replace("{1}", shellQuote("d:sub"));
+    const r = spawnSync("sh", ["-c", cmd], { encoding: "utf8" });
+    expect(r.stdout).toContain("marker-file.txt");
+    rmSync(dir, { recursive: true, force: true });
   });
 });

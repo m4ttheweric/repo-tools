@@ -130,3 +130,26 @@ function walkFallback(
   walk("", 1);
   return { folders, files };
 }
+
+/** POSIX single-quote escaping: ' -> '\'' wrapped in single quotes. */
+export function shellQuote(s: string): string {
+  return "'" + s.replaceAll("'", "'\\''") + "'";
+}
+
+/**
+ * Build the fzf --preview shell snippet for a nav picker rooted at baseDir.
+ *
+ * fzf substitutes {1} with the (already shell-quoted) value column, e.g.
+ * 'd:src' or 'f:sub/readme.md'. The snippet strips the 2-char kind prefix
+ * and joins with baseDir. eza/bat are soft deps; ls/cat are the fallbacks.
+ */
+export function buildPreviewCommand(baseDir: string): string {
+  const base = shellQuote(baseDir);
+  return (
+    `v={1}; p=${base}"/\${v#??}"; ` +
+    `case "$v" in ` +
+    `d:*) eza -la --color=always "$p" 2>/dev/null || ls -la "$p";; ` +
+    `*) bat --color=always --style=numbers "$p" 2>/dev/null || cat "$p";; ` +
+    `esac`
+  );
+}
