@@ -25,6 +25,9 @@ export interface DeepListOpts {
 export const cmp = (a: string, b: string) =>
   a.localeCompare(b, undefined, { sensitivity: "base" });
 
+/** Directories the fallback walk never descends into, regardless of showHidden. */
+const WALK_SKIP_DIRS = new Set([".git", "node_modules"]);
+
 /** List one directory level. Dotfiles are excluded unless showHidden. */
 export function listEntries(dir: string, showHidden: boolean): DirListing {
   let entries: string[];
@@ -109,7 +112,7 @@ function walkFallback(
     entries.sort(cmp);
     for (const name of entries) {
       if (full()) return;
-      if (name === ".git") continue;
+      if (WALK_SKIP_DIRS.has(name)) continue;
       if (!showHidden && name.startsWith(".")) continue;
       const relPath = rel ? `${rel}/${name}` : name;
       let isDir: boolean;
@@ -149,7 +152,7 @@ export function buildPreviewCommand(baseDir: string): string {
     `v={1}; p=${base}"/\${v#??}"; ` +
     `case "$v" in ` +
     `d:*) eza -la --color=always "$p" 2>/dev/null || ls -la "$p";; ` +
-    `*) bat --color=always --style=numbers "$p" 2>/dev/null || cat "$p";; ` +
+    `*) bat --color=always --style=numbers "$p" 2>/dev/null || head -c 65536 "$p";; ` +
     `esac`
   );
 }

@@ -21,6 +21,8 @@ beforeAll(() => {
   mkdirSync(join(root, ".git", "objects"), { recursive: true });
   writeFileSync(join(root, ".git", "config"), "x");
   writeFileSync(join(root, ".hidden-dir", "inside.txt"), "x");
+  mkdirSync(join(root, "beta", "node_modules", "pkg"), { recursive: true });
+  writeFileSync(join(root, "beta", "node_modules", "pkg", "index.js"), "x");
 });
 
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -59,6 +61,12 @@ describe("deepList (fallback walk)", () => {
     expect(files).toContain(".hidden-dir/inside.txt");
     expect(folders.some((f) => f.startsWith(".git"))).toBe(false);
     expect(files.some((f) => f.startsWith(".git"))).toBe(false);
+  });
+
+  test("always skips node_modules", () => {
+    const { folders, files } = deepList(root, { showHidden: true }, noFd);
+    expect(folders.some((f) => f.includes("node_modules"))).toBe(false);
+    expect(files.some((f) => f.includes("node_modules"))).toBe(false);
   });
 
   test("respects maxResults cap", () => {
@@ -118,7 +126,7 @@ describe("buildPreviewCommand", () => {
     const cmd = buildPreviewCommand("/tmp/base");
     expect(cmd).toContain("{1}");
     expect(cmd).toContain("ls -la");
-    expect(cmd).toContain("cat");
+    expect(cmd).toContain("head -c");
   });
 
   test("snippet previews a file with spaces and quotes in the path", () => {
