@@ -21,20 +21,22 @@ describe("buildNavArgs preview", () => {
 describe("buildNavArgs helpHeader", () => {
   const base = { options: [], message: "m" };
 
-  test("collapses the header and binds ctrl-/ to reveal the hints", () => {
+  test("hides the hints at start and toggles them with ctrl-/", () => {
     const args = buildNavArgs({ ...base, helpHeader: "line1\nline2" });
-    expect(args).toContain("--header=ctrl-/: commands");
-    expect(args).toContain("--bind=ctrl-/:change-header(line1\nline2)");
+    expect(args).toContain("--header=line1\nline2");
+    expect(args).toContain("--footer=ctrl-/: commands");
+    expect(args).toContain("--bind=start:hide-header");
+    expect(args).toContain("--bind=ctrl-/:toggle-header");
   });
 
   test("explicit header wins over helpHeader", () => {
     const args = buildNavArgs({ ...base, header: "esc: cancel", helpHeader: "hints" });
     expect(args).toContain("--header=esc: cancel");
-    expect(args.some((a) => a.includes("change-header"))).toBe(false);
+    expect(args.some((a) => a.includes("toggle-header") || a.startsWith("--footer"))).toBe(false);
   });
 
-  test("omits the reveal bind when helpHeader is not set", () => {
+  test("omits footer and toggle binds when helpHeader is not set", () => {
     const args = buildNavArgs(base);
-    expect(args.some((a) => a.includes("change-header"))).toBe(false);
+    expect(args.some((a) => a.includes("toggle-header") || a.startsWith("--footer"))).toBe(false);
   });
 });

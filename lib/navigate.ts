@@ -70,10 +70,11 @@ export interface NavPickerOpts {
    */
   preview?: string;
   /**
-   * Full key-hint text (may be multi-line) revealed on demand. When set, the
-   * visible header collapses to "ctrl-/: commands" and ctrl-/ swaps this text
-   * in via fzf's change-header — all key bindings work either way, only the
-   * hint text is hidden. Ignored if `header`/`headerParts` is set.
+   * Full key-hint text (may be multi-line), hidden until requested. When set,
+   * the hints go in the header but start hidden; a sticky one-line footer
+   * shows "ctrl-/: commands" and ctrl-/ toggles the hints on and off — all
+   * key bindings work either way, only the hint text is hidden. Ignored if
+   * `header`/`headerParts` is set.
    */
   helpHeader?: string;
 }
@@ -123,12 +124,13 @@ const DEFAULT_HEADER = "enter: select  |: OR  !: exclude";
  * via `result.key === "ctrl-up"`.
  */
 export function buildNavArgs(opts: NavPickerOpts): string[] {
+  const helpMode = !!opts.helpHeader && !opts.header && !opts.headerParts;
   const header =
     opts.header ??
     (opts.headerParts
       ? opts.headerParts.join("  ")
-      : opts.helpHeader
-        ? "ctrl-/: commands"
+      : helpMode
+        ? opts.helpHeader!
         : DEFAULT_HEADER);
 
   const expectKeys = ["ctrl-up", ...(opts.expectKeys ?? [])];
@@ -167,8 +169,12 @@ export function buildNavArgs(opts: NavPickerOpts): string[] {
           "--bind=ctrl-p:toggle-preview",
         ]
       : []),
-    ...(opts.helpHeader && !opts.header && !opts.headerParts
-      ? [`--bind=ctrl-/:change-header(${opts.helpHeader})`]
+    ...(helpMode
+      ? [
+          "--footer=ctrl-/: commands",
+          "--bind=start:hide-header",
+          "--bind=ctrl-/:toggle-header",
+        ]
       : []),
   ];
 }
