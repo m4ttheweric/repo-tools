@@ -166,8 +166,9 @@ export async function navigate(args: string[]): Promise<void> {
 
     const modeHint = deepMode ? "ctrl-r: browse" : "ctrl-r: deep jump";
     const upHint = deepMode ? "ctrl-up: browse" : "ctrl-up: up";
-    // Revealed by ctrl-/. Two narrow columns (~44 chars) so the help fits
-    // even in a split-pane terminal; long single lines get truncated by fzf.
+    // Revealed by ctrl-/. Two columns spread across the list area — the
+    // preview pane takes the right half of the terminal, and fzf truncates
+    // (not wraps) header lines that overflow.
     const helpPairs: Array<[string, string]> = [
       ["enter: open", "ctrl-k: actions"],
       ["ctrl-space: cd selected", "ctrl-o: editor"],
@@ -176,8 +177,12 @@ export async function navigate(args: string[]): Promise<void> {
       ["esc: quit", hiddenHint],
       ["", "ctrl-p: preview"],
     ];
+    const termCols = process.stderr.columns || 80;
+    const listWidth = Math.floor(termCols / 2) - 4; // preview + borders
+    const rightWidth = Math.max(...helpPairs.map(([, right]) => right.length));
+    const leftPad = Math.max(25, listWidth - rightWidth);
     const helpHeader = helpPairs
-      .map(([left, right]) => (left.padEnd(25) + right).trimEnd())
+      .map(([left, right]) => (left.padEnd(leftPad) + right).trimEnd())
       .join("\n");
     const result = await runNavPicker({
       options,
