@@ -79,8 +79,18 @@ export function createSystemProcessHandlers(
   scanner: SystemProcessScanner,
   ctx: HandlerContext,
 ): HandlerMap {
+  // The background scanner refreshes every 10s; the tray polls far faster
+  // while its panel is open. Re-discover on read when the cache is older than
+  // this so a poll reflects current reality (new/dead processes) instead of
+  // up-to-10s-stale data. `refresh` deliberately skips the runaway sample
+  // window, so scanning more often here can't trip a premature alert.
+  const STALE_READ_MS = 1500;
+
   return {
     "system-processes": async () => {
+      if (scanner.msSinceLastScan() > STALE_READ_MS) {
+        scanner.refresh(ctx.portCacheRef.ports);
+      }
       const processes = scanner.getProcesses().map(proc => {
         let linearTicket: string | null = null;
         if (proc.branch) {

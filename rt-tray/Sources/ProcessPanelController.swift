@@ -48,6 +48,9 @@ class ProcessPanelController: ObservableObject {
     @Published var scannerReady = false
     /// Bumped whenever repoGroups content changes; the outline view skips
     /// reloads for any SwiftUI update that doesn't carry a new version.
+    @Published var searchText = "" {
+        didSet { if oldValue != searchText { dataVersion += 1 } }
+    }
     @Published var dataVersion = 0
 
     private let daemonClient = DaemonClient()
@@ -75,9 +78,13 @@ class ProcessPanelController: ObservableObject {
     func startPolling() {
         pollTimer?.invalidate()
         refresh()
+        // Poll fast (2s) — this timer only runs while the panel is on-screen
+        // (started in .onAppear, invalidated in .onDisappear), so the daemon's
+        // matching scan-on-read cost is paid only while the user is watching.
+        // The daemon's own background scan stays at 10s for runaway detection.
         // .common mode so polls don't stall while a menu is open or the
         // user is scrolling (both put the run loop in tracking mode).
-        let timer = Timer(timeInterval: 10, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
             self?.refresh()
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -433,8 +440,34 @@ class ProcessPanelController: ObservableObject {
     // MARK: Derived view data
 
     var filteredGroups: [RepoGroup] {
-        guard let selected = selectedRepo else { return repoGroups }
-        return repoGroups.filter { $0.name == selected }
+        var groups = repoGroups
+        if let selected = selectedRepo {
+            groups = groups.filter { $0.name == selected }
+        }
+        guard !searchText.isEmpty else { return groups }
+        let query = searchText.lowercased()
+        return groups.compactMap { group in
+            let matched = Self.filterProcessTree(group.processes, query: query)
+            guard !matched.isEmpty else { return nil }
+            return RepoGroup(name: group.name, processes: matched,
+                           totalCpu: matched.reduce(0) { $0 + ($1.totalCpuPercent ?? $1.cpuPercent) })
+        }
+    }
+
+    private static func filterProcessTree(_ procs: [SystemProcess], query: String) -> [SystemProcess] {
+        procs.compactMap { proc in
+            let selfMatches = ProcessColumn.allCases.contains {
+                proc.textForColumn($0).lowercased().contains(query)
+            }
+            if selfMatches { return proc }
+            let filteredChildren = filterProcessTree(proc.children ?? [], query: query)
+            if !filteredChildren.isEmpty {
+                var copy = proc
+                copy.children = filteredChildren
+                return copy
+            }
+            return nil
+        }
     }
 
     var totalProcessCount: Int {
@@ -442,6 +475,13 @@ class ProcessPanelController: ObservableObject {
             return 1 + (proc.children ?? []).reduce(0) { $0 + countTree($1) }
         }
         return repoGroups.flatMap(\.processes).reduce(0) { $0 + countTree($1) }
+    }
+
+    var filteredProcessCount: Int {
+        func countTree(_ proc: SystemProcess) -> Int {
+            1 + (proc.children ?? []).reduce(0) { $0 + countTree($1) }
+        }
+        return filteredGroups.flatMap(\.processes).reduce(0) { $0 + countTree($1) }
     }
 
     var repoNames: [String] {

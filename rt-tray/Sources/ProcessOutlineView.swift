@@ -74,6 +74,7 @@ struct ProcessOutlineView: NSViewRepresentable {
     let herdrPids: Set<Int>
     let selection: Set<Int>
     let dataVersion: Int
+    let searchText: String
     let controller: ProcessPanelController
 
     func makeCoordinator() -> Coordinator {
@@ -143,6 +144,7 @@ struct ProcessOutlineView: NSViewRepresentable {
 
         coordinator.controller = controller
         coordinator.currentHerdrPids = herdrPids
+        coordinator.currentSearchText = searchText
         guard let outlineView = coordinator.outlineView else { return }
 
         if coordinator.lastVisibleColumns != visibleColumns {
@@ -213,6 +215,7 @@ struct ProcessOutlineView: NSViewRepresentable {
         var expandedProcessPids: Set<Int> = []
         var currentKillingPids: Set<Int> = []
         var currentHerdrPids: Set<Int> = []
+        var currentSearchText: String = ""
         var lastDataVersion = -1
         var lastVisibleColumns: Set<ProcessColumn>? = nil
         var activeSortColumn: ProcessColumn? = nil
@@ -515,6 +518,27 @@ struct ProcessOutlineView: NSViewRepresentable {
             controller?.killAllInGroup(item.group)
         }
 
+        // MARK: Search Highlighting
+
+        private func highlightedString(_ text: String, font: NSFont, color: NSColor) -> NSAttributedString {
+            let attributed = NSMutableAttributedString(string: text, attributes: [
+                .font: font,
+                .foregroundColor: color,
+            ])
+            let search = currentSearchText
+            guard !search.isEmpty else { return attributed }
+            let searchLower = search.lowercased()
+            let textLower = text.lowercased()
+            var searchStart = textLower.startIndex
+            while searchStart < textLower.endIndex,
+                  let range = textLower.range(of: searchLower, range: searchStart..<textLower.endIndex) {
+                let nsRange = NSRange(range, in: text)
+                attributed.addAttribute(.backgroundColor, value: NSColor.findHighlightColor, range: nsRange)
+                searchStart = range.upperBound
+            }
+            return attributed
+        }
+
         // MARK: Process Cell Views
 
         private func makeCellView(_ proc: SystemProcess, column: ProcessColumn,
@@ -547,9 +571,14 @@ struct ProcessOutlineView: NSViewRepresentable {
             }
 
             let (text, font, color, alignment) = cellConfig(proc, column)
-            cell.textField?.stringValue = text
-            cell.textField?.font = font
-            cell.textField?.textColor = isKilling(proc) ? .tertiaryLabelColor : color
+            let effectiveColor = isKilling(proc) ? NSColor.tertiaryLabelColor : color
+            if currentSearchText.isEmpty {
+                cell.textField?.stringValue = text
+                cell.textField?.font = font
+                cell.textField?.textColor = effectiveColor
+            } else {
+                cell.textField?.attributedStringValue = highlightedString(text, font: font, color: effectiveColor)
+            }
             cell.textField?.alignment = alignment
             // Text columns truncate freely (paths, branches, full commands);
             // numeric columns never do, so skip the tooltip noise there.
@@ -597,10 +626,18 @@ struct ProcessOutlineView: NSViewRepresentable {
 
             if !ancestryParts.isEmpty {
                 let chainText = ancestryParts.joined(separator: " \u{2192} ")
-                let chainLabel = NSTextField(labelWithString: chainText)
+                let chainFont = NSFont.systemFont(ofSize: 9.5, weight: .regular)
+                let chainColor: NSColor = killing ? .tertiaryLabelColor : .secondaryLabelColor
+                let chainLabel: NSTextField
+                if currentSearchText.isEmpty {
+                    chainLabel = NSTextField(labelWithString: chainText)
+                    chainLabel.font = chainFont
+                    chainLabel.textColor = chainColor
+                } else {
+                    chainLabel = NSTextField(labelWithAttributedString:
+                        highlightedString(chainText, font: chainFont, color: chainColor))
+                }
                 chainLabel.setContentHuggingPriority(.required, for: .vertical)
-                chainLabel.font = .systemFont(ofSize: 9.5, weight: .regular)
-                chainLabel.textColor = killing ? .tertiaryLabelColor : .secondaryLabelColor
                 chainLabel.lineBreakMode = .byTruncatingTail
                 chainLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
                 nameStack.addArrangedSubview(chainLabel)
@@ -610,11 +647,19 @@ struct ProcessOutlineView: NSViewRepresentable {
             leafRow.orientation = .horizontal
             leafRow.spacing = 4
 
-            let label = NSTextField(labelWithString: leafName)
-            label.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+            let leafFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+            let leafColor: NSColor = killing ? .tertiaryLabelColor : .labelColor
+            let label: NSTextField
+            if currentSearchText.isEmpty {
+                label = NSTextField(labelWithString: leafName)
+                label.font = leafFont
+                if killing { label.textColor = .tertiaryLabelColor }
+            } else {
+                label = NSTextField(labelWithAttributedString:
+                    highlightedString(leafName, font: leafFont, color: leafColor))
+            }
             label.lineBreakMode = .byTruncatingTail
             label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            if killing { label.textColor = .tertiaryLabelColor }
             leafRow.addArrangedSubview(label)
 
             if proc.isClaudeCode {

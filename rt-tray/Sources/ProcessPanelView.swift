@@ -54,7 +54,9 @@ struct ProcessPanelView: View {
                 .font(.system(size: 12))
                 .foregroundColor(.secondary)
 
-            Spacer()
+            Spacer(minLength: 4)
+            SearchField(text: $controller.searchText)
+                .frame(width: 180)
 
             PanelMenu(icon: "gearshape", makeMenu: makeGearMenu)
                 .help("Daemon and app controls")
@@ -190,8 +192,11 @@ struct ProcessPanelView: View {
     }
 
     private var processCountText: String {
-        let count = controller.totalProcessCount
-        return count == 1 ? "1 process" : "\(count) processes"
+        let total = controller.totalProcessCount
+        if controller.searchText.isEmpty {
+            return total == 1 ? "1 process" : "\(total) processes"
+        }
+        return "\(controller.filteredProcessCount) of \(total)"
     }
 
     private var columnPickerView: some View {
@@ -224,6 +229,7 @@ struct ProcessPanelView: View {
             herdrPids: controller.herdrRowPids,
             selection: controller.selection,
             dataVersion: controller.dataVersion,
+            searchText: controller.searchText,
             controller: controller
         )
     }
@@ -389,6 +395,70 @@ final class ActionMenuItem: NSMenuItem {
 
     @objc private func invoke() {
         handler()
+    }
+}
+
+struct SearchField: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeNSView(context: Context) -> KeyableSearchField {
+        let field = KeyableSearchField()
+        field.placeholderString = "Filter"
+        field.controlSize = .small
+        field.font = .systemFont(ofSize: 12)
+        field.focusRingType = .none
+        field.delegate = context.coordinator
+        field.sendsSearchStringImmediately = true
+        field.sendsWholeSearchString = false
+        return field
+    }
+
+    func updateNSView(_ nsView: KeyableSearchField, context: Context) {
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    class Coordinator: NSObject, NSSearchFieldDelegate {
+        let text: Binding<String>
+
+        init(text: Binding<String>) {
+            self.text = text
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSSearchField else { return }
+            text.wrappedValue = field.stringValue
+        }
+    }
+}
+
+/// NSSearchField that handles Cmd+A/C/V/X/Z itself so they work in
+/// menu-bar panels where the app menu's key equivalents intercept them.
+final class KeyableSearchField: NSSearchField {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.modifierFlags.contains(.command),
+              let chars = event.charactersIgnoringModifiers else {
+            return super.performKeyEquivalent(with: event)
+        }
+        switch chars {
+        case "a": currentEditor()?.selectAll(nil); return true
+        case "c": currentEditor()?.copy(nil); return true
+        case "v": currentEditor()?.paste(nil); return true
+        case "x": currentEditor()?.cut(nil); return true
+        case "z":
+            if event.modifierFlags.contains(.shift) {
+                currentEditor()?.undoManager?.redo()
+            } else {
+                currentEditor()?.undoManager?.undo()
+            }
+            return true
+        default: return super.performKeyEquivalent(with: event)
+        }
     }
 }
 

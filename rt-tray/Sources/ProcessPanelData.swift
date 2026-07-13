@@ -87,6 +87,24 @@ struct SystemProcess: Codable, Identifiable {
         }
         return pids
     }
+
+    func textForColumn(_ column: ProcessColumn) -> String {
+        switch column {
+        case .command:       return command
+        case .packageScript: return packageScript ?? ""
+        case .cpu:           return cpuFormatted
+        case .memory:        return memoryMB
+        case .port:          return portFormatted
+        case .branch:        return branch ?? ""
+        case .linearTicket:  return linearTicket ?? ""
+        case .pid:           return "\(pid)"
+        case .uptime:        return uptime
+        case .worktree:      return worktreeName
+        case .dir:           return relativeDir
+        case .cwd:           return cwd
+        case .fullCommand:   return fullCommand
+        }
+    }
 }
 
 struct SystemProcessResponse: Codable {
