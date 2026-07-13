@@ -28,8 +28,14 @@ function makeProcess(overrides: Partial<SystemProcess> = {}): SystemProcess {
 }
 
 function setup(processes: SystemProcess[], cacheEntries: Record<string, any> = {}) {
-  const scanner = { getProcesses: () => processes } as any;
-  const ctx = { cache: { entries: cacheEntries } } as any;
+  // msSinceLastScan returns 0 (fresh) so the handler serves the supplied
+  // cache without a scan-on-read; refresh is a no-op guard for completeness.
+  const scanner = {
+    getProcesses: () => processes,
+    msSinceLastScan: () => 0,
+    refresh: () => processes,
+  } as any;
+  const ctx = { cache: { entries: cacheEntries }, portCacheRef: { ports: [] } } as any;
   return createSystemProcessHandlers(scanner, ctx);
 }
 

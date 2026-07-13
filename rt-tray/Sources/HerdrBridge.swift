@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// A pane discovered via `herdr pane list`, before any process matching.
@@ -50,6 +51,10 @@ struct HerdrPane {
     let paneId: String
     let tabId: String
     let workspaceId: String
+    /// The pane's shell pid — stable across the pane's lifetime (unlike its
+    /// foreground process, which changes command-to-command) and always
+    /// present, so it's the anchor for walking up to the hosting terminal.
+    let hostPid: Int
 }
 
 /// Bridges rt-tray to a running herdr instance over its CLI.
@@ -183,11 +188,14 @@ class HerdrBridge {
 
         for entry in candidates {
             guard let info = processInfo(forPane: entry.paneId) else { continue }
+            // hostPid anchors the walk up to the terminal emulator; prefer the
+            // shell (stable for the pane's life) but fall back to the matched
+            // pid itself so a pane missing shell_pid still gets found.
             if info.shellPid == pid {
-                return HerdrPane(paneId: entry.paneId, tabId: entry.tabId, workspaceId: entry.workspaceId)
+                return HerdrPane(paneId: entry.paneId, tabId: entry.tabId, workspaceId: entry.workspaceId, hostPid: info.shellPid ?? pid)
             }
             if let foreground = info.foregroundProcesses, foreground.contains(where: { $0.pid == pid }) {
-                return HerdrPane(paneId: entry.paneId, tabId: entry.tabId, workspaceId: entry.workspaceId)
+                return HerdrPane(paneId: entry.paneId, tabId: entry.tabId, workspaceId: entry.workspaceId, hostPid: info.shellPid ?? pid)
             }
         }
         return nil
@@ -195,10 +203,65 @@ class HerdrBridge {
 
     /// Brings a pane into view. herdr has no `pane focus <id>` (pane focus
     /// is direction-only); focusing a pane means focusing its workspace
-    /// then its tab.
+    /// then its tab. That alone only changes herdr's *internal* focus state
+    /// over the socket -- herdr's API has no concept of raising its own
+    /// window, and multiple herdr clients can be attached at once, so the
+    /// change is invisible unless a herdr window already happens to be
+    /// frontmost. Walk up from the pane's shell pid to whichever terminal
+    /// emulator hosts it and activate that app so the change is actually seen.
     func focusPane(_ pane: HerdrPane) {
         run(["workspace", "focus", pane.workspaceId])
         run(["tab", "focus", pane.tabId])
+        if let terminalPid = Self.terminalAppPid(ancestorOf: pane.hostPid) {
+            DispatchQueue.main.async {
+                NSRunningApplication(processIdentifier: terminalPid)?.activate(options: [.activateAllWindows])
+            }
+        } else {
+            TrayLog.warn("no terminal ancestor found for herdr pane", ["pane_id": pane.paneId, "host_pid": pane.hostPid])
+        }
+    }
+
+    /// Bundle-path fragments for terminal emulators known to host herdr.
+    private static let terminalBundleMarkers = [
+        "/Ghostty.app/", "/iTerm.app/", "/Terminal.app/",
+        "/WezTerm.app/", "/kitty.app/", "/Alacritty.app/", "/Warp.app/",
+    ]
+
+    /// Walks a pid's ancestor chain looking for a process whose executable
+    /// lives inside a known terminal emulator's app bundle. herdr's socket
+    /// API exposes no way to learn which OS process/window hosts a pane, so
+    /// this is the only way to find something activatable.
+    private static func terminalAppPid(ancestorOf pid: Int) -> pid_t? {
+        var current = pid_t(pid)
+        for _ in 0..<32 {
+            if let path = executablePath(for: current),
+               terminalBundleMarkers.contains(where: { path.contains($0) }) {
+                return current
+            }
+            guard let parent = parentPid(of: current), parent > 1, parent != current else { return nil }
+            current = parent
+        }
+        return nil
+    }
+
+    /// libproc's PROC_PIDPATHINFO_MAXSIZE (4 * MAXPATHLEN) isn't visible to
+    /// the Swift Clang importer as a usable constant, so it's inlined here.
+    private static let maxPidPathSize = 4 * 1024
+
+    private static func executablePath(for pid: pid_t) -> String? {
+        var buffer = [UInt8](repeating: 0, count: maxPidPathSize)
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else { return nil }
+        return String(decoding: buffer[0..<Int(length)], as: UTF8.self)
+    }
+
+    private static func parentPid(of pid: pid_t) -> pid_t? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        let result = sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0)
+        guard result == 0, size > 0 else { return nil }
+        return info.kp_eproc.e_ppid
     }
 
     /// Reads recent scrollback text from a pane.
