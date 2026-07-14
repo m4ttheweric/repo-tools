@@ -126,6 +126,13 @@ function reconcileIndexMap(repoName: string, worktreePaths: string[]): IndexMap 
 
 // ─── git helpers (local — narrow-purpose, no execSync wrapper lib) ───────────
 
+// rt drives git inside target repos but must never fire their hooks (repo
+// stealth). A broken husky post-checkout/post-merge hook otherwise makes the
+// checkout exit non-zero *after* it already succeeded, surfacing as a spurious
+// "checkout-failed" even though the branch switched fine. Disable hooks on every
+// mutating command by pointing hooksPath at a nonexistent dir.
+const NO_HOOKS = "-c core.hooksPath=/dev/null";
+
 interface WorktreeInfo { path: string; branch: string | null; }
 
 function listWorktrees(repoPath: string): WorktreeInfo[] {
@@ -254,9 +261,9 @@ export function park(
   // 5. Check out parking-lot/N, creating it off the default branch if missing.
   try {
     if (branchExistsLocal(worktreePath, parkBranch)) {
-      execSync(`git checkout "${parkBranch}"`, { cwd: worktreePath, stdio: "pipe" });
+      execSync(`git ${NO_HOOKS} checkout "${parkBranch}"`, { cwd: worktreePath, stdio: "pipe" });
     } else {
-      execSync(`git checkout -b "${parkBranch}" "${defaultRef}"`, { cwd: worktreePath, stdio: "pipe" });
+      execSync(`git ${NO_HOOKS} checkout -b "${parkBranch}" "${defaultRef}"`, { cwd: worktreePath, stdio: "pipe" });
       log.info({ parkBranch, defaultRef }, `created ${parkBranch} from ${defaultRef}`);
     }
   } catch (err) {
@@ -266,7 +273,7 @@ export function park(
   // 6. Fast-forward. If parking-lot/N was just created off defaultRef this is
   //    a no-op; if it existed already we advance it.
   try {
-    execSync(`git merge --ff-only "${defaultRef}"`, { cwd: worktreePath, stdio: "pipe" });
+    execSync(`git ${NO_HOOKS} merge --ff-only "${defaultRef}"`, { cwd: worktreePath, stdio: "pipe" });
   } catch (err) {
     return { ok: false, action: "ff-failed", detail: String(err) };
   }
@@ -327,7 +334,7 @@ function fastForwardParkedWorktrees(
   for (const wt of parked) {
     if (hasUncommittedChanges(wt.path)) continue;
     try {
-      execSync(`git merge --ff-only "${defaultRef}"`, { cwd: wt.path, stdio: "pipe" });
+      execSync(`git ${NO_HOOKS} merge --ff-only "${defaultRef}"`, { cwd: wt.path, stdio: "pipe" });
       log.debug({ branch: wt.branch, worktree: wt.path, defaultRef }, `fast-forwarded ${wt.branch} → ${defaultRef}`);
     } catch (err) {
       // Branch has diverged or is already up to date — expected, skip.
