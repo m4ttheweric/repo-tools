@@ -451,6 +451,18 @@ const TREE: Record<string, CommandNode> = {
     },
   },
 
+  worktree: {
+    description: "Worktree-wide operations",
+    subcommands: {
+      each: {
+        description: "Run a command in each worktree (--all | --parked, else pick)",
+        module: "./commands/worktree.ts",
+        fn: "worktreeEach",
+        context: "repo",
+      },
+    },
+  },
+
   doppler: {
     description: "Per-repo Doppler template + sync into ~/.doppler/.doppler.yaml",
     subcommands: {
