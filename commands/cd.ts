@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync, appendFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { yellow, green, reset } from "../lib/tui.ts";
-import { getRepoIdentity, getKnownRepos, getWorkspacePackages, type KnownRepo } from "../lib/repo.ts";
+import { getRepoIdentity, getKnownRepos, getWorkspacePackages, repoOption, type KnownRepo } from "../lib/repo.ts";
 import {
   pickWorktreeWithSwitch,
   pickFromAllRepos,
@@ -192,13 +192,7 @@ export async function worktreePicker(args: string[]): Promise<void> {
     if (wtBranch) {
       // Pick repo first, then jump to the matching worktree (or show picker)
       const { filterableSelect } = await import("../lib/rt-render.tsx");
-      const repoOptions = repos.map((r) => ({
-        value: r.repoName,
-        label: r.repoName,
-        hint: r.worktrees.length > 1
-          ? `${r.worktrees.length} worktrees`
-          : r.worktrees[0]?.path.replace(homedir(), "~") ?? "",
-      }));
+      const repoOptions = repos.map(repoOption);
       const pickedRepoName = repos.length === 1
         ? repos[0]!.repoName
         : await filterableSelect({ message: "Pick a repo", options: repoOptions, stderr: true });

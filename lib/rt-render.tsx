@@ -341,7 +341,10 @@ export async function filterableSelect(opts: {
       const hint = o.hint
         ? (o.color ? o.hint : `\x1b[2m${o.hint}\x1b[22m`)
         : "";
-      return `${o.value}\t${open}\x1b[1m${o.label}\x1b[22m${pad}\t  ${hint}${close}`;
+      // \x1b[22m cancels bold AND dim (both are "intensity" in SGR), so a
+      // dim `open` color would otherwise vanish right after the label —
+      // reapply it before the hint so the whole row stays dimmed.
+      return `${o.value}\t${open}\x1b[1m${o.label}\x1b[22m${open}${pad}\t  ${hint}${close}`;
     })
     .join("\n");
 
