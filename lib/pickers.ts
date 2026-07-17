@@ -7,7 +7,7 @@
 
 import { execSync } from "child_process";
 import { join } from "path";
-import { getRepoIdentity, getKnownRepos, pickWorktreeFromRepo, getWorkspacePackages, type KnownRepo } from "./repo.ts";
+import { getRepoIdentity, getKnownRepos, pickWorktreeFromRepo, getWorkspacePackages, repoOption, type KnownRepo } from "./repo.ts";
 import { enrichBranches, formatBranchLabel } from "./enrich.ts";
 
 const SWITCH_REPO     = "__switch_repo__"     as const;
@@ -36,14 +36,8 @@ async function buildWorktreeOptions(
   }));
 }
 
-function repoOptionsFromList(repos: KnownRepo[]): { value: string; label: string; hint: string }[] {
-  return repos.map(r => ({
-    value: r.repoName,
-    label: r.repoName,
-    hint: r.worktrees.length > 1
-      ? `${r.worktrees.length} worktrees`
-      : r.worktrees[0]?.path.replace(process.env.HOME || "", "~") || "",
-  }));
+function repoOptionsFromList(repos: KnownRepo[]) {
+  return repos.map(repoOption);
 }
 
 // ─── Pickers ─────────────────────────────────────────────────────────────────

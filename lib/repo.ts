@@ -13,7 +13,7 @@ import { repoDataDir } from "./rt-paths.ts";
 // ─── Re-exports ──────────────────────────────────────────────────────────────
 
 export { getRepoRoot, getCurrentBranch, getRemoteUrl } from "./git.ts";
-export { updateRepoIndex, getKnownRepos, type KnownRepo } from "./repo-index.ts";
+export { updateRepoIndex, getKnownRepos, repoOption, type KnownRepo } from "./repo-index.ts";
 export {
   loadRepoConfig, loadOrCreateRepoConfig, saveRepoConfig,
   type RepoConfig, type SetupStep,
@@ -22,7 +22,7 @@ export {
 // ─── Internal imports ────────────────────────────────────────────────────────
 
 import { getRepoRoot, getRemoteUrl } from "./git.ts";
-import { updateRepoIndex, getKnownRepos, type KnownRepo } from "./repo-index.ts";
+import { updateRepoIndex, getKnownRepos, repoOption, type KnownRepo } from "./repo-index.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -126,13 +126,7 @@ export async function requireRepoIdentity(commandLabel?: string): Promise<RepoId
     const { filterableSelect } = await import("./rt-render.tsx");
     const picked = await filterableSelect({
       message: commandLabel ? `Pick a repo for ${commandLabel}` : "Pick a repo",
-      options: repos.map(r => ({
-        value: r.repoName,
-        label: r.repoName,
-        hint: r.worktrees.length > 1
-          ? `${r.worktrees.length} worktrees`
-          : r.worktrees[0]?.path.replace(process.env.HOME || "", "~") || "",
-      })),
+      options: repos.map(repoOption),
     });
     if (!picked) process.exit(0);  // Esc on picker — clean exit
     const match = repos.find(r => r.repoName === picked);
@@ -181,13 +175,7 @@ export async function pickWorktree(prompt: string): Promise<string> {
     selectedRepo = repos[0]!;
   } else {
     const { filterableSelect } = await import("./rt-render.tsx");
-    const repoOptions = repos.map(r => ({
-      value: r.repoName,
-      label: r.repoName,
-      hint: r.worktrees.length > 1
-        ? `${r.worktrees.length} worktrees`
-        : r.worktrees[0]?.path.replace(process.env.HOME || "", "~") || "",
-    }));
+    const repoOptions = repos.map(repoOption);
 
     const picked = await filterableSelect({ message: "Select a repo", options: repoOptions });
     if (!picked) process.exit(0);            // user escaped — clean exit, no error
@@ -321,13 +309,7 @@ export async function pickRepoInteractive(): Promise<RepoIdentity> {
 async function pickFromAllRepos(repos: KnownRepo[]): Promise<string> {
   const { filterableSelect } = await import("./rt-render.tsx");
 
-  const repoOptions = repos.map((r) => ({
-    value: r.repoName,
-    label: r.repoName,
-    hint: r.worktrees.length > 1
-      ? `${r.worktrees.length} worktrees`
-      : r.worktrees[0]?.path.replace(process.env.HOME || "", "~") || "",
-  }));
+  const repoOptions = repos.map(repoOption);
 
   const pickedRepo = await filterableSelect({ message: "Pick a repo", options: repoOptions });
   if (!pickedRepo) process.exit(0);        // Esc on all-repos picker

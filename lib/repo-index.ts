@@ -6,11 +6,12 @@
  */
 
 import { execSync } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, readdirSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { repoDataDir } from "./rt-paths.ts";
 import { readJson, writeJson } from "./json-store.ts";
+import { dim } from "./ansi.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -19,6 +20,9 @@ export interface KnownRepo {
   /** All available worktree paths */
   worktrees: { path: string; branch: string; isBare: boolean }[];
   dataDir: string;
+  /** False for repos discovered by scanning sibling directories, never
+   *  explicitly visited by rt. Omitted (implicitly true) for indexed repos. */
+  registered?: boolean;
 }
 
 // ─── Index CRUD ──────────────────────────────────────────────────────────────
@@ -106,5 +110,79 @@ export function getKnownRepos(): KnownRepo[] {
     });
   }
 
-  return repos.filter(r => r.worktrees.length > 0);
+  const known = repos.filter(r => r.worktrees.length > 0);
+  const knownNames = new Set(known.map(r => r.repoName));
+  const knownPaths = new Set(known.flatMap(r => r.worktrees.map(w => w.path)));
+
+  return [...known, ...scanUnregisteredRepos(known, knownNames, knownPaths)];
+}
+
+/**
+ * Scan the parent directories of already-registered repos for sibling git
+ * repos that have never been visited by rt (and so are absent from
+ * repos.json). This is what lets `rt cd` surface a repo the first time you
+ * ever pick it, instead of requiring you to `cd` there manually first.
+ *
+ * Only looks one level deep and only under directories that already contain
+ * a registered repo — there's no separate "roots" config to keep in sync.
+ */
+function scanUnregisteredRepos(
+  known: KnownRepo[],
+  knownNames: Set<string>,
+  knownPaths: Set<string>,
+): KnownRepo[] {
+  const roots = new Set(known.map(r => dirname(r.worktrees[0]!.path)).filter(existsSync));
+  const unregistered: KnownRepo[] = [];
+
+  for (const root of roots) {
+    let entries: import("fs").Dirent[];
+    try {
+      entries = readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      if (knownNames.has(entry.name)) continue;
+
+      const repoPath = join(root, entry.name);
+      if (knownPaths.has(repoPath)) continue;
+      if (!existsSync(join(repoPath, ".git"))) continue;
+
+      let branch = "";
+      try {
+        branch = execSync("git rev-parse --abbrev-ref HEAD", {
+          cwd: repoPath, encoding: "utf8", stdio: "pipe",
+        }).trim();
+      } catch { /* detached HEAD or other edge case — leave blank */ }
+
+      unregistered.push({
+        repoName: entry.name,
+        worktrees: [{ path: repoPath, branch, isBare: false }],
+        dataDir: repoDataDir(entry.name),
+        registered: false,
+      });
+    }
+  }
+
+  return unregistered;
+}
+
+// ─── Picker option formatting ───────────────────────────────────────────────
+
+/** Shared repo → picker-option mapping, dimmed + labeled for unregistered repos. */
+export function repoOption(r: KnownRepo): { value: string; label: string; hint: string; color?: string } {
+  const location = r.worktrees.length > 1
+    ? `${r.worktrees.length} worktrees`
+    : r.worktrees[0]?.path.replace(homedir(), "~") || "";
+
+  return {
+    value: r.repoName,
+    label: r.repoName,
+    hint: r.registered === false
+      ? (location ? `${location} · unregistered` : "unregistered")
+      : location,
+    ...(r.registered === false ? { color: dim } : {}),
+  };
 }
