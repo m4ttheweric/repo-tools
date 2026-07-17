@@ -248,11 +248,21 @@ export async function runNavPicker(
     const input = formatNavInput(opts.options);
     const args = buildNavArgs(opts);
 
-    // Resolve cursor position: resumeValue wins over initialPos/currentPos
+    // Resolve cursor position: resumeValue wins over initialPos/currentPos.
+    // When nothing pins the cursor and the list is unfiltered, default to the
+    // first non-separator row so the cursor never opens on a heading (a
+    // filtered list already excludes separators, so its line 1 is a real row).
+    const defaultPos =
+      opts.initialQuery
+        ? null
+        : (() => {
+            const i = opts.options.findIndex((o) => !o.separator);
+            return i > 0 ? i + 1 : null;
+          })();
     const cursorPos =
       (opts.resumeValue
         ? findResumePosition(opts.options, opts.initialQuery ?? "", opts.resumeValue)
-        : null) ?? currentPos ?? null;
+        : null) ?? currentPos ?? defaultPos ?? null;
 
     if (cursorPos !== null) {
       args.push(`--bind=load:pos(${cursorPos})`);
