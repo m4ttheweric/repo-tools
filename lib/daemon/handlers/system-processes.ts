@@ -89,7 +89,7 @@ export function createSystemProcessHandlers(
   return {
     "system-processes": async () => {
       if (scanner.msSinceLastScan() > STALE_READ_MS) {
-        scanner.refresh(ctx.portCacheRef.ports);
+        await scanner.refresh(ctx.portCacheRef.ports);
       }
       const processes = scanner.getProcesses().map(proc => {
         let linearTicket: string | null = null;

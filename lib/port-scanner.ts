@@ -4,12 +4,16 @@
  * Used by both the daemon (cached scan every 30s) and the CLI fallback (on-demand).
  * Scans via lsof, resolves process CWD, matches against the repo index and
  * worktree map, and filters out macOS GUI app processes.
+ *
+ * All subprocess work is async and batched (one ps/lsof call for every pid,
+ * not one per pid) — the daemon runs this on a timer, and a synchronous scan
+ * would freeze the event loop long enough to time out status polls.
  */
 
-import { execSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { runCapture } from "./subprocess.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -42,79 +46,112 @@ export function loadRepoIndex(): Record<string, string> {
   }
 }
 
+// ─── Pure parsers ────────────────────────────────────────────────────────────
+
+export interface ListeningProcess {
+  command: string;
+  pid: number;
+  port: number;
+}
+
+/** Parse `lsof -iTCP -sTCP:LISTEN -P -n` output, deduplicated by pid:port. */
+export function parseListeningLsof(output: string): ListeningProcess[] {
+  const lines = output.trim().split("\n").filter(Boolean);
+  if (lines.length <= 1) return []; // header only
+
+  const seen = new Set<string>();
+  const results: ListeningProcess[] = [];
+  for (const line of lines.slice(1)) {
+    const parts = line.split(/\s+/);
+    const command = parts[0] || "unknown";
+    const pid = parseInt(parts[1] || "0", 10);
+    if (!pid) continue;
+
+    // Parse port — handles both IPv4 (*:3000) and IPv6 ([::1]:4001 (LISTEN))
+    const portMatch = line.match(/:(\d+)\s+\(LISTEN\)/);
+    if (!portMatch) continue;
+    const port = parseInt(portMatch[1]!, 10);
+
+    const key = `${pid}:${port}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    results.push({ command, pid, port });
+  }
+  return results;
+}
+
 /**
- * Check if a PID belongs to a macOS .app bundle (Cursor, Zed, GitHub Desktop, etc.).
- * GUI apps listen on ports for IPC but aren't dev servers we care about.
+ * Parse `ps -o pid=,<col>= -p ...` output into a pid → value map. The value
+ * is everything after the pid, so columns with spaces (comm paths) survive.
  */
-function isAppBundleProcess(pid: number): boolean {
-  try {
-    const comm = execSync(`ps -p ${pid} -o comm= 2>/dev/null`, {
-      encoding: "utf8", stdio: "pipe", timeout: 2000,
-    }).trim();
-    return comm.includes(".app/Contents/");
-  } catch {
-    return false;
+export function parsePidValueMap(output: string): Map<number, string> {
+  const map = new Map<number, string>();
+  for (const line of output.split("\n")) {
+    const match = line.match(/^\s*(\d+)\s+(.*)/);
+    if (!match) continue;
+    map.set(parseInt(match[1]!, 10), match[2]!.trim());
   }
+  return map;
 }
 
-function getProcessCwd(pid: number): string | null {
-  try {
-    const output = execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null`, {
-      encoding: "utf8", stdio: "pipe", timeout: 3000,
-    });
-    for (const line of output.split("\n")) {
-      if (line.startsWith("n") && line.length > 1 && line[1] === "/") {
-        return line.slice(1);
-      }
+/** Parse `lsof -Fpn` p/n field pairs into a pid → cwd map. */
+export function parseCwdMap(output: string): Map<number, string> {
+  const map = new Map<number, string>();
+  let currentPid = 0;
+  for (const line of output.split("\n")) {
+    if (line.startsWith("p")) {
+      currentPid = parseInt(line.slice(1), 10);
+    } else if (line.startsWith("n/") && currentPid > 0) {
+      map.set(currentPid, line.slice(1));
     }
-    return null;
-  } catch {
-    return null;
   }
+  return map;
 }
 
-function getProcessUptime(pid: number): string {
-  try {
-    return execSync(`ps -p ${pid} -o etime= 2>/dev/null`, {
-      encoding: "utf8", stdio: "pipe", timeout: 2000,
-    }).trim() || "unknown";
-  } catch {
-    return "unknown";
+/** Parse `git worktree list --porcelain` output into path/branch pairs. */
+export function parseWorktreePorcelain(output: string): Array<{ path: string; branch: string }> {
+  const results: Array<{ path: string; branch: string }> = [];
+  let currentPath = "";
+  let currentBranch = "";
+  for (const line of output.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      if (currentPath && currentBranch) {
+        results.push({ path: currentPath, branch: currentBranch });
+      }
+      currentPath = line.replace("worktree ", "").trim();
+      currentBranch = "";
+    } else if (line.startsWith("branch ")) {
+      currentBranch = line.replace("branch refs/heads/", "").trim();
+    }
   }
+  if (currentPath && currentBranch) {
+    results.push({ path: currentPath, branch: currentBranch });
+  }
+  return results;
 }
 
 /**
  * Build a worktree map from the repo index: worktree path → { repo, branch }.
+ * Repos are listed concurrently.
  */
-export function buildWorktreeMap(
+export async function buildWorktreeMap(
   repos: Record<string, string>,
-): Map<string, { repo: string; branch: string }> {
-  const map = new Map<string, { repo: string; branch: string }>();
-  for (const [repoName, repoPath] of Object.entries(repos)) {
-    if (!existsSync(repoPath)) continue;
-    try {
-      const output = execSync("git worktree list --porcelain", {
-        cwd: repoPath, encoding: "utf8", stdio: "pipe", timeout: 5000,
-      });
-      let currentPath = "";
-      let currentBranch = "";
-      for (const line of output.split("\n")) {
-        if (line.startsWith("worktree ")) {
-          if (currentPath && currentBranch) {
-            map.set(currentPath, { repo: repoName, branch: currentBranch });
-          }
-          currentPath = line.replace("worktree ", "").trim();
-          currentBranch = "";
-        } else if (line.startsWith("branch ")) {
-          currentBranch = line.replace("branch refs/heads/", "").trim();
-        }
-      }
-      if (currentPath && currentBranch) {
-        map.set(currentPath, { repo: repoName, branch: currentBranch });
-      }
-    } catch { /* skip repos that error */ }
-  }
-  return map;
+): Promise<Map<string, { repo: string; branch: string }>> {
+  const perRepo = await Promise.all(
+    Object.entries(repos)
+      .filter(([, repoPath]) => existsSync(repoPath))
+      .map(async ([repoName, repoPath]) => {
+        const { stdout, exitCode } = await runCapture(
+          ["git", "worktree", "list", "--porcelain"],
+          { cwd: repoPath, timeoutMs: 5000 },
+        );
+        if (exitCode !== 0) return [];
+        return parseWorktreePorcelain(stdout).map(
+          (w) => [w.path, { repo: repoName, branch: w.branch }] as const,
+        );
+      }),
+  );
+  return new Map(perRepo.flat());
 }
 
 export function matchCwdToRepo(
@@ -164,60 +201,39 @@ export function matchCwdToRepo(
  * Filters out macOS GUI app processes (Cursor, Zed, etc.) and only returns
  * ports whose process CWD matches a known repo.
  */
-export function scanListeningPorts(): PortEntry[] {
+export async function scanListeningPorts(): Promise<PortEntry[]> {
   const repos = loadRepoIndex();
   if (Object.keys(repos).length === 0) return [];
 
-  const worktreeMap = buildWorktreeMap(repos);
+  const [worktreeMap, listenersRes] = await Promise.all([
+    buildWorktreeMap(repos),
+    runCapture(["lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n"], { timeoutMs: 10_000 }),
+  ]);
 
-  // Get all listening TCP ports
-  let lsofOutput: string;
-  try {
-    lsofOutput = execSync("lsof -iTCP -sTCP:LISTEN -P -n 2>/dev/null", {
-      encoding: "utf8", stdio: "pipe", timeout: 10000,
-    });
-  } catch {
-    return [];
-  }
+  const listeners = parseListeningLsof(listenersRes.stdout);
+  if (listeners.length === 0) return [];
 
-  const lines = lsofOutput.trim().split("\n").filter(Boolean);
-  if (lines.length <= 1) return []; // header only
+  const pidList = [...new Set(listeners.map((l) => l.pid))].join(",");
+  const [commRes, etimeRes, cwdRes] = await Promise.all([
+    runCapture(["ps", "-o", "pid=,comm=", "-p", pidList], { timeoutMs: 5000 }),
+    runCapture(["ps", "-o", "pid=,etime=", "-p", pidList], { timeoutMs: 5000 }),
+    runCapture(["lsof", "-a", "-p", pidList, "-d", "cwd", "-Fpn"], { timeoutMs: 10_000 }),
+  ]);
+  const commMap = parsePidValueMap(commRes.stdout);
+  const etimeMap = parsePidValueMap(etimeRes.stdout);
+  const cwdMap = parseCwdMap(cwdRes.stdout);
 
-  // Deduplicate by PID+port, cache app-bundle checks by PID
-  const seen = new Set<string>();
-  const appBundlePids = new Map<number, boolean>();
   const entries: PortEntry[] = [];
-
-  for (const line of lines.slice(1)) {
-    const parts = line.split(/\s+/);
-    const command = parts[0] || "unknown";
-    const pid = parseInt(parts[1] || "0", 10);
-    if (!pid) continue;
-
-    // Parse port — handles both IPv4 (*:3000) and IPv6 ([::1]:4001 (LISTEN))
-    const portMatch = line.match(/:(\d+)\s+\(LISTEN\)/);
-    if (!portMatch) continue;
-    const port = parseInt(portMatch[1]!, 10);
-
-    const key = `${pid}:${port}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
+  for (const { command, pid, port } of listeners) {
     // Skip macOS GUI apps (Cursor, Zed, etc.) — they listen on ports for IPC
-    if (!appBundlePids.has(pid)) {
-      appBundlePids.set(pid, isAppBundleProcess(pid));
-    }
-    if (appBundlePids.get(pid)) continue;
+    if ((commMap.get(pid) ?? "").includes(".app/Contents/")) continue;
 
-    // Resolve CWD and match to repo
-    const cwd = getProcessCwd(pid);
+    const cwd = cwdMap.get(pid);
     if (!cwd) continue;
 
     const match = matchCwdToRepo(cwd, repos, worktreeMap);
     // Only include ports that match a known repo
     if (!match.repo) continue;
-
-    const uptime = getProcessUptime(pid);
 
     entries.push({
       port,
@@ -228,7 +244,7 @@ export function scanListeningPorts(): PortEntry[] {
       worktree: match.worktree,
       branch: match.branch,
       relativeDir: match.relativeDir,
-      uptime,
+      uptime: etimeMap.get(pid) || "unknown",
     });
   }
 
