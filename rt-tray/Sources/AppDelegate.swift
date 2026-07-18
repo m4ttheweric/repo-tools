@@ -387,6 +387,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var isRefreshing = false
+    private var consecutiveStatusFailures = 0
 
     /// Main-actor so `isRefreshing` and all menu/UI mutations are serialized;
     /// the daemon queries themselves still run off-main across the awaits.
@@ -397,11 +398,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         defer { isRefreshing = false }
 
         guard let status = await daemonClient.queryTrayStatus() else {
-            if currentHealth != .starting {
-                setHealth(.down)
+            consecutiveStatusFailures += 1
+            // A single missed poll is usually a transient daemon stall, not an
+            // outage — hold the last known state and only go red on the second
+            // consecutive miss.
+            guard consecutiveStatusFailures >= 2, currentHealth != .starting else { return }
+            if currentHealth != .down {
+                TrayLog.warn("daemon unreachable, marking down", ["failures": consecutiveStatusFailures])
             }
+            setHealth(.down)
             return
         }
+        if consecutiveStatusFailures >= 2 {
+            TrayLog.info("daemon reachable again", ["failures": consecutiveStatusFailures])
+        }
+        consecutiveStatusFailures = 0
 
         var health: DaemonHealth = status.pendingNotifications > 0 ? .warning : .healthy
 
