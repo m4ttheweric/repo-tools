@@ -116,7 +116,7 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
       const shouldRefresh = payload?.refresh === true;
       if (shouldRefresh) {
         const { scanListeningPorts } = await import("../../port-scanner.ts");
-        ctx.portCacheRef.ports = scanListeningPorts();
+        ctx.portCacheRef.ports = await scanListeningPorts();
         ctx.portCacheRef.updatedAt = Date.now();
         ctx.log.info({ count: ctx.portCacheRef.ports.length }, "ports: on-demand refresh");
       }

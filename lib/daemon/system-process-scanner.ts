@@ -9,8 +9,8 @@
  * non-listening processes that can still run away with CPU/memory.
  */
 
-import { execSync } from "child_process";
 import { getDaemonLogger } from "./../daemon-logger.ts";
+import { runCapture } from "../subprocess.ts";
 
 const log = (await getDaemonLogger()).childLogger("process-scan");
 import { existsSync, readFileSync } from "fs";
@@ -102,7 +102,7 @@ export function parseProcessList(
   psOutput: string,
   repos: Record<string, string>,
   cwdMap: Map<number, string>,
-  worktreeMap: Map<string, { repo: string; branch: string }> = buildWorktreeMap(repos),
+  worktreeMap: Map<string, { repo: string; branch: string }> = new Map(),
 ): Omit<SystemProcess, "port" | "linearTicket" | "packageScript" | "isRunaway" | "runawayDurationMs" | "firstSeen" | "children">[] {
   const lines = psOutput.trim().split("\n");
   if (lines.length <= 1) return [];
@@ -211,32 +211,32 @@ export function parsePackageScripts(psEwwOutput: string): Map<number, string> {
   return scripts;
 }
 
-function getPackageScripts(pidList: string): Map<number, string> {
-  try {
-    const out = execSync(`ps eww -o pid=,command= -p ${pidList} 2>/dev/null`, {
-      encoding: "utf8", stdio: "pipe", timeout: 5000, maxBuffer: 32 * 1024 * 1024,
-    });
-    return parsePackageScripts(out);
-  } catch (err) {
-    log.warn({ err }, "ps eww scan failed; package scripts unavailable");
+async function getPackageScripts(pidList: string): Promise<Map<number, string>> {
+  const { stdout, exitCode } = await runCapture(
+    ["ps", "eww", "-o", "pid=,command=", "-p", pidList],
+    { timeoutMs: 5000 },
+  );
+  if (exitCode !== 0 && !stdout) {
+    log.warn({ exitCode }, "ps eww scan failed; package scripts unavailable");
     return new Map();
   }
+  return parsePackageScripts(stdout);
 }
 
-function getAllRepoPids(trackedPaths: string[]): Map<number, string> {
+async function getAllRepoPids(trackedPaths: string[]): Promise<Map<number, string>> {
   if (trackedPaths.length === 0) return new Map();
 
-  try {
-    // Single lsof call to get cwds for ALL processes at once.
-    // -d cwd selects only the cwd file descriptor, -Fpn emits pid + name fields.
-    const out = execSync("lsof -d cwd -Fpn 2>/dev/null", {
-      encoding: "utf8", stdio: "pipe", timeout: 10000,
-    });
-    return parseLsofCwdMap(out, trackedPaths);
-  } catch (err) {
-    log.warn({ err }, "lsof scan failed; returning empty cwd map");
+  // Single lsof call to get cwds for ALL processes at once.
+  // -d cwd selects only the cwd file descriptor, -Fpn emits pid + name fields.
+  const { stdout, exitCode } = await runCapture(
+    ["lsof", "-d", "cwd", "-Fpn"],
+    { timeoutMs: 10_000 },
+  );
+  if (exitCode !== 0 && !stdout) {
+    log.warn({ exitCode }, "lsof scan failed; returning empty cwd map");
     return new Map();
   }
+  return parseLsofCwdMap(stdout, trackedPaths);
 }
 
 export class SystemProcessScanner {
@@ -261,9 +261,9 @@ export class SystemProcessScanner {
    * (samplesNeeded = sustainMs / 10s) assumes that cadence, so ONLY this
    * path may feed samples. On-demand reads use `refresh` instead.
    */
-  scan(portEntries: PortEntry[] = []): SystemProcess[] {
+  async scan(portEntries: PortEntry[] = []): Promise<SystemProcess[]> {
     try {
-      const gathered = this.gather(portEntries);
+      const gathered = await this.gather(portEntries);
       const now = Date.now();
 
       const currentPids = new Set<number>();
@@ -344,9 +344,9 @@ export class SystemProcessScanner {
    * full `scan`, so badges persist but faster polling can't trip a premature
    * alert. Also advances `lastScanAt` so freshness checks see the update.
    */
-  refresh(portEntries: PortEntry[] = []): SystemProcess[] {
+  async refresh(portEntries: PortEntry[] = []): Promise<SystemProcess[]> {
     try {
-      const gathered = this.gather(portEntries);
+      const gathered = await this.gather(portEntries);
       const prev = new Map(this.lastResult.map(p => [p.pid, p]));
       const results = gathered.map<SystemProcess>(proc => {
         const before = prev.get(proc.pid);
@@ -369,34 +369,30 @@ export class SystemProcessScanner {
    * decorate it with port + package-script, but no runaway/tracking state.
    * Shared by `scan` (adds tracking) and `refresh` (carries flags forward).
    */
-  private gather(portEntries: PortEntry[]): GatheredProcess[] {
+  private async gather(portEntries: PortEntry[]): Promise<GatheredProcess[]> {
     const repos = loadRepoIndex();
     if (Object.keys(repos).length === 0) return [];
 
     // Include worktree paths in the lsof pre-filter: worktrees often live as
     // siblings of the registered repo root, so filtering on roots alone would
     // drop their processes before matchCwdToRepo ever sees them.
-    const worktreeMap = buildWorktreeMap(repos);
+    const worktreeMap = await buildWorktreeMap(repos);
     const trackedPaths = [...new Set([...Object.values(repos), ...worktreeMap.keys()])];
-    const cwdMap = getAllRepoPids(trackedPaths);
+    const cwdMap = await getAllRepoPids(trackedPaths);
     if (cwdMap.size === 0) return [];
 
     // Get CPU/memory for discovered PIDs
     const pidList = [...cwdMap.keys()].join(",");
-    let psOutput: string;
-    try {
-      psOutput = execSync(
-        `ps -p ${pidList} -o pid=,ppid=,pcpu=,rss=,etime=,comm=,args= 2>/dev/null`,
-        { encoding: "utf8", stdio: "pipe", timeout: 5000 },
-      );
-    } catch {
-      return [];
-    }
+    const psRes = await runCapture(
+      ["ps", "-p", pidList, "-o", "pid=,ppid=,pcpu=,rss=,etime=,comm=,args="],
+      { timeoutMs: 5000 },
+    );
+    if (!psRes.stdout) return [];
 
-    const parsed = parseProcessList(psOutput, repos, cwdMap, worktreeMap);
+    const parsed = parseProcessList(psRes.stdout, repos, cwdMap, worktreeMap);
 
     const packageScripts = parsed.length > 0
-      ? getPackageScripts(parsed.map(p => p.pid).join(","))
+      ? await getPackageScripts(parsed.map(p => p.pid).join(","))
       : new Map<number, string>();
 
     // Build port lookup by PID

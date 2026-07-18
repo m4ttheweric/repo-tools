@@ -8,16 +8,16 @@
 
 import { existsSync, watch, type FSWatcher } from "fs";
 import { basename, dirname, join, resolve } from "path";
-import { execSync } from "child_process";
 import type { Logger } from "pino";
 import { repoDataDir } from "../rt-paths.ts";
+import { runCapture } from "../subprocess.ts";
 import { loadRepoIndex, resolveGitConfigPath } from "./repo-index.ts";
 
 export interface HooksGuard {
   /** Live map of repo git-config watchers (configPath → FSWatcher). */
   watchedConfigs: Map<string, FSWatcher>;
   /** Re-apply rt hooks shim dir if clobbered; returns true if a repair happened. */
-  checkAndRepairHooksPath(repoName: string, repoPath: string): boolean;
+  checkAndRepairHooksPath(repoName: string, repoPath: string): Promise<boolean>;
   /** Start a directory watch over a repo's .git/config and run an initial check. */
   startWatchingRepo(repoName: string, repoPath: string): void;
   /** Discover repos from the index and ensure each is watched. */
@@ -29,7 +29,7 @@ export interface HooksGuard {
 export function createHooksGuard(log: Logger): HooksGuard {
   const watchedConfigs = new Map<string, FSWatcher>();
 
-  function checkAndRepairHooksPath(repoName: string, repoPath: string): boolean {
+  async function checkAndRepairHooksPath(repoName: string, repoPath: string): Promise<boolean> {
     const dataDir = repoDataDir(repoName);
     const hooksJson = join(dataDir, "hooks.json");
     const shimsDir = join(dataDir, "hooks");
@@ -37,12 +37,9 @@ export function createHooksGuard(log: Logger): HooksGuard {
     // Only guard repos that have hooks managed by rt
     if (!existsSync(hooksJson) || !existsSync(shimsDir)) return false;
 
-    try {
-      const currentHooksPath = execSync("git config core.hooksPath", {
-        cwd: repoPath,
-        encoding: "utf8",
-        stdio: "pipe",
-      }).trim();
+    const current = await runCapture(["git", "config", "core.hooksPath"], { cwd: repoPath, timeoutMs: 5000 });
+    if (current.exitCode === 0) {
+      const currentHooksPath = current.stdout.trim();
 
       // Repair unless hooksPath points EXACTLY at this repo's shims dir. The old
       // check accepted any path merely containing ".rt", so it never repaired a
@@ -51,25 +48,17 @@ export function createHooksGuard(log: Logger): HooksGuard {
       if (resolve(currentHooksPath) === resolve(shimsDir)) return false;
 
       // Hooks path was clobbered — re-apply
-      execSync(`git config core.hooksPath "${shimsDir}"`, {
-        cwd: repoPath,
-        stdio: "pipe",
-      });
+      const set = await runCapture(["git", "config", "core.hooksPath", shimsDir], { cwd: repoPath, timeoutMs: 5000 });
+      if (set.exitCode !== 0) return false;
       log.warn({ repo: repoName, was: currentHooksPath }, "hooks-guard repaired core.hooksPath");
       return true;
-    } catch {
-      // git config core.hooksPath not set — check if it should be
-      try {
-        execSync(`git config core.hooksPath "${shimsDir}"`, {
-          cwd: repoPath,
-          stdio: "pipe",
-        });
-        log.info({ repo: repoName }, "hooks-guard set core.hooksPath");
-        return true;
-      } catch {
-        return false;
-      }
     }
+
+    // git config core.hooksPath not set — set it
+    const set = await runCapture(["git", "config", "core.hooksPath", shimsDir], { cwd: repoPath, timeoutMs: 5000 });
+    if (set.exitCode !== 0) return false;
+    log.info({ repo: repoName }, "hooks-guard set core.hooksPath");
+    return true;
   }
 
   function startWatchingRepo(repoName: string, repoPath: string): void {
@@ -96,7 +85,7 @@ export function createHooksGuard(log: Logger): HooksGuard {
       if (filename !== configFile) return;
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
-        checkAndRepairHooksPath(repoName, repoPath);
+        void checkAndRepairHooksPath(repoName, repoPath);
       }, 100); // slightly longer debounce: rename events can cluster
     });
 
@@ -104,7 +93,7 @@ export function createHooksGuard(log: Logger): HooksGuard {
     log.debug({ repo: repoName, file: `${gitDir}/${configFile}` }, "watching repo");
 
     // Initial check
-    checkAndRepairHooksPath(repoName, repoPath);
+    void checkAndRepairHooksPath(repoName, repoPath);
   }
 
   function refreshWatchedRepos(): void {

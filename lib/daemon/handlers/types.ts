@@ -76,7 +76,7 @@ export interface HandlerContext {
   /** Read-through fn for the repo index; cheap so we don't cache. */
   repoIndex:      () => RepoIndex;
   /** Re-apply rt hooks shim dir if clobbered; returns true if a repair happened. */
-  checkAndRepairHooksPath: (repoName: string, repoPath: string) => boolean;
+  checkAndRepairHooksPath: (repoName: string, repoPath: string) => Promise<boolean>;
   /** Start a directory watch over a repo's .git/config and run an initial check. */
   startWatchingRepo:       (repoName: string, repoPath: string) => void;
   /** Holder for the last cache-refresh timestamp (0 = never). */

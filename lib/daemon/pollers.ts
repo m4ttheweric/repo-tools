@@ -25,27 +25,38 @@ export interface PollerDeps {
   broadcast: (type: string, data: any) => void;
   systemProcessScanner: SystemProcessScanner;
   repoIndex: () => RepoIndex;
-  checkAndRepairHooksPath: (repoName: string, repoPath: string) => boolean;
+  checkAndRepairHooksPath: (repoName: string, repoPath: string) => Promise<boolean>;
 }
 
 export function startPollers(deps: PollerDeps): void {
   const { log, refreshCache, portCacheRef, broadcast, systemProcessScanner } = deps;
 
-  function refreshPortCache(): void {
+  // In-flight guards: the scans are async now, so a slow scan must not
+  // overlap the next tick (the runaway math assumes one sample per 10s).
+  let portScanInFlight = false;
+  let processScanInFlight = false;
+
+  async function refreshPortCache(): Promise<void> {
+    if (portScanInFlight) return;
+    portScanInFlight = true;
     try {
-      portCacheRef.ports = scanListeningPorts();
+      portCacheRef.ports = await scanListeningPorts();
       portCacheRef.updatedAt = Date.now();
       log.debug({ count: portCacheRef.ports.length }, "ports scanned");
 
       broadcast("ports", { ports: portCacheRef.ports, updatedAt: portCacheRef.updatedAt });
     } catch (err) {
       log.error({ err }, "port scan failed");
+    } finally {
+      portScanInFlight = false;
     }
   }
 
-  function refreshSystemProcesses(): void {
+  async function refreshSystemProcesses(): Promise<void> {
+    if (processScanInFlight) return;
+    processScanInFlight = true;
     try {
-      const processes = systemProcessScanner.scan(portCacheRef.ports);
+      const processes = await systemProcessScanner.scan(portCacheRef.ports);
       broadcast("system-processes", {
         processes,
         updatedAt: Date.now(),
@@ -59,6 +70,8 @@ export function startPollers(deps: PollerDeps): void {
       );
     } catch (err) {
       log.error({ err }, "system process scan failed");
+    } finally {
+      processScanInFlight = false;
     }
   }
 
@@ -77,10 +90,10 @@ export function startPollers(deps: PollerDeps): void {
   // Periodic hooks scan — belt-and-suspenders fallback in case a directory
   // watcher ever misses a write (e.g. watcher limit hit, FS edge-case).
   // Runs every 60s; each call is cheap (one git-config read per watched repo).
-  setInterval(() => {
+  setInterval(async () => {
     const repos = deps.repoIndex();
     for (const [repoName, repoPath] of Object.entries(repos)) {
-      if (existsSync(repoPath)) deps.checkAndRepairHooksPath(repoName, repoPath);
+      if (existsSync(repoPath)) await deps.checkAndRepairHooksPath(repoName, repoPath);
     }
   }, HOOKS_SCAN_INTERVAL_MS);
 }

@@ -26,7 +26,7 @@ export function createHooksHandlers(ctx: HandlerContext): HandlerMap {
       const repos = ctx.repoIndex();
       const repoPath = repos[repoName];
       if (!repoPath) return { ok: false, error: "unknown repo" };
-      const repaired = ctx.checkAndRepairHooksPath(repoName, repoPath);
+      const repaired = await ctx.checkAndRepairHooksPath(repoName, repoPath);
       return { ok: true, repaired };
     },
 
