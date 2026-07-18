@@ -279,3 +279,23 @@ describe("runaway detection", () => {
     expect(allAbove).toBe(false);
   });
 });
+
+describe("parseProcessList headerless input", () => {
+  test("does not drop the first process of headerless ps -o pid=,... output", async () => {
+    const { parseProcessList } = await import("../system-process-scanner.ts");
+
+    const psOutput = [
+      "12345     1  45.2 102400     1:30:00 node             node server.js",
+      "12346     1  12.0  51200        5:00 bun              bun run dev",
+    ].join("\n");
+
+    const repos = { myrepo: "/Users/test/repos/myrepo" };
+    const cwdMap = new Map<number, string>([
+      [12345, "/Users/test/repos/myrepo"],
+      [12346, "/Users/test/repos/myrepo"],
+    ]);
+
+    const result = parseProcessList(psOutput, repos, cwdMap);
+    expect(result.map(p => p.pid)).toEqual([12345, 12346]);
+  });
+});
