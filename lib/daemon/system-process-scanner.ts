@@ -104,12 +104,12 @@ export function parseProcessList(
   cwdMap: Map<number, string>,
   worktreeMap: Map<string, { repo: string; branch: string }> = new Map(),
 ): Omit<SystemProcess, "port" | "linearTicket" | "packageScript" | "isRunaway" | "runawayDurationMs" | "firstSeen" | "children">[] {
-  const lines = psOutput.trim().split("\n");
-  if (lines.length <= 1) return [];
-
+  // No positional header skip: the daemon's `ps -o pid=,...` output is
+  // headerless, so dropping the first line would drop a real process. A
+  // header line (from `ps` without `=`) fails the pid regex and is skipped.
   const results: Omit<SystemProcess, "port" | "linearTicket" | "packageScript" | "isRunaway" | "runawayDurationMs" | "firstSeen" | "children">[] = [];
 
-  for (const line of lines.slice(1)) {
+  for (const line of psOutput.trim().split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
