@@ -136,7 +136,7 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   mr: {
-    description: "Merge request operations (GitLab) — `pr` works too",
+    description: "Merge request operations (GitLab); `pr` works too",
     aliases: ["pr"],
     subcommands: {
       open: {
@@ -341,7 +341,7 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   nav: {
-    description: "Navigate filesystem with fzf — persistent picker, esc to quit",
+    description: "Navigate filesystem with fzf; persistent picker, esc to quit",
     module: "./commands/nav.ts",
     fn: "navigate",
     requiresTTY: true,
