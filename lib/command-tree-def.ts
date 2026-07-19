@@ -7,6 +7,37 @@
  */
 import type { CommandNode } from "./command-tree.ts";
 
+const branchSubcommands: Record<string, CommandNode> = {
+  switch: {
+    description: "Checkout with stash handling",
+    module: "./commands/branch.ts",
+    fn: "switchBranch",
+    context: "worktree",
+    aliases: ["sw"],
+  },
+  create: {
+    description: "From Linear ticket or scratch",
+    module: "./commands/branch.ts",
+    fn: "createBranchFlow",
+    context: "worktree",
+    aliases: ["new"],
+  },
+  rename: {
+    description: "Rename the current branch",
+    module: "./commands/branch.ts",
+    fn: "renameBranch",
+    context: "worktree",
+    aliases: ["mv"],
+  },
+  clean: {
+    description: "Delete stale branches interactively",
+    module: "./commands/branch-clean.ts",
+    fn: "cleanBranches",
+    context: "worktree",
+    requiresTTY: true,
+  },
+};
+
 export const TREE: Record<string, CommandNode> = {
   git: {
     description: "Git operations (rebase, reset, branch, commit, backup)",
@@ -53,39 +84,10 @@ export const TREE: Record<string, CommandNode> = {
       },
       branch: {
         description: "Branch management (switch, create, rename, clean)",
-        subcommands: {
-          switch: {
-            description: "Checkout with stash handling",
-            module: "./commands/branch.ts",
-            fn: "switchBranch",
-            context: "worktree",
-            aliases: ["sw"],
-          },
-          create: {
-            description: "From Linear ticket or scratch",
-            module: "./commands/branch.ts",
-            fn: "createBranchFlow",
-            context: "worktree",
-            aliases: ["new"],
-          },
-          rename: {
-            description: "Rename the current branch",
-            module: "./commands/branch.ts",
-            fn: "renameBranch",
-            context: "worktree",
-            aliases: ["mv"],
-          },
-          clean: {
-            description: "Delete stale branches interactively",
-            module: "./commands/branch-clean.ts",
-            fn: "cleanBranches",
-            context: "worktree",
-            requiresTTY: true,
-          },
-        },
+        subcommands: branchSubcommands,
       },
       commit: {
-        description: "Interactive staging + commit with live diff preview",
+        description: "Interactive staged/unstaged commit picker with live diff preview",
         module: "./commands/commit.ts",
         fn: "commitFlow",
         context: "worktree",
@@ -176,36 +178,7 @@ export const TREE: Record<string, CommandNode> = {
   // Aliases — rt branch and rt commit still work as before
   branch: {
     description: "Branch management (switch, create, rename, clean)",
-    subcommands: {
-      switch: {
-        description: "Checkout with stash handling",
-        module: "./commands/branch.ts",
-        fn: "switchBranch",
-        context: "worktree",
-        aliases: ["sw"],
-      },
-      create: {
-        description: "From Linear ticket or scratch",
-        module: "./commands/branch.ts",
-        fn: "createBranchFlow",
-        context: "worktree",
-        aliases: ["new"],
-      },
-      rename: {
-        description: "Rename the current branch",
-        module: "./commands/branch.ts",
-        fn: "renameBranch",
-        context: "worktree",
-        aliases: ["mv"],
-      },
-      clean: {
-        description: "Delete stale branches interactively",
-        module: "./commands/branch-clean.ts",
-        fn: "cleanBranches",
-        context: "worktree",
-        requiresTTY: true,
-      },
-    },
+    subcommands: branchSubcommands,
   },
 
   turbo: {
@@ -320,6 +293,12 @@ export const TREE: Record<string, CommandNode> = {
     description: "Show current version and prod/dev mode",
     module: "./commands/version.ts",
     fn: "runVersion",
+  },
+
+  verify: {
+    description: "Verify an rt installation end-to-end (run after brew install)",
+    module: "./commands/verify.ts",
+    fn: "runVerify",
   },
 
   open: {
