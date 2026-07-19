@@ -58,7 +58,7 @@ function renderStub(path: string[]): string {
     "",
     `# rt ${path.join(" ")}`,
     "",
-    `Alias — see the canonical reference for \`${name}\`.`,
+    `Alias. See the canonical reference for \`${name}\`.`,
     "",
   ].join("\n");
 }

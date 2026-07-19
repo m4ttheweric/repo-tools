@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { renderUsage, renderArgsTable, slugArg } from "../lib/docs-render.ts";
+import { renderUsage, renderArgsTable, slugArg, escapeMdxText } from "../lib/docs-render.ts";
 import type { CommandArg } from "../../lib/command-tree.ts";
 
 const NO_COMMON = { flags: new Set<string>(), href: "/guides/common-flags" };
@@ -37,7 +37,7 @@ test("renderArgsTable returns empty string when no args", () => {
   expect(renderArgsTable([], NO_COMMON)).toBe("");
 });
 
-import { renderPage } from "../lib/docs-render.ts";
+import { renderPage, renderSubcommandsTable } from "../lib/docs-render.ts";
 import type { CommandNode } from "../../lib/command-tree.ts";
 
 const OPTS = {
@@ -90,4 +90,38 @@ test("renderPage splices a partial import only when the partial exists", () => {
 test("renderPage hides subcommands section when node has no subcommands", () => {
   const node: CommandNode = { description: "Runner", module: "./commands/run.ts", fn: "runCommand" };
   expect(renderPage(node, ["run"], "run", OPTS)).not.toContain("## Subcommands");
+});
+
+test("escapeMdxText escapes angle brackets used for placeholders", () => {
+  expect(escapeMdxText("origin/<branch>")).toBe("origin/&lt;branch&gt;");
+});
+
+test("renderPage escapes MDX-hostile characters in the description", () => {
+  const node: CommandNode = {
+    description: "Push current branch to origin/<branch>, fixing wrong upstream",
+    module: "./commands/git/push.ts",
+    fn: "pushCommand",
+  };
+  const out = renderPage(node, ["git", "push"], "git/push", OPTS);
+  expect(out).toContain("origin/&lt;branch&gt;");
+  expect(out).not.toContain("origin/<branch>");
+});
+
+test("renderSubcommandsTable escapes MDX-hostile characters in subcommand descriptions", () => {
+  const node: CommandNode = {
+    description: "StrongDM connections",
+    subcommands: {
+      connect: { description: "Pick a connection and connect (or connect <key> directly)", module: "./commands/sdm.ts", fn: "connectCmd" },
+    },
+  };
+  const out = renderSubcommandsTable(node, ["sdm"]);
+  expect(out).toContain("&lt;key&gt;");
+  expect(out).not.toContain("connect <key> directly");
+});
+
+test("renderUsage leaves the bash usage block unescaped (raw positional inside a code fence)", () => {
+  const args: CommandArg[] = [{ name: "Key", type: "text" }];
+  const out = renderUsage(["sdm", "connect"], args);
+  expect(out).toContain("```bash");
+  expect(out).toContain("<key>");
 });
