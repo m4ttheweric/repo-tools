@@ -8,7 +8,9 @@
     "test": "bun test lib",
     "test:watch": "bun test --watch lib",
     "test:e2e": "bun test --preload ./e2e/setup.ts --timeout 60000 e2e/",
-    "test:all": "bun test lib && bun test --preload ./e2e/setup.ts --timeout 60000 e2e/"
+    "test:all": "bun test lib && bun test --preload ./e2e/setup.ts --timeout 60000 e2e/",
+    "docs:gen": "bun scripts/gen-docs.ts",
+    "docs:check": "bun scripts/check-docs.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
