@@ -30,6 +30,7 @@ import * as status from "../commands/status/index.tsx";
 import * as cd from "../commands/cd.ts";
 import * as code from "../commands/code.ts";
 import * as version from "../commands/version.ts";
+import * as verify from "../commands/verify.ts";
 import * as update from "../commands/update.ts";
 import * as doppler from "../commands/doppler.ts";
 import * as nav from "../commands/nav.ts";
@@ -63,6 +64,7 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/cd.ts": cd,
   "./commands/code.ts": code,
   "./commands/version.ts": version,
+  "./commands/verify.ts": verify,
   "./commands/update.ts": update,
   "./commands/doppler.ts": doppler,
   "./commands/nav.ts": nav,
