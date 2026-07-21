@@ -37,5 +37,5 @@ Opens System Settings to the Privacy & Security → Full Disk Access pane and pr
 
 Two other top-level flags exist but are not meant to be run by hand:
 
-- **`--daemon`** starts the daemon server process directly. It's the entry point the daemon supervisor spawns internally (`rt --daemon`) when `rt` is a compiled binary; you shouldn't need to run it yourself.
+- **`--daemon`** starts the daemon server process directly. It's the entry point the daemon's launcher (launchd, or a background process) runs internally (`rt --daemon`) when `rt` is a compiled binary; you shouldn't need to run it yourself.
 - **`--post-install`** is the developer/installer entry point invoked by the Homebrew formula's `post_install` hook. It sets up the tray app, editor extension, daemon, and shell integration. `rt` also runs this transparently on first use if setup hasn't completed yet.
