@@ -1,0 +1,9 @@
+{
+  "label": "Command reference",
+  "position": 4,
+  "link": {
+    "type": "generated-index",
+    "title": "Command reference",
+    "description": "Every built-in rt command, generated from the command tree."
+  }
+}
