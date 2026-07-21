@@ -12,8 +12,15 @@ Port scanner + killer (zero-config, daemon-powered)
 ## Usage
 
 ```bash
-rt port
+rt port <port-or-subcommand> <port>
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `<port-or-subcommand>` | text |  | A port number to kill directly, or 'kill' to open the interactive kill picker; omit to list all ports |
+| `<port>` | text |  | When the first argument is 'kill', a port number to kill directly instead of opening the picker |
 
 _See code: [commands/port.ts › portScanner](https://github.com/m4ttheweric/repo-tools/blob/main/commands/port.ts)_
 

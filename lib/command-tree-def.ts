@@ -277,6 +277,9 @@ export const TREE: Record<string, CommandNode> = {
         fn: "buildSelect",
         context: "worktree",
         requiresTTY: true,
+        args: [
+          { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Force turbo to ignore its build cache" },
+        ],
       },
     },
   },
@@ -286,6 +289,10 @@ export const TREE: Record<string, CommandNode> = {
     module: "./commands/hooks.ts",
     fn: "toggleHooks",
     context: "repo",
+    args: [
+      { name: "Target", type: "text", placeholder: "off | on | status | pre-push", hint: "Global action (off, on, status) or a specific hook name to target; omit for the interactive picker" },
+      { name: "State", type: "text", placeholder: "on | off", hint: "on/off state to apply when Target is a specific hook name" },
+    ],
   },
 
   run: {
@@ -294,12 +301,16 @@ export const TREE: Record<string, CommandNode> = {
     fn: "runCommand",
     context: "worktree",
     requiresTTY: true,
+    args: [
+      { name: "Preset", type: "text", placeholder: "backend-lite", hint: "Launch a saved preset directly by name, skipping the picker chain" },
+    ],
     subcommands: {
       again: {
         description: "Pick from recently run scripts across all repos",
         module: "./commands/run.ts",
         fn: "runAgainCommand",
         requiresTTY: true,
+        args: [],
       },
     },
   },
@@ -310,6 +321,10 @@ export const TREE: Record<string, CommandNode> = {
     description: "Port scanner + killer (zero-config, daemon-powered)",
     module: "./commands/port.ts",
     fn: "portScanner",
+    args: [
+      { name: "Port or subcommand", type: "text", placeholder: "8080 | kill", hint: "A port number to kill directly, or 'kill' to open the interactive kill picker; omit to list all ports" },
+      { name: "Port", type: "text", placeholder: "8080", hint: "When the first argument is 'kill', a port number to kill directly instead of opening the picker" },
+    ],
   },
 
   sdm: {
