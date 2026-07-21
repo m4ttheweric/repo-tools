@@ -5,4 +5,50 @@ title: StrongDM
 
 # StrongDM
 
-Filled in Task 4/5.
+`rt sdm` is a StrongDM auth-and-connect module: it logs you in, lists the datasources you can reach, and connects you fast with friendly names.
+
+```bash
+rt sdm connect             # pick a datasource and connect (auto-logs-in if your session expired)
+rt sdm status              # StrongDM auth health + connected tunnels
+rt sdm login               # log in (browser popup, terminal fallback)
+rt sdm set-email <email>   # set the email rt logs in with
+rt sdm refresh             # re-scan the catalog
+rt sdm enrichment [init]   # show or scaffold the enrichment map
+```
+
+See the full command reference: [`rt sdm`](/reference/sdm), [`rt sdm connect`](/reference/sdm/connect), [`rt sdm status`](/reference/sdm/status), [`rt sdm login`](/reference/sdm/login), [`rt sdm refresh`](/reference/sdm/refresh), [`rt sdm enrichment`](/reference/sdm/enrichment), [`rt sdm set-email`](/reference/sdm/set-email).
+
+## rt reads live, it does not maintain a list
+
+rt reads your resources straight from the StrongDM CLI: `sdm access catalog` for the datasources you can reach, and `sdm status` for what is currently connected. There is nothing to configure and no list to maintain in rt itself. Every real datasource you can reach shows up in the picker, and nothing else does; rt never invents or guesses a resource name.
+
+If `rt sdm connect` only shows recents, your session expired. It logs you back in automatically before listing, so you rarely need to run `rt sdm login` by hand.
+
+## Enrichment (optional, declarative)
+
+Raw StrongDM names (`example-alpha-staging`) work as-is, but you can give them nicer labels, group them by tier, and set connect defaults with a declarative file you own at `~/.rt/sdm/enrichment.jsonc`. Nothing runs to enrich; rt just reads this JSON and overlays it on the live catalog.
+
+Scaffold it from your current catalog, then fill in the labels:
+
+```bash
+rt sdm enrichment init    # writes ~/.rt/sdm/enrichment.jsonc: every resource, blank labels
+rt sdm enrichment         # show the file path + how many resources are enriched vs raw
+```
+
+```jsonc
+{
+  // map a StrongDM resource name to a nicer label + connect metadata
+  "example-alpha-staging": { "label": "alpha staging", "tier": "staging",    "db": { "schema": "public" } },
+  "example-alpha-prod":    { "label": "alpha prod",    "tier": "production", "production": true }
+}
+```
+
+| field | meaning |
+| --- | --- |
+| `label` | shown in the picker (defaults to the raw resource name) |
+| `tier` | `development` / `qa` / `staging` / `production` / anything: groups the picker |
+| `production` | `true` adds a confirm guard before connecting |
+| `reasonSuggestion` | prefill for the access-request reason prompt |
+| `db` | `{ database, schema, user }` hints used to verify the tunnel after connecting |
+
+A resource missing from the file just shows its raw name and connects with Postgres defaults. Keep the file in your own repo and copy or symlink it to `~/.rt/sdm/enrichment.jsonc` to share it with your team.
