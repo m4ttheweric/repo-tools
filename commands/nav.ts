@@ -10,10 +10,10 @@
  * ctrl-k opens an action menu on the highlighted item (Open with…, Reveal in
  * Finder, Quick Look, Copy path, Open terminal here).
  *
- * Dotfiles are hidden by default; ctrl-t toggles showing them. ctrl-r toggles
+ * Dotfiles are shown by default; ctrl-t toggles hiding them. ctrl-r toggles
  * deep-jump mode, recursively listing everything under the current directory
  * so you can filter across nested paths. ctrl-p toggles a preview pane
- * showing the highlighted folder's contents or file's text.
+ * (hidden by default) showing the highlighted folder's contents or file's text.
  *
  * Optional first arg sets the starting directory (defaults to cwd).
  */
@@ -23,7 +23,9 @@ import { spawnSync } from "child_process";
 import { homedir } from "os";
 import { openDirectoryInEditor } from "./code.ts";
 import { runNavPicker, type NavOption } from "../lib/navigate.ts";
-import { listEntries, deepList, buildPreviewCommand } from "../lib/nav-fs.ts";
+import {
+  listEntries, deepList, buildPreviewCommand, buildHelpHeaderCommand, renderHelpHeader,
+} from "../lib/nav-fs.ts";
 
 function tildeify(p: string): string {
   const home = homedir();
@@ -113,8 +115,11 @@ export async function navigate(args: string[]): Promise<void> {
   };
 
   let cwd = resolve(args[0] ?? process.cwd());
-  let showHidden = false;
+  let showHidden = true;
   let deepMode = false;
+  // ctrl-p round-trips (rather than fzf's internal toggle-preview) so this
+  // state survives navigation and the help layout can use the real width.
+  let previewOn = false;
   // Preserved across ctrl-k/ctrl-t/ctrl-f round trips so the user's filter and
   // cursor position survive. Reset on any cwd-changing navigation.
   let resumeQuery = "";
@@ -166,32 +171,25 @@ export async function navigate(args: string[]): Promise<void> {
 
     const modeHint = deepMode ? "ctrl-r: browse" : "ctrl-r: deep jump";
     const upHint = deepMode ? "ctrl-up: browse" : "ctrl-up: up";
-    // Revealed by ctrl-/. Two columns spread across the list area — the
-    // preview pane takes the right half of the terminal, and fzf truncates
-    // (not wraps) header lines that overflow.
-    const helpPairs: Array<[string, string]> = [
-      ["enter: open", "ctrl-k: actions"],
-      ["ctrl-space: cd selected", "ctrl-o: editor"],
-      ["ctrl-h: cd here", "ctrl-f: finder"],
-      [upHint, modeHint],
-      ["esc: quit", hiddenHint],
-      ["", "ctrl-p: preview"],
+    // Revealed by ctrl-/. Laid out by buildHelpHeaderCommand — run once here
+    // for the initial header, and re-run by fzf on terminal resize.
+    const helpHints = [
+      "enter: open", "ctrl-space: cd selected", "ctrl-h: cd here", upHint, "esc: quit",
+      "ctrl-k: actions", "ctrl-o: editor", "ctrl-f: finder", modeHint, hiddenHint,
+      previewOn ? "ctrl-p: hide preview" : "ctrl-p: preview",
     ];
-    const termCols = process.stderr.columns || 80;
-    const listWidth = Math.floor(termCols / 2) - 4; // preview + borders
-    const rightWidth = Math.max(...helpPairs.map(([, right]) => right.length));
-    const leftPad = Math.max(25, listWidth - rightWidth);
-    const helpHeader = helpPairs
-      .map(([left, right]) => (left.padEnd(leftPad) + right).trimEnd())
-      .join("\n");
+    const helpCommand = buildHelpHeaderCommand(helpHints, previewOn);
+    const helpHeader = renderHelpHeader(helpCommand, process.stderr.columns || 80);
     const result = await runNavPicker({
       options,
       message: tildeify(cwd) + (deepMode ? " (deep)" : ""),
       helpHeader,
-      expectKeys: ["ctrl-k", "ctrl-o", "ctrl-space", "ctrl-h", "ctrl-f", "ctrl-r", "ctrl-t"],
+      resizeHeaderCommand: helpCommand,
+      expectKeys: ["ctrl-k", "ctrl-o", "ctrl-space", "ctrl-h", "ctrl-f", "ctrl-r", "ctrl-t", "ctrl-p"],
       initialQuery: resumeQuery,
       resumeValue: resumeValue || undefined,
       preview: buildPreviewCommand(cwd),
+      previewHidden: !previewOn,
     });
     if (!result) return;
     const { value: choice, key, query } = result;
@@ -204,6 +202,14 @@ export async function navigate(args: string[]): Promise<void> {
     // from the new list — findResumePosition returns null and that's fine)
     if (key === "ctrl-t") {
       showHidden = !showHidden;
+      resumeQuery = query;
+      resumeValue = choice ?? "";
+      continue;
+    }
+
+    // ctrl-p: toggle the preview pane, preserving filter and cursor
+    if (key === "ctrl-p") {
+      previewOn = !previewOn;
       resumeQuery = query;
       resumeValue = choice ?? "";
       continue;
@@ -270,7 +276,9 @@ export async function navigate(args: string[]): Promise<void> {
       }
       if (key === "ctrl-o") {
         await openDirectoryInEditor(target);
-        return;
+        resumeQuery = query;
+        resumeValue = choice;
+        continue;
       }
       // Descending always lands in browse mode: deep jump is a travel
       // accelerator, not a permanent view.

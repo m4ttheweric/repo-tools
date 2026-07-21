@@ -5,10 +5,14 @@
  *
  * Prints the selected path to stdout so a shell function can cd into it.
  *
+ * rt cd is for changing worktree or repo; moving around inside a repo is what
+ * rt nav is for. So the default never drills below the worktree root.
+ *
  * Behavior:
  *   - In a tracked repo with worktrees → worktree picker + "switch repo" option
  *   - In a tracked repo without worktrees → repo picker (all known repos)
  *   - Not in a tracked repo → repo picker (all known repos with worktrees)
+ *   - --package → opt back into the monorepo package picker (one level deeper)
  *
  * Shell setup (add to your shell rc file):
  *   rtcd() { local dir; dir="$(rt cd "$@")" && [ -n "$dir" ] && cd "$dir"; }
@@ -170,6 +174,7 @@ export async function worktreePicker(args: string[]): Promise<void> {
 
   // ── Parse flags ─────────────────────────────────────────────────────────────────────
   const forceRepo    = args.includes("--repo");
+  const wantPackages = args.includes("--package") || args.includes("--packages");
   const wtIdx        = args.indexOf("--worktree");
   const wtBranch     = wtIdx !== -1 ? args[wtIdx + 1] : undefined;
 
@@ -208,7 +213,7 @@ export async function worktreePicker(args: string[]): Promise<void> {
         selectedPath = await resolveWorktreeByBranch(wtBranch, [pickedRepo], { stderr: true });
       }
     } else {
-      selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: true });
+      selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages });
     }
 
   // ── --worktree flag only: resolve branch in current repo (then all repos) ──
@@ -220,21 +225,21 @@ export async function worktreePicker(args: string[]): Promise<void> {
     const finalRepos = inCurrent.length > 0 ? searchRepos : repos;
     selectedPath = await resolveWorktreeByBranch(wtBranch, finalRepos, { stderr: true });
 
-  // ── In a monorepo: package picker ────────────────────────────────────────
-  } else if (currentRepo && getWorkspacePackages(identity!.repoRoot).length > 0) {
+  // ── --package in a monorepo: package picker (opt-in) ─────────────────────
+  } else if (wantPackages && currentRepo && getWorkspacePackages(identity!.repoRoot).length > 0) {
     selectedPath = await pickPackageWithEscape(currentRepo, identity!.repoRoot, repos, { stderr: true });
 
-  // ── In a plain multi-worktree repo: worktree picker [unchanged] ──────────
+  // ── In a multi-worktree repo: worktree picker ────────────────────────────
   } else if (currentRepo && currentRepo.worktrees.length > 1) {
     const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot, { stderr: true });
     if (!result) process.exit(0);
     selectedPath = isSwitchRepo(result)
-      ? await pickFromAllRepos(repos, { stderr: true, includePackages: true })
+      ? await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages })
       : result;
 
-  // ── Not in a tracked repo or single-worktree: repo picker [unchanged] ───
+  // ── Not in a tracked repo or single-worktree: repo picker ───────────────
   } else {
-    selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: true });
+    selectedPath = await pickFromAllRepos(repos, { stderr: true, includePackages: wantPackages });
   }
 
   // Restore stdout and print just the path

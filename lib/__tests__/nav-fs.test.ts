@@ -3,7 +3,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
-import { listEntries, deepList, shellQuote, buildPreviewCommand } from "../nav-fs.ts";
+import {
+  listEntries, deepList, shellQuote, buildPreviewCommand,
+  buildHelpHeaderCommand, renderHelpHeader,
+} from "../nav-fs.ts";
 
 let root: string;
 
@@ -118,6 +121,40 @@ describe("shellQuote", () => {
   test("wraps in single quotes and escapes embedded single quotes", () => {
     expect(shellQuote("plain")).toBe("'plain'");
     expect(shellQuote("it's")).toBe("'it'\\''s'");
+  });
+});
+
+describe("buildHelpHeaderCommand", () => {
+  const hints = ["enter: open", "ctrl-k: actions", "ctrl-o: editor", "esc: quit"];
+
+  test("flows hints into more columns as width grows", () => {
+    const cmd = buildHelpHeaderCommand(hints, false);
+    // 40 cols → 36 usable → 2 columns of the ~15-char hints
+    const narrow = renderHelpHeader(cmd, 40).split("\n");
+    expect(narrow).toEqual(["enter: open       ctrl-o: editor", "ctrl-k: actions   esc: quit"]);
+    // 80 cols → all four hints fit on one line
+    const wide = renderHelpHeader(cmd, 80).split("\n");
+    expect(wide.length).toBe(1);
+    for (const h of hints) expect(wide[0]).toContain(h);
+  });
+
+  test("previewOn halves the available width", () => {
+    const cmd = buildHelpHeaderCommand(hints, true);
+    // 80 cols with preview → same 36 usable as 40 cols without
+    const lines = renderHelpHeader(cmd, 80).split("\n");
+    expect(lines.length).toBe(2);
+  });
+
+  test("degrades to a single column when nothing fits", () => {
+    const cmd = buildHelpHeaderCommand(hints, false);
+    expect(renderHelpHeader(cmd, 10).split("\n")).toEqual(hints);
+  });
+
+  test("lines never exceed the usable width", () => {
+    const cmd = buildHelpHeaderCommand(hints, false);
+    for (const line of renderHelpHeader(cmd, 40).split("\n")) {
+      expect(line.length).toBeLessThanOrEqual(36);
+    }
   });
 });
 
