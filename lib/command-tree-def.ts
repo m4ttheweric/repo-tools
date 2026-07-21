@@ -14,6 +14,7 @@ const branchSubcommands: Record<string, CommandNode> = {
     fn: "switchBranch",
     context: "worktree",
     aliases: ["sw"],
+    args: [],
   },
   create: {
     description: "From Linear ticket or scratch",
@@ -21,6 +22,10 @@ const branchSubcommands: Record<string, CommandNode> = {
     fn: "createBranchFlow",
     context: "worktree",
     aliases: ["new"],
+    args: [
+      { name: "Branch name", type: "text", placeholder: "feature/my-branch", hint: "Skip the interactive picker and create this branch directly" },
+      { name: "From", flag: "--from", type: "text", placeholder: "origin/main", hint: "Start point for the new branch" },
+    ],
   },
   rename: {
     description: "Rename the current branch",
@@ -28,6 +33,7 @@ const branchSubcommands: Record<string, CommandNode> = {
     fn: "renameBranch",
     context: "worktree",
     aliases: ["mv"],
+    args: [],
   },
   clean: {
     description: "Delete stale branches interactively",
@@ -35,6 +41,10 @@ const branchSubcommands: Record<string, CommandNode> = {
     fn: "cleanBranches",
     context: "worktree",
     requiresTTY: true,
+    args: [
+      { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Preview deletions without deleting (alias -n)" },
+      { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Skip the open-MR warning and force-delete (alias -f)" },
+    ],
   },
 };
 
@@ -45,6 +55,7 @@ const commitNode: CommandNode = {
   fn: "commitFlow",
   context: "worktree",
   requiresTTY: true,
+  args: [],
 };
 
 export const TREE: Record<string, CommandNode> = {

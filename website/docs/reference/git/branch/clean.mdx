@@ -12,8 +12,15 @@ Delete stale branches interactively
 ## Usage
 
 ```bash
-rt git branch clean
+rt git branch clean [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| [`--dry-run`](/guides/common-flags) | boolean | `false` | Preview deletions without deleting (alias -n) |
+| `--force` | boolean | `false` | Skip the open-MR warning and force-delete (alias -f) |
 
 _See code: [commands/branch-clean.ts › cleanBranches](https://github.com/m4ttheweric/repo-tools/blob/main/commands/branch-clean.ts)_
 
