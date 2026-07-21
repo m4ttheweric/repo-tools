@@ -5,4 +5,37 @@ title: Global flags & entry points
 
 # Global flags & entry points
 
-Filled in Task 4.
+A few entry points are handled directly by `rt`'s CLI entry (`cli.ts`), before any command-tree dispatch. These are not tree commands, so they don't have their own generated reference page.
+
+## `--version` / `-V`
+
+```bash
+rt --version
+rt -V
+```
+
+Prints the installed version (`rt <version>`) and exits.
+
+## `--help` / `-h`
+
+```bash
+rt --help
+rt -h
+```
+
+Shows the root command picker's listing non-interactively (as if run off a TTY), so it works in scripts and piped output instead of launching the interactive picker.
+
+## `--grant-fda`
+
+```bash
+rt --grant-fda
+```
+
+Opens System Settings to the Privacy & Security → Full Disk Access pane and prints instructions for adding `rt-tray.app`. The daemon inherits this grant from the tray app, so the grant target is `rt-tray`, not `rt` itself. Restart the daemon (`rt daemon restart`) after granting.
+
+## Internal entry points
+
+Two other top-level flags exist but are not meant to be run by hand:
+
+- **`--daemon`** starts the daemon server process directly. It's the entry point the daemon supervisor spawns internally (`rt --daemon`) when `rt` is a compiled binary; you shouldn't need to run it yourself.
+- **`--post-install`** is the developer/installer entry point invoked by the Homebrew formula's `post_install` hook. It sets up the tray app, editor extension, daemon, and shell integration. `rt` also runs this transparently on first use if setup hasn't completed yet.
