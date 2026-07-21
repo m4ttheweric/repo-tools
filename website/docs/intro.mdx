@@ -6,4 +6,26 @@ title: What is rt
 
 # rt
 
-rt is a personal developer CLI for branch management, worktrees, git workflows, and notifications. This page is filled in Task 3.
+rt is a personal developer CLI for branch management, service orchestration, git workflows, and notifications. It's designed for monorepos with git worktrees.
+
+## Mental model
+
+Run `rt` with no arguments to get an interactive menu that walks you from repo, to worktree, to action. Every command also works as a direct invocation, so once you know the shape of a command you can skip the picker entirely:
+
+```bash
+rt <command> [subcommand] [args]
+```
+
+A background daemon runs alongside the CLI, caching MR and branch data, scanning ports, and guarding git hooks so commands like `rt status` and `rt port` stay fast and work from anywhere on your machine.
+
+## Zero footprint
+
+rt is macOS-only. It keeps all of its state, config, and per-repo data under `~/.rt/` and never writes anything into the repos it manages, so onboarding a repo or uninstalling rt never touches your git history or working tree.
+
+## Reference is generated
+
+The Command reference section in the sidebar is generated from the same command tree that drives rt's interactive pickers, so it always matches what `rt` actually does. See [rt status](/reference/status) or [rt cd](/reference/cd) for examples of what a reference page looks like.
+
+## Where to go next
+
+Start with [Install](/getting-started/install) to get rt onto your machine, then [Onboard a repo](/getting-started/onboard-a-repo) and [First commands](/getting-started/first-commands) to get moving day-to-day.
