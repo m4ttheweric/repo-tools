@@ -38,6 +38,15 @@ const branchSubcommands: Record<string, CommandNode> = {
   },
 };
 
+// Shared so `rt commit` and `rt git commit` are one node (enrich once, render once).
+const commitNode: CommandNode = {
+  description: "Interactive staged/unstaged commit picker with live diff preview",
+  module: "./commands/commit.ts",
+  fn: "commitFlow",
+  context: "worktree",
+  requiresTTY: true,
+};
+
 export const TREE: Record<string, CommandNode> = {
   git: {
     description: "Git operations (rebase, reset, branch, commit, backup)",
@@ -86,13 +95,7 @@ export const TREE: Record<string, CommandNode> = {
         description: "Branch management (switch, create, rename, clean)",
         subcommands: branchSubcommands,
       },
-      commit: {
-        description: "Interactive staged/unstaged commit picker with live diff preview",
-        module: "./commands/commit.ts",
-        fn: "commitFlow",
-        context: "worktree",
-        requiresTTY: true,
-      },
+      commit: commitNode,
       backup: {
         description: "Back up the current branch",
         module: "./commands/git/backup.ts",
@@ -217,13 +220,7 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
-  commit: {
-    description: "Interactive staged/unstaged commit picker with live diff preview",
-    module: "./commands/commit.ts",
-    fn: "commitFlow",
-    context: "worktree",
-    requiresTTY: true,
-  },
+  commit: commitNode,
 
   port: {
     description: "Port scanner + killer (zero-config, daemon-powered)",
