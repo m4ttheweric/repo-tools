@@ -385,24 +385,31 @@ export const TREE: Record<string, CommandNode> = {
     fn: "showStatus",
     context: "repo",
     fullscreen: true,
+    args: [],
   },
 
   update: {
     description: "Update rt to the latest version via Homebrew",
     module: "./commands/update.ts",
     fn: "runUpdate",
+    args: [],
   },
 
   version: {
     description: "Show current version and prod/dev mode",
     module: "./commands/version.ts",
     fn: "runVersion",
+    args: [],
   },
 
   verify: {
     description: "Verify an rt installation end-to-end (run after brew install)",
     module: "./commands/verify.ts",
     fn: "runVerify",
+    args: [
+      { name: "CI", flag: "--ci", type: "boolean", default: false, hint: "Minimal, no-color output for CI logs" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable JSON output" },
+    ],
   },
 
   open: {
