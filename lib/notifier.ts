@@ -367,6 +367,20 @@ function approvedByUserIds(entry: CacheEntry): string[] {
 }
 
 /**
+ * Whether the current user authored this MR. Branches enter the cache because
+ * they're checked out locally — which includes teammates' branches pulled down
+ * for review. Their pipeline/MR-state transitions must never notify. Strict: if
+ * the current user id can't be resolved, treat the MR as not-ours (suppress)
+ * rather than risk resurfacing other people's alerts.
+ */
+function isSelfAuthored(entry: CacheEntry, currentUserId: number | null): boolean {
+  const selfId = numericUserId(currentUserId);
+  if (!selfId) return false;
+  const authorId = numericUserId(entry.mr?.author?.id);
+  return authorId !== null && authorId === selfId;
+}
+
+/**
  * GitLab detailed_merge_status values that mean "GitLab is still recomputing
  * mergeability" rather than a settled answer. The SDK's optimistic `isReady`
  * flips true during these windows (ignoring approvals), and GitLab enters them
@@ -442,6 +456,11 @@ function detectBranchTransitions(
     // If the MR slot is null we have no fresh data — skipping prevents
     // false "transition" detection that would clear the fired key set.
     if (!entry.mr) continue;
+
+    // Author gate: only the current user's own MRs generate notifications.
+    // A teammate's branch checked out for review lands in this cache too; its
+    // pipeline failures and state changes must stay silent.
+    if (!isSelfAuthored(entry, currentUserId)) continue;
 
     const now = snapshotBranch(entry);
     const was = prev[branch];
@@ -761,4 +780,5 @@ export const __test__ = {
   shouldNotifyApprovalTransition,
   snapshotBranch,
   shouldRearmReady,
+  isSelfAuthored,
 };
