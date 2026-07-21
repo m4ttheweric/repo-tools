@@ -27,6 +27,8 @@ rt mr ship [flags]
 | `--debug` | boolean | `false` | Print the assembled prompt and stop before creating the MR |
 | [`--dry-run`](/guides/common-flags) | boolean | `false` | Rehearse push + MR creation without doing either |
 | `--web` | boolean | `false` | Open the new MR in the browser |
+| `--remote` | text |  | Remote to push to (forwarded to the push step) |
+| `--no-verify` | boolean | `false` | Skip pre-push hooks (forwarded to the push step) |
 
 _See code: [commands/mr.ts › shipCommand](https://github.com/m4ttheweric/repo-tools/blob/main/commands/mr.ts)_
 
