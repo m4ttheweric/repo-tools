@@ -140,6 +140,43 @@ export function shellQuote(s: string): string {
 }
 
 /**
+ * Build a shell snippet that lays out help hints column-major into as many
+ * columns as fit the available width, reading $FZF_COLUMNS at run time.
+ *
+ * This is the single layout implementation: nav runs it once (with
+ * FZF_COLUMNS faked to the current terminal width) for the initial header,
+ * and binds it to fzf's resize event via transform-header so the layout
+ * recomputes when the terminal size changes mid-session.
+ *
+ * With the preview pane open the header only has the left half of the
+ * terminal; fzf truncates (not wraps) header lines that overflow.
+ */
+export function buildHelpHeaderCommand(hints: string[], previewOn: boolean): string {
+  const quoted = hints.map(shellQuote).join(" ");
+  const cols = "${FZF_COLUMNS:-$(tput cols)}";
+  const width = previewOn ? `$(( ${cols} / 2 - 4 ))` : `$(( ${cols} - 4 ))`;
+  return (
+    `printf '%s\\n' ${quoted} | awk -v w=${width} '` +
+    `{ h[NR] = $0; if (length($0) > m) m = length($0) } ` +
+    `END { n = NR; nc = int(w / (m + 3)); if (nc < 1) nc = 1; if (nc > n) nc = n; ` +
+    `cw = int(w / nc); rows = int((n + nc - 1) / nc); ` +
+    `for (r = 1; r <= rows; r++) { line = ""; ` +
+    `for (c = 0; c < nc; c++) { i = c * rows + r; ` +
+    `if (i <= n) { s = h[i]; while (length(s) < cw) s = s " "; line = line s } } ` +
+    `sub(/ +$/, "", line); print line } }'`
+  );
+}
+
+/** Run a buildHelpHeaderCommand snippet outside fzf, faking FZF_COLUMNS. */
+export function renderHelpHeader(command: string, cols: number): string {
+  const r = spawnSync("sh", ["-c", command], {
+    encoding: "utf8",
+    env: { ...process.env, FZF_COLUMNS: String(cols) },
+  });
+  return (r.stdout ?? "").trimEnd();
+}
+
+/**
  * Build the fzf --preview shell snippet for a nav picker rooted at baseDir.
  *
  * fzf substitutes {1} with the (already shell-quoted) value column, e.g.

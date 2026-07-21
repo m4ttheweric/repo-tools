@@ -67,8 +67,13 @@ export interface NavPickerOpts {
   /**
    * fzf --preview command. When set, a right-side preview window is shown
    * and ctrl-p toggles it. The command sees the value column as {1}.
+   * If the caller lists "ctrl-p" in `expectKeys`, the internal toggle bind is
+   * skipped so ctrl-p round-trips instead — letting the caller own preview
+   * visibility (pass `previewHidden` on re-show) and know the real state.
    */
   preview?: string;
+  /** Start with the preview window hidden (only meaningful with `preview`). */
+  previewHidden?: boolean;
   /**
    * Full key-hint text (may be multi-line), hidden until requested. When set,
    * the hints go in the header but start hidden; a sticky one-line footer
@@ -77,6 +82,13 @@ export interface NavPickerOpts {
    * `header`/`headerParts` is set.
    */
   helpHeader?: string;
+  /**
+   * Shell command that re-renders the help header (reading $FZF_COLUMNS),
+   * bound to fzf's resize event via transform-header so a multi-line
+   * helpHeader re-lays-out when the terminal size changes. Only meaningful
+   * with `helpHeader`.
+   */
+  resizeHeaderCommand?: string;
 }
 
 /** Create a separator NavOption. The value is auto-generated; the cursor auto-skips it. */
@@ -165,8 +177,8 @@ export function buildNavArgs(opts: NavPickerOpts): string[] {
     ...(opts.preview
       ? [
           `--preview=${opts.preview}`,
-          "--preview-window=right,50%,border-rounded",
-          "--bind=ctrl-p:toggle-preview",
+          `--preview-window=right,50%,border-rounded${opts.previewHidden ? ",hidden" : ""}`,
+          ...(expectKeys.includes("ctrl-p") ? [] : ["--bind=ctrl-p:toggle-preview"]),
         ]
       : []),
     ...(helpMode
@@ -174,6 +186,9 @@ export function buildNavArgs(opts: NavPickerOpts): string[] {
           "--footer=ctrl-/: commands",
           "--bind=start:hide-header",
           "--bind=ctrl-/:toggle-header",
+          ...(opts.resizeHeaderCommand
+            ? [`--bind=resize:transform-header(${opts.resizeHeaderCommand})`]
+            : []),
         ]
       : []),
   ];
