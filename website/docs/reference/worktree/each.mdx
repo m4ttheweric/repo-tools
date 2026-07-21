@@ -12,8 +12,16 @@ Run a command in each worktree (--all | --parked, else pick)
 ## Usage
 
 ```bash
-rt worktree each
+rt worktree each <command> [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--all` | boolean | `false` | Run in every worktree (mutually exclusive with --parked) |
+| `--parked` | boolean | `false` | Run only in parked worktrees |
+| `<command>` | text |  | Command to run in each selected worktree; omit both flags to pick interactively |
 
 _See code: [commands/worktree.ts › worktreeEach](https://github.com/m4ttheweric/repo-tools/blob/main/commands/worktree.ts)_
 

@@ -12,8 +12,14 @@ Sync all worktrees in the current repo
 ## Usage
 
 ```bash
-rt sync all
+rt sync all [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| [`--dry-run`](/guides/common-flags) | boolean | `false` | Show what would happen without doing it |
 
 _See code: [commands/sync.ts › syncAllCommand](https://github.com/m4ttheweric/repo-tools/blob/main/commands/sync.ts)_
 

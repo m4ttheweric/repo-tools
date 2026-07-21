@@ -63,12 +63,15 @@ export const TREE: Record<string, CommandNode> = {
     description: "Git operations (rebase, reset, branch, commit, backup)",
     subcommands: {
       rebase: {
-        description: "Smart rebase onto origin/master with auto-resolve; on conflict, --json/--agent/--no-agent control escalation (--agent needs a TTY and a running herdr)",
+        description: "Smart rebase onto origin/master with auto-resolve",
         module: "./commands/git/rebase.ts",
         fn: "rebaseCommand",
         context: "worktree",
         args: [
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Show what would happen without doing it" },
+          { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "On conflict, emit a JSON conflict bundle and exit 3 instead of prompting" },
+          { name: "Agent", flag: "--agent", type: "boolean", default: false, hint: "On conflict, skip the prompt and hand off straight to a Claude agent in herdr" },
+          { name: "No agent", flag: "--no-agent", type: "boolean", default: false, hint: "On conflict, never offer agent escalation; abort instead" },
         ],
         subcommands: {
           onto: {
@@ -236,16 +239,25 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   sync: {
-    description: "Sync branches: rebase onto master + push (daily routine); on conflict, --json/--agent/--no-agent control escalation (--agent needs a TTY and a running herdr)",
+    description: "Sync branches: rebase onto master + push (daily routine)",
     module: "./commands/sync.ts",
     fn: "syncCommand",
     context: "worktree",
+    args: [
+      { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Show what would happen without doing it" },
+      { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "On conflict, emit a JSON conflict bundle and exit 3 instead of prompting" },
+      { name: "Agent", flag: "--agent", type: "boolean", default: false, hint: "On conflict, skip the prompt and hand off straight to a Claude agent in herdr" },
+      { name: "No agent", flag: "--no-agent", type: "boolean", default: false, hint: "On conflict, never offer agent escalation; abort instead" },
+    ],
     subcommands: {
       all: {
         description: "Sync all worktrees in the current repo",
         module: "./commands/sync.ts",
         fn: "syncAllCommand",
         context: "repo",
+        args: [
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Show what would happen without doing it" },
+        ],
       },
     },
   },
@@ -454,27 +466,32 @@ export const TREE: Record<string, CommandNode> = {
         description: "Show whether auto-park is enabled + worktree bindings",
         module: "./commands/parking-lot.ts",
         fn: "statusCommand",
+        args: [],
       },
       enable: {
         description: "Turn on auto-park",
         module: "./commands/parking-lot.ts",
         fn: "enableCommand",
+        args: [],
       },
       disable: {
         description: "Turn off auto-park (daemon scans become no-ops)",
         module: "./commands/parking-lot.ts",
         fn: "disableCommand",
+        args: [],
       },
       scan: {
         description: "Run the park check immediately against the live cache",
         module: "./commands/parking-lot.ts",
         fn: "scanCommand",
+        args: [],
       },
       this: {
         description: "Park the current worktree now (manual override; ignores enabled flag)",
         module: "./commands/parking-lot.ts",
         fn: "parkThisCommand",
         context: "worktree",
+        args: [],
       },
       pick: {
         description: "Pick worktrees in this repo to park (multi-select)",
@@ -482,6 +499,7 @@ export const TREE: Record<string, CommandNode> = {
         fn: "parkPickCommand",
         context: "repo",
         requiresTTY: true,
+        args: [],
       },
     },
   },
@@ -494,6 +512,11 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/worktree.ts",
         fn: "worktreeEach",
         context: "repo",
+        args: [
+          { name: "All", flag: "--all", type: "boolean", default: false, hint: "Run in every worktree (mutually exclusive with --parked)" },
+          { name: "Parked", flag: "--parked", type: "boolean", default: false, hint: "Run only in parked worktrees" },
+          { name: "Command", type: "text", placeholder: "git status", hint: "Command to run in each selected worktree; omit both flags to pick interactively" },
+        ],
       },
     },
   },
