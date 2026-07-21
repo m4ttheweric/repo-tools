@@ -30,7 +30,10 @@ if [ ! -f build/index.html ]; then
   exit 1
 fi
 
-if ! command -v wrangler >/dev/null 2>&1 && ! bunx --bun wrangler --version >/dev/null 2>&1; then
+# Run wrangler on the Node runtime, not Bun's ... `bunx --bun wrangler pages
+# deploy` silently uploads nothing (it bails right after fetching the project).
+WRANGLER="bunx wrangler"
+if ! command -v wrangler >/dev/null 2>&1 && ! $WRANGLER --version >/dev/null 2>&1; then
   echo "error: wrangler not found. Install it (bun add -g wrangler) or run via bunx." >&2
   exit 1
 fi
@@ -41,5 +44,5 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
 fi
 
 echo "==> Deploying build/ to Cloudflare Pages project '$PROJECT'"
-bunx --bun wrangler pages deploy build --project-name "$PROJECT" --branch main
+$WRANGLER pages deploy build --project-name "$PROJECT" --branch main
 echo "==> Deployed. If DNS is pointed at the project, rt.cool is live."
