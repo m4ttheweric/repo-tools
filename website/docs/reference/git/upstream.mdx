@@ -12,8 +12,15 @@ Fix branch upstream to track origin/&lt;branch&gt;
 ## Usage
 
 ```bash
-rt git upstream
+rt git upstream [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--remote` | text |  | Remote to set the upstream to |
+| [`--dry-run`](/guides/common-flags) | boolean | `false` | Show what would change without applying it |
 
 _See code: [commands/git/push.ts › upstreamCommand](https://github.com/m4ttheweric/repo-tools/blob/main/commands/git/push.ts)_
 
