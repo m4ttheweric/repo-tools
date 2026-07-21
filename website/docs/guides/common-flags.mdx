@@ -1,0 +1,36 @@
+---
+sidebar_position: 1
+title: Common flags
+---
+
+# Common flags
+
+A handful of flags show up across many `rt` commands rather than being specific to one. This page is the single place that documents them; command reference pages link back here instead of repeating the explanation on every row.
+
+## `--json`
+
+Emit machine-readable output instead of the interactive TUI. Commands that support scripting or agent callers (for example `rt sync`) honor `--json`: when a command like `rt sync` hits a conflict it can't resolve, `--json` makes it print a deterministic JSON "conflict bundle" describing the branch, target, and unresolved files, then exit with status `3`, leaving the rebase paused rather than prompting interactively. `--json` always wins over the agent-escalation flags below, because a scripted caller needs a predictable contract, not a prompt.
+
+## `--dry-run`
+
+Show what a command *would* do without changing anything. On `rt sync` and `rt git rebase`, this prints the fetch/reset/rebase/push steps that would run, but skips the actual reset, rebase, and push.
+
+## `--repo <name>`
+
+Pre-select a repo instead of resolving it from the current working directory. Commands whose context is a worktree (they normally resolve "which repo/worktree am I in" from `cwd`, or show a repo picker) accept `--repo <name>` to skip that resolution and jump straight to `<name>`'s worktree picker (or directly into its one worktree, if it only has one). For example, `rt branch switch --repo <name>` resolves `<name>` and jumps to its worktree picker instead of resolving the repo from `cwd`.
+
+Note that `rt cd --repo` is a different, unrelated flag: `rt cd` isn't a worktree-context command, so the generic `--repo <name>` mechanism above doesn't apply to it. It parses its own boolean `--repo` (no value) that means "show the all-repos picker instead of the current directory's repo," and it happens to share a name with the flag described here.
+
+## The agent-escalation trio: `--agent` / `--no-agent`
+
+`rt sync` and `rt git rebase` can hit conflicts they can't auto-resolve. By default (interactively, on a TTY, without `--json`), rt pauses the rebase and offers a choice: abort, hand the conflict off to a Claude agent running in a herdr pane, or leave it paused for you to resolve by hand.
+
+- **`--agent`** skips that prompt and goes straight to the agent-handoff path. If herdr isn't reachable, rt says so and falls back to the interactive prompt rather than failing silently.
+- **`--no-agent`** disables escalation entirely: on conflict, rt aborts the rebase and exits `1`, exactly like it did before agent escalation existed.
+- **Escalation requires a TTY.** Off a TTY (for example in CI) without `--json`, rt always aborts on conflict, whether or not `--agent`/`--no-agent` was passed, since there's no one to prompt and no JSON contract requested.
+
+`--json` takes priority over both: if `--json` is present, rt always emits the conflict bundle and exits `3`, regardless of `--agent`/`--no-agent`.
+
+## Which commands honor these
+
+Not every command accepts every flag above; each command's own reference page lists the flags it actually parses. `--dry-run`, `--json`, `--agent`, and `--no-agent` are used by `rt sync` and `rt git rebase` (the two commands that run rebases and can hit conflicts). `--repo <name>` is used by worktree-context commands, such as `rt branch switch` and `rt commit`. (`rt cd --repo` is the unrelated, cd-specific boolean flag described above, not this one.)

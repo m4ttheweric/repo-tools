@@ -12,8 +12,14 @@ Show daemon logs
 ## Usage
 
 ```bash
-rt daemon logs
+rt daemon logs [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--terminal` | boolean | `false` | Tail logs in terminal via lnav or pino-pretty instead of opening the web viewer (alias -t) |
 
 _See code: [commands/daemon.ts › showLogs](https://github.com/m4ttheweric/repo-tools/blob/main/commands/daemon.ts)_
 

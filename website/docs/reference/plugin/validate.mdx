@@ -12,8 +12,14 @@ Deep-validate installed plugins
 ## Usage
 
 ```bash
-rt plugin validate
+rt plugin validate <plugin>
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `<plugin>` | text |  | Validate only this plugin by directory name; omit to validate all installed plugins |
 
 _See code: [commands/plugin.ts › runValidate](https://github.com/m4ttheweric/repo-tools/blob/main/commands/plugin.ts)_
 

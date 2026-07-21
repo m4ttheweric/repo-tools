@@ -12,8 +12,16 @@ Push current branch to origin/&lt;branch&gt;, fixing wrong upstream
 ## Usage
 
 ```bash
-rt git push
+rt git push [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--remote` | text |  | Remote to push to |
+| [`--dry-run`](/guides/common-flags) | boolean | `false` | Show the git command without running it |
+| `--no-verify` | boolean | `false` | Skip pre-push hooks |
 
 ## Subcommands
 

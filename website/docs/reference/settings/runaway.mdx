@@ -12,8 +12,15 @@ Configure runaway process detection thresholds
 ## Usage
 
 ```bash
-rt settings runaway
+rt settings runaway <field> <value>
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `<field>` | select |  | Omit both to show current thresholds |
+| `<value>` | text |  | Numeric value for the chosen field |
 
 _See code: [commands/settings.ts › configureRunaway](https://github.com/m4ttheweric/repo-tools/blob/main/commands/settings.ts)_
 

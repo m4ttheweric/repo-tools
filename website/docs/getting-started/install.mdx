@@ -1,0 +1,47 @@
+---
+sidebar_position: 1
+title: Install
+---
+
+# Install
+
+```bash
+brew install m4ttheweric/tap/rt
+rt verify                  # completes first-run setup, then verifies everything
+```
+
+[`rt verify`](/reference/verify) does double duty. On first run it performs the setup that installs the tray app, daemon, editor extensions, and shell integration, and on every subsequent run it health-checks each of those pieces so you can confirm the install is still in good shape.
+
+Then configure your API tokens:
+
+```bash
+rt settings linear token   # Linear API key (for ticket lookup)
+rt settings gitlab token   # GitLab PAT (for MR status)
+```
+
+See [rt settings linear token](/reference/settings/linear/token) and [rt settings gitlab token](/reference/settings/gitlab/token) for details.
+
+For detailed diagnostics at any time:
+
+```bash
+rt verify
+```
+
+## What Gets Installed
+
+| Component | Description |
+|---|---|
+| `rt` binary | Standalone CLI on your PATH |
+| `rt-tray.app` | Menu bar app... daemon health, notifications, auto-updates |
+| `rt-context` extension | VS Code/Cursor... branch + ticket in status bar |
+| Background daemon | Caches MR/branch data, scans ports, guards git hooks |
+| `fzf` + `tmux` | Required dependencies (installed automatically) |
+| Shell alias | `rtcd`... fast worktree directory switching |
+
+## Upgrade
+
+```bash
+rt update
+```
+
+The tray app checks for new releases automatically and, when one is available, prompts you to run [`rt update`](/reference/update) from your terminal. It never runs the upgrade itself. `rt update` also re-runs the post-install setup, so the tray app, daemon, and editor extensions are refreshed in a single step.

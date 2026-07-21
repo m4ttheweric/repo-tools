@@ -12,8 +12,15 @@ Verify an rt installation end-to-end (run after brew install)
 ## Usage
 
 ```bash
-rt verify
+rt verify [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--ci` | boolean | `false` | Minimal, no-color output for CI logs |
+| [`--json`](/guides/common-flags) | boolean | `false` | Machine-readable JSON output |
 
 _See code: [commands/verify.ts › runVerify](https://github.com/m4ttheweric/repo-tools/blob/main/commands/verify.ts)_
 

@@ -12,8 +12,16 @@ Push with --force-with-lease (after rebase/amend)
 ## Usage
 
 ```bash
-rt git push force
+rt git push force [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--remote` | text |  | Remote to push to |
+| [`--dry-run`](/guides/common-flags) | boolean | `false` | Show the git command without running it |
+| `--no-verify` | boolean | `false` | Skip pre-push hooks |
 
 _See code: [commands/git/push.ts › forcePushCommand](https://github.com/m4ttheweric/repo-tools/blob/main/commands/git/push.ts)_
 

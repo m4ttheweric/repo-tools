@@ -12,8 +12,16 @@ Draft an MR description with an agent (streams to stdout)
 ## Usage
 
 ```bash
-rt mr describe
+rt mr describe [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--target` | text |  | Target branch to diff against |
+| `--inline` | text |  | Extra inline guidance appended to the prompt |
+| `--debug` | boolean | `false` | Print the assembled prompt instead of calling the agent |
 
 _See code: [commands/mr.ts › describeCommand](https://github.com/m4ttheweric/repo-tools/blob/main/commands/mr.ts)_
 

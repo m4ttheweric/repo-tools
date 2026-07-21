@@ -12,8 +12,18 @@ Pull from origin (mirror of GitHub Desktop's Pull button)
 ## Usage
 
 ```bash
-rt git pull
+rt git pull [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--remote` | text |  | Remote to pull from |
+| [`--dry-run`](/guides/common-flags) | boolean | `false` | Show the git command without running it |
+| `--no-verify` | boolean | `false` | Skip pre-pull hooks |
+| `--rebase` | boolean | `false` | Force rebase instead of merge, overriding pull.rebase config |
+| `--no-rebase` | boolean | `false` | Force merge instead of rebase, overriding pull.rebase config |
 
 _See code: [commands/git/pull.ts › pullCommand](https://github.com/m4ttheweric/repo-tools/blob/main/commands/git/pull.ts)_
 

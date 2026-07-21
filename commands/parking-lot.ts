@@ -29,7 +29,7 @@ import {
 } from "../lib/parking-lot-config.ts";
 import { describeRepoBindings, isParkable, park } from "../lib/daemon/parking-lot.ts";
 import { daemonQuery, lastQueryTimedOut } from "../lib/daemon-client.ts";
-import { getRepoIdentity } from "../lib/repo.ts";
+import { getRepoIdentity, requireRepoIdentity } from "../lib/repo.ts";
 import { getCurrentBranch } from "../lib/git-ops.ts";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -46,6 +46,38 @@ function dot(enabled: boolean): string {
   return enabled ? `${green}●${reset}` : `${dim}○${reset}`;
 }
 
+/** Render one repo's parking-lot bindings (auto-park slot table). */
+function printRepoBindings(repoName: string, repoPath: string): void {
+  console.log(`  ${bold}${repoName}${reset} ${dim}${repoPath}${reset}`);
+
+  if (!existsSync(repoPath)) {
+    console.log(`    ${yellow}⚠${reset} path missing on disk\n`);
+    return;
+  }
+
+  const bindings = describeRepoBindings(repoName, repoPath).sort((a, b) => a.index - b.index);
+  if (bindings.length === 0) {
+    console.log(`    ${dim}no worktrees${reset}\n`);
+    return;
+  }
+
+  const widest    = Math.max(...bindings.map(b => String(b.index).length));
+  const repoDir   = repoPath.replace(/\/[^/]+\/?$/, "");
+  const wtNames   = bindings.map(b => b.path.startsWith(repoDir + "/") ? b.path.slice(repoDir.length + 1) : b.path);
+  const widestWt  = Math.max(...wtNames.map(s => s.length));
+  for (let i = 0; i < bindings.length; i++) {
+    const b      = bindings[i]!;
+    const idx    = String(b.index).padStart(widest);
+    const wt     = wtNames[i]!.padEnd(widestWt);
+    const slot   = `parking-lot/${b.index}`;
+    const status = b.branch === null     ? `${dim}(detached)${reset}`
+                 : b.branch === slot     ? `${green}parked${reset}`
+                 :                         b.branch;
+    console.log(`    ${cyan}park/${idx}${reset}  ${dim}${wt}${reset}  ${status}`);
+  }
+  console.log("");
+}
+
 // ─── Commands ────────────────────────────────────────────────────────────────
 
 export async function statusCommand(): Promise<void> {
@@ -56,48 +88,17 @@ export async function statusCommand(): Promise<void> {
   console.log(`    ${dim}config: ${PARKING_LOT_CONFIG_PATH}${reset}`);
   console.log("");
 
-  const allRepoNames = Object.keys(repos);
-  if (allRepoNames.length === 0) {
+  if (Object.keys(repos).length === 0) {
     console.log(`  ${dim}no repos tracked — register one with rt from inside a repo${reset}\n`);
     return;
   }
 
-  // Scope to the current repo when invoked from inside one. Outside a repo,
-  // fall through and show every tracked repo.
-  const identity = getRepoIdentity();
-  const repoNames = identity && repos[identity.repoName] ? [identity.repoName] : allRepoNames;
-
-  for (const repoName of repoNames) {
-    const repoPath = repos[repoName]!;
-    console.log(`  ${bold}${repoName}${reset} ${dim}${repoPath}${reset}`);
-
-    if (!existsSync(repoPath)) {
-      console.log(`    ${yellow}⚠${reset} path missing on disk\n`);
-      continue;
-    }
-
-    const bindings = describeRepoBindings(repoName, repoPath);
-    if (bindings.length === 0) {
-      console.log(`    ${dim}no worktrees${reset}\n`);
-      continue;
-    }
-
-    const widest    = Math.max(...bindings.map(b => String(b.index).length));
-    const repoDir   = repoPath.replace(/\/[^/]+\/?$/, "");
-    const wtNames   = bindings.map(b => b.path.startsWith(repoDir + "/") ? b.path.slice(repoDir.length + 1) : b.path);
-    const widestWt  = Math.max(...wtNames.map(s => s.length));
-    for (let i = 0; i < bindings.length; i++) {
-      const b      = bindings[i]!;
-      const idx    = String(b.index).padStart(widest);
-      const wt     = wtNames[i]!.padEnd(widestWt);
-      const slot   = `parking-lot/${b.index}`;
-      const status = b.branch === null     ? `${dim}(detached)${reset}`
-                   : b.branch === slot     ? `${green}parked${reset}`
-                   :                         b.branch;
-      console.log(`    ${cyan}park/${idx}${reset}  ${dim}${wt}${reset}  ${status}`);
-    }
-    console.log("");
-  }
+  // Scope to a single repo rather than dumping every tracked repo at once:
+  // the current repo when invoked from inside one, otherwise the shared repo
+  // picker (auto-selects when only one repo is known).
+  const identity = await requireRepoIdentity("park status");
+  const repoPath = repos[identity.repoName] ?? identity.repoRoot;
+  printRepoBindings(identity.repoName, repoPath);
 }
 
 export async function enableCommand(): Promise<void> {
@@ -236,18 +237,12 @@ export async function parkThisCommand(): Promise<void> {
 }
 
 export async function parkPickCommand(): Promise<void> {
-  const identity = getRepoIdentity();
-  if (!identity) {
-    console.log(`  ${red}✗${reset} not in a git repo\n`);
-    process.exit(1);
-  }
+  // Scope to a repo: the current one when inside it, otherwise the shared
+  // repo picker (auto-selects when only one repo is known).
+  const identity = await requireRepoIdentity("park pick");
 
   const repos = loadRepos();
-  const repoPath = repos[identity.repoName];
-  if (!repoPath) {
-    console.log(`  ${red}✗${reset} repo "${identity.repoName}" not registered in ~/.rt/repos.json\n`);
-    process.exit(1);
-  }
+  const repoPath = repos[identity.repoName] ?? identity.repoRoot;
 
   const bindings = describeRepoBindings(identity.repoName, repoPath);
 
