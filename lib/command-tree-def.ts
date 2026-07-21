@@ -291,7 +291,7 @@ export const TREE: Record<string, CommandNode> = {
     context: "repo",
     args: [
       { name: "Target", type: "text", placeholder: "off | on | status | pre-push", hint: "Global action (off, on, status) or a specific hook name to target; omit for the interactive picker" },
-      { name: "State", type: "text", placeholder: "on | off", hint: "on/off state to apply when Target is a specific hook name" },
+      { name: "State", type: "select", hint: "on/off state to apply when Target is a specific hook name", options: [{ value: "on", label: "on" }, { value: "off", label: "off" }] },
     ],
   },
 
