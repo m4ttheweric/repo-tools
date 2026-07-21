@@ -3,11 +3,13 @@
  * Deterministic, no LLM, no handler imports. Usage:
  *   bun scripts/gen-docs.ts [--dry-run] [--out <dir>]
  */
-import { mkdirSync, writeFileSync, existsSync, rmSync, readdirSync } from "fs";
+import { mkdirSync, writeFileSync, existsSync } from "fs";
 import { dirname, join } from "path";
 import { TREE } from "../lib/command-tree-def.ts";
 import { walkTree } from "./lib/docs-walk.ts";
 import { renderPage, type RenderOpts } from "./lib/docs-render.ts";
+import { cleanGenerated } from "./lib/docs-clean.ts";
+import { HAND_WRITTEN_REFERENCE } from "./lib/docs-hand.ts";
 
 const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
@@ -25,13 +27,8 @@ const opts: RenderOpts = {
 
 const specs = walkTree(TREE);
 
-// Clean previously generated pages (never touch _partials/).
-if (!dryRun && existsSync(OUT)) {
-  for (const name of readdirSync(OUT)) {
-    if (name === "_partials") continue;
-    rmSync(join(OUT, name), { recursive: true, force: true });
-  }
-}
+// Clean previously generated pages (never touch hand-written files).
+if (!dryRun) cleanGenerated(OUT, HAND_WRITTEN_REFERENCE);
 
 let written = 0;
 for (const spec of specs) {

@@ -8,6 +8,7 @@ import { join } from "path";
 import { spawnSync } from "child_process";
 import { TREE } from "../lib/command-tree-def.ts";
 import { coverageGaps } from "./lib/docs-coverage.ts";
+import { HAND_WRITTEN_REFERENCE } from "./lib/docs-hand.ts";
 
 const COMMITTED = "website/docs/reference";
 const tmp = mkdtempSync(join(tmpdir(), "rt-docs-"));
@@ -20,7 +21,9 @@ if (gen.status !== 0) {
 }
 
 // Diff temp vs committed. `diff -r` exits non-zero on any difference.
-const diff = spawnSync("diff", ["-r", "-u", COMMITTED, tmp], { encoding: "utf8" });
+// Hand-written files (never generated) are excluded from the comparison.
+const excludes = HAND_WRITTEN_REFERENCE.flatMap((n) => ["--exclude", n]);
+const diff = spawnSync("diff", ["-r", "-u", ...excludes, COMMITTED, tmp], { encoding: "utf8" });
 rmSync(tmp, { recursive: true, force: true });
 
 const gaps = coverageGaps(TREE);
