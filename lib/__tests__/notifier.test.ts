@@ -57,6 +57,27 @@ function mrEntry(mr: Record<string, unknown>) {
   return { ticket: null, linearId: "", fetchedAt: 0, mr } as any;
 }
 
+describe("author gate", () => {
+  const authored = (authorId: string) =>
+    mrEntry({ author: { id: authorId }, pipeline: { status: "failed" } });
+
+  test("recognizes an MR authored by the current user (scoped id)", () => {
+    expect(__test__.isSelfAuthored(authored("gitlab:123"), 123)).toBe(true);
+  });
+
+  test("suppresses an MR authored by someone else", () => {
+    expect(__test__.isSelfAuthored(authored("gitlab:456"), 123)).toBe(false);
+  });
+
+  test("strict: suppresses when current user id is unresolved", () => {
+    expect(__test__.isSelfAuthored(authored("gitlab:123"), null)).toBe(false);
+  });
+
+  test("suppresses when the MR carries no author", () => {
+    expect(__test__.isSelfAuthored(mrEntry({ pipeline: { status: "failed" } }), 123)).toBe(false);
+  });
+});
+
 describe("snapshotBranch readiness", () => {
   test("is NOT ready when GitLab is transiently re-checking an unreviewed MR", () => {
     // GitLab parks MRs in `unchecked`/`checking` on every push, pipeline event,

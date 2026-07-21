@@ -77,10 +77,18 @@ function collectNewNotes(
   prev: Set<number>,
   nextDiscussions: Discussion[],
   currentUserId: number | null,
+  isMrAuthor: boolean,
 ): NewCommentNote[] {
   const selfAuthorId = currentUserId !== null ? `gitlab:${currentUserId}` : null;
   const out: NewCommentNote[] = [];
   for (const d of nextDiscussions) {
+    // Only surface comments on MRs I authored, or in threads I'm a participant
+    // in (I've posted at least one note). A teammate's MR pulled down for
+    // review is in this cache too — its unrelated threads must stay silent.
+    const involved = selfAuthorId
+      ? d.notes.some((n) => n.author.id === selfAuthorId)
+      : false;
+    if (!isMrAuthor && !involved) continue;
     for (const n of d.notes) {
       if (n.system) continue;
       if (prev.has(n.id)) continue;
@@ -141,9 +149,13 @@ export async function refreshDiscussions(
     fetchedAt,
   });
 
+  const currentUserId = getCurrentUserId();
+  const selfAuthorId = currentUserId !== null ? `gitlab:${currentUserId}` : null;
+  const isMrAuthor = selfAuthorId !== null && hit.entry.mr?.author?.id === selfAuthorId;
+
   const newNotes = isFirstFetch
     ? []
-    : collectNewNotes(prevIds, detail.discussions, getCurrentUserId());
+    : collectNewNotes(prevIds, detail.discussions, currentUserId, isMrAuthor);
 
   if (newNotes.length > 0) {
     const mrTitle = hit.entry.mr?.title ?? `!${iid}`;
