@@ -12,8 +12,22 @@ Open a bare MR on the current branch via glab
 ## Usage
 
 ```bash
-rt mr open
+rt mr open [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--target` | text |  | Target branch for the MR (defaults to config or repo default) |
+| `--title` | text |  | MR title (defaults to the last commit subject) |
+| `--draft` | boolean | `false` | Open as a draft MR |
+| `--no-draft` | boolean | `false` | Force non-draft even if config defaults to draft |
+| `--description` | text |  | Inline description body |
+| `--description-file` | text |  | Read description from a file (- for stdin) |
+| `--fill` | boolean | `false` | Let glab fill the description from commits |
+| [`--dry-run`](/guides/common-flags) | boolean | `false` | Preview the glab command without creating the MR |
+| `--web` | boolean | `false` | Open the new MR in the browser |
 
 _See code: [commands/mr.ts › openCommand](https://github.com/m4ttheweric/repo-tools/blob/main/commands/mr.ts)_
 
