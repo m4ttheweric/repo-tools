@@ -15,10 +15,12 @@ The daemon is a long-lived process (managed by launchd) that:
 - **Scans ports.** It scans listening ports roughly every 30 seconds, so `rt port` can show you what's running across your repos with zero configuration.
 - **Guards git hooks.** For repos where rt manages hooks, it watches each repo's `.git/config` and re-applies rt's hooks shim path if something else (another tool running `git config`) clobbers it.
 - **Answers status polls.** CLI commands and the tray app both query the daemon over a local Unix socket (and a REST/WebSocket API) for cached data and health.
+- **Kills a worktree's workload on park.** When you park a worktree (its feature is done), the daemon finds the dev servers, watchers, and compilers rooted in that worktree, SIGTERMs them, and escalates any survivor to SIGKILL after about 5 seconds. It deliberately spares AI agent sessions (Claude, Codex, and the like) and everything they spawned, plus shells and `.app` bundle processes, since those aren't workload.
+- **Scans for and notifies on runaway processes.** Roughly every 10 seconds it scans system processes for anything rooted in a tracked repo, tracks a rolling CPU sample window per process, and notifies once a process has sustained high CPU for long enough (5 minutes above 80% by default, after a 2-minute grace period). AI agent sessions are excluded from this too.
 
 The tray app (menu-bar icon) shows the daemon's health at a glance, polling its status so you can tell at a look whether it's up.
 
-The daemon does not manage or supervise other processes, run scripts, or provide tunnels. It only does the caching, scanning, and hook-guarding described above.
+It does not run or supervise your dev servers for you the way the old managed-process feature did, and it does not provide tunnels: there's no "start this script and keep it alive" concept. The process-related behaviors above are reactive (park-time cleanup) and observational (runaway detection), not a general-purpose process supervisor.
 
 ## Installing, starting, and stopping
 
