@@ -5,4 +5,42 @@ title: The daemon
 
 # The daemon
 
-Filled in Task 4/5.
+`rt` runs a small background daemon that keeps a few things warm so interactive commands feel instant instead of shelling out to GitHub, GitLab, and `git` on every keystroke.
+
+## What it does today
+
+The daemon is a long-lived process (managed by launchd) that:
+
+- **Caches MR/branch data.** It refreshes the branch and merge-request cache for every registered repo roughly every 5 minutes, and can be nudged to refresh sooner. Commands like `rt status` read this cache instead of re-fetching from GitLab/Linear on every invocation.
+- **Scans ports.** It scans listening ports roughly every 30 seconds, so `rt port` can show you what's running across your repos with zero configuration.
+- **Guards git hooks.** For repos where rt manages hooks, it watches each repo's `.git/config` and re-applies rt's hooks shim path if something else (another tool running `git config`) clobbers it.
+- **Answers status polls.** CLI commands and the tray app both query the daemon over a local Unix socket (and a REST/WebSocket API) for cached data and health.
+
+The tray app (menu-bar icon) shows the daemon's health at a glance, polling its status so you can tell at a look whether it's up.
+
+The daemon does not manage or supervise other processes, run scripts, or provide tunnels. It only does the caching, scanning, and hook-guarding described above.
+
+## Installing, starting, and stopping
+
+```bash
+rt daemon install         # install and start the daemon (launchd or background process)
+rt daemon uninstall       # stop and remove the daemon
+rt daemon start           # start the daemon
+rt daemon stop            # stop the daemon
+rt daemon restart         # restart the daemon
+```
+
+`rt verify` (the command recommended after a fresh install) also completes daemon setup transparently on first run, so you rarely need to run `rt daemon install` yourself.
+
+## Checking health and logs
+
+```bash
+rt daemon status          # pid, uptime, cached repos, cached ports
+rt daemon logs            # open the log viewer
+```
+
+`rt daemon status` reports basic liveness: pid, uptime, how many repos are watched, how many cache entries and ports are cached, and how stale the port cache is.
+
+`rt daemon logs` opens a browser-based log viewer by default; pass `--terminal` (or `-t`) for a live tail in your terminal instead. All daemon (and other rt surface) logs live under `~/.rt/logs/`; see the [logging guide](/guides/logging) for the file convention and how the viewer discovers them.
+
+See the full command reference: [`rt daemon`](/reference/daemon), [`rt daemon status`](/reference/daemon/status), [`rt daemon logs`](/reference/daemon/logs), [`rt daemon install`](/reference/daemon/install), [`rt daemon start`](/reference/daemon/start), [`rt daemon stop`](/reference/daemon/stop), [`rt daemon restart`](/reference/daemon/restart), and [`rt daemon uninstall`](/reference/daemon/uninstall).
