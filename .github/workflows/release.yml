@@ -40,7 +40,7 @@ jobs:
             echo "available=true" >> $GITHUB_OUTPUT
           else
             echo "available=false" >> $GITHUB_OUTPUT
-            echo "::warning::Developer ID secrets not configured — falling back to ad-hoc signing (TCC grants will be invalidated on every release)"
+            echo "::warning::Developer ID secrets not configured, falling back to ad-hoc signing (TCC grants will be invalidated on every release)"
           fi
 
       - name: Import Developer ID certificate
@@ -90,7 +90,7 @@ jobs:
         run: bun build --compile --target=bun-darwin-x64 ./cli.ts --outfile rt-x64 --define RT_VERSION='"${{ github.ref_name }}"'
 
       # ── Sign rt binaries (must run BEFORE tray build so the embedded daemon
-      # carries Bun JIT entitlements baked in by codesign — re-signing later
+      # carries Bun JIT entitlements baked in by codesign, re-signing later
       # would invalidate the parent bundle's seal). ───────────────────────────
       - name: Sign rt binaries
         run: |
@@ -167,7 +167,7 @@ jobs:
             echo "available=true" >> $GITHUB_OUTPUT
           else
             echo "available=false" >> $GITHUB_OUTPUT
-            echo "::warning::Notarization secrets not set — rt-tray.app will trigger Gatekeeper warning on first launch"
+            echo "::warning::Notarization secrets not set, rt-tray.app will trigger Gatekeeper warning on first launch"
           fi
 
       - name: Notarize and staple rt-tray.app
@@ -207,10 +207,16 @@ jobs:
         run: security delete-keychain "$KEYCHAIN_PATH" || true
 
       # ── Create GitHub Release ────────────────────────────────────────────────
+      # RELEASE_NOTES.md is committed by the rt-release skill at the tagged
+      # commit and is the single source of the release body. The guard keeps a
+      # hand-pushed tag (no skill) from failing the publish.
+      - name: Ensure release notes exist
+        run: '[ -f RELEASE_NOTES.md ] || echo "Release ${GITHUB_REF_NAME}." > RELEASE_NOTES.md'
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
           files: |
             rt-darwin-arm64-*.tar.gz
             rt-darwin-x64-*.tar.gz
@@ -230,7 +236,7 @@ jobs:
 
           cat > Formula/rt.rb << FORMULA
           class Rt < Formula
-            desc "Developer CLI — branch management, service runner, daemon, notifications"
+            desc "Developer CLI for branch management, service runner, daemon, and notifications"
             homepage "https://github.com/m4ttheweric/repo-tools"
             version "${VERSION_NUM}"
             license "MIT"
