@@ -1,6 +1,6 @@
 // lib/command-tree-def.ts
 /**
- * The built-in rt command tree — the single source of truth for command
+ * The built-in rt command tree: the single source of truth for command
  * names, descriptions, args, and structure. Kept in its own side-effect-free
  * module so both cli.ts (runtime dispatch) and scripts/gen-docs.ts (docs
  * generation) can import it without triggering the CLI entry logic.
@@ -70,7 +70,7 @@ export const TREE: Record<string, CommandNode> = {
         args: [
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Show what would happen without doing it" },
           { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "On conflict, emit a JSON conflict bundle and exit 3 instead of prompting" },
-          { name: "Agent", flag: "--agent", type: "boolean", default: false, hint: "On conflict, skip the prompt and hand off straight to a Claude agent in herdr" },
+          { name: "Agent", flag: "--agent", type: "boolean", default: false, hint: "On conflict, skip the prompt and hand off straight to a Claude agent in herdr (requires a TTY)" },
           { name: "No agent", flag: "--no-agent", type: "boolean", default: false, hint: "On conflict, never offer agent escalation; abort instead" },
         ],
         subcommands: {
@@ -83,7 +83,7 @@ export const TREE: Record<string, CommandNode> = {
               { name: "Branch", type: "text", placeholder: "main", hint: "Branch to rebase onto" },
               { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Show what would happen without doing it" },
               { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "On conflict, emit a JSON conflict bundle and exit 3 instead of prompting" },
-              { name: "Agent", flag: "--agent", type: "boolean", default: false, hint: "On conflict, skip the prompt and hand off straight to a Claude agent in herdr" },
+              { name: "Agent", flag: "--agent", type: "boolean", default: false, hint: "On conflict, skip the prompt and hand off straight to a Claude agent in herdr (requires a TTY)" },
               { name: "No agent", flag: "--no-agent", type: "boolean", default: false, hint: "On conflict, never offer agent escalation; abort instead" },
             ],
           },
@@ -246,7 +246,7 @@ export const TREE: Record<string, CommandNode> = {
     args: [
       { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Show what would happen without doing it" },
       { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "On conflict, emit a JSON conflict bundle and exit 3 instead of prompting" },
-      { name: "Agent", flag: "--agent", type: "boolean", default: false, hint: "On conflict, skip the prompt and hand off straight to a Claude agent in herdr" },
+      { name: "Agent", flag: "--agent", type: "boolean", default: false, hint: "On conflict, skip the prompt and hand off straight to a Claude agent in herdr (requires a TTY)" },
       { name: "No agent", flag: "--no-agent", type: "boolean", default: false, hint: "On conflict, never offer agent escalation; abort instead" },
     ],
     subcommands: {
@@ -262,7 +262,7 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
-  // Aliases — rt branch and rt commit still work as before
+  // Aliases: rt branch and rt commit still work as before
   branch: {
     description: "Branch management (switch, create, rename, clean)",
     subcommands: branchSubcommands,
@@ -331,10 +331,11 @@ export const TREE: Record<string, CommandNode> = {
     description: "StrongDM connections: pick, connect, verify",
     subcommands: {
       connect: {
-        description: "Pick a connection and connect (or connect <key> directly)",
+        description: "Pick a connection and connect",
         module: "./commands/sdm.ts",
         fn: "connectCmd",
         args: [
+          { name: "Connection key", type: "text", placeholder: "e.g. prod-db", hint: "Connect to this connection directly; omit for the interactive picker" },
           { name: "Duration", flag: "--duration", type: "text", placeholder: "8h", hint: "How long to keep the connection open" },
           { name: "Reason", flag: "--reason", type: "text", placeholder: "e.g. debugging ticket", hint: "Why you need this connection" },
         ],
@@ -346,7 +347,7 @@ export const TREE: Record<string, CommandNode> = {
         args: [],
       },
       login: {
-        description: "Log in to StrongDM (browser popup; --manual for terminal, --visible to watch)",
+        description: "Log in to StrongDM (browser popup by default)",
         module: "./commands/sdm.ts",
         fn: "loginCmd",
         args: [

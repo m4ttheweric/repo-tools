@@ -22,7 +22,7 @@ rt git rebase onto <branch> [flags]
 | `<branch>` | text |  | Branch to rebase onto |
 | [`--dry-run`](/guides/common-flags) | boolean | `false` | Show what would happen without doing it |
 | [`--json`](/guides/common-flags) | boolean | `false` | On conflict, emit a JSON conflict bundle and exit 3 instead of prompting |
-| [`--agent`](/guides/common-flags) | boolean | `false` | On conflict, skip the prompt and hand off straight to a Claude agent in herdr |
+| [`--agent`](/guides/common-flags) | boolean | `false` | On conflict, skip the prompt and hand off straight to a Claude agent in herdr (requires a TTY) |
 | [`--no-agent`](/guides/common-flags) | boolean | `false` | On conflict, never offer agent escalation; abort instead |
 
 _See code: [commands/git/rebase.ts › ontoCommand](https://github.com/m4ttheweric/repo-tools/blob/main/commands/git/rebase.ts)_
