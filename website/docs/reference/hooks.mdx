@@ -12,8 +12,15 @@ Toggle git hooks on/off (husky)
 ## Usage
 
 ```bash
-rt hooks
+rt hooks <target> <state>
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `<target>` | text |  | Global action (off, on, status) or a specific hook name to target; omit for the interactive picker |
+| `<state>` | select |  | on/off state to apply when Target is a specific hook name |
 
 _See code: [commands/hooks.ts › toggleHooks](https://github.com/m4ttheweric/repo-tools/blob/main/commands/hooks.ts)_
 

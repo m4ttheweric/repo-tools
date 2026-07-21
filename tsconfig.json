@@ -28,5 +28,5 @@
   },
   // apps/* and extensions/* are standalone sub-projects (their own tsconfig,
   // build, and deps); the root project type-checks the rt CLI/daemon only.
-  "exclude": ["apps", "extensions"]
+  "exclude": ["apps", "extensions", "website"]
 }

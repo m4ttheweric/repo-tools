@@ -1,0 +1,45 @@
+---
+sidebar_position: 2
+title: Onboard a repo
+---
+
+# Onboard a repo
+
+There's no explicit "add repo" step. Any git repo with an `origin` remote is picked up automatically the first time you run an rt command inside it:
+
+```bash
+cd ~/code/my-repo
+rt status            # or rt cd, rt branch switch, anything repo-aware
+```
+
+On first invocation rt will:
+
+1. Derive the repo name from `git remote get-url origin`
+2. Register the repo in `~/.rt/repos.json`
+3. Create a data dir at `~/.rt/<repo-name>/`
+4. Start the daemon watching it for MR, branch, and port state
+
+All of this lives under `~/.rt/`, never inside the repo itself. Onboarding never adds files, config, or commits to your project.
+
+If the daemon was already running, the next refresh cycle picks the repo up (MR data refreshes every 5 minutes, port scans every ~30 seconds). From then on [rt status](/reference/status), the runner, ticket lookup, port scanning, and MR notifications all work from anywhere on your machine.
+
+## Optional per-repo config
+
+| Command | When you need it |
+|---|---|
+| [`rt hooks`](/reference/hooks) | Repo uses husky and you want a quick on/off toggle |
+| [`rt workspace sync`](/reference/workspace/sync) | Repo has a `.code-workspace` file you want synced across worktrees |
+| [`rt settings extension`](/reference/settings/extension) | Install the `rt-context` status-bar extension into local editors |
+
+## Global settings that affect every repo
+
+Set these once; they apply to all repos, and are stored under `~/.rt/`, not in any repo:
+
+```bash
+rt settings gitlab token       # required for rt status, MR actions, notifications
+rt settings linear token       # required for ticket lookup in rt status / branch names
+rt settings linear team        # only needed if you use rt branch create to file new tickets
+rt settings notifications      # pick which events fire native macOS notifications
+```
+
+See [rt settings gitlab token](/reference/settings/gitlab/token), [rt settings linear token](/reference/settings/linear/token), [rt settings linear team](/reference/settings/linear/team), and [rt settings notifications](/reference/settings/notifications) for details.

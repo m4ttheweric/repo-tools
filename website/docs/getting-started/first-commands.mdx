@@ -1,0 +1,52 @@
+---
+sidebar_position: 3
+title: First commands
+---
+
+# First commands
+
+Run `rt` with no arguments for an interactive menu. All commands below also support direct invocation:
+
+```bash
+rt <command> [subcommand] [args]
+```
+
+## Navigation
+
+- [`rt cd`](/reference/cd) ... fuzzy worktree/repo directory picker.
+- [`rt code`](/reference/code) ... open a worktree in your preferred editor.
+- `rtcd` ... a shell alias added by install that `cd`s into a picked worktree (wraps `rt cd`).
+
+## Run
+
+- [`rt run`](/reference/run) ... interactive script runner that walks repo, then worktree, then package, then script.
+
+## Status
+
+- [`rt status`](/reference/status) ... live branch dashboard with MR actions, pipeline, and review status.
+- [`rt port`](/reference/port) ... port scanner and killer, daemon-powered and zero-config.
+
+## Branch
+
+- [`rt branch switch`](/reference/branch/switch) ... checkout with automatic stash handling.
+- [`rt branch create`](/reference/branch/create) ... create a branch from a Linear ticket or from scratch.
+- [`rt branch clean`](/reference/branch/clean) ... interactively delete stale branches.
+
+## Sync
+
+- [`rt sync`](/reference/sync) ... rebase the current worktree onto master and push.
+- [`rt sync all`](/reference/sync/all) ... sync every worktree in the repo.
+
+## Git
+
+- [`rt git rebase`](/reference/git/rebase) ... smart rebase onto origin/master with auto-resolve.
+- [`rt git commit`](/reference/git/commit) ... interactive staging and commit with a live diff preview.
+
+## Open
+
+- [`rt open mr`](/reference/open/mr) ... open the current branch's GitLab MR.
+- [`rt open pipeline`](/reference/open/pipeline) ... open GitLab CI pipelines.
+- [`rt open repo`](/reference/open/repo) ... open the repository page.
+- [`rt open ticket`](/reference/open/ticket) ... open the Linear ticket for this branch.
+
+For flags and full detail on any of these, follow the link to its reference page.

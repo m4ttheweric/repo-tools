@@ -12,8 +12,16 @@ Worktree/repo directory picker
 ## Usage
 
 ```bash
-rt cd
+rt cd [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| [`--repo`](/guides/common-flags) | boolean | `false` | Always show the repo picker instead of the current repo's worktree list |
+| `--package` | boolean | `false` | Opt into the monorepo package picker, one level deeper than the worktree root (alias --packages) |
+| `--worktree` | text |  | Jump straight to the worktree whose branch starts with this text |
 
 _See code: [commands/cd.ts › worktreePicker](https://github.com/m4ttheweric/repo-tools/blob/main/commands/cd.ts)_
 

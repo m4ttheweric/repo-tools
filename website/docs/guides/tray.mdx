@@ -1,0 +1,32 @@
+---
+sidebar_position: 6
+title: The tray app
+---
+
+# The tray app
+
+The `rt-tray` menu bar app shows daemon health at a glance and delivers native notifications, so you don't need a terminal open to know something happened.
+
+## The dot
+
+| Dot | Meaning |
+| --- | --- |
+| Green | daemon running normally |
+| Yellow | daemon starting |
+| Orange | pending notifications |
+| Red | daemon not reachable |
+
+## Menu actions
+
+From the tray menu you can:
+
+- restart the daemon
+- stop the daemon
+- toggle launch-at-login
+- check for updates
+
+## Updates
+
+The tray app never self-upgrades. When a newer release is available, it notifies you and prompts you to run `rt update` yourself; it does not download or install anything on your behalf.
+
+See also: the [daemon guide](/guides/daemon) for what the daemon itself does, and [`rt daemon`](/reference/daemon) / [`rt update`](/reference/update) in the command reference.

@@ -7,18 +7,19 @@ sidebar_label: connect
 
 `rt › sdm › connect`
 
-Pick a connection and connect (or connect &lt;key&gt; directly)
+Pick a connection and connect
 
 ## Usage
 
 ```bash
-rt sdm connect [flags]
+rt sdm connect <connection-key> [flags]
 ```
 
 ## Arguments & flags
 
 | Flag / Arg | Type | Default | Description |
 | --- | --- | --- | --- |
+| `<connection-key>` | text |  | Connect to this connection directly; omit for the interactive picker |
 | `--duration` | text |  | How long to keep the connection open |
 | `--reason` | text |  | Why you need this connection |
 

@@ -7,7 +7,7 @@ sidebar_label: rebase
 
 `rt › git › rebase`
 
-Smart rebase onto origin/master with auto-resolve; on conflict, --json/--agent/--no-agent control escalation (--agent needs a TTY and a running herdr)
+Smart rebase onto origin/master with auto-resolve
 
 ## Usage
 
@@ -20,6 +20,9 @@ rt git rebase [flags]
 | Flag / Arg | Type | Default | Description |
 | --- | --- | --- | --- |
 | [`--dry-run`](/guides/common-flags) | boolean | `false` | Show what would happen without doing it |
+| [`--json`](/guides/common-flags) | boolean | `false` | On conflict, emit a JSON conflict bundle and exit 3 instead of prompting |
+| [`--agent`](/guides/common-flags) | boolean | `false` | On conflict, skip the prompt and hand off straight to a Claude agent in herdr (requires a TTY) |
+| [`--no-agent`](/guides/common-flags) | boolean | `false` | On conflict, never offer agent escalation; abort instead |
 
 ## Subcommands
 
