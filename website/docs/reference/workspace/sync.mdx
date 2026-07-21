@@ -12,8 +12,15 @@ Auto-sync workspace file across worktrees
 ## Usage
 
 ```bash
-rt workspace sync
+rt workspace sync [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--status` | boolean | `false` | Show current sync config and watcher state |
+| `--off` | boolean | `false` | Disable syncing and remove the file watcher |
 
 _See code: [commands/workspace.ts › workspaceSyncCommand](https://github.com/m4ttheweric/repo-tools/blob/main/commands/workspace.ts)_
 
