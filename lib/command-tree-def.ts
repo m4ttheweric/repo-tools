@@ -446,6 +446,11 @@ export const TREE: Record<string, CommandNode> = {
     module: "./commands/cd.ts",
     fn: "worktreePicker",
     requiresTTY: true,
+    args: [
+      { name: "Repo picker", flag: "--repo", type: "boolean", default: false, hint: "Always show the repo picker instead of the current repo's worktree list" },
+      { name: "Package picker", flag: "--package", type: "boolean", default: false, hint: "Opt into the monorepo package picker, one level deeper than the worktree root (alias --packages)" },
+      { name: "Worktree", flag: "--worktree", type: "text", placeholder: "feature/my-branch", hint: "Jump straight to the worktree whose branch starts with this text" },
+    ],
   },
 
   nav: {
@@ -453,6 +458,9 @@ export const TREE: Record<string, CommandNode> = {
     module: "./commands/nav.ts",
     fn: "navigate",
     requiresTTY: true,
+    args: [
+      { name: "Path", type: "text", placeholder: ".", hint: "Starting directory; defaults to the current directory" },
+    ],
   },
 
   code: {
@@ -460,6 +468,9 @@ export const TREE: Record<string, CommandNode> = {
     module: "./commands/code.ts",
     fn: "openInEditor",
     requiresTTY: true,
+    args: [
+      { name: "Pick", flag: "--pick", type: "boolean", default: false, hint: "Force the worktree/repo picker instead of using the current repo (alias -p)" },
+    ],
   },
 
   agent: {
@@ -467,6 +478,10 @@ export const TREE: Record<string, CommandNode> = {
     module: "./commands/agent.ts",
     fn: "launchAgent",
     requiresTTY: true,
+    args: [
+      { name: "Here", flag: "--here", type: "boolean", default: false, hint: "Use the exact current directory instead of resolving a repo/worktree (alias -h)" },
+      { name: "Pick", flag: "--pick", type: "boolean", default: false, hint: "Force the repo/worktree picker before launching (alias -p)" },
+    ],
   },
 
   workspace: {
@@ -478,6 +493,10 @@ export const TREE: Record<string, CommandNode> = {
         fn: "workspaceSyncCommand",
         context: "repo",
         requiresTTY: true,
+        args: [
+          { name: "Status", flag: "--status", type: "boolean", default: false, hint: "Show current sync config and watcher state" },
+          { name: "Off", flag: "--off", type: "boolean", default: false, hint: "Disable syncing and remove the file watcher" },
+        ],
       },
     },
   },
@@ -716,16 +735,23 @@ export const TREE: Record<string, CommandNode> = {
         description: "Scaffold a new plugin",
         module: "./commands/plugin.ts",
         fn: "runNew",
+        args: [
+          { name: "Name", type: "text", placeholder: "my-plugin", hint: "Plugin name (kebab-case); omit to be prompted interactively" },
+        ],
       },
       list: {
         description: "List installed plugins",
         module: "./commands/plugin.ts",
         fn: "runList",
+        args: [],
       },
       validate: {
         description: "Deep-validate installed plugins",
         module: "./commands/plugin.ts",
         fn: "runValidate",
+        args: [
+          { name: "Plugin", type: "text", placeholder: "my-plugin", hint: "Validate only this plugin by directory name; omit to validate all installed plugins" },
+        ],
       },
     },
   },

@@ -12,8 +12,15 @@ Launch a CLI coding agent (Claude Code, Cursor, etc.) in a worktree
 ## Usage
 
 ```bash
-rt agent
+rt agent [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--here` | boolean | `false` | Use the exact current directory instead of resolving a repo/worktree (alias -h) |
+| `--pick` | boolean | `false` | Force the repo/worktree picker before launching (alias -p) |
 
 _See code: [commands/agent.ts › launchAgent](https://github.com/m4ttheweric/repo-tools/blob/main/commands/agent.ts)_
 
