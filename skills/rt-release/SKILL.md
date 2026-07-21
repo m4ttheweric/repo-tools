@@ -8,8 +8,9 @@ description: Use when the user says release, cut a release, tag and release, shi
 Push any unpushed commits on main, update the rt.cool docs, generate GitHub
 release notes from the previous tag to HEAD, tag and publish the release,
 then deploy rt.cool. This skill supersedes the local `.claude/commands/release.md`
-command, which only covered the tag-and-publish part; that file can be left
-as-is or reduced to a pointer at this skill.
+command, which covered verify, version bump, push, draft notes, approval, and
+tag/publish but had no docs-update or deploy step; that file can be left as-is
+or reduced to a pointer at this skill.
 
 ## Process
 
@@ -76,5 +77,7 @@ as-is or reduced to a pointer at this skill.
    - Never hand-write a command flag or arg table; those are owned by doc
      regeneration (`bun run docs:gen`, wrapped by `scripts/update-docs.ts`),
      never by this skill.
-   - Every outward or irreversible action, push, tag, `gh release create`,
-     and deploy, happens only after the step 6 approval, never before it.
+   - The tag, `gh release create`, and deploy happen only after the step 6
+     approval, never before it. The step 3 push is the one exception: it may
+     run earlier, but only once the user has confirmed that push specifically
+     (or pre-authorized the whole release).
