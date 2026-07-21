@@ -228,6 +228,8 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Debug", flag: "--debug", type: "boolean", default: false, hint: "Print the assembled prompt and stop before creating the MR" },
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Rehearse push + MR creation without doing either" },
           { name: "Web", flag: "--web", type: "boolean", default: false, hint: "Open the new MR in the browser" },
+          { name: "Remote", flag: "--remote", type: "text", placeholder: "origin", hint: "Remote to push to (forwarded to the push step)" },
+          { name: "No verify", flag: "--no-verify", type: "boolean", default: false, hint: "Skip pre-push hooks (forwarded to the push step)" },
         ],
       },
     },
