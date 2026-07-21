@@ -2,125 +2,66 @@
  * rt commit — GitHub Desktop-style staging, discarding, and commit flow.
  *
  * Presents an fzf multi-picker of all changed files (staged + unstaged).
- * Files already staged are pre-selected (checked). The right-side fzf
- * preview pane shows a live diff for the focused file, rendered via delta
+ * All files are pre-selected; deselect what you don't want. The right-side
+ * fzf preview pane shows a live diff for the focused file, rendered via delta
  * (with fallback to plain `git diff --color=always` if delta is not installed).
  *
- * Operations (mirrors GitHub Desktop's Changes tab exactly):
+ * Operations (mirrors GitHub Desktop's Changes tab):
  *   - space: stage/unstage (toggle inclusion in commit)
  *   - ctrl-d: discard working-tree changes for selected files
  *   - enter: commit staged selection
  *   - esc: abort
  *
- * Discard uses `git checkout HEAD -- <paths>` — the same command GitHub Desktop
- * runs (see app/src/lib/git/checkout.ts:checkoutPaths in desktop/desktop).
- *
- * Flow:
- *   1. Parse `git status --porcelain` → build file list
+ * Git mechanics live in lib/commit-ops.ts (tested there):
+ *   1. Parse `git status --porcelain -z` → build file list
  *   2. fzf multi-picker with diff preview on the right (60% width)
- *   3a. ctrl-d → confirm → `git checkout HEAD -- <paths>` → back to step 1
- *   3b. enter → sync staging area → commit message → `git commit` → done
+ *   3a. ctrl-d → confirm → discardChanges → back to step 1
+ *   3b. enter → syncStagingArea → commit message → commitStaged → done
  *   3c. esc → abort
  */
 
-import { execSync, execFileSync, spawnSync } from "child_process";
+import { spawnSync } from "child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeFileSync, unlinkSync, rmSync } from "node:fs";
+import { writeFileSync, unlinkSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { textInput } from "../lib/rt-render.tsx";
 import { ensureFzf } from "../lib/fzf.ts";
+import {
+  getChangedFiles,
+  discardChanges,
+  syncStagingArea,
+  commitStaged,
+  type ChangedFile,
+} from "../lib/commit-ops.ts";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Display ──────────────────────────────────────────────────────────────────
 
-interface ChangedFile {
-  /** Raw two-char porcelain status (e.g. "M ", " M", "??", "A ", "D ") */
-  rawStatus: string;
-  /** Relative path from repo root */
-  path: string;
-  /** True if the index (left) column indicates a staged change */
-  isStaged: boolean;
-  /** True if the worktree (right) column indicates an unstaged change */
-  hasUnstaged: boolean;
-}
+const STATUS_COLORS: Record<string, string> = {
+  A: "32",
+  M: "33",
+  D: "31",
+  R: "34",
+  C: "34",
+  U: "35",
+};
 
-// ─── Git helpers ──────────────────────────────────────────────────────────────
-
-function getChangedFiles(cwd: string): ChangedFile[] {
-  let out: string;
-  try {
-    out = execSync("git status --porcelain", { cwd, encoding: "utf8", stdio: "pipe" });
-  } catch {
-    return [];
-  }
-
-  const files: ChangedFile[] = [];
-  for (const line of out.split("\n")) {
-    if (!line.trim()) continue;
-
-    // Porcelain v1: XY PATH  (or XY PATH -> NEWPATH for renames)
-    const xy = line.slice(0, 2);
-    let path = line.slice(3).trim();
-
-    // Handle renames: "R  old -> new" → take the "new" path
-    if (path.includes(" -> ")) {
-      path = path.split(" -> ")[1]!.trim();
-    }
-
-    const indexStatus = xy[0]!;   // left column  = staged
-    const wtreeStatus = xy[1]!;   // right column = unstaged
-
-    const isUntracked = xy === "??";
-
-    files.push({
-      rawStatus: xy,
-      path,
-      isStaged: !isUntracked && indexStatus !== " " && indexStatus !== "?",
-      hasUnstaged: isUntracked || wtreeStatus !== " ",
-    });
-  }
-
-  return files;
-}
-
-/** Build a human-readable status badge and icon */
+/** Two-char status badge, colored by the dominant status letter. Handles any
+ *  porcelain combination (M , MM, AM, RM, ...) instead of a fixed lookup. */
 function fileLabel(f: ChangedFile): string {
-  const ICONS: Record<string, string> = {
-    "??": "  \x1b[2m??\x1b[0m",  // untracked
-    "A ": "  \x1b[32mA \x1b[0m",  // new staged
-    "M ": "  \x1b[33mM \x1b[0m",  // modified staged
-    "D ": "  \x1b[31mD \x1b[0m",  // deleted staged
-    "R ": "  \x1b[34mR \x1b[0m",  // renamed staged
-    " M": "  \x1b[2mM \x1b[0m",   // modified unstaged only
-    " D": "  \x1b[2mD \x1b[0m",   // deleted unstaged only
-    MM:   "  \x1b[33mMM\x1b[0m",  // staged + unstaged mods
-  };
-  const icon = ICONS[f.rawStatus] ?? `  ${f.rawStatus}`;
-  return `${icon}  ${f.path}`;
+  if (f.rawStatus === "??") return `  \x1b[2m??\x1b[0m  ${f.path}`;
+  const letter = f.isStaged ? f.rawStatus[0]! : f.rawStatus[1]!;
+  const color = f.isStaged ? STATUS_COLORS[letter] ?? "0" : "2";
+  return `  \x1b[${color}m${f.rawStatus}\x1b[0m  ${f.path}`;
 }
 
-/** Discard changes. Tracked paths go through `git checkout HEAD -- <paths>` —
- *  the exact command GitHub Desktop uses
- *  (app/src/lib/git/checkout.ts:checkoutPaths). Untracked paths are unknown to
- *  HEAD (checkout would fail on them), so they are deleted instead, matching
- *  Desktop's discard behavior for new files. */
-function discardWorkingTreeChanges(cwd: string, files: ChangedFile[], paths: string[]): void {
-  const untracked = new Set(
-    files.filter((f) => f.rawStatus === "??").map((f) => f.path),
-  );
-  const toCheckout = paths.filter((p) => !untracked.has(p));
-  const toDelete = paths.filter((p) => untracked.has(p));
-
-  if (toCheckout.length > 0) {
-    execFileSync("git", ["checkout", "HEAD", "--", ...toCheckout], {
-      cwd,
-      stdio: "pipe",
-    });
+function errMessage(err: unknown): string {
+  if (err instanceof Error && "stderr" in err) {
+    const stderr = String((err as Error & { stderr: unknown }).stderr).trim();
+    if (stderr) return stderr;
   }
-  for (const p of toDelete) {
-    rmSync(join(cwd, p), { recursive: true, force: true });
-  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** Inline confirmation before discarding. Mirrors GitHub Desktop's
@@ -128,14 +69,16 @@ function discardWorkingTreeChanges(cwd: string, files: ChangedFile[], paths: str
 async function confirmDiscard(paths: string[]): Promise<boolean> {
   const label =
     paths.length === 1 ? `"${paths[0]}"` : `${paths.length} files`;
-  process.stderr.write(`\n  discard changes to ${label}? [y/N] `);
+  process.stderr.write("\n");
 
   return new Promise((resolve) => {
     const rl = createInterface({
       input: process.stdin,
       output: process.stderr,
     });
-    rl.question("", (answer) => {
+    // The prompt must go through rl.question — readline's line refresh
+    // clears the current line, erasing any text written directly before it.
+    rl.question(`  discard changes to ${label}? [y/N] `, (answer) => {
       rl.close();
       const trimmed = answer.trim().toLowerCase();
       resolve(trimmed === "y" || trimmed === "yes");
@@ -148,15 +91,12 @@ async function confirmDiscard(paths: string[]): Promise<boolean> {
 /** Returns the diff command to pipe into for colorised output.
  *  Uses delta if available, otherwise falls back to nothing (git produces ANSI itself). */
 function deltaPipeCmd(): string {
-  try {
-    execSync("which delta", { stdio: "pipe" });
-    // delta flags tuned for the preview pane.
-    // --syntax-theme intentionally omitted — let delta use its configured default
-    // to avoid quote-escaping issues when the theme name contains spaces.
-    return "| delta --no-gitconfig --paging=never --width=variable --line-numbers";
-  } catch {
-    return "";
-  }
+  const result = spawnSync("which", ["delta"], { stdio: "pipe" });
+  if (result.status !== 0) return "";
+  // delta flags tuned for the preview pane.
+  // --syntax-theme intentionally omitted — let delta use its configured default
+  // to avoid quote-escaping issues when the theme name contains spaces.
+  return "| delta --no-gitconfig --paging=never --width=variable --line-numbers";
 }
 
 /**
@@ -222,11 +162,7 @@ interface PickerResult {
  * Returns { exitKey, paths } where exitKey is the key that dismissed fzf,
  * or null if the user cancelled (esc).
  */
-function runFilePicker(
-  cwd: string,
-  files: ChangedFile[],
-  initiallyStaged: Set<string>,
-): PickerResult | null {
+function runFilePicker(cwd: string, files: ChangedFile[]): PickerResult | null {
   ensureFzf();
   const pipe = deltaPipeCmd();
   const { cmd: previewCmd, cleanup: cleanupPreview } = buildPreviewCmd(cwd, pipe);
@@ -235,23 +171,6 @@ function runFilePicker(
   const input = files
     .map((f) => `${f.rawStatus}:${f.path}\t${fileLabel(f)}`)
     .join("\n");
-
-  // Pre-select already-staged files using fzf's start binding.
-  // Strategy: toggle-all (select all), then individually deselect unstaged-only files.
-  const stagedIndices: number[] = [];
-  files.forEach((f, i) => {
-    if (initiallyStaged.has(f.path)) stagedIndices.push(i + 1); // 1-indexed
-  });
-
-  let startBinding = "";
-  if (stagedIndices.length > 0) {
-    // toggle-all selects everything, then deselect items that should NOT be staged
-    const deselect = files
-      .map((f, i) => (initiallyStaged.has(f.path) ? null : `pos(${i + 1})+deselect`))
-      .filter(Boolean);
-    const actions = ["select-all", ...deselect, "pos(1)"].join("+");
-    startBinding = `--bind=start:${actions}`;
-  }
 
   const result = spawnSync(
     "fzf",
@@ -267,6 +186,11 @@ function runFilePicker(
       "--header=space: stage  tab: toggle+next  ctrl-a: toggle-all  ctrl-d: discard  enter: commit  esc: abort",
       "--no-mouse",
       "--bind=space:toggle,tab:toggle+down,ctrl-a:toggle-all",
+      // GitHub Desktop style: everything checked by default. Must be the
+      // `load` event, not `start`: start fires before the piped input is
+      // read, so select-all would apply to an empty list and enter/ctrl-d
+      // would act on only the focused file.
+      "--bind=load:select-all",
       "--expect=ctrl-d",        // detect discard key; printed as first output line
       // Preview pane: right side, 60% width
       `--preview=${previewCmd}`,
@@ -274,8 +198,6 @@ function runFilePicker(
       "--preview-label= diff ",
       // Highlight matched characters
       "--color=hl:#ffb86c,hl+:#ffb86c",
-      // Only add start binding if we have staged files to pre-select
-      ...(startBinding ? [startBinding] : []),
     ],
     {
       input,
@@ -285,13 +207,12 @@ function runFilePicker(
     },
   );
 
+  cleanupPreview();
+
   // fzf exits non-zero on ESC / Ctrl+C
   if (result.status !== 0 || !result.stdout?.trim()) {
-    cleanupPreview();
     return null;
   }
-
-  cleanupPreview();
 
   // With --expect, fzf prints the exit key on the first line (empty string for
   // enter). Only strip the trailing newline — a full trim() would eat the empty
@@ -310,46 +231,6 @@ function runFilePicker(
   return { exitKey, paths };
 }
 
-// ─── Staging sync ─────────────────────────────────────────────────────────────
-
-/**
- * Bring the git index into sync with the user's selection.
- *   - Files selected but not yet staged → git add
- *   - Files that were staged but deselected → git restore --staged
- *   - Untracked files selected → git add (stages new file)
- */
-function syncStagingArea(
-  cwd: string,
-  allFiles: ChangedFile[],
-  selectedPaths: Set<string>,
-  previouslyStaged: Set<string>,
-): void {
-  const toAdd: string[] = [];
-  const toUnstage: string[] = [];
-
-  for (const f of allFiles) {
-    // hasUnstaged covers partially-staged files (e.g. "MM"): the file is
-    // already in the index, but its newest edits are not — GitHub Desktop
-    // commits the full file content for checked files, so re-add it.
-    if (selectedPaths.has(f.path) && (!f.isStaged || f.hasUnstaged)) {
-      toAdd.push(f.path);
-    } else if (!selectedPaths.has(f.path) && previouslyStaged.has(f.path)) {
-      toUnstage.push(f.path);
-    }
-  }
-
-  if (toAdd.length > 0) {
-    execFileSync("git", ["add", "--", ...toAdd], { cwd, stdio: "pipe" });
-  }
-
-  if (toUnstage.length > 0) {
-    execFileSync("git", ["restore", "--staged", "--", ...toUnstage], {
-      cwd,
-      stdio: "pipe",
-    });
-  }
-}
-
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export async function commitFlow(_args: string[], ctx: CommandContext): Promise<void> {
@@ -358,25 +239,19 @@ export async function commitFlow(_args: string[], ctx: CommandContext): Promise<
   // Loop: discard returns to the picker with a refreshed file list.
   // This mirrors GitHub Desktop — after discarding, the changes list updates in-place.
   while (true) {
-    // 1. Get all changed files
     const files = getChangedFiles(cwd);
     if (files.length === 0) {
       process.stderr.write("\n  \x1b[2mnothing to commit — working tree clean\x1b[0m\n\n");
       process.exit(0);
     }
 
-    // GitHub Desktop style: all files selected by default — deselect what you don't want
-    const initiallyStaged = new Set(files.map((f) => f.path));
-
-    // 2. Show fzf file picker with diff preview
-    const result = runFilePicker(cwd, files, initiallyStaged);
+    const result = runFilePicker(cwd, files);
 
     if (!result) {
       process.stderr.write("\n  \x1b[2maborted\x1b[0m\n\n");
       process.exit(0);
     }
 
-    // 3a. ctrl-d — discard working-tree changes (GH Desktop: checkoutPaths → checkout HEAD)
     if (result.exitKey === "ctrl-d") {
       if (result.paths.length === 0) {
         process.stderr.write("\n  \x1b[33mno files selected — nothing to discard\x1b[0m\n\n");
@@ -390,13 +265,9 @@ export async function commitFlow(_args: string[], ctx: CommandContext): Promise<
       }
 
       try {
-        discardWorkingTreeChanges(cwd, files, result.paths);
+        discardChanges(cwd, files, result.paths);
       } catch (err) {
-        const stderr =
-          err instanceof Error && "stderr" in err
-            ? String((err as Error & { stderr: unknown }).stderr)
-            : String(err);
-        process.stderr.write(`  \x1b[31mdiscard failed:\x1b[0m ${stderr.trim()}\n`);
+        process.stderr.write(`  \x1b[31mdiscard failed:\x1b[0m ${errMessage(err)}\n`);
         continue;
       }
       const label = result.paths.length === 1 ? result.paths[0] : `${result.paths.length} files`;
@@ -405,49 +276,39 @@ export async function commitFlow(_args: string[], ctx: CommandContext): Promise<
       continue;
     }
 
-    // 3b. enter — proceed with commit
     if (result.paths.length === 0) {
       process.stderr.write("\n  \x1b[33mno files selected — nothing to commit\x1b[0m\n\n");
       process.exit(0);
     }
 
-    // 4. Sync the staging area to match selection
-    const selectedSet = new Set(result.paths);
-    syncStagingArea(cwd, files, selectedSet, initiallyStaged);
+    try {
+      syncStagingArea(cwd, files, new Set(result.paths));
+    } catch (err) {
+      process.stderr.write(`\n  \x1b[31mstaging failed:\x1b[0m ${errMessage(err)}\n\n`);
+      process.exit(1);
+    }
 
-    // 5. Show what's staged now
     const stagedList = result.paths.map((p) => `  \x1b[32m+\x1b[0m ${p}`).join("\n");
     process.stderr.write(`\n${stagedList}\n\n`);
 
-    // 6. Prompt for commit message
     const message = await textInput({
       message: "Commit message",
       placeholder: "feat: ...",
     });
 
     if (!message.trim()) {
-      // User submitted empty message — abort without committing. The staging
-      // changes from step 4 are left in place (index now matches the selection).
+      // The staging changes from syncStagingArea are left in place (index now
+      // matches the selection), so a plain `git commit` can pick up from here.
       process.stderr.write("\n  \x1b[33mempty message — commit aborted\x1b[0m\n\n");
       process.exit(0);
     }
 
-    // 7. Commit
     try {
-      const output = execSync(`git commit -m ${JSON.stringify(message.trim())}`, {
-        cwd,
-        encoding: "utf8",
-        stdio: "pipe",
-      });
-
-      // Extract the short SHA from the first line of output (e.g. "[main a1b2c3d] feat: ...")
-      const firstLine = output.split("\n")[0] ?? "";
-      process.stderr.write(`\n  \x1b[32m✔\x1b[0m ${firstLine}\n\n`);
+      const summary = commitStaged(cwd, message.trim());
+      process.stderr.write(`\n  \x1b[32m✔\x1b[0m ${summary}\n\n`);
       process.exit(0);
-    } catch (err: unknown) {
-      const stderr =
-        err instanceof Error && "stderr" in err ? String((err as NodeJS.ErrnoException & { stderr: string }).stderr) : String(err);
-      process.stderr.write(`\n  \x1b[31mcommit failed:\x1b[0m ${stderr}\n\n`);
+    } catch (err) {
+      process.stderr.write(`\n  \x1b[31mcommit failed:\x1b[0m ${errMessage(err)}\n\n`);
       process.exit(1);
     }
   }
