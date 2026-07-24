@@ -8,9 +8,9 @@
  * full poll in cache-refresh.ts remains the safety net for the events feed's
  * blind spots (metadata-only MR edits, pipeline status transitions).
  *
- * This module is also the daemon's shared GitLab plumbing (successor to the
- * deleted mr-subscriptions.ts): per-repo provider registry, current-user id,
- * and the aggregated connection state broadcast as `mr:status`.
+ * This module is also the daemon's shared GitLab plumbing: per-repo provider
+ * registry, current-user id, and the aggregated connection state broadcast
+ * as `mr:status`.
  *
  * Lifecycle:
  *   initFreshness(env)      — daemon startup, after first cache refresh
@@ -525,9 +525,9 @@ export async function initFreshness(env: FreshnessEnv): Promise<void> {
 
 /**
  * Align watchers with the repo index: start one per GitLab repo that lacks
- * one, dispose watchers for repos removed from the index. Unlike the old
- * per-MR subscriptions, a watcher covers the whole project regardless of how
- * many MRs are cached (pushes to MR-less branches still matter).
+ * one, dispose watchers for repos removed from the index. A watcher covers
+ * the whole project regardless of how many MRs are cached, because pushes
+ * to MR-less branches matter too.
  */
 export async function reconcileFreshness(env: FreshnessEnv): Promise<void> {
   const repoIndex = env.ctx.repoIndex();

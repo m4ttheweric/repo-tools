@@ -1,16 +1,16 @@
 /**
  * Background poller for MR discussions.
  *
- * `mr-subscriptions` pushes GraphQL-level MR updates in real time via
- * ActionCable, but discussion threads are only available through REST. This
- * poller sweeps every tracked MR on a timer and calls `refreshDiscussions`,
- * which stores the snapshot and broadcasts `discussions:new-comments` +
- * `notification` whenever someone (other than the current user) posts a new
- * non-system note.
+ * The freshness watchers refresh a specific MR's discussions within seconds
+ * of a `notes:` invalidation, but two thread mutations emit no GitLab event
+ * at all: resolve/unresolve toggles and note edits. This poller sweeps every
+ * tracked MR on a slow timer and calls `refreshDiscussions`, which stores
+ * the snapshot and broadcasts `discussions:new-comments` + `notification`
+ * whenever someone (other than the current user) posts a new non-system note.
  *
  * Design notes:
- * - Polls every `POLL_INTERVAL_MS` (90s) — rare enough to be polite to
- *   GitLab's REST API, fast enough that a reply surfaces within 1–2 minutes.
+ * - Polls every `POLL_INTERVAL_MS` (5 min) — the events path handles the
+ *   fast cases; this sweep only backfills the event-less mutations above.
  * - Only polls MRs in `open` / `mergeable` / `blocked` / `draft` state.
  *   Merged / closed MRs rarely receive new comments and aren't worth the
  *   round trip.
@@ -24,7 +24,7 @@ import type { HandlerContext } from "./handlers/types.ts";
 import { getDaemonLogger } from "../daemon-logger.ts";
 const log = (await getDaemonLogger()).childLogger("discussions");
 
-const POLL_INTERVAL_MS = 90 * 1000;
+const POLL_INTERVAL_MS = 5 * 60 * 1000;
 
 const TERMINAL_STATES = new Set(["merged", "closed"]);
 
@@ -54,7 +54,8 @@ async function sweep(env: PollerEnv): Promise<void> {
       try {
         await refreshDiscussions({ ctx: env.ctx, broadcast: env.broadcast }, repoName, iid);
       } catch (err) {
-        // Expected for MRs without a live subscription yet — keep going.
+        // Expected for a repo context that can't be resolved yet, or a
+        // transient fetch failure — keep going.
         log.warn({ err }, `${repoName}#${iid} refresh failed`);
       }
     }
@@ -67,7 +68,7 @@ export function startDiscussionsPoller(env: PollerEnv): void {
   if (timer) return;
   log.info(`starting (every ${POLL_INTERVAL_MS / 1000}s)`);
   // Kick off a first sweep after a short delay so the daemon finishes
-  // initializing subscriptions before we start hitting GitLab.
+  // initializing freshness watchers before we start hitting GitLab.
   setTimeout(() => { sweep(env); }, 10_000);
   timer = setInterval(() => { sweep(env); }, POLL_INTERVAL_MS);
 }

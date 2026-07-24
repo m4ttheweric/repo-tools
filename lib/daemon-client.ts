@@ -187,10 +187,9 @@ export async function isDaemonRunning(): Promise<boolean> {
 // ─── MR action facade ────────────────────────────────────────────────────────
 
 /**
- * JSON-over-IPC mirror of glance-sdk's `MRDashboardActions` bound to a
- * `{repoName, iid}` pair. Each method round-trips through the daemon, which
- * holds the single authoritative GitLabProvider + DashboardGroup and runs the
- * real action against the live group.
+ * JSON-over-IPC facade for MR actions, bound to a `{repoName, iid}` pair.
+ * Each method round-trips through the daemon, which holds the single
+ * authoritative per-repo GitLabProvider and runs the real action against it.
  *
  * Errors returned by the daemon (`{ok: false, error}`) and transport-level
  * failures (daemon down) both surface as thrown Errors so callers can handle
