@@ -217,9 +217,12 @@ export async function showStatus(): Promise<void> {
       | undefined;
     if (freshness && Object.keys(freshness).length > 0) {
       const parts = Object.entries(freshness).map(([repo, f]) => {
+        // lastSyncedAt only advances on a non-empty batch or a state
+        // transition, so a quiet-but-healthy repo can go the whole session
+        // without one; "never" would misread as broken, not idle.
         const age = f.lastSyncedAt
           ? `${Math.round((Date.now() - Date.parse(f.lastSyncedAt)) / 1000)}s ago`
-          : "never";
+          : "no events yet";
         return `${repo} ${f.state} (${age})`;
       });
       console.log(`    ${dim}events: ${parts.join(" · ")}${reset}`);
