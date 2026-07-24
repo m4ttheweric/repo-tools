@@ -32,7 +32,7 @@ export interface CacheRefresherDeps {
   broadcast: (type: string, data: any) => void;
   /** Full daemon status payload for the post-refresh "status" broadcast. */
   statusSnapshot: () => Promise<any>;
-  /** Reconcile live MR subscriptions against the freshly-loaded cache. */
+  /** Reconcile freshness watchers against the freshly-loaded repo index. */
   reconcileSubscriptions: () => Promise<void>;
 }
 

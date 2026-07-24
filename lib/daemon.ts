@@ -104,7 +104,7 @@ const handlerCtx: HandlerContext = {
   refreshStatusRef,
 };
 
-/** Env bundle for the MR subscription subsystem. */
+/** Env bundle for the live-freshness subsystem. */
 const freshnessEnv: FreshnessEnv = { ctx: handlerCtx, broadcast };
 
 const routedHandlers = buildRoutedHandlers({ ctx: handlerCtx, broadcast, systemProcessScanner });
