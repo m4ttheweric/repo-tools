@@ -17,7 +17,7 @@
  */
 
 import type { Discussion, Note } from "@workforge/glance-sdk";
-import { getRepoContext, getCurrentUserId } from "./mr-subscriptions.ts";
+import { getRepoContext, getCurrentUserId } from "./freshness.ts";
 import type { HandlerContext, CacheEntry } from "./handlers/types.ts";
 
 export type BroadcastFn = (type: string, data: any) => void;

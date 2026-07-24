@@ -1,7 +1,7 @@
 /**
  * Background cache refresh — discovers branches across tracked repos, enriches
  * them with MR/Linear data, and runs the post-refresh hooks (notifications,
- * auto-parking, doppler-template sync, status broadcast, MR-subscription
+ * auto-parking, doppler-template sync, status broadcast, freshness-watcher
  * reconcile).
  *
  * Concurrent callers are coalesced: the 5-minute timer and `cache:refresh` IPC
@@ -17,7 +17,7 @@ import type { Logger } from "pino";
 import type { DiskCache } from "./branch-cache.ts";
 import type { PortCacheRef, RepoIndex } from "./handlers/types.ts";
 import { checkAndNotify } from "../notifier.ts";
-import { getCurrentUserId } from "./mr-subscriptions.ts";
+import { getCurrentUserId } from "./freshness.ts";
 import { checkAndPark } from "./parking-lot.ts";
 import { reconcileForRepo } from "./doppler-sync.ts";
 import { listWorktreeRoots, listWorktrees } from "../git-worktrees.ts";
@@ -143,10 +143,10 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       // Broadcast to WebSocket clients
       broadcast("status", await deps.statusSnapshot());
 
-      // Reconcile live MR subscriptions against the freshly-loaded cache.
-      // Adds/removes watchers for MRs that appeared/disappeared since last tick.
+      // Reconcile events watchers against the repo index. Starts/stops
+      // per-repo watchers as repos are added/removed.
       deps.reconcileSubscriptions().catch((err) => {
-        log.error({ err }, "mr-subscriptions: reconcile failed");
+        log.error({ err }, "freshness: reconcile failed");
       });
     } catch (err) {
       log.error({ err }, "cache refresh failed");
