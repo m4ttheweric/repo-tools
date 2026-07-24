@@ -18,14 +18,30 @@
 
 import { render } from "ink";
 import { StatusMessage } from "@inkjs/ui";
-import { fetchStatusData } from "./data.ts";
+import { fetchStatusData, parseMaxAge } from "./data.ts";
 import type { CacheEntry } from "./types.ts";
 import { LiveDashboard } from "./dashboard.tsx";
 
 // ─── Entry point ────────────────────────────────────────────────────────────
 
-export async function showStatus(_args: string[]): Promise<void> {
-  const data = await fetchStatusData();
+export async function showStatus(args: string[]): Promise<void> {
+  let maxAgeMs: number | undefined;
+  if (args.includes("--fresh")) {
+    maxAgeMs = 0;
+  } else {
+    const flagIdx = args.indexOf("--max-age");
+    if (flagIdx !== -1) {
+      const raw = args[flagIdx + 1];
+      const parsed = raw ? parseMaxAge(raw) : null;
+      if (parsed === null) {
+        console.error("rt status: invalid --max-age value (use a number of seconds, or 30s / 2m / 1h)");
+        process.exit(1);
+      }
+      maxAgeMs = parsed;
+    }
+  }
+
+  const data = await fetchStatusData(maxAgeMs !== undefined ? { maxAgeMs } : undefined);
   const iidToBranch = new Map<
     number,
     { branch: string; entry: CacheEntry }
