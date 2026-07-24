@@ -15,6 +15,23 @@ export function createCacheHandlers(ctx: HandlerContext): HandlerMap {
   return {
     "cache:read": async (payload) => {
       const branches = payload?.branches as string[] | undefined;
+      const maxAgeMs = payload?.maxAgeMs as number | undefined;
+
+      // Freshness gate: when the caller sets maxAgeMs, refresh first if the
+      // oldest requested entry is older than that. Missing entries and an
+      // empty cache count as infinitely stale. refreshCache is coalesced, so
+      // concurrent stale readers share one refresh.
+      if (typeof maxAgeMs === "number") {
+        const pool = branches ?? Object.keys(ctx.cache.entries);
+        let oldestFetchedAt = 0;
+        if (pool.length > 0) {
+          oldestFetchedAt = Math.min(...pool.map((b) => ctx.cache.entries[b]?.fetchedAt ?? 0));
+        }
+        if (Date.now() - oldestFetchedAt >= maxAgeMs) {
+          await ctx.refreshCache();
+        }
+      }
+
       if (!branches) return { ok: true, data: ctx.cache.entries };
       const filtered: Record<string, CacheEntry> = {};
       for (const b of branches) {
