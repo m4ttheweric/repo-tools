@@ -9,7 +9,7 @@ import type { Logger } from "pino";
 import { DAEMON_SOCK_PATH, DAEMON_PID_PATH } from "../daemon-config.ts";
 import { clearWsClients } from "./api-server.ts";
 import { cleanupAllWatchers } from "./workspace-sync.ts";
-import { disposeAllMRSubscriptions } from "./mr-subscriptions.ts";
+import { disposeFreshness } from "./freshness.ts";
 import { stopDiscussionsPoller } from "./discussions-poller.ts";
 import type { HooksGuard } from "./hooks-guard.ts";
 
@@ -35,7 +35,7 @@ export function createCleanup(deps: ShutdownDeps): () => void {
     clearWsClients();
 
     try { cleanupAllWatchers(); } catch { /* */ }
-    try { disposeAllMRSubscriptions(); } catch { /* */ }
+    try { disposeFreshness(); } catch { /* */ }
     try { stopDiscussionsPoller(); } catch { /* */ }
     try { hooksGuard.closeAll(); } catch { /* */ }
 

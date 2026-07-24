@@ -515,3 +515,104 @@ async function runGapFill(env: FreshnessEnv, target: RepoTarget, overrides: Mapp
     log.info({ repo: repoName, filled: [...found.values()].filter(Boolean).length }, "gap-fill applied");
   }
 }
+
+// ─── Watcher lifecycle ───────────────────────────────────────────────────────
+
+export async function initFreshness(env: FreshnessEnv): Promise<void> {
+  log.info("initializing");
+  await reconcileFreshness(env);
+}
+
+/**
+ * Align watchers with the repo index: start one per GitLab repo that lacks
+ * one, dispose watchers for repos removed from the index. Unlike the old
+ * per-MR subscriptions, a watcher covers the whole project regardless of how
+ * many MRs are cached (pushes to MR-less branches still matter).
+ */
+export async function reconcileFreshness(env: FreshnessEnv): Promise<void> {
+  const repoIndex = env.ctx.repoIndex();
+
+  for (const [repoName, repoPath] of Object.entries(repoIndex)) {
+    if (watches.has(repoName)) continue;
+
+    const provider = ensureProvider(repoName, repoPath);
+    if (!provider?.watchEvents) continue;
+    if (!userIdResolved) await ensureUserId();
+
+    const remoteUrl = getRemoteUrl(repoPath);
+    const remote = remoteUrl ? parseRemoteUrl(remoteUrl) : null;
+    if (!remote) continue;
+
+    startWatch(env, repoName, provider, remote.projectPath);
+  }
+
+  for (const repoName of [...watches.keys()]) {
+    if (!repoIndex[repoName]) {
+      stopWatch(repoName);
+      log.info(`disposed watcher for ${repoName} (repo removed from index)`);
+    }
+  }
+
+  broadcastStatus(env);
+}
+
+function startWatch(env: FreshnessEnv, repoName: string, provider: GitLabProvider, projectPath: string): void {
+  const resumeCursor = cursorStore.get(repoName);
+
+  const watch: RepoWatch = {
+    provider,
+    projectPath,
+    dispose:      () => {},
+    projectId:    null,
+    state:        "live",
+    lastSyncedAt: null,
+    lastEventId:  resumeCursor?.lastEventId ?? null,
+    processing:   false,
+    pending:      [],
+    gapFillTimer: null,
+  };
+
+  watch.dispose = provider.watchEvents!(
+    projectPath,
+    {
+      cursor: resumeCursor,
+      onCursor: (c) => {
+        cursorStore.set(repoName, c);
+        watch.lastEventId = c.lastEventId;
+      },
+      onStatus: (s) => {
+        const prev = watch.state;
+        watch.state = s.state;
+        watch.lastSyncedAt = s.lastSyncedAt;
+        if (prev !== s.state) {
+          log.info({ repo: repoName, state: s.state, cause: s.cause ?? null }, "events watcher status");
+          broadcastStatus(env);
+        }
+      },
+    },
+    (batch) => {
+      watch.lastSyncedAt = batch.syncedAt;
+      if (batch.invalidations.length === 0) return;
+      applyInvalidationBatch(env, { repoName, projectPath, provider }, watch, batch.invalidations)
+        .catch((err) => log.warn({ err, repo: repoName }, "invalidation batch failed"));
+    },
+  );
+
+  watches.set(repoName, watch);
+  log.info({ repo: repoName, projectPath, resumed: resumeCursor != null }, "events watcher started");
+}
+
+function stopWatch(repoName: string): void {
+  const w = watches.get(repoName);
+  if (!w) return;
+  try { w.dispose(); } catch { /* watcher already stopped */ }
+  if (w.gapFillTimer) clearTimeout(w.gapFillTimer);
+  watches.delete(repoName);
+}
+
+export function disposeFreshness(): void {
+  for (const repoName of [...watches.keys()]) stopWatch(repoName);
+  providers.clear();
+  userId = null;
+  userIdResolved = false;
+}

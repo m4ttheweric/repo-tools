@@ -39,10 +39,10 @@ import { startApiServer, broadcast } from "./daemon/api-server.ts";
 import { startPollers } from "./daemon/pollers.ts";
 import { restoreWatchers } from "./daemon/workspace-sync.ts";
 import {
-  initMRSubscriptions,
-  reconcileMRSubscriptions,
-  type MRSubscriptionEnv,
-} from "./daemon/mr-subscriptions.ts";
+  initFreshness,
+  reconcileFreshness,
+  type FreshnessEnv,
+} from "./daemon/freshness.ts";
 import { startDiscussionsPoller } from "./daemon/discussions-poller.ts";
 import { createCleanup, installSignalHandlers } from "./daemon/shutdown.ts";
 import type { HandlerContext } from "./daemon/handlers/types.ts";
@@ -87,7 +87,7 @@ const refreshCache = createCacheRefresher({
   repoIndex: loadRepoIndex,
   broadcast,
   statusSnapshot: () => handleCommand("tray:status", {}),
-  reconcileSubscriptions: () => reconcileMRSubscriptions(mrSubEnv),
+  reconcileSubscriptions: () => reconcileFreshness(freshnessEnv),
 });
 
 // ─── Handler context + command routing ───────────────────────────────────────
@@ -105,7 +105,7 @@ const handlerCtx: HandlerContext = {
 };
 
 /** Env bundle for the MR subscription subsystem. */
-const mrSubEnv: MRSubscriptionEnv = { ctx: handlerCtx, broadcast };
+const freshnessEnv: FreshnessEnv = { ctx: handlerCtx, broadcast };
 
 const routedHandlers = buildRoutedHandlers({ ctx: handlerCtx, broadcast, systemProcessScanner });
 
@@ -210,12 +210,12 @@ export function startDaemon(): void {
     checkAndRepairHooksPath: hooksGuard.checkAndRepairHooksPath,
   });
 
-  // Kick off live MR subscriptions once the first refresh has populated the
-  // cache with iids + repoName stamps. reconcileMRSubscriptions inside the
-  // cache refresher picks up the slack from there.
+  // Kick off the events watchers once the first refresh has populated the
+  // cache with repoName stamps. reconcileFreshness inside the cache refresher
+  // follows repo-index changes from there.
   setTimeout(() => {
-    initMRSubscriptions(mrSubEnv).catch((err) => {
-      log.error({ err }, "mr-subscriptions: init failed");
+    initFreshness(freshnessEnv).catch((err) => {
+      log.error({ err }, "freshness: init failed");
     });
   }, 7000);
 

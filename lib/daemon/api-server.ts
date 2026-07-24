@@ -11,7 +11,7 @@ import type { Server, ServerWebSocket } from "bun";
 import type { Logger } from "pino";
 import { API_PORT } from "../daemon-config.ts";
 import { needsToken, tokenOk, loadOrCreateApiToken } from "./api-auth.ts";
-import { getAggregatedConnection } from "./mr-subscriptions.ts";
+import { getAggregatedConnection } from "./freshness.ts";
 
 const API_INDEX = {
   name: "rt daemon",

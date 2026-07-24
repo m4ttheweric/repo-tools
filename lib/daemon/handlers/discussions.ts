@@ -14,7 +14,7 @@
  */
 
 import { NoteMutator } from "@workforge/glance-sdk";
-import { getRepoContext } from "../mr-subscriptions.ts";
+import { getRepoContext } from "../freshness.ts";
 import { loadSecrets } from "../../linear.ts";
 import { refreshDiscussions, type BroadcastFn } from "../discussions-store.ts";
 import type { HandlerContext, HandlerMap, CacheEntry } from "./types.ts";
