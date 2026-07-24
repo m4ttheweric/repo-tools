@@ -71,7 +71,7 @@ export interface EnrichedBranch {
  */
 export type MRInfo = MRDashboardProps & { sha: string | null };
 
-function toMRInfo(pr: PullRequest): MRInfo {
+export function toMRInfo(pr: PullRequest): MRInfo {
   // Delegates to glance-sdk ≥ 0.7.6, which uses mergeabilityChecks as a stable
   // source for `conflicts` (fixes GitLab's async boolean flapping).
   return { ...getMRDashboardProps(pr, "idle"), sha: pr.sha };

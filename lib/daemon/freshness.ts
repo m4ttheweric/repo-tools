@@ -21,10 +21,11 @@
 import { execSync } from "child_process";
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import { GitLabProvider, type EventCursor } from "@workforge/glance-sdk";
+import { GitLabProvider, type EventCursor, type InvalidationKey, type PullRequest } from "@workforge/glance-sdk";
 import { RT_DIR } from "../daemon-config.ts";
 import { loadSecrets } from "../linear.ts";
-import { parseRemoteUrl, isGitLabRemote } from "../enrich.ts";
+import { parseRemoteUrl, isGitLabRemote, toMRInfo } from "../enrich.ts";
+import { checkAndNotify } from "../notifier.ts";
 import type { HandlerContext } from "./handlers/types.ts";
 import { getDaemonLogger } from "../daemon-logger.ts";
 
@@ -87,7 +88,7 @@ interface RepoWatch {
   lastSyncedAt: string | null;
   lastEventId:  number | null;
   processing:   boolean;
-  pending:      import("@workforge/glance-sdk").InvalidationKey[];
+  pending:      InvalidationKey[];
   gapFillTimer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -305,4 +306,212 @@ async function fetchProjectId(provider: GitLabProvider, projectPath: string): Pr
  */
 export function getCurrentUserId(): number | null {
   return userId;
+}
+
+// ─── Invalidation → targeted refresh mapping ─────────────────────────────────
+
+export const GAP_FILL_DEBOUNCE_MS = 5000;
+
+/** Narrow provider surface the mapping needs — tests stub this. */
+export type TargetedFetcher = Pick<
+  GitLabProvider,
+  "fetchSingleMR" | "fetchPullRequestByBranch" | "fetchPullRequestsByBranches"
+>;
+
+export interface RepoTarget {
+  repoName:    string;
+  projectPath: string;
+  provider:    TargetedFetcher;
+}
+
+/** Mutable batch-processing state. RepoWatch satisfies this structurally. */
+export interface BatchRunner {
+  processing:   boolean;
+  pending:      InvalidationKey[];
+  gapFillTimer: ReturnType<typeof setTimeout> | null;
+}
+
+/** Test seams. Production callers omit this. */
+export interface MappingOverrides {
+  refreshDiscussions?: (env: FreshnessEnv, repoName: string, iid: number) => Promise<unknown>;
+  notify?:             (entries: Record<string, any>, userId: number | null) => void;
+  gapFillDebounceMs?:  number;
+}
+
+/**
+ * Process one tick's invalidations for a repo. Batches arriving while a
+ * previous batch is still processing are merged into `runner.pending` and
+ * drained when the current run finishes — no overlap, no loss.
+ */
+export async function applyInvalidationBatch(
+  env: FreshnessEnv,
+  target: RepoTarget,
+  runner: BatchRunner,
+  keys: InvalidationKey[],
+  overrides: MappingOverrides = {},
+): Promise<void> {
+  if (runner.processing) {
+    runner.pending.push(...keys);
+    return;
+  }
+  runner.processing = true;
+  try {
+    await processKeys(env, target, runner, keys, overrides);
+    while (runner.pending.length > 0) {
+      const drained = runner.pending.splice(0);
+      await processKeys(env, target, runner, drained, overrides);
+    }
+  } finally {
+    runner.processing = false;
+  }
+}
+
+async function processKeys(
+  env: FreshnessEnv,
+  target: RepoTarget,
+  runner: BatchRunner,
+  keys: InvalidationKey[],
+  overrides: MappingOverrides,
+): Promise<void> {
+  const { ctx } = env;
+  const { repoName, projectPath, provider } = target;
+
+  // Dedup by kind:ref. The SDK dedups within a tick, but merged pending
+  // batches can re-introduce duplicates.
+  const seen = new Set<string>();
+  const unique = keys.filter((k) => {
+    const id = `${k.kind}:${k.ref}`;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+
+  // iid → branch for this repo, rebuilt per batch (the cache may have been
+  // reloaded from disk by the full poll since the last tick).
+  const branchByIid = new Map<number, string>();
+  for (const [branch, entry] of Object.entries(ctx.cache.entries)) {
+    if (entry.repoName !== repoName) continue;
+    if (typeof entry.mr?.iid === "number") branchByIid.set(entry.mr.iid, branch);
+  }
+
+  let mutated = false;
+
+  for (const k of unique) {
+    try {
+      switch (k.kind) {
+        case "mr": {
+          const iid = Number(k.ref);
+          const branch = branchByIid.get(iid);
+          if (!branch) {
+            // Not a cached MR. Could be someone else's, or an MR just opened
+            // on one of our branches — the gap-fill decides cheaply.
+            scheduleGapFill(env, target, runner, overrides);
+            break;
+          }
+          const pr = await provider.fetchSingleMR(projectPath, iid, getCurrentUserId());
+          mutated = updateEntry(env, repoName, branch, pr) || mutated;
+          break;
+        }
+        case "notes": {
+          const iid = Number(k.ref);
+          if (!branchByIid.has(iid)) break; // not one of ours
+          const refresh = overrides.refreshDiscussions ?? defaultRefreshDiscussions;
+          await refresh(env, repoName, iid);
+          break;
+        }
+        case "branch": {
+          const entry = ctx.cache.entries[k.ref];
+          if (!entry || entry.repoName !== repoName) break; // not one of ours
+          const pr = await provider.fetchPullRequestByBranch(projectPath, k.ref, "all");
+          if (!pr && runner.gapFillTimer) break; // MR may be mid-creation; let the gap-fill decide
+          mutated = updateEntry(env, repoName, k.ref, pr) || mutated;
+          break;
+        }
+        case "pipelines":
+          // Pipeline status transitions emit no events (verified blind spot);
+          // the 5-min full poll covers pipeline drift.
+          break;
+      }
+    } catch (err) {
+      log.warn({ err, repo: repoName, key: `${k.kind}:${k.ref}` }, "targeted refresh failed");
+    }
+  }
+
+  if (mutated) {
+    ctx.flushCache();
+    const notify = overrides.notify
+      ?? ((entries: Record<string, any>, uid: number | null) => checkAndNotify(entries, undefined, uid));
+    notify(ctx.cache.entries, getCurrentUserId());
+  }
+}
+
+/**
+ * Write one refreshed MR into its cache entry, preserving enrichment fields
+ * the events path never touches (ticket, linearId, discussions).
+ * Returns true if the entry was written.
+ */
+function updateEntry(env: FreshnessEnv, repoName: string, branch: string, pr: PullRequest | null): boolean {
+  const { ctx } = env;
+  const existing = ctx.cache.entries[branch];
+  if (!existing) return false; // lost race with a full refresh — skip
+  const mr = pr ? toMRInfo(pr) : null;
+  ctx.cache.entries[branch] = { ...existing, mr, fetchedAt: Date.now(), repoName };
+  if (mr && typeof mr.iid === "number") {
+    env.broadcast("mr:update", { repoName, mrs: { [mr.iid]: mr } });
+  }
+  return true;
+}
+
+async function defaultRefreshDiscussions(env: FreshnessEnv, repoName: string, iid: number): Promise<unknown> {
+  // Dynamic import: discussions-store imports getRepoContext from this
+  // module, so a static import here would be a top-level-await cycle.
+  const { refreshDiscussions } = await import("./discussions-store.ts");
+  return refreshDiscussions({ ctx: env.ctx, broadcast: env.broadcast }, repoName, iid);
+}
+
+/**
+ * Debounced catch-all for events about MRs we don't have cached: one batch
+ * fetch over this repo's branches that currently lack an MR. Covers the
+ * "MR just opened on my branch" case without paying anything for other
+ * users' MR activity (no null-mr branches → no request at all).
+ */
+function scheduleGapFill(
+  env: FreshnessEnv,
+  target: RepoTarget,
+  runner: BatchRunner,
+  overrides: MappingOverrides,
+): void {
+  if (runner.gapFillTimer) return; // already scheduled
+  const delay = overrides.gapFillDebounceMs ?? GAP_FILL_DEBOUNCE_MS;
+  runner.gapFillTimer = setTimeout(() => {
+    runner.gapFillTimer = null;
+    runGapFill(env, target, overrides).catch((err) => {
+      log.warn({ err, repo: target.repoName }, "gap-fill failed");
+    });
+  }, delay);
+}
+
+async function runGapFill(env: FreshnessEnv, target: RepoTarget, overrides: MappingOverrides): Promise<void> {
+  const { ctx } = env;
+  const { repoName, projectPath, provider } = target;
+
+  const nullMrBranches = Object.entries(ctx.cache.entries)
+    .filter(([, e]) => e.repoName === repoName && e.mr == null)
+    .map(([branch]) => branch);
+  if (nullMrBranches.length === 0) return;
+  if (!provider.fetchPullRequestsByBranches) return;
+
+  const found = await provider.fetchPullRequestsByBranches(projectPath, nullMrBranches, "all");
+  let mutated = false;
+  for (const [branch, pr] of found) {
+    if (!pr) continue; // still no MR — leave the entry untouched
+    mutated = updateEntry(env, repoName, branch, pr) || mutated;
+  }
+  if (mutated) {
+    ctx.flushCache();
+    const notify = overrides.notify
+      ?? ((entries: Record<string, any>, uid: number | null) => checkAndNotify(entries, undefined, uid));
+    notify(ctx.cache.entries, getCurrentUserId());
+    log.info({ repo: repoName, filled: [...found.values()].filter(Boolean).length }, "gap-fill applied");
+  }
 }
