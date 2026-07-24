@@ -386,7 +386,10 @@ export const TREE: Record<string, CommandNode> = {
     fn: "showStatus",
     context: "repo",
     fullscreen: true,
-    args: [],
+    args: [
+      { name: "Fresh", flag: "--fresh", type: "boolean", hint: "Refresh the cache before rendering" },
+      { name: "Max age", flag: "--max-age", type: "text", placeholder: "30s", hint: "Refresh first if the cache is older than this (45, 45s, 2m, 1h)" },
+    ],
   },
 
   update: {

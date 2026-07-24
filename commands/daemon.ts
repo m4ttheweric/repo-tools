@@ -211,6 +211,19 @@ export async function showStatus(): Promise<void> {
     console.log(`  ${green}●${reset} running ${dim}(SMAppService · pid ${pid} · uptime ${formatUptime(uptime)})${reset}`);
     console.log(`    ${dim}watching: ${watchedRepos} repo${watchedRepos !== 1 ? "s" : ""}${reset}`);
     console.log(`    ${dim}cache: ${cacheEntries} entries${reset}`);
+
+    const freshness = response.data.freshness as
+      | Record<string, { state: string; lastSyncedAt: string | null }>
+      | undefined;
+    if (freshness && Object.keys(freshness).length > 0) {
+      const parts = Object.entries(freshness).map(([repo, f]) => {
+        const age = f.lastSyncedAt
+          ? `${Math.round((Date.now() - Date.parse(f.lastSyncedAt)) / 1000)}s ago`
+          : "never";
+        return `${repo} ${f.state} (${age})`;
+      });
+      console.log(`    ${dim}events: ${parts.join(" · ")}${reset}`);
+    }
   } else {
     const pid = readDaemonPid();
     console.log(`  ${red}●${reset} installed but not running`);

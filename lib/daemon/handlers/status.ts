@@ -16,6 +16,7 @@ import type { HandlerContext, HandlerMap } from "./types.ts";
 import type { PortEntry } from "../../port-scanner.ts";
 import { listWorktrees } from "../../git-worktrees.ts";
 import { drainNotifications, peekNotifications } from "../../notifier.ts";
+import { getFreshnessSnapshot } from "../freshness.ts";
 
 export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
   return {
@@ -33,6 +34,7 @@ export function createStatusHandlers(ctx: HandlerContext): HandlerMap {
           cacheEntries: Object.keys(ctx.cache.entries).length,
           portsCached: ctx.portCacheRef.ports.length,
           portCacheAge: ctx.portCacheRef.updatedAt ? Date.now() - ctx.portCacheRef.updatedAt : null,
+          freshness: getFreshnessSnapshot(),
         },
       };
     },
