@@ -159,6 +159,27 @@ describe("applyInvalidationBatch", () => {
     expect(entries["no-mr-branch"].mr.iid).toBe(99);
   });
 
+  test("disposed runner never arms gapFillTimer for an unknown mr key", async () => {
+    const entries: Record<string, any> = {
+      "no-mr-branch": { mr: null, fetchedAt: 1, repoName: "repo-x" },
+    };
+    const { env } = makeEnv(entries);
+    let batchCalled = false;
+    const target: RepoTarget = {
+      repoName: "repo-x", projectPath: "g/p",
+      provider: {
+        fetchSingleMR: async () => null,
+        fetchPullRequestByBranch: async () => null,
+        fetchPullRequestsByBranches: async () => { batchCalled = true; return new Map(); },
+      } as any,
+    };
+    const runner: BatchRunner = { ...makeRunner(), disposed: true };
+    await applyInvalidationBatch(env, target, runner, [key("mr", "999")], noNotify);
+    expect(runner.gapFillTimer).toBeNull();                  // scheduleGapFill bailed immediately
+    await new Promise((r) => setTimeout(r, 40));              // > gapFillDebounceMs (10)
+    expect(batchCalled).toBe(false);                          // no fetch ever ran
+  });
+
   test("unknown mr key with no null-mr branches skips the batch fetch entirely", async () => {
     const entries: Record<string, any> = {
       "has-mr": { mr: { iid: 7 }, fetchedAt: 1, repoName: "repo-x" },

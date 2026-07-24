@@ -90,6 +90,8 @@ interface RepoWatch {
   processing:   boolean;
   pending:      InvalidationKey[];
   gapFillTimer: ReturnType<typeof setTimeout> | null;
+  /** Set by stopWatch; tells a gap-fill timer armed just before teardown not to fire. */
+  disposed:     boolean;
 }
 
 const watches   = new Map<string, RepoWatch>();
@@ -329,6 +331,11 @@ export interface BatchRunner {
   processing:   boolean;
   pending:      InvalidationKey[];
   gapFillTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * Optional so bare test runners (never registered in `watches`) don't need
+   * it; production runners are always RepoWatch, which always sets it.
+   */
+  disposed?:    boolean;
 }
 
 /** Test seams. Production callers omit this. */
@@ -481,10 +488,12 @@ function scheduleGapFill(
   runner: BatchRunner,
   overrides: MappingOverrides,
 ): void {
+  if (runner.disposed) return; // stopWatch already tore this repo down
   if (runner.gapFillTimer) return; // already scheduled
   const delay = overrides.gapFillDebounceMs ?? GAP_FILL_DEBOUNCE_MS;
   runner.gapFillTimer = setTimeout(() => {
     runner.gapFillTimer = null;
+    if (runner.disposed) return; // stopWatch ran while this timer was pending
     runGapFill(env, target, overrides).catch((err) => {
       log.warn({ err, repo: target.repoName }, "gap-fill failed");
     });
@@ -523,13 +532,26 @@ export async function initFreshness(env: FreshnessEnv): Promise<void> {
   await reconcileFreshness(env);
 }
 
+// The 7s boot timer (initFreshness) and every refreshCache() tail call
+// reconcileFreshness, and they can overlap in real time. Coalesce the same
+// way cache-refresh.ts does: a caller that arrives while one is running
+// awaits the in-flight run instead of starting a second pass that could
+// double-startWatch the same repo.
+let reconcileInFlight: Promise<void> | null = null;
+
 /**
  * Align watchers with the repo index: start one per GitLab repo that lacks
  * one, dispose watchers for repos removed from the index. A watcher covers
  * the whole project regardless of how many MRs are cached, because pushes
  * to MR-less branches matter too.
  */
-export async function reconcileFreshness(env: FreshnessEnv): Promise<void> {
+export function reconcileFreshness(env: FreshnessEnv): Promise<void> {
+  if (reconcileInFlight) return reconcileInFlight;
+  reconcileInFlight = reconcileFreshnessImpl(env).finally(() => { reconcileInFlight = null; });
+  return reconcileInFlight;
+}
+
+async function reconcileFreshnessImpl(env: FreshnessEnv): Promise<void> {
   const repoIndex = env.ctx.repoIndex();
 
   for (const [repoName, repoPath] of Object.entries(repoIndex)) {
@@ -538,6 +560,11 @@ export async function reconcileFreshness(env: FreshnessEnv): Promise<void> {
     const provider = ensureProvider(repoName, repoPath);
     if (!provider?.watchEvents) continue;
     if (!userIdResolved) await ensureUserId();
+
+    // Re-check after the await: coalescing above should make this
+    // unreachable, but the await is a yield point, so re-verify before
+    // startWatch rather than trust a check made before it.
+    if (watches.has(repoName)) continue;
 
     const remoteUrl = getRemoteUrl(repoPath);
     const remote = remoteUrl ? parseRemoteUrl(remoteUrl) : null;
@@ -570,6 +597,7 @@ function startWatch(env: FreshnessEnv, repoName: string, provider: GitLabProvide
     processing:   false,
     pending:      [],
     gapFillTimer: null,
+    disposed:     false,
   };
 
   watch.dispose = provider.watchEvents!(
@@ -605,6 +633,7 @@ function startWatch(env: FreshnessEnv, repoName: string, provider: GitLabProvide
 function stopWatch(repoName: string): void {
   const w = watches.get(repoName);
   if (!w) return;
+  w.disposed = true; // must be set before dispose(): a batch already in flight checks this on the way out
   try { w.dispose(); } catch { /* watcher already stopped */ }
   if (w.gapFillTimer) clearTimeout(w.gapFillTimer);
   watches.delete(repoName);
