@@ -16,6 +16,7 @@ import { createParkingLotHandlers } from "./handlers/parking-lot.ts";
 import { createDiscussionHandlers } from "./handlers/discussions.ts";
 import { createSystemProcessHandlers } from "./handlers/system-processes.ts";
 import { createSdmHandlers } from "./handlers/sdm.ts";
+import { reconcileFreshness, getFreshnessSnapshot } from "./freshness.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
 
 export function buildRoutedHandlers(opts: {
@@ -34,5 +35,12 @@ export function buildRoutedHandlers(opts: {
     ...createDiscussionHandlers(ctx, broadcast),
     ...createSystemProcessHandlers(systemProcessScanner, ctx),
     ...createSdmHandlers(ctx),
+
+    // Applies events-watch allowlist edits immediately (rt daemon events
+    // <repo> on|off) instead of waiting for the next refresh-tail reconcile.
+    "freshness:reconcile": async () => {
+      await reconcileFreshness({ ctx, broadcast });
+      return { ok: true, data: getFreshnessSnapshot() };
+    },
   };
 }
