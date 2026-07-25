@@ -75,25 +75,48 @@ export function createCursorStore(filePath: string): CursorStore {
 
 const cursorStore = createCursorStore(EVENTS_CURSORS_PATH);
 
-// ─── Events-watch allowlist (opt-in) ─────────────────────────────────────────
+// ─── Per-repo tracking levels (opt-in) ───────────────────────────────────────
 
-export const EVENTS_WATCH_PATH = join(RT_DIR, "events-watch.json");
+export const REPO_TRACKING_PATH = join(RT_DIR, "repo-tracking.json");
 
 /**
- * Watching a repo's events feed costs one API request per ~15s tick, so
- * watchers are strictly opt-in: a repo gets one only when its name appears in
- * ~/.rt/events-watch.json (a JSON array of repos.json keys, managed by
- * `rt daemon events <repo> on|off`). A missing or corrupt file means nothing
- * is watched.
+ * Background tracking is strictly opt-in per repo, managed by
+ * `rt daemon track <repo> live|poll|off`:
+ *
+ *   live — events watcher (~15s feed poll) + the 5-min enrichment poll
+ *   poll — 5-min enrichment poll only
+ *   off  — no background API calls; enrichment happens on demand when a
+ *          command asks for the branch (default for unlisted repos)
  */
-export function loadEventsAllowlist(filePath: string = EVENTS_WATCH_PATH): Set<string> {
+export type TrackingLevel = "live" | "poll" | "off";
+
+export type RepoTracking = Record<string, TrackingLevel>;
+
+const TRACKING_LEVELS = new Set<string>(["live", "poll", "off"]);
+
+/**
+ * Read ~/.rt/repo-tracking.json ({ repoName: level }). A missing or corrupt
+ * file means nothing is tracked; entries with unknown levels are dropped so
+ * a typo degrades to "off" rather than to accidental polling.
+ */
+export function loadRepoTracking(filePath: string = REPO_TRACKING_PATH): RepoTracking {
   try {
     const parsed = JSON.parse(readFileSync(filePath, "utf8"));
-    if (Array.isArray(parsed)) {
-      return new Set(parsed.filter((v): v is string => typeof v === "string"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const out: RepoTracking = {};
+      for (const [repo, level] of Object.entries(parsed)) {
+        if (typeof level === "string" && TRACKING_LEVELS.has(level)) {
+          out[repo] = level as TrackingLevel;
+        }
+      }
+      return out;
     }
-  } catch { /* missing file is the normal not-opted-in state */ }
-  return new Set();
+  } catch { /* missing file is the normal nothing-tracked state */ }
+  return {};
+}
+
+export function trackingLevel(tracking: RepoTracking, repoName: string): TrackingLevel {
+  return tracking[repoName] ?? "off";
 }
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -561,8 +584,8 @@ export async function initFreshness(env: FreshnessEnv): Promise<void> {
 let reconcileInFlight: Promise<void> | null = null;
 
 /**
- * Align watchers with the repo index and the opt-in allowlist: start one per
- * allowlisted GitLab repo that lacks one, dispose watchers for repos removed
+ * Align watchers with the repo index and the tracking config: start one per
+ * live-tracked GitLab repo that lacks one, dispose watchers for repos removed
  * from either. A watcher covers the whole project regardless of how many MRs
  * are cached, because pushes to MR-less branches matter too.
  */
@@ -574,10 +597,10 @@ export function reconcileFreshness(env: FreshnessEnv): Promise<void> {
 
 async function reconcileFreshnessImpl(env: FreshnessEnv): Promise<void> {
   const repoIndex = env.ctx.repoIndex();
-  const allowed = loadEventsAllowlist();
+  const tracking = loadRepoTracking();
 
   for (const [repoName, repoPath] of Object.entries(repoIndex)) {
-    if (!allowed.has(repoName)) continue;
+    if (trackingLevel(tracking, repoName) !== "live") continue;
     if (watches.has(repoName)) continue;
 
     const provider = ensureProvider(repoName, repoPath);
@@ -600,9 +623,9 @@ async function reconcileFreshnessImpl(env: FreshnessEnv): Promise<void> {
     if (!repoIndex[repoName]) {
       stopWatch(repoName);
       log.info(`disposed watcher for ${repoName} (repo removed from index)`);
-    } else if (!allowed.has(repoName)) {
+    } else if (trackingLevel(tracking, repoName) !== "live") {
       stopWatch(repoName);
-      log.info(`disposed watcher for ${repoName} (events watch opted out)`);
+      log.info(`disposed watcher for ${repoName} (no longer tracked live)`);
     }
   }
 

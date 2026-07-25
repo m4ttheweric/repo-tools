@@ -649,13 +649,14 @@ export const TREE: Record<string, CommandNode> = {
         fn: "showStatus",
         args: [],
       },
-      events: {
-        description: "Opt repos in/out of live events watching",
+      track: {
+        description: "Per-repo background tracking (live/poll/off)",
         module: "./commands/daemon.ts",
-        fn: "manageEvents",
+        fn: "manageTracking",
+        aliases: ["events"],
         args: [
           { name: "Repo", type: "text", placeholder: "assured-dev", hint: "Repo name from ~/.rt/repos.json (omit to list)" },
-          { name: "Action", type: "text", placeholder: "on", hint: "on or off" },
+          { name: "Level", type: "text", placeholder: "live", hint: "live (events + poll), poll (5-min only), off (on-demand only)" },
         ],
       },
       logs: {
