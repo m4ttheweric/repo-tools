@@ -20,6 +20,7 @@
  */
 
 import { refreshDiscussions, type BroadcastFn } from "./discussions-store.ts";
+import { loadRepoTracking, trackingLevel } from "./freshness.ts";
 import type { HandlerContext } from "./handlers/types.ts";
 import { getDaemonLogger } from "../daemon-logger.ts";
 const log = (await getDaemonLogger()).childLogger("discussions");
@@ -41,8 +42,11 @@ async function sweep(env: PollerEnv): Promise<void> {
   sweeping = true;
   try {
     const targets: Array<{ repoName: string; iid: number }> = [];
+    const tracking = loadRepoTracking();
     for (const entry of Object.values(env.ctx.cache.entries)) {
       if (!entry.repoName) continue;
+      // Untracked repos get no background API calls, including this sweep.
+      if (trackingLevel(tracking, entry.repoName) === "off") continue;
       const mr = entry.mr;
       const iid = mr?.iid;
       if (typeof iid !== "number") continue;

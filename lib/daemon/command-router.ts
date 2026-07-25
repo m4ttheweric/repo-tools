@@ -36,8 +36,8 @@ export function buildRoutedHandlers(opts: {
     ...createSystemProcessHandlers(systemProcessScanner, ctx),
     ...createSdmHandlers(ctx),
 
-    // Applies events-watch allowlist edits immediately (rt daemon events
-    // <repo> on|off) instead of waiting for the next refresh-tail reconcile.
+    // Applies repo-tracking edits immediately (rt daemon track <repo>
+    // live|poll|off) instead of waiting for the next refresh-tail reconcile.
     "freshness:reconcile": async () => {
       await reconcileFreshness({ ctx, broadcast });
       return { ok: true, data: getFreshnessSnapshot() };

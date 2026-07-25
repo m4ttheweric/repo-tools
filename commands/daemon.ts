@@ -241,16 +241,26 @@ export async function showStatus(): Promise<void> {
   console.log("");
 }
 
-// ─── Events watch (opt-in) ───────────────────────────────────────────────────
+// ─── Per-repo tracking (opt-in) ──────────────────────────────────────────────
 
-const EVENTS_WATCH_PATH = join(RT_DIR, "events-watch.json");
+const REPO_TRACKING_PATH = join(RT_DIR, "repo-tracking.json");
+const TRACKING_LEVELS = ["live", "poll", "off"] as const;
+type TrackingLevel = (typeof TRACKING_LEVELS)[number];
 
-function readEventsAllowlist(): string[] {
+function readRepoTracking(): Record<string, TrackingLevel> {
   try {
-    const parsed = JSON.parse(readFileSync(EVENTS_WATCH_PATH, "utf8"));
-    if (Array.isArray(parsed)) return parsed.filter((v): v is string => typeof v === "string");
-  } catch { /* missing file means nothing opted in */ }
-  return [];
+    const parsed = JSON.parse(readFileSync(REPO_TRACKING_PATH, "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const out: Record<string, TrackingLevel> = {};
+      for (const [repo, level] of Object.entries(parsed)) {
+        if (typeof level === "string" && (TRACKING_LEVELS as readonly string[]).includes(level)) {
+          out[repo] = level as TrackingLevel;
+        }
+      }
+      return out;
+    }
+  } catch { /* missing file means nothing tracked */ }
+  return {};
 }
 
 function readRepoIndex(): Record<string, string> {
@@ -262,76 +272,89 @@ function readRepoIndex(): Record<string, string> {
 }
 
 /**
- * Manage which repos get a live events watcher.
+ * Manage per-repo background tracking.
  *
- *   rt daemon events              list repos with opt-in + live watcher state
- *   rt daemon events <repo> on    opt a repo in (applies immediately)
- *   rt daemon events <repo> off   opt a repo out (watcher stops immediately)
+ *   rt daemon track                    list repos with level + watcher state
+ *   rt daemon track <repo> live       events watcher + 5-min enrichment
+ *   rt daemon track <repo> poll       5-min enrichment only
+ *   rt daemon track <repo> off        no background API calls (default)
+ *
+ * "off" removes the entry (off is the default for unlisted repos). Level
+ * changes apply immediately for watchers; the 5-min poll picks up poll/off
+ * changes on its next cycle, so `live`/`poll` also kick a refresh.
  */
-export async function manageEvents(args: string[] = []): Promise<void> {
-  const [repoArg, action] = args;
+export async function manageTracking(args: string[] = []): Promise<void> {
+  const [repoArg, levelArg] = args;
 
   if (!repoArg) {
     const repos = readRepoIndex();
-    const allowed = new Set(readEventsAllowlist());
+    const tracking = readRepoTracking();
     const status = await daemonQuery("status");
     const freshness = ((status?.ok ? status.data?.freshness : undefined) ?? {}) as
       Record<string, { state: string }>;
 
-    console.log(`\n  ${bold}events watchers${reset} ${dim}(opt-in · ~/.rt/events-watch.json)${reset}\n`);
+    console.log(`\n  ${bold}repo tracking${reset} ${dim}(opt-in · ~/.rt/repo-tracking.json · unlisted = off)${reset}\n`);
     for (const name of Object.keys(repos).sort()) {
-      const on = allowed.has(name);
-      const live = freshness[name];
-      const state = live ? live.state : on ? "starting" : "";
-      const marker = on ? `${green}●${reset}` : `${dim}○${reset}`;
-      console.log(`  ${marker} ${on ? name : `${dim}${name}${reset}`}${state ? ` ${dim}(${state})${reset}` : ""}`);
+      const level = tracking[name] ?? "off";
+      const watcher = freshness[name];
+      const marker = level === "live" ? `${green}●${reset}` : level === "poll" ? `${yellow}◐${reset}` : `${dim}○${reset}`;
+      const detail = level === "live"
+        ? `live${watcher ? ` (${watcher.state})` : " (watcher starting)"}`
+        : level === "poll" ? "poll" : "";
+      console.log(`  ${marker} ${level === "off" ? `${dim}${name}${reset}` : name}${detail ? ` ${dim}${detail}${reset}` : ""}`);
     }
-    // Allowlist entries that no longer match a registered repo do nothing;
+    // Tracking entries that no longer match a registered repo do nothing;
     // surface them so a rename or typo isn't silently inert.
-    const stale = [...allowed].filter((name) => !repos[name]);
-    for (const name of stale) {
-      console.log(`  ${yellow}!${reset} ${name} ${dim}(in allowlist but not in ~/.rt/repos.json)${reset}`);
+    for (const name of Object.keys(tracking).filter((n) => !repos[n])) {
+      console.log(`  ${yellow}!${reset} ${name} ${dim}(tracked but not in ~/.rt/repos.json)${reset}`);
     }
-    console.log(`\n  ${dim}toggle: rt daemon events <repo> on|off${reset}\n`);
+    console.log(`\n  ${dim}set: rt daemon track <repo> live|poll|off${reset}\n`);
     return;
   }
 
-  if (action !== "on" && action !== "off") {
-    console.log(`\n  usage: rt daemon events [<repo> on|off]\n`);
+  if (!levelArg || !(TRACKING_LEVELS as readonly string[]).includes(levelArg)) {
+    console.log(`\n  usage: rt daemon track [<repo> live|poll|off]\n`);
     return;
   }
+  const level = levelArg as TrackingLevel;
 
-  if (action === "on") {
+  if (level !== "off") {
     const repoPath = readRepoIndex()[repoArg];
     if (!repoPath) {
       console.log(`\n  ${red}✗${reset} repo "${repoArg}" not registered in ~/.rt/repos.json\n`);
       return;
     }
-    // Watchers only ever start for GitLab remotes; refuse rather than write
-    // an allowlist entry that can never take effect.
-    let remoteUrl = "";
-    try {
-      remoteUrl = execSync("git config --get remote.origin.url", {
-        cwd: repoPath, encoding: "utf8", stdio: "pipe",
-      }).trim();
-    } catch { /* no origin remote */ }
-    if (!isGitLabRemote(remoteUrl)) {
-      console.log(`\n  ${red}✗${reset} ${repoArg} has no GitLab remote ${dim}(${remoteUrl || "no origin"})${reset}; events watching is GitLab-only\n`);
-      return;
+    if (level === "live") {
+      // Watchers only ever start for GitLab remotes; refuse rather than
+      // write a tracking entry that can never take effect.
+      let remoteUrl = "";
+      try {
+        remoteUrl = execSync("git config --get remote.origin.url", {
+          cwd: repoPath, encoding: "utf8", stdio: "pipe",
+        }).trim();
+      } catch { /* no origin remote */ }
+      if (!isGitLabRemote(remoteUrl)) {
+        console.log(`\n  ${red}✗${reset} ${repoArg} has no GitLab remote ${dim}(${remoteUrl || "no origin"})${reset}; live watching is GitLab-only (use poll)\n`);
+        return;
+      }
     }
   }
 
-  const list = new Set(readEventsAllowlist());
-  if (action === "on") list.add(repoArg);
-  else list.delete(repoArg);
-  writeFileSync(EVENTS_WATCH_PATH, JSON.stringify([...list].sort(), null, 2) + "\n");
-  console.log(`\n  ${green}✓${reset} ${repoArg} events watch ${action}`);
+  const tracking = readRepoTracking();
+  if (level === "off") delete tracking[repoArg];
+  else tracking[repoArg] = level;
+  const sorted = Object.fromEntries(Object.entries(tracking).sort(([a], [b]) => a.localeCompare(b)));
+  writeFileSync(REPO_TRACKING_PATH, JSON.stringify(sorted, null, 2) + "\n");
+  console.log(`\n  ${green}✓${reset} ${repoArg} tracking: ${level}`);
 
-  // Apply now rather than waiting for the next 5-minute refresh tail.
+  // Watchers apply immediately; a fresh enrichment pass makes poll/live
+  // repos show data now instead of at the next 5-minute cycle.
   const res = await daemonQuery("freshness:reconcile", undefined, 30_000);
   if (res?.ok) {
     const watching = Object.keys((res.data ?? {}) as Record<string, unknown>).sort();
-    console.log(`    ${dim}watching now: ${watching.length > 0 ? watching.join(", ") : "none"}${reset}\n`);
+    console.log(`    ${dim}live watchers: ${watching.length > 0 ? watching.join(", ") : "none"}${reset}`);
+    if (level !== "off") await daemonQuery("cache:refresh");
+    console.log("");
   } else {
     console.log(`    ${dim}daemon not reachable; applies when it next starts or refreshes${reset}\n`);
   }

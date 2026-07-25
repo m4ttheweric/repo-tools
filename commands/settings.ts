@@ -418,10 +418,14 @@ function enableDevMode(sourcePath: string): void {
   // own interpreter) and the tools cli.ts shells out to (logdy, lnav, bunx)
   // fail to resolve, so the log viewer never starts.
   const bunDir = dirname(bunPath);
+  // --tsconfig-override pins JSX transpilation to our own tsconfig. Bun
+  // otherwise applies the tsconfig found in the *cwd*, so running from a repo
+  // whose tsconfig sets jsxImportSource (e.g. hono/jsx) breaks every .tsx
+  // file in rt with "Cannot find module '<source>/jsx-dev-runtime'".
   const wrapper = [
     `#!/bin/zsh`,
     `export PATH="${bunDir}:/opt/homebrew/bin:/usr/local/bin:$PATH"`,
-    `exec "${bunPath}" run "${sourcePath}/cli.ts" "$@"`,
+    `exec "${bunPath}" --tsconfig-override="${sourcePath}/tsconfig.json" run "${sourcePath}/cli.ts" "$@"`,
   ].join("\n") + "\n";
   writeFileSync(DEV_MODE_WRAPPER, wrapper, { mode: 0o755 });
 }
