@@ -26,6 +26,7 @@ import {
   isDaemonInstalled,
   markDaemonInstalled, markDaemonUninstalled, cleanupDaemonFiles,
   readDaemonPid,
+  RT_DIR,
   LOG_DIR,
   LAUNCHD_PLIST_PATH,
 } from "../lib/daemon-config.ts";
@@ -237,6 +238,87 @@ export async function showStatus(): Promise<void> {
   console.log(`    ${dim}config: ~/.rt/daemon.json${reset}`);
   console.log(`    ${dim}logs: ~/.rt/logs/ ${reset}${dim}(view with: rt daemon logs)${reset}`);
   console.log("");
+}
+
+// ─── Events watch (opt-in) ───────────────────────────────────────────────────
+
+const EVENTS_WATCH_PATH = join(RT_DIR, "events-watch.json");
+
+function readEventsAllowlist(): string[] {
+  try {
+    const parsed = JSON.parse(readFileSync(EVENTS_WATCH_PATH, "utf8"));
+    if (Array.isArray(parsed)) return parsed.filter((v): v is string => typeof v === "string");
+  } catch { /* missing file means nothing opted in */ }
+  return [];
+}
+
+function readRepoIndex(): Record<string, string> {
+  try {
+    return JSON.parse(readFileSync(join(RT_DIR, "repos.json"), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Manage which repos get a live events watcher.
+ *
+ *   rt daemon events              list repos with opt-in + live watcher state
+ *   rt daemon events <repo> on    opt a repo in (applies immediately)
+ *   rt daemon events <repo> off   opt a repo out (watcher stops immediately)
+ */
+export async function manageEvents(args: string[] = []): Promise<void> {
+  const [repoArg, action] = args;
+
+  if (!repoArg) {
+    const repos = readRepoIndex();
+    const allowed = new Set(readEventsAllowlist());
+    const status = await daemonQuery("status");
+    const freshness = ((status?.ok ? status.data?.freshness : undefined) ?? {}) as
+      Record<string, { state: string }>;
+
+    console.log(`\n  ${bold}events watchers${reset} ${dim}(opt-in · ~/.rt/events-watch.json)${reset}\n`);
+    for (const name of Object.keys(repos).sort()) {
+      const on = allowed.has(name);
+      const live = freshness[name];
+      const state = live ? live.state : on ? "starting" : "";
+      const marker = on ? `${green}●${reset}` : `${dim}○${reset}`;
+      console.log(`  ${marker} ${on ? name : `${dim}${name}${reset}`}${state ? ` ${dim}(${state})${reset}` : ""}`);
+    }
+    // Allowlist entries that no longer match a registered repo do nothing;
+    // surface them so a rename or typo isn't silently inert.
+    const stale = [...allowed].filter((name) => !repos[name]);
+    for (const name of stale) {
+      console.log(`  ${yellow}!${reset} ${name} ${dim}(in allowlist but not in ~/.rt/repos.json)${reset}`);
+    }
+    console.log(`\n  ${dim}toggle: rt daemon events <repo> on|off${reset}\n`);
+    return;
+  }
+
+  if (action !== "on" && action !== "off") {
+    console.log(`\n  usage: rt daemon events [<repo> on|off]\n`);
+    return;
+  }
+
+  if (action === "on" && !readRepoIndex()[repoArg]) {
+    console.log(`\n  ${red}✗${reset} repo "${repoArg}" not registered in ~/.rt/repos.json\n`);
+    return;
+  }
+
+  const list = new Set(readEventsAllowlist());
+  if (action === "on") list.add(repoArg);
+  else list.delete(repoArg);
+  writeFileSync(EVENTS_WATCH_PATH, JSON.stringify([...list].sort(), null, 2) + "\n");
+  console.log(`\n  ${green}✓${reset} ${repoArg} events watch ${action}`);
+
+  // Apply now rather than waiting for the next 5-minute refresh tail.
+  const res = await daemonQuery("freshness:reconcile", undefined, 30_000);
+  if (res?.ok) {
+    const watching = Object.keys((res.data ?? {}) as Record<string, unknown>).sort();
+    console.log(`    ${dim}watching now: ${watching.length > 0 ? watching.join(", ") : "none"}${reset}\n`);
+  } else {
+    console.log(`    ${dim}daemon not reachable; applies when it next starts or refreshes${reset}\n`);
+  }
 }
 
 // ─── Logs ────────────────────────────────────────────────────────────────────

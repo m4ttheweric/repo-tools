@@ -75,6 +75,27 @@ export function createCursorStore(filePath: string): CursorStore {
 
 const cursorStore = createCursorStore(EVENTS_CURSORS_PATH);
 
+// ─── Events-watch allowlist (opt-in) ─────────────────────────────────────────
+
+export const EVENTS_WATCH_PATH = join(RT_DIR, "events-watch.json");
+
+/**
+ * Watching a repo's events feed costs one API request per ~15s tick, so
+ * watchers are strictly opt-in: a repo gets one only when its name appears in
+ * ~/.rt/events-watch.json (a JSON array of repos.json keys, managed by
+ * `rt daemon events <repo> on|off`). A missing or corrupt file means nothing
+ * is watched.
+ */
+export function loadEventsAllowlist(filePath: string = EVENTS_WATCH_PATH): Set<string> {
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+    if (Array.isArray(parsed)) {
+      return new Set(parsed.filter((v): v is string => typeof v === "string"));
+    }
+  } catch { /* missing file is the normal not-opted-in state */ }
+  return new Set();
+}
+
 // ─── State ───────────────────────────────────────────────────────────────────
 
 /** Per-repo live watcher state. Structurally a BatchRunner (Task 3). */
@@ -540,10 +561,10 @@ export async function initFreshness(env: FreshnessEnv): Promise<void> {
 let reconcileInFlight: Promise<void> | null = null;
 
 /**
- * Align watchers with the repo index: start one per GitLab repo that lacks
- * one, dispose watchers for repos removed from the index. A watcher covers
- * the whole project regardless of how many MRs are cached, because pushes
- * to MR-less branches matter too.
+ * Align watchers with the repo index and the opt-in allowlist: start one per
+ * allowlisted GitLab repo that lacks one, dispose watchers for repos removed
+ * from either. A watcher covers the whole project regardless of how many MRs
+ * are cached, because pushes to MR-less branches matter too.
  */
 export function reconcileFreshness(env: FreshnessEnv): Promise<void> {
   if (reconcileInFlight) return reconcileInFlight;
@@ -553,8 +574,10 @@ export function reconcileFreshness(env: FreshnessEnv): Promise<void> {
 
 async function reconcileFreshnessImpl(env: FreshnessEnv): Promise<void> {
   const repoIndex = env.ctx.repoIndex();
+  const allowed = loadEventsAllowlist();
 
   for (const [repoName, repoPath] of Object.entries(repoIndex)) {
+    if (!allowed.has(repoName)) continue;
     if (watches.has(repoName)) continue;
 
     const provider = ensureProvider(repoName, repoPath);
@@ -577,6 +600,9 @@ async function reconcileFreshnessImpl(env: FreshnessEnv): Promise<void> {
     if (!repoIndex[repoName]) {
       stopWatch(repoName);
       log.info(`disposed watcher for ${repoName} (repo removed from index)`);
+    } else if (!allowed.has(repoName)) {
+      stopWatch(repoName);
+      log.info(`disposed watcher for ${repoName} (events watch opted out)`);
     }
   }
 

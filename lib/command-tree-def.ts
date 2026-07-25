@@ -649,6 +649,15 @@ export const TREE: Record<string, CommandNode> = {
         fn: "showStatus",
         args: [],
       },
+      events: {
+        description: "Opt repos in/out of live events watching",
+        module: "./commands/daemon.ts",
+        fn: "manageEvents",
+        args: [
+          { name: "Repo", type: "text", placeholder: "assured-dev", hint: "Repo name from ~/.rt/repos.json (omit to list)" },
+          { name: "Action", type: "text", placeholder: "on", hint: "on or off" },
+        ],
+      },
       logs: {
         description: "Show daemon logs",
         module: "./commands/daemon.ts",
