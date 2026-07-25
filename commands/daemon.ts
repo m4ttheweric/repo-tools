@@ -31,6 +31,7 @@ import {
   LAUNCHD_PLIST_PATH,
 } from "../lib/daemon-config.ts";
 import { daemonQuery, isDaemonRunning, trayQuery } from "../lib/daemon-client.ts";
+import { isGitLabRemote } from "../lib/enrich.ts";
 
 function formatUptime(ms: number): string {
   const seconds = Math.floor(ms / 1000);
@@ -300,9 +301,24 @@ export async function manageEvents(args: string[] = []): Promise<void> {
     return;
   }
 
-  if (action === "on" && !readRepoIndex()[repoArg]) {
-    console.log(`\n  ${red}✗${reset} repo "${repoArg}" not registered in ~/.rt/repos.json\n`);
-    return;
+  if (action === "on") {
+    const repoPath = readRepoIndex()[repoArg];
+    if (!repoPath) {
+      console.log(`\n  ${red}✗${reset} repo "${repoArg}" not registered in ~/.rt/repos.json\n`);
+      return;
+    }
+    // Watchers only ever start for GitLab remotes; refuse rather than write
+    // an allowlist entry that can never take effect.
+    let remoteUrl = "";
+    try {
+      remoteUrl = execSync("git config --get remote.origin.url", {
+        cwd: repoPath, encoding: "utf8", stdio: "pipe",
+      }).trim();
+    } catch { /* no origin remote */ }
+    if (!isGitLabRemote(remoteUrl)) {
+      console.log(`\n  ${red}✗${reset} ${repoArg} has no GitLab remote ${dim}(${remoteUrl || "no origin"})${reset}; events watching is GitLab-only\n`);
+      return;
+    }
   }
 
   const list = new Set(readEventsAllowlist());
