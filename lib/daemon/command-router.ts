@@ -31,7 +31,7 @@ export function buildRoutedHandlers(opts: {
     ...createHooksHandlers(ctx),
     ...createStatusHandlers(ctx),
     ...createWorkspaceHandlers(ctx),
-    ...createMRHandlers(ctx),
+    ...createMRHandlers(ctx, broadcast),
     ...createParkingLotHandlers(ctx),
     ...createDiscussionHandlers(ctx, broadcast),
     ...createSystemProcessHandlers(systemProcessScanner, ctx),

@@ -11,10 +11,26 @@
  * Every handler routes by `{ repoName, iid }`. If no provider can be built
  * for the repo (missing token, unparseable remote), the handler returns
  * `{ ok: false, error }` so the client can surface a toast.
+ *
+ * mr:action write-back (spec §5.4): a mutation only ever tells us the MR
+ * changed, not the fresh shape of every field (approvals, pipeline status,
+ * ...). Three buckets decide how we get that fresh shape into the stores:
+ *   - returned-PR (merge, toggleDraft) — the SDK call itself returns the
+ *     fresh PullRequest, so write-back is free (zero extra fetches).
+ *   - void (approve, unapprove, rebase, setAutoMerge, cancelAutoMerge,
+ *     requestReReview) — one immediate fetchSingleMR follow-up.
+ *   - retry (retryPipeline, retryJob) — pipelines are the events blind
+ *     spot; one DELAYED follow-up catches the flip to "running" (the
+ *     final pass/fail rides the normal 5-min cycle).
+ * Follow-up failures log at warn and never fail the action.
  */
 
-import { getRepoContext } from "../freshness.ts";
+import { applyMRWriteback, getCurrentUserId, getRepoContext } from "../freshness.ts";
+import { getDaemonLogger } from "../../daemon-logger.ts";
+import type { PullRequest } from "@workforge/glance-sdk";
 import type { HandlerContext, HandlerMap } from "./types.ts";
+
+const log = (await getDaemonLogger()).childLogger("mr");
 
 type ActionName =
   | "merge" | "rebase" | "approve" | "unapprove"
@@ -22,9 +38,35 @@ type ActionName =
   | "retryJob" | "retryPipeline"
   | "toggleDraft" | "requestReReview";
 
-export function createMRHandlers(ctx: HandlerContext): HandlerMap {
+export const RETRY_WRITEBACK_DELAY_MS = 5000;
+
+const RETURNED_PR_ACTIONS = new Set<ActionName>(["merge", "toggleDraft"]);
+const RETRY_ACTIONS       = new Set<ActionName>(["retryPipeline", "retryJob"]);
+
+export interface MRHandlerOverrides {
+  getContext?:  (repoName: string) => Promise<{ provider: any; projectPath: string }>;
+  writeback?:   (repoName: string, projectPath: string, pr: PullRequest) => void;
+  fetchSingle?: (provider: any, projectPath: string, iid: number) => Promise<PullRequest | null>;
+  retryDelayMs?: number;
+}
+
+export function createMRHandlers(
+  ctx: HandlerContext,
+  broadcast: (type: string, data: any) => void,
+  overrides: MRHandlerOverrides = {},
+): HandlerMap {
+  const getContext = overrides.getContext
+    ?? ((repoName: string) => getRepoContext(repoName, ctx.repoIndex()[repoName]));
+  const writeback = overrides.writeback
+    ?? ((repoName: string, projectPath: string, pr: PullRequest) =>
+        applyMRWriteback({ ctx, broadcast }, repoName, projectPath, pr));
+  const fetchSingle = overrides.fetchSingle
+    ?? ((provider: any, projectPath: string, iid: number) =>
+        provider.fetchSingleMR(projectPath, iid, getCurrentUserId()));
+  const retryDelayMs = overrides.retryDelayMs ?? RETRY_WRITEBACK_DELAY_MS;
+
   function contextFor(repoName: string) {
-    return getRepoContext(repoName, ctx.repoIndex()[repoName]);
+    return getContext(repoName);
   }
 
   return {
@@ -40,8 +82,9 @@ export function createMRHandlers(ctx: HandlerContext): HandlerMap {
 
       try {
         const { provider, projectPath } = await contextFor(repoName);
+        let returnedPr: PullRequest | null = null;
         switch (action) {
-          case "merge":            await provider.mergePullRequest(projectPath, iid, args[0]);          break;
+          case "merge":            returnedPr = await provider.mergePullRequest(projectPath, iid, args[0]);          break;
           case "rebase":           await provider.rebasePullRequest(projectPath, iid);                  break;
           case "approve":          await provider.approvePullRequest(projectPath, iid);                 break;
           case "unapprove":        await provider.unapprovePullRequest(projectPath, iid);               break;
@@ -49,10 +92,29 @@ export function createMRHandlers(ctx: HandlerContext): HandlerMap {
           case "cancelAutoMerge":  await provider.cancelAutoMerge(projectPath, iid);                    break;
           case "retryPipeline":    await provider.retryPipeline(projectPath, args[0]);                  break;
           case "retryJob":         await provider.retryJob(projectPath, args[0]);                       break;
-          case "toggleDraft":      await provider.updatePullRequest(projectPath, iid, { draft: args[0] }); break;
+          case "toggleDraft":      returnedPr = await provider.updatePullRequest(projectPath, iid, { draft: args[0] }); break;
           case "requestReReview":  await provider.requestReReview(projectPath, iid, args[0]);           break;
           default:
             return { ok: false, error: `unsupported action: ${action}` };
+        }
+
+        const followUp = async () => {
+          try {
+            const pr = await fetchSingle(provider, projectPath, iid);
+            if (pr) writeback(repoName, projectPath, pr);
+          } catch (err) {
+            log.warn({ err, repo: repoName, iid, action }, "write-back follow-up failed");
+          }
+        };
+
+        if (RETURNED_PR_ACTIONS.has(action) && returnedPr) {
+          writeback(repoName, projectPath, returnedPr);
+        } else if (RETRY_ACTIONS.has(action)) {
+          // Pipelines are the events blind spot: one delayed fetch catches
+          // the flip to "running"; the final pass/fail rides the 5-min cycle.
+          setTimeout(() => { followUp(); }, retryDelayMs);
+        } else {
+          await followUp();
         }
         return { ok: true };
       } catch (err) {
