@@ -122,6 +122,21 @@ function getRemoteUrl(repoPath: string): string | null {
   }
 }
 
+/**
+ * All daemon-built providers carry the SDK's onRequest hook wired to the
+ * freshness logger at debug. This is the API-accounting source for the
+ * stress-test gates (spec §10.2) — one line per logical SDK operation,
+ * visible under RT_LOG_LEVEL=debug.
+ */
+function makeProvider(host: string, token: string): GitLabProvider {
+  return new GitLabProvider(host, token, {
+    onRequest: (info) => log.debug(
+      { op: info.op, transport: info.transport, status: info.status, ms: Math.round(info.durationMs) },
+      "api request",
+    ),
+  });
+}
+
 function ensureProvider(repoName: string, repoPath: string): GitLabProvider | null {
   const cached = providers.get(repoName);
   if (cached) return cached;
@@ -149,7 +164,7 @@ function ensureProvider(repoName: string, repoPath: string): GitLabProvider | nu
     return null;
   }
 
-  const provider = new GitLabProvider(remote.host, secrets.gitlabToken);
+  const provider = makeProvider(remote.host, secrets.gitlabToken);
   providers.set(repoName, provider);
   return provider;
 }
@@ -263,7 +278,7 @@ export async function getRepoContext(
     if (!remote) {
       throw new Error(`could not parse remote URL "${remoteUrl}"`);
     }
-    provider = new GitLabProvider(remote.host, secrets.gitlabToken);
+    provider = makeProvider(remote.host, secrets.gitlabToken);
     providers.set(repoName, provider);
   }
 
