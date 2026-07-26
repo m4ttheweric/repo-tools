@@ -516,6 +516,25 @@ function updateEntry(env: FreshnessEnv, repoName: string, branch: string, pr: Pu
   return true;
 }
 
+/**
+ * Mutation write-back (spec §5.4): after an rt-mediated MR mutation, write
+ * the fresh PR into whichever stores hold it. The branch entry updates
+ * unconditionally (it exists only if the MR is one of ours); the project
+ * store updates only under the "project-mrs" grant.
+ */
+export function applyMRWriteback(env: FreshnessEnv, repoName: string, projectPath: string, pr: PullRequest): void {
+  let branch: string | null = null;
+  for (const [b, entry] of Object.entries(env.ctx.cache.entries)) {
+    if (entry.repoName === repoName && entry.mr?.iid === pr.iid) { branch = b; break; }
+  }
+  if (branch && updateEntry(env, repoName, branch, pr)) env.ctx.flushCache();
+
+  if (grants(loadRepoTracking(), repoName).caches.has("project-mrs")) {
+    const changed = getProjectMRs().upsert(repoName, projectPath, pr, "mutation");
+    if (changed.length > 0) env.broadcast("project-mrs", { repoName, iids: changed });
+  }
+}
+
 async function defaultRefreshDiscussions(env: FreshnessEnv, repoName: string, iid: number): Promise<unknown> {
   // Dynamic import: discussions-store imports getRepoContext from this
   // module, so a static import here would be a top-level-await cycle.
