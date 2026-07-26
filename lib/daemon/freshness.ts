@@ -8,6 +8,14 @@
  * full poll in cache-refresh.ts remains the safety net for the events feed's
  * blind spots (metadata-only MR edits, pipeline status transitions).
  *
+ * The mapping's fan-out is grant-scoped: a repo granting only `branches`
+ * gets today's branch-cache-only behavior (including the unknown-iid
+ * gap-fill); a repo also granting `project-mrs` additionally upserts the
+ * project open-MR store on `mr`/`branch` events (teammate MRs included,
+ * without a second fetch when a local fetch already produced the PR); a
+ * repo granting `discussions` gets `notes` events routed to the discussions
+ * store, but only for MRs whose discussions are already cached.
+ *
  * This module is also the daemon's shared GitLab plumbing: per-repo provider
  * registry, current-user id, and the aggregated connection state broadcast
  * as `mr:status`.
@@ -23,12 +31,14 @@ import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { GitLabProvider, type EventCursor, type InvalidationKey, type PullRequest } from "@workforge/glance-sdk";
 import { RT_DIR } from "../daemon-config.ts";
-import { loadRepoTracking, grants } from "../repo-tracking.ts";
+import { loadRepoTracking, grants, type RepoGrants } from "../repo-tracking.ts";
 import { loadSecrets } from "../linear.ts";
 import { parseRemoteUrl, isGitLabRemote, toMRInfo } from "../enrich.ts";
 import { checkAndNotify } from "../notifier.ts";
 import type { HandlerContext } from "./handlers/types.ts";
 import { getDaemonLogger } from "../daemon-logger.ts";
+import { getProjectMRs, type ProjectMRs } from "./project-mrs-store.ts";
+import { getDiscussionsFileStore } from "./discussions-file-store.ts";
 
 const log = (await getDaemonLogger()).childLogger("freshness");
 
@@ -344,6 +354,9 @@ export interface MappingOverrides {
   refreshDiscussions?: (env: FreshnessEnv, repoName: string, iid: number) => Promise<unknown>;
   notify?:             (entries: Record<string, any>, userId: number | null) => void;
   gapFillDebounceMs?:  number;
+  grantsFor?:            (repoName: string) => RepoGrants;                   // default: grants(loadRepoTracking(), repoName)
+  projectStore?:         ProjectMRs;                                          // default: getProjectMRs()
+  hasCachedDiscussions?: (repoName: string, iid: number) => boolean;          // default: file-store read !== undefined
 }
 
 /**
@@ -402,6 +415,15 @@ async function processKeys(
     if (typeof entry.mr?.iid === "number") branchByIid.set(entry.mr.iid, branch);
   }
 
+  const g = (overrides.grantsFor ?? ((r: string) => grants(loadRepoTracking(), r)))(repoName);
+  const pStore = overrides.projectStore ?? getProjectMRs();
+  const wantProject = g.caches.has("project-mrs");
+
+  const upsertProject = (pr: PullRequest) => {
+    const changed = pStore.upsert(repoName, projectPath, pr, "events");
+    if (changed.length > 0) env.broadcast("project-mrs", { repoName, iids: changed });
+  };
+
   let mutated = false;
 
   for (const k of unique) {
@@ -410,29 +432,53 @@ async function processKeys(
         case "mr": {
           const iid = Number(k.ref);
           const branch = branchByIid.get(iid);
-          if (!branch) {
-            // Not a cached MR. Could be someone else's, or an MR just opened
-            // on one of our branches — the gap-fill decides cheaply.
+          if (!branch && !wantProject) {
+            // Not a cached MR and no project store to feed. Could be
+            // someone else's, or an MR just opened on one of our branches —
+            // the gap-fill decides cheaply.
             scheduleGapFill(env, target, runner, overrides);
             break;
           }
           const pr = await provider.fetchSingleMR(projectPath, iid, getCurrentUserId());
-          mutated = updateEntry(env, repoName, branch, pr) || mutated;
+          if (branch) mutated = updateEntry(env, repoName, branch, pr) || mutated;
+          if (wantProject && pr) upsertProject(pr);
           break;
         }
         case "notes": {
           const iid = Number(k.ref);
-          if (!branchByIid.has(iid)) break; // not one of ours
+          if (!g.caches.has("discussions")) break; // repo doesn't grant discussions
+          const hasCached = overrides.hasCachedDiscussions
+            ?? ((repo: string, mrIid: number) => getDiscussionsFileStore().read(repo, mrIid) !== undefined);
+          if (!hasCached(repoName, iid)) break; // not something a consumer has looked at
           const refresh = overrides.refreshDiscussions ?? defaultRefreshDiscussions;
           await refresh(env, repoName, iid);
           break;
         }
         case "branch": {
           const entry = ctx.cache.entries[k.ref];
-          if (!entry || entry.repoName !== repoName) break; // not one of ours
-          const pr = await provider.fetchPullRequestByBranch(projectPath, k.ref, "all");
-          if (!pr && runner.gapFillTimer) break; // MR may be mid-creation; let the gap-fill decide
-          mutated = updateEntry(env, repoName, k.ref, pr) || mutated;
+          const isOurs = entry !== undefined && entry.repoName === repoName;
+          let fetchedForRef: PullRequest | null | undefined;
+          if (isOurs) {
+            fetchedForRef = await provider.fetchPullRequestByBranch(projectPath, k.ref, "all");
+            if (!(fetchedForRef == null && runner.gapFillTimer)) {
+              // MR may be mid-creation when null and a gap-fill is already
+              // armed; let the gap-fill decide instead of writing null now.
+              mutated = updateEntry(env, repoName, k.ref, fetchedForRef ?? null) || mutated;
+            }
+          }
+          if (wantProject) {
+            if (fetchedForRef) {
+              // Local push: reuse the PR the local handling just fetched.
+              upsertProject(fetchedForRef);
+            } else if (!isOurs) {
+              // Teammate push: resolve the branch through the project store.
+              const hit = pStore.findBySourceBranch(repoName, k.ref);
+              if (hit) {
+                const pr = await provider.fetchSingleMR(projectPath, hit.iid, getCurrentUserId());
+                if (pr) upsertProject(pr);
+              }
+            }
+          }
           break;
         }
         case "pipelines":
