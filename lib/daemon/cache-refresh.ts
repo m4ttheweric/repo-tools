@@ -20,6 +20,8 @@ import { checkAndNotify } from "../notifier.ts";
 import { getCurrentUserId } from "./freshness.ts";
 import { loadRepoTracking, grants } from "../repo-tracking.ts";
 import { syncProjectMRs } from "./project-sync.ts";
+import { getProjectMRs } from "./project-mrs-store.ts";
+import { pruneDiscussionsStore } from "./discussions-file-store.ts";
 import { checkAndPark } from "./parking-lot.ts";
 import { reconcileForRepo } from "./doppler-sync.ts";
 import { listWorktreeRoots, listWorktrees } from "../git-worktrees.ts";
@@ -58,6 +60,7 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       const { extractLinearId } = await import("../linear.ts");
       const repos = repoIndex();
       const tracking = loadRepoTracking();
+      const failedRepos = new Set<string>();
 
       for (const [repoName, repoPath] of Object.entries(repos)) {
         if (!existsSync(repoPath)) continue;
@@ -71,6 +74,7 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
             await syncProjectMRs({ repoIndex, broadcast }, repoName);
           } catch (err) {
             log.warn({ err, repo: repoName }, "project sync failed");
+            failedRepos.add(repoName);
           }
         }
 
@@ -117,6 +121,7 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
           }
         } catch (err) {
           log.warn({ err, repo: repoName }, "cache refresh skipped repo");
+          failedRepos.add(repoName);
         }
       }
 
@@ -124,6 +129,19 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       loadCache();
       refreshStatusRef.lastRefreshAt = Date.now();
       log.debug({ count: Object.keys(cache.entries).length }, "cache refresh complete");
+
+      // Discussions prune: drop snapshots whose MR is in neither store.
+      // failedRepos are exempt — never prune on a failed pass.
+      try {
+        const removed = pruneDiscussionsStore({
+          entries: cache.entries,
+          projectStore: getProjectMRs(),
+          failedRepos,
+        });
+        if (removed > 0) log.debug({ removed }, "discussions prune");
+      } catch (err) {
+        log.warn({ err }, "discussions prune failed");
+      }
 
       // Check for state transitions and fire notifications
       checkAndNotify(cache.entries, portCacheRef.ports, getCurrentUserId());
