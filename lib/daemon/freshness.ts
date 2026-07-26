@@ -634,6 +634,15 @@ function startWatch(env: FreshnessEnv, repoName: string, provider: GitLabProvide
 
   watches.set(repoName, watch);
   log.info({ repo: repoName, projectPath, resumed: resumeCursor != null }, "events watcher started");
+
+  // Watcher start = the repo just went live; give project-mrs consumers
+  // data now instead of at the next 5-min cycle.
+  if (grants(loadRepoTracking(), repoName).caches.has("project-mrs")) {
+    import("./project-sync.ts")
+      .then(({ syncProjectMRs }) =>
+        syncProjectMRs({ repoIndex: () => env.ctx.repoIndex(), broadcast: env.broadcast }, repoName))
+      .catch((err) => log.warn({ err, repo: repoName }, "watcher-start project sync failed"));
+  }
 }
 
 function stopWatch(repoName: string): void {

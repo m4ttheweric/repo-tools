@@ -19,6 +19,7 @@ import type { PortCacheRef, RepoIndex } from "./handlers/types.ts";
 import { checkAndNotify } from "../notifier.ts";
 import { getCurrentUserId } from "./freshness.ts";
 import { loadRepoTracking, grants } from "../repo-tracking.ts";
+import { syncProjectMRs } from "./project-sync.ts";
 import { checkAndPark } from "./parking-lot.ts";
 import { reconcileForRepo } from "./doppler-sync.ts";
 import { listWorktreeRoots, listWorktrees } from "../git-worktrees.ts";
@@ -60,8 +61,21 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
 
       for (const [repoName, repoPath] of Object.entries(repos)) {
         if (!existsSync(repoPath)) continue;
+
+        const g = grants(tracking, repoName);
+        if (g.caches.size === 0) continue; // off: zero background work
+
+        // Project list sync (member-blind team view) — its own grant.
+        if (g.caches.has("project-mrs")) {
+          try {
+            await syncProjectMRs({ repoIndex, broadcast }, repoName);
+          } catch (err) {
+            log.warn({ err, repo: repoName }, "project sync failed");
+          }
+        }
+
         // Branch-view enrichment requires the "branches" grant.
-        if (!grants(tracking, repoName).caches.has("branches")) continue;
+        if (!g.caches.has("branches")) continue;
 
         try {
           // 1. Discover worktree branches (detached worktrees have no branch)
