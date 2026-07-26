@@ -59,14 +59,15 @@ export function loadRepoTracking(filePath: string = REPO_TRACKING_PATH): RepoTra
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
 
-  const repos = (parsed as { version?: unknown; repos?: unknown }).version === 2
-    ? (parsed as { repos?: unknown }).repos
-    : parsed;
+  const isV2 = (parsed as { version?: unknown }).version === 2
+    && typeof (parsed as { repos?: unknown }).repos === "object"
+    && (parsed as { repos?: unknown }).repos !== null
+    && !Array.isArray((parsed as { repos?: unknown }).repos);
+  const repos = isV2 ? (parsed as { repos: Record<string, unknown> }).repos : parsed;
   if (!repos || typeof repos !== "object" || Array.isArray(repos)) return {};
 
   const out: RepoTracking = {};
   for (const [repo, value] of Object.entries(repos)) {
-    if (repo === "version") continue; // tolerate a stray key in legacy shape
     const entry = normalizeEntry(value);
     if (entry) out[repo] = entry;
   }

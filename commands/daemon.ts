@@ -32,7 +32,7 @@ import {
 } from "../lib/daemon-config.ts";
 import { daemonQuery, isDaemonRunning, trayQuery } from "../lib/daemon-client.ts";
 import { isGitLabRemote } from "../lib/enrich.ts";
-import { loadRepoTracking, grants, saveRepoTracking, REPO_TRACKING_PATH } from "../lib/repo-tracking.ts";
+import { loadRepoTracking, grants, saveRepoTracking } from "../lib/repo-tracking.ts";
 
 function formatUptime(ms: number): string {
   const seconds = Math.floor(ms / 1000);

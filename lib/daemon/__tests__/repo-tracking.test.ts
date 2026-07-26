@@ -47,6 +47,17 @@ describe("loadRepoTracking", () => {
     expect(t.c).toBeUndefined();
     expect(t.d).toBeUndefined();
   });
+
+  test('a repo literally named "version" survives in both shapes', () => {
+    const legacy = tmpFile(JSON.stringify({ version: "live", other: "poll" }));
+    expect(loadRepoTracking(legacy).version).toEqual({ mode: "live", caches: ["branches"] });
+    const v2 = tmpFile(JSON.stringify({
+      version: 2,
+      repos: { version: { mode: "poll", caches: ["branches"] }!, other: { mode: "live", caches: ["branches"] }! },
+    }));
+    expect(loadRepoTracking(v2).version).toEqual({ mode: "poll", caches: ["branches"] });
+    expect(loadRepoTracking(v2).other).toBeDefined();
+  });
 });
 
 describe("grants", () => {
