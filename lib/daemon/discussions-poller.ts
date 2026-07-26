@@ -11,6 +11,8 @@
  * Design notes:
  * - Polls every `POLL_INTERVAL_MS` (5 min) — the events path handles the
  *   fast cases; this sweep only backfills the event-less mutations above.
+ * - Sweeps only repos granting the "discussions" cache, not every non-off
+ *   repo — a repo tracked for branches alone gets no discussions polling.
  * - Only polls MRs in `open` / `mergeable` / `blocked` / `draft` state.
  *   Merged / closed MRs rarely receive new comments and aren't worth the
  *   round trip.
@@ -20,7 +22,7 @@
  */
 
 import { refreshDiscussions, type BroadcastFn } from "./discussions-store.ts";
-import { loadRepoTracking, trackingLevel } from "./freshness.ts";
+import { loadRepoTracking, grants } from "../repo-tracking.ts";
 import type { HandlerContext } from "./handlers/types.ts";
 import { getDaemonLogger } from "../daemon-logger.ts";
 const log = (await getDaemonLogger()).childLogger("discussions");
@@ -45,8 +47,8 @@ async function sweep(env: PollerEnv): Promise<void> {
     const tracking = loadRepoTracking();
     for (const entry of Object.values(env.ctx.cache.entries)) {
       if (!entry.repoName) continue;
-      // Untracked repos get no background API calls, including this sweep.
-      if (trackingLevel(tracking, entry.repoName) === "off") continue;
+      // The background discussions sweep requires the "discussions" grant.
+      if (!grants(tracking, entry.repoName).caches.has("discussions")) continue;
       const mr = entry.mr;
       const iid = mr?.iid;
       if (typeof iid !== "number") continue;

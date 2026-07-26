@@ -23,6 +23,7 @@ import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { GitLabProvider, type EventCursor, type InvalidationKey, type PullRequest } from "@workforge/glance-sdk";
 import { RT_DIR } from "../daemon-config.ts";
+import { loadRepoTracking, grants } from "../repo-tracking.ts";
 import { loadSecrets } from "../linear.ts";
 import { parseRemoteUrl, isGitLabRemote, toMRInfo } from "../enrich.ts";
 import { checkAndNotify } from "../notifier.ts";
@@ -74,50 +75,6 @@ export function createCursorStore(filePath: string): CursorStore {
 }
 
 const cursorStore = createCursorStore(EVENTS_CURSORS_PATH);
-
-// ─── Per-repo tracking levels (opt-in) ───────────────────────────────────────
-
-export const REPO_TRACKING_PATH = join(RT_DIR, "repo-tracking.json");
-
-/**
- * Background tracking is strictly opt-in per repo, managed by
- * `rt daemon track <repo> live|poll|off`:
- *
- *   live — events watcher (~15s feed poll) + the 5-min enrichment poll
- *   poll — 5-min enrichment poll only
- *   off  — no background API calls; enrichment happens on demand when a
- *          command asks for the branch (default for unlisted repos)
- */
-export type TrackingLevel = "live" | "poll" | "off";
-
-export type RepoTracking = Record<string, TrackingLevel>;
-
-const TRACKING_LEVELS = new Set<string>(["live", "poll", "off"]);
-
-/**
- * Read ~/.rt/repo-tracking.json ({ repoName: level }). A missing or corrupt
- * file means nothing is tracked; entries with unknown levels are dropped so
- * a typo degrades to "off" rather than to accidental polling.
- */
-export function loadRepoTracking(filePath: string = REPO_TRACKING_PATH): RepoTracking {
-  try {
-    const parsed = JSON.parse(readFileSync(filePath, "utf8"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const out: RepoTracking = {};
-      for (const [repo, level] of Object.entries(parsed)) {
-        if (typeof level === "string" && TRACKING_LEVELS.has(level)) {
-          out[repo] = level as TrackingLevel;
-        }
-      }
-      return out;
-    }
-  } catch { /* missing file is the normal nothing-tracked state */ }
-  return {};
-}
-
-export function trackingLevel(tracking: RepoTracking, repoName: string): TrackingLevel {
-  return tracking[repoName] ?? "off";
-}
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -600,7 +557,7 @@ async function reconcileFreshnessImpl(env: FreshnessEnv): Promise<void> {
   const tracking = loadRepoTracking();
 
   for (const [repoName, repoPath] of Object.entries(repoIndex)) {
-    if (trackingLevel(tracking, repoName) !== "live") continue;
+    if (grants(tracking, repoName).mode !== "live") continue;
     if (watches.has(repoName)) continue;
 
     const provider = ensureProvider(repoName, repoPath);
@@ -623,7 +580,7 @@ async function reconcileFreshnessImpl(env: FreshnessEnv): Promise<void> {
     if (!repoIndex[repoName]) {
       stopWatch(repoName);
       log.info(`disposed watcher for ${repoName} (repo removed from index)`);
-    } else if (trackingLevel(tracking, repoName) !== "live") {
+    } else if (grants(tracking, repoName).mode !== "live") {
       stopWatch(repoName);
       log.info(`disposed watcher for ${repoName} (no longer tracked live)`);
     }

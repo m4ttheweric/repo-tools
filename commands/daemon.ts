@@ -32,6 +32,7 @@ import {
 } from "../lib/daemon-config.ts";
 import { daemonQuery, isDaemonRunning, trayQuery } from "../lib/daemon-client.ts";
 import { isGitLabRemote } from "../lib/enrich.ts";
+import { loadRepoTracking, grants, saveRepoTracking, REPO_TRACKING_PATH } from "../lib/repo-tracking.ts";
 
 function formatUptime(ms: number): string {
   const seconds = Math.floor(ms / 1000);
@@ -243,26 +244,6 @@ export async function showStatus(): Promise<void> {
 
 // ─── Per-repo tracking (opt-in) ──────────────────────────────────────────────
 
-const REPO_TRACKING_PATH = join(RT_DIR, "repo-tracking.json");
-const TRACKING_LEVELS = ["live", "poll", "off"] as const;
-type TrackingLevel = (typeof TRACKING_LEVELS)[number];
-
-function readRepoTracking(): Record<string, TrackingLevel> {
-  try {
-    const parsed = JSON.parse(readFileSync(REPO_TRACKING_PATH, "utf8"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const out: Record<string, TrackingLevel> = {};
-      for (const [repo, level] of Object.entries(parsed)) {
-        if (typeof level === "string" && (TRACKING_LEVELS as readonly string[]).includes(level)) {
-          out[repo] = level as TrackingLevel;
-        }
-      }
-      return out;
-    }
-  } catch { /* missing file means nothing tracked */ }
-  return {};
-}
-
 function readRepoIndex(): Record<string, string> {
   try {
     return JSON.parse(readFileSync(join(RT_DIR, "repos.json"), "utf8"));
@@ -288,14 +269,14 @@ export async function manageTracking(args: string[] = []): Promise<void> {
 
   if (!repoArg) {
     const repos = readRepoIndex();
-    const tracking = readRepoTracking();
+    const tracking = loadRepoTracking();
     const status = await daemonQuery("status");
     const freshness = ((status?.ok ? status.data?.freshness : undefined) ?? {}) as
       Record<string, { state: string }>;
 
     console.log(`\n  ${bold}repo tracking${reset} ${dim}(opt-in · ~/.rt/repo-tracking.json · unlisted = off)${reset}\n`);
     for (const name of Object.keys(repos).sort()) {
-      const level = tracking[name] ?? "off";
+      const level = grants(tracking, name).mode;
       const watcher = freshness[name];
       const marker = level === "live" ? `${green}●${reset}` : level === "poll" ? `${yellow}◐${reset}` : `${dim}○${reset}`;
       const detail = level === "live"
@@ -312,11 +293,11 @@ export async function manageTracking(args: string[] = []): Promise<void> {
     return;
   }
 
-  if (!levelArg || !(TRACKING_LEVELS as readonly string[]).includes(levelArg)) {
+  if (!levelArg || !["live", "poll", "off"].includes(levelArg)) {
     console.log(`\n  usage: rt daemon track [<repo> live|poll|off]\n`);
     return;
   }
-  const level = levelArg as TrackingLevel;
+  const level = levelArg as "live" | "poll" | "off";
 
   if (level !== "off") {
     const repoPath = readRepoIndex()[repoArg];
@@ -340,11 +321,10 @@ export async function manageTracking(args: string[] = []): Promise<void> {
     }
   }
 
-  const tracking = readRepoTracking();
+  const tracking = loadRepoTracking();
   if (level === "off") delete tracking[repoArg];
-  else tracking[repoArg] = level;
-  const sorted = Object.fromEntries(Object.entries(tracking).sort(([a], [b]) => a.localeCompare(b)));
-  writeFileSync(REPO_TRACKING_PATH, JSON.stringify(sorted, null, 2) + "\n");
+  else tracking[repoArg] = { mode: level as "live" | "poll", caches: tracking[repoArg]?.caches ?? ["branches"] };
+  saveRepoTracking(tracking);
   console.log(`\n  ${green}✓${reset} ${repoArg} tracking: ${level}`);
 
   // Watchers apply immediately; a fresh enrichment pass makes poll/live
