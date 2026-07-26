@@ -434,6 +434,32 @@ describe("applyInvalidationBatch", () => {
     expect(store.read("repo-x")!.mrs[7]).toBeDefined();       // project store also fed
   });
 
+  test("mr event, iid NOT in branchByIid but entry keyed by PR's sourceBranch has mr: null: ONE fetch feeds branch entry AND project store", async () => {
+    const store = createProjectMRs(tmpStorePath(), 0);
+    const entries: Record<string, any> = {
+      "branch-42": { mr: null, fetchedAt: 1, repoName: "repo-x" },
+    };
+    const { env } = makeEnv(entries);
+    const calls: number[] = [];
+    const target: RepoTarget = {
+      repoName: "repo-x", projectPath: "g/p",
+      provider: {
+        // fakePR(42) has sourceBranch "branch-42" (see fakePR factory above).
+        fetchSingleMR: async (_pp: string, iid: number) => { calls.push(iid); return fakePR(42); },
+        fetchPullRequestByBranch: async () => { throw new Error("unexpected"); },
+        fetchPullRequestsByBranches: async () => { throw new Error("unexpected"); },
+      } as any,
+    };
+    await applyInvalidationBatch(env, target, makeRunner(), [key("mr", "42")], {
+      ...noNotify, grantsFor: projectGrants, projectStore: store,
+    });
+    expect(calls).toEqual([42]);                                // exactly one fetch
+    expect(entries["branch-42"].mr).not.toBeNull();              // branch entry filled via sourceBranch feed
+    expect(entries["branch-42"].mr.iid).toBe(42);
+    expect(entries["branch-42"].fetchedAt).toBeGreaterThan(1);
+    expect(store.read("repo-x")!.mrs[42]).toBeDefined();         // project store also fed
+  });
+
   test("branch push with local entry + project grant: fetchPullRequestByBranch result reused, NO fetchSingleMR", async () => {
     const store = createProjectMRs(tmpStorePath(), 0);
     const entries: Record<string, any> = {

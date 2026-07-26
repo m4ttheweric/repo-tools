@@ -334,10 +334,22 @@ export async function manageTracking(args: string[] = []): Promise<void> {
   }
 
   const tracking = loadRepoTracking();
+  const previousEntry = levelArg !== "off" ? tracking[repoArg] : undefined;
   if (levelArg === "off") delete tracking[repoArg];
   else tracking[repoArg] = { mode: levelArg as "live" | "poll", caches };
   saveRepoTracking(tracking);
   console.log(`\n  ${green}✓${reset} ${repoArg} tracking: ${levelArg}${levelArg === "off" ? "" : ` [${caches.join(", ")}]`}`);
+  // A write that omits the caches arg always resets to ["branches"] (see
+  // default above). If the entry it replaced granted more than that, the
+  // caller silently lost project-mrs/discussions grants — flag it.
+  if (
+    levelArg !== "off" &&
+    cachesArg === undefined &&
+    previousEntry &&
+    previousEntry.caches.some((c) => c !== "branches")
+  ) {
+    console.log(`    ${dim}note: caches reset to [branches] (was [${previousEntry.caches.join(", ")}]) — pass a caches list to keep grants${reset}`);
+  }
 
   // Watchers apply immediately; a fresh enrichment pass makes poll/live
   // repos show data now instead of at the next 5-minute cycle.

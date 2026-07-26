@@ -14,7 +14,7 @@
  */
 
 import { NoteMutator } from "@workforge/glance-sdk";
-import { getRepoContext } from "../freshness.ts";
+import { getRepoContext, providerRequestHook } from "../freshness.ts";
 import { loadSecrets } from "../../linear.ts";
 import { refreshDiscussions, type BroadcastFn } from "../discussions-store.ts";
 import { getDiscussionsFileStore } from "../discussions-file-store.ts";
@@ -138,7 +138,7 @@ export function createDiscussionHandlers(
         const repoCtx = await getRepoContext(repoName, repoPath);
         const secrets = loadSecrets();
         if (!secrets.gitlabToken) return { ok: false, error: "no gitlabToken in secrets" };
-        const mutator = new NoteMutator(repoCtx.provider.baseURL, secrets.gitlabToken);
+        const mutator = new NoteMutator(repoCtx.provider.baseURL, secrets.gitlabToken, providerRequestHook());
         await mutator.createNote(repoCtx.projectId, iid, body, discussionId);
         const res = await refreshDiscussions(deps, repoName, iid);
         return { ok: true, data: { discussions: res.discussions, fetchedAt: res.fetchedAt } };

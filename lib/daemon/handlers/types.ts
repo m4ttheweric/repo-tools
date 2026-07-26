@@ -24,12 +24,16 @@ export interface CacheEntry {
    */
   repoName?: string;
   /**
-   * Discussion threads for this MR. Populated lazily on first `discussions:read`
-   * and refreshed on `discussions:refresh` or after a resolve/reply mutation.
-   * Absent until the user opens the Reviews sub-view.
+   * Legacy field, no longer written since the discussions lift — snapshots
+   * now live in ~/.rt/discussions.json (see discussions-file-store.ts). Kept
+   * only so the one-time seed can read old caches; die by attrition.
    */
   discussions?: Discussion[];
-  /** Unix-ms of the last successful discussions fetch; used for TTL. */
+  /**
+   * Legacy field, no longer written since the discussions lift — snapshots
+   * now live in ~/.rt/discussions.json (see discussions-file-store.ts). Kept
+   * only so the one-time seed can read old caches; die by attrition.
+   */
   discussionsFetchedAt?: number;
 }
 
