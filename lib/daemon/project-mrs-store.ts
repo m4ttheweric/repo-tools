@@ -104,12 +104,14 @@ export function createProjectMRs(
       // fetch — keep it; the sync result predates it.
       if (existing && existing.fetchedAt > syncStartedAt) continue;
       // (c) full syncs never carry diverged data; keep a fresher value.
+      // Copy-on-preserve: callers may hold references to the same fetched
+      // objects, so never mutate the incoming pr.
       const prevDiverged = (existing?.pr as { divergedCommitsCount?: number | null } | undefined)?.divergedCommitsCount;
-      const next = pr as { divergedCommitsCount?: number | null };
-      if (next.divergedCommitsCount == null && prevDiverged != null) {
-        next.divergedCommitsCount = prevDiverged;
-      }
-      store.mrs[pr.iid] = { pr, fetchedAt: syncStartedAt };
+      const incomingDiverged = (pr as { divergedCommitsCount?: number | null }).divergedCommitsCount;
+      const toStore = incomingDiverged == null && prevDiverged != null
+        ? ({ ...pr, divergedCommitsCount: prevDiverged } as PullRequest)
+        : pr;
+      store.mrs[pr.iid] = { pr: toStore, fetchedAt: syncStartedAt };
       changed.push(pr.iid);
     }
 
