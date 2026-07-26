@@ -656,7 +656,8 @@ export const TREE: Record<string, CommandNode> = {
         aliases: ["events"],
         args: [
           { name: "Repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.rt/repos.json (omit to list)" },
-          { name: "Level", type: "text", placeholder: "live", hint: "live (events + poll), poll (5-min only), off (on-demand only)" },
+          { name: "Level", type: "text", placeholder: "live|poll|off", hint: "live (events + poll), poll (5-min only), off (on-demand only)" },
+          { name: "Caches", type: "text", placeholder: "branches,project-mrs", hint: "Comma list of cache kinds to track: branches, project-mrs, discussions (default: branches)" },
         ],
       },
       logs: {

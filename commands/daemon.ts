@@ -32,7 +32,8 @@ import {
 } from "../lib/daemon-config.ts";
 import { daemonQuery, isDaemonRunning, trayQuery } from "../lib/daemon-client.ts";
 import { isGitLabRemote } from "../lib/enrich.ts";
-import { loadRepoTracking, grants, saveRepoTracking } from "../lib/repo-tracking.ts";
+import type { CacheKind } from "../lib/repo-tracking.ts";
+import { loadRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS } from "../lib/repo-tracking.ts";
 
 function formatUptime(ms: number): string {
   const seconds = Math.floor(ms / 1000);
@@ -255,10 +256,10 @@ function readRepoIndex(): Record<string, string> {
 /**
  * Manage per-repo background tracking.
  *
- *   rt daemon track                    list repos with level + watcher state
- *   rt daemon track <repo> live       events watcher + 5-min enrichment
- *   rt daemon track <repo> poll       5-min enrichment only
- *   rt daemon track <repo> off        no background API calls (default)
+ *   rt daemon track                      list repos with level + watcher state
+ *   rt daemon track <repo> live|poll     events watcher + 5-min enrichment (branches by default)
+ *   rt daemon track <repo> off           no background API calls (default)
+ *   rt daemon track <repo> live|poll <caches>  opt-in to specific caches (branches,project-mrs,discussions)
  *
  * "off" removes the entry (off is the default for unlisted repos). Level
  * changes apply immediately for watchers; the 5-min poll picks up poll/off
@@ -276,36 +277,47 @@ export async function manageTracking(args: string[] = []): Promise<void> {
 
     console.log(`\n  ${bold}repo tracking${reset} ${dim}(opt-in · ~/.rt/repo-tracking.json · unlisted = off)${reset}\n`);
     for (const name of Object.keys(repos).sort()) {
-      const level = grants(tracking, name).mode;
+      const g = grants(tracking, name);
       const watcher = freshness[name];
-      const marker = level === "live" ? `${green}●${reset}` : level === "poll" ? `${yellow}◐${reset}` : `${dim}○${reset}`;
-      const detail = level === "live"
+      const marker = g.mode === "live" ? `${green}●${reset}` : g.mode === "poll" ? `${yellow}◐${reset}` : `${dim}○${reset}`;
+      const detail = g.mode === "live"
         ? `live${watcher ? ` (${watcher.state})` : " (watcher starting)"}`
-        : level === "poll" ? "poll" : "";
-      console.log(`  ${marker} ${level === "off" ? `${dim}${name}${reset}` : name}${detail ? ` ${dim}${detail}${reset}` : ""}`);
+        : g.mode === "poll" ? "poll" : "";
+      const suffix = g.mode === "off" ? "" : ` [${[...g.caches].join(", ")}]`;
+      console.log(`  ${marker} ${g.mode === "off" ? `${dim}${name}${reset}` : name}${detail ? ` ${dim}${detail}${reset}` : ""}${suffix ? ` ${dim}${suffix}${reset}` : ""}`);
     }
     // Tracking entries that no longer match a registered repo do nothing;
     // surface them so a rename or typo isn't silently inert.
     for (const name of Object.keys(tracking).filter((n) => !repos[n])) {
       console.log(`  ${yellow}!${reset} ${name} ${dim}(tracked but not in ~/.rt/repos.json)${reset}`);
     }
-    console.log(`\n  ${dim}set: rt daemon track <repo> live|poll|off${reset}\n`);
+    console.log(`\n  ${dim}set: rt daemon track <repo> live|poll|off [caches]   caches: ${[...CACHE_KINDS].join(",")} (default branches)${reset}\n`);
     return;
   }
 
   if (!levelArg || !["live", "poll", "off"].includes(levelArg)) {
-    console.log(`\n  usage: rt daemon track [<repo> live|poll|off]\n`);
+    console.log(`\n  usage: rt daemon track [<repo> live|poll|off [caches]]\n         caches: comma list of ${[...CACHE_KINDS].join(",")} (default: branches)\n`);
     return;
   }
-  const level = levelArg as "live" | "poll" | "off";
 
-  if (level !== "off") {
+  const cachesArg = args[2];
+  let caches: CacheKind[] = ["branches"];
+  if (levelArg !== "off" && cachesArg !== undefined) {
+    const parsed = parseCachesArg(cachesArg);
+    if (!parsed) {
+      console.log(`\n  ${red}✗${reset} unknown cache name in "${cachesArg}" ${dim}(valid: ${[...CACHE_KINDS].join(", ")})${reset}\n`);
+      return;
+    }
+    caches = parsed;
+  }
+
+  if (levelArg !== "off") {
     const repoPath = readRepoIndex()[repoArg];
     if (!repoPath) {
       console.log(`\n  ${red}✗${reset} repo "${repoArg}" not registered in ~/.rt/repos.json\n`);
       return;
     }
-    if (level === "live") {
+    if (levelArg === "live") {
       // Watchers only ever start for GitLab remotes; refuse rather than
       // write a tracking entry that can never take effect.
       let remoteUrl = "";
@@ -322,10 +334,10 @@ export async function manageTracking(args: string[] = []): Promise<void> {
   }
 
   const tracking = loadRepoTracking();
-  if (level === "off") delete tracking[repoArg];
-  else tracking[repoArg] = { mode: level as "live" | "poll", caches: tracking[repoArg]?.caches ?? ["branches"] };
+  if (levelArg === "off") delete tracking[repoArg];
+  else tracking[repoArg] = { mode: levelArg as "live" | "poll", caches };
   saveRepoTracking(tracking);
-  console.log(`\n  ${green}✓${reset} ${repoArg} tracking: ${level}`);
+  console.log(`\n  ${green}✓${reset} ${repoArg} tracking: ${levelArg}${levelArg === "off" ? "" : ` [${caches.join(", ")}]`}`);
 
   // Watchers apply immediately; a fresh enrichment pass makes poll/live
   // repos show data now instead of at the next 5-minute cycle.
@@ -333,7 +345,7 @@ export async function manageTracking(args: string[] = []): Promise<void> {
   if (res?.ok) {
     const watching = Object.keys((res.data ?? {}) as Record<string, unknown>).sort();
     console.log(`    ${dim}live watchers: ${watching.length > 0 ? watching.join(", ") : "none"}${reset}`);
-    if (level !== "off") await daemonQuery("cache:refresh");
+    if (levelArg !== "off") await daemonQuery("cache:refresh");
     console.log("");
   } else {
     console.log(`    ${dim}daemon not reachable; applies when it next starts or refreshes${reset}\n`);
