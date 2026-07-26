@@ -17,7 +17,8 @@ import type { Logger } from "pino";
 import type { DiskCache } from "./branch-cache.ts";
 import type { PortCacheRef, RepoIndex } from "./handlers/types.ts";
 import { checkAndNotify } from "../notifier.ts";
-import { getCurrentUserId, loadRepoTracking, trackingLevel } from "./freshness.ts";
+import { getCurrentUserId } from "./freshness.ts";
+import { loadRepoTracking, grants } from "../repo-tracking.ts";
 import { checkAndPark } from "./parking-lot.ts";
 import { reconcileForRepo } from "./doppler-sync.ts";
 import { listWorktreeRoots, listWorktrees } from "../git-worktrees.ts";
@@ -59,9 +60,8 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
 
       for (const [repoName, repoPath] of Object.entries(repos)) {
         if (!existsSync(repoPath)) continue;
-        // Background enrichment is opt-in (live/poll); untracked repos are
-        // enriched on demand via branch:enrich when a command asks.
-        if (trackingLevel(tracking, repoName) === "off") continue;
+        // Branch-view enrichment requires the "branches" grant.
+        if (!grants(tracking, repoName).caches.has("branches")) continue;
 
         try {
           // 1. Discover worktree branches (detached worktrees have no branch)
