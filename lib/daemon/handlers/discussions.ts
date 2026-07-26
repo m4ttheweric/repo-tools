@@ -17,23 +17,12 @@ import { NoteMutator } from "@workforge/glance-sdk";
 import { getRepoContext } from "../freshness.ts";
 import { loadSecrets } from "../../linear.ts";
 import { refreshDiscussions, type BroadcastFn } from "../discussions-store.ts";
-import type { HandlerContext, HandlerMap, CacheEntry } from "./types.ts";
+import { getDiscussionsFileStore } from "../discussions-file-store.ts";
+import { grants, loadRepoTracking } from "../../repo-tracking.ts";
+import type { HandlerContext, HandlerMap } from "./types.ts";
 
 /** Discussions are stable per push; 2min TTL keeps reads fast without going stale. */
 const DISCUSSIONS_TTL_MS = 2 * 60 * 1000;
-
-function findEntry(
-  ctx: HandlerContext,
-  repoName: string,
-  iid: number,
-): { branch: string; entry: CacheEntry } | null {
-  for (const [branch, entry] of Object.entries(ctx.cache.entries)) {
-    if (entry.repoName === repoName && entry.mr?.iid === iid) {
-      return { branch, entry };
-    }
-  }
-  return null;
-}
 
 export function createDiscussionHandlers(
   ctx: HandlerContext,
@@ -46,31 +35,21 @@ export function createDiscussionHandlers(
       const repoName = payload?.repoName as string | undefined;
       const iid      = payload?.iid      as number | undefined;
       const force    = payload?.force === true;
-
       if (!repoName || typeof iid !== "number") {
         return { ok: false, error: "missing repoName/iid" };
       }
 
-      const hit = findEntry(ctx, repoName, iid);
-      if (!hit) return { ok: false, error: `no cache entry for ${repoName}#${iid}` };
+      const granted = grants(loadRepoTracking(), repoName).caches.has("discussions");
+      const cached = getDiscussionsFileStore().read(repoName, iid);
 
-      const fresh =
-        !force &&
-        hit.entry.discussions !== undefined &&
-        hit.entry.discussionsFetchedAt !== undefined &&
-        Date.now() - hit.entry.discussionsFetchedAt < DISCUSSIONS_TTL_MS;
+      // Granted repos: events + sweep own freshness, a hit never refetches.
+      // Ungranted repos: the 2-min TTL keeps on-demand reads honest.
+      const fresh = !force && cached !== undefined &&
+        (granted || Date.now() - cached.fetchedAt < DISCUSSIONS_TTL_MS);
 
       if (fresh) {
-        return {
-          ok: true,
-          data: {
-            discussions: hit.entry.discussions,
-            fetchedAt:   hit.entry.discussionsFetchedAt,
-            stale:       false,
-          },
-        };
+        return { ok: true, data: { discussions: cached.discussions, fetchedAt: cached.fetchedAt, stale: false } };
       }
-
       try {
         const res = await refreshDiscussions(deps, repoName, iid);
         return { ok: true, data: { discussions: res.discussions, fetchedAt: res.fetchedAt, stale: false } };

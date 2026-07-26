@@ -22,9 +22,14 @@
  */
 
 import { refreshDiscussions, type BroadcastFn } from "./discussions-store.ts";
-import { seedDiscussionsFromBranchCache } from "./discussions-file-store.ts";
-import { loadRepoTracking, grants } from "../repo-tracking.ts";
-import type { HandlerContext } from "./handlers/types.ts";
+import {
+  seedDiscussionsFromBranchCache,
+  getDiscussionsFileStore,
+  type DiscussionsFileStore,
+} from "./discussions-file-store.ts";
+import { getProjectMRs, type ProjectMRs } from "./project-mrs-store.ts";
+import { loadRepoTracking, grants, type RepoTracking } from "../repo-tracking.ts";
+import type { HandlerContext, CacheEntry } from "./handlers/types.ts";
 import { getDaemonLogger } from "../daemon-logger.ts";
 const log = (await getDaemonLogger()).childLogger("discussions");
 
@@ -40,22 +45,57 @@ export interface PollerEnv {
 let timer: ReturnType<typeof setInterval> | null = null;
 let sweeping = false;
 
+/**
+ * Sweep targets = branch-cache MRs (any status not yet terminal) for granted
+ * repos, PLUS project-store MRs whose discussions are already cached
+ * (demand-following: sweep cost tracks what consumers looked at, not project
+ * size). Both sources require the "discussions" grant.
+ */
+export function collectSweepTargets(
+  entries: Record<string, CacheEntry>,
+  tracking: RepoTracking,
+  projectStore: ProjectMRs,
+  fileStore: DiscussionsFileStore,
+): Array<{ repoName: string; iid: number }> {
+  const out: Array<{ repoName: string; iid: number }> = [];
+  const seen = new Set<string>();
+  const add = (repoName: string, iid: number) => {
+    const k = `${repoName}:${iid}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push({ repoName, iid });
+  };
+
+  for (const entry of Object.values(entries)) {
+    if (!entry.repoName) continue;
+    if (!grants(tracking, entry.repoName).caches.has("discussions")) continue;
+    const iid = entry.mr?.iid;
+    if (typeof iid !== "number") continue;
+    if (TERMINAL_STATES.has(entry.mr.status)) continue;
+    add(entry.repoName, iid);
+  }
+
+  // Project-store MRs are swept only when their discussions are already
+  // cached (demand-following): sweep cost tracks what consumers looked at,
+  // not project size.
+  for (const [repoName, record] of Object.entries(projectStore.data)) {
+    if (!grants(tracking, repoName).caches.has("discussions")) continue;
+    for (const [iidStr, mrEntry] of Object.entries(record.mrs)) {
+      const iid = Number(iidStr);
+      if (mrEntry.pr.state !== "opened") continue;
+      if (!fileStore.read(repoName, iid)) continue;
+      add(repoName, iid);
+    }
+  }
+  return out;
+}
+
 async function sweep(env: PollerEnv): Promise<void> {
   if (sweeping) return;
   sweeping = true;
   try {
-    const targets: Array<{ repoName: string; iid: number }> = [];
     const tracking = loadRepoTracking();
-    for (const entry of Object.values(env.ctx.cache.entries)) {
-      if (!entry.repoName) continue;
-      // The background discussions sweep requires the "discussions" grant.
-      if (!grants(tracking, entry.repoName).caches.has("discussions")) continue;
-      const mr = entry.mr;
-      const iid = mr?.iid;
-      if (typeof iid !== "number") continue;
-      if (TERMINAL_STATES.has(mr.status)) continue;
-      targets.push({ repoName: entry.repoName, iid });
-    }
+    const targets = collectSweepTargets(env.ctx.cache.entries, tracking, getProjectMRs(), getDiscussionsFileStore());
 
     for (const { repoName, iid } of targets) {
       try {

@@ -12,6 +12,7 @@ import { join } from "path";
 import type { Discussion } from "@workforge/glance-sdk";
 import { RT_DIR } from "../daemon-config.ts";
 import type { CacheEntry } from "./handlers/types.ts";
+import type { ProjectMRs } from "./project-mrs-store.ts";
 
 export const DISCUSSIONS_PATH = join(RT_DIR, "discussions.json");
 
@@ -79,4 +80,35 @@ export function seedDiscussionsFromBranchCache(
     copied++;
   }
   return copied;
+}
+
+/**
+ * Union-membership prune: a discussions snapshot survives if its MR is live
+ * in EITHER the branch cache or the project-MR store. Everything else is an
+ * orphan (the MR fell out of both cache-refresh passes) and gets dropped.
+ * Repos whose cache-refresh pass failed this cycle are exempt — a transient
+ * failure must never look like "the MR disappeared".
+ */
+export function pruneDiscussionsStore(opts: {
+  entries: Record<string, CacheEntry>;
+  projectStore: ProjectMRs;
+  failedRepos?: ReadonlySet<string>;
+  store?: DiscussionsFileStore;
+}): number {
+  const store = opts.store ?? getDiscussionsFileStore();
+  const live = new Set<string>();
+  for (const entry of Object.values(opts.entries)) {
+    if (entry.repoName && typeof entry.mr?.iid === "number") live.add(`${entry.repoName}:${entry.mr.iid}`);
+  }
+  for (const [repoName, record] of Object.entries(opts.projectStore.data)) {
+    for (const iid of Object.keys(record.mrs)) live.add(`${repoName}:${iid}`);
+  }
+  let removed = 0;
+  for (const { repoName, iid } of store.keys()) {
+    if (opts.failedRepos?.has(repoName)) continue;   // never prune on a failed pass
+    if (live.has(`${repoName}:${iid}`)) continue;
+    store.remove(repoName, iid);
+    removed++;
+  }
+  return removed;
 }
