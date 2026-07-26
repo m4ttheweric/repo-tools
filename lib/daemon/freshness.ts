@@ -122,6 +122,16 @@ function getRemoteUrl(repoPath: string): string | null {
   }
 }
 
+/** The same debug-accounting hook makeProvider wires, for SDK helpers rt constructs directly (NoteMutator). */
+export function providerRequestHook(): { onRequest: (info: { op: string; transport: "graphql" | "rest"; method: string; path: string; durationMs: number; status: number }) => void } {
+  return {
+    onRequest: (info) => log.debug(
+      { op: info.op, transport: info.transport, status: info.status, ms: Math.round(info.durationMs) },
+      "api request",
+    ),
+  };
+}
+
 /**
  * All daemon-built providers carry the SDK's onRequest hook wired to the
  * freshness logger at debug. This is the API-accounting source for the
@@ -129,12 +139,7 @@ function getRemoteUrl(repoPath: string): string | null {
  * visible under RT_LOG_LEVEL=debug.
  */
 function makeProvider(host: string, token: string): GitLabProvider {
-  return new GitLabProvider(host, token, {
-    onRequest: (info) => log.debug(
-      { op: info.op, transport: info.transport, status: info.status, ms: Math.round(info.durationMs) },
-      "api request",
-    ),
-  });
+  return new GitLabProvider(host, token, providerRequestHook());
 }
 
 function ensureProvider(repoName: string, repoPath: string): GitLabProvider | null {
@@ -455,7 +460,9 @@ async function processKeys(
             break;
           }
           const pr = await provider.fetchSingleMR(projectPath, iid, getCurrentUserId());
-          if (branch) mutated = updateEntry(env, repoName, branch, pr) || mutated;
+          const feedBranch = branch
+            ?? (pr && ctx.cache.entries[pr.sourceBranch]?.repoName === repoName ? pr.sourceBranch : undefined);
+          if (feedBranch) mutated = updateEntry(env, repoName, feedBranch, pr) || mutated;
           if (wantProject && pr) upsertProject(pr);
           break;
         }

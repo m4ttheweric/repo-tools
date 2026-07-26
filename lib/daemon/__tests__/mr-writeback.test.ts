@@ -48,7 +48,8 @@ describe("mr:action write-back", () => {
     const res = await handlers["mr:action"]!({ repoName: "repo", iid: 3, action: "retryPipeline", args: [555] });
     expect(res.ok).toBe(true);
     expect(singles).toEqual([]);          // not yet
-    await sleep(30);
+    const start = Date.now();
+    while (singles.length === 0 && Date.now() - start < 500) await sleep(10);
     expect(singles).toEqual([3]);
     expect(writebacks.length).toBe(1);
   });
