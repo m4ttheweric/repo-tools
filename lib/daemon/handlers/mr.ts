@@ -108,7 +108,13 @@ export function createMRHandlers(
         };
 
         if (RETURNED_PR_ACTIONS.has(action) && returnedPr) {
-          writeback(repoName, projectPath, returnedPr);
+          // The mutation already succeeded; a failing write-back must not
+          // misreport it as failed. Same never-fail contract as followUp.
+          try {
+            writeback(repoName, projectPath, returnedPr);
+          } catch (err) {
+            log.warn({ err, repo: repoName, iid, action }, "write-back failed");
+          }
         } else if (RETRY_ACTIONS.has(action)) {
           // Pipelines are the events blind spot: one delayed fetch catches
           // the flip to "running"; the final pass/fail rides the 5-min cycle.
