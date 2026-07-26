@@ -5,10 +5,15 @@
  * `discussions-poller.ts` (periodic sweep that surfaces new comments as
  * notifications).
  *
+ * Snapshots live in `~/.rt/discussions.json` (see `discussions-file-store.ts`),
+ * keyed `repo:iid` — not on the branch-cache entry, so a teammate's MR (no
+ * branch entry of its own) still has a home. MR metadata for titles/webUrl/
+ * author/terminal-state resolves branch entry first, then the project store.
+ *
  * On every refresh this module:
- *   1. Captures the previously-cached note IDs for the MR.
+ *   1. Captures the previously-stored note IDs for the MR.
  *   2. Fetches the current discussions snapshot from GitLab.
- *   3. Writes the snapshot to the cache entry + flushes to disk.
+ *   3. Writes the snapshot to the discussions file store.
  *   4. Broadcasts `discussions:update`.
  *   5. If any new non-system notes appeared from someone other than the
  *      current user, broadcasts `discussions:new-comments` with per-note
@@ -18,7 +23,9 @@
 
 import type { Discussion, Note } from "@workforge/glance-sdk";
 import { getRepoContext, getCurrentUserId } from "./freshness.ts";
-import type { HandlerContext, CacheEntry } from "./handlers/types.ts";
+import { getDiscussionsFileStore, type DiscussionsFileStore } from "./discussions-file-store.ts";
+import { getProjectMRs, type ProjectMRs } from "./project-mrs-store.ts";
+import type { HandlerContext } from "./handlers/types.ts";
 
 export type BroadcastFn = (type: string, data: any) => void;
 
@@ -41,17 +48,61 @@ export interface RefreshResult {
   newNotes:    NewCommentNote[];
 }
 
-function findEntry(
+export interface MRMeta {
+  title:           string;
+  webUrl:          string | null;
+  authorNumericId: number | null;
+  terminal:        boolean;
+}
+
+/** "gitlab:123" and "gitlab:user:123" both → 123. */
+function numericUserId(id: string | null | undefined): number | null {
+  const tail = id?.split(":").pop();
+  const n = tail ? parseInt(tail, 10) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+const TERMINAL = new Set(["merged", "closed"]);
+
+/**
+ * MR metadata for notifications and terminal-state checks: branch entry
+ * first (it carries the enriched mr-info shape), then the project store
+ * (raw PullRequest shape). Null when the MR is in neither store — callers
+ * refuse rather than blind-fetch, so ungranted repos can't leak API calls.
+ */
+export function resolveMRMeta(
   ctx: HandlerContext,
   repoName: string,
   iid: number,
-): { branch: string; entry: CacheEntry } | null {
-  for (const [branch, entry] of Object.entries(ctx.cache.entries)) {
+  projectStore: ProjectMRs = getProjectMRs(),
+): MRMeta | null {
+  for (const entry of Object.values(ctx.cache.entries)) {
     if (entry.repoName === repoName && entry.mr?.iid === iid) {
-      return { branch, entry };
+      return {
+        title:           entry.mr.title ?? `!${iid}`,
+        webUrl:          entry.mr.webUrl ?? null,
+        authorNumericId: numericUserId(entry.mr.author?.id),
+        terminal:        TERMINAL.has(entry.mr.status),
+      };
     }
   }
+  const rec = projectStore.read(repoName)?.mrs[iid];
+  if (rec) {
+    return {
+      title:           rec.pr.title ?? `!${iid}`,
+      webUrl:          rec.pr.webUrl ?? null,
+      authorNumericId: numericUserId(rec.pr.author?.id),
+      terminal:        TERMINAL.has(rec.pr.state),
+    };
+  }
   return null;
+}
+
+export interface RefreshOverrides {
+  fetchDiscussions?: (repoName: string, iid: number) => Promise<Discussion[]>;
+  fileStore?:        DiscussionsFileStore;
+  projectStore?:     ProjectMRs;
+  currentUserId?:    number | null;
 }
 
 /**
@@ -110,56 +161,55 @@ function buildNewNote(n: Note): NewCommentNote {
 }
 
 /**
- * Fetch discussions for a single MR, persist to cache, broadcast update, and
- * return a diff describing any new non-user notes.
+ * Fetch discussions for a single MR, persist to the discussions file store,
+ * broadcast update, and return a diff describing any new non-user notes.
+ * The branch cache is NOT written and NOT flushed here — discussions live
+ * only in the file store now.
  *
- * `silentFirstFetch` suppresses new-comment notifications when this is the
- * first time we've ever seen discussions for the MR — otherwise every MR
- * would fire a storm of "new comment" events on daemon startup.
+ * The first-ever fetch for an MR is silent — otherwise every MR would fire a
+ * storm of "new comment" events on daemon startup.
  */
 export async function refreshDiscussions(
   deps: RefreshDeps,
   repoName: string,
   iid: number,
+  overrides: RefreshOverrides = {},
 ): Promise<RefreshResult> {
-  const hit = findEntry(deps.ctx, repoName, iid);
-  if (!hit) throw new Error(`no cache entry for ${repoName}#${iid}`);
+  const fileStore = overrides.fileStore ?? getDiscussionsFileStore();
+  const meta = resolveMRMeta(deps.ctx, repoName, iid, overrides.projectStore);
+  if (!meta) throw new Error(`MR not cached: ${repoName}#${iid}`);
 
-  const repoPath = deps.ctx.repoIndex()[repoName];
-  const repoCtx = await getRepoContext(repoName, repoPath);
+  const prevEntry = fileStore.read(repoName, iid);
+  const isFirstFetch = prevEntry === undefined;
+  const prevIds = collectNoteIds(prevEntry?.discussions);
 
-  const isFirstFetch = hit.entry.discussions === undefined;
-  const prevIds = collectNoteIds(hit.entry.discussions);
-
-  const scopedRepoId = `gitlab:${repoCtx.projectId}`;
-  const detail = await repoCtx.provider.fetchMRDiscussions(scopedRepoId, iid);
+  const fetchDiscussions = overrides.fetchDiscussions ?? (async (repo: string, mrIid: number) => {
+    const repoPath = deps.ctx.repoIndex()[repo];
+    const repoCtx = await getRepoContext(repo, repoPath);
+    const detail = await repoCtx.provider.fetchMRDiscussions(`gitlab:${repoCtx.projectId}`, mrIid);
+    return detail.discussions;
+  });
+  const discussions = await fetchDiscussions(repoName, iid);
 
   const fetchedAt = Date.now();
-  deps.ctx.cache.entries[hit.branch] = {
-    ...hit.entry,
-    discussions: detail.discussions,
-    discussionsFetchedAt: fetchedAt,
-  };
-  deps.ctx.flushCache();
+  fileStore.write(repoName, iid, { discussions, fetchedAt });
 
   deps.broadcast("discussions:update", {
     repoName,
     iid,
-    discussions: detail.discussions,
+    discussions,
     fetchedAt,
   });
 
-  const currentUserId = getCurrentUserId();
-  const selfAuthorId = currentUserId !== null ? `gitlab:${currentUserId}` : null;
-  const isMrAuthor = selfAuthorId !== null && hit.entry.mr?.author?.id === selfAuthorId;
-
+  const currentUserId = overrides.currentUserId !== undefined ? overrides.currentUserId : getCurrentUserId();
+  const isMrAuthor = currentUserId !== null && meta.authorNumericId === currentUserId;
   const newNotes = isFirstFetch
     ? []
-    : collectNewNotes(prevIds, detail.discussions, currentUserId, isMrAuthor);
+    : collectNewNotes(prevIds, discussions, currentUserId, isMrAuthor);
 
   if (newNotes.length > 0) {
-    const mrTitle = hit.entry.mr?.title ?? `!${iid}`;
-    const webUrl  = hit.entry.mr?.webUrl ?? null;
+    const mrTitle = meta.title;
+    const webUrl  = meta.webUrl;
 
     deps.broadcast("discussions:new-comments", {
       repoName,
@@ -181,5 +231,5 @@ export async function refreshDiscussions(
     });
   }
 
-  return { discussions: detail.discussions, fetchedAt, newNotes };
+  return { discussions, fetchedAt, newNotes };
 }
