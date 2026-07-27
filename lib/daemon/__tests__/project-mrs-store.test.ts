@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { createProjectMRs } from "../project-mrs-store.ts";
+import { createProjectMRs, freshnessOf } from "../project-mrs-store.ts";
 import type { PullRequest } from "@workforge/glance-sdk";
 
 function tmpStorePath(): string {
@@ -100,5 +100,78 @@ describe("findBySourceBranch / load tolerance / flush", () => {
     s.flushNow();
     const reloaded = createProjectMRs(p, 0);
     expect(reloaded.read("repo")!.mrs[1]!.pr.iid).toBe(1);
+  });
+});
+
+describe("applyDelta", () => {
+  test("upserts every incoming pr, including terminal states", () => {
+    const s = createProjectMRs(tmpStorePath(), 0);
+    s.fullSync("repo", "g/p", [pr(1), pr(2)], Date.now() - 10_000);
+    const deltaStartedAt = Date.now();
+    const changed = s.applyDelta("repo", "g/p", [
+      pr(1, { title: "updated in delta" } as any),
+      pr(3, { state: "merged" } as any),
+    ], deltaStartedAt);
+    expect(changed.sort()).toEqual([1, 3]);
+    expect(s.read("repo")!.mrs[1]!.pr.title).toBe("updated in delta");
+    expect(s.read("repo")!.mrs[2]).toBeDefined(); // absent from delta → untouched, not pruned
+    expect(s.read("repo")!.mrs[3]!.pr.state).toBe("merged");
+  });
+
+  test("creates the record when missing, source defaults to poll", () => {
+    const s = createProjectMRs(tmpStorePath(), 0);
+    const deltaStartedAt = Date.now();
+    s.applyDelta("repo", "g/p", [pr(1)], deltaStartedAt);
+    const record = s.read("repo")!;
+    expect(record.projectPath).toBe("g/p");
+    expect(record.source).toBe("poll");
+    expect(record.deltaSyncedAt).toBe(deltaStartedAt);
+  });
+
+  test("leaves source untouched when the record already exists", () => {
+    const s = createProjectMRs(tmpStorePath(), 0);
+    s.fullSync("repo", "g/p", [pr(1)], Date.now() - 10_000);
+    s.upsert("repo", null, pr(2), "events"); // source → "events"
+    expect(s.read("repo")!.source).toBe("events");
+    s.applyDelta("repo", "g/p", [pr(1)], Date.now());
+    expect(s.read("repo")!.source).toBe("events"); // applyDelta does not touch source
+  });
+
+  test("bumps deltaSyncedAt, not listSyncedAt", () => {
+    const s = createProjectMRs(tmpStorePath(), 0);
+    const listSyncedAt = Date.now() - 60_000;
+    s.fullSync("repo", "g/p", [pr(1)], listSyncedAt);
+    const deltaStartedAt = Date.now();
+    s.applyDelta("repo", "g/p", [pr(1)], deltaStartedAt);
+    const record = s.read("repo")!;
+    expect(record.listSyncedAt).toBe(listSyncedAt);
+    expect(record.deltaSyncedAt).toBe(deltaStartedAt);
+  });
+
+  test("entry fetchedAt is 'now', not deltaStartedAt", () => {
+    const s = createProjectMRs(tmpStorePath(), 0);
+    const deltaStartedAt = Date.now() - 5000; // fetch took a while
+    s.applyDelta("repo", "g/p", [pr(1)], deltaStartedAt);
+    expect(s.read("repo")!.mrs[1]!.fetchedAt).toBeGreaterThan(deltaStartedAt);
+  });
+});
+
+describe("freshnessOf", () => {
+  test("is the max of listSyncedAt and deltaSyncedAt", () => {
+    const s = createProjectMRs(tmpStorePath(), 0);
+    const listSyncedAt = Date.now() - 60_000;
+    s.fullSync("repo", "g/p", [pr(1)], listSyncedAt);
+    expect(freshnessOf(s.read("repo")!)).toBe(listSyncedAt);
+
+    const deltaStartedAt = Date.now();
+    s.applyDelta("repo", "g/p", [pr(1)], deltaStartedAt);
+    expect(freshnessOf(s.read("repo")!)).toBe(deltaStartedAt);
+  });
+
+  test("defaults to listSyncedAt when deltaSyncedAt is unset", () => {
+    const s = createProjectMRs(tmpStorePath(), 0);
+    const listSyncedAt = Date.now() - 1000;
+    s.fullSync("repo", "g/p", [pr(1)], listSyncedAt);
+    expect(freshnessOf(s.read("repo")!)).toBe(listSyncedAt);
   });
 });

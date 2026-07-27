@@ -7,7 +7,7 @@
  */
 
 import { loadRepoTracking, grants, type RepoTracking } from "../../repo-tracking.ts";
-import { getProjectMRs, type ProjectMRs } from "../project-mrs-store.ts";
+import { getProjectMRs, freshnessOf, type ProjectMRs } from "../project-mrs-store.ts";
 import { syncProjectMRs } from "../project-sync.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 
@@ -41,8 +41,9 @@ export function createProjectMRsHandlers(
       }
 
       if (typeof maxAgeMs === "number") {
-        const listSyncedAt = store().read(repoName)?.listSyncedAt ?? 0;
-        if (Date.now() - listSyncedAt >= maxAgeMs) {
+        const existing = store().read(repoName);
+        const freshness = existing ? freshnessOf(existing) : 0;
+        if (Date.now() - freshness >= maxAgeMs) {
           try {
             await sync(repoName);
           } catch (err) {
@@ -55,7 +56,7 @@ export function createProjectMRsHandlers(
       if (!record) return { ok: true, data: { mrs: {}, listSyncedAt: 0, source: "poll", syncedAt: 0 } };
       return {
         ok: true,
-        data: { mrs: record.mrs, listSyncedAt: record.listSyncedAt, source: record.source, syncedAt: record.listSyncedAt },
+        data: { mrs: record.mrs, listSyncedAt: record.listSyncedAt, source: record.source, syncedAt: freshnessOf(record) },
       };
     },
   };
