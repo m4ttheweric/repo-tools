@@ -295,29 +295,73 @@ export async function manageTracking(args: string[] = []): Promise<void> {
     return;
   }
 
-  if (!levelArg || !["live", "poll", "off"].includes(levelArg)) {
-    console.log(`\n  usage: rt daemon track [<repo> live|poll|off [caches]]\n         caches: comma list of ${[...CACHE_KINDS].join(",")} (default: branches)\n`);
-    return;
+  // ── rt daemon track <repo> — interactive editor (house style: fzf flow) ──
+  let interactiveLevel: string | undefined;
+  let interactiveCaches: CacheKind[] | undefined;
+  if (!levelArg) {
+    if (!readRepoIndex()[repoArg]) {
+      console.log(`\n  ${red}✗${reset} repo "${repoArg}" not registered in ~/.rt/repos.json\n`);
+      return;
+    }
+    const { filterableSelect, filterableMultiselect } = await import("../lib/rt-render.tsx");
+    const current = grants(loadRepoTracking(), repoArg);
+    const modeHint = (m: string) => (current.mode === m ? "current" : undefined);
+    const picked = await filterableSelect({
+      message: `${repoArg} tracking mode`,
+      options: [
+        { value: "live", label: "live", hint: [modeHint("live"), "events watcher (~15s) + 5-min cycle · GitLab only"].filter(Boolean).join(" · ") },
+        { value: "poll", label: "poll", hint: [modeHint("poll"), "5-min cycle only"].filter(Boolean).join(" · ") },
+        { value: "off",  label: "off",  hint: [modeHint("off"), "no background API calls (on-demand still works)"].filter(Boolean).join(" · ") },
+      ],
+    });
+    if (!picked) return; // esc = no changes
+    interactiveLevel = picked;
+    if (picked !== "off") {
+      const selected = await filterableMultiselect({
+        message: `${repoArg} caches — space to toggle, enter to confirm`,
+        options: [
+          { value: "branches",    label: "branches",    hint: "my branches: MR + Linear enrichment" },
+          { value: "project-mrs", label: "project-mrs", hint: "team-wide open-MR list (boards)" },
+          { value: "discussions", label: "discussions", hint: "background thread freshness + comment notifications" },
+        ],
+        initialValues: current.mode === "off" ? ["branches"] : [...current.caches],
+      });
+      if (selected === null) return; // esc = no changes
+      if (selected.length === 0) {
+        console.log(`\n  ${red}✗${reset} at least one cache is required ${dim}(use off to stop tracking)${reset}\n`);
+        return;
+      }
+      interactiveCaches = selected as CacheKind[];
+    }
   }
 
-  const cachesArg = args[2];
-  let caches: CacheKind[] = ["branches"];
-  if (levelArg !== "off" && cachesArg !== undefined) {
+  const level = interactiveLevel ?? levelArg;
+  if (!level || !["live", "poll", "off"].includes(level)) {
+    console.log(`\n  usage: rt daemon track [<repo>] [live|poll|off [caches…]]\n         <repo> alone opens the interactive editor\n         caches: ${[...CACHE_KINDS].join(" ")} (space-separated; default branches)\n`);
+    return;
+  }
+  const levelArg2 = level;
+
+  // Explicit caches: everything after the level, space-separated words
+  // (commas tolerated for muscle memory).
+  const cachesArg = interactiveCaches ? undefined : (args.length > 2 ? args.slice(2).join(",") : undefined);
+  let caches: CacheKind[] = interactiveCaches ?? ["branches"];
+  if (!interactiveCaches && levelArg2 !== "off" && cachesArg !== undefined) {
     const parsed = parseCachesArg(cachesArg);
     if (!parsed) {
-      console.log(`\n  ${red}✗${reset} unknown cache name in "${cachesArg}" ${dim}(valid: ${[...CACHE_KINDS].join(", ")})${reset}\n`);
+      console.log(`\n  ${red}✗${reset} unknown cache name in "${args.slice(2).join(" ")}" ${dim}(valid: ${[...CACHE_KINDS].join(", ")})${reset}\n`);
       return;
     }
     caches = parsed;
   }
 
-  if (levelArg !== "off") {
+  if (levelArg2 !== "off") {
     const repoPath = readRepoIndex()[repoArg];
     if (!repoPath) {
       console.log(`\n  ${red}✗${reset} repo "${repoArg}" not registered in ~/.rt/repos.json\n`);
       return;
     }
-    if (levelArg === "live") {
+    if (levelArg2 === "live") {
       // Watchers only ever start for GitLab remotes; refuse rather than
       // write a tracking entry that can never take effect.
       let remoteUrl = "";
@@ -334,16 +378,17 @@ export async function manageTracking(args: string[] = []): Promise<void> {
   }
 
   const tracking = loadRepoTracking();
-  const previousEntry = levelArg !== "off" ? tracking[repoArg] : undefined;
-  if (levelArg === "off") delete tracking[repoArg];
-  else tracking[repoArg] = { mode: levelArg as "live" | "poll", caches };
+  const previousEntry = levelArg2 !== "off" ? tracking[repoArg] : undefined;
+  if (levelArg2 === "off") delete tracking[repoArg];
+  else tracking[repoArg] = { mode: levelArg2 as "live" | "poll", caches };
   saveRepoTracking(tracking);
-  console.log(`\n  ${green}✓${reset} ${repoArg} tracking: ${levelArg}${levelArg === "off" ? "" : ` [${caches.join(", ")}]`}`);
+  console.log(`\n  ${green}✓${reset} ${repoArg} tracking: ${levelArg2}${levelArg2 === "off" ? "" : ` [${caches.join(", ")}]`}`);
   // A write that omits the caches arg always resets to ["branches"] (see
   // default above). If the entry it replaced granted more than that, the
   // caller silently lost project-mrs/discussions grants — flag it.
   if (
-    levelArg !== "off" &&
+    levelArg2 !== "off" &&
+    interactiveCaches === undefined &&
     cachesArg === undefined &&
     previousEntry &&
     previousEntry.caches.some((c) => c !== "branches")
@@ -357,7 +402,7 @@ export async function manageTracking(args: string[] = []): Promise<void> {
   if (res?.ok) {
     const watching = Object.keys((res.data ?? {}) as Record<string, unknown>).sort();
     console.log(`    ${dim}live watchers: ${watching.length > 0 ? watching.join(", ") : "none"}${reset}`);
-    if (levelArg !== "off") await daemonQuery("cache:refresh");
+    if (levelArg2 !== "off") await daemonQuery("cache:refresh");
     console.log("");
   } else {
     console.log(`    ${dim}daemon not reachable; applies when it next starts or refreshes${reset}\n`);
