@@ -43,8 +43,14 @@ export interface ProjectSyncOverrides {
   mode?: "auto" | "deep";
   fetchProject?: (repoName: string) => Promise<{ projectPath: string; prs: PullRequest[] }>;
   fetchDelta?: (repoName: string, updatedAfter: string) => Promise<{ projectPath: string; prs: PullRequest[] }>;
+  fetchSingle?: (repoName: string, projectPath: string, iid: number) => Promise<PullRequest | null>;
   store?: ProjectMRs;
 }
+
+/** Pipeline states that mean "still running" — the set the delta top-up refreshes. */
+const IN_FLIGHT_PIPELINE = new Set(["running", "pending", "created", "waiting_for_resource", "preparing"]);
+/** Safety cap on per-cycle pipeline top-up fetches (the set is naturally 0-5). */
+export const PIPELINE_TOPUP_CAP = 15;
 
 const syncInFlight = new Map<string, Promise<void>>();
 
@@ -108,7 +114,39 @@ async function syncImpl(
 
   const { projectPath, prs } = await fetchDelta(repoName, updatedAfter);
   const changed = store.applyDelta(repoName, projectPath, prs, deltaStartedAt);
-  log.debug({ repo: repoName, mode: "delta", changed: changed.length }, "project sync");
+
+  // Pipeline top-up: pipeline transitions bump no MR timestamp, so they
+  // miss deltas (same blind spot as the events feed). Refresh the MRs whose
+  // STORED pipeline is still in flight and that this delta didn't already
+  // cover — the set is naturally tiny (pipelines currently running on open
+  // MRs), so this restores the old ≤5-min pipeline freshness for ~0-5
+  // targeted fetches per cycle.
+  const fetchSingle = overrides.fetchSingle ?? (async (repo: string, pp: string, iid: number) => {
+    const { provider } = await getRepoContext(repo, deps.repoIndex()[repo]);
+    return provider.fetchSingleMR(pp, iid, null);
+  });
+  const deltaIids = new Set(changed);
+  const topup: number[] = [];
+  const afterDelta = store.read(repoName);
+  for (const [iidStr, entry] of Object.entries(afterDelta?.mrs ?? {})) {
+    const iid = Number(iidStr);
+    if (deltaIids.has(iid)) continue;
+    if (entry.pr.state !== "opened") continue;
+    const status = (entry.pr as { pipeline?: { status?: string } | null }).pipeline?.status;
+    if (!status || !IN_FLIGHT_PIPELINE.has(status)) continue;
+    topup.push(iid);
+    if (topup.length >= PIPELINE_TOPUP_CAP) break;
+  }
+  for (const iid of topup) {
+    try {
+      const pr = await fetchSingle(repoName, projectPath, iid);
+      if (pr) changed.push(...store.upsert(repoName, projectPath, pr, "events"));
+    } catch (err) {
+      log.warn({ err, repo: repoName, iid }, "pipeline top-up fetch failed");
+    }
+  }
+
+  log.debug({ repo: repoName, mode: "delta", changed: changed.length, topup: topup.length }, "project sync");
   if (changed.length > 0) {
     deps.broadcast("project-mrs", { repoName, iids: changed });
   }

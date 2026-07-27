@@ -243,3 +243,35 @@ describe("project-mrs:read handler", async () => {
     expect(res.data.syncedAt).toBe(store.read("repo")!.deltaSyncedAt);
   });
 });
+
+describe("pipeline top-up (delta blind-spot fix)", () => {
+  const prWithPipe = (iid: number, status: string | null, state = "opened") =>
+    ({ id: `gitlab:mr:${iid}`, iid, title: `MR ${iid}`, state, sourceBranch: `b${iid}`, targetBranch: "main",
+       webUrl: "", divergedCommitsCount: null, pipeline: status ? { status } : null }) as any;
+
+  test("delta refreshes in-flight-pipeline MRs the window missed; settled/closed skipped", async () => {
+    const store = tmpStore();
+    const t0 = Date.now() - 10_000;
+    store.fullSync("repo", "g/p", [
+      prWithPipe(1, "running"),          // in flight -> top-up
+      prWithPipe(2, "success"),          // settled -> skip
+      prWithPipe(3, "pending", "merged"),// not opened -> skip
+      prWithPipe(4, null),               // no pipeline -> skip
+      prWithPipe(5, "created"),          // in flight but covered by delta below -> skip
+    ], t0);
+    const singles: number[] = [];
+    const events: any[] = [];
+    await syncProjectMRs(
+      { repoIndex: () => ({ repo: "/tmp/repo" }), broadcast: (t, d) => events.push(d) },
+      "repo",
+      {
+        store,
+        fetchDelta: async () => ({ projectPath: "g/p", prs: [prWithPipe(5, "success")] }),
+        fetchSingle: async (_r, _pp, iid) => { singles.push(iid); return prWithPipe(iid, "success"); },
+      },
+    );
+    expect(singles).toEqual([1]);
+    expect((store.read("repo")!.mrs[1]!.pr as any).pipeline.status).toBe("success");
+    expect((events.at(-1) as any).iids).toContain(1);
+  });
+});
