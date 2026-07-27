@@ -51,6 +51,8 @@ export interface ProjectSyncOverrides {
 const IN_FLIGHT_PIPELINE = new Set(["running", "pending", "created", "waiting_for_resource", "preparing"]);
 /** Safety cap on per-cycle pipeline top-up fetches (the set is naturally 0-5). */
 export const PIPELINE_TOPUP_CAP = 15;
+/** In-flight top-up fetches. Bounded so a big set can't burst the forge. */
+export const TOPUP_CONCURRENCY = 4;
 /**
  * MRs untouched for this long with a still-in-flight pipeline are considered
  * stuck (e.g. a pipeline sitting in "created" forever) and drop out of the
@@ -146,13 +148,26 @@ async function syncImpl(
     topup.push(iid);
     if (topup.length >= PIPELINE_TOPUP_CAP) break;
   }
-  for (const iid of topup) {
-    try {
-      const pr = await fetchSingle(repoName, projectPath, iid);
-      if (pr) changed.push(...store.upsert(repoName, projectPath, pr, "events"));
-    } catch (err) {
-      log.warn({ err, repo: repoName, iid }, "pipeline top-up fetch failed");
-    }
+  // Fetched concurrently — these are heavy per-MR detail queries, and a manual
+  // refresh (maxAgeMs: 0) waits on the whole set, so a serial loop put the
+  // board's spinner directly behind PIPELINE_TOPUP_CAP round trips. Upserts
+  // are applied afterwards in request order so `changed` (and the broadcast it
+  // feeds) stays deterministic regardless of completion order.
+  const fetched: Array<PullRequest | null> = new Array(topup.length).fill(null);
+  for (let i = 0; i < topup.length; i += TOPUP_CONCURRENCY) {
+    const chunk = topup.slice(i, i + TOPUP_CONCURRENCY);
+    await Promise.all(
+      chunk.map(async (iid, j) => {
+        try {
+          fetched[i + j] = await fetchSingle(repoName, projectPath, iid);
+        } catch (err) {
+          log.warn({ err, repo: repoName, iid }, "pipeline top-up fetch failed");
+        }
+      }),
+    );
+  }
+  for (const pr of fetched) {
+    if (pr) changed.push(...store.upsert(repoName, projectPath, pr, "events"));
   }
 
   log.debug({ repo: repoName, mode: "delta", changed: changed.length, topup: topup.length }, "project sync");
