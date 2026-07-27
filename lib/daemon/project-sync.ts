@@ -51,6 +51,13 @@ export interface ProjectSyncOverrides {
 const IN_FLIGHT_PIPELINE = new Set(["running", "pending", "created", "waiting_for_resource", "preparing"]);
 /** Safety cap on per-cycle pipeline top-up fetches (the set is naturally 0-5). */
 export const PIPELINE_TOPUP_CAP = 15;
+/**
+ * MRs untouched for this long with a still-in-flight pipeline are considered
+ * stuck (e.g. a pipeline sitting in "created" forever) and drop out of the
+ * top-up — otherwise each one costs a heavy fetch every cycle indefinitely.
+ * The daily deep reconcile still re-reads them.
+ */
+export const TOPUP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 const syncInFlight = new Map<string, Promise<void>>();
 
@@ -134,6 +141,8 @@ async function syncImpl(
     if (entry.pr.state !== "opened") continue;
     const status = (entry.pr as { pipeline?: { status?: string } | null }).pipeline?.status;
     if (!status || !IN_FLIGHT_PIPELINE.has(status)) continue;
+    const updatedAt = Date.parse(entry.pr.updatedAt ?? "");
+    if (Number.isFinite(updatedAt) && deltaStartedAt - updatedAt > TOPUP_MAX_AGE_MS) continue;
     topup.push(iid);
     if (topup.length >= PIPELINE_TOPUP_CAP) break;
   }

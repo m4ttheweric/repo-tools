@@ -274,4 +274,27 @@ describe("pipeline top-up (delta blind-spot fix)", () => {
     expect((store.read("repo")!.mrs[1]!.pr as any).pipeline.status).toBe("success");
     expect((events.at(-1) as any).iids).toContain(1);
   });
+
+  test("stuck pipelines drop out of top-up: in-flight but updatedAt older than 24h is skipped", async () => {
+    const { TOPUP_MAX_AGE_MS } = await import("../project-sync.ts");
+    const store = tmpStore();
+    const stale = new Date(Date.now() - TOPUP_MAX_AGE_MS - 60_000).toISOString();
+    const fresh = new Date(Date.now() - 60_000).toISOString();
+    store.fullSync("repo", "g/p", [
+      { ...prWithPipe(1, "created"), updatedAt: stale }, // stuck since forever -> skip
+      { ...prWithPipe(2, "running"), updatedAt: fresh }, // genuinely live -> top-up
+      prWithPipe(3, "running"),                          // no updatedAt -> treated fresh -> top-up
+    ], Date.now() - 10_000);
+    const singles: number[] = [];
+    await syncProjectMRs(
+      { repoIndex: () => ({ repo: "/tmp/repo" }), broadcast: () => {} },
+      "repo",
+      {
+        store,
+        fetchDelta: async () => ({ projectPath: "g/p", prs: [] }),
+        fetchSingle: async (_r, _pp, iid) => { singles.push(iid); return prWithPipe(iid, "success"); },
+      },
+    );
+    expect(singles.sort()).toEqual([2, 3]);
+  });
 });
