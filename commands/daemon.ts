@@ -31,6 +31,7 @@ import {
   LAUNCHD_PLIST_PATH,
 } from "../lib/daemon-config.ts";
 import { daemonQuery, isDaemonRunning, trayQuery } from "../lib/daemon-client.ts";
+import { classifyDaemonStatus, type DaemonStatusVerdict } from "../lib/daemon-status.ts";
 import { isGitLabRemote } from "../lib/enrich.ts";
 import type { CacheKind } from "../lib/repo-tracking.ts";
 import { loadRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS } from "../lib/repo-tracking.ts";
@@ -210,13 +211,38 @@ export async function showStatus(): Promise<void> {
   }
 
   const response = await daemonQuery("status");
-  if (response?.ok) {
-    const { pid, uptime, watchedRepos, cacheEntries } = response.data;
-    console.log(`  ${green}●${reset} running ${dim}(SMAppService · pid ${pid} · uptime ${formatUptime(uptime)})${reset}`);
-    console.log(`    ${dim}watching: ${watchedRepos} repo${watchedRepos !== 1 ? "s" : ""}${reset}`);
-    console.log(`    ${dim}cache: ${cacheEntries} entries${reset}`);
+  // A failed status query does NOT mean the daemon is down — it answers `ping`
+  // in a fraction of the budget a loaded `status` needs. Establish liveness
+  // before reporting, and only pay for the probe when nothing came back.
+  const alive = classifyDaemonStatus.needsLivenessProbe(response) ? await isDaemonRunning() : false;
+  const verdict = classifyDaemonStatus({
+    installed: true,
+    response,
+    alive,
+    pid: readDaemonPid() ?? null,
+  });
 
-    const freshness = response.data.freshness as
+  for (const line of statusLines(verdict, Date.now())) console.log(line);
+
+  console.log(`    ${dim}config: ~/.rt/daemon.json${reset}`);
+  console.log(`    ${dim}logs: ~/.rt/logs/ ${reset}${dim}(view with: rt daemon logs)${reset}`);
+  console.log("");
+}
+
+/**
+ * Render a verdict to the lines the operator reads. Pure — `now` is injected so
+ * the freshness ages are deterministic under test.
+ */
+export function statusLines(verdict: DaemonStatusVerdict, now: number): string[] {
+  if (verdict.state === "running") {
+    const { pid, uptime, watchedRepos, cacheEntries } = verdict.data;
+    const lines = [
+      `  ${green}●${reset} running ${dim}(SMAppService · pid ${pid} · uptime ${formatUptime(uptime)})${reset}`,
+      `    ${dim}watching: ${watchedRepos} repo${watchedRepos !== 1 ? "s" : ""}${reset}`,
+      `    ${dim}cache: ${cacheEntries} entries${reset}`,
+    ];
+
+    const freshness = verdict.data.freshness as
       | Record<string, { state: string; lastSyncedAt: string | null }>
       | undefined;
     if (freshness && Object.keys(freshness).length > 0) {
@@ -225,22 +251,37 @@ export async function showStatus(): Promise<void> {
         // transition, so a quiet-but-healthy repo can go the whole session
         // without one; "never" would misread as broken, not idle.
         const age = f.lastSyncedAt
-          ? `${Math.round((Date.now() - Date.parse(f.lastSyncedAt)) / 1000)}s ago`
+          ? `${Math.round((now - Date.parse(f.lastSyncedAt)) / 1000)}s ago`
           : "no events yet";
         return `${repo} ${f.state} (${age})`;
       });
-      console.log(`    ${dim}events: ${parts.join(" · ")}${reset}`);
+      lines.push(`    ${dim}events: ${parts.join(" · ")}${reset}`);
     }
-  } else {
-    const pid = readDaemonPid();
-    console.log(`  ${red}●${reset} installed but not running`);
-    if (pid) console.log(`    ${dim}last pid: ${pid}${reset}`);
-    console.log(`    ${dim}run: rt daemon start${reset}`);
+    return lines;
   }
 
-  console.log(`    ${dim}config: ~/.rt/daemon.json${reset}`);
-  console.log(`    ${dim}logs: ~/.rt/logs/ ${reset}${dim}(view with: rt daemon logs)${reset}`);
-  console.log("");
+  if (verdict.state === "degraded") {
+    // Up, but `status` did not come back. Saying "not running" here would send
+    // the operator to `rt daemon start` against a daemon that is already up.
+    const lines = [`  ${yellow}●${reset} running, but not reporting status`];
+    if (verdict.pid) lines.push(`    ${dim}pid: ${verdict.pid}${reset}`);
+    lines.push(
+      verdict.reason === "error"
+        ? `    ${dim}status command failed: ${verdict.detail ?? "unknown error"}${reset}`
+        : `    ${dim}answers ping, but status timed out — likely mid-sync${reset}`,
+    );
+    lines.push(`    ${dim}check: rt daemon logs${reset}`);
+    return lines;
+  }
+
+  if (verdict.state === "not-running") {
+    const lines = [`  ${red}●${reset} installed but not running`];
+    if (verdict.pid) lines.push(`    ${dim}last pid: ${verdict.pid}${reset}`);
+    lines.push(`    ${dim}run: rt daemon start${reset}`);
+    return lines;
+  }
+
+  return [];
 }
 
 // ─── Per-repo tracking (opt-in) ──────────────────────────────────────────────
