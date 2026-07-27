@@ -2,12 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { syncProjectMRs } from "../project-sync.ts";
+import { syncProjectMRs, DEEP_RECONCILE_MS, DELTA_OVERLAP_MS } from "../project-sync.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
 import type { PullRequest } from "@workforge/glance-sdk";
 
-function pr(iid: number): PullRequest {
-  return { id: `gitlab:mr:${iid}`, iid, title: `MR ${iid}`, state: "opened", sourceBranch: `b${iid}`, targetBranch: "main", webUrl: "", divergedCommitsCount: null } as unknown as PullRequest;
+function pr(iid: number, over: Partial<PullRequest> = {}): PullRequest {
+  return {
+    id: `gitlab:mr:${iid}`, iid, title: `MR ${iid}`, state: "opened",
+    sourceBranch: `b${iid}`, targetBranch: "main", webUrl: "", divergedCommitsCount: null,
+    ...over,
+  } as unknown as PullRequest;
 }
 function tmpStore() {
   return createProjectMRs(join(mkdtempSync(join(tmpdir(), "rt-psync-")), "s.json"), 0);
@@ -61,6 +65,120 @@ describe("syncProjectMRs", () => {
   });
 });
 
+describe("mode resolution", () => {
+  test("no record → deep fetch called, delta never called", async () => {
+    const store = tmpStore();
+    let deepCalled = false;
+    let deltaCalled = false;
+    await syncProjectMRs(
+      { repoIndex: () => ({ repo: "/tmp/repo" }), broadcast: () => {} },
+      "repo",
+      {
+        store,
+        fetchProject: async () => { deepCalled = true; return { projectPath: "g/p", prs: [pr(1)] }; },
+        fetchDelta: async () => { deltaCalled = true; return { projectPath: "g/p", prs: [] }; },
+      },
+    );
+    expect(deepCalled).toBe(true);
+    expect(deltaCalled).toBe(false);
+  });
+
+  test("fresh record → delta fetch called with updatedAfter ≈ freshness - 2min", async () => {
+    const store = tmpStore();
+    const listSyncedAt = Date.now() - 30_000; // recent, well under the 24h deep threshold
+    store.fullSync("repo", "g/p", [pr(1)], listSyncedAt);
+    let deepCalled = false;
+    let capturedUpdatedAfter: string | undefined;
+    await syncProjectMRs(
+      { repoIndex: () => ({ repo: "/tmp/repo" }), broadcast: () => {} },
+      "repo",
+      {
+        store,
+        fetchProject: async () => { deepCalled = true; return { projectPath: "g/p", prs: [] }; },
+        fetchDelta: async (_repo, updatedAfter) => { capturedUpdatedAfter = updatedAfter; return { projectPath: "g/p", prs: [] }; },
+      },
+    );
+    expect(deepCalled).toBe(false);
+    expect(capturedUpdatedAfter).toBeDefined();
+    const expected = listSyncedAt - DELTA_OVERLAP_MS;
+    const actual = new Date(capturedUpdatedAfter!).getTime();
+    expect(Math.abs(actual - expected)).toBeLessThan(2000); // tolerance for wall-clock drift during the test
+  });
+
+  test("listSyncedAt older than 24h → deep, even though a record exists", async () => {
+    const store = tmpStore();
+    const listSyncedAt = Date.now() - (DEEP_RECONCILE_MS + 60_000);
+    store.fullSync("repo", "g/p", [pr(1)], listSyncedAt);
+    let deepCalled = false;
+    let deltaCalled = false;
+    await syncProjectMRs(
+      { repoIndex: () => ({ repo: "/tmp/repo" }), broadcast: () => {} },
+      "repo",
+      {
+        store,
+        fetchProject: async () => { deepCalled = true; return { projectPath: "g/p", prs: [] }; },
+        fetchDelta: async () => { deltaCalled = true; return { projectPath: "g/p", prs: [] }; },
+      },
+    );
+    expect(deepCalled).toBe(true);
+    expect(deltaCalled).toBe(false);
+  });
+
+  test("explicit mode: 'deep' forces deep even with a fresh record", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [pr(1)], Date.now() - 1000);
+    let deepCalled = false;
+    await syncProjectMRs(
+      { repoIndex: () => ({ repo: "/tmp/repo" }), broadcast: () => {} },
+      "repo",
+      {
+        store,
+        mode: "deep",
+        fetchProject: async () => { deepCalled = true; return { projectPath: "g/p", prs: [] }; },
+        fetchDelta: async () => { throw new Error("must not call delta"); },
+      },
+    );
+    expect(deepCalled).toBe(true);
+  });
+
+  test("delta upserts via applyDelta, bumps deltaSyncedAt not listSyncedAt, and broadcasts on changed", async () => {
+    const store = tmpStore();
+    const listSyncedAt = Date.now() - 1000;
+    store.fullSync("repo", "g/p", [pr(1)], listSyncedAt);
+    const events: Array<{ type: string; data: any }> = [];
+    await syncProjectMRs(
+      { repoIndex: () => ({ repo: "/tmp/repo" }), broadcast: (type, data) => events.push({ type, data }) },
+      "repo",
+      { store, fetchDelta: async () => ({ projectPath: "g/p", prs: [pr(2, { state: "merged" })] }) },
+    );
+    expect(events).toEqual([{ type: "project-mrs", data: { repoName: "repo", iids: [2] } }]);
+    expect(store.read("repo")!.mrs[2]!.pr.state).toBe("merged");
+    expect(store.read("repo")!.mrs[1]).toBeDefined(); // delta doesn't prune
+    expect(store.read("repo")!.listSyncedAt).toBe(listSyncedAt); // untouched
+    expect(store.read("repo")!.deltaSyncedAt).toBeGreaterThanOrEqual(listSyncedAt);
+  });
+
+  test("delta with no changes → no broadcast", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [pr(1)], Date.now() - 1000);
+    const deps = { repoIndex: () => ({ repo: "/tmp/repo" }), broadcast: () => { throw new Error("must not broadcast"); } };
+    await syncProjectMRs(deps, "repo", { store, fetchDelta: async () => ({ projectPath: "g/p", prs: [] }) });
+  });
+
+  test("deep still prunes via fullSync", async () => {
+    const store = tmpStore();
+    const listSyncedAt = Date.now() - (DEEP_RECONCILE_MS + 60_000);
+    store.fullSync("repo", "g/p", [pr(1), pr(2)], listSyncedAt); // forces deep mode below
+    await syncProjectMRs(
+      { repoIndex: () => ({ repo: "/tmp/repo" }), broadcast: () => {} },
+      "repo",
+      { store, fetchProject: async () => ({ projectPath: "g/p", prs: [pr(1)] }) }, // pr 2 no longer open
+    );
+    expect(store.read("repo")!.mrs[1]).toBeDefined();
+    expect(store.read("repo")!.mrs[2]).toBeUndefined();
+  });
+});
+
 describe("project-mrs:read handler", async () => {
   const { createProjectMRsHandlers } = await import("../handlers/project-mrs.ts");
   const fakeCtx = { repoIndex: () => ({ repo: "/tmp/repo" }) } as any;
@@ -109,5 +227,19 @@ describe("project-mrs:read handler", async () => {
     const res = await h["project-mrs:read"]!({ repoName: "repo", maxAgeMs: 0 });
     expect(res.ok).toBe(false);
     expect(res.error).toContain("project sync failed");
+  });
+
+  test("freshness gate honors deltaSyncedAt: old listSyncedAt but fresh deltaSyncedAt → no sync", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [pr(1)], Date.now() - 10 * 60_000); // stale as a deep sync
+    store.applyDelta("repo", "g/p", [pr(1)], Date.now());             // but delta-fresh
+    let synced = 0;
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, {
+      store, sync: async () => { synced++; }, tracking: grantedTracking,
+    });
+    const res = await h["project-mrs:read"]!({ repoName: "repo", maxAgeMs: 60_000 });
+    expect(synced).toBe(0);
+    expect(res.ok).toBe(true);
+    expect(res.data.syncedAt).toBe(store.read("repo")!.deltaSyncedAt);
   });
 });

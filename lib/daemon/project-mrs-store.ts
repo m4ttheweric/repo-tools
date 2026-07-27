@@ -28,7 +28,13 @@ export interface ProjectMRStore {
   projectPath: string;
   mrs: Record<number, ProjectMREntry>;
   listSyncedAt: number;
+  deltaSyncedAt?: number;
   source: "poll" | "events" | "mutation";
+}
+
+/** Read freshness = the more recent of a deep sync and a delta sync (spec §5.7). */
+export function freshnessOf(store: ProjectMRStore): number {
+  return Math.max(store.listSyncedAt, store.deltaSyncedAt ?? 0);
 }
 
 export interface ProjectMRs {
@@ -36,6 +42,7 @@ export interface ProjectMRs {
   read(repoName: string): ProjectMRStore | undefined;
   upsert(repoName: string, projectPath: string | null, pr: PullRequest, source: "events" | "mutation"): number[];
   fullSync(repoName: string, projectPath: string, prs: PullRequest[], syncStartedAt: number): number[];
+  applyDelta(repoName: string, projectPath: string, prs: PullRequest[], deltaStartedAt: number): number[];
   findBySourceBranch(repoName: string, branch: string): PullRequest | null;
   flushNow(): void;
 }
@@ -133,6 +140,31 @@ export function createProjectMRs(
     return changed;
   }
 
+  function applyDelta(
+    repoName: string,
+    projectPath: string,
+    prs: PullRequest[],
+    deltaStartedAt: number,
+  ): number[] {
+    const store = data[repoName] ?? { projectPath, mrs: {}, listSyncedAt: 0, source: "poll" as const };
+    const changed: number[] = [];
+    // Unlike fullSync, a delta result is not a reconcile against the whole
+    // set (it's a window of updated MRs, not every open MR), so there's
+    // nothing to prune and no race to guard against: the fetch started
+    // after deltaStartedAt, so it's unconditionally the freshest data for
+    // every iid it names. fetchedAt is "now", not deltaStartedAt — a
+    // delta result is fresher than the window start it was queried from.
+    for (const pr of prs) {
+      store.mrs[pr.iid] = { pr, fetchedAt: Date.now() };
+      changed.push(pr.iid);
+    }
+    store.projectPath = projectPath;
+    store.deltaSyncedAt = deltaStartedAt;
+    data[repoName] = store;
+    flushSoon();
+    return changed;
+  }
+
   function findBySourceBranch(repoName: string, branch: string): PullRequest | null {
     const store = data[repoName];
     if (!store) return null;
@@ -147,6 +179,7 @@ export function createProjectMRs(
     read: (repoName) => data[repoName],
     upsert,
     fullSync,
+    applyDelta,
     findBySourceBranch,
     flushNow,
   };
