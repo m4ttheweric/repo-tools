@@ -655,9 +655,9 @@ export const TREE: Record<string, CommandNode> = {
         fn: "manageTracking",
         aliases: ["events"],
         args: [
-          { name: "Repo", type: "text", placeholder: "assured-dev", hint: "Repo name from ~/.rt/repos.json (omit to list)" },
-          { name: "Level", type: "text", placeholder: "live|poll|off", hint: "live (events + poll), poll (5-min only), off (on-demand only)" },
-          { name: "Caches", type: "text", placeholder: "branches,project-mrs", hint: "Comma list of cache kinds to track: branches, project-mrs, discussions (default: branches)" },
+          { name: "Repo", type: "text", placeholder: "assured-dev", hint: "Repo name from ~/.rt/repos.json (omit to list; repo alone opens the interactive editor)" },
+          { name: "Level", type: "text", placeholder: "live|poll|off", hint: "live (events + poll), poll (5-min only), off (on-demand only); omit to pick interactively" },
+          { name: "Caches", type: "text", placeholder: "branches project-mrs", hint: "Cache kinds, space-separated: branches, project-mrs, discussions (default: branches)" },
         ],
       },
       logs: {
