@@ -275,6 +275,76 @@ describe("pipeline top-up (delta blind-spot fix)", () => {
     expect((events.at(-1) as any).iids).toContain(1);
   });
 
+  test("top-up fetches run concurrently — a serial loop stalls the manual refresh", async () => {
+    const store = tmpStore();
+    const many = Array.from({ length: 8 }, (_, i) => prWithPipe(i + 1, "running"));
+    store.fullSync("repo", "g/p", many, Date.now() - 10_000);
+
+    let inFlight = 0;
+    let peak = 0;
+    await syncProjectMRs(
+      { repoIndex: () => ({ repo: "/tmp/repo" }), broadcast: () => {} },
+      "repo",
+      {
+        store,
+        fetchDelta: async () => ({ projectPath: "g/p", prs: [] }),
+        fetchSingle: async (_r, _pp, iid) => {
+          inFlight++;
+          peak = Math.max(peak, inFlight);
+          await new Promise((r) => setTimeout(r, 5));
+          inFlight--;
+          return prWithPipe(iid, "success");
+        },
+      },
+    );
+
+    expect(peak).toBeGreaterThan(1);
+    // Every one still lands, regardless of completion order.
+    for (let iid = 1; iid <= 8; iid++) {
+      expect((store.read("repo")!.mrs[iid]!.pr as any).pipeline.status).toBe("success");
+    }
+  });
+
+  test("top-up applies upserts in request order, so `changed` stays deterministic", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [1, 2, 3, 4].map((i) => prWithPipe(i, "running")), Date.now() - 10_000);
+    const events: any[] = [];
+    await syncProjectMRs(
+      { repoIndex: () => ({ repo: "/tmp/repo" }), broadcast: (_t, d) => events.push(d) },
+      "repo",
+      {
+        store,
+        fetchDelta: async () => ({ projectPath: "g/p", prs: [] }),
+        // Resolve in reverse order: later iids finish first.
+        fetchSingle: async (_r, _pp, iid) => {
+          await new Promise((r) => setTimeout(r, (5 - iid) * 4));
+          return prWithPipe(iid, "success");
+        },
+      },
+    );
+    expect((events.at(-1) as any).iids).toEqual([1, 2, 3, 4]);
+  });
+
+  test("one failing top-up fetch does not sink the rest", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [1, 2, 3].map((i) => prWithPipe(i, "running")), Date.now() - 10_000);
+    await syncProjectMRs(
+      { repoIndex: () => ({ repo: "/tmp/repo" }), broadcast: () => {} },
+      "repo",
+      {
+        store,
+        fetchDelta: async () => ({ projectPath: "g/p", prs: [] }),
+        fetchSingle: async (_r, _pp, iid) => {
+          if (iid === 2) throw new Error("gitlab said no");
+          return prWithPipe(iid, "success");
+        },
+      },
+    );
+    expect((store.read("repo")!.mrs[1]!.pr as any).pipeline.status).toBe("success");
+    expect((store.read("repo")!.mrs[2]!.pr as any).pipeline.status).toBe("running"); // untouched
+    expect((store.read("repo")!.mrs[3]!.pr as any).pipeline.status).toBe("success");
+  });
+
   test("stuck pipelines drop out of top-up: in-flight but updatedAt older than 24h is skipped", async () => {
     const { TOPUP_MAX_AGE_MS } = await import("../project-sync.ts");
     const store = tmpStore();
