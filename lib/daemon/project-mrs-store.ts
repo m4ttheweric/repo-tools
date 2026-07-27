@@ -148,14 +148,22 @@ export function createProjectMRs(
   ): number[] {
     const store = data[repoName] ?? { projectPath, mrs: {}, listSyncedAt: 0, source: "poll" as const };
     const changed: number[] = [];
-    // Unlike fullSync, a delta result is not a reconcile against the whole
-    // set (it's a window of updated MRs, not every open MR), so there's
-    // nothing to prune and no race to guard against: the fetch started
-    // after deltaStartedAt, so it's unconditionally the freshest data for
-    // every iid it names. fetchedAt is "now", not deltaStartedAt — a
+    // Unlike fullSync, a delta is a window of updated MRs, not the whole
+    // set: nothing to prune. But the same two write rules apply. An entry
+    // written AFTER the delta's fetch began (event/mutation upsert racing
+    // the in-flight request) is newer than anything this response carries;
+    // and project-path fetches never carry diverged data, so a non-null
+    // value from an event-fed fetch must survive. fetchedAt is "now" — a
     // delta result is fresher than the window start it was queried from.
     for (const pr of prs) {
-      store.mrs[pr.iid] = { pr, fetchedAt: Date.now() };
+      const existing = store.mrs[pr.iid];
+      if (existing && existing.fetchedAt > deltaStartedAt) continue;
+      const prevDiverged = (existing?.pr as { divergedCommitsCount?: number | null } | undefined)?.divergedCommitsCount;
+      const incomingDiverged = (pr as { divergedCommitsCount?: number | null }).divergedCommitsCount;
+      const toStore = incomingDiverged == null && prevDiverged != null
+        ? ({ ...pr, divergedCommitsCount: prevDiverged } as PullRequest)
+        : pr;
+      store.mrs[pr.iid] = { pr: toStore, fetchedAt: Date.now() };
       changed.push(pr.iid);
     }
     store.projectPath = projectPath;
