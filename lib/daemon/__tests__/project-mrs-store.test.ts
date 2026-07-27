@@ -175,3 +175,23 @@ describe("freshnessOf", () => {
     expect(freshnessOf(s.read("repo")!)).toBe(listSyncedAt);
   });
 });
+
+describe("applyDelta guards (review fixes)", () => {
+  test("delta preserves an event-fed diverged count when incoming is null", () => {
+    const s = createProjectMRs(tmpStorePath(), 0);
+    s.fullSync("repo", "g/p", [pr(1)], Date.now() - 10_000);
+    s.upsert("repo", null, pr(1, { divergedCommitsCount: 4 } as any), "events");
+    s.applyDelta("repo", "g/p", [pr(1, { divergedCommitsCount: null } as any)], Date.now() - 1000);
+    expect((s.read("repo")!.mrs[1]!.pr as any).divergedCommitsCount).toBe(4);
+  });
+
+  test("delta never clobbers an entry written after the delta fetch began", () => {
+    const s = createProjectMRs(tmpStorePath(), 0);
+    const deltaStartedAt = Date.now() - 5000;
+    s.fullSync("repo", "g/p", [pr(1)], deltaStartedAt - 1);
+    s.upsert("repo", null, pr(1, { state: "merged" } as any), "mutation"); // fetchedAt = now > deltaStartedAt
+    const changed = s.applyDelta("repo", "g/p", [pr(1)], deltaStartedAt);   // stale window says opened
+    expect(s.read("repo")!.mrs[1]!.pr.state).toBe("merged");
+    expect(changed).toEqual([]);
+  });
+});
