@@ -1,6 +1,7 @@
 {
   "name": "repo-tools",
   "private": true,
+  "workspaces": ["packages/*"],
   "bin": {
     "rt": "./cli.ts"
   },
