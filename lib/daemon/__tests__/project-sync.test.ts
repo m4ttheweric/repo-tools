@@ -2,7 +2,7 @@ import { describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { syncProjectMRs, DEEP_RECONCILE_MS, DEEP_RETRY_BACKOFF_MS, DELTA_OVERLAP_MS } from "../project-sync.ts";
+import { syncProjectMRs, backfillAuthors, DEEP_RECONCILE_MS, DEEP_RETRY_BACKOFF_MS, DELTA_OVERLAP_MS } from "../project-sync.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
 import type { PullRequest } from "@workforge/glance-sdk";
 
@@ -472,5 +472,94 @@ describe("pipeline top-up (delta blind-spot fix)", () => {
       },
     );
     expect(singles.sort()).toEqual([2, 3]);
+  });
+});
+
+describe("demand-scoped sync", () => {
+  const deps = (repo: string) => ({ repoIndex: () => ({ [repo]: "/tmp/repo" }), broadcast: () => {} });
+  const days = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
+
+  test("deep with demands uses the author fetch, filters to window, prunes the rest, records scope", async () => {
+    const store = tmpStore();
+    store.fullSync("s1", "g/p", [
+      pr(1, { author: { username: "zombie" } as any, updatedAt: days(200) }),
+    ], Date.now() - (DEEP_RECONCILE_MS + 60_000));
+    store.registerDemand("s1", "board", ["alice"], Date.now());
+    let authorsAsked: string[] | null = null;
+    await syncProjectMRs(deps("s1"), "s1", {
+      store, selfUsername: "me", windowDays: 30,
+      fetchAuthors: async (_r, authors) => {
+        authorsAsked = authors;
+        return { projectPath: "g/p", prs: [
+          pr(2, { author: { username: "alice" } as any, updatedAt: days(1) }),
+          pr(3, { author: { username: "alice" } as any, updatedAt: days(45) }),  // outside window
+        ] };
+      },
+      fetchDelta: async () => { throw new Error("must not delta"); },
+    });
+    expect(authorsAsked as string[] | null).toEqual(["alice", "me"]);
+    const rec = store.read("s1")!;
+    expect(rec.mrs[2]).toBeDefined();
+    expect(rec.mrs[3]).toBeUndefined();       // window-filtered
+    expect(rec.mrs[1]).toBeUndefined();       // pruned: out of scope
+    expect(rec.scope).toEqual({ authors: ["alice", "me"], windowDays: 30 });
+  });
+
+  test("no demands and no self: deep stays the unscoped project sweep", async () => {
+    const store = tmpStore();
+    let projectFetch = false;
+    await syncProjectMRs(deps("s2"), "s2", {
+      store, selfUsername: null, windowDays: 30,
+      fetchProject: async () => { projectFetch = true; return { projectPath: "g/p", prs: [pr(1)] }; },
+      fetchAuthors: async () => { throw new Error("must not author-fetch"); },
+    });
+    expect(projectFetch).toBe(true);
+  });
+
+  test("delta drops MRs by out-of-scope authors when a scope exists", async () => {
+    const store = tmpStore();
+    store.fullSync("s3", "g/p", [], Date.now() - 1000);
+    store.setScope("s3", { authors: ["alice"], windowDays: 30 });
+    await syncProjectMRs(deps("s3"), "s3", {
+      store,
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [
+        pr(4, { author: { username: "alice" } as any }),
+        pr(5, { author: { username: "stranger" } as any }),
+      ] }),
+    });
+    expect(store.read("s3")!.mrs[4]).toBeDefined();
+    expect(store.read("s3")!.mrs[5]).toBeUndefined();
+  });
+
+  test("deep expires idle demands before computing scope", async () => {
+    const store = tmpStore();
+    store.fullSync("s4", "g/p", [], Date.now() - (DEEP_RECONCILE_MS + 60_000));
+    store.registerDemand("s4", "dead", ["ghost"], 1);
+    store.read("s4")!.demands!.dead!.lastSeenAt = 1;   // long idle
+    let authorsAsked: string[] | null = null;
+    await syncProjectMRs(deps("s4"), "s4", {
+      store, selfUsername: "me", windowDays: 30,
+      fetchAuthors: async (_r, a) => { authorsAsked = a; return { projectPath: "g/p", prs: [] }; },
+    });
+    expect(authorsAsked as string[] | null).toEqual(["me"]);
+    expect(store.read("s4")!.demands!.dead).toBeUndefined();
+  });
+
+  test("backfillAuthors fetches just the named authors, upserts, extends scope, broadcasts", async () => {
+    const store = tmpStore();
+    store.fullSync("s5", "g/p", [], Date.now() - 1000);
+    store.setScope("s5", { authors: ["alice"], windowDays: 30 });
+    const events: any[] = [];
+    await backfillAuthors(
+      { repoIndex: () => ({ s5: "/tmp/repo" }), broadcast: (t, d) => events.push({ t, d }) },
+      "s5", ["newbie"],
+      { store, windowDays: 30, fetchAuthors: async (_r, a) => {
+          expect(a).toEqual(["newbie"]);
+          return { projectPath: "g/p", prs: [pr(9, { author: { username: "newbie" } as any, updatedAt: days(1) })] };
+        } },
+    );
+    expect(store.read("s5")!.mrs[9]).toBeDefined();
+    expect(store.read("s5")!.scope!.authors).toEqual(["alice", "newbie"]);
+    expect(events.length).toBe(1);
   });
 });

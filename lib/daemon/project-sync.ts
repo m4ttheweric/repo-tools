@@ -30,8 +30,9 @@
  */
 
 import type { PullRequest } from "@workforge/glance-sdk";
-import { getRepoContext } from "./freshness.ts";
-import { getProjectMRs, freshnessOf, type ProjectMRs } from "./project-mrs-store.ts";
+import { getRepoContext, resolveSelfUsername } from "./freshness.ts";
+import { getProjectMRs, freshnessOf, type ProjectMRs, type ProjectMRStore } from "./project-mrs-store.ts";
+import { loadRepoTracking, grants } from "../repo-tracking.ts";
 import { getDaemonLogger } from "../daemon-logger.ts";
 
 const log = (await getDaemonLogger()).childLogger("project-sync");
@@ -42,6 +43,30 @@ export const DEEP_RECONCILE_MS = 24 * 60 * 60 * 1000;
 export const DELTA_OVERLAP_MS = 2 * 60 * 1000;
 /** After a staleness-forced deep fails, hold deep retries this long; delta covers the gap. */
 export const DEEP_RETRY_BACKOFF_MS = 60 * 60 * 1000;
+/** A demand client that hasn't renewed in this long drops out of the scope on the next deep. */
+export const DEMAND_IDLE_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Union of every live demand's authors plus the repo's own user, sorted and
+ * de-duplicated. Null means "no demands, no self" -- there is nothing to
+ * scope to, so the deep sync stays the legacy unscoped project sweep.
+ */
+export function effectiveAuthors(record: ProjectMRStore | undefined, selfUsername: string | null): string[] | null {
+  const authors = new Set<string>();
+  for (const d of Object.values(record?.demands ?? {})) for (const a of d.authors) authors.add(a);
+  if (selfUsername) authors.add(selfUsername);
+  if (authors.size === 0) return null;
+  return [...authors].sort();
+}
+
+/** Drops PRs whose updatedAt is older than the window. A missing/unparseable timestamp is kept -- never guess-drop. */
+function withinWindow(prs: PullRequest[], windowDays: number, now: number): PullRequest[] {
+  const cutoff = now - windowDays * 86_400_000;
+  return prs.filter((pr) => {
+    const t = Date.parse(pr.updatedAt ?? "");
+    return !Number.isFinite(t) || t >= cutoff;
+  });
+}
 
 /**
  * repoName → when a staleness-forced deep last failed. In-memory on purpose:
@@ -60,6 +85,17 @@ export interface ProjectSyncOverrides {
   fetchProject?: (repoName: string) => Promise<{ projectPath: string; prs: PullRequest[] }>;
   fetchDelta?: (repoName: string, updatedAfter: string) => Promise<{ projectPath: string; prs: PullRequest[] }>;
   fetchSingle?: (repoName: string, projectPath: string, iid: number) => Promise<PullRequest | null>;
+  /** Scoped deep's fetch: every open MR by any of these authors. */
+  fetchAuthors?: (repoName: string, authors: string[]) => Promise<{ projectPath: string; prs: PullRequest[] }>;
+  /** Overrides the grants-resolved window (test seam); production always resolves it from repo-tracking. */
+  windowDays?: number;
+  /**
+   * Test seam for the self-username resolution `syncImpl` otherwise performs
+   * via `resolveSelfUsername`. `undefined` means "resolve for real"; `null`
+   * means "resolved to no self" -- so passing null still opts a repo with no
+   * demands into scope computation instead of the legacy unscoped sweep.
+   */
+  selfUsername?: string | null;
   store?: ProjectMRs;
 }
 
@@ -105,14 +141,60 @@ async function syncImpl(
   const isDeep = explicitDeep || (deepDue && (!record || !deepBackingOff));
 
   if (isDeep) {
+    // Idle demand clients (a board tab closed a week ago) must not keep
+    // pinning their authors into the scope forever.
+    store.expireDemands(repoName, DEMAND_IDLE_EXPIRY_MS);
+    const windowDays = overrides.windowDays ?? grants(loadRepoTracking(), repoName).projectMrsWindowDays;
+
+    // Resolving self costs a network round trip (via getRepoContext), so it
+    // only runs when scope could actually apply: a live demand, or a caller
+    // that already supplied selfUsername (test seam; `null` still counts as
+    // "supplied" so it opts into scope computation instead of skipping it).
+    // With neither, every existing no-demand caller (including all of
+    // today's tests) stays on the legacy unscoped sweep with zero network
+    // calls.
+    const hasDemands = Object.keys(record?.demands ?? {}).length > 0;
+    let scopeAuthors: string[] | null = null;
+    if (hasDemands || overrides.selfUsername !== undefined) {
+      const selfUsername = overrides.selfUsername !== undefined
+        ? overrides.selfUsername
+        : await resolveSelfUsername(repoName, deps.repoIndex()[repoName] ?? "");
+      scopeAuthors = effectiveAuthors(record, selfUsername);
+    }
+
     const fetchProject = overrides.fetchProject ?? (async (repo: string) => {
       const { provider, projectPath } = await getRepoContext(repo, deps.repoIndex()[repo]);
       const prs = await provider.fetchPullRequests({ projectPath, state: "opened", listWeight: true });
       return { projectPath, prs };
     });
+    const fetchAuthors = overrides.fetchAuthors ?? (async (repo: string, authors: string[]) => {
+      const { provider, projectPath } = await getRepoContext(repo, deps.repoIndex()[repo]);
+      const prs = await provider.fetchPullRequests({ projectPath, authorUsernames: authors, state: "opened" });
+      return { projectPath, prs };
+    });
 
     const syncStartedAt = Date.now();
     try {
+      if (scopeAuthors) {
+        // fullSync's reconcile prunes everything absent from `kept`, which
+        // now covers both out-of-scope authors and out-of-window MRs...a
+        // failed author fetch rejects the whole deep (below) rather than
+        // landing here as "this author has no MRs".
+        const { projectPath, prs } = await fetchAuthors(repoName, scopeAuthors);
+        const kept = withinWindow(prs, windowDays, syncStartedAt);
+        const changed = store.fullSync(repoName, projectPath, kept, syncStartedAt);
+        store.setScope(repoName, { authors: scopeAuthors, windowDays });
+        deepFailedAt.delete(repoName);
+        log.debug(
+          { repo: repoName, mode: "deep", scoped: true, authors: scopeAuthors.length, open: kept.length, changed: changed.length },
+          "project sync",
+        );
+        if (changed.length > 0) {
+          deps.broadcast("project-mrs", { repoName, iids: changed });
+        }
+        return;
+      }
+
       const { projectPath, prs } = await fetchProject(repoName);
       const changed = store.fullSync(repoName, projectPath, prs, syncStartedAt);
       deepFailedAt.delete(repoName);
@@ -148,7 +230,14 @@ async function syncImpl(
     return { projectPath, prs };
   });
 
-  const { projectPath, prs } = await fetchDelta(repoName, updatedAfter);
+  let { projectPath, prs } = await fetchDelta(repoName, updatedAfter);
+  // A demand-scoped repo's delta window still queries the whole project
+  // (updatedAfter has no author filter), so drop anything outside scope here
+  // rather than letting it back into a store the deep sync just pruned it from.
+  if (record?.scope) {
+    const authors = record.scope.authors;
+    prs = prs.filter((pr) => authors.includes(pr.author?.username ?? ""));
+  }
   const changed = store.applyDelta(repoName, projectPath, prs, deltaStartedAt);
 
   // Pipeline top-up: pipeline transitions bump no MR timestamp, so they
@@ -198,6 +287,44 @@ async function syncImpl(
   }
 
   log.debug({ repo: repoName, mode: "delta", changed: changed.length, topup: topup.length }, "project sync");
+  if (changed.length > 0) {
+    deps.broadcast("project-mrs", { repoName, iids: changed });
+  }
+}
+
+/**
+ * On-demand top-up for authors newly added to a repo's scope (e.g. a board
+ * widening its demand) without waiting for the next daily deep. Fetches only
+ * the given names, upserts what's in-window, and extends (never replaces)
+ * the existing scope's author list.
+ */
+export async function backfillAuthors(
+  deps: ProjectSyncDeps,
+  repoName: string,
+  authors: string[],
+  overrides: ProjectSyncOverrides = {},
+): Promise<void> {
+  const store = overrides.store ?? getProjectMRs();
+  const record = store.read(repoName);
+  const windowDays = record?.scope?.windowDays
+    ?? overrides.windowDays
+    ?? grants(loadRepoTracking(), repoName).projectMrsWindowDays;
+  const fetchAuthors = overrides.fetchAuthors ?? (async (repo: string, names: string[]) => {
+    const { provider, projectPath } = await getRepoContext(repo, deps.repoIndex()[repo]);
+    const prs = await provider.fetchPullRequests({ projectPath, authorUsernames: names, state: "opened" });
+    return { projectPath, prs };
+  });
+
+  const { projectPath, prs } = await fetchAuthors(repoName, authors);
+  const kept = withinWindow(prs, windowDays, Date.now());
+  const changed: number[] = [];
+  for (const pr of kept) {
+    changed.push(...store.upsert(repoName, projectPath, pr, "events"));
+  }
+
+  const union = [...new Set([...(record?.scope?.authors ?? []), ...authors])].sort();
+  store.setScope(repoName, { authors: union, windowDays });
+
   if (changed.length > 0) {
     deps.broadcast("project-mrs", { repoName, iids: changed });
   }
