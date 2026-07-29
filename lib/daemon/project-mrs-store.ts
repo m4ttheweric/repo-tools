@@ -24,12 +24,15 @@ export const PROJECT_MRS_PATH = join(RT_DIR, "project-mrs.json");
 const FLUSH_DEBOUNCE_MS = 500;
 
 export interface ProjectMREntry { pr: PullRequest; fetchedAt: number; }
+export interface DemandEntry { authors: string[]; declaredAt: number; lastSeenAt: number; }
 export interface ProjectMRStore {
   projectPath: string;
   mrs: Record<number, ProjectMREntry>;
   listSyncedAt: number;
   deltaSyncedAt?: number;
   source: "poll" | "events" | "mutation";
+  demands?: Record<string, DemandEntry>;
+  scope?: { authors: string[]; windowDays: number };
 }
 
 /** Read freshness = the more recent of a deep sync and a delta sync (spec §5.7). */
@@ -44,6 +47,9 @@ export interface ProjectMRs {
   fullSync(repoName: string, projectPath: string, prs: PullRequest[], syncStartedAt: number): number[];
   applyDelta(repoName: string, projectPath: string, prs: PullRequest[], deltaStartedAt: number): number[];
   findBySourceBranch(repoName: string, branch: string): PullRequest | null;
+  registerDemand(repoName: string, client: string, authors: string[], declaredAt: number): boolean;
+  expireDemands(repoName: string, maxIdleMs: number): string[];
+  setScope(repoName: string, scope: { authors: string[]; windowDays: number }): void;
   flushNow(): void;
 }
 
@@ -182,6 +188,37 @@ export function createProjectMRs(
     return null;
   }
 
+  function registerDemand(repoName: string, client: string, authors: string[], declaredAt: number): boolean {
+    const store = data[repoName]
+      ?? (data[repoName] = { projectPath: "", mrs: {}, listSyncedAt: 0, source: "poll" as const });
+    store.demands ??= {};
+    const prev = store.demands[client];
+    if (prev && declaredAt < prev.declaredAt) return false;
+    const unchanged = prev !== undefined
+      && prev.authors.length === authors.length
+      && prev.authors.every((a, i) => a === authors[i]);
+    store.demands[client] = { authors: [...authors], declaredAt, lastSeenAt: Date.now() };
+    flushSoon();
+    return !unchanged;
+  }
+
+  function expireDemands(repoName: string, maxIdleMs: number): string[] {
+    const demands = data[repoName]?.demands;
+    if (!demands) return [];
+    const cutoff = Date.now() - maxIdleMs;
+    const dropped = Object.keys(demands).filter((c) => demands[c]!.lastSeenAt < cutoff);
+    for (const c of dropped) delete demands[c];
+    if (dropped.length) flushSoon();
+    return dropped;
+  }
+
+  function setScope(repoName: string, scope: { authors: string[]; windowDays: number }): void {
+    const store = data[repoName];
+    if (!store) return;
+    store.scope = { authors: [...scope.authors], windowDays: scope.windowDays };
+    flushSoon();
+  }
+
   return {
     data,
     read: (repoName) => data[repoName],
@@ -189,6 +226,9 @@ export function createProjectMRs(
     fullSync,
     applyDelta,
     findBySourceBranch,
+    registerDemand,
+    expireDemands,
+    setScope,
     flushNow,
   };
 }
