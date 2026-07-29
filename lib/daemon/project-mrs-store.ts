@@ -180,11 +180,15 @@ export function createProjectMRs(
     return changed;
   }
 
+  // Matches any stored state (not just "opened"): callers like mr:by-branch
+  // want a branch → MR resolution that mirrors what the forge itself would
+  // return for `state: 'all'`, so a just-merged or closed MR is as valid a
+  // cache hit as an open one.
   function findBySourceBranch(repoName: string, branch: string): PullRequest | null {
     const store = data[repoName];
     if (!store) return null;
     for (const entry of Object.values(store.mrs)) {
-      if (entry.pr.state === "opened" && entry.pr.sourceBranch === branch) return entry.pr;
+      if (entry.pr.sourceBranch === branch) return entry.pr;
     }
     return null;
   }

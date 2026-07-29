@@ -87,11 +87,11 @@ describe("fullSync reconcile", () => {
 });
 
 describe("findBySourceBranch / load tolerance / flush", () => {
-  test("findBySourceBranch matches open MRs only", () => {
+  test("findBySourceBranch matches any stored state", () => {
     const s = createProjectMRs(tmpStorePath(), 0);
     s.fullSync("repo", "g/p", [pr(1), pr(2, { state: "merged", sourceBranch: "feat-2" } as any)], Date.now());
     expect(s.findBySourceBranch("repo", "feat-1")!.iid).toBe(1);
-    expect(s.findBySourceBranch("repo", "feat-2")).toBeNull();
+    expect(s.findBySourceBranch("repo", "feat-2")!.iid).toBe(2);
     expect(s.findBySourceBranch("repo", "nope")).toBeNull();
   });
 

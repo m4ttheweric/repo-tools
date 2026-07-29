@@ -20,6 +20,7 @@ import { refreshDiscussions, type BroadcastFn } from "../discussions-store.ts";
 import { getDiscussionsFileStore } from "../discussions-file-store.ts";
 import { grants, loadRepoTracking } from "../../repo-tracking.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
+import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 
 /** Discussions are stable per push; 2min TTL keeps reads fast without going stale. */
 const DISCUSSIONS_TTL_MS = 2 * 60 * 1000;
@@ -31,7 +32,13 @@ export function createDiscussionHandlers(
   const deps = { ctx, broadcast };
 
   return {
-    "discussions:read": async (payload) => {
+    // `force` is a legacy daemon-client-only escape hatch (lib/daemon-client.ts),
+    // not part of the typed rt-client catalog -- extended onto the base
+    // payload type rather than added to Commands so the public contract
+    // stays what rt-client actually sends.
+    "discussions:read": async (
+      payload: Commands["discussions:read"]["payload"] & { force?: boolean },
+    ): Promise<{ ok: true; data: Commands["discussions:read"]["data"] } | { ok: false; error: string }> => {
       const repoName = payload?.repoName as string | undefined;
       const iid      = payload?.iid      as number | undefined;
       const force    = payload?.force === true;

@@ -4,12 +4,20 @@
  * `maxAgeMs` mirrors cache:read's freshness contract (`>=` so 0 always
  * forces) but gates on listSyncedAt and awaits ONLY this repo's project
  * sync — never the full branch-enrichment refresh.
+ *
+ * mr:by-branch — batch branch → MR resolution for the same repo, same grant.
+ * Store-first (any stored state), forge-fallthrough on a miss with a
+ * write-back upsert so the next call for that branch is a store hit. A
+ * per-branch forge failure resolves to null rather than failing the batch.
  */
 
+import type { PullRequest } from "@workforge/glance-sdk";
 import { loadRepoTracking, grants, type RepoTracking } from "../../repo-tracking.ts";
 import { getProjectMRs, freshnessOf, type ProjectMRs } from "../project-mrs-store.ts";
 import { syncProjectMRs, backfillAuthors } from "../project-sync.ts";
+import { getRepoContext } from "../freshness.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
+import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 
 /** Shape of the `demand` request field once validated. */
 interface DemandRequest {
@@ -29,12 +37,22 @@ function isValidDemand(d: unknown): d is DemandRequest {
   return true;
 }
 
+/** A malformed `branches` field never partially runs -- reject before any store or forge access. */
+function isValidBranches(v: unknown): v is string[] {
+  if (!Array.isArray(v) || v.length < 1 || v.length > 100) return false;
+  return v.every((b) => typeof b === "string" && b.length > 0);
+}
+
+/** Forge fetches within a batch, mirroring project-sync.ts's pipeline top-up chunking. */
+const BY_BRANCH_CONCURRENCY = 4;
+
 /** Test seams; production callers omit this. */
 export interface ProjectMRsHandlerOverrides {
   store?: ProjectMRs;
   sync?: (repoName: string) => Promise<void>;
   tracking?: () => RepoTracking;
   backfill?: (repoName: string, authors: string[]) => Promise<void>;
+  fetchByBranch?: (repoName: string, branch: string) => Promise<PullRequest | null>;
 }
 
 export function createProjectMRsHandlers(
@@ -49,7 +67,9 @@ export function createProjectMRsHandlers(
   const backfill = overrides.backfill
     ?? ((repoName: string, authors: string[]) => backfillAuthors({ repoIndex: ctx.repoIndex, broadcast }, repoName, authors));
   return {
-    "project-mrs:read": async (payload) => {
+    "project-mrs:read": async (
+      payload: Commands["project-mrs:read"]["payload"],
+    ): Promise<{ ok: true; data: Commands["project-mrs:read"]["data"] } | { ok: false; error: string }> => {
       const repoName = payload?.repoName as string | undefined;
       const maxAgeMs = payload?.maxAgeMs as number | undefined;
       const rawDemand = payload?.demand;
@@ -124,6 +144,65 @@ export function createProjectMRsHandlers(
           scope: record.scope ? { ...record.scope, uncovered } : undefined,
         },
       };
+    },
+
+    "mr:by-branch": async (
+      payload: Commands["mr:by-branch"]["payload"],
+    ): Promise<{ ok: true; data: Commands["mr:by-branch"]["data"] } | { ok: false; error: string }> => {
+      const repoName = payload?.repoName as string | undefined;
+      const branches = payload?.branches;
+      if (!repoName || !isValidBranches(branches)) {
+        return { ok: false, error: "malformed by-branch request" };
+      }
+
+      if (!grants(tracking(), repoName).caches.has("project-mrs")) {
+        return {
+          ok: false,
+          error: `project-mrs cache not granted for ${repoName}; run: rt daemon track ${repoName} live branches,project-mrs`,
+        };
+      }
+
+      // Tracks the projectPath the default forge fetch resolves so the
+      // write-back upsert has somewhere to attach even on a repo the store
+      // has never seen. Test overrides skip forge resolution entirely, so
+      // this stays whatever the store already knows (set by prior syncs).
+      let projectPath = store().read(repoName)?.projectPath ?? null;
+      const fetchByBranch = overrides.fetchByBranch ?? (async (repo: string, branch: string) => {
+        const repoCtx = await getRepoContext(repo, ctx.repoIndex()[repo]);
+        projectPath = repoCtx.projectPath;
+        return repoCtx.provider.fetchPullRequestByBranch(repoCtx.projectPath, branch, "all");
+      });
+
+      const byBranch: Commands["mr:by-branch"]["data"]["byBranch"] = {};
+      const misses: string[] = [];
+      for (const branch of branches) {
+        const hit = store().findBySourceBranch(repoName, branch);
+        byBranch[branch] = hit ? { pr: hit, source: "store" } : null;
+        if (!hit) misses.push(branch);
+      }
+
+      // Chunked 4-wide (mirrors project-sync.ts's pipeline top-up loop) so a
+      // large batch can't burst the forge with one fetch per branch.
+      for (let i = 0; i < misses.length; i += BY_BRANCH_CONCURRENCY) {
+        const chunk = misses.slice(i, i + BY_BRANCH_CONCURRENCY);
+        await Promise.all(chunk.map(async (branch) => {
+          try {
+            const pr = await fetchByBranch(repoName, branch);
+            if (pr) {
+              store().upsert(repoName, projectPath, pr, "events");
+              byBranch[branch] = { pr, source: "forge" };
+            } else {
+              byBranch[branch] = null;
+            }
+          } catch (err) {
+            ctx.log.warn({ err, repo: repoName, branch }, "by-branch forge fetch failed");
+            byBranch[branch] = null;
+          }
+        }));
+      }
+
+      const record = store().read(repoName);
+      return { ok: true, data: { byBranch, syncedAt: record ? freshnessOf(record) : 0 } };
     },
   };
 }
