@@ -8,14 +8,33 @@
 
 import { loadRepoTracking, grants, type RepoTracking } from "../../repo-tracking.ts";
 import { getProjectMRs, freshnessOf, type ProjectMRs } from "../project-mrs-store.ts";
-import { syncProjectMRs } from "../project-sync.ts";
+import { syncProjectMRs, backfillAuthors } from "../project-sync.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
+
+/** Shape of the `demand` request field once validated. */
+interface DemandRequest {
+  client: string;
+  authors: string[];
+  declaredAt: number;
+}
+
+/** Guards store writes: a bad demand must be rejected, never partially registered. */
+function isValidDemand(d: unknown): d is DemandRequest {
+  if (!d || typeof d !== "object") return false;
+  const { client, authors, declaredAt } = d as Record<string, unknown>;
+  if (typeof client !== "string" || client.length === 0) return false;
+  if (!Array.isArray(authors) || authors.length < 1 || authors.length > 200) return false;
+  if (!authors.every((a) => typeof a === "string" && a.length > 0)) return false;
+  if (typeof declaredAt !== "number" || !Number.isFinite(declaredAt)) return false;
+  return true;
+}
 
 /** Test seams; production callers omit this. */
 export interface ProjectMRsHandlerOverrides {
   store?: ProjectMRs;
   sync?: (repoName: string) => Promise<void>;
   tracking?: () => RepoTracking;
+  backfill?: (repoName: string, authors: string[]) => Promise<void>;
 }
 
 export function createProjectMRsHandlers(
@@ -27,17 +46,31 @@ export function createProjectMRsHandlers(
   const sync = overrides.sync
     ?? ((repoName: string) => syncProjectMRs({ repoIndex: ctx.repoIndex, broadcast }, repoName));
   const tracking = overrides.tracking ?? loadRepoTracking;
+  const backfill = overrides.backfill
+    ?? ((repoName: string, authors: string[]) => backfillAuthors({ repoIndex: ctx.repoIndex, broadcast }, repoName, authors));
   return {
     "project-mrs:read": async (payload) => {
       const repoName = payload?.repoName as string | undefined;
       const maxAgeMs = payload?.maxAgeMs as number | undefined;
+      const rawDemand = payload?.demand;
       if (!repoName) return { ok: false, error: "missing repoName" };
+
+      if (rawDemand !== undefined && !isValidDemand(rawDemand)) {
+        return { ok: false, error: "malformed demand" };
+      }
+      const demand = rawDemand as DemandRequest | undefined;
 
       if (!grants(tracking(), repoName).caches.has("project-mrs")) {
         return {
           ok: false,
           error: `project-mrs cache not granted for ${repoName}; run: rt daemon track ${repoName} live branches,project-mrs`,
         };
+      }
+
+      // Registered before the freshness gate so a forced read's awaited sync
+      // (below) already sees this demand's authors.
+      if (demand) {
+        store().registerDemand(repoName, demand.client, demand.authors, demand.declaredAt);
       }
 
       if (typeof maxAgeMs === "number") {
@@ -52,11 +85,29 @@ export function createProjectMRsHandlers(
         }
       }
 
-      const record = store().read(repoName);
+      let record = store().read(repoName);
+      const covered = new Set(record?.scope?.authors ?? []);
+      const uncovered = demand ? demand.authors.filter((a) => !covered.has(a)) : [];
+      if (uncovered.length > 0) {
+        const run = backfill(repoName, uncovered);
+        if (maxAgeMs === 0) {
+          await run.catch(() => {});   // forced read: caller wants completeness now
+          record = store().read(repoName);
+        } else {
+          void run.catch(() => {});    // background heal; scope.uncovered tells the client
+        }
+      }
+
       if (!record) return { ok: true, data: { mrs: {}, listSyncedAt: 0, source: "poll", syncedAt: 0 } };
       return {
         ok: true,
-        data: { mrs: record.mrs, listSyncedAt: record.listSyncedAt, source: record.source, syncedAt: freshnessOf(record) },
+        data: {
+          mrs: record.mrs,
+          listSyncedAt: record.listSyncedAt,
+          source: record.source,
+          syncedAt: freshnessOf(record),
+          scope: record.scope ? { ...record.scope, uncovered } : undefined,
+        },
       };
     },
   };

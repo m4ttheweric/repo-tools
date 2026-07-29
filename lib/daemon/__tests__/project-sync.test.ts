@@ -242,6 +242,55 @@ describe("project-mrs:read handler", async () => {
     expect(res.ok).toBe(true);
     expect(res.data.syncedAt).toBe(store.read("repo")!.deltaSyncedAt);
   });
+
+  test("demand registers before the freshness gate and is monotonic", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [], Date.now());
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, { store, sync: async () => {}, tracking: grantedTracking });
+    await h["project-mrs:read"]!({ repoName: "repo", demand: { client: "b:1", authors: ["x"], declaredAt: 5 } });
+    await h["project-mrs:read"]!({ repoName: "repo", demand: { client: "b:1", authors: ["stale"], declaredAt: 4 } });
+    expect(store.read("repo")!.demands!["b:1"]!.authors).toEqual(["x"]);
+  });
+
+  test("malformed demand is rejected without registering", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [], Date.now());
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, { store, sync: async () => {}, tracking: grantedTracking });
+    const res = await h["project-mrs:read"]!({ repoName: "repo", demand: { client: "", authors: ["x"], declaredAt: 1 } });
+    expect(res.ok).toBe(false);
+    expect(store.read("repo")!.demands).toBeUndefined();
+  });
+
+  test("uncovered demanded authors are reported and kick a backfill on unforced reads", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [], Date.now());
+    store.setScope("repo", { authors: ["alice"], windowDays: 30 });
+    const backfilled: string[][] = [];
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, {
+      store, sync: async () => {}, tracking: grantedTracking,
+      backfill: async (_r, authors) => { backfilled.push(authors); },
+    });
+    const res = await h["project-mrs:read"]!({ repoName: "repo",
+      demand: { client: "b:1", authors: ["alice", "newbie"], declaredAt: 1 } });
+    expect(res.ok).toBe(true);
+    expect((res.data as any).scope).toEqual({ authors: ["alice"], windowDays: 30, uncovered: ["newbie"] });
+    await new Promise((r) => setTimeout(r, 0));   // fire-and-forget settles
+    expect(backfilled).toEqual([["newbie"]]);
+  });
+
+  test("forced read with uncovered authors awaits the backfill", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [], Date.now() - 60_000);
+    store.setScope("repo", { authors: [], windowDays: 30 });
+    const order: string[] = [];
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, {
+      store, sync: async () => { order.push("sync"); }, tracking: grantedTracking,
+      backfill: async () => { order.push("backfill"); },
+    });
+    await h["project-mrs:read"]!({ repoName: "repo", maxAgeMs: 0,
+      demand: { client: "b:1", authors: ["newbie"], declaredAt: 1 } });
+    expect(order).toEqual(["sync", "backfill"]);
+  });
 });
 
 describe("deep-failure fallback (wedged-repo fix)", () => {
