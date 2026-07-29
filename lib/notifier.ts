@@ -399,7 +399,8 @@ const READY_TRANSITIONAL = new Set(["checking", "unchecked", "approvals_syncing"
 function isReadyForNotification(entry: CacheEntry): boolean {
   return entry.mr?.state === "opened"
     && entry.mr?.statusDetail === "mergeable"
-    && (entry.mr?.reviews?.isApproved ?? false);
+    && !(entry.mr?.blockers?.awaitingApprovals ?? true)
+    && entry.mr?.isStacked !== true;
 }
 
 function snapshotBranch(entry: CacheEntry): BranchSnapshot {
@@ -428,27 +429,29 @@ function shouldRearmReady(was: BranchSnapshot, now: BranchSnapshot): boolean {
   return !READY_TRANSITIONAL.has(now.statusDetail ?? "");
 }
 
+type ApprovalTransitionVerdict = "notify" | "not-transition" | "no-new-approver" | "self-approved";
+
 function shouldNotifyApprovalTransition(
   was: BranchSnapshot,
   now: BranchSnapshot,
   currentUserId: number | null,
-): boolean {
-  if (was.approved || !now.approved) return false;
+): ApprovalTransitionVerdict {
+  if (was.approved || !now.approved) return "not-transition";
 
   // Require a human approval to have actually landed: some approver present
   // now that wasn't before. A bare flag flip (approval-rule change, GitLab
   // flap, vacuously-approved stack MR) with no new approver is not news.
   const previousApprovers = new Set(was.approvedByUserIds ?? []);
   const grew = (now.approvedByUserIds ?? []).some((id) => !previousApprovers.has(id));
-  if (!grew) return false;
+  if (!grew) return "no-new-approver";
 
   const selfId = numericUserId(currentUserId);
-  if (!selfId) return true;
+  if (!selfId) return "notify";
 
   const selfNewlyApproved = (now.approvedByUserIds ?? []).includes(selfId)
     && !previousApprovers.has(selfId);
 
-  return !selfNewlyApproved;
+  return selfNewlyApproved ? "self-approved" : "notify";
 }
 
 function detectBranchTransitions(
@@ -540,12 +543,15 @@ function detectBranchTransitions(
       const key = `mr:approved:${branch}`;
       if (fired.has(key)) {
         log.debug(`suppressed duplicate mr_approved on ${branch}`);
-      } else if (shouldNotifyApprovalTransition(was, now, currentUserId)) {
-        fired.add(key);
-        log.info(`MR approved on ${branch} [was=${was.approved} now=${now.approved}]`);
-        if (isEnabled(prefs, "mr_approved")) notify("MR Approved 👍", branchShort, mrUrl, "mr_approved");
       } else {
-        log.debug(`suppressed mr_approved on ${branch} (no new approver or self-approved)`);
+        const verdict = shouldNotifyApprovalTransition(was, now, currentUserId);
+        if (verdict === "notify") {
+          fired.add(key);
+          log.info(`MR approved on ${branch} [was=${was.approved} now=${now.approved}]`);
+          if (isEnabled(prefs, "mr_approved")) notify("MR Approved 👍", branchShort, mrUrl, "mr_approved");
+        } else {
+          log.debug(`suppressed mr_approved on ${branch} (${verdict})`);
+        }
       }
     }
 
