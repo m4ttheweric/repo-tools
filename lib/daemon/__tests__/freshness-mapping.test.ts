@@ -527,6 +527,86 @@ describe("applyInvalidationBatch", () => {
     expect(anyCalled).toBe(false);
   });
 
+  // ─── events fan-out scope filter (Task 6) ─────────────────────────────────
+
+  test("mr event, scope present + out-of-scope author: no upsert, no broadcast", async () => {
+    const store = createProjectMRs(tmpStorePath(), 0);
+    store.fullSync("repo-x", "g/p", [], Date.now() - 1000);
+    store.setScope("repo-x", { authors: ["alice"], windowDays: 30 });
+    const { env, broadcasts } = makeEnv({});
+    const target: RepoTarget = {
+      repoName: "repo-x", projectPath: "g/p",
+      provider: {
+        // fakePR's default author username is "someone", not in scope.
+        fetchSingleMR: async (_pp: string, iid: number) => fakePR(iid),
+        fetchPullRequestByBranch: async () => { throw new Error("unexpected"); },
+        fetchPullRequestsByBranches: async () => { throw new Error("unexpected"); },
+      } as any,
+    };
+    await applyInvalidationBatch(env, target, makeRunner(), [key("mr", "42")], {
+      ...noNotify, grantsFor: projectGrants, projectStore: store,
+    });
+    expect(store.read("repo-x")!.mrs[42]).toBeUndefined();
+    expect(broadcasts.some((b) => b.type === "project-mrs")).toBe(false);
+  });
+
+  test("mr event, scope present + in-scope author: upsert proceeds", async () => {
+    const store = createProjectMRs(tmpStorePath(), 0);
+    store.fullSync("repo-x", "g/p", [], Date.now() - 1000);
+    store.setScope("repo-x", { authors: ["someone"], windowDays: 30 });
+    const { env, broadcasts } = makeEnv({});
+    const target: RepoTarget = {
+      repoName: "repo-x", projectPath: "g/p",
+      provider: {
+        fetchSingleMR: async (_pp: string, iid: number) => fakePR(iid),
+        fetchPullRequestByBranch: async () => { throw new Error("unexpected"); },
+        fetchPullRequestsByBranches: async () => { throw new Error("unexpected"); },
+      } as any,
+    };
+    await applyInvalidationBatch(env, target, makeRunner(), [key("mr", "42")], {
+      ...noNotify, grantsFor: projectGrants, projectStore: store,
+    });
+    expect(store.read("repo-x")!.mrs[42]).toBeDefined();
+    expect(broadcasts.some((b) => b.type === "project-mrs")).toBe(true);
+  });
+
+  test("mr event, no scope set: upsert proceeds regardless of author (legacy)", async () => {
+    const store = createProjectMRs(tmpStorePath(), 0);
+    store.fullSync("repo-x", "g/p", [], Date.now() - 1000); // no setScope call
+    const { env } = makeEnv({});
+    const target: RepoTarget = {
+      repoName: "repo-x", projectPath: "g/p",
+      provider: {
+        fetchSingleMR: async (_pp: string, iid: number) => fakePR(iid),
+        fetchPullRequestByBranch: async () => { throw new Error("unexpected"); },
+        fetchPullRequestsByBranches: async () => { throw new Error("unexpected"); },
+      } as any,
+    };
+    await applyInvalidationBatch(env, target, makeRunner(), [key("mr", "42")], {
+      ...noNotify, grantsFor: projectGrants, projectStore: store,
+    });
+    expect(store.read("repo-x")!.mrs[42]).toBeDefined();
+  });
+
+  test("mr event, scope present + PR has no author: never guess-drop, upsert proceeds", async () => {
+    const store = createProjectMRs(tmpStorePath(), 0);
+    store.fullSync("repo-x", "g/p", [], Date.now() - 1000);
+    store.setScope("repo-x", { authors: ["alice"], windowDays: 30 });
+    const { env } = makeEnv({});
+    const target: RepoTarget = {
+      repoName: "repo-x", projectPath: "g/p",
+      provider: {
+        fetchSingleMR: async (_pp: string, iid: number) => fakePR(iid, { author: null }),
+        fetchPullRequestByBranch: async () => { throw new Error("unexpected"); },
+        fetchPullRequestsByBranches: async () => { throw new Error("unexpected"); },
+      } as any,
+    };
+    await applyInvalidationBatch(env, target, makeRunner(), [key("mr", "42")], {
+      ...noNotify, grantsFor: projectGrants, projectStore: store,
+    });
+    expect(store.read("repo-x")!.mrs[42]).toBeDefined();
+  });
+
   test("notes: no discussions grant → no refresh; grant without cached discussions → no refresh; both → refresh", async () => {
     const entries: Record<string, any> = {
       "feat-a": { mr: { iid: 42 }, fetchedAt: 1, repoName: "repo-x" },

@@ -456,6 +456,11 @@ async function processKeys(
   const wantProject = g.caches.has("project-mrs");
 
   const upsertProject = (pr: PullRequest) => {
+    // Demand-scoped repos only track the declared authors; an MR missing an
+    // author never guess-drops, since we can't tell which side of the scope
+    // it belongs on.
+    const scope = pStore.read(repoName)?.scope;
+    if (scope && pr.author?.username && !scope.authors.includes(pr.author.username)) return;
     const changed = pStore.upsert(repoName, projectPath, pr, "events");
     if (changed.length > 0) env.broadcast("project-mrs", { repoName, iids: changed });
   };
