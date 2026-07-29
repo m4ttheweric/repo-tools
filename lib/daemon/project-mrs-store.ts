@@ -187,7 +187,9 @@ export function createProjectMRs(
   // merged/closed MR lingers until the daily deep prune, then a new MR
   // opens on the same branch name) -- an open entry is always the live
   // truth, so it wins over any terminal-state entry regardless of iid
-  // order. Only fall back to a terminal entry when no open one exists.
+  // order. With no open entry, the highest-iid terminal entry is the
+  // newest MR on that branch name (forge 'all' semantics), not whichever
+  // terminal entry Object.values happened to iterate first.
   function findBySourceBranch(repoName: string, branch: string): PullRequest | null {
     const store = data[repoName];
     if (!store) return null;
@@ -195,7 +197,7 @@ export function createProjectMRs(
     for (const entry of Object.values(store.mrs)) {
       if (entry.pr.sourceBranch !== branch) continue;
       if (entry.pr.state === "opened") return entry.pr;
-      fallback ??= entry.pr;
+      if (!fallback || entry.pr.iid > fallback.iid) fallback = entry.pr;
     }
     return fallback;
   }

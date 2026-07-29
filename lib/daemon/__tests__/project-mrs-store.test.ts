@@ -103,6 +103,15 @@ describe("findBySourceBranch / load tolerance / flush", () => {
     expect(s.findBySourceBranch("repo", "reused")!.iid).toBe(99);  // open wins even though it's the higher iid
   });
 
+  test("findBySourceBranch with no open entry falls back to the newest terminal one", () => {
+    const s = createProjectMRs(tmpStorePath(), 0);
+    s.fullSync("repo", "g/p", [
+      pr(1, { state: "merged", sourceBranch: "reused-2" } as any),
+      pr(5, { state: "closed", sourceBranch: "reused-2" } as any),
+    ], Date.now());
+    expect(s.findBySourceBranch("repo", "reused-2")!.iid).toBe(5);  // newest terminal, not lowest iid
+  });
+
   test("corrupt file loads as empty; flushNow round-trips", () => {
     const p = tmpStorePath();
     writeFileSync(p, "{broken");

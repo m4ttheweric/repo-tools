@@ -5,7 +5,7 @@
  * forces) but gates on listSyncedAt and awaits ONLY this repo's project
  * sync — never the full branch-enrichment refresh.
  *
- * mr:by-branch — batch branch → MR resolution for the same repo, same grant.
+ * mr:by-branch ... batch branch → MR resolution for the same repo, same grant.
  * Store-first (any stored state), forge-fallthrough on a miss with a
  * write-back upsert so the next call for that branch is a store hit. A
  * per-branch forge failure resolves to null rather than failing the batch.
