@@ -197,6 +197,11 @@ async function syncImpl(
 
       const { projectPath, prs } = await fetchProject(repoName);
       const changed = store.fullSync(repoName, projectPath, prs, syncStartedAt);
+      // A prior deep may have left a scope from demands that have since
+      // expired; landing on the unscoped sweep means that scope no longer
+      // applies, and a stale one would silently misfilter every delta after
+      // this point.
+      store.setScope(repoName, null);
       deepFailedAt.delete(repoName);
       log.debug({ repo: repoName, mode: "deep", open: prs.length, changed: changed.length }, "project sync");
       if (changed.length > 0) {
@@ -304,6 +309,11 @@ export async function backfillAuthors(
   authors: string[],
   overrides: ProjectSyncOverrides = {},
 ): Promise<void> {
+  // An empty list would otherwise reach store.setScope as scope.authors = [],
+  // which the delta filter reads as "match nobody" -- excluding every MR on
+  // a record that may already have a real scope.
+  if (authors.length === 0) return;
+
   const store = overrides.store ?? getProjectMRs();
   const record = store.read(repoName);
   const windowDays = record?.scope?.windowDays

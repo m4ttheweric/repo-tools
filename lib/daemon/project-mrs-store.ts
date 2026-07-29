@@ -49,7 +49,8 @@ export interface ProjectMRs {
   findBySourceBranch(repoName: string, branch: string): PullRequest | null;
   registerDemand(repoName: string, client: string, authors: string[], declaredAt: number): boolean;
   expireDemands(repoName: string, maxIdleMs: number): string[];
-  setScope(repoName: string, scope: { authors: string[]; windowDays: number }): void;
+  /** Passing null clears an existing scope (the demand that motivated it is gone). */
+  setScope(repoName: string, scope: { authors: string[]; windowDays: number } | null): void;
   flushNow(): void;
 }
 
@@ -212,10 +213,14 @@ export function createProjectMRs(
     return dropped;
   }
 
-  function setScope(repoName: string, scope: { authors: string[]; windowDays: number }): void {
+  function setScope(repoName: string, scope: { authors: string[]; windowDays: number } | null): void {
     const store = data[repoName];
     if (!store) return;
-    store.scope = { authors: [...scope.authors], windowDays: scope.windowDays };
+    if (scope === null) {
+      delete store.scope;
+    } else {
+      store.scope = { authors: [...scope.authors], windowDays: scope.windowDays };
+    }
     flushSoon();
   }
 

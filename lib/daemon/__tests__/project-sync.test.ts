@@ -562,4 +562,50 @@ describe("demand-scoped sync", () => {
     expect(store.read("s5")!.scope!.authors).toEqual(["alice", "newbie"]);
     expect(events.length).toBe(1);
   });
+
+  test("backfillAuthors with an empty author list is a no-op: no fetch, no scope mutation, no broadcast", async () => {
+    const store = tmpStore();
+    store.fullSync("s6", "g/p", [], Date.now() - 1000);
+    store.setScope("s6", { authors: ["alice"], windowDays: 30 });
+    const events: any[] = [];
+    await backfillAuthors(
+      { repoIndex: () => ({ s6: "/tmp/repo" }), broadcast: (t, d) => events.push({ t, d }) },
+      "s6", [],
+      { store, fetchAuthors: async () => { throw new Error("must not fetch"); } },
+    );
+    expect(store.read("s6")!.scope!.authors).toEqual(["alice"]);
+    expect(events.length).toBe(0);
+  });
+
+  test("unscoped deep clears a stale scope, so a subsequent delta stops misfiltering", async () => {
+    const store = tmpStore();
+    store.fullSync("s7", "g/p", [], Date.now() - (DEEP_RECONCILE_MS + 60_000));
+    store.registerDemand("s7", "board", ["alice"], Date.now());
+    await syncProjectMRs(deps("s7"), "s7", {
+      store, selfUsername: "me", windowDays: 30,
+      fetchAuthors: async () => ({ projectPath: "g/p", prs: [] }),
+      fetchDelta: async () => { throw new Error("must not delta"); },
+    });
+    expect(store.read("s7")!.scope).toEqual({ authors: ["alice", "me"], windowDays: 30 });
+
+    // The demand goes idle past DEMAND_IDLE_EXPIRY_MS; a forced deep with no
+    // demands left and no selfUsername override takes the unscoped sweep --
+    // the exact production transition once a board tab closes.
+    store.read("s7")!.demands!.board!.lastSeenAt = 1;
+    await syncProjectMRs(deps("s7"), "s7", {
+      store, mode: "deep",
+      fetchProject: async () => ({ projectPath: "g/p", prs: [] }),
+      fetchAuthors: async () => { throw new Error("must not author-fetch: no demands, no self"); },
+    });
+    expect(store.read("s7")!.scope).toBeUndefined();
+
+    // A previously out-of-scope author's PR must land now that scope is gone.
+    await syncProjectMRs(deps("s7"), "s7", {
+      store,
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [
+        pr(8, { author: { username: "stranger" } as any }),
+      ] }),
+    });
+    expect(store.read("s7")!.mrs[8]).toBeDefined();
+  });
 });
