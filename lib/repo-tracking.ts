@@ -23,9 +23,11 @@ export const CACHE_KINDS = ["branches", "project-mrs", "discussions"] as const;
 export type CacheKind = (typeof CACHE_KINDS)[number];
 export type TrackingMode = "live" | "poll";
 
-export interface RepoTrackingEntry { mode: TrackingMode; caches: CacheKind[]; }
+export const DEFAULT_PROJECT_MRS_WINDOW_DAYS = 30;
+
+export interface RepoTrackingEntry { mode: TrackingMode; caches: CacheKind[]; projectMrsWindowDays?: number; }
 export type RepoTracking = Record<string, RepoTrackingEntry>;
-export interface RepoGrants { mode: TrackingMode | "off"; caches: Set<CacheKind>; }
+export interface RepoGrants { mode: TrackingMode | "off"; caches: Set<CacheKind>; projectMrsWindowDays: number; }
 
 const MODES = new Set<string>(["live", "poll"]);
 const KINDS = new Set<string>(CACHE_KINDS);
@@ -42,7 +44,11 @@ function normalizeEntry(value: unknown): RepoTrackingEntry | null {
   if (!Array.isArray(caches)) return null;
   const kept = [...new Set(caches.filter((c): c is CacheKind => typeof c === "string" && KINDS.has(c)))];
   if (kept.length === 0) return null; // caches must be non-empty; a fully-bogus list degrades to off
-  return { mode: mode as TrackingMode, caches: kept };
+  const { projectMrsWindowDays } = value as { projectMrsWindowDays?: unknown };
+  const window = typeof projectMrsWindowDays === "number"
+    && Number.isInteger(projectMrsWindowDays) && projectMrsWindowDays > 0
+    ? projectMrsWindowDays : undefined;
+  return { mode: mode as TrackingMode, caches: kept, ...(window !== undefined ? { projectMrsWindowDays: window } : {}) };
 }
 
 /**
@@ -76,8 +82,9 @@ export function loadRepoTracking(filePath: string = REPO_TRACKING_PATH): RepoTra
 
 export function grants(tracking: RepoTracking, repoName: string): RepoGrants {
   const entry = tracking[repoName];
-  if (!entry) return { mode: "off", caches: new Set() };
-  return { mode: entry.mode, caches: new Set(entry.caches) };
+  if (!entry) return { mode: "off", caches: new Set(), projectMrsWindowDays: DEFAULT_PROJECT_MRS_WINDOW_DAYS };
+  return { mode: entry.mode, caches: new Set(entry.caches),
+    projectMrsWindowDays: entry.projectMrsWindowDays ?? DEFAULT_PROJECT_MRS_WINDOW_DAYS };
 }
 
 /** Write the v2 envelope, repos sorted for stable diffs. */

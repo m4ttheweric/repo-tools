@@ -58,6 +58,17 @@ describe("loadRepoTracking", () => {
     expect(loadRepoTracking(v2).version).toEqual({ mode: "poll", caches: ["branches"] });
     expect(loadRepoTracking(v2).other).toBeDefined();
   });
+
+  test("invalid projectMrsWindowDays values are dropped, entry survives", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "rt-track-")), "t.json");
+    writeFileSync(file, JSON.stringify({ version: 2, repos: {
+      a: { mode: "live", caches: ["branches"], projectMrsWindowDays: -5 },
+      b: { mode: "live", caches: ["branches"], projectMrsWindowDays: "soon" },
+    }}));
+    const t = loadRepoTracking(file);
+    expect(t.a).toBeDefined(); expect(t.a?.projectMrsWindowDays).toBeUndefined();
+    expect(t.b).toBeDefined(); expect(t.b?.projectMrsWindowDays).toBeUndefined();
+  });
 });
 
 describe("grants", () => {
@@ -74,6 +85,12 @@ describe("grants", () => {
     expect(g.caches.has("discussions")).toBe(true);
     expect(g.caches.has("project-mrs")).toBe(false);
   });
+
+  test("grants resolves window default 30 and explicit value", () => {
+    expect(grants({ r: { mode: "live", caches: ["project-mrs"] } }, "r").projectMrsWindowDays).toBe(30);
+    expect(grants({ r: { mode: "live", caches: ["project-mrs"], projectMrsWindowDays: 90 } }, "r").projectMrsWindowDays).toBe(90);
+    expect(grants({}, "missing").projectMrsWindowDays).toBe(30);
+  });
 });
 
 describe("saveRepoTracking", () => {
@@ -87,6 +104,12 @@ describe("saveRepoTracking", () => {
     expect(raw.version).toBe(2);
     expect(Object.keys(raw.repos)).toEqual(["abc", "zed"]);
     expect(loadRepoTracking(p).abc!.caches).toEqual(["branches", "project-mrs"]);
+  });
+
+  test("projectMrsWindowDays round-trips through save/load", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "rt-track-")), "t.json");
+    saveRepoTracking({ repo: { mode: "live", caches: ["project-mrs"], projectMrsWindowDays: 60 } }, file);
+    expect(loadRepoTracking(file).repo?.projectMrsWindowDays).toBe(60);
   });
 });
 

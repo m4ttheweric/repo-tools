@@ -87,12 +87,12 @@ function makeRunner(): BatchRunner {
 // branch-entry-only refresh) — none of them intend to exercise the
 // project-mrs/discussions fan-out, so pin the grant explicitly rather than
 // rely on the real (filesystem-backed) default resolving to "off" the same way.
-const branchesOnlyGrants = () => ({ mode: "live" as const, caches: new Set(["branches"] as const) });
+const branchesOnlyGrants = () => ({ mode: "live" as const, caches: new Set(["branches"] as const), projectMrsWindowDays: 30 });
 const noNotify = { notify: () => {}, gapFillDebounceMs: 10, grantsFor: branchesOnlyGrants };
 
 // Full grant: branches + project-mrs + discussions. Used by the new
 // project-store-fan-out tests below.
-const projectGrants = () => ({ mode: "live" as const, caches: new Set(["branches", "project-mrs", "discussions"] as const) });
+const projectGrants = () => ({ mode: "live" as const, caches: new Set(["branches", "project-mrs", "discussions"] as const), projectMrsWindowDays: 30 });
 
 function key(kind: InvalidationKey["kind"], ref: string): InvalidationKey {
   return { kind, ref, cause: "test" };
@@ -236,7 +236,7 @@ describe("applyInvalidationBatch", () => {
       [key("notes", "42"), key("notes", "777")],
       {
         ...noNotify,
-        grantsFor: () => ({ mode: "live" as const, caches: new Set(["branches", "discussions"] as const) }),
+        grantsFor: () => ({ mode: "live" as const, caches: new Set(["branches", "discussions"] as const), projectMrsWindowDays: 30 }),
         // Only 42's discussions are "cached" here — hasCachedDiscussions (not
         // branch membership) is the gate now that the old branchByIid.has(iid)
         // check is gone, so 777 must be excluded via this stub instead.
@@ -547,7 +547,7 @@ describe("applyInvalidationBatch", () => {
       const { env } = makeEnv(entries);
       await applyInvalidationBatch(env, makeTarget(), makeRunner(), [key("notes", "42")], {
         ...noNotify,
-        grantsFor: () => ({ mode: "live" as const, caches: new Set(["branches", "project-mrs"] as const) }),
+        grantsFor: () => ({ mode: "live" as const, caches: new Set(["branches", "project-mrs"] as const), projectMrsWindowDays: 30 }),
         hasCachedDiscussions: () => true,
         refreshDiscussions,
       });
@@ -559,7 +559,7 @@ describe("applyInvalidationBatch", () => {
       const { env } = makeEnv(entries);
       await applyInvalidationBatch(env, makeTarget(), makeRunner(), [key("notes", "42")], {
         ...noNotify,
-        grantsFor: () => ({ mode: "live" as const, caches: new Set(["branches", "discussions"] as const) }),
+        grantsFor: () => ({ mode: "live" as const, caches: new Set(["branches", "discussions"] as const), projectMrsWindowDays: 30 }),
         hasCachedDiscussions: () => false,
         refreshDiscussions,
       });
@@ -571,7 +571,7 @@ describe("applyInvalidationBatch", () => {
       const { env } = makeEnv(entries);
       await applyInvalidationBatch(env, makeTarget(), makeRunner(), [key("notes", "42")], {
         ...noNotify,
-        grantsFor: () => ({ mode: "live" as const, caches: new Set(["branches", "discussions"] as const) }),
+        grantsFor: () => ({ mode: "live" as const, caches: new Set(["branches", "discussions"] as const), projectMrsWindowDays: 30 }),
         hasCachedDiscussions: () => true,
         refreshDiscussions,
       });
@@ -584,7 +584,7 @@ describe("applyInvalidationBatch", () => {
       const { env } = makeEnv({}); // no branch entries at all
       await applyInvalidationBatch(env, makeTarget(), makeRunner(), [key("notes", "999")], {
         ...noNotify,
-        grantsFor: () => ({ mode: "live" as const, caches: new Set(["branches", "discussions"] as const) }),
+        grantsFor: () => ({ mode: "live" as const, caches: new Set(["branches", "discussions"] as const), projectMrsWindowDays: 30 }),
         hasCachedDiscussions: () => true,
         refreshDiscussions,
       });
