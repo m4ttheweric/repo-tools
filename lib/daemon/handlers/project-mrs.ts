@@ -52,7 +52,13 @@ export interface ProjectMRsHandlerOverrides {
   sync?: (repoName: string) => Promise<void>;
   tracking?: () => RepoTracking;
   backfill?: (repoName: string, authors: string[]) => Promise<void>;
-  fetchByBranch?: (repoName: string, branch: string) => Promise<PullRequest | null>;
+  /**
+   * Returns projectPath explicitly alongside the PR so the write-back
+   * upsert never depends on an implicit side channel (a prior version threaded
+   * it through a captured outer variable, which would have silently no-opped
+   * the upsert had the assignment ever been reordered out from under it).
+   */
+  fetchByBranch?: (repoName: string, branch: string) => Promise<{ pr: PullRequest | null; projectPath: string }>;
 }
 
 export function createProjectMRsHandlers(
@@ -162,17 +168,6 @@ export function createProjectMRsHandlers(
         };
       }
 
-      // Tracks the projectPath the default forge fetch resolves so the
-      // write-back upsert has somewhere to attach even on a repo the store
-      // has never seen. Test overrides skip forge resolution entirely, so
-      // this stays whatever the store already knows (set by prior syncs).
-      let projectPath = store().read(repoName)?.projectPath ?? null;
-      const fetchByBranch = overrides.fetchByBranch ?? (async (repo: string, branch: string) => {
-        const repoCtx = await getRepoContext(repo, ctx.repoIndex()[repo]);
-        projectPath = repoCtx.projectPath;
-        return repoCtx.provider.fetchPullRequestByBranch(repoCtx.projectPath, branch, "all");
-      });
-
       const byBranch: Commands["mr:by-branch"]["data"]["byBranch"] = {};
       const misses: string[] = [];
       for (const branch of branches) {
@@ -181,13 +176,26 @@ export function createProjectMRsHandlers(
         if (!hit) misses.push(branch);
       }
 
+      // Repo context (provider + projectPath) is resolved once per
+      // invocation, not once per missed branch -- every miss in this batch
+      // shares the same repo. Memoized as a promise (not awaited here) so
+      // concurrent misses within the first chunk all share one resolve
+      // instead of racing separate getRepoContext calls.
+      let repoCtxPromise: ReturnType<typeof getRepoContext> | null = null;
+      const fetchByBranch = overrides.fetchByBranch ?? (async (repo: string, branch: string) => {
+        repoCtxPromise ??= getRepoContext(repo, ctx.repoIndex()[repo]);
+        const repoCtx = await repoCtxPromise;
+        const pr = await repoCtx.provider.fetchPullRequestByBranch(repoCtx.projectPath, branch, "all");
+        return { pr, projectPath: repoCtx.projectPath };
+      });
+
       // Chunked 4-wide (mirrors project-sync.ts's pipeline top-up loop) so a
       // large batch can't burst the forge with one fetch per branch.
       for (let i = 0; i < misses.length; i += BY_BRANCH_CONCURRENCY) {
         const chunk = misses.slice(i, i + BY_BRANCH_CONCURRENCY);
         await Promise.all(chunk.map(async (branch) => {
           try {
-            const pr = await fetchByBranch(repoName, branch);
+            const { pr, projectPath } = await fetchByBranch(repoName, branch);
             if (pr) {
               store().upsert(repoName, projectPath, pr, "events");
               byBranch[branch] = { pr, source: "forge" };

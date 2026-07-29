@@ -407,7 +407,7 @@ describe("project-mrs:read handler", async () => {
     store.fullSync("repo", "g/p", [], Date.now());
     let forgeCalls = 0;
     const h = createProjectMRsHandlers(fakeCtx, () => {}, { store, sync: async () => {}, tracking: grantedTracking,
-      fetchByBranch: async (_r, branch) => { forgeCalls++; return pr(7, { sourceBranch: branch, state: "merged" }); } });
+      fetchByBranch: async (_r, branch) => { forgeCalls++; return { pr: pr(7, { sourceBranch: branch, state: "merged" }), projectPath: "g/p" }; } });
     const r1 = await h["mr:by-branch"]!({ repoName: "repo", branches: ["feat-b"] });
     expect((r1.data as any).byBranch["feat-b"].source).toBe("forge");
     const r2 = await h["mr:by-branch"]!({ repoName: "repo", branches: ["feat-b"] });
@@ -421,7 +421,7 @@ describe("project-mrs:read handler", async () => {
     const warns: any[] = [];
     const ctx = { ...fakeCtx, log: { ...fakeCtx.log, warn: (o: any) => warns.push(o) } } as any;
     const h = createProjectMRsHandlers(ctx, () => {}, { store, sync: async () => {}, tracking: grantedTracking,
-      fetchByBranch: async (_r, branch) => { if (branch === "boom") throw new Error("forge down"); return null; } });
+      fetchByBranch: async (_r, branch) => { if (branch === "boom") throw new Error("forge down"); return { pr: null, projectPath: "g/p" }; } });
     const res = await h["mr:by-branch"]!({ repoName: "repo", branches: ["ok", "gone", "boom"] });
     expect(res.ok).toBe(true);
     expect((res.data as any).byBranch["ok"].source).toBe("store");
