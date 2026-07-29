@@ -86,13 +86,21 @@ export function createProjectMRsHandlers(
       }
 
       let record = store().read(repoName);
-      const covered = new Set(record?.scope?.authors ?? []);
-      const uncovered = demand ? demand.authors.filter((a) => !covered.has(a)) : [];
+      // Dedupe so a caller repeating an author doesn't double it into
+      // scope.uncovered or fan out a redundant backfill fetch.
+      const demandedAuthors = demand ? [...new Set(demand.authors)] : [];
+      let covered = new Set(record?.scope?.authors ?? []);
+      let uncovered = demandedAuthors.filter((a) => !covered.has(a));
       if (uncovered.length > 0) {
         const run = backfill(repoName, uncovered);
         if (maxAgeMs === 0) {
           await run.catch(() => {});   // forced read: caller wants completeness now
           record = store().read(repoName);
+          // The backfill just extended scope.authors; recompute so a
+          // completed forced read never reports an author as both covered
+          // and uncovered.
+          covered = new Set(record?.scope?.authors ?? []);
+          uncovered = demandedAuthors.filter((a) => !covered.has(a));
         } else {
           void run.catch(() => {});    // background heal; scope.uncovered tells the client
         }
