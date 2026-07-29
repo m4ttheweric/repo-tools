@@ -23,7 +23,7 @@ describe("approval transition notifications", () => {
       approvedByUserIds: ["123"],
     };
 
-    expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe(false);
+    expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe("self-approved");
   });
 
   test("notifies when another approval completes an MR I had already approved", () => {
@@ -37,7 +37,7 @@ describe("approval transition notifications", () => {
       approvedByUserIds: ["123", "456"],
     };
 
-    expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe(true);
+    expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe("notify");
   });
 
   test("notifies when current user id is not available", () => {
@@ -48,19 +48,19 @@ describe("approval transition notifications", () => {
       approvedByUserIds: ["123"],
     };
 
-    expect(__test__.shouldNotifyApprovalTransition(was, now, null)).toBe(true);
+    expect(__test__.shouldNotifyApprovalTransition(was, now, null)).toBe("notify");
   });
 
   test("does not notify when approved flips with no new approver", () => {
     const was = { ...baseSnapshot, approvedByUserIds: ["456"] };
     const now = { ...baseSnapshot, approved: true, approvedByUserIds: ["456"] };
-    expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe(false);
+    expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe("no-new-approver");
   });
 
   test("does not notify when approved flips with an empty approver list", () => {
     const was = { ...baseSnapshot };
     const now = { ...baseSnapshot, approved: true };
-    expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe(false);
+    expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe("no-new-approver");
   });
 });
 
@@ -123,6 +123,18 @@ describe("snapshotBranch readiness", () => {
       isReady: true,
       reviews: { isApproved: false },
       blockers: { awaitingApprovals: true, hasConflicts: false },
+    }));
+    expect(snap.isReady).toBe(false);
+  });
+
+  test("is NOT ready when the MR is stacked, even with approvals met", () => {
+    const snap = __test__.snapshotBranch(mrEntry({
+      state: "opened",
+      statusDetail: "mergeable",
+      isReady: true,
+      isStacked: true,
+      reviews: { isApproved: true },
+      blockers: { awaitingApprovals: false, hasConflicts: false },
     }));
     expect(snap.isReady).toBe(false);
   });
