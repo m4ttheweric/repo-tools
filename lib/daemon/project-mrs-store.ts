@@ -183,14 +183,21 @@ export function createProjectMRs(
   // Matches any stored state (not just "opened"): callers like mr:by-branch
   // want a branch → MR resolution that mirrors what the forge itself would
   // return for `state: 'all'`, so a just-merged or closed MR is as valid a
-  // cache hit as an open one.
+  // cache hit as an open one. But branch names get reused (an old
+  // merged/closed MR lingers until the daily deep prune, then a new MR
+  // opens on the same branch name) -- an open entry is always the live
+  // truth, so it wins over any terminal-state entry regardless of iid
+  // order. Only fall back to a terminal entry when no open one exists.
   function findBySourceBranch(repoName: string, branch: string): PullRequest | null {
     const store = data[repoName];
     if (!store) return null;
+    let fallback: PullRequest | null = null;
     for (const entry of Object.values(store.mrs)) {
-      if (entry.pr.sourceBranch === branch) return entry.pr;
+      if (entry.pr.sourceBranch !== branch) continue;
+      if (entry.pr.state === "opened") return entry.pr;
+      fallback ??= entry.pr;
     }
-    return null;
+    return fallback;
   }
 
   function registerDemand(repoName: string, client: string, authors: string[], declaredAt: number): boolean {
