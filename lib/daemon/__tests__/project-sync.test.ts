@@ -391,6 +391,52 @@ describe("project-mrs:read handler", async () => {
     await new Promise((r) => setTimeout(r, 0));   // fire-and-forget settles
     expect(backfilled).toEqual([["new"]]);
   });
+
+  test("by-branch: store hit wins with source store", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [pr(1, { sourceBranch: "feat-a" })], Date.now());
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, { store, sync: async () => {}, tracking: grantedTracking,
+      fetchByBranch: async () => { throw new Error("must not hit forge"); } });
+    const res = await h["mr:by-branch"]!({ repoName: "repo", branches: ["feat-a"] });
+    expect(res.ok).toBe(true);
+    expect((res.data as any).byBranch["feat-a"]).toMatchObject({ source: "store", pr: { iid: 1 } });
+  });
+
+  test("by-branch: miss falls through to forge, writes back, next call is a store hit", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [], Date.now());
+    let forgeCalls = 0;
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, { store, sync: async () => {}, tracking: grantedTracking,
+      fetchByBranch: async (_r, branch) => { forgeCalls++; return pr(7, { sourceBranch: branch, state: "merged" }); } });
+    const r1 = await h["mr:by-branch"]!({ repoName: "repo", branches: ["feat-b"] });
+    expect((r1.data as any).byBranch["feat-b"].source).toBe("forge");
+    const r2 = await h["mr:by-branch"]!({ repoName: "repo", branches: ["feat-b"] });
+    expect((r2.data as any).byBranch["feat-b"].source).toBe("store");
+    expect(forgeCalls).toBe(1);
+  });
+
+  test("by-branch: no MR anywhere is null; a per-branch forge failure is null with a warn, not a batch failure", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [pr(1, { sourceBranch: "ok" })], Date.now());
+    const warns: any[] = [];
+    const ctx = { ...fakeCtx, log: { ...fakeCtx.log, warn: (o: any) => warns.push(o) } } as any;
+    const h = createProjectMRsHandlers(ctx, () => {}, { store, sync: async () => {}, tracking: grantedTracking,
+      fetchByBranch: async (_r, branch) => { if (branch === "boom") throw new Error("forge down"); return null; } });
+    const res = await h["mr:by-branch"]!({ repoName: "repo", branches: ["ok", "gone", "boom"] });
+    expect(res.ok).toBe(true);
+    expect((res.data as any).byBranch["ok"].source).toBe("store");
+    expect((res.data as any).byBranch["gone"]).toBeNull();
+    expect((res.data as any).byBranch["boom"]).toBeNull();
+    expect(warns.length).toBe(1);
+  });
+
+  test("by-branch: malformed requests and missing grant are rejected", async () => {
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, { store: tmpStore(), sync: async () => {}, tracking: grantedTracking });
+    expect((await h["mr:by-branch"]!({ repoName: "repo", branches: [] })).ok).toBe(false);
+    expect((await h["mr:by-branch"]!({ repoName: "repo", branches: Array.from({length: 101}, (_, i) => `b${i}`) })).ok).toBe(false);
+    const denied = createProjectMRsHandlers(fakeCtx, () => {}, { store: tmpStore(), sync: async () => {}, tracking: () => ({}) });
+    expect((await denied["mr:by-branch"]!({ repoName: "repo", branches: ["x"] })).error).toContain("not granted");
+  });
 });
 
 describe("deep-failure fallback (wedged-repo fix)", () => {
