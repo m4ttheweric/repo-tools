@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { syncProjectMRs, DEEP_RECONCILE_MS, DELTA_OVERLAP_MS } from "../project-sync.ts";
+import { syncProjectMRs, DEEP_RECONCILE_MS, DEEP_RETRY_BACKOFF_MS, DELTA_OVERLAP_MS } from "../project-sync.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
 import type { PullRequest } from "@workforge/glance-sdk";
 
@@ -241,6 +241,112 @@ describe("project-mrs:read handler", async () => {
     expect(synced).toBe(0);
     expect(res.ok).toBe(true);
     expect(res.data.syncedAt).toBe(store.read("repo")!.deltaSyncedAt);
+  });
+});
+
+describe("deep-failure fallback (wedged-repo fix)", () => {
+  const overdue = () => Date.now() - (DEEP_RECONCILE_MS + 60_000);
+
+  test("staleness-forced deep that fails falls back to delta in the same sync", async () => {
+    const store = tmpStore();
+    store.fullSync("wedge-a", "g/p", [pr(1, { title: "Draft: MR 1" })], overdue());
+    const events: Array<{ type: string; data: any }> = [];
+    await syncProjectMRs(
+      { repoIndex: () => ({ "wedge-a": "/tmp/repo" }), broadcast: (type, data) => events.push({ type, data }) },
+      "wedge-a",
+      {
+        store,
+        fetchProject: async () => { throw new Error("GraphQL errors: Timeout on DiffStatsSummary.additions"); },
+        fetchDelta: async () => ({ projectPath: "g/p", prs: [pr(1, { title: "MR 1" })] }),
+      },
+    );
+    expect(store.read("wedge-a")!.mrs[1]!.pr.title).toBe("MR 1");
+    expect(store.read("wedge-a")!.deltaSyncedAt).toBeGreaterThan(overdue());
+    expect(events).toEqual([{ type: "project-mrs", data: { repoName: "wedge-a", iids: [1] } }]);
+  });
+
+  test("a failed deep backs off: the next overdue sync goes straight to delta", async () => {
+    const store = tmpStore();
+    store.fullSync("wedge-b", "g/p", [pr(1)], overdue());
+    const deps = { repoIndex: () => ({ "wedge-b": "/tmp/repo" }), broadcast: () => {} };
+    let deepAttempts = 0;
+    const failingDeep = async () => { deepAttempts++; throw new Error("still timing out"); };
+    const opts = { store, fetchProject: failingDeep, fetchDelta: async () => ({ projectPath: "g/p", prs: [] }) };
+
+    await syncProjectMRs(deps, "wedge-b", opts);
+    expect(deepAttempts).toBe(1);
+    // listSyncedAt is still overdue, but the backoff routes this one to delta.
+    await syncProjectMRs(deps, "wedge-b", opts);
+    expect(deepAttempts).toBe(1);
+  });
+
+  test("backoff expires: deep is retried after DEEP_RETRY_BACKOFF_MS", async () => {
+    const store = tmpStore();
+    store.fullSync("wedge-c", "g/p", [pr(1)], overdue());
+    const deps = { repoIndex: () => ({ "wedge-c": "/tmp/repo" }), broadcast: () => {} };
+    let deepAttempts = 0;
+    const opts = {
+      store,
+      fetchProject: async () => { deepAttempts++; throw new Error("still timing out"); },
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [] }),
+    };
+    try {
+      await syncProjectMRs(deps, "wedge-c", opts);
+      expect(deepAttempts).toBe(1);
+      setSystemTime(new Date(Date.now() + DEEP_RETRY_BACKOFF_MS + 60_000));
+      await syncProjectMRs(deps, "wedge-c", opts);
+      expect(deepAttempts).toBe(2);
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  test("deep success clears the backoff clock via listSyncedAt", async () => {
+    const store = tmpStore();
+    store.fullSync("wedge-d", "g/p", [pr(1)], overdue());
+    const deps = { repoIndex: () => ({ "wedge-d": "/tmp/repo" }), broadcast: () => {} };
+    await syncProjectMRs(deps, "wedge-d", {
+      store,
+      fetchProject: async () => { throw new Error("timeout"); },
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [] }),
+    });
+    // Deep succeeds on the backoff retry → listSyncedAt advances → next sync is plain delta.
+    setSystemTime(new Date(Date.now() + DEEP_RETRY_BACKOFF_MS + 60_000));
+    try {
+      await syncProjectMRs(deps, "wedge-d", { store, fetchProject: async () => ({ projectPath: "g/p", prs: [pr(1)] }), fetchDelta: async () => { throw new Error("must not delta"); } });
+      let deepCalled = false;
+      await syncProjectMRs(deps, "wedge-d", {
+        store,
+        fetchProject: async () => { deepCalled = true; return { projectPath: "g/p", prs: [] }; },
+        fetchDelta: async () => ({ projectPath: "g/p", prs: [] }),
+      });
+      expect(deepCalled).toBe(false);
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  test("cold start (no record) deep failure still rejects: nothing to delta against", async () => {
+    const store = tmpStore();
+    await expect(
+      syncProjectMRs(
+        { repoIndex: () => ({ "wedge-e": "/tmp/repo" }), broadcast: () => {} },
+        "wedge-e",
+        { store, fetchProject: async () => { throw new Error("gitlab down"); }, fetchDelta: async () => ({ projectPath: "g/p", prs: [] }) },
+      ),
+    ).rejects.toThrow("gitlab down");
+  });
+
+  test("explicit mode:'deep' failure still rejects: the caller asked for deep", async () => {
+    const store = tmpStore();
+    store.fullSync("wedge-f", "g/p", [pr(1)], Date.now() - 1000);
+    await expect(
+      syncProjectMRs(
+        { repoIndex: () => ({ "wedge-f": "/tmp/repo" }), broadcast: () => {} },
+        "wedge-f",
+        { store, mode: "deep", fetchProject: async () => { throw new Error("timeout"); }, fetchDelta: async () => ({ projectPath: "g/p", prs: [] }) },
+      ),
+    ).rejects.toThrow("timeout");
   });
 });
 

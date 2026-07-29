@@ -19,6 +19,14 @@
  * `applyDelta`). Approval-only changes don't bump `updatedAt` and so miss
  * deltas — a documented blind spot healed by the events watcher on `live`
  * repos and by the next deep reconcile on `poll` repos.
+ *
+ * A staleness-forced deep that FAILS must not wedge the repo: `listSyncedAt`
+ * never advances on failure, so without a fallback every subsequent cycle
+ * re-forces the same failing deep and delta starves... the store then only
+ * moves on events, which GitLab never emits for draft-to-ready. On failure
+ * with an existing record, the sync falls back to delta for this cycle and
+ * deep retries are held behind `DEEP_RETRY_BACKOFF_MS`. Cold starts (no
+ * record to delta against) and explicit `mode: "deep"` requests still reject.
  */
 
 import type { PullRequest } from "@workforge/glance-sdk";
@@ -32,6 +40,14 @@ const log = (await getDaemonLogger()).childLogger("project-sync");
 export const DEEP_RECONCILE_MS = 24 * 60 * 60 * 1000;
 /** DELTA's `updatedAfter` window is freshness minus this overlap (upserts are idempotent). */
 export const DELTA_OVERLAP_MS = 2 * 60 * 1000;
+/** After a staleness-forced deep fails, hold deep retries this long; delta covers the gap. */
+export const DEEP_RETRY_BACKOFF_MS = 60 * 60 * 1000;
+
+/**
+ * repoName → when a staleness-forced deep last failed. In-memory on purpose:
+ * a daemon restart retrying deep immediately is the desired behavior.
+ */
+const deepFailedAt = new Map<string, number>();
 
 export interface ProjectSyncDeps {
   repoIndex(): Record<string, string>;
@@ -83,9 +99,10 @@ async function syncImpl(
   const store = overrides.store ?? getProjectMRs();
   const record = store.read(repoName);
 
-  const isDeep = overrides.mode === "deep"
-    || !record
-    || Date.now() - record.listSyncedAt > DEEP_RECONCILE_MS;
+  const explicitDeep = overrides.mode === "deep";
+  const deepDue = !record || Date.now() - record.listSyncedAt > DEEP_RECONCILE_MS;
+  const deepBackingOff = Date.now() - (deepFailedAt.get(repoName) ?? 0) < DEEP_RETRY_BACKOFF_MS;
+  const isDeep = explicitDeep || (deepDue && (!record || !deepBackingOff));
 
   if (isDeep) {
     const fetchProject = overrides.fetchProject ?? (async (repo: string) => {
@@ -95,13 +112,23 @@ async function syncImpl(
     });
 
     const syncStartedAt = Date.now();
-    const { projectPath, prs } = await fetchProject(repoName);
-    const changed = store.fullSync(repoName, projectPath, prs, syncStartedAt);
-    log.debug({ repo: repoName, mode: "deep", open: prs.length, changed: changed.length }, "project sync");
-    if (changed.length > 0) {
-      deps.broadcast("project-mrs", { repoName, iids: changed });
+    try {
+      const { projectPath, prs } = await fetchProject(repoName);
+      const changed = store.fullSync(repoName, projectPath, prs, syncStartedAt);
+      deepFailedAt.delete(repoName);
+      log.debug({ repo: repoName, mode: "deep", open: prs.length, changed: changed.length }, "project sync");
+      if (changed.length > 0) {
+        deps.broadcast("project-mrs", { repoName, iids: changed });
+      }
+      return;
+    } catch (err) {
+      // No record → nothing to delta against; explicit deep → the caller
+      // wanted exactly this. Otherwise fall through to delta so freshness
+      // keeps flowing while the heavy deep query is backing off.
+      if (explicitDeep || !record) throw err;
+      deepFailedAt.set(repoName, Date.now());
+      log.warn({ err, repo: repoName }, "deep reconcile failed; falling back to delta");
     }
-    return;
   }
 
   // DELTA: updatedAfter window is this repo's read-freshness minus a
