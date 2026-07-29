@@ -245,3 +245,27 @@ describe("demand registry", () => {
     expect(s.read("r")!.projectPath).toBe("g/p");
   });
 });
+
+describe("scope", () => {
+  test("setScope stores authors and windowDays", () => {
+    const s = tmpStore();
+    s.fullSync("r", "g/p", [], Date.now());
+    s.setScope("r", { authors: ["bob", "alice"], windowDays: 30 });
+    expect(s.read("r")!.scope).toEqual({ authors: ["bob", "alice"], windowDays: 30 });
+  });
+
+  test("setScope(repoName, null) clears an existing scope", () => {
+    const s = tmpStore();
+    s.fullSync("r", "g/p", [], Date.now());
+    s.setScope("r", { authors: ["alice"], windowDays: 30 });
+    s.setScope("r", null);
+    expect(s.read("r")!.scope).toBeUndefined();
+  });
+
+  test("setScope on a repo with no record is a no-op either way", () => {
+    const s = tmpStore();
+    s.setScope("ghost", { authors: ["alice"], windowDays: 30 });
+    s.setScope("ghost", null);
+    expect(s.read("ghost")).toBeUndefined();
+  });
+});
