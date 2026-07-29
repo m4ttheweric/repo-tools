@@ -435,10 +435,16 @@ function shouldNotifyApprovalTransition(
 ): boolean {
   if (was.approved || !now.approved) return false;
 
+  // Require a human approval to have actually landed: some approver present
+  // now that wasn't before. A bare flag flip (approval-rule change, GitLab
+  // flap, vacuously-approved stack MR) with no new approver is not news.
+  const previousApprovers = new Set(was.approvedByUserIds ?? []);
+  const grew = (now.approvedByUserIds ?? []).some((id) => !previousApprovers.has(id));
+  if (!grew) return false;
+
   const selfId = numericUserId(currentUserId);
   if (!selfId) return true;
 
-  const previousApprovers = new Set(was.approvedByUserIds ?? []);
   const selfNewlyApproved = (now.approvedByUserIds ?? []).includes(selfId)
     && !previousApprovers.has(selfId);
 
@@ -529,19 +535,17 @@ function detectBranchTransitions(
       }
     }
 
-    // MR approved (was not approved → now approved)
+    // MR approved (was not approved -> now approved)
     if (!was.approved && now.approved) {
       const key = `mr:approved:${branch}`;
-      if (!fired.has(key)) {
-        fired.add(key);
-        if (shouldNotifyApprovalTransition(was, now, currentUserId)) {
-          log.info(`MR approved on ${branch} [was=${was.approved} now=${now.approved}]`);
-          if (isEnabled(prefs, "mr_approved")) notify("MR Approved 👍", branchShort, mrUrl, "mr_approved");
-        } else {
-          log.debug(`suppressed self-approved MR approved on ${branch}`);
-        }
-      } else {
+      if (fired.has(key)) {
         log.debug(`suppressed duplicate mr_approved on ${branch}`);
+      } else if (shouldNotifyApprovalTransition(was, now, currentUserId)) {
+        fired.add(key);
+        log.info(`MR approved on ${branch} [was=${was.approved} now=${now.approved}]`);
+        if (isEnabled(prefs, "mr_approved")) notify("MR Approved 👍", branchShort, mrUrl, "mr_approved");
+      } else {
+        log.debug(`suppressed mr_approved on ${branch} (no new approver or self-approved)`);
       }
     }
 

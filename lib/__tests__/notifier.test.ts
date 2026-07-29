@@ -50,6 +50,18 @@ describe("approval transition notifications", () => {
 
     expect(__test__.shouldNotifyApprovalTransition(was, now, null)).toBe(true);
   });
+
+  test("does not notify when approved flips with no new approver", () => {
+    const was = { ...baseSnapshot, approvedByUserIds: ["456"] };
+    const now = { ...baseSnapshot, approved: true, approvedByUserIds: ["456"] };
+    expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe(false);
+  });
+
+  test("does not notify when approved flips with an empty approver list", () => {
+    const was = { ...baseSnapshot };
+    const now = { ...baseSnapshot, approved: true };
+    expect(__test__.shouldNotifyApprovalTransition(was, now, 123)).toBe(false);
+  });
 });
 
 /** Build a fake cache entry's MR slot for snapshotBranch(). */
