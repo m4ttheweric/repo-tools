@@ -30,7 +30,7 @@
  */
 
 import type { PullRequest } from "@workforge/glance-sdk";
-import { getRepoContext, resolveSelfUsername } from "./freshness.ts";
+import { getRepoContext, getSelfUsername, resolveSelfUsername } from "./freshness.ts";
 import { getProjectMRs, freshnessOf, type ProjectMRs, type ProjectMRStore } from "./project-mrs-store.ts";
 import { loadRepoTracking, grants } from "../repo-tracking.ts";
 import { getDaemonLogger } from "../daemon-logger.ts";
@@ -241,7 +241,10 @@ async function syncImpl(
   // rather than letting it back into a store the deep sync just pruned it from.
   if (record?.scope) {
     const authors = record.scope.authors;
-    prs = prs.filter((pr) => authors.includes(pr.author?.username ?? ""));
+    // A missing author is never guess-dropped (same rule as withinWindow and
+    // the events-mapping upsertProject filter) -- there is no way to tell
+    // which side of the scope it belongs on.
+    prs = prs.filter((pr) => !pr.author?.username || authors.includes(pr.author.username));
   }
   const changed = store.applyDelta(repoName, projectPath, prs, deltaStartedAt);
 
@@ -332,8 +335,17 @@ export async function backfillAuthors(
     changed.push(...store.upsert(repoName, projectPath, pr, "events"));
   }
 
-  const union = [...new Set([...(record?.scope?.authors ?? []), ...authors])].sort();
-  store.setScope(repoName, { authors: union, windowDays });
+  // Include self so a backfill against a previously unscoped store doesn't
+  // flip into scoped mode without the daemon user's own username -- that gap
+  // would drop the user's own MRs from delta/events until the next deep
+  // sync (up to 24h). This is a cheap in-memory read (getSelfUsername), not
+  // the network resolution syncImpl does -- backfill runs on-demand from a
+  // read handler and must stay cheap. undefined (production) reads the
+  // cached value; null (test seam) means "resolved to no self".
+  const selfUsername = overrides.selfUsername !== undefined ? overrides.selfUsername : getSelfUsername();
+  const union = new Set([...(record?.scope?.authors ?? []), ...authors]);
+  if (selfUsername) union.add(selfUsername);
+  store.setScope(repoName, { authors: [...union].sort(), windowDays });
 
   if (changed.length > 0) {
     deps.broadcast("project-mrs", { repoName, iids: changed });

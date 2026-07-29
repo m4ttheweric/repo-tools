@@ -181,7 +181,7 @@ describe("mode resolution", () => {
 
 describe("project-mrs:read handler", async () => {
   const { createProjectMRsHandlers } = await import("../handlers/project-mrs.ts");
-  const fakeCtx = { repoIndex: () => ({ repo: "/tmp/repo" }) } as any;
+  const fakeCtx = { repoIndex: () => ({ repo: "/tmp/repo" }), log: { warn: () => {} } } as any;
   const grantedTracking = () => ({ repo: { mode: "live" as const, caches: ["branches", "project-mrs"] as any } });
 
   test("grant denied → instructive error, sync never runs", async () => {
@@ -326,6 +326,70 @@ describe("project-mrs:read handler", async () => {
     expect((res.data as any).scope.uncovered).toEqual(["newbie"]);
     await new Promise((r) => setTimeout(r, 0));   // fire-and-forget settles
     expect(backfilled).toEqual([["newbie"]]);
+  });
+
+  test("background backfill rejection is logged at warn, not silently swallowed (finding 2)", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [], Date.now());
+    store.setScope("repo", { authors: ["alice"], windowDays: 30 });
+    const warns: Array<{ obj: any; msg: string }> = [];
+    const ctxWithLog = { ...fakeCtx, log: { warn: (obj: any, msg: string) => warns.push({ obj, msg }) } };
+    const h = createProjectMRsHandlers(ctxWithLog, () => {}, {
+      store, sync: async () => {}, tracking: grantedTracking,
+      backfill: async () => { throw new Error("gitlab down"); },
+    });
+    const res = await h["project-mrs:read"]!({ repoName: "repo",
+      demand: { client: "b:1", authors: ["alice", "newbie"], declaredAt: 1 } });
+    expect(res.ok).toBe(true); // unforced read still succeeds -- existing behavior
+    await new Promise((r) => setTimeout(r, 0));   // fire-and-forget settles
+    expect(warns.length).toBe(1);
+    expect(warns[0]!.obj.repo).toBe("repo");
+    expect(warns[0]!.obj.authors).toEqual(["newbie"]);
+    expect(warns[0]!.obj.err).toBeInstanceOf(Error);
+  });
+
+  test("forced backfill rejection is logged at warn and the read still resolves ok (finding 2)", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [], Date.now() - 60_000);
+    store.setScope("repo", { authors: ["alice"], windowDays: 30 });
+    const warns: Array<{ obj: any; msg: string }> = [];
+    const ctxWithLog = { ...fakeCtx, log: { warn: (obj: any, msg: string) => warns.push({ obj, msg }) } };
+    const h = createProjectMRsHandlers(ctxWithLog, () => {}, {
+      store, sync: async () => {}, tracking: grantedTracking,
+      backfill: async () => { throw new Error("gitlab down"); },
+    });
+    const res = await h["project-mrs:read"]!({ repoName: "repo", maxAgeMs: 0,
+      demand: { client: "b:1", authors: ["alice", "newbie"], declaredAt: 1 } });
+    expect(res.ok).toBe(true);
+    expect(warns.length).toBe(1);
+    expect(warns[0]!.obj.repo).toBe("repo");
+    expect(warns[0]!.obj.authors).toEqual(["newbie"]);
+  });
+
+  test("uncovered is computed from the stored demand, not a stale request (finding 4)", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [], Date.now());
+    store.setScope("repo", { authors: [], windowDays: 30 });
+    const backfilled: string[][] = [];
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, {
+      store, sync: async () => {}, tracking: grantedTracking,
+      backfill: async (_r, authors) => { backfilled.push(authors); },
+    });
+    // A newer demand declares "new" for client b:1.
+    await h["project-mrs:read"]!({ repoName: "repo",
+      demand: { client: "b:1", authors: ["new"], declaredAt: 200 } });
+    backfilled.length = 0;
+    // A stale in-flight read for the same client arrives after and is
+    // rejected by registerDemand's monotonic guard -- the stored demand for
+    // b:1 stays ["new"], and uncovered/backfill must reflect that, not the
+    // stale request's ["old"].
+    const res = await h["project-mrs:read"]!({ repoName: "repo",
+      demand: { client: "b:1", authors: ["old"], declaredAt: 100 } });
+    expect(store.read("repo")!.demands!["b:1"]!.authors).toEqual(["new"]); // unchanged by the stale demand
+    expect(res.ok).toBe(true);
+    expect((res.data as any).scope.uncovered).toEqual(["new"]);
+    await new Promise((r) => setTimeout(r, 0));   // fire-and-forget settles
+    expect(backfilled).toEqual([["new"]]);
   });
 });
 
@@ -616,6 +680,19 @@ describe("demand-scoped sync", () => {
     expect(store.read("s3")!.mrs[5]).toBeUndefined();
   });
 
+  test("delta keeps an authorless MR when a scope exists -- never guess-drop (finding 3)", async () => {
+    const store = tmpStore();
+    store.fullSync("s3b", "g/p", [], Date.now() - 1000);
+    store.setScope("s3b", { authors: ["alice"], windowDays: 30 });
+    await syncProjectMRs(deps("s3b"), "s3b", {
+      store,
+      fetchDelta: async () => ({ projectPath: "g/p", prs: [
+        pr(6, { author: null as any }),
+      ] }),
+    });
+    expect(store.read("s3b")!.mrs[6]).toBeDefined();
+  });
+
   test("deep expires idle demands before computing scope", async () => {
     const store = tmpStore();
     store.fullSync("s4", "g/p", [], Date.now() - (DEEP_RECONCILE_MS + 60_000));
@@ -646,6 +723,32 @@ describe("demand-scoped sync", () => {
     expect(store.read("s5")!.mrs[9]).toBeDefined();
     expect(store.read("s5")!.scope!.authors).toEqual(["alice", "newbie"]);
     expect(events.length).toBe(1);
+  });
+
+  test("backfillAuthors with a cached self includes self in the resulting scope (finding 1)", async () => {
+    // A backfill against a previously unscoped store must not flip into
+    // scoped mode without the daemon user's own username -- otherwise the
+    // delta/events filters drop the user's own MRs until the next deep sync.
+    const store = tmpStore();
+    store.fullSync("s5b", "g/p", [], Date.now() - 1000);
+    // No prior scope at all (the unscoped-store case the finding describes).
+    await backfillAuthors(
+      { repoIndex: () => ({ s5b: "/tmp/repo" }), broadcast: () => {} },
+      "s5b", ["newbie"],
+      { store, windowDays: 30, selfUsername: "me", fetchAuthors: async () => ({ projectPath: "g/p", prs: [] }) },
+    );
+    expect(store.read("s5b")!.scope!.authors).toEqual(["me", "newbie"]);
+  });
+
+  test("backfillAuthors with selfUsername explicitly null yields just the backfilled authors", async () => {
+    const store = tmpStore();
+    store.fullSync("s5c", "g/p", [], Date.now() - 1000);
+    await backfillAuthors(
+      { repoIndex: () => ({ s5c: "/tmp/repo" }), broadcast: () => {} },
+      "s5c", ["newbie"],
+      { store, windowDays: 30, selfUsername: null, fetchAuthors: async () => ({ projectPath: "g/p", prs: [] }) },
+    );
+    expect(store.read("s5c")!.scope!.authors).toEqual(["newbie"]);
   });
 
   test("backfillAuthors with an empty author list is a no-op: no fetch, no scope mutation, no broadcast", async () => {

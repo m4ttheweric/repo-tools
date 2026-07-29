@@ -87,14 +87,21 @@ export function createProjectMRsHandlers(
 
       let record = store().read(repoName);
       // Dedupe so a caller repeating an author doesn't double it into
-      // scope.uncovered or fan out a redundant backfill fetch.
-      const demandedAuthors = demand ? [...new Set(demand.authors)] : [];
+      // scope.uncovered or fan out a redundant backfill fetch. Read from the
+      // STORED demand for this client (not the raw request) so a stale
+      // in-flight read -- one registerDemand just rejected via its monotonic
+      // guard -- can't backfill authors a newer declaration already dropped.
+      const demandedAuthors = demand ? [...new Set(record?.demands?.[demand.client]?.authors ?? [])] : [];
       let covered = new Set(record?.scope?.authors ?? []);
       let uncovered = demandedAuthors.filter((a) => !covered.has(a));
       if (uncovered.length > 0) {
-        const run = backfill(repoName, uncovered);
+        const attemptedAuthors = uncovered;
+        const run = backfill(repoName, attemptedAuthors);
+        const logBackfillFailure = (err: unknown) => {
+          ctx.log.warn({ err, repo: repoName, authors: attemptedAuthors }, "backfill failed");
+        };
         if (maxAgeMs === 0) {
-          await run.catch(() => {});   // forced read: caller wants completeness now
+          await run.catch(logBackfillFailure);   // forced read: caller wants completeness now
           record = store().read(repoName);
           // The backfill just extended scope.authors; recompute so a
           // completed forced read never reports an author as both covered
@@ -102,7 +109,7 @@ export function createProjectMRsHandlers(
           covered = new Set(record?.scope?.authors ?? []);
           uncovered = demandedAuthors.filter((a) => !covered.has(a));
         } else {
-          void run.catch(() => {});    // background heal; scope.uncovered tells the client
+          void run.catch(logBackfillFailure);    // background heal; scope.uncovered tells the client
         }
       }
 
