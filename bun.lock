@@ -9,7 +9,7 @@
         "@rezi-ui/core": "^0.1.0-alpha.60",
         "@rezi-ui/jsx": "^0.1.0-alpha.60",
         "@rezi-ui/node": "^0.1.0-alpha.60",
-        "@workforge/glance-sdk": "0.11.0",
+        "@workforge/glance-sdk": "0.12.0",
         "cli-highlight": "^2.1.11",
         "fullscreen-ink": "^0.1.0",
         "ink": "^6.8.0",
@@ -58,7 +58,7 @@
 
     "@types/react": ["@types/react@19.2.14", "", { "dependencies": { "csstype": "^3.2.2" } }, "sha512-ilcTH/UniCkMdtexkoCN0bI7pMcJDvmQFPvuPvmEaYA/NSfFTAgdUSLAoVjaRJm7+6PvcM+q1zYOwS4wTYMF9w=="],
 
-    "@workforge/glance-sdk": ["@workforge/glance-sdk@0.11.0", "", { "dependencies": { "@gitbeaker/rest": "^43.8.0" } }, "sha512-BjTfK8x2kD+M11V4/dWPsVr0WfEgujfj4aEw1CvVdlN1y0hr9oKQRBo7NlCihxsFIUtY1SZOh6T6vN+uDIjHzg=="],
+    "@workforge/glance-sdk": ["@workforge/glance-sdk@0.12.0", "", { "dependencies": { "@gitbeaker/rest": "^43.8.0" } }, "sha512-Jf4wLjZsvcwIsuM9PxkZXclicohQN90arBB14W6PnScu/OUkS8fiEBv1W8k96yEQTfpysc2ijqw6SiZ0y0ENtg=="],
 
     "@xterm/headless": ["@xterm/headless@6.0.0", "", {}, "sha512-5Yj1QINYCyzrZtf8OFIHi47iQtI+0qYFPHmouEfG8dHNxbZ9Tb9YGSuLcsEwj9Z+OL75GJqPyJbyoFer80a2Hw=="],
 
