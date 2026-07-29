@@ -9,6 +9,10 @@ function tmpStorePath(): string {
   return join(mkdtempSync(join(tmpdir(), "rt-pmrs-")), "project-mrs.json");
 }
 
+function tmpStore() {
+  return createProjectMRs(tmpStorePath(), 0);
+}
+
 /** Minimal PullRequest-shaped object; the store treats prs as opaque JSON. */
 function pr(iid: number, over: Partial<PullRequest> = {}): PullRequest {
   return {
@@ -193,5 +197,51 @@ describe("applyDelta guards (review fixes)", () => {
     const changed = s.applyDelta("repo", "g/p", [pr(1)], deltaStartedAt);   // stale window says opened
     expect(s.read("repo")!.mrs[1]!.pr.state).toBe("merged");
     expect(changed).toEqual([]);
+  });
+});
+
+describe("demand registry", () => {
+  test("registerDemand creates a shell record and stores the demand", () => {
+    const s = tmpStore();
+    expect(s.registerDemand("r", "mr-board:5980", ["alice", "bob"], 100)).toBe(true);
+    expect(s.read("r")!.demands!["mr-board:5980"]).toMatchObject({ authors: ["alice", "bob"], declaredAt: 100 });
+  });
+
+  test("wholesale replace: newer declaredAt swaps the list entirely", () => {
+    const s = tmpStore();
+    s.registerDemand("r", "c1", ["alice", "bob"], 100);
+    expect(s.registerDemand("r", "c1", ["carol"], 200)).toBe(true);
+    expect(s.read("r")!.demands!.c1!.authors).toEqual(["carol"]);
+  });
+
+  test("monotonic guard: stale declaredAt is ignored", () => {
+    const s = tmpStore();
+    s.registerDemand("r", "c1", ["new"], 200);
+    expect(s.registerDemand("r", "c1", ["old"], 100)).toBe(false);
+    expect(s.read("r")!.demands!.c1!.authors).toEqual(["new"]);
+  });
+
+  test("identical re-declaration refreshes lastSeenAt but reports no change", () => {
+    const s = tmpStore();
+    s.registerDemand("r", "c1", ["alice"], 100);
+    const before = s.read("r")!.demands!.c1!.lastSeenAt;
+    expect(s.registerDemand("r", "c1", ["alice"], 150)).toBe(false);
+    expect(s.read("r")!.demands!.c1!.lastSeenAt).toBeGreaterThanOrEqual(before);
+    expect(s.read("r")!.demands!.c1!.declaredAt).toBe(150);
+  });
+
+  test("expireDemands drops idle clients and reports them", () => {
+    const s = tmpStore();
+    s.registerDemand("r", "live-client", ["alice"], Date.now());
+    s.read("r")!.demands!["dead-client"] = { authors: ["bob"], declaredAt: 1, lastSeenAt: 1 };
+    expect(s.expireDemands("r", 7 * 86_400_000)).toEqual(["dead-client"]);
+    expect(s.read("r")!.demands!["live-client"]).toBeDefined();
+  });
+
+  test("fullSync on a shell record adopts the real projectPath", () => {
+    const s = tmpStore();
+    s.registerDemand("r", "c1", ["alice"], 100);
+    s.fullSync("r", "g/p", [], Date.now());
+    expect(s.read("r")!.projectPath).toBe("g/p");
   });
 });
