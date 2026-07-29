@@ -109,6 +109,7 @@ const watches   = new Map<string, RepoWatch>();
 const providers = new Map<string, GitLabProvider>();
 let   userId: number | null = null;
 let   userIdResolved = false;
+let   selfUsername: string | null = null;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -185,11 +186,26 @@ async function ensureUserId(): Promise<number | null> {
     const numId = user.id.split(":").pop();
     userId = numId ? parseInt(numId, 10) : null;
     userIdResolved = true;
+    selfUsername = user.username ?? null;
     log.info(`resolved userId=${userId}`);
   } catch (err) {
     log.warn({ err }, "token validation failed");
   }
   return userId;
+}
+
+export function getSelfUsername(): string | null { return selfUsername; }
+
+export async function resolveSelfUsername(repoName: string, repoPath: string): Promise<string | null> {
+  if (selfUsername) return selfUsername;
+  try {
+    await getRepoContext(repoName, repoPath);   // materializes a provider for ensureUserId
+    await ensureUserId();
+    return selfUsername;
+  } catch (err) {
+    log.warn({ err, repo: repoName }, "self username resolution failed");
+    return null;
+  }
 }
 
 // ─── Aggregated connection state ─────────────────────────────────────────────
