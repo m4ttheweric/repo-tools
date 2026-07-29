@@ -30,6 +30,13 @@
         "typescript": "^5",
       },
     },
+    "packages/rt-client": {
+      "name": "@mattstack/rt-client",
+      "version": "0.1.0",
+      "peerDependencies": {
+        "@workforge/glance-sdk": ">=0.11.0",
+      },
+    },
   },
   "packages": {
     "@alcalzone/ansi-tokenize": ["@alcalzone/ansi-tokenize@0.2.5", "", { "dependencies": { "ansi-styles": "^6.2.1", "is-fullwidth-code-point": "^5.0.0" } }, "sha512-3NX/MpTdroi0aKz134A6RC2Gb2iXVECN4QaAXnvCIxxIm3C3AVB1mkUe8NaaiyvOpDfsrqWhYtj+Q6a62RrTsw=="],
@@ -41,6 +48,8 @@
     "@gitbeaker/rest": ["@gitbeaker/rest@43.8.0", "", { "dependencies": { "@gitbeaker/core": "^43.8.0", "@gitbeaker/requester-utils": "^43.8.0" } }, "sha512-xxqsNsUXaFang9b2e/NTIgqUeuUlifA2Opy1mOVqTDuJZZNIOTgUNyziwBJoleBhMC0XuvY3JNVMWthufcVjRw=="],
 
     "@inkjs/ui": ["@inkjs/ui@2.0.0", "", { "dependencies": { "chalk": "^5.3.0", "cli-spinners": "^3.0.0", "deepmerge": "^4.3.1", "figures": "^6.1.0" }, "peerDependencies": { "ink": ">=5" } }, "sha512-5+8fJmwtF9UvikzLfph9sA+LS+l37Ij/szQltkuXLOAXwNkBX9innfzh4pLGXIB59vKEQUtc6D4qGvhD7h3pAg=="],
+
+    "@mattstack/rt-client": ["@mattstack/rt-client@workspace:packages/rt-client"],
 
     "@pinojs/redact": ["@pinojs/redact@0.4.0", "", {}, "sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg=="],
 
