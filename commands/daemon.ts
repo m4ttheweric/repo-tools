@@ -34,7 +34,9 @@ import { daemonQuery, isDaemonRunning, trayQuery } from "../lib/daemon-client.ts
 import { classifyDaemonStatus, type DaemonStatusVerdict } from "../lib/daemon-status.ts";
 import { isGitLabRemote } from "../lib/enrich.ts";
 import type { CacheKind } from "../lib/repo-tracking.ts";
-import { loadRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS } from "../lib/repo-tracking.ts";
+import { loadRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS, DEFAULT_PROJECT_MRS_WINDOW_DAYS } from "../lib/repo-tracking.ts";
+import { createProjectMRs, PROJECT_MRS_PATH } from "../lib/daemon/project-mrs-store.ts";
+import { timeAgo } from "../lib/tui/utils/label.ts";
 
 function formatUptime(ms: number): string {
   const seconds = Math.floor(ms / 1000);
@@ -286,6 +288,11 @@ export function statusLines(verdict: DaemonStatusVerdict, now: number): string[]
 
 // ─── Per-repo tracking (opt-in) ──────────────────────────────────────────────
 
+/** "45d" for an explicit value, "(default 30)" when the entry leaves it unset. */
+function formatWindowLabel(rawWindowDays: number | undefined): string {
+  return rawWindowDays !== undefined ? `${rawWindowDays}d` : `(default ${DEFAULT_PROJECT_MRS_WINDOW_DAYS})`;
+}
+
 function readRepoIndex(): Record<string, string> {
   try {
     return JSON.parse(readFileSync(join(RT_DIR, "repos.json"), "utf8"));
@@ -324,7 +331,7 @@ export async function manageTracking(args: string[] = []): Promise<void> {
       const detail = g.mode === "live"
         ? `live${watcher ? ` (${watcher.state})` : " (watcher starting)"}`
         : g.mode === "poll" ? "poll" : "";
-      const suffix = g.mode === "off" ? "" : ` [${[...g.caches].join(", ")}]`;
+      const suffix = g.mode === "off" ? "" : ` [${[...g.caches].join(", ")}] window ${formatWindowLabel(tracking[name]?.projectMrsWindowDays)}`;
       console.log(`  ${marker} ${g.mode === "off" ? `${dim}${name}${reset}` : name}${detail ? ` ${dim}${detail}${reset}` : ""}${suffix ? ` ${dim}${suffix}${reset}` : ""}`);
     }
     // Tracking entries that no longer match a registered repo do nothing;
@@ -339,14 +346,29 @@ export async function manageTracking(args: string[] = []): Promise<void> {
   // ── rt daemon track <repo> — interactive editor (house style: fzf flow) ──
   let interactiveLevel: string | undefined;
   let interactiveCaches: CacheKind[] | undefined;
+  let interactiveWindowDays: number | null | undefined; // undefined = untouched, null = clear
   if (!levelArg) {
     if (!readRepoIndex()[repoArg]) {
       console.log(`\n  ${red}✗${reset} repo "${repoArg}" not registered in ~/.rt/repos.json\n`);
       return;
     }
-    const { filterableSelect, filterableMultiselect } = await import("../lib/rt-render.tsx");
-    const current = grants(loadRepoTracking(), repoArg);
+    const { filterableSelect, filterableMultiselect, textInput } = await import("../lib/rt-render.tsx");
+    const rawTracking = loadRepoTracking();
+    const rawEntry = rawTracking[repoArg];
+    const current = grants(rawTracking, repoArg);
     const modeHint = (m: string) => (current.mode === m ? "current" : undefined);
+
+    console.log(`\n  ${bold}${repoArg}${reset} ${dim}window ${formatWindowLabel(rawEntry?.projectMrsWindowDays)}${reset}`);
+    // Read-only: the store is written only by the daemon (deep sync,
+    // registerDemand), never by the CLI.
+    const demands = createProjectMRs(PROJECT_MRS_PATH).read(repoArg)?.demands;
+    if (demands && Object.keys(demands).length > 0) {
+      console.log(`  ${dim}demands (read-only):${reset}`);
+      for (const [client, d] of Object.entries(demands)) {
+        console.log(`    ${dim}${client} · ${d.authors.length} author${d.authors.length === 1 ? "" : "s"} [${d.authors.join(", ")}] · last seen ${timeAgo(d.lastSeenAt)}${reset}`);
+      }
+    }
+
     const picked = await filterableSelect({
       message: `${repoArg} tracking mode`,
       options: [
@@ -373,6 +395,20 @@ export async function manageTracking(args: string[] = []): Promise<void> {
         return;
       }
       interactiveCaches = selected as CacheKind[];
+
+      // Positive integer or empty (clears back to default); re-prompt on
+      // anything else rather than silently keeping a bad value.
+      while (true) {
+        const raw = await textInput({
+          message: `project-mrs window in days (empty clears to default ${DEFAULT_PROJECT_MRS_WINDOW_DAYS})`,
+          defaultValue: rawEntry?.projectMrsWindowDays !== undefined ? String(rawEntry.projectMrsWindowDays) : "",
+        });
+        const trimmed = raw.trim();
+        if (trimmed === "") { interactiveWindowDays = null; break; }
+        const n = Number(trimmed);
+        if (Number.isInteger(n) && n > 0) { interactiveWindowDays = n; break; }
+        console.log(`  ${red}✗${reset} enter a positive integer, or leave empty to clear`);
+      }
     }
   }
 
@@ -420,10 +456,23 @@ export async function manageTracking(args: string[] = []): Promise<void> {
 
   const tracking = loadRepoTracking();
   const previousEntry = levelArg2 !== "off" ? tracking[repoArg] : undefined;
-  if (levelArg2 === "off") delete tracking[repoArg];
-  else tracking[repoArg] = { mode: levelArg2 as "live" | "poll", caches };
+  if (levelArg2 === "off") {
+    delete tracking[repoArg];
+  } else {
+    // Only the interactive editor ever touches the window; the positional
+    // CLI form (rt daemon track <repo> live [caches]) carries whatever the
+    // entry it's replacing already had.
+    const windowDays = interactiveWindowDays !== undefined
+      ? (interactiveWindowDays ?? undefined)
+      : previousEntry?.projectMrsWindowDays;
+    tracking[repoArg] = {
+      mode: levelArg2 as "live" | "poll",
+      caches,
+      ...(windowDays !== undefined ? { projectMrsWindowDays: windowDays } : {}),
+    };
+  }
   saveRepoTracking(tracking);
-  console.log(`\n  ${green}✓${reset} ${repoArg} tracking: ${levelArg2}${levelArg2 === "off" ? "" : ` [${caches.join(", ")}]`}`);
+  console.log(`\n  ${green}✓${reset} ${repoArg} tracking: ${levelArg2}${levelArg2 === "off" ? "" : ` [${caches.join(", ")}] window ${formatWindowLabel(tracking[repoArg]?.projectMrsWindowDays)}`}`);
   // A write that omits the caches arg always resets to ["branches"] (see
   // default above). If the entry it replaced granted more than that, the
   // caller silently lost project-mrs/discussions grants — flag it.
