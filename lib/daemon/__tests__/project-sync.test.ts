@@ -291,6 +291,42 @@ describe("project-mrs:read handler", async () => {
       demand: { client: "b:1", authors: ["newbie"], declaredAt: 1 } });
     expect(order).toEqual(["sync", "backfill"]);
   });
+
+  test("forced read recomputes uncovered after the backfill completes", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [], Date.now() - 60_000);
+    store.setScope("repo", { authors: ["alice"], windowDays: 30 });
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, {
+      store, sync: async () => {}, tracking: grantedTracking,
+      // Mirrors what the real backfillAuthors does: extends the stored scope
+      // with the authors it just fetched.
+      backfill: async (_r, authors) => {
+        const existing = store.read("repo")!.scope!.authors;
+        store.setScope("repo", { authors: [...existing, ...authors].sort(), windowDays: 30 });
+      },
+    });
+    const res = await h["project-mrs:read"]!({ repoName: "repo", maxAgeMs: 0,
+      demand: { client: "b:1", authors: ["alice", "newbie"], declaredAt: 1 } });
+    expect(res.ok).toBe(true);
+    expect((res.data as any).scope.uncovered).toEqual([]);
+    expect((res.data as any).scope.authors).toContain("newbie");
+  });
+
+  test("duplicate demanded authors collapse to a single uncovered entry", async () => {
+    const store = tmpStore();
+    store.fullSync("repo", "g/p", [], Date.now());
+    store.setScope("repo", { authors: ["alice"], windowDays: 30 });
+    const backfilled: string[][] = [];
+    const h = createProjectMRsHandlers(fakeCtx, () => {}, {
+      store, sync: async () => {}, tracking: grantedTracking,
+      backfill: async (_r, authors) => { backfilled.push(authors); },
+    });
+    const res = await h["project-mrs:read"]!({ repoName: "repo",
+      demand: { client: "b:1", authors: ["alice", "newbie", "newbie"], declaredAt: 1 } });
+    expect((res.data as any).scope.uncovered).toEqual(["newbie"]);
+    await new Promise((r) => setTimeout(r, 0));   // fire-and-forget settles
+    expect(backfilled).toEqual([["newbie"]]);
+  });
 });
 
 describe("deep-failure fallback (wedged-repo fix)", () => {
