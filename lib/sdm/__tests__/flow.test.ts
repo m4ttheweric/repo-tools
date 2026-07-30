@@ -58,12 +58,13 @@ describe("runGuidedConnect", () => {
     expect(calls).toContain("access:8h:checking alpha data");
   });
 
-  test("non-interactive access request without a reason fails, submitting nothing", async () => {
+  test("non-interactive access request without a reason defaults to reasonSuggestion, no prompts reached", async () => {
     const { deps, calls } = makeDeps({ needsAccessRequest: async () => true });
     const r = await runGuidedConnect(target, { interactive: false }, deps);
-    expect(r.outcome).toBe("failed");
-    if (r.outcome === "failed") expect(r.stage).toBe("access");
-    expect(calls.some(c => c.startsWith("access:"))).toBe(false);
+    expect(r.outcome).toBe("connected");
+    expect(calls).toContain("access:8h:checking alpha data");
+    expect(calls).not.toContain("promptReason");
+    expect(calls).not.toContain("promptDuration");
   });
 
   test("non-interactive with flags submits them verbatim", async () => {
@@ -141,5 +142,77 @@ describe("runGuidedConnect", () => {
     }
     // A usable tunnel is still recorded as a recent (unlike a hard failure).
     expect(calls).toContain("recordRecent");
+  });
+});
+
+const ADDRESS = "127.0.0.1:15432";
+
+function okSnapshot(): SdmSnapshot {
+  return {
+    health: { status: "ok", message: null },
+    resources: new Map([["res", { connected: true, address: ADDRESS, expiry: null }]]),
+  };
+}
+
+const never = async (): Promise<never> => {
+  throw new Error("prompt reached in non-interactive flow");
+};
+
+function makeResDeps(overrides: Partial<GuidedDeps> = {}) {
+  const accessCalls: Array<{ resource: string; duration: string; reason: string }> = [];
+  const deps: GuidedDeps = {
+    getSnapshot: async () => okSnapshot(),
+    needsAccessRequest: async () => true,
+    requestAccess: async (resource, duration, reason) => {
+      accessCalls.push({ resource, duration, reason });
+      return { ok: true };
+    },
+    connect: async () => ({ ok: true }),
+    verify: async () => ({ ok: true, attempts: 1, latencyMs: 5, lastError: null }),
+    probeTunnel: async () => ({ ok: true, latencyMs: 1 }),
+    login: never,
+    promptDuration: never,
+    promptReason: never,
+    confirmProduction: never,
+    confirmLogin: never,
+    onLine: () => {},
+    recordRecent: () => {},
+    ...overrides,
+  };
+  return { deps, accessCalls };
+}
+
+const resTarget: GuidedTarget = {
+  key: "sdm:res",
+  label: "res label",
+  sdmResource: "res",
+  reasonSuggestion: "investigating res data",
+};
+
+describe("runGuidedConnect non-interactive defaulting", () => {
+  test("defaults duration to 8h and reason to reasonSuggestion", async () => {
+    const { deps, accessCalls } = makeResDeps();
+    const result = await runGuidedConnect(resTarget, { interactive: false }, deps);
+    expect(result.outcome).toBe("connected");
+    expect(accessCalls).toEqual([{ resource: "res", duration: "8h", reason: "investigating res data" }]);
+  });
+
+  test("falls back to the label template when reasonSuggestion is absent", async () => {
+    const { deps, accessCalls } = makeResDeps();
+    const bare: GuidedTarget = { key: "sdm:res", label: "res label", sdmResource: "res" };
+    await runGuidedConnect(bare, { interactive: false }, deps);
+    expect(accessCalls[0]!.reason).toBe("investigating res label data");
+  });
+
+  test("explicit flags win over defaults", async () => {
+    const { deps, accessCalls } = makeResDeps();
+    await runGuidedConnect(resTarget, { interactive: false, duration: "1h", reason: "ticket ABC-1" }, deps);
+    expect(accessCalls).toEqual([{ resource: "res", duration: "1h", reason: "ticket ABC-1" }]);
+  });
+
+  test("whitespace-only reason falls back to the suggestion", async () => {
+    const { deps, accessCalls } = makeResDeps();
+    await runGuidedConnect(resTarget, { interactive: false, reason: "   " }, deps);
+    expect(accessCalls[0]!.reason).toBe("investigating res data");
   });
 });

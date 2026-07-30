@@ -3,12 +3,14 @@
  * functions backed by the terminal; the daemon's reconnect handler passes
  * interactive: false with prompts that are never reached.
  *
- * Org-visibility invariant: requestAccess is only ever called with a
- * duration and reason that came from a human (interactive prompt or
- * explicit flags). No code path synthesizes a reason.
+ * Org-visibility invariant: requestAccess reasons and durations come from a
+ * human: typed at a prompt, passed as explicit flags, or authored once in
+ * ~/.rt/sdm/enrichment.jsonc (reasonSuggestion). Non-interactive callers
+ * default to the enrichment reason; no caller synthesizes a bespoke reason
+ * at runtime.
  */
 
-import type { SdmFailureCode, SdmSnapshot } from "./core.ts";
+import { SDM_DEFAULT_DURATION, type SdmFailureCode, type SdmSnapshot } from "./core.ts";
 import { buildPostgresUrl, type ProbeResult, type VerifyOutcome } from "./verify.ts";
 
 export interface GuidedTarget {
@@ -87,17 +89,11 @@ export async function runGuidedConnect(
     let duration = opts.duration;
     let reason = opts.reason;
     if (opts.interactive) {
-      duration ??= await deps.promptDuration("8h");
+      duration ??= await deps.promptDuration(SDM_DEFAULT_DURATION);
       reason ??= await deps.promptReason(target.reasonSuggestion ?? `investigating ${target.label} data`);
     }
-    if (!reason?.trim()) {
-      return {
-        outcome: "failed",
-        stage: "access",
-        error: "An access request needs a human-provided reason. Pass --reason (and optionally --duration).",
-      };
-    }
-    duration ??= "8h";
+    duration ??= SDM_DEFAULT_DURATION;
+    if (!reason?.trim()) reason = target.reasonSuggestion ?? `investigating ${target.label} data`;
     const access = await deps.requestAccess(target.sdmResource, duration, reason, deps.onLine);
     if (!access.ok) {
       return { outcome: "failed", stage: "access", error: access.error ?? "Access request failed.", hint: hintFor(access.code) };
