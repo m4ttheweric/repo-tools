@@ -23,6 +23,7 @@ import {
   loginSdm,
   requestAccess,
   resourceNeedsAccessRequest,
+  SDM_DURATIONS,
   SDM_INSTALL_URL,
 } from "../lib/sdm/core.ts";
 import { scanSdmResources, type SdmResource } from "../lib/sdm/scan.ts";
@@ -113,11 +114,10 @@ async function guidedConnect(target: GuidedTarget, opts: { duration?: string; re
     },
     login: sdmBrowserLogin,
     promptDuration: async def => {
-      const all = [
-        { value: "8h", label: "8 hours" },
-        { value: "4h", label: "4 hours" },
-        { value: "1h", label: "1 hour" },
-      ];
+      const all = SDM_DURATIONS.map(value => {
+        const hours = Number.parseInt(value, 10);
+        return { value, label: `${hours} hour${hours === 1 ? "" : "s"}` };
+      });
       // select() has no initialValue option; ordering puts the default first.
       const options = [...all.filter(o => o.value === def), ...all.filter(o => o.value !== def)];
       return select({ message: "Access duration", options });

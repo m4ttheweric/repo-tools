@@ -34,6 +34,10 @@ export type SdmFailureCode = "not-authenticated" | "no-access" | "other";
 
 export const SDM_INSTALL_URL = "https://www.strongdm.com/docs/cli/";
 
+/** Durations rt offers for access requests; index 0 is the default. */
+export const SDM_DURATIONS = ["8h", "4h", "1h"] as const;
+export const SDM_DEFAULT_DURATION: string = SDM_DURATIONS[0];
+
 const HEADER_FIRST_COL = new Set(["DATASOURCE", "CLUSTER", "WEBSITE", "SERVER"]);
 
 export function parseSdmStatus(output: string): Map<string, SdmResourceState> {
