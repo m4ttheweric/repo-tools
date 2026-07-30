@@ -21,10 +21,16 @@ production requires an explicit human yes.
    - `health: "not-authenticated"`: run `rt sdm login` (silent browser flow;
      no TTY needed). If it exits non-zero telling you to run
      `rt sdm login --manual`, STOP and give the user that exact command to
-     run in a terminal; you cannot complete the SAML hop for them.
+     run in a terminal; you cannot complete the SAML hop for them. Login
+     normally finishes in seconds, but a cold or MFA session escalates to a
+     visible Chrome window and can take ~3 minutes -- run it with a generous
+     timeout (at least 240s), and tell the user a browser window may appear.
    - `health: "not-installed"`: STOP; the sdm CLI is missing. Relay the
      install message.
-   - `appRunning: false` alone is fine: connect launches the app itself.
+   - `health: "error"` with `appRunning: false`: proceed to connect anyway --
+     connect launches the desktop app itself and waits for it. `appRunning:
+     false` alone is fine in any case; only stop and relay the error if
+     connect then fails.
 
 2. **Discover.** `rt sdm connections --json`
    - Match the user's request against `label`, `tier`, and `key`.

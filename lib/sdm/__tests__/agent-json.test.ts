@@ -5,6 +5,7 @@ import {
   buildConnectJson,
   buildProductionRefusal,
   buildStatusJson,
+  shouldRefuseProduction,
 } from "../agent-json.ts";
 import type { SdmConnection } from "../browse.ts";
 import type { SdmResourceState, SdmSnapshot } from "../core.ts";
@@ -140,6 +141,28 @@ describe("buildProductionRefusal", () => {
     expect(body.stage).toBe("confirm");
     expect(body.error).toContain("staging read-write");
     expect(body.error).toContain("--confirm-production");
+  });
+});
+
+describe("shouldRefuseProduction", () => {
+  test("production, non-interactive, no flag: refuse", () => {
+    expect(shouldRefuseProduction({ production: true }, { interactive: false })).toBe(true);
+  });
+
+  test("production, non-interactive, --confirm-production: allow", () => {
+    expect(shouldRefuseProduction({ production: true }, { interactive: false, confirmProduction: true })).toBe(false);
+  });
+
+  test("production, interactive: allow (the prompt-based gate handles it)", () => {
+    expect(shouldRefuseProduction({ production: true }, { interactive: true })).toBe(false);
+  });
+
+  test("non-production, non-interactive: allow", () => {
+    expect(shouldRefuseProduction({ production: false }, { interactive: false })).toBe(false);
+  });
+
+  test("production undefined: allow", () => {
+    expect(shouldRefuseProduction({ production: undefined }, { interactive: false })).toBe(false);
   });
 });
 
