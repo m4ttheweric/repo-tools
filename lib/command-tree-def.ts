@@ -354,7 +354,9 @@ export const TREE: Record<string, CommandNode> = {
         description: "CLI auth health + connected tunnels",
         module: "./commands/sdm.ts",
         fn: "statusCmd",
-        args: [],
+        args: [
+          { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "Machine-readable health + appRunning + tunnels" },
+        ],
       },
       login: {
         description: "Log in to StrongDM (browser popup by default)",

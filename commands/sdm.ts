@@ -29,12 +29,12 @@ import {
 import { scanSdmResources, type SdmResource } from "../lib/sdm/scan.ts";
 import { buildSdmConnections, type SdmConnection } from "../lib/sdm/browse.ts";
 import { loadEnrichment } from "../lib/sdm/enrichment.ts";
-import { buildConnectionsJson, buildConnectionsRefusal, buildConnectJson, buildProductionRefusal } from "../lib/sdm/agent-json.ts";
+import { buildConnectionsJson, buildConnectionsRefusal, buildConnectJson, buildProductionRefusal, buildStatusJson } from "../lib/sdm/agent-json.ts";
 import { loadSdmState, recordRecent, type RecentEntry } from "../lib/sdm/state.ts";
 import { runGuidedConnect, type GuidedTarget } from "../lib/sdm/flow.ts";
 import { probeQuery, probeTunnel, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS } from "../lib/sdm/verify.ts";
 import { buildPickerOptions } from "../lib/sdm/picker.ts";
-import { ensureSdmApp } from "../lib/sdm/app.ts";
+import { ensureSdmApp, isSdmAppRunning } from "../lib/sdm/app.ts";
 
 // `sdm` is a branch node in the command tree (cli.ts); each subcommand below
 // is a leaf pointing at one of these exported functions.
@@ -330,8 +330,16 @@ export async function connectionsCmd(rest: string[]): Promise<void> {
   }
 }
 
-export async function statusCmd(): Promise<void> {
-  const snapshot = await getSdmSnapshot(true);
+export async function statusCmd(rest: string[] = []): Promise<void> {
+  const json = rest.includes("--json");
+  const [snapshot, appRunning] = await Promise.all([getSdmSnapshot(true), isSdmAppRunning()]);
+  if (json) {
+    const { json: body, exitCode } = buildStatusJson(snapshot, appRunning);
+    console.log(JSON.stringify(body, null, 2));
+    process.exitCode = exitCode;
+    return;
+  }
+  if (!appRunning) console.log(`${yellow}StrongDM app: not running${reset} ${dim}(rt launches it on connect)${reset}`);
   if (snapshot.health.status !== "ok") {
     console.log(`${red}sdm:${reset} ${snapshot.health.status} ${dim}${snapshot.health.message ?? ""}${reset}`);
     process.exitCode = 1;
@@ -367,6 +375,13 @@ export async function loginCmd(args: string[]): Promise<void> {
     }
     console.log(`${dim}running sdm login (answer its prompts here; your browser will open for SAML)...${reset}`);
     await runManualLogin();
+    return;
+  }
+
+  const app = await ensureSdmApp(streamLine);
+  if (!app.ok) {
+    console.error(`${red}✗ ${app.error}${reset}`);
+    process.exitCode = 1;
     return;
   }
 
