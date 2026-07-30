@@ -260,7 +260,14 @@ export async function connectCmd(rest: string[], _ctx?: CommandContext): Promise
     else positional.push(arg);
   }
   const key = positional[0];
-  if (!key) return pickAndConnect();
+  if (!key) {
+    if (flags.json) {
+      console.log(JSON.stringify({ ok: false, stage: "health", error: "a connection key is required with --json", hint: "rt sdm connections --json lists valid keys" }, null, 2));
+      process.exitCode = 1;
+      return;
+    }
+    return pickAndConnect();
+  }
   const app = await ensureSdmApp(streamLine);
   if (!app.ok) {
     if (flags.json) console.log(JSON.stringify({ ok: false, stage: "health", error: app.error, hint: null }, null, 2));
