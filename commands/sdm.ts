@@ -29,6 +29,7 @@ import {
 import { scanSdmResources, type SdmResource } from "../lib/sdm/scan.ts";
 import { buildSdmConnections, type SdmConnection } from "../lib/sdm/browse.ts";
 import { loadEnrichment } from "../lib/sdm/enrichment.ts";
+import { buildConnectionsJson, buildConnectionsRefusal } from "../lib/sdm/agent-json.ts";
 import { loadSdmState, recordRecent, type RecentEntry } from "../lib/sdm/state.ts";
 import { runGuidedConnect, type GuidedTarget } from "../lib/sdm/flow.ts";
 import { probeQuery, probeTunnel, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS } from "../lib/sdm/verify.ts";
@@ -246,6 +247,44 @@ export async function connectCmd(rest: string[], _ctx?: CommandContext): Promise
   }
   const interactive = process.stdin.isTTY && !(flags.duration && flags.reason);
   await guidedConnect(toTarget(target), { ...flags, interactive });
+}
+
+/**
+ * `rt sdm connections [--json]`: the discovery half of the agent contract.
+ * Refuses (ok:false, exit 1) when the scan cannot run; an empty list must
+ * mean "you truly have no resources", never "we could not look".
+ */
+export async function connectionsCmd(rest: string[]): Promise<void> {
+  const json = rest.includes("--json");
+  const snapshot = await getSdmSnapshot();
+  if (snapshot.health.status !== "ok") {
+    if (json) console.log(JSON.stringify(buildConnectionsRefusal(snapshot.health), null, 2));
+    else console.error(`${red}sdm:${reset} ${snapshot.health.status} ${dim}${snapshot.health.message ?? ""}${reset}`);
+    process.exitCode = 1;
+    return;
+  }
+  const { resources, error } = await getScan();
+  if (error) {
+    if (json) console.log(JSON.stringify(buildConnectionsRefusal(snapshot.health, error), null, 2));
+    else console.error(`${red}scan failed:${reset} ${error}`);
+    process.exitCode = 1;
+    return;
+  }
+  const connections = buildSdmConnections(resources, loadEnrichment());
+  if (json) {
+    console.log(JSON.stringify(buildConnectionsJson(connections, snapshot.resources), null, 2));
+    return;
+  }
+  if (connections.length === 0) {
+    console.log(`${dim}no StrongDM resources visible; check access or run \`rt sdm refresh\`${reset}`);
+    return;
+  }
+  for (const c of connections) {
+    const state = snapshot.resources.get(c.sdmResource);
+    const gutter = state?.connected ? `${green}●${reset}` : c.standingAccess ? `${green}✓${reset}` : " ";
+    const tier = c.tier ? `  ${dim}${c.tier}${reset}` : "";
+    console.log(`${gutter} ${bold}${c.label}${reset}  ${cyan}${c.key}${reset}${tier}`);
+  }
 }
 
 export async function statusCmd(): Promise<void> {

@@ -340,6 +340,14 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Reason", flag: "--reason", type: "text", placeholder: "e.g. debugging ticket", hint: "Why you need this connection" },
         ],
       },
+      connections: {
+        description: "List StrongDM connections (machine-readable with --json)",
+        module: "./commands/sdm.ts",
+        fn: "connectionsCmd",
+        args: [
+          { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "Envelope with connections, offered durations, and per-connection default reason" },
+        ],
+      },
       status: {
         description: "CLI auth health + connected tunnels",
         module: "./commands/sdm.ts",
