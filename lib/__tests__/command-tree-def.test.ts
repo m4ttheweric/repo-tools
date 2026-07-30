@@ -23,3 +23,10 @@ test("verify command is present in the tree", () => {
   expect(TREE.verify).toBeDefined();
   expect(TREE.verify!.module).toBe("./commands/verify.ts");
 });
+
+test("sdm connections leaf exists and is agent-drivable", () => {
+  const leaf = TREE.sdm!.subcommands!.connections!;
+  expect(leaf.module).toBe("./commands/sdm.ts");
+  expect(leaf.fn).toBe("connectionsCmd");
+  expect(leaf.args!.some(a => a.flag === "--json")).toBe(true);
+});
