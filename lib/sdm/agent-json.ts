@@ -62,6 +62,16 @@ export function buildConnectJson(target: GuidedTarget, result: GuidedResult): { 
   return { exitCode: 1, json: { ok: false, stage: result.stage, error: result.error, hint: result.hint ?? null } };
 }
 
+/** CLI-layer production gate: refuse a non-interactive connect to a
+ * production target unless --confirm-production relayed a human yes.
+ * The daemon's tray reconnect never calls this; a tray click is a human. */
+export function shouldRefuseProduction(
+  target: Pick<GuidedTarget, "production">,
+  opts: { interactive: boolean; confirmProduction?: boolean },
+): boolean {
+  return Boolean(target.production) && !opts.interactive && !opts.confirmProduction;
+}
+
 export function buildProductionRefusal(target: GuidedTarget): unknown {
   return {
     ok: false,

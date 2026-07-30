@@ -29,7 +29,7 @@ import {
 import { scanSdmResources, type SdmResource } from "../lib/sdm/scan.ts";
 import { buildSdmConnections, type SdmConnection } from "../lib/sdm/browse.ts";
 import { loadEnrichment } from "../lib/sdm/enrichment.ts";
-import { buildConnectionsJson, buildConnectionsRefusal, buildConnectJson, buildProductionRefusal, buildStatusJson } from "../lib/sdm/agent-json.ts";
+import { buildConnectionsJson, buildConnectionsRefusal, buildConnectJson, buildProductionRefusal, buildStatusJson, shouldRefuseProduction } from "../lib/sdm/agent-json.ts";
 import { loadSdmState, recordRecent, type RecentEntry } from "../lib/sdm/state.ts";
 import { runGuidedConnect, type GuidedTarget } from "../lib/sdm/flow.ts";
 import { probeQuery, probeTunnel, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS } from "../lib/sdm/verify.ts";
@@ -105,7 +105,7 @@ async function guidedConnect(
 ): Promise<void> {
   // The guard lives here, not in runGuidedConnect: the daemon's tray-driven
   // reconnect is also non-interactive but a tray click is a human action.
-  if (target.production && !opts.interactive && !opts.confirmProduction) {
+  if (shouldRefuseProduction(target, opts)) {
     if (opts.json) console.log(JSON.stringify(buildProductionRefusal(target), null, 2));
     else console.error(`${red}✗ ${target.label} is a production resource; a human must approve.${reset} ${dim}re-run with --confirm-production${reset}`);
     process.exitCode = 1;
