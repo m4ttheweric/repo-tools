@@ -30,3 +30,9 @@ test("sdm connections leaf exists and is agent-drivable", () => {
   expect(leaf.fn).toBe("connectionsCmd");
   expect(leaf.args!.some(a => a.flag === "--json")).toBe(true);
 });
+
+test("sdm connect carries the agent flags", () => {
+  const flags = TREE.sdm!.subcommands!.connect!.args!.map(a => a.flag);
+  expect(flags).toContain("--json");
+  expect(flags).toContain("--confirm-production");
+});

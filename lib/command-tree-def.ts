@@ -338,6 +338,8 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Connection key", type: "text", placeholder: "e.g. prod-db", hint: "Connect to this connection directly; omit for the interactive picker" },
           { name: "Duration", flag: "--duration", type: "text", placeholder: "8h", hint: "How long to keep the connection open" },
           { name: "Reason", flag: "--reason", type: "text", placeholder: "e.g. debugging ticket", hint: "Why you need this connection" },
+          { name: "JSON output", flag: "--json", type: "boolean", default: false, hint: "Non-interactive; emit a JSON result envelope on stdout" },
+          { name: "Confirm production", flag: "--confirm-production", type: "boolean", default: false, hint: "Required to connect to a production-tier resource non-interactively" },
         ],
       },
       connections: {
