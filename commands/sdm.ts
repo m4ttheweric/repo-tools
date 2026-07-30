@@ -29,11 +29,12 @@ import {
 import { scanSdmResources, type SdmResource } from "../lib/sdm/scan.ts";
 import { buildSdmConnections, type SdmConnection } from "../lib/sdm/browse.ts";
 import { loadEnrichment } from "../lib/sdm/enrichment.ts";
-import { buildConnectionsJson, buildConnectionsRefusal } from "../lib/sdm/agent-json.ts";
+import { buildConnectionsJson, buildConnectionsRefusal, buildConnectJson, buildProductionRefusal } from "../lib/sdm/agent-json.ts";
 import { loadSdmState, recordRecent, type RecentEntry } from "../lib/sdm/state.ts";
 import { runGuidedConnect, type GuidedTarget } from "../lib/sdm/flow.ts";
 import { probeQuery, probeTunnel, verifyWithRetries, VERIFY_ATTEMPT_TIMEOUT_MS } from "../lib/sdm/verify.ts";
 import { buildPickerOptions } from "../lib/sdm/picker.ts";
+import { ensureSdmApp } from "../lib/sdm/app.ts";
 
 // `sdm` is a branch node in the command tree (cli.ts); each subcommand below
 // is a leaf pointing at one of these exported functions.
@@ -98,7 +99,18 @@ async function ensureSdmAuth(): Promise<boolean> {
   return false;
 }
 
-async function guidedConnect(target: GuidedTarget, opts: { duration?: string; reason?: string; interactive: boolean }): Promise<void> {
+async function guidedConnect(
+  target: GuidedTarget,
+  opts: { duration?: string; reason?: string; interactive: boolean; json?: boolean; confirmProduction?: boolean },
+): Promise<void> {
+  // The guard lives here, not in runGuidedConnect: the daemon's tray-driven
+  // reconnect is also non-interactive but a tray click is a human action.
+  if (target.production && !opts.interactive && !opts.confirmProduction) {
+    if (opts.json) console.log(JSON.stringify(buildProductionRefusal(target), null, 2));
+    else console.error(`${red}✗ ${target.label} is a production resource; a human must approve.${reset} ${dim}re-run with --confirm-production${reset}`);
+    process.exitCode = 1;
+    return;
+  }
   const { select, textInput, confirm } = await import("../lib/rt-render.tsx");
   const result = await runGuidedConnect(target, opts, {
     getSnapshot: f => getSdmSnapshot(f),
@@ -138,6 +150,12 @@ async function guidedConnect(target: GuidedTarget, opts: { duration?: string; re
       }),
   });
 
+  if (opts.json) {
+    const { json, exitCode } = buildConnectJson(target, result);
+    console.log(JSON.stringify(json, null, 2));
+    process.exitCode = exitCode;
+    return;
+  }
   if (result.outcome === "connected") {
     const dbInfo = target.db ? ` ${dim}(${target.db.database ?? "postgres"}/${target.db.schema ?? "public"})${reset}` : "";
     console.log(`\n${green}✓${reset} ${bold}${target.label}${reset} ready at ${cyan}${result.address}${reset}${dbInfo}`);
@@ -172,6 +190,12 @@ function toTarget(c: SdmConnection | RecentEntry): GuidedTarget {
 async function pickAndConnect(): Promise<void> {
   if (!process.stdin.isTTY) {
     console.error("rt sdm connect needs a terminal. Use `rt sdm connect <key> --duration --reason` for scripts.");
+    process.exitCode = 1;
+    return;
+  }
+  const app = await ensureSdmApp(streamLine);
+  if (!app.ok) {
+    console.error(`${red}✗ ${app.error}${reset}`);
     process.exitCode = 1;
     return;
   }
@@ -223,7 +247,7 @@ StrongDM CLI install:  ${dim}${SDM_INSTALL_URL}${reset}`);
  * <key> [--duration 8h] [--reason "..."]` connects directly (scriptable).
  */
 export async function connectCmd(rest: string[], _ctx?: CommandContext): Promise<void> {
-  const flags: { duration?: string; reason?: string } = {};
+  const flags: { duration?: string; reason?: string; json?: boolean; confirmProduction?: boolean } = {};
   const positional: string[] = [];
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i]!;
@@ -231,21 +255,33 @@ export async function connectCmd(rest: string[], _ctx?: CommandContext): Promise
     else if (arg === "--reason") flags.reason = rest[++i];
     else if (arg.startsWith("--duration=")) flags.duration = arg.slice("--duration=".length);
     else if (arg.startsWith("--reason=")) flags.reason = arg.slice("--reason=".length);
+    else if (arg === "--json") flags.json = true;
+    else if (arg === "--confirm-production") flags.confirmProduction = true;
     else positional.push(arg);
   }
   const key = positional[0];
   if (!key) return pickAndConnect();
+  const app = await ensureSdmApp(streamLine);
+  if (!app.ok) {
+    if (flags.json) console.log(JSON.stringify({ ok: false, stage: "health", error: app.error, hint: null }, null, 2));
+    else console.error(`${red}✗ ${app.error}${reset}`);
+    process.exitCode = 1;
+    return;
+  }
   const { resources } = await getScan();
   const connections = buildSdmConnections(resources, loadEnrichment());
   const target =
     connections.find(c => c.key === key) ??
     loadSdmState().recents.find(r => r.key === key);
   if (!target) {
-    console.error(`${red}unknown connection key:${reset} ${key} ${dim}(rt sdm refresh to re-discover)${reset}`);
+    if (flags.json) console.log(JSON.stringify({ ok: false, stage: "health", error: `unknown connection key: ${key}`, hint: "rt sdm connections --json lists valid keys; rt sdm refresh re-discovers" }, null, 2));
+    else console.error(`${red}unknown connection key:${reset} ${key} ${dim}(rt sdm refresh to re-discover)${reset}`);
     process.exitCode = 1;
     return;
   }
-  const interactive = process.stdin.isTTY && !(flags.duration && flags.reason);
+  // --json is an agent calling: never prompt. Otherwise a TTY with both
+  // flags provided still short-circuits the prompts, as before.
+  const interactive = !flags.json && process.stdin.isTTY && !(flags.duration && flags.reason);
   await guidedConnect(toTarget(target), { ...flags, interactive });
 }
 
