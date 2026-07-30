@@ -22,6 +22,8 @@ rt sdm connect <connection-key> [flags]
 | `<connection-key>` | text |  | Connect to this connection directly; omit for the interactive picker |
 | `--duration` | text |  | How long to keep the connection open |
 | `--reason` | text |  | Why you need this connection |
+| [`--json`](/guides/common-flags) | boolean | `false` | Non-interactive; emit a JSON result envelope on stdout |
+| `--confirm-production` | boolean | `false` | Required to connect to a production-tier resource non-interactively |
 
 _See code: [commands/sdm.ts › connectCmd](https://github.com/m4ttheweric/repo-tools/blob/main/commands/sdm.ts)_
 

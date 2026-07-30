@@ -12,8 +12,14 @@ CLI auth health + connected tunnels
 ## Usage
 
 ```bash
-rt sdm status
+rt sdm status [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| [`--json`](/guides/common-flags) | boolean | `false` | Machine-readable health + appRunning + tunnels |
 
 _See code: [commands/sdm.ts › statusCmd](https://github.com/m4ttheweric/repo-tools/blob/main/commands/sdm.ts)_
 
