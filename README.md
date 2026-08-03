@@ -1,6 +1,16 @@
-# rt — repo tools
+# rt: repo tools
 
-Personal developer CLI for branch management, service orchestration, git workflows, and notifications. Designed for monorepos with git worktrees.
+rt is a developer CLI for git-worktree-based monorepo workflows: worktree
+navigation, smart git rebase/reset, a live MR status dashboard, port
+scanning, and StrongDM connections, all backed by a background daemon. It
+ships alongside a macOS menu bar tray app for daemon health and
+notifications, a VS Code/Cursor extension that shows your branch and linked
+ticket in the status bar, and a plugin system for adding your own commands
+that can never crash rt itself.
+
+Full documentation: **https://rt.cool**
+
+![rt --help output](docs/assets/rt-help.png)
 
 ## Install
 
@@ -10,7 +20,7 @@ rt verify                  # completes first-run setup, then verifies everything
 ```
 
 `rt verify` runs setup on first use (tray app, daemon, editor extensions, shell
-integration) and then reports the health of each piece — use it any time you
+integration) and then reports the health of each piece: use it any time you
 want to confirm the install is in good shape.
 
 Then configure your API tokens:
@@ -31,11 +41,11 @@ rt verify
 | Component | Description |
 |---|---|
 | `rt` binary | Standalone CLI on your PATH |
-| `rt-tray.app` | Menu bar app — daemon health, notifications, auto-updates |
-| `rt-context` extension | VS Code/Cursor — branch + ticket in status bar |
+| `rt-tray.app` | Menu bar app: daemon health, notifications, auto-updates |
+| `rt-context` extension | VS Code/Cursor: branch + ticket in status bar |
 | Background daemon | Caches MR/branch data, scans ports, guards git hooks |
 | `fzf` + `tmux` | Required dependencies (installed automatically) |
-| Shell alias | `rtcd` — fast worktree directory switching |
+| Shell alias | `rtcd`: fast worktree directory switching |
 
 ### Upgrade
 
@@ -50,9 +60,33 @@ editor extensions are refreshed in a single step.
 
 ---
 
+## Highlights
+
+- **Worktree-first navigation**: `rt cd` and the `rtcd` shell alias are a
+  fuzzy picker across every repo and worktree on disk.
+- **Smart git operations**: `rt git rebase` auto-resolves what it safely can
+  onto `origin/master`; `rt sync` rebases and pushes the current worktree in
+  one step.
+- **Live MR dashboard**: `rt status` shows pipeline and review status with
+  inline MR actions, backed by a background daemon that keeps GitLab data
+  warm.
+- **Zero-config port scanning**: `rt port` finds and kills processes on
+  stale dev ports without any setup.
+- **macOS tray app**: `rt-tray` shows daemon health at a glance and delivers
+  native notifications.
+- **Editor status bar**: the `rt-context` VS Code/Cursor extension shows
+  your worktree, branch, and linked Linear ticket.
+- **Safe plugin system**: drop a folder under `~/.rt/plugins/` to add your
+  own commands; a broken plugin is skipped with a warning and can never
+  crash rt itself.
+- **StrongDM integration**: `rt sdm connect` reads your real StrongDM
+  catalog and connects with friendly names, no maintained list required.
+
+---
+
 ## Onboarding a repo
 
-There's no explicit "add repo" step — any git repo with an `origin` remote is
+There's no explicit "add repo" step: any git repo with an `origin` remote is
 picked up automatically the first time you run an `rt` command inside it:
 
 ```bash
@@ -116,7 +150,7 @@ rtcd                      # cd into a picked worktree (wraps rt cd)
 ### Run
 
 ```bash
-rt run                    # Interactive script runner — repo → worktree → package → script
+rt run                    # Interactive script runner: repo → worktree → package → script
 ```
 
 ### Branch
@@ -154,7 +188,7 @@ rt sync all               # Sync all worktrees in the repo
 ### Status
 
 ```bash
-rt status                 # Live branch dashboard — MR actions, pipeline & review status
+rt status                 # Live branch dashboard: MR actions, pipeline & review status
 rt port                   # Port scanner + killer (daemon-powered, zero-config)
 ```
 
@@ -316,10 +350,10 @@ Clicking the item opens the linked Linear ticket directly.
 
 The `rt-tray` menu bar app shows daemon health and delivers native notifications.
 
-- **Green dot** — daemon running normally
-- **Yellow dot** — daemon starting
-- **Orange dot** — pending notifications
-- **Red dot** — daemon not reachable
+- **Green dot**: daemon running normally
+- **Yellow dot**: daemon starting
+- **Orange dot**: pending notifications
+- **Red dot**: daemon not reachable
 
 From the menu you can restart the daemon, stop it, toggle launch-at-login, and check for updates.
 
@@ -332,7 +366,7 @@ From the menu you can restart the daemon, stop it, toggle launch-at-login, and c
 | macOS | Required (Apple Silicon or Intel) |
 | `fzf` | Auto-installed by Homebrew |
 | `tmux` | Auto-installed by Homebrew |
-| `zellij` | Optional — only needed for `rt x --zellij` mode (`brew install zellij`) |
+| `zellij` | Optional, only needed for `rt x --zellij` mode (`brew install zellij`) |
 
 ---
 
@@ -343,11 +377,11 @@ This repo uses [Bun](https://bun.sh).
 
 ### Day-to-day dev (source mode)
 
-The normal way to develop — no compile step, changes are instant:
+The normal way to develop: no compile step, changes are instant.
 
 ```bash
-git clone https://github.com/m4ttheweric/repo-tools.git
-cd repo-tools
+git clone https://github.com/m4ttstack/rt.git
+cd rt
 bun install
 bun run cli.ts          # runs the CLI from source
 bun run cli.ts verify   # run any subcommand the same way
@@ -369,7 +403,7 @@ rt settings dev-mode prod   # switch back to Homebrew binary
 - `dev` mode writes a wrapper script at `~/.local/bin/rt` that calls `bun run /path/to/cli.ts "$@"`
 - `prod` mode removes that wrapper, letting `/opt/homebrew/bin/rt` take over
 - `~/.local/bin` is added to your PATH automatically (in your shell rc file) during `brew install` and on first `dev-mode dev`
-- The source path is remembered in `~/.rt/dev-mode.json` — no re-entry needed when toggling back
+- The source path is remembered in `~/.rt/dev-mode.json`, so there's no re-entry needed when toggling back
 
 `rt version` tells you which is active (and the source path in dev mode);
 `rt --version` is the short form that just prints the version string.
@@ -387,7 +421,7 @@ This is the same code that `rt` auto-runs on its first invocation (and that
 1. Copies `rt-tray.app` to `~/Applications`
 2. Installs `rt-context.vsix` into all detected editors
 3. Installs the daemon as a launchd agent
-4. Writes shell integration to your rc file (PATH + rtcd, idempotent — supports zsh, bash, fish)
+4. Writes shell integration to your rc file (PATH + rtcd, idempotent, supports zsh, bash, fish)
 
 ### Verifying an installation
 
@@ -438,7 +472,7 @@ The tray app reads its version from `Info.plist` (`CFBundleShortVersionString`),
 
 ### Release process
 
-Push a version tag — CI handles everything else:
+Push a version tag; CI handles everything else:
 
 ```bash
 git tag v1.2.3
@@ -453,7 +487,7 @@ GitHub Actions will:
 5. Update `m4ttheweric/homebrew-tap` formula with real URLs + SHA256s
 6. Run `rt verify --ci` on a fresh `macos-latest` runner to confirm the install works
 
-The formula has **no** `post_install` hook — Homebrew runs formula hooks in a
+The formula has **no** `post_install` hook: Homebrew runs formula hooks in a
 sandbox that can't write to `~/Applications`, `~/.rt`, or shell rc files, so
 setup is deferred to the binary itself. `cli.ts` detects a missing
 `~/.rt/daemon.json` on first invocation and transparently runs
