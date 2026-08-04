@@ -9,7 +9,7 @@
 
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import type { Discussion } from "@workforge/glance-sdk";
+import type { Discussion } from "@mattstack/glance";
 import { RT_DIR } from "../daemon-config.ts";
 import type { CacheEntry } from "./handlers/types.ts";
 import type { ProjectMRs } from "./project-mrs-store.ts";

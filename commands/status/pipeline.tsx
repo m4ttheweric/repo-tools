@@ -6,7 +6,7 @@
 import type React from "react";
 import { Box, Text } from "ink";
 import { Spinner, StatusMessage } from "@inkjs/ui";
-import type { MRDashboardProps, Pipeline, PipelineJob } from "@workforge/glance-sdk";
+import type { MRDashboardProps, Pipeline, PipelineJob } from "@mattstack/glance";
 import { ScrollableList } from "../../lib/ScrollableList.tsx";
 import { rpad, lpad } from "../../lib/tui/utils/label.ts";
 import { useSpinnerFrame } from "../../lib/tui/hooks/use-spinner.ts";

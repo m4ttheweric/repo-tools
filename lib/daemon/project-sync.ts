@@ -29,7 +29,7 @@
  * record to delta against) and explicit `mode: "deep"` requests still reject.
  */
 
-import type { PullRequest } from "@workforge/glance-sdk";
+import type { PullRequest } from "@mattstack/glance";
 import { getRepoContext, getSelfUsername, resolveSelfUsername } from "./freshness.ts";
 import { getProjectMRs, freshnessOf, type ProjectMRs, type ProjectMRStore } from "./project-mrs-store.ts";
 import { loadRepoTracking, grants } from "../repo-tracking.ts";

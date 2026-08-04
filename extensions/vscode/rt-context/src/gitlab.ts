@@ -1,4 +1,4 @@
-import { GitLabProvider } from '@workforge/glance-sdk';
+import { GitLabProvider } from '@mattstack/glance';
 import { parseRemoteUrl } from './branchParser';
 
 /**

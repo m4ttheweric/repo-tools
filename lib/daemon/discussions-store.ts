@@ -21,7 +21,7 @@
  *      / desktop surface can pick it up.
  */
 
-import type { Discussion, Note } from "@workforge/glance-sdk";
+import type { Discussion, Note } from "@mattstack/glance";
 import { getRepoContext, getCurrentUserId } from "./freshness.ts";
 import { getDiscussionsFileStore, type DiscussionsFileStore } from "./discussions-file-store.ts";
 import { getProjectMRs, type ProjectMRs } from "./project-mrs-store.ts";

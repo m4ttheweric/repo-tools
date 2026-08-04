@@ -13,7 +13,7 @@
  * `discussions-store.ts`, which also emits new-comment notifications.
  */
 
-import { NoteMutator } from "@workforge/glance-sdk";
+import { NoteMutator } from "@mattstack/glance";
 import { getRepoContext, providerRequestHook } from "../freshness.ts";
 import { loadSecrets } from "../../linear.ts";
 import { refreshDiscussions, type BroadcastFn } from "../discussions-store.ts";

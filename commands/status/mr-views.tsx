@@ -6,8 +6,8 @@
 
 import { Box, Text } from "ink";
 import { Badge, Spinner, StatusMessage } from "@inkjs/ui";
-import type { MRDashboardProps, PipelineJob, Reviewer } from "@workforge/glance-sdk";
-import { getReviewDisplayState } from "@workforge/glance-sdk";
+import type { MRDashboardProps, PipelineJob, Reviewer } from "@mattstack/glance";
+import { getReviewDisplayState } from "@mattstack/glance";
 import { truncate, rpad, lpad, timeAgo } from "../../lib/tui/utils/label.ts";
 import { useSpinnerFrame } from "../../lib/tui/hooks/use-spinner.ts";
 import { useTerminalWidth } from "../../lib/tui/hooks/use-terminal-width.ts";

@@ -8,7 +8,7 @@
 
 import type { FSWatcher } from "fs";
 import type { Logger } from "pino";
-import type { Discussion } from "@workforge/glance-sdk";
+import type { Discussion } from "@mattstack/glance";
 import type { PortEntry } from "../../port-scanner.ts";
 
 /** Daemon-local cache entry shape (mirrors the inline definition in daemon.ts). */

@@ -3,7 +3,7 @@
  */
 
 import type { PortEntry } from "../../lib/port-scanner.ts";
-import type { MRDashboardProps } from "@workforge/glance-sdk";
+import type { MRDashboardProps } from "@mattstack/glance";
 
 export interface CacheEntry {
   ticket: {

@@ -9,7 +9,7 @@ import {
   type BatchRunner,
 } from "../freshness.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
-import type { InvalidationKey } from "@workforge/glance-sdk";
+import type { InvalidationKey } from "@mattstack/glance";
 
 function tmpStorePath(): string {
   return join(mkdtempSync(join(tmpdir(), "rt-freshness-mapping-")), "project-mrs.json");

@@ -11,7 +11,7 @@
  * per-branch forge failure resolves to null rather than failing the batch.
  */
 
-import type { PullRequest } from "@workforge/glance-sdk";
+import type { PullRequest } from "@mattstack/glance";
 import { loadRepoTracking, grants, type RepoTracking } from "../../repo-tracking.ts";
 import { getProjectMRs, freshnessOf, type ProjectMRs } from "../project-mrs-store.ts";
 import { syncProjectMRs, backfillAuthors } from "../project-sync.ts";

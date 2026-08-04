@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { syncProjectMRs, backfillAuthors, DEEP_RECONCILE_MS, DEEP_RETRY_BACKOFF_MS, DELTA_OVERLAP_MS } from "../project-sync.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
-import type { PullRequest } from "@workforge/glance-sdk";
+import type { PullRequest } from "@mattstack/glance";
 
 function pr(iid: number, over: Partial<PullRequest> = {}): PullRequest {
   return {

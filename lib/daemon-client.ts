@@ -252,7 +252,7 @@ export function mrActions(repoName: string, iid: number): DaemonMRActions {
 
 // ─── Discussions facade ──────────────────────────────────────────────────────
 
-import type { Discussion } from "@workforge/glance-sdk";
+import type { Discussion } from "@mattstack/glance";
 
 export interface DiscussionsSnapshot {
   discussions: Discussion[];

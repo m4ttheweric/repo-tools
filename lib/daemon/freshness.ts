@@ -29,7 +29,7 @@
 import { execSync } from "child_process";
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import { GitLabProvider, type EventCursor, type InvalidationKey, type PullRequest } from "@workforge/glance-sdk";
+import { GitLabProvider, type EventCursor, type InvalidationKey, type PullRequest } from "@mattstack/glance";
 import { RT_DIR } from "../daemon-config.ts";
 import { loadRepoTracking, grants, type RepoGrants } from "../repo-tracking.ts";
 import { loadSecrets } from "../linear.ts";
