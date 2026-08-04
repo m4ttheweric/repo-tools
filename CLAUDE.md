@@ -2,6 +2,12 @@
 
 Personal developer CLI built with Bun. Compiled to a standalone binary via `bun build --compile` and distributed through Homebrew.
 
+## Architecture docs live in Linear, not this repo
+
+rt is one piece of a plan spanning five repos, so the governing design docs are
+not in any single repo. Before proposing anything about rt's scope, mr-board,
+glance, gitq, or the acme skills, read `docs/architecture.md` for the links.
+
 ## Logging architecture
 
 Logging is structural, not per-feature. Outcomes are logged at central seams; feature code only logs domain events. When adding a feature, you almost never need to add logging — check this list before writing any.
