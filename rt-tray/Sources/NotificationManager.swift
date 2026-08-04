@@ -134,7 +134,86 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     // MARK: - Sound selection
 
-    /// Resolve the category → bundled .caf file and play it via NSSound.
+    /// Severity tiers behind the three bundled alert samples. A burst of
+    /// notifications plays the highest tier it contains, once.
+    private enum SoundTier: Int, Comparable {
+        case neutral = 0
+        case positive = 1
+        case warning = 2
+
+        var resource: String {
+            switch self {
+            case .neutral:  return "neutral"
+            case .positive: return "positive"
+            case .warning:  return "warning"
+            }
+        }
+
+        static func < (lhs: SoundTier, rhs: SoundTier) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+
+    private static func tier(for category: String) -> SoundTier {
+        switch category {
+        case "pipeline_passed", "mr_approved", "mr_merged", "mr_ready":
+            return .positive
+        case "pipeline_failed", "mr_closed", "merge_conflicts", "merge_error", "runaway_process":
+            return .warning
+        default:
+            return .neutral
+        }
+    }
+
+    /// How long a burst is collected before its single tone plays. Long enough
+    /// to catch one daemon tick's worth of transitions (they arrive stamped the
+    /// same millisecond), short enough to stay in sync with the banner.
+    private static let coalesceWindow: TimeInterval = 0.25
+
+    /// Burst state — confined to the main queue by `playSound`.
+    private static var pendingTier: SoundTier?
+    private static var coalescedCount = 0
+
+    /// NSSound must outlive the scope that starts it or playback can be cut short.
+    private static var playingSound: NSSound?
+
+    /// Request the alert sound for a notification category.
+    ///
+    /// A single daemon refresh routinely emits several transitions at once —
+    /// approved + ready + needs-rebase on one MR, or conflicts across three
+    /// branches, all stamped the same millisecond. Playing one sample per event
+    /// overlaps two copies of the same 1.2–5.5s file a millisecond apart, which
+    /// is heard as one doubled, phased tone rather than as separate alerts. So a
+    /// burst collapses into a single play at its highest severity: whichever
+    /// event opens the window, a `pipeline_failed` landing 1ms later still wins
+    /// over a `needs_rebase` that arrived first.
+    static func playSound(for category: String) {
+        let tier = tier(for: category)
+
+        // Burst state is main-queue-confined; the queue-drain path calls in off-main.
+        DispatchQueue.main.async {
+            if let pending = Self.pendingTier {
+                Self.pendingTier = max(pending, tier)
+                Self.coalescedCount += 1
+                return
+            }
+
+            Self.pendingTier = tier
+            Self.coalescedCount = 1
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.coalesceWindow) {
+                let winner = Self.pendingTier ?? tier
+                let count = Self.coalescedCount
+                Self.pendingTier = nil
+                Self.coalescedCount = 0
+
+                if count > 1 {
+                    TrayLog.info("coalesced notification sounds", ["count": count, "tier": winner.resource])
+                }
+                Self.play(winner)
+            }
+        }
+    }
+
+    /// Resolve the tier → bundled .caf file and play it via NSSound.
     ///
     /// We play the sound manually rather than handing it to UNNotificationSound:
     /// on macOS UNNotificationSound(named:) only resolves files inside
@@ -144,24 +223,19 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     ///
     /// Falls back to the built-in macOS "Funk" alert if the bundle didn't ship
     /// the expected .caf (older build, afconvert missing during bundling).
-    static func playSound(for category: String) {
-        let base: String
-        switch category {
-        case "pipeline_passed", "mr_approved", "mr_merged", "mr_ready":
-            base = "positive"
-        case "pipeline_failed", "mr_closed", "merge_conflicts", "merge_error", "runaway_process":
-            base = "warning"
-        default:
-            base = "neutral"
-        }
+    private static func play(_ tier: SoundTier) {
+        TrayLog.info("notification sound", ["tier": tier.resource])
 
-        if let url = Bundle.main.url(forResource: base, withExtension: "caf"),
+        if let url = Bundle.main.url(forResource: tier.resource, withExtension: "caf"),
            let sound = NSSound(contentsOf: url, byReference: false) {
+            playingSound = sound
             sound.play()
             return
         }
 
-        NSSound(named: "Funk")?.play()
+        let fallback = NSSound(named: "Funk")
+        playingSound = fallback
+        fallback?.play()
     }
 
     // MARK: - Fire Notification
@@ -174,8 +248,8 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         content.sound = nil  // we play the sound ourselves below
         content.categoryIdentifier = event.category
 
-        // Play the mapped sound immediately — banners are delivered within
-        // milliseconds so this lines up with the visual alert.
+        // Request the mapped sound. Playback is coalesced across a short window,
+        // so a tick that fires several events makes one tone, not a pile.
         Self.playSound(for: event.category)
 
         // Stash the URL in userInfo so we can open it on click
