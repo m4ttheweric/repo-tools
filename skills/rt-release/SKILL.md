@@ -1,5 +1,5 @@
 ---
-name: rt-release
+name: rt:release
 description: Use when the user says release, cut a release, tag and release, ship a release, or push a new version of rt.
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: rt-sdm-connect
+name: rt:sdm-connect
 description: Use when the user asks to log into an environment via StrongDM/sdm, connect to a database tunnel, or get database access for an environment. Examples include "log into staging via sdm", "connect me to the QA database", "get me a tunnel to production", "sdm connect". Drives rt's sdm JSON verbs; never calls the sdm CLI directly.
 ---
 

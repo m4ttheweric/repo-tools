@@ -1,5 +1,5 @@
 ---
-name: rt-create-plugin
+name: rt:create-plugin
 description: Use when asked to create, extend, debug, or validate an rt user plugin, to add a custom command to rt, or when working in a plugin folder under ~/.rt/plugins/.
 ---
 

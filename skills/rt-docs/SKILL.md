@@ -1,5 +1,5 @@
 ---
-name: rt-docs
+name: rt:docs
 description: Use when updating the rt.cool documentation for a release or after command/behavior changes ... regenerate the generated command reference, update the concept guides that changed, and leave everything staged for review.
 ---
 
