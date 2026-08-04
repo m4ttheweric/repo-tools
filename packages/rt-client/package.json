@@ -1,13 +1,41 @@
 {
   "name": "@mattstack/rt-client",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.1",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
     "./test/fake-daemon.ts": "./test/fake-daemon.ts"
   },
   "peerDependencies": {
     "@mattstack/glance": ">=0.13.0"
+  },
+  "description": "Typed client for the rt daemon: repos, worktrees, ports, tokens, and the event relay",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/m4ttstack/rt.git",
+    "directory": "packages/rt-client"
+  },
+  "homepage": "https://rt.cool",
+  "bugs": {
+    "url": "https://github.com/m4ttstack/rt/issues"
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target node --format esm --packages external && tsc -p tsconfig.json",
+    "check-types": "tsc --noEmit -p tsconfig.json"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

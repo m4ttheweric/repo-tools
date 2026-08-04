@@ -1,0 +1,28 @@
+# @mattstack/rt-client
+
+Typed client for the [rt](https://rt.cool) daemon.
+
+rt keeps the per-repo state a dev environment needs: worktrees, assigned ports,
+tokens, dev servers, and a live event relay. This package is how other programs
+read and drive that state without shelling out to the CLI and parsing text.
+
+```bash
+bun add @mattstack/rt-client
+```
+
+```ts
+import { rtCommand, readProjectMRs } from '@mattstack/rt-client';
+
+const repos = await rtCommand(['repos', 'list']);
+const mrs = await readProjectMRs('group/repo');
+```
+
+Requires a running rt daemon. Install rt with `brew install m4ttheweric/tap/rt`,
+then `rt verify`.
+
+`@mattstack/glance` is a peer dependency: rt-client returns glance's forge types
+so merge request shapes stay identical across rt, gitq, and mr-board.
+
+## License
+
+MIT
