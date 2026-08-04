@@ -4,7 +4,7 @@
  * its functions against this map so a new command only needs an entry here
  * plus one function, never a change to the transport itself.
  */
-import type { PullRequest, MRDetail } from "@workforge/glance-sdk";
+import type { PullRequest, MRDetail } from "@mattstack/glance";
 
 export type Discussion = MRDetail["discussions"][number];
 

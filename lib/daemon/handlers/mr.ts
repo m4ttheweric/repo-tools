@@ -27,7 +27,7 @@
 
 import { applyMRWriteback, getCurrentUserId, getRepoContext } from "../freshness.ts";
 import { getDaemonLogger } from "../../daemon-logger.ts";
-import type { PullRequest } from "@workforge/glance-sdk";
+import type { PullRequest } from "@mattstack/glance";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 
 const log = (await getDaemonLogger()).childLogger("mr");

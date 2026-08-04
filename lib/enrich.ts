@@ -2,7 +2,7 @@
  * Centralized branch enrichment for rt.
  *
  * Single source of truth for enriching branches with:
- *  - GitLab MR data (via @workforge/glance-sdk)
+ *  - GitLab MR data (via @mattstack/glance)
  *  - Linear ticket info (via Linear GraphQL API)
  *  - Disk cache with stale-while-revalidate
  *
@@ -17,7 +17,7 @@ import {
   type PullRequest,
   getMRDashboardProps,
   type MRDashboardProps,
-} from "@workforge/glance-sdk";
+} from "@mattstack/glance";
 import { green, blue, red, reset, dim, yellow, cyan } from "./tui.ts";
 import {
   loadSecrets,

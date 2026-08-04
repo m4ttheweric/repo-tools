@@ -6,8 +6,8 @@
 
 import { Box, Text } from "ink";
 import { Spinner, StatusMessage } from "@inkjs/ui";
-import type { Discussion, MRDashboardProps, Reviewer, ReviewerSummary } from "@workforge/glance-sdk";
-import { getReviewDisplayState, getReviewerSummaries } from "@workforge/glance-sdk";
+import type { Discussion, MRDashboardProps, Reviewer, ReviewerSummary } from "@mattstack/glance";
+import { getReviewDisplayState, getReviewerSummaries } from "@mattstack/glance";
 import { timeAgo } from "../../lib/tui/utils/label.ts";
 import type { ActionState } from "./types.ts";
 import { Markdown } from "./markdown.tsx";

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createProjectMRs, freshnessOf } from "../project-mrs-store.ts";
-import type { PullRequest } from "@workforge/glance-sdk";
+import type { PullRequest } from "@mattstack/glance";
 
 function tmpStorePath(): string {
   return join(mkdtempSync(join(tmpdir(), "rt-pmrs-")), "project-mrs.json");

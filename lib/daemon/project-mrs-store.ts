@@ -14,7 +14,7 @@
 
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import type { PullRequest } from "@workforge/glance-sdk";
+import type { PullRequest } from "@mattstack/glance";
 import { RT_DIR } from "../daemon-config.ts";
 import { getDaemonLogger } from "../daemon-logger.ts";
 

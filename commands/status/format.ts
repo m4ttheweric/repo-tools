@@ -4,7 +4,7 @@
  * rpad, lpad, timeAgo) live in lib/tui/utils/label.ts.
  */
 
-import type { MRDashboardProps } from "@workforge/glance-sdk";
+import type { MRDashboardProps } from "@mattstack/glance";
 
 // ─── Status config ──────────────────────────────────────────────────────────
 

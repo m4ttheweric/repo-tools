@@ -8,7 +8,7 @@
 
 import type { Dispatch, SetStateAction } from "react";
 import { useInput } from "ink";
-import type { MRDashboardProps, Pipeline, ReviewerSummary } from "@workforge/glance-sdk";
+import type { MRDashboardProps, Pipeline, ReviewerSummary } from "@mattstack/glance";
 import {
   fetchDiscussions,
   setDiscussionResolved,

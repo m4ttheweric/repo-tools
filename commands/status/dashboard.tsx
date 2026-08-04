@@ -8,7 +8,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Box, Text } from "ink";
 import { Badge, Spinner, StatusMessage } from "@inkjs/ui";
 import { ScrollableList } from "../../lib/ScrollableList.tsx";
-import type { Discussion, MRDashboardProps, Pipeline } from "@workforge/glance-sdk";
+import type { Discussion, MRDashboardProps, Pipeline } from "@mattstack/glance";
 import {
   mrActions,
   subscribeToDaemon,
