@@ -349,12 +349,6 @@ export function buildImagePreviewSnippet(): string {
   // them, matching the style already used in buildPreviewCommand.
   return (
     `d="\${FZF_PREVIEW_COLUMNS:-80}x\${FZF_PREVIEW_LINES:-24}"; ` +
-    // Hold the format VALUE, never the flag-plus-value pair. An earlier version
-    // stored "-f kitty" and passed it unquoted, relying on word splitting to
-    // become two arguments. sh splits it; zsh does not, and fzf runs preview
-    // commands with $SHELL -c, so on a zsh login shell chafa received one
-    // mangled argument and failed with "Output format given as '-s'". The
-    // branches below pass -f and its value as separate, quoted words instead.
     `fmt=""; ` +
     `case "\${TERM_PROGRAM:-}" in ` +
     `ghostty|kitty|WezTerm) fmt=kitty;; ` +
@@ -362,26 +356,26 @@ export function buildImagePreviewSnippet(): string {
     `esac; ` +
     `[ -n "\${KITTY_WINDOW_ID:-}" ] && fmt=kitty; ` +
     `[ "\${TERM:-}" = "xterm-kitty" ] && fmt=kitty; ` +
+    // Shared last resort, defined once and used from every failed branch.
+    `_rtfall() { if command -v chafa >/dev/null 2>&1; then ` +
+    `chafa --probe off -f symbols -s "$d" "$p"; echo; else file "$p"; fi; }; ` +
     `if [ "$fmt" = kitty ] && command -v kitten >/dev/null 2>&1; then ` +
-    // Order matters and is not the same as fzf's own demo script. Inside a
-    // preview pane the only things that survive are images fzf can place
-    // itself and plain text. kitten's unicode placeholders are placeable, and
-    // iTerm's inline protocol is what imgcat is for, so those come first.
-    // chafa is last and is pinned to symbols: it has no placeholder support at
-    // all, so any protocol it emits draws at the cursor and fzf's next redraw
-    // wipes it, which is exactly the empty pane this replaced.
+    // kitten writes to a file first so its success can actually be judged.
+    // Piping straight into sed hides both the exit status and the failure
+    // text: kitten asks the terminal for its pixel dimensions, and inside a
+    // preview pane that query can go unanswered ("Terminal does not support
+    // reporting screen sizes"), which then renders as an error where the
+    // image should be. Empty or failed output falls through to character art.
+    `t="\${TMPDIR:-/tmp}/rt-nav-icat.$$"; ` +
+    `if kitten icat --clear --transfer-mode=memory --unicode-placeholder ` +
+    `--stdin=no --place="$d@0x0" "$p" >"$t" 2>/dev/null && [ -s "$t" ]; then ` +
     // kitten's last line is a bare reset with no newline, which makes fzf draw
     // a spurious scroll indicator. Drop it and re-attach the reset above.
-    // The escape is a literal ESC byte rather than bash-only $'\e', because
-    // fzf runs preview commands with $SHELL -c and $SHELL may be sh.
-    `kitten icat --clear --transfer-mode=memory --unicode-placeholder ` +
-    `--stdin=no --place="$d@0x0" "$p" | sed '$d' | sed '$s/$/\x1b[m/'; ` +
+    // A literal ESC byte, not bash-only $'\e': fzf runs previews with $SHELL -c.
+    `sed '$d' "$t" | sed '$s/$/\x1b[m/'; else _rtfall; fi; rm -f "$t"; ` +
     `elif [ "$fmt" = iterm ] && command -v imgcat >/dev/null 2>&1; then ` +
     `imgcat -W "\${d%%x*}" -H "\${d##*x}" "$p"; ` +
-    `elif command -v chafa >/dev/null 2>&1; then ` +
-    // Trailing newline lets fzf render successive images cleanly.
-    `chafa --probe off -f symbols -s "$d" "$p"; echo; ` +
-    `else file "$p"; fi`
+    `else _rtfall; fi`
   );
 }
 

@@ -233,7 +233,12 @@ for (const SHELL of ["sh", "zsh"] as const) {
         const file = join(dir, `${n}.args`);
         args[n] = file;
         const shim = join(dir, n);
-        writeFileSync(shim, `#!/bin/sh\nprintf '%s\\n' "$*" > ${file}\n`);
+        // Records argv AND emits a byte on stdout: the snippet only accepts
+        // kitten's output when the file it wrote is non-empty.
+        writeFileSync(
+          shim,
+          `#!/bin/sh\nprintf '%s\\n' "$*" > ${file}\necho RENDERED-${n}\n`,
+        );
         chmodSync(shim, 0o755);
       }
       return { dir, args };
@@ -284,6 +289,39 @@ for (const SHELL of ["sh", "zsh"] as const) {
       const { dir, args } = fakeBin(["chafa"]);
       runSnippet(dir, { TERM_PROGRAM: "ghostty" });
       expect(readFileSync(args.chafa!, "utf8")).toContain("-f symbols");
+    });
+
+    test("kitten that fails falls back to character art, not an error", () => {
+      // kitten asks the terminal for pixel dimensions, and inside a preview
+      // pane that query can go unanswered. Before this fallback existed the
+      // pane showed "Terminal does not support reporting screen sizes".
+      const dir = mkdtempSync(join(tmpdir(), "nav-img-bin-"));
+      const chafaArgs = join(dir, "chafa.args");
+      writeFileSync(join(dir, "kitten"), "#!/bin/sh\necho 'Error: no screen sizes' >&2\nexit 1\n");
+      chmodSync(join(dir, "kitten"), 0o755);
+      writeFileSync(
+        join(dir, "chafa"),
+        `#!/bin/sh\nprintf '%s\\n' "$*" > ${chafaArgs}\necho RENDERED-chafa\n`,
+      );
+      chmodSync(join(dir, "chafa"), 0o755);
+
+      const imgDir = mkdtempSync(join(tmpdir(), "nav-img-base-"));
+      writeFileSync(join(imgDir, "pic.png"), Buffer.from(PNG_B64, "base64"));
+      const cmd = buildPreviewCommand(imgDir).replace("{1}", shellQuote("f:pic.png"));
+      const r = spawnSync(SHELL, ["-c", cmd], {
+        encoding: "utf8",
+        env: {
+          PATH: `${dir}:/usr/bin:/bin`,
+          TERM: "xterm-256color",
+          TERM_PROGRAM: "ghostty",
+        },
+      });
+
+      expect(readFileSync(chafaArgs, "utf8")).toContain("-f symbols");
+      expect(r.stdout).toContain("RENDERED-chafa");
+      expect(r.stdout).not.toContain("no screen sizes");
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(imgDir, { recursive: true, force: true });
     });
 
     test("iTerm2 uses imgcat and leaves chafa alone", () => {
