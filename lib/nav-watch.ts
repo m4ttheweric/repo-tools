@@ -39,6 +39,8 @@ const defaultPost: NavWatchDeps["post"] = async (socketPath, body) => {
   await fetch("http://localhost/", { unix: socketPath, method: "POST", body });
 };
 
+const POLL_INTERVAL_MS = 250;
+
 // Polls the directory's mtime instead of subscribing to fs.watch. On Darwin
 // 25 (macOS 26), directory-level fs.watch is backed by FSEvents, and FSEvents
 // was observed to deliver zero add/remove notifications on this OS build
@@ -51,8 +53,6 @@ const defaultPost: NavWatchDeps["post"] = async (socketPath, body) => {
 // reliable substitute that costs one stat() per interval. Do not "optimize"
 // this back to fs.watch(dir, ...) without first confirming FSEvents actually
 // delivers directory events on the target OS.
-const POLL_INTERVAL_MS = 250;
-
 const defaultWatch: NavWatchDeps["watch"] = (dir, listener) => {
   const onChange = (curr: Stats, prev: Stats) => {
     if (curr.mtimeMs !== prev.mtimeMs) listener();
@@ -109,6 +109,10 @@ export function startNavWatch(opts: NavWatchOpts): { stop(): void } {
       });
   };
 
+  // Note: unlike fs.watch, fs.watchFile does not throw for a missing or
+  // unwatchable directory, so this catch is effectively unreachable for the
+  // real defaultWatch. It is exercised only by tests that inject a fake
+  // watch() that throws.
   try {
     watcher = watch(opts.dir, () => {
       if (stopped) return;
