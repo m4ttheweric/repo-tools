@@ -283,20 +283,39 @@ export async function runNavPicker(
       args.push(`--bind=load:pos(${cursorPos})`);
     }
 
-    const result = spawnSync("fzf", args, {
-      input,
-      stdio: ["pipe", "pipe", "inherit"],
-      encoding: "utf8",
+    // Async spawn, not spawnSync: spawnSync blocks the event loop for the
+    // lifetime of the picker, which would stop fs.watch callbacks from ever
+    // firing for the live-refresh watcher wired up in runNavPicker's caller.
+    // fzf reads the keyboard from /dev/tty directly, so a piped stdin is only
+    // ever the item list.
+    const proc = Bun.spawn(["fzf", ...args], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "inherit",
     });
 
-    if (result.status !== 0) {
-      if (opts.captureQueryOnNoMatch && result.status === 1) {
-        return parseNavOutput(result.stdout ?? "");
+    try {
+      proc.stdin.write(input);
+      await proc.stdin.end();
+    } catch {
+      // fzf can exit before the list is fully written (esc on a huge listing).
+      // The exit code below is what decides the outcome, so an EPIPE here is
+      // an expected condition, not an error.
+    }
+
+    const [stdout, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ]);
+
+    if (exitCode !== 0) {
+      if (opts.captureQueryOnNoMatch && exitCode === 1) {
+        return parseNavOutput(stdout);
       }
       return null;
     }
 
-    const parsed = parseNavOutput(result.stdout ?? "");
+    const parsed = parseNavOutput(stdout);
 
     // If a separator was selected, re-show with cursor on the next real item
     if (parsed.value?.startsWith(NAV_SEPARATOR_PREFIX)) {
