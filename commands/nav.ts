@@ -15,6 +15,11 @@
  * so you can filter across nested paths. ctrl-p toggles a preview pane
  * (hidden by default) showing the highlighted folder's contents or file's text.
  *
+ * In browse mode the listing refreshes itself: files that appear or disappear
+ * while the picker is open show up without leaving and re-entering. Deep-jump
+ * mode stays a static snapshot. Image files preview as images when chafa (or
+ * kitten, or imgcat) is installed.
+ *
  * Optional first arg sets the starting directory (defaults to cwd).
  */
 
