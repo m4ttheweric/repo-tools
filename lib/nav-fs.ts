@@ -176,6 +176,57 @@ export function renderHelpHeader(command: string, cols: number): string {
   return (r.stdout ?? "").trimEnd();
 }
 
+/** Extensions routed to the image branch, as POSIX `case` classes (no subprocess). */
+const IMAGE_CASE_PATTERNS = [
+  "png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif",
+  "heic", "avif", "ico", "svg", "jxl", "qoi",
+]
+  .map((ext) =>
+    "*." +
+    [...ext].map((c) => `[${c.toLowerCase()}${c.toUpperCase()}]`).join(""),
+  )
+  .join("|");
+
+/**
+ * Shell fragment that renders "$p" as an image, sized to the preview pane.
+ *
+ * Renderer priority mirrors fzf's own bin/fzf-preview.sh: kitten icat, then
+ * chafa, then imgcat, then `file` so an uninstalled machine still prints
+ * something readable instead of binary noise.
+ *
+ * chafa runs with `--probe off` and an explicit `-f` on purpose. Left to itself
+ * it probes the controlling tty for protocol support, and inside a preview pane
+ * that tty belongs to fzf in raw mode, so the query races fzf's input reader.
+ * Probing costs nothing measurable, so there is no reason to allow it.
+ */
+export function buildImagePreviewSnippet(): string {
+  // Shell ${...} expansions are escaped as \${...} so TS does not interpolate
+  // them, matching the style already used in buildPreviewCommand.
+  return (
+    `d="\${FZF_PREVIEW_COLUMNS:-80}x\${FZF_PREVIEW_LINES:-24}"; ` +
+    `f=""; ` +
+    `case "\${TERM_PROGRAM:-}" in ` +
+    `ghostty|kitty|WezTerm) f="-f kitty";; ` +
+    `iTerm.app) f="-f iterm";; ` +
+    `esac; ` +
+    `[ -n "\${KITTY_WINDOW_ID:-}" ] && f="-f kitty"; ` +
+    `[ "\${TERM:-}" = "xterm-kitty" ] && f="-f kitty"; ` +
+    `if [ -n "$f" ] && command -v kitten >/dev/null 2>&1; then ` +
+    // kitten's last line is a bare reset with no newline, which makes fzf draw
+    // a spurious scroll indicator. Drop it and re-attach the reset above.
+    // The escape is a literal ESC byte rather than bash-only $'\e', because
+    // fzf runs preview commands with $SHELL -c and $SHELL may be sh.
+    `kitten icat --clear --transfer-mode=memory --unicode-placeholder ` +
+    `--stdin=no --place="$d@0x0" "$p" | sed '$d' | sed '$s/$/\x1b[m/'; ` +
+    `elif command -v chafa >/dev/null 2>&1; then ` +
+    // Trailing newline lets fzf render successive images cleanly.
+    `chafa --probe off $f -s "$d" "$p"; echo; ` +
+    `elif command -v imgcat >/dev/null 2>&1; then ` +
+    `imgcat -W "\${d%%x*}" -H "\${d##*x}" "$p"; ` +
+    `else file "$p"; fi`
+  );
+}
+
 /**
  * Build the fzf --preview shell snippet for a nav picker rooted at baseDir.
  *
@@ -191,6 +242,8 @@ export function buildPreviewCommand(baseDir: string): string {
     // One entry per line: long-format lines overflow the 50% pane and fzf
     // truncates (not wraps), which chops off the filenames themselves.
     `d:*) eza -a1 --color=always "$p" 2>/dev/null || ls -1AF "$p";; ` +
+    // Ordered after d:* so a directory named foo.png still lists as a directory.
+    `${IMAGE_CASE_PATTERNS}) ${buildImagePreviewSnippet()};; ` +
     `*) bat --color=always --style=numbers "$p" 2>/dev/null || head -c 65536 "$p";; ` +
     `esac`
   );

@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
 import {
-  listEntries, deepList, shellQuote, buildPreviewCommand,
+  listEntries, deepList, shellQuote, buildPreviewCommand, buildImagePreviewSnippet,
   buildHelpHeaderCommand, renderHelpHeader,
 } from "../nav-fs.ts";
 
@@ -188,6 +188,69 @@ describe("buildPreviewCommand", () => {
     const cmd = buildPreviewCommand(dir).replace("{1}", shellQuote("d:sub"));
     const r = spawnSync("sh", ["-c", cmd], { encoding: "utf8" });
     expect(r.stdout).toContain("marker-file.txt");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("routes image extensions to the image branch, case-insensitively", () => {
+    const cmd = buildPreviewCommand("/tmp/base");
+    // POSIX case classes, not a `file --mime` subprocess
+    expect(cmd).toContain("*.[pP][nN][gG]");
+    expect(cmd).toContain("*.[sS][vV][gG]");
+    expect(cmd).not.toContain("--mime");
+  });
+
+  test("directory and text branches are unchanged", () => {
+    const cmd = buildPreviewCommand("/tmp/base");
+    expect(cmd).toContain("eza -a1 --color=always");
+    expect(cmd).toContain("ls -1AF");
+    expect(cmd).toContain("bat --color=always --style=numbers");
+    expect(cmd).toContain("head -c 65536");
+  });
+});
+
+describe("buildImagePreviewSnippet", () => {
+  test("never lets chafa probe the tty and always pins a format", () => {
+    const snip = buildImagePreviewSnippet();
+    expect(snip).toContain("--probe off");
+    expect(snip).toContain("-f kitty");
+    expect(snip).toContain("-f iterm");
+  });
+
+  test("sizes from the fzf preview env vars", () => {
+    const snip = buildImagePreviewSnippet();
+    expect(snip).toContain("FZF_PREVIEW_COLUMNS");
+    expect(snip).toContain("FZF_PREVIEW_LINES");
+  });
+
+  test("falls back to `file` when no renderer is installed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "nav-img-"));
+    // 8x8 PNG
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAKklEQVR42mP8z8BQz0AEYBxVSF+" +
+        "FjP+RwH8GBgYmYhSyMIykRfooZBxNPQCk2Qb9Cm7DIQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    writeFileSync(join(dir, "pic.png"), png);
+    const cmd = buildPreviewCommand(dir).replace("{1}", shellQuote("f:pic.png"));
+    // Empty PATH additions: only /usr/bin and /bin, so no chafa/kitten/imgcat
+    const r = spawnSync("sh", ["-c", cmd], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: "/usr/bin:/bin" },
+    });
+    expect(r.stdout).toContain("PNG image data");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a directory named like an image still previews as a directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "nav-img-dir-"));
+    mkdirSync(join(dir, "shots.png"));
+    writeFileSync(join(dir, "shots.png", "inside.txt"), "x");
+    const cmd = buildPreviewCommand(dir).replace("{1}", shellQuote("d:shots.png"));
+    const r = spawnSync("sh", ["-c", cmd], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: "/usr/bin:/bin" },
+    });
+    expect(r.stdout).toContain("inside.txt");
     rmSync(dir, { recursive: true, force: true });
   });
 });

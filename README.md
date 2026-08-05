@@ -367,6 +367,7 @@ From the menu you can restart the daemon, stop it, toggle launch-at-login, and c
 | `fzf` | Auto-installed by Homebrew |
 | `tmux` | Auto-installed by Homebrew |
 | `zellij` | Optional, only needed for `rt x --zellij` mode (`brew install zellij`) |
+| `chafa` | Optional, enables image previews in `rt nav` (`brew install chafa`) |
 
 ---
 
