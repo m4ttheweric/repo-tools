@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
@@ -254,55 +254,74 @@ describe("buildImagePreviewSnippet", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  // These two run the real chafa binary (guarded by Bun.which) rather than just
-  // asserting on the snippet text, so a deleted or broken format-selection
-  // branch would actually fail them instead of passing on substring matches.
-  test("recognized terminal: chafa is pinned to the kitty graphics protocol", () => {
-    if (!Bun.which("chafa")) return;
-    const dir = mkdtempSync(join(tmpdir(), "nav-img-fmt-"));
-    const png = Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAKklEQVR42mP8z8BQz0AEYBxVSF+" +
-        "FjP+RwH8GBgYmYhSyMIykRfooZBxNPQCk2Qb9Cm7DIQAAAABJRU5ErkJggg==",
-      "base64",
-    );
-    writeFileSync(join(dir, "pic.png"), png);
-    const cmd = buildPreviewCommand(dir).replace("{1}", shellQuote("f:pic.png"));
-    // Env built from scratch (no ...process.env): TERM_PROGRAM=ghostty is the
-    // only recognized-terminal signal present, so this proves our own env-var
-    // match pins the format rather than chafa's independent detection.
-    const r = spawnSync("sh", ["-c", cmd], {
+  // A fake chafa on PATH that records its own argv instead of rendering
+  // anything. This isolates OUR format-selection logic (the `case
+  // "${TERM_PROGRAM:-}"` arm in buildImagePreviewSnippet) from chafa's own
+  // independent terminal detection: a real chafa binary recognizes several
+  // of the same TERM_PROGRAM values on its own, so asserting on real chafa
+  // output cannot tell "our snippet passed -f kitty" apart from "chafa
+  // guessed kitty despite getting no -f at all." Recording argv can.
+  function fakeChafaDir(): { dir: string; argsFile: string } {
+    const dir = mkdtempSync(join(tmpdir(), "nav-fake-bin-"));
+    const argsFile = join(dir, "args.txt");
+    const shim = join(dir, "chafa");
+    writeFileSync(shim, `#!/bin/sh\nprintf '%s\\n' "$*" > '${argsFile}'\n`);
+    chmodSync(shim, 0o755);
+    return { dir, argsFile };
+  }
+
+  test("recognized terminal (ghostty): our snippet passes --probe off and -f kitty", () => {
+    const { dir, argsFile } = fakeChafaDir();
+    const cmd = buildPreviewCommand("/tmp/nav-img-base").replace("{1}", shellQuote("f:pic.png"));
+    // kitten is not on this PATH, so the chafa branch is the one that runs.
+    spawnSync("sh", ["-c", cmd], {
       encoding: "utf8",
       env: {
-        PATH: "/opt/homebrew/bin:/usr/bin:/bin",
+        PATH: `${dir}:/usr/bin:/bin`,
         TERM: "xterm-256color",
         TERM_PROGRAM: "ghostty",
       },
     });
-    expect(r.stdout).toContain("\x1b_G");
+    const args = readFileSync(argsFile, "utf8");
+    expect(args).toContain("--probe off");
+    expect(args).toContain("-f kitty");
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("unrecognized terminal: format is left to chafa's own detection, which degrades to symbol art", () => {
-    if (!Bun.which("chafa")) return;
-    const dir = mkdtempSync(join(tmpdir(), "nav-img-fmt-"));
-    const png = Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAKklEQVR42mP8z8BQz0AEYBxVSF+" +
-        "FjP+RwH8GBgYmYhSyMIykRfooZBxNPQCk2Qb9Cm7DIQAAAABJRU5ErkJggg==",
-      "base64",
-    );
-    writeFileSync(join(dir, "pic.png"), png);
-    const cmd = buildPreviewCommand(dir).replace("{1}", shellQuote("f:pic.png"));
-    // Clean env: only PATH and TERM. No TERM_PROGRAM, KITTY_WINDOW_ID,
-    // GHOSTTY_*, TERMINFO, or __CFBundleIdentifier, so neither our hardcoded
-    // list nor chafa's own env-based detection has anything to recognize.
-    const r = spawnSync("sh", ["-c", cmd], {
+  test("recognized terminal (iTerm.app): our snippet passes -f iterm", () => {
+    const { dir, argsFile } = fakeChafaDir();
+    const cmd = buildPreviewCommand("/tmp/nav-img-base").replace("{1}", shellQuote("f:pic.png"));
+    spawnSync("sh", ["-c", cmd], {
       encoding: "utf8",
       env: {
-        PATH: "/opt/homebrew/bin:/usr/bin:/bin",
+        PATH: `${dir}:/usr/bin:/bin`,
+        TERM: "xterm-256color",
+        TERM_PROGRAM: "iTerm.app",
+      },
+    });
+    const args = readFileSync(argsFile, "utf8");
+    expect(args).toContain("-f iterm");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("unrecognized terminal: our snippet passes --probe off but leaves -f unset", () => {
+    const { dir, argsFile } = fakeChafaDir();
+    const cmd = buildPreviewCommand("/tmp/nav-img-base").replace("{1}", shellQuote("f:pic.png"));
+    // Clean env: only PATH and TERM. No TERM_PROGRAM, KITTY_WINDOW_ID,
+    // GHOSTTY_*, TERMINFO, or __CFBundleIdentifier, so our case arm has
+    // nothing to match. This is the test that genuinely discriminates: it
+    // fails immediately if the format-selection logic is deleted, since a
+    // hardcoded "-f something" would then always show up here.
+    spawnSync("sh", ["-c", cmd], {
+      encoding: "utf8",
+      env: {
+        PATH: `${dir}:/usr/bin:/bin`,
         TERM: "xterm-256color",
       },
     });
-    expect(r.stdout).not.toContain("\x1b_G");
+    const args = readFileSync(argsFile, "utf8");
+    expect(args).toContain("--probe off");
+    expect(args).not.toContain("-f");
     rmSync(dir, { recursive: true, force: true });
   });
 });
