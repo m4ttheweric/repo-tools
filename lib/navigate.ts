@@ -10,7 +10,7 @@
  */
 
 import { spawnSync } from "child_process";
-import { unlinkSync } from "fs";
+import { mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { ensureFzf } from "./fzf.ts";
 import { startNavWatch } from "./nav-watch.ts";
@@ -274,6 +274,9 @@ export function findResumePosition(
  */
 let navSocketSeq = 0;
 function navWatchPaths(): { socketPath: string; listFile: string } {
+  // fzf cannot bind --listen (and the whole picker fails, not just live
+  // refresh) if ~/.rt does not exist yet, e.g. on a machine's first run.
+  mkdirSync(rtDir(), { recursive: true });
   const stem = `nav-${process.pid}-${navSocketSeq++}`;
   return {
     socketPath: join(rtDir(), `${stem}.sock`),
@@ -299,6 +302,13 @@ export async function runNavPicker(
     const input = formatNavInput(opts.options);
     const paths = opts.watch ? navWatchPaths() : null;
     const args = buildNavArgs(opts, paths?.socketPath);
+
+    // Tracks the options behind the most recent live-refresh render, so a
+    // separator selected after a reload resolves against what is actually on
+    // screen rather than the (by then stale) opts.options captured above.
+    // Declared inside the loop so it resets on every re-show, not just once
+    // per runNavPicker call.
+    let liveOptions: NavOption[] | null = null;
 
     // Resolve cursor position: resumeValue wins over initialPos/currentPos.
     // When nothing pins the cursor and the list is unfiltered, default to the
@@ -340,14 +350,19 @@ export async function runNavPicker(
       // an expected condition, not an error.
     }
 
+    const w = opts.watch;
     const watcher =
-      opts.watch && paths
+      w && paths
         ? startNavWatch({
-            dir: opts.watch.dir,
+            dir: w.dir,
             socketPath: paths.socketPath,
             listFile: paths.listFile,
             initial: input,
-            render: () => formatNavInput(opts.watch!.render()),
+            render: () => {
+              const next = w.render();
+              liveOptions = next;
+              return formatNavInput(next);
+            },
             onError: (err) =>
               console.error(`  nav: live refresh disabled (${err})`),
           })
@@ -381,13 +396,20 @@ export async function runNavPicker(
 
     // If a separator was selected, re-show with cursor on the next real item
     if (parsed.value?.startsWith(NAV_SEPARATOR_PREFIX)) {
-      const hitIdx = opts.options.findIndex((o) => o.value === parsed.value);
-      const nextReal = opts.options.findIndex(
+      // Resolve against the live-refreshed options when a reload happened
+      // during this iteration; opts.options is what the picker STARTED with,
+      // which by selection time may no longer match what is on screen.
+      const options = liveOptions ?? opts.options;
+      const hitIdx = options.findIndex((o) => o.value === parsed.value);
+      const nextReal = options.findIndex(
         (o, i) => i > hitIdx && !o.separator,
       );
       currentPos = nextReal >= 0 ? nextReal + 1 : null;
-      // Clear resumeValue so it doesn't override our computed position
-      opts = { ...opts, resumeValue: undefined };
+      // Clear resumeValue so it doesn't override our computed position, and
+      // carry the live-refreshed options forward so the next iteration
+      // renders what was last on screen instead of reverting to the stale
+      // original listing.
+      opts = { ...opts, options, resumeValue: undefined };
       continue;
     }
 
