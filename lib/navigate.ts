@@ -170,6 +170,9 @@ export function buildNavArgs(opts: NavPickerOpts, socketPath?: string): string[]
     // space below on a tall terminal. "100%" uses the full height either way.
     "--height=100%",
     "--layout=reverse",
+    // Up at the top wraps to the bottom and down at the bottom wraps to the
+    // top, so a long list has no dead ends at either edge.
+    "--cycle",
     "--border=rounded",
     `--border-label= ${opts.message} `,
     "--prompt=filter: ",
