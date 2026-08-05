@@ -11,7 +11,7 @@
  * race it.
  */
 
-import { watchFile, unwatchFile, writeFileSync, type Stats } from "fs";
+import { watchFile, unwatchFile, writeFileSync, renameSync, type Stats } from "fs";
 import { shellQuote } from "./nav-fs.ts";
 
 export interface NavWatchDeps {
@@ -80,14 +80,25 @@ export function startNavWatch(opts: NavWatchOpts): { stop(): void } {
     try {
       next = opts.render();
     } catch (err) {
-      // Directory deleted underneath us, or unreadable. Leave the last good
-      // listing on screen rather than blanking the picker.
+      // Guards against render() throwing outright, but that is not what
+      // happens when the watched directory disappears: listEntries
+      // (nav-fs.ts) swallows its own readdir errors and returns an empty
+      // listing instead of throwing, so that case flows through the normal
+      // path below and DOES blank the picker with an empty reload. This
+      // catch only protects against some other, currently hypothetical,
+      // throw from render().
       opts.onError?.(err);
       return;
     }
     if (next === lastSent) return;
     try {
-      writeFileSync(opts.listFile, next);
+      // writeFileSync alone truncates opts.listFile in place, which can hand
+      // fzf's `cat` a partial read if it lands mid-write. Write to a sibling
+      // temp path and rename over the target instead: rename within the same
+      // directory is atomic, so fzf only ever sees the old or the new file.
+      const tmp = `${opts.listFile}.tmp`;
+      writeFileSync(tmp, next);
+      renameSync(tmp, opts.listFile);
     } catch (err) {
       opts.onError?.(err);
       return;
