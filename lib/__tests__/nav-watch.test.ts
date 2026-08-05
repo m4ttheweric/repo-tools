@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, rmSync, readFileSync } from "fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { startNavWatch } from "../nav-watch.ts";
@@ -161,6 +161,35 @@ describe("startNavWatch", () => {
     w.trigger();
     await sleep(40);
     expect(callCount).toBe(2);
+    handle.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("the real defaultWatch detects a file created in a real directory", async () => {
+    // Exercises the actual polling implementation (no deps.watch fake)
+    // against a real temp directory, so a regression in the underlying
+    // detection mechanism (e.g. a filesystem-events API that silently stops
+    // delivering directory notifications) is caught here instead of only
+    // surfacing downstream in the e2e suite.
+    const dir = mkdtempSync(join(tmpdir(), "nav-watch-real-"));
+    const p = fakePost();
+    const handle = startNavWatch({
+      dir,
+      socketPath: join(dir, "s.sock"),
+      listFile: join(dir, "list.txt"),
+      initial: "INITIAL",
+      render: () => "CHANGED",
+      deps: { post: p.post },
+    });
+
+    writeFileSync(join(dir, "appeared.txt"), "hi");
+
+    const start = Date.now();
+    while (p.bodies.length === 0 && Date.now() - start < 3000) {
+      await sleep(50);
+    }
+
+    expect(p.bodies.length).toBeGreaterThan(0);
     handle.stop();
     rmSync(dir, { recursive: true, force: true });
   });

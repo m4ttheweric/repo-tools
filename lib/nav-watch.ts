@@ -11,7 +11,7 @@
  * race it.
  */
 
-import { watch as fsWatch, writeFileSync } from "fs";
+import { watchFile, unwatchFile, writeFileSync, type Stats } from "fs";
 import { shellQuote } from "./nav-fs.ts";
 
 export interface NavWatchDeps {
@@ -39,8 +39,30 @@ const defaultPost: NavWatchDeps["post"] = async (socketPath, body) => {
   await fetch("http://localhost/", { unix: socketPath, method: "POST", body });
 };
 
-const defaultWatch: NavWatchDeps["watch"] = (dir, listener) =>
-  fsWatch(dir, { persistent: false }, () => listener());
+// Polls the directory's mtime instead of subscribing to fs.watch. On Darwin
+// 25 (macOS 26), directory-level fs.watch is backed by FSEvents, and FSEvents
+// was observed to deliver zero add/remove notifications on this OS build
+// (confirmed under both Bun and Node, sandboxed and unsandboxed, across
+// $HOME, /tmp, /var/folders, and a repo checkout). Watching a single file
+// still works, because that path uses kqueue rather than FSEvents, but a
+// directory listing needs to know about entries appearing and disappearing,
+// which only the (broken) FSEvents path reports. A directory's mtime changes
+// whenever an entry is added, removed, or renamed, so polling it is a
+// reliable substitute that costs one stat() per interval. Do not "optimize"
+// this back to fs.watch(dir, ...) without first confirming FSEvents actually
+// delivers directory events on the target OS.
+const POLL_INTERVAL_MS = 250;
+
+const defaultWatch: NavWatchDeps["watch"] = (dir, listener) => {
+  const onChange = (curr: Stats, prev: Stats) => {
+    if (curr.mtimeMs !== prev.mtimeMs) listener();
+  };
+  // persistent: false so this can never hold the process open on its own;
+  // startNavWatch's caller (runNavPicker) already guarantees stop() runs on
+  // every exit path.
+  watchFile(dir, { interval: POLL_INTERVAL_MS, persistent: false }, onChange);
+  return { close: () => unwatchFile(dir, onChange) };
+};
 
 export function startNavWatch(opts: NavWatchOpts): { stop(): void } {
   const watch = opts.deps?.watch ?? defaultWatch;
