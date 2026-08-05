@@ -333,13 +333,16 @@ const IMAGE_CASE_PATTERNS = [
  * that tty belongs to fzf in raw mode, so the query races fzf's input reader.
  * Probing costs nothing measurable, so there is no reason to allow it.
  *
- * `-f` is pinned only for the terminals this snippet recognizes by env var.
- * For everything else `-f` is left unset on purpose: chafa's own detection
- * reads env vars we do not (GHOSTTY_BIN_DIR, TERMINFO, __CFBundleIdentifier,
- * ...), which covers more terminals than our hardcoded list ever could, and
- * it bottoms out at symbol art rather than a graphics protocol the terminal
- * cannot render. Pinning a format here would override that and downgrade
- * every terminal we did not think to hardcode.
+ * chafa is also pinned to `-f symbols` rather than a graphics protocol. It has
+ * no unicode-placeholder support, so anything it draws lands at the cursor and
+ * fzf's next redraw erases it: verified as a silently blank preview pane under
+ * Ghostty. Character art is the highest fidelity chafa can produce that fzf is
+ * able to keep on screen. Install kitty's `kitten` for real pixels; the branch
+ * above prefers it whenever it is present.
+ *
+ * `fmt` no longer picks a chafa format. It only records which real-image
+ * renderer this terminal can use: kitty-protocol terminals get kitten, iTerm2
+ * gets imgcat, and everything else falls through to chafa's character art.
  */
 export function buildImagePreviewSnippet(): string {
   // Shell ${...} expansions are escaped as \${...} so TS does not interpolate
@@ -360,18 +363,24 @@ export function buildImagePreviewSnippet(): string {
     `[ -n "\${KITTY_WINDOW_ID:-}" ] && fmt=kitty; ` +
     `[ "\${TERM:-}" = "xterm-kitty" ] && fmt=kitty; ` +
     `if [ "$fmt" = kitty ] && command -v kitten >/dev/null 2>&1; then ` +
+    // Order matters and is not the same as fzf's own demo script. Inside a
+    // preview pane the only things that survive are images fzf can place
+    // itself and plain text. kitten's unicode placeholders are placeable, and
+    // iTerm's inline protocol is what imgcat is for, so those come first.
+    // chafa is last and is pinned to symbols: it has no placeholder support at
+    // all, so any protocol it emits draws at the cursor and fzf's next redraw
+    // wipes it, which is exactly the empty pane this replaced.
     // kitten's last line is a bare reset with no newline, which makes fzf draw
     // a spurious scroll indicator. Drop it and re-attach the reset above.
     // The escape is a literal ESC byte rather than bash-only $'\e', because
     // fzf runs preview commands with $SHELL -c and $SHELL may be sh.
     `kitten icat --clear --transfer-mode=memory --unicode-placeholder ` +
     `--stdin=no --place="$d@0x0" "$p" | sed '$d' | sed '$s/$/\x1b[m/'; ` +
+    `elif [ "$fmt" = iterm ] && command -v imgcat >/dev/null 2>&1; then ` +
+    `imgcat -W "\${d%%x*}" -H "\${d##*x}" "$p"; ` +
     `elif command -v chafa >/dev/null 2>&1; then ` +
     // Trailing newline lets fzf render successive images cleanly.
-    `if [ -n "$fmt" ]; then chafa --probe off -f "$fmt" -s "$d" "$p"; ` +
-    `else chafa --probe off -s "$d" "$p"; fi; echo; ` +
-    `elif command -v imgcat >/dev/null 2>&1; then ` +
-    `imgcat -W "\${d%%x*}" -H "\${d##*x}" "$p"; ` +
+    `chafa --probe off -f symbols -s "$d" "$p"; echo; ` +
     `else file "$p"; fi`
   );
 }

@@ -217,19 +217,41 @@ for (const SHELL of ["sh", "zsh"] as const) {
   });
 
   describe(`buildImagePreviewSnippet (${SHELL})`, () => {
+    const PNG_B64 =
+      "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAKklEQVR42mP8z8BQz0AEYBxVSF+" +
+      "FjP+RwH8GBgYmYhSyMIykRfooZBxNPQCk2Qb9Cm7DIQAAAABJRU5ErkJggg==";
+
+    /**
+     * Fake renderers on a scratch PATH, each recording its own argv. Asserting
+     * on what our snippet actually invoked beats asserting on substrings of the
+     * snippet text, which stayed green through two real bugs.
+     */
+    function fakeBin(names: string[]): { dir: string; args: Record<string, string> } {
+      const dir = mkdtempSync(join(tmpdir(), "nav-img-bin-"));
+      const args: Record<string, string> = {};
+      for (const n of names) {
+        const file = join(dir, `${n}.args`);
+        args[n] = file;
+        const shim = join(dir, n);
+        writeFileSync(shim, `#!/bin/sh\nprintf '%s\\n' "$*" > ${file}\n`);
+        chmodSync(shim, 0o755);
+      }
+      return { dir, args };
+    }
+
+    function runSnippet(binDir: string, env: Record<string, string>): void {
+      const imgDir = mkdtempSync(join(tmpdir(), "nav-img-base-"));
+      writeFileSync(join(imgDir, "pic.png"), Buffer.from(PNG_B64, "base64"));
+      const cmd = buildPreviewCommand(imgDir).replace("{1}", shellQuote("f:pic.png"));
+      spawnSync(SHELL, ["-c", cmd], {
+        encoding: "utf8",
+        env: { PATH: `${binDir}:/usr/bin:/bin`, TERM: "xterm-256color", ...env },
+      });
+      rmSync(imgDir, { recursive: true, force: true });
+    }
+
     test("never lets chafa probe the tty", () => {
       expect(buildImagePreviewSnippet()).toContain("--probe off");
-    });
-
-    test("passes -f and its value as separate quoted words", () => {
-      const snip = buildImagePreviewSnippet();
-      // The format value lives alone in fmt, and -f is written out beside a
-      // quoted "$fmt". Storing "-f kitty" together and expanding it unquoted
-      // depends on word splitting, which sh does and zsh does not, and that
-      // shipped a real bug for every zsh user.
-      expect(snip).toContain('-f "$fmt"');
-      expect(snip).not.toContain('"-f kitty"');
-      expect(snip).not.toMatch(/chafa[^;]*\s\$fmt\s/);
     });
 
     test("sizes from the fzf preview env vars", () => {
@@ -238,149 +260,78 @@ for (const SHELL of ["sh", "zsh"] as const) {
       expect(snip).toContain("FZF_PREVIEW_LINES");
     });
 
+    test("chafa is pinned to symbols, never a graphics protocol", () => {
+      const snip = buildImagePreviewSnippet();
+      // chafa has no unicode-placeholder support, so any protocol it emits is
+      // drawn at the cursor and wiped by fzf's next redraw, leaving a blank
+      // pane. Character art is the most it can produce that survives.
+      expect(snip).toContain("-f symbols");
+      expect(snip).not.toContain("-f kitty");
+      expect(snip).not.toContain("-f iterm");
+      expect(snip).not.toContain('-f "$fmt"');
+    });
+
+    test("kitty-protocol terminal with kitten installed uses kitten, not chafa", () => {
+      const { dir, args } = fakeBin(["kitten", "chafa"]);
+      runSnippet(dir, { TERM_PROGRAM: "ghostty" });
+      expect(existsSync(args.kitten!)).toBe(true);
+      expect(readFileSync(args.kitten!, "utf8")).toContain("--unicode-placeholder");
+      expect(existsSync(args.chafa!)).toBe(false);
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    test("kitty-protocol terminal without kitten falls to chafa symbols", () => {
+      const { dir, args } = fakeBin(["chafa"]);
+      runSnippet(dir, { TERM_PROGRAM: "ghostty" });
+      expect(readFileSync(args.chafa!, "utf8")).toContain("-f symbols");
+    });
+
+    test("iTerm2 uses imgcat and leaves chafa alone", () => {
+      const { dir, args } = fakeBin(["imgcat", "chafa"]);
+      runSnippet(dir, { TERM_PROGRAM: "iTerm.app" });
+      expect(existsSync(args.imgcat!)).toBe(true);
+      expect(existsSync(args.chafa!)).toBe(false);
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    test("iTerm2 never takes the kitten branch even when kitten exists", () => {
+      // kitten emits kitty protocol, which iTerm2 cannot render.
+      const { dir, args } = fakeBin(["kitten", "chafa"]);
+      runSnippet(dir, { TERM_PROGRAM: "iTerm.app" });
+      expect(existsSync(args.kitten!)).toBe(false);
+      expect(readFileSync(args.chafa!, "utf8")).toContain("-f symbols");
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    test("unrecognized terminal falls to chafa symbols", () => {
+      const { dir, args } = fakeBin(["chafa"]);
+      runSnippet(dir, {});
+      expect(readFileSync(args.chafa!, "utf8")).toContain("-f symbols");
+    });
+
     test("falls back to `file` when no renderer is installed", () => {
-      const dir = mkdtempSync(join(tmpdir(), "nav-img-"));
-      // 8x8 PNG
-      const png = Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAKklEQVR42mP8z8BQz0AEYBxVSF+" +
-          "FjP+RwH8GBgYmYhSyMIykRfooZBxNPQCk2Qb9Cm7DIQAAAABJRU5ErkJggg==",
-        "base64",
-      );
-      writeFileSync(join(dir, "pic.png"), png);
-      const cmd = buildPreviewCommand(dir).replace("{1}", shellQuote("f:pic.png"));
-      // Empty PATH additions: only /usr/bin and /bin, so no chafa/kitten/imgcat
+      const imgDir = mkdtempSync(join(tmpdir(), "nav-img-none-"));
+      writeFileSync(join(imgDir, "pic.png"), Buffer.from(PNG_B64, "base64"));
+      const cmd = buildPreviewCommand(imgDir).replace("{1}", shellQuote("f:pic.png"));
       const r = spawnSync(SHELL, ["-c", cmd], {
         encoding: "utf8",
-        env: { ...process.env, PATH: "/usr/bin:/bin" },
+        env: { PATH: "/usr/bin:/bin", TERM: "xterm-256color" },
       });
       expect(r.stdout).toContain("PNG image data");
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(imgDir, { recursive: true, force: true });
     });
 
     test("a directory named like an image still previews as a directory", () => {
-      const dir = mkdtempSync(join(tmpdir(), "nav-img-dir-"));
-      mkdirSync(join(dir, "shots.png"));
-      writeFileSync(join(dir, "shots.png", "inside.txt"), "x");
-      const cmd = buildPreviewCommand(dir).replace("{1}", shellQuote("d:shots.png"));
+      const d = mkdtempSync(join(tmpdir(), "nav-img-dir-"));
+      mkdirSync(join(d, "shots.png"));
+      writeFileSync(join(d, "shots.png", "inside.txt"), "x");
+      const cmd = buildPreviewCommand(d).replace("{1}", shellQuote("d:shots.png"));
       const r = spawnSync(SHELL, ["-c", cmd], {
         encoding: "utf8",
-        env: { ...process.env, PATH: "/usr/bin:/bin" },
+        env: { PATH: "/usr/bin:/bin", TERM: "xterm-256color" },
       });
       expect(r.stdout).toContain("inside.txt");
-      rmSync(dir, { recursive: true, force: true });
-    });
-
-    // A fake chafa on PATH that records its own argv instead of rendering
-    // anything. This isolates OUR format-selection logic (the `case
-    // "${TERM_PROGRAM:-}"` arm in buildImagePreviewSnippet) from chafa's own
-    // independent terminal detection: a real chafa binary recognizes several
-    // of the same TERM_PROGRAM values on its own, so asserting on real chafa
-    // output cannot tell "our snippet passed -f kitty" apart from "chafa
-    // guessed kitty despite getting no -f at all." Recording argv can.
-    function fakeChafaDir(): { dir: string; argsFile: string } {
-      const dir = mkdtempSync(join(tmpdir(), "nav-fake-bin-"));
-      const argsFile = join(dir, "args.txt");
-      const shim = join(dir, "chafa");
-      writeFileSync(shim, `#!/bin/sh\nprintf '%s\\n' "$*" > '${argsFile}'\n`);
-      chmodSync(shim, 0o755);
-      return { dir, argsFile };
-    }
-
-    test("recognized terminal (ghostty): our snippet passes --probe off and -f kitty", () => {
-      const { dir, argsFile } = fakeChafaDir();
-      const cmd = buildPreviewCommand("/tmp/nav-img-base").replace("{1}", shellQuote("f:pic.png"));
-      // kitten is not on this PATH, so the chafa branch is the one that runs.
-      spawnSync(SHELL, ["-c", cmd], {
-        encoding: "utf8",
-        env: {
-          PATH: `${dir}:/usr/bin:/bin`,
-          TERM: "xterm-256color",
-          TERM_PROGRAM: "ghostty",
-        },
-      });
-      const args = readFileSync(argsFile, "utf8");
-      expect(args).toContain("--probe off");
-      expect(args).toContain("-f kitty");
-      rmSync(dir, { recursive: true, force: true });
-    });
-
-    test("recognized terminal (iTerm.app): our snippet passes -f iterm", () => {
-      const { dir, argsFile } = fakeChafaDir();
-      const cmd = buildPreviewCommand("/tmp/nav-img-base").replace("{1}", shellQuote("f:pic.png"));
-      spawnSync(SHELL, ["-c", cmd], {
-        encoding: "utf8",
-        env: {
-          PATH: `${dir}:/usr/bin:/bin`,
-          TERM: "xterm-256color",
-          TERM_PROGRAM: "iTerm.app",
-        },
-      });
-      const args = readFileSync(argsFile, "utf8");
-      expect(args).toContain("-f iterm");
-      rmSync(dir, { recursive: true, force: true });
-    });
-
-    test("unrecognized terminal: our snippet passes --probe off but leaves -f unset", () => {
-      const { dir, argsFile } = fakeChafaDir();
-      const cmd = buildPreviewCommand("/tmp/nav-img-base").replace("{1}", shellQuote("f:pic.png"));
-      // Clean env: only PATH and TERM. No TERM_PROGRAM, KITTY_WINDOW_ID,
-      // GHOSTTY_*, TERMINFO, or __CFBundleIdentifier, so our case arm has
-      // nothing to match. This is the test that genuinely discriminates: it
-      // fails immediately if the format-selection logic is deleted, since a
-      // hardcoded "-f something" would then always show up here.
-      spawnSync(SHELL, ["-c", cmd], {
-        encoding: "utf8",
-        env: {
-          PATH: `${dir}:/usr/bin:/bin`,
-          TERM: "xterm-256color",
-        },
-      });
-      const args = readFileSync(argsFile, "utf8");
-      expect(args).toContain("--probe off");
-      expect(args).not.toContain("-f");
-      rmSync(dir, { recursive: true, force: true });
-    });
-
-    // Fake bins for BOTH chafa and kitten on PATH at once. $f is "-f kitty"
-    // for Kitty/Ghostty/WezTerm but "-f iterm" for iTerm2, and the renderer
-    // guard must only take the kitten branch for the former. A guard that
-    // merely checks "$f is non-empty" would wrongly route an iTerm2 user who
-    // happens to have kitten installed into the kitten icat branch, which
-    // emits the Kitty graphics protocol into a terminal that cannot render
-    // it. No earlier test put a kitten shim on PATH, which is how that bug
-    // survived review.
-    function fakeChafaAndKittenDir(): {
-      dir: string;
-      chafaArgsFile: string;
-      kittenArgsFile: string;
-    } {
-      const dir = mkdtempSync(join(tmpdir(), "nav-fake-bin-"));
-      const chafaArgsFile = join(dir, "chafa-args.txt");
-      const kittenArgsFile = join(dir, "kitten-args.txt");
-      const chafaShim = join(dir, "chafa");
-      writeFileSync(chafaShim, `#!/bin/sh\nprintf '%s\\n' "$*" > '${chafaArgsFile}'\n`);
-      chmodSync(chafaShim, 0o755);
-      const kittenShim = join(dir, "kitten");
-      writeFileSync(kittenShim, `#!/bin/sh\nprintf '%s\\n' "$*" > '${kittenArgsFile}'\n`);
-      chmodSync(kittenShim, 0o755);
-      return { dir, chafaArgsFile, kittenArgsFile };
-    }
-
-    test("iTerm2 with kitten also on PATH: kitten shim is NOT invoked, chafa shim IS", () => {
-      const { dir, chafaArgsFile, kittenArgsFile } = fakeChafaAndKittenDir();
-      const cmd = buildPreviewCommand("/tmp/nav-img-base").replace("{1}", shellQuote("f:pic.png"));
-      spawnSync(SHELL, ["-c", cmd], {
-        encoding: "utf8",
-        env: {
-          PATH: `${dir}:/usr/bin:/bin`,
-          TERM: "xterm-256color",
-          TERM_PROGRAM: "iTerm.app",
-        },
-      });
-      expect(existsSync(kittenArgsFile)).toBe(false);
-      const chafaArgs = readFileSync(chafaArgsFile, "utf8");
-      expect(chafaArgs).toContain("-f iterm");
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(d, { recursive: true, force: true });
     });
   });
 

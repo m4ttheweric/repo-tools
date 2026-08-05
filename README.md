@@ -367,7 +367,8 @@ From the menu you can restart the daemon, stop it, toggle launch-at-login, and c
 | `fzf` | 0.71.0 or newer (`--listen` and `--id-nth`, used by `rt nav`'s live refresh); auto-installed by Homebrew |
 | `tmux` | Auto-installed by Homebrew |
 | `zellij` | Optional, only needed for `rt x --zellij` mode (`brew install zellij`) |
-| `chafa` | Optional, enables image previews in `rt nav` (`brew install chafa`) |
+| `chafa` | Optional, renders image previews in `rt nav` as colored character art (`brew install chafa`) |
+| `kitten` | Optional, upgrades `rt nav` image previews to true pixels on Kitty-protocol terminals such as Ghostty. Ships with Kitty (`brew install --cask kitty`) |
 
 ---
 
