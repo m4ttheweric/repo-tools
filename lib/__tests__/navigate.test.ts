@@ -13,7 +13,7 @@ describe("buildNavArgs preview", () => {
   test("emits preview command, window, and toggle bind when preview is set", () => {
     const args = buildNavArgs({ ...base, preview: "echo {1}" });
     expect(args).toContain("--preview=echo {1}");
-    expect(args).toContain("--preview-window=right,50%,border-rounded");
+    expect(args).toContain("--preview-window=right,50%,border-line");
     expect(args).toContain("--bind=ctrl-p:toggle-preview");
   });
 });

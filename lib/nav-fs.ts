@@ -346,14 +346,20 @@ export function buildImagePreviewSnippet(): string {
   // them, matching the style already used in buildPreviewCommand.
   return (
     `d="\${FZF_PREVIEW_COLUMNS:-80}x\${FZF_PREVIEW_LINES:-24}"; ` +
-    `f=""; ` +
+    // Hold the format VALUE, never the flag-plus-value pair. An earlier version
+    // stored "-f kitty" and passed it unquoted, relying on word splitting to
+    // become two arguments. sh splits it; zsh does not, and fzf runs preview
+    // commands with $SHELL -c, so on a zsh login shell chafa received one
+    // mangled argument and failed with "Output format given as '-s'". The
+    // branches below pass -f and its value as separate, quoted words instead.
+    `fmt=""; ` +
     `case "\${TERM_PROGRAM:-}" in ` +
-    `ghostty|kitty|WezTerm) f="-f kitty";; ` +
-    `iTerm.app) f="-f iterm";; ` +
+    `ghostty|kitty|WezTerm) fmt=kitty;; ` +
+    `iTerm.app) fmt=iterm;; ` +
     `esac; ` +
-    `[ -n "\${KITTY_WINDOW_ID:-}" ] && f="-f kitty"; ` +
-    `[ "\${TERM:-}" = "xterm-kitty" ] && f="-f kitty"; ` +
-    `if [ "$f" = "-f kitty" ] && command -v kitten >/dev/null 2>&1; then ` +
+    `[ -n "\${KITTY_WINDOW_ID:-}" ] && fmt=kitty; ` +
+    `[ "\${TERM:-}" = "xterm-kitty" ] && fmt=kitty; ` +
+    `if [ "$fmt" = kitty ] && command -v kitten >/dev/null 2>&1; then ` +
     // kitten's last line is a bare reset with no newline, which makes fzf draw
     // a spurious scroll indicator. Drop it and re-attach the reset above.
     // The escape is a literal ESC byte rather than bash-only $'\e', because
@@ -362,7 +368,8 @@ export function buildImagePreviewSnippet(): string {
     `--stdin=no --place="$d@0x0" "$p" | sed '$d' | sed '$s/$/\x1b[m/'; ` +
     `elif command -v chafa >/dev/null 2>&1; then ` +
     // Trailing newline lets fzf render successive images cleanly.
-    `chafa --probe off $f -s "$d" "$p"; echo; ` +
+    `if [ -n "$fmt" ]; then chafa --probe off -f "$fmt" -s "$d" "$p"; ` +
+    `else chafa --probe off -s "$d" "$p"; fi; echo; ` +
     `elif command -v imgcat >/dev/null 2>&1; then ` +
     `imgcat -W "\${d%%x*}" -H "\${d##*x}" "$p"; ` +
     `else file "$p"; fi`
