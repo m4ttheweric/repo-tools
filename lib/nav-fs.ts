@@ -20,37 +20,164 @@ export interface DeepListOpts {
   maxResults?: number;
   /** Fallback-walk depth cap. Default 8. (fd path is capped by maxResults only.) */
   maxDepth?: number;
+  /** Ordering within the folder group and the file group. Defaults to name, ascending. */
+  sort?: SortState;
 }
 
 export const cmp = (a: string, b: string) =>
   a.localeCompare(b, undefined, { sensitivity: "base" });
 
+// ─── Sorting ────────────────────────────────────────────────────────────────
+
+export type SortKey = "name" | "modified" | "created" | "size" | "kind";
+
+export interface SortState {
+  key: SortKey;
+  /** Flips the key's natural direction (see SORT_OPTIONS). */
+  reverse: boolean;
+}
+
+/** Name ascending: what nav has always done, and what it still opens with. */
+export const DEFAULT_SORT: SortState = { key: "name", reverse: false };
+
+/**
+ * The sort menu, in display order.
+ *
+ * Each key has a natural direction chosen to be the useful one rather than the
+ * numerically ascending one: newest and largest first, because that is what you
+ * are looking for when you sort by date or size at all. `reverse` flips it.
+ */
+export const SORT_OPTIONS: {
+  key: SortKey;
+  label: string;
+  forward: string;
+  reversed: string;
+}[] = [
+  { key: "name", label: "Name", forward: "A to Z", reversed: "Z to A" },
+  { key: "modified", label: "Date Modified", forward: "newest first", reversed: "oldest first" },
+  { key: "created", label: "Date Created", forward: "newest first", reversed: "oldest first" },
+  { key: "size", label: "Size", forward: "largest first", reversed: "smallest first" },
+  { key: "kind", label: "Kind", forward: "by extension", reversed: "by extension, Z to A" },
+];
+
+/** Human wording for a sort state, e.g. "Date Modified, newest first". */
+export function sortLabel(sort: SortState): string {
+  const opt = SORT_OPTIONS.find((o) => o.key === sort.key) ?? SORT_OPTIONS[0]!;
+  return `${opt.label}, ${sort.reverse ? opt.reversed : opt.forward}`;
+}
+
+export function isDefaultSort(sort: SortState): boolean {
+  return sort.key === DEFAULT_SORT.key && sort.reverse === DEFAULT_SORT.reverse;
+}
+
+/** One entry plus the stat fields the non-name sorts need. */
+export interface EntryMeta {
+  name: string;
+  mtimeMs: number;
+  birthtimeMs: number;
+  size: number;
+}
+
+/** Lowercased extension after the final dot, or "" when there is none. */
+export function extensionOf(name: string): string {
+  const dot = name.lastIndexOf(".");
+  // A leading dot is a dotfile, not an extension: ".gitignore" has no kind.
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+/**
+ * Order entries by the given sort, returning just the names.
+ *
+ * Name is always the tiebreak, and the tiebreak is never reversed, so entries
+ * that compare equal on the primary key stay in a stable, readable order.
+ */
+export function sortEntries(entries: EntryMeta[], sort: SortState): string[] {
+  const dir = sort.reverse ? -1 : 1;
+  const byName = (a: EntryMeta, b: EntryMeta) => cmp(a.name, b.name);
+  const primary = (a: EntryMeta, b: EntryMeta): number => {
+    switch (sort.key) {
+      case "modified":
+        return b.mtimeMs - a.mtimeMs;
+      case "created":
+        return b.birthtimeMs - a.birthtimeMs;
+      case "size":
+        return b.size - a.size;
+      case "kind":
+        return cmp(extensionOf(a.name), extensionOf(b.name));
+      default:
+        return byName(a, b);
+    }
+  };
+  return [...entries]
+    .sort((a, b) => dir * primary(a, b) || byName(a, b))
+    .map((e) => e.name);
+}
+
 /** Directories the fallback walk never descends into, regardless of showHidden. */
 const WALK_SKIP_DIRS = new Set([".git", "node_modules"]);
 
-/** List one directory level. Dotfiles are excluded unless showHidden. */
-export function listEntries(dir: string, showHidden: boolean): DirListing {
+/**
+ * List one directory level. Dotfiles are excluded unless showHidden.
+ *
+ * Folders and files are returned as separate groups and sorted independently,
+ * so folders stay above files no matter which sort is active. Every non-name
+ * sort is free here: the stat needed to tell a folder from a file already
+ * carries mtime, birthtime, and size.
+ */
+export function listEntries(
+  dir: string,
+  showHidden: boolean,
+  sort: SortState = DEFAULT_SORT,
+): DirListing {
   let entries: string[];
   try {
     entries = readdirSync(dir);
   } catch {
     return { folders: [], files: [] };
   }
-  const folders: string[] = [];
-  const files: string[] = [];
+  const folders: EntryMeta[] = [];
+  const files: EntryMeta[] = [];
   for (const name of entries) {
     if (!showHidden && name.startsWith(".")) continue;
-    let isDir: boolean;
+    let st: ReturnType<typeof statSync>;
     try {
-      isDir = statSync(join(dir, name)).isDirectory();
+      st = statSync(join(dir, name));
     } catch {
       continue; // broken symlink etc. — skip (matches prior nav behavior)
     }
-    (isDir ? folders : files).push(name);
+    const meta: EntryMeta = {
+      name,
+      mtimeMs: st.mtimeMs,
+      birthtimeMs: st.birthtimeMs,
+      size: st.size,
+    };
+    (st.isDirectory() ? folders : files).push(meta);
   }
-  folders.sort(cmp);
-  files.sort(cmp);
-  return { folders, files };
+  return { folders: sortEntries(folders, sort), files: sortEntries(files, sort) };
+}
+
+/**
+ * Order relative paths from a deep listing.
+ *
+ * Name sorting needs no stats. The others stat every entry, which measures
+ * about 15ms for the 5000-entry cap on APFS, so deep mode gets the full set of
+ * sorts rather than an artificial name-only restriction.
+ */
+function sortRelPaths(root: string, rels: string[], sort: SortState): string[] {
+  if (sort.key === "name") {
+    const out = [...rels].sort(cmp);
+    return sort.reverse ? out.reverse() : out;
+  }
+  const metas: EntryMeta[] = rels.map((name) => {
+    try {
+      const st = statSync(join(root, name));
+      return { name, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs, size: st.size };
+    } catch {
+      // Vanished between listing and stat: keep it, sorted as if empty/epoch.
+      return { name, mtimeMs: 0, birthtimeMs: 0, size: 0 };
+    }
+  });
+  return sortEntries(metas, sort);
 }
 
 /**
@@ -64,6 +191,7 @@ export function deepList(
   resolveFd: () => string | null = () => Bun.which("fd"),
 ): DirListing {
   const maxResults = opts.maxResults ?? 5000;
+  const sort = opts.sort ?? DEFAULT_SORT;
   const fd = resolveFd();
   if (fd) {
     const common = [
@@ -82,13 +210,19 @@ export function deepList(
         .filter(Boolean)
         .map((s) => s.replace(/\/$/, ""));
     };
-    const folders = run("d").sort(cmp).slice(0, maxResults);
-    const files = run("f")
-      .sort(cmp)
-      .slice(0, Math.max(0, maxResults - folders.length));
+    // Sort before capping, matching the previous behavior for the default sort.
+    const folders = sortRelPaths(dir, run("d"), sort).slice(0, maxResults);
+    const files = sortRelPaths(dir, run("f"), sort).slice(
+      0,
+      Math.max(0, maxResults - folders.length),
+    );
     return { folders, files };
   }
-  return walkFallback(dir, opts.showHidden, opts.maxDepth ?? 8, maxResults);
+  const walked = walkFallback(dir, opts.showHidden, opts.maxDepth ?? 8, maxResults);
+  return {
+    folders: sortRelPaths(dir, walked.folders, sort),
+    files: sortRelPaths(dir, walked.files, sort),
+  };
 }
 
 function walkFallback(
