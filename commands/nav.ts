@@ -98,9 +98,27 @@ async function runActionMenu(target: string, kind: ItemKind): Promise<{ exit: bo
       spawnSync("open", kind === "file" ? ["-R", target] : [target], { stdio: "inherit" });
       return { exit: false };
 
-    case "quicklook":
-      spawnSync("qlmanage", ["-p", target], { stdio: ["ignore", "ignore", "ignore"] });
+    case "quicklook": {
+      // qlmanage blocks until the preview window is dismissed, and fzf has
+      // already torn down by the time it runs, so without this line the
+      // terminal just sits empty with nothing to explain the wait. Discarding
+      // every stream on top of that made a real failure look exactly like
+      // success: a blank screen either way.
+      console.error(`  Quick Look: ${name}  (close the preview to return)`);
+      const r = spawnSync("qlmanage", ["-p", target], {
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf8",
+      });
+      // status is null when the user closes the window, which is the normal exit.
+      if (r.error || (r.status !== null && r.status !== 0)) {
+        const detail =
+          r.error?.message ?? (r.stderr || r.stdout || "").trim() ?? "";
+        console.error(
+          `  Quick Look failed${detail ? `: ${detail.split("\n")[0]}` : ` (exit ${r.status})`}`,
+        );
+      }
       return { exit: false };
+    }
 
     case "copy-path":
       spawnSync("pbcopy", [], { input: target });
