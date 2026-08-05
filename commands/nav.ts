@@ -20,6 +20,11 @@
  * mode stays a static snapshot. Image files preview as images when chafa (or
  * kitten, or imgcat) is installed.
  *
+ * ctrl-s picks the sort order: Name (the default), Date Modified, Date Created,
+ * Size, or Kind. Choosing the sort that is already active reverses it. Folders
+ * always stay above files, sorted within their own group. The sort lasts for
+ * the session and resets on the next run.
+ *
  * Optional first arg sets the starting directory (defaults to cwd).
  */
 
@@ -30,6 +35,8 @@ import { openDirectoryInEditor } from "./code.ts";
 import { runNavPicker, type NavOption } from "../lib/navigate.ts";
 import {
   listEntries, deepList, buildPreviewCommand, buildHelpHeaderCommand, renderHelpHeader,
+  DEFAULT_SORT, SORT_OPTIONS, sortLabel, isDefaultSort,
+  type SortState, type SortKey,
 } from "../lib/nav-fs.ts";
 
 function tildeify(p: string): string {
@@ -109,6 +116,43 @@ async function runActionMenu(target: string, kind: ItemKind): Promise<{ exit: bo
   return { exit: false };
 }
 
+/**
+ * Sort menu, opened with ctrl-s.
+ *
+ * A menu rather than a cycling key so the options stay named and discoverable,
+ * and so the active one and its direction are visible. Choosing the sort that
+ * is already active reverses it, which is what clicking a Finder column header
+ * does. Cancelling returns the current sort unchanged.
+ */
+async function runSortMenu(current: SortState): Promise<SortState> {
+  const options: NavOption[] = SORT_OPTIONS.map((o) => {
+    const active = o.key === current.key;
+    return {
+      value: o.key,
+      label: (active ? "● " : "  ") + o.label,
+      hint: active
+        ? `${current.reverse ? o.reversed : o.forward}  (select to reverse)`
+        : o.forward,
+    };
+  });
+
+  const result = await runNavPicker({
+    options,
+    message: "Sort by",
+    header: "enter: apply  esc: cancel",
+    expectKeys: [],
+    resumeValue: current.key,
+  });
+  // ctrl-up is always in fzf's --expect and means "back" everywhere in rt, so
+  // treat it as cancel rather than as accepting the highlighted row.
+  if (!result || !result.value || result.key === "ctrl-up") return current;
+
+  const key = result.value as SortKey;
+  return key === current.key
+    ? { key, reverse: !current.reverse }
+    : { key, reverse: false };
+}
+
 export async function navigate(args: string[]): Promise<void> {
   // Redirect stdout → stderr so TUI output doesn't contaminate the path output
   const realStdoutWrite = process.stdout.write.bind(process.stdout);
@@ -125,6 +169,9 @@ export async function navigate(args: string[]): Promise<void> {
   // ctrl-p round-trips (rather than fzf's internal toggle-preview) so this
   // state survives navigation and the help layout can use the real width.
   let previewOn = false;
+  // Session state like showHidden: survives descending into directories, resets
+  // next time you run rt nav.
+  let sort: SortState = { ...DEFAULT_SORT };
   // Preserved across ctrl-k/ctrl-t/ctrl-f round trips so the user's filter and
   // cursor position survive. Reset on any cwd-changing navigation.
   let resumeQuery = "";
@@ -136,8 +183,8 @@ export async function navigate(args: string[]): Promise<void> {
     // cannot drift apart.
     const buildOptions = (): NavOption[] => {
       const { folders, files } = deepMode
-        ? deepList(cwd, { showHidden })
-        : listEntries(cwd, showHidden);
+        ? deepList(cwd, { showHidden, sort })
+        : listEntries(cwd, showHidden, sort);
       return [
         ...folders.map((name) => ({ value: "d:" + name, label: "📁 " + name, hint: "" })),
         ...files.map((name) => ({ value: "f:" + name, label: name, hint: "" })),
@@ -185,16 +232,19 @@ export async function navigate(args: string[]): Promise<void> {
     const helpHints = [
       "enter: open", "ctrl-space: cd selected", "ctrl-h: cd here", upHint, "esc: quit",
       "ctrl-k: actions", "ctrl-o: editor", "ctrl-f: finder", modeHint, hiddenHint,
-      previewOn ? "ctrl-p: hide preview" : "ctrl-p: preview",
+      previewOn ? "ctrl-p: hide preview" : "ctrl-p: preview", "ctrl-s: sort",
     ];
     const helpCommand = buildHelpHeaderCommand(helpHints, previewOn);
     const helpHeader = renderHelpHeader(helpCommand, process.stderr.columns || 80);
     const result = await runNavPicker({
       options,
-      message: tildeify(cwd) + (deepMode ? " (deep)" : ""),
+      message:
+        tildeify(cwd) +
+        (deepMode ? " (deep)" : "") +
+        (isDefaultSort(sort) ? "" : ` (${sortLabel(sort)})`),
       helpHeader,
       resizeHeaderCommand: helpCommand,
-      expectKeys: ["ctrl-k", "ctrl-o", "ctrl-space", "ctrl-h", "ctrl-f", "ctrl-r", "ctrl-t", "ctrl-p"],
+      expectKeys: ["ctrl-k", "ctrl-o", "ctrl-space", "ctrl-h", "ctrl-f", "ctrl-r", "ctrl-t", "ctrl-p", "ctrl-s"],
       initialQuery: resumeQuery,
       resumeValue: resumeValue || undefined,
       preview: buildPreviewCommand(cwd),
@@ -222,6 +272,15 @@ export async function navigate(args: string[]): Promise<void> {
     // ctrl-p: toggle the preview pane, preserving filter and cursor
     if (key === "ctrl-p") {
       previewOn = !previewOn;
+      resumeQuery = query;
+      resumeValue = choice ?? "";
+      continue;
+    }
+
+    // ctrl-s: pick a sort order. Keeps the filter and cursor, since the same
+    // entries are still listed, only reordered.
+    if (key === "ctrl-s") {
+      sort = await runSortMenu(sort);
       resumeQuery = query;
       resumeValue = choice ?? "";
       continue;
