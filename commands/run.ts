@@ -719,6 +719,11 @@ export async function runCommand(
           headerParts: ["enter: select", "esc: cancel"],
         });
         if (!repoResult) process.exit(1);
+        // ctrl-up here is "back" with nowhere left to go, exactly like the
+        // single-repo case above. Without this the key falls through and
+        // selects whatever row the cursor was on, so with more than one known
+        // repo there is no way out of Select repo <-> Select package.
+        if (repoResult.key === "ctrl-up") process.exit(0);
         selectedRepo = knownRepos.find((r) => r.repoName === repoResult.value)!;
       }
 
