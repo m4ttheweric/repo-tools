@@ -364,9 +364,10 @@ From the menu you can restart the daemon, stop it, toggle launch-at-login, and c
 | Dependency | Notes |
 |---|---|
 | macOS | Required (Apple Silicon or Intel) |
-| `fzf` | Auto-installed by Homebrew |
+| `fzf` | 0.71.0 or newer (`--listen` and `--id-nth`, used by `rt nav`'s live refresh); auto-installed by Homebrew |
 | `tmux` | Auto-installed by Homebrew |
 | `zellij` | Optional, only needed for `rt x --zellij` mode (`brew install zellij`) |
+| `chafa` | Optional, enables image previews in `rt nav` (`brew install chafa`) |
 
 ---
 

@@ -15,6 +15,11 @@
  * so you can filter across nested paths. ctrl-p toggles a preview pane
  * (hidden by default) showing the highlighted folder's contents or file's text.
  *
+ * In browse mode the listing refreshes itself: files that appear or disappear
+ * while the picker is open show up without leaving and re-entering. Deep-jump
+ * mode stays a static snapshot. Image files preview as images when chafa (or
+ * kitten, or imgcat) is installed.
+ *
  * Optional first arg sets the starting directory (defaults to cwd).
  */
 
@@ -127,14 +132,18 @@ export async function navigate(args: string[]): Promise<void> {
 
   while (true) {
     const atRoot = cwd === "/";
-    const { folders, files } = deepMode
-      ? deepList(cwd, { showHidden })
-      : listEntries(cwd, showHidden);
-
-    const options: NavOption[] = [
-      ...folders.map((name) => ({ value: "d:" + name, label: "📁 " + name, hint: "" })),
-      ...files.map((name) => ({ value: "f:" + name, label: name, hint: "" })),
-    ];
+    // Shared by the initial render and by the live-refresh watcher, so the two
+    // cannot drift apart.
+    const buildOptions = (): NavOption[] => {
+      const { folders, files } = deepMode
+        ? deepList(cwd, { showHidden })
+        : listEntries(cwd, showHidden);
+      return [
+        ...folders.map((name) => ({ value: "d:" + name, label: "📁 " + name, hint: "" })),
+        ...files.map((name) => ({ value: "f:" + name, label: name, hint: "" })),
+      ];
+    };
+    const options: NavOption[] = buildOptions();
 
     const hiddenHint = showHidden ? "ctrl-t: hide hidden" : "ctrl-t: show hidden";
 
@@ -190,6 +199,9 @@ export async function navigate(args: string[]): Promise<void> {
       resumeValue: resumeValue || undefined,
       preview: buildPreviewCommand(cwd),
       previewHidden: !previewOn,
+      // Browse mode only. Deep mode re-runs fd over the whole tree, so watching
+      // it would mean a recursive watch plus a full rescan per event.
+      watch: deepMode ? undefined : { dir: cwd, render: buildOptions },
     });
     if (!result) return;
     const { value: choice, key, query } = result;

@@ -10,7 +10,11 @@
  */
 
 import { spawnSync } from "child_process";
+import { mkdirSync, unlinkSync } from "fs";
+import { join } from "path";
 import { ensureFzf } from "./fzf.ts";
+import { startNavWatch } from "./nav-watch.ts";
+import { rtDir } from "./rt-paths.ts";
 import { T, toHex } from "./tui/palette.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -89,6 +93,14 @@ export interface NavPickerOpts {
    * with `helpHeader`.
    */
   resizeHeaderCommand?: string;
+  /**
+   * Live-refresh the list while the picker is open. When set, fzf runs with a
+   * --listen socket and field-based cursor tracking, and `dir` is watched for
+   * filesystem events; each change re-renders via `render` and reloads fzf in
+   * place. Only meaningful for a single directory: callers that list
+   * recursively should leave this unset.
+   */
+  watch?: { dir: string; render: () => NavOption[] };
 }
 
 /** Create a separator NavOption. The value is auto-generated; the cursor auto-skips it. */
@@ -135,7 +147,7 @@ const DEFAULT_HEADER = "enter: select  |: OR  !: exclude";
  * ctrl-up is always added to --expect so callers can detect back-navigation
  * via `result.key === "ctrl-up"`.
  */
-export function buildNavArgs(opts: NavPickerOpts): string[] {
+export function buildNavArgs(opts: NavPickerOpts, socketPath?: string): string[] {
   const helpMode = !!opts.helpHeader && !opts.header && !opts.headerParts;
   const header =
     opts.header ??
@@ -179,6 +191,15 @@ export function buildNavArgs(opts: NavPickerOpts): string[] {
           `--preview=${opts.preview}`,
           `--preview-window=right,50%,border-rounded${opts.previewHidden ? ",hidden" : ""}`,
           ...(expectKeys.includes("ctrl-p") ? [] : ["--bind=ctrl-p:toggle-preview"]),
+        ]
+      : []),
+    ...(socketPath
+      ? [
+          `--listen=${socketPath}`,
+          // Field 1 is the value column, so the cursor lands back on the same
+          // entry after a reload rather than resetting to the top.
+          "--track",
+          "--id-nth=1",
         ]
       : []),
     ...(helpMode
@@ -246,6 +267,24 @@ export function findResumePosition(
 // ─── Main entry point ───────────────────────────────────────────────────────
 
 /**
+ * Socket and list-file paths for one picker invocation.
+ *
+ * Under rtDir() rather than $TMPDIR: macOS caps unix socket paths near 104
+ * bytes and /var/folders/... eats most of that budget before the filename.
+ */
+let navSocketSeq = 0;
+function navWatchPaths(): { socketPath: string; listFile: string } {
+  // fzf cannot bind --listen (and the whole picker fails, not just live
+  // refresh) if ~/.rt does not exist yet, e.g. on a machine's first run.
+  mkdirSync(rtDir(), { recursive: true });
+  const stem = `nav-${process.pid}-${navSocketSeq++}`;
+  return {
+    socketPath: join(rtDir(), `${stem}.sock`),
+    listFile: join(rtDir(), `${stem}.list`),
+  };
+}
+
+/**
  * Run an fzf picker and return the parsed result.
  *
  * Returns null when fzf is cancelled (Esc / Ctrl-C / non-zero exit).
@@ -261,7 +300,15 @@ export async function runNavPicker(
   // Retry loop: if the user selects a separator, re-show with cursor past it
   while (true) {
     const input = formatNavInput(opts.options);
-    const args = buildNavArgs(opts);
+    const paths = opts.watch ? navWatchPaths() : null;
+    const args = buildNavArgs(opts, paths?.socketPath);
+
+    // Tracks the options behind the most recent live-refresh render, so a
+    // separator selected after a reload resolves against what is actually on
+    // screen rather than the (by then stale) opts.options captured above.
+    // Declared inside the loop so it resets on every re-show, not just once
+    // per runNavPicker call.
+    let liveOptions: NavOption[] | null = null;
 
     // Resolve cursor position: resumeValue wins over initialPos/currentPos.
     // When nothing pins the cursor and the list is unfiltered, default to the
@@ -283,30 +330,89 @@ export async function runNavPicker(
       args.push(`--bind=load:pos(${cursorPos})`);
     }
 
-    const result = spawnSync("fzf", args, {
-      input,
-      stdio: ["pipe", "pipe", "inherit"],
-      encoding: "utf8",
+    // Async spawn, not spawnSync: spawnSync blocks the event loop for the
+    // lifetime of the picker, which would stop fs.watch callbacks from ever
+    // firing for the live-refresh watcher wired up in runNavPicker's caller.
+    // fzf reads the keyboard from /dev/tty directly, so a piped stdin is only
+    // ever the item list.
+    const proc = Bun.spawn(["fzf", ...args], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "inherit",
     });
 
-    if (result.status !== 0) {
-      if (opts.captureQueryOnNoMatch && result.status === 1) {
-        return parseNavOutput(result.stdout ?? "");
+    try {
+      proc.stdin.write(input);
+      await proc.stdin.end();
+    } catch {
+      // fzf can exit before the list is fully written (esc on a huge listing).
+      // The exit code below is what decides the outcome, so an EPIPE here is
+      // an expected condition, not an error.
+    }
+
+    const w = opts.watch;
+    const watcher =
+      w && paths
+        ? startNavWatch({
+            dir: w.dir,
+            socketPath: paths.socketPath,
+            listFile: paths.listFile,
+            initial: input,
+            render: () => {
+              const next = w.render();
+              liveOptions = next;
+              return formatNavInput(next);
+            },
+            // fzf owns the terminal while the picker is open, so nothing can
+            // be written to stderr here without garbling the TUI. A watcher
+            // error is silently swallowed: the listing just stays static
+            // instead of refreshing, with no announcement to the user.
+            onError: () => {},
+          })
+        : null;
+
+    const [stdout, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ]);
+
+    watcher?.stop();
+    if (paths) {
+      for (const p of [paths.socketPath, paths.listFile]) {
+        try {
+          unlinkSync(p);
+        } catch {
+          // Already gone: fzf removes its own socket on exit, and the list file
+          // is never written when nothing changed.
+        }
+      }
+    }
+
+    if (exitCode !== 0) {
+      if (opts.captureQueryOnNoMatch && exitCode === 1) {
+        return parseNavOutput(stdout);
       }
       return null;
     }
 
-    const parsed = parseNavOutput(result.stdout ?? "");
+    const parsed = parseNavOutput(stdout);
 
     // If a separator was selected, re-show with cursor on the next real item
     if (parsed.value?.startsWith(NAV_SEPARATOR_PREFIX)) {
-      const hitIdx = opts.options.findIndex((o) => o.value === parsed.value);
-      const nextReal = opts.options.findIndex(
+      // Resolve against the live-refreshed options when a reload happened
+      // during this iteration; opts.options is what the picker STARTED with,
+      // which by selection time may no longer match what is on screen.
+      const options = liveOptions ?? opts.options;
+      const hitIdx = options.findIndex((o) => o.value === parsed.value);
+      const nextReal = options.findIndex(
         (o, i) => i > hitIdx && !o.separator,
       );
       currentPos = nextReal >= 0 ? nextReal + 1 : null;
-      // Clear resumeValue so it doesn't override our computed position
-      opts = { ...opts, resumeValue: undefined };
+      // Clear resumeValue so it doesn't override our computed position, and
+      // carry the live-refreshed options forward so the next iteration
+      // renders what was last on screen instead of reverting to the stale
+      // original listing.
+      opts = { ...opts, options, resumeValue: undefined };
       continue;
     }
 
