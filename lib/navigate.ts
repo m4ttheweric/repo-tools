@@ -10,7 +10,11 @@
  */
 
 import { spawnSync } from "child_process";
+import { unlinkSync } from "fs";
+import { join } from "path";
 import { ensureFzf } from "./fzf.ts";
+import { startNavWatch } from "./nav-watch.ts";
+import { rtDir } from "./rt-paths.ts";
 import { T, toHex } from "./tui/palette.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -89,6 +93,14 @@ export interface NavPickerOpts {
    * with `helpHeader`.
    */
   resizeHeaderCommand?: string;
+  /**
+   * Live-refresh the list while the picker is open. When set, fzf runs with a
+   * --listen socket and field-based cursor tracking, and `dir` is watched for
+   * filesystem events; each change re-renders via `render` and reloads fzf in
+   * place. Only meaningful for a single directory: callers that list
+   * recursively should leave this unset.
+   */
+  watch?: { dir: string; render: () => NavOption[] };
 }
 
 /** Create a separator NavOption. The value is auto-generated; the cursor auto-skips it. */
@@ -135,7 +147,7 @@ const DEFAULT_HEADER = "enter: select  |: OR  !: exclude";
  * ctrl-up is always added to --expect so callers can detect back-navigation
  * via `result.key === "ctrl-up"`.
  */
-export function buildNavArgs(opts: NavPickerOpts): string[] {
+export function buildNavArgs(opts: NavPickerOpts, socketPath?: string): string[] {
   const helpMode = !!opts.helpHeader && !opts.header && !opts.headerParts;
   const header =
     opts.header ??
@@ -179,6 +191,15 @@ export function buildNavArgs(opts: NavPickerOpts): string[] {
           `--preview=${opts.preview}`,
           `--preview-window=right,50%,border-rounded${opts.previewHidden ? ",hidden" : ""}`,
           ...(expectKeys.includes("ctrl-p") ? [] : ["--bind=ctrl-p:toggle-preview"]),
+        ]
+      : []),
+    ...(socketPath
+      ? [
+          `--listen=${socketPath}`,
+          // Field 1 is the value column, so the cursor lands back on the same
+          // entry after a reload rather than resetting to the top.
+          "--track",
+          "--id-nth=1",
         ]
       : []),
     ...(helpMode
@@ -246,6 +267,21 @@ export function findResumePosition(
 // ─── Main entry point ───────────────────────────────────────────────────────
 
 /**
+ * Socket and list-file paths for one picker invocation.
+ *
+ * Under rtDir() rather than $TMPDIR: macOS caps unix socket paths near 104
+ * bytes and /var/folders/... eats most of that budget before the filename.
+ */
+let navSocketSeq = 0;
+function navWatchPaths(): { socketPath: string; listFile: string } {
+  const stem = `nav-${process.pid}-${navSocketSeq++}`;
+  return {
+    socketPath: join(rtDir(), `${stem}.sock`),
+    listFile: join(rtDir(), `${stem}.list`),
+  };
+}
+
+/**
  * Run an fzf picker and return the parsed result.
  *
  * Returns null when fzf is cancelled (Esc / Ctrl-C / non-zero exit).
@@ -261,7 +297,8 @@ export async function runNavPicker(
   // Retry loop: if the user selects a separator, re-show with cursor past it
   while (true) {
     const input = formatNavInput(opts.options);
-    const args = buildNavArgs(opts);
+    const paths = opts.watch ? navWatchPaths() : null;
+    const args = buildNavArgs(opts, paths?.socketPath);
 
     // Resolve cursor position: resumeValue wins over initialPos/currentPos.
     // When nothing pins the cursor and the list is unfiltered, default to the
@@ -303,10 +340,35 @@ export async function runNavPicker(
       // an expected condition, not an error.
     }
 
+    const watcher =
+      opts.watch && paths
+        ? startNavWatch({
+            dir: opts.watch.dir,
+            socketPath: paths.socketPath,
+            listFile: paths.listFile,
+            initial: input,
+            render: () => formatNavInput(opts.watch!.render()),
+            onError: (err) =>
+              console.error(`  nav: live refresh disabled (${err})`),
+          })
+        : null;
+
     const [stdout, exitCode] = await Promise.all([
       new Response(proc.stdout).text(),
       proc.exited,
     ]);
+
+    watcher?.stop();
+    if (paths) {
+      for (const p of [paths.socketPath, paths.listFile]) {
+        try {
+          unlinkSync(p);
+        } catch {
+          // Already gone: fzf removes its own socket on exit, and the list file
+          // is never written when nothing changed.
+        }
+      }
+    }
 
     if (exitCode !== 0) {
       if (opts.captureQueryOnNoMatch && exitCode === 1) {
