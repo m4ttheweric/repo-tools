@@ -6,6 +6,7 @@ import { spawnSync } from "child_process";
 import {
   listEntries, deepList, shellQuote, buildPreviewCommand, buildImagePreviewSnippet,
   buildHelpHeaderCommand, renderHelpHeader,
+  sortEntries, extensionOf, sortLabel, isDefaultSort, DEFAULT_SORT,
 } from "../nav-fs.ts";
 
 let root: string;
@@ -365,5 +366,134 @@ describe("buildImagePreviewSnippet", () => {
     const chafaArgs = readFileSync(chafaArgsFile, "utf8");
     expect(chafaArgs).toContain("-f iterm");
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("sortEntries", () => {
+  // b is newest and largest, a is oldest and smallest, c sits between.
+  const metas = [
+    { name: "b.txt", mtimeMs: 300, birthtimeMs: 30, size: 300 },
+    { name: "a.md", mtimeMs: 100, birthtimeMs: 10, size: 100 },
+    { name: "c.txt", mtimeMs: 200, birthtimeMs: 20, size: 200 },
+  ];
+
+  test("name ascending is the default order", () => {
+    expect(sortEntries(metas, { key: "name", reverse: false })).toEqual([
+      "a.md", "b.txt", "c.txt",
+    ]);
+  });
+
+  test("date modified puts newest first, and reverse flips it", () => {
+    expect(sortEntries(metas, { key: "modified", reverse: false })).toEqual([
+      "b.txt", "c.txt", "a.md",
+    ]);
+    expect(sortEntries(metas, { key: "modified", reverse: true })).toEqual([
+      "a.md", "c.txt", "b.txt",
+    ]);
+  });
+
+  test("date created puts newest first", () => {
+    expect(sortEntries(metas, { key: "created", reverse: false })).toEqual([
+      "b.txt", "c.txt", "a.md",
+    ]);
+  });
+
+  test("size puts largest first, and reverse flips it", () => {
+    expect(sortEntries(metas, { key: "size", reverse: false })).toEqual([
+      "b.txt", "c.txt", "a.md",
+    ]);
+    expect(sortEntries(metas, { key: "size", reverse: true })).toEqual([
+      "a.md", "c.txt", "b.txt",
+    ]);
+  });
+
+  test("kind groups by extension, name breaking ties", () => {
+    expect(sortEntries(metas, { key: "kind", reverse: false })).toEqual([
+      "a.md", "b.txt", "c.txt",
+    ]);
+  });
+
+  test("name is the tiebreak and is never reversed", () => {
+    // All three share an mtime, so only the tiebreak decides, in both directions.
+    const tied = metas.map((m) => ({ ...m, mtimeMs: 500 }));
+    const forward = sortEntries(tied, { key: "modified", reverse: false });
+    const reversed = sortEntries(tied, { key: "modified", reverse: true });
+    expect(forward).toEqual(["a.md", "b.txt", "c.txt"]);
+    expect(reversed).toEqual(forward);
+  });
+
+  test("does not mutate its input", () => {
+    const before = metas.map((m) => m.name);
+    sortEntries(metas, { key: "size", reverse: false });
+    expect(metas.map((m) => m.name)).toEqual(before);
+  });
+});
+
+describe("extensionOf", () => {
+  test("returns the lowercased extension after the final dot", () => {
+    expect(extensionOf("Photo.JPG")).toBe("jpg");
+    expect(extensionOf("archive.tar.gz")).toBe("gz");
+  });
+
+  test("a dotfile has no extension", () => {
+    expect(extensionOf(".gitignore")).toBe("");
+    expect(extensionOf("README")).toBe("");
+  });
+});
+
+describe("sortLabel / isDefaultSort", () => {
+  test("describes the active sort and its direction", () => {
+    expect(sortLabel({ key: "size", reverse: false })).toBe("Size, largest first");
+    expect(sortLabel({ key: "size", reverse: true })).toBe("Size, smallest first");
+    expect(sortLabel({ key: "modified", reverse: false })).toBe("Date Modified, newest first");
+  });
+
+  test("only name-ascending counts as default", () => {
+    expect(isDefaultSort(DEFAULT_SORT)).toBe(true);
+    expect(isDefaultSort({ key: "name", reverse: true })).toBe(false);
+    expect(isDefaultSort({ key: "size", reverse: false })).toBe(false);
+  });
+});
+
+describe("listEntries sorting", () => {
+  test("folders stay above files under every sort", () => {
+    const d = mkdtempSync(join(tmpdir(), "nav-sort-"));
+    mkdirSync(join(d, "zzz-folder"));
+    writeFileSync(join(d, "aaa-file.txt"), "x");
+    // Default sort would put the file first if the groups were merged.
+    for (const key of ["name", "modified", "created", "size", "kind"] as const) {
+      const { folders, files } = listEntries(d, true, { key, reverse: false });
+      expect(folders).toEqual(["zzz-folder"]);
+      expect(files).toEqual(["aaa-file.txt"]);
+    }
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  test("orders files by real size read from disk", () => {
+    const d = mkdtempSync(join(tmpdir(), "nav-sort-size-"));
+    writeFileSync(join(d, "small.txt"), "x");
+    writeFileSync(join(d, "big.txt"), "x".repeat(5000));
+    expect(listEntries(d, true, { key: "size", reverse: false }).files).toEqual([
+      "big.txt", "small.txt",
+    ]);
+    expect(listEntries(d, true, { key: "size", reverse: true }).files).toEqual([
+      "small.txt", "big.txt",
+    ]);
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  test("omitting the sort argument preserves the historical name ordering", () => {
+    // Its own directory rather than the shared `root`, which other tests in
+    // this file add fixtures to.
+    const d = mkdtempSync(join(tmpdir(), "nav-sort-default-"));
+    mkdirSync(join(d, "beta"));
+    mkdirSync(join(d, "Alpha"));
+    writeFileSync(join(d, "b.txt"), "b");
+    writeFileSync(join(d, "A.txt"), "a");
+    const { folders, files } = listEntries(d, false);
+    // Case-insensitive, folders before files: unchanged from before sorting existed.
+    expect(folders).toEqual(["Alpha", "beta"]);
+    expect(files).toEqual(["A.txt", "b.txt"]);
+    rmSync(d, { recursive: true, force: true });
   });
 });
