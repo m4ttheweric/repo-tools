@@ -365,7 +365,13 @@ export async function navigate(args: string[]): Promise<void> {
       return;
     }
 
+    // Opening a file is a round trip like ctrl-k or ctrl-f, not navigation:
+    // the same directory is still listed afterwards, so keep the filter and
+    // put the cursor back on the file that was just opened rather than
+    // dropping it to the top of the list.
     spawnSync("open", [target], { stdio: "inherit" });
+    resumeQuery = query;
+    resumeValue = choice;
     continue;
   }
 }

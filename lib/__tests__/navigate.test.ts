@@ -60,3 +60,10 @@ describe("buildNavArgs live refresh", () => {
     expect(args).toContain("--id-nth=1");
   });
 });
+
+describe("buildNavArgs cyclic scroll", () => {
+  test("always enables --cycle so the list wraps at both ends", () => {
+    // Up at the top goes to the bottom, down at the bottom goes to the top.
+    expect(buildNavArgs({ options: [], message: "m" })).toContain("--cycle");
+  });
+});
