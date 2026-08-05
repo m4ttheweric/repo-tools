@@ -133,6 +133,38 @@ describe("startNavWatch", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("retries a failed POST on the next event instead of suppressing it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nav-watch-retry-"));
+    const w = fakeWatch();
+    let callCount = 0;
+    const post = async (_sock: string, _body: string) => {
+      callCount++;
+      if (callCount === 1) {
+        throw new Error("ECONNREFUSED");
+      }
+    };
+    const handle = startNavWatch({
+      dir,
+      socketPath: join(dir, "s.sock"),
+      listFile: join(dir, "list.txt"),
+      initial: "INITIAL",
+      // Same rendered content on both events: if a failed POST were wrongly
+      // recorded as delivered, the "unchanged" guard would suppress the
+      // second attempt and callCount would stay at 1.
+      render: () => "CHANGED",
+      debounceMs: 10,
+      deps: { watch: w.watch, post },
+    });
+    w.trigger();
+    await sleep(40);
+    expect(callCount).toBe(1);
+    w.trigger();
+    await sleep(40);
+    expect(callCount).toBe(2);
+    handle.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   test("a failing watch registration reports through onError and does not throw", () => {
     const dir = mkdtempSync(join(tmpdir(), "nav-watch-nowatch-"));
     const errors: unknown[] = [];

@@ -70,12 +70,21 @@ export function startNavWatch(opts: NavWatchOpts): { stop(): void } {
       opts.onError?.(err);
       return;
     }
-    lastSent = next;
     const body = `reload(cat ${shellQuote(opts.listFile)})+refresh-preview`;
-    post(opts.socketPath, body).catch(() => {
-      // fzf exited between the debounce firing and the request landing. That is
-      // the ordinary way a session ends, not a fault.
-    });
+    post(opts.socketPath, body)
+      .then(() => {
+        // Only remember this listing as delivered once the POST actually
+        // lands. Marking it sent beforehand would let a failed POST (e.g. fzf
+        // has not yet bound its --listen socket) get silently swallowed by
+        // the next-event guard above, with no retry.
+        lastSent = next;
+      })
+      .catch(() => {
+        // fzf exited between the debounce firing and the request landing, or
+        // has not bound its socket yet. Either way, leaving lastSent
+        // unadvanced means the next filesystem event resends this listing
+        // instead of dropping it forever.
+      });
   };
 
   try {
