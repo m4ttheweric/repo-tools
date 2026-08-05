@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { createTestHome } from "../harness.ts";
 import { startInteractive, type TermwrightSession } from "../interactive.ts";
-import { createFixtureRepo, createMonorepoFixture } from "../fixtures.ts";
+import { createMonorepoFixture } from "../fixtures.ts";
 
 describe("picker navigation", () => {
   let home: string;
@@ -31,11 +31,6 @@ describe("picker navigation", () => {
         },
       ],
     }));
-
-    createFixtureRepo(home, {
-      name: "nav-simple",
-      scripts: { dev: "echo dev", test: "echo test", lint: "echo lint" },
-    });
   });
 
   afterEach(async () => {

@@ -40,3 +40,23 @@ describe("buildNavArgs helpHeader", () => {
     expect(args.some((a) => a.includes("toggle-header") || a.startsWith("--footer"))).toBe(false);
   });
 });
+
+describe("buildNavArgs live refresh", () => {
+  const base = { options: [], message: "m" };
+
+  test("omits listen and tracking args when no socket path is given", () => {
+    const args = buildNavArgs(base);
+    expect(args.some((a) => a.startsWith("--listen"))).toBe(false);
+    expect(args).not.toContain("--track");
+    expect(args).not.toContain("--id-nth=1");
+  });
+
+  test("emits listen and field-based tracking when a socket path is given", () => {
+    const args = buildNavArgs(base, "/tmp/rt-nav-1.sock");
+    expect(args).toContain("--listen=/tmp/rt-nav-1.sock");
+    // Field 1 is the machine value column (d:src, f:readme.md), so the cursor
+    // returns to the same entry after a reload instead of jumping to the top.
+    expect(args).toContain("--track");
+    expect(args).toContain("--id-nth=1");
+  });
+});
