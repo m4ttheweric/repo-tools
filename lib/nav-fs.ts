@@ -219,7 +219,7 @@ export function buildImagePreviewSnippet(): string {
     `esac; ` +
     `[ -n "\${KITTY_WINDOW_ID:-}" ] && f="-f kitty"; ` +
     `[ "\${TERM:-}" = "xterm-kitty" ] && f="-f kitty"; ` +
-    `if [ -n "$f" ] && command -v kitten >/dev/null 2>&1; then ` +
+    `if [ "$f" = "-f kitty" ] && command -v kitten >/dev/null 2>&1; then ` +
     // kitten's last line is a bare reset with no newline, which makes fzf draw
     // a spurious scroll indicator. Drop it and re-attach the reset above.
     // The escape is a literal ESC byte rather than bash-only $'\e', because

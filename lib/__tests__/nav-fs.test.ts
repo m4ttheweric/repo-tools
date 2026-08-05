@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from "fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
@@ -322,6 +322,48 @@ describe("buildImagePreviewSnippet", () => {
     const args = readFileSync(argsFile, "utf8");
     expect(args).toContain("--probe off");
     expect(args).not.toContain("-f");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Fake bins for BOTH chafa and kitten on PATH at once. $f is "-f kitty"
+  // for Kitty/Ghostty/WezTerm but "-f iterm" for iTerm2, and the renderer
+  // guard must only take the kitten branch for the former. A guard that
+  // merely checks "$f is non-empty" would wrongly route an iTerm2 user who
+  // happens to have kitten installed into the kitten icat branch, which
+  // emits the Kitty graphics protocol into a terminal that cannot render
+  // it. No earlier test put a kitten shim on PATH, which is how that bug
+  // survived review.
+  function fakeChafaAndKittenDir(): {
+    dir: string;
+    chafaArgsFile: string;
+    kittenArgsFile: string;
+  } {
+    const dir = mkdtempSync(join(tmpdir(), "nav-fake-bin-"));
+    const chafaArgsFile = join(dir, "chafa-args.txt");
+    const kittenArgsFile = join(dir, "kitten-args.txt");
+    const chafaShim = join(dir, "chafa");
+    writeFileSync(chafaShim, `#!/bin/sh\nprintf '%s\\n' "$*" > '${chafaArgsFile}'\n`);
+    chmodSync(chafaShim, 0o755);
+    const kittenShim = join(dir, "kitten");
+    writeFileSync(kittenShim, `#!/bin/sh\nprintf '%s\\n' "$*" > '${kittenArgsFile}'\n`);
+    chmodSync(kittenShim, 0o755);
+    return { dir, chafaArgsFile, kittenArgsFile };
+  }
+
+  test("iTerm2 with kitten also on PATH: kitten shim is NOT invoked, chafa shim IS", () => {
+    const { dir, chafaArgsFile, kittenArgsFile } = fakeChafaAndKittenDir();
+    const cmd = buildPreviewCommand("/tmp/nav-img-base").replace("{1}", shellQuote("f:pic.png"));
+    spawnSync("sh", ["-c", cmd], {
+      encoding: "utf8",
+      env: {
+        PATH: `${dir}:/usr/bin:/bin`,
+        TERM: "xterm-256color",
+        TERM_PROGRAM: "iTerm.app",
+      },
+    });
+    expect(existsSync(kittenArgsFile)).toBe(false);
+    const chafaArgs = readFileSync(chafaArgsFile, "utf8");
+    expect(chafaArgs).toContain("-f iterm");
     rmSync(dir, { recursive: true, force: true });
   });
 });

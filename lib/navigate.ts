@@ -363,8 +363,11 @@ export async function runNavPicker(
               liveOptions = next;
               return formatNavInput(next);
             },
-            onError: (err) =>
-              console.error(`  nav: live refresh disabled (${err})`),
+            // fzf owns the terminal while the picker is open, so nothing can
+            // be written to stderr here without garbling the TUI. A watcher
+            // error is silently swallowed: the listing just stays static
+            // instead of refreshing, with no announcement to the user.
+            onError: () => {},
           })
         : null;
 
