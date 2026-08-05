@@ -253,4 +253,56 @@ describe("buildImagePreviewSnippet", () => {
     expect(r.stdout).toContain("inside.txt");
     rmSync(dir, { recursive: true, force: true });
   });
+
+  // These two run the real chafa binary (guarded by Bun.which) rather than just
+  // asserting on the snippet text, so a deleted or broken format-selection
+  // branch would actually fail them instead of passing on substring matches.
+  test("recognized terminal: chafa is pinned to the kitty graphics protocol", () => {
+    if (!Bun.which("chafa")) return;
+    const dir = mkdtempSync(join(tmpdir(), "nav-img-fmt-"));
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAKklEQVR42mP8z8BQz0AEYBxVSF+" +
+        "FjP+RwH8GBgYmYhSyMIykRfooZBxNPQCk2Qb9Cm7DIQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    writeFileSync(join(dir, "pic.png"), png);
+    const cmd = buildPreviewCommand(dir).replace("{1}", shellQuote("f:pic.png"));
+    // Env built from scratch (no ...process.env): TERM_PROGRAM=ghostty is the
+    // only recognized-terminal signal present, so this proves our own env-var
+    // match pins the format rather than chafa's independent detection.
+    const r = spawnSync("sh", ["-c", cmd], {
+      encoding: "utf8",
+      env: {
+        PATH: "/opt/homebrew/bin:/usr/bin:/bin",
+        TERM: "xterm-256color",
+        TERM_PROGRAM: "ghostty",
+      },
+    });
+    expect(r.stdout).toContain("\x1b_G");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("unrecognized terminal: format is left to chafa's own detection, which degrades to symbol art", () => {
+    if (!Bun.which("chafa")) return;
+    const dir = mkdtempSync(join(tmpdir(), "nav-img-fmt-"));
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAKklEQVR42mP8z8BQz0AEYBxVSF+" +
+        "FjP+RwH8GBgYmYhSyMIykRfooZBxNPQCk2Qb9Cm7DIQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    writeFileSync(join(dir, "pic.png"), png);
+    const cmd = buildPreviewCommand(dir).replace("{1}", shellQuote("f:pic.png"));
+    // Clean env: only PATH and TERM. No TERM_PROGRAM, KITTY_WINDOW_ID,
+    // GHOSTTY_*, TERMINFO, or __CFBundleIdentifier, so neither our hardcoded
+    // list nor chafa's own env-based detection has anything to recognize.
+    const r = spawnSync("sh", ["-c", cmd], {
+      encoding: "utf8",
+      env: {
+        PATH: "/opt/homebrew/bin:/usr/bin:/bin",
+        TERM: "xterm-256color",
+      },
+    });
+    expect(r.stdout).not.toContain("\x1b_G");
+    rmSync(dir, { recursive: true, force: true });
+  });
 });

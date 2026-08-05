@@ -194,10 +194,18 @@ const IMAGE_CASE_PATTERNS = [
  * chafa, then imgcat, then `file` so an uninstalled machine still prints
  * something readable instead of binary noise.
  *
- * chafa runs with `--probe off` and an explicit `-f` on purpose. Left to itself
- * it probes the controlling tty for protocol support, and inside a preview pane
+ * chafa runs with `--probe off` unconditionally: left to itself it probes
+ * the controlling tty for protocol support, and inside a preview pane
  * that tty belongs to fzf in raw mode, so the query races fzf's input reader.
  * Probing costs nothing measurable, so there is no reason to allow it.
+ *
+ * `-f` is pinned only for the terminals this snippet recognizes by env var.
+ * For everything else `-f` is left unset on purpose: chafa's own detection
+ * reads env vars we do not (GHOSTTY_BIN_DIR, TERMINFO, __CFBundleIdentifier,
+ * ...), which covers more terminals than our hardcoded list ever could, and
+ * it bottoms out at symbol art rather than a graphics protocol the terminal
+ * cannot render. Pinning a format here would override that and downgrade
+ * every terminal we did not think to hardcode.
  */
 export function buildImagePreviewSnippet(): string {
   // Shell ${...} expansions are escaped as \${...} so TS does not interpolate
