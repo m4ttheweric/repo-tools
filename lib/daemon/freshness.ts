@@ -330,8 +330,9 @@ export async function getRepoContext(
 }
 
 async function fetchProjectId(provider: GitLabProvider, projectPath: string): Promise<number> {
-  // restRequest does NOT prepend /api/v4 — it just appends path to baseURL.
-  const apiPath = `/api/v4/projects/${encodeURIComponent(projectPath)}`;
+  // glance >=0.14 prefixes /api/v4 itself and rejects pre-prefixed paths
+  // (MAT-130), so this path is provider-relative.
+  const apiPath = `/projects/${encodeURIComponent(projectPath)}`;
   let res: Response;
   try {
     res = await provider.restRequest("GET", apiPath);
@@ -697,6 +698,14 @@ async function reconcileFreshnessImpl(env: FreshnessEnv): Promise<void> {
   broadcastStatus(env);
 }
 
+// glance >=0.15 widened EventCursor.lastEventId to number | string | null for
+// GitHub's string event ids. This watch path is GitLab-only, whose ids stay
+// numeric; anything else reads as absent, same as glance's own pollers treat
+// foreign cursor shapes.
+function numericEventId(v: number | string | null | undefined): number | null {
+  return typeof v === "number" ? v : null;
+}
+
 function startWatch(env: FreshnessEnv, repoName: string, provider: GitLabProvider, projectPath: string): void {
   const resumeCursor = cursorStore.get(repoName);
 
@@ -707,7 +716,7 @@ function startWatch(env: FreshnessEnv, repoName: string, provider: GitLabProvide
     projectId:    null,
     state:        "live",
     lastSyncedAt: null,
-    lastEventId:  resumeCursor?.lastEventId ?? null,
+    lastEventId:  numericEventId(resumeCursor?.lastEventId),
     processing:   false,
     pending:      [],
     gapFillTimer: null,
@@ -720,7 +729,7 @@ function startWatch(env: FreshnessEnv, repoName: string, provider: GitLabProvide
       cursor: resumeCursor,
       onCursor: (c) => {
         cursorStore.set(repoName, c);
-        watch.lastEventId = c.lastEventId;
+        watch.lastEventId = numericEventId(c.lastEventId);
       },
       onStatus: (s) => {
         const prev = watch.state;
