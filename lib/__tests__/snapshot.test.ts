@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { snapshotWorktree } from "../snapshot.ts";
+import { SnapshotBaseRefError, snapshotWorktree } from "../snapshot.ts";
 
 let tmpRoot: string;
 let repo: string;
@@ -98,6 +98,30 @@ describe("snapshotWorktree", () => {
     expect(snap.changedFiles).toContain("committed.txt");
     expect(snap.changedFiles).toContain("base.txt");
     expect(snap.changedFiles).toContain("untracked.txt");
+  });
+
+  test("diffs against a caller-supplied base ref (repos defaulting to main)", async () => {
+    // The remote default branch is main, not master.
+    g("update-ref -d refs/remotes/origin/master");
+    g("update-ref refs/remotes/origin/main HEAD");
+    writeFileSync(join(repo, "committed.txt"), "c\n");
+    g("add committed.txt");
+    g("commit -q -m feat");
+    writeFileSync(join(repo, "base.txt"), "uncommitted edit\n");
+
+    const snap = await snapshotWorktree(repo, "refs/remotes/origin/main");
+
+    expect(snap.mergeBase).toBe(g("rev-parse refs/remotes/origin/main"));
+    expect(snap.changedFiles).toContain("committed.txt");
+    expect(snap.changedFiles).toContain("base.txt");
+  });
+
+  test("throws SnapshotBaseRefError when the base ref does not exist", async () => {
+    g("update-ref -d refs/remotes/origin/master");
+    await expect(snapshotWorktree(repo)).rejects.toThrow(SnapshotBaseRefError);
+    // …and before any snapshot work: the worktree stays pristine.
+    await snapshotWorktree(repo, "refs/remotes/origin/missing").catch(() => {});
+    expect(g("status --porcelain=v1")).toBe("");
   });
 
   test("resolves the worktree root when called from a subdirectory", async () => {

@@ -19,10 +19,20 @@ export interface WorktreeSnapshot {
   tree: string;
   /** Snapshot commit (parent = the worktree's HEAD). */
   commit: string;
-  /** merge-base of HEAD and refs/remotes/origin/master. */
+  /** merge-base of HEAD and the base ref (the repo's default branch). */
   mergeBase: string;
   /** Paths changed between mergeBase and the snapshot commit. */
   changedFiles: string[];
+}
+
+/** The base ref does not resolve to a commit in this worktree. */
+export class SnapshotBaseRefError extends Error {
+  constructor(public readonly baseRef: string) {
+    super(
+      `base ref ${baseRef} not found in this worktree — fetch the remote, or fix defaultBranch in the repo overlay (~/.rt/repos/<repoId>/repo.jsonc)`,
+    );
+    this.name = "SnapshotBaseRefError";
+  }
 }
 
 /** Run git in `cwd` with extra env, capturing stdout; throws with stderr on failure. */
@@ -51,12 +61,22 @@ async function git(cwd: string, env: Record<string, string>, args: string[]): Pr
  * covers the whole tree from the worktree root.
  *
  * `changedFiles` is diffed mergeBase..snapshotCommit (NOT the worktree),
- * so uncommitted edits count. The merge-base uses the local
- * refs/remotes/origin/master; the controller re-computes against the
- * mirror (Task 10 calibration reconciles the two).
+ * so uncommitted edits count. The merge-base uses the local `baseRef`
+ * (the repo's default branch — see resolveBaseRef in lib/validate-farm.ts);
+ * the controller re-computes against the mirror (Task 10 calibration
+ * reconciles the two). Throws SnapshotBaseRefError when `baseRef` does not
+ * resolve, before any snapshot work happens.
  */
-export async function snapshotWorktree(cwd: string): Promise<WorktreeSnapshot> {
+export async function snapshotWorktree(
+  cwd: string,
+  baseRef: string = "refs/remotes/origin/master",
+): Promise<WorktreeSnapshot> {
   const root = (await git(cwd, {}, ["rev-parse", "--show-toplevel"])).trim();
+  try {
+    await git(root, {}, ["rev-parse", "--verify", "--quiet", `${baseRef}^{commit}`]);
+  } catch {
+    throw new SnapshotBaseRefError(baseRef);
+  }
   const tmpIndex = join(tmpdir(), `rt-snap-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const env = { GIT_INDEX_FILE: tmpIndex };
   try {
@@ -65,7 +85,7 @@ export async function snapshotWorktree(cwd: string): Promise<WorktreeSnapshot> {
     const tree = (await git(root, env, ["write-tree"])).trim();
     const head = (await git(root, {}, ["rev-parse", "HEAD"])).trim();
     const commit = (await git(root, env, ["commit-tree", tree, "-p", head, "-m", "rt validate snapshot"])).trim();
-    const mergeBase = (await git(root, {}, ["merge-base", "HEAD", "refs/remotes/origin/master"])).trim();
+    const mergeBase = (await git(root, {}, ["merge-base", "HEAD", baseRef])).trim();
     const changedFiles = (await git(root, {}, ["diff", "--name-only", mergeBase, commit]))
       .trim()
       .split("\n")
