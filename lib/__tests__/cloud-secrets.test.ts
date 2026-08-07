@@ -30,7 +30,10 @@ function fakeExec(script: Record<string, ExecResult>): { exec: Exec; calls: Call
 
 const REAL_VERSION: ExecResult = { stdout: "v3.75.0\n", exitCode: 0 };
 const SHIM_VERSION: ExecResult = { stdout: "mattcloud doppler shim v1\n", exitCode: 0 };
-const ENV_SNAPSHOT: ExecResult = { stdout: "FOO=bar\nBAZ_URL=https://x\n", exitCode: 0 };
+const JSON_SNAPSHOT: ExecResult = {
+  stdout: '{\n  "FOO": "bar",\n  "BAZ_URL": "https://x"\n}\n',
+  exitCode: 0,
+};
 
 describe("isDopplerShim", () => {
   test("detects the mattcloud shim by its --version output", async () => {
@@ -60,12 +63,10 @@ describe("syncSecrets", () => {
     expect(out.exitCode).toBe(1);
   });
 
-  test("pipes the env doppler → kubectl create → kubectl apply, all via stdin", async () => {
-    const yaml = "apiVersion: v1\nkind: Secret\n";
+  test("pipes the JSON doppler → kubectl apply manifest, all via stdin", async () => {
     const { exec, calls } = fakeExec({
       "doppler --version": REAL_VERSION,
-      "doppler secrets download": ENV_SNAPSHOT,
-      "kubectl -n mc-validate create": { stdout: yaml, exitCode: 0 },
+      "doppler secrets download": JSON_SNAPSHOT,
       "kubectl -n mc-validate apply": { stdout: "secret/acme-doppler-env configured\n", exitCode: 0 },
     });
 
@@ -76,36 +77,68 @@ describe("syncSecrets", () => {
     expect(out.message).not.toContain("bar"); // counts only, never values
 
     const download = calls.find(c => c.argv[1] === "secrets");
-    expect(download?.argv).toEqual(["doppler", "secrets", "download", "--no-file", "--format", "env"]);
+    expect(download?.argv).toEqual(["doppler", "secrets", "download", "--no-file", "--format", "json"]);
     expect(download?.cwd).toBe("/wt");
-
-    const create = calls.find(c => c.argv.includes("create"));
-    expect(create?.argv).toEqual([
-      "kubectl", "-n", "mc-validate", "create", "secret", "generic", "acme-doppler-env",
-      "--from-env-file=/dev/stdin", "--dry-run=client", "-o", "yaml",
-    ]);
-    expect(create?.stdin).toBe(ENV_SNAPSHOT.stdout); // env travels via stdin, not a file
 
     const apply = calls.find(c => c.argv.includes("apply"));
     expect(apply?.argv).toEqual(["kubectl", "-n", "mc-validate", "apply", "-f", "-"]);
-    expect(apply?.stdin).toBe(yaml);
+    // Values reach kubectl through stdin, never argv.
+    expect(apply?.argv.join(" ")).not.toContain("bar");
+    const manifest = JSON.parse(apply!.stdin!);
+    expect(manifest.kind).toBe("Secret");
+    expect(manifest.metadata).toEqual({ name: "acme-doppler-env", namespace: "mc-validate" });
+    expect(manifest.stringData["doppler.json"]).toBe(JSON_SNAPSHOT.stdout); // verbatim
+  });
+
+  test("a value with newlines, quotes, and = survives verbatim into the manifest", async () => {
+    const gnarly = JSON.stringify({
+      PEM: '-----BEGIN KEY-----\nline"one"\nline=two\n-----END KEY-----\n',
+      PLAIN: "x",
+    });
+    const { exec, calls } = fakeExec({
+      "doppler --version": REAL_VERSION,
+      "doppler secrets download": { stdout: gnarly, exitCode: 0 },
+      "kubectl -n mc-validate apply": { stdout: "ok", exitCode: 0 },
+    });
+
+    const out = await syncSecrets({ cwd: "/wt", secretRef: "s", exec });
+
+    expect(out.exitCode).toBe(0);
+    expect(out.message).toContain("2 env vars");
+    const apply = calls.find(c => c.argv.includes("apply"))!;
+    const manifest = JSON.parse(apply.stdin!);
+    expect(manifest.stringData["doppler.json"]).toBe(gnarly); // byte-for-byte
+    expect(JSON.parse(manifest.stringData["doppler.json"]).PEM)
+      .toBe('-----BEGIN KEY-----\nline"one"\nline=two\n-----END KEY-----\n');
   });
 
   test("refuses to upsert an empty snapshot", async () => {
     const { exec, calls } = fakeExec({
       "doppler --version": REAL_VERSION,
-      "doppler secrets download": { stdout: "\n", exitCode: 0 },
+      "doppler secrets download": { stdout: "{}\n", exitCode: 0 },
     });
     const out = await syncSecrets({ cwd: "/wt", secretRef: "s", exec });
     expect(out.exitCode).toBe(1);
     expect(calls.some(c => c.argv[0] === "kubectl")).toBe(false);
   });
 
+  test("refuses a download that is not a JSON object", async () => {
+    for (const stdout of ["FOO=bar\n", '["FOO"]', "null"]) {
+      const { exec, calls } = fakeExec({
+        "doppler --version": REAL_VERSION,
+        "doppler secrets download": { stdout, exitCode: 0 },
+      });
+      const out = await syncSecrets({ cwd: "/wt", secretRef: "s", exec });
+      expect(out.exitCode).toBe(1);
+      expect(calls.some(c => c.argv[0] === "kubectl")).toBe(false);
+    }
+  });
+
   test("surfaces kubectl failures as exit 1 without leaking env contents", async () => {
     const { exec } = fakeExec({
       "doppler --version": REAL_VERSION,
-      "doppler secrets download": ENV_SNAPSHOT,
-      "kubectl -n mc-validate create": { stdout: "", exitCode: 1 },
+      "doppler secrets download": JSON_SNAPSHOT,
+      "kubectl -n mc-validate apply": { stdout: "", exitCode: 1 },
     });
     const out = await syncSecrets({ cwd: "/wt", secretRef: "s", exec });
     expect(out.exitCode).toBe(1);

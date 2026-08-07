@@ -55,10 +55,35 @@ export interface SecretsSyncOutcome {
   message: string;
 }
 
+/** apply an in-memory Secret manifest via kubectl stdin; null on success. */
+async function applySecretManifest(
+  exec: Exec,
+  namespace: string,
+  name: string,
+  fields: { stringData?: Record<string, string>; data?: Record<string, string> },
+): Promise<string | null> {
+  const apply = await exec(["kubectl", "-n", namespace, "apply", "-f", "-"], {
+    stdin: JSON.stringify({
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: { name, namespace },
+      type: "Opaque",
+      ...fields,
+    }),
+  });
+  if (apply.exitCode !== 0) {
+    return `kubectl apply failed for Secret ${name} — is the cluster reachable?`;
+  }
+  return null;
+}
+
 /**
- * doppler secrets download (in-memory) → kubectl create secret --dry-run
- * -o yaml → kubectl apply, all via stdin. Cluster-verify pending: the
- * kubectl leg can only be integration-verified against the cluster.
+ * doppler secrets download (in-memory, JSON) → kubectl apply via stdin.
+ * The Secret carries doppler's JSON export verbatim under the single key
+ * `doppler.json`; the in-pod shim parses it back. JSON (not dotenv)
+ * because multiline values break both `--from-env-file` and line-based
+ * parsers. Cluster-verify pending: the kubectl leg can only be
+ * integration-verified against the cluster.
  */
 export async function syncSecrets(opts: {
   cwd: string;
@@ -82,32 +107,30 @@ export async function syncSecrets(opts: {
   }
 
   const download = await exec(
-    ["doppler", "secrets", "download", "--no-file", "--format", "env"],
+    ["doppler", "secrets", "download", "--no-file", "--format", "json"],
     { cwd: opts.cwd },
   );
   if (download.exitCode !== 0) {
     return { exitCode: 1, message: "doppler secrets download failed — check `doppler setup` in this worktree" };
   }
-  const varCount = download.stdout.split("\n").filter(l => /^[A-Za-z_][A-Za-z0-9_]*=/.test(l)).length;
+  let varCount = 0;
+  try {
+    const parsed: unknown = JSON.parse(download.stdout);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { exitCode: 1, message: "doppler download was not a JSON object; refusing to upsert" };
+    }
+    varCount = Object.keys(parsed).length;
+  } catch {
+    return { exitCode: 1, message: "doppler download was not valid JSON; refusing to upsert" };
+  }
   if (varCount === 0) {
     return { exitCode: 1, message: "doppler returned no env vars — refusing to upsert an empty Secret" };
   }
 
-  const dryRun = await exec(
-    [
-      "kubectl", "-n", namespace, "create", "secret", "generic", opts.secretRef,
-      "--from-env-file=/dev/stdin", "--dry-run=client", "-o", "yaml",
-    ],
-    { stdin: download.stdout },
-  );
-  if (dryRun.exitCode !== 0) {
-    return { exitCode: 1, message: "kubectl create --dry-run failed — is kubectl on PATH with the mattcloud context?" };
-  }
-
-  const apply = await exec(["kubectl", "-n", namespace, "apply", "-f", "-"], { stdin: dryRun.stdout });
-  if (apply.exitCode !== 0) {
-    return { exitCode: 1, message: "kubectl apply failed — is the cluster reachable?" };
-  }
+  const error = await applySecretManifest(exec, namespace, opts.secretRef, {
+    stringData: { "doppler.json": download.stdout },
+  });
+  if (error) return { exitCode: 1, message: error };
 
   return {
     exitCode: 0,
@@ -123,28 +146,6 @@ export interface SandboxSecretOutcome {
   /** 0 ok, 1 tooling failure, 64 refused (nothing to upsert). */
   exitCode: 0 | 1 | 64;
   message: string;
-}
-
-/** apply an in-memory Secret manifest via kubectl stdin; null on success. */
-async function applySecretManifest(
-  exec: Exec,
-  namespace: string,
-  name: string,
-  fields: { stringData?: Record<string, string>; data?: Record<string, string> },
-): Promise<string | null> {
-  const apply = await exec(["kubectl", "-n", namespace, "apply", "-f", "-"], {
-    stdin: JSON.stringify({
-      apiVersion: "v1",
-      kind: "Secret",
-      metadata: { name, namespace },
-      type: "Opaque",
-      ...fields,
-    }),
-  });
-  if (apply.exitCode !== 0) {
-    return `kubectl apply failed for Secret ${name} — is the cluster reachable?`;
-  }
-  return null;
 }
 
 /**
