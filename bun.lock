@@ -6,7 +6,7 @@
       "name": "repo-tools",
       "dependencies": {
         "@inkjs/ui": "^2.0.0",
-        "@mattstack/glance": "^0.18.0",
+        "@mattstack/glance": "^0.19.0",
         "@rezi-ui/core": "^0.1.0-alpha.60",
         "@rezi-ui/jsx": "^0.1.0-alpha.60",
         "@rezi-ui/node": "^0.1.0-alpha.60",
@@ -49,7 +49,7 @@
 
     "@inkjs/ui": ["@inkjs/ui@2.0.0", "", { "dependencies": { "chalk": "^5.3.0", "cli-spinners": "^3.0.0", "deepmerge": "^4.3.1", "figures": "^6.1.0" }, "peerDependencies": { "ink": ">=5" } }, "sha512-5+8fJmwtF9UvikzLfph9sA+LS+l37Ij/szQltkuXLOAXwNkBX9innfzh4pLGXIB59vKEQUtc6D4qGvhD7h3pAg=="],
 
-    "@mattstack/glance": ["@mattstack/glance@0.18.0", "", { "dependencies": { "@gitbeaker/rest": "^43.8.0", "@octokit/core": "^7.0.7", "@octokit/graphql": "^9.0.4", "@octokit/plugin-paginate-rest": "^15.0.0", "@octokit/plugin-retry": "^8.1.1", "@octokit/plugin-throttling": "^11.0.5", "@octokit/request-error": "^7.1.1" } }, "sha512-En6JsVn85VpZvZx8X21HrEqVIzC5ndalFfsXJufJ+eKb8Va2jJUX/z88NjnWi21BphE1Uuvfdg0fydmG2W5URQ=="],
+    "@mattstack/glance": ["@mattstack/glance@0.19.0", "", { "dependencies": { "@gitbeaker/rest": "^43.8.0", "@octokit/core": "^7.0.7", "@octokit/graphql": "^9.0.4", "@octokit/plugin-paginate-rest": "^15.0.0", "@octokit/plugin-retry": "^8.1.1", "@octokit/plugin-throttling": "^11.0.5", "@octokit/request-error": "^7.1.1" } }, "sha512-H+QMuyC3IZ3SXl8TpdjIKVhZvx+vP2ltVdt88CDz8e6YFponB2fplyOrHXLvGFITN1EnnEM6DQyYTcQ06F+7fg=="],
 
     "@mattstack/rt-client": ["@mattstack/rt-client@workspace:packages/rt-client"],
 
