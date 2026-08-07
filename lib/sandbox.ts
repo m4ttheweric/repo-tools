@@ -202,6 +202,11 @@ export interface SandboxOverlayConfig {
   processes: SandboxProcess[];
   /** Local dev-ports state file the daemon mirrors into (absolute, ~ expanded). */
   stateFile?: string;
+  /**
+   * QA-tunnel POSTGRES_URL shape with {host}/{port} placeholders —
+   * credentials and db name are adapter facts (lib/qa-tunnel.ts).
+   */
+  qaPostgresUrlTemplate?: string;
 }
 
 function expandHome(path: string): string {
@@ -220,7 +225,13 @@ export function readSandboxConfig(
   repoId: string,
   reposRoot: string = reposDir(),
 ): SandboxOverlayConfig | null {
-  let raw: { sandbox?: { processes?: Array<Partial<SandboxProcess>>; stateFile?: string } };
+  let raw: {
+    sandbox?: {
+      processes?: Array<Partial<SandboxProcess>>;
+      stateFile?: string;
+      qaPostgresUrlTemplate?: string;
+    };
+  };
   try {
     raw = JSON.parse(readFileSync(join(reposRoot, repoId, "config.json"), "utf8"));
   } catch {
@@ -241,6 +252,7 @@ export function readSandboxConfig(
   return {
     processes,
     ...(sandbox.stateFile ? { stateFile: expandHome(sandbox.stateFile) } : {}),
+    ...(sandbox.qaPostgresUrlTemplate ? { qaPostgresUrlTemplate: sandbox.qaPostgresUrlTemplate } : {}),
   };
 }
 

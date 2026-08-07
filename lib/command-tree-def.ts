@@ -755,6 +755,15 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Container", type: "text", placeholder: "agent", hint: "agent, chrome, watcher, postgres, or a dev-process name" },
         ],
       },
+      "qa-tunnel": {
+        description: "Extend the local SDM tunnel into the cluster (ssh -R via the receiver; credential stays local)",
+        module: "./commands/sandbox.ts",
+        fn: "qaTunnelCommand",
+        args: [
+          { name: "Sandbox id", type: "text", placeholder: "sandbox id" },
+          { name: "Resource", flag: "--resource", type: "text", placeholder: "qa-database", hint: "SDM resource whose local listener to extend (or pass --local-port)" },
+        ],
+      },
       flags: {
         description: "Upsert the sandbox's LD fallback Secret (pod recycle applies it)",
         module: "./commands/sandbox.ts",
