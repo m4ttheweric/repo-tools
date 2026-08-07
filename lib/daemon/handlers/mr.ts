@@ -28,6 +28,7 @@
 import { applyMRWriteback, getCurrentUserId, getRepoContext } from "../freshness.ts";
 import { getDaemonLogger } from "../../daemon-logger.ts";
 import type { PullRequest } from "@mattstack/glance";
+import { ReadBackFailedError } from "@mattstack/glance";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 
 const log = (await getDaemonLogger()).childLogger("mr");
@@ -83,19 +84,34 @@ export function createMRHandlers(
       try {
         const { provider, projectPath } = await contextFor(repoName);
         let returnedPr: PullRequest | null = null;
-        switch (action) {
-          case "merge":            returnedPr = await provider.mergePullRequest(projectPath, iid, args[0]);          break;
-          case "rebase":           await provider.rebasePullRequest(projectPath, iid);                  break;
-          case "approve":          await provider.approvePullRequest(projectPath, iid);                 break;
-          case "unapprove":        await provider.unapprovePullRequest(projectPath, iid);               break;
-          case "setAutoMerge":     await provider.setAutoMerge(projectPath, iid);                       break;
-          case "cancelAutoMerge":  await provider.cancelAutoMerge(projectPath, iid);                    break;
-          case "retryPipeline":    await provider.retryPipeline(projectPath, args[0]);                  break;
-          case "retryJob":         await provider.retryJob(projectPath, args[0]);                       break;
-          case "toggleDraft":      returnedPr = await provider.updatePullRequest(projectPath, iid, { draft: args[0] }); break;
-          case "requestReReview":  await provider.requestReReview(projectPath, iid, args[0]);           break;
-          default:
-            return { ok: false, error: `unsupported action: ${action}` };
+        try {
+          switch (action) {
+            case "merge":            returnedPr = await provider.mergePullRequest(projectPath, iid, args[0]);          break;
+            case "rebase":           await provider.rebasePullRequest(projectPath, iid);                  break;
+            case "approve":          await provider.approvePullRequest(projectPath, iid);                 break;
+            case "unapprove":        await provider.unapprovePullRequest(projectPath, iid);               break;
+            case "setAutoMerge":     await provider.setAutoMerge(projectPath, iid);                       break;
+            case "cancelAutoMerge":  await provider.cancelAutoMerge(projectPath, iid);                    break;
+            case "retryPipeline":    await provider.retryPipeline(projectPath, args[0]);                  break;
+            case "retryJob":         await provider.retryJob(projectPath, args[0]);                       break;
+            case "toggleDraft":      returnedPr = await provider.updatePullRequest(projectPath, iid, { draft: args[0] }); break;
+            case "requestReReview":  await provider.requestReReview(projectPath, iid, args[0]);           break;
+            default:
+              return { ok: false, error: `unsupported action: ${action}` };
+          }
+        } catch (err) {
+          // The two returned-PR actions read the MR back after mutating it, and
+          // that read can fail over a mutation that already landed -- GitLab's
+          // GraphQL times out on the dashboard fragment often enough to matter.
+          // Reporting those as failed put a toast in front of the user for a
+          // merge or draft flip that had actually happened, and invited them to
+          // do it again. `writeApplied` is the SDK saying the write is on the
+          // forge and only describing it failed (glance 0.19.0, MAT-169).
+          //
+          // `returnedPr` stays null, which drops through to the same follow-up
+          // fetch the void actions use, so the stores still get a fresh shape.
+          if (!(err instanceof ReadBackFailedError && err.writeApplied)) throw err;
+          log.warn({ err, repo: repoName, iid, action }, "action landed but its read-back failed; recovering via follow-up fetch");
         }
 
         const followUp = async () => {
