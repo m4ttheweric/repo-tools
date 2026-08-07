@@ -4,10 +4,20 @@
  * rt validate — the local door to the mattcloud validation farm.
  *
  * Usage:
- *   rt validate [--wait] [--manifest <path>]   snapshot → push → submit
+ *   rt validate [--wait] [--manifest <path>] [--json]
+ *                                              snapshot → push → submit
  *                                              exit 0 farm-green / 1 red / 2 infra / 64 usage
- *   rt validate status [<runId>]               per-group results (defaults to the last run)
+ *   rt validate status [<runId>] [--json]      per-group results (defaults to the last run)
+ *                                              exit as above, plus 3 still-in-flight / 64 run not found
  *   rt validate logs <runId> <group>           a failed group's log from the controller
+ *
+ * A farm-side failure (controller unreachable, HTTP error, poll failure, git
+ * plumbing) always exits 2 — never 1, which the contract reserves for a red
+ * code verdict. A missing default-branch ref exits 64 with the fix.
+ *
+ * --json emits { run: { id, status, groups }, exitCode } for skills to
+ * consume (same style as rt sdm / rt verify); progress chatter is suppressed
+ * and errors stay on stderr.
  *
  * The worktree's exact state (uncommitted edits included) is snapshotted
  * without touching HEAD/index (lib/snapshot.ts), pushed to the in-cluster
@@ -30,10 +40,13 @@ import {
   controllerUrl,
   createControllerClient,
   ensureEndpoints,
+  failureExitCode,
   loadGateManifest,
   manifestHash,
-  receiverRepoUrl,
+  pushSnapshot,
+  resolveBaseRef,
   resolveRepoId,
+  statusExitCode,
   summarizeRun,
   verdictExitCode,
   type ControllerClient,
@@ -88,18 +101,34 @@ const STATUS_GLYPH: Record<GroupResult["status"], string> = {
   infra: `${red}!${reset}`,
 };
 
-function groupLine(g: GroupResult): string {
+function groupLine(g: GroupResult, runId: string): string {
   const label = g.status === "inherited" ? `${yellow}inherited (matches master baseline)${reset}`
     : g.status === "skipped" ? `${dim}skipped (when-clause)${reset}`
-    : g.status === "fail" ? `${red}fail${reset}${g.logRef ? `  ${dim}rt validate logs <runId> ${g.name}${reset}` : ""}`
+    : g.status === "fail" ? `${red}fail${reset}${g.logRef ? `  ${dim}rt validate logs ${runId} ${g.name}${reset}` : ""}`
     : g.status === "infra" ? `${red}infra${reset}`
     : `${green}pass${reset}`;
   return `  ${STATUS_GLYPH[g.status]} ${g.name.padEnd(10)} ${label}`;
 }
 
 function printRun(run: Run): void {
-  for (const g of run.groups) console.log(groupLine(g));
+  for (const g of run.groups) console.log(groupLine(g, run.id));
   console.log(`\n  ${bold}${summarizeRun(run)}${reset}\n`);
+}
+
+/** Machine shape shared by `rt validate --json` and `rt validate status --json`. */
+function printRunJson(run: Run, exitCode: number): void {
+  console.log(JSON.stringify({
+    run: {
+      id: run.id,
+      status: run.status,
+      groups: run.groups.map(g => ({
+        name: g.name,
+        status: g.status,
+        ...(g.logRef ? { logRef: g.logRef } : {}),
+      })),
+    },
+    exitCode,
+  }, null, 2));
 }
 
 /** True when the controller answers /healthz. */
@@ -115,8 +144,9 @@ async function probeController(): Promise<boolean> {
 /**
  * Port-forwards for the command's lifetime when nothing already serves the
  * endpoints (the daemon may hold long-lived forwards later; this is the
- * fallback). Cluster-verify pending — only the "already up" path is
- * unit-tested.
+ * fallback). A process-exit backstop reaps the children even when the
+ * command bails through process.exit before its finally runs.
+ * Cluster-verify pending — only the "already up" path is unit-tested.
  */
 function spawnKubectlForwards(): { stop: () => void } {
   const specs: string[][] = [
@@ -126,16 +156,22 @@ function spawnKubectlForwards(): { stop: () => void } {
   const procs = specs.map(argv =>
     Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "ignore" }),
   );
+  const killAll = () => {
+    for (const p of procs) {
+      try { p.kill(); } catch { /* already exited */ }
+    }
+  };
+  process.on("exit", killAll);
   return {
     stop: () => {
-      for (const p of procs) {
-        try { p.kill(); } catch { /* already exited */ }
-      }
+      process.off("exit", killAll);
+      killAll();
     },
   };
 }
 
-async function requireEndpoints(): Promise<{ stop: () => void }> {
+/** Make the controller reachable, or print why and return null (exit 2). */
+async function requireEndpoints(): Promise<{ stop: () => void } | null> {
   const handle = await ensureEndpoints({
     probe: probeController,
     spawnForwards: spawnKubectlForwards,
@@ -143,7 +179,7 @@ async function requireEndpoints(): Promise<{ stop: () => void }> {
   if (handle.status === "unreachable") {
     console.error(`\n  ${red}controller unreachable at ${controllerUrl()}${reset}`);
     console.error(`  ${dim}is the mattcloud cluster up and kubectl pointed at it? (MC_CONTROLLER_URL overrides)${reset}\n`);
-    process.exit(2);
+    return null;
   }
   return handle;
 }
@@ -152,10 +188,12 @@ async function requireEndpoints(): Promise<{ stop: () => void }> {
 
 export async function validateCommand(args: string[], ctx: CommandContext): Promise<void> {
   let wait = false;
+  let json = false;
   let manifestPath: string | null = null;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (arg === "--wait") wait = true;
+    else if (arg === "--json") json = true;
     else if (arg === "--manifest") {
       manifestPath = args[++i] ?? null;
       if (!manifestPath) usageExit("--manifest requires a path");
@@ -170,28 +208,66 @@ export async function validateCommand(args: string[], ctx: CommandContext): Prom
   const manifest = loadGateManifest(path);
   const hash = manifestHash(manifest);
 
-  console.log(`\n  ${dim}snapshotting worktree…${reset}`);
-  const snap = await snapshotWorktree(process.cwd());
-  console.log(
-    `  ${dim}tree ${snap.tree.slice(0, 12)} · ${snap.changedFiles.length} files changed vs merge-base ${snap.mergeBase.slice(0, 12)}${reset}`,
-  );
+  // Everything from here can fail farm-side or in git plumbing; the shared
+  // try/catch maps those to the contract (2 infra / 64 missing base ref —
+  // never an uncaught exit 1, which would read as farm-red), and the
+  // finally always reaps any port-forward children we spawned.
+  let endpoints: { stop: () => void } | null = null;
+  let exitCode: number;
+  try {
+    if (!json) console.log(`\n  ${dim}snapshotting worktree…${reset}`);
+    const baseRef = resolveBaseRef(repoId, process.cwd());
+    const snap = await snapshotWorktree(process.cwd(), baseRef);
+    if (!json) {
+      console.log(
+        `  ${dim}tree ${snap.tree.slice(0, 12)} · ${snap.changedFiles.length} files changed vs merge-base ${snap.mergeBase.slice(0, 12)}${reset}`,
+      );
+    }
 
-  const endpoints = await requireEndpoints();
+    endpoints = await requireEndpoints();
+    if (!endpoints) {
+      exitCode = 2; // requireEndpoints already printed why
+    } else {
+      exitCode = await submitAndReport({ repoId, snap, manifest, hash, wait, json });
+    }
+  } catch (err) {
+    exitCode = failureExitCode(err);
+    const message = err instanceof Error ? err.message : String(err);
+    if (exitCode === 64) {
+      console.error(`\n  ${red}${message}${reset}\n`);
+    } else {
+      console.error(`\n  ${red}farm pipeline failed — not a code verdict${reset}`);
+      console.error(`  ${dim}${message}${reset}\n`);
+    }
+  } finally {
+    endpoints?.stop();
+  }
+  process.exit(exitCode);
+}
+
+/** Push the snapshot, submit the run, and report — returns the exit code. */
+async function submitAndReport(opts: {
+  repoId: string;
+  snap: Awaited<ReturnType<typeof snapshotWorktree>>;
+  manifest: ReturnType<typeof loadGateManifest>;
+  hash: string;
+  wait: boolean;
+  json: boolean;
+}): Promise<number> {
+  const { repoId, snap, manifest, hash, wait, json } = opts;
 
   // Push the snapshot commit to the receiver (incremental; the mirror
   // already has master's objects). No local ref is created.
-  const pushUrl = receiverRepoUrl(repoId);
-  const push = Bun.spawn(["git", "push", pushUrl, `${snap.commit}:refs/snapshots/${snap.tree}`], {
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "pipe",
+  const push = await pushSnapshot({
+    repoId,
+    commit: snap.commit,
+    tree: snap.tree,
+    cwd: process.cwd(),
   });
-  const pushErr = await new Response(push.stderr as ReadableStream).text();
-  if ((await push.exited) !== 0) {
-    endpoints.stop();
-    console.error(`\n  ${red}snapshot push to ${pushUrl} failed${reset}`);
-    console.error(`  ${dim}${pushErr.trim()}${reset}\n`);
-    process.exit(2);
+  if (!push.ok) {
+    console.error(`\n  ${red}snapshot push to ${push.pushUrl} failed${reset}`);
+    console.error(`  ${dim}${push.stderr.trim()}${reset}\n`);
+    return 2;
   }
 
   const client = createControllerClient();
@@ -205,33 +281,46 @@ export async function validateCommand(args: string[], ctx: CommandContext): Prom
   });
   saveLastRun(repoId, runId);
 
-  console.log(`  ${bold}run ${runId}${reset}${cached ? ` ${green}(cached verdict — unchanged tree)${reset}` : ""}\n`);
-
-  if (!wait && !cached) {
-    endpoints.stop();
-    console.log(`  ${dim}submitted — check with${reset} ${bold}rt validate status${reset}\n`);
-    process.exit(0);
+  if (!json) {
+    console.log(`  ${bold}run ${runId}${reset}${cached ? ` ${green}(cached verdict — unchanged tree)${reset}` : ""}\n`);
   }
 
-  const finalRun = await pollUntilDone(client, runId);
-  endpoints.stop();
-  printRun(finalRun);
-  process.exit(verdictExitCode(finalRun));
+  if (!wait && !cached) {
+    if (json) {
+      const run = await client.getRun(runId);
+      printRunJson(
+        run ?? { id: runId, repoId, tree: snap.tree, manifestHash: hash, status: "pending", groups: [], createdAt: "" },
+        0,
+      );
+    } else {
+      console.log(`  ${dim}submitted — check with${reset} ${bold}rt validate status${reset}\n`);
+    }
+    return 0;
+  }
+
+  const finalRun = await pollUntilDone(client, runId, { quiet: json });
+  const exitCode = verdictExitCode(finalRun);
+  if (json) printRunJson(finalRun, exitCode);
+  else printRun(finalRun);
+  return exitCode;
 }
 
 /** Poll the controller, printing each group's status transition once. */
-async function pollUntilDone(client: ControllerClient, runId: string): Promise<Run> {
+async function pollUntilDone(
+  client: ControllerClient,
+  runId: string,
+  opts: { quiet?: boolean } = {},
+): Promise<Run> {
   const printed = new Map<string, string>();
   while (true) {
     const run = await client.getRun(runId);
-    if (!run) {
-      console.error(`\n  ${red}run ${runId} disappeared from the controller${reset}\n`);
-      process.exit(2);
-    }
-    for (const g of run.groups) {
-      if (printed.get(g.name) !== g.status) {
-        printed.set(g.name, g.status);
-        console.log(`  ${dim}${g.name} → ${g.status}${reset}`);
+    if (!run) throw new Error(`run ${runId} disappeared from the controller`);
+    if (!opts.quiet) {
+      for (const g of run.groups) {
+        if (printed.get(g.name) !== g.status) {
+          printed.set(g.name, g.status);
+          console.log(`  ${dim}${g.name} → ${g.status}${reset}`);
+        }
       }
     }
     if (run.status === "done" || run.status === "infra") return run;
@@ -242,6 +331,7 @@ async function pollUntilDone(client: ControllerClient, runId: string): Promise<R
 // ─── rt validate status ──────────────────────────────────────────────────────
 
 export async function statusCommand(args: string[], ctx: CommandContext): Promise<void> {
+  const json = args.includes("--json");
   const repoId = requireRepoId(ctx);
   const runId = args.find(a => !a.startsWith("--")) ?? loadLastRun(repoId);
   if (!runId) usageExit("no run id given and no previous run recorded — run `rt validate` first");
@@ -250,15 +340,28 @@ export async function statusCommand(args: string[], ctx: CommandContext): Promis
     console.error(`\n  ${red}controller unreachable at ${controllerUrl()}${reset}\n`);
     process.exit(2);
   }
-  const run = await createControllerClient().getRun(runId);
+  let run: Run | null;
+  try {
+    run = await createControllerClient().getRun(runId);
+  } catch (err) {
+    console.error(`\n  ${red}farm pipeline failed — not a code verdict${reset}`);
+    console.error(`  ${dim}${err instanceof Error ? err.message : String(err)}${reset}\n`);
+    process.exit(2);
+  }
+  const exitCode = statusExitCode(run); // 64 not found / 3 in flight / verdict
   if (!run) {
     console.error(`\n  ${red}run ${runId} not found${reset}\n`);
-    process.exit(1);
+    process.exit(exitCode);
   }
 
-  console.log(`\n  ${bold}${cyan}run ${run.id}${reset} ${dim}(${run.status}, tree ${run.tree.slice(0, 12)})${reset}\n`);
-  printRun(run);
-  if (run.status === "done" || run.status === "infra") process.exit(verdictExitCode(run));
+  if (json) {
+    printRunJson(run, exitCode);
+  } else {
+    console.log(`\n  ${bold}${cyan}run ${run.id}${reset} ${dim}(${run.status}, tree ${run.tree.slice(0, 12)})${reset}\n`);
+    printRun(run);
+    if (exitCode === 3) console.log(`  ${dim}still in flight — exit 3${reset}\n`);
+  }
+  process.exit(exitCode);
 }
 
 // ─── rt validate logs ────────────────────────────────────────────────────────
@@ -272,7 +375,14 @@ export async function logsCommand(args: string[], _ctx: CommandContext): Promise
     console.error(`\n  ${red}controller unreachable at ${controllerUrl()}${reset}\n`);
     process.exit(2);
   }
-  const log = await createControllerClient().getGroupLog(runId, group);
+  let log: string | null;
+  try {
+    log = await createControllerClient().getGroupLog(runId, group);
+  } catch (err) {
+    console.error(`\n  ${red}farm pipeline failed — not a code verdict${reset}`);
+    console.error(`  ${dim}${err instanceof Error ? err.message : String(err)}${reset}\n`);
+    process.exit(2);
+  }
   if (log === null) {
     console.error(`\n  ${red}no log for group ${group} on run ${runId}${reset}\n`);
     process.exit(1);

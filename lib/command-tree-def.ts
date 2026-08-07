@@ -632,15 +632,17 @@ export const TREE: Record<string, CommandNode> = {
     args: [
       { name: "Wait", flag: "--wait", type: "boolean", default: false, hint: "Block until the farm verdict (exit 0 farm-green, 1 red, 2 infra)" },
       { name: "Manifest", flag: "--manifest", type: "text", placeholder: "~/.rt/repos/<repo>/gates.jsonc", hint: "Gate manifest path (defaults to the repo overlay's gates.jsonc)" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable output: { run: { id, status, groups }, exitCode }" },
     ],
     subcommands: {
       status: {
-        description: "Per-group results for a run (defaults to the last submitted run)",
+        description: "Per-group results for a run (defaults to the last submitted run; exit 0/1/2 verdict, 3 still in flight, 64 run not found)",
         module: "./commands/validate.ts",
         fn: "statusCommand",
         context: "worktree",
         args: [
           { name: "Run id", type: "text", placeholder: "run id", hint: "Controller run id; omit for the last run submitted from this repo" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable output: { run: { id, status, groups }, exitCode }" },
         ],
       },
       logs: {
