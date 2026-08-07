@@ -631,6 +631,7 @@ export const TREE: Record<string, CommandNode> = {
     devOnly: true,
     args: [
       { name: "Wait", flag: "--wait", type: "boolean", default: false, hint: "Block until the farm verdict (exit 0 farm-green, 1 red, 2 infra)" },
+      { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Always create a fresh run — skip the verdict-cache and in-flight attach" },
       { name: "Manifest", flag: "--manifest", type: "text", placeholder: "~/.rt/repos/<repo>/gates.jsonc", hint: "Gate manifest path (defaults to the repo overlay's gates.jsonc)" },
       { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable output: { run: { id, status, groups }, exitCode }" },
     ],

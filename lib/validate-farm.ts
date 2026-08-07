@@ -234,6 +234,13 @@ export interface SubmitRequest {
   manifest: GateManifest;
   changedFiles: string[];
   mergeBase: string;
+  /**
+   * Always create a fresh run: the controller skips the verdict-cache AND
+   * the in-flight attach and responds `cached: false`. Omitted entirely when
+   * not forcing. Cluster-verify pending: the controller side is a sibling
+   * contract, asserted here only as request shape.
+   */
+  force?: true;
 }
 
 export interface ControllerClient {
