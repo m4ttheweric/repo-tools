@@ -674,6 +674,13 @@ export const TREE: Record<string, CommandNode> = {
           },
         },
       },
+      "sync-config": {
+        description: "Overlay gates.jsonc + bake.jsonc → ConfigMaps repo-gates / repo-bake-config (mc-system)",
+        module: "./commands/cloud.ts",
+        fn: "syncConfigCommand",
+        context: "worktree",
+        args: [],
+      },
     },
   },
 
