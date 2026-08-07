@@ -9,6 +9,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { stripJsonc } from "../jsonc.ts";
 
 export interface EnrichmentEntry {
   label?: string;
@@ -22,18 +23,10 @@ export function enrichmentPath(): string {
   return join(homedir(), ".rt", "sdm", "enrichment.jsonc");
 }
 
-/**
- * Strips comments and trailing commas so the result parses as plain JSON.
- * The `//` stripping is a plain regex, not a tokenizer, so a `//` occurring
- * inside a string value (e.g. a label) would be misread as a comment. This
- * is an accepted limitation: enrichment labels are not expected to contain
- * `//`.
- */
-export function stripJsonc(text: string): string {
-  const noBlockComments = text.replace(/\/\*[\s\S]*?\*\//g, "");
-  const noLineComments = noBlockComments.replace(/\/\/.*$/gm, "");
-  return noLineComments.replace(/,(\s*[}\]])/g, "$1");
-}
+// Re-exported for existing importers; the implementation moved to
+// lib/jsonc.ts when the validate-farm overlay files needed a string-aware
+// version (origin URLs contain `//`, which the old regex ate).
+export { stripJsonc } from "../jsonc.ts";
 
 export function loadEnrichment(path = enrichmentPath()): Record<string, EnrichmentEntry> {
   try {
