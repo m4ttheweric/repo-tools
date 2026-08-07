@@ -10,9 +10,8 @@
 
 import { openSync, writeSync, closeSync, readdirSync, unlinkSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
+import { logsDir } from "./rt-paths.ts";
 
-const LOG_DIR = join(homedir(), ".rt", "logs");
 const RETENTION_DAYS = 14;
 
 function today(): string {
@@ -21,19 +20,20 @@ function today(): string {
 }
 
 function logPath(): string {
-  return join(LOG_DIR, `cli.${today()}.log`);
+  return join(logsDir(), `cli.${today()}.log`);
 }
 
 function pruneOldLogs(): void {
   try {
+    const dir = logsDir();
     const cutoff = Date.now() - RETENTION_DAYS * 86_400_000;
-    for (const f of readdirSync(LOG_DIR)) {
+    for (const f of readdirSync(dir)) {
       if (!f.startsWith("cli.") || !f.endsWith(".log")) continue;
       const match = f.match(/^cli\.(\d{4}-\d{2}-\d{2})\.log$/);
       if (!match) continue;
       const fileDate = new Date(match[1]!).getTime();
       if (fileDate < cutoff) {
-        try { unlinkSync(join(LOG_DIR, f)); } catch { /* best-effort */ }
+        try { unlinkSync(join(dir, f)); } catch { /* best-effort */ }
       }
     }
   } catch { /* best-effort */ }
@@ -84,7 +84,8 @@ export function redactSensitiveArgs(args: string[]): string[] {
 export function logCommand(entry: CommandLog): void {
   finalized = true;
   try {
-    if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
+    const dir = logsDir();
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
     const line = JSON.stringify({
       time: new Date().toISOString(),

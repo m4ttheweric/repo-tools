@@ -29,6 +29,19 @@ export function reposDir(): string {
 }
 
 /**
+ * ~/.rt/logs... every surface's JSON-lines log files.
+ *
+ * Log *writers* must resolve through this (call-time HOME) rather than a
+ * module-load-time const: a const is baked from whatever HOME was set when the
+ * module first loaded, so a test that repoints HOME afterwards still writes
+ * into the developer's real ~/.rt/logs. Readers (the `rt daemon logs` viewer)
+ * can keep using the const, since they only ever run against the real tree.
+ */
+export function logsDir(): string {
+  return join(rtDir(), "logs");
+}
+
+/**
  * ~/.rt/repos/<repoName> — a single repo's data directory (config, hooks,
  * scripts, run-history, etc.). This is `RepoIdentity.dataDir`.
  */

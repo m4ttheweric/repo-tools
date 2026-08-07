@@ -10,7 +10,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "fs";
 import { join } from "path";
-import { rtDir, reposDir, repoDataDir } from "../rt-paths.ts";
+import { rtDir, reposDir, repoDataDir, logsDir } from "../rt-paths.ts";
 
 describe("rt-paths", () => {
   const origHome = process.env.HOME;
@@ -28,6 +28,26 @@ describe("rt-paths", () => {
     expect(repoDataDir("r")).toBe("/tmp/home-1/.rt/repos/r");
     process.env.HOME = "/tmp/home-2";
     expect(repoDataDir("r")).toBe("/tmp/home-2/.rt/repos/r");
+  });
+
+  test("logsDir follows HOME at call time (guards against test log pollution)", () => {
+    // A module-load-time const here is what made the daemon and CLI loggers
+    // write into the developer's real ~/.rt/logs during tests, no matter what
+    // HOME the test had set.
+    process.env.HOME = "/tmp/home-logs-1";
+    expect(logsDir()).toBe("/tmp/home-logs-1/.rt/logs");
+    process.env.HOME = "/tmp/home-logs-2";
+    expect(logsDir()).toBe("/tmp/home-logs-2/.rt/logs");
+  });
+
+  test("log writers resolve the log dir at call time, not at module load", () => {
+    // Source-guard: a writer that binds its log dir to a module-level const is
+    // invisible until it silently pollutes the real tree, so pin it here.
+    for (const file of ["../daemon-logger.ts", "../cli-logger.ts"]) {
+      const src = readFileSync(join(import.meta.dir, file), "utf8");
+      expect(src).toContain("logsDir()");
+      expect(src).not.toMatch(/^const LOG_DIR\s*=/m);
+    }
   });
 
   test("a repo dir is NEVER directly under ~/.rt (regression guard for the move)", () => {

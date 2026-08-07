@@ -6,7 +6,7 @@
  *
  * Two exports:
  *   - createDaemonLogger(opts): async factory (testable, takes a logDir)
- *   - getDaemonLogger():        lazy singleton bound to LOG_DIR (production use)
+ *   - getDaemonLogger():        lazy singleton bound to ~/.rt/logs (production use)
  *
  * Crash safety: the pino-roll stream uses sync:true so fatal lines flush
  * synchronously before exit when uncaught exceptions propagate.
@@ -20,7 +20,7 @@ import roll from "pino-roll";
 import { dlopen, suffix, FFIType } from "bun:ffi";
 import { mkdirSync, openSync, closeSync } from "fs";
 import { join } from "path";
-import { LOG_DIR } from "./daemon-config.ts";
+import { logsDir } from "./rt-paths.ts";
 
 export interface DaemonLoggerHandle {
   /** Root logger — use when no specific module scope applies. */
@@ -87,13 +87,13 @@ export async function createDaemonLogger(opts: CreateOptions): Promise<DaemonLog
 let cached: DaemonLoggerHandle | undefined;
 
 /**
- * Lazily initialize the production logger bound to LOG_DIR.
+ * Lazily initialize the production logger bound to ~/.rt/logs.
  * Multiple callers share the same handle.
  */
 export async function getDaemonLogger(): Promise<DaemonLoggerHandle> {
   if (!cached) {
     cached = await createDaemonLogger({
-      logDir: LOG_DIR,
+      logDir: logsDir(),
       level: (process.env.RT_LOG_LEVEL as pino.LevelWithSilent | undefined) ?? "info",
     });
   }
@@ -114,8 +114,9 @@ export async function getDaemonLogger(): Promise<DaemonLoggerHandle> {
 export function redirectNativeStderr(): void {
   if (process.platform !== "darwin") return;
   try {
-    mkdirSync(LOG_DIR, { recursive: true });
-    const fd = openSync(join(LOG_DIR, "daemon-stderr.log"), "a");
+    const dir = logsDir();
+    mkdirSync(dir, { recursive: true });
+    const fd = openSync(join(dir, "daemon-stderr.log"), "a");
     const libc = dlopen(`libSystem.${suffix}`, {
       dup2: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
     });
