@@ -333,39 +333,49 @@ const IMAGE_CASE_PATTERNS = [
  * that tty belongs to fzf in raw mode, so the query races fzf's input reader.
  * Probing costs nothing measurable, so there is no reason to allow it.
  *
- * `-f` is pinned only for the terminals this snippet recognizes by env var.
- * For everything else `-f` is left unset on purpose: chafa's own detection
- * reads env vars we do not (GHOSTTY_BIN_DIR, TERMINFO, __CFBundleIdentifier,
- * ...), which covers more terminals than our hardcoded list ever could, and
- * it bottoms out at symbol art rather than a graphics protocol the terminal
- * cannot render. Pinning a format here would override that and downgrade
- * every terminal we did not think to hardcode.
+ * chafa is also pinned to `-f symbols` rather than a graphics protocol. It has
+ * no unicode-placeholder support, so anything it draws lands at the cursor and
+ * fzf's next redraw erases it: verified as a silently blank preview pane under
+ * Ghostty. Character art is the highest fidelity chafa can produce that fzf is
+ * able to keep on screen. Install kitty's `kitten` for real pixels; the branch
+ * above prefers it whenever it is present.
+ *
+ * `fmt` no longer picks a chafa format. It only records which real-image
+ * renderer this terminal can use: kitty-protocol terminals get kitten, iTerm2
+ * gets imgcat, and everything else falls through to chafa's character art.
  */
 export function buildImagePreviewSnippet(): string {
   // Shell ${...} expansions are escaped as \${...} so TS does not interpolate
   // them, matching the style already used in buildPreviewCommand.
   return (
     `d="\${FZF_PREVIEW_COLUMNS:-80}x\${FZF_PREVIEW_LINES:-24}"; ` +
-    `f=""; ` +
+    `fmt=""; ` +
     `case "\${TERM_PROGRAM:-}" in ` +
-    `ghostty|kitty|WezTerm) f="-f kitty";; ` +
-    `iTerm.app) f="-f iterm";; ` +
+    `ghostty|kitty|WezTerm) fmt=kitty;; ` +
+    `iTerm.app) fmt=iterm;; ` +
     `esac; ` +
-    `[ -n "\${KITTY_WINDOW_ID:-}" ] && f="-f kitty"; ` +
-    `[ "\${TERM:-}" = "xterm-kitty" ] && f="-f kitty"; ` +
-    `if [ "$f" = "-f kitty" ] && command -v kitten >/dev/null 2>&1; then ` +
+    `[ -n "\${KITTY_WINDOW_ID:-}" ] && fmt=kitty; ` +
+    `[ "\${TERM:-}" = "xterm-kitty" ] && fmt=kitty; ` +
+    // Shared last resort, defined once and used from every failed branch.
+    `_rtfall() { if command -v chafa >/dev/null 2>&1; then ` +
+    `chafa --probe off -f symbols -s "$d" "$p"; echo; else file "$p"; fi; }; ` +
+    `if [ "$fmt" = kitty ] && command -v kitten >/dev/null 2>&1; then ` +
+    // kitten writes to a file first so its success can actually be judged.
+    // Piping straight into sed hides both the exit status and the failure
+    // text: kitten asks the terminal for its pixel dimensions, and inside a
+    // preview pane that query can go unanswered ("Terminal does not support
+    // reporting screen sizes"), which then renders as an error where the
+    // image should be. Empty or failed output falls through to character art.
+    `t="\${TMPDIR:-/tmp}/rt-nav-icat.$$"; ` +
+    `if kitten icat --clear --transfer-mode=memory --unicode-placeholder ` +
+    `--stdin=no --place="$d@0x0" "$p" >"$t" 2>/dev/null && [ -s "$t" ]; then ` +
     // kitten's last line is a bare reset with no newline, which makes fzf draw
     // a spurious scroll indicator. Drop it and re-attach the reset above.
-    // The escape is a literal ESC byte rather than bash-only $'\e', because
-    // fzf runs preview commands with $SHELL -c and $SHELL may be sh.
-    `kitten icat --clear --transfer-mode=memory --unicode-placeholder ` +
-    `--stdin=no --place="$d@0x0" "$p" | sed '$d' | sed '$s/$/\x1b[m/'; ` +
-    `elif command -v chafa >/dev/null 2>&1; then ` +
-    // Trailing newline lets fzf render successive images cleanly.
-    `chafa --probe off $f -s "$d" "$p"; echo; ` +
-    `elif command -v imgcat >/dev/null 2>&1; then ` +
+    // A literal ESC byte, not bash-only $'\e': fzf runs previews with $SHELL -c.
+    `sed '$d' "$t" | sed '$s/$/\x1b[m/'; else _rtfall; fi; rm -f "$t"; ` +
+    `elif [ "$fmt" = iterm ] && command -v imgcat >/dev/null 2>&1; then ` +
     `imgcat -W "\${d%%x*}" -H "\${d##*x}" "$p"; ` +
-    `else file "$p"; fi`
+    `else _rtfall; fi`
   );
 }
 

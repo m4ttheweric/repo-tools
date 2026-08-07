@@ -46,7 +46,11 @@ describe("nav sort menu", () => {
     await session.waitForIdle(300, 10_000);
     await session.ctrl("s");
     await session.waitForText("Sort by", 15_000);
+    // Settle again inside the menu: the query has to land before enter, and
+    // the menu is a second fzf process that has only just taken the terminal.
+    await session.waitForIdle(300, 10_000);
     await session.type("size");
+    await session.waitForIdle(300, 10_000);
     await session.press("enter");
 
     await session.waitForText("largest first", 15_000);
@@ -65,7 +69,11 @@ describe("nav sort menu", () => {
     await session.waitForIdle(300, 10_000);
     await session.ctrl("s");
     await session.waitForText("Sort by", 15_000);
+    // Settle again inside the menu: the query has to land before enter, and
+    // the menu is a second fzf process that has only just taken the terminal.
+    await session.waitForIdle(300, 10_000);
     await session.type("size");
+    await session.waitForIdle(300, 10_000);
     await session.press("enter");
     await session.waitForText("largest first", 15_000);
 
@@ -73,7 +81,11 @@ describe("nav sort menu", () => {
     await session.waitForIdle(300, 10_000);
     await session.ctrl("s");
     await session.waitForText("Sort by", 15_000);
+    // Settle again inside the menu: the query has to land before enter, and
+    // the menu is a second fzf process that has only just taken the terminal.
+    await session.waitForIdle(300, 10_000);
     await session.type("size");
+    await session.waitForIdle(300, 10_000);
     await session.press("enter");
 
     await session.waitForText("smallest first", 15_000);

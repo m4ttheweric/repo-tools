@@ -13,7 +13,7 @@ describe("buildNavArgs preview", () => {
   test("emits preview command, window, and toggle bind when preview is set", () => {
     const args = buildNavArgs({ ...base, preview: "echo {1}" });
     expect(args).toContain("--preview=echo {1}");
-    expect(args).toContain("--preview-window=right,50%,border-rounded");
+    expect(args).toContain("--preview-window=right,50%,border-line");
     expect(args).toContain("--bind=ctrl-p:toggle-preview");
   });
 });
@@ -58,5 +58,12 @@ describe("buildNavArgs live refresh", () => {
     // returns to the same entry after a reload instead of jumping to the top.
     expect(args).toContain("--track");
     expect(args).toContain("--id-nth=1");
+  });
+});
+
+describe("buildNavArgs cyclic scroll", () => {
+  test("always enables --cycle so the list wraps at both ends", () => {
+    // Up at the top goes to the bottom, down at the bottom goes to the top.
+    expect(buildNavArgs({ options: [], message: "m" })).toContain("--cycle");
   });
 });
