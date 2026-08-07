@@ -5,7 +5,7 @@
  */
 import { rtCommand } from "./transport.ts";
 import type { RtResponse, RtClientOptions } from "./transport.ts";
-import type { DemandDecl, ProjectMRsData, DiscussionsData, MrByBranchData } from "./commands.ts";
+import type { DemandDecl, ProjectMRsData, DiscussionsData, MrByBranchData, ForgeSlug, ForgeTokenData } from "./commands.ts";
 
 /**
  * One repo's project open-MR store. A cold repo forces a full paginated sync
@@ -50,5 +50,24 @@ export function readMrsByBranch(
     "mr:by-branch",
     { repoName, branches },
     { sockPath: opts.sockPath, timeoutMs: 60_000 },
+  );
+}
+
+/**
+ * The forge token for one tracked repo (MAT-33). Grant-gated on the daemon
+ * side: an untracked repo comes back `ok: false` with the `rt daemon track`
+ * command to run, which is the fail-closed shape callers should surface
+ * verbatim. Callers keep env-var precedence on their own side; this is the
+ * fallback that replaces reading ~/.rt/secrets.json directly.
+ */
+export function resolveForgeToken(
+  repoName: string,
+  forge: ForgeSlug,
+  opts: RtClientOptions = {},
+): Promise<RtResponse<ForgeTokenData>> {
+  return rtCommand<ForgeTokenData>(
+    "secrets:forge-token",
+    { repoName, forge },
+    { sockPath: opts.sockPath, timeoutMs: 10_000 },
   );
 }
