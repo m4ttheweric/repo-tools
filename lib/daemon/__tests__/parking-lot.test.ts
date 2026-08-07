@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { findDesktopStash, getCurrentBranch, hasUncommittedChanges } from "../../git-ops.ts";
@@ -11,7 +11,10 @@ import { findDesktopStash, getCurrentBranch, hasUncommittedChanges } from "../..
 const tmpHome = mkdtempSync(join(tmpdir(), "rt-parking-"));
 process.env.HOME = tmpHome;
 
-const { __test__, isParkable, park } = await import("../parking-lot.ts");
+const { __test__, fastForwardParkedWorktrees, isParkable, park } = await import("../parking-lot.ts");
+// Imported after the HOME override for the same RT_DIR-pinning reason.
+const { saveSyncConfig } = await import("../../sync-config.ts");
+const { repoDataDir } = await import("../../rt-paths.ts");
 
 describe("reconcileIndexMap", () => {
   const repo = "test-repo";
@@ -207,5 +210,131 @@ describe("park (detached worktree)", () => {
     } finally {
       try { process.kill(pid, "SIGKILL"); } catch { /* already dead */ }
     }
+  });
+});
+
+describe("fastForwardParkedWorktrees (dirty-tree resolution)", () => {
+  const repoName = "ff-test-repo";
+  const GENERATED = "src/generated/schema.graphql";
+
+  let root: string;
+  let primary: string;
+  let wt: string;
+  let origin: string;
+
+  /** Run git in a given worktree. */
+  const git = (cwd: string, args: string[]) =>
+    execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" });
+
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), "rt-park-ff-")));
+    origin = join(root, "origin.git");
+    mkdirSync(origin);
+    execFileSync("git", ["init", "--bare", "-b", "master", origin], { stdio: "pipe" });
+    execFileSync("git", ["clone", origin, "primary"], { cwd: root, stdio: "pipe" });
+    primary = join(root, "primary");
+    git(primary, ["config", "user.email", "t@example.com"]);
+    git(primary, ["config", "user.name", "Test"]);
+
+    // The generated file ends WITHOUT a trailing newline, mirroring the real
+    // schema.graphql that froze web.
+    mkdirSync(join(primary, "src", "generated"), { recursive: true });
+    writeFileSync(join(primary, GENERATED), "type Query {\n  id: ID!\n}");
+    writeFileSync(join(primary, "README.md"), "hi\n");
+    git(primary, ["add", "."]);
+    git(primary, ["commit", "-m", "init"]);
+    git(primary, ["push", "origin", "master"]);
+
+    // A linked worktree parked on its slot branch.
+    wt = join(root, "wt7");
+    git(primary, ["worktree", "add", "-b", "parking-lot/7", wt, "HEAD"]);
+
+    // origin/master advances by one commit so there is something to fast-forward to.
+    writeFileSync(join(primary, "NEW.md"), "new\n");
+    git(primary, ["add", "."]);
+    git(primary, ["commit", "-m", "advance"]);
+    git(primary, ["push", "origin", "master"]);
+    git(primary, ["checkout", "-q", "HEAD~1"]); // keep master off the primary's HEAD
+
+    // Declare the generated file as auto-resolvable, exactly like acme-dev's
+    // sync.json does. postResolve is present to prove the sweep does NOT run it.
+    saveSyncConfig(repoDataDir(repoName), {
+      autoResolve: [
+        { glob: [`**/generated/**`], strategy: "theirs", postResolve: ["exit 1"] },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    try { rmSync(root, { recursive: true, force: true }); } catch { /* */ }
+    try { rmSync(repoDataDir(repoName), { recursive: true, force: true }); } catch { /* */ }
+  });
+
+  function behindCount(): number {
+    return parseInt(git(wt, ["rev-list", "--count", "HEAD..origin/master"]).trim(), 10);
+  }
+
+  test("fast-forwards a clean parked worktree", () => {
+    expect(behindCount()).toBe(1);
+    fastForwardParkedWorktrees(repoName, primary, [{ path: wt, branch: "parking-lot/7" }]);
+    expect(behindCount()).toBe(0);
+  });
+
+  test("discards a whitespace-only drift on a declared generated file, then fast-forwards", () => {
+    // The exact web shape: a trailing newline appended to a generated file.
+    writeFileSync(join(wt, GENERATED), "type Query {\n  id: ID!\n}\n");
+    expect(hasUncommittedChanges(wt)).toBe(true);
+
+    fastForwardParkedWorktrees(repoName, primary, [{ path: wt, branch: "parking-lot/7" }]);
+
+    expect(behindCount()).toBe(0);
+    expect(hasUncommittedChanges(wt)).toBe(false);
+  });
+
+  test("stashes and restores undeclared dirty work across the fast-forward", () => {
+    writeFileSync(join(wt, "sheep.toml"), "name = 'mine'\n");
+    git(wt, ["add", "sheep.toml"]);
+
+    fastForwardParkedWorktrees(repoName, primary, [{ path: wt, branch: "parking-lot/7" }]);
+
+    expect(behindCount()).toBe(0);
+    // The user's own work must survive the sweep.
+    expect(existsSync(join(wt, "sheep.toml"))).toBe(true);
+    expect(readFileSync(join(wt, "sheep.toml"), "utf8")).toBe("name = 'mine'\n");
+  });
+
+  test("handles the mixed case: discard the generated drift, stash/restore the rest", () => {
+    writeFileSync(join(wt, GENERATED), "type Query {\n  id: ID!\n}\n");
+    writeFileSync(join(wt, "sheep.toml"), "name = 'mine'\n");
+    git(wt, ["add", "sheep.toml"]);
+
+    fastForwardParkedWorktrees(repoName, primary, [{ path: wt, branch: "parking-lot/7" }]);
+
+    expect(behindCount()).toBe(0);
+    expect(existsSync(join(wt, "sheep.toml"))).toBe(true);
+    // The generated drift is gone (discarded, not stashed back on top).
+    expect(git(wt, ["status", "--porcelain", "--", GENERATED]).trim()).toBe("");
+  });
+
+  test("a substantive change to a declared file is stashed, never discarded", () => {
+    // Not whitespace, a real edit. The declaration says "upstream wins", but a
+    // background daemon must not destroy content it didn't generate.
+    writeFileSync(join(wt, GENERATED), "type Query {\n  id: ID!\n  extra: String\n}");
+
+    fastForwardParkedWorktrees(repoName, primary, [{ path: wt, branch: "parking-lot/7" }]);
+
+    expect(behindCount()).toBe(0);
+    expect(readFileSync(join(wt, GENERATED), "utf8")).toContain("extra: String");
+  });
+
+  test("leaves a diverged parked branch alone rather than forcing it", () => {
+    writeFileSync(join(wt, "local.md"), "local\n");
+    git(wt, ["add", "."]);
+    git(wt, ["commit", "-m", "local commit"]);
+    const headBefore = git(wt, ["rev-parse", "HEAD"]).trim();
+
+    fastForwardParkedWorktrees(repoName, primary, [{ path: wt, branch: "parking-lot/7" }]);
+
+    expect(git(wt, ["rev-parse", "HEAD"]).trim()).toBe(headBefore);
   });
 });
