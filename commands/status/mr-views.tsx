@@ -20,6 +20,8 @@ import {
   REVIEW_COLOR,
   pipelineIcon,
   jobStatusIcon,
+  canRebaseRemotely,
+  behindSuffix,
 } from "./format.ts";
 
 // ─── Pipeline Badge (compact + detailed) ────────────────────────────────────
@@ -197,7 +199,7 @@ function BlockerDetailed({ mr }: { mr: MRDashboardProps }) {
   const items: { icon: string; color: string; text: string }[] = [];
 
   if (b.hasConflicts) items.push({ icon: "⚠", color: "yellow", text: "Merge conflicts" });
-  if (b.needsRebase) items.push({ icon: "↻", color: "yellow", text: `Branch is behind target by ${mr.rebaseButton.behindBy} commits` });
+  if (b.needsRebase) items.push({ icon: "↻", color: "yellow", text: `Rebase required before merge${behindSuffix(mr)}` });
   if (b.hasUnresolvedDiscussions) items.push({ icon: "💬", color: "cyan", text: "Unresolved discussions" });
   if (b.isDraft) items.push({ icon: "○", color: "gray", text: "Draft — mark as ready before merging" });
   if (b.mergeError) items.push({ icon: "✗", color: "red", text: b.mergeError });
@@ -292,9 +294,8 @@ function ActionBarView({
   if (mr.mergeButton.visible && !mr.mergeButton.disabled) {
     items.push({ key: "m", label: mr.mergeButton.label });
   }
-  if (mr.rebaseButton.visible) {
-    const behind = mr.rebaseButton.behindBy;
-    items.push({ key: "r", label: `${mr.rebaseButton.label}${behind > 0 ? ` (${behind} behind)` : ""}` });
+  if (canRebaseRemotely(mr)) {
+    items.push({ key: "r", label: `${mr.rebaseButton.label}${behindSuffix(mr)}` });
   }
   items.push({ key: "R", label: "Local rebase" });
   items.push({ key: "a", label: "Approve" });
