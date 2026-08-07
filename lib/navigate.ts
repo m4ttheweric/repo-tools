@@ -170,7 +170,13 @@ export function buildNavArgs(opts: NavPickerOpts, socketPath?: string): string[]
     // space below on a tall terminal. "100%" uses the full height either way.
     "--height=100%",
     "--layout=reverse",
-    "--border=rounded",
+    // Up at the top wraps to the bottom and down at the bottom wraps to the
+    // top, so a long list has no dead ends at either edge.
+    "--cycle",
+    // A single rule across the top rather than a box around everything: the
+    // label still carries the current path, but the picker reads as part of the
+    // terminal instead of a drawn-on window.
+    "--border=top",
     `--border-label= ${opts.message} `,
     "--prompt=filter: ",
     `--header=${header}`,
@@ -189,7 +195,8 @@ export function buildNavArgs(opts: NavPickerOpts, socketPath?: string): string[]
     ...(opts.preview
       ? [
           `--preview=${opts.preview}`,
-          `--preview-window=right,50%,border-rounded${opts.previewHidden ? ",hidden" : ""}`,
+          // One vertical separator instead of a second box inside the first.
+          `--preview-window=right,50%,border-line${opts.previewHidden ? ",hidden" : ""}`,
           ...(expectKeys.includes("ctrl-p") ? [] : ["--bind=ctrl-p:toggle-preview"]),
         ]
       : []),
