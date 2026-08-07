@@ -114,3 +114,87 @@ export async function syncSecrets(opts: {
     message: `synced ${varCount} env vars into Secret ${opts.secretRef} (${namespace})`,
   };
 }
+
+// ─── Sandbox extensions (slice 2) ────────────────────────────────────────────
+// Same posture as syncSecrets: values flow memory → kubectl stdin, never
+// argv and never a new disk location; messages carry names/counts only.
+
+export interface SandboxSecretOutcome {
+  /** 0 ok, 1 tooling failure, 64 refused (nothing to upsert). */
+  exitCode: 0 | 1 | 64;
+  message: string;
+}
+
+/** apply an in-memory Secret manifest via kubectl stdin; null on success. */
+async function applySecretManifest(
+  exec: Exec,
+  namespace: string,
+  name: string,
+  fields: { stringData?: Record<string, string>; data?: Record<string, string> },
+): Promise<string | null> {
+  const apply = await exec(["kubectl", "-n", namespace, "apply", "-f", "-"], {
+    stdin: JSON.stringify({
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: { name, namespace },
+      type: "Opaque",
+      ...fields,
+    }),
+  });
+  if (apply.exitCode !== 0) {
+    return `kubectl apply failed for Secret ${name} — is the cluster reachable?`;
+  }
+  return null;
+}
+
+/**
+ * Upsert `repo-browser-secrets` — the dotenv fast-browser stat-checks at
+ * /secrets/browser/env. Whose login these are is the operator's choice
+ * (design ruling); rt only moves the bytes. Cluster-verify pending.
+ */
+export async function syncBrowserSecrets(opts: {
+  content: string;
+  namespace?: string;
+  exec?: Exec;
+}): Promise<SandboxSecretOutcome> {
+  const exec = opts.exec ?? spawnExec;
+  const namespace = opts.namespace ?? "mc-sandboxes";
+  if (!opts.content.trim()) {
+    return { exitCode: 64, message: "browser secrets file is empty — refusing to upsert an empty Secret" };
+  }
+  const error = await applySecretManifest(exec, namespace, "repo-browser-secrets", {
+    stringData: { env: opts.content },
+  });
+  if (error) return { exitCode: 1, message: error };
+  return { exitCode: 0, message: `upserted Secret repo-browser-secrets (${namespace})` };
+}
+
+/**
+ * Upsert `agent-credentials` — opaque files at overlay-named keys, mounted
+ * at overlay-named $HOME paths by the controller. The contract is generic
+ * on purpose: HOW the operator produces the files is adapter business, and
+ * nothing here knows or cares (design ruling 1). Binary-safe (base64
+ * `data`). Cluster-verify pending.
+ */
+export async function syncAgentCredentials(opts: {
+  files: Record<string, Uint8Array>;
+  namespace?: string;
+  exec?: Exec;
+}): Promise<SandboxSecretOutcome> {
+  const exec = opts.exec ?? spawnExec;
+  const namespace = opts.namespace ?? "mc-sandboxes";
+  const entries = Object.entries(opts.files);
+  if (entries.length === 0) {
+    return { exitCode: 64, message: "no agent credential files — declare them in the overlay first" };
+  }
+  const data: Record<string, string> = {};
+  for (const [key, bytes] of entries) {
+    data[key] = Buffer.from(bytes).toString("base64");
+  }
+  const error = await applySecretManifest(exec, namespace, "agent-credentials", { data });
+  if (error) return { exitCode: 1, message: error };
+  return {
+    exitCode: 0,
+    message: `upserted Secret agent-credentials with ${entries.length} file${entries.length === 1 ? "" : "s"} (${namespace})`,
+  };
+}

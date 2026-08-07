@@ -207,6 +207,14 @@ export interface SandboxOverlayConfig {
    * credentials and db name are adapter facts (lib/qa-tunnel.ts).
    */
   qaPostgresUrlTemplate?: string;
+  /** Local dotenv for the repo-browser-secrets Secret (absolute, ~ expanded). */
+  browserSecretsFile?: string;
+  /**
+   * agent-credentials sources: Secret key → local file path. The keys are
+   * overlay-named; how the operator produces the files is adapter business
+   * (design ruling 1 — nothing cswap-shaped in rt core).
+   */
+  agentCredentialFiles?: Record<string, string>;
 }
 
 function expandHome(path: string): string {
@@ -230,6 +238,8 @@ export function readSandboxConfig(
       processes?: Array<Partial<SandboxProcess>>;
       stateFile?: string;
       qaPostgresUrlTemplate?: string;
+      browserSecretsFile?: string;
+      agentCredentialFiles?: Record<string, string>;
     };
   };
   try {
@@ -253,6 +263,14 @@ export function readSandboxConfig(
     processes,
     ...(sandbox.stateFile ? { stateFile: expandHome(sandbox.stateFile) } : {}),
     ...(sandbox.qaPostgresUrlTemplate ? { qaPostgresUrlTemplate: sandbox.qaPostgresUrlTemplate } : {}),
+    ...(sandbox.browserSecretsFile ? { browserSecretsFile: expandHome(sandbox.browserSecretsFile) } : {}),
+    ...(sandbox.agentCredentialFiles
+      ? {
+          agentCredentialFiles: Object.fromEntries(
+            Object.entries(sandbox.agentCredentialFiles).map(([k, v]) => [k, expandHome(v)]),
+          ),
+        }
+      : {}),
   };
 }
 
