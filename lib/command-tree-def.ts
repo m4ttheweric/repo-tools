@@ -621,6 +621,59 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  // devOnly until the mattcloud cluster is live (validation-farm plan Task 9):
+  // the compiled binary must not ship a verb whose backend exists nowhere yet.
+  validate: {
+    description: "Validate the worktree on the farm (snapshot → cluster verdict)",
+    module: "./commands/validate.ts",
+    fn: "validateCommand",
+    context: "worktree",
+    devOnly: true,
+    args: [
+      { name: "Wait", flag: "--wait", type: "boolean", default: false, hint: "Block until the farm verdict (exit 0 farm-green, 1 red, 2 infra)" },
+      { name: "Manifest", flag: "--manifest", type: "text", placeholder: "~/.rt/repos/<repo>/gates.jsonc", hint: "Gate manifest path (defaults to the repo overlay's gates.jsonc)" },
+    ],
+    subcommands: {
+      status: {
+        description: "Per-group results for a run (defaults to the last submitted run)",
+        module: "./commands/validate.ts",
+        fn: "statusCommand",
+        context: "worktree",
+        args: [
+          { name: "Run id", type: "text", placeholder: "run id", hint: "Controller run id; omit for the last run submitted from this repo" },
+        ],
+      },
+      logs: {
+        description: "Print a failed group's log from the controller",
+        module: "./commands/validate.ts",
+        fn: "logsCommand",
+        args: [
+          { name: "Run id", type: "text", placeholder: "run id", hint: "Controller run id" },
+          { name: "Group", type: "text", placeholder: "tests", hint: "Task group name (format, lint, typecheck, cvi, tests)" },
+        ],
+      },
+    },
+  },
+
+  cloud: {
+    description: "mattcloud cluster operations",
+    devOnly: true,
+    subcommands: {
+      secrets: {
+        description: "Cluster Secret operations",
+        subcommands: {
+          sync: {
+            description: "Doppler env snapshot → k8s Secret upsert (never touches disk)",
+            module: "./commands/cloud.ts",
+            fn: "secretsSyncCommand",
+            context: "worktree",
+            args: [],
+          },
+        },
+      },
+    },
+  },
+
   daemon: {
     description: "Manage the rt background daemon",
     subcommands: {
