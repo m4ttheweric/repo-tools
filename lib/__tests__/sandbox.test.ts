@@ -5,9 +5,12 @@ import { join } from "node:path";
 
 import {
   createSandboxClient,
+  createSandboxFlow,
+  findSandboxAnchor,
   listSandboxOverlays,
   parseFlagValues,
   pushSandboxBranch,
+  sandboxLogsArgv,
   readSandboxAnchor,
   readSandboxConfig,
   removeSandboxAnchor,
@@ -319,5 +322,84 @@ describe("flags", () => {
     const out = await upsertFlagsSecret({ sandboxId: "sb-1", flags: {}, exec });
     expect(out.exitCode).toBe(1);
     expect(out.message).toContain("kubectl");
+  });
+});
+
+// ─── Create flow ─────────────────────────────────────────────────────────────
+
+describe("createSandboxFlow", () => {
+  function world(pushExit = 0) {
+    const order: string[] = [];
+    const client = {
+      async create(req: unknown) {
+        order.push("create");
+        (world as unknown as Record<string, unknown>).lastCreateBody = req;
+        return { sandboxId: "sb-9" };
+      },
+    } as unknown as import("../sandbox.ts").SandboxClient;
+    const spawn = async (argv: string[]) => {
+      order.push(`push ${argv[3]}`);
+      return { exitCode: pushExit, stderr: pushExit === 0 ? "" : "denied" };
+    };
+    return { order, client, spawn };
+  }
+
+  test("pushes the handshake ref first, then POSTs, then writes the anchor", async () => {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
+    const { order, client, spawn } = world();
+    const out = await createSandboxFlow({
+      repoId: "acme-dev", branch: "cv-9", commit: "abc", cwd: "/w",
+      brief: "do it", flags: { f: true }, client, spawn,
+    });
+    expect(out).toEqual({ ok: true, sandboxId: "sb-9" });
+    expect(order).toEqual(["push +abc:refs/sandboxes/incoming/cv-9", "create"]);
+    const anchor = readSandboxAnchor("acme-dev", "sb-9")!;
+    expect(anchor.branch).toBe("cv-9");
+    expect(anchor.lastEventSeq).toBe(0);
+  });
+
+  test("flags serialize into flagsFileContent; omitted entirely when absent", async () => {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
+    const bodies: Array<Record<string, unknown>> = [];
+    const client = {
+      async create(req: Record<string, unknown>) { bodies.push(req); return { sandboxId: "s" }; },
+    } as unknown as import("../sandbox.ts").SandboxClient;
+    const spawn = async () => ({ exitCode: 0, stderr: "" });
+    await createSandboxFlow({ repoId: "r", branch: "b", commit: "c", cwd: "/w", brief: "x", flags: { f: 1 }, client, spawn });
+    await createSandboxFlow({ repoId: "r", branch: "b", commit: "c", cwd: "/w", brief: "x", client, spawn });
+    expect(JSON.parse(bodies[0]!.flagsFileContent as string)).toEqual({ f: 1 });
+    expect("flagsFileContent" in bodies[1]!).toBe(false);
+    expect("imageTag" in bodies[1]!).toBe(false);
+  });
+
+  test("a failed push short-circuits: no POST, no anchor", async () => {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
+    const { order, client, spawn } = world(1);
+    const out = await createSandboxFlow({
+      repoId: "acme-dev", branch: "cv-9", commit: "abc", cwd: "/w", brief: "x", client, spawn,
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.message).toContain("denied");
+    expect(order).toHaveLength(1);
+    expect(readSandboxAnchor("acme-dev", "sb-9")).toBeNull();
+  });
+});
+
+// ─── Anchor lookup + logs argv ───────────────────────────────────────────────
+
+describe("findSandboxAnchor", () => {
+  test("finds an anchor across repoIds; null when unknown", () => {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
+    writeSandboxAnchor({ id: "sb-1", repoId: "acme-dev", branch: "b", createdAt: "t", lastEventSeq: 0 });
+    expect(findSandboxAnchor("sb-1")).toMatchObject({ id: "sb-1", repoId: "acme-dev" });
+    expect(findSandboxAnchor("ghost")).toBeNull();
+  });
+});
+
+describe("sandboxLogsArgv", () => {
+  test("kubectl logs passthrough for the sandbox pod, extra args appended", () => {
+    expect(sandboxLogsArgv("sb-1", "agent", ["-f"])).toEqual([
+      "kubectl", "-n", "mc-sandboxes", "logs", "sb-1", "-c", "agent", "-f",
+    ]);
   });
 });

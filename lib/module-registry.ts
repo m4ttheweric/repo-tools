@@ -40,6 +40,7 @@ import * as plugin from "../commands/plugin.ts";
 import * as worktree from "../commands/worktree.ts";
 import * as validate from "../commands/validate.ts";
 import * as cloud from "../commands/cloud.ts";
+import * as sandbox from "../commands/sandbox.ts";
 
 export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/branch.ts": branch,
@@ -76,4 +77,5 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/worktree.ts": worktree,
   "./commands/validate.ts": validate,
   "./commands/cloud.ts": cloud,
+  "./commands/sandbox.ts": sandbox,
 };

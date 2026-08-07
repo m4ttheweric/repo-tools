@@ -160,8 +160,8 @@ function printRunJson(run: Run, exitCode: number): void {
   }, null, 2));
 }
 
-/** True when the controller answers /healthz. */
-async function probeController(): Promise<boolean> {
+/** True when the controller answers /healthz. (Shared with commands/sandbox.ts.) */
+export async function probeController(): Promise<boolean> {
   try {
     const res = await fetch(`${controllerUrl()}/healthz`, { signal: AbortSignal.timeout(1500) });
     return res.ok;
@@ -199,8 +199,8 @@ function spawnKubectlForwards(): { stop: () => void } {
   };
 }
 
-/** Make the controller reachable, or print why and return null (exit 2). */
-async function requireEndpoints(): Promise<{ stop: () => void } | null> {
+/** Make the controller reachable, or print why and return null (exit 2). (Shared with commands/sandbox.ts.) */
+export async function requireEndpoints(): Promise<{ stop: () => void } | null> {
   const handle = await ensureEndpoints({
     probe: probeController,
     spawnForwards: spawnKubectlForwards,
