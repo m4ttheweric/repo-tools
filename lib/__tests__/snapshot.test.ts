@@ -137,3 +137,11 @@ describe("snapshotWorktree", () => {
     expect(names).toContain("sub/nested.txt");
   });
 });
+
+test("snapshot commits are deterministic: same state -> same commit sha", async () => {
+  writeFileSync(join(repo, "det.txt"), "same state\n");
+  const a = await snapshotWorktree(repo, "refs/remotes/origin/master");
+  const b = await snapshotWorktree(repo, "refs/remotes/origin/master");
+  expect(b.commit).toBe(a.commit);
+  expect(b.tree).toBe(a.tree);
+});

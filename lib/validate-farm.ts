@@ -90,7 +90,9 @@ export async function pushSnapshot(opts: {
   const spawn = opts.spawn ?? spawnGitPush;
   const pushUrl = receiverRepoUrl(opts.repoId);
   const result = await spawn(
-    ["git", "push", pushUrl, `${opts.commit}:refs/snapshots/${opts.tree}`],
+    // Forced refspec: snapshot refs are content-addressed by tree, so any
+    // commit carrying the tree is equivalent; non-fast-forward retries must win.
+    ["git", "push", pushUrl, `+${opts.commit}:refs/snapshots/${opts.tree}`],
     { cwd: opts.cwd, env: receiverSshEnv(opts.env ?? process.env) },
   );
   return { ok: result.exitCode === 0, pushUrl, stderr: result.stderr };

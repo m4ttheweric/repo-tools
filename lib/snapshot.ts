@@ -84,7 +84,18 @@ export async function snapshotWorktree(
     await git(root, env, ["add", "-A", "--", "."]);
     const tree = (await git(root, env, ["write-tree"])).trim();
     const head = (await git(root, {}, ["rev-parse", "HEAD"])).trim();
-    const commit = (await git(root, env, ["commit-tree", tree, "-p", head, "-m", "rt validate snapshot"])).trim();
+    // Deterministic dates: same tree + parent => same commit sha, so retries
+    // and concurrent runs are idempotent against the receiver's snapshot ref.
+    const detEnv = {
+      ...env,
+      GIT_AUTHOR_NAME: "rt-validate",
+      GIT_AUTHOR_EMAIL: "rt@local",
+      GIT_COMMITTER_NAME: "rt-validate",
+      GIT_COMMITTER_EMAIL: "rt@local",
+      GIT_AUTHOR_DATE: "1970-01-01T00:00:00Z",
+      GIT_COMMITTER_DATE: "1970-01-01T00:00:00Z",
+    };
+    const commit = (await git(root, detEnv, ["commit-tree", tree, "-p", head, "-m", "rt validate snapshot"])).trim();
     const mergeBase = (await git(root, {}, ["merge-base", "HEAD", baseRef])).trim();
     const changedFiles = (await git(root, {}, ["diff", "--name-only", mergeBase, commit]))
       .trim()
