@@ -179,6 +179,22 @@ describe("mode resolution", () => {
   });
 });
 
+
+/**
+ * Narrowers for the typed handler results (MAT-31): the handlers now return
+ * the catalog's discriminated union, so reaching for `.data`/`.error`
+ * without deciding which arm you expect is a type error. Throwing on the
+ * wrong arm keeps the failure message better than a bare undefined access.
+ */
+function dataOf<T>(res: { ok: true; data: T } | { ok: false; error: string }): T {
+  if (!res.ok) throw new Error(`expected ok:true, got error: ${res.error}`);
+  return res.data;
+}
+function errOf<T>(res: { ok: true; data: T } | { ok: false; error: string }): string {
+  if (res.ok) throw new Error(`expected ok:false, got data: ${JSON.stringify(res.data)}`);
+  return res.error;
+}
+
 describe("project-mrs:read handler", async () => {
   const { createProjectMRsHandlers } = await import("../handlers/project-mrs.ts");
   const fakeCtx = { repoIndex: () => ({ repo: "/tmp/repo" }), log: { warn: () => {} } } as any;
@@ -191,8 +207,8 @@ describe("project-mrs:read handler", async () => {
     });
     const res = await h["project-mrs:read"]!({ repoName: "repo" });
     expect(res.ok).toBe(false);
-    expect(res.error).toContain("project-mrs cache not granted for repo");
-    expect(res.error).toContain("rt daemon track repo live branches,project-mrs");
+    expect(errOf(res)).toContain("project-mrs cache not granted for repo");
+    expect(errOf(res)).toContain("rt daemon track repo live branches,project-mrs");
     expect(synced).toBe(0);
   });
 
@@ -216,7 +232,7 @@ describe("project-mrs:read handler", async () => {
     });
     const res = await h["project-mrs:read"]!({ repoName: "repo" });
     expect(res.ok).toBe(true);
-    expect(res.data).toEqual({ mrs: {}, listSyncedAt: 0, source: "poll", syncedAt: 0 });
+    expect(dataOf(res)).toEqual({ mrs: {}, listSyncedAt: 0, source: "poll", syncedAt: 0 });
     expect(synced).toBe(0);
   });
 
@@ -226,7 +242,7 @@ describe("project-mrs:read handler", async () => {
     });
     const res = await h["project-mrs:read"]!({ repoName: "repo", maxAgeMs: 0 });
     expect(res.ok).toBe(false);
-    expect(res.error).toContain("project sync failed");
+    expect(errOf(res)).toContain("project sync failed");
   });
 
   test("freshness gate honors deltaSyncedAt: old listSyncedAt but fresh deltaSyncedAt → no sync", async () => {
@@ -240,7 +256,7 @@ describe("project-mrs:read handler", async () => {
     const res = await h["project-mrs:read"]!({ repoName: "repo", maxAgeMs: 60_000 });
     expect(synced).toBe(0);
     expect(res.ok).toBe(true);
-    expect(res.data.syncedAt).toBe(store.read("repo")!.deltaSyncedAt);
+    expect(dataOf(res).syncedAt).toBe(store.read("repo")!.deltaSyncedAt!);
   });
 
   test("demand registers before the freshness gate and is monotonic", async () => {
@@ -273,7 +289,7 @@ describe("project-mrs:read handler", async () => {
     const res = await h["project-mrs:read"]!({ repoName: "repo",
       demand: { client: "b:1", authors: ["alice", "newbie"], declaredAt: 1 } });
     expect(res.ok).toBe(true);
-    expect((res.data as any).scope).toEqual({ authors: ["alice"], windowDays: 30, uncovered: ["newbie"] });
+    expect((dataOf(res) as any).scope).toEqual({ authors: ["alice"], windowDays: 30, uncovered: ["newbie"] });
     await new Promise((r) => setTimeout(r, 0));   // fire-and-forget settles
     expect(backfilled).toEqual([["newbie"]]);
   });
@@ -308,8 +324,8 @@ describe("project-mrs:read handler", async () => {
     const res = await h["project-mrs:read"]!({ repoName: "repo", maxAgeMs: 0,
       demand: { client: "b:1", authors: ["alice", "newbie"], declaredAt: 1 } });
     expect(res.ok).toBe(true);
-    expect((res.data as any).scope.uncovered).toEqual([]);
-    expect((res.data as any).scope.authors).toContain("newbie");
+    expect((dataOf(res) as any).scope.uncovered).toEqual([]);
+    expect((dataOf(res) as any).scope.authors).toContain("newbie");
   });
 
   test("duplicate demanded authors collapse to a single uncovered entry", async () => {
@@ -323,7 +339,7 @@ describe("project-mrs:read handler", async () => {
     });
     const res = await h["project-mrs:read"]!({ repoName: "repo",
       demand: { client: "b:1", authors: ["alice", "newbie", "newbie"], declaredAt: 1 } });
-    expect((res.data as any).scope.uncovered).toEqual(["newbie"]);
+    expect((dataOf(res) as any).scope.uncovered).toEqual(["newbie"]);
     await new Promise((r) => setTimeout(r, 0));   // fire-and-forget settles
     expect(backfilled).toEqual([["newbie"]]);
   });
@@ -387,7 +403,7 @@ describe("project-mrs:read handler", async () => {
       demand: { client: "b:1", authors: ["old"], declaredAt: 100 } });
     expect(store.read("repo")!.demands!["b:1"]!.authors).toEqual(["new"]); // unchanged by the stale demand
     expect(res.ok).toBe(true);
-    expect((res.data as any).scope.uncovered).toEqual(["new"]);
+    expect((dataOf(res) as any).scope.uncovered).toEqual(["new"]);
     await new Promise((r) => setTimeout(r, 0));   // fire-and-forget settles
     expect(backfilled).toEqual([["new"]]);
   });
@@ -399,7 +415,7 @@ describe("project-mrs:read handler", async () => {
       fetchByBranch: async () => { throw new Error("must not hit forge"); } });
     const res = await h["mr:by-branch"]!({ repoName: "repo", branches: ["feat-a"] });
     expect(res.ok).toBe(true);
-    expect((res.data as any).byBranch["feat-a"]).toMatchObject({ source: "store", pr: { iid: 1 } });
+    expect((dataOf(res) as any).byBranch["feat-a"]).toMatchObject({ source: "store", pr: { iid: 1 } });
   });
 
   test("by-branch: miss falls through to forge, writes back, next call is a store hit", async () => {
@@ -409,9 +425,9 @@ describe("project-mrs:read handler", async () => {
     const h = createProjectMRsHandlers(fakeCtx, () => {}, { store, sync: async () => {}, tracking: grantedTracking,
       fetchByBranch: async (_r, branch) => { forgeCalls++; return { pr: pr(7, { sourceBranch: branch, state: "merged" }), projectPath: "g/p" }; } });
     const r1 = await h["mr:by-branch"]!({ repoName: "repo", branches: ["feat-b"] });
-    expect((r1.data as any).byBranch["feat-b"].source).toBe("forge");
+    expect((dataOf(r1) as any).byBranch["feat-b"].source).toBe("forge");
     const r2 = await h["mr:by-branch"]!({ repoName: "repo", branches: ["feat-b"] });
-    expect((r2.data as any).byBranch["feat-b"].source).toBe("store");
+    expect((dataOf(r2) as any).byBranch["feat-b"].source).toBe("store");
     expect(forgeCalls).toBe(1);
   });
 
@@ -424,9 +440,9 @@ describe("project-mrs:read handler", async () => {
       fetchByBranch: async (_r, branch) => { if (branch === "boom") throw new Error("forge down"); return { pr: null, projectPath: "g/p" }; } });
     const res = await h["mr:by-branch"]!({ repoName: "repo", branches: ["ok", "gone", "boom"] });
     expect(res.ok).toBe(true);
-    expect((res.data as any).byBranch["ok"].source).toBe("store");
-    expect((res.data as any).byBranch["gone"]).toBeNull();
-    expect((res.data as any).byBranch["boom"]).toBeNull();
+    expect((dataOf(res) as any).byBranch["ok"].source).toBe("store");
+    expect((dataOf(res) as any).byBranch["gone"]).toBeNull();
+    expect((dataOf(res) as any).byBranch["boom"]).toBeNull();
     expect(warns.length).toBe(1);
   });
 
@@ -435,7 +451,7 @@ describe("project-mrs:read handler", async () => {
     expect((await h["mr:by-branch"]!({ repoName: "repo", branches: [] })).ok).toBe(false);
     expect((await h["mr:by-branch"]!({ repoName: "repo", branches: Array.from({length: 101}, (_, i) => `b${i}`) })).ok).toBe(false);
     const denied = createProjectMRsHandlers(fakeCtx, () => {}, { store: tmpStore(), sync: async () => {}, tracking: () => ({}) });
-    expect((await denied["mr:by-branch"]!({ repoName: "repo", branches: ["x"] })).error).toContain("not granted");
+    expect(errOf(await denied["mr:by-branch"]!({ repoName: "repo", branches: ["x"] }))).toContain("not granted");
   });
 });
 

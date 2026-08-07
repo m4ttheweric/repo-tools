@@ -19,7 +19,7 @@ import { loadSecrets } from "../../linear.ts";
 import { refreshDiscussions, type BroadcastFn } from "../discussions-store.ts";
 import { getDiscussionsFileStore } from "../discussions-file-store.ts";
 import { grants, loadRepoTracking } from "../../repo-tracking.ts";
-import type { HandlerContext, HandlerMap } from "./types.ts";
+import type { HandlerContext, HandlerMap, TypedHandlers } from "./types.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 
 /** Discussions are stable per push; 2min TTL keeps reads fast without going stale. */
@@ -28,7 +28,7 @@ const DISCUSSIONS_TTL_MS = 2 * 60 * 1000;
 export function createDiscussionHandlers(
   ctx: HandlerContext,
   broadcast: BroadcastFn,
-): HandlerMap {
+): Pick<TypedHandlers, "discussions:read"> & HandlerMap {
   const deps = { ctx, broadcast };
 
   return {

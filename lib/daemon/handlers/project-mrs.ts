@@ -16,7 +16,7 @@ import { loadRepoTracking, grants, type RepoTracking } from "../../repo-tracking
 import { getProjectMRs, freshnessOf, type ProjectMRs } from "../project-mrs-store.ts";
 import { syncProjectMRs, backfillAuthors } from "../project-sync.ts";
 import { getRepoContext } from "../freshness.ts";
-import type { HandlerContext, HandlerMap } from "./types.ts";
+import type { HandlerContext, HandlerMap, TypedHandlers } from "./types.ts";
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
 
 /** Shape of the `demand` request field once validated. */
@@ -65,7 +65,7 @@ export function createProjectMRsHandlers(
   ctx: HandlerContext,
   broadcast: (type: string, data: unknown) => void,
   overrides: ProjectMRsHandlerOverrides = {},
-): HandlerMap {
+): Pick<TypedHandlers, "project-mrs:read" | "mr:by-branch"> & HandlerMap {
   const store = () => overrides.store ?? getProjectMRs();
   const sync = overrides.sync
     ?? ((repoName: string) => syncProjectMRs({ repoIndex: ctx.repoIndex, broadcast }, repoName));
