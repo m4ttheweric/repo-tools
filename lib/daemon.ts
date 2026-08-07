@@ -36,6 +36,7 @@ import { createHooksGuard } from "./daemon/hooks-guard.ts";
 import { buildRoutedHandlers } from "./daemon/command-router.ts";
 import { startSocketServer } from "./daemon/socket-server.ts";
 import { startApiServer, broadcast } from "./daemon/api-server.ts";
+import { loadCronConfig, startCron } from "./daemon/cron.ts";
 import { startPollers } from "./daemon/pollers.ts";
 import { restoreWatchers } from "./daemon/workspace-sync.ts";
 import {
@@ -83,10 +84,17 @@ const startedAt = Date.now();
 
 const hooksGuard = createHooksGuard(log);
 
+// Cron trigger layer (mechanism-only, MAT-161): sees every broadcast frame.
+const cron = startCron(loadCronConfig(undefined, log), { log });
+const emit: typeof broadcast = (type, data) => {
+  broadcast(type, data);
+  cron.onBroadcast(type, data);
+};
+
 const refreshCache = createCacheRefresher({
   log, cache, loadCache, refreshStatusRef, portCacheRef,
   repoIndex: loadRepoIndex,
-  broadcast,
+  broadcast: emit,
   statusSnapshot: () => handleCommand("tray:status", {}),
   reconcileSubscriptions: () => reconcileFreshness(freshnessEnv),
 });
@@ -106,9 +114,9 @@ const handlerCtx: HandlerContext = {
 };
 
 /** Env bundle for the live-freshness subsystem. */
-const freshnessEnv: FreshnessEnv = { ctx: handlerCtx, broadcast };
+const freshnessEnv: FreshnessEnv = { ctx: handlerCtx, broadcast: emit };
 
-const routedHandlers = buildRoutedHandlers({ ctx: handlerCtx, broadcast, systemProcessScanner });
+const routedHandlers = buildRoutedHandlers({ ctx: handlerCtx, broadcast: emit, systemProcessScanner });
 
 async function handleCommand(cmd: string, payload: any): Promise<any> {
   const t0 = Date.now();
@@ -155,7 +163,11 @@ async function routeCommand(cmd: string, payload: any): Promise<any> {
 // it makes server.upgrade() require an explicit data arg.
 const servers: { socket?: Server<any>; api?: Server<any> } = {};
 
-const cleanup = createCleanup({ servers, hooksGuard, flushCache, log });
+const cleanupCore = createCleanup({ servers, hooksGuard, flushCache, log });
+const cleanup = (): void => {
+  cron.dispose();
+  cleanupCore();
+};
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
@@ -183,7 +195,7 @@ export function startDaemon(): void {
   servers.api = startApiServer({ handleCommand, log });
 
   // Wire notification broadcasts to WebSocket clients
-  onNotification(broadcast);
+  onNotification(emit);
 
   // Discover and watch repos
   hooksGuard.refreshWatchedRepos();
@@ -206,7 +218,7 @@ export function startDaemon(): void {
   // Periodic background work: cache refresh, port scan, system-process scan,
   // hooks-guard fallback rescan.
   startPollers({
-    log, refreshCache, portCacheRef, broadcast, systemProcessScanner,
+    log, refreshCache, portCacheRef, broadcast: emit, systemProcessScanner,
     repoIndex: loadRepoIndex,
     checkAndRepairHooksPath: hooksGuard.checkAndRepairHooksPath,
   });
@@ -221,7 +233,7 @@ export function startDaemon(): void {
   }, 7000);
 
   // Background sweep for new MR comments → `discussions:new-comments` events.
-  startDiscussionsPoller({ ctx: handlerCtx, broadcast });
+  startDiscussionsPoller({ ctx: handlerCtx, broadcast: emit });
 
   // Sandbox ground-truth reconcile: port-forwards, dev-ports mirroring, and
   // typed-event → notification fan-out (no-op while no controller answers).
