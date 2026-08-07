@@ -55,16 +55,25 @@ function printRepoBindings(repoName: string, repoPath: string): void {
     return;
   }
 
-  const bindings = describeRepoBindings(repoName, repoPath).sort((a, b) => a.index - b.index);
+  const bindings = describeRepoBindings(repoName, repoPath, { withStaleness: true })
+    .sort((a, b) => a.index - b.index);
   if (bindings.length === 0) {
     console.log(`    ${dim}no worktrees${reset}\n`);
     return;
   }
 
+  // Staleness is only worth showing where it means something is wrong. An
+  // unparked slot trails master by design... its worktree is off on a feature
+  // branch, and park() fast-forwards the slot when it comes back. A *parked*
+  // slot that trails is the real signal: the background sweep isn't keeping it
+  // current. Annotating both drowns the second in the first.
+  const STALE_AT = 50;
+
   const widest    = Math.max(...bindings.map(b => String(b.index).length));
   const repoDir   = repoPath.replace(/\/[^/]+\/?$/, "");
   const wtNames   = bindings.map(b => b.path.startsWith(repoDir + "/") ? b.path.slice(repoDir.length + 1) : b.path);
   const widestWt  = Math.max(...wtNames.map(s => s.length));
+  let staleCount  = 0;
   for (let i = 0; i < bindings.length; i++) {
     const b      = bindings[i]!;
     const idx    = String(b.index).padStart(widest);
@@ -73,9 +82,16 @@ function printRepoBindings(repoName: string, repoPath: string): void {
     const status = b.branch === null     ? `${dim}(detached)${reset}`
                  : b.branch === slot     ? `${green}parked${reset}`
                  :                         b.branch;
-    console.log(`    ${cyan}park/${idx}${reset}  ${dim}${wt}${reset}  ${status}`);
+    const behind = b.slotBehind ?? 0;
+    const stuck  = b.branch === slot && behind >= STALE_AT;
+    if (stuck) staleCount++;
+    const stale  = stuck ? `  ${yellow}${behind} behind${reset}` : "";
+    console.log(`    ${cyan}park/${idx}${reset}  ${dim}${wt}${reset}  ${status}${stale}`);
   }
   console.log("");
+  if (staleCount > 0) {
+    console.log(`    ${yellow}⚠${reset} ${staleCount} parked slot${staleCount > 1 ? "s are" : " is"} not being kept current ${dim}... check the daemon: rt daemon logs${reset}\n`);
+  }
 }
 
 // ─── Commands ────────────────────────────────────────────────────────────────

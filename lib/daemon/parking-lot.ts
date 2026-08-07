@@ -16,7 +16,7 @@
  * per MR and never park on a cold-boot `merged` cache entry.
  */
 
-import { execSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
 
@@ -25,12 +25,15 @@ import { RT_DIR } from "../daemon-config.ts";
 import { repoDataDir } from "../rt-paths.ts";
 import { readJson, writeJson } from "../json-store.ts";
 import {
+  findDesktopStash,
   getCurrentBranch,
   getRemoteDefaultBranch,
   hasUncommittedChanges,
+  popStash,
   stashChanges,
 } from "../git-ops.ts";
 import { loadParkingLotConfig } from "../parking-lot-config.ts";
+import { loadSyncConfig, matchRule } from "../sync-config.ts";
 // Namespace import so tests can spy on the kill step.
 import * as wtKill from "./worktree-process-kill.ts";
 import type { CacheEntry, RepoIndex } from "./handlers/types.ts";
@@ -314,7 +317,91 @@ function isParkedBranch(branch: string): boolean {
   return /^parking-lot\/\d+$/.test(branch);
 }
 
-function fastForwardParkedWorktrees(
+/** One entry from `git status --porcelain`. */
+interface DirtyEntry { status: string; path: string; }
+
+function listDirtyEntries(cwd: string): DirtyEntry[] {
+  let out: string;
+  try {
+    out = execSync("git status --porcelain", { cwd, encoding: "utf8", stdio: "pipe" });
+  } catch (err) {
+    log.warn({ err, cwd }, "git status failed during ff-sweep");
+    return [];
+  }
+
+  const entries: DirtyEntry[] = [];
+  for (const line of out.split("\n")) {
+    if (line.length < 4) continue;
+    const status = line.slice(0, 2);
+    let path = line.slice(3);
+    // Rename/copy entries read "old -> new"; the destination is what's dirty.
+    const arrow = path.indexOf(" -> ");
+    if (arrow !== -1) path = path.slice(arrow + 4);
+    // git quotes paths containing specials (C-style escapes).
+    if (path.startsWith('"') && path.endsWith('"')) {
+      try { path = JSON.parse(path) as string; } catch { path = path.slice(1, -1); }
+    }
+    entries.push({ status, path });
+  }
+  return entries;
+}
+
+/**
+ * Whether a tracked file's local change is pure whitespace relative to HEAD.
+ * Compared against HEAD (not the index) so a staged whitespace-only edit counts.
+ */
+function isWhitespaceOnlyChange(cwd: string, path: string): boolean {
+  try {
+    execFileSync("git", ["diff", "HEAD", "--ignore-all-space", "--exit-code", "--", path], {
+      cwd, stdio: "pipe",
+    });
+    return true; // exit 0 → nothing left once whitespace is ignored
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Decide what to do with each dirty path before a fast-forward.
+ *
+ * `discard` covers tracked modifications to files the repo's sync.json
+ * declares auto-resolvable with `strategy: "theirs"`, whose local diff is pure
+ * whitespace. These are generated artifacts that drift by a trailing newline
+ * and are rebuilt by the next build; the declaration says upstream wins.
+ *
+ * Everything else is stashed and restored, never discarded... a background
+ * sweep must not destroy content it didn't generate. That deliberately
+ * includes substantive changes to declared files: the declaration is about
+ * regenerable drift, not about giving the daemon licence to delete real edits.
+ */
+function classifyDirtyForFastForward(
+  worktreePath: string,
+  repoName: string,
+  entries: DirtyEntry[],
+): { discard: string[]; stashRest: boolean } {
+  const rules = loadSyncConfig(repoDataDir(repoName)).autoResolve;
+  const discard: string[] = [];
+  let stashRest = false;
+
+  for (const e of entries) {
+    const untracked = e.status === "??";
+    const modified  = !untracked && e.status.includes("M");
+    if (
+      modified &&
+      matchRule(e.path, rules)?.strategy === "theirs" &&
+      isWhitespaceOnlyChange(worktreePath, e.path)
+    ) {
+      discard.push(e.path);
+    } else {
+      stashRest = true;
+    }
+  }
+
+  return { discard, stashRest };
+}
+
+export function fastForwardParkedWorktrees(
+  repoName: string,
   repoPath: string,
   worktrees: WorktreeInfo[],
 ): void {
@@ -332,13 +419,66 @@ function fastForwardParkedWorktrees(
   }
 
   for (const wt of parked) {
-    if (hasUncommittedChanges(wt.path)) continue;
+    const entries = listDirtyEntries(wt.path);
+    let discarded: string[] = [];
+    let stashName: string | null = null;
+
+    if (entries.length > 0) {
+      const { discard, stashRest } = classifyDirtyForFastForward(wt.path, repoName, entries);
+
+      // Reset declared generated drift to HEAD (covers staged + unstaged).
+      for (const path of discard) {
+        try {
+          execFileSync("git", ["checkout", "HEAD", "--", path], { cwd: wt.path, stdio: "pipe" });
+          discarded.push(path);
+        } catch (err) {
+          log.warn({ err, worktree: wt.path, path }, "failed to reset declared generated file; will stash instead");
+        }
+      }
+
+      // Anything left gets stashed under the slot's Desktop-compatible marker
+      // so it is recoverable by hand even if the restore below fails.
+      if (stashRest || hasUncommittedChanges(wt.path)) {
+        try {
+          stashChanges(wt.path, wt.branch!);
+          stashName = findDesktopStash(wt.path, wt.branch!)?.name ?? "stash@{0}";
+        } catch (err) {
+          log.warn({ err, branch: wt.branch, worktree: wt.path }, `ff-sweep: could not stash ${wt.branch}, leaving it behind`);
+          continue;
+        }
+      }
+    }
+
+    let advanced = false;
     try {
       execSync(`git ${NO_HOOKS} merge --ff-only "${defaultRef}"`, { cwd: wt.path, stdio: "pipe" });
-      log.debug({ branch: wt.branch, worktree: wt.path, defaultRef }, `fast-forwarded ${wt.branch} → ${defaultRef}`);
+      advanced = true;
     } catch (err) {
-      // Branch has diverged or is already up to date — expected, skip.
+      // Branch has diverged or is already up to date... expected, not a failure.
       log.debug({ err, branch: wt.branch, worktree: wt.path }, "ff-only skipped (diverged or already up to date)");
+    }
+
+    // Always attempt the restore, including when the ff was a no-op: we took
+    // the user's changes, so we owe them back regardless of the merge outcome.
+    if (stashName) {
+      try {
+        popStash(wt.path, stashName);
+      } catch (err) {
+        log.warn(
+          { err, branch: wt.branch, worktree: wt.path, stashName },
+          `ff-sweep: stash ${stashName} did not reapply cleanly in ${wt.path}... it is preserved, restore it with: git stash pop ${stashName}`,
+        );
+        continue;
+      }
+    }
+
+    if (advanced) {
+      log.info(
+        { branch: wt.branch, worktree: wt.path, defaultRef, discarded, stashed: Boolean(stashName) },
+        `fast-forwarded ${wt.branch} → ${defaultRef}`
+          + (discarded.length ? ` (reset ${discarded.length} generated file${discarded.length > 1 ? "s" : ""})` : "")
+          + (stashName ? " (stashed and restored local changes)" : ""),
+      );
     }
   }
 }
@@ -421,7 +561,7 @@ export function checkAndPark(env: ParkingEnv): void {
     if (!existsSync(repoPath)) continue;
     const worktrees = worktreeByRepo.get(repoPath) ?? listWorktrees(repoPath);
     try {
-      fastForwardParkedWorktrees(repoPath, worktrees);
+      fastForwardParkedWorktrees(repoName, repoPath, worktrees);
     } catch (err) {
       log.warn({ err, repoName }, `ff-sweep failed for ${repoName}`);
     }
@@ -434,16 +574,54 @@ export interface WorktreeBinding {
   path:   string;
   branch: string | null;
   index:  number;
+  /**
+   * Commits the worktree's `parking-lot/<index>` branch trails the local
+   * `origin/master` ref by, or null when the slot branch doesn't exist yet or
+   * staleness wasn't requested. Reads the already-fetched remote ref rather
+   * than fetching, so it costs one rev-list per slot and no network.
+   */
+  slotBehind?: number | null;
+}
+
+/** How far `ref` trails `defaultRef`, or null if either ref is unresolvable. */
+function countBehind(repoPath: string, ref: string, defaultRef: string): number | null {
+  try {
+    const out = execFileSync("git", ["rev-list", "--count", `${ref}..${defaultRef}`], {
+      cwd: repoPath, encoding: "utf8", stdio: "pipe",
+    });
+    const n = parseInt(out.trim(), 10);
+    return Number.isNaN(n) ? null : n;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Current worktree → parking-lot-index bindings for a single repo, reconciling
  * against `git worktree list` on the fly. Used by `rt parking-lot status`.
+ *
+ * `withStaleness` adds a rev-list per slot; the park pickers skip it so their
+ * hot path stays a single `git worktree list`.
  */
-export function describeRepoBindings(repoName: string, repoPath: string): WorktreeBinding[] {
+export function describeRepoBindings(
+  repoName: string,
+  repoPath: string,
+  opts: { withStaleness?: boolean } = {},
+): WorktreeBinding[] {
   const worktrees = listWorktrees(repoPath);
   const indexes   = reconcileIndexMap(repoName, worktrees.map(w => w.path));
-  return worktrees.map(w => ({ path: w.path, branch: w.branch, index: indexes[w.path] ?? 0 }));
+  const defaultRef = opts.withStaleness
+    ? (getRemoteDefaultBranch(repoPath) ?? "origin/master")
+    : null;
+
+  return worktrees.map(w => {
+    const index = indexes[w.path] ?? 0;
+    const binding: WorktreeBinding = { path: w.path, branch: w.branch, index };
+    if (defaultRef && index) {
+      binding.slotBehind = countBehind(repoPath, `parking-lot/${index}`, defaultRef);
+    }
+    return binding;
+  });
 }
 
 // ─── Exposed for tests ───────────────────────────────────────────────────────
