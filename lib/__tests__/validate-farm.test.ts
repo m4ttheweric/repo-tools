@@ -202,6 +202,28 @@ describe("createControllerClient", () => {
     expect(JSON.parse(String(calls[0]!.init?.body))).toEqual(req);
   });
 
+  test("submit sends force: true in the body only when forcing", async () => {
+    // Cluster-verify pending: the controller side of force (fresh run,
+    // verdict-cache and in-flight attach skipped, cached: false) is the
+    // sibling contract — only the request shape is provable here.
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchFn = (async (_url: any, init?: any) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ runId: "r1", cached: false }), { status: 200 });
+    }) as typeof fetch;
+
+    const client = createControllerClient("http://ctrl:8080", fetchFn);
+    const base = {
+      repoId: "assured-dev", tree: "t1", manifestHash: "m1",
+      manifest: { image: "img", taskGroups: [] }, changedFiles: [], mergeBase: "mb",
+    };
+    await client.submit({ ...base, force: true });
+    await client.submit(base);
+
+    expect(bodies[0]!.force).toBe(true);
+    expect("force" in bodies[1]!).toBe(false);
+  });
+
   test("getRun returns null on 404 and the Run on 200", async () => {
     const fetchFn = (async (url: any) => {
       if (String(url).endsWith("/runs/missing")) return new Response("", { status: 404 });

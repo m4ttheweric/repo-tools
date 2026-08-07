@@ -4,7 +4,7 @@
  * rt validate — the local door to the mattcloud validation farm.
  *
  * Usage:
- *   rt validate [--wait] [--manifest <path>] [--json]
+ *   rt validate [--wait] [--force] [--manifest <path>] [--json]
  *                                              snapshot → push → submit
  *                                              exit 0 farm-green / 1 red / 2 infra / 64 usage
  *   rt validate status [<runId>] [--json]      per-group results (defaults to the last run)
@@ -15,9 +15,14 @@
  * plumbing) always exits 2 — never 1, which the contract reserves for a red
  * code verdict. A missing default-branch ref exits 64 with the fix.
  *
+ * --force sends `force: true` to the controller, which always creates a
+ * fresh run — verdict-cache AND in-flight attach are skipped, and the
+ * response is never `cached`.
+ *
  * --json emits { run: { id, status, groups }, exitCode } for skills to
  * consume (same style as rt sdm / rt verify); progress chatter is suppressed
- * and errors stay on stderr.
+ * and errors stay on stderr. The shape is unchanged by --force — it only
+ * guarantees the run behind it is fresh.
  *
  * The worktree's exact state (uncommitted edits included) is snapshotted
  * without touching HEAD/index (lib/snapshot.ts), pushed to the in-cluster
@@ -188,11 +193,13 @@ async function requireEndpoints(): Promise<{ stop: () => void } | null> {
 
 export async function validateCommand(args: string[], ctx: CommandContext): Promise<void> {
   let wait = false;
+  let force = false;
   let json = false;
   let manifestPath: string | null = null;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (arg === "--wait") wait = true;
+    else if (arg === "--force") force = true;
     else if (arg === "--json") json = true;
     else if (arg === "--manifest") {
       manifestPath = args[++i] ?? null;
@@ -228,7 +235,7 @@ export async function validateCommand(args: string[], ctx: CommandContext): Prom
     if (!endpoints) {
       exitCode = 2; // requireEndpoints already printed why
     } else {
-      exitCode = await submitAndReport({ repoId, snap, manifest, hash, wait, json });
+      exitCode = await submitAndReport({ repoId, snap, manifest, hash, wait, force, json });
     }
   } catch (err) {
     exitCode = failureExitCode(err);
@@ -252,9 +259,10 @@ async function submitAndReport(opts: {
   manifest: ReturnType<typeof loadGateManifest>;
   hash: string;
   wait: boolean;
+  force: boolean;
   json: boolean;
 }): Promise<number> {
-  const { repoId, snap, manifest, hash, wait, json } = opts;
+  const { repoId, snap, manifest, hash, wait, force, json } = opts;
 
   // Push the snapshot commit to the receiver (incremental; the mirror
   // already has master's objects). No local ref is created.
@@ -278,6 +286,9 @@ async function submitAndReport(opts: {
     manifest,
     changedFiles: snap.changedFiles,
     mergeBase: snap.mergeBase,
+    // The flag is omitted (not force: false) when unforced — the controller
+    // contract keys on the presence of `force: true`.
+    ...(force ? { force: true as const } : {}),
   });
   saveLastRun(repoId, runId);
 
