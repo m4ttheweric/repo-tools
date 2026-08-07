@@ -104,15 +104,27 @@ describe("refreshDiscussions (lifted)", () => {
     };
     const ctx = fakeCtx(entries);
     const events: string[] = [];
+    const notified: Array<[string, string, string, string | undefined]> = [];
     const deps = { ctx, broadcast: (t: string) => events.push(t) };
-    const overrides = { fileStore, projectStore: pStore, fetchDiscussions: async () => [disc(1)], currentUserId: 1 };
+    const overrides = {
+      fileStore, projectStore: pStore, fetchDiscussions: async () => [disc(1)], currentUserId: 1,
+      // Without this the real emitter queues to ~/.rt and pops a desktop banner.
+      notify: (c: string, t: string, m: string, u?: string) => { notified.push([c, t, m, u]); },
+    };
 
     const first = await refreshDiscussions(deps, "repo", 5, overrides);
     expect(first.newNotes).toEqual([]);
+    expect(notified).toEqual([]);                        // first fetch stays silent
 
     const second = await refreshDiscussions(deps, "repo", 5, { ...overrides, fetchDiscussions: async () => [disc(1), disc(2)] });
     expect(second.newNotes.length).toBe(1);
     expect(events).toContain("discussions:update");
+    expect(events).toContain("discussions:new-comments");
+
+    // Routed through the notifier under a preference key, not broadcast raw:
+    // that is what puts it in the durable queue and on the tray socket.
+    expect(events).not.toContain("notification");
+    expect(notified).toEqual([["new_comment", "New comment on !5", "@luke: n2", "http://w/5"]]);
   });
 
   test("throws for an MR in neither store", async () => {

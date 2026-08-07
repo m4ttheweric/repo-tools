@@ -7,10 +7,10 @@ const baseSnapshot = {
   approved: false,
   approvedByUserIds: [] as string[],
   conflicts: false,
+  conflictFreeStreak: 1,
   needsRebase: false,
   isReady: false,
   mergeError: null,
-  ticketState: null,
   statusDetail: null as string | null,
 };
 
@@ -162,5 +162,70 @@ describe("ready-to-merge re-arming", () => {
     const was = { ...baseSnapshot, isReady: false };
     const now = { ...baseSnapshot, isReady: false, statusDetail: "not_approved" };
     expect(__test__.shouldRearmReady(was, now)).toBe(false);
+  });
+
+  test("does NOT re-arm during 'preparing', the just-created-MR window", () => {
+    const now = { ...ready, isReady: false, statusDetail: "preparing" };
+    expect(__test__.shouldRearmReady(ready, now)).toBe(false);
+  });
+});
+
+describe("merge-conflict re-arming", () => {
+  const conflicted = { ...baseSnapshot, conflicts: true, conflictFreeStreak: 0, statusDetail: "not_approved" };
+
+  // The MRs that flapped worst sat at a settled `not_approved` throughout, so
+  // a transitional-status test alone would not have held the key.
+  test("does NOT re-arm on a single conflict-free observation", () => {
+    const now = { ...conflicted, conflicts: false, conflictFreeStreak: 1 };
+    expect(__test__.shouldRearmConflicts(conflicted, now)).toBe(false);
+  });
+
+  test("re-arms once the negative holds across observations", () => {
+    const now = { ...conflicted, conflicts: false, conflictFreeStreak: 2 };
+    expect(__test__.shouldRearmConflicts(conflicted, now)).toBe(true);
+  });
+
+  test("does NOT re-arm while GitLab is re-checking, however long the streak", () => {
+    const now = { ...conflicted, conflicts: false, conflictFreeStreak: 9, statusDetail: "checking" };
+    expect(__test__.shouldRearmConflicts(conflicted, now)).toBe(false);
+  });
+
+  test("never re-arms while the conflict is still reported", () => {
+    const now = { ...conflicted, conflicts: true, conflictFreeStreak: 0 };
+    expect(__test__.shouldRearmConflicts(conflicted, now)).toBe(false);
+  });
+
+  test("never re-arms when there was no conflict to begin with", () => {
+    const was = { ...baseSnapshot, conflicts: false, conflictFreeStreak: 5 };
+    const now = { ...baseSnapshot, conflicts: false, conflictFreeStreak: 6 };
+    expect(__test__.shouldRearmConflicts(was, now)).toBe(false);
+  });
+});
+
+describe("conflict-free streak", () => {
+  const entry = (hasConflicts: boolean) => ({
+    ticket: null,
+    linearId: "",
+    fetchedAt: 0,
+    mr: { blockers: { hasConflicts }, state: "opened" },
+  });
+
+  test("counts up across conflict-free observations", () => {
+    const first = __test__.snapshotBranch(entry(false));
+    expect(first.conflictFreeStreak).toBe(1);
+    expect(__test__.snapshotBranch(entry(false), first).conflictFreeStreak).toBe(2);
+  });
+
+  test("resets the moment a conflict is reported", () => {
+    const prev = { ...baseSnapshot, conflictFreeStreak: 7 };
+    expect(__test__.snapshotBranch(entry(true), prev).conflictFreeStreak).toBe(0);
+  });
+
+  test("a blink between two conflicted reads never reaches the re-arm threshold", () => {
+    // conflicted -> blink -> conflicted, the exact 5-minute pattern from the logs
+    let snap = __test__.snapshotBranch(entry(true));
+    const conflicted = snap;
+    snap = __test__.snapshotBranch(entry(false), snap);
+    expect(__test__.shouldRearmConflicts(conflicted, snap)).toBe(false);
   });
 });
