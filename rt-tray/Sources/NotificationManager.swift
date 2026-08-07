@@ -118,6 +118,11 @@ class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 intentIdentifiers: []
             ),
             UNNotificationCategory(
+                identifier: "new_comment",
+                actions: [openMR],
+                intentIdentifiers: []
+            ),
+            UNNotificationCategory(
                 identifier: "stale_port",
                 actions: [showProcesses],
                 intentIdentifiers: []

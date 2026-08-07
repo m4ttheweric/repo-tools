@@ -18,8 +18,9 @@
 import { execSync, execFileSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
+import { isTransitionalMergeStatus } from "@mattstack/glance";
 import { RT_DIR } from "./daemon-config.ts";
-import type { PortEntry } from "./port-scanner.ts";
+import { parseEtimeMs, type PortEntry } from "./port-scanner.ts";
 import type { SystemProcess } from "./daemon/system-process-scanner.ts";
 import { agentSessionPids } from "./daemon/worktree-process-kill.ts";
 import { getDaemonLogger } from "./daemon-logger.ts";
@@ -33,10 +34,15 @@ interface BranchSnapshot {
   approved: boolean;
   approvedByUserIds: string[];
   conflicts: boolean;
+  /**
+   * Consecutive observations that reported no conflict, carried forward from
+   * the previous snapshot. Zero whenever conflicts are present.
+   * See shouldRearmConflicts.
+   */
+  conflictFreeStreak: number;
   needsRebase: boolean;
   isReady: boolean;
   mergeError: string | null;
-  ticketState: string | null;
   /** GitLab detailed_merge_status (e.g. "mergeable", "unchecked", "not_approved"). */
   statusDetail: string | null;
 }
@@ -100,8 +106,9 @@ export const NOTIFICATION_TYPES = [
   { key: "mr_closed",         label: "MR closed",           description: "When your MR is closed without merging" },
   { key: "mr_ready",          label: "MR ready to merge",   description: "When all blockers are cleared" },
   { key: "merge_conflicts",   label: "Merge conflicts",     description: "When merge conflicts appear on your MR" },
-  { key: "needs_rebase",      label: "Needs rebase",        description: "When your branch falls behind target" },
+  { key: "needs_rebase",      label: "Needs rebase",        description: "When GitLab requires a rebase before your MR can merge" },
   { key: "merge_error",       label: "Merge error",         description: "When auto-merge or merge train fails" },
+  { key: "new_comment",       label: "New comment",         description: "When someone comments on an MR you're tracking" },
   { key: "stale_port",        label: "Stale processes",     description: "When a dev server has been running 6h+" },
   { key: "runaway_process",   label: "Runaway processes",   description: "When a process is pegged at high CPU for 5+ minutes" },
 ] as const;
@@ -124,6 +131,24 @@ export function saveNotificationPrefs(prefs: NotificationPrefs): void {
     mkdirSync(RT_DIR, { recursive: true });
     writeFileSync(PREFS_PATH, JSON.stringify(prefs, null, 2));
   } catch { /* best-effort */ }
+}
+
+/**
+ * notify() gated on the user's preference for `category`, loading prefs per
+ * call. For emitters outside the transition loop (which loads prefs once per
+ * cycle). Every notification rt delivers goes through notify(), so it lands in
+ * the durable queue, reaches the tray socket, and falls back to the CLI
+ * notifier — a bare broadcast reaches WebSocket clients only.
+ */
+export function notifyEnabled(
+  category: string,
+  title: string,
+  message: string,
+  url?: string,
+  pids?: number[],
+): void {
+  if (!isEnabled(loadNotificationPrefs(), category)) return;
+  notify(title, message, url, category, pids);
 }
 
 function isEnabled(prefs: NotificationPrefs, key: string): boolean {
@@ -381,13 +406,15 @@ function isSelfAuthored(entry: CacheEntry, currentUserId: number | null): boolea
 }
 
 /**
- * GitLab detailed_merge_status values that mean "GitLab is still recomputing
- * mergeability" rather than a settled answer. The SDK's optimistic `isReady`
- * flips true during these windows (ignoring approvals), and GitLab enters them
- * on every push, pipeline event, comment, or target-branch advance. We treat
- * them as not-ready so a transient re-check never reads as "ready to merge".
+ * How many consecutive observations must report "no conflict" before we
+ * believe the conflict is gone and re-arm the alert. GitLab's conflict answer
+ * is an OR of three async signals that drop together for a single poll cycle
+ * while it re-runs its merge checks; taking that at face value re-armed the
+ * alert and re-fired it on the next cycle, 91 times on one MR. One stable
+ * repeat is enough to tell a blink from a resolution, and the cost of being
+ * wrong is only that a genuine re-conflict notifies one cycle late.
  */
-const READY_TRANSITIONAL = new Set(["checking", "unchecked", "approvals_syncing"]);
+const CONFLICT_FREE_OBSERVATIONS_TO_REARM = 2;
 
 /**
  * Strict readiness for notification purposes: the MR is open, GitLab has
@@ -403,17 +430,18 @@ function isReadyForNotification(entry: CacheEntry): boolean {
     && entry.mr?.isStacked !== true;
 }
 
-function snapshotBranch(entry: CacheEntry): BranchSnapshot {
+function snapshotBranch(entry: CacheEntry, prev?: BranchSnapshot): BranchSnapshot {
+  const conflicts = entry.mr?.blockers?.hasConflicts ?? false;
   return {
     pipelineStatus: entry.mr?.pipeline?.status ?? null,
     mrState: entry.mr?.state ?? null,
     approved: entry.mr?.reviews?.isApproved ?? false,
     approvedByUserIds: approvedByUserIds(entry),
-    conflicts: entry.mr?.blockers?.hasConflicts ?? false,
+    conflicts,
+    conflictFreeStreak: conflicts ? 0 : (prev?.conflictFreeStreak ?? 0) + 1,
     needsRebase: entry.mr?.blockers?.needsRebase ?? false,
     isReady: isReadyForNotification(entry),
     mergeError: entry.mr?.blockers?.mergeError ?? null,
-    ticketState: entry.ticket?.stateName ?? null,
     statusDetail: entry.mr?.statusDetail ?? null,
   };
 }
@@ -426,7 +454,22 @@ function snapshotBranch(entry: CacheEntry): BranchSnapshot {
  */
 function shouldRearmReady(was: BranchSnapshot, now: BranchSnapshot): boolean {
   if (!was.isReady || now.isReady) return false;
-  return !READY_TRANSITIONAL.has(now.statusDetail ?? "");
+  return !isTransitionalMergeStatus(now.statusDetail);
+}
+
+/**
+ * Whether to re-arm the "merge conflicts" alert. Same shape as
+ * shouldRearmReady, with one addition: a settled non-conflict status is not
+ * enough on its own. The MRs that flapped worst sat at a settled
+ * `not_approved` the whole time, and their conflict came from the CONFLICT
+ * mergeability check rather than from `detailedMergeStatus`, so a
+ * transitional-status test alone would not have caught the blink. Require the
+ * negative to hold across observations before believing it.
+ */
+function shouldRearmConflicts(was: BranchSnapshot, now: BranchSnapshot): boolean {
+  if (!was.conflicts || now.conflicts) return false;
+  if (isTransitionalMergeStatus(now.statusDetail)) return false;
+  return now.conflictFreeStreak >= CONFLICT_FREE_OBSERVATIONS_TO_REARM;
 }
 
 type ApprovalTransitionVerdict = "notify" | "not-transition" | "no-new-approver" | "self-approved";
@@ -471,9 +514,9 @@ function detectBranchTransitions(
     // pipeline failures and state changes must stay silent.
     if (!isSelfAuthored(entry, currentUserId)) continue;
 
-    const now = snapshotBranch(entry);
     const was = prev[branch];
     if (!was) continue; // First time seeing this branch — no transition
+    const now = snapshotBranch(entry, was);
 
     const branchShort = branch.length > 40 ? branch.slice(0, 39) + "…" : branch;
     const mrUrl = entry.mr?.webUrl ?? undefined;
@@ -579,7 +622,11 @@ function detectBranchTransitions(
       }
     }
 
-    // Needs rebase (branch fell behind target)
+    // Needs rebase: GitLab requires a rebase before this MR can merge.
+    // Not "the target branch moved" — glance 0.18 stopped folding behind-ness
+    // into this blocker (MAT-164). It now tracks `shouldBeRebased`, which rides
+    // the GraphQL payload every fetch path shares, so it no longer flips false
+    // on a bulk poll and re-arm the alert for an MR whose state never changed.
     if (!was.needsRebase && now.needsRebase) {
       const key = `mr:rebase:${branch}`;
       if (!fired.has(key)) {
@@ -617,9 +664,11 @@ function detectBranchTransitions(
       if (fired.delete(`mr:approved:${branch}`))
         log.debug(`cleared mr:approved key for ${branch}`);
     }
-    if (was.conflicts && !now.conflicts) {
+    if (shouldRearmConflicts(was, now)) {
       if (fired.delete(`mr:conflicts:${branch}`))
-        log.debug(`cleared mr:conflicts key for ${branch}`);
+        log.debug(`cleared mr:conflicts key for ${branch} (statusDetail=${now.statusDetail}, conflict-free x${now.conflictFreeStreak})`);
+    } else if (was.conflicts && !now.conflicts) {
+      log.debug(`held mr:conflicts key for ${branch} (statusDetail=${now.statusDetail}, conflict-free x${now.conflictFreeStreak})`);
     }
     if (shouldRearmReady(was, now)) {
       if (fired.delete(`mr:ready:${branch}`))
@@ -665,7 +714,10 @@ function detectStalePortTransitions(
     }
 
     const snapshot = portState[key]!;
-    const age = now - snapshot.firstSeen;
+    // The process's own clock, not ours. `firstSeen` only says when the daemon
+    // noticed it, which understates anything that predates the notifier state
+    // and makes the "has been running Nh" figure in the message untrue.
+    const age = parseEtimeMs(entry.uptime) ?? now - snapshot.firstSeen;
 
     if (age > STALE_PORT_THRESHOLD_MS && !snapshot.staleNotified) {
       snapshot.staleNotified = true;
@@ -777,7 +829,7 @@ export function checkAndNotify(
     if (!entry.mr && state.branches[branch]) {
       newBranches[branch] = state.branches[branch]!;
     } else {
-      newBranches[branch] = snapshotBranch(entry);
+      newBranches[branch] = snapshotBranch(entry, state.branches[branch]);
     }
   }
 
@@ -790,5 +842,6 @@ export const __test__ = {
   shouldNotifyApprovalTransition,
   snapshotBranch,
   shouldRearmReady,
+  shouldRearmConflicts,
   isSelfAuthored,
 };
