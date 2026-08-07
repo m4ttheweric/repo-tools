@@ -1,7 +1,7 @@
 export { rtCommand, DEFAULT_SOCK } from "./transport.ts";
 export type { RtResponse, RtClientOptions } from "./transport.ts";
 
-export { readProjectMRs, readDiscussions, readMrsByBranch } from "./client.ts";
+export { readProjectMRs, readDiscussions, readMrsByBranch, resolveForgeToken } from "./client.ts";
 
 export { COMMAND_NAMES } from "./commands.ts";
 export type {
@@ -14,6 +14,8 @@ export type {
   MrByBranchData,
   Commands,
   CommandName,
+  ForgeSlug,
+  ForgeTokenData,
 } from "./commands.ts";
 
 export { subscribe, DEFAULT_WS_URL } from "./relay.ts";

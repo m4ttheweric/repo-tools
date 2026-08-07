@@ -45,12 +45,32 @@ export interface MrByBranchData {
   syncedAt: number;
 }
 
+/** Forges the daemon can hold a token for. */
+export type ForgeSlug = "gitlab" | "github";
+
+export interface ForgeTokenData {
+  token: string;
+}
+
 export interface Commands {
   "project-mrs:read": { payload: { repoName: string; maxAgeMs?: number; demand?: DemandDecl }; data: ProjectMRsData };
   "discussions:read": { payload: { repoName: string; iid: number }; data: DiscussionsData };
   "mr:by-branch": { payload: { repoName: string; branches: string[] }; data: MrByBranchData };
+  /**
+   * The forge token for one tracked repo (MAT-33). Repo-scoped on purpose:
+   * rt gates access per repo through repo-tracking.json, and this verb is
+   * what lets consumers stop reading ~/.rt/secrets.json directly, which
+   * walked around that grant model entirely. An untracked repo is refused;
+   * the caller's env vars keep precedence on the caller's side.
+   */
+  "secrets:forge-token": { payload: { repoName: string; forge: ForgeSlug }; data: ForgeTokenData };
 }
 
 export type CommandName = keyof Commands;
 
-export const COMMAND_NAMES: readonly CommandName[] = ["project-mrs:read", "discussions:read", "mr:by-branch"];
+export const COMMAND_NAMES: readonly CommandName[] = [
+  "project-mrs:read",
+  "discussions:read",
+  "mr:by-branch",
+  "secrets:forge-token",
+];
