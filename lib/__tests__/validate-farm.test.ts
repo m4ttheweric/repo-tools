@@ -335,7 +335,7 @@ describe("pushSnapshot", () => {
     });
     expect(out.ok).toBe(true);
     expect(calls[0]!.argv).toEqual([
-      "git", "push", "ssh://git@localhost:2222/repos/assured-dev.git", "c1:refs/snapshots/t1",
+      "git", "push", "ssh://git@localhost:2222/repos/assured-dev.git", "+c1:refs/snapshots/t1",
     ]);
     expect(calls[0]!.cwd).toBe("/wt");
     expect(calls[0]!.env).toEqual({}); // no key knob → default ssh resolution
