@@ -10,6 +10,8 @@
  *   rt validate status [<runId>] [--json]      per-group results (defaults to the last run)
  *                                              exit as above, plus 3 still-in-flight / 64 run not found
  *   rt validate logs <runId> <group>           a failed group's log from the controller
+ *   rt validate --help                         usage incl. the MC_* env vars (MC_ENV_HELP,
+ *                                              lib/validate-farm.ts — documented only there)
  *
  * A farm-side failure (controller unreachable, HTTP error, poll failure, git
  * plumbing) always exits 2 — never 1, which the contract reserves for a red
@@ -42,6 +44,7 @@ import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import { repoDataDir } from "../lib/rt-paths.ts";
 import { snapshotWorktree } from "../lib/snapshot.ts";
 import {
+  MC_ENV_HELP,
   controllerUrl,
   createControllerClient,
   ensureEndpoints,
@@ -64,6 +67,27 @@ import {
 function usageExit(message: string): never {
   console.error(`\n  ${red}${message}${reset}\n`);
   process.exit(64);
+}
+
+function helpExit(): never {
+  console.log(`
+  ${bold}rt validate${reset} [--wait] [--force] [--manifest <path>] [--json]
+      snapshot → push → submit; exit 0 farm-green / 1 red / 2 infra / 64 usage
+  ${bold}rt validate status${reset} [<runId>] [--json]
+      per-group results (defaults to the last run); exit as above, plus 3 in flight / 64 not found
+  ${bold}rt validate logs${reset} <runId> <group>
+      a failed group's log from the controller
+
+  ${bold}Flags${reset}
+    --wait      block until the farm verdict instead of returning after submit
+    --force     always create a fresh run — skip the verdict-cache and in-flight attach
+    --manifest  gate manifest path (default: the repo overlay's gates.jsonc)
+    --json      machine-readable { run: { id, status, groups }, exitCode }
+
+  ${bold}Env${reset}
+${MC_ENV_HELP}
+`);
+  process.exit(0);
 }
 
 /** Resolve the farm repoId from the worktree's origin, or exit 64. */
@@ -198,7 +222,8 @@ export async function validateCommand(args: string[], ctx: CommandContext): Prom
   let manifestPath: string | null = null;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
-    if (arg === "--wait") wait = true;
+    if (arg === "--help" || arg === "-h") helpExit();
+    else if (arg === "--wait") wait = true;
     else if (arg === "--force") force = true;
     else if (arg === "--json") json = true;
     else if (arg === "--manifest") {
