@@ -17,7 +17,7 @@ import {
 } from "../../lib/daemon-client.ts";
 import type { ActionState, CacheEntry, JobTraceState, SortMode, StatusData } from "./types.ts";
 import { SORT_CYCLE } from "./types.ts";
-import { cleanTraceLine } from "./format.ts";
+import { cleanTraceLine, canRebaseRemotely } from "./format.ts";
 import { buildAllCommenterSummaries, groupThreadsByFile, type DiscussionsState } from "./reviews.tsx";
 
 export interface DashboardInputContext {
@@ -458,7 +458,7 @@ export function useDashboardInput(ctx: DashboardInputContext): void {
           });
         });
       }
-      if (input === "r" && mr.rebaseButton.visible) {
+      if (input === "r" && canRebaseRemotely(mr)) {
         executeAction("r", "Rebase", "Rebasing…", () => focusedActions.rebase());
       }
       if (input === "R") {

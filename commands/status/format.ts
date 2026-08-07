@@ -37,6 +37,32 @@ export const STATUS_ART: Record<MRStatus, [string, string]> = {
   closed:    ["╭ ✗ ╮", "╰───╯"],
 };
 
+// ─── Rebase affordance ──────────────────────────────────────────────────────
+
+/**
+ * Whether to offer the remote (GitLab-side) rebase action.
+ *
+ * `rebaseButton.visible` tracks `shouldBeRebased` alone as of glance 0.18 —
+ * GitLab's answer to "does this project's merge method require a rebase", which
+ * is false on every `merge_method: merge` project. Being behind target is no
+ * longer a blocker there (MAT-164), but rebasing to pick up the target branch
+ * is still something we do by hand every day, so keep offering it when the
+ * branch is known to be behind.
+ *
+ * `behindTarget` is null when the fetch path that produced this MR never asked
+ * for the count. Null is unknown, not zero: it only suppresses the extra
+ * affordance, it never hides a rebase GitLab itself is demanding.
+ */
+export function canRebaseRemotely(mr: MRDashboardProps): boolean {
+  return mr.state === "opened" && (mr.rebaseButton.visible || (mr.behindTarget ?? 0) > 0);
+}
+
+/** " (3 behind)" when the count is known and non-zero, "" otherwise. */
+export function behindSuffix(mr: MRDashboardProps): string {
+  const behind = mr.behindTarget;
+  return behind !== null && behind > 0 ? ` (${behind} behind)` : "";
+}
+
 // ─── Review display state ───────────────────────────────────────────────────
 
 export const REVIEW_ICON: Record<string, string> = {
