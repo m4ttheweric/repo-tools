@@ -48,35 +48,80 @@ async function upsertConfigMap(
   return null;
 }
 
+/** apply an in-memory multi-key ConfigMap manifest via stdin; null on success. */
+async function applyConfigMapManifest(
+  exec: Exec,
+  namespace: string,
+  name: string,
+  data: Record<string, string>,
+): Promise<string | null> {
+  const apply = await exec(["kubectl", "-n", namespace, "apply", "-f", "-"], {
+    stdin: JSON.stringify({
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: { name, namespace },
+      data,
+    }),
+  });
+  if (apply.exitCode !== 0) {
+    return `kubectl apply failed for ConfigMap ${name} — is the cluster reachable?`;
+  }
+  return null;
+}
+
 /**
- * Upsert gates.jsonc → repo-gates and (when present) bake.jsonc →
- * repo-bake-config. `bake` is null when the overlay has no bake.jsonc —
- * legal, and the outcome message says the bake sync was skipped.
+ * Upsert the overlay's config files into their ConfigMaps: gates.jsonc →
+ * repo-gates (required), bake.jsonc → repo-bake-config,
+ * sandbox-bake.jsonc → sandbox-bake-config, and browser-flows/* →
+ * repo-browser-flows (one key per flow file, applied as one in-memory
+ * manifest since kubectl's stdin carries only one file). Null/absent
+ * optional inputs are legal — the outcome message says what was skipped.
  */
 export async function syncConfig(opts: {
   gates: string;
   bake: string | null;
+  sandboxBake?: string | null;
+  browserFlows?: Array<{ name: string; content: string }> | null;
   namespace?: string;
   exec?: Exec;
 }): Promise<ConfigSyncOutcome> {
   const exec = opts.exec ?? spawnExec;
   const namespace = opts.namespace ?? "mc-system";
+  const synced: string[] = [];
+  const skipped: string[] = [];
 
   const gatesError = await upsertConfigMap(exec, namespace, "repo-gates", "gates.jsonc", opts.gates);
   if (gatesError) return { exitCode: 1, message: gatesError };
+  synced.push("repo-gates");
 
   if (opts.bake === null) {
-    return {
-      exitCode: 0,
-      message: `synced gates.jsonc → ConfigMap repo-gates (${namespace}) — no bake.jsonc in the overlay, repo-bake-config skipped`,
-    };
+    skipped.push("repo-bake-config skipped (no bake.jsonc in the overlay)");
+  } else {
+    const bakeError = await upsertConfigMap(exec, namespace, "repo-bake-config", "bake.jsonc", opts.bake);
+    if (bakeError) return { exitCode: 1, message: bakeError };
+    synced.push("repo-bake-config");
   }
 
-  const bakeError = await upsertConfigMap(exec, namespace, "repo-bake-config", "bake.jsonc", opts.bake);
-  if (bakeError) return { exitCode: 1, message: bakeError };
+  if (opts.sandboxBake === null || opts.sandboxBake === undefined) {
+    skipped.push("sandbox-bake-config skipped (no sandbox-bake.jsonc in the overlay)");
+  } else {
+    const error = await upsertConfigMap(exec, namespace, "sandbox-bake-config", "sandbox-bake.jsonc", opts.sandboxBake);
+    if (error) return { exitCode: 1, message: error };
+    synced.push("sandbox-bake-config");
+  }
+
+  if (!opts.browserFlows || opts.browserFlows.length === 0) {
+    skipped.push("repo-browser-flows skipped (no browser-flows/ in the overlay)");
+  } else {
+    const data: Record<string, string> = {};
+    for (const flow of opts.browserFlows) data[flow.name] = flow.content;
+    const error = await applyConfigMapManifest(exec, namespace, "repo-browser-flows", data);
+    if (error) return { exitCode: 1, message: error };
+    synced.push("repo-browser-flows");
+  }
 
   return {
     exitCode: 0,
-    message: `synced gates.jsonc → ConfigMap repo-gates and bake.jsonc → ConfigMap repo-bake-config (${namespace})`,
+    message: `synced ${synced.join(", ")} (${namespace})${skipped.length ? ` — ${skipped.join("; ")}` : ""}`,
   };
 }

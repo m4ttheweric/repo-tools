@@ -104,3 +104,60 @@ describe("syncConfig", () => {
     expect(calls.every(c => c.argv[2] === "other")).toBe(true);
   });
 });
+
+// ─── Sandbox extensions (slice 2): sandbox-bake-config + repo-browser-flows ──
+
+describe("syncConfig sandbox extensions", () => {
+  const SANDBOX_BAKE = `{ "agentCliVersion": "2.1.0", "fastBrowserVersion": "0.9.1" }\n`;
+  const SANDBOX_BAKE_YAML = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: sandbox-bake-config\n";
+
+  test("sandbox-bake.jsonc syncs to ConfigMap sandbox-bake-config via the same stdin pattern", async () => {
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-system create configmap repo-gates": { stdout: GATES_YAML, exitCode: 0 },
+      "kubectl -n mc-system create configmap sandbox-bake-config": { stdout: SANDBOX_BAKE_YAML, exitCode: 0 },
+      "kubectl -n mc-system apply": { stdout: "configured\n", exitCode: 0 },
+    });
+    const out = await syncConfig({ gates: GATES, bake: null, sandboxBake: SANDBOX_BAKE, exec });
+    expect(out.exitCode).toBe(0);
+    expect(out.message).toContain("sandbox-bake-config");
+    const create = calls.find(c => c.argv.includes("sandbox-bake-config"))!;
+    expect(create.argv).toContain("--from-file=sandbox-bake.jsonc=/dev/stdin");
+    expect(create.stdin).toBe(SANDBOX_BAKE);
+  });
+
+  test("browser flows sync as one multi-key ConfigMap applied from an in-memory manifest", async () => {
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-system create configmap repo-gates": { stdout: GATES_YAML, exitCode: 0 },
+      "kubectl -n mc-system apply": { stdout: "configured\n", exitCode: 0 },
+    });
+    const out = await syncConfig({
+      gates: GATES,
+      bake: null,
+      browserFlows: [
+        { name: "login.flow.md", content: "# login" },
+        { name: "evidence.flow.md", content: "# evidence" },
+      ],
+      exec,
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.message).toContain("repo-browser-flows");
+    const apply = calls.filter(c => c.argv.join(" ") === "kubectl -n mc-system apply -f -")
+      .find(c => c.stdin!.includes("repo-browser-flows"))!;
+    const manifest = JSON.parse(apply.stdin!);
+    expect(manifest.kind).toBe("ConfigMap");
+    expect(manifest.metadata.name).toBe("repo-browser-flows");
+    expect(manifest.data).toEqual({ "login.flow.md": "# login", "evidence.flow.md": "# evidence" });
+  });
+
+  test("absent sandbox overlay files are skipped and said so, without kubectl calls for them", async () => {
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-system create configmap repo-gates": { stdout: GATES_YAML, exitCode: 0 },
+      "kubectl -n mc-system apply": { stdout: "configured\n", exitCode: 0 },
+    });
+    const out = await syncConfig({ gates: GATES, bake: null, exec });
+    expect(out.exitCode).toBe(0);
+    expect(out.message).toContain("repo-bake-config skipped");
+    expect(calls.some(c => c.argv.includes("sandbox-bake-config"))).toBe(false);
+    expect(calls.some(c => (c.stdin ?? "").includes("repo-browser-flows"))).toBe(false);
+  });
+});

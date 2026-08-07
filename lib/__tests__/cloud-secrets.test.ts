@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
-import { isDopplerShim, syncSecrets, type Exec, type ExecResult } from "../cloud-secrets.ts";
+import {
+  isDopplerShim,
+  syncAgentCredentials,
+  syncBrowserSecrets,
+  syncSecrets,
+  type Exec,
+  type ExecResult,
+} from "../cloud-secrets.ts";
 
 interface Call {
   argv: string[];
@@ -103,5 +110,54 @@ describe("syncSecrets", () => {
     const out = await syncSecrets({ cwd: "/wt", secretRef: "s", exec });
     expect(out.exitCode).toBe(1);
     expect(out.message).not.toContain("FOO");
+  });
+});
+
+// ─── Sandbox extensions (slice 2): browser secrets + agent credentials ───────
+
+describe("syncBrowserSecrets", () => {
+  test("upserts repo-browser-secrets (mc-sandboxes) with the dotenv under key env, via stdin only", async () => {
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-sandboxes apply": { stdout: "ok", exitCode: 0 },
+    });
+    const out = await syncBrowserSecrets({ content: "USER=me\nPASS=secret\n", exec });
+    expect(out.exitCode).toBe(0);
+    expect(out.message).toContain("repo-browser-secrets");
+    // Values reach kubectl through stdin, never argv.
+    expect(calls[0]!.argv.join(" ")).not.toContain("secret");
+    const manifest = JSON.parse(calls[0]!.stdin!);
+    expect(manifest.metadata).toEqual({ name: "repo-browser-secrets", namespace: "mc-sandboxes" });
+    expect(manifest.stringData.env).toBe("USER=me\nPASS=secret\n");
+  });
+
+  test("refuses an empty dotenv with 64", async () => {
+    const { exec, calls } = fakeExec({});
+    const out = await syncBrowserSecrets({ content: "\n", exec });
+    expect(out.exitCode).toBe(64);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("syncAgentCredentials", () => {
+  test("upserts agent-credentials with base64 data per overlay-named key (binary-safe)", async () => {
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-sandboxes apply": { stdout: "ok", exitCode: 0 },
+    });
+    const out = await syncAgentCredentials({
+      files: { "claude-session.json": new TextEncoder().encode('{"tok":1}') },
+      exec,
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.message).toContain("agent-credentials");
+    const manifest = JSON.parse(calls[0]!.stdin!);
+    expect(manifest.metadata).toEqual({ name: "agent-credentials", namespace: "mc-sandboxes" });
+    expect(manifest.data["claude-session.json"]).toBe(Buffer.from('{"tok":1}').toString("base64"));
+  });
+
+  test("refuses an empty file set with 64", async () => {
+    const { exec, calls } = fakeExec({});
+    const out = await syncAgentCredentials({ files: {}, exec });
+    expect(out.exitCode).toBe(64);
+    expect(calls).toHaveLength(0);
   });
 });

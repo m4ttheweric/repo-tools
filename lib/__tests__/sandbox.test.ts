@@ -187,6 +187,8 @@ describe("readSandboxConfig", () => {
           { name: "backend", port: 4000 },
         ],
         stateFile: "~/.acme/dev-ports.state.json",
+        browserSecretsFile: "~/.acme/browser.env",
+        agentCredentialFiles: { "claude-session.json": "~/.claude/session.json" },
       },
     }));
     process.env.HOME = "/tmp/sbx-home";
@@ -196,6 +198,10 @@ describe("readSandboxConfig", () => {
       { name: "backend", port: 4000, localPorts: [4000] },
     ]);
     expect(config.stateFile).toBe("/tmp/sbx-home/.acme/dev-ports.state.json");
+    expect(config.browserSecretsFile).toBe("/tmp/sbx-home/.acme/browser.env");
+    expect(config.agentCredentialFiles).toEqual({
+      "claude-session.json": "/tmp/sbx-home/.claude/session.json",
+    });
   });
 
   test("null when the overlay or its sandbox section is missing", () => {
