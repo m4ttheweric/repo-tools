@@ -26,6 +26,7 @@ import { getRepoContext, getCurrentUserId } from "./freshness.ts";
 import { getDiscussionsFileStore, type DiscussionsFileStore } from "./discussions-file-store.ts";
 import { getProjectMRs, type ProjectMRs } from "./project-mrs-store.ts";
 import type { HandlerContext } from "./handlers/types.ts";
+import { notifyEnabled } from "../notifier.ts";
 
 export type BroadcastFn = (type: string, data: any) => void;
 
@@ -103,6 +104,8 @@ export interface RefreshOverrides {
   fileStore?:        DiscussionsFileStore;
   projectStore?:     ProjectMRs;
   currentUserId?:    number | null;
+  /** Test seam: the real emitter queues to disk and pokes the tray socket. */
+  notify?:           (category: string, title: string, message: string, url?: string) => void;
 }
 
 /**
@@ -220,15 +223,19 @@ export async function refreshDiscussions(
     });
 
     // Companion generic notification event for any tray/desktop surface.
+    // Routed through notify() rather than broadcast directly: that is what
+    // puts it in the durable queue, on the tray socket, and under a
+    // preference key. A bare broadcast reached WebSocket clients only, in a
+    // payload shape no other notification used.
     const first = newNotes[0]!;
     const preview = first.body.split("\n")[0]!.slice(0, 140);
     const extra = newNotes.length > 1 ? ` (+${newNotes.length - 1} more)` : "";
-    deps.broadcast("notification", {
-      title: `New comment on !${iid}`,
-      body:  `@${first.authorUser}: ${preview}${extra}`,
-      webUrl,
-      mrId:  `gitlab:mr:${iid}`,
-    });
+    (overrides.notify ?? notifyEnabled)(
+      "new_comment",
+      `New comment on !${iid}`,
+      `@${first.authorUser}: ${preview}${extra}`,
+      webUrl ?? undefined,
+    );
   }
 
   return { discussions, fetchedAt, newNotes };

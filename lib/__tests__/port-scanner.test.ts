@@ -4,6 +4,7 @@ import {
   parsePidValueMap,
   parseCwdMap,
   parseWorktreePorcelain,
+  parseEtimeMs,
 } from "../port-scanner.ts";
 
 describe("parseListeningLsof", () => {
@@ -103,5 +104,19 @@ describe("parseWorktreePorcelain", () => {
     expect(parseWorktreePorcelain(output)).toEqual([
       { path: "/Users/matt/repos/foo", branch: "main" },
     ]);
+  });
+});
+
+describe("parseEtimeMs", () => {
+  test("MM:SS", () => expect(parseEtimeMs("07:13")).toBe(433_000));
+  test("HH:MM:SS", () => expect(parseEtimeMs("21:28:36")).toBe(77_316_000));
+  test("DD-HH:MM:SS", () => expect(parseEtimeMs("2-03:14:22")).toBe(184_462_000));
+  test("leading whitespace from ps padding", () => expect(parseEtimeMs("  00:01")).toBe(1000));
+
+  // Null, not 0: an unreadable clock must not read as "just started", or a
+  // long-running process would silently never cross the staleness threshold.
+  test("the scanner's placeholder is unknown, not zero", () => {
+    expect(parseEtimeMs("unknown")).toBeNull();
+    expect(parseEtimeMs("")).toBeNull();
   });
 });

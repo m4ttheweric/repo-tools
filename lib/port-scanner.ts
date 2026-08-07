@@ -36,6 +36,24 @@ export interface PortEntry {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/**
+ * Parse a ps `etime` string to milliseconds. ps emits the coarsest form that
+ * fits: "MM:SS", "HH:MM:SS", or "DD-HH:MM:SS". Returns null for the scanner's
+ * "unknown" placeholder and anything else unrecognized, so callers can tell
+ * "not running long" from "we could not read the clock".
+ */
+export function parseEtimeMs(etime: string): number | null {
+  const m = etime.trim().match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/);
+  if (!m) return null;
+  const [, days, hours, minutes, seconds] = m;
+  return (
+    (parseInt(days ?? "0", 10) * 86_400 +
+      parseInt(hours ?? "0", 10) * 3_600 +
+      parseInt(minutes!, 10) * 60 +
+      parseInt(seconds!, 10)) * 1000
+  );
+}
+
 const REPOS_JSON_PATH = join(homedir(), ".rt", "repos.json");
 
 export function loadRepoIndex(): Record<string, string> {
