@@ -320,6 +320,21 @@ export function removeSandboxAnchor(repoId: string, sandboxId: string): void {
   if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 }
 
+/** Locate a sandbox's anchor without knowing its repoId (id-based verbs). */
+export function findSandboxAnchor(sandboxId: string): SandboxAnchor | null {
+  let repoIds: string[];
+  try {
+    repoIds = readdirSync(sandboxesDir());
+  } catch {
+    return null;
+  }
+  for (const repoId of repoIds) {
+    const anchor = readSandboxAnchor(repoId, sandboxId);
+    if (anchor) return anchor;
+  }
+  return null;
+}
+
 // ─── Branch handshake push ───────────────────────────────────────────────────
 
 /** The pre-POST handshake ref the seed Job fetches (see CONTRACT NOTES). */
@@ -346,6 +361,60 @@ export async function pushSandboxBranch(opts: {
     { cwd: opts.cwd, env: receiverSshEnv(opts.env ?? process.env) },
   );
   return { ok: result.exitCode === 0, pushUrl, stderr: result.stderr };
+}
+
+// ─── Create flow ─────────────────────────────────────────────────────────────
+
+/**
+ * The create pipeline: handshake-push the branch head to the receiver
+ * FIRST (the seed Job fetches it the moment the POST lands), then POST
+ * /sandboxes, then write the local anchor the daemon and skills key on.
+ */
+export async function createSandboxFlow(opts: {
+  repoId: string;
+  branch: string;
+  commit: string;
+  cwd: string;
+  brief: string;
+  imageTag?: string;
+  flags?: Record<string, unknown>;
+  client: SandboxClient;
+  spawn: GitPushSpawn;
+  env?: Record<string, string | undefined>;
+}): Promise<{ ok: true; sandboxId: string } | { ok: false; message: string }> {
+  const push = await pushSandboxBranch({
+    repoId: opts.repoId,
+    branch: opts.branch,
+    commit: opts.commit,
+    cwd: opts.cwd,
+    spawn: opts.spawn,
+    ...(opts.env ? { env: opts.env } : {}),
+  });
+  if (!push.ok) {
+    return { ok: false, message: `branch push to ${push.pushUrl} failed: ${push.stderr.trim()}` };
+  }
+  const { sandboxId } = await opts.client.create({
+    repoId: opts.repoId,
+    branch: opts.branch,
+    brief: opts.brief,
+    ...(opts.imageTag ? { imageTag: opts.imageTag } : {}),
+    ...(opts.flags ? { flagsFileContent: JSON.stringify(opts.flags, null, 2) } : {}),
+  });
+  writeSandboxAnchor({
+    id: sandboxId,
+    repoId: opts.repoId,
+    branch: opts.branch,
+    createdAt: new Date().toISOString(),
+    lastEventSeq: 0,
+  });
+  return { ok: true, sandboxId };
+}
+
+// ─── Logs passthrough ────────────────────────────────────────────────────────
+
+/** kubectl logs argv for a sandbox container (pod name == sandbox id). */
+export function sandboxLogsArgv(sandboxId: string, container: string, extra: string[] = []): string[] {
+  return ["kubectl", "-n", SANDBOX_NAMESPACE, "logs", sandboxId, "-c", container, ...extra];
 }
 
 // ─── Flags ───────────────────────────────────────────────────────────────────

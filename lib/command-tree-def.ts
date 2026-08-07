@@ -684,6 +684,89 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  // devOnly for the same reason as validate/cloud: the controller's sandbox
+  // half is not deployed anywhere yet (sandbox-controller plan Task 8).
+  sandbox: {
+    description: "Cloud dev sandboxes for herd tickets (mattcloud)",
+    devOnly: true,
+    subcommands: {
+      create: {
+        description: "Create a cloud sandbox from a ticket or branch (push → controller → local anchor)",
+        module: "./commands/sandbox.ts",
+        fn: "createCommand",
+        context: "worktree",
+        args: [
+          { name: "Ticket", flag: "--ticket", type: "text", placeholder: "ACME-1234", hint: "Linear ticket — derives the branch name and brief via the provisioning path" },
+          { name: "Branch", flag: "--branch", type: "text", placeholder: "branch-name", hint: "Existing branch to sandbox (default: current branch)" },
+          { name: "Job dir", flag: "--job", type: "text", placeholder: "~/jobs/acme-1234", hint: "Directory whose job.md becomes the brief" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable { sandboxId, repoId, branch, anchorDir }" },
+        ],
+      },
+      ls: {
+        description: "List sandboxes with pod state and local ports",
+        module: "./commands/sandbox.ts",
+        fn: "lsCommand",
+        args: [
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable detail list" },
+        ],
+      },
+      status: {
+        description: "One sandbox's ground truth: state, container readiness, local ports (pool warnings are loud here)",
+        module: "./commands/sandbox.ts",
+        fn: "statusCommand",
+        args: [
+          { name: "Sandbox id", type: "text", placeholder: "sandbox id", hint: "Omit to list all sandboxes" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable detail" },
+        ],
+      },
+      suspend: {
+        description: "Delete the pod, keep the workspace PVC (compute → zero; forwards release)",
+        module: "./commands/sandbox.ts",
+        fn: "suspendCommand",
+        args: [{ name: "Sandbox id", type: "text", placeholder: "sandbox id" }],
+      },
+      resume: {
+        description: "Recreate the pod against the warm workspace (same pinned image)",
+        module: "./commands/sandbox.ts",
+        fn: "resumeCommand",
+        args: [{ name: "Sandbox id", type: "text", placeholder: "sandbox id" }],
+      },
+      destroy: {
+        description: "Delete pod + PVC + Secrets and prune receiver refs + local anchor",
+        module: "./commands/sandbox.ts",
+        fn: "destroyCommand",
+        args: [{ name: "Sandbox id", type: "text", placeholder: "sandbox id" }],
+      },
+      answer: {
+        description: "Deliver answer.md to the sandbox via the controller mailbox",
+        module: "./commands/sandbox.ts",
+        fn: "answerCommand",
+        args: [
+          { name: "Sandbox id", type: "text", placeholder: "sandbox id" },
+          { name: "File", type: "text", placeholder: "answer.md", hint: "Answer file; omit to read stdin" },
+        ],
+      },
+      logs: {
+        description: "kubectl logs passthrough for a sandbox container",
+        module: "./commands/sandbox.ts",
+        fn: "logsCommand",
+        args: [
+          { name: "Sandbox id", type: "text", placeholder: "sandbox id" },
+          { name: "Container", type: "text", placeholder: "agent", hint: "agent, chrome, watcher, postgres, or a dev-process name" },
+        ],
+      },
+      flags: {
+        description: "Upsert the sandbox's LD fallback Secret (pod recycle applies it)",
+        module: "./commands/sandbox.ts",
+        fn: "flagsCommand",
+        args: [
+          { name: "Sandbox id", type: "text", placeholder: "sandbox id" },
+          { name: "Flags", type: "text", placeholder: "my-flag=true", hint: "k=v pairs; values parse as JSON when they can" },
+        ],
+      },
+    },
+  },
+
   daemon: {
     description: "Manage the rt background daemon",
     subcommands: {

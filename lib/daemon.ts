@@ -44,6 +44,7 @@ import {
   type FreshnessEnv,
 } from "./daemon/freshness.ts";
 import { startDiscussionsPoller } from "./daemon/discussions-poller.ts";
+import { startSandboxSync } from "./daemon/sandbox-sync.ts";
 import { createCleanup, installSignalHandlers } from "./daemon/shutdown.ts";
 import type { HandlerContext } from "./daemon/handlers/types.ts";
 import type { PortEntry } from "./port-scanner.ts";
@@ -221,6 +222,10 @@ export function startDaemon(): void {
 
   // Background sweep for new MR comments → `discussions:new-comments` events.
   startDiscussionsPoller({ ctx: handlerCtx, broadcast });
+
+  // Sandbox ground-truth reconcile: port-forwards, dev-ports mirroring, and
+  // typed-event → notification fan-out (no-op while no controller answers).
+  startSandboxSync(log);
 
   // Graceful shutdown on all termination signals
   installSignalHandlers({ cleanup, flushLogs: () => loggerHandle.flush?.(), log });

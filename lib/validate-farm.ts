@@ -66,7 +66,8 @@ export type GitPushSpawn = (
   opts: { cwd: string; env: Record<string, string> },
 ) => Promise<{ exitCode: number; stderr: string }>;
 
-const spawnGitPush: GitPushSpawn = async (argv, opts) => {
+/** Real GitPushSpawn (also used by the sandbox handshake/ship pushes). */
+export const spawnGitPush: GitPushSpawn = async (argv, opts) => {
   const proc = Bun.spawn(argv, {
     cwd: opts.cwd,
     env: { ...process.env, ...opts.env },
