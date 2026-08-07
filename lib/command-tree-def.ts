@@ -755,6 +755,14 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Container", type: "text", placeholder: "agent", hint: "agent, chrome, watcher, postgres, or a dev-process name" },
         ],
       },
+      ship: {
+        description: "Relay the sandbox branch to the real origin — fetch from the receiver, confirm, push under your identity",
+        module: "./commands/sandbox.ts",
+        fn: "shipCommand",
+        context: "worktree",
+        requiresTTY: true,
+        args: [{ name: "Sandbox id", type: "text", placeholder: "sandbox id" }],
+      },
       "qa-tunnel": {
         description: "Extend the local SDM tunnel into the cluster (ssh -R via the receiver; credential stays local)",
         module: "./commands/sandbox.ts",

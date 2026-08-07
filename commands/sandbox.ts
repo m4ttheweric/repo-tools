@@ -369,6 +369,57 @@ export async function logsCommand(args: string[]): Promise<void> {
   process.exit(await proc.exited);
 }
 
+// ─── rt sandbox ship ─────────────────────────────────────────────────────────
+
+export async function shipCommand(args: string[], ctx: CommandContext): Promise<void> {
+  const id = requireId(args, "ship");
+  const repoId = requireRepoId(ctx);
+
+  // Branch from the local anchor; a sandbox created elsewhere falls back to
+  // the controller record.
+  let branch = findSandboxAnchor(id)?.branch ?? null;
+  if (!branch) {
+    await requireController();
+    try {
+      branch = (await createSandboxClient().get(id))?.branch ?? null;
+    } catch (err) {
+      infraExit(err);
+    }
+    if (!branch) usageExit(`sandbox ${id} is unknown locally and to the controller`);
+  }
+
+  const { shipSandbox, runGit } = await import("../lib/sandbox-ship.ts");
+  const { confirm } = await import("../lib/rt-render.tsx");
+  const out = await shipSandbox({
+    repoId,
+    sandboxId: id,
+    branch,
+    baseRef: resolveBaseRef(repoId, process.cwd()),
+    cwd: process.cwd(),
+    git: runGit,
+    confirm: async (summary) => {
+      console.log(`\n  ${bold}${summary.branch}${reset} ${dim}(${summary.commit.slice(0, 12)} from sandbox ${id})${reset}\n`);
+      if (summary.log) console.log(summary.log.split("\n").map(l => `  ${l}`).join("\n"));
+      if (summary.diffstat) console.log(`\n${summary.diffstat.split("\n").map(l => `  ${dim}${l}${reset}`).join("\n")}\n`);
+      return await confirm({
+        message: `Push ${summary.branch} to origin under your identity?`,
+        initialValue: false,
+      });
+    },
+  });
+
+  if (!out.ok) {
+    console.error(`\n  ${red}✗ ${out.message}${reset}\n`);
+    process.exit(2);
+  }
+  if (!out.pushed) {
+    console.log(`\n  ${yellow}nothing pushed${reset} ${dim}— the branch stays on the receiver (refs/sandboxes/${id}/${branch})${reset}\n`);
+    process.exit(1);
+  }
+  console.log(`\n  ${green}✓${reset} ${bold}${branch}${reset} pushed to origin under your local identity`);
+  console.log(`  ${dim}continue with the normal local flow (MR creation / ship skill) from here${reset}\n`);
+}
+
 // ─── rt sandbox qa-tunnel ────────────────────────────────────────────────────
 
 /** True when something accepts a TCP connection on 127.0.0.1:port. */
