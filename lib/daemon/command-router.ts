@@ -6,7 +6,7 @@
  * inline in daemon.ts.
  */
 
-import type { HandlerContext, HandlerMap } from "./handlers/types.ts";
+import type { HandlerContext, HandlerMap, TypedHandlers } from "./handlers/types.ts";
 import { createCacheHandlers }     from "./handlers/cache.ts";
 import { createHooksHandlers }     from "./handlers/hooks.ts";
 import { createStatusHandlers }    from "./handlers/status.ts";
@@ -20,11 +20,16 @@ import { createProjectMRsHandlers } from "./handlers/project-mrs.ts";
 import { reconcileFreshness, getFreshnessSnapshot } from "./freshness.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
 
+// `TypedHandlers & HandlerMap`, not plain HandlerMap: the intersection makes
+// this function the compile-time proof that every command in the rt-client
+// catalog has a daemon handler. A catalog entry whose factory stops
+// declaring it fails here, before the runtime exhaustiveness test in
+// __tests__/rt-client-commands.test.ts ever runs (MAT-31).
 export function buildRoutedHandlers(opts: {
   ctx: HandlerContext;
   broadcast: (type: string, data: any) => void;
   systemProcessScanner: SystemProcessScanner;
-}): HandlerMap {
+}): TypedHandlers & HandlerMap {
   const { ctx, broadcast, systemProcessScanner } = opts;
   return {
     ...createCacheHandlers(ctx),
