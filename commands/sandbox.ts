@@ -369,6 +369,94 @@ export async function logsCommand(args: string[]): Promise<void> {
   process.exit(await proc.exited);
 }
 
+// ─── rt sandbox qa-tunnel ────────────────────────────────────────────────────
+
+/** True when something accepts a TCP connection on 127.0.0.1:port. */
+async function probeLocalListener(port: number): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), 1500);
+    Bun.connect({
+      hostname: "127.0.0.1",
+      port,
+      socket: {
+        open(socket) { clearTimeout(timer); socket.end(); resolve(true); },
+        error() { clearTimeout(timer); resolve(false); },
+        data() {},
+        close() {},
+      },
+    }).catch(() => { clearTimeout(timer); resolve(false); });
+  });
+}
+
+/** Resolve an sdm resource's local listener port from `sdm status`. */
+async function resolveSdmListenerPort(resource: string): Promise<number> {
+  const { getSdmSnapshot } = await import("../lib/sdm/core.ts");
+  const snapshot = await getSdmSnapshot(true);
+  const state = snapshot.resources.get(resource);
+  if (!state) usageExit(`sdm knows no resource "${resource}" — check \`rt sdm status\``);
+  if (!state.connected || !state.address) {
+    usageExit(`sdm resource "${resource}" is not connected — connect it first (rt sdm)`);
+  }
+  const port = Number(state.address.split(":")[1]);
+  if (!Number.isFinite(port)) usageExit(`sdm address "${state.address}" carries no local port`);
+  return port;
+}
+
+export async function qaTunnelCommand(args: string[]): Promise<void> {
+  let resource: string | null = null;
+  let localPort: number | null = null;
+  const positional: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--help" || arg === "-h") helpExit();
+    else if (arg === "--resource") { resource = args[++i] ?? null; if (!resource) usageExit("--resource requires a name"); }
+    else if (arg === "--local-port") { localPort = Number(args[++i]); if (!Number.isFinite(localPort)) usageExit("--local-port requires a number"); }
+    else if (arg.startsWith("--")) usageExit(`unknown argument: ${arg}`);
+    else positional.push(arg);
+  }
+  const id = positional[0];
+  if (!id) usageExit("usage: rt sandbox qa-tunnel <id> [--resource <name> | --local-port <n>]");
+  if (localPort === null) {
+    if (!resource) usageExit("pass --resource <sdm resource> or --local-port <n> for the local SDM listener");
+    localPort = await resolveSdmListenerPort(resource);
+  }
+
+  const anchor = findSandboxAnchor(id);
+  const overlay = anchor ? readSandboxConfig(anchor.repoId) : null;
+
+  const { openQaTunnel, spawnTunnel } = await import("../lib/qa-tunnel.ts");
+  const { notify } = await import("../lib/notifier.ts");
+  const out = await openQaTunnel({
+    sandboxId: id,
+    localPort,
+    ...(overlay?.qaPostgresUrlTemplate ? { urlTemplate: overlay.qaPostgresUrlTemplate } : {}),
+    probeListener: probeLocalListener,
+    spawn: spawnTunnel,
+    exec: (await import("../lib/cloud-secrets.ts")).spawnExec,
+    onDeath: (code) => {
+      notify("QA tunnel died", `sandbox ${id}: ssh -R exited ${code} — the in-pod backend will see DB errors`, undefined, "sandbox_qa_tunnel");
+    },
+  });
+  if (!out.ok) {
+    console.error(`\n  ${red}✗ ${out.message}${reset}\n`);
+    process.exit(2);
+  }
+
+  console.log(`\n  ${green}✓${reset} QA tunnel up: 127.0.0.1:${localPort} ${dim}→${reset} ${bold}receiver.mc-system.svc:${out.clusterPort}${reset} ${dim}(in-cluster)${reset}`);
+  console.log(`  POSTGRES_URL override ${dim}${out.postgresUrl}${reset}`);
+  console.log(`  ${dim}recycle the pod (rt sandbox suspend ${id} && rt sandbox resume ${id}) to apply${reset}`);
+  console.log(`  ${dim}the tunnel lives in this process and dies with your laptop session — Ctrl-C to close${reset}\n`);
+
+  process.on("SIGINT", () => {
+    out.handle.kill();
+    console.log(`\n  ${dim}tunnel closed${reset}\n`);
+    process.exit(0);
+  });
+  const code = await out.handle.exited;
+  console.error(`\n  ${red}tunnel exited (${code}) — the in-pod backend will see DB errors until reopened${reset}\n`);
+  process.exit(code === 0 ? 0 : 2);
+}
+
 // ─── rt sandbox flags ────────────────────────────────────────────────────────
 
 export async function flagsCommand(args: string[]): Promise<void> {
