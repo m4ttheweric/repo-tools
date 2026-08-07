@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import {
+  MC_ENV_HELP,
   createControllerClient,
   ensureEndpoints,
   failureExitCode,
@@ -381,6 +382,16 @@ describe("pushSnapshot", () => {
     });
     expect(out.ok).toBe(false);
     expect(out.stderr).toContain("Could not read");
+  });
+});
+
+// ─── env-var docs ────────────────────────────────────────────────────────────
+
+describe("MC_ENV_HELP", () => {
+  test("the one place documenting every MC_* var the client reads", () => {
+    for (const name of ["MC_CONTROLLER_URL", "MC_RECEIVER_URL", "MC_RECEIVER_SSH_KEY"]) {
+      expect(MC_ENV_HELP).toContain(name);
+    }
   });
 });
 

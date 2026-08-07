@@ -5,14 +5,9 @@
  * Everything here is unit-testable with injected fetch/exec fakes. The
  * controller/receiver do not exist on a reachable host yet, so pieces that
  * can only be proven against the cluster carry a "cluster-verify pending"
- * note. Endpoints come from env with port-forward-shaped defaults:
- *
- *   MC_CONTROLLER_URL    (default http://localhost:8080)
- *   MC_RECEIVER_URL      (default ssh://git@localhost:2222)
- *   MC_RECEIVER_SSH_KEY  (optional: private key path pinned for the receiver
- *                         push — the operator's default identity lives in an
- *                         ssh agent, so the in-cluster receiver needs an
- *                         explicit knob for deterministic key selection)
+ * note. Endpoints come from env with port-forward-shaped defaults — the
+ * MC_* vars are documented once, in MC_ENV_HELP below (which is what
+ * `rt validate --help` prints).
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -24,6 +19,18 @@ import { getRemoteDefaultBranch } from "./git-ops.ts";
 import { SnapshotBaseRefError } from "./snapshot.ts";
 
 // ─── Endpoints ───────────────────────────────────────────────────────────────
+
+/**
+ * The canonical MC_* env-var documentation — every MC_ var the farm client
+ * reads, described in this one place. `rt validate --help` prints it
+ * verbatim; document any new MC_ var here, nowhere else.
+ */
+export const MC_ENV_HELP = [
+  "    MC_CONTROLLER_URL    controller endpoint            (default http://localhost:8080)",
+  "    MC_RECEIVER_URL      receiver git-push endpoint     (default ssh://git@localhost:2222)",
+  "    MC_RECEIVER_SSH_KEY  private key path pinned for the receiver push",
+  "                         (default: ssh's own resolution — agent, config)",
+].join("\n");
 
 export function controllerUrl(): string {
   return (process.env.MC_CONTROLLER_URL ?? "http://localhost:8080").replace(/\/$/, "");
