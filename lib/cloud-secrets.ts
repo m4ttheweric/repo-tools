@@ -38,10 +38,15 @@ export const spawnExec: Exec = async (argv, opts = {}) => {
   return { stdout, exitCode };
 };
 
+/** The one shim check: `doppler --version` output names the mattcloud shim. */
+function versionNamesShim(stdout: string): boolean {
+  return stdout.toLowerCase().includes("mattcloud");
+}
+
 /** Detect the mattcloud doppler shim (its --version output names it). */
 export async function isDopplerShim(exec: Exec): Promise<boolean> {
   const r = await exec(["doppler", "--version"]);
-  return r.exitCode === 0 && r.stdout.toLowerCase().includes("mattcloud");
+  return r.exitCode === 0 && versionNamesShim(r.stdout);
 }
 
 export interface SecretsSyncOutcome {
@@ -72,7 +77,7 @@ export async function syncSecrets(opts: {
   if (version.exitCode !== 0) {
     return { exitCode: 1, message: "doppler not found on PATH — install it or fix PATH" };
   }
-  if (version.stdout.toLowerCase().includes("mattcloud")) {
+  if (versionNamesShim(version.stdout)) {
     return { exitCode: 64, message: "refusing: `doppler` on PATH is the mattcloud shim, not the real CLI" };
   }
 
