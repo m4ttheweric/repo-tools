@@ -140,7 +140,7 @@ export async function createCommand(args: string[], ctx: CommandContext): Promis
   const repoId = requireRepoId(ctx);
   if (!readSandboxConfig(repoId)) {
     usageExit(
-      `overlay ~/.rt/repos/${repoId}/config.json has no "sandbox" section — declare processes (name/port/localPorts) and stateFile first`,
+      `overlay ~/.rt/repos/${repoId}/sandbox.jsonc is missing — declare processes (name/port/localPorts) and stateFile first`,
     );
   }
 

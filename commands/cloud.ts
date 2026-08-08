@@ -136,7 +136,7 @@ export async function browserSecretsSyncCommand(_args: string[], ctx: CommandCon
   const repoId = requireRepoId(ctx);
   const config = readSandboxConfig(repoId);
   if (!config?.browserSecretsFile) {
-    console.error(`\n  ${red}overlay ~/.rt/repos/${repoId}/config.json names no sandbox.browserSecretsFile${reset}\n`);
+    console.error(`\n  ${red}overlay ~/.rt/repos/${repoId}/sandbox.jsonc names no browserSecretsFile${reset}\n`);
     process.exit(64);
   }
   if (!existsSync(config.browserSecretsFile)) {
@@ -157,7 +157,7 @@ export async function agentCredentialsSyncCommand(_args: string[], ctx: CommandC
   const config = readSandboxConfig(repoId);
   const sources = config?.agentCredentialFiles ?? {};
   if (Object.keys(sources).length === 0) {
-    console.error(`\n  ${red}overlay ~/.rt/repos/${repoId}/config.json names no sandbox.agentCredentialFiles${reset}\n`);
+    console.error(`\n  ${red}overlay ~/.rt/repos/${repoId}/sandbox.jsonc names no agentCredentialFiles${reset}\n`);
     process.exit(64);
   }
   const files: Record<string, Uint8Array> = {};

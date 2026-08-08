@@ -216,20 +216,19 @@ describe("createSandboxClient", () => {
 // ─── Overlay sandbox config ──────────────────────────────────────────────────
 
 describe("readSandboxConfig", () => {
-  test("reads the overlay's sandbox section; localPorts default to the pod port", () => {
+  test("reads the overlay's sandbox.jsonc (comments allowed); localPorts default to the pod port", () => {
     const root = mkdtempSync(join(tmpdir(), "sbx-overlay-"));
     mkdirSync(join(root, "acme-dev"), { recursive: true });
-    writeFileSync(join(root, "acme-dev", "config.json"), JSON.stringify({
-      sandbox: {
-        processes: [
-          { name: "portal", port: 4001, localPorts: [4001, 5001, 6001] },
-          { name: "backend", port: 4000 },
-        ],
-        stateFile: "~/.acme/dev-ports.state.json",
-        browserSecretsFile: "~/.acme/browser.env",
-        agentCredentialFiles: { "claude-session.json": "~/.claude/session.json" },
-      },
-    }));
+    writeFileSync(join(root, "acme-dev", "sandbox.jsonc"), `// adapter facts
+${JSON.stringify({
+      processes: [
+        { name: "portal", port: 4001, localPorts: [4001, 5001, 6001] },
+        { name: "backend", port: 4000 },
+      ],
+      stateFile: "~/.acme/dev-ports.state.json",
+      browserSecretsFile: "~/.acme/browser.env",
+      agentCredentialFiles: { "claude-session.json": "~/.claude/session.json" },
+    })}`);
     process.env.HOME = "/tmp/sbx-home";
     const config = readSandboxConfig("acme-dev", root)!;
     expect(config.processes).toEqual([
@@ -243,23 +242,28 @@ describe("readSandboxConfig", () => {
     });
   });
 
-  test("null when the overlay or its sandbox section is missing", () => {
+  test("null when sandbox.jsonc is missing or malformed; the config.json path is dead", () => {
     const root = mkdtempSync(join(tmpdir(), "sbx-overlay-"));
     expect(readSandboxConfig("ghost", root)).toBeNull();
     mkdirSync(join(root, "plain"), { recursive: true });
-    writeFileSync(join(root, "plain", "config.json"), JSON.stringify({ setup: [] }));
+    writeFileSync(join(root, "plain", "sandbox.jsonc"), "{ not json");
     expect(readSandboxConfig("plain", root)).toBeNull();
+    // A config.json sandbox section no longer counts (ruled: no fallback).
+    mkdirSync(join(root, "legacy"), { recursive: true });
+    writeFileSync(join(root, "legacy", "config.json"), JSON.stringify({
+      sandbox: { processes: [{ name: "app", port: 3000 }] },
+    }));
+    expect(readSandboxConfig("legacy", root)).toBeNull();
   });
 
-  test("listSandboxOverlays finds exactly the repos with a sandbox section", () => {
+  test("listSandboxOverlays finds exactly the repos with a sandbox.jsonc", () => {
     const root = mkdtempSync(join(tmpdir(), "sbx-overlay-"));
-    for (const [repo, config] of [
-      ["with-sandbox", { sandbox: { processes: [{ name: "app", port: 3000 }] } }],
-      ["without", { setup: [] }],
-    ] as const) {
-      mkdirSync(join(root, repo), { recursive: true });
-      writeFileSync(join(root, repo, "config.json"), JSON.stringify(config));
-    }
+    mkdirSync(join(root, "with-sandbox"), { recursive: true });
+    writeFileSync(join(root, "with-sandbox", "sandbox.jsonc"), JSON.stringify({
+      processes: [{ name: "app", port: 3000 }],
+    }));
+    mkdirSync(join(root, "without"), { recursive: true });
+    writeFileSync(join(root, "without", "config.json"), JSON.stringify({ setup: [] }));
     const overlays = listSandboxOverlays(root);
     expect(overlays.map(o => o.repoId)).toEqual(["with-sandbox"]);
     expect(overlays[0]!.config.processes[0]!.name).toBe("app");
