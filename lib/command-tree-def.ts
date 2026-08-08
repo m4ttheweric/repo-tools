@@ -859,9 +859,10 @@ export const TREE: Record<string, CommandNode> = {
         ],
       },
       review: {
-        description: "Review synced evidence before it attaches to the MR (stub — lands in the next task)",
+        description: "Review synced evidence before it attaches to the MR (approve / reject / edit-and-redraw)",
         module: "./commands/evidence.ts",
         fn: "reviewCommand",
+        requiresTTY: true,
         args: [
           { name: "Branch", flag: "--branch", type: "text", placeholder: "branch-name" },
         ],
