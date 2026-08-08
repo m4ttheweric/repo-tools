@@ -62,6 +62,22 @@ describe("evidence handlers", () => {
     expect(frames.at(-1)!.type).toBe("evidence:updated");
   });
 
+  test("request: explicit executor local-chrome on a non-identityGated view still goes local", async () => {
+    // Proves the pass-through path `--local` now relies on (commands/evidence.ts
+    // requestCommand): an explicit executor overrides the identityGated default,
+    // so a non-gated view never falls through to the sidecar's sandboxId check.
+    const { h, ledger } = makeHandlers();
+    const r = await h["evidence:request"]!({
+      repoId: "demo", branch: "acme-1-fix",
+      caseId: "c1", view: "qa-case", recipe: "shot", slot: "standalone",
+      executor: "local-chrome",
+    });
+    expect(r.ok).toBe(true);
+    expect(r.data.executor).toBe("local-chrome");
+    expect(r.data.requestId.startsWith("local-")).toBe(true);
+    expect(ledger.read(r.data.requestId)!.sandboxId).toBeNull();
+  });
+
   test("request: identityGated view defaults to local-chrome with a local- requestId", async () => {
     const { h, ledger } = makeHandlers();
     const r = await h["evidence:request"]!({
@@ -171,5 +187,12 @@ describe("evidence handlers", () => {
     const r = await h["evidence:pull"]!({});
     expect(r.ok).toBe(true);
     expect(r.data.synced.sort()).toEqual(["r1", "r2"]);
+  });
+
+  test("pull with an explicit unknown requestId rejects instead of silently syncing nothing", async () => {
+    const { h } = makeHandlers();
+    const r = await h["evidence:pull"]!({ requestId: "no-such-id" });
+    expect(r.ok).toBe(false);
+    expect(r.error).toBe("unknown requestId: no-such-id");
   });
 });

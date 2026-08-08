@@ -25,7 +25,7 @@ import {
   type EvidenceConfig,
 } from "../../evidence-config.ts";
 import { syncEvidence, branchSlug, treeFileNames } from "../evidence-sync.ts";
-import { notify as sendNotification } from "../../notifier.ts";
+import { notifyEnabled } from "../../notifier.ts";
 
 export interface EvidenceHandlerOverrides {
   ledger?: EvidenceLedger;
@@ -62,7 +62,7 @@ export function createEvidenceHandlers(
           client,
           ledger,
           config,
-          notify: (title, message, category) => sendNotification(title, message, undefined, category),
+          notify: (title, message, category) => notifyEnabled(category, title, message),
         },
         requestId,
       ));
@@ -141,6 +141,9 @@ export function createEvidenceHandlers(
     },
 
     "evidence:pull": async (payload: { requestId?: string } = {}) => {
+      if (payload.requestId && !ledger.read(payload.requestId)) {
+        return { ok: false, error: `unknown requestId: ${payload.requestId}` };
+      }
       const ids = payload.requestId
         ? [payload.requestId]
         : ledger.list({ states: ["captured"] }).map((e) => e.requestId);

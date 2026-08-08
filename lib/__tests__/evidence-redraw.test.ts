@@ -79,4 +79,20 @@ describe("evidence-redraw", () => {
     deps.exec = async () => ({ exitCode: 2, stdout: "", stderr: "annotation 1 falls outside the image" });
     expect(await redrawAnnotations(entry, deps)).toEqual({ error: "annotation 1 falls outside the image" });
   });
+
+  test("corrupt or missing manifest returns an error instead of throwing", async () => {
+    const { entry, deps } = redrawSetup();
+    writeFileSync(entry.files!.manifest, "{not json");
+    const result = await redrawAnnotations(entry, deps);
+    expect("error" in result).toBe(true);
+    expect((result as { error: string }).error).toContain("could not read manifest");
+  });
+
+  test("annotate exiting 0 with non-JSON stdout returns an error instead of throwing", async () => {
+    const { entry, deps } = redrawSetup();
+    deps.exec = async () => ({ exitCode: 0, stdout: "not json", stderr: "" });
+    const result = await redrawAnnotations(entry, deps);
+    expect("error" in result).toBe(true);
+    expect((result as { error: string }).error).toContain("non-JSON stdout");
+  });
 });

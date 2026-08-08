@@ -36,7 +36,12 @@ export async function redrawAnnotations(
 ): Promise<{ annotatedPath: string } | { error: string }> {
   if (!entry.files) return { error: "no measured capture to redraw from" };
 
-  const manifest: CaptureManifest = JSON.parse(readFileSync(entry.files.manifest, "utf8"));
+  let manifest: CaptureManifest;
+  try {
+    manifest = JSON.parse(readFileSync(entry.files.manifest, "utf8"));
+  } catch (err) {
+    return { error: `could not read manifest: ${err instanceof Error ? err.message : String(err)}` };
+  }
   if (!manifest.capture?.viewport) return { error: "no measured capture to redraw from" };
   if (!manifest.annotateConfig) return { error: "no measured capture to redraw from" };
 
@@ -64,6 +69,11 @@ export async function redrawAnnotations(
   const result = await deps.exec(["fast-browser", "annotate", configPath, "--json"]);
   if (result.exitCode !== 0) return { error: result.stderr };
 
-  const report: AnnotateReport = JSON.parse(result.stdout);
+  let report: AnnotateReport;
+  try {
+    report = JSON.parse(result.stdout);
+  } catch (err) {
+    return { error: `annotate exited 0 with non-JSON stdout: ${err instanceof Error ? err.message : String(err)}` };
+  }
   return { annotatedPath: report.out };
 }

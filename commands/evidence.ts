@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 /**
- * rt evidence: capture-request lifecycle for QA evidence (evidence factory).
+ * rt evidence: capture-request lifecycle for screenshot evidence.
  *
  * Usage:
  *   rt evidence request <sandboxId> --case <id> --view <name> --recipe <name>
@@ -182,6 +182,7 @@ export async function requestCommand(args: string[], ctx: CommandContext): Promi
       ...(Object.keys(parsed.args).length ? { args: parsed.args } : {}),
       slot: parsed.slot,
       ...(parsed.forceBefore ? { forceBefore: true } : {}),
+      ...(parsed.local ? { executor: "local-chrome" as const } : {}),
     });
     if (parsed.json) {
       console.log(JSON.stringify(out, null, 2));

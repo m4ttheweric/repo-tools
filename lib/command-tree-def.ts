@@ -801,11 +801,11 @@ export const TREE: Record<string, CommandNode> = {
   // devOnly for the same reason as sandbox: the controller's evidence
   // endpoints are not deployed anywhere yet (evidence-factory plan Task 8+).
   evidence: {
-    description: "Evidence capture requests for QA screenshots (evidence factory)",
+    description: "Evidence capture requests for screenshot evidence",
     devOnly: true,
     subcommands: {
       request: {
-        description: "Queue an evidence capture — branch resolves from the sandbox anchor (or the worktree with --local)",
+        description: "Queue an evidence capture; branch resolves from the sandbox anchor (or the worktree with --local)",
         module: "./commands/evidence.ts",
         fn: "requestCommand",
         context: "worktree",
