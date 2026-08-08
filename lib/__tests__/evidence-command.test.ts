@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
-import { EVIDENCE_REQUEST_USAGE, parseEvidenceRequestFlags } from "../../commands/evidence.ts";
+import { EVIDENCE_REQUEST_USAGE, parseEvidenceRequestFlags, reviewClosingHints } from "../../commands/evidence.ts";
+import type { EvidenceConfig } from "../../lib/evidence-config.ts";
 
 test("argless invocation gets the verb's full usage line, not a bare field error", () => {
   expect(parseEvidenceRequestFlags([])).toEqual({ error: EVIDENCE_REQUEST_USAGE });
@@ -34,4 +35,24 @@ test("errors: missing required flag, bad slot, malformed --arg", () => {
 test("--local with no sandbox id is valid (branch resolved from the worktree)", () => {
   const p = parseEvidenceRequestFlags(["--local", "--case", "c", "--view", "v", "--recipe", "r", "--slot", "standalone"]);
   expect(p).toMatchObject({ sandboxId: null, local: true });
+});
+
+test("reviewClosingHints: config-carried, deduped, nothing for repos without a hint", () => {
+  const base: Omit<EvidenceConfig, "reviewClosingHint"> = {
+    evidenceRoot: "~/e", appPort: 1,
+    views: {}, recipes: {},
+    login: { url: "/", fields: {}, submit: "b", assertAuthed: { selector: "[x]" } },
+  };
+  const configs: Record<string, EvidenceConfig | null> = {
+    "with-hint": { ...base, reviewClosingHint: "assured:capture-evidence A5" },
+    "same-hint": { ...base, reviewClosingHint: "assured:capture-evidence A5" },
+    "other-hint": { ...base, reviewClosingHint: "other step" },
+    "no-hint": { ...base },
+    "no-config": null,
+  };
+  const lookup = (repoId: string) => configs[repoId] ?? null;
+  expect(reviewClosingHints(["with-hint", "same-hint", "other-hint", "no-hint", "no-config"], lookup))
+    .toEqual(["assured:capture-evidence A5", "other step"]);
+  expect(reviewClosingHints([], lookup)).toEqual([]);
+  expect(reviewClosingHints(["no-hint", "no-config"], lookup)).toEqual([]);
 });

@@ -49,6 +49,12 @@ export interface EvidenceConfig {
   views: Record<string, EvidenceView>;
   recipes: Record<string, EvidenceRecipe>;
   login: EvidenceLogin;
+  /**
+   * Closing line `rt evidence review` prints when a session ends — the
+   * overlay owns the wording (rt hardcodes no adapter strings). Absent
+   * means no hint is printed.
+   */
+  reviewClosingHint?: string;
 }
 
 /** Loads ~/.rt/repos/<repoId>/evidence.jsonc; null when missing or malformed, never throws. */
