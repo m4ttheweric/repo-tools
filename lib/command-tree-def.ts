@@ -689,7 +689,7 @@ export const TREE: Record<string, CommandNode> = {
         },
       },
       "sync-config": {
-        description: "Overlay config files → ConfigMaps repo-gates / repo-bake-config / sandbox-bake-config / repo-browser-flows (mc-system)",
+        description: "Overlay config files → ConfigMaps repo-gates / repo-bake-config / sandbox-bake-config / repo-sandbox-config / repo-browser-flows (mc-system)",
         module: "./commands/cloud.ts",
         fn: "syncConfigCommand",
         context: "worktree",

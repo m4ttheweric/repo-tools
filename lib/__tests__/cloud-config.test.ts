@@ -149,6 +149,38 @@ describe("syncConfig sandbox extensions", () => {
     expect(manifest.data).toEqual({ "login.flow.md": "# login", "evidence.flow.md": "# evidence" });
   });
 
+  test("sandbox.jsonc syncs to ConfigMap repo-sandbox-config under key <repoId>.json", async () => {
+    const SANDBOX_JSON = `{\n  "processes": [],\n  "postgresImage": "postgis/postgis:16-3.4"\n}`;
+    const SANDBOX_YAML = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: repo-sandbox-config\n";
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-system create configmap repo-gates": { stdout: GATES_YAML, exitCode: 0 },
+      "kubectl -n mc-system create configmap repo-sandbox-config": { stdout: SANDBOX_YAML, exitCode: 0 },
+      "kubectl -n mc-system apply": { stdout: "configured\n", exitCode: 0 },
+    });
+    const out = await syncConfig({
+      gates: GATES,
+      bake: null,
+      sandbox: { repoId: "assured-dev", json: SANDBOX_JSON },
+      exec,
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.message).toContain("repo-sandbox-config");
+    const create = calls.find(c => c.argv.includes("repo-sandbox-config"))!;
+    expect(create.argv).toContain("--from-file=assured-dev.json=/dev/stdin");
+    expect(create.stdin).toBe(SANDBOX_JSON);
+  });
+
+  test("absent sandbox.jsonc is skipped and said so", async () => {
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-system create configmap repo-gates": { stdout: GATES_YAML, exitCode: 0 },
+      "kubectl -n mc-system apply": { stdout: "configured\n", exitCode: 0 },
+    });
+    const out = await syncConfig({ gates: GATES, bake: null, sandbox: null, exec });
+    expect(out.exitCode).toBe(0);
+    expect(out.message).toContain("no sandbox.jsonc");
+    expect(calls.some(c => c.argv.includes("repo-sandbox-config"))).toBe(false);
+  });
+
   test("absent sandbox overlay files are skipped and said so, without kubectl calls for them", async () => {
     const { exec, calls } = fakeExec({
       "kubectl -n mc-system create configmap repo-gates": { stdout: GATES_YAML, exitCode: 0 },
