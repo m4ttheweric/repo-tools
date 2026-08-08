@@ -29,6 +29,7 @@ import {
   type SandboxOverlayConfig,
   type SandboxProcess,
 } from "./sandbox.ts";
+import type { EvidenceLedger } from "./daemon/evidence-ledger.ts";
 
 // ─── Port allocation ─────────────────────────────────────────────────────────
 
@@ -231,6 +232,11 @@ export interface SandboxSyncDeps {
   notify(title: string, message: string, category: string): void;
   /** Overlay enumeration, injectable for tests; defaults to ~/.rt/repos. */
   overlays?(): Array<{ repoId: string; config: SandboxOverlayConfig }>;
+  /** Evidence fold-in, wired by lib/daemon/sandbox-sync.ts; absent when a repo has no evidence overlay. */
+  evidence?: {
+    ledger: EvidenceLedger;
+    sync(requestId: string): Promise<void>;
+  };
 }
 
 /**
@@ -244,7 +250,7 @@ export interface SandboxSyncDeps {
 export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<void> } {
   const overlays = deps.overlays ?? listSandboxOverlays;
 
-  function fanOut(anchor: SandboxAnchor, stateFile: string | undefined, events: SandboxEvent[]): void {
+  async function fanOut(anchor: SandboxAnchor, stateFile: string | undefined, events: SandboxEvent[]): Promise<void> {
     const id = anchor.id;
     for (const event of events) {
       const payload = (event.payload ?? {}) as Record<string, unknown>;
@@ -274,6 +280,37 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
             } catch { /* malformed capture — the next capture event retries */ }
           }
           break;
+        case "evidence-started": {
+          // in-pod agents can enqueue without rt: materialize a ledger entry on first sight
+          const requestId = payload.requestId as string;
+          if (deps.evidence && requestId && !deps.evidence.ledger.read(requestId)) {
+            const detail = await deps.client.getEvidence(requestId).catch(() => null);
+            if (detail) deps.evidence.ledger.upsert({
+              requestId, executor: "sidecar", sandboxId: anchor.id, repoId: anchor.repoId,
+              branch: anchor.branch, caseId: detail.caseId, view: detail.view, recipe: detail.recipe,
+              slot: detail.slot, state: "requested", requestedAt: detail.createdAt,
+            });
+          }
+          break;
+        }
+        case "evidence-ready": {
+          if (deps.evidence) {
+            const requestId = payload.requestId as string;
+            if (deps.evidence.ledger.read(requestId)) deps.evidence.ledger.setState(requestId, "captured");
+            await deps.evidence.sync(requestId).catch(() => { /* next poll or rt evidence pull retries */ });
+          }
+          break;
+        }
+        case "evidence-failed": {
+          if (deps.evidence) {
+            const requestId = payload.requestId as string;
+            if (deps.evidence.ledger.read(requestId)) {
+              deps.evidence.ledger.setState(requestId, "failed", { error: payload.error });
+            }
+            deps.notify("Evidence capture failed", `${anchor.branch}: ${requestId}`, "evidence_failed");
+          }
+          break;
+        }
       }
     }
   }
@@ -281,7 +318,7 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
   async function pollEvents(anchor: SandboxAnchor, stateFile: string | undefined): Promise<void> {
     const events = await deps.client.events(anchor.id, anchor.lastEventSeq);
     if (events.length === 0) return;
-    fanOut(anchor, stateFile, events);
+    await fanOut(anchor, stateFile, events);
     anchor.lastEventSeq = Math.max(...events.map(e => e.seq));
     writeSandboxAnchor(anchor);
   }
