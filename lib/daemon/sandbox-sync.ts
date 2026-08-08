@@ -14,6 +14,9 @@ import { controllerUrl } from "../validate-farm.ts";
 import { createSandboxClient } from "../sandbox.ts";
 import { createForwardSet, createSandboxSync } from "../sandbox-allocator.ts";
 import { notifyEnabled } from "../notifier.ts";
+import { getEvidenceLedger } from "./evidence-ledger.ts";
+import { syncEvidence } from "./evidence-sync.ts";
+import { loadEvidenceConfig } from "../evidence-config.ts";
 
 const SANDBOX_SYNC_INTERVAL_MS = 5 * 1000;
 
@@ -29,6 +32,9 @@ export function stopSandboxSync(): void {
 
 export function startSandboxSync(log: Logger): { stop: () => void } {
   const forwards = createForwardSet();
+  const client = createSandboxClient();
+  const evidenceLedger = getEvidenceLedger();
+  const notify = (title: string, message: string, category: string) => notifyEnabled(category, title, message);
   const sync = createSandboxSync({
     probe: async () => {
       try {
@@ -38,9 +44,16 @@ export function startSandboxSync(log: Logger): { stop: () => void } {
         return false;
       }
     },
-    client: createSandboxClient(),
+    client,
     forwards,
-    notify: (title, message, category) => notifyEnabled(category, title, message),
+    notify,
+    evidence: {
+      ledger: evidenceLedger,
+      sync: (requestId) => syncEvidence(
+        { client, ledger: evidenceLedger, config: (repoId) => loadEvidenceConfig(repoId), notify },
+        requestId,
+      ),
+    },
   });
 
   let inFlight = false;

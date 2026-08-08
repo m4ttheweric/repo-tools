@@ -111,6 +111,8 @@ export const NOTIFICATION_TYPES = [
   { key: "new_comment",       label: "New comment",         description: "When someone comments on an MR you're tracking" },
   { key: "stale_port",        label: "Stale processes",     description: "When a dev server has been running 6h+" },
   { key: "runaway_process",   label: "Runaway processes",   description: "When a process is pegged at high CPU for 5+ minutes" },
+  { key: "evidence_batch_ready", label: "Evidence batch ready", description: "All evidence requests for a branch settled; captures await review" },
+  { key: "evidence_failed",      label: "Evidence capture failed", description: "A queued evidence capture failed in the sandbox" },
 ] as const;
 
 export type NotificationPrefs = Record<string, boolean>;
