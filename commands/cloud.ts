@@ -12,6 +12,7 @@
  *                            sandbox-bake.jsonc → sandbox-bake-config,
  *                            sandbox.jsonc → repo-sandbox-config
  *                            (key <repoId>.json, comments stripped),
+ *                            evidence.jsonc → repo-evidence-config,
  *                            browser-flows/* → repo-browser-flows
  *                            (exit 0 ok / 1 tooling failure / 64 no gates.jsonc)
  *   rt cloud secrets sync-browser   overlay sandbox.browserSecretsFile →
@@ -92,6 +93,7 @@ export async function syncConfigCommand(_args: string[], ctx: CommandContext): P
   const bakePath = join(repoDataDir(repoId), "bake.jsonc");
   const sandboxBakePath = join(repoDataDir(repoId), "sandbox-bake.jsonc");
   const sandboxPath = join(repoDataDir(repoId), "sandbox.jsonc");
+  const evidencePath = join(repoDataDir(repoId), "evidence.jsonc");
   // The controller JSON.parses the mounted <repoId>.json, so comments must
   // come out here; the schema itself stays overlay-owned (no validation).
   let sandbox: { repoId: string; json: string } | null = null;
@@ -115,6 +117,7 @@ export async function syncConfigCommand(_args: string[], ctx: CommandContext): P
     bake: existsSync(bakePath) ? readFileSync(bakePath, "utf8") : null,
     sandboxBake: existsSync(sandboxBakePath) ? readFileSync(sandboxBakePath, "utf8") : null,
     sandbox,
+    evidence: existsSync(evidencePath) ? readFileSync(evidencePath, "utf8") : null,
     browserFlows,
   });
   if (outcome.exitCode === 0) {

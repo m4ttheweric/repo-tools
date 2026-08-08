@@ -192,4 +192,31 @@ describe("syncConfig sandbox extensions", () => {
     expect(calls.some(c => c.argv.includes("sandbox-bake-config"))).toBe(false);
     expect(calls.some(c => (c.stdin ?? "").includes("repo-browser-flows"))).toBe(false);
   });
+
+  test("evidence.jsonc syncs to ConfigMap repo-evidence-config via the same stdin pattern", async () => {
+    const EVIDENCE = `{\n  "evidenceRoot": "~/evidence",\n  "appPort": 4001\n}`;
+    const EVIDENCE_YAML = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: repo-evidence-config\n";
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-system create configmap repo-gates": { stdout: GATES_YAML, exitCode: 0 },
+      "kubectl -n mc-system create configmap repo-evidence-config": { stdout: EVIDENCE_YAML, exitCode: 0 },
+      "kubectl -n mc-system apply": { stdout: "configured\n", exitCode: 0 },
+    });
+    const out = await syncConfig({ gates: GATES, bake: null, evidence: EVIDENCE, exec });
+    expect(out.exitCode).toBe(0);
+    expect(out.message).toContain("repo-evidence-config");
+    const create = calls.find(c => c.argv.includes("repo-evidence-config"))!;
+    expect(create.argv).toContain("--from-file=evidence.jsonc=/dev/stdin");
+    expect(create.stdin).toBe(EVIDENCE);
+  });
+
+  test("absent evidence.jsonc is skipped and said so", async () => {
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-system create configmap repo-gates": { stdout: GATES_YAML, exitCode: 0 },
+      "kubectl -n mc-system apply": { stdout: "configured\n", exitCode: 0 },
+    });
+    const out = await syncConfig({ gates: GATES, bake: null, evidence: null, exec });
+    expect(out.exitCode).toBe(0);
+    expect(out.message).toContain("no evidence.jsonc");
+    expect(calls.some(c => c.argv.includes("repo-evidence-config"))).toBe(false);
+  });
 });
