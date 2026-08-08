@@ -246,6 +246,12 @@ function makeSyncWorld(): SyncWorld {
     },
     async mailbox() { return []; },
     async postMailbox() {},
+    async requestEvidence() { throw new Error("unused"); },
+    async listEvidence() { return []; },
+    async getEvidence() { return null; },
+    async fetchEvidenceArtifact() { return new Uint8Array(); },
+    async cancelEvidence() {},
+    async ackEvidenceSynced() {},
   };
 
   const spawn: ForwardSpawn = (argv) => {
