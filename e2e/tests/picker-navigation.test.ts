@@ -49,6 +49,11 @@ describe("picker navigation", () => {
     await session.type("git");
     await session.waitForIdle();
     await session.press("Enter");
+    // "rebase" alone is an ambiguous latch: the root picker's git row
+    // description also contains the word ("Git operations (rebase, ...)"), so
+    // it can match before the subcommand picker exists. Wait for the
+    // subcommand picker's border label first, then for its loaded list.
+    await session.waitForText("rt › git", 5000);
     await session.waitForText("rebase", 5000);
 
     // ctrl-up at the subcommand picker goes back to the root picker
@@ -111,6 +116,9 @@ describe("picker navigation", () => {
     await session.type("git");
     await session.waitForIdle();
     await session.press("Enter");
+    // Same two-stage latch as above: border label proves the subcommand
+    // picker is up, then "rebase" proves its list has loaded.
+    await session.waitForText("rt › git", 5000);
     await session.waitForText("rebase", 5000);
 
     await session.press("Escape");
