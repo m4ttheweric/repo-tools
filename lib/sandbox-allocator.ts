@@ -22,6 +22,7 @@ import {
   readSandboxAnchor,
   removeSandboxAnchor,
   writeSandboxAnchor,
+  type EvidenceState,
   type SandboxAnchor,
   type SandboxClient,
   type SandboxDetail,
@@ -29,7 +30,7 @@ import {
   type SandboxOverlayConfig,
   type SandboxProcess,
 } from "./sandbox.ts";
-import type { EvidenceLedger } from "./daemon/evidence-ledger.ts";
+import type { EvidenceLedger, LedgerState } from "./daemon/evidence-ledger.ts";
 
 // ─── Port allocation ─────────────────────────────────────────────────────────
 
@@ -241,11 +242,12 @@ export interface SandboxSyncDeps {
 
 /**
  * One reconcile pass. For every sandbox the controller reports: poll typed
- * events since the anchor's seq and fan them out, then converge local state
- * on the controller's — running sandboxes get an allocation + forward +
- * state entry; suspended ones release all three (allocation kept as resume
- * preference); destroyed/unknown ones are pruned entirely. Errors from one
- * sandbox never block the rest.
+ * events since the anchor's seq and fan them out, materialize ledger entries
+ * for controller evidence requests the ledger has never seen, then converge
+ * local state on the controller's — running sandboxes get an allocation +
+ * forward + state entry; suspended ones release all three (allocation kept
+ * as resume preference); destroyed/unknown ones are pruned entirely. Errors
+ * from one sandbox never block the rest.
  */
 export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<void> } {
   const overlays = deps.overlays ?? listSandboxOverlays;
@@ -321,6 +323,37 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
     await fanOut(anchor, stateFile, events);
     anchor.lastEventSeq = Math.max(...events.map(e => e.seq));
     writeSandboxAnchor(anchor);
+  }
+
+  /** Controller request state → ledger state for a materialized entry. */
+  const LEDGER_STATE_FOR: Record<EvidenceState, LedgerState> = {
+    queued: "requested",
+    running: "requested",
+    captured: "captured",
+    failed: "failed",
+  };
+
+  /**
+   * Reconcile the ledger against the controller's request list: a request
+   * the ledger has never seen (e.g. its event fold-in failed transiently)
+   * gets a materialized entry with the state the controller reports, so it
+   * is no longer orphaned ("unknown requestId" on pull). Existing entries
+   * are never touched — creation only, so decidedAt and friends keep their
+   * stamps and the pass stays idempotent. Artifacts sync on the normal path
+   * afterwards (evidence-ready fan-out or rt evidence pull).
+   */
+  async function reconcileEvidence(anchor: SandboxAnchor): Promise<void> {
+    if (!deps.evidence) return;
+    const requests = await deps.client.listEvidence(anchor.id);
+    for (const req of requests) {
+      if (deps.evidence.ledger.read(req.id)) continue;
+      deps.evidence.ledger.upsert({
+        requestId: req.id, executor: "sidecar", sandboxId: anchor.id, repoId: anchor.repoId,
+        branch: anchor.branch, caseId: req.caseId, view: req.view, recipe: req.recipe,
+        slot: req.slot, state: LEDGER_STATE_FOR[req.state], requestedAt: req.createdAt,
+        ...(req.error != null ? { error: req.error } : {}),
+      });
+    }
   }
 
   function reconcileRunning(
@@ -402,6 +435,11 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
         try {
           if (byId.has(anchor.id)) await pollEvents(anchor, config.stateFile);
         } catch { /* one sandbox's poll failure must not block the rest */ }
+        try {
+          if (byId.has(anchor.id) && byId.get(anchor.id)!.state !== "destroyed") {
+            await reconcileEvidence(anchor);
+          }
+        } catch { /* transient controller failure — next pass retries */ }
 
         const sandbox = byId.get(anchor.id);
         if (!sandbox || sandbox.state === "destroyed") {
