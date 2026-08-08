@@ -96,6 +96,22 @@ describe("shipSandbox", () => {
     expect(w.calls.some(c => c.argv[1] === "push")).toBe(false);
   });
 
+  test("a publickey fetch failure points at the overlay receiverSshKey", async () => {
+    const run: GitRun = async () => ({
+      stdout: "", stderr: "git@localhost: Permission denied (publickey).", exitCode: 128,
+    });
+    const out = await shipSandbox({
+      repoId: "acme-dev", sandboxId: "s", branch: "b", baseRef: "refs/remotes/origin/master",
+      cwd: "/w", git: run,
+      confirm: async () => { throw new Error("must not be reached"); },
+      env: {},
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.message).toContain("receiverSshKey in ~/.rt/repos/acme-dev/repo.jsonc");
+    }
+  });
+
   test("a summary command failure aborts before the confirmation, not after", async () => {
     const { run, calls } = fakeGit({
       "git fetch": { exitCode: 0 },

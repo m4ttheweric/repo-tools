@@ -378,6 +378,25 @@ describe("createSandboxFlow", () => {
     expect("imageTag" in bodies[1]!).toBe(false);
   });
 
+  test("a host-key push failure carries the one-line remedy in the message", async () => {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
+    const client = {
+      async create(): Promise<never> { throw new Error("must not POST after a failed push"); },
+    } as unknown as import("../sandbox.ts").SandboxClient;
+    const spawn = async () => ({
+      exitCode: 128,
+      stderr: "Host key verification failed.\nfatal: Could not read from remote repository.",
+    });
+    const out = await createSandboxFlow({
+      repoId: "acme-dev", branch: "b", commit: "c", cwd: "/w", brief: "x", client, spawn,
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.message).toContain("ssh-keygen -R");
+      expect(out.message).toContain("ssh-keyscan");
+    }
+  });
+
   test("a failed push short-circuits: no POST, no anchor", async () => {
     process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
     const { order, client, spawn } = world(1);

@@ -81,6 +81,31 @@ export function receiverSshEnv(
   };
 }
 
+/**
+ * One-line remedy for a receiver ssh failure, keyed on ssh's stderr; null
+ * when rt knows no fix (callers then show raw stderr alone). Substring
+ * detection on purpose — ssh's wording is stable across versions.
+ */
+export function receiverSshRemedy(
+  stderr: string,
+  opts: { repoId?: string | null; url?: string } = {},
+): string | null {
+  if (stderr.includes("Host key verification failed")) {
+    const url = opts.url ?? receiverUrl();
+    const match = url.match(/^ssh:\/\/(?:[^@]+@)?([^:/]+)(?::(\d+))?/);
+    const host = match?.[1] ?? "the-receiver-host";
+    const port = match?.[2] ? Number(match[2]) : 22;
+    // known_hosts stores non-22 endpoints as [host]:port.
+    const knownHost = port === 22 ? host : `[${host}]:${port}`;
+    return `receiver host key changed or unknown — run: ssh-keygen -R "${knownHost}" && ssh-keyscan -p ${port} ${host} >> ~/.ssh/known_hosts`;
+  }
+  if (stderr.includes("Permission denied (publickey)")) {
+    const overlay = opts.repoId ? `~/.rt/repos/${opts.repoId}/repo.jsonc` : "the overlay repo.jsonc";
+    return `receiver rejected the ssh key — check receiverSshKey in ${overlay} (MC_RECEIVER_SSH_KEY overrides)`;
+  }
+  return null;
+}
+
 /** Injected git-push runner so the push is unit-testable off-cluster. */
 export type GitPushSpawn = (
   argv: string[],

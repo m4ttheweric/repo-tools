@@ -52,6 +52,7 @@ import {
   loadGateManifest,
   manifestHash,
   pushSnapshot,
+  receiverSshRemedy,
   resolveBaseRef,
   resolveRepoId,
   statusExitCode,
@@ -299,7 +300,10 @@ async function submitAndReport(opts: {
   });
   if (!push.ok) {
     console.error(`\n  ${red}snapshot push to ${push.pushUrl} failed${reset}`);
-    console.error(`  ${dim}${push.stderr.trim()}${reset}\n`);
+    console.error(`  ${dim}${push.stderr.trim()}${reset}`);
+    const remedy = receiverSshRemedy(push.stderr, { repoId, url: push.pushUrl });
+    if (remedy) console.error(`  ${yellow}${remedy}${reset}`);
+    console.error("");
     return 2;
   }
 

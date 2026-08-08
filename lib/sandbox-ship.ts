@@ -11,7 +11,7 @@
  * cluster-verify pending.
  */
 
-import { receiverRepoUrl, receiverSshEnv } from "./validate-farm.ts";
+import { receiverRepoUrl, receiverSshEnv, receiverSshRemedy } from "./validate-farm.ts";
 
 /** One injected runner for every git leg (fetch needs env, summaries stdout). */
 export type GitRun = (
@@ -75,7 +75,11 @@ export async function shipSandbox(opts: {
     { cwd, env: receiverSshEnv(opts.env ?? process.env, opts.repoId, opts.reposRoot) },
   );
   if (fetch.exitCode !== 0) {
-    return { ok: false, message: `receiver fetch of ${sandboxShipRef(opts.sandboxId, opts.branch)} failed: ${fetch.stderr.trim()}` };
+    const remedy = receiverSshRemedy(fetch.stderr, { repoId: opts.repoId, url: receiverRepoUrl(opts.repoId) });
+    return {
+      ok: false,
+      message: `receiver fetch of ${sandboxShipRef(opts.sandboxId, opts.branch)} failed: ${fetch.stderr.trim()}${remedy ? `\n${remedy}` : ""}`,
+    };
   }
 
   // Summary legs run locally — no env pinning needed.
