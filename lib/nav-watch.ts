@@ -11,7 +11,7 @@
  * race it.
  */
 
-import { watchFile, unwatchFile, writeFileSync, renameSync, type Stats } from "fs";
+import { statSync, writeFileSync, renameSync } from "fs";
 import { shellQuote } from "./nav-fs.ts";
 
 export interface NavWatchDeps {
@@ -53,15 +53,36 @@ const POLL_INTERVAL_MS = 250;
 // reliable substitute that costs one stat() per interval. Do not "optimize"
 // this back to fs.watch(dir, ...) without first confirming FSEvents actually
 // delivers directory events on the target OS.
+//
+// The poll is hand-rolled rather than fs.watchFile because watchFile takes
+// its baseline stat asynchronously on a background thread. A directory entry
+// appearing between registration and that first stat is folded into the
+// baseline and never reported, so the caller's just-rendered listing goes
+// permanently stale until some later change. Stating synchronously here
+// closes that gap: everything after registration is a delta.
 const defaultWatch: NavWatchDeps["watch"] = (dir, listener) => {
-  const onChange = (curr: Stats, prev: Stats) => {
-    if (curr.mtimeMs !== prev.mtimeMs) listener();
+  const mtime = () => {
+    try {
+      return statSync(dir).mtimeMs;
+    } catch {
+      // Directory gone; report as a distinct value so its disappearance
+      // fires the listener once, then compares equal thereafter.
+      return -1;
+    }
   };
-  // persistent: false so this can never hold the process open on its own;
-  // startNavWatch's caller (runNavPicker) already guarantees stop() runs on
-  // every exit path.
-  watchFile(dir, { interval: POLL_INTERVAL_MS, persistent: false }, onChange);
-  return { close: () => unwatchFile(dir, onChange) };
+  let last = mtime();
+  const timer = setInterval(() => {
+    const curr = mtime();
+    if (curr !== last) {
+      last = curr;
+      listener();
+    }
+  }, POLL_INTERVAL_MS);
+  // unref so this can never hold the process open on its own (the
+  // equivalent of watchFile's persistent: false); startNavWatch's caller
+  // (runNavPicker) already guarantees stop() runs on every exit path.
+  timer.unref();
+  return { close: () => clearInterval(timer) };
 };
 
 export function startNavWatch(opts: NavWatchOpts): { stop(): void } {
