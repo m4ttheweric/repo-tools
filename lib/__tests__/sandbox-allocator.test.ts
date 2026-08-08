@@ -16,12 +16,15 @@ import {
 import {
   readSandboxAnchor,
   writeSandboxAnchor,
+  type EvidenceDetail,
   type SandboxClient,
   type SandboxDetail,
   type SandboxEvent,
   type SandboxProcess,
 } from "../sandbox.ts";
 import { sandboxAnchorDir } from "../rt-paths.ts";
+import { createEvidenceLedger } from "../daemon/evidence-ledger.ts";
+import type { EvidenceLedger } from "../daemon/evidence-ledger.ts";
 
 const ORIG_HOME = process.env.HOME;
 afterEach(() => { process.env.HOME = ORIG_HOME; });
@@ -191,9 +194,13 @@ interface SyncWorld {
   spawned: Array<{ argv: string[]; killed: boolean }>;
   sync: { syncOnce(): Promise<void> };
   reachable: boolean;
+  /** Set by evidence tests before syncOnce; read by the client fake's getEvidence. */
+  evidenceDetail: EvidenceDetail | null;
+  evidenceLedger?: EvidenceLedger;
+  evidenceSyncCalls: string[];
 }
 
-function makeSyncWorld(): SyncWorld {
+function makeSyncWorld(opts?: { withEvidence?: boolean }): SyncWorld {
   const home = mkdtempSync(join(tmpdir(), "sbx-sync-home-"));
   process.env.HOME = home;
   const repoDir = join(home, ".rt", "repos", "acme-dev");
@@ -229,6 +236,8 @@ function makeSyncWorld(): SyncWorld {
     spawned: [],
     sync: null as unknown as SyncWorld["sync"],
     reachable: true,
+    evidenceDetail: null,
+    evidenceSyncCalls: [],
   };
 
   const client: SandboxClient = {
@@ -246,6 +255,15 @@ function makeSyncWorld(): SyncWorld {
     },
     async mailbox() { return []; },
     async postMailbox() {},
+    async requestEvidence() { throw new Error("unused"); },
+    async listEvidence() { return []; },
+    async getEvidence(requestId) {
+      world.clientCalls.push(`getEvidence ${requestId}`);
+      return world.evidenceDetail;
+    },
+    async fetchEvidenceArtifact() { return new Uint8Array(); },
+    async cancelEvidence() {},
+    async ackEvidenceSynced() {},
   };
 
   const spawn: ForwardSpawn = (argv) => {
@@ -254,11 +272,19 @@ function makeSyncWorld(): SyncWorld {
     return { kill: () => { entry.killed = true; } };
   };
 
+  if (opts?.withEvidence) {
+    world.evidenceLedger = createEvidenceLedger(join(mkdtempSync(join(tmpdir(), "rt-evl-")), "l.json"));
+  }
+
   world.sync = createSandboxSync({
     probe: async () => world.reachable,
     client,
     forwards: createForwardSet(spawn),
     notify: (title, _message, category) => world.notifications.push({ title, category }),
+    evidence: world.evidenceLedger ? {
+      ledger: world.evidenceLedger,
+      sync: async (requestId: string) => { world.evidenceSyncCalls.push(requestId); },
+    } : undefined,
   });
   return world;
 }
@@ -377,5 +403,74 @@ describe("createSandboxSync", () => {
     });
     await world.sync.syncOnce();
     expect(existsSync(sandboxAnchorDir("acme-dev", "sb-gone"))).toBe(false);
+  });
+
+  // ─── Evidence event fold-in ────────────────────────────────────────────────
+
+  test("evidence-started materializes a ledger entry on first sight via client.getEvidence", async () => {
+    const world = makeSyncWorld({ withEvidence: true });
+    world.evidenceDetail = {
+      id: "r1", sandboxId: "sb-1", caseId: "c1", view: "v1", recipe: "rec1",
+      args: {}, slot: "after", state: "captured", requestedBy: "agent",
+      forceBefore: false, error: null, createdAt: "2026-08-08T00:00:00.000Z",
+      updatedAt: "2026-08-08T00:00:01.000Z", syncedAt: null, artifacts: [],
+    };
+    world.eventsByCall = [[
+      { seq: 1, ts: "t", sandboxId: "sb-1", type: "evidence-started", payload: { requestId: "r1" } },
+    ]];
+    await world.sync.syncOnce();
+
+    const entry = world.evidenceLedger!.read("r1")!;
+    expect(entry).toMatchObject({
+      requestId: "r1", executor: "sidecar", sandboxId: "sb-1", repoId: "acme-dev",
+      branch: "acme-1-fix", caseId: "c1", view: "v1", recipe: "rec1", slot: "after",
+      state: "requested", requestedAt: "2026-08-08T00:00:00.000Z",
+    });
+    expect(world.clientCalls).toContain("getEvidence r1");
+
+    // Second sight: the ledger already has the entry, so no re-fetch/upsert.
+    world.eventsByCall = [[
+      { seq: 2, ts: "t", sandboxId: "sb-1", type: "evidence-started", payload: { requestId: "r1" } },
+    ]];
+    const callsBefore = world.clientCalls.filter(c => c === "getEvidence r1").length;
+    await world.sync.syncOnce();
+    expect(world.clientCalls.filter(c => c === "getEvidence r1").length).toBe(callsBefore);
+  });
+
+  test("evidence-ready sets captured and awaits deps.evidence.sync", async () => {
+    const world = makeSyncWorld({ withEvidence: true });
+    world.evidenceLedger!.upsert({
+      requestId: "r1", executor: "sidecar", sandboxId: "sb-1", repoId: "acme-dev",
+      branch: "acme-1-fix", caseId: "c1", view: "v1", recipe: "rec1", slot: "after",
+      state: "requested", requestedAt: "2026-08-08T00:00:00.000Z",
+    });
+    world.eventsByCall = [[
+      {
+        seq: 1, ts: "t", sandboxId: "sb-1", type: "evidence-ready",
+        payload: { requestId: "r1", summary: "ok", artifacts: [{ name: "base.png", size: 2 }] },
+      },
+    ]];
+    await world.sync.syncOnce();
+
+    expect(world.evidenceLedger!.read("r1")!.state).toBe("captured");
+    expect(world.evidenceSyncCalls).toEqual(["r1"]);
+  });
+
+  test("evidence-failed sets failed state with error and notifies evidence_failed", async () => {
+    const world = makeSyncWorld({ withEvidence: true });
+    world.evidenceLedger!.upsert({
+      requestId: "r1", executor: "sidecar", sandboxId: "sb-1", repoId: "acme-dev",
+      branch: "acme-1-fix", caseId: "c1", view: "v1", recipe: "rec1", slot: "after",
+      state: "captured", requestedAt: "2026-08-08T00:00:00.000Z",
+    });
+    world.eventsByCall = [[
+      { seq: 1, ts: "t", sandboxId: "sb-1", type: "evidence-failed", payload: { requestId: "r1", error: "boom" } },
+    ]];
+    await world.sync.syncOnce();
+
+    const entry = world.evidenceLedger!.read("r1")!;
+    expect(entry.state).toBe("failed");
+    expect(entry.error).toBe("boom");
+    expect(world.notifications).toContainEqual({ title: "Evidence capture failed", category: "evidence_failed" });
   });
 });

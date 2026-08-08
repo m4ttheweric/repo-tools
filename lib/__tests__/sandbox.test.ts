@@ -172,6 +172,44 @@ describe("createSandboxClient", () => {
     await client.postMailbox("sb-1", { name: "answer.md", content: "yes" });
     expect(calls[1]!.body).toEqual({ name: "answer.md", content: "yes" });
   });
+
+  test("requestEvidence POSTs the body and returns requestId", async () => {
+    const calls: any[] = [];
+    const client = createSandboxClient("http://c", (async (url: string | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ requestId: "r1" }), { status: 200 });
+    }) as unknown as typeof fetch);
+    const out = await client.requestEvidence("sb1", {
+      caseId: "c1", view: "v", recipe: "r", slot: "after", args: { contactId: "k" },
+    });
+    expect(out).toEqual({ requestId: "r1" });
+    expect(calls[0].url).toBe("http://c/sandboxes/sb1/evidence");
+    expect(JSON.parse(calls[0].init.body)).toEqual({
+      caseId: "c1", view: "v", recipe: "r", slot: "after", args: { contactId: "k" },
+    });
+  });
+
+  test("getEvidence maps 404 to null; fetchEvidenceArtifact returns raw bytes", async () => {
+    const client404 = createSandboxClient("http://c", (async () => new Response("nf", { status: 404 })) as unknown as typeof fetch);
+    expect(await client404.getEvidence("nope")).toBeNull();
+    const bytes = new Uint8Array([1, 2, 3]);
+    const clientBytes = createSandboxClient("http://c", (async () => new Response(bytes, { status: 200 })) as unknown as typeof fetch);
+    expect(await clientBytes.fetchEvidenceArtifact("r1", "base.png")).toEqual(bytes);
+  });
+
+  test("listEvidence adds ?state= only when given; cancel/ack throw on non-2xx", async () => {
+    const urls: string[] = [];
+    const ok = createSandboxClient("http://c", (async (url: string | URL) => {
+      urls.push(String(url));
+      return new Response("[]", { status: 200 });
+    }) as unknown as typeof fetch);
+    await ok.listEvidence("sb1");
+    await ok.listEvidence("sb1", "queued");
+    expect(urls).toEqual(["http://c/sandboxes/sb1/evidence", "http://c/sandboxes/sb1/evidence?state=queued"]);
+    const bad = createSandboxClient("http://c", (async () => new Response("boom", { status: 500 })) as unknown as typeof fetch);
+    await expect(bad.cancelEvidence("r1")).rejects.toThrow("controller");
+    await expect(bad.ackEvidenceSynced("r1")).rejects.toThrow("controller");
+  });
 });
 
 // ─── Overlay sandbox config ──────────────────────────────────────────────────
