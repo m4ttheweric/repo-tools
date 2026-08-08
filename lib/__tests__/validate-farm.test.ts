@@ -15,6 +15,7 @@ import {
   readRepoOverlay,
   receiverSshEnv,
   resolveBaseRef,
+  resolveReceiverSshKey,
   resolveRepoId,
   statusExitCode,
   summarizeRun,
@@ -341,7 +342,51 @@ describe("receiverSshEnv", () => {
   });
 });
 
+describe("resolveReceiverSshKey", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "rt-sshkey-"));
+    mkdirSync(join(root, "assured-dev"));
+    writeFileSync(
+      join(root, "assured-dev", "repo.jsonc"),
+      `{\n  "origin": "x",\n  // pinned mirror key\n  "receiverSshKey": "~/.ssh/mattcloud-mirror",\n}\n`,
+    );
+  });
+
+  afterEach(() => {
+    try { rmSync(root, { recursive: true, force: true }); } catch { /* */ }
+  });
+
+  test("MC_RECEIVER_SSH_KEY wins over the overlay key — explicit override", () => {
+    expect(resolveReceiverSshKey("assured-dev", { MC_RECEIVER_SSH_KEY: "/env/key" }, root)).toBe("/env/key");
+  });
+
+  test("falls back to the overlay receiverSshKey with ~ expanded", () => {
+    expect(resolveReceiverSshKey("assured-dev", { HOME: "/home/u" }, root)).toBe("/home/u/.ssh/mattcloud-mirror");
+  });
+
+  test("undefined when neither env nor overlay names a key", () => {
+    expect(resolveReceiverSshKey("no-such-repo", {}, root)).toBeUndefined();
+    expect(resolveReceiverSshKey(null, {}, root)).toBeUndefined();
+  });
+
+  test("receiverSshEnv pins GIT_SSH_COMMAND from the overlay key", () => {
+    expect(receiverSshEnv({ HOME: "/home/u" }, "assured-dev", root)).toEqual({
+      GIT_SSH_COMMAND: "ssh -i /home/u/.ssh/mattcloud-mirror -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new",
+    });
+  });
+});
+
 describe("pushSnapshot", () => {
+  // Isolated overlay root: the developer's real ~/.rt/repos may pin a
+  // receiverSshKey for assured-dev, which would leak into the env asserts.
+  let emptyRoot: string;
+  beforeEach(() => { emptyRoot = mkdtempSync(join(tmpdir(), "rt-push-")); });
+  afterEach(() => {
+    try { rmSync(emptyRoot, { recursive: true, force: true }); } catch { /* */ }
+  });
+
   function fakeSpawn(exitCode: number, stderr = "") {
     const calls: Array<{ argv: string[]; cwd: string; env: Record<string, string> }> = [];
     const spawn: GitPushSpawn = async (argv, opts) => {
@@ -354,7 +399,7 @@ describe("pushSnapshot", () => {
   test("pushes commit:refs/snapshots/<tree> to the receiver repo URL from the worktree", async () => {
     const { spawn, calls } = fakeSpawn(0);
     const out = await pushSnapshot({
-      repoId: "assured-dev", commit: "c1", tree: "t1", cwd: "/wt", spawn, env: {},
+      repoId: "assured-dev", commit: "c1", tree: "t1", cwd: "/wt", spawn, env: {}, reposRoot: emptyRoot,
     });
     expect(out.ok).toBe(true);
     expect(calls[0]!.argv).toEqual([
@@ -378,7 +423,7 @@ describe("pushSnapshot", () => {
   test("surfaces a failed push with its stderr", async () => {
     const { spawn } = fakeSpawn(128, "fatal: Could not read from remote repository.\n");
     const out = await pushSnapshot({
-      repoId: "assured-dev", commit: "c1", tree: "t1", cwd: "/wt", spawn, env: {},
+      repoId: "assured-dev", commit: "c1", tree: "t1", cwd: "/wt", spawn, env: {}, reposRoot: emptyRoot,
     });
     expect(out.ok).toBe(false);
     expect(out.stderr).toContain("Could not read");

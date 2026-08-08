@@ -384,11 +384,12 @@ export async function pushSandboxBranch(opts: {
   cwd: string;
   spawn: GitPushSpawn;
   env?: Record<string, string | undefined>;
+  reposRoot?: string;
 }): Promise<{ ok: boolean; pushUrl: string; stderr: string }> {
   const pushUrl = receiverRepoUrl(opts.repoId);
   const result = await opts.spawn(
     ["git", "push", pushUrl, `+${opts.commit}:${sandboxIncomingRef(opts.branch)}`],
-    { cwd: opts.cwd, env: receiverSshEnv(opts.env ?? process.env) },
+    { cwd: opts.cwd, env: receiverSshEnv(opts.env ?? process.env, opts.repoId, opts.reposRoot) },
   );
   return { ok: result.exitCode === 0, pushUrl, stderr: result.stderr };
 }
