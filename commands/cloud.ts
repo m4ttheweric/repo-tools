@@ -10,6 +10,8 @@
  *                            gates.jsonc → repo-gates (required),
  *                            bake.jsonc → repo-bake-config,
  *                            sandbox-bake.jsonc → sandbox-bake-config,
+ *                            sandbox.jsonc → repo-sandbox-config
+ *                            (key <repoId>.json, comments stripped),
  *                            browser-flows/* → repo-browser-flows
  *                            (exit 0 ok / 1 tooling failure / 64 no gates.jsonc)
  *   rt cloud secrets sync-browser   overlay sandbox.browserSecretsFile →
@@ -43,6 +45,7 @@ import { repoDataDir } from "../lib/rt-paths.ts";
 import { syncConfig } from "../lib/cloud-config.ts";
 import { syncAgentCredentials, syncBrowserSecrets, syncSecrets } from "../lib/cloud-secrets.ts";
 import { loadGateManifest, resolveRepoId } from "../lib/validate-farm.ts";
+import { stripJsonc } from "../lib/jsonc.ts";
 import { readSandboxConfig } from "../lib/sandbox.ts";
 
 /** Resolve the farm repoId from the worktree's origin, or exit 64. */
@@ -88,6 +91,18 @@ export async function syncConfigCommand(_args: string[], ctx: CommandContext): P
   }
   const bakePath = join(repoDataDir(repoId), "bake.jsonc");
   const sandboxBakePath = join(repoDataDir(repoId), "sandbox-bake.jsonc");
+  const sandboxPath = join(repoDataDir(repoId), "sandbox.jsonc");
+  // The controller JSON.parses the mounted <repoId>.json, so comments must
+  // come out here; the schema itself stays overlay-owned (no validation).
+  let sandbox: { repoId: string; json: string } | null = null;
+  if (existsSync(sandboxPath)) {
+    try {
+      sandbox = { repoId, json: JSON.stringify(JSON.parse(stripJsonc(readFileSync(sandboxPath, "utf8"))), null, 2) };
+    } catch {
+      console.error(`\n  ${red}${sandboxPath} is not valid JSONC${reset}\n`);
+      process.exit(64);
+    }
+  }
   const flowsDir = join(repoDataDir(repoId), "browser-flows");
   const browserFlows = existsSync(flowsDir)
     ? readdirSync(flowsDir)
@@ -99,6 +114,7 @@ export async function syncConfigCommand(_args: string[], ctx: CommandContext): P
     gates: readFileSync(gatesPath, "utf8"),
     bake: existsSync(bakePath) ? readFileSync(bakePath, "utf8") : null,
     sandboxBake: existsSync(sandboxBakePath) ? readFileSync(sandboxBakePath, "utf8") : null,
+    sandbox,
     browserFlows,
   });
   if (outcome.exitCode === 0) {
