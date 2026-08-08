@@ -6,11 +6,14 @@ import { join } from "path";
 
 import {
   MC_ENV_HELP,
+  POLL_MAX_CONSECUTIVE_FAILURES,
+  TunnelLostError,
   createControllerClient,
   ensureEndpoints,
   failureExitCode,
   manifestHash,
   normalizeOrigin,
+  pollRunUntilDone,
   pushSnapshot,
   readRepoOverlay,
   receiverSshEnv,
@@ -18,9 +21,11 @@ import {
   resolveBaseRef,
   resolveReceiverSshKey,
   resolveRepoId,
+  runToJson,
   statusExitCode,
   summarizeRun,
   verdictExitCode,
+  type ControllerClient,
   type GitPushSpawn,
   type Run,
 } from "../validate-farm.ts";
@@ -277,6 +282,31 @@ describe("verdictExitCode", () => {
     expect(verdictExitCode(run({ status: "infra" }))).toBe(2);
     expect(verdictExitCode(run({ groups: [{ name: "tests", status: "infra" }] }))).toBe(2);
   });
+
+  test("an evicted group is infra (2), never red (1), even alongside passes", () => {
+    const evicted = run({ status: "infra", groups: [
+      { name: "lint", status: "pass" },
+      { name: "tests", status: "infra", infraReason: "evicted" },
+    ] });
+    expect(verdictExitCode(evicted)).toBe(2);
+    for (const reason of ["oom-killed", "disrupted"] as const) {
+      expect(verdictExitCode(run({ groups: [{ name: "tests", status: "infra", infraReason: reason }] }))).toBe(2);
+    }
+  });
+});
+
+describe("runToJson", () => {
+  test("carries infraReason on infra groups and omits it elsewhere", () => {
+    const shaped = runToJson(run({ status: "infra", groups: [
+      { name: "lint", status: "pass", logRef: "/runs/r1/logs/lint" },
+      { name: "tests", status: "infra", infraReason: "evicted", logRef: "/runs/r1/logs/tests" },
+    ] }), 2);
+    expect(shaped.exitCode).toBe(2);
+    expect(shaped.run.groups[1]).toEqual({
+      name: "tests", status: "infra", logRef: "/runs/r1/logs/tests", infraReason: "evicted",
+    });
+    expect(shaped.run.groups[0]).not.toHaveProperty("infraReason");
+  });
 });
 
 describe("statusExitCode", () => {
@@ -326,6 +356,98 @@ describe("summarizeRun", () => {
 
   test("infra is not a code verdict", () => {
     expect(summarizeRun(run({ status: "infra" }))).toContain("not a code verdict");
+  });
+
+  test("names the infra reasons so an eviction is readable at a glance", () => {
+    const s = summarizeRun(run({ status: "infra", groups: [
+      { name: "typecheck", status: "infra", infraReason: "evicted" },
+      { name: "tests", status: "infra", infraReason: "evicted" },
+    ] }));
+    expect(s).toContain("evicted");
+  });
+});
+
+// ─── wait-mode polling (tunnel-resilient) ────────────────────────────────────
+
+/** getRun script: each entry is a Run to return, null for 404, or "throw". */
+function scriptedClient(script: Array<Run | null | "throw">): { client: ControllerClient; calls: () => number } {
+  let i = 0;
+  const client = {
+    submit: () => { throw new Error("unused"); },
+    getGroupLog: () => { throw new Error("unused"); },
+    async getRun() {
+      const step = script[Math.min(i++, script.length - 1)];
+      if (step === "throw") throw new Error("fetch failed: connection refused");
+      return step ?? null;
+    },
+  } as ControllerClient;
+  return { client, calls: () => i };
+}
+
+const noDelay = async () => {};
+
+describe("pollRunUntilDone", () => {
+  test("polls to the terminal run and reports each transition once", async () => {
+    const pending = run({ status: "running", groups: [{ name: "lint", status: "pass" }] });
+    const done = run({ status: "done", groups: [{ name: "lint", status: "pass" }] });
+    const { client } = scriptedClient([pending, pending, done]);
+    const transitions: string[] = [];
+    const result = await pollRunUntilDone(client, "r1", {
+      delayMs: noDelay,
+      onTransition: (g, s) => transitions.push(`${g}:${s}`),
+    });
+    expect(result.status).toBe("done");
+    expect(transitions).toEqual(["lint:pass"]);
+  });
+
+  test("a dead tunnel is reconnected and polling continues to the verdict", async () => {
+    const done = run({ status: "infra", groups: [{ name: "tests", status: "infra", infraReason: "evicted" }] });
+    const { client } = scriptedClient(["throw", "throw", done]);
+    let reconnects = 0;
+    const result = await pollRunUntilDone(client, "r1", {
+      delayMs: noDelay,
+      reconnect: async () => { reconnects++; return true; },
+    });
+    expect(result.groups[0]?.infraReason).toBe("evicted");
+    expect(reconnects).toBe(2);
+  });
+
+  test("gives up loudly after bounded consecutive failures with the status remedy", async () => {
+    const { client } = scriptedClient(["throw"]);
+    let reconnects = 0;
+    const attempt = pollRunUntilDone(client, "r1", {
+      delayMs: noDelay,
+      reconnect: async () => { reconnects++; return false; },
+    });
+    await expect(attempt).rejects.toBeInstanceOf(TunnelLostError);
+    await attempt.catch((err: TunnelLostError) => {
+      expect(err.message).toContain("rt validate status r1");
+      expect(err.runId).toBe("r1");
+    });
+    expect(reconnects).toBe(POLL_MAX_CONSECUTIVE_FAILURES - 1);
+  });
+
+  test("a successful poll resets the failure count", async () => {
+    const running = run({ status: "running" });
+    const done = run({ status: "done" });
+    const script: Array<Run | "throw"> = [];
+    for (let round = 0; round < 3; round++) script.push("throw", "throw", running);
+    script.push(done);
+    const { client } = scriptedClient(script);
+    const result = await pollRunUntilDone(client, "r1", {
+      delayMs: noDelay,
+      reconnect: async () => true,
+    });
+    expect(result.status).toBe("done");
+  });
+
+  test("TunnelLostError maps to infra (2), never red", () => {
+    expect(failureExitCode(new TunnelLostError("r1"))).toBe(2);
+  });
+
+  test("a 404 run mid-poll still throws (controller lost the run, not the tunnel)", async () => {
+    const { client } = scriptedClient([null]);
+    await expect(pollRunUntilDone(client, "r1", { delayMs: noDelay })).rejects.toThrow("disappeared");
   });
 });
 
