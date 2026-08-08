@@ -6,11 +6,13 @@
  * to disk along the way.
  *
  * ConfigMaps (namespace mc-system):
- *   repo-gates           key gates.jsonc    (required — the gate manifest)
- *   repo-bake-config     key bake.jsonc     (optional — image-bake config)
- *   repo-sandbox-config  key <repoId>.json  (optional — sandbox.jsonc, comments
- *                        stripped: the controller mounts the ConfigMap at
- *                        /config-sandbox and JSON.parses <repoId>.json)
+ *   repo-gates            key gates.jsonc     (required — the gate manifest)
+ *   repo-bake-config      key bake.jsonc      (optional — image-bake config)
+ *   repo-sandbox-config   key <repoId>.json   (optional — sandbox.jsonc, comments
+ *                         stripped: the controller mounts the ConfigMap at
+ *                         /config-sandbox and JSON.parses <repoId>.json)
+ *   repo-evidence-config  key evidence.jsonc  (optional: evidence-capture
+ *                         overlay; mounted at /config-evidence for the bake job)
  *
  * The files are shipped as raw JSONC bytes; schema validation is the
  * controller's business (same "parsed loosely on purpose" stance as
@@ -77,10 +79,11 @@ async function applyConfigMapManifest(
  * repo-gates (required), bake.jsonc → repo-bake-config,
  * sandbox-bake.jsonc → sandbox-bake-config, sandbox.jsonc →
  * repo-sandbox-config (keyed <repoId>.json — the caller converts JSONC to
- * JSON since the controller JSON.parses it), and browser-flows/* →
- * repo-browser-flows (one key per flow file, applied as one in-memory
- * manifest since kubectl's stdin carries only one file). Null/absent
- * optional inputs are legal — the outcome message says what was skipped.
+ * JSON since the controller JSON.parses it), evidence.jsonc →
+ * repo-evidence-config, and browser-flows/* → repo-browser-flows (one key
+ * per flow file, applied as one in-memory manifest since kubectl's stdin
+ * carries only one file). Null/absent optional inputs are legal — the
+ * outcome message says what was skipped.
  */
 export async function syncConfig(opts: {
   gates: string;
@@ -88,6 +91,7 @@ export async function syncConfig(opts: {
   sandboxBake?: string | null;
   /** sandbox.jsonc already stripped to plain JSON, keyed by repoId. */
   sandbox?: { repoId: string; json: string } | null;
+  evidence?: string | null;
   browserFlows?: Array<{ name: string; content: string }> | null;
   namespace?: string;
   exec?: Exec;
@@ -125,6 +129,14 @@ export async function syncConfig(opts: {
     );
     if (error) return { exitCode: 1, message: error };
     synced.push("repo-sandbox-config");
+  }
+
+  if (opts.evidence === null || opts.evidence === undefined) {
+    skipped.push("repo-evidence-config skipped (no evidence.jsonc in the overlay)");
+  } else {
+    const error = await upsertConfigMap(exec, namespace, "repo-evidence-config", "evidence.jsonc", opts.evidence);
+    if (error) return { exitCode: 1, message: error };
+    synced.push("repo-evidence-config");
   }
 
   if (!opts.browserFlows || opts.browserFlows.length === 0) {
