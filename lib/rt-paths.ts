@@ -62,3 +62,8 @@ export function sandboxesDir(): string {
 export function sandboxAnchorDir(repoId: string, sandboxId: string): string {
   return join(sandboxesDir(), repoId, sandboxId);
 }
+
+/** ~/.rt/evidence-ledger.json — the evidence ledger file store. */
+export function evidenceLedgerPath(): string {
+  return join(rtDir(), "evidence-ledger.json");
+}
