@@ -6,6 +6,7 @@
  * Usage:
  *   rt sandbox create [--ticket CV-XXXX | --branch <name>] [--job <dir>]
  *                     [--flags <k=v>...] [--image <tag>] [--json]
+ *                     [--evidence-before <caseId>:<view>:<recipe>[:k=v,...]]...
  *   rt sandbox ls [--json]              all sandboxes + local port state
  *   rt sandbox status [<id>] [--json]   detail incl. container readiness
  *   rt sandbox suspend|resume|destroy <id>
@@ -35,12 +36,14 @@ import {
   createSandboxClient,
   createSandboxFlow,
   findSandboxAnchor,
+  parseEvidenceBeforeSpecs,
   parseFlagValues,
   readSandboxAnchor,
   readSandboxConfig,
   removeSandboxAnchor,
   sandboxLogsArgv,
   upsertFlagsSecret,
+  type EvidenceBeforeEntry,
   type SandboxDetail,
 } from "../lib/sandbox.ts";
 import { loadSecrets, fetchTicket } from "../lib/linear.ts";
@@ -55,8 +58,9 @@ function usageExit(message: string): never {
 
 function helpExit(): never {
   console.log(`
-  ${bold}rt sandbox create${reset} [--ticket CV-XXXX | --branch <name>] [--job <dir>] [--flags k=v...] [--image <tag>] [--json]
-      push branch to the receiver, create the cloud sandbox, anchor it locally
+  ${bold}rt sandbox create${reset} [--ticket CV-XXXX | --branch <name>] [--job <dir>] [--flags k=v...] [--image <tag>] [--evidence-before <caseId>:<view>:<recipe>[:k=v,...]]... [--json]
+      push branch to the receiver, create the cloud sandbox, anchor it locally;
+      --evidence-before (repeatable, max 10) queues before-slot captures with the create
   ${bold}rt sandbox ls${reset} [--json] / ${bold}status${reset} [<id>] [--json]
       controller ground truth + local ports (pool warnings are loud here)
   ${bold}rt sandbox suspend|resume|destroy${reset} <id>
@@ -112,6 +116,7 @@ export async function createCommand(args: string[], ctx: CommandContext): Promis
   let imageTag: string | null = null;
   let json = false;
   const flagPairs: string[] = [];
+  const evidenceBeforeSpecs: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (arg === "--help" || arg === "-h") helpExit();
@@ -121,9 +126,16 @@ export async function createCommand(args: string[], ctx: CommandContext): Promis
     else if (arg === "--job") { jobDir = args[++i] ?? null; if (!jobDir) usageExit("--job requires a directory"); }
     else if (arg === "--image") { imageTag = args[++i] ?? null; if (!imageTag) usageExit("--image requires a tag"); }
     else if (arg === "--flags") { const pair = args[++i]; if (!pair) usageExit("--flags requires k=v"); flagPairs.push(pair); }
+    else if (arg === "--evidence-before") { const spec = args[++i]; if (!spec) usageExit("--evidence-before requires <caseId>:<view>:<recipe>[:k=v,...]"); evidenceBeforeSpecs.push(spec); }
     else usageExit(`unknown argument: ${arg}`);
   }
   if (ticket && branch) usageExit("--ticket and --branch are mutually exclusive");
+  let evidenceBefore: EvidenceBeforeEntry[] = [];
+  try {
+    evidenceBefore = parseEvidenceBeforeSpecs(evidenceBeforeSpecs);
+  } catch (err) {
+    usageExit((err as Error).message);
+  }
 
   const repoId = requireRepoId(ctx);
   if (!readSandboxConfig(repoId)) {
@@ -181,6 +193,7 @@ export async function createCommand(args: string[], ctx: CommandContext): Promis
       brief,
       ...(imageTag ? { imageTag } : {}),
       ...(flagPairs.length ? { flags: parseFlagValues(flagPairs) } : {}),
+      ...(evidenceBefore.length ? { evidenceBefore } : {}),
       client: createSandboxClient(),
       spawn: spawnGitPush,
     });

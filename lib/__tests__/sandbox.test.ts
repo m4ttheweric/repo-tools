@@ -8,6 +8,7 @@ import {
   createSandboxFlow,
   findSandboxAnchor,
   listSandboxOverlays,
+  parseEvidenceBeforeSpecs,
   parseFlagValues,
   pushSandboxBranch,
   sandboxLogsArgv,
@@ -369,6 +370,44 @@ describe("flags", () => {
   });
 });
 
+// ─── Evidence-before specs ───────────────────────────────────────────────────
+
+describe("parseEvidenceBeforeSpecs", () => {
+  test("parses specs with and without an args segment", () => {
+    expect(parseEvidenceBeforeSpecs([
+      "c1:cvi-case:shot",
+      "c2:cvi-case:shot:contactId=k,section=overview",
+    ])).toEqual([
+      { caseId: "c1", view: "cvi-case", recipe: "shot" },
+      { caseId: "c2", view: "cvi-case", recipe: "shot", args: { contactId: "k", section: "overview" } },
+    ]);
+  });
+
+  test("colons after the third belong to the args segment (values may carry them)", () => {
+    expect(parseEvidenceBeforeSpecs(["c1:v:r:url=http://x:8080"])).toEqual([
+      { caseId: "c1", view: "v", recipe: "r", args: { url: "http://x:8080" } },
+    ]);
+  });
+
+  test("malformed specs throw with the expected form named", () => {
+    for (const bad of [
+      "c1:v",              // too few segments
+      "c1::r",             // empty segment
+      "c1:v:r:",           // empty args segment
+      "c1:v:r:noequals",   // args pair without =
+      "c1:v:r:=v",         // empty args key
+    ]) {
+      expect(() => parseEvidenceBeforeSpecs([bad])).toThrow("<caseId>:<view>:<recipe>[:k=v,...]");
+    }
+  });
+
+  test("rejects more than 10 entries (controller cap)", () => {
+    const specs = Array.from({ length: 11 }, (_, i) => `c${i}:v:r`);
+    expect(() => parseEvidenceBeforeSpecs(specs)).toThrow("at most 10");
+    expect(parseEvidenceBeforeSpecs(specs.slice(0, 10))).toHaveLength(10);
+  });
+});
+
 // ─── Create flow ─────────────────────────────────────────────────────────────
 
 describe("createSandboxFlow", () => {
@@ -414,6 +453,23 @@ describe("createSandboxFlow", () => {
     expect(JSON.parse(bodies[0]!.flagsFileContent as string)).toEqual({ f: 1 });
     expect("flagsFileContent" in bodies[1]!).toBe(false);
     expect("imageTag" in bodies[1]!).toBe(false);
+  });
+
+  test("evidenceBefore passes through to the create body; omitted when absent", async () => {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
+    const bodies: Array<Record<string, unknown>> = [];
+    const client = {
+      async create(req: Record<string, unknown>) { bodies.push(req); return { sandboxId: "s" }; },
+    } as unknown as import("../sandbox.ts").SandboxClient;
+    const spawn = async () => ({ exitCode: 0, stderr: "" });
+    const evidenceBefore = [
+      { caseId: "c1", view: "cvi-case", recipe: "shot", args: { contactId: "k" } },
+      { caseId: "c2", view: "cvi-case", recipe: "shot" },
+    ];
+    await createSandboxFlow({ repoId: "r", branch: "b", commit: "c", cwd: "/w", brief: "x", evidenceBefore, client, spawn });
+    await createSandboxFlow({ repoId: "r", branch: "b", commit: "c", cwd: "/w", brief: "x", client, spawn });
+    expect(bodies[0]!.evidenceBefore).toEqual(evidenceBefore);
+    expect("evidenceBefore" in bodies[1]!).toBe(false);
   });
 
   test("a host-key push failure carries the one-line remedy in the message", async () => {

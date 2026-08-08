@@ -111,13 +111,20 @@ export interface MailboxFile {
   content: string;
 }
 
+export interface EvidenceBeforeEntry {
+  caseId: string;
+  view: string;
+  recipe: string;
+  args?: Record<string, string>;
+}
+
 export interface CreateSandboxRequest {
   repoId: string;
   branch: string;
   imageTag?: string;
   brief: string;
   flagsFileContent?: string;
-  evidenceBefore?: Array<{ caseId: string; view: string; recipe: string; args?: Record<string, string> }>;
+  evidenceBefore?: EvidenceBeforeEntry[];
 }
 
 // ─── Controller HTTP client (sandbox half) ───────────────────────────────────
@@ -489,6 +496,7 @@ export async function createSandboxFlow(opts: {
   brief: string;
   imageTag?: string;
   flags?: Record<string, unknown>;
+  evidenceBefore?: EvidenceBeforeEntry[];
   client: SandboxClient;
   spawn: GitPushSpawn;
   env?: Record<string, string | undefined>;
@@ -514,6 +522,7 @@ export async function createSandboxFlow(opts: {
     brief: opts.brief,
     ...(opts.imageTag ? { imageTag: opts.imageTag } : {}),
     ...(opts.flags ? { flagsFileContent: JSON.stringify(opts.flags, null, 2) } : {}),
+    ...(opts.evidenceBefore?.length ? { evidenceBefore: opts.evidenceBefore } : {}),
   });
   writeSandboxAnchor({
     id: sandboxId,
@@ -553,6 +562,40 @@ export function parseFlagValues(pairs: string[]): Record<string, unknown> {
     }
   }
   return flags;
+}
+
+/** Controller-side cap on CreateSandboxRequest.evidenceBefore entries. */
+export const EVIDENCE_BEFORE_MAX = 10;
+
+const EVIDENCE_BEFORE_FORM = "<caseId>:<view>:<recipe>[:k=v,...]";
+
+/**
+ * Parse repeated `--evidence-before` specs into CreateSandboxRequest.evidenceBefore.
+ * Grammar: <caseId>:<view>:<recipe>[:k=v,...] — commas separate k=v pairs, and
+ * colons after the third belong to the args segment (values may carry them).
+ * Mirrors the controller's validation ({caseId,view,recipe,args?}, max 10) so
+ * a bad spec dies client-side with the expected form named.
+ */
+export function parseEvidenceBeforeSpecs(specs: string[]): EvidenceBeforeEntry[] {
+  if (specs.length > EVIDENCE_BEFORE_MAX) {
+    throw new Error(`--evidence-before accepts at most ${EVIDENCE_BEFORE_MAX} entries (controller cap)`);
+  }
+  return specs.map((spec) => {
+    const malformed = () =>
+      new Error(`malformed --evidence-before "${spec}" — expected ${EVIDENCE_BEFORE_FORM}`);
+    const [caseId, view, recipe, ...rest] = spec.split(":");
+    if (!caseId || !view || !recipe) throw malformed();
+    if (rest.length === 0) return { caseId, view, recipe };
+    const argsSegment = rest.join(":");
+    if (!argsSegment) throw malformed();
+    const args: Record<string, string> = {};
+    for (const pair of argsSegment.split(",")) {
+      const eq = pair.indexOf("=");
+      if (eq <= 0) throw malformed();
+      args[pair.slice(0, eq)] = pair.slice(eq + 1);
+    }
+    return { caseId, view, recipe, args };
+  });
 }
 
 export interface SandboxOpOutcome {
