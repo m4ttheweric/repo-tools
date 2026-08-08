@@ -448,7 +448,15 @@ async function showPicker(
     encoding: "utf8",
   });
 
-  if (result.status !== 0) return null;
+  // fzf exits 1 ("no match") when an --expect key is pressed while no item is
+  // matched -- the list is still loading from stdin, or the query matches
+  // nothing. The query and key lines are still printed, and back-navigation
+  // doesn't depend on a selection existing, so read the key before consulting
+  // the exit status; otherwise a ctrl-up during list load or on an empty
+  // filter is silently rewritten into a cancel and rt exits instead of going
+  // back. Anything else non-zero (130 = Esc/ctrl-c abort, 2 = error) is a
+  // real cancel.
+  if (result.status !== 0 && result.status !== 1) return null;
 
   const lines = (result.stdout ?? "").split("\n");
   const key = lines[1]?.trim() || "";
@@ -459,7 +467,7 @@ async function showPicker(
     return breadcrumb.length > 1 ? BACK : null;
   }
 
-  if (!value) return null;
+  if (result.status !== 0 || !value) return null;
 
   return { command: value, withArgs: key === "alt-enter" };
 }
