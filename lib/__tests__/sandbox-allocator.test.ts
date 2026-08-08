@@ -205,14 +205,12 @@ function makeSyncWorld(opts?: { withEvidence?: boolean }): SyncWorld {
   process.env.HOME = home;
   const repoDir = join(home, ".rt", "repos", "acme-dev");
   mkdirSync(repoDir, { recursive: true });
-  writeFileSync(join(repoDir, "config.json"), JSON.stringify({
-    sandbox: {
-      processes: [
-        { name: "adjuster", port: 4001, localPorts: [4001, 5001, 6001] },
-        { name: "backend", port: 4000, localPorts: [10400, 10401] },
-      ],
-      stateFile: "~/.acme/dev-ports.state.json",
-    },
+  writeFileSync(join(repoDir, "sandbox.jsonc"), JSON.stringify({
+    processes: [
+      { name: "adjuster", port: 4001, localPorts: [4001, 5001, 6001] },
+      { name: "backend", port: 4000, localPorts: [10400, 10401] },
+    ],
+    stateFile: "~/.acme/dev-ports.state.json",
   }));
   const stateFile = join(home, ".acme", "dev-ports.state.json");
   mkdirSync(join(home, ".acme"), { recursive: true });
