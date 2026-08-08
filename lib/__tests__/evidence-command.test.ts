@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 
-import { parseEvidenceRequestFlags } from "../../commands/evidence.ts";
+import { EVIDENCE_REQUEST_USAGE, parseEvidenceRequestFlags } from "../../commands/evidence.ts";
+
+test("argless invocation gets the verb's full usage line, not a bare field error", () => {
+  expect(parseEvidenceRequestFlags([])).toEqual({ error: EVIDENCE_REQUEST_USAGE });
+  for (const piece of ["<sandboxId>", "--view", "--recipe", "--arg k=v", "--slot before|after|standalone", "--force-before", "--local"]) {
+    expect(EVIDENCE_REQUEST_USAGE).toContain(piece);
+  }
+});
 
 test("parses the full request flag set", () => {
   const p = parseEvidenceRequestFlags([
