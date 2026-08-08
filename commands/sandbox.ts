@@ -479,6 +479,7 @@ export async function qaTunnelCommand(args: string[]): Promise<void> {
   const { notify } = await import("../lib/notifier.ts");
   const out = await openQaTunnel({
     sandboxId: id,
+    repoId: anchor?.repoId ?? null,
     localPort,
     ...(overlay?.qaPostgresUrlTemplate ? { urlTemplate: overlay.qaPostgresUrlTemplate } : {}),
     probeListener: probeLocalListener,

@@ -63,6 +63,7 @@ export async function shipSandbox(opts: {
   git: GitRun;
   confirm: (summary: ShipSummary) => Promise<boolean>;
   env?: Record<string, string | undefined>;
+  reposRoot?: string;
 }): Promise<
   | { ok: true; pushed: boolean; summary: ShipSummary }
   | { ok: false; message: string }
@@ -71,7 +72,7 @@ export async function shipSandbox(opts: {
 
   const fetch = await git(
     ["git", "fetch", receiverRepoUrl(opts.repoId), sandboxShipRef(opts.sandboxId, opts.branch)],
-    { cwd, env: receiverSshEnv(opts.env ?? process.env) },
+    { cwd, env: receiverSshEnv(opts.env ?? process.env, opts.repoId, opts.reposRoot) },
   );
   if (fetch.exitCode !== 0) {
     return { ok: false, message: `receiver fetch of ${sandboxShipRef(opts.sandboxId, opts.branch)} failed: ${fetch.stderr.trim()}` };

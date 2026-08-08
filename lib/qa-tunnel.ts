@@ -17,7 +17,7 @@
  * `AllowTcpForwarding remote`).
  */
 
-import { receiverUrl } from "./validate-farm.ts";
+import { receiverUrl, resolveReceiverSshKey } from "./validate-farm.ts";
 import { SANDBOX_NAMESPACE, applyManifest, type SandboxOpOutcome } from "./sandbox.ts";
 import { spawnExec, type Exec } from "./cloud-secrets.ts";
 
@@ -124,6 +124,8 @@ export const spawnTunnel: TunnelSpawn = (argv) => {
  */
 export async function openQaTunnel(opts: {
   sandboxId: string;
+  /** For the overlay receiverSshKey fallback; null when the anchor is unknown. */
+  repoId?: string | null;
   localPort: number;
   clusterPort?: number;
   urlTemplate?: string;
@@ -146,11 +148,12 @@ export async function openQaTunnel(opts: {
     };
   }
 
+  const sshKey = resolveReceiverSshKey(opts.repoId, env);
   const handle = opts.spawn(qaTunnelArgv({
     clusterPort,
     localPort: opts.localPort,
     ...(env.MC_RECEIVER_URL ? { receiverUrl: env.MC_RECEIVER_URL } : {}),
-    ...(env.MC_RECEIVER_SSH_KEY ? { sshKey: env.MC_RECEIVER_SSH_KEY } : {}),
+    ...(sshKey ? { sshKey } : {}),
   }));
 
   const postgresUrl = qaPostgresUrl(opts.urlTemplate, clusterPort);

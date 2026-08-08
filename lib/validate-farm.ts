@@ -12,6 +12,7 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { reposDir } from "./rt-paths.ts";
 import { stripJsonc } from "./jsonc.ts";
@@ -29,7 +30,8 @@ export const MC_ENV_HELP = [
   "    MC_CONTROLLER_URL    controller endpoint            (default http://localhost:8080)",
   "    MC_RECEIVER_URL      receiver git-push endpoint     (default ssh://git@localhost:2222)",
   "    MC_RECEIVER_SSH_KEY  private key path pinned for the receiver push",
-  "                         (default: ssh's own resolution — agent, config)",
+  "                         (overrides the overlay repo.jsonc receiverSshKey;",
+  "                         default: ssh's own resolution — agent, config)",
 ].join("\n");
 
 export function controllerUrl(): string {
@@ -46,14 +48,33 @@ export function receiverRepoUrl(repoId: string): string {
 }
 
 /**
- * Extra env for the receiver push: when MC_RECEIVER_SSH_KEY names a private
- * key, pin ssh to exactly that key; otherwise leave ssh's own resolution
+ * The private key path pinned for receiver ssh traffic, by precedence:
+ * MC_RECEIVER_SSH_KEY (explicit override) → the overlay repo.jsonc's
+ * `receiverSshKey` (~ expanded) → undefined, leaving ssh's own resolution
  * (agent, config) alone.
+ */
+export function resolveReceiverSshKey(
+  repoId: string | null | undefined,
+  env: Record<string, string | undefined> = process.env,
+  reposRoot: string = reposDir(),
+): string | undefined {
+  if (env.MC_RECEIVER_SSH_KEY) return env.MC_RECEIVER_SSH_KEY;
+  const configured = repoId ? readRepoOverlay(repoId, reposRoot)?.receiverSshKey : undefined;
+  if (!configured) return undefined;
+  return configured.replace(/^~(?=\/|$)/, env.HOME ?? homedir());
+}
+
+/**
+ * Extra env for the receiver push: when a key is pinned (env or overlay —
+ * resolveReceiverSshKey), pin ssh to exactly that key; otherwise leave
+ * ssh's own resolution (agent, config) alone.
  */
 export function receiverSshEnv(
   env: Record<string, string | undefined> = process.env,
+  repoId?: string | null,
+  reposRoot?: string,
 ): Record<string, string> {
-  const key = env.MC_RECEIVER_SSH_KEY;
+  const key = resolveReceiverSshKey(repoId, env, reposRoot);
   if (!key) return {};
   return {
     GIT_SSH_COMMAND: `ssh -i ${key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`,
@@ -94,6 +115,7 @@ export async function pushSnapshot(opts: {
   cwd: string;
   spawn?: GitPushSpawn;
   env?: Record<string, string | undefined>;
+  reposRoot?: string;
 }): Promise<{ ok: boolean; pushUrl: string; stderr: string }> {
   const spawn = opts.spawn ?? spawnGitPush;
   const pushUrl = receiverRepoUrl(opts.repoId);
@@ -101,7 +123,7 @@ export async function pushSnapshot(opts: {
     // Forced refspec: snapshot refs are content-addressed by tree, so any
     // commit carrying the tree is equivalent; non-fast-forward retries must win.
     ["git", "push", pushUrl, `+${opts.commit}:refs/snapshots/${opts.tree}`],
-    { cwd: opts.cwd, env: receiverSshEnv(opts.env ?? process.env) },
+    { cwd: opts.cwd, env: receiverSshEnv(opts.env ?? process.env, opts.repoId, opts.reposRoot) },
   );
   return { ok: result.exitCode === 0, pushUrl, stderr: result.stderr };
 }
@@ -129,6 +151,8 @@ export function normalizeOrigin(url: string): string {
 export interface RepoOverlay {
   origin?: string;
   defaultBranch?: string;
+  /** Private key path (~ allowed) pinned for receiver ssh traffic; MC_RECEIVER_SSH_KEY overrides. */
+  receiverSshKey?: string;
 }
 
 /** Read an overlay's repo.jsonc; null when missing or malformed, never throws. */
