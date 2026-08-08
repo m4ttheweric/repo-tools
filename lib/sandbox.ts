@@ -19,6 +19,10 @@
  *  - GET list/events/mailbox return bare JSON arrays; POST mailbox takes one
  *    `{name, content}` file.
  *  - `captured` event payload is `{file, content}` with the file's text.
+ *  - Evidence: POST /sandboxes/:id/evidence {caseId,view,recipe,args?,slot,forceBefore?}
+ *    -> {requestId}; GET list is a bare array (?state= filter); /evidence/:id/* verbs are
+ *    claim (watcher), artifacts PUT/GET (raw bytes), complete, synced, DELETE (queued only).
+ *    Events evidence-started/-ready/-failed carry {requestId}; -ready adds {summary, artifacts}.
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -34,6 +38,30 @@ export const SANDBOX_NAMESPACE = "mc-sandboxes";
 // ─── Record types (mirror the design's sandbox model) ────────────────────────
 
 export type SandboxState = "creating" | "running" | "suspended" | "destroyed" | "error";
+
+export type EvidenceSlot = "before" | "after" | "standalone";
+export type EvidenceState = "queued" | "running" | "captured" | "failed";
+
+export interface EvidenceRequestRecord {
+  id: string;
+  sandboxId: string;
+  caseId: string;
+  view: string;
+  recipe: string;
+  args: Record<string, string>;
+  slot: EvidenceSlot;
+  state: EvidenceState;
+  requestedBy: string;
+  forceBefore: boolean;
+  error: unknown | null;
+  createdAt: string;
+  updatedAt: string;
+  syncedAt: string | null;
+}
+
+export interface EvidenceDetail extends EvidenceRequestRecord {
+  artifacts: Array<{ name: string; size: number }>;
+}
 
 export interface SandboxRecord {
   id: string;
@@ -65,7 +93,10 @@ export type SandboxEventType =
   | "blocked"
   | "process-dead"
   | "state"
-  | "captured";
+  | "captured"
+  | "evidence-started"
+  | "evidence-ready"
+  | "evidence-failed";
 
 export interface SandboxEvent {
   seq: number;
@@ -86,6 +117,7 @@ export interface CreateSandboxRequest {
   imageTag?: string;
   brief: string;
   flagsFileContent?: string;
+  evidenceBefore?: Array<{ caseId: string; view: string; recipe: string; args?: Record<string, string> }>;
 }
 
 // ─── Controller HTTP client (sandbox half) ───────────────────────────────────
@@ -101,6 +133,15 @@ export interface SandboxClient {
   events(id: string, since: number): Promise<SandboxEvent[]>;
   mailbox(id: string): Promise<MailboxFile[]>;
   postMailbox(id: string, file: MailboxFile): Promise<void>;
+  requestEvidence(
+    sandboxId: string,
+    req: { caseId: string; view: string; recipe: string; args?: Record<string, string>; slot: EvidenceSlot; forceBefore?: boolean },
+  ): Promise<{ requestId: string }>;
+  listEvidence(sandboxId: string, state?: EvidenceState): Promise<EvidenceRequestRecord[]>;
+  getEvidence(requestId: string): Promise<EvidenceDetail | null>;
+  fetchEvidenceArtifact(requestId: string, name: string): Promise<Uint8Array>;
+  cancelEvidence(requestId: string): Promise<void>;
+  ackEvidenceSynced(requestId: string): Promise<void>;
 }
 
 /**
@@ -175,6 +216,45 @@ export function createSandboxClient(
           body: JSON.stringify(file),
         }),
         `POST /sandboxes/${id}/mailbox`,
+      );
+    },
+    async requestEvidence(sandboxId, req) {
+      const res = await fetchFn(`${baseUrl}/sandboxes/${sandboxId}/evidence`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(req),
+      });
+      await requireOk(res, `POST /sandboxes/${sandboxId}/evidence`);
+      return (await res.json()) as { requestId: string };
+    },
+    async listEvidence(sandboxId, state) {
+      const url = state ? `${baseUrl}/sandboxes/${sandboxId}/evidence?state=${state}` : `${baseUrl}/sandboxes/${sandboxId}/evidence`;
+      const res = await requireOk(await fetchFn(url), `GET /sandboxes/${sandboxId}/evidence`);
+      return (await res.json()) as EvidenceRequestRecord[];
+    },
+    async getEvidence(requestId) {
+      const res = await fetchFn(`${baseUrl}/evidence/${requestId}`);
+      if (res.status === 404) return null;
+      await requireOk(res, `GET /evidence/${requestId}`);
+      return (await res.json()) as EvidenceDetail;
+    },
+    async fetchEvidenceArtifact(requestId, name) {
+      const res = await requireOk(
+        await fetchFn(`${baseUrl}/evidence/${requestId}/artifacts/${name}`),
+        `GET /evidence/${requestId}/artifacts/${name}`,
+      );
+      return new Uint8Array(await res.arrayBuffer());
+    },
+    async cancelEvidence(requestId) {
+      await requireOk(
+        await fetchFn(`${baseUrl}/evidence/${requestId}`, { method: "DELETE" }),
+        `DELETE /evidence/${requestId}`,
+      );
+    },
+    async ackEvidenceSynced(requestId) {
+      await requireOk(
+        await fetchFn(`${baseUrl}/evidence/${requestId}/synced`, { method: "POST" }),
+        `POST /evidence/${requestId}/synced`,
       );
     },
   };

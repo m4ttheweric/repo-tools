@@ -798,6 +798,78 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  // devOnly for the same reason as sandbox: the controller's evidence
+  // endpoints are not deployed anywhere yet (evidence-factory plan Task 8+).
+  evidence: {
+    description: "Evidence capture requests for screenshot evidence",
+    devOnly: true,
+    subcommands: {
+      request: {
+        description: "Queue an evidence capture; branch resolves from the sandbox anchor (or the worktree with --local)",
+        module: "./commands/evidence.ts",
+        fn: "requestCommand",
+        context: "worktree",
+        args: [
+          { name: "Sandbox id", type: "text", placeholder: "sandbox id", hint: "Omit with --local to resolve the branch from the current worktree" },
+          { name: "Case", flag: "--case", type: "text", placeholder: "case id" },
+          { name: "View", flag: "--view", type: "text", placeholder: "cvi-case" },
+          { name: "Recipe", flag: "--recipe", type: "text", placeholder: "shot" },
+          {
+            name: "Slot", flag: "--slot", type: "select",
+            options: [
+              { value: "before", label: "before" },
+              { value: "after", label: "after" },
+              { value: "standalone", label: "standalone" },
+            ],
+          },
+          { name: "Local", flag: "--local", type: "boolean", default: false, hint: "Resolve the branch from the current worktree instead of a sandbox anchor" },
+          { name: "Force before", flag: "--force-before", type: "boolean", default: false, hint: "Recapture a before shot even if one already exists" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable { requestId, executor }" },
+        ],
+      },
+      ls: {
+        description: "List evidence requests (ledger, plus controller-queued rows with --sandbox)",
+        module: "./commands/evidence.ts",
+        fn: "lsCommand",
+        args: [
+          { name: "Sandbox id", flag: "--sandbox", type: "text", placeholder: "sandbox id", hint: "Also merges controller rows the ledger doesn't know about yet" },
+          { name: "Branch", flag: "--branch", type: "text", placeholder: "branch-name" },
+          { name: "Pending", flag: "--pending", type: "boolean", default: false, hint: "Only requested/captured/synced" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false },
+        ],
+      },
+      pull: {
+        description: "Sync captured artifacts into the evidence tree (every captured entry when no id given)",
+        module: "./commands/evidence.ts",
+        fn: "pullCommand",
+        args: [
+          { name: "Request id", type: "text", placeholder: "request id", hint: "Omit to pull every captured entry" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false },
+        ],
+      },
+      fulfill: {
+        description: "File a local-chrome capture's screenshot(s), flipping the request to synced",
+        module: "./commands/evidence.ts",
+        fn: "fulfillCommand",
+        args: [
+          { name: "Request id", type: "text", placeholder: "request id" },
+          { name: "Base PNG", type: "text", placeholder: "base.png" },
+          { name: "Annotated PNG", type: "text", placeholder: "annotated.png", hint: "Optional" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false },
+        ],
+      },
+      review: {
+        description: "Review synced evidence before it attaches to the MR (approve / reject / edit-and-redraw)",
+        module: "./commands/evidence.ts",
+        fn: "reviewCommand",
+        requiresTTY: true,
+        args: [
+          { name: "Branch", flag: "--branch", type: "text", placeholder: "branch-name" },
+        ],
+      },
+    },
+  },
+
   daemon: {
     description: "Manage the rt background daemon",
     subcommands: {
