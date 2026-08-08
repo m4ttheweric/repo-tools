@@ -23,8 +23,16 @@
  *
  * --json emits { run: { id, status, groups }, exitCode } for skills to
  * consume (same style as rt sdm / rt verify); progress chatter is suppressed
- * and errors stay on stderr. The shape is unchanged by --force — it only
+ * and errors stay on stderr. Infra groups carry `infraReason` (evicted,
+ * oom-killed, disrupted, init-failed, create-failed, controller-restart) so
+ * an eviction is distinguishable from a code failure. When the farm side
+ * dies before a run shape exists, --json emits { error, exitCode } instead;
+ * there is no no-JSON exit. The shape is unchanged by --force — it only
  * guarantees the run behind it is fresh.
+ *
+ * --wait survives tunnel loss: a failed poll re-establishes the kubectl
+ * port-forwards with bounded retries, and only repeated failure gives up
+ * (exit 2 with the `rt validate status <runId>` remedy).
  *
  * The worktree's exact state (uncommitted edits included) is snapshotted
  * without touching HEAD/index (lib/snapshot.ts), pushed to the in-cluster
@@ -51,14 +59,15 @@ import {
   failureExitCode,
   loadGateManifest,
   manifestHash,
+  pollRunUntilDone,
   pushSnapshot,
   receiverSshRemedy,
   resolveBaseRef,
   resolveRepoId,
+  runToJson,
   statusExitCode,
   summarizeRun,
   verdictExitCode,
-  type ControllerClient,
   type GroupResult,
   type Run,
 } from "../lib/validate-farm.ts";
@@ -135,7 +144,7 @@ function groupLine(g: GroupResult, runId: string): string {
   const label = g.status === "inherited" ? `${yellow}inherited (matches master baseline)${reset}`
     : g.status === "skipped" ? `${dim}skipped (when-clause)${reset}`
     : g.status === "fail" ? `${red}fail${reset}${g.logRef ? `  ${dim}rt validate logs ${runId} ${g.name}${reset}` : ""}`
-    : g.status === "infra" ? `${red}infra${reset}`
+    : g.status === "infra" ? `${red}infra${reset}${g.infraReason ? ` ${yellow}(${g.infraReason}: not a code verdict)${reset}` : ""}${g.logRef ? `  ${dim}rt validate logs ${runId} ${g.name}${reset}` : ""}`
     : `${green}pass${reset}`;
   return `  ${STATUS_GLYPH[g.status]} ${g.name.padEnd(10)} ${label}`;
 }
@@ -147,18 +156,16 @@ function printRun(run: Run): void {
 
 /** Machine shape shared by `rt validate --json` and `rt validate status --json`. */
 function printRunJson(run: Run, exitCode: number): void {
-  console.log(JSON.stringify({
-    run: {
-      id: run.id,
-      status: run.status,
-      groups: run.groups.map(g => ({
-        name: g.name,
-        status: g.status,
-        ...(g.logRef ? { logRef: g.logRef } : {}),
-      })),
-    },
-    exitCode,
-  }, null, 2));
+  console.log(JSON.stringify(runToJson(run, exitCode), null, 2));
+}
+
+/**
+ * A --json caller must always get JSON on stdout, even when the farm side
+ * dies before a run shape exists (tunnel loss, unreachable controller, push
+ * failure) -- a bare exit 2 is indistinguishable from a crash.
+ */
+function printErrorJson(message: string, exitCode: number): void {
+  console.log(JSON.stringify({ error: message, exitCode }, null, 2));
 }
 
 /** True when the controller answers /healthz. (Shared with commands/sandbox.ts.) */
@@ -246,6 +253,14 @@ export async function validateCommand(args: string[], ctx: CommandContext): Prom
   // never an uncaught exit 1, which would read as farm-red), and the
   // finally always reaps any port-forward children we spawned.
   let endpoints: { stop: () => void } | null = null;
+  // Wait-mode polls dial through localhost port-forwards that can die mid-run;
+  // the poll loop calls this to stand fresh ones up before giving up.
+  const reconnect = async (): Promise<boolean> => {
+    console.error(`  ${yellow}controller connection lost — re-establishing port-forwards…${reset}`);
+    endpoints?.stop();
+    endpoints = await requireEndpoints();
+    return endpoints !== null;
+  };
   let exitCode: number;
   try {
     if (!json) console.log(`\n  ${dim}snapshotting worktree…${reset}`);
@@ -260,8 +275,9 @@ export async function validateCommand(args: string[], ctx: CommandContext): Prom
     endpoints = await requireEndpoints();
     if (!endpoints) {
       exitCode = 2; // requireEndpoints already printed why
+      if (json) printErrorJson(`controller unreachable at ${controllerUrl()}`, exitCode);
     } else {
-      exitCode = await submitAndReport({ repoId, snap, manifest, hash, wait, force, json });
+      exitCode = await submitAndReport({ repoId, snap, manifest, hash, wait, force, json, reconnect });
     }
   } catch (err) {
     exitCode = failureExitCode(err);
@@ -272,6 +288,7 @@ export async function validateCommand(args: string[], ctx: CommandContext): Prom
       console.error(`\n  ${red}farm pipeline failed — not a code verdict${reset}`);
       console.error(`  ${dim}${message}${reset}\n`);
     }
+    if (json) printErrorJson(message, exitCode);
   } finally {
     endpoints?.stop();
   }
@@ -287,8 +304,9 @@ async function submitAndReport(opts: {
   wait: boolean;
   force: boolean;
   json: boolean;
+  reconnect: () => Promise<boolean>;
 }): Promise<number> {
-  const { repoId, snap, manifest, hash, wait, force, json } = opts;
+  const { repoId, snap, manifest, hash, wait, force, json, reconnect } = opts;
 
   // Push the snapshot commit to the receiver (incremental; the mirror
   // already has master's objects). No local ref is created.
@@ -304,6 +322,7 @@ async function submitAndReport(opts: {
     const remedy = receiverSshRemedy(push.stderr, { repoId, url: push.pushUrl });
     if (remedy) console.error(`  ${yellow}${remedy}${reset}`);
     console.error("");
+    if (json) printErrorJson(`snapshot push to ${push.pushUrl} failed`, 2);
     return 2;
   }
 
@@ -338,34 +357,16 @@ async function submitAndReport(opts: {
     return 0;
   }
 
-  const finalRun = await pollUntilDone(client, runId, { quiet: json });
+  const finalRun = await pollRunUntilDone(client, runId, {
+    reconnect,
+    ...(json
+      ? {}
+      : { onTransition: (group, status) => console.log(`  ${dim}${group} → ${status}${reset}`) }),
+  });
   const exitCode = verdictExitCode(finalRun);
   if (json) printRunJson(finalRun, exitCode);
   else printRun(finalRun);
   return exitCode;
-}
-
-/** Poll the controller, printing each group's status transition once. */
-async function pollUntilDone(
-  client: ControllerClient,
-  runId: string,
-  opts: { quiet?: boolean } = {},
-): Promise<Run> {
-  const printed = new Map<string, string>();
-  while (true) {
-    const run = await client.getRun(runId);
-    if (!run) throw new Error(`run ${runId} disappeared from the controller`);
-    if (!opts.quiet) {
-      for (const g of run.groups) {
-        if (printed.get(g.name) !== g.status) {
-          printed.set(g.name, g.status);
-          console.log(`  ${dim}${g.name} → ${g.status}${reset}`);
-        }
-      }
-    }
-    if (run.status === "done" || run.status === "infra") return run;
-    await new Promise(r => setTimeout(r, 2000));
-  }
 }
 
 // ─── rt validate status ──────────────────────────────────────────────────────
@@ -378,19 +379,23 @@ export async function statusCommand(args: string[], ctx: CommandContext): Promis
 
   if (!(await probeController())) {
     console.error(`\n  ${red}controller unreachable at ${controllerUrl()}${reset}\n`);
+    if (json) printErrorJson(`controller unreachable at ${controllerUrl()}`, 2);
     process.exit(2);
   }
   let run: Run | null;
   try {
     run = await createControllerClient().getRun(runId);
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     console.error(`\n  ${red}farm pipeline failed — not a code verdict${reset}`);
-    console.error(`  ${dim}${err instanceof Error ? err.message : String(err)}${reset}\n`);
+    console.error(`  ${dim}${message}${reset}\n`);
+    if (json) printErrorJson(message, 2);
     process.exit(2);
   }
   const exitCode = statusExitCode(run); // 64 not found / 3 in flight / verdict
   if (!run) {
     console.error(`\n  ${red}run ${runId} not found${reset}\n`);
+    if (json) printErrorJson(`run ${runId} not found`, exitCode);
     process.exit(exitCode);
   }
 
