@@ -235,7 +235,18 @@ export interface GateManifest {
   image: string;
   env?: Record<string, string>;
   secretRef?: string;
-  taskGroups: Array<{ name: string; run: string; when?: string; services?: string[] }>;
+  taskGroups: Array<{
+    name: string;
+    run: string;
+    when?: string;
+    services?: string[];
+    env?: Record<string, string>;
+    /** k8s requests/limits for the group's worker container (controller-validated). */
+    resources?: {
+      requests?: { cpu?: string; memory?: string };
+      limits?: { cpu?: string; memory?: string };
+    };
+  }>;
 }
 
 export function loadGateManifest(path: string): GateManifest {
@@ -268,10 +279,26 @@ export function manifestHash(manifest: unknown): string {
 // ─── Controller HTTP client ──────────────────────────────────────────────────
 
 // Mirrors mattcloud controller/src/types.ts (Task 4).
+
+/**
+ * Machine token naming why a group settled infra. Wire contract with the
+ * controller (controller/src/types.ts carries this union verbatim) -- extend
+ * both sides together, never rename existing tokens.
+ */
+export type InfraReason =
+  | "evicted"
+  | "oom-killed"
+  | "disrupted"
+  | "init-failed"
+  | "create-failed"
+  | "controller-restart";
+
 export interface GroupResult {
   name: string;
   status: "pass" | "fail" | "skipped" | "inherited" | "infra";
   logRef?: string;
+  /** Present only when status is "infra". */
+  infraReason?: InfraReason;
 }
 
 export interface Run {
@@ -378,13 +405,40 @@ export function summarizeRun(run: Run): string {
   const counts = new Map<string, number>();
   for (const g of run.groups) counts.set(g.status, (counts.get(g.status) ?? 0) + 1);
   const parts = [...counts.entries()].map(([status, n]) => `${n} ${status}`).join(", ");
-  if (run.status === "infra" || run.groups.some(g => g.status === "infra")) {
-    return `farm-infra — not a code verdict (${parts})`;
+  const infraGroups = run.groups.filter(g => g.status === "infra");
+  if (run.status === "infra" || infraGroups.length > 0) {
+    const reasons = [...new Set(infraGroups.map(g => g.infraReason).filter(Boolean))];
+    const why = reasons.length > 0 ? `; ${reasons.join(", ")}` : "";
+    return `farm-infra — not a code verdict (${parts}${why})`;
   }
   if (run.groups.some(g => g.status === "fail")) return `farm-red (${parts})`;
   if (run.groups.some(g => g.status === "inherited")) return `farm-green with inherited failures (${parts})`;
   if (run.status !== "done") return `${run.status} (${parts})`;
   return `farm-green (${parts})`;
+}
+
+/**
+ * Machine shape behind `rt validate --json` / `rt validate status --json`:
+ * only contract fields, never internal ones. infraReason rides along so a
+ * consumer can tell an eviction from a code failure without kubectl.
+ */
+export function runToJson(run: Run, exitCode: number): {
+  run: { id: string; status: Run["status"]; groups: GroupResult[] };
+  exitCode: number;
+} {
+  return {
+    run: {
+      id: run.id,
+      status: run.status,
+      groups: run.groups.map(g => ({
+        name: g.name,
+        status: g.status,
+        ...(g.logRef ? { logRef: g.logRef } : {}),
+        ...(g.infraReason ? { infraReason: g.infraReason } : {}),
+      })),
+    },
+    exitCode,
+  };
 }
 
 // ─── Endpoint readiness (port-forward) ───────────────────────────────────────
@@ -419,4 +473,75 @@ export async function ensureEndpoints(deps: EnsureEndpointsDeps): Promise<Endpoi
   }
   forwards.stop();
   return { status: "unreachable", stop: () => {} };
+}
+
+// ─── Wait-mode polling (tunnel-resilient) ────────────────────────────────────
+
+/**
+ * The --wait tunnel died and bounded re-establish attempts failed. The farm
+ * run continues server-side; the message is the remedy line the user sees.
+ */
+export class TunnelLostError extends Error {
+  constructor(public readonly runId: string) {
+    super(
+      `controller connection lost mid-run and could not be re-established after ${POLL_MAX_CONSECUTIVE_FAILURES} attempts.\n` +
+        `The farm run continues server-side. Restore connectivity (kubectl port-forward -n mc-system svc/controller 8080:8080),\n` +
+        `then fetch the verdict with: rt validate status ${runId}`,
+    );
+    this.name = "TunnelLostError";
+  }
+}
+
+export const POLL_MAX_CONSECUTIVE_FAILURES = 4;
+
+export interface PollRunDeps {
+  /**
+   * Try to bring the controller endpoint back (re-probe, respawn forwards);
+   * resolves true when it answers again. Absent means no recovery is
+   * possible and poll errors only get the bounded plain retries.
+   */
+  reconnect?: () => Promise<boolean>;
+  /** Called once per observed group-status transition (progress printing). */
+  onTransition?: (group: string, status: GroupResult["status"]) => void;
+  delayMs?: (ms: number) => Promise<void>;
+  pollIntervalMs?: number;
+}
+
+/**
+ * Poll a run to its terminal state, surviving tunnel loss: a failed poll
+ * triggers reconnect and retries, and only POLL_MAX_CONSECUTIVE_FAILURES
+ * failures in a row give up (throwing TunnelLostError, exit 2 with a remedy
+ * -- never a silent death). One successful poll resets the count.
+ */
+export async function pollRunUntilDone(
+  client: ControllerClient,
+  runId: string,
+  deps: PollRunDeps = {},
+): Promise<Run> {
+  const delay = deps.delayMs ?? (ms => new Promise(r => setTimeout(r, ms)));
+  const interval = deps.pollIntervalMs ?? 2000;
+  const seen = new Map<string, string>();
+  let consecutiveFailures = 0;
+  while (true) {
+    let run: Run | null;
+    try {
+      run = await client.getRun(runId);
+      consecutiveFailures = 0;
+    } catch {
+      consecutiveFailures++;
+      if (consecutiveFailures >= POLL_MAX_CONSECUTIVE_FAILURES) throw new TunnelLostError(runId);
+      const recovered = deps.reconnect ? await deps.reconnect() : false;
+      if (!recovered) await delay(interval);
+      continue;
+    }
+    if (!run) throw new Error(`run ${runId} disappeared from the controller`);
+    for (const g of run.groups) {
+      if (seen.get(g.name) !== g.status) {
+        seen.set(g.name, g.status);
+        deps.onTransition?.(g.name, g.status);
+      }
+    }
+    if (run.status === "done" || run.status === "infra") return run;
+    await delay(interval);
+  }
 }
