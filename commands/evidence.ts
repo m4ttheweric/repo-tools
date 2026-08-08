@@ -42,6 +42,7 @@ import {
   evidenceRequest,
 } from "../lib/daemon-client.ts";
 import type { EvidenceLedgerEntry } from "../lib/daemon/evidence-ledger.ts";
+import { loadEvidenceConfig, type EvidenceConfig } from "../lib/evidence-config.ts";
 import { navSeparator, runNavPicker, type NavOption } from "../lib/navigate.ts";
 import { buildImagePreviewSnippet, shellQuote } from "../lib/nav-fs.ts";
 import { redrawAnnotations, type RedrawDeps } from "../lib/evidence-redraw.ts";
@@ -331,7 +332,22 @@ export async function fulfillCommand(args: string[]): Promise<void> {
 
 // ─── rt evidence review ───────────────────────────────────────────────────────
 
-const REVIEW_CLOSING_HINT = "attach stays a separate held step (assured:capture-evidence A5)";
+/**
+ * Config-carried closing hints for the repos whose evidence the session
+ * listed — one line per distinct hint, in first-seen order. Repos without a
+ * reviewClosingHint (or without evidence config at all) contribute nothing.
+ */
+export function reviewClosingHints(
+  repoIds: Iterable<string>,
+  config: (repoId: string) => EvidenceConfig | null = loadEvidenceConfig,
+): string[] {
+  const hints: string[] = [];
+  for (const repoId of repoIds) {
+    const hint = config(repoId)?.reviewClosingHint;
+    if (typeof hint === "string" && hint.trim() && !hints.includes(hint)) hints.push(hint);
+  }
+  return hints;
+}
 
 /** One-line prompt on stderr so it survives fzf's own stdout usage; resolves to the trimmed answer. */
 function promptLine(question: string): Promise<string> {
@@ -385,6 +401,7 @@ export async function reviewCommand(args: string[]): Promise<void> {
 
   let resumeQuery = "";
   let resumeValue: string | undefined;
+  const seenRepoIds = new Set<string>();
 
   while (true) {
     let entries: EvidenceLedgerEntry[];
@@ -398,6 +415,7 @@ export async function reviewCommand(args: string[]): Promise<void> {
       console.log(`\n  ${dim}no synced evidence waiting for review${reset}\n`);
       break;
     }
+    for (const e of entries) seenRepoIds.add(e.repoId);
 
     // Group by branch so the picker can head each cluster when more than one
     // is present; a single --branch filter already names the branch in the
@@ -542,5 +560,7 @@ export async function reviewCommand(args: string[]): Promise<void> {
     }
   }
 
-  console.log(`  ${dim}${REVIEW_CLOSING_HINT}${reset}\n`);
+  for (const hint of reviewClosingHints(seenRepoIds)) {
+    console.log(`  ${dim}${hint}${reset}\n`);
+  }
 }
