@@ -31,6 +31,7 @@ import { homedir } from "node:os";
 import { reposDir, sandboxAnchorDir, sandboxesDir } from "./rt-paths.ts";
 import { controllerUrl, receiverRepoUrl, receiverSshEnv, receiverSshRemedy, type GitPushSpawn } from "./validate-farm.ts";
 import { spawnExec, type Exec } from "./cloud-secrets.ts";
+import { stripJsonc } from "./jsonc.ts";
 
 /** The sandbox namespace — every sandbox-scoped cluster object lives here. */
 export const SANDBOX_NAMESPACE = "mc-sandboxes";
@@ -270,8 +271,8 @@ export function createSandboxClient(
 // ─── Overlay sandbox config ──────────────────────────────────────────────────
 
 /**
- * One dev process the sandbox pod runs, from the overlay's config.json
- * `sandbox` section. `localPorts` is the ordered list of LOCAL candidate
+ * One dev process the sandbox pod runs, from the overlay's sandbox.jsonc.
+ * `localPorts` is the ordered list of LOCAL candidate
  * ports the allocator may forward this process to (the Auth0-registered pool
  * for browser-facing processes — an adapter fact the overlay owns). When the
  * overlay omits it, the only candidate is the pod port itself: no silently
@@ -310,32 +311,33 @@ function expandHome(path: string): string {
 }
 
 /**
- * Read the overlay's sandbox section from ~/.rt/repos/<repoId>/config.json.
- * Null when the overlay or the section is missing — the repo is not
- * sandbox-enabled. Parsed loosely on purpose (the controller owns schema
- * validation of its own copy); rt only needs process names/ports, the local
- * port pools, and the state-file path.
+ * Read the overlay's ~/.rt/repos/<repoId>/sandbox.jsonc — the canonical
+ * per-repo sandbox config, same jsonc discipline as gates/bake/evidence
+ * (JSONC bytes → stripJsonc → JSON.parse). Null when the file is missing or
+ * malformed — the repo is not sandbox-enabled. Parsed loosely on purpose
+ * (the controller owns schema validation of its own copy); rt only needs
+ * process names/ports, the local port pools, and the state-file path.
  */
 export function readSandboxConfig(
   repoId: string,
   reposRoot: string = reposDir(),
 ): SandboxOverlayConfig | null {
-  let raw: {
-    sandbox?: {
-      processes?: Array<Partial<SandboxProcess>>;
-      stateFile?: string;
-      qaPostgresUrlTemplate?: string;
-      browserSecretsFile?: string;
-      agentCredentialFiles?: Record<string, string>;
-    };
-  };
+  let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(join(reposRoot, repoId, "config.json"), "utf8"));
+    const text = readFileSync(join(reposRoot, repoId, "sandbox.jsonc"), "utf8");
+    raw = JSON.parse(stripJsonc(text));
   } catch {
     return null;
   }
-  const sandbox = raw.sandbox;
-  if (!sandbox || !Array.isArray(sandbox.processes)) return null;
+  if (raw === null || typeof raw !== "object") return null;
+  const sandbox = raw as {
+    processes?: Array<Partial<SandboxProcess>>;
+    stateFile?: string;
+    qaPostgresUrlTemplate?: string;
+    browserSecretsFile?: string;
+    agentCredentialFiles?: Record<string, string>;
+  };
+  if (!Array.isArray(sandbox.processes)) return null;
   const processes: SandboxProcess[] = [];
   for (const p of sandbox.processes) {
     if (typeof p.name !== "string" || typeof p.port !== "number") return null;
@@ -361,7 +363,7 @@ export function readSandboxConfig(
   };
 }
 
-/** Every overlay under reposRoot that declares a sandbox section. */
+/** Every overlay under reposRoot that ships a sandbox.jsonc. */
 export function listSandboxOverlays(
   reposRoot: string = reposDir(),
 ): Array<{ repoId: string; config: SandboxOverlayConfig }> {
@@ -484,27 +486,52 @@ export async function pushSandboxBranch(opts: {
 // ─── Create flow ─────────────────────────────────────────────────────────────
 
 /**
- * The create pipeline: handshake-push the branch head to the receiver
- * FIRST (the seed Job fetches it the moment the POST lands), then POST
- * /sandboxes, then write the local anchor the daemon and skills key on.
+ * The create pipeline: resolve the named branch's head FIRST — explicitly as
+ * refs/heads/<branch>, aborting before any push/POST/anchor when it does not
+ * exist (MAT-216: a silent HEAD push seeded a sandbox from the wrong commit)
+ * — then handshake-push it to the receiver (the seed Job fetches it the
+ * moment the POST lands), then POST /sandboxes, then write the local anchor
+ * the daemon and skills key on.
  */
 export async function createSandboxFlow(opts: {
   repoId: string;
   branch: string;
-  commit: string;
   cwd: string;
   brief: string;
   imageTag?: string;
   flags?: Record<string, unknown>;
   evidenceBefore?: EvidenceBeforeEntry[];
+  /**
+   * Ref to seed from when refs/heads/<branch> is missing locally — the
+   * --ticket path's "a fresh ticket branch is just the base ref's tree".
+   * Absent means a missing branch aborts instead of falling back.
+   */
+  fallbackRef?: string;
   client: SandboxClient;
   spawn: GitPushSpawn;
+  exec?: Exec;
   env?: Record<string, string | undefined>;
 }): Promise<{ ok: true; sandboxId: string } | { ok: false; message: string }> {
+  const exec = opts.exec ?? spawnExec;
+  const resolve = async (ref: string): Promise<string | null> => {
+    const r = await exec(["git", "rev-parse", "--verify", "--quiet", ref], { cwd: opts.cwd });
+    const commit = r.stdout.trim();
+    return r.exitCode === 0 && commit ? commit : null;
+  };
+  let commit = await resolve(`refs/heads/${opts.branch}`);
+  if (!commit && opts.fallbackRef) commit = await resolve(opts.fallbackRef);
+  if (!commit) {
+    return {
+      ok: false,
+      message:
+        `branch "${opts.branch}" does not exist in this checkout (refs/heads/${opts.branch}` +
+        `${opts.fallbackRef ? ` and base ref ${opts.fallbackRef}` : ""} did not resolve) — nothing was pushed`,
+    };
+  }
   const push = await pushSandboxBranch({
     repoId: opts.repoId,
     branch: opts.branch,
-    commit: opts.commit,
+    commit,
     cwd: opts.cwd,
     spawn: opts.spawn,
     ...(opts.env ? { env: opts.env } : {}),

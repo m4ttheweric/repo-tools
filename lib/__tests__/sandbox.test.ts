@@ -216,20 +216,19 @@ describe("createSandboxClient", () => {
 // ─── Overlay sandbox config ──────────────────────────────────────────────────
 
 describe("readSandboxConfig", () => {
-  test("reads the overlay's sandbox section; localPorts default to the pod port", () => {
+  test("reads the overlay's sandbox.jsonc (comments allowed); localPorts default to the pod port", () => {
     const root = mkdtempSync(join(tmpdir(), "sbx-overlay-"));
     mkdirSync(join(root, "acme-dev"), { recursive: true });
-    writeFileSync(join(root, "acme-dev", "config.json"), JSON.stringify({
-      sandbox: {
-        processes: [
-          { name: "portal", port: 4001, localPorts: [4001, 5001, 6001] },
-          { name: "backend", port: 4000 },
-        ],
-        stateFile: "~/.acme/dev-ports.state.json",
-        browserSecretsFile: "~/.acme/browser.env",
-        agentCredentialFiles: { "claude-session.json": "~/.claude/session.json" },
-      },
-    }));
+    writeFileSync(join(root, "acme-dev", "sandbox.jsonc"), `// adapter facts
+${JSON.stringify({
+      processes: [
+        { name: "portal", port: 4001, localPorts: [4001, 5001, 6001] },
+        { name: "backend", port: 4000 },
+      ],
+      stateFile: "~/.acme/dev-ports.state.json",
+      browserSecretsFile: "~/.acme/browser.env",
+      agentCredentialFiles: { "claude-session.json": "~/.claude/session.json" },
+    })}`);
     process.env.HOME = "/tmp/sbx-home";
     const config = readSandboxConfig("acme-dev", root)!;
     expect(config.processes).toEqual([
@@ -243,23 +242,28 @@ describe("readSandboxConfig", () => {
     });
   });
 
-  test("null when the overlay or its sandbox section is missing", () => {
+  test("null when sandbox.jsonc is missing or malformed; the config.json path is dead", () => {
     const root = mkdtempSync(join(tmpdir(), "sbx-overlay-"));
     expect(readSandboxConfig("ghost", root)).toBeNull();
     mkdirSync(join(root, "plain"), { recursive: true });
-    writeFileSync(join(root, "plain", "config.json"), JSON.stringify({ setup: [] }));
+    writeFileSync(join(root, "plain", "sandbox.jsonc"), "{ not json");
     expect(readSandboxConfig("plain", root)).toBeNull();
+    // A config.json sandbox section no longer counts (ruled: no fallback).
+    mkdirSync(join(root, "legacy"), { recursive: true });
+    writeFileSync(join(root, "legacy", "config.json"), JSON.stringify({
+      sandbox: { processes: [{ name: "app", port: 3000 }] },
+    }));
+    expect(readSandboxConfig("legacy", root)).toBeNull();
   });
 
-  test("listSandboxOverlays finds exactly the repos with a sandbox section", () => {
+  test("listSandboxOverlays finds exactly the repos with a sandbox.jsonc", () => {
     const root = mkdtempSync(join(tmpdir(), "sbx-overlay-"));
-    for (const [repo, config] of [
-      ["with-sandbox", { sandbox: { processes: [{ name: "app", port: 3000 }] } }],
-      ["without", { setup: [] }],
-    ] as const) {
-      mkdirSync(join(root, repo), { recursive: true });
-      writeFileSync(join(root, repo, "config.json"), JSON.stringify(config));
-    }
+    mkdirSync(join(root, "with-sandbox"), { recursive: true });
+    writeFileSync(join(root, "with-sandbox", "sandbox.jsonc"), JSON.stringify({
+      processes: [{ name: "app", port: 3000 }],
+    }));
+    mkdirSync(join(root, "without"), { recursive: true });
+    writeFileSync(join(root, "without", "config.json"), JSON.stringify({ setup: [] }));
     const overlays = listSandboxOverlays(root);
     expect(overlays.map(o => o.repoId)).toEqual(["with-sandbox"]);
     expect(overlays[0]!.config.processes[0]!.name).toBe("app");
@@ -411,7 +415,19 @@ describe("parseEvidenceBeforeSpecs", () => {
 // ─── Create flow ─────────────────────────────────────────────────────────────
 
 describe("createSandboxFlow", () => {
-  function world(pushExit = 0) {
+  /** Exec fake resolving only the given refs; records every rev-parse. */
+  function gitRefs(refs: Record<string, string>) {
+    const resolved: string[] = [];
+    const exec: Exec = async (argv) => {
+      const ref = argv[argv.length - 1]!;
+      resolved.push(ref);
+      const commit = refs[ref];
+      return commit ? { stdout: `${commit}\n`, exitCode: 0 } : { stdout: "", exitCode: 1 };
+    };
+    return { exec, resolved };
+  }
+
+  function world(pushExit = 0, refs: Record<string, string> = { "refs/heads/acme-9": "abc" }) {
     const order: string[] = [];
     const client = {
       async create(req: unknown) {
@@ -424,21 +440,61 @@ describe("createSandboxFlow", () => {
       order.push(`push ${argv[3]}`);
       return { exitCode: pushExit, stderr: pushExit === 0 ? "" : "denied" };
     };
-    return { order, client, spawn };
+    return { order, client, spawn, ...gitRefs(refs) };
   }
 
-  test("pushes the handshake ref first, then POSTs, then writes the anchor", async () => {
+  test("resolves refs/heads/<branch>, pushes the handshake ref, POSTs, writes the anchor", async () => {
     process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
-    const { order, client, spawn } = world();
+    const { order, client, spawn, exec, resolved } = world();
     const out = await createSandboxFlow({
-      repoId: "acme-dev", branch: "acme-9", commit: "abc", cwd: "/w",
-      brief: "do it", flags: { f: true }, client, spawn,
+      repoId: "acme-dev", branch: "acme-9", cwd: "/w",
+      brief: "do it", flags: { f: true }, client, spawn, exec,
     });
     expect(out).toEqual({ ok: true, sandboxId: "sb-9" });
+    expect(resolved).toEqual(["refs/heads/acme-9"]);
     expect(order).toEqual(["push +abc:refs/sandboxes/incoming/acme-9", "create"]);
     const anchor = readSandboxAnchor("acme-dev", "sb-9")!;
     expect(anchor.branch).toBe("acme-9");
     expect(anchor.lastEventSeq).toBe(0);
+  });
+
+  test("a branch that does not resolve aborts: no push, no POST, no anchor", async () => {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
+    const { order, client, spawn, exec } = world(0, {});
+    const out = await createSandboxFlow({
+      repoId: "acme-dev", branch: "cv-ghost", cwd: "/w", brief: "x", client, spawn, exec,
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.message).toContain('branch "cv-ghost"');
+      expect(out.message).toContain("refs/heads/cv-ghost");
+    }
+    expect(order).toEqual([]);
+    expect(readSandboxAnchor("acme-dev", "sb-9")).toBeNull();
+  });
+
+  test("fallbackRef seeds a missing branch from the base ref (the --ticket path)", async () => {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
+    const { order, client, spawn, exec, resolved } = world(0, { "refs/remotes/origin/master": "base1" });
+    const out = await createSandboxFlow({
+      repoId: "acme-dev", branch: "acme-9", cwd: "/w", brief: "x",
+      fallbackRef: "refs/remotes/origin/master", client, spawn, exec,
+    });
+    expect(out).toEqual({ ok: true, sandboxId: "sb-9" });
+    expect(resolved).toEqual(["refs/heads/acme-9", "refs/remotes/origin/master"]);
+    expect(order[0]).toBe("push +base1:refs/sandboxes/incoming/acme-9");
+  });
+
+  test("fallbackRef that does not resolve either still aborts, naming both refs", async () => {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
+    const { order, client, spawn, exec } = world(0, {});
+    const out = await createSandboxFlow({
+      repoId: "acme-dev", branch: "acme-9", cwd: "/w", brief: "x",
+      fallbackRef: "refs/remotes/origin/master", client, spawn, exec,
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.message).toContain("refs/remotes/origin/master");
+    expect(order).toEqual([]);
   });
 
   test("flags serialize into flagsFileContent; omitted entirely when absent", async () => {
@@ -448,8 +504,9 @@ describe("createSandboxFlow", () => {
       async create(req: Record<string, unknown>) { bodies.push(req); return { sandboxId: "s" }; },
     } as unknown as import("../sandbox.ts").SandboxClient;
     const spawn = async () => ({ exitCode: 0, stderr: "" });
-    await createSandboxFlow({ repoId: "r", branch: "b", commit: "c", cwd: "/w", brief: "x", flags: { f: 1 }, client, spawn });
-    await createSandboxFlow({ repoId: "r", branch: "b", commit: "c", cwd: "/w", brief: "x", client, spawn });
+    const { exec } = gitRefs({ "refs/heads/b": "c" });
+    await createSandboxFlow({ repoId: "r", branch: "b", cwd: "/w", brief: "x", flags: { f: 1 }, client, spawn, exec });
+    await createSandboxFlow({ repoId: "r", branch: "b", cwd: "/w", brief: "x", client, spawn, exec });
     expect(JSON.parse(bodies[0]!.flagsFileContent as string)).toEqual({ f: 1 });
     expect("flagsFileContent" in bodies[1]!).toBe(false);
     expect("imageTag" in bodies[1]!).toBe(false);
@@ -462,12 +519,13 @@ describe("createSandboxFlow", () => {
       async create(req: Record<string, unknown>) { bodies.push(req); return { sandboxId: "s" }; },
     } as unknown as import("../sandbox.ts").SandboxClient;
     const spawn = async () => ({ exitCode: 0, stderr: "" });
+    const { exec } = gitRefs({ "refs/heads/b": "c" });
     const evidenceBefore = [
       { caseId: "c1", view: "qa-case", recipe: "shot", args: { contactId: "k" } },
       { caseId: "c2", view: "qa-case", recipe: "shot" },
     ];
-    await createSandboxFlow({ repoId: "r", branch: "b", commit: "c", cwd: "/w", brief: "x", evidenceBefore, client, spawn });
-    await createSandboxFlow({ repoId: "r", branch: "b", commit: "c", cwd: "/w", brief: "x", client, spawn });
+    await createSandboxFlow({ repoId: "r", branch: "b", cwd: "/w", brief: "x", evidenceBefore, client, spawn, exec });
+    await createSandboxFlow({ repoId: "r", branch: "b", cwd: "/w", brief: "x", client, spawn, exec });
     expect(bodies[0]!.evidenceBefore).toEqual(evidenceBefore);
     expect("evidenceBefore" in bodies[1]!).toBe(false);
   });
@@ -481,8 +539,9 @@ describe("createSandboxFlow", () => {
       exitCode: 128,
       stderr: "Host key verification failed.\nfatal: Could not read from remote repository.",
     });
+    const { exec } = gitRefs({ "refs/heads/b": "c" });
     const out = await createSandboxFlow({
-      repoId: "acme-dev", branch: "b", commit: "c", cwd: "/w", brief: "x", client, spawn,
+      repoId: "acme-dev", branch: "b", cwd: "/w", brief: "x", client, spawn, exec,
     });
     expect(out.ok).toBe(false);
     if (!out.ok) {
@@ -493,9 +552,9 @@ describe("createSandboxFlow", () => {
 
   test("a failed push short-circuits: no POST, no anchor", async () => {
     process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
-    const { order, client, spawn } = world(1);
+    const { order, client, spawn, exec } = world(1);
     const out = await createSandboxFlow({
-      repoId: "acme-dev", branch: "acme-9", commit: "abc", cwd: "/w", brief: "x", client, spawn,
+      repoId: "acme-dev", branch: "acme-9", cwd: "/w", brief: "x", client, spawn, exec,
     });
     expect(out.ok).toBe(false);
     if (!out.ok) expect(out.message).toContain("denied");

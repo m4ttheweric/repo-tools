@@ -140,7 +140,7 @@ export async function createCommand(args: string[], ctx: CommandContext): Promis
   const repoId = requireRepoId(ctx);
   if (!readSandboxConfig(repoId)) {
     usageExit(
-      `overlay ~/.rt/repos/${repoId}/config.json has no "sandbox" section — declare processes (name/port/localPorts) and stateFile first`,
+      `overlay ~/.rt/repos/${repoId}/sandbox.jsonc is missing — declare processes (name/port/localPorts) and stateFile first`,
     );
   }
 
@@ -168,29 +168,19 @@ export async function createCommand(args: string[], ctx: CommandContext): Promis
   }
   if (!brief) usageExit("no brief — pass --job <dir> (job.md) or --ticket");
 
-  // The branch head to hand the receiver; a fresh ticket branch is just the
-  // base ref's tree (design: "a fresh ticket branch is just master's tree").
-  let commit: string;
-  try {
-    commit = execFileSync("git", ["rev-parse", branch], { cwd: process.cwd(), encoding: "utf8" }).trim();
-  } catch {
-    try {
-      commit = execFileSync("git", ["rev-parse", resolveBaseRef(repoId, process.cwd())], { cwd: process.cwd(), encoding: "utf8" }).trim();
-    } catch (err) {
-      infraExit(err);
-    }
-  }
-
   let endpoints: { stop: () => void } | null = null;
   try {
     endpoints = await requireEndpoints();
     if (!endpoints) process.exit(2);
+    // The flow resolves refs/heads/<branch> itself and aborts when it does
+    // not exist; only the --ticket path may seed a fresh branch from the
+    // base ref (design: "a fresh ticket branch is just master's tree").
     const out = await createSandboxFlow({
       repoId,
       branch,
-      commit,
       cwd: process.cwd(),
       brief,
+      ...(ticket ? { fallbackRef: resolveBaseRef(repoId, process.cwd()) } : {}),
       ...(imageTag ? { imageTag } : {}),
       ...(flagPairs.length ? { flags: parseFlagValues(flagPairs) } : {}),
       ...(evidenceBefore.length ? { evidenceBefore } : {}),

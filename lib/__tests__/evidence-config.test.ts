@@ -33,6 +33,16 @@ test("loads jsonc (comments + trailing commas); null on missing or malformed", (
   expect(loadEvidenceConfig("demo", root)).toBeNull();
 });
 
+test("reviewClosingHint is optional: absent stays undefined, present round-trips", () => {
+  const root = writeOverlay();
+  expect(loadEvidenceConfig("demo", root)!.reviewClosingHint).toBeUndefined();
+  writeFileSync(
+    join(root, "demo", "evidence.jsonc"),
+    FIXTURE.replace('"appPort": 4001,', '"appPort": 4001,\n  "reviewClosingHint": "acme:capture-evidence A5",'),
+  );
+  expect(loadEvidenceConfig("demo", root)!.reviewClosingHint).toBe("acme:capture-evidence A5");
+});
+
 test("expandEvidenceRoot expands ~ at call time", () => {
   const prev = process.env.HOME;
   process.env.HOME = "/tmp/fakehome";

@@ -17,6 +17,7 @@ import {
   readSandboxAnchor,
   writeSandboxAnchor,
   type EvidenceDetail,
+  type EvidenceRequestRecord,
   type SandboxClient,
   type SandboxDetail,
   type SandboxEvent,
@@ -196,6 +197,10 @@ interface SyncWorld {
   reachable: boolean;
   /** Set by evidence tests before syncOnce; read by the client fake's getEvidence. */
   evidenceDetail: EvidenceDetail | null;
+  /** Controller request list the client fake's listEvidence returns. */
+  evidenceRequests: EvidenceRequestRecord[];
+  /** When set, the client fake's listEvidence throws with this message. */
+  evidenceListError?: string;
   evidenceLedger?: EvidenceLedger;
   evidenceSyncCalls: string[];
 }
@@ -205,14 +210,12 @@ function makeSyncWorld(opts?: { withEvidence?: boolean }): SyncWorld {
   process.env.HOME = home;
   const repoDir = join(home, ".rt", "repos", "acme-dev");
   mkdirSync(repoDir, { recursive: true });
-  writeFileSync(join(repoDir, "config.json"), JSON.stringify({
-    sandbox: {
-      processes: [
-        { name: "portal", port: 4001, localPorts: [4001, 5001, 6001] },
-        { name: "backend", port: 4000, localPorts: [10400, 10401] },
-      ],
-      stateFile: "~/.acme/dev-ports.state.json",
-    },
+  writeFileSync(join(repoDir, "sandbox.jsonc"), JSON.stringify({
+    processes: [
+      { name: "portal", port: 4001, localPorts: [4001, 5001, 6001] },
+      { name: "backend", port: 4000, localPorts: [10400, 10401] },
+    ],
+    stateFile: "~/.acme/dev-ports.state.json",
   }));
   const stateFile = join(home, ".acme", "dev-ports.state.json");
   mkdirSync(join(home, ".acme"), { recursive: true });
@@ -237,6 +240,7 @@ function makeSyncWorld(opts?: { withEvidence?: boolean }): SyncWorld {
     sync: null as unknown as SyncWorld["sync"],
     reachable: true,
     evidenceDetail: null,
+    evidenceRequests: [],
     evidenceSyncCalls: [],
   };
 
@@ -256,7 +260,11 @@ function makeSyncWorld(opts?: { withEvidence?: boolean }): SyncWorld {
     async mailbox() { return []; },
     async postMailbox() {},
     async requestEvidence() { throw new Error("unused"); },
-    async listEvidence() { return []; },
+    async listEvidence(sandboxId) {
+      world.clientCalls.push(`listEvidence ${sandboxId}`);
+      if (world.evidenceListError) throw new Error(world.evidenceListError);
+      return world.evidenceRequests;
+    },
     async getEvidence(requestId) {
       world.clientCalls.push(`getEvidence ${requestId}`);
       return world.evidenceDetail;
@@ -472,5 +480,68 @@ describe("createSandboxSync", () => {
     expect(entry.state).toBe("failed");
     expect(entry.error).toBe("boom");
     expect(world.notifications).toContainEqual({ title: "Evidence capture failed", category: "evidence_failed" });
+  });
+
+  // ─── Evidence materialize-on-sync ──────────────────────────────────────────
+
+  function controllerRequest(overrides: Partial<EvidenceRequestRecord>): EvidenceRequestRecord {
+    return {
+      id: "r?", sandboxId: "sb-1", caseId: "c1", view: "v1", recipe: "rec1",
+      args: {}, slot: "after", state: "queued", requestedBy: "agent",
+      forceBefore: false, error: null, createdAt: "2026-08-08T00:00:00.000Z",
+      updatedAt: "2026-08-08T00:00:01.000Z", syncedAt: null,
+      ...overrides,
+    };
+  }
+
+  test("sync pass materializes ledger entries for controller requests the ledger has never seen", async () => {
+    const world = makeSyncWorld({ withEvidence: true });
+    world.evidenceRequests = [
+      controllerRequest({ id: "r1", state: "queued" }),
+      controllerRequest({ id: "r2", state: "running" }),
+      controllerRequest({ id: "r3", state: "captured" }),
+      controllerRequest({ id: "r4", state: "failed", error: "boom" }),
+    ];
+    await world.sync.syncOnce();
+
+    expect(world.clientCalls).toContain("listEvidence sb-1");
+    const states = ["r1", "r2", "r3", "r4"].map((id) => world.evidenceLedger!.read(id)!.state);
+    expect(states).toEqual(["requested", "requested", "captured", "failed"]);
+    const r3 = world.evidenceLedger!.read("r3")!;
+    expect(r3).toMatchObject({
+      executor: "sidecar", sandboxId: "sb-1", repoId: "acme-dev", branch: "acme-1-fix",
+      caseId: "c1", view: "v1", recipe: "rec1", slot: "after",
+      requestedAt: "2026-08-08T00:00:00.000Z",
+    });
+    expect(world.evidenceLedger!.read("r4")!.error).toBe("boom");
+    // Materialize-only: the pass never syncs artifacts itself (normal path
+    // — evidence-ready fan-out or rt evidence pull — owns that).
+    expect(world.evidenceSyncCalls).toEqual([]);
+  });
+
+  test("materialize is creation-only: existing entries keep their state and stamps across passes", async () => {
+    const world = makeSyncWorld({ withEvidence: true });
+    world.evidenceRequests = [controllerRequest({ id: "r1", state: "captured" })];
+    await world.sync.syncOnce();
+
+    // Locally the request has since been decided; the controller still
+    // reports it captured — the next pass must not touch it.
+    world.evidenceLedger!.setState("r1", "synced");
+    world.evidenceLedger!.setState("r1", "approved");
+    const decided = world.evidenceLedger!.read("r1")!.decidedAt!;
+    await world.sync.syncOnce();
+
+    const entry = world.evidenceLedger!.read("r1")!;
+    expect(entry.state).toBe("approved");
+    expect(entry.decidedAt).toBe(decided);
+  });
+
+  test("a listEvidence failure is swallowed and never blocks the rest of the pass", async () => {
+    const world = makeSyncWorld({ withEvidence: true });
+    world.evidenceListError = "controller hiccup";
+    await world.sync.syncOnce();
+    // The running sandbox still reconciled: forward spawned despite the throw.
+    expect(world.clientCalls).toContain("listEvidence sb-1");
+    expect(world.spawned).toHaveLength(1);
   });
 });
