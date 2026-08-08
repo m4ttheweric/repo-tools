@@ -14,6 +14,7 @@ import {
   pushSnapshot,
   readRepoOverlay,
   receiverSshEnv,
+  receiverSshRemedy,
   resolveBaseRef,
   resolveReceiverSshKey,
   resolveRepoId,
@@ -375,6 +376,35 @@ describe("resolveReceiverSshKey", () => {
     expect(receiverSshEnv({ HOME: "/home/u" }, "acme-dev", root)).toEqual({
       GIT_SSH_COMMAND: "ssh -i /home/u/.ssh/mattcloud-mirror -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new",
     });
+  });
+});
+
+describe("receiverSshRemedy", () => {
+  test("host key failure names the known_hosts entry and the rescan command", () => {
+    const remedy = receiverSshRemedy("Host key verification failed.\nfatal: Could not read from remote repository.", {
+      url: "ssh://git@localhost:2222/repos/acme-dev.git",
+    });
+    expect(remedy).toBe(
+      'receiver host key changed or unknown — run: ssh-keygen -R "[localhost]:2222" && ssh-keyscan -p 2222 localhost >> ~/.ssh/known_hosts',
+    );
+  });
+
+  test("port 22 endpoints use the bare-host known_hosts form", () => {
+    const remedy = receiverSshRemedy("Host key verification failed.", { url: "ssh://git@receiver.example" });
+    expect(remedy).toContain('ssh-keygen -R "receiver.example"');
+    expect(remedy).toContain("ssh-keyscan -p 22 receiver.example");
+  });
+
+  test("publickey rejection points at the overlay receiverSshKey", () => {
+    const remedy = receiverSshRemedy("git@localhost: Permission denied (publickey).", { repoId: "acme-dev" });
+    expect(remedy).toBe(
+      "receiver rejected the ssh key — check receiverSshKey in ~/.rt/repos/acme-dev/repo.jsonc (MC_RECEIVER_SSH_KEY overrides)",
+    );
+  });
+
+  test("null for stderr rt knows no fix for — raw stderr stands alone", () => {
+    expect(receiverSshRemedy("fatal: Could not read from remote repository.")).toBeNull();
+    expect(receiverSshRemedy("")).toBeNull();
   });
 });
 

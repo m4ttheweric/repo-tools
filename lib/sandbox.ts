@@ -25,7 +25,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { reposDir, sandboxAnchorDir, sandboxesDir } from "./rt-paths.ts";
-import { controllerUrl, receiverRepoUrl, receiverSshEnv, type GitPushSpawn } from "./validate-farm.ts";
+import { controllerUrl, receiverRepoUrl, receiverSshEnv, receiverSshRemedy, type GitPushSpawn } from "./validate-farm.ts";
 import { spawnExec, type Exec } from "./cloud-secrets.ts";
 
 /** The sandbox namespace — every sandbox-scoped cluster object lives here. */
@@ -422,7 +422,11 @@ export async function createSandboxFlow(opts: {
     ...(opts.env ? { env: opts.env } : {}),
   });
   if (!push.ok) {
-    return { ok: false, message: `branch push to ${push.pushUrl} failed: ${push.stderr.trim()}` };
+    const remedy = receiverSshRemedy(push.stderr, { repoId: opts.repoId, url: push.pushUrl });
+    return {
+      ok: false,
+      message: `branch push to ${push.pushUrl} failed: ${push.stderr.trim()}${remedy ? `\n${remedy}` : ""}`,
+    };
   }
   const { sandboxId } = await opts.client.create({
     repoId: opts.repoId,
