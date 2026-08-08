@@ -110,8 +110,12 @@ export interface EvidenceRequestFlags {
   json: boolean;
 }
 
+export const EVIDENCE_REQUEST_USAGE =
+  "usage: rt evidence request <sandboxId> --case <id> --view <name> --recipe <name> --slot before|after|standalone [--arg k=v ...] [--local] [--force-before] [--json]";
+
 /** Pure flag parser for `rt evidence request`, no process.exit, testable in isolation. */
 export function parseEvidenceRequestFlags(args: string[]): EvidenceRequestFlags | { error: string } {
+  if (args.length === 0) return { error: EVIDENCE_REQUEST_USAGE };
   let sandboxId: string | null = null;
   let caseId: string | null = null;
   let view: string | null = null;
