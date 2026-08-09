@@ -58,9 +58,11 @@ function usageExit(message: string): never {
 
 function helpExit(): never {
   console.log(`
-  ${bold}rt sandbox create${reset} [--ticket CV-XXXX | --branch <name>] [--job <dir>] [--flags k=v...] [--image <tag>] [--evidence-before <caseId>:<view>:<recipe>[:k=v,...]]... [--json]
+  ${bold}rt sandbox create${reset} [--ticket CV-XXXX | --branch <name>] [--job <dir>] [--flags k=v...] [--image <tag>] [--account <secret-key>] [--agent-env NAME=value]... [--evidence-before <caseId>:<view>:<recipe>[:k=v,...]]... [--json]
       push branch to the receiver, create the cloud sandbox, anchor it locally;
-      --evidence-before (repeatable, max 10) queues before-slot captures with the create
+      --evidence-before (repeatable, max 10) queues before-slot captures with the create;
+      --account picks the agent-credentials Secret key (billing identity);
+      --agent-env NAME=value (repeatable) sets per-lane agent env (reserved names rejected)
   ${bold}rt sandbox ls${reset} [--json] / ${bold}status${reset} [<id>] [--json]
       controller ground truth + local ports (pool warnings are loud here)
   ${bold}rt sandbox suspend|resume|destroy${reset} <id>
@@ -109,7 +111,44 @@ function infraExit(err: unknown): never {
 
 // ─── rt sandbox create ───────────────────────────────────────────────────────
 
+const CREDENTIAL_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$/;
+const AGENT_ENV_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
+const RESERVED_AGENT_ENV = new Set([
+  "SANDBOX_ID", "SANDBOX_PORTS_JSON", "SANDBOX_STATE_FILE", "DOPPLER_ENV_FILE",
+  "HOME", "CLAUDE_CODE_OAUTH_TOKEN", "IS_SANDBOX", "CONTROLLER_URL",
+]);
+
+/** Pull --account / --agent-env out of a create argv; everything else lands in rest. */
+export function parseAgentSelection(
+  args: string[],
+): { rest: string[]; agentCredentialKey?: string; agentEnv?: Record<string, string> } | { error: string } {
+  const rest: string[] = [];
+  let agentCredentialKey: string | undefined;
+  let agentEnv: Record<string, string> | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--account") {
+      const value = args[++i];
+      if (!value || !CREDENTIAL_KEY_RE.test(value)) return { error: `--account: invalid secret key ${value ?? "(missing)"}` };
+      agentCredentialKey = value;
+    } else if (arg === "--agent-env") {
+      const value = args[++i];
+      const eq = value?.indexOf("=") ?? -1;
+      if (!value || eq < 1) return { error: `--agent-env: expected NAME=value, got ${value ?? "(missing)"}` };
+      const name = value.slice(0, eq);
+      if (!AGENT_ENV_NAME_RE.test(name)) return { error: `--agent-env: invalid name ${name}` };
+      if (RESERVED_AGENT_ENV.has(name)) return { error: `--agent-env: ${name} is reserved` };
+      (agentEnv ??= {})[name] = value.slice(eq + 1);
+    } else {
+      rest.push(arg);
+    }
+  }
+  return { rest, ...(agentCredentialKey ? { agentCredentialKey } : {}), ...(agentEnv ? { agentEnv } : {}) };
+}
+
 export async function createCommand(args: string[], ctx: CommandContext): Promise<void> {
+  const selection = parseAgentSelection(args);
+  if ("error" in selection) usageExit(selection.error);
   let ticket: string | null = null;
   let branch: string | null = null;
   let jobDir: string | null = null;
@@ -117,16 +156,17 @@ export async function createCommand(args: string[], ctx: CommandContext): Promis
   let json = false;
   const flagPairs: string[] = [];
   const evidenceBeforeSpecs: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!;
+  const rest = selection.rest;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
     if (arg === "--help" || arg === "-h") helpExit();
     else if (arg === "--json") json = true;
-    else if (arg === "--ticket") { ticket = args[++i] ?? null; if (!ticket) usageExit("--ticket requires an id"); }
-    else if (arg === "--branch") { branch = args[++i] ?? null; if (!branch) usageExit("--branch requires a name"); }
-    else if (arg === "--job") { jobDir = args[++i] ?? null; if (!jobDir) usageExit("--job requires a directory"); }
-    else if (arg === "--image") { imageTag = args[++i] ?? null; if (!imageTag) usageExit("--image requires a tag"); }
-    else if (arg === "--flags") { const pair = args[++i]; if (!pair) usageExit("--flags requires k=v"); flagPairs.push(pair); }
-    else if (arg === "--evidence-before") { const spec = args[++i]; if (!spec) usageExit("--evidence-before requires <caseId>:<view>:<recipe>[:k=v,...]"); evidenceBeforeSpecs.push(spec); }
+    else if (arg === "--ticket") { ticket = rest[++i] ?? null; if (!ticket) usageExit("--ticket requires an id"); }
+    else if (arg === "--branch") { branch = rest[++i] ?? null; if (!branch) usageExit("--branch requires a name"); }
+    else if (arg === "--job") { jobDir = rest[++i] ?? null; if (!jobDir) usageExit("--job requires a directory"); }
+    else if (arg === "--image") { imageTag = rest[++i] ?? null; if (!imageTag) usageExit("--image requires a tag"); }
+    else if (arg === "--flags") { const pair = rest[++i]; if (!pair) usageExit("--flags requires k=v"); flagPairs.push(pair); }
+    else if (arg === "--evidence-before") { const spec = rest[++i]; if (!spec) usageExit("--evidence-before requires <caseId>:<view>:<recipe>[:k=v,...]"); evidenceBeforeSpecs.push(spec); }
     else usageExit(`unknown argument: ${arg}`);
   }
   if (ticket && branch) usageExit("--ticket and --branch are mutually exclusive");
@@ -184,6 +224,8 @@ export async function createCommand(args: string[], ctx: CommandContext): Promis
       ...(imageTag ? { imageTag } : {}),
       ...(flagPairs.length ? { flags: parseFlagValues(flagPairs) } : {}),
       ...(evidenceBefore.length ? { evidenceBefore } : {}),
+      ...(selection.agentCredentialKey ? { agentCredentialKey: selection.agentCredentialKey } : {}),
+      ...(selection.agentEnv ? { agentEnv: selection.agentEnv } : {}),
       client: createSandboxClient(),
       spawn: spawnGitPush,
     });

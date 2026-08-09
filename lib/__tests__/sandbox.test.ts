@@ -556,6 +556,26 @@ describe("createSandboxFlow", () => {
     expect("evidenceBefore" in bodies[1]!).toBe(false);
   });
 
+  test("agentCredentialKey/agentEnv pass through to the create body; omitted when absent", async () => {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
+    const bodies: Array<Record<string, unknown>> = [];
+    const client = {
+      async create(req: Record<string, unknown>) { bodies.push(req); return { sandboxId: "s" }; },
+    } as unknown as import("../sandbox.ts").SandboxClient;
+    const spawn = async () => ({ exitCode: 0, stderr: "" });
+    const { exec } = gitRefs({ "refs/heads/b": "c" });
+    await createSandboxFlow({
+      repoId: "r", branch: "b", cwd: "/w", brief: "x",
+      agentCredentialKey: "acct-3.token",
+      agentEnv: { ANTHROPIC_MODEL: "claude-sonnet-5" },
+      client, spawn, exec,
+    });
+    await createSandboxFlow({ repoId: "r", branch: "b", cwd: "/w", brief: "x", client, spawn, exec });
+    expect(bodies[0]!.agentCredentialKey).toBe("acct-3.token");
+    expect(bodies[0]!.agentEnv).toEqual({ ANTHROPIC_MODEL: "claude-sonnet-5" });
+    expect(Object.keys(bodies[1]!)).toEqual(["repoId", "branch", "brief"]);
+  });
+
   test("a host-key push failure carries the one-line remedy in the message", async () => {
     process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
     const client = {
