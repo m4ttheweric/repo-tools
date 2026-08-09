@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { parseAgentSelection } from "../../commands/sandbox.ts";
+import { parseAgentSelection, parseEventsArgs, renderSandboxEvent } from "../../commands/sandbox.ts";
+import type { SandboxEvent } from "../sandbox.ts";
 
 describe("parseAgentSelection", () => {
   test("collects --account and repeated --agent-env", () => {
@@ -25,5 +26,34 @@ describe("parseAgentSelection", () => {
       const out = parseAgentSelection(args);
       expect("error" in out).toBe(true);
     }
+  });
+});
+
+describe("parseEventsArgs", () => {
+  test("id, default since 0, --since and --json honored", () => {
+    expect(parseEventsArgs(["sb-1"])).toEqual({ id: "sb-1", since: 0, json: false });
+    expect(parseEventsArgs(["sb-1", "--since", "42", "--json"])).toEqual({ id: "sb-1", since: 42, json: true });
+  });
+  test("missing id / non-integer since are errors", () => {
+    expect("error" in parseEventsArgs([])).toBe(true);
+    expect("error" in parseEventsArgs(["sb-1", "--since", "x"])).toBe(true);
+  });
+});
+
+describe("renderSandboxEvent", () => {
+  const base = { seq: 7, ts: "2026-08-09T01:00:00Z", sandboxId: "sb-1" };
+  test("question, state, captured lane.json, process-dead", () => {
+    expect(renderSandboxEvent({ ...base, type: "question", payload: {} } as SandboxEvent)).toContain("question.md");
+    expect(renderSandboxEvent({ ...base, type: "state", payload: { state: "error", message: "seed failed" } } as SandboxEvent)).toContain("error");
+    expect(
+      renderSandboxEvent({
+        ...base, type: "captured",
+        payload: { file: "lane.json", content: JSON.stringify({ state: "blocked", turns: 3 }) },
+      } as SandboxEvent),
+    ).toContain("lane: blocked");
+    expect(renderSandboxEvent({ ...base, type: "process-dead", payload: { reason: "agent-terminated", exitCode: 1 } } as SandboxEvent)).toContain("agent-terminated");
+  });
+  test("every line leads with [seq]", () => {
+    expect(renderSandboxEvent({ ...base, type: "report", payload: {} } as SandboxEvent)).toMatch(/^\[7\]/);
   });
 });
