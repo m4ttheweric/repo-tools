@@ -128,6 +128,7 @@ describe("syncConfig sandbox extensions", () => {
   test("browser flows sync as one multi-key ConfigMap applied from an in-memory manifest", async () => {
     const { exec, calls } = fakeExec({
       "kubectl -n mc-system create configmap repo-gates": { stdout: GATES_YAML, exitCode: 0 },
+      "kubectl -n mc-system get configmap repo-browser-flows": { stdout: "", exitCode: 0 },
       "kubectl -n mc-system apply": { stdout: "configured\n", exitCode: 0 },
     });
     const out = await syncConfig({
@@ -151,10 +152,9 @@ describe("syncConfig sandbox extensions", () => {
 
   test("sandbox.jsonc syncs to ConfigMap repo-sandbox-config under key <repoId>.json", async () => {
     const SANDBOX_JSON = `{\n  "processes": [],\n  "postgresImage": "postgis/postgis:16-3.4"\n}`;
-    const SANDBOX_YAML = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: repo-sandbox-config\n";
     const { exec, calls } = fakeExec({
       "kubectl -n mc-system create configmap repo-gates": { stdout: GATES_YAML, exitCode: 0 },
-      "kubectl -n mc-system create configmap repo-sandbox-config": { stdout: SANDBOX_YAML, exitCode: 0 },
+      "kubectl -n mc-system get configmap repo-sandbox-config": { stdout: "", exitCode: 0 },
       "kubectl -n mc-system apply": { stdout: "configured\n", exitCode: 0 },
     });
     const out = await syncConfig({
@@ -165,9 +165,15 @@ describe("syncConfig sandbox extensions", () => {
     });
     expect(out.exitCode).toBe(0);
     expect(out.message).toContain("repo-sandbox-config");
-    const create = calls.find(c => c.argv.includes("repo-sandbox-config"))!;
-    expect(create.argv).toContain("--from-file=assured-dev.json=/dev/stdin");
-    expect(create.stdin).toBe(SANDBOX_JSON);
+    // First sync (map absent): the merge-apply carries just the repo's key.
+    const get = calls.find(c => c.argv.includes("get"))!;
+    expect(get.argv).toEqual([
+      "kubectl", "-n", "mc-system", "get", "configmap", "repo-sandbox-config",
+      "-o", "json", "--ignore-not-found",
+    ]);
+    const apply = calls.filter(c => c.argv.join(" ") === "kubectl -n mc-system apply -f -")
+      .find(c => c.stdin!.includes("repo-sandbox-config"))!;
+    expect(JSON.parse(apply.stdin!).data).toEqual({ "assured-dev.json": SANDBOX_JSON });
   });
 
   test("absent sandbox.jsonc is skipped and said so", async () => {
@@ -191,6 +197,98 @@ describe("syncConfig sandbox extensions", () => {
     expect(out.message).toContain("repo-bake-config skipped");
     expect(calls.some(c => c.argv.includes("sandbox-bake-config"))).toBe(false);
     expect(calls.some(c => (c.stdin ?? "").includes("repo-browser-flows"))).toBe(false);
+  });
+
+  test("syncing repo B's sandbox config preserves repo A's key (MAT-226)", async () => {
+    const EXISTING = JSON.stringify({
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: { name: "repo-sandbox-config", namespace: "mc-system" },
+      data: { "assured-dev.json": '{"processes":[]}' },
+    });
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-system create configmap repo-gates": { stdout: GATES_YAML, exitCode: 0 },
+      "kubectl -n mc-system get configmap repo-sandbox-config": { stdout: EXISTING, exitCode: 0 },
+      "kubectl -n mc-system apply": { stdout: "configured\n", exitCode: 0 },
+    });
+    const out = await syncConfig({
+      gates: GATES,
+      bake: null,
+      sandbox: { repoId: "repo-tools", json: '{"processes":["dev"]}' },
+      exec,
+    });
+    expect(out.exitCode).toBe(0);
+    const apply = calls.filter(c => c.argv.join(" ") === "kubectl -n mc-system apply -f -")
+      .find(c => c.stdin!.includes("repo-sandbox-config"))!;
+    const manifest = JSON.parse(apply.stdin!);
+    expect(manifest.data).toEqual({
+      "assured-dev.json": '{"processes":[]}',
+      "repo-tools.json": '{"processes":["dev"]}',
+    });
+  });
+
+  test("sandbox config sync re-syncing the same repo overwrites its own key only", async () => {
+    const EXISTING = JSON.stringify({
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: { name: "repo-sandbox-config", namespace: "mc-system" },
+      data: { "assured-dev.json": '{"old":true}', "repo-tools.json": '{"keep":1}' },
+    });
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-system create configmap repo-gates": { stdout: GATES_YAML, exitCode: 0 },
+      "kubectl -n mc-system get configmap repo-sandbox-config": { stdout: EXISTING, exitCode: 0 },
+      "kubectl -n mc-system apply": { stdout: "configured\n", exitCode: 0 },
+    });
+    const out = await syncConfig({
+      gates: GATES, bake: null, sandbox: { repoId: "assured-dev", json: '{"new":true}' }, exec,
+    });
+    expect(out.exitCode).toBe(0);
+    const apply = calls.filter(c => c.argv.join(" ") === "kubectl -n mc-system apply -f -")
+      .find(c => c.stdin!.includes("repo-sandbox-config"))!;
+    expect(JSON.parse(apply.stdin!).data).toEqual({
+      "assured-dev.json": '{"new":true}',
+      "repo-tools.json": '{"keep":1}',
+    });
+  });
+
+  test("a failed sandbox-config get aborts with 1 before any apply for that map", async () => {
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-system create configmap repo-gates": { stdout: GATES_YAML, exitCode: 0 },
+      "kubectl -n mc-system get configmap repo-sandbox-config": { stdout: "", exitCode: 1 },
+      "kubectl -n mc-system apply": { stdout: "configured\n", exitCode: 0 },
+    });
+    const out = await syncConfig({
+      gates: GATES, bake: null, sandbox: { repoId: "repo-tools", json: "{}" }, exec,
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.message).toContain("repo-sandbox-config");
+    expect(calls.some(c => (c.stdin ?? "").includes("repo-sandbox-config"))).toBe(false);
+  });
+
+  test("browser flows merge into existing flow keys instead of replacing the map", async () => {
+    const EXISTING = JSON.stringify({
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: { name: "repo-browser-flows", namespace: "mc-system" },
+      data: { "other-repo.flow.md": "# other" },
+    });
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-system create configmap repo-gates": { stdout: GATES_YAML, exitCode: 0 },
+      "kubectl -n mc-system get configmap repo-browser-flows": { stdout: EXISTING, exitCode: 0 },
+      "kubectl -n mc-system apply": { stdout: "configured\n", exitCode: 0 },
+    });
+    const out = await syncConfig({
+      gates: GATES, bake: null,
+      browserFlows: [{ name: "login.flow.md", content: "# login" }],
+      exec,
+    });
+    expect(out.exitCode).toBe(0);
+    const apply = calls.filter(c => c.argv.join(" ") === "kubectl -n mc-system apply -f -")
+      .find(c => c.stdin!.includes("repo-browser-flows"))!;
+    expect(JSON.parse(apply.stdin!).data).toEqual({
+      "other-repo.flow.md": "# other",
+      "login.flow.md": "# login",
+    });
   });
 
   test("evidence.jsonc syncs to ConfigMap repo-evidence-config via the same stdin pattern", async () => {

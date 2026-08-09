@@ -20,7 +20,7 @@
  * unit-tested with injected exec fakes only.
  */
 
-import { spawnExec, type Exec } from "./cloud-secrets.ts";
+import { getClusterObjectData, spawnExec, type Exec } from "./cloud-secrets.ts";
 
 export interface ConfigSyncOutcome {
   /** 0 ok, 1 tooling failure. (A missing gates.jsonc is the command's exit 64 — it never reaches here.) */
@@ -75,15 +75,33 @@ async function applyConfigMapManifest(
 }
 
 /**
+ * Merge keys into a ConfigMap shared by multiple repos (read-modify-write:
+ * kubectl get → merge → apply). Only the repo's own keys are overwritten;
+ * sibling repos' keys survive. Replacing the whole map instead deleted
+ * assured-dev.json when repo-tools synced (MAT-226). Null on success.
+ */
+async function mergeConfigMapKeys(
+  exec: Exec,
+  namespace: string,
+  name: string,
+  entries: Record<string, string>,
+): Promise<string | null> {
+  const existing = await getClusterObjectData(exec, namespace, "configmap", name);
+  if (!existing.ok) return existing.message;
+  return applyConfigMapManifest(exec, namespace, name, { ...existing.data, ...entries });
+}
+
+/**
  * Upsert the overlay's config files into their ConfigMaps: gates.jsonc →
  * repo-gates (required), bake.jsonc → repo-bake-config,
  * sandbox-bake.jsonc → sandbox-bake-config, sandbox.jsonc →
  * repo-sandbox-config (keyed <repoId>.json — the caller converts JSONC to
  * JSON since the controller JSON.parses it), evidence.jsonc →
  * repo-evidence-config, and browser-flows/* → repo-browser-flows (one key
- * per flow file, applied as one in-memory manifest since kubectl's stdin
- * carries only one file). Null/absent optional inputs are legal — the
- * outcome message says what was skipped.
+ * per flow file). The two maps shared across repos (repo-sandbox-config,
+ * repo-browser-flows) are merged, not replaced — see mergeConfigMapKeys
+ * (MAT-226). Null/absent optional inputs are legal — the outcome message
+ * says what was skipped.
  */
 export async function syncConfig(opts: {
   gates: string;
@@ -101,6 +119,8 @@ export async function syncConfig(opts: {
   const synced: string[] = [];
   const skipped: string[] = [];
 
+  // repo-gates stays replace-wins on purpose: it is flat single-key by
+  // current design, so the farm's repo wins (no sibling keys to preserve).
   const gatesError = await upsertConfigMap(exec, namespace, "repo-gates", "gates.jsonc", opts.gates);
   if (gatesError) return { exitCode: 1, message: gatesError };
   synced.push("repo-gates");
@@ -124,8 +144,9 @@ export async function syncConfig(opts: {
   if (opts.sandbox === null || opts.sandbox === undefined) {
     skipped.push("repo-sandbox-config skipped (no sandbox.jsonc in the overlay)");
   } else {
-    const error = await upsertConfigMap(
-      exec, namespace, "repo-sandbox-config", `${opts.sandbox.repoId}.json`, opts.sandbox.json,
+    // Shared across repos (one key per repoId) — merge, never replace.
+    const error = await mergeConfigMapKeys(
+      exec, namespace, "repo-sandbox-config", { [`${opts.sandbox.repoId}.json`]: opts.sandbox.json },
     );
     if (error) return { exitCode: 1, message: error };
     synced.push("repo-sandbox-config");
@@ -144,7 +165,8 @@ export async function syncConfig(opts: {
   } else {
     const data: Record<string, string> = {};
     for (const flow of opts.browserFlows) data[flow.name] = flow.content;
-    const error = await applyConfigMapManifest(exec, namespace, "repo-browser-flows", data);
+    // Multi-key map shared by every synced repo's flows — merge, never replace.
+    const error = await mergeConfigMapKeys(exec, namespace, "repo-browser-flows", data);
     if (error) return { exitCode: 1, message: error };
     synced.push("repo-browser-flows");
   }

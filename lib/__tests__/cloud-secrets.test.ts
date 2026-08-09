@@ -174,6 +174,7 @@ describe("syncBrowserSecrets", () => {
 describe("syncAgentCredentials", () => {
   test("upserts agent-credentials with base64 data per overlay-named key (binary-safe)", async () => {
     const { exec, calls } = fakeExec({
+      "kubectl -n mc-sandboxes get secret agent-credentials": { stdout: "", exitCode: 0 },
       "kubectl -n mc-sandboxes apply": { stdout: "ok", exitCode: 0 },
     });
     const out = await syncAgentCredentials({
@@ -182,7 +183,7 @@ describe("syncAgentCredentials", () => {
     });
     expect(out.exitCode).toBe(0);
     expect(out.message).toContain("agent-credentials");
-    const manifest = JSON.parse(calls[0]!.stdin!);
+    const manifest = JSON.parse(calls.find(c => c.argv.includes("apply"))!.stdin!);
     expect(manifest.metadata).toEqual({ name: "agent-credentials", namespace: "mc-sandboxes" });
     expect(manifest.data["claude-session.json"]).toBe(Buffer.from('{"tok":1}').toString("base64"));
   });
@@ -192,5 +193,42 @@ describe("syncAgentCredentials", () => {
     const out = await syncAgentCredentials({ files: {}, exec });
     expect(out.exitCode).toBe(64);
     expect(calls).toHaveLength(0);
+  });
+
+  test("merges into an existing Secret so other repos' credential keys survive (MAT-226)", async () => {
+    const EXISTING = JSON.stringify({
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: { name: "agent-credentials", namespace: "mc-sandboxes" },
+      data: { "other-repo.pem": Buffer.from("keep").toString("base64") },
+    });
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-sandboxes get secret agent-credentials": { stdout: EXISTING, exitCode: 0 },
+      "kubectl -n mc-sandboxes apply": { stdout: "ok", exitCode: 0 },
+    });
+    const out = await syncAgentCredentials({
+      files: { "claude-session.json": new TextEncoder().encode('{"tok":1}') },
+      exec,
+    });
+    expect(out.exitCode).toBe(0);
+    const apply = calls.find(c => c.argv.includes("apply"))!;
+    expect(JSON.parse(apply.stdin!).data).toEqual({
+      "other-repo.pem": Buffer.from("keep").toString("base64"),
+      "claude-session.json": Buffer.from('{"tok":1}').toString("base64"),
+    });
+  });
+
+  test("a failed agent-credentials get aborts with 1 before any apply", async () => {
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-sandboxes get secret agent-credentials": { stdout: "", exitCode: 1 },
+      "kubectl -n mc-sandboxes apply": { stdout: "ok", exitCode: 0 },
+    });
+    const out = await syncAgentCredentials({
+      files: { "claude-session.json": new TextEncoder().encode("x") },
+      exec,
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.message).toContain("agent-credentials");
+    expect(calls.some(c => c.argv.includes("apply"))).toBe(false);
   });
 });
