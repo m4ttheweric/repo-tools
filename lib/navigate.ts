@@ -395,9 +395,18 @@ export async function runNavPicker(
       }
     }
 
+    // fzf exits 1 ("no match") when an --expect key is pressed while no item
+    // is matched -- the list is still loading from stdin, or the query matches
+    // nothing. The query and key lines are still printed, and key handling
+    // (ctrl-up back-navigation and friends) doesn't depend on a selection
+    // existing, so read the key before consulting the exit status; otherwise
+    // an expect key during list load or on an empty filter is silently
+    // rewritten into a cancel. Anything else non-zero (130 = Esc/ctrl-c
+    // abort, 2 = error) is a real cancel.
     if (exitCode !== 0) {
-      if (opts.captureQueryOnNoMatch && exitCode === 1) {
-        return parseNavOutput(stdout);
+      if (exitCode === 1) {
+        const parsed = parseNavOutput(stdout);
+        if (parsed.key || opts.captureQueryOnNoMatch) return parsed;
       }
       return null;
     }

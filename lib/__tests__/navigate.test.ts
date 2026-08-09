@@ -1,4 +1,8 @@
-import { describe, test, expect } from "bun:test";
+import { afterEach, beforeEach, describe, test, expect } from "bun:test";
+import { spawnSync } from "child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { buildNavArgs } from "../navigate.ts";
 
 describe("buildNavArgs preview", () => {
@@ -65,5 +69,74 @@ describe("buildNavArgs cyclic scroll", () => {
   test("always enables --cycle so the list wraps at both ends", () => {
     // Up at the top goes to the bottom, down at the bottom goes to the top.
     expect(buildNavArgs({ options: [], message: "m" })).toContain("--cycle");
+  });
+});
+
+describe("runNavPicker fzf exit 1 (no match)", () => {
+  /**
+   * Fake fzf on a scratch PATH. fzf exits 1 when an --expect key is pressed
+   * while no item is matched (list still streaming in, or the filter matches
+   * nothing) — but it still prints the query and key lines. These fakes
+   * reproduce exactly that stdout so the exit-status handling is exercised
+   * without a tty.
+   *
+   * runNavPicker runs in a child bun process: Bun.spawn resolves the
+   * executable against the environ PATH captured at process start, so an
+   * in-process `process.env.PATH` mutation never reaches the fake — the PATH
+   * has to be set on the child's environment at spawn time.
+   */
+  let binDir: string;
+
+  beforeEach(() => {
+    binDir = mkdtempSync(join(tmpdir(), "nav-fzf-bin-"));
+    writeFileSync(
+      join(binDir, "picker-child.ts"),
+      `const { runNavPicker } = await import(${JSON.stringify(join(import.meta.dir, "..", "navigate.ts"))});\n` +
+        `const r = await runNavPicker(JSON.parse(process.env.NAV_OPTS));\n` +
+        `console.log("RESULT:" + JSON.stringify(r));\n` +
+        `process.exit(0);\n`,
+    );
+  });
+
+  afterEach(() => {
+    rmSync(binDir, { recursive: true, force: true });
+  });
+
+  function pickWithFakeFzf(fzfBody: string, opts: Record<string, unknown> = {}): unknown {
+    const shim = join(binDir, "fzf");
+    writeFileSync(shim, `#!/bin/sh\ncat > /dev/null\n${fzfBody}`);
+    chmodSync(shim, 0o755);
+    const result = spawnSync(process.execPath, [join(binDir, "picker-child.ts")], {
+      encoding: "utf8",
+      timeout: 10_000,
+      env: {
+        PATH: `${binDir}:/usr/bin:/bin`,
+        HOME: process.env.HOME ?? "",
+        NAV_OPTS: JSON.stringify({ options: [{ value: "a", label: "a" }], message: "m", ...opts }),
+      },
+    });
+    const line = result.stdout.split("\n").find((l) => l.startsWith("RESULT:"));
+    if (!line) throw new Error(`picker child produced no result: ${result.stdout}\n${result.stderr}`);
+    return JSON.parse(line.slice("RESULT:".length));
+  }
+
+  test("honors a printed --expect key instead of discarding it as a cancel", () => {
+    // ctrl-up during list load / on an empty filter: exit 1, key line printed.
+    const result = pickWithFakeFzf("printf '\\nctrl-up\\n'\nexit 1\n");
+    expect(result).toEqual({ value: null, key: "ctrl-up", query: "" });
+  });
+
+  test("exit 1 with no key pressed is still a cancel by default", () => {
+    // Enter on a no-match query: no expect key, no selection.
+    expect(pickWithFakeFzf("printf 'zz\\n\\n'\nexit 1\n")).toBeNull();
+  });
+
+  test("exit 1 with no key still resolves the query under captureQueryOnNoMatch", () => {
+    const result = pickWithFakeFzf("printf 'zz\\n\\n'\nexit 1\n", { captureQueryOnNoMatch: true });
+    expect(result).toEqual({ value: null, key: "", query: "zz" });
+  });
+
+  test("abort exits (130) remain cancels even with output printed", () => {
+    expect(pickWithFakeFzf("printf '\\nctrl-up\\n'\nexit 130\n")).toBeNull();
   });
 });
