@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   TUI_CREDENTIALS_EXPIRES_AT_MS,
   isDopplerShim,
+  kubectlEnv,
   mintTuiCredentialFiles,
+  spawnExec,
   syncAgentCredentials,
   syncAttendedSshKey,
   syncBrowserSecrets,
@@ -361,5 +366,85 @@ describe("syncAttendedSshKey", () => {
     const out = await syncAttendedSshKey({ publicKey: " ", exec });
     expect(out.exitCode).toBe(64);
     expect(calls).toHaveLength(0);
+  });
+});
+
+// ─── kubectl env resolution (MAT-235) ────────────────────────────────────────
+// The rt daemon is spawned by the rt-tray launchd app, so a shell `export
+// KUBECONFIG` can never reach it; without resolution every kubectl leg hits
+// the ambient ~/.kube/config (the sdm-managed WORK cluster). The mattcloud
+// kubeconfig must be found at ~/.rt/kubeconfig-mattcloud.yaml and delivered
+// via env, never --kubeconfig argv (argv is visible in ps).
+
+describe("kubectlEnv", () => {
+  const withTempHome = async (
+    setup: (home: string) => void,
+    run: (home: string) => void | Promise<void>,
+  ) => {
+    const home = mkdtempSync(join(tmpdir(), "rt-kubectl-env-"));
+    const savedHome = process.env.HOME;
+    const savedKubeconfig = process.env.KUBECONFIG;
+    try {
+      process.env.HOME = home;
+      delete process.env.KUBECONFIG;
+      setup(home);
+      await run(home);
+    } finally {
+      process.env.HOME = savedHome;
+      if (savedKubeconfig === undefined) delete process.env.KUBECONFIG;
+      else process.env.KUBECONFIG = savedKubeconfig;
+      rmSync(home, { recursive: true, force: true });
+    }
+  };
+
+  test("resolves KUBECONFIG to ~/.rt/kubeconfig-mattcloud.yaml when unset and the file exists", async () => {
+    await withTempHome(
+      home => {
+        mkdirSync(join(home, ".rt"), { recursive: true });
+        writeFileSync(join(home, ".rt", "kubeconfig-mattcloud.yaml"), "apiVersion: v1\n");
+      },
+      home => {
+        const env = kubectlEnv();
+        expect(env.KUBECONFIG).toBe(join(home, ".rt", "kubeconfig-mattcloud.yaml"));
+      },
+    );
+  });
+
+  test("explicit KUBECONFIG wins even when the mattcloud file exists", async () => {
+    await withTempHome(
+      home => {
+        mkdirSync(join(home, ".rt"), { recursive: true });
+        writeFileSync(join(home, ".rt", "kubeconfig-mattcloud.yaml"), "apiVersion: v1\n");
+      },
+      () => {
+        process.env.KUBECONFIG = "/explicit/kubeconfig.yaml";
+        const env = kubectlEnv();
+        expect(env.KUBECONFIG).toBe("/explicit/kubeconfig.yaml");
+      },
+    );
+  });
+
+  test("leaves env alone when the mattcloud file is absent (ambient ~/.kube/config)", async () => {
+    await withTempHome(
+      () => {},
+      () => {
+        const env = kubectlEnv();
+        expect(env.KUBECONFIG).toBeUndefined();
+      },
+    );
+  });
+
+  test("spawnExec delivers the resolved KUBECONFIG to the child's environment", async () => {
+    await withTempHome(
+      home => {
+        mkdirSync(join(home, ".rt"), { recursive: true });
+        writeFileSync(join(home, ".rt", "kubeconfig-mattcloud.yaml"), "apiVersion: v1\n");
+      },
+      async home => {
+        const r = await spawnExec(["sh", "-c", 'printf %s "$KUBECONFIG"']);
+        expect(r.exitCode).toBe(0);
+        expect(r.stdout).toBe(join(home, ".rt", "kubeconfig-mattcloud.yaml"));
+      },
+    );
   });
 });

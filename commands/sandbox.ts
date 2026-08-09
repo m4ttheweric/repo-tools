@@ -519,8 +519,9 @@ export async function logsCommand(args: string[]): Promise<void> {
   if (!id || !container) usageExit("usage: rt sandbox logs <id> <container> [kubectl-logs args...]");
   // Flags after the container (e.g. -f, --tail) pass straight through.
   const extra = [...rest, ...args.filter(a => a.startsWith("--") && a !== "--json")];
+  const { kubectlEnv } = await import("../lib/cloud-secrets.ts");
   const proc = Bun.spawn(sandboxLogsArgv(id, container, extra), {
-    stdin: "ignore", stdout: "inherit", stderr: "inherit",
+    env: kubectlEnv(), stdin: "ignore", stdout: "inherit", stderr: "inherit",
   });
   process.exit(await proc.exited);
 }
