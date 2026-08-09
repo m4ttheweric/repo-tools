@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  attendedSshHostAlias,
   attendedSshKeyPath,
   createSandboxClient,
   createSandboxFlow,
@@ -12,7 +13,10 @@ import {
   listSandboxOverlays,
   parseEvidenceBeforeSpecs,
   parseFlagValues,
+  prepareAttendedAttach,
   pushSandboxBranch,
+  renderAttendedSshBlock,
+  upsertSshConfigBlock,
   sandboxLogsArgv,
   readSandboxAnchor,
   readSandboxConfig,
@@ -705,5 +709,127 @@ describe("ensureAttendedSshKey", () => {
     const out = await ensureAttendedSshKey({ exec });
     expect(out.ok).toBe(false);
     if (!out.ok) expect(out.message).toContain("ssh-keygen -y");
+  });
+});
+
+// ─── Attach: ssh config + flow (MAT-235) ─────────────────────────────────────
+
+describe("attended ssh config", () => {
+  test("alias is mc-<shortid> (id truncated to 12 chars)", () => {
+    expect(attendedSshHostAlias("sb-1")).toBe("mc-sb-1");
+    expect(attendedSshHostAlias("0123456789abcdef")).toBe("mc-0123456789ab");
+  });
+
+  test("renders a marker-managed Host block pinned to the attended key", () => {
+    const block = renderAttendedSshBlock({ alias: "mc-sb-1", localPort: 24221, keyPath: "/h/.rt/secrets/attended-ssh-key" });
+    expect(block).toContain("Host mc-sb-1");
+    expect(block).toContain("HostName 127.0.0.1");
+    expect(block).toContain("Port 24221");
+    expect(block).toContain("User root");
+    expect(block).toContain("IdentityFile /h/.rt/secrets/attended-ssh-key");
+    expect(block).toContain("IdentitiesOnly yes");
+    // Pod restarts remint host keys behind the same 127.0.0.1 port — pin
+    // nothing, or every recycle strands the alias on a stale known_hosts row.
+    expect(block).toContain("StrictHostKeyChecking no");
+    expect(block).toContain("UserKnownHostsFile /dev/null");
+  });
+
+  test("upsert appends once and replaces its own block in place on re-attach", () => {
+    const block1 = renderAttendedSshBlock({ alias: "mc-sb-1", localPort: 24221, keyPath: "/k" });
+    const block2 = renderAttendedSshBlock({ alias: "mc-sb-1", localPort: 24225, keyPath: "/k" });
+    const existing = "Host github.com\n  User git\n";
+    const once = upsertSshConfigBlock(existing, "mc-sb-1", block1);
+    expect(once).toContain("Host github.com");
+    expect(once).toContain("Port 24221");
+    const twice = upsertSshConfigBlock(once, "mc-sb-1", block2);
+    expect(twice).toContain("Host github.com");
+    expect(twice).toContain("Port 24225");
+    expect(twice).not.toContain("Port 24221");
+    expect(twice.match(/Host mc-sb-1/g)).toHaveLength(1);
+    // A sibling sandbox's block survives.
+    const other = upsertSshConfigBlock(twice, "mc-sb-2", renderAttendedSshBlock({ alias: "mc-sb-2", localPort: 24222, keyPath: "/k" }));
+    expect(upsertSshConfigBlock(other, "mc-sb-1", block1)).toContain("Host mc-sb-2");
+  });
+});
+
+describe("prepareAttendedAttach", () => {
+  function attachWorld() {
+    const home = mkdtempSync(join(tmpdir(), "sbx-attach-"));
+    process.env.HOME = home;
+    writeSandboxAnchor({
+      id: "sb-1", repoId: "acme-dev", branch: "b", createdAt: "t", lastEventSeq: 0,
+      localPorts: { adjuster: 5001, ssh: 24223 },
+    });
+    mkdirSync(join(home, ".rt", "secrets"), { recursive: true });
+    writeFileSync(attendedSshKeyPath(), "PRIVATE");
+    writeFileSync(`${attendedSshKeyPath()}.pub`, "ssh-ed25519 AAAA rt-attended\n");
+    const detail: SandboxDetail = {
+      id: "sb-1", repoId: "acme-dev", branch: "b", imageTag: "img",
+      state: "running", createdAt: "t", ports: {}, lastEventSeq: 0, attended: true,
+    };
+    const exec: Exec = async () => { throw new Error("ssh-keygen must not run (key exists)"); };
+    return { home, detail, exec };
+  }
+
+  test("happy path: writes the Host block into ~/.ssh/config and returns the herdr command", async () => {
+    const { home, detail, exec } = attachWorld();
+    const out = await prepareAttendedAttach({ sandboxId: "sb-1", detail, exec });
+    expect(out).toEqual({ ok: true, alias: "mc-sb-1", command: ["herdr", "--remote", "mc-sb-1"], mintedKey: false });
+    const config = readFileSync(join(home, ".ssh", "config"), "utf8");
+    expect(config).toContain("Host mc-sb-1");
+    expect(config).toContain("Port 24223");
+    expect(config).toContain(`IdentityFile ${attendedSshKeyPath()}`);
+  });
+
+  test("re-attach after a port change rewrites the block instead of stacking a second one", async () => {
+    const { home, detail, exec } = attachWorld();
+    await prepareAttendedAttach({ sandboxId: "sb-1", detail, exec });
+    writeSandboxAnchor({
+      id: "sb-1", repoId: "acme-dev", branch: "b", createdAt: "t", lastEventSeq: 0,
+      localPorts: { adjuster: 5001, ssh: 24229 },
+    });
+    await prepareAttendedAttach({ sandboxId: "sb-1", detail, exec });
+    const config = readFileSync(join(home, ".ssh", "config"), "utf8");
+    expect(config).toContain("Port 24229");
+    expect(config).not.toContain("Port 24223");
+  });
+
+  test("a headless sandbox is refused with the attended hint", async () => {
+    const { detail, exec } = attachWorld();
+    const out = await prepareAttendedAttach({ sandboxId: "sb-1", detail: { ...detail, attended: undefined }, exec });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.message).toContain("--attended");
+  });
+
+  test("a non-running sandbox is refused with the resume hint", async () => {
+    const { detail, exec } = attachWorld();
+    const out = await prepareAttendedAttach({ sandboxId: "sb-1", detail: { ...detail, state: "suspended" }, exec });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.message).toContain("rt sandbox resume");
+  });
+
+  test("a missing daemon forward is refused loudly (ground truth, not a guess)", async () => {
+    const { detail, exec } = attachWorld();
+    writeSandboxAnchor({
+      id: "sb-1", repoId: "acme-dev", branch: "b", createdAt: "t", lastEventSeq: 0,
+      localPorts: { adjuster: 5001 },
+    });
+    const out = await prepareAttendedAttach({ sandboxId: "sb-1", detail, exec });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.message).toContain("daemon");
+  });
+
+  test("mints the key on first need and says so (pub half still needs the sync verb)", async () => {
+    const { detail } = attachWorld();
+    rmSync(attendedSshKeyPath());
+    rmSync(`${attendedSshKeyPath()}.pub`);
+    const exec: Exec = async (argv) => {
+      writeFileSync(argv[argv.length - 1]!, "PRIVATE");
+      writeFileSync(`${argv[argv.length - 1]!}.pub`, "ssh-ed25519 NEW rt-attended\n");
+      return { stdout: "", exitCode: 0 };
+    };
+    const out = await prepareAttendedAttach({ sandboxId: "sb-1", detail, exec });
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.mintedKey).toBe(true);
   });
 });

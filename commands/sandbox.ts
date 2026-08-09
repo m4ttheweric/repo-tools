@@ -70,6 +70,8 @@ function helpExit(): never {
       controller ground truth + local ports (pool warnings are loud here)
   ${bold}rt sandbox suspend|resume|destroy${reset} <id>
       suspend keeps the workspace, drops compute; destroy prunes everything
+  ${bold}rt sandbox attach${reset} <id> [--exec]     attended lanes: pin the mc-<shortid> ssh alias
+      to the daemon's 2422 forward and print (or exec) herdr --remote mc-<shortid>
   ${bold}rt sandbox answer${reset} <id> [<file>]     answer.md via mailbox (stdin when no file)
   ${bold}rt sandbox events${reset} <id> [--since <seq>] [--json]
       controller event log (lane state, questions, captures); one line per event
@@ -661,6 +663,55 @@ export async function qaTunnelCommand(args: string[]): Promise<void> {
   const code = await out.handle.exited;
   console.error(`\n  ${red}tunnel exited (${code}) — the in-pod backend will see DB errors until reopened${reset}\n`);
   process.exit(code === 0 ? 0 : 2);
+}
+
+// ─── rt sandbox attach ───────────────────────────────────────────────────────
+
+/** Pure argv parse for `rt sandbox attach`, exported for tests. */
+export function parseAttachArgs(args: string[]): { id: string; exec: boolean } | { error: string } {
+  let id: string | undefined, exec = false;
+  for (const arg of args) {
+    if (arg === "--exec") exec = true;
+    else if (!arg.startsWith("--") && !id) id = arg;
+    else return { error: `unknown argument: ${arg}` };
+  }
+  if (!id) return { error: "usage: rt sandbox attach <id> [--exec]" };
+  return { id, exec };
+}
+
+export async function attachCommand(args: string[]): Promise<void> {
+  const parsed = parseAttachArgs(args);
+  if ("error" in parsed) usageExit(parsed.error);
+
+  await requireController();
+  let detail: SandboxDetail | null;
+  try {
+    detail = await createSandboxClient().get(parsed.id);
+  } catch (err) {
+    infraExit(err);
+  }
+  if (!detail) {
+    console.error(`\n  ${red}sandbox ${parsed.id} not found${reset}\n`);
+    process.exit(64);
+  }
+
+  const { prepareAttendedAttach } = await import("../lib/sandbox.ts");
+  const { spawnExec } = await import("../lib/cloud-secrets.ts");
+  const out = await prepareAttendedAttach({ sandboxId: parsed.id, detail, exec: spawnExec });
+  if (!out.ok) {
+    console.error(`\n  ${red}✗ ${out.message}${reset}\n`);
+    process.exit(2);
+  }
+  if (out.mintedKey) {
+    console.log(`\n  ${yellow}⚠ attended ssh key freshly minted${reset} — this pod does not trust it yet:`);
+    console.log(`    ${bold}rt cloud secrets sync-attended-key${reset} ${dim}then recycle the pod (suspend + resume)${reset}`);
+  }
+  if (parsed.exec) {
+    const proc = Bun.spawn(out.command, { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    process.exit(await proc.exited);
+  }
+  console.log(`\n  ${green}✓${reset} ssh alias ${bold}${out.alias}${reset} ready ${dim}(~/.ssh/config, daemon-held forward)${reset}`);
+  console.log(`  attach with ${bold}${out.command.join(" ")}${reset} ${dim}(or rerun with --exec)${reset}\n`);
 }
 
 // ─── rt cloud secrets sync-attended-key ──────────────────────────────────────

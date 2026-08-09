@@ -16,6 +16,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { sandboxAnchorDir } from "./rt-paths.ts";
 import {
+  ATTENDED_SSH_POD_PORT,
+  ATTENDED_SSH_PROCESS_NAME,
   SANDBOX_NAMESPACE,
   listSandboxAnchors,
   listSandboxOverlays,
@@ -34,11 +36,7 @@ import type { EvidenceLedger, LedgerState } from "./daemon/evidence-ledger.ts";
 
 // ─── Attended ssh (MAT-235) ──────────────────────────────────────────────────
 
-/** The in-pod sshd port for attended lanes (design call 5). */
-export const ATTENDED_SSH_POD_PORT = 2422;
-
-/** Reserved name for the ssh pseudo-process in allocations and anchors. */
-export const ATTENDED_SSH_PROCESS_NAME = "ssh";
+export { ATTENDED_SSH_POD_PORT, ATTENDED_SSH_PROCESS_NAME };
 
 /**
  * Local candidate ports for attended ssh forwards. Unlike browser-facing
