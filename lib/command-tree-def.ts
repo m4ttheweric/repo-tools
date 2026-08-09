@@ -714,6 +714,8 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Branch", flag: "--branch", type: "text", placeholder: "branch-name", hint: "Existing branch to sandbox (default: current branch)" },
           { name: "Job dir", flag: "--job", type: "text", placeholder: "~/jobs/acme-1234", hint: "Directory whose job.md becomes the brief" },
           { name: "Account", flag: "--account", type: "text", placeholder: "acct-3.token", hint: "agent-credentials Secret key for this lane's billing identity" },
+          { name: "Attended", flag: "--attended", type: "boolean", default: false, hint: "Attended lane: in-pod herdr server + sshd; attach with rt sandbox attach" },
+          { name: "TUI account", flag: "--tui-account", type: "text", placeholder: "acct-3", hint: "agent-credentials key prefix for the attended lane's TUI credentials" },
           { name: "Agent env", flag: "--agent-env", type: "text", placeholder: "ANTHROPIC_MODEL=…", hint: "Per-lane agent env NAME=value (repeatable)" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable { sandboxId, repoId, branch, anchorDir }" },
         ],
