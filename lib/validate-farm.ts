@@ -28,6 +28,7 @@ import { SnapshotBaseRefError } from "./snapshot.ts";
  */
 export const MC_ENV_HELP = [
   "    MC_CONTROLLER_URL    controller endpoint            (default http://localhost:8080)",
+  "    MC_API_TOKEN         controller bearer for mutating routes (default unset)",
   "    MC_RECEIVER_URL      receiver git-push endpoint     (default ssh://git@localhost:2222)",
   "    MC_RECEIVER_SSH_KEY  private key path pinned for the receiver push",
   "                         (overrides the overlay repo.jsonc receiverSshKey;",
@@ -36,6 +37,12 @@ export const MC_ENV_HELP = [
 
 export function controllerUrl(): string {
   return (process.env.MC_CONTROLLER_URL ?? "http://localhost:8080").replace(/\/$/, "");
+}
+
+/** Bearer for the controller's mutating routes; resolved at call time. */
+export function mcAuthHeaders(): Record<string, string> {
+  const token = process.env.MC_API_TOKEN;
+  return token ? { authorization: `Bearer ${token}` } : {};
 }
 
 export function receiverUrl(): string {
@@ -345,20 +352,20 @@ export function createControllerClient(
     async submit(req) {
       const res = await fetchFn(`${baseUrl}/validate`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...mcAuthHeaders() },
         body: JSON.stringify(req),
       });
       if (!res.ok) throw new Error(`controller POST /validate failed: ${res.status} ${await res.text()}`);
       return (await res.json()) as { runId: string; cached: boolean };
     },
     async getRun(id) {
-      const res = await fetchFn(`${baseUrl}/runs/${id}`);
+      const res = await fetchFn(`${baseUrl}/runs/${id}`, { headers: mcAuthHeaders() });
       if (res.status === 404) return null;
       if (!res.ok) throw new Error(`controller GET /runs/${id} failed: ${res.status}`);
       return (await res.json()) as Run;
     },
     async getGroupLog(id, group) {
-      const res = await fetchFn(`${baseUrl}/runs/${id}/logs/${group}`);
+      const res = await fetchFn(`${baseUrl}/runs/${id}/logs/${group}`, { headers: mcAuthHeaders() });
       if (res.status === 404) return null;
       if (!res.ok) throw new Error(`controller GET /runs/${id}/logs/${group} failed: ${res.status}`);
       return await res.text();
