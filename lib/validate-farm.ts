@@ -301,7 +301,8 @@ export type InfraReason =
   | "disrupted"
   | "init-failed"
   | "create-failed"
-  | "controller-restart";
+  | "controller-restart"
+  | "tunnel-lost";
 
 export interface GroupResult {
   name: string;
@@ -317,6 +318,12 @@ export interface Run {
   tree: string;
   manifestHash: string;
   status: "pending" | "running" | "done" | "infra";
+  /**
+   * Present only when status is "infra" and the whole run (not one group)
+   * failed for that reason — today only the client-side "tunnel-lost"
+   * synthesis; the controller reports reasons per group.
+   */
+  infraReason?: InfraReason;
   groups: GroupResult[];
   createdAt: string;
 }
@@ -433,13 +440,14 @@ export function summarizeRun(run: Run): string {
  * consumer can tell an eviction from a code failure without kubectl.
  */
 export function runToJson(run: Run, exitCode: number): {
-  run: { id: string; status: Run["status"]; groups: GroupResult[] };
+  run: { id: string; status: Run["status"]; infraReason?: InfraReason; groups: GroupResult[] };
   exitCode: number;
 } {
   return {
     run: {
       id: run.id,
       status: run.status,
+      ...(run.infraReason ? { infraReason: run.infraReason } : {}),
       groups: run.groups.map(g => ({
         name: g.name,
         status: g.status,
@@ -492,7 +500,11 @@ export async function ensureEndpoints(deps: EnsureEndpointsDeps): Promise<Endpoi
  * run continues server-side; the message is the remedy line the user sees.
  */
 export class TunnelLostError extends Error {
-  constructor(public readonly runId: string) {
+  constructor(
+    public readonly runId: string,
+    /** The last run state a poll observed before the tunnel died, if any. */
+    public readonly lastRun: Run | null = null,
+  ) {
     super(
       `controller connection lost mid-run and could not be re-established after ${POLL_MAX_CONSECUTIVE_FAILURES} attempts.\n` +
         `The farm run continues server-side. Restore connectivity (kubectl port-forward -n mc-system svc/controller 8080:8080),\n` +
@@ -500,6 +512,25 @@ export class TunnelLostError extends Error {
     );
     this.name = "TunnelLostError";
   }
+}
+
+/**
+ * The honest machine verdict for a lost tunnel: the same run shape --json
+ * consumers already parse, status "infra" (never red, never a bare exit 2),
+ * with infraReason "tunnel-lost" naming the client side as the failure and
+ * the last-observed group states carried as-is.
+ */
+export function tunnelLostRun(err: TunnelLostError): Run {
+  return {
+    id: err.runId,
+    repoId: err.lastRun?.repoId ?? "",
+    tree: err.lastRun?.tree ?? "",
+    manifestHash: err.lastRun?.manifestHash ?? "",
+    status: "infra",
+    infraReason: "tunnel-lost",
+    groups: err.lastRun?.groups ?? [],
+    createdAt: err.lastRun?.createdAt ?? "",
+  };
 }
 
 export const POLL_MAX_CONSECUTIVE_FAILURES = 4;
@@ -532,6 +563,7 @@ export async function pollRunUntilDone(
   const interval = deps.pollIntervalMs ?? 2000;
   const seen = new Map<string, string>();
   let consecutiveFailures = 0;
+  let lastRun: Run | null = null;
   while (true) {
     let run: Run | null;
     try {
@@ -539,11 +571,17 @@ export async function pollRunUntilDone(
       consecutiveFailures = 0;
     } catch {
       consecutiveFailures++;
-      if (consecutiveFailures >= POLL_MAX_CONSECUTIVE_FAILURES) throw new TunnelLostError(runId);
+      if (consecutiveFailures >= POLL_MAX_CONSECUTIVE_FAILURES) {
+        throw new TunnelLostError(runId, lastRun);
+      }
       const recovered = deps.reconnect ? await deps.reconnect() : false;
-      if (!recovered) await delay(interval);
+      // Bounded backoff while the endpoint stays down: the failure cap above
+      // bounds it, so the wait doubles per consecutive failure and resets
+      // with the count on the next successful poll.
+      if (!recovered) await delay(interval * 2 ** (consecutiveFailures - 1));
       continue;
     }
+    if (run) lastRun = run;
     if (!run) throw new Error(`run ${runId} disappeared from the controller`);
     for (const g of run.groups) {
       if (seen.get(g.name) !== g.status) {

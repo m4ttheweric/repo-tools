@@ -31,8 +31,10 @@
  * guarantees the run behind it is fresh.
  *
  * --wait survives tunnel loss: a failed poll re-establishes the kubectl
- * port-forwards with bounded retries, and only repeated failure gives up
- * (exit 2 with the `rt validate status <runId>` remedy).
+ * port-forwards with bounded exponential backoff, and only repeated failure
+ * gives up — exit 2 with the `rt validate status <runId>` remedy, and under
+ * --json the run shape consumers already parse (status "infra", infraReason
+ * "tunnel-lost", last-observed groups) — never a bare exit 2.
  *
  * The worktree's exact state (uncommitted edits included) is snapshotted
  * without touching HEAD/index (lib/snapshot.ts), pushed to the in-cluster
@@ -54,6 +56,7 @@ import { kubectlEnv } from "../lib/cloud-secrets.ts";
 import { snapshotWorktree } from "../lib/snapshot.ts";
 import {
   MC_ENV_HELP,
+  TunnelLostError,
   controllerUrl,
   createControllerClient,
   ensureEndpoints,
@@ -68,6 +71,7 @@ import {
   runToJson,
   statusExitCode,
   summarizeRun,
+  tunnelLostRun,
   verdictExitCode,
   type GroupResult,
   type Run,
@@ -289,7 +293,13 @@ export async function validateCommand(args: string[], ctx: CommandContext): Prom
       console.error(`\n  ${red}farm pipeline failed — not a code verdict${reset}`);
       console.error(`  ${dim}${message}${reset}\n`);
     }
-    if (json) printErrorJson(message, exitCode);
+    if (json) {
+      // A lost tunnel has a run id, so the consumer gets the run shape it
+      // already parses (status "infra", infraReason "tunnel-lost") rather
+      // than the shapeless { error } fallback.
+      if (err instanceof TunnelLostError) printRunJson(tunnelLostRun(err), exitCode);
+      else printErrorJson(message, exitCode);
+    }
   } finally {
     endpoints?.stop();
   }
