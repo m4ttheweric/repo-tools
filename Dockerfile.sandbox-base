@@ -8,7 +8,8 @@ FROM oven/bun:1-debian
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates curl \
   && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-  && apt-get install -y --no-install-recommends nodejs \
+  # python3/make/g++: node-pty's node-gyp build needs a toolchain
+  && apt-get install -y --no-install-recommends nodejs python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 ENV HOME=/root
 WORKDIR /app
