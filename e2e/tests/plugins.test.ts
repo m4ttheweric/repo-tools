@@ -13,10 +13,11 @@ function localDay(): string {
 }
 
 // The harness spawns rt with a minimal env that drops TZ, so the CLI derives
-// its local day from the system zone while localDay() above honors $TZ. Any
-// rt invocation whose dated log file we read must run with our TZ so both
-// sides compute the same day.
-const tz: Record<string, string> = process.env.TZ ? { TZ: process.env.TZ } : {};
+// its local day from the system zone while this test process runs in $TZ if
+// set, else Etc/UTC (bun test forces UTC for determinism without exposing it
+// in process.env). Any rt invocation whose dated log file we read must run
+// in the test's EFFECTIVE zone so both sides compute the same day.
+const tz: Record<string, string> = { TZ: process.env.TZ ?? "Etc/UTC" };
 
 function installPlugin(home: string, dirName: string, manifest: unknown, files: Record<string, string> = {}): string {
   const dir = join(home, ".rt", "plugins", dirName);
