@@ -762,6 +762,25 @@ export const TREE: Record<string, CommandNode> = {
           { name: "File", type: "text", placeholder: "answer.md", hint: "Answer file; omit to read stdin" },
         ],
       },
+      events: {
+        description: "Sandbox event log from the controller (lane state, questions, captures)",
+        module: "./commands/sandbox.ts",
+        fn: "eventsCommand",
+        args: [
+          { name: "Sandbox id", type: "text", placeholder: "sandbox id" },
+          { name: "Since", flag: "--since", type: "text", placeholder: "0", hint: "Only events after this seq" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Raw event array" },
+        ],
+      },
+      steer: {
+        description: "Deliver steer.md via the mailbox — the lane supervisor injects it at the next turn boundary",
+        module: "./commands/sandbox.ts",
+        fn: "steerCommand",
+        args: [
+          { name: "Sandbox id", type: "text", placeholder: "sandbox id" },
+          { name: "File", type: "text", placeholder: "steer.md", hint: "Steer file; omit to read stdin" },
+        ],
+      },
       logs: {
         description: "kubectl logs passthrough for a sandbox container",
         module: "./commands/sandbox.ts",

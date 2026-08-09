@@ -45,6 +45,7 @@ import {
   upsertFlagsSecret,
   type EvidenceBeforeEntry,
   type SandboxDetail,
+  type SandboxEvent,
 } from "../lib/sandbox.ts";
 import { loadSecrets, fetchTicket } from "../lib/linear.ts";
 import { loadBranchNamingConfig, resolveBranchName } from "../lib/branch-naming.ts";
@@ -68,6 +69,10 @@ function helpExit(): never {
   ${bold}rt sandbox suspend|resume|destroy${reset} <id>
       suspend keeps the workspace, drops compute; destroy prunes everything
   ${bold}rt sandbox answer${reset} <id> [<file>]     answer.md via mailbox (stdin when no file)
+  ${bold}rt sandbox events${reset} <id> [--since <seq>] [--json]
+      controller event log (lane state, questions, captures); one line per event
+  ${bold}rt sandbox steer${reset} <id> [<file>]      steer.md via mailbox (stdin when no file);
+      the lane supervisor injects it at the next turn boundary
   ${bold}rt sandbox logs${reset} <id> <container> [args...]
   ${bold}rt sandbox flags${reset} <id> k=v...        LD fallback Secret; pod recycle applies it
 
@@ -398,6 +403,87 @@ export async function answerCommand(args: string[]): Promise<void> {
     infraExit(err);
   }
   console.log(`\n  ${green}✓${reset} answer.md queued — the watcher materializes it and consumes question.md\n`);
+}
+
+// ─── rt sandbox events / steer ───────────────────────────────────────────────
+
+/** Pure argv parse for `rt sandbox events`, exported for tests. */
+export function parseEventsArgs(
+  args: string[],
+): { id: string; since: number; json: boolean } | { error: string } {
+  let id: string | undefined, since = 0, json = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--json") json = true;
+    else if (arg === "--since") {
+      const v = args[++i];
+      if (!v || !/^\d+$/.test(v)) return { error: `--since: integer seq required, got ${v ?? "(missing)"}` };
+      since = Number(v);
+    } else if (!arg.startsWith("--") && !id) id = arg;
+    else return { error: `unknown argument: ${arg}` };
+  }
+  if (!id) return { error: "usage: rt sandbox events <id> [--since <seq>] [--json]" };
+  return { id, since, json };
+}
+
+/** One human line per event; exported for tests. */
+export function renderSandboxEvent(event: SandboxEvent): string {
+  const p = (event.payload ?? {}) as Record<string, unknown>;
+  let summary: string;
+  switch (event.type) {
+    case "question": summary = "question.md written — answer with rt sandbox answer"; break;
+    case "report": summary = "report.md written"; break;
+    case "blocked": summary = "blocked.md written"; break;
+    case "process-dead": summary = `agent died (${p.reason ?? "unknown"}${p.exitCode !== undefined ? `, exit ${p.exitCode}` : ""})`; break;
+    case "state": summary = `state -> ${p.state ?? "?"}${p.message ? `: ${p.message}` : ""}`; break;
+    case "captured":
+      if (p.file === "lane.json" && typeof p.content === "string") {
+        try {
+          const lane = JSON.parse(p.content) as { state?: string; turns?: number };
+          summary = `lane: ${lane.state ?? "?"} (turn ${lane.turns ?? "?"})`;
+          break;
+        } catch { /* fall through to generic */ }
+      }
+      summary = `captured ${p.file ?? "?"}`;
+      break;
+    default: summary = `${event.type}${p.requestId ? ` ${p.requestId}` : ""}`;
+  }
+  return `[${event.seq}] ${event.ts} ${summary}`;
+}
+
+export async function eventsCommand(args: string[]): Promise<void> {
+  const parsed = parseEventsArgs(args);
+  if ("error" in parsed) usageExit(parsed.error);
+  await requireController();
+  try {
+    const events = await createSandboxClient().events(parsed.id, parsed.since);
+    if (parsed.json) console.log(JSON.stringify(events, null, 2));
+    else for (const event of events) console.log(renderSandboxEvent(event));
+  } catch (err) {
+    infraExit(err);
+  }
+}
+
+export async function steerCommand(args: string[]): Promise<void> {
+  const positional = args.filter(a => !a.startsWith("--"));
+  const [id, file] = positional;
+  if (!id) usageExit("usage: rt sandbox steer <id> [<file>]");
+  let content: string;
+  if (file) {
+    if (!existsSync(file)) usageExit(`no such file: ${file}`);
+    content = readFileSync(file, "utf8");
+  } else {
+    if (process.stdin.isTTY) usageExit("no file given and stdin is a TTY — pipe the steer or pass a file");
+    content = await new Response(Bun.stdin.stream()).text();
+  }
+  if (!content.trim()) usageExit("refusing to deliver an empty steer.md");
+  await requireController();
+  try {
+    await createSandboxClient().postMailbox(id, { name: "steer.md", content });
+  } catch (err) {
+    infraExit(err);
+  }
+  console.log(`\n  ${green}✓${reset} steer.md queued — the supervisor injects it at the next turn boundary (ack: lane.json steerAck)\n`);
 }
 
 // ─── rt sandbox logs ─────────────────────────────────────────────────────────
