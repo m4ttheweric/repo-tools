@@ -12,6 +12,12 @@ function localDay(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// The harness spawns rt with a minimal env that drops TZ, so the CLI derives
+// its local day from the system zone while localDay() above honors $TZ. Any
+// rt invocation whose dated log file we read must run with our TZ so both
+// sides compute the same day.
+const tz: Record<string, string> = process.env.TZ ? { TZ: process.env.TZ } : {};
+
 function installPlugin(home: string, dirName: string, manifest: unknown, files: Record<string, string> = {}): string {
   const dir = join(home, ".rt", "plugins", dirName);
   mkdirSync(dir, { recursive: true });
@@ -76,10 +82,10 @@ export async function run(args: string[], ctx: RtCommandContext) {
   }, 30_000);
 
   test("module command runs with store persistence and domain log", async () => {
-    const first = await rt(["e2e-hello", "x"], { home });
+    const first = await rt(["e2e-hello", "x"], { home, env: tz });
     expect(first.exitCode).toBe(0);
     expect(first.stdout).toContain("HELLO 1 x");
-    const second = await rt(["e2e-hello"], { home });
+    const second = await rt(["e2e-hello"], { home, env: tz });
     expect(second.stdout).toContain("HELLO 2");
 
     const day = localDay();
@@ -99,7 +105,7 @@ export async function run(args: string[], ctx: RtCommandContext) {
   }, 30_000);
 
   test("throwing plugin: exit 1 + error outcome in cli log", async () => {
-    const result = await rt(["e2e-boom"], { home });
+    const result = await rt(["e2e-boom"], { home, env: tz });
     expect(result.exitCode).toBe(1);
     const day = localDay();
     const cli = readFileSync(join(home, ".rt", "logs", `cli.${day}.log`), "utf8");
