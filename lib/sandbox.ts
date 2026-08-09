@@ -75,6 +75,8 @@ export interface SandboxRecord {
   ports: Record<string, number>;
   briefRef?: string;
   lastEventSeq: number;
+  /** Attended lane (MAT-235): the pod runs herdr server + sshd on 2422. */
+  attended?: boolean;
 }
 
 export interface ContainerReadiness {

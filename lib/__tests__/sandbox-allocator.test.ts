@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  ATTENDED_SSH_LOCAL_PORTS,
+  ATTENDED_SSH_PROCESS_NAME,
   allocatePorts,
   createForwardSet,
   createSandboxSync,
@@ -543,5 +545,49 @@ describe("createSandboxSync", () => {
     // The running sandbox still reconciled: forward spawned despite the throw.
     expect(world.clientCalls).toContain("listEvidence sb-1");
     expect(world.spawned).toHaveLength(1);
+  });
+});
+
+// ─── Attended lanes: ssh forward (MAT-235) ───────────────────────────────────
+
+describe("attended ssh forward", () => {
+  test("an attended sandbox's forward gains local:2422 for sshd; ssh stays out of the dev-ports state entry", async () => {
+    const world = makeSyncWorld();
+    world.detail = { ...world.detail, attended: true };
+    await world.sync.syncOnce();
+
+    expect(world.spawned).toHaveLength(1);
+    expect(world.spawned[0]!.argv).toEqual([
+      "kubectl", "-n", "mc-sandboxes", "port-forward", "pod/sb-1",
+      "5001:4001", "10401:4000", `${ATTENDED_SSH_LOCAL_PORTS[0]}:2422`,
+    ]);
+    const anchor = readSandboxAnchor("acme-dev", "sb-1")!;
+    expect(anchor.localPorts).toEqual({
+      adjuster: 5001, backend: 10401, [ATTENDED_SSH_PROCESS_NAME]: ATTENDED_SSH_LOCAL_PORTS[0]!,
+    });
+    // The dev-ports state file is a consumer contract (skills key on process
+    // names) — the ssh port must never appear there.
+    const state = JSON.parse(readFileSync(world.stateFile, "utf8"));
+    const entry = state[sandboxAnchorDir("acme-dev", "sb-1")];
+    expect(Object.keys(entry).sort()).toEqual(["adjuster", "backend", "ts"]);
+  });
+
+  test("two attended sandboxes never share one local ssh port", async () => {
+    const world = makeSyncWorld();
+    world.detail = { ...world.detail, attended: true };
+    await world.sync.syncOnce();
+    // A second attended sandbox's ssh allocation must skip the held local.
+    const out = allocatePorts(
+      [{ name: ATTENDED_SSH_PROCESS_NAME, port: 2422, localPorts: [...ATTENDED_SSH_LOCAL_PORTS] }],
+      [ATTENDED_SSH_LOCAL_PORTS[0]!],
+    );
+    expect(out.ports[ATTENDED_SSH_PROCESS_NAME]).toBe(ATTENDED_SSH_LOCAL_PORTS[1]!);
+  });
+
+  test("a headless sandbox's forward is unchanged (no ssh mapping)", async () => {
+    const world = makeSyncWorld();
+    await world.sync.syncOnce();
+    expect(world.spawned[0]!.argv.join(" ")).not.toContain("2422");
+    expect(readSandboxAnchor("acme-dev", "sb-1")!.localPorts).toEqual({ adjuster: 5001, backend: 10401 });
   });
 });
