@@ -5,6 +5,7 @@ import {
   isDopplerShim,
   mintTuiCredentialFiles,
   syncAgentCredentials,
+  syncAttendedSshKey,
   syncBrowserSecrets,
   syncSecrets,
   syncTuiCredentials,
@@ -339,5 +340,26 @@ describe("syncTuiCredentials", () => {
     });
     expect(out.exitCode).toBe(1);
     expect(calls.some(c => c.argv.includes("apply"))).toBe(false);
+  });
+});
+
+describe("syncAttendedSshKey", () => {
+  test("upserts the attended-ssh-key Secret with the pub half under key pubkey", async () => {
+    const { exec, calls } = fakeExec({
+      "kubectl -n mc-sandboxes apply": { stdout: "ok", exitCode: 0 },
+    });
+    const out = await syncAttendedSshKey({ publicKey: "ssh-ed25519 AAAA rt-attended", exec });
+    expect(out.exitCode).toBe(0);
+    expect(out.message).toContain("attended-ssh-key");
+    const manifest = JSON.parse(calls[0]!.stdin!);
+    expect(manifest.metadata).toEqual({ name: "attended-ssh-key", namespace: "mc-sandboxes" });
+    expect(manifest.stringData.pubkey).toBe("ssh-ed25519 AAAA rt-attended");
+  });
+
+  test("refuses an empty public key with 64", async () => {
+    const { exec, calls } = fakeExec({});
+    const out = await syncAttendedSshKey({ publicKey: " ", exec });
+    expect(out.exitCode).toBe(64);
+    expect(calls).toHaveLength(0);
   });
 });
