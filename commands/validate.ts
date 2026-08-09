@@ -50,6 +50,7 @@ import { join } from "node:path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import { repoDataDir } from "../lib/rt-paths.ts";
+import { kubectlEnv } from "../lib/cloud-secrets.ts";
 import { snapshotWorktree } from "../lib/snapshot.ts";
 import {
   MC_ENV_HELP,
@@ -191,7 +192,7 @@ function spawnKubectlForwards(): { stop: () => void } {
     ["kubectl", "port-forward", "-n", "mc-system", "svc/receiver", "2222:2222"],
   ];
   const procs = specs.map(argv =>
-    Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "ignore" }),
+    Bun.spawn(argv, { env: kubectlEnv(), stdin: "ignore", stdout: "ignore", stderr: "ignore" }),
   );
   const killAll = () => {
     for (const p of procs) {

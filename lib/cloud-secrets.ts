@@ -9,9 +9,35 @@
  * upload stale values while looking authoritative.
  */
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { rtDir } from "./rt-paths.ts";
+
 export interface ExecResult {
   stdout: string;
   exitCode: number;
+}
+
+/**
+ * Env for every kubectl spawn (MAT-235). The ambient ~/.kube/config on this
+ * machine is the sdm-managed WORK cluster, and the rt daemon is spawned by
+ * the rt-tray launchd app, so a shell `export KUBECONFIG` can never reach
+ * it — the mattcloud kubeconfig must be resolved here, at spawn time:
+ *
+ *   1. explicit KUBECONFIG in the base env wins, untouched;
+ *   2. else ~/.rt/kubeconfig-mattcloud.yaml when it exists;
+ *   3. else the base env unchanged (ambient ~/.kube/config).
+ *
+ * Delivered via env, never a --kubeconfig argv flag: argv is visible in ps,
+ * and the kubectl legs here deliberately keep secrets off argv (stdin).
+ */
+export function kubectlEnv(
+  base: Record<string, string | undefined> = process.env,
+): Record<string, string | undefined> {
+  if (base.KUBECONFIG) return base;
+  const mattcloud = join(rtDir(), "kubeconfig-mattcloud.yaml");
+  if (!existsSync(mattcloud)) return base;
+  return { ...base, KUBECONFIG: mattcloud };
 }
 
 /** Injected process runner — `stdin` is written to the child, never to disk. */
@@ -26,6 +52,7 @@ export const spawnExec: Exec = async (argv, opts = {}) => {
   try {
     proc = Bun.spawn(argv, {
       cwd: opts.cwd,
+      env: kubectlEnv(),
       stdin: opts.stdin !== undefined ? new TextEncoder().encode(opts.stdin) : "ignore",
       stdout: "pipe",
       stderr: "ignore",

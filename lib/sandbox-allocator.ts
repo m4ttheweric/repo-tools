@@ -15,6 +15,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { sandboxAnchorDir } from "./rt-paths.ts";
+import { kubectlEnv } from "./cloud-secrets.ts";
 import {
   ATTENDED_SSH_POD_PORT,
   ATTENDED_SSH_PROCESS_NAME,
@@ -119,7 +120,7 @@ export interface ForwardSet {
 
 /** Real spawner. Cluster-verify pending: needs a live cluster to prove. */
 export const spawnForward: ForwardSpawn = (argv) => {
-  const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  const proc = Bun.spawn(argv, { env: kubectlEnv(), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
   return {
     kill: () => {
       try { proc.kill(); } catch { /* already exited */ }
