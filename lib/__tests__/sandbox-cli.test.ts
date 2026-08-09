@@ -1,6 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { parseAgentSelection, parseEventsArgs, renderSandboxEvent } from "../../commands/sandbox.ts";
+import { parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent } from "../../commands/sandbox.ts";
 import type { SandboxEvent } from "../sandbox.ts";
+
+describe("parseAttachArgs", () => {
+  test("id with optional --exec", () => {
+    expect(parseAttachArgs(["sb-1"])).toEqual({ id: "sb-1", exec: false });
+    expect(parseAttachArgs(["sb-1", "--exec"])).toEqual({ id: "sb-1", exec: true });
+  });
+  test("missing id / unknown flags are errors", () => {
+    expect("error" in parseAttachArgs([])).toBe(true);
+    expect("error" in parseAttachArgs(["sb-1", "--bogus"])).toBe(true);
+  });
+});
 
 describe("parseAgentSelection", () => {
   test("collects --account and repeated --agent-env", () => {

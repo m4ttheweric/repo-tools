@@ -645,6 +645,109 @@ export async function ensureAttendedSshKey(opts: {
   return { ok: true, created: true, publicKey: readPub() };
 }
 
+// ─── Attach: ssh config + flow (MAT-235) ─────────────────────────────────────
+
+/** Reserved pseudo-process name for the attended sshd forward. */
+export const ATTENDED_SSH_PROCESS_NAME = "ssh";
+
+/** The in-pod sshd port for attended lanes (design call 5). */
+export const ATTENDED_SSH_POD_PORT = 2422;
+
+/** `mc-<shortid>` — the ~/.ssh/config alias for a sandbox (id capped at 12 chars). */
+export function attendedSshHostAlias(sandboxId: string): string {
+  return `mc-${sandboxId.slice(0, 12)}`;
+}
+
+const sshBlockBegin = (alias: string) => `# >>> rt sandbox attach ${alias} (managed block, do not edit)`;
+const sshBlockEnd = (alias: string) => `# <<< rt sandbox attach ${alias}`;
+
+/**
+ * The marker-managed Host block attach maintains. Host-key checking is off
+ * on purpose: every pod recycle mints fresh host keys behind the same
+ * forwarded 127.0.0.1 port, so pinning would strand the alias on a stale
+ * known_hosts row after every resume.
+ */
+export function renderAttendedSshBlock(opts: { alias: string; localPort: number; keyPath: string }): string {
+  return [
+    sshBlockBegin(opts.alias),
+    `Host ${opts.alias}`,
+    "  HostName 127.0.0.1",
+    `  Port ${opts.localPort}`,
+    "  User root",
+    `  IdentityFile ${opts.keyPath}`,
+    "  IdentitiesOnly yes",
+    "  StrictHostKeyChecking no",
+    "  UserKnownHostsFile /dev/null",
+    "  LogLevel ERROR",
+    sshBlockEnd(opts.alias),
+    "",
+  ].join("\n");
+}
+
+/**
+ * Replace the alias's previous managed block (marker-delimited) or append
+ * the new one. Everything outside the markers — including other sandboxes'
+ * blocks — passes through byte-for-byte.
+ */
+export function upsertSshConfigBlock(config: string, alias: string, block: string): string {
+  const begin = config.indexOf(sshBlockBegin(alias));
+  if (begin !== -1) {
+    const endMarker = sshBlockEnd(alias);
+    const end = config.indexOf(endMarker, begin);
+    if (end !== -1) {
+      const after = config.slice(end + endMarker.length).replace(/^\n/, "");
+      return config.slice(0, begin) + block + after;
+    }
+  }
+  if (!config) return block;
+  return `${config.replace(/\n*$/, "\n\n")}${block}`;
+}
+
+/**
+ * Everything `rt sandbox attach` needs before printing/execing the thin
+ * client: verify the sandbox is an attended lane and running (controller
+ * ground truth), read the daemon-held ssh forward off the anchor (never
+ * guess a port — event-driven rule), mint the keypair on first need, and
+ * pin the Host block in ~/.ssh/config.
+ */
+export async function prepareAttendedAttach(opts: {
+  sandboxId: string;
+  detail: SandboxDetail | null;
+  exec: Exec;
+  sshConfigPath?: string;
+  keyPath?: string;
+}): Promise<{ ok: true; alias: string; command: string[]; mintedKey: boolean } | { ok: false; message: string }> {
+  const { sandboxId, detail } = opts;
+  if (!detail) return { ok: false, message: `sandbox ${sandboxId} is unknown to the controller` };
+  if (!detail.attended) {
+    return { ok: false, message: `sandbox ${sandboxId} is not an attended lane — create one with rt sandbox create --attended --tui-account <key>` };
+  }
+  if (detail.state !== "running") {
+    return { ok: false, message: `sandbox ${sandboxId} is ${detail.state} — rt sandbox resume ${sandboxId} first` };
+  }
+  const anchor = findSandboxAnchor(sandboxId);
+  const localPort = anchor?.localPorts?.[ATTENDED_SSH_PROCESS_NAME];
+  if (localPort === undefined) {
+    return {
+      ok: false,
+      message: `the daemon holds no ssh forward for ${sandboxId} yet — is the rt daemon running? (rt daemon status; the forward appears within one sync pass of the pod running)`,
+    };
+  }
+  const keyPath = opts.keyPath ?? attendedSshKeyPath();
+  const key = await ensureAttendedSshKey({ exec: opts.exec, keyPath });
+  if (!key.ok) return { ok: false, message: key.message };
+
+  const configPath = opts.sshConfigPath ?? join(process.env.HOME ?? homedir(), ".ssh", "config");
+  const alias = attendedSshHostAlias(sandboxId);
+  let existing = "";
+  try {
+    existing = readFileSync(configPath, "utf8");
+  } catch { /* first Host block — the file is created below */ }
+  mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
+  writeFileSync(configPath, upsertSshConfigBlock(existing, alias, renderAttendedSshBlock({ alias, localPort, keyPath })), { mode: 0o600 });
+  return { ok: true, alias, command: ["herdr", "--remote", alias], mintedKey: key.created };
+}
+
 // ─── Logs passthrough ────────────────────────────────────────────────────────
 
 /** kubectl logs argv for a sandbox container (pod name == sandbox id). */

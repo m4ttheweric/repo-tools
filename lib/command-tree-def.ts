@@ -761,6 +761,15 @@ export const TREE: Record<string, CommandNode> = {
         fn: "destroyCommand",
         args: [{ name: "Sandbox id", type: "text", placeholder: "sandbox id" }],
       },
+      attach: {
+        description: "Attended lanes: pin the mc-<shortid> ssh alias to the daemon's sshd forward and print (or exec) herdr --remote",
+        module: "./commands/sandbox.ts",
+        fn: "attachCommand",
+        args: [
+          { name: "Sandbox id", type: "text", placeholder: "sandbox id" },
+          { name: "Exec", flag: "--exec", type: "boolean", default: false, hint: "Exec herdr --remote directly instead of printing the command" },
+        ],
+      },
       answer: {
         description: "Deliver answer.md to the sandbox via the controller mailbox",
         module: "./commands/sandbox.ts",
