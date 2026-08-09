@@ -206,6 +206,103 @@ export async function syncBrowserSecrets(opts: {
  * repo's keys MERGE into the existing data — replacing wholesale would
  * delete sibling repos' credentials (MAT-226). Cluster-verify pending.
  */
+// ─── Attended lanes: per-account TUI credentials (MAT-235) ───────────────────
+
+/**
+ * 2100-01-01T00:00:00Z in ms. Setup-token access tokens don't expire on the
+ * recipe's timescale; the TUI only checks expiresAt against Date.now(), so a
+ * fixed far-future stamp keeps the minted file deterministic.
+ */
+export const TUI_CREDENTIALS_EXPIRES_AT_MS = 4102444800000;
+
+export interface TuiAccountIdentity {
+  email: string;
+  organizationUuid: string;
+  organizationName: string;
+}
+
+/**
+ * MAT-233 provider seam: resolving WHO an account key is (email, org) is
+ * adapter business — the cswap adapter implements this, rt core only takes
+ * the answer and writes files. Nothing cswap-shaped may creep in here.
+ */
+export type TuiIdentityProvider = (accountKey: string) => Promise<TuiAccountIdentity>;
+
+/**
+ * The two files a TUI (attended) lane needs in the pod's $HOME, exactly per
+ * the MAT-231 spike recipe: `.claude/.credentials.json` (claudeAiOauth from
+ * setup-token) and `.claude.json` (onboarding done, identity block, and
+ * /workspace/src pre-trusted). The env token is deliberately NOT part of
+ * this: attended lanes must not see CLAUDE_CODE_OAUTH_TOKEN.
+ */
+export function mintTuiCredentialFiles(
+  input: { token: string } & TuiAccountIdentity,
+): { credentialsJson: string; claudeJson: string } {
+  const credentialsJson = JSON.stringify(
+    {
+      claudeAiOauth: {
+        accessToken: input.token,
+        refreshToken: null,
+        expiresAt: TUI_CREDENTIALS_EXPIRES_AT_MS,
+        scopes: ["user:inference", "user:profile"],
+        subscriptionType: "max",
+      },
+    },
+    null,
+    2,
+  );
+  const claudeJson = JSON.stringify(
+    {
+      hasCompletedOnboarding: true,
+      theme: "dark",
+      oauthAccount: {
+        emailAddress: input.email,
+        organizationUuid: input.organizationUuid,
+        organizationName: input.organizationName,
+        organizationRole: "admin",
+      },
+      projects: { "/workspace/src": { hasTrustDialogAccepted: true } },
+    },
+    null,
+    2,
+  );
+  return { credentialsJson, claudeJson };
+}
+
+/**
+ * Mint an account's two TUI files and merge-upsert them as agent-credentials
+ * keys `<accountKey>.credentials.json` / `<accountKey>.claude.json` — the
+ * keys the controller subPath-mounts into attended pods. Reuses the MAT-226
+ * merge path so sibling accounts' and repos' keys survive.
+ */
+export async function syncTuiCredentials(opts: {
+  accountKey: string;
+  token: string;
+  identity: TuiIdentityProvider;
+  namespace?: string;
+  exec?: Exec;
+}): Promise<SandboxSecretOutcome> {
+  if (!opts.token.trim()) {
+    return { exitCode: 64, message: `no token for ${opts.accountKey} — refusing to mint empty TUI credentials` };
+  }
+  const identity = await opts.identity(opts.accountKey);
+  const minted = mintTuiCredentialFiles({ token: opts.token, ...identity });
+  const encoder = new TextEncoder();
+  const out = await syncAgentCredentials({
+    files: {
+      [`${opts.accountKey}.credentials.json`]: encoder.encode(minted.credentialsJson),
+      [`${opts.accountKey}.claude.json`]: encoder.encode(minted.claudeJson),
+    },
+    ...(opts.namespace !== undefined ? { namespace: opts.namespace } : {}),
+    ...(opts.exec !== undefined ? { exec: opts.exec } : {}),
+  });
+  if (out.exitCode !== 0) return out;
+  return {
+    exitCode: 0,
+    message: `upserted TUI credentials for ${opts.accountKey} into Secret agent-credentials (${opts.namespace ?? "mc-sandboxes"})`,
+  };
+}
+
 export async function syncAgentCredentials(opts: {
   files: Record<string, Uint8Array>;
   namespace?: string;
