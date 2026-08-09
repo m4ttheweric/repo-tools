@@ -59,10 +59,12 @@ function usageExit(message: string): never {
 
 function helpExit(): never {
   console.log(`
-  ${bold}rt sandbox create${reset} [--ticket CV-XXXX | --branch <name>] [--job <dir>] [--flags k=v...] [--image <tag>] [--account <secret-key>] [--agent-env NAME=value]... [--evidence-before <caseId>:<view>:<recipe>[:k=v,...]]... [--json]
+  ${bold}rt sandbox create${reset} [--ticket CV-XXXX | --branch <name>] [--job <dir>] [--flags k=v...] [--image <tag>] [--account <secret-key>] [--attended --tui-account <key>] [--agent-env NAME=value]... [--evidence-before <caseId>:<view>:<recipe>[:k=v,...]]... [--json]
       push branch to the receiver, create the cloud sandbox, anchor it locally;
       --evidence-before (repeatable, max 10) queues before-slot captures with the create;
       --account picks the agent-credentials Secret key (billing identity);
+      --attended boots an in-pod herdr server + sshd instead of the lane supervisor;
+      --tui-account picks whose TUI credentials land in the pod (excludes --account);
       --agent-env NAME=value (repeatable) sets per-lane agent env (reserved names rejected)
   ${bold}rt sandbox ls${reset} [--json] / ${bold}status${reset} [<id>] [--json]
       controller ground truth + local ports (pool warnings are loud here)
@@ -123,19 +125,27 @@ const RESERVED_AGENT_ENV = new Set([
   "HOME", "CLAUDE_CODE_OAUTH_TOKEN", "IS_SANDBOX", "CONTROLLER_URL",
 ]);
 
-/** Pull --account / --agent-env out of a create argv; everything else lands in rest. */
+/** Pull --account / --agent-env / --attended / --tui-account out of a create argv; everything else lands in rest. */
 export function parseAgentSelection(
   args: string[],
-): { rest: string[]; agentCredentialKey?: string; agentEnv?: Record<string, string> } | { error: string } {
+): { rest: string[]; agentCredentialKey?: string; agentEnv?: Record<string, string>; attended?: boolean; tuiCredentialKey?: string } | { error: string } {
   const rest: string[] = [];
   let agentCredentialKey: string | undefined;
   let agentEnv: Record<string, string> | undefined;
+  let attended = false;
+  let tuiCredentialKey: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (arg === "--account") {
       const value = args[++i];
       if (!value || !CREDENTIAL_KEY_RE.test(value)) return { error: `--account: invalid secret key ${value ?? "(missing)"}` };
       agentCredentialKey = value;
+    } else if (arg === "--attended") {
+      attended = true;
+    } else if (arg === "--tui-account") {
+      const value = args[++i];
+      if (!value || !CREDENTIAL_KEY_RE.test(value)) return { error: `--tui-account: invalid secret key ${value ?? "(missing)"}` };
+      tuiCredentialKey = value;
     } else if (arg === "--agent-env") {
       const value = args[++i];
       const eq = value?.indexOf("=") ?? -1;
@@ -148,7 +158,18 @@ export function parseAgentSelection(
       rest.push(arg);
     }
   }
-  return { rest, ...(agentCredentialKey ? { agentCredentialKey } : {}), ...(agentEnv ? { agentEnv } : {}) };
+  // Mirror the controller's attended-lane validation so a bad combination
+  // dies here with a friendly message instead of a 400.
+  if (attended && !tuiCredentialKey) return { error: "--attended lanes need a TUI account — pass --tui-account <secret-key>" };
+  if (tuiCredentialKey && !attended) return { error: "--tui-account only applies to attended lanes — pass --attended" };
+  if (attended && agentCredentialKey) return { error: "one auth mode per lane — --attended (TUI credentials) excludes --account (env token)" };
+  return {
+    rest,
+    ...(agentCredentialKey ? { agentCredentialKey } : {}),
+    ...(agentEnv ? { agentEnv } : {}),
+    ...(attended ? { attended } : {}),
+    ...(tuiCredentialKey ? { tuiCredentialKey } : {}),
+  };
 }
 
 export async function createCommand(args: string[], ctx: CommandContext): Promise<void> {
@@ -231,6 +252,8 @@ export async function createCommand(args: string[], ctx: CommandContext): Promis
       ...(evidenceBefore.length ? { evidenceBefore } : {}),
       ...(selection.agentCredentialKey ? { agentCredentialKey: selection.agentCredentialKey } : {}),
       ...(selection.agentEnv ? { agentEnv: selection.agentEnv } : {}),
+      ...(selection.attended ? { attended: selection.attended } : {}),
+      ...(selection.tuiCredentialKey ? { tuiCredentialKey: selection.tuiCredentialKey } : {}),
       client: createSandboxClient(),
       spawn: spawnGitPush,
     });

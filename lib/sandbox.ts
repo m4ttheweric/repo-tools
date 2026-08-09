@@ -130,6 +130,15 @@ export interface CreateSandboxRequest {
   agentCredentialKey?: string;
   /** Per-sandbox agent env (controller validates names against its reserved list). */
   agentEnv?: Record<string, string>;
+  /**
+   * Attended lane (MAT-235): the pod boots a supervised herdr server + sshd
+   * instead of the lane supervisor. Requires tuiCredentialKey; mutually
+   * exclusive with agentCredentialKey (one auth mode per lane — the
+   * controller 400s the combination, rt validates it Mac-side too).
+   */
+  attended?: boolean;
+  /** agent-credentials key prefix whose .credentials.json/.claude.json land in the pod's $HOME. */
+  tuiCredentialKey?: string;
 }
 
 // ─── Controller HTTP client (sandbox half) ───────────────────────────────────
@@ -525,6 +534,8 @@ export async function createSandboxFlow(opts: {
   evidenceBefore?: EvidenceBeforeEntry[];
   agentCredentialKey?: string;
   agentEnv?: Record<string, string>;
+  attended?: boolean;
+  tuiCredentialKey?: string;
   /**
    * Ref to seed from when refs/heads/<branch> is missing locally — the
    * --ticket path's "a fresh ticket branch is just the base ref's tree".
@@ -576,6 +587,8 @@ export async function createSandboxFlow(opts: {
     ...(opts.evidenceBefore?.length ? { evidenceBefore: opts.evidenceBefore } : {}),
     ...(opts.agentCredentialKey ? { agentCredentialKey: opts.agentCredentialKey } : {}),
     ...(opts.agentEnv ? { agentEnv: opts.agentEnv } : {}),
+    ...(opts.attended ? { attended: opts.attended } : {}),
+    ...(opts.tuiCredentialKey ? { tuiCredentialKey: opts.tuiCredentialKey } : {}),
   });
   writeSandboxAnchor({
     id: sandboxId,

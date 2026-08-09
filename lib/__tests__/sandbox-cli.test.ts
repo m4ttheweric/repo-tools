@@ -27,6 +27,29 @@ describe("parseAgentSelection", () => {
       expect("error" in out).toBe(true);
     }
   });
+
+  test("collects --attended with its --tui-account (attended lanes, MAT-235)", () => {
+    expect(parseAgentSelection(["--attended", "--tui-account", "acct-3"])).toEqual({
+      rest: [],
+      attended: true,
+      tuiCredentialKey: "acct-3",
+    });
+  });
+
+  test("attended lane validation is Mac-side friendly (mirrors the controller's 400s)", () => {
+    // attended implies a tui account; a tui account implies attended; one auth mode per lane.
+    for (const args of [
+      ["--attended"],
+      ["--tui-account", "acct-3"],
+      ["--attended", "--tui-account", "acct-3", "--account", "acct-3.token"],
+      ["--attended", "--tui-account", "../etc"],
+      ["--attended", "--tui-account"],
+    ]) {
+      const out = parseAgentSelection(args);
+      expect("error" in out).toBe(true);
+    }
+    expect((parseAgentSelection(["--attended"]) as { error: string }).error).toContain("--tui-account");
+  });
 });
 
 describe("parseEventsArgs", () => {
