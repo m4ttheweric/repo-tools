@@ -1,0 +1,16 @@
+# Base for the repo-tools cloud-lane sandbox image (research profile).
+# Mirrors what a validate image provides: the repo seeded at /app with deps
+# installed, git for the seed's fetch/checkout, node for /opt/mc scripts.
+# Built locally (docker buildx, linux/amd64) and pushed to the cluster
+# registry; nightly-bake wiring for mattstack repos is a deliberate
+# follow-up (MAT-223 plan, Task C2).
+FROM oven/bun:1-debian
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates curl \
+  && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+  && apt-get install -y --no-install-recommends nodejs \
+  && rm -rf /var/lib/apt/lists/*
+ENV HOME=/root
+WORKDIR /app
+COPY . /app
+RUN bun install --frozen-lockfile
