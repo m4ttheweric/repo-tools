@@ -34,7 +34,8 @@ afterEach(() => { process.env.HOME = ORIG_HOME; });
 interface FetchCall {
   url: string;
   method: string;
-  body: unknown;
+  body?: unknown;
+  headers?: Record<string, string>;
 }
 
 /** Fake fetch that scripts responses per `METHOD url-suffix` and records calls. */
@@ -46,6 +47,7 @@ function fakeFetch(script: Record<string, { status: number; json?: unknown; text
       url: String(url),
       method,
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      headers: Object.fromEntries(new Headers(init?.headers).entries()),
     });
     for (const [key, res] of Object.entries(script)) {
       const [m, suffix] = key.split(" ", 2);
@@ -210,6 +212,30 @@ describe("createSandboxClient", () => {
     const bad = createSandboxClient("http://c", (async () => new Response("boom", { status: 500 })) as unknown as typeof fetch);
     await expect(bad.cancelEvidence("r1")).rejects.toThrow("controller");
     await expect(bad.ackEvidenceSynced("r1")).rejects.toThrow("controller");
+  });
+});
+
+describe("bearer header", () => {
+  const prev = process.env.MC_API_TOKEN;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.MC_API_TOKEN;
+    else process.env.MC_API_TOKEN = prev;
+  });
+
+  test("MC_API_TOKEN set: every call carries the bearer", async () => {
+    process.env.MC_API_TOKEN = "s3cret";
+    const { fetchFn, calls } = fakeFetch({ "POST /sandboxes/sb-1/mailbox": { status: 200 } });
+    const client = createSandboxClient("http://c", fetchFn);
+    await client.postMailbox("sb-1", { name: "answer.md", content: "x" });
+    expect(calls[0]!.headers!["authorization"]).toBe("Bearer s3cret");
+  });
+
+  test("MC_API_TOKEN unset: no auth header", async () => {
+    delete process.env.MC_API_TOKEN;
+    const { fetchFn, calls } = fakeFetch({ "POST /sandboxes/sb-1/mailbox": { status: 200 } });
+    const client = createSandboxClient("http://c", fetchFn);
+    await client.postMailbox("sb-1", { name: "answer.md", content: "x" });
+    expect(calls[0]!.headers?.["authorization"]).toBeUndefined();
   });
 });
 

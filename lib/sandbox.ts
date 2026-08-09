@@ -29,7 +29,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { reposDir, sandboxAnchorDir, sandboxesDir } from "./rt-paths.ts";
-import { controllerUrl, receiverRepoUrl, receiverSshEnv, receiverSshRemedy, type GitPushSpawn } from "./validate-farm.ts";
+import { controllerUrl, mcAuthHeaders, receiverRepoUrl, receiverSshEnv, receiverSshRemedy, type GitPushSpawn } from "./validate-farm.ts";
 import { spawnExec, type Exec } from "./cloud-secrets.ts";
 import { stripJsonc } from "./jsonc.ts";
 
@@ -170,8 +170,14 @@ export function createSandboxClient(
 ): SandboxClient {
   const timeoutMs = opts.timeoutMs ?? 10_000;
   const artifactTimeoutMs = opts.artifactTimeoutMs ?? 60_000;
+  // Every call gains the MC_API_TOKEN bearer (resolved per request); GETs
+  // don't need it but the controller ignores it there, so one seam covers all.
   const bounded = (url: string, init: RequestInit = {}, ms: number = timeoutMs): Promise<Response> =>
-    fetchFn(url, { ...init, signal: AbortSignal.timeout(ms) });
+    fetchFn(url, {
+      ...init,
+      headers: { ...mcAuthHeaders(), ...(init.headers as Record<string, string> | undefined) },
+      signal: AbortSignal.timeout(ms),
+    });
   async function requireOk(res: Response, what: string): Promise<Response> {
     if (!res.ok) throw new Error(`controller ${what} failed: ${res.status} ${await res.text()}`);
     return res;
