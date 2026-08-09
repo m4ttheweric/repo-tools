@@ -32,6 +32,31 @@ import {
 } from "./sandbox.ts";
 import type { EvidenceLedger, LedgerState } from "./daemon/evidence-ledger.ts";
 
+// ─── Attended ssh (MAT-235) ──────────────────────────────────────────────────
+
+/** The in-pod sshd port for attended lanes (design call 5). */
+export const ATTENDED_SSH_POD_PORT = 2422;
+
+/** Reserved name for the ssh pseudo-process in allocations and anchors. */
+export const ATTENDED_SSH_PROCESS_NAME = "ssh";
+
+/**
+ * Local candidate ports for attended ssh forwards. Unlike browser-facing
+ * pools these carry no Auth0 registration constraint — the pool exists only
+ * so concurrent attended sandboxes get distinct, predictable locals that
+ * `rt sandbox attach` can pin in ~/.ssh/config Host blocks.
+ */
+export const ATTENDED_SSH_LOCAL_PORTS = [24221, 24222, 24223, 24224, 24225, 24226, 24227, 24228, 24229, 24230] as const;
+
+/** The ssh pseudo-process an attended sandbox adds to its allocation. */
+function attendedSshProcess(): SandboxProcess {
+  return {
+    name: ATTENDED_SSH_PROCESS_NAME,
+    port: ATTENDED_SSH_POD_PORT,
+    localPorts: [...ATTENDED_SSH_LOCAL_PORTS],
+  };
+}
+
 // ─── Port allocation ─────────────────────────────────────────────────────────
 
 export interface AllocationOutcome {
@@ -368,13 +393,18 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
       lastEventSeq: 0,
     };
     const anchorDir = sandboxAnchorDir(sandbox.repoId, sandbox.id);
+    // Attended sandboxes forward sshd too — a pseudo-process outside the
+    // overlay, so the daemon holds the tunnel `rt sandbox attach` points at.
+    const processes = sandbox.attended
+      ? [...config.processes, attendedSshProcess()]
+      : config.processes;
     const processNames = config.processes.map(p => p.name);
     const taken = new Set<number>(deps.forwards.activeLocals(sandbox.id));
     if (config.stateFile) {
       for (const port of statePortsInUse(config.stateFile, processNames, anchorDir)) taken.add(port);
     }
 
-    const allocation = allocatePorts(config.processes, taken, anchor.localPorts);
+    const allocation = allocatePorts(processes, taken, anchor.localPorts);
     if (!allocation.ok) {
       // Loud, not silent: an unregistered local port cannot complete Auth0
       // login, so a partial forward would be a lying success.
@@ -394,12 +424,18 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
     writeSandboxAnchor(anchor);
 
     const mapping: ForwardMapping = {};
-    for (const proc of config.processes) {
+    for (const proc of processes) {
       mapping[proc.name] = { local: allocation.ports[proc.name]!, pod: proc.port };
     }
     // Pod name == sandbox id (contract note in lib/sandbox.ts).
     deps.forwards.ensure(sandbox.id, sandbox.id, mapping);
-    if (config.stateFile) upsertStateEntry(config.stateFile, anchorDir, allocation.ports);
+    // The state entry mirrors overlay processes ONLY: it is a consumer
+    // contract (skills key on process-name fields), so the ssh pseudo-port
+    // stays on the anchor and out of the file.
+    if (config.stateFile) {
+      const overlayPorts = Object.fromEntries(config.processes.map(p => [p.name, allocation.ports[p.name]!]));
+      upsertStateEntry(config.stateFile, anchorDir, overlayPorts);
+    }
   }
 
   function release(repoId: string, sandboxId: string, config: SandboxOverlayConfig): void {
