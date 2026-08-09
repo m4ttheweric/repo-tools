@@ -19,6 +19,7 @@ import { syncEvidence } from "./evidence-sync.ts";
 import { loadEvidenceConfig } from "../evidence-config.ts";
 
 const SANDBOX_SYNC_INTERVAL_MS = 5 * 1000;
+const STUCK_PASS_WARN_MS = 60 * 1000;
 
 // Module-scoped stop handle so shutdown.ts can reap the forward children
 // without threading state through daemon.ts (same shape as
@@ -56,16 +57,30 @@ export function startSandboxSync(log: Logger): { stop: () => void } {
     },
   });
 
+  // Overlapping passes skip (never pile up); a pass that outlives the client
+  // fetch timeouts indicates a bug, so surface it instead of skipping
+  // silently forever (MAT-222 hardening).
   let inFlight = false;
+  let inFlightSince = 0;
+  let warnedStuck = false;
   const timer = setInterval(async () => {
-    if (inFlight) return;
+    if (inFlight) {
+      const stuckMs = Date.now() - inFlightSince;
+      if (stuckMs > STUCK_PASS_WARN_MS && !warnedStuck) {
+        warnedStuck = true;
+        log.warn({ stuckMs }, "sandbox sync pass still running; skipping ticks until it settles");
+      }
+      return;
+    }
     inFlight = true;
+    inFlightSince = Date.now();
     try {
       await sync.syncOnce();
     } catch (err) {
       log.warn({ err }, "sandbox sync pass failed");
     } finally {
       inFlight = false;
+      warnedStuck = false;
     }
   }, SANDBOX_SYNC_INTERVAL_MS);
 
