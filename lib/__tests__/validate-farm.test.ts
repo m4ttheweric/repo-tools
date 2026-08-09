@@ -26,6 +26,7 @@ import {
   runToJson,
   statusExitCode,
   summarizeRun,
+  tunnelLostRun,
   verdictExitCode,
   type ControllerClient,
   type GitPushSpawn,
@@ -445,6 +446,62 @@ describe("pollRunUntilDone", () => {
 
   test("TunnelLostError maps to infra (2), never red", () => {
     expect(failureExitCode(new TunnelLostError("r1"))).toBe(2);
+  });
+
+  test("TunnelLostError carries the last observed run for an honest verdict", async () => {
+    const seen = run({ status: "running", groups: [{ name: "lint", status: "pass" }] });
+    const { client } = scriptedClient([seen, "throw"]);
+    const attempt = pollRunUntilDone(client, "r1", {
+      delayMs: noDelay,
+      reconnect: async () => false,
+    });
+    await expect(attempt).rejects.toBeInstanceOf(TunnelLostError);
+    await attempt.catch((err: TunnelLostError) => {
+      expect(err.lastRun?.groups).toEqual([{ name: "lint", status: "pass" }]);
+    });
+  });
+
+  test("lastRun is null when the tunnel dies before any poll lands", async () => {
+    const { client } = scriptedClient(["throw"]);
+    const attempt = pollRunUntilDone(client, "r1", { delayMs: noDelay });
+    await expect(attempt).rejects.toBeInstanceOf(TunnelLostError);
+    await attempt.catch((err: TunnelLostError) => {
+      expect(err.lastRun).toBeNull();
+    });
+  });
+
+  test("failed reconnects back off exponentially instead of a flat interval", async () => {
+    const { client } = scriptedClient(["throw"]);
+    const delays: number[] = [];
+    const attempt = pollRunUntilDone(client, "r1", {
+      delayMs: async (ms) => { delays.push(ms); },
+      reconnect: async () => false,
+      pollIntervalMs: 100,
+    });
+    await expect(attempt).rejects.toBeInstanceOf(TunnelLostError);
+    expect(delays).toEqual([100, 200, 400]);
+  });
+
+  test("tunnelLostRun shapes an honest infra verdict from what was last seen", () => {
+    const seen = run({ status: "running", groups: [{ name: "lint", status: "pass" }] });
+    const shaped = tunnelLostRun(new TunnelLostError("r1", seen));
+    expect(shaped.id).toBe("r1");
+    expect(shaped.status).toBe("infra");
+    expect(shaped.infraReason).toBe("tunnel-lost");
+    expect(shaped.groups).toEqual([{ name: "lint", status: "pass" }]);
+    // The verdict contract maps it to 2 — infra, never red.
+    expect(verdictExitCode(shaped)).toBe(2);
+  });
+
+  test("tunnelLostRun with nothing observed still yields a parseable infra run", () => {
+    const shaped = tunnelLostRun(new TunnelLostError("r9"));
+    expect(shaped).toMatchObject({ id: "r9", status: "infra", infraReason: "tunnel-lost", groups: [] });
+  });
+
+  test("runToJson carries a run-level infraReason and omits it when absent", () => {
+    const lost = runToJson(tunnelLostRun(new TunnelLostError("r1")), 2);
+    expect(lost.run.infraReason).toBe("tunnel-lost");
+    expect(runToJson(run(), 0).run).not.toHaveProperty("infraReason");
   });
 
   test("a 404 run mid-poll still throws (controller lost the run, not the tunnel)", async () => {
