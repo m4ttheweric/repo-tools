@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  attendedSshKeyPath,
   createSandboxClient,
   createSandboxFlow,
+  ensureAttendedSshKey,
   findSandboxAnchor,
   listSandboxOverlays,
   parseEvidenceBeforeSpecs,
@@ -644,5 +646,64 @@ describe("sandboxLogsArgv", () => {
     expect(sandboxLogsArgv("sb-1", "agent", ["-f"])).toEqual([
       "kubectl", "-n", "mc-sandboxes", "logs", "sb-1", "-c", "agent", "-f",
     ]);
+  });
+});
+
+// ─── Attended ssh key (MAT-235) ──────────────────────────────────────────────
+
+describe("ensureAttendedSshKey", () => {
+  test("mints an ed25519 keypair on first need: 0700 dir, 0600 private half, pub returned", async () => {
+    const home = mkdtempSync(join(tmpdir(), "sbx-sshkey-"));
+    process.env.HOME = home;
+    const keyPath = attendedSshKeyPath();
+    expect(keyPath).toBe(join(home, ".rt", "secrets", "attended-ssh-key"));
+
+    const argvs: string[][] = [];
+    // The fake keygen writes both halves like the real one would.
+    const exec: Exec = async (argv) => {
+      argvs.push([...argv]);
+      writeFileSync(keyPath, "PRIVATE", { mode: 0o644 });
+      writeFileSync(`${keyPath}.pub`, "ssh-ed25519 AAAA rt-attended\n");
+      return { stdout: "", exitCode: 0 };
+    };
+    const out = await ensureAttendedSshKey({ exec });
+
+    expect(out).toEqual({ ok: true, created: true, publicKey: "ssh-ed25519 AAAA rt-attended" });
+    expect(argvs).toHaveLength(1);
+    expect(argvs[0]).toEqual(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "rt-attended-ssh-key", "-f", keyPath]);
+    const { statSync } = await import("node:fs");
+    expect(statSync(keyPath).mode & 0o777).toBe(0o600);
+    expect(statSync(join(home, ".rt", "secrets")).mode & 0o777).toBe(0o700);
+  });
+
+  test("an existing key is reused without running ssh-keygen", async () => {
+    const home = mkdtempSync(join(tmpdir(), "sbx-sshkey-"));
+    process.env.HOME = home;
+    mkdirSync(join(home, ".rt", "secrets"), { recursive: true });
+    writeFileSync(attendedSshKeyPath(), "PRIVATE");
+    writeFileSync(`${attendedSshKeyPath()}.pub`, "ssh-ed25519 BBBB rt-attended\n");
+    const exec: Exec = async () => { throw new Error("ssh-keygen must not run"); };
+    const out = await ensureAttendedSshKey({ exec });
+    expect(out).toEqual({ ok: true, created: false, publicKey: "ssh-ed25519 BBBB rt-attended" });
+  });
+
+  test("a failed ssh-keygen surfaces as ok:false with the path named", async () => {
+    const home = mkdtempSync(join(tmpdir(), "sbx-sshkey-"));
+    process.env.HOME = home;
+    const exec: Exec = async () => ({ stdout: "", exitCode: 1 });
+    const out = await ensureAttendedSshKey({ exec });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.message).toContain("attended-ssh-key");
+  });
+
+  test("a private half without its pub half is an error, not a silent remint", async () => {
+    const home = mkdtempSync(join(tmpdir(), "sbx-sshkey-"));
+    process.env.HOME = home;
+    mkdirSync(join(home, ".rt", "secrets"), { recursive: true });
+    writeFileSync(attendedSshKeyPath(), "PRIVATE");
+    const exec: Exec = async () => { throw new Error("ssh-keygen must not run"); };
+    const out = await ensureAttendedSshKey({ exec });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.message).toContain("ssh-keygen -y");
   });
 });

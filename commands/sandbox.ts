@@ -663,6 +663,32 @@ export async function qaTunnelCommand(args: string[]): Promise<void> {
   process.exit(code === 0 ? 0 : 2);
 }
 
+// ─── rt cloud secrets sync-attended-key ──────────────────────────────────────
+
+/**
+ * Mint the attended keypair when missing and ship the pub half into the
+ * attended-ssh-key Secret. Lives in this module (not commands/cloud.ts)
+ * because the attended-lane machinery is sandbox-owned; the tree parks the
+ * verb under `rt cloud secrets` beside its sibling syncs.
+ */
+export async function syncAttendedKeyCommand(_args: string[]): Promise<void> {
+  const { ensureAttendedSshKey, attendedSshKeyPath } = await import("../lib/sandbox.ts");
+  const { spawnExec, syncAttendedSshKey } = await import("../lib/cloud-secrets.ts");
+  const key = await ensureAttendedSshKey({ exec: spawnExec });
+  if (!key.ok) {
+    console.error(`\n  ${red}✗ ${key.message}${reset}\n`);
+    process.exit(1);
+  }
+  if (key.created) console.log(`\n  ${green}✓${reset} minted ${attendedSshKeyPath()} (ed25519, private half stays local)`);
+  const outcome = await syncAttendedSshKey({ publicKey: key.publicKey });
+  if (outcome.exitCode !== 0) {
+    console.error(`\n  ${red}✗ ${outcome.message}${reset}\n`);
+    process.exit(outcome.exitCode);
+  }
+  console.log(`${key.created ? "" : "\n"}  ${green}✓${reset} ${outcome.message}`);
+  console.log(`  ${dim}attended pods created from now on accept this key; existing pods need a recycle${reset}\n`);
+}
+
 // ─── rt sandbox flags ────────────────────────────────────────────────────────
 
 export async function flagsCommand(args: string[]): Promise<void> {

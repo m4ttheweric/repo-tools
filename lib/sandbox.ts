@@ -25,8 +25,8 @@
  *    Events evidence-started/-ready/-failed carry {requestId}; -ready adds {summary, artifacts}.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { reposDir, sandboxAnchorDir, sandboxesDir } from "./rt-paths.ts";
 import { controllerUrl, mcAuthHeaders, receiverRepoUrl, receiverSshEnv, receiverSshRemedy, type GitPushSpawn } from "./validate-farm.ts";
@@ -598,6 +598,49 @@ export async function createSandboxFlow(opts: {
     lastEventSeq: 0,
   });
   return { ok: true, sandboxId };
+}
+
+// ─── Attended ssh key (MAT-235) ──────────────────────────────────────────────
+
+/**
+ * ~/.rt/secrets/attended-ssh-key — the private half of the dedicated
+ * attended-lane keypair (design call 2: NOT the receiver-client-key, which
+ * lives in a different trust domain). Call-time HOME per rt-paths convention.
+ */
+export function attendedSshKeyPath(): string {
+  return join(process.env.HOME ?? homedir(), ".rt", "secrets", "attended-ssh-key");
+}
+
+/**
+ * Mint the attended keypair on first need (ed25519, no passphrase, 0700 dir,
+ * 0600 private half) via injected ssh-keygen; reuse an existing one without
+ * touching it. A private half missing its pub is an error with the remedy
+ * named, never a silent remint — reminting would orphan every pod that
+ * already trusts the old pub half.
+ */
+export async function ensureAttendedSshKey(opts: {
+  exec: Exec;
+  keyPath?: string;
+}): Promise<{ ok: true; created: boolean; publicKey: string } | { ok: false; message: string }> {
+  const keyPath = opts.keyPath ?? attendedSshKeyPath();
+  const pubPath = `${keyPath}.pub`;
+  const readPub = () => readFileSync(pubPath, "utf8").trim();
+  if (existsSync(keyPath)) {
+    if (!existsSync(pubPath)) {
+      return {
+        ok: false,
+        message: `${keyPath} exists but its pub half is missing — recover it with: ssh-keygen -y -f ${keyPath} > ${pubPath}`,
+      };
+    }
+    return { ok: true, created: false, publicKey: readPub() };
+  }
+  mkdirSync(dirname(keyPath), { recursive: true, mode: 0o700 });
+  const keygen = await opts.exec(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "rt-attended-ssh-key", "-f", keyPath]);
+  if (keygen.exitCode !== 0 || !existsSync(keyPath) || !existsSync(pubPath)) {
+    return { ok: false, message: `ssh-keygen failed to mint ${keyPath} (exit ${keygen.exitCode})` };
+  }
+  chmodSync(keyPath, 0o600);
+  return { ok: true, created: true, publicKey: readPub() };
 }
 
 // ─── Logs passthrough ────────────────────────────────────────────────────────

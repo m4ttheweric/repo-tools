@@ -206,7 +206,30 @@ export async function syncBrowserSecrets(opts: {
  * repo's keys MERGE into the existing data — replacing wholesale would
  * delete sibling repos' credentials (MAT-226). Cluster-verify pending.
  */
-// ─── Attended lanes: per-account TUI credentials (MAT-235) ───────────────────
+// ─── Attended lanes (MAT-235) ────────────────────────────────────────────────
+
+/**
+ * Upsert the `attended-ssh-key` Secret with the operator's public half under
+ * key `pubkey` — the controller injects it as ATTENDED_AUTHORIZED_KEY into
+ * attended pods. Single-operator Secret, so a wholesale replace is correct
+ * (no MAT-226 merge dance). The private half never leaves ~/.rt/secrets.
+ */
+export async function syncAttendedSshKey(opts: {
+  publicKey: string;
+  namespace?: string;
+  exec?: Exec;
+}): Promise<SandboxSecretOutcome> {
+  const exec = opts.exec ?? spawnExec;
+  const namespace = opts.namespace ?? "mc-sandboxes";
+  if (!opts.publicKey.trim()) {
+    return { exitCode: 64, message: "attended ssh public key is empty — refusing to upsert" };
+  }
+  const error = await applySecretManifest(exec, namespace, "attended-ssh-key", {
+    stringData: { pubkey: opts.publicKey },
+  });
+  if (error) return { exitCode: 1, message: error };
+  return { exitCode: 0, message: `upserted Secret attended-ssh-key (${namespace})` };
+}
 
 /**
  * 2100-01-01T00:00:00Z in ms. Setup-token access tokens don't expire on the

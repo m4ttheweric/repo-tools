@@ -686,6 +686,12 @@ export const TREE: Record<string, CommandNode> = {
             context: "worktree",
             args: [],
           },
+          "sync-attended-key": {
+            description: "Mint the attended ssh keypair if needed and ship the pub half → Secret attended-ssh-key (mc-sandboxes)",
+            module: "./commands/sandbox.ts",
+            fn: "syncAttendedKeyCommand",
+            args: [],
+          },
         },
       },
       "sync-config": {
