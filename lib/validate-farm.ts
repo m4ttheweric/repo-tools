@@ -27,16 +27,19 @@ import { SnapshotBaseRefError } from "./snapshot.ts";
  * verbatim; document any new MC_ var here, nowhere else.
  */
 export const MC_ENV_HELP = [
-  "    MC_CONTROLLER_URL    controller endpoint            (default http://localhost:8080)",
+  "    MC_CONTROLLER_URL    controller endpoint            (default http://127.0.0.1:8080)",
   "    MC_API_TOKEN         controller bearer for mutating routes (default unset)",
-  "    MC_RECEIVER_URL      receiver git-push endpoint     (default ssh://git@localhost:2222)",
+  "    MC_RECEIVER_URL      receiver git-push endpoint     (default ssh://git@127.0.0.1:2222)",
   "    MC_RECEIVER_SSH_KEY  private key path pinned for the receiver push",
   "                         (overrides the overlay repo.jsonc receiverSshKey;",
   "                         default: ssh's own resolution — agent, config)",
 ].join("\n");
 
+// Defaults pin IPv4 loopback, never `localhost`: macOS resolves localhost
+// to ::1 first while kubectl port-forwards bind IPv4 only, which broke both
+// the receiver push ("Connection closed by ::1") and controller probes.
 export function controllerUrl(): string {
-  return (process.env.MC_CONTROLLER_URL ?? "http://localhost:8080").replace(/\/$/, "");
+  return (process.env.MC_CONTROLLER_URL ?? "http://127.0.0.1:8080").replace(/\/$/, "");
 }
 
 /** Bearer for the controller's mutating routes; resolved at call time. */
@@ -46,7 +49,7 @@ export function mcAuthHeaders(): Record<string, string> {
 }
 
 export function receiverUrl(): string {
-  return (process.env.MC_RECEIVER_URL ?? "ssh://git@localhost:2222").replace(/\/$/, "");
+  return (process.env.MC_RECEIVER_URL ?? "ssh://git@127.0.0.1:2222").replace(/\/$/, "");
 }
 
 /** The receiver's bare-repo push URL for a repoId (Task 2 path convention). */

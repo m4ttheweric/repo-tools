@@ -8,7 +8,9 @@ import {
   MC_ENV_HELP,
   POLL_MAX_CONSECUTIVE_FAILURES,
   TunnelLostError,
+  controllerUrl,
   createControllerClient,
+  receiverUrl,
   ensureEndpoints,
   failureExitCode,
   manifestHash,
@@ -555,7 +557,7 @@ describe("pushSnapshot", () => {
     });
     expect(out.ok).toBe(true);
     expect(calls[0]!.argv).toEqual([
-      "git", "push", "ssh://git@localhost:2222/repos/assured-dev.git", "+c1:refs/snapshots/t1",
+      "git", "push", "ssh://git@127.0.0.1:2222/repos/assured-dev.git", "+c1:refs/snapshots/t1",
     ]);
     expect(calls[0]!.cwd).toBe("/wt");
     expect(calls[0]!.env).toEqual({}); // no key knob → default ssh resolution
@@ -589,6 +591,47 @@ describe("MC_ENV_HELP", () => {
     for (const name of ["MC_CONTROLLER_URL", "MC_RECEIVER_URL", "MC_RECEIVER_SSH_KEY"]) {
       expect(MC_ENV_HELP).toContain(name);
     }
+  });
+
+  test("documented defaults match the code's and avoid `localhost` (::1 vs IPv4-only forwards)", () => {
+    expect(MC_ENV_HELP).toContain("http://127.0.0.1:8080");
+    expect(MC_ENV_HELP).toContain("ssh://git@127.0.0.1:2222");
+    expect(MC_ENV_HELP).not.toContain("localhost");
+  });
+});
+
+// ─── endpoint defaults ───────────────────────────────────────────────────────
+
+describe("endpoint defaults", () => {
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const name of ["MC_CONTROLLER_URL", "MC_RECEIVER_URL"]) {
+      saved[name] = process.env[name];
+      delete process.env[name];
+    }
+  });
+  afterEach(() => {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  // 127.0.0.1, never localhost: macOS resolves localhost to ::1 while
+  // kubectl port-forwards bind IPv4 only, so the default must pin IPv4.
+  test("controllerUrl defaults to IPv4 loopback", () => {
+    expect(controllerUrl()).toBe("http://127.0.0.1:8080");
+  });
+
+  test("receiverUrl defaults to IPv4 loopback", () => {
+    expect(receiverUrl()).toBe("ssh://git@127.0.0.1:2222");
+  });
+
+  test("env overrides still win", () => {
+    process.env.MC_CONTROLLER_URL = "http://controller.example:9999/";
+    process.env.MC_RECEIVER_URL = "ssh://git@receiver.example:2222/";
+    expect(controllerUrl()).toBe("http://controller.example:9999");
+    expect(receiverUrl()).toBe("ssh://git@receiver.example:2222");
   });
 });
 
