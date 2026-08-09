@@ -15,7 +15,6 @@
  * Called at the end of each daemon cache refresh cycle.
  */
 
-import { execSync, execFileSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { isTransitionalMergeStatus } from "@mattstack/glance";
@@ -279,14 +278,9 @@ function resolveTerminalNotifier(): string | false {
       }
     }
 
-    // Fall back to `which` for custom installs (nix, macports, etc.)
-    try {
-      _terminalNotifierPath = execSync("which terminal-notifier", {
-        stdio: "pipe", timeout: 3000,
-      }).toString().trim();
-    } catch {
-      _terminalNotifierPath = false;
-    }
+    // PATH scan for custom installs (nix, macports, etc.) — in-process, no
+    // `which` subprocess (this runs on the daemon's main thread).
+    _terminalNotifierPath = Bun.which("terminal-notifier") ?? false;
   }
   return _terminalNotifierPath;
 }
@@ -296,25 +290,36 @@ function escapeAppleScript(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+/** How long a fallback notifier child may run before SIGTERM, then SIGKILL. */
+const FALLBACK_TERM_MS = 5000;
+const FALLBACK_KILL_MS = 7000;
+
 /** Direct notification via terminal-notifier or osascript (no queue).
  *  argv-array spawning — message content includes branch names and error
- *  text, which must never pass through a shell ($, backticks, quotes). */
+ *  text, which must never pass through a shell ($, backticks, quotes).
+ *
+ *  Fire-and-forget async spawn, never a sync exec: this runs on the daemon's
+ *  main thread, and a hung notifier child (osascript blocked on Notification
+ *  Center/TCC from the launchd context) must not block the event loop.
+ *  Bun's sync-exec `timeout` only SIGTERMs and then waits the child out, so
+ *  a SIGTERM-immune child wedged every API/socket surface for the child's
+ *  lifetime (MAT-222). The kill escalation here is the bound the sync
+ *  timeout could not provide. */
 function notifyFallback(title: string, message: string, url?: string): void {
+  const tnPath = resolveTerminalNotifier();
+  let argv: string[];
+  if (tnPath) {
+    argv = [tnPath, "-title", "rt", "-subtitle", title, "-message", message, "-group", "rt"];
+    if (url) argv.push("-open", url);
+  } else {
+    const body = `${title}: ${message}`;
+    argv = ["osascript", "-e", `display notification "${escapeAppleScript(body)}" with title "rt"`];
+  }
   try {
-    const tnPath = resolveTerminalNotifier();
-    if (tnPath) {
-      const args = ["-title", "rt", "-subtitle", title, "-message", message, "-group", "rt"];
-      if (url) args.push("-open", url);
-      execFileSync(tnPath, args, { stdio: "pipe", timeout: 5000 });
-    } else {
-      // osascript fallback
-      const body = `${title}: ${message}`;
-      execFileSync(
-        "osascript",
-        ["-e", `display notification "${escapeAppleScript(body)}" with title "rt"`],
-        { stdio: "pipe", timeout: 5000 },
-      );
-    }
+    const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const term = setTimeout(() => { try { proc.kill("SIGTERM"); } catch { /* already exited */ } }, FALLBACK_TERM_MS);
+    const kill = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* already exited */ } }, FALLBACK_KILL_MS);
+    void proc.exited.finally(() => { clearTimeout(term); clearTimeout(kill); });
   } catch { /* notification is best-effort */ }
 }
 
@@ -846,4 +851,8 @@ export const __test__ = {
   shouldRearmReady,
   shouldRearmConflicts,
   isSelfAuthored,
+  notifyFallback,
+  setTerminalNotifierPath(p: string | false | null): void {
+    _terminalNotifierPath = p;
+  },
 };
