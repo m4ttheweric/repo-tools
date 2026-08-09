@@ -67,7 +67,7 @@ describe("shipSandbox", () => {
       expect(out.summary.log).toContain("fix the thing");
     }
     expect(w.calls[0]!.argv).toEqual([
-      "git", "fetch", "ssh://git@localhost:2222/repos/acme-dev.git", "refs/sandboxes/sb-1/acme-1-fix",
+      "git", "fetch", "ssh://git@127.0.0.1:2222/repos/acme-dev.git", "refs/sandboxes/sb-1/acme-1-fix",
     ]);
     expect(w.calls[0]!.cwd).toBe("/work");
     expect(w.calls[0]!.env?.GIT_SSH_COMMAND).toContain("/key");

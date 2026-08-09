@@ -344,7 +344,7 @@ describe("pushSandboxBranch", () => {
     expect(sandboxIncomingRef("acme-1-fix")).toBe("refs/sandboxes/incoming/acme-1-fix");
     expect(pushes).toHaveLength(1);
     expect(pushes[0]!.argv).toEqual([
-      "git", "push", "ssh://git@localhost:2222/repos/acme-dev.git",
+      "git", "push", "ssh://git@127.0.0.1:2222/repos/acme-dev.git",
       "+abc123:refs/sandboxes/incoming/acme-1-fix",
     ]);
     expect(pushes[0]!.cwd).toBe("/work");
