@@ -155,18 +155,30 @@ export interface SandboxClient {
 /**
  * Thin client over the controller's sandbox API. Cluster-verify pending:
  * shapes are asserted against the design contract, not a live controller.
+ *
+ * Every call carries a bounded AbortSignal.timeout: the daemon's sync tick
+ * shares the event loop with the API/socket servers, and the controller sits
+ * behind a kubectl port-forward whose failure mode is a connection that
+ * accepts but never answers — an unbounded fetch on that connection never
+ * settles and the pass wedges until restart (MAT-222). Artifact downloads
+ * get a longer bound (screenshots over the forward).
  */
 export function createSandboxClient(
   baseUrl: string = controllerUrl(),
   fetchFn: typeof fetch = fetch,
+  opts: { timeoutMs?: number; artifactTimeoutMs?: number } = {},
 ): SandboxClient {
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+  const artifactTimeoutMs = opts.artifactTimeoutMs ?? 60_000;
+  const bounded = (url: string, init: RequestInit = {}, ms: number = timeoutMs): Promise<Response> =>
+    fetchFn(url, { ...init, signal: AbortSignal.timeout(ms) });
   async function requireOk(res: Response, what: string): Promise<Response> {
     if (!res.ok) throw new Error(`controller ${what} failed: ${res.status} ${await res.text()}`);
     return res;
   }
   return {
     async create(req) {
-      const res = await fetchFn(`${baseUrl}/sandboxes`, {
+      const res = await bounded(`${baseUrl}/sandboxes`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(req),
@@ -175,50 +187,50 @@ export function createSandboxClient(
       return (await res.json()) as { sandboxId: string };
     },
     async list() {
-      const res = await requireOk(await fetchFn(`${baseUrl}/sandboxes`), "GET /sandboxes");
+      const res = await requireOk(await bounded(`${baseUrl}/sandboxes`), "GET /sandboxes");
       return (await res.json()) as SandboxDetail[];
     },
     async get(id) {
-      const res = await fetchFn(`${baseUrl}/sandboxes/${id}`);
+      const res = await bounded(`${baseUrl}/sandboxes/${id}`);
       if (res.status === 404) return null;
       await requireOk(res, `GET /sandboxes/${id}`);
       return (await res.json()) as SandboxDetail;
     },
     async suspend(id) {
       await requireOk(
-        await fetchFn(`${baseUrl}/sandboxes/${id}/suspend`, { method: "POST" }),
+        await bounded(`${baseUrl}/sandboxes/${id}/suspend`, { method: "POST" }),
         `POST /sandboxes/${id}/suspend`,
       );
     },
     async up(id) {
       await requireOk(
-        await fetchFn(`${baseUrl}/sandboxes/${id}/up`, { method: "POST" }),
+        await bounded(`${baseUrl}/sandboxes/${id}/up`, { method: "POST" }),
         `POST /sandboxes/${id}/up`,
       );
     },
     async destroy(id) {
       await requireOk(
-        await fetchFn(`${baseUrl}/sandboxes/${id}`, { method: "DELETE" }),
+        await bounded(`${baseUrl}/sandboxes/${id}`, { method: "DELETE" }),
         `DELETE /sandboxes/${id}`,
       );
     },
     async events(id, since) {
       const res = await requireOk(
-        await fetchFn(`${baseUrl}/sandboxes/${id}/events?since=${since}`),
+        await bounded(`${baseUrl}/sandboxes/${id}/events?since=${since}`),
         `GET /sandboxes/${id}/events`,
       );
       return (await res.json()) as SandboxEvent[];
     },
     async mailbox(id) {
       const res = await requireOk(
-        await fetchFn(`${baseUrl}/sandboxes/${id}/mailbox`),
+        await bounded(`${baseUrl}/sandboxes/${id}/mailbox`),
         `GET /sandboxes/${id}/mailbox`,
       );
       return (await res.json()) as MailboxFile[];
     },
     async postMailbox(id, file) {
       await requireOk(
-        await fetchFn(`${baseUrl}/sandboxes/${id}/mailbox`, {
+        await bounded(`${baseUrl}/sandboxes/${id}/mailbox`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(file),
@@ -227,7 +239,7 @@ export function createSandboxClient(
       );
     },
     async requestEvidence(sandboxId, req) {
-      const res = await fetchFn(`${baseUrl}/sandboxes/${sandboxId}/evidence`, {
+      const res = await bounded(`${baseUrl}/sandboxes/${sandboxId}/evidence`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(req),
@@ -237,31 +249,31 @@ export function createSandboxClient(
     },
     async listEvidence(sandboxId, state) {
       const url = state ? `${baseUrl}/sandboxes/${sandboxId}/evidence?state=${state}` : `${baseUrl}/sandboxes/${sandboxId}/evidence`;
-      const res = await requireOk(await fetchFn(url), `GET /sandboxes/${sandboxId}/evidence`);
+      const res = await requireOk(await bounded(url), `GET /sandboxes/${sandboxId}/evidence`);
       return (await res.json()) as EvidenceRequestRecord[];
     },
     async getEvidence(requestId) {
-      const res = await fetchFn(`${baseUrl}/evidence/${requestId}`);
+      const res = await bounded(`${baseUrl}/evidence/${requestId}`);
       if (res.status === 404) return null;
       await requireOk(res, `GET /evidence/${requestId}`);
       return (await res.json()) as EvidenceDetail;
     },
     async fetchEvidenceArtifact(requestId, name) {
       const res = await requireOk(
-        await fetchFn(`${baseUrl}/evidence/${requestId}/artifacts/${name}`),
+        await bounded(`${baseUrl}/evidence/${requestId}/artifacts/${name}`, {}, artifactTimeoutMs),
         `GET /evidence/${requestId}/artifacts/${name}`,
       );
       return new Uint8Array(await res.arrayBuffer());
     },
     async cancelEvidence(requestId) {
       await requireOk(
-        await fetchFn(`${baseUrl}/evidence/${requestId}`, { method: "DELETE" }),
+        await bounded(`${baseUrl}/evidence/${requestId}`, { method: "DELETE" }),
         `DELETE /evidence/${requestId}`,
       );
     },
     async ackEvidenceSynced(requestId) {
       await requireOk(
-        await fetchFn(`${baseUrl}/evidence/${requestId}/synced`, { method: "POST" }),
+        await bounded(`${baseUrl}/evidence/${requestId}/synced`, { method: "POST" }),
         `POST /evidence/${requestId}/synced`,
       );
     },
