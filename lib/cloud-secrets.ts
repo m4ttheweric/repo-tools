@@ -38,6 +38,33 @@ export const spawnExec: Exec = async (argv, opts = {}) => {
   return { stdout, exitCode };
 };
 
+/**
+ * Read an existing cluster object's `.data` for a read-modify-write merge
+ * (MAT-226: shared multi-repo maps must never be replaced wholesale).
+ * `--ignore-not-found` makes "absent" a clean success with empty stdout, so
+ * a non-zero exit is a real tooling/cluster failure, never a first sync.
+ */
+export async function getClusterObjectData(
+  exec: Exec,
+  namespace: string,
+  kind: "configmap" | "secret",
+  name: string,
+): Promise<{ ok: true; data: Record<string, string> } | { ok: false; message: string }> {
+  const got = await exec(
+    ["kubectl", "-n", namespace, "get", kind, name, "-o", "json", "--ignore-not-found"],
+  );
+  if (got.exitCode !== 0) {
+    return { ok: false, message: `kubectl get failed for ${kind} ${name} — is the cluster reachable?` };
+  }
+  if (!got.stdout.trim()) return { ok: true, data: {} };
+  try {
+    const parsed = JSON.parse(got.stdout) as { data?: Record<string, string> };
+    return { ok: true, data: parsed.data ?? {} };
+  } catch {
+    return { ok: false, message: `kubectl get returned unparseable JSON for ${kind} ${name}` };
+  }
+}
+
 /** The one shim check: `doppler --version` output names the mattcloud shim. */
 function versionNamesShim(stdout: string): boolean {
   return stdout.toLowerCase().includes("mattcloud");
@@ -175,7 +202,9 @@ export async function syncBrowserSecrets(opts: {
  * at overlay-named $HOME paths by the controller. The contract is generic
  * on purpose: HOW the operator produces the files is adapter business, and
  * nothing here knows or cares (design ruling 1). Binary-safe (base64
- * `data`). Cluster-verify pending.
+ * `data`). The Secret is shared across repos (overlay-named keys), so the
+ * repo's keys MERGE into the existing data — replacing wholesale would
+ * delete sibling repos' credentials (MAT-226). Cluster-verify pending.
  */
 export async function syncAgentCredentials(opts: {
   files: Record<string, Uint8Array>;
@@ -188,7 +217,9 @@ export async function syncAgentCredentials(opts: {
   if (entries.length === 0) {
     return { exitCode: 64, message: "no agent credential files — declare them in the overlay first" };
   }
-  const data: Record<string, string> = {};
+  const existing = await getClusterObjectData(exec, namespace, "secret", "agent-credentials");
+  if (!existing.ok) return { exitCode: 1, message: existing.message };
+  const data: Record<string, string> = { ...existing.data };
   for (const [key, bytes] of entries) {
     data[key] = Buffer.from(bytes).toString("base64");
   }
