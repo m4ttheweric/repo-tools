@@ -126,6 +126,10 @@ export interface CreateSandboxRequest {
   brief: string;
   flagsFileContent?: string;
   evidenceBefore?: EvidenceBeforeEntry[];
+  /** agent-credentials Secret key selecting this sandbox's billing identity. */
+  agentCredentialKey?: string;
+  /** Per-sandbox agent env (controller validates names against its reserved list). */
+  agentEnv?: Record<string, string>;
 }
 
 // ─── Controller HTTP client (sandbox half) ───────────────────────────────────
@@ -519,6 +523,8 @@ export async function createSandboxFlow(opts: {
   imageTag?: string;
   flags?: Record<string, unknown>;
   evidenceBefore?: EvidenceBeforeEntry[];
+  agentCredentialKey?: string;
+  agentEnv?: Record<string, string>;
   /**
    * Ref to seed from when refs/heads/<branch> is missing locally — the
    * --ticket path's "a fresh ticket branch is just the base ref's tree".
@@ -568,6 +574,8 @@ export async function createSandboxFlow(opts: {
     ...(opts.imageTag ? { imageTag: opts.imageTag } : {}),
     ...(opts.flags ? { flagsFileContent: JSON.stringify(opts.flags, null, 2) } : {}),
     ...(opts.evidenceBefore?.length ? { evidenceBefore: opts.evidenceBefore } : {}),
+    ...(opts.agentCredentialKey ? { agentCredentialKey: opts.agentCredentialKey } : {}),
+    ...(opts.agentEnv ? { agentEnv: opts.agentEnv } : {}),
   });
   writeSandboxAnchor({
     id: sandboxId,
