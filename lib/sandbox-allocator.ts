@@ -115,6 +115,8 @@ export interface ForwardSet {
   active(sandboxId: string): ForwardMapping | null;
   /** Local ports held by forwards, optionally excluding one sandbox's. */
   activeLocals(exceptSandboxId?: string): number[];
+  /** Sandbox ids a forward is currently held for. */
+  heldIds(): string[];
   stopAll(): void;
 }
 
@@ -161,6 +163,9 @@ export function createForwardSet(
         for (const m of Object.values(mapping)) out.push(m.local);
       }
       return out;
+    },
+    heldIds() {
+      return [...held.keys()];
     },
     stopAll() {
       for (const { handle } of held.values()) handle.kill();
@@ -403,7 +408,7 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
       for (const port of statePortsInUse(config.stateFile, processNames, anchorDir)) taken.add(port);
     }
 
-    const allocation = allocatePorts(processes, taken, anchor.localPorts);
+    const allocation = allocatePorts(processes, taken, anchor.localPorts ?? anchor.preferredPorts);
     if (!allocation.ok) {
       // Loud, not silent: an unregistered local port cannot complete Auth0
       // login, so a partial forward would be a lying success.
@@ -419,6 +424,7 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
     }
 
     delete anchor.allocationError;
+    delete anchor.preferredPorts;
     anchor.localPorts = allocation.ports;
     writeSandboxAnchor(anchor);
 
@@ -440,6 +446,14 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
   function release(repoId: string, sandboxId: string, config: SandboxOverlayConfig): void {
     deps.forwards.stop(sandboxId);
     if (config.stateFile) removeStateEntry(config.stateFile, sandboxAnchorDir(repoId, sandboxId));
+    // The anchor must not claim ports it no longer holds (attach reads
+    // localPorts as ground truth); the allocation survives as a preference.
+    const anchor = readSandboxAnchor(repoId, sandboxId);
+    if (anchor?.localPorts) {
+      anchor.preferredPorts = anchor.localPorts;
+      delete anchor.localPorts;
+      writeSandboxAnchor(anchor);
+    }
   }
 
   async function syncOnce(): Promise<void> {
@@ -490,6 +504,16 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
           release(repoId, anchor.id, config);
         }
       }
+    }
+
+    // Orphan sweep: the loop above only visits anchors, so a forward whose
+    // anchor is already gone (rt sandbox destroy prunes it immediately) or
+    // whose sandbox left the controller list would leak a kubectl child
+    // forever (MAT-273 live repro). Ground truth: only running sandboxes
+    // keep a forward.
+    for (const id of deps.forwards.heldIds()) {
+      const state = byId.get(id)?.state;
+      if (state !== "running") deps.forwards.stop(id);
     }
   }
 

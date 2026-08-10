@@ -428,8 +428,15 @@ export interface SandboxAnchor {
   createdAt: string;
   /** Last controller event seq the daemon has fanned out. */
   lastEventSeq: number;
-  /** Local port allocation while running (released on suspend, kept as preference). */
+  /** Live local port allocation — present only while the daemon holds forwards. */
   localPorts?: Record<string, number>;
+  /**
+   * The last allocation, kept when the sandbox leaves running so resume
+   * re-establishes the same ports. Separate from localPorts on purpose:
+   * attach reads localPorts as ground truth, so a released sandbox must not
+   * claim ports it no longer holds.
+   */
+  preferredPorts?: Record<string, number>;
   /** Loud `rt sandbox status` warning when the pool could not satisfy a process. */
   allocationError?: string;
 }
