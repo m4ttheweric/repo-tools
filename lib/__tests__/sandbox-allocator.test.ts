@@ -82,11 +82,11 @@ describe("allocatePorts", () => {
 
 describe("createForwardSet", () => {
   function recordingSpawn() {
-    const spawned: Array<{ argv: string[]; killed: boolean }> = [];
+    const spawned: Array<{ argv: string[]; killed: boolean; dead: boolean }> = [];
     const spawn: ForwardSpawn = (argv) => {
-      const entry = { argv, killed: false };
+      const entry = { argv, killed: false, dead: false };
       spawned.push(entry);
-      return { kill: () => { entry.killed = true; } };
+      return { kill: () => { entry.killed = true; }, alive: () => !entry.killed && !entry.dead };
     };
     return { spawn, spawned };
   }
@@ -112,6 +112,29 @@ describe("createForwardSet", () => {
     set.ensure("sb-1", "sb-1", { adjuster: { local: 6001, pod: 4001 } });
     expect(spawned).toHaveLength(2);
     expect(spawned[0]!.killed).toBe(true);
+  });
+
+  test("ensure reports its outcome and respawns a forward whose child died", () => {
+    const { spawn, spawned } = recordingSpawn();
+    const set = createForwardSet(spawn);
+    expect(set.ensure("sb-1", "sb-1", MAPPING)).toBe("spawned");
+    expect(set.ensure("sb-1", "sb-1", MAPPING)).toBe("kept");
+    // The kubectl child died on its own (pod recycle, network blip): the
+    // unchanged mapping must NOT read as "kept" — respawn it.
+    spawned[0]!.dead = true;
+    expect(set.ensure("sb-1", "sb-1", MAPPING)).toBe("respawned");
+    expect(spawned).toHaveLength(2);
+    expect(spawned[1]!.argv).toEqual(spawned[0]!.argv);
+  });
+
+  test("a dead forward is not active and its locals are not held", () => {
+    const { spawn, spawned } = recordingSpawn();
+    const set = createForwardSet(spawn);
+    set.ensure("sb-1", "sb-1", MAPPING);
+    spawned[0]!.dead = true;
+    expect(set.active("sb-1")).toBeNull();
+    expect(set.activeLocals()).toEqual([]);
+    expect(set.heldIds()).toEqual([]);
   });
 
   test("stop kills the forward and clears active; activeLocals excludes a sandbox", () => {
@@ -195,7 +218,10 @@ interface SyncWorld {
   clientCalls: string[];
   eventsByCall: SandboxEvent[][];
   notifications: Array<{ title: string; category: string }>;
-  spawned: Array<{ argv: string[]; killed: boolean }>;
+  spawned: Array<{ argv: string[]; killed: boolean; dead: boolean }>;
+  /** Local ports with a foreign listener (squatter fake for deps.listens). */
+  listeners: Set<number>;
+  logs: Array<{ obj: Record<string, unknown>; msg: string }>;
   sync: { syncOnce(): Promise<void> };
   reachable: boolean;
   /** When set, the client fake's list() returns this instead of [detail]. */
@@ -242,6 +268,8 @@ function makeSyncWorld(opts?: { withEvidence?: boolean }): SyncWorld {
     eventsByCall: [],
     notifications: [],
     spawned: [],
+    listeners: new Set(),
+    logs: [],
     sync: null as unknown as SyncWorld["sync"],
     reachable: true,
     listResult: null,
@@ -280,9 +308,9 @@ function makeSyncWorld(opts?: { withEvidence?: boolean }): SyncWorld {
   };
 
   const spawn: ForwardSpawn = (argv) => {
-    const entry = { argv, killed: false };
+    const entry = { argv, killed: false, dead: false };
     world.spawned.push(entry);
-    return { kill: () => { entry.killed = true; } };
+    return { kill: () => { entry.killed = true; }, alive: () => !entry.killed && !entry.dead };
   };
 
   if (opts?.withEvidence) {
@@ -294,6 +322,8 @@ function makeSyncWorld(opts?: { withEvidence?: boolean }): SyncWorld {
     client,
     forwards: createForwardSet(spawn),
     notify: (title, _message, category) => world.notifications.push({ title, category }),
+    listens: async (port) => world.listeners.has(port),
+    log: { info: (obj, msg) => world.logs.push({ obj, msg }) },
     evidence: world.evidenceLedger ? {
       ledger: world.evidenceLedger,
       sync: async (requestId: string) => { world.evidenceSyncCalls.push(requestId); },
@@ -630,5 +660,64 @@ describe("attended ssh forward", () => {
     await world.sync.syncOnce();
     expect(world.spawned[0]!.argv.join(" ")).not.toContain("2422");
     expect(readSandboxAnchor("acme-dev", "sb-1")!.localPorts).toEqual({ adjuster: 5001, backend: 10401 });
+  });
+});
+
+// ─── Forward-spawn robustness (MAT-273 A2) ───────────────────────────────────
+
+describe("forward-spawn robustness", () => {
+  test("a dead forward child is respawned on the next pass with the same mapping", async () => {
+    const world = makeSyncWorld();
+    await world.sync.syncOnce();
+    world.spawned[0]!.dead = true;
+    await world.sync.syncOnce();
+    expect(world.spawned).toHaveLength(2);
+    expect(world.spawned[1]!.argv).toEqual(world.spawned[0]!.argv);
+  });
+
+  test("a stale squatter on the chosen local port moves the allocation to the next pool port", async () => {
+    const world = makeSyncWorld();
+    // Something we do not hold already listens on adjuster's first free
+    // candidate (orphan kubectl from a dead daemon, unrelated process).
+    world.listeners.add(5001);
+    await world.sync.syncOnce();
+    expect(world.spawned).toHaveLength(1);
+    expect(world.spawned[0]!.argv).toContain("6001:4001");
+    expect(readSandboxAnchor("acme-dev", "sb-1")!.localPorts!.adjuster).toBe(6001);
+
+    // Our own live forward now listens on 6001 — that is not a squatter;
+    // steady state keeps the allocation and spawns nothing new.
+    world.listeners.add(6001);
+    await world.sync.syncOnce();
+    expect(world.spawned).toHaveLength(1);
+    expect(readSandboxAnchor("acme-dev", "sb-1")!.localPorts!.adjuster).toBe(6001);
+  });
+
+  test("post-daemon-restart: a squatted previous ssh port converges to the next pool port", async () => {
+    const world = makeSyncWorld();
+    world.detail = { ...world.detail, attended: true };
+    // The previous daemon's anchor survives the restart; its kubectl child
+    // (never reaped — it crashed) still squats the old ssh local.
+    writeSandboxAnchor({
+      id: "sb-1", repoId: "acme-dev", branch: "cv-1-fix", createdAt: "t", lastEventSeq: 0,
+      localPorts: { adjuster: 5001, backend: 10401, ssh: ATTENDED_SSH_LOCAL_PORTS[0]! },
+    });
+    world.listeners.add(ATTENDED_SSH_LOCAL_PORTS[0]!);
+    await world.sync.syncOnce();
+    expect(world.spawned).toHaveLength(1);
+    expect(world.spawned[0]!.argv).toContain(`${ATTENDED_SSH_LOCAL_PORTS[1]}:2422`);
+    expect(readSandboxAnchor("acme-dev", "sb-1")!.localPorts).toEqual({
+      adjuster: 5001, backend: 10401, [ATTENDED_SSH_PROCESS_NAME]: ATTENDED_SSH_LOCAL_PORTS[1]!,
+    });
+  });
+
+  test("every spawn and reap emits a daemon log line (silence is diagnosable)", async () => {
+    const world = makeSyncWorld();
+    await world.sync.syncOnce();
+    expect(world.logs.some(l => l.msg.includes("spawn") && l.obj.sandboxId === "sb-1")).toBe(true);
+
+    world.detail = { ...world.detail, state: "destroyed" };
+    await world.sync.syncOnce();
+    expect(world.logs.some(l => l.msg.includes("reap") && l.obj.sandboxId === "sb-1")).toBe(true);
   });
 });

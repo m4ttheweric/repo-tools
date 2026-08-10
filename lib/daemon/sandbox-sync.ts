@@ -12,7 +12,7 @@
 import type { Logger } from "pino";
 import { controllerUrl } from "../validate-farm.ts";
 import { createSandboxClient } from "../sandbox.ts";
-import { createForwardSet, createSandboxSync } from "../sandbox-allocator.ts";
+import { createForwardSet, createSandboxSync, probeLocalListener } from "../sandbox-allocator.ts";
 import { notifyEnabled } from "../notifier.ts";
 import { getEvidenceLedger } from "./evidence-ledger.ts";
 import { syncEvidence } from "./evidence-sync.ts";
@@ -32,6 +32,7 @@ export function stopSandboxSync(): void {
 }
 
 export function startSandboxSync(log: Logger): { stop: () => void } {
+  const slog = log.child({ module: "sandbox-sync" });
   const forwards = createForwardSet();
   const client = createSandboxClient();
   const evidenceLedger = getEvidenceLedger();
@@ -48,6 +49,8 @@ export function startSandboxSync(log: Logger): { stop: () => void } {
     client,
     forwards,
     notify,
+    listens: probeLocalListener,
+    log: slog,
     evidence: {
       ledger: evidenceLedger,
       sync: (requestId) => syncEvidence(

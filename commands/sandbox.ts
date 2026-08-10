@@ -579,23 +579,6 @@ export async function shipCommand(args: string[], ctx: CommandContext): Promise<
 
 // ─── rt sandbox qa-tunnel ────────────────────────────────────────────────────
 
-/** True when something accepts a TCP connection on 127.0.0.1:port. */
-async function probeLocalListener(port: number): Promise<boolean> {
-  return await new Promise<boolean>((resolve) => {
-    const timer = setTimeout(() => resolve(false), 1500);
-    Bun.connect({
-      hostname: "127.0.0.1",
-      port,
-      socket: {
-        open(socket) { clearTimeout(timer); socket.end(); resolve(true); },
-        error() { clearTimeout(timer); resolve(false); },
-        data() {},
-        close() {},
-      },
-    }).catch(() => { clearTimeout(timer); resolve(false); });
-  });
-}
-
 /** Resolve an sdm resource's local listener port from `sdm status`. */
 async function resolveSdmListenerPort(resource: string): Promise<number> {
   const { getSdmSnapshot } = await import("../lib/sdm/core.ts");
@@ -633,6 +616,7 @@ export async function qaTunnelCommand(args: string[]): Promise<void> {
   const overlay = anchor ? readSandboxConfig(anchor.repoId) : null;
 
   const { openQaTunnel, spawnTunnel } = await import("../lib/qa-tunnel.ts");
+  const { probeLocalListener } = await import("../lib/sandbox-allocator.ts");
   const { notify } = await import("../lib/notifier.ts");
   const out = await openQaTunnel({
     sandboxId: id,
