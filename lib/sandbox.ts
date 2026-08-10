@@ -494,6 +494,30 @@ export function findSandboxAnchor(sandboxId: string): SandboxAnchor | null {
   return null;
 }
 
+// ─── Short-id resolution ─────────────────────────────────────────────────────
+
+/**
+ * Resolve a full or prefix sandbox id against controller ground truth: an
+ * exact match wins, else an unambiguous prefix. Shared by id-taking verbs so
+ * short ids work everywhere (`rt sandbox attach 0b70`); ambiguity is refused
+ * naming the candidates rather than guessed at.
+ */
+export async function resolveSandboxId(
+  client: SandboxClient,
+  idOrPrefix: string,
+): Promise<{ ok: true; detail: SandboxDetail } | { ok: false; message: string; notFound?: true }> {
+  const all = await client.list();
+  const exact = all.find(s => s.id === idOrPrefix);
+  if (exact) return { ok: true, detail: exact };
+  const matches = all.filter(s => s.id.startsWith(idOrPrefix));
+  if (matches.length === 1) return { ok: true, detail: matches[0]! };
+  if (matches.length === 0) return { ok: false, notFound: true, message: `sandbox ${idOrPrefix} not found` };
+  return {
+    ok: false,
+    message: `sandbox id "${idOrPrefix}" is ambiguous — matches ${matches.map(s => s.id).join(", ")}`,
+  };
+}
+
 // ─── Branch handshake push ───────────────────────────────────────────────────
 
 /** The pre-POST handshake ref the seed Job fetches (see CONTRACT NOTES). */

@@ -41,6 +41,7 @@ import {
   readSandboxAnchor,
   readSandboxConfig,
   removeSandboxAnchor,
+  resolveSandboxId,
   sandboxLogsArgv,
   upsertFlagsSecret,
   type EvidenceBeforeEntry,
@@ -669,20 +670,22 @@ export async function attachCommand(args: string[]): Promise<void> {
   if ("error" in parsed) usageExit(parsed.error);
 
   await requireController();
-  let detail: SandboxDetail | null;
+  // Short ids welcome: resolve full-or-prefix against controller ground truth.
+  let resolved: Awaited<ReturnType<typeof resolveSandboxId>>;
   try {
-    detail = await createSandboxClient().get(parsed.id);
+    resolved = await resolveSandboxId(createSandboxClient(), parsed.id);
   } catch (err) {
     infraExit(err);
   }
-  if (!detail) {
-    console.error(`\n  ${red}sandbox ${parsed.id} not found${reset}\n`);
+  if (!resolved.ok) {
+    console.error(`\n  ${red}${resolved.message}${reset}\n`);
     process.exit(64);
   }
+  const detail = resolved.detail;
 
   const { prepareAttendedAttach } = await import("../lib/sandbox.ts");
   const { spawnExec } = await import("../lib/cloud-secrets.ts");
-  const out = await prepareAttendedAttach({ sandboxId: parsed.id, detail, exec: spawnExec });
+  const out = await prepareAttendedAttach({ sandboxId: detail.id, detail, exec: spawnExec });
   if (!out.ok) {
     console.error(`\n  ${red}✗ ${out.message}${reset}\n`);
     process.exit(2);
