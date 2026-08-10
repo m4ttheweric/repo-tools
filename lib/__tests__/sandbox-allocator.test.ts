@@ -17,6 +17,7 @@ import {
 } from "../sandbox-allocator.ts";
 import {
   readSandboxAnchor,
+  removeSandboxAnchor,
   writeSandboxAnchor,
   type EvidenceDetail,
   type EvidenceRequestRecord,
@@ -197,6 +198,8 @@ interface SyncWorld {
   spawned: Array<{ argv: string[]; killed: boolean }>;
   sync: { syncOnce(): Promise<void> };
   reachable: boolean;
+  /** When set, the client fake's list() returns this instead of [detail]. */
+  listResult: SandboxDetail[] | null;
   /** Set by evidence tests before syncOnce; read by the client fake's getEvidence. */
   evidenceDetail: EvidenceDetail | null;
   /** Controller request list the client fake's listEvidence returns. */
@@ -241,6 +244,7 @@ function makeSyncWorld(opts?: { withEvidence?: boolean }): SyncWorld {
     spawned: [],
     sync: null as unknown as SyncWorld["sync"],
     reachable: true,
+    listResult: null,
     evidenceDetail: null,
     evidenceRequests: [],
     evidenceSyncCalls: [],
@@ -250,8 +254,7 @@ function makeSyncWorld(opts?: { withEvidence?: boolean }): SyncWorld {
     async create() { throw new Error("unused"); },
     async list() {
       world.clientCalls.push("list");
-      return world.detail.state === "destroyed" && world.detail.id === "gone"
-        ? [] : [world.detail];
+      return world.listResult ?? [world.detail];
     },
     async get() { return world.detail; },
     async suspend() {}, async up() {}, async destroy() {},
@@ -321,7 +324,7 @@ describe("createSandboxSync", () => {
     expect(world.spawned).toHaveLength(1);
   });
 
-  test("suspend releases: forward killed, state entry removed, allocation kept as resume preference", async () => {
+  test("suspend releases: forward killed, state entry removed, localPorts cleared but kept as resume preference", async () => {
     const world = makeSyncWorld();
     await world.sync.syncOnce();
     world.detail = { ...world.detail, state: "suspended", podPhase: undefined };
@@ -330,14 +333,31 @@ describe("createSandboxSync", () => {
     expect(world.spawned[0]!.killed).toBe(true);
     const state = JSON.parse(readFileSync(world.stateFile, "utf8"));
     expect(Object.keys(state)).toEqual(["/wt/local"]);
+    // The anchor must not claim live ports it no longer has (attach reads
+    // localPorts as ground truth); the allocation survives as a preference.
     const anchor = readSandboxAnchor("acme-dev", "sb-1")!;
-    expect(anchor.localPorts).toEqual({ portal: 5001, backend: 10401 });
+    expect(anchor.localPorts).toBeUndefined();
+    expect(anchor.preferredPorts).toEqual({ portal: 5001, backend: 10401 });
 
     // Resume re-establishes the same allocation when free.
     world.detail = { ...world.detail, state: "running", podPhase: "Running" };
     await world.sync.syncOnce();
     expect(world.spawned).toHaveLength(2);
     expect(world.spawned[1]!.argv).toContain("5001:4001");
+    const resumed = readSandboxAnchor("acme-dev", "sb-1")!;
+    expect(resumed.localPorts).toEqual({ portal: 5001, backend: 10401 });
+    expect(resumed.preferredPorts).toBeUndefined();
+  });
+
+  test("error state releases the forward and clears the anchor's localPorts", async () => {
+    const world = makeSyncWorld();
+    await world.sync.syncOnce();
+    world.detail = { ...world.detail, state: "error", podPhase: undefined };
+    await world.sync.syncOnce();
+
+    expect(world.spawned[0]!.killed).toBe(true);
+    expect(readSandboxAnchor("acme-dev", "sb-1")!.localPorts).toBeUndefined();
+    expect(Object.keys(JSON.parse(readFileSync(world.stateFile, "utf8")))).toEqual(["/wt/local"]);
   });
 
   test("destroyed sandbox: forwards, state entry, and anchor all pruned", async () => {
@@ -349,6 +369,27 @@ describe("createSandboxSync", () => {
     expect(world.spawned[0]!.killed).toBe(true);
     expect(existsSync(sandboxAnchorDir("acme-dev", "sb-1"))).toBe(false);
     expect(Object.keys(JSON.parse(readFileSync(world.stateFile, "utf8")))).toEqual(["/wt/local"]);
+  });
+
+  test("a destroyed sandbox whose anchor the CLI already pruned still gets its forward reaped", async () => {
+    // Live repro (MAT-273 #1): `rt sandbox destroy` removes the anchor
+    // immediately, so the next pass has no anchor to visit — the held
+    // kubectl port-forward must still be reaped from controller ground truth.
+    const world = makeSyncWorld();
+    await world.sync.syncOnce();
+    removeSandboxAnchor("acme-dev", "sb-1");
+    world.detail = { ...world.detail, state: "destroyed" };
+    await world.sync.syncOnce();
+    expect(world.spawned[0]!.killed).toBe(true);
+  });
+
+  test("a forward for a sandbox absent from the controller list is reaped", async () => {
+    const world = makeSyncWorld();
+    await world.sync.syncOnce();
+    removeSandboxAnchor("acme-dev", "sb-1");
+    world.listResult = [];
+    await world.sync.syncOnce();
+    expect(world.spawned[0]!.killed).toBe(true);
   });
 
   test("events fan out to notify, bearer folds into the state entry, seq persists across polls", async () => {
