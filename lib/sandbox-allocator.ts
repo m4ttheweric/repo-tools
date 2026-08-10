@@ -101,6 +101,8 @@ export function allocatePorts(
 
 export interface ForwardHandle {
   kill(): void;
+  /** False once the child exited on its own; absent means always-alive (fakes). */
+  alive?(): boolean;
 }
 
 /** Injected spawner so the kubectl leg is unit-testable off-cluster. */
@@ -109,9 +111,13 @@ export type ForwardSpawn = (argv: string[]) => ForwardHandle;
 export type ForwardMapping = Record<string, { local: number; pod: number }>;
 
 export interface ForwardSet {
-  /** Hold `kubectl port-forward` for the sandbox; no-op when unchanged. */
-  ensure(sandboxId: string, podName: string, mapping: ForwardMapping): void;
-  stop(sandboxId: string): void;
+  /**
+   * Hold `kubectl port-forward` for the sandbox. "kept" when a live forward
+   * already covers the mapping; a dead child or a mapping change respawns.
+   */
+  ensure(sandboxId: string, podName: string, mapping: ForwardMapping): "spawned" | "respawned" | "kept";
+  /** True when a forward was actually held (and is now stopped). */
+  stop(sandboxId: string): boolean;
   active(sandboxId: string): ForwardMapping | null;
   /** Local ports held by forwards, optionally excluding one sandbox's. */
   activeLocals(exceptSandboxId?: string): number[];
@@ -123,12 +129,35 @@ export interface ForwardSet {
 /** Real spawner. Cluster-verify pending: needs a live cluster to prove. */
 export const spawnForward: ForwardSpawn = (argv) => {
   const proc = Bun.spawn(argv, { env: kubectlEnv(), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  let exited = false;
+  proc.exited.then(() => { exited = true; }, () => { exited = true; });
   return {
     kill: () => {
       try { proc.kill(); } catch { /* already exited */ }
     },
+    alive: () => !exited,
   };
 };
+
+/**
+ * True when something accepts a TCP connection on 127.0.0.1:port — the real
+ * deps.listens for squatter detection (also the CLI's qa-tunnel probe).
+ */
+export async function probeLocalListener(port: number): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), 1500);
+    Bun.connect({
+      hostname: "127.0.0.1",
+      port,
+      socket: {
+        open(socket) { clearTimeout(timer); socket.end(); resolve(true); },
+        error() { clearTimeout(timer); resolve(false); },
+        data() {},
+        close() {},
+      },
+    }).catch(() => { clearTimeout(timer); resolve(false); });
+  });
+}
 
 export function createForwardSet(
   spawn: ForwardSpawn = spawnForward,
@@ -140,23 +169,37 @@ export function createForwardSet(
     return Object.entries(mapping).map(([name, m]) => `${name}=${m.local}:${m.pod}`).sort().join(",");
   }
 
+  /** Drop entries whose child died on its own — a dead forward holds nothing. */
+  function pruneDead(): void {
+    for (const [id, { handle }] of [...held]) {
+      if (handle.alive && !handle.alive()) held.delete(id);
+    }
+  }
+
   return {
     ensure(sandboxId, podName, mapping) {
+      const wasHeld = held.has(sandboxId);
+      pruneDead();
       const current = held.get(sandboxId);
-      if (current && mappingKey(current.mapping) === mappingKey(mapping)) return;
+      if (current && mappingKey(current.mapping) === mappingKey(mapping)) return "kept";
       current?.handle.kill();
       const pairs = Object.values(mapping).map(m => `${m.local}:${m.pod}`);
       const handle = spawn(["kubectl", "-n", namespace, "port-forward", `pod/${podName}`, ...pairs]);
       held.set(sandboxId, { mapping, handle });
+      return wasHeld ? "respawned" : "spawned";
     },
     stop(sandboxId) {
-      held.get(sandboxId)?.handle.kill();
+      const current = held.get(sandboxId);
+      current?.handle.kill();
       held.delete(sandboxId);
+      return current !== undefined;
     },
     active(sandboxId) {
+      pruneDead();
       return held.get(sandboxId)?.mapping ?? null;
     },
     activeLocals(exceptSandboxId) {
+      pruneDead();
       const out: number[] = [];
       for (const [id, { mapping }] of held) {
         if (id === exceptSandboxId) continue;
@@ -165,6 +208,7 @@ export function createForwardSet(
       return out;
     },
     heldIds() {
+      pruneDead();
       return [...held.keys()];
     },
     stopAll() {
@@ -260,6 +304,16 @@ export interface SandboxSyncDeps {
   client: SandboxClient;
   forwards: ForwardSet;
   notify(title: string, message: string, category: string): void;
+  /**
+   * True when something listens on 127.0.0.1:port. Used for stale-squatter
+   * detection: a listener on a port our live forwards do not hold is foreign
+   * (orphan kubectl from a dead daemon, unrelated process), so the allocation
+   * moves to the next pool port instead of spawning a forward that loses the
+   * bind race. Absent = no probing (tests that don't care).
+   */
+  listens?(port: number): Promise<boolean>;
+  /** Spawn/reap diagnostics — the daemon wires its sandbox-sync module logger. */
+  log?: { info(obj: Record<string, unknown>, msg: string): void };
   /** Overlay enumeration, injectable for tests; defaults to ~/.rt/repos. */
   overlays?(): Array<{ repoId: string; config: SandboxOverlayConfig }>;
   /** Evidence fold-in, wired by lib/daemon/sandbox-sync.ts; absent when a repo has no evidence overlay. */
@@ -385,10 +439,10 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
     }
   }
 
-  function reconcileRunning(
+  async function reconcileRunning(
     sandbox: SandboxDetail,
     config: SandboxOverlayConfig,
-  ): void {
+  ): Promise<void> {
     const anchor: SandboxAnchor = readSandboxAnchor(sandbox.repoId, sandbox.id) ?? {
       id: sandbox.id,
       repoId: sandbox.repoId,
@@ -408,7 +462,25 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
       for (const port of statePortsInUse(config.stateFile, processNames, anchorDir)) taken.add(port);
     }
 
-    const allocation = allocatePorts(processes, taken, anchor.localPorts ?? anchor.preferredPorts);
+    const preferred = anchor.localPorts ?? anchor.preferredPorts;
+    let allocation = allocatePorts(processes, taken, preferred);
+    if (deps.listens) {
+      // Ports our own live forward for this sandbox holds are never squatted;
+      // everything else we're about to bind gets probed. Each round marks the
+      // squatted ports taken and re-allocates, so the pass converges on free
+      // pool ports (or falls into the exhaustion branch below).
+      const ours = new Set(Object.values(deps.forwards.active(sandbox.id) ?? {}).map(m => m.local));
+      while (allocation.ok) {
+        const squatted: number[] = [];
+        for (const port of Object.values(allocation.ports)) {
+          if (!ours.has(port) && (await deps.listens(port))) squatted.push(port);
+        }
+        if (squatted.length === 0) break;
+        for (const port of squatted) taken.add(port);
+        deps.log?.info({ sandboxId: sandbox.id, ports: squatted }, "local ports squatted by a foreign listener; re-allocating");
+        allocation = allocatePorts(processes, taken, preferred);
+      }
+    }
     if (!allocation.ok) {
       // Loud, not silent: an unregistered local port cannot complete Auth0
       // login, so a partial forward would be a lying success.
@@ -433,7 +505,10 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
       mapping[proc.name] = { local: allocation.ports[proc.name]!, pod: proc.port };
     }
     // Pod name == sandbox id (contract note in lib/sandbox.ts).
-    deps.forwards.ensure(sandbox.id, sandbox.id, mapping);
+    const outcome = deps.forwards.ensure(sandbox.id, sandbox.id, mapping);
+    if (outcome !== "kept") {
+      deps.log?.info({ sandboxId: sandbox.id, mapping, outcome }, `forward ${outcome}`);
+    }
     // The state entry mirrors overlay processes ONLY: it is a consumer
     // contract (skills key on process-name fields), so the ssh pseudo-port
     // stays on the anchor and out of the file.
@@ -444,7 +519,9 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
   }
 
   function release(repoId: string, sandboxId: string, config: SandboxOverlayConfig): void {
-    deps.forwards.stop(sandboxId);
+    if (deps.forwards.stop(sandboxId)) {
+      deps.log?.info({ sandboxId }, "forward reaped (sandbox left running)");
+    }
     if (config.stateFile) removeStateEntry(config.stateFile, sandboxAnchorDir(repoId, sandboxId));
     // The anchor must not claim ports it no longer holds (attach reads
     // localPorts as ground truth); the allocation survives as a preference.
@@ -497,7 +574,7 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
           continue;
         }
         if (sandbox.state === "running") {
-          reconcileRunning(sandbox, config);
+          await reconcileRunning(sandbox, config);
         } else {
           // creating / suspended / error: nothing should be forwarded or
           // mirrored; the allocation stays on the anchor as a preference.
@@ -513,7 +590,9 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
     // keep a forward.
     for (const id of deps.forwards.heldIds()) {
       const state = byId.get(id)?.state;
-      if (state !== "running") deps.forwards.stop(id);
+      if (state !== "running" && deps.forwards.stop(id)) {
+        deps.log?.info({ sandboxId: id, state: state ?? "absent" }, "forward reaped (orphan)");
+      }
     }
   }
 
