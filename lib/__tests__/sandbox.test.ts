@@ -21,6 +21,7 @@ import {
   readSandboxAnchor,
   readSandboxConfig,
   removeSandboxAnchor,
+  resolveSandboxId,
   sandboxIncomingRef,
   upsertFlagsSecret,
   writeSandboxAnchor,
@@ -749,6 +750,48 @@ describe("attended ssh config", () => {
     // A sibling sandbox's block survives.
     const other = upsertSshConfigBlock(twice, "mc-sb-2", renderAttendedSshBlock({ alias: "mc-sb-2", localPort: 24222, keyPath: "/k" }));
     expect(upsertSshConfigBlock(other, "mc-sb-1", block1)).toContain("Host mc-sb-2");
+  });
+});
+
+describe("resolveSandboxId", () => {
+  function clientWith(ids: string[]) {
+    const details: SandboxDetail[] = ids.map((id) => ({
+      id, repoId: "r", branch: "b", imageTag: "img", state: "running",
+      createdAt: "t", ports: {}, lastEventSeq: 0,
+    }));
+    return { async list() { return details; } } as unknown as import("../sandbox.ts").SandboxClient;
+  }
+
+  test("an exact id wins even when it prefixes another", async () => {
+    const out = await resolveSandboxId(clientWith(["abc", "abcd"]), "abc");
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.detail.id).toBe("abc");
+  });
+
+  test("an unambiguous prefix resolves to the full id", async () => {
+    const full = "0b707c06-03d4-49da-8d81-f007d890d639";
+    const out = await resolveSandboxId(clientWith([full, "f00dfeed-1111-2222-3333-444455556666"]), "0b70");
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.detail.id).toBe(full);
+  });
+
+  test("an ambiguous prefix is refused naming the candidates", async () => {
+    const out = await resolveSandboxId(clientWith(["abc-1", "abc-2"]), "abc");
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.message).toContain("abc-1");
+      expect(out.message).toContain("abc-2");
+      expect(out.notFound).toBeUndefined();
+    }
+  });
+
+  test("no match is notFound", async () => {
+    const out = await resolveSandboxId(clientWith(["abc"]), "zzz");
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.notFound).toBe(true);
+      expect(out.message).toContain("zzz");
+    }
   });
 });
 
