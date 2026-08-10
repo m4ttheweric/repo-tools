@@ -62,6 +62,7 @@ function helpExit(): never {
   console.log(`
   ${bold}rt sandbox create${reset} [--ticket CV-XXXX | --branch <name>] [--job <dir>] [--flags k=v...] [--image <tag>] [--account <secret-key>] [--attended --tui-account <key>] [--agent-env NAME=value]... [--evidence-before <caseId>:<view>:<recipe>[:k=v,...]]... [--json]
       push branch to the receiver, create the cloud sandbox, anchor it locally;
+      a --branch missing locally is created from the default branch head (with a notice);
       --evidence-before (repeatable, max 10) queues before-slot captures with the create;
       --account picks the agent-credentials Secret key (billing identity);
       --attended boots an in-pod herdr server + sshd instead of the lane supervisor
@@ -192,6 +193,7 @@ export async function createCommand(args: string[], ctx: CommandContext): Promis
   if ("error" in selection) usageExit(selection.error);
   let ticket: string | null = null;
   let branch: string | null = null;
+  let branchFlag = false;
   let jobDir: string | null = null;
   let imageTag: string | null = null;
   let json = false;
@@ -203,7 +205,7 @@ export async function createCommand(args: string[], ctx: CommandContext): Promis
     if (arg === "--help" || arg === "-h") helpExit();
     else if (arg === "--json") json = true;
     else if (arg === "--ticket") { ticket = rest[++i] ?? null; if (!ticket) usageExit("--ticket requires an id"); }
-    else if (arg === "--branch") { branch = rest[++i] ?? null; if (!branch) usageExit("--branch requires a name"); }
+    else if (arg === "--branch") { branch = rest[++i] ?? null; if (!branch) usageExit("--branch requires a name"); branchFlag = true; }
     else if (arg === "--job") { jobDir = rest[++i] ?? null; if (!jobDir) usageExit("--job requires a directory"); }
     else if (arg === "--image") { imageTag = rest[++i] ?? null; if (!imageTag) usageExit("--image requires a tag"); }
     else if (arg === "--flags") { const pair = rest[++i]; if (!pair) usageExit("--flags requires k=v"); flagPairs.push(pair); }
@@ -256,14 +258,17 @@ export async function createCommand(args: string[], ctx: CommandContext): Promis
     endpoints = await requireEndpoints();
     if (!endpoints) process.exit(2);
     // The flow resolves refs/heads/<branch> itself and aborts when it does
-    // not exist; only the --ticket path may seed a fresh branch from the
-    // base ref (design: "a fresh ticket branch is just master's tree").
+    // not exist; the --ticket path seeds a fresh branch from the base ref
+    // (design: "a fresh ticket branch is just master's tree"), and an
+    // explicit --branch that is missing locally is created from it
+    // (MAT-273 — scratch/acceptance sessions; never a remote touch).
     const out = await createSandboxFlow({
       repoId,
       branch,
       cwd: process.cwd(),
       brief,
       ...(ticket ? { fallbackRef: resolveBaseRef(repoId, process.cwd()) } : {}),
+      ...(branchFlag ? { createBranchFromRef: resolveBaseRef(repoId, process.cwd()) } : {}),
       ...(imageTag ? { imageTag } : {}),
       ...(flagPairs.length ? { flags: parseFlagValues(flagPairs) } : {}),
       ...(evidenceBefore.length ? { evidenceBefore } : {}),
@@ -280,8 +285,14 @@ export async function createCommand(args: string[], ctx: CommandContext): Promis
     }
     const anchorDir = sandboxAnchorDir(repoId, out.sandboxId);
     if (json) {
-      console.log(JSON.stringify({ sandboxId: out.sandboxId, repoId, branch, anchorDir }, null, 2));
+      console.log(JSON.stringify({
+        sandboxId: out.sandboxId, repoId, branch, anchorDir,
+        ...(out.branchCreatedFrom ? { branchCreatedFrom: out.branchCreatedFrom } : {}),
+      }, null, 2));
     } else {
+      if (out.branchCreatedFrom) {
+        console.log(`\n  ${yellow}branch ${branch} did not exist locally — created from ${out.branchCreatedFrom}${reset}`);
+      }
       console.log(`\n  ${green}✓${reset} sandbox ${bold}${out.sandboxId}${reset} creating on ${cyan}${branch}${reset}`);
       console.log(`  ${dim}anchor ${anchorDir}${reset}`);
       console.log(`  ${dim}watch with${reset} ${bold}rt sandbox status ${out.sandboxId}${reset}\n`);

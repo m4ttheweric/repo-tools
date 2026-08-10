@@ -575,11 +575,18 @@ export async function createSandboxFlow(opts: {
    * Absent means a missing branch aborts instead of falling back.
    */
   fallbackRef?: string;
+  /**
+   * The --branch path's affordance (MAT-273): when refs/heads/<branch> is
+   * missing, CREATE it locally from this ref's head (`git branch`, never a
+   * remote touch) and report branchCreatedFrom so the caller can say so.
+   * Unlike fallbackRef, the branch exists afterwards.
+   */
+  createBranchFromRef?: string;
   client: SandboxClient;
   spawn: GitPushSpawn;
   exec?: Exec;
   env?: Record<string, string | undefined>;
-}): Promise<{ ok: true; sandboxId: string } | { ok: false; message: string }> {
+}): Promise<{ ok: true; sandboxId: string; branchCreatedFrom?: string } | { ok: false; message: string }> {
   const exec = opts.exec ?? spawnExec;
   const resolve = async (ref: string): Promise<string | null> => {
     const r = await exec(["git", "rev-parse", "--verify", "--quiet", ref], { cwd: opts.cwd });
@@ -587,13 +594,29 @@ export async function createSandboxFlow(opts: {
     return r.exitCode === 0 && commit ? commit : null;
   };
   let commit = await resolve(`refs/heads/${opts.branch}`);
+  let branchCreatedFrom: string | undefined;
   if (!commit && opts.fallbackRef) commit = await resolve(opts.fallbackRef);
+  if (!commit && opts.createBranchFromRef) {
+    const base = await resolve(opts.createBranchFromRef);
+    if (base) {
+      const made = await exec(["git", "branch", opts.branch, base], { cwd: opts.cwd });
+      if (made.exitCode !== 0) {
+        return {
+          ok: false,
+          message: `creating branch "${opts.branch}" from ${opts.createBranchFromRef} failed (git branch exit ${made.exitCode})`,
+        };
+      }
+      commit = base;
+      branchCreatedFrom = opts.createBranchFromRef;
+    }
+  }
   if (!commit) {
+    const baseRef = opts.fallbackRef ?? opts.createBranchFromRef;
     return {
       ok: false,
       message:
         `branch "${opts.branch}" does not exist in this checkout (refs/heads/${opts.branch}` +
-        `${opts.fallbackRef ? ` and base ref ${opts.fallbackRef}` : ""} did not resolve) — nothing was pushed`,
+        `${baseRef ? ` and base ref ${baseRef}` : ""} did not resolve) — nothing was pushed`,
     };
   }
   const push = await pushSandboxBranch({
@@ -630,7 +653,7 @@ export async function createSandboxFlow(opts: {
     createdAt: new Date().toISOString(),
     lastEventSeq: 0,
   });
-  return { ok: true, sandboxId };
+  return { ok: true, sandboxId, ...(branchCreatedFrom ? { branchCreatedFrom } : {}) };
 }
 
 // ─── Attended ssh key (MAT-235) ──────────────────────────────────────────────
