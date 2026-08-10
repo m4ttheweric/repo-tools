@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent } from "../../commands/sandbox.ts";
+import { parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent, requireBrief } from "../../commands/sandbox.ts";
 import type { SandboxEvent } from "../sandbox.ts";
 
 describe("parseAttachArgs", () => {
@@ -60,6 +60,26 @@ describe("parseAgentSelection", () => {
       expect("error" in out).toBe(true);
     }
     expect((parseAgentSelection(["--attended"]) as { error: string }).error).toContain("--tui-account");
+  });
+});
+
+describe("requireBrief", () => {
+  test("a given brief passes through untouched", () => {
+    expect(requireBrief("MAT-1: fix it", false)).toEqual({ brief: "MAT-1: fix it" });
+    expect(requireBrief("MAT-1: fix it", true)).toEqual({ brief: "MAT-1: fix it" });
+  });
+
+  test("briefless attended is legal — the operator IS the session (empty brief sent)", () => {
+    expect(requireBrief(null, true)).toEqual({ brief: "" });
+  });
+
+  test("briefless headless is still refused with the flags named", () => {
+    const out = requireBrief(null, false);
+    expect("error" in out).toBe(true);
+    if ("error" in out) {
+      expect(out.error).toContain("--job");
+      expect(out.error).toContain("--ticket");
+    }
   });
 });
 
