@@ -64,7 +64,8 @@ function helpExit(): never {
       push branch to the receiver, create the cloud sandbox, anchor it locally;
       --evidence-before (repeatable, max 10) queues before-slot captures with the create;
       --account picks the agent-credentials Secret key (billing identity);
-      --attended boots an in-pod herdr server + sshd instead of the lane supervisor;
+      --attended boots an in-pod herdr server + sshd instead of the lane supervisor
+      (attended lanes may omit --job/--ticket: briefless attended is the operator's session);
       --tui-account picks whose TUI credentials land in the pod (excludes --account);
       --agent-env NAME=value (repeatable) sets per-lane agent env (reserved names rejected)
   ${bold}rt sandbox ls${reset} [--json] / ${bold}status${reset} [<id>] [--json]
@@ -175,6 +176,17 @@ export function parseAgentSelection(
   };
 }
 
+/**
+ * Attended lanes may omit the brief — briefless attended is the operator's
+ * own session (the pod seeds an empty job.md); headless creates still need
+ * one, since the lane agent has nothing else to work from.
+ */
+export function requireBrief(brief: string | null, attended: boolean): { brief: string } | { error: string } {
+  if (brief !== null) return { brief };
+  if (attended) return { brief: "" };
+  return { error: "no brief — pass --job <dir> (job.md) or --ticket (only attended lanes may omit both)" };
+}
+
 export async function createCommand(args: string[], ctx: CommandContext): Promise<void> {
   const selection = parseAgentSelection(args);
   if ("error" in selection) usageExit(selection.error);
@@ -235,7 +247,9 @@ export async function createCommand(args: string[], ctx: CommandContext): Promis
     } catch { /* fall through to the usage error */ }
     if (!branch || branch === "HEAD") usageExit("no branch given and HEAD is detached — pass --branch or --ticket");
   }
-  if (!brief) usageExit("no brief — pass --job <dir> (job.md) or --ticket");
+  const briefed = requireBrief(brief, selection.attended ?? false);
+  if ("error" in briefed) usageExit(briefed.error);
+  brief = briefed.brief;
 
   let endpoints: { stop: () => void } | null = null;
   try {
