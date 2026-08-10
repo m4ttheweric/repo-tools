@@ -530,6 +530,67 @@ describe("createSandboxFlow", () => {
     expect(order).toEqual([]);
   });
 
+  /** Exec fake that also honors `git branch <name> <commit>` (A5 auto-create). */
+  function gitWithBranchCreate(refs: Record<string, string>) {
+    const calls: string[][] = [];
+    const exec: Exec = async (argv) => {
+      calls.push([...argv]);
+      if (argv[1] === "branch") {
+        refs[`refs/heads/${argv[2]}`] = argv[3]!;
+        return { stdout: "", exitCode: 0 };
+      }
+      const ref = argv[argv.length - 1]!;
+      const commit = refs[ref];
+      return commit ? { stdout: `${commit}\n`, exitCode: 0 } : { stdout: "", exitCode: 1 };
+    };
+    return { exec, calls, refs };
+  }
+
+  test("createBranchFromRef creates a missing branch from the base head and says so (--branch, MAT-273)", async () => {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
+    const { order, client, spawn } = world();
+    const { exec, calls } = gitWithBranchCreate({ "refs/remotes/origin/master": "base1" });
+    const out = await createSandboxFlow({
+      repoId: "acme-dev", branch: "scratch-1", cwd: "/w", brief: "x",
+      createBranchFromRef: "refs/remotes/origin/master", client, spawn, exec,
+    });
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.branchCreatedFrom).toBe("refs/remotes/origin/master");
+    // The local branch really exists now (never a remote touch), and the
+    // handshake pushes its head.
+    expect(calls).toContainEqual(["git", "branch", "scratch-1", "base1"]);
+    expect(order[0]).toBe("push +base1:refs/sandboxes/incoming/scratch-1");
+  });
+
+  test("createBranchFromRef leaves an existing branch alone (no create, no notice)", async () => {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
+    const { client, spawn } = world();
+    const { exec, calls } = gitWithBranchCreate({ "refs/heads/acme-9": "abc", "refs/remotes/origin/master": "base1" });
+    const out = await createSandboxFlow({
+      repoId: "acme-dev", branch: "acme-9", cwd: "/w", brief: "x",
+      createBranchFromRef: "refs/remotes/origin/master", client, spawn, exec,
+    });
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.branchCreatedFrom).toBeUndefined();
+    expect(calls.some(c => c[1] === "branch")).toBe(false);
+  });
+
+  test("createBranchFromRef that does not resolve either still aborts naming both refs", async () => {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
+    const { order, client, spawn } = world();
+    const { exec } = gitWithBranchCreate({});
+    const out = await createSandboxFlow({
+      repoId: "acme-dev", branch: "scratch-1", cwd: "/w", brief: "x",
+      createBranchFromRef: "refs/remotes/origin/master", client, spawn, exec,
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.message).toContain("refs/heads/scratch-1");
+      expect(out.message).toContain("refs/remotes/origin/master");
+    }
+    expect(order).toEqual([]);
+  });
+
   test("flags serialize into flagsFileContent; omitted entirely when absent", async () => {
     process.env.HOME = mkdtempSync(join(tmpdir(), "sbx-home-"));
     const bodies: Array<Record<string, unknown>> = [];
