@@ -16,7 +16,8 @@ import {
   type InfraForwardTarget,
 } from "../infra-forwards.ts";
 import { receiverRepoUrl } from "../validate-farm.ts";
-import type { ForwardSpawn } from "../sandbox-allocator.ts";
+import { createForwardSet, createSandboxSync, type ForwardSpawn } from "../sandbox-allocator.ts";
+import type { SandboxClient } from "../sandbox.ts";
 
 const ORIG_CONTROLLER = process.env.MC_CONTROLLER_URL;
 const ORIG_RECEIVER = process.env.MC_RECEIVER_URL;
@@ -174,5 +175,41 @@ describe("createInfraForwardSet", () => {
     spawned[0]!.dead = true;
     await set.ensureOnce();
     expect(lines).toHaveLength(3);
+  });
+});
+
+// ─── Daemon lifecycle hook ───────────────────────────────────────────────────
+
+describe("reconcile-loop ownership", () => {
+  test("every sync pass ensures infra forwards BEFORE the controller probe gate — an unreachable controller is exactly when the 8080 forward must come up", async () => {
+    const ensured: number[] = [];
+    const sync = createSandboxSync({
+      probe: async () => false, // controller unreachable: pod reconcile no-ops...
+      client: {} as SandboxClient,
+      forwards: createForwardSet(() => ({ kill() {} })),
+      notify: () => {},
+      overlays: () => [],
+      infra: { ensureOnce: async () => { ensured.push(1); return []; } },
+    });
+    await sync.syncOnce();
+    await sync.syncOnce();
+    expect(ensured).toHaveLength(2); // ...but the infra pass still ran each time
+  });
+
+  test("an infra ensure failure never blocks the pod reconcile", async () => {
+    let listed = 0;
+    const client = {
+      async list() { listed += 1; return []; },
+    } as unknown as SandboxClient;
+    const sync = createSandboxSync({
+      probe: async () => true,
+      client,
+      forwards: createForwardSet(() => ({ kill() {} })),
+      notify: () => {},
+      overlays: () => [],
+      infra: { ensureOnce: async () => { throw new Error("kubectl missing"); } },
+    });
+    await sync.syncOnce();
+    expect(listed).toBe(1);
   });
 });
