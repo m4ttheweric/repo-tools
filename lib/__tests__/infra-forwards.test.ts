@@ -138,4 +138,41 @@ describe("createInfraForwardSet", () => {
     ]);
     expect(spawned).toHaveLength(2);
   });
+
+  test("a dead child is respawned on the next pass — same retry treatment as the pod forwards", async () => {
+    const { spawn, spawned } = recordingSpawn();
+    const set = createInfraForwardSet({ targets: TARGETS, spawn, listens: async () => false });
+    await set.ensureOnce();
+    spawned[1]!.dead = true; // receiver kubectl died (network blip, pod recycle)
+    expect(await set.ensureOnce()).toEqual([
+      { name: "controller", outcome: "kept" },
+      { name: "receiver", outcome: "respawned" },
+    ]);
+    expect(spawned).toHaveLength(3);
+    expect(spawned[2]!.argv).toEqual(spawned[1]!.argv);
+  });
+
+  test("stopAll kills every held child (daemon shutdown reaps, nothing leaks)", async () => {
+    const { spawn, spawned } = recordingSpawn();
+    const set = createInfraForwardSet({ targets: TARGETS, spawn, listens: async () => false });
+    await set.ensureOnce();
+    set.stopAll();
+    expect(spawned.every(s => s.killed)).toBe(true);
+    // Stopped means nothing held: with the ports still free, the next pass respawns.
+    expect((await set.ensureOnce()).map(o => o.outcome)).toEqual(["spawned", "spawned"]);
+  });
+
+  test("every spawn emits a daemon log line (silence is diagnosable)", async () => {
+    const { spawn, spawned } = recordingSpawn();
+    const lines: string[] = [];
+    const set = createInfraForwardSet({
+      targets: TARGETS, spawn, listens: async () => false,
+      log: { info: (_obj, msg) => lines.push(msg) },
+    });
+    await set.ensureOnce();
+    expect(lines).toHaveLength(2);
+    spawned[0]!.dead = true;
+    await set.ensureOnce();
+    expect(lines).toHaveLength(3);
+  });
 });

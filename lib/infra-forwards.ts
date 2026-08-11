@@ -97,7 +97,12 @@ export function createInfraForwardSet(deps: InfraForwardDeps): InfraForwardSet {
           `svc/${target.service}`, `${target.localPort}:${target.servicePort}`,
         ]);
         held.set(target.name, handle);
-        outcomes.push({ name: target.name, outcome: current ? "respawned" : "spawned" });
+        const outcome: InfraOutcome = current ? "respawned" : "spawned";
+        deps.log?.info(
+          { target: target.name, local: target.localPort, service: `svc/${target.service}`, outcome },
+          `infra forward ${outcome}`,
+        );
+        outcomes.push({ name: target.name, outcome });
       }
       return outcomes;
     },
