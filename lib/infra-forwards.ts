@@ -83,6 +83,15 @@ export function createInfraForwardSet(deps: InfraForwardDeps): InfraForwardSet {
           }
           held.delete(target.name);
         }
+        // Nothing of ours holds the port (a dead child was pruned above and
+        // listens no more). A listener there is a foreign holder (rt
+        // validate's command-lifetime forward, a manual kubectl): spawning
+        // would lose the bind race, so leave it alone. When it exits, the
+        // next pass takes over.
+        if (await deps.listens(target.localPort)) {
+          outcomes.push({ name: target.name, outcome: "foreign" });
+          continue;
+        }
         const handle = spawn([
           "kubectl", "-n", namespace, "port-forward",
           `svc/${target.service}`, `${target.localPort}:${target.servicePort}`,

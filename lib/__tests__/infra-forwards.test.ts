@@ -107,4 +107,35 @@ describe("createInfraForwardSet", () => {
     ]);
     expect(spawned).toHaveLength(2);
   });
+
+  test("a foreign listener on the port is respected — rt validate's or a manual forward keeps the bind", async () => {
+    const { spawn, spawned } = recordingSpawn();
+    let foreign = true;
+    const set = createInfraForwardSet({ targets: TARGETS, spawn, listens: async () => foreign });
+    expect(await set.ensureOnce()).toEqual([
+      { name: "controller", outcome: "foreign" },
+      { name: "receiver", outcome: "foreign" },
+    ]);
+    expect(spawned).toHaveLength(0);
+    // The foreign holder went away (validate finished): the daemon takes over.
+    foreign = false;
+    expect(await set.ensureOnce()).toEqual([
+      { name: "controller", outcome: "spawned" },
+      { name: "receiver", outcome: "spawned" },
+    ]);
+    expect(spawned).toHaveLength(2);
+  });
+
+  test("our own live child never reads as foreign even though it listens", async () => {
+    const { spawn, spawned } = recordingSpawn();
+    let listening = false;
+    const set = createInfraForwardSet({ targets: TARGETS, spawn, listens: async () => listening });
+    await set.ensureOnce();
+    listening = true; // the spawned kubectl children now hold the ports
+    expect(await set.ensureOnce()).toEqual([
+      { name: "controller", outcome: "kept" },
+      { name: "receiver", outcome: "kept" },
+    ]);
+    expect(spawned).toHaveLength(2);
+  });
 });
