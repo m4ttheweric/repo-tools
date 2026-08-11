@@ -344,6 +344,7 @@ export async function sendTestPushNotification(): Promise<void> {
 
 const DEV_MODE_WRAPPER = `${Bun.env.HOME}/.local/bin/rt`;
 const DEV_MODE_CONFIG  = `${Bun.env.HOME}/.rt/dev-mode.json`;
+export const DEV_MODE_PRELOAD = `${Bun.env.HOME}/.rt/dev-restore-cwd.ts`;
 
 // Paths inside rt-tray.app that participate in the daemon-binary swap.
 const RT_TRAY_APP          = `${Bun.env.HOME}/Applications/rt-tray.app`;
@@ -417,22 +418,56 @@ function enableDevMode(sourcePath: string): void {
   // /usr/bin:/bin:/usr/sbin:/sbin. Without this, both `bun` (the wrapper's
   // own interpreter) and the tools cli.ts shells out to (logdy, lnav, bunx)
   // fail to resolve, so the log viewer never starts.
+  writeFileSync(DEV_MODE_PRELOAD, renderDevModePreload());
+  writeFileSync(DEV_MODE_WRAPPER, renderDevModeWrapper(sourcePath, bunPath), { mode: 0o755 });
+}
+
+// Bun transpiles with the tsconfig found in the *cwd*, so running rt from a
+// repo whose tsconfig sets jsxImportSource (e.g. hono/jsx) breaks every .tsx
+// file in rt with "Cannot find module '<source>/jsx-dev-runtime'". The wrapper
+// used --tsconfig-override to pin rt's own tsconfig, but that flag trips a bun
+// fd-bookkeeping bug that makes every rt command trail an "Internal error:
+// directory mismatch" line on exit (https://github.com/oven-sh/bun/issues/22023,
+// still present in 1.3.14). Instead: cd into the source repo so bun resolves
+// rt's tsconfig naturally, and restore the user's launch cwd via a --preload
+// script, which runs after bun fixes its transpiler config at startup but
+// before any other module loads.
+export function renderDevModeWrapper(sourcePath: string, bunPath: string): string {
   const bunDir = dirname(bunPath);
-  // --tsconfig-override pins JSX transpilation to our own tsconfig. Bun
-  // otherwise applies the tsconfig found in the *cwd*, so running from a repo
-  // whose tsconfig sets jsxImportSource (e.g. hono/jsx) breaks every .tsx
-  // file in rt with "Cannot find module '<source>/jsx-dev-runtime'".
-  const wrapper = [
+  return [
     `#!/bin/zsh`,
     `export PATH="${bunDir}:/opt/homebrew/bin:/usr/local/bin:$PATH"`,
-    `exec "${bunPath}" --tsconfig-override="${sourcePath}/tsconfig.json" run "${sourcePath}/cli.ts" "$@"`,
+    `export RT_LAUNCH_CWD="$PWD"`,
+    `cd "${sourcePath}" || { echo "rt: dev-mode source checkout missing: ${sourcePath}" >&2; exit 1; }`,
+    `exec "${bunPath}" run --preload="${DEV_MODE_PRELOAD}" "${sourcePath}/cli.ts" "$@"`,
   ].join("\n") + "\n";
-  writeFileSync(DEV_MODE_WRAPPER, wrapper, { mode: 0o755 });
+}
+
+export function renderDevModePreload(): string {
+  return [
+    `// Written by \`rt settings dev-mode\` (commands/settings.ts, RT-25).`,
+    `// The dev wrapper cds into the rt source repo before exec'ing bun; this`,
+    `// puts the process back in the directory the user launched from.`,
+    `const launchCwd = process.env.RT_LAUNCH_CWD;`,
+    `if (launchCwd) {`,
+    `  try {`,
+    `    process.chdir(launchCwd);`,
+    `    process.env.PWD = launchCwd;`,
+    `  } catch {`,
+    `    // Launch dir vanished; keep running from the source repo.`,
+    `  }`,
+    `  delete process.env.RT_LAUNCH_CWD;`,
+    `}`,
+    `export {};`,
+  ].join("\n") + "\n";
 }
 
 function disableDevMode(): void {
   if (existsSync(DEV_MODE_WRAPPER)) {
     rmSync(DEV_MODE_WRAPPER);
+  }
+  if (existsSync(DEV_MODE_PRELOAD)) {
+    rmSync(DEV_MODE_PRELOAD);
   }
 }
 
