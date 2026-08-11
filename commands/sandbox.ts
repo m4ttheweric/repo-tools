@@ -661,14 +661,33 @@ export async function steerCommand(args: string[]): Promise<void> {
 
 // ─── rt sandbox logs ─────────────────────────────────────────────────────────
 
+/**
+ * Resolve a typed full-or-prefix id, then shape the kubectl-logs argv; the
+ * logs verb's seam (RT-24) — the pod is named by the full id, so a raw
+ * prefix would miss it just like the controller 404ed.
+ */
+export async function resolveSandboxLogsArgv(
+  client: SandboxClient,
+  idOrPrefix: string,
+  container: string,
+  extra: string[],
+): Promise<string[]> {
+  const { id } = await resolveSandboxOrExit(client, idOrPrefix);
+  return sandboxLogsArgv(id, container, extra);
+}
+
 export async function logsCommand(args: string[]): Promise<void> {
   const positional = args.filter(a => !a.startsWith("--"));
   const [id, container, ...rest] = positional;
   if (!id || !container) usageExit("usage: rt sandbox logs <id> <container> [kubectl-logs args...]");
   // Flags after the container (e.g. -f, --tail) pass straight through.
   const extra = [...rest, ...args.filter(a => a.startsWith("--") && a !== "--json")];
+  // Short ids welcome (RT-24): resolution needs controller ground truth even
+  // though the logs themselves come from kubectl.
+  await requireController();
+  const argv = await resolveSandboxLogsArgv(createSandboxClient(), id, container, extra);
   const { kubectlEnv } = await import("../lib/cloud-secrets.ts");
-  const proc = Bun.spawn(sandboxLogsArgv(id, container, extra), {
+  const proc = Bun.spawn(argv, {
     env: kubectlEnv(), stdin: "ignore", stdout: "inherit", stderr: "inherit",
   });
   process.exit(await proc.exited);
@@ -882,6 +901,21 @@ export async function syncAttendedKeyCommand(_args: string[]): Promise<void> {
 
 // ─── rt sandbox flags ────────────────────────────────────────────────────────
 
+/**
+ * Resolve a typed full-or-prefix id, then upsert the LD fallback Secret; the
+ * flags verb's seam (RT-24) — the Secret is named sandbox-<full id>-flags,
+ * so a raw prefix would silently create a Secret no pod ever mounts.
+ */
+export async function upsertFlagsForSandbox(
+  client: SandboxClient,
+  idOrPrefix: string,
+  flags: Record<string, unknown>,
+  exec?: import("../lib/cloud-secrets.ts").Exec,
+): Promise<{ exitCode: number; message: string }> {
+  const { id } = await resolveSandboxOrExit(client, idOrPrefix);
+  return upsertFlagsSecret({ sandboxId: id, flags, ...(exec ? { exec } : {}) });
+}
+
 export async function flagsCommand(args: string[]): Promise<void> {
   const positional = args.filter(a => !a.startsWith("--"));
   const [id, ...pairs] = positional;
@@ -892,7 +926,8 @@ export async function flagsCommand(args: string[]): Promise<void> {
   } catch (err) {
     usageExit((err as Error).message);
   }
-  const outcome = await upsertFlagsSecret({ sandboxId: id, flags });
+  await requireController();
+  const outcome = await upsertFlagsForSandbox(createSandboxClient(), id, flags);
   if (outcome.exitCode !== 0) {
     console.error(`\n  ${red}✗ ${outcome.message}${reset}\n`);
     process.exit(outcome.exitCode);
