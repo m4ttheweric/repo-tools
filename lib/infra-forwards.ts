@@ -6,7 +6,7 @@
  * with only the daemon running (no `rt validate`, no hand-held kubectl).
  */
 
-import type { ForwardHandle, ForwardSpawn } from "./sandbox-allocator.ts";
+import { spawnForward, type ForwardHandle, type ForwardSpawn } from "./sandbox-allocator.ts";
 import { controllerUrl, receiverUrl } from "./validate-farm.ts";
 
 /** The infra services live beside the controller, not with sandbox pods. */
@@ -66,11 +66,35 @@ export interface InfraForwardDeps {
 }
 
 export function createInfraForwardSet(deps: InfraForwardDeps): InfraForwardSet {
-  void deps;
+  const targets = deps.targets ?? infraForwardTargets();
+  const spawn = deps.spawn ?? spawnForward;
+  const namespace = deps.namespace ?? INFRA_NAMESPACE;
+  const held = new Map<string, ForwardHandle>();
+
   return {
     async ensureOnce() {
-      return [];
+      const outcomes: Array<{ name: string; outcome: InfraOutcome }> = [];
+      for (const target of targets) {
+        const current = held.get(target.name);
+        if (current) {
+          if (!current.alive || current.alive()) {
+            outcomes.push({ name: target.name, outcome: "kept" });
+            continue;
+          }
+          held.delete(target.name);
+        }
+        const handle = spawn([
+          "kubectl", "-n", namespace, "port-forward",
+          `svc/${target.service}`, `${target.localPort}:${target.servicePort}`,
+        ]);
+        held.set(target.name, handle);
+        outcomes.push({ name: target.name, outcome: current ? "respawned" : "spawned" });
+      }
+      return outcomes;
     },
-    stopAll() {},
+    stopAll() {
+      for (const handle of held.values()) handle.kill();
+      held.clear();
+    },
   };
 }
