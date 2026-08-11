@@ -747,26 +747,26 @@ export const TREE: Record<string, CommandNode> = {
         description: "Delete the pod, keep the workspace PVC (compute → zero; forwards release)",
         module: "./commands/sandbox.ts",
         fn: "suspendCommand",
-        args: [{ name: "Sandbox id", type: "text", placeholder: "sandbox id" }],
+        args: [{ name: "Sandbox id", type: "text", placeholder: "sandbox id", hint: "Omit to pick from running sandboxes" }],
       },
       resume: {
         description: "Recreate the pod against the warm workspace (same pinned image)",
         module: "./commands/sandbox.ts",
         fn: "resumeCommand",
-        args: [{ name: "Sandbox id", type: "text", placeholder: "sandbox id" }],
+        args: [{ name: "Sandbox id", type: "text", placeholder: "sandbox id", hint: "Omit to pick from suspended sandboxes" }],
       },
       destroy: {
         description: "Delete pod + PVC + Secrets and prune receiver refs + local anchor",
         module: "./commands/sandbox.ts",
         fn: "destroyCommand",
-        args: [{ name: "Sandbox id", type: "text", placeholder: "sandbox id" }],
+        args: [{ name: "Sandbox id", type: "text", placeholder: "sandbox id", hint: "Omit to pick from a list" }],
       },
       attach: {
         description: "Attended lanes: pin the mc-<shortid> ssh alias to the daemon's sshd forward and print (or exec) herdr --remote",
         module: "./commands/sandbox.ts",
         fn: "attachCommand",
         args: [
-          { name: "Sandbox id", type: "text", placeholder: "sandbox id" },
+          { name: "Sandbox id", type: "text", placeholder: "sandbox id", hint: "Omit to pick from attached-ready attended lanes" },
           { name: "Exec", flag: "--exec", type: "boolean", default: false, hint: "Exec herdr --remote directly instead of printing the command" },
         ],
       },
@@ -784,7 +784,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/sandbox.ts",
         fn: "eventsCommand",
         args: [
-          { name: "Sandbox id", type: "text", placeholder: "sandbox id" },
+          { name: "Sandbox id", type: "text", placeholder: "sandbox id", hint: "Omit to pick from a list" },
           { name: "Since", flag: "--since", type: "text", placeholder: "0", hint: "Only events after this seq" },
           { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Raw event array" },
         ],
@@ -794,7 +794,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/sandbox.ts",
         fn: "steerCommand",
         args: [
-          { name: "Sandbox id", type: "text", placeholder: "sandbox id" },
+          { name: "Sandbox id", type: "text", placeholder: "sandbox id", hint: "Omit to pick from running headless lanes" },
           { name: "File", type: "text", placeholder: "steer.md", hint: "Steer file; omit to read stdin" },
         ],
       },
