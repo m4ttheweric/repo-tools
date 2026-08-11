@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent, requireBrief } from "../../commands/sandbox.ts";
-import type { SandboxEvent } from "../sandbox.ts";
+import { sandboxPickerCandidates } from "../sandbox.ts";
+import type { SandboxDetail, SandboxEvent, SandboxState } from "../sandbox.ts";
+
+/** Minimal SandboxDetail for picker tests. */
+function sb(id: string, state: SandboxState, attended = false): SandboxDetail {
+  return {
+    id, repoId: "acme-dev", branch: `branch-${id}`, imageTag: "base:1",
+    state, createdAt: "2026-08-10T00:00:00Z", ports: {}, lastEventSeq: 0,
+    ...(attended ? { attended: true } : {}),
+  };
+}
 
 describe("parseAttachArgs", () => {
   test("id with optional --exec", () => {
@@ -99,6 +109,38 @@ describe("parseEventsArgs", () => {
   test("non-integer since / unknown flags are errors", () => {
     expect("error" in parseEventsArgs(["sb-1", "--since", "x"])).toBe(true);
     expect("error" in parseEventsArgs(["--bogus"])).toBe(true);
+  });
+});
+
+describe("sandboxPickerCandidates", () => {
+  // One of every relevant shape: the picker fixture pool.
+  const pool: SandboxDetail[] = [
+    sb("aaaa-running-headless", "running"),
+    sb("bbbb-running-attended", "running", true),
+    sb("cccc-suspended", "suspended"),
+    sb("dddd-creating", "creating"),
+    sb("eeee-error", "error"),
+    sb("ffff-destroyed", "destroyed"),
+  ];
+  const ids = (verb: Parameters<typeof sandboxPickerCandidates>[1]) =>
+    sandboxPickerCandidates(pool, verb).map(d => d.id);
+
+  test("attach offers only running attended lanes (prepareAttendedAttach's own gates)", () => {
+    expect(ids("attach")).toEqual(["bbbb-running-attended"]);
+  });
+  test("steer offers only running headless lanes (the lane supervisor consumes steer.md)", () => {
+    expect(ids("steer")).toEqual(["aaaa-running-headless"]);
+  });
+  test("suspend offers running sandboxes, attended or not (compute to drop)", () => {
+    expect(ids("suspend")).toEqual(["aaaa-running-headless", "bbbb-running-attended"]);
+  });
+  test("resume offers only suspended sandboxes", () => {
+    expect(ids("resume")).toEqual(["cccc-suspended"]);
+  });
+  test("events and destroy offer everything not destroyed (triage + cleanup verbs)", () => {
+    const everythingLive = ["aaaa-running-headless", "bbbb-running-attended", "cccc-suspended", "dddd-creating", "eeee-error"];
+    expect(ids("events")).toEqual(everythingLive);
+    expect(ids("destroy")).toEqual(everythingLive);
   });
 });
 
