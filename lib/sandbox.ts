@@ -548,6 +548,21 @@ export function sandboxPickerCandidates(
   }
 }
 
+/**
+ * Compact age column for picker rows ("now", "5m", "3h", "2d"); "?" when the
+ * controller hands back an unparseable createdAt. `nowMs` injected for tests.
+ */
+export function formatSandboxAge(createdAt: string, nowMs: number): string {
+  const created = Date.parse(createdAt);
+  if (Number.isNaN(created)) return "?";
+  const mins = Math.floor((nowMs - created) / 60_000);
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  return `${Math.floor(hrs / 24)}d`;
+}
+
 // ─── Branch handshake push ───────────────────────────────────────────────────
 
 /** The pre-POST handshake ref the seed Job fetches (see CONTRACT NOTES). */
