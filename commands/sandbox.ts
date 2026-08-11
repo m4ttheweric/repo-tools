@@ -678,27 +678,32 @@ export async function qaTunnelCommand(args: string[]): Promise<void> {
 
 // ─── rt sandbox attach ───────────────────────────────────────────────────────
 
-/** Pure argv parse for `rt sandbox attach`, exported for tests. */
-export function parseAttachArgs(args: string[]): { id: string; exec: boolean } | { error: string } {
+/**
+ * Pure argv parse for `rt sandbox attach`, exported for tests.
+ * A missing id is not an error: `id: null` signals the no-arg picker
+ * fallback (RT-23) — the command falls into an fzf picker of candidates.
+ */
+export function parseAttachArgs(args: string[]): { id: string | null; exec: boolean } | { error: string } {
   let id: string | undefined, exec = false;
   for (const arg of args) {
     if (arg === "--exec") exec = true;
     else if (!arg.startsWith("--") && !id) id = arg;
     else return { error: `unknown argument: ${arg}` };
   }
-  if (!id) return { error: "usage: rt sandbox attach <id> [--exec]" };
-  return { id, exec };
+  return { id: id ?? null, exec };
 }
 
 export async function attachCommand(args: string[]): Promise<void> {
   const parsed = parseAttachArgs(args);
   if ("error" in parsed) usageExit(parsed.error);
+  // Interim until the picker wiring lands (RT-23): keep the old behavior.
+  const id = parsed.id ?? usageExit("usage: rt sandbox attach <id> [--exec]");
 
   await requireController();
   // Short ids welcome: resolve full-or-prefix against controller ground truth.
   let resolved: Awaited<ReturnType<typeof resolveSandboxId>>;
   try {
-    resolved = await resolveSandboxId(createSandboxClient(), parsed.id);
+    resolved = await resolveSandboxId(createSandboxClient(), id);
   } catch (err) {
     infraExit(err);
   }

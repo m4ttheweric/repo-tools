@@ -7,9 +7,13 @@ describe("parseAttachArgs", () => {
     expect(parseAttachArgs(["sb-1"])).toEqual({ id: "sb-1", exec: false });
     expect(parseAttachArgs(["sb-1", "--exec"])).toEqual({ id: "sb-1", exec: true });
   });
-  test("missing id / unknown flags are errors", () => {
-    expect("error" in parseAttachArgs([])).toBe(true);
+  test("no id is not an error — null id signals the picker fallback (RT-23)", () => {
+    expect(parseAttachArgs([])).toEqual({ id: null, exec: false });
+    expect(parseAttachArgs(["--exec"])).toEqual({ id: null, exec: true });
+  });
+  test("unknown flags are errors", () => {
     expect("error" in parseAttachArgs(["sb-1", "--bogus"])).toBe(true);
+    expect("error" in parseAttachArgs(["--bogus"])).toBe(true);
   });
 });
 
