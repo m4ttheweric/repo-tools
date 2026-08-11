@@ -518,6 +518,36 @@ export async function resolveSandboxId(
   };
 }
 
+// ─── No-arg picker candidates (RT-23) ────────────────────────────────────────
+
+/** The id-taking verbs that fall into an fzf picker when the id is omitted. */
+export type SandboxPickerVerb = "attach" | "events" | "steer" | "suspend" | "resume" | "destroy";
+
+/**
+ * Filter controller ground truth down to what a verb can act on, so the
+ * no-arg picker only ever offers actionable rows:
+ *   attach  → running attended lanes (prepareAttendedAttach refuses the rest)
+ *   steer   → running headless lanes (the lane supervisor consumes steer.md;
+ *             attended lanes run herdr + sshd instead)
+ *   suspend → running, attended or not (the only state with compute to drop)
+ *   resume  → suspended
+ *   events / destroy → anything not destroyed (triage + cleanup apply to
+ *             creating/running/suspended/error alike)
+ */
+export function sandboxPickerCandidates(
+  all: SandboxDetail[],
+  verb: SandboxPickerVerb,
+): SandboxDetail[] {
+  switch (verb) {
+    case "attach": return all.filter(d => d.attended === true && d.state === "running");
+    case "steer": return all.filter(d => !d.attended && d.state === "running");
+    case "suspend": return all.filter(d => d.state === "running");
+    case "resume": return all.filter(d => d.state === "suspended");
+    case "events":
+    case "destroy": return all.filter(d => d.state !== "destroyed");
+  }
+}
+
 // ─── Branch handshake push ───────────────────────────────────────────────────
 
 /** The pre-POST handshake ref the seed Job fetches (see CONTRACT NOTES). */
