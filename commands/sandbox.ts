@@ -47,6 +47,7 @@ import {
   sandboxPickerRow,
   upsertFlagsSecret,
   type EvidenceBeforeEntry,
+  type SandboxClient,
   type SandboxDetail,
   type SandboxEvent,
   type SandboxPickerVerb,
@@ -166,6 +167,21 @@ function infraExit(err: unknown): never {
   console.error(`\n  ${red}sandbox pipeline failed${reset}`);
   console.error(`  ${dim}${err instanceof Error ? err.message : String(err)}${reset}\n`);
   process.exit(2);
+}
+
+/**
+ * The shared resolve-and-exit dance for id-taking verbs (RT-24): resolve a
+ * typed full-or-prefix id against controller ground truth before any client
+ * call, so short ids work on the whole verb family, not just attach.
+ * Picker-selected ids (RT-23) are already full and re-resolve as exact hits.
+ */
+export async function resolveSandboxOrExit(
+  client: SandboxClient,
+  idOrPrefix: string,
+): Promise<SandboxDetail> {
+  const resolved = await resolveSandboxId(client, idOrPrefix);
+  if (!resolved.ok) throw new Error(resolved.message);
+  return resolved.detail;
 }
 
 // ─── rt sandbox create ───────────────────────────────────────────────────────
