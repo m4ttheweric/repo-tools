@@ -179,8 +179,16 @@ export async function resolveSandboxOrExit(
   client: SandboxClient,
   idOrPrefix: string,
 ): Promise<SandboxDetail> {
-  const resolved = await resolveSandboxId(client, idOrPrefix);
-  if (!resolved.ok) throw new Error(resolved.message);
+  let resolved: Awaited<ReturnType<typeof resolveSandboxId>>;
+  try {
+    resolved = await resolveSandboxId(client, idOrPrefix);
+  } catch (err) {
+    infraExit(err);
+  }
+  if (!resolved.ok) {
+    console.error(`\n  ${red}${resolved.message}${reset}\n`);
+    process.exit(64);
+  }
   return resolved.detail;
 }
 
