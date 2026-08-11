@@ -842,17 +842,7 @@ export async function attachCommand(args: string[]): Promise<void> {
 
   await requireController();
   // Short ids welcome: resolve full-or-prefix against controller ground truth.
-  let resolved: Awaited<ReturnType<typeof resolveSandboxId>>;
-  try {
-    resolved = await resolveSandboxId(createSandboxClient(), id);
-  } catch (err) {
-    infraExit(err);
-  }
-  if (!resolved.ok) {
-    console.error(`\n  ${red}${resolved.message}${reset}\n`);
-    process.exit(64);
-  }
-  const detail = resolved.detail;
+  const detail = await resolveSandboxOrExit(createSandboxClient(), id);
 
   const { prepareAttendedAttach } = await import("../lib/sandbox.ts");
   const { spawnExec } = await import("../lib/cloud-secrets.ts");
