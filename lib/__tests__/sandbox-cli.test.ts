@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent, requireBrief } from "../../commands/sandbox.ts";
-import { sandboxPickerCandidates } from "../sandbox.ts";
+import { formatSandboxAge, sandboxPickerCandidates } from "../sandbox.ts";
 import type { SandboxDetail, SandboxEvent, SandboxState } from "../sandbox.ts";
 
 /** Minimal SandboxDetail for picker tests. */
@@ -141,6 +141,19 @@ describe("sandboxPickerCandidates", () => {
     const everythingLive = ["aaaa-running-headless", "bbbb-running-attended", "cccc-suspended", "dddd-creating", "eeee-error"];
     expect(ids("events")).toEqual(everythingLive);
     expect(ids("destroy")).toEqual(everythingLive);
+  });
+});
+
+describe("formatSandboxAge", () => {
+  const now = Date.parse("2026-08-10T12:00:00Z");
+  test("compact m/h/d buckets", () => {
+    expect(formatSandboxAge("2026-08-10T11:59:40Z", now)).toBe("now");
+    expect(formatSandboxAge("2026-08-10T11:15:00Z", now)).toBe("45m");
+    expect(formatSandboxAge("2026-08-10T09:00:00Z", now)).toBe("3h");
+    expect(formatSandboxAge("2026-08-08T12:00:00Z", now)).toBe("2d");
+  });
+  test("unparseable createdAt renders ? instead of NaN", () => {
+    expect(formatSandboxAge("not-a-date", now)).toBe("?");
   });
 });
 
