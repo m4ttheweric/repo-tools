@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent, requireBrief, resolveSandboxOrExit } from "../../commands/sandbox.ts";
+import { dispatchLifecycle, parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent, requireBrief, resolveSandboxOrExit } from "../../commands/sandbox.ts";
 import { formatSandboxAge, sandboxPickerCandidates, sandboxPickerRow } from "../sandbox.ts";
 import type { SandboxClient, SandboxDetail, SandboxEvent, SandboxState } from "../sandbox.ts";
 
@@ -73,6 +73,40 @@ describe("resolveSandboxOrExit", () => {
     const out = await trapExit(() => resolveSandboxOrExit(broken, "b37d"));
     expect(out.code).toBe(2);
     expect(out.stderr).toContain("502");
+  });
+});
+
+describe("dispatchLifecycle", () => {
+  const full = "b37d2680-193d-42c0-9317-ecc0148c70e4";
+  const other = "f00dfeed-1111-2222-3333-444455556666";
+
+  /** Fake client that records which id each lifecycle call received. */
+  function recordingClient(ids: string[]) {
+    const calls: Array<[string, string]> = [];
+    const details = ids.map(id => sb(id, "running"));
+    const client = {
+      async list() { return details; },
+      async suspend(id: string) { calls.push(["suspend", id]); },
+      async up(id: string) { calls.push(["up", id]); },
+      async destroy(id: string) { calls.push(["destroy", id]); },
+    } as unknown as SandboxClient;
+    return { client, calls };
+  }
+
+  test("RT-24 regression: destroy with an unambiguous 8-char prefix sends the FULL id to the controller", async () => {
+    // The live failure: `rt sandbox destroy b37d2680` shipped the prefix raw
+    // and the controller 404ed. The controller must only ever see full ids.
+    const { client, calls } = recordingClient([full, other]);
+    const resolved = await dispatchLifecycle(client, "destroy", "b37d2680");
+    expect(resolved).toBe(full);
+    expect(calls).toEqual([["destroy", full]]);
+  });
+
+  test("suspend and resume resolve through the same seam (resume maps to the controller's up)", async () => {
+    const { client, calls } = recordingClient([full, other]);
+    await dispatchLifecycle(client, "suspend", "b37d2680");
+    await dispatchLifecycle(client, "resume", "f00dfeed");
+    expect(calls).toEqual([["suspend", full], ["up", other]]);
   });
 });
 

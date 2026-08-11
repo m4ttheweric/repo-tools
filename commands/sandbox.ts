@@ -462,18 +462,35 @@ export async function statusCommand(args: string[]): Promise<void> {
 
 // ─── rt sandbox suspend / resume / destroy ───────────────────────────────────
 
+/**
+ * Resolve a typed full-or-prefix id, then dispatch one lifecycle action;
+ * returns the full id the controller saw. Exported seam: the RT-24
+ * regression pins that a typed short id reaches the controller resolved.
+ */
+export async function dispatchLifecycle(
+  client: SandboxClient,
+  verb: "suspend" | "resume" | "destroy",
+  idOrPrefix: string,
+): Promise<string> {
+  const { id } = await resolveSandboxOrExit(client, idOrPrefix);
+  if (verb === "suspend") await client.suspend(id);
+  else if (verb === "resume") await client.up(id);
+  else await client.destroy(id);
+  return id;
+}
+
 async function lifecycleVerb(
   args: string[],
   verb: "suspend" | "resume" | "destroy",
 ): Promise<void> {
   // No id → picker filtered to what the verb can act on (RT-23).
-  const id = args.find(a => !a.startsWith("--")) ?? await pickSandboxId(verb);
+  const typedId = args.find(a => !a.startsWith("--")) ?? await pickSandboxId(verb);
   await requireController();
-  const client = createSandboxClient();
+  // Short ids welcome (RT-24): resolve before the lifecycle call, so the
+  // messages and anchor cleanup below carry the full id too.
+  let id: string;
   try {
-    if (verb === "suspend") await client.suspend(id);
-    else if (verb === "resume") await client.up(id);
-    else await client.destroy(id);
+    id = await dispatchLifecycle(createSandboxClient(), verb, typedId);
   } catch (err) {
     infraExit(err);
   }
