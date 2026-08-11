@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent, requireBrief } from "../../commands/sandbox.ts";
-import { formatSandboxAge, sandboxPickerCandidates } from "../sandbox.ts";
+import { formatSandboxAge, sandboxPickerCandidates, sandboxPickerRow } from "../sandbox.ts";
 import type { SandboxDetail, SandboxEvent, SandboxState } from "../sandbox.ts";
 
 /** Minimal SandboxDetail for picker tests. */
@@ -154,6 +154,29 @@ describe("formatSandboxAge", () => {
   });
   test("unparseable createdAt renders ? instead of NaN", () => {
     expect(formatSandboxAge("not-a-date", now)).toBe("?");
+  });
+});
+
+describe("sandboxPickerRow", () => {
+  const now = Date.parse("2026-08-10T12:00:00Z");
+  const detail: SandboxDetail = {
+    ...sb("0b70c1d2-3e4f-5a6b-7c8d-9e0f1a2b3c4d", "running"),
+    branch: "goodwinmattheweric/mat-273-scratch",
+    createdAt: "2026-08-10T09:00:00Z",
+  };
+
+  test("value is the full id — the selection feeds the verb exactly as a typed id", () => {
+    expect(sandboxPickerRow(detail, now).value).toBe("0b70c1d2-3e4f-5a6b-7c8d-9e0f1a2b3c4d");
+  });
+  test("label is the friendly identity: repo · branch, never the bare UUID", () => {
+    expect(sandboxPickerRow(detail, now).label).toBe("acme-dev · goodwinmattheweric/mat-273-scratch");
+  });
+  test("hint carries short id, state, and age", () => {
+    expect(sandboxPickerRow(detail, now).hint).toBe("0b70c1d2  running  3h");
+  });
+  test("attended lanes are marked in the hint", () => {
+    const attended = { ...detail, attended: true };
+    expect(sandboxPickerRow(attended, now).hint).toBe("0b70c1d2  running  3h  attended");
   });
 });
 

@@ -563,6 +563,25 @@ export function formatSandboxAge(createdAt: string, nowMs: number): string {
   return `${Math.floor(hrs / 24)}d`;
 }
 
+/**
+ * One picker row per candidate, in the NavOption shape runNavPicker renders:
+ * value carries the full id (feeds the verb exactly as a typed id would);
+ * the friendly identity is `repo · branch`, never the bare UUID alone; the
+ * hint column shows short id, state, and age.
+ */
+export function sandboxPickerRow(
+  detail: SandboxDetail,
+  nowMs: number,
+): { value: string; label: string; hint: string } {
+  const short = detail.id.slice(0, 8);
+  const age = formatSandboxAge(detail.createdAt, nowMs);
+  return {
+    value: detail.id,
+    label: `${detail.repoId} · ${detail.branch}`,
+    hint: `${short}  ${detail.state}  ${age}${detail.attended ? "  attended" : ""}`,
+  };
+}
+
 // ─── Branch handshake push ───────────────────────────────────────────────────
 
 /** The pre-POST handshake ref the seed Job fetches (see CONTRACT NOTES). */
