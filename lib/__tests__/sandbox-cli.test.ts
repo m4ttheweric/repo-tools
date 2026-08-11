@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent, requireBrief } from "../../commands/sandbox.ts";
+import { parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent, requireBrief, resolveSandboxOrExit } from "../../commands/sandbox.ts";
 import { formatSandboxAge, sandboxPickerCandidates, sandboxPickerRow } from "../sandbox.ts";
-import type { SandboxDetail, SandboxEvent, SandboxState } from "../sandbox.ts";
+import type { SandboxClient, SandboxDetail, SandboxEvent, SandboxState } from "../sandbox.ts";
 
 /** Minimal SandboxDetail for picker tests. */
 function sb(id: string, state: SandboxState, attended = false): SandboxDetail {
@@ -11,6 +11,28 @@ function sb(id: string, state: SandboxState, attended = false): SandboxDetail {
     ...(attended ? { attended: true } : {}),
   };
 }
+
+/** Fake client whose ground truth is just a list of ids (resolution tests). */
+function clientWith(ids: string[]): SandboxClient {
+  const details = ids.map(id => sb(id, "running"));
+  return { async list() { return details; } } as unknown as SandboxClient;
+}
+
+describe("resolveSandboxOrExit", () => {
+  // The RT-24 live failure: an 8-char short id typed at a verb.
+  const full = "b37d2680-193d-42c0-9317-ecc0148c70e4";
+  const other = "f00dfeed-1111-2222-3333-444455556666";
+
+  test("an unambiguous prefix resolves to the full sandbox", async () => {
+    const detail = await resolveSandboxOrExit(clientWith([full, other]), "b37d2680");
+    expect(detail.id).toBe(full);
+  });
+
+  test("an exact id passes through untouched (picker-selected ids re-resolve as exact hits)", async () => {
+    const detail = await resolveSandboxOrExit(clientWith(["abc", "abcd"]), "abc");
+    expect(detail.id).toBe("abc");
+  });
+});
 
 describe("parseAttachArgs", () => {
   test("id with optional --exec", () => {
