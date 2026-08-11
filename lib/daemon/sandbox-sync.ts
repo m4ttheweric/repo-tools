@@ -13,6 +13,7 @@ import type { Logger } from "pino";
 import { controllerUrl } from "../validate-farm.ts";
 import { createSandboxClient } from "../sandbox.ts";
 import { createForwardSet, createSandboxSync, probeLocalListener } from "../sandbox-allocator.ts";
+import { createInfraForwardSet } from "../infra-forwards.ts";
 import { notifyEnabled } from "../notifier.ts";
 import { getEvidenceLedger } from "./evidence-ledger.ts";
 import { syncEvidence } from "./evidence-sync.ts";
@@ -34,6 +35,9 @@ export function stopSandboxSync(): void {
 export function startSandboxSync(log: Logger): { stop: () => void } {
   const slog = log.child({ module: "sandbox-sync" });
   const forwards = createForwardSet();
+  // Daemon-owned infra forwards (RT-22): controller 8080 + receiver 2222,
+  // so `rt sandbox create`'s push works with only the daemon running.
+  const infra = createInfraForwardSet({ listens: probeLocalListener, log: slog });
   const client = createSandboxClient();
   const evidenceLedger = getEvidenceLedger();
   const notify = (title: string, message: string, category: string) => notifyEnabled(category, title, message);
@@ -51,6 +55,7 @@ export function startSandboxSync(log: Logger): { stop: () => void } {
     notify,
     listens: probeLocalListener,
     log: slog,
+    infra,
     evidence: {
       ledger: evidenceLedger,
       sync: (requestId) => syncEvidence(
@@ -91,6 +96,7 @@ export function startSandboxSync(log: Logger): { stop: () => void } {
     stop: () => {
       clearInterval(timer);
       forwards.stopAll();
+      infra.stopAll();
     },
   };
   return running;

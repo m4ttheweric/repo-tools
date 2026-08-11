@@ -316,6 +316,14 @@ export interface SandboxSyncDeps {
   log?: { info(obj: Record<string, unknown>, msg: string): void };
   /** Overlay enumeration, injectable for tests; defaults to ~/.rt/repos. */
   overlays?(): Array<{ repoId: string; config: SandboxOverlayConfig }>;
+  /**
+   * Daemon-owned infra forwards (RT-22: controller 8080 + receiver 2222).
+   * Ensured at the TOP of every pass, before the controller probe gate —
+   * an unreachable controller is exactly when the 8080 forward must come
+   * up, and the receiver forward is what `rt sandbox create`'s push dials
+   * whether or not any sandbox is running.
+   */
+  infra?: { ensureOnce(): Promise<unknown> };
   /** Evidence fold-in, wired by lib/daemon/sandbox-sync.ts; absent when a repo has no evidence overlay. */
   evidence?: {
     ledger: EvidenceLedger;
@@ -534,6 +542,9 @@ export function createSandboxSync(deps: SandboxSyncDeps): { syncOnce(): Promise<
   }
 
   async function syncOnce(): Promise<void> {
+    try {
+      await deps.infra?.ensureOnce();
+    } catch { /* a kubectl spawn failure must not block the pod reconcile */ }
     if (!(await deps.probe())) return;
     let all: SandboxDetail[];
     try {
