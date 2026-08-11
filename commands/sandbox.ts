@@ -479,6 +479,19 @@ export async function dispatchLifecycle(
   return id;
 }
 
+/**
+ * Resolve a typed full-or-prefix id, then post one mailbox file; the seam
+ * answer and steer share (RT-24), pinned so the mailbox sees full ids only.
+ */
+export async function deliverMailbox(
+  client: SandboxClient,
+  idOrPrefix: string,
+  file: { name: string; content: string },
+): Promise<void> {
+  const { id } = await resolveSandboxOrExit(client, idOrPrefix);
+  await client.postMailbox(id, file);
+}
+
 async function lifecycleVerb(
   args: string[],
   verb: "suspend" | "resume" | "destroy",
@@ -538,7 +551,7 @@ export async function answerCommand(args: string[]): Promise<void> {
 
   await requireController();
   try {
-    await createSandboxClient().postMailbox(id, { name: "answer.md", content });
+    await deliverMailbox(createSandboxClient(), id, { name: "answer.md", content });
   } catch (err) {
     infraExit(err);
   }
@@ -626,7 +639,7 @@ export async function steerCommand(args: string[]): Promise<void> {
   if (!content.trim()) usageExit("refusing to deliver an empty steer.md");
   await requireController();
   try {
-    await createSandboxClient().postMailbox(id, { name: "steer.md", content });
+    await deliverMailbox(createSandboxClient(), id, { name: "steer.md", content });
   } catch (err) {
     infraExit(err);
   }
