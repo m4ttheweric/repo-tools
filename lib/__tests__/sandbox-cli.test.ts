@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { deliverMailbox, dispatchLifecycle, fetchSandboxEvents, parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent, requireBrief, resolveSandboxOrExit } from "../../commands/sandbox.ts";
+import { deliverMailbox, dispatchLifecycle, fetchSandboxEvents, parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent, requireBrief, resolveSandboxLogsArgv, resolveSandboxOrExit, upsertFlagsForSandbox } from "../../commands/sandbox.ts";
 import { formatSandboxAge, sandboxPickerCandidates, sandboxPickerRow } from "../sandbox.ts";
 import type { SandboxClient, SandboxDetail, SandboxEvent, SandboxState } from "../sandbox.ts";
 
@@ -139,6 +139,26 @@ describe("fetchSandboxEvents", () => {
     } as unknown as SandboxClient;
     await fetchSandboxEvents(client, "b37d2680", 42);
     expect(asked).toEqual([[full, 42]]);
+  });
+});
+
+describe("logs and flags resolve typed short ids before their kubectl legs", () => {
+  const full = "b37d2680-193d-42c0-9317-ecc0148c70e4";
+  const other = "f00dfeed-1111-2222-3333-444455556666";
+
+  test("logs: the kubectl argv names the FULL pod id, pass-through args kept", async () => {
+    const argv = await resolveSandboxLogsArgv(clientWith([full, other]), "b37d2680", "backend", ["-f"]);
+    expect(argv).toContain(full);
+    expect(argv).toContain("backend");
+    expect(argv).toContain("-f");
+    expect(argv).not.toContain("b37d2680");
+  });
+
+  test("flags: the Secret upsert targets the FULL id's sandbox-<id>-flags name", async () => {
+    const exec = async () => ({ stdout: "", stderr: "", exitCode: 0 });
+    const out = await upsertFlagsForSandbox(clientWith([full, other]), "b37d2680", { "my-flag": true }, exec);
+    expect(out.exitCode).toBe(0);
+    expect(out.message).toContain(`sandbox-${full}-flags`);
   });
 });
 
