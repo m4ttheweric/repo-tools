@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { dispatchLifecycle, parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent, requireBrief, resolveSandboxOrExit } from "../../commands/sandbox.ts";
+import { deliverMailbox, dispatchLifecycle, parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent, requireBrief, resolveSandboxOrExit } from "../../commands/sandbox.ts";
 import { formatSandboxAge, sandboxPickerCandidates, sandboxPickerRow } from "../sandbox.ts";
 import type { SandboxClient, SandboxDetail, SandboxEvent, SandboxState } from "../sandbox.ts";
 
@@ -107,6 +107,22 @@ describe("dispatchLifecycle", () => {
     await dispatchLifecycle(client, "suspend", "b37d2680");
     await dispatchLifecycle(client, "resume", "f00dfeed");
     expect(calls).toEqual([["suspend", full], ["up", other]]);
+  });
+});
+
+describe("deliverMailbox", () => {
+  const full = "b37d2680-193d-42c0-9317-ecc0148c70e4";
+  const other = "f00dfeed-1111-2222-3333-444455556666";
+
+  test("answer/steer resolve a typed short id before posting; the mailbox sees the FULL id", async () => {
+    const posted: Array<[string, string]> = [];
+    const details = [sb(full, "running"), sb(other, "running")];
+    const client = {
+      async list() { return details; },
+      async postMailbox(id: string, file: { name: string }) { posted.push([id, file.name]); },
+    } as unknown as SandboxClient;
+    await deliverMailbox(client, "b37d2680", { name: "steer.md", content: "go left" });
+    expect(posted).toEqual([[full, "steer.md"]]);
   });
 });
 
