@@ -583,6 +583,15 @@ describe("receiverSshRemedy", () => {
     );
   });
 
+  test("a refused connection points at the daemon that owns the forward (RT-22)", () => {
+    const remedy = receiverSshRemedy(
+      "ssh: connect to host 127.0.0.1 port 2222: Connection refused\nfatal: Could not read from remote repository.",
+    );
+    expect(remedy).toBe(
+      "nothing is listening on the receiver endpoint — the rt daemon holds this forward; check `rt daemon status` (MC_RECEIVER_URL overrides the endpoint)",
+    );
+  });
+
   test("null for stderr rt knows no fix for — raw stderr stands alone", () => {
     expect(receiverSshRemedy("fatal: Could not read from remote repository.")).toBeNull();
     expect(receiverSshRemedy("")).toBeNull();

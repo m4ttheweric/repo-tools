@@ -185,8 +185,8 @@ export async function probeController(): Promise<boolean> {
 
 /**
  * Port-forwards for the command's lifetime when nothing already serves the
- * endpoints (the daemon may hold long-lived forwards later; this is the
- * fallback). A process-exit backstop reaps the children even when the
+ * endpoints (the daemon holds long-lived forwards — lib/infra-forwards.ts;
+ * this is the fallback). A process-exit backstop reaps the children even when the
  * command bails through process.exit before its finally runs.
  * Cluster-verify pending — only the "already up" path is unit-tested.
  */
