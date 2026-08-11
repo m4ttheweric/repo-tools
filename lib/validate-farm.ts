@@ -113,6 +113,11 @@ export function receiverSshRemedy(
     const overlay = opts.repoId ? `~/.rt/repos/${opts.repoId}/repo.jsonc` : "the overlay repo.jsonc";
     return `receiver rejected the ssh key — check receiverSshKey in ${overlay} (MC_RECEIVER_SSH_KEY overrides)`;
   }
+  if (stderr.includes("Connection refused")) {
+    // RT-22: the daemon owns the receiver forward; a refused connection
+    // means it is not running (or its kubectl child cannot reach the cluster).
+    return "nothing is listening on the receiver endpoint — the rt daemon holds this forward; check `rt daemon status` (MC_RECEIVER_URL overrides the endpoint)";
+  }
   return null;
 }
 
