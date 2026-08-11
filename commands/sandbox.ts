@@ -43,10 +43,13 @@ import {
   removeSandboxAnchor,
   resolveSandboxId,
   sandboxLogsArgv,
+  sandboxPickerCandidates,
+  sandboxPickerRow,
   upsertFlagsSecret,
   type EvidenceBeforeEntry,
   type SandboxDetail,
   type SandboxEvent,
+  type SandboxPickerVerb,
 } from "../lib/sandbox.ts";
 import { loadSecrets, fetchTicket } from "../lib/linear.ts";
 import { loadBranchNamingConfig, resolveBranchName } from "../lib/branch-naming.ts";
@@ -71,15 +74,16 @@ function helpExit(): never {
       --agent-env NAME=value (repeatable) sets per-lane agent env (reserved names rejected)
   ${bold}rt sandbox ls${reset} [--json] / ${bold}status${reset} [<id>] [--json]
       controller ground truth + local ports (pool warnings are loud here)
-  ${bold}rt sandbox suspend|resume|destroy${reset} <id>
+  ${bold}rt sandbox suspend|resume|destroy${reset} [<id>]
       suspend keeps the workspace, drops compute; destroy prunes everything
-  ${bold}rt sandbox attach${reset} <id> [--exec]     attended lanes: pin the mc-<shortid> ssh alias
+  ${bold}rt sandbox attach${reset} [<id>] [--exec]   attended lanes: pin the mc-<shortid> ssh alias
       to the daemon's 2422 forward and print (or exec) herdr --remote mc-<shortid>
   ${bold}rt sandbox answer${reset} <id> [<file>]     answer.md via mailbox (stdin when no file)
-  ${bold}rt sandbox events${reset} <id> [--since <seq>] [--json]
+  ${bold}rt sandbox events${reset} [<id>] [--since <seq>] [--json]
       controller event log (lane state, questions, captures); one line per event
-  ${bold}rt sandbox steer${reset} <id> [<file>]      steer.md via mailbox (stdin when no file);
-      the lane supervisor injects it at the next turn boundary
+  ${bold}rt sandbox steer${reset} [<id>] [<file>]    steer.md via mailbox (stdin when no file);
+      the lane supervisor injects it at the next turn boundary;
+      omitting <id> on these verbs opens a picker of actionable sandboxes
   ${bold}rt sandbox logs${reset} <id> <container> [args...]
   ${bold}rt sandbox flags${reset} <id> k=v...        LD fallback Secret; pod recycle applies it
 
@@ -113,6 +117,49 @@ function requireId(args: string[], verb: string): string {
   const id = args.find(a => !a.startsWith("--"));
   if (!id) usageExit(`usage: rt sandbox ${verb} <id>`);
   return id;
+}
+
+/** Calm empty-picker messages, one per verb — say what would be actionable. */
+const PICKER_EMPTY: Record<SandboxPickerVerb, string> = {
+  attach: "no running attended lanes to attach — create one with rt sandbox create --attended --tui-account <key>",
+  events: "no sandboxes",
+  steer: "no running headless lanes to steer",
+  suspend: "no running sandboxes to suspend",
+  resume: "no suspended sandboxes to resume",
+  destroy: "no sandboxes to destroy",
+};
+
+/**
+ * The no-arg fallback (RT-23): an fzf picker over the sandboxes this verb can
+ * act on. Returns the selected full id — from here the verb proceeds exactly
+ * as if the id had been typed. Esc/cancel exits 0 with a calm message, like
+ * every other rt picker. Interactive seam: the pure parts (candidate filters,
+ * row shape) live in lib/sandbox.ts with tests; this stays thin.
+ */
+async function pickSandboxId(verb: SandboxPickerVerb): Promise<string> {
+  await requireController();
+  let all: SandboxDetail[];
+  try {
+    all = await createSandboxClient().list();
+  } catch (err) {
+    infraExit(err);
+  }
+  const candidates = sandboxPickerCandidates(all, verb);
+  if (candidates.length === 0) {
+    console.log(`\n  ${dim}${PICKER_EMPTY[verb]}${reset}\n`);
+    process.exit(0);
+  }
+  const { runNavPicker } = await import("../lib/navigate.ts");
+  const now = Date.now();
+  const result = await runNavPicker({
+    options: candidates.map(d => sandboxPickerRow(d, now)),
+    message: `rt sandbox ${verb}`,
+  });
+  if (!result?.value || result.key === "ctrl-up") {
+    console.log(`\n  ${dim}nothing selected${reset}\n`);
+    process.exit(0);
+  }
+  return result.value;
 }
 
 function infraExit(err: unknown): never {
@@ -395,7 +442,8 @@ async function lifecycleVerb(
   args: string[],
   verb: "suspend" | "resume" | "destroy",
 ): Promise<void> {
-  const id = requireId(args, verb);
+  // No id → picker filtered to what the verb can act on (RT-23).
+  const id = args.find(a => !a.startsWith("--")) ?? await pickSandboxId(verb);
   await requireController();
   const client = createSandboxClient();
   try {
@@ -508,8 +556,8 @@ export function renderSandboxEvent(event: SandboxEvent): string {
 export async function eventsCommand(args: string[]): Promise<void> {
   const parsed = parseEventsArgs(args);
   if ("error" in parsed) usageExit(parsed.error);
-  // Interim until the picker wiring lands (RT-23): keep the old behavior.
-  const id = parsed.id ?? usageExit("usage: rt sandbox events <id> [--since <seq>] [--json]");
+  // No id → picker; --since/--json still apply to the selection.
+  const id = parsed.id ?? await pickSandboxId("events");
   await requireController();
   try {
     const events = await createSandboxClient().events(id, parsed.since);
@@ -522,8 +570,10 @@ export async function eventsCommand(args: string[]): Promise<void> {
 
 export async function steerCommand(args: string[]): Promise<void> {
   const positional = args.filter(a => !a.startsWith("--"));
-  const [id, file] = positional;
-  if (!id) usageExit("usage: rt sandbox steer <id> [<file>]");
+  // No id → picker of steerable lanes; the steer body then comes from stdin
+  // (fzf reads the keyboard from /dev/tty, so a piped stdin still pickers).
+  const file = positional[1];
+  const id = positional[0] ?? await pickSandboxId("steer");
   let content: string;
   if (file) {
     if (!existsSync(file)) usageExit(`no such file: ${file}`);
@@ -701,8 +751,8 @@ export function parseAttachArgs(args: string[]): { id: string | null; exec: bool
 export async function attachCommand(args: string[]): Promise<void> {
   const parsed = parseAttachArgs(args);
   if ("error" in parsed) usageExit(parsed.error);
-  // Interim until the picker wiring lands (RT-23): keep the old behavior.
-  const id = parsed.id ?? usageExit("usage: rt sandbox attach <id> [--exec]");
+  // No id → picker of attachable lanes; flags like --exec still apply.
+  const id = parsed.id ?? await pickSandboxId("attach");
 
   await requireController();
   // Short ids welcome: resolve full-or-prefix against controller ground truth.
