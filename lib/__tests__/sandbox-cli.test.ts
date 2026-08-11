@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { deliverMailbox, dispatchLifecycle, parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent, requireBrief, resolveSandboxOrExit } from "../../commands/sandbox.ts";
+import { deliverMailbox, dispatchLifecycle, fetchSandboxEvents, parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent, requireBrief, resolveSandboxOrExit } from "../../commands/sandbox.ts";
 import { formatSandboxAge, sandboxPickerCandidates, sandboxPickerRow } from "../sandbox.ts";
 import type { SandboxClient, SandboxDetail, SandboxEvent, SandboxState } from "../sandbox.ts";
 
@@ -123,6 +123,22 @@ describe("deliverMailbox", () => {
     } as unknown as SandboxClient;
     await deliverMailbox(client, "b37d2680", { name: "steer.md", content: "go left" });
     expect(posted).toEqual([[full, "steer.md"]]);
+  });
+});
+
+describe("fetchSandboxEvents", () => {
+  const full = "b37d2680-193d-42c0-9317-ecc0148c70e4";
+  const other = "f00dfeed-1111-2222-3333-444455556666";
+
+  test("events resolves a typed short id before the controller query, keeping --since", async () => {
+    const asked: Array<[string, number]> = [];
+    const details = [sb(full, "running"), sb(other, "running")];
+    const client = {
+      async list() { return details; },
+      async events(id: string, since: number) { asked.push([id, since]); return []; },
+    } as unknown as SandboxClient;
+    await fetchSandboxEvents(client, "b37d2680", 42);
+    expect(asked).toEqual([[full, 42]]);
   });
 });
 

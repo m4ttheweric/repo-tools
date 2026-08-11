@@ -607,6 +607,19 @@ export function renderSandboxEvent(event: SandboxEvent): string {
   return `[${event.seq}] ${event.ts} ${summary}`;
 }
 
+/**
+ * Resolve a typed full-or-prefix id, then read the event log; the events
+ * verb's client seam (RT-24), pinned so the query carries the full id.
+ */
+export async function fetchSandboxEvents(
+  client: SandboxClient,
+  idOrPrefix: string,
+  since: number,
+): Promise<SandboxEvent[]> {
+  const { id } = await resolveSandboxOrExit(client, idOrPrefix);
+  return client.events(id, since);
+}
+
 export async function eventsCommand(args: string[]): Promise<void> {
   const parsed = parseEventsArgs(args);
   if ("error" in parsed) usageExit(parsed.error);
@@ -614,7 +627,7 @@ export async function eventsCommand(args: string[]): Promise<void> {
   const id = parsed.id ?? await pickSandboxId("events");
   await requireController();
   try {
-    const events = await createSandboxClient().events(id, parsed.since);
+    const events = await fetchSandboxEvents(createSandboxClient(), id, parsed.since);
     if (parsed.json) console.log(JSON.stringify(events, null, 2));
     else for (const event of events) console.log(renderSandboxEvent(event));
   } catch (err) {
