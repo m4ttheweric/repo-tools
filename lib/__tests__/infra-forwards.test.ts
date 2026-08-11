@@ -9,8 +9,14 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { infraForwardTargets, INFRA_NAMESPACE } from "../infra-forwards.ts";
+import {
+  createInfraForwardSet,
+  infraForwardTargets,
+  INFRA_NAMESPACE,
+  type InfraForwardTarget,
+} from "../infra-forwards.ts";
 import { receiverRepoUrl } from "../validate-farm.ts";
+import type { ForwardSpawn } from "../sandbox-allocator.ts";
 
 const ORIG_CONTROLLER = process.env.MC_CONTROLLER_URL;
 const ORIG_RECEIVER = process.env.MC_RECEIVER_URL;
@@ -55,5 +61,50 @@ describe("infraForwardTargets", () => {
     const pushUrl = receiverRepoUrl("assured-dev");
     const port = Number(pushUrl.match(/^ssh:\/\/[^@]+@[^:]+:(\d+)\//)![1]);
     expect(port).toBe(receiver.localPort);
+  });
+});
+
+// ─── createInfraForwardSet ───────────────────────────────────────────────────
+
+const TARGETS: InfraForwardTarget[] = [
+  { name: "controller", service: "controller", localPort: 8080, servicePort: 8080 },
+  { name: "receiver", service: "receiver", localPort: 2222, servicePort: 2222 },
+];
+
+function recordingSpawn() {
+  const spawned: Array<{ argv: string[]; killed: boolean; dead: boolean }> = [];
+  const spawn: ForwardSpawn = (argv) => {
+    const entry = { argv, killed: false, dead: false };
+    spawned.push(entry);
+    return { kill: () => { entry.killed = true; }, alive: () => !entry.killed && !entry.dead };
+  };
+  return { spawn, spawned };
+}
+
+describe("createInfraForwardSet", () => {
+  test("ensureOnce spawns one kubectl svc port-forward per unserved target", async () => {
+    const { spawn, spawned } = recordingSpawn();
+    const set = createInfraForwardSet({ targets: TARGETS, spawn, listens: async () => false });
+    const outcomes = await set.ensureOnce();
+    expect(outcomes).toEqual([
+      { name: "controller", outcome: "spawned" },
+      { name: "receiver", outcome: "spawned" },
+    ]);
+    expect(spawned.map(s => s.argv)).toEqual([
+      ["kubectl", "-n", "mc-system", "port-forward", "svc/controller", "8080:8080"],
+      ["kubectl", "-n", "mc-system", "port-forward", "svc/receiver", "2222:2222"],
+    ]);
+  });
+
+  test("a live child is kept — no respawn churn on the healthy path", async () => {
+    const { spawn, spawned } = recordingSpawn();
+    const set = createInfraForwardSet({ targets: TARGETS, spawn, listens: async () => false });
+    await set.ensureOnce();
+    const outcomes = await set.ensureOnce();
+    expect(outcomes).toEqual([
+      { name: "controller", outcome: "kept" },
+      { name: "receiver", outcome: "kept" },
+    ]);
+    expect(spawned).toHaveLength(2);
   });
 });
