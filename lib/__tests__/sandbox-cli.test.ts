@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { parseAgentSelection, parseAttachArgs, parseEventsArgs, renderSandboxEvent, requireBrief, resolveSandboxOrExit } from "../../commands/sandbox.ts";
 import { formatSandboxAge, sandboxPickerCandidates, sandboxPickerRow } from "../sandbox.ts";
 import type { SandboxClient, SandboxDetail, SandboxEvent, SandboxState } from "../sandbox.ts";
@@ -31,6 +31,48 @@ describe("resolveSandboxOrExit", () => {
   test("an exact id passes through untouched (picker-selected ids re-resolve as exact hits)", async () => {
     const detail = await resolveSandboxOrExit(clientWith(["abc", "abcd"]), "abc");
     expect(detail.id).toBe("abc");
+  });
+
+  // The refusal paths follow attach's idiom exactly: the resolver's message
+  // in red on stderr, then exit 64. Client failures infraExit (2). The exits
+  // are trapped as thrown sentinels so the test process survives.
+  async function trapExit(run: () => Promise<unknown>): Promise<{ code: number | undefined; stderr: string }> {
+    const lines: string[] = [];
+    const errSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      lines.push(args.join(" "));
+    });
+    const exitSpy = spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw Object.assign(new Error(`exit ${code}`), { exitCode: code });
+    }) as typeof process.exit);
+    try {
+      await run();
+      throw new Error("expected an exit, got a return");
+    } catch (err) {
+      return { code: (err as { exitCode?: number }).exitCode, stderr: lines.join("\n") };
+    } finally {
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+  }
+
+  test("an ambiguous prefix exits 64 naming the candidate ids", async () => {
+    const out = await trapExit(() => resolveSandboxOrExit(clientWith(["abc-1", "abc-2"]), "abc"));
+    expect(out.code).toBe(64);
+    expect(out.stderr).toContain("abc-1");
+    expect(out.stderr).toContain("abc-2");
+  });
+
+  test("not-found exits 64 with the resolver's message, never a raw controller 404", async () => {
+    const out = await trapExit(() => resolveSandboxOrExit(clientWith([full]), "zzz"));
+    expect(out.code).toBe(64);
+    expect(out.stderr).toContain("sandbox zzz not found");
+  });
+
+  test("a client failure infraExits (2), the family's plumbing-error idiom", async () => {
+    const broken = { async list(): Promise<SandboxDetail[]> { throw new Error("controller GET /sandboxes failed: 502"); } } as unknown as SandboxClient;
+    const out = await trapExit(() => resolveSandboxOrExit(broken, "b37d"));
+    expect(out.code).toBe(2);
+    expect(out.stderr).toContain("502");
   });
 });
 
