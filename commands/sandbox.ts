@@ -458,10 +458,14 @@ export async function answerCommand(args: string[]): Promise<void> {
 
 // ─── rt sandbox events / steer ───────────────────────────────────────────────
 
-/** Pure argv parse for `rt sandbox events`, exported for tests. */
+/**
+ * Pure argv parse for `rt sandbox events`, exported for tests.
+ * A missing id is not an error: `id: null` signals the no-arg picker
+ * fallback (RT-23).
+ */
 export function parseEventsArgs(
   args: string[],
-): { id: string; since: number; json: boolean } | { error: string } {
+): { id: string | null; since: number; json: boolean } | { error: string } {
   let id: string | undefined, since = 0, json = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -473,8 +477,7 @@ export function parseEventsArgs(
     } else if (!arg.startsWith("--") && !id) id = arg;
     else return { error: `unknown argument: ${arg}` };
   }
-  if (!id) return { error: "usage: rt sandbox events <id> [--since <seq>] [--json]" };
-  return { id, since, json };
+  return { id: id ?? null, since, json };
 }
 
 /** One human line per event; exported for tests. */
@@ -505,9 +508,11 @@ export function renderSandboxEvent(event: SandboxEvent): string {
 export async function eventsCommand(args: string[]): Promise<void> {
   const parsed = parseEventsArgs(args);
   if ("error" in parsed) usageExit(parsed.error);
+  // Interim until the picker wiring lands (RT-23): keep the old behavior.
+  const id = parsed.id ?? usageExit("usage: rt sandbox events <id> [--since <seq>] [--json]");
   await requireController();
   try {
-    const events = await createSandboxClient().events(parsed.id, parsed.since);
+    const events = await createSandboxClient().events(id, parsed.since);
     if (parsed.json) console.log(JSON.stringify(events, null, 2));
     else for (const event of events) console.log(renderSandboxEvent(event));
   } catch (err) {

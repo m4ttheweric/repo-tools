@@ -92,9 +92,13 @@ describe("parseEventsArgs", () => {
     expect(parseEventsArgs(["sb-1"])).toEqual({ id: "sb-1", since: 0, json: false });
     expect(parseEventsArgs(["sb-1", "--since", "42", "--json"])).toEqual({ id: "sb-1", since: 42, json: true });
   });
-  test("missing id / non-integer since are errors", () => {
-    expect("error" in parseEventsArgs([])).toBe(true);
+  test("no id is not an error — null id signals the picker fallback (RT-23)", () => {
+    expect(parseEventsArgs([])).toEqual({ id: null, since: 0, json: false });
+    expect(parseEventsArgs(["--since", "9", "--json"])).toEqual({ id: null, since: 9, json: true });
+  });
+  test("non-integer since / unknown flags are errors", () => {
     expect("error" in parseEventsArgs(["sb-1", "--since", "x"])).toBe(true);
+    expect("error" in parseEventsArgs(["--bogus"])).toBe(true);
   });
 });
 
