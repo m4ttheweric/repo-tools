@@ -133,20 +133,21 @@ function collectNewNotes(
   currentUserId: number | null,
   isMrAuthor: boolean,
 ): NewCommentNote[] {
-  const selfAuthorId = currentUserId !== null ? `gitlab:${currentUserId}` : null;
+  // Compare numeric tails, not raw strings: note authors arrive scoped as
+  // "gitlab:user:N" while currentUserId is bare numeric.
+  const isSelf = (n: Note) =>
+    currentUserId !== null && numericUserId(n.author.id) === currentUserId;
   const out: NewCommentNote[] = [];
   for (const d of nextDiscussions) {
     // Only surface comments on MRs I authored, or in threads I'm a participant
     // in (I've posted at least one note). A teammate's MR pulled down for
     // review is in this cache too — its unrelated threads must stay silent.
-    const involved = selfAuthorId
-      ? d.notes.some((n) => n.author.id === selfAuthorId)
-      : false;
+    const involved = d.notes.some(isSelf);
     if (!isMrAuthor && !involved) continue;
     for (const n of d.notes) {
       if (n.system) continue;
       if (prev.has(n.id)) continue;
-      if (selfAuthorId && n.author.id === selfAuthorId) continue;
+      if (isSelf(n)) continue;
       out.push(buildNewNote(n));
     }
   }

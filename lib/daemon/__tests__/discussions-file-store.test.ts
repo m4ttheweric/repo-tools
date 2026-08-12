@@ -10,7 +10,7 @@ import type { HandlerContext } from "../handlers/types.ts";
 function tmpPath(name: string): string {
   return join(mkdtempSync(join(tmpdir(), "rt-disc-")), name);
 }
-const note = (id: number) => ({ id, system: false, body: `n${id}`, createdAt: "2026-07-26T00:00:00Z", author: { id: "gitlab:777", name: "Luke", username: "luke" } });
+const note = (id: number) => ({ id, system: false, body: `n${id}`, createdAt: "2026-07-26T00:00:00Z", author: { id: "gitlab:user:777", name: "Luke", username: "luke" } });
 const disc = (id: number) => ({ id: `d${id}`, notes: [note(id)] }) as any;
 
 function fakeCtx(entries: Record<string, any>): HandlerContext {
@@ -125,6 +125,60 @@ describe("refreshDiscussions (lifted)", () => {
     // that is what puts it in the durable queue and on the tray socket.
     expect(events).not.toContain("notification");
     expect(notified).toEqual([["new_comment", "New comment on !5", "@luke: n2", "http://w/5"]]);
+  });
+
+  // The provider stamps note authors in the scoped format "gitlab:user:N"
+  // (glance NoteAuthor.id); fixtures must match or the self-filter is untested.
+  const scopedNote = (id: number, userId: number, username: string) =>
+    ({ id, system: false, body: `n${id}`, createdAt: "2026-07-26T00:00:00Z", author: { id: `gitlab:user:${userId}`, name: username, username } });
+
+  test("own comments (scoped author id) never notify on my own MR", async () => {
+    const fileStore = createDiscussionsFileStore(tmpPath("d.json"));
+    const pStore = createProjectMRs(tmpPath("p.json"), 0);
+    const ctx = fakeCtx({
+      feat: { repoName: "repo", mr: { iid: 5, title: "T", webUrl: "http://w/5", status: "open", author: { id: "gitlab:1" } }, ticket: null, linearId: "", fetchedAt: 0 },
+    });
+    const notified: string[] = [];
+    const deps = { ctx, broadcast: () => {} };
+    const mine = scopedNote(1, 1, "matt");
+    const overrides = {
+      fileStore, projectStore: pStore, currentUserId: 1,
+      fetchDiscussions: async () => [{ id: "d1", notes: [mine] } as any],
+      notify: (c: string) => { notified.push(c); },
+    };
+
+    await refreshDiscussions(deps, "repo", 5, overrides);
+    const second = await refreshDiscussions(deps, "repo", 5, {
+      ...overrides,
+      fetchDiscussions: async () => [{ id: "d1", notes: [mine, scopedNote(2, 1, "matt")] } as any],
+    });
+    expect(second.newNotes).toEqual([]);
+    expect(notified).toEqual([]);
+  });
+
+  test("teammate reply in a thread I participate in (scoped ids) notifies on someone else's MR", async () => {
+    const fileStore = createDiscussionsFileStore(tmpPath("d.json"));
+    const pStore = createProjectMRs(tmpPath("p.json"), 0);
+    const ctx = fakeCtx({
+      feat: { repoName: "repo", mr: { iid: 5, title: "T", webUrl: "http://w/5", status: "open", author: { id: "gitlab:2" } }, ticket: null, linearId: "", fetchedAt: 0 },
+    });
+    const notified: string[] = [];
+    const deps = { ctx, broadcast: () => {} };
+    const mine = scopedNote(1, 1, "matt");
+    const overrides = {
+      fileStore, projectStore: pStore, currentUserId: 1,
+      fetchDiscussions: async () => [{ id: "d1", notes: [mine] } as any],
+      notify: (c: string) => { notified.push(c); },
+    };
+
+    await refreshDiscussions(deps, "repo", 5, overrides);
+    const second = await refreshDiscussions(deps, "repo", 5, {
+      ...overrides,
+      fetchDiscussions: async () => [{ id: "d1", notes: [mine, scopedNote(2, 777, "luke")] } as any],
+    });
+    expect(second.newNotes.length).toBe(1);
+    expect(second.newNotes[0]!.authorUser).toBe("luke");
+    expect(notified).toEqual(["new_comment"]);
   });
 
   test("throws for an MR in neither store", async () => {
