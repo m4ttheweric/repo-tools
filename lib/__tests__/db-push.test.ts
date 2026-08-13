@@ -60,18 +60,18 @@ describe("readClusterCredentials", () => {
 describe("localDumpSizeBytes", () => {
   test("parses the byte count from the local psql query", async () => {
     const { exec, calls } = fakeExec({
-      "psql -d acme": { stdout: "148992\n", stderr: "", exitCode: 0 },
+      "psql postgres://postgres:postgres@localhost:5432/acme": { stdout: "148992\n", stderr: "", exitCode: 0 },
     });
 
     const size = await localDumpSizeBytes(exec);
 
     expect(size).toBe(148992);
-    expect(calls[0]!.argv).toEqual(["psql", "-d", "acme", "-tAc", "SELECT pg_database_size('acme');"]);
+    expect(calls[0]!.argv).toEqual(["psql", "postgres://postgres:postgres@localhost:5432/acme", "-tAc", "SELECT pg_database_size('acme');"]);
   });
 
   test("returns null when the local query fails (no local Postgres, etc.)", async () => {
     const { exec } = fakeExec({
-      "psql -d acme": { stdout: "", stderr: "psql: error: connection refused", exitCode: 2 },
+      "psql postgres://postgres:postgres@localhost:5432/acme": { stdout: "", stderr: "psql: error: connection refused", exitCode: 2 },
     });
 
     const size = await localDumpSizeBytes(exec);
@@ -114,7 +114,7 @@ describe("pushDatabase", () => {
     // The dump-size probe (a read-only local psql query) is allowed before the
     // decline — it's what the confirm prompt shows the operator. Nothing else runs.
     const { exec, calls } = fakeExec({
-      "psql -d acme": { stdout: "0\n", stderr: "", exitCode: 0 },
+      "psql postgres://postgres:postgres@localhost:5432/acme": { stdout: "0\n", stderr: "", exitCode: 0 },
     });
     const spawn = fakeSpawnForward();
 
@@ -126,7 +126,7 @@ describe("pushDatabase", () => {
     });
 
     expect(out).toEqual({ ok: false, code: "declined", message: "push cancelled — nothing was touched" });
-    expect(calls.every(c => c.argv[0] === "psql" && c.argv[1] === "-d")).toBe(true);
+    expect(calls.every(c => c.argv[0] === "psql" && c.argv[1] === "postgres://postgres:postgres@localhost:5432/acme")).toBe(true);
     expect(spawn.spawned).toBe(0);
   });
 });
@@ -134,7 +134,7 @@ describe("pushDatabase", () => {
 describe("pushDatabase confirm summary", () => {
   test("names the cluster, local source db, and dump size before anything destructive", async () => {
     const { exec } = fakeExec({
-      "psql -d acme": { stdout: "148992\n", stderr: "", exitCode: 0 },
+      "psql postgres://postgres:postgres@localhost:5432/acme": { stdout: "148992\n", stderr: "", exitCode: 0 },
     });
     const summaries: Array<{ cluster: string; sourceDb: string; dumpSizeBytes: number | null }> = [];
 
@@ -157,7 +157,7 @@ describe("pushDatabase confirm summary", () => {
 describe("pushDatabase credentials", () => {
   test("a kubectl secret read failure hard-refuses before any port-forward", async () => {
     const { exec } = fakeExec({
-      "psql -d acme": { stdout: "0\n", stderr: "", exitCode: 0 },
+      "psql postgres://postgres:postgres@localhost:5432/acme": { stdout: "0\n", stderr: "", exitCode: 0 },
       "kubectl -n mc-system get secret postgres-credentials": { stdout: "", stderr: "unreachable", exitCode: 1 },
     });
     const spawn = fakeSpawnForward();
@@ -181,7 +181,7 @@ describe("pushDatabase credentials", () => {
 describe("pushDatabase port-forward", () => {
   test("hard-refuses when the postgres port-forward never comes up", async () => {
     const { exec } = fakeExec({
-      "psql -d acme": { stdout: "0\n", stderr: "", exitCode: 0 },
+      "psql postgres://postgres:postgres@localhost:5432/acme": { stdout: "0\n", stderr: "", exitCode: 0 },
       "kubectl -n mc-system get secret postgres-credentials": {
         stdout: JSON.stringify({ data: { username: "YQ==", password: "Yg==" } }),
         stderr: "",
@@ -207,10 +207,67 @@ describe("pushDatabase port-forward", () => {
   });
 });
 
+describe("local source URL", () => {
+  test("pg_dump and the size query hit the default local TCP URL, never the bare socket", async () => {
+    const { exec, calls } = fakeExec({
+      "psql postgres://postgres:postgres@localhost:5432/acme": { stdout: "0\n", stderr: "", exitCode: 0 },
+      "kubectl -n mc-system get secret postgres-credentials": {
+        stdout: JSON.stringify({ data: { username: "YQ==", password: "Yg==" } }),
+        stderr: "",
+        exitCode: 0,
+      },
+      "pg_dump": { stdout: "-- dump content --", stderr: "", exitCode: 0 },
+      "psql -h 127.0.0.1 -p 15432": { stdout: "", stderr: "", exitCode: 0 },
+    });
+
+    const out = await pushDatabase({
+      exec,
+      spawnForward: () => ({ kill: () => {}, exited: new Promise(() => {}) }),
+      probe: async () => true,
+      confirm: async () => true,
+    });
+
+    expect(out.ok).toBe(true);
+    const argvs = calls.map(c => c.argv.join(" "));
+    expect(argvs).toContain(
+      "pg_dump --no-owner --no-privileges postgres://postgres:postgres@localhost:5432/acme",
+    );
+    expect(argvs.some(a => a === "pg_dump --no-owner --no-privileges acme")).toBe(false);
+    expect(argvs.some(a => a.startsWith("psql -d acme"))).toBe(false);
+  });
+
+  test("a sourceUrl override reaches both local legs", async () => {
+    const url = "postgres://me:pw@localhost:6543/acme";
+    const { exec, calls } = fakeExec({
+      [`psql ${url}`]: { stdout: "0\n", stderr: "", exitCode: 0 },
+      "kubectl -n mc-system get secret postgres-credentials": {
+        stdout: JSON.stringify({ data: { username: "YQ==", password: "Yg==" } }),
+        stderr: "",
+        exitCode: 0,
+      },
+      "pg_dump": { stdout: "-- dump content --", stderr: "", exitCode: 0 },
+      "psql -h 127.0.0.1 -p 15432": { stdout: "", stderr: "", exitCode: 0 },
+    });
+
+    const out = await pushDatabase({
+      exec,
+      sourceUrl: url,
+      spawnForward: () => ({ kill: () => {}, exited: new Promise(() => {}) }),
+      probe: async () => true,
+      confirm: async () => true,
+    });
+
+    expect(out.ok).toBe(true);
+    const argvs = calls.map(c => c.argv.join(" "));
+    expect(argvs).toContain(`pg_dump --no-owner --no-privileges ${url}`);
+    expect(argvs).toContain(`psql ${url} -tAc SELECT pg_database_size('acme');`);
+  });
+});
+
 describe("pushDatabase happy path", () => {
   function happyScript(): Record<string, ExecResult> {
     return {
-      "psql -d acme": { stdout: "0\n", stderr: "", exitCode: 0 },
+      "psql postgres://postgres:postgres@localhost:5432/acme": { stdout: "0\n", stderr: "", exitCode: 0 },
       "kubectl -n mc-system get secret postgres-credentials": {
         stdout: JSON.stringify({ data: { username: "YQ==", password: "Yg==" } }),
         stderr: "",
@@ -237,7 +294,7 @@ describe("pushDatabase happy path", () => {
 
     const argvs = calls.map(c => c.argv.join(" "));
     // pg_dump reads local acme before any cluster mutation.
-    expect(argvs).toContain("pg_dump --no-owner --no-privileges acme");
+    expect(argvs).toContain("pg_dump --no-owner --no-privileges postgres://postgres:postgres@localhost:5432/acme");
     const dumpIdx = argvs.findIndex(a => a.startsWith("pg_dump"));
 
     // The template is torn down and rebuilt from the dump, after the dump.
@@ -277,7 +334,7 @@ describe("pushDatabase happy path", () => {
 describe("pushDatabase failures mid-flight", () => {
   function baseScript(): Record<string, ExecResult> {
     return {
-      "psql -d acme": { stdout: "0\n", stderr: "", exitCode: 0 },
+      "psql postgres://postgres:postgres@localhost:5432/acme": { stdout: "0\n", stderr: "", exitCode: 0 },
       "kubectl -n mc-system get secret postgres-credentials": {
         stdout: JSON.stringify({ data: { username: "YQ==", password: "Yg==" } }),
         stderr: "",

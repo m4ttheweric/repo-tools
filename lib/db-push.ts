@@ -16,6 +16,9 @@ export const DB_SERVICE = "postgres";
 export const DB_LOCAL_PORT = 15432;
 export const DB_CLUSTER_PORT = 5432;
 export const LIVE_DB = "acme";
+// The acme dev database runs in Docker publishing TCP 5432 with the
+// stock dev credentials; bare pg_dump/psql try the Unix socket and fail.
+export const DEFAULT_SOURCE_URL = `postgres://postgres:postgres@localhost:5432/${LIVE_DB}`;
 export const TEMPLATE_DB = "acme_tpl";
 export const CREDENTIALS_SECRET = "postgres-credentials";
 
@@ -54,8 +57,8 @@ export const spawnExec: Exec = async (argv, opts = {}) => {
 };
 
 /** Local `acme` database size in bytes, or null when the local query fails. */
-export async function localDumpSizeBytes(exec: Exec): Promise<number | null> {
-  const res = await exec(["psql", "-d", LIVE_DB, "-tAc", `SELECT pg_database_size('${LIVE_DB}');`]);
+export async function localDumpSizeBytes(exec: Exec, sourceUrl: string = DEFAULT_SOURCE_URL): Promise<number | null> {
+  const res = await exec(["psql", sourceUrl, "-tAc", `SELECT pg_database_size('${LIVE_DB}');`]);
   if (res.exitCode !== 0) return null;
   const n = Number(res.stdout.trim());
   return Number.isFinite(n) ? n : null;
@@ -110,13 +113,16 @@ export type PushResult =
  */
 export async function pushDatabase(opts: {
   exec: Exec;
+  /** Local source connection URL; defaults to the stock dev Docker DB. */
+  sourceUrl?: string;
   spawnForward: () => PortForwardHandle;
   probe?: () => Promise<boolean>;
   confirm: (summary: PushConfirmSummary) => Promise<boolean>;
   onPhase?: (phase: string, elapsedMs: number) => void;
   delayMs?: (ms: number) => Promise<void>;
 }): Promise<PushResult> {
-  const dumpSizeBytes = await localDumpSizeBytes(opts.exec);
+  const sourceUrl = opts.sourceUrl ?? DEFAULT_SOURCE_URL;
+  const dumpSizeBytes = await localDumpSizeBytes(opts.exec, sourceUrl);
   const proceed = await opts.confirm({
     cluster: `mattcloud cluster (${DB_NAMESPACE}/svc/${DB_SERVICE})`,
     sourceDb: `local ${LIVE_DB}`,
@@ -159,7 +165,7 @@ export async function pushDatabase(opts: {
 
   try {
     const dump = await runPhase("pg_dump local acme", () =>
-      opts.exec(["pg_dump", "--no-owner", "--no-privileges", LIVE_DB]),
+      opts.exec(["pg_dump", "--no-owner", "--no-privileges", sourceUrl]),
     );
     if (dump.exitCode !== 0) {
       return { ok: false, code: "tooling", message: `pg_dump failed: ${dump.stderr.trim() || "unknown error"}` };
