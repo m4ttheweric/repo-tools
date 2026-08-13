@@ -63,6 +63,18 @@ async function confirmPush(summary: PushConfirmSummary): Promise<boolean> {
   });
 }
 
+/**
+ * The Docker container publishing the local Postgres port, when there is one.
+ * Dumping through its own binary keeps the dump's major version matched to
+ * both servers; a newer host pg_dump emits SET statements PG16 rejects.
+ */
+async function detectSourceContainer(): Promise<{ docker: string } | undefined> {
+  const res = await spawnExec(["docker", "ps", "--filter", "publish=5432", "--format", "{{.Names}}"]);
+  if (res.exitCode !== 0) return undefined;
+  const name = res.stdout.trim().split("\n")[0]?.trim();
+  return name ? { docker: name } : undefined;
+}
+
 export async function pushCommand(args: string[], _ctx: CommandContext): Promise<void> {
   for (const arg of args) {
     if (arg === "--help" || arg === "-h") helpExit();
@@ -71,6 +83,7 @@ export async function pushCommand(args: string[], _ctx: CommandContext): Promise
 
   const out = await pushDatabase({
     exec: spawnExec,
+    dumpVia: await detectSourceContainer(),
     spawnForward: spawnPostgresForward,
     confirm: confirmPush,
     onPhase: (phase, elapsedMs) => {

@@ -266,6 +266,43 @@ describe("local source URL", () => {
   });
 });
 
+describe("version-matched dumper", () => {
+  test("dumpVia.docker runs pg_dump inside the source container, streaming to the host spool", async () => {
+    // The host pg_dump can be newer than both servers (18 vs 16), and a v18
+    // dump emits SET transaction_timeout, which PG16 rejects on restore. The
+    // container's own binary always matches the source server.
+    const { exec, calls } = fakeExec({
+      "psql postgres://postgres:postgres@localhost:5432/assured": { stdout: "0\n", stderr: "", exitCode: 0 },
+      "kubectl -n mc-system get secret postgres-credentials": {
+        stdout: JSON.stringify({ data: { username: "YQ==", password: "Yg==" } }),
+        stderr: "",
+        exitCode: 0,
+      },
+      "sh -c": { stdout: "", stderr: "", exitCode: 0 },
+      "psql -h 127.0.0.1 -p 15432": { stdout: "", stderr: "", exitCode: 0 },
+      "rm -f": { stdout: "", stderr: "", exitCode: 0 },
+    });
+
+    const out = await pushDatabase({
+      exec,
+      dumpVia: { docker: "assured-db-1" },
+      dumpFile: "/tmp/rt-test-dump.sql",
+      spawnForward: () => ({ kill: () => {}, exited: new Promise(() => {}) }),
+      probe: async () => true,
+      confirm: async () => true,
+    });
+
+    expect(out.ok).toBe(true);
+    const argvs = calls.map(c => c.argv.join(" "));
+    const dumpCall = argvs.find(a => a.startsWith("sh -c"));
+    expect(dumpCall).toBeDefined();
+    expect(dumpCall).toContain("docker exec 'assured-db-1' pg_dump");
+    expect(dumpCall).toContain("--no-owner --no-privileges");
+    expect(dumpCall).toContain("> '/tmp/rt-test-dump.sql'");
+    expect(argvs.some(a => a.startsWith("pg_dump "))).toBe(false);
+  });
+});
+
 describe("pushDatabase happy path", () => {
   function happyScript(): Record<string, ExecResult> {
     return {
