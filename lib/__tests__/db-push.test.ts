@@ -217,6 +217,7 @@ describe("local source URL", () => {
         exitCode: 0,
       },
       "pg_dump": { stdout: "-- dump content --", stderr: "", exitCode: 0 },
+      "sh -c": { stdout: "", stderr: "", exitCode: 0 },
       "psql -h 127.0.0.1 -p 15432": { stdout: "", stderr: "", exitCode: 0 },
     });
 
@@ -231,7 +232,7 @@ describe("local source URL", () => {
     expect(out.ok).toBe(true);
     const argvs = calls.map(c => c.argv.join(" "));
     expect(argvs).toContain(
-      "pg_dump --no-owner --no-privileges -f /tmp/rt-test-dump.sql postgres://postgres:postgres@localhost:5432/acme",
+      "pg_dump -Fc --no-owner --no-privileges -f /tmp/rt-test-dump.sql postgres://postgres:postgres@localhost:5432/acme",
     );
     expect(argvs.some(a => a === "pg_dump --no-owner --no-privileges acme")).toBe(false);
     expect(argvs.some(a => a.startsWith("psql -d acme"))).toBe(false);
@@ -247,6 +248,7 @@ describe("local source URL", () => {
         exitCode: 0,
       },
       "pg_dump": { stdout: "-- dump content --", stderr: "", exitCode: 0 },
+      "sh -c": { stdout: "", stderr: "", exitCode: 0 },
       "psql -h 127.0.0.1 -p 15432": { stdout: "", stderr: "", exitCode: 0 },
     });
 
@@ -261,7 +263,7 @@ describe("local source URL", () => {
 
     expect(out.ok).toBe(true);
     const argvs = calls.map(c => c.argv.join(" "));
-    expect(argvs).toContain(`pg_dump --no-owner --no-privileges -f /tmp/rt-test-dump.sql ${url}`);
+    expect(argvs).toContain(`pg_dump -Fc --no-owner --no-privileges -f /tmp/rt-test-dump.sql ${url}`);
     expect(argvs).toContain(`psql ${url} -tAc SELECT pg_database_size('acme');`);
   });
 });
@@ -276,6 +278,7 @@ describe("phase rendering seam", () => {
         exitCode: 0,
       },
       "pg_dump": { stdout: "", stderr: "", exitCode: 0 },
+      "sh -c": { stdout: "", stderr: "", exitCode: 0 },
       "psql -h 127.0.0.1 -p 15432": { stdout: "", stderr: "", exitCode: 0 },
       "rm -f": { stdout: "", stderr: "", exitCode: 0 },
     });
@@ -349,6 +352,7 @@ describe("pushDatabase happy path", () => {
         exitCode: 0,
       },
       "pg_dump": { stdout: "-- dump content --", stderr: "", exitCode: 0 },
+      "sh -c": { stdout: "", stderr: "", exitCode: 0 },
       "psql -h 127.0.0.1 -p 15432": { stdout: "", stderr: "", exitCode: 0 },
     };
   }
@@ -372,7 +376,7 @@ describe("pushDatabase happy path", () => {
     // pg_dump streams to the dump file before any cluster mutation -- the dump
     // is never buffered in memory (a 10GB dump killed the allocator).
     expect(argvs).toContain(
-      "pg_dump --no-owner --no-privileges -f /tmp/rt-test-dump.sql postgres://postgres:postgres@localhost:5432/acme",
+      "pg_dump -Fc --no-owner --no-privileges -f /tmp/rt-test-dump.sql postgres://postgres:postgres@localhost:5432/acme",
     );
     const dumpIdx = argvs.findIndex(a => a.startsWith("pg_dump"));
 
@@ -382,8 +386,8 @@ describe("pushDatabase happy path", () => {
     );
     const tplDrop = argvs.indexOf(`psql -h 127.0.0.1 -p 15432 -U a -d postgres -v ON_ERROR_STOP=1 -c DROP DATABASE IF EXISTS "acme_tpl";`);
     const tplCreate = argvs.indexOf(`psql -h 127.0.0.1 -p 15432 -U a -d postgres -v ON_ERROR_STOP=1 -c CREATE DATABASE "acme_tpl";`);
-    const tplRestore = argvs.indexOf(
-      `psql -h 127.0.0.1 -p 15432 -U a -d acme_tpl -v ON_ERROR_STOP=1 -f /tmp/rt-test-dump.sql`,
+    const tplRestore = argvs.findIndex(a =>
+      a.startsWith("sh -c") && a.includes("kubectl exec -i -n mc-system postgres-0 -- pg_restore"),
     );
     expect(dumpIdx).toBeGreaterThanOrEqual(0);
     expect(tplTerminate).toBeGreaterThan(dumpIdx);
@@ -391,6 +395,9 @@ describe("pushDatabase happy path", () => {
     expect(tplCreate).toBeGreaterThan(tplDrop);
     expect(tplRestore).toBeGreaterThan(tplCreate);
     expect(calls[tplRestore]!.stdin).toBeUndefined();
+    // the 12GB stream stalled kubectl port-forward; bulk data goes through exec
+    expect(argvs[tplRestore]).toContain("< '/tmp/rt-test-dump.sql'");
+    expect(argvs[tplRestore]).toContain("-d 'acme_tpl'");
 
     // The dump file is cleaned up after a successful push.
     expect(argvs).toContain("rm -f /tmp/rt-test-dump.sql");
@@ -452,7 +459,7 @@ describe("pushDatabase failures mid-flight", () => {
       "psql -h 127.0.0.1 -p 15432 -U a -d postgres -v ON_ERROR_STOP=1 -c DROP DATABASE IF EXISTS \"acme_tpl\";": { stdout: "", stderr: "", exitCode: 0 },
       "psql -h 127.0.0.1 -p 15432 -U a -d postgres -v ON_ERROR_STOP=1 -c CREATE DATABASE \"acme_tpl\";": { stdout: "", stderr: "", exitCode: 0 },
       "psql -h 127.0.0.1 -p 15432 -U a -d postgres -v ON_ERROR_STOP=1 -c SELECT pg_terminate_backend": { stdout: "", stderr: "", exitCode: 0 },
-      "psql -h 127.0.0.1 -p 15432 -U a -d acme_tpl -v ON_ERROR_STOP=1": { stdout: "", stderr: "syntax error near FOO", exitCode: 3 },
+      "sh -c": { stdout: "", stderr: "syntax error near FOO", exitCode: 3 },
     });
 
     const out = await pushDatabase({
@@ -474,7 +481,7 @@ describe("pushDatabase failures mid-flight", () => {
     const { exec } = fakeExec({
       ...baseScript(),
       "pg_dump": { stdout: "-- dump --", stderr: "", exitCode: 0 },
-      "psql -h 127.0.0.1 -p 15432 -U a -d acme_tpl -v ON_ERROR_STOP=1": { stdout: "", stderr: "", exitCode: 0 },
+      "sh -c": { stdout: "", stderr: "", exitCode: 0 },
       "psql -h 127.0.0.1 -p 15432 -U a -d postgres -v ON_ERROR_STOP=1 -c CREATE DATABASE \"acme\" TEMPLATE \"acme_tpl\";": {
         stdout: "",
         stderr: "database is being accessed by other users",

@@ -18,6 +18,7 @@ export const DB_CLUSTER_PORT = 5432;
 export const LIVE_DB = "acme";
 // The acme dev database runs in Docker publishing TCP 5432 with the
 // stock dev credentials; bare pg_dump/psql try the Unix socket and fail.
+export const DB_POD = "postgres-0";
 export const DEFAULT_SOURCE_URL = `postgres://postgres:postgres@localhost:5432/${LIVE_DB}`;
 export const TEMPLATE_DB = "acme_tpl";
 export const CREDENTIALS_SECRET = "postgres-credentials";
@@ -186,9 +187,9 @@ export async function pushDatabase(opts: {
       ? [
           "sh",
           "-c",
-          `docker exec ${shq(opts.dumpVia.docker)} pg_dump --no-owner --no-privileges ${shq(sourceUrl)} > ${shq(dumpFile)}`,
+          `docker exec ${shq(opts.dumpVia.docker)} pg_dump -Fc --no-owner --no-privileges ${shq(sourceUrl)} > ${shq(dumpFile)}`,
         ]
-      : ["pg_dump", "--no-owner", "--no-privileges", "-f", dumpFile, sourceUrl];
+      : ["pg_dump", "-Fc", "--no-owner", "--no-privileges", "-f", dumpFile, sourceUrl];
     const dump = await runPhase("pg_dump local acme", () => opts.exec(dumpArgv));
     if (dump.exitCode !== 0) {
       return { ok: false, code: "tooling", message: `pg_dump failed: ${dump.stderr.trim() || "unknown error"}` };
@@ -271,10 +272,15 @@ async function recreateDatabase(
   const create = await runAdminSql(exec, creds, "postgres", createDatabaseSql(db));
   if (create.exitCode !== 0) return { ok: false, message: create.stderr.trim() || "create database failed" };
 
-  const restore = await exec(
-    ["psql", "-h", "127.0.0.1", "-p", String(DB_LOCAL_PORT), "-U", creds.username, "-d", db, "-v", "ON_ERROR_STOP=1", "-f", from.restoreFromFile],
-    { env: { PGPASSWORD: creds.password } },
-  );
+  // Bulk data never goes through the port-forward: a multi-GB stream stalls it
+  // (server parks in ClientRead and never recovers). kubectl exec carries the
+  // compressed dump straight into the pod, where the socket connection is local.
+  const restore = await exec([
+    "sh",
+    "-c",
+    `kubectl exec -i -n ${DB_NAMESPACE} ${DB_POD} -- pg_restore -U ${shq(creds.username)} -d ${shq(db)} ` +
+      `--no-owner --no-privileges < ${shq(from.restoreFromFile)}`,
+  ]);
   if (restore.exitCode !== 0) return { ok: false, message: restore.stderr.trim() || "restore failed" };
   return { ok: true };
 }
