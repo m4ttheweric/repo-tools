@@ -704,6 +704,21 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  // devOnly for the same reason as validate/cloud: the cluster-side database
+  // (cloud-db-infra) may not be live everywhere this binary ships yet.
+  db: {
+    description: "mattcloud cluster database freshness + recovery",
+    devOnly: true,
+    subcommands: {
+      push: {
+        description: "Dump local assured → cluster assured_tpl → recreate live assured from it",
+        module: "./commands/db.ts",
+        fn: "pushCommand",
+        args: [],
+      },
+    },
+  },
+
   // devOnly for the same reason as validate/cloud: the controller's sandbox
   // half is not deployed anywhere yet (sandbox-controller plan Task 8).
   sandbox: {
