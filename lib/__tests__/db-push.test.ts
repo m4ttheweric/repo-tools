@@ -222,6 +222,7 @@ describe("local source URL", () => {
 
     const out = await pushDatabase({
       exec,
+      dumpFile: "/tmp/rt-test-dump.sql",
       spawnForward: () => ({ kill: () => {}, exited: new Promise(() => {}) }),
       probe: async () => true,
       confirm: async () => true,
@@ -230,7 +231,7 @@ describe("local source URL", () => {
     expect(out.ok).toBe(true);
     const argvs = calls.map(c => c.argv.join(" "));
     expect(argvs).toContain(
-      "pg_dump --no-owner --no-privileges postgres://postgres:postgres@localhost:5432/assured",
+      "pg_dump --no-owner --no-privileges -f /tmp/rt-test-dump.sql postgres://postgres:postgres@localhost:5432/assured",
     );
     expect(argvs.some(a => a === "pg_dump --no-owner --no-privileges assured")).toBe(false);
     expect(argvs.some(a => a.startsWith("psql -d assured"))).toBe(false);
@@ -252,6 +253,7 @@ describe("local source URL", () => {
     const out = await pushDatabase({
       exec,
       sourceUrl: url,
+      dumpFile: "/tmp/rt-test-dump.sql",
       spawnForward: () => ({ kill: () => {}, exited: new Promise(() => {}) }),
       probe: async () => true,
       confirm: async () => true,
@@ -259,7 +261,7 @@ describe("local source URL", () => {
 
     expect(out.ok).toBe(true);
     const argvs = calls.map(c => c.argv.join(" "));
-    expect(argvs).toContain(`pg_dump --no-owner --no-privileges ${url}`);
+    expect(argvs).toContain(`pg_dump --no-owner --no-privileges -f /tmp/rt-test-dump.sql ${url}`);
     expect(argvs).toContain(`psql ${url} -tAc SELECT pg_database_size('assured');`);
   });
 });
@@ -284,6 +286,7 @@ describe("pushDatabase happy path", () => {
 
     const out = await pushDatabase({
       exec,
+      dumpFile: "/tmp/rt-test-dump.sql",
       spawnForward: () => ({ kill: () => {}, exited: new Promise(() => {}) }),
       probe: async () => true,
       confirm: async () => true,
@@ -293,8 +296,11 @@ describe("pushDatabase happy path", () => {
     expect(out.ok).toBe(true);
 
     const argvs = calls.map(c => c.argv.join(" "));
-    // pg_dump reads local assured before any cluster mutation.
-    expect(argvs).toContain("pg_dump --no-owner --no-privileges postgres://postgres:postgres@localhost:5432/assured");
+    // pg_dump streams to the dump file before any cluster mutation -- the dump
+    // is never buffered in memory (a 10GB dump killed the allocator).
+    expect(argvs).toContain(
+      "pg_dump --no-owner --no-privileges -f /tmp/rt-test-dump.sql postgres://postgres:postgres@localhost:5432/assured",
+    );
     const dumpIdx = argvs.findIndex(a => a.startsWith("pg_dump"));
 
     // The template is torn down and rebuilt from the dump, after the dump.
@@ -303,13 +309,19 @@ describe("pushDatabase happy path", () => {
     );
     const tplDrop = argvs.indexOf(`psql -h 127.0.0.1 -p 15432 -U a -d postgres -v ON_ERROR_STOP=1 -c DROP DATABASE IF EXISTS "assured_tpl";`);
     const tplCreate = argvs.indexOf(`psql -h 127.0.0.1 -p 15432 -U a -d postgres -v ON_ERROR_STOP=1 -c CREATE DATABASE "assured_tpl";`);
-    const tplRestore = argvs.indexOf(`psql -h 127.0.0.1 -p 15432 -U a -d assured_tpl -v ON_ERROR_STOP=1`);
+    const tplRestore = argvs.indexOf(
+      `psql -h 127.0.0.1 -p 15432 -U a -d assured_tpl -v ON_ERROR_STOP=1 -f /tmp/rt-test-dump.sql`,
+    );
     expect(dumpIdx).toBeGreaterThanOrEqual(0);
     expect(tplTerminate).toBeGreaterThan(dumpIdx);
     expect(tplDrop).toBeGreaterThan(tplTerminate);
     expect(tplCreate).toBeGreaterThan(tplDrop);
     expect(tplRestore).toBeGreaterThan(tplCreate);
-    expect(calls[tplRestore]!.stdin).toBe("-- dump content --");
+    expect(calls[tplRestore]!.stdin).toBeUndefined();
+
+    // The dump file is cleaned up after a successful push.
+    expect(argvs).toContain("rm -f /tmp/rt-test-dump.sql");
+    expect(argvs.indexOf("rm -f /tmp/rt-test-dump.sql")).toBeGreaterThan(tplRestore);
 
     // Then the live db is torn down and recreated FROM the template, server-side.
     const liveTerminate = argvs.indexOf(
@@ -380,7 +392,7 @@ describe("pushDatabase failures mid-flight", () => {
     expect(out).toEqual({
       ok: false,
       code: "cluster",
-      message: "restore into assured_tpl failed: syntax error near FOO",
+      message: expect.stringContaining("restore into assured_tpl failed: syntax error near FOO"),
     });
     expect(calls.some(c => c.argv.join(" ").includes(`DROP DATABASE IF EXISTS "assured";`))).toBe(false);
   });

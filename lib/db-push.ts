@@ -115,6 +115,8 @@ export async function pushDatabase(opts: {
   exec: Exec;
   /** Local source connection URL; defaults to the stock dev Docker DB. */
   sourceUrl?: string;
+  /** Dump spool path; the dump streams to disk, never through memory. */
+  dumpFile?: string;
   spawnForward: () => PortForwardHandle;
   probe?: () => Promise<boolean>;
   confirm: (summary: PushConfirmSummary) => Promise<boolean>;
@@ -163,19 +165,25 @@ export async function pushDatabase(opts: {
     return result;
   };
 
+  const dumpFile = opts.dumpFile ?? `/tmp/rt-db-push-${Date.now()}.sql`;
+
   try {
     const dump = await runPhase("pg_dump local assured", () =>
-      opts.exec(["pg_dump", "--no-owner", "--no-privileges", sourceUrl]),
+      opts.exec(["pg_dump", "--no-owner", "--no-privileges", "-f", dumpFile, sourceUrl]),
     );
     if (dump.exitCode !== 0) {
       return { ok: false, code: "tooling", message: `pg_dump failed: ${dump.stderr.trim() || "unknown error"}` };
     }
 
     const restoreTpl = await runPhase(`recreate ${TEMPLATE_DB} from the dump`, () =>
-      recreateDatabase(opts.exec, creds, TEMPLATE_DB, { restoreFromStdin: dump.stdout }),
+      recreateDatabase(opts.exec, creds, TEMPLATE_DB, { restoreFromFile: dumpFile }),
     );
     if (!restoreTpl.ok) {
-      return { ok: false, code: "cluster", message: `restore into ${TEMPLATE_DB} failed: ${restoreTpl.message}` };
+      return {
+        ok: false,
+        code: "cluster",
+        message: `restore into ${TEMPLATE_DB} failed: ${restoreTpl.message} (dump kept at ${dumpFile})`,
+      };
     }
 
     const recreateLive = await runPhase(`recreate live ${LIVE_DB} from ${TEMPLATE_DB}`, () =>
@@ -191,6 +199,8 @@ export async function pushDatabase(opts: {
           `CREATE DATABASE ${LIVE_DB} TEMPLATE ${TEMPLATE_DB}.`,
       };
     }
+
+    await opts.exec(["rm", "-f", dumpFile]);
 
     return {
       ok: true,
@@ -225,7 +235,7 @@ async function recreateDatabase(
   exec: Exec,
   creds: ClusterCredentials,
   db: string,
-  from: { restoreFromStdin: string } | { template: string },
+  from: { restoreFromFile: string } | { template: string },
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   const terminate = await runAdminSql(exec, creds, "postgres", terminateConnectionsSql(db));
   if (terminate.exitCode !== 0) return { ok: false, message: terminate.stderr.trim() || "terminate connections failed" };
@@ -243,8 +253,8 @@ async function recreateDatabase(
   if (create.exitCode !== 0) return { ok: false, message: create.stderr.trim() || "create database failed" };
 
   const restore = await exec(
-    ["psql", "-h", "127.0.0.1", "-p", String(DB_LOCAL_PORT), "-U", creds.username, "-d", db, "-v", "ON_ERROR_STOP=1"],
-    { stdin: from.restoreFromStdin, env: { PGPASSWORD: creds.password } },
+    ["psql", "-h", "127.0.0.1", "-p", String(DB_LOCAL_PORT), "-U", creds.username, "-d", db, "-v", "ON_ERROR_STOP=1", "-f", from.restoreFromFile],
+    { env: { PGPASSWORD: creds.password } },
   );
   if (restore.exitCode !== 0) return { ok: false, message: restore.stderr.trim() || "restore failed" };
   return { ok: true };
