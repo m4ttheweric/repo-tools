@@ -16,6 +16,7 @@
 
 import type { CommandContext } from "../lib/command-tree.ts";
 import { bold, dim, green, red, reset, yellow } from "../lib/tui.ts";
+import { createStepRunner } from "../lib/rt-render.tsx";
 import {
   LIVE_DB,
   TEMPLATE_DB,
@@ -81,13 +82,25 @@ export async function pushCommand(args: string[], _ctx: CommandContext): Promise
     else usageExit(`unknown argument: ${arg}`);
   }
 
+  const steps = createStepRunner();
+
   const out = await pushDatabase({
     exec: spawnExec,
     dumpVia: await detectSourceContainer(),
     spawnForward: spawnPostgresForward,
     confirm: confirmPush,
-    onPhase: (phase, elapsedMs) => {
-      console.log(`  ${dim}✓ ${phase} (${(elapsedMs / 1000).toFixed(1)}s)${reset}`);
+    runPhase: (phase, task) => {
+      const start = Date.now();
+      // The runner reads doneHint after the task settles, so the elapsed time
+      // can be filled in here and still reach the ✓ line.
+      const opts: { doneHint?: string } = {};
+      return steps.run(`${phase}…`, async () => {
+        try {
+          return await task();
+        } finally {
+          opts.doneHint = `${((Date.now() - start) / 1000).toFixed(1)}s`;
+        }
+      }, opts);
     },
   });
 
