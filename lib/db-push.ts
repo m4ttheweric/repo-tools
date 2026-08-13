@@ -56,6 +56,11 @@ export const spawnExec: Exec = async (argv, opts = {}) => {
   return { stdout, stderr, exitCode };
 };
 
+/** Single-quote a value for `sh -c`. */
+function shq(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 /** Local `acme` database size in bytes, or null when the local query fails. */
 export async function localDumpSizeBytes(exec: Exec, sourceUrl: string = DEFAULT_SOURCE_URL): Promise<number | null> {
   const res = await exec(["psql", sourceUrl, "-tAc", `SELECT pg_database_size('${LIVE_DB}');`]);
@@ -117,6 +122,12 @@ export async function pushDatabase(opts: {
   sourceUrl?: string;
   /** Dump spool path; the dump streams to disk, never through memory. */
   dumpFile?: string;
+  /**
+   * Dump through the source database's own container binary. The host
+   * pg_dump may be a newer major than the servers (18 vs 16 here), and a
+   * newer dump emits SET statements the older target rejects.
+   */
+  dumpVia?: { docker: string };
   spawnForward: () => PortForwardHandle;
   probe?: () => Promise<boolean>;
   confirm: (summary: PushConfirmSummary) => Promise<boolean>;
@@ -168,9 +179,14 @@ export async function pushDatabase(opts: {
   const dumpFile = opts.dumpFile ?? `/tmp/rt-db-push-${Date.now()}.sql`;
 
   try {
-    const dump = await runPhase("pg_dump local acme", () =>
-      opts.exec(["pg_dump", "--no-owner", "--no-privileges", "-f", dumpFile, sourceUrl]),
-    );
+    const dumpArgv = opts.dumpVia
+      ? [
+          "sh",
+          "-c",
+          `docker exec ${shq(opts.dumpVia.docker)} pg_dump --no-owner --no-privileges ${shq(sourceUrl)} > ${shq(dumpFile)}`,
+        ]
+      : ["pg_dump", "--no-owner", "--no-privileges", "-f", dumpFile, sourceUrl];
+    const dump = await runPhase("pg_dump local acme", () => opts.exec(dumpArgv));
     if (dump.exitCode !== 0) {
       return { ok: false, code: "tooling", message: `pg_dump failed: ${dump.stderr.trim() || "unknown error"}` };
     }
