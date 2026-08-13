@@ -266,6 +266,42 @@ describe("local source URL", () => {
   });
 });
 
+describe("phase rendering seam", () => {
+  test("every phase runs through the injected runPhase, in order", async () => {
+    const { exec } = fakeExec({
+      "psql postgres://postgres:postgres@localhost:5432/acme": { stdout: "0\n", stderr: "", exitCode: 0 },
+      "kubectl -n mc-system get secret postgres-credentials": {
+        stdout: JSON.stringify({ data: { username: "YQ==", password: "Yg==" } }),
+        stderr: "",
+        exitCode: 0,
+      },
+      "pg_dump": { stdout: "", stderr: "", exitCode: 0 },
+      "psql -h 127.0.0.1 -p 15432": { stdout: "", stderr: "", exitCode: 0 },
+      "rm -f": { stdout: "", stderr: "", exitCode: 0 },
+    });
+    const seen: string[] = [];
+
+    const out = await pushDatabase({
+      exec,
+      dumpFile: "/tmp/rt-test-dump.sql",
+      spawnForward: () => ({ kill: () => {}, exited: new Promise(() => {}) }),
+      probe: async () => true,
+      confirm: async () => true,
+      runPhase: async (phase, task) => {
+        seen.push(phase);
+        return task();
+      },
+    });
+
+    expect(out.ok).toBe(true);
+    expect(seen).toEqual([
+      "pg_dump local acme",
+      "recreate acme_tpl from the dump",
+      "recreate live acme from acme_tpl",
+    ]);
+  });
+});
+
 describe("version-matched dumper", () => {
   test("dumpVia.docker runs pg_dump inside the source container, streaming to the host spool", async () => {
     // The host pg_dump can be newer than both servers (18 vs 16), and a v18

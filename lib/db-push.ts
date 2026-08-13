@@ -132,6 +132,8 @@ export async function pushDatabase(opts: {
   probe?: () => Promise<boolean>;
   confirm: (summary: PushConfirmSummary) => Promise<boolean>;
   onPhase?: (phase: string, elapsedMs: number) => void;
+  /** Wraps each phase so a caller can render progress around it. */
+  runPhase?: <T>(phase: string, task: () => Promise<T>) => Promise<T>;
   delayMs?: (ms: number) => Promise<void>;
 }): Promise<PushResult> {
   const sourceUrl = opts.sourceUrl ?? DEFAULT_SOURCE_URL;
@@ -169,9 +171,10 @@ export async function pushDatabase(opts: {
 
   const creds = credsResult.creds;
   const onPhase = opts.onPhase ?? (() => {});
+  const wrapPhase = opts.runPhase ?? (async <T>(_phase: string, task: () => Promise<T>) => task());
   const runPhase = async <T>(phase: string, fn: () => Promise<T>): Promise<T> => {
     const start = Date.now();
-    const result = await fn();
+    const result = await wrapPhase(phase, fn);
     onPhase(phase, Date.now() - start);
     return result;
   };
@@ -179,7 +182,7 @@ export async function pushDatabase(opts: {
   const dumpFile = opts.dumpFile ?? `/tmp/rt-db-push-${Date.now()}.sql`;
 
   try {
-    const dumpArgv = opts.dumpVia
+    const dumpArgv: [string, ...string[]] = opts.dumpVia
       ? [
           "sh",
           "-c",
