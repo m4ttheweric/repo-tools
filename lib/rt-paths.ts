@@ -49,21 +49,3 @@ export function repoDataDir(repoName: string): string {
   return join(reposDir(), repoName);
 }
 
-/** ~/.rt/sandboxes — local anchor directories for cloud sandboxes. */
-export function sandboxesDir(): string {
-  return join(rtDir(), "sandboxes");
-}
-
-/**
- * ~/.rt/sandboxes/<repoId>/<id> — a sandbox's local anchor directory: the
- * real local path that keys its dev-ports state entry (skills key that file
- * by directory) and holds sandbox.json metadata.
- */
-export function sandboxAnchorDir(repoId: string, sandboxId: string): string {
-  return join(sandboxesDir(), repoId, sandboxId);
-}
-
-/** ~/.rt/evidence-ledger.json — the evidence ledger file store. */
-export function evidenceLedgerPath(): string {
-  return join(rtDir(), "evidence-ledger.json");
-}

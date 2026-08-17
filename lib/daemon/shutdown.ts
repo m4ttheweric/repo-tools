@@ -11,7 +11,6 @@ import { clearWsClients } from "./api-server.ts";
 import { cleanupAllWatchers } from "./workspace-sync.ts";
 import { disposeFreshness } from "./freshness.ts";
 import { stopDiscussionsPoller } from "./discussions-poller.ts";
-import { stopSandboxSync } from "./sandbox-sync.ts";
 import type { HooksGuard } from "./hooks-guard.ts";
 
 export interface ShutdownDeps {
@@ -38,7 +37,6 @@ export function createCleanup(deps: ShutdownDeps): () => void {
     try { cleanupAllWatchers(); } catch { /* */ }
     try { disposeFreshness(); } catch { /* */ }
     try { stopDiscussionsPoller(); } catch { /* */ }
-    try { stopSandboxSync(); } catch { /* */ }
     try { hooksGuard.closeAll(); } catch { /* */ }
 
     flushCache();
