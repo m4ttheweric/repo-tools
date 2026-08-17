@@ -43,3 +43,14 @@ describe("json-store", () => {
     expect(readFileSync(p, "utf8")).toBe('{\n  "a": 1\n}');
   });
 });
+
+describe("writeJson atomicity", () => {
+  test("round-trips and leaves no tmp file behind", () => {
+    const dir = mkdtempSync(join(tmpdir(), "jsonstore-"));
+    const p = join(dir, "nested", "file.json");
+    writeJson(p, { a: 1 });
+    expect(readJson<{ a: number } | null>(p, null)).toEqual({ a: 1 });
+    const { readdirSync } = require("fs");
+    expect(readdirSync(join(dir, "nested"))).toEqual(["file.json"]);
+  });
+});
