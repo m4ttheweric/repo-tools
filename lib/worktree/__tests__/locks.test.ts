@@ -115,4 +115,30 @@ describe("withTreeLock", () => {
     release1?.();
     expect(isTreeLocked(path)).toBe(false);
   });
+
+  it("regression: stale release does not steal new holder's lock", () => {
+    // A acquires lock
+    const path = "/test/tree/12";
+    const releaseA = tryLockTree(path);
+    expect(releaseA).not.toBeNull();
+    expect(isTreeLocked(path)).toBe(true);
+
+    // A releases
+    releaseA?.();
+    expect(isTreeLocked(path)).toBe(false);
+
+    // B acquires the same lock
+    const releaseB = tryLockTree(path);
+    expect(releaseB).not.toBeNull();
+    expect(isTreeLocked(path)).toBe(true);
+
+    // A's stale release fires again (e.g., from catch+finally or retry logic)
+    releaseA?.();
+    // B's lock should still be held (not stolen by A's stale release)
+    expect(isTreeLocked(path)).toBe(true);
+
+    // B's release should still work
+    releaseB?.();
+    expect(isTreeLocked(path)).toBe(false);
+  });
 });
