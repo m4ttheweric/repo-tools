@@ -11,7 +11,8 @@
  * are categorically not rt's to delete, no matter what the caller asks for.
  */
 
-import { statusPorcelainAsync, gitOk, isAncestorAsync, remoteDefaultRef, remoteRefExists, runGit } from "./git-async.ts";
+import { existsSync } from "fs";
+import { gitOk, isAncestorAsync, remoteDefaultRef, remoteRefExists, runGit } from "./git-async.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "./registry.ts";
 import { hasFreshAttendantLease } from "./lease.ts";
 import { loadSyncConfig, matchRule } from "../sync-config.ts";
@@ -69,13 +70,24 @@ async function isWhitespaceOnlyChange(cwd: string, path: string): Promise<boolea
  * is about regenerable drift, not licence to delete real edits.
  *
  * One intelligence, two callers (dispose guard 2 and the freshen sweep).
+ *
+ * Fails CLOSED: a `git status` that exits nonzero (corrupt index, unreadable
+ * worktree, missing directory) yields a `<status-failed>` blocker rather than
+ * an empty-and-therefore-clean answer. Unknown dirt is dirt — the alternative
+ * is deleting a tree holding uncommitted work because git couldn't be asked.
  */
+export const STATUS_FAILED_BLOCKER = "<status-failed>";
+
 export async function classifyDirtyAsync(
   worktreePath: string,
   repoName: string,
 ): Promise<{ discard: string[]; blockers: string[] }> {
   const rules = loadSyncConfig(repoDataDir(repoName)).autoResolve;
-  const entries = parseDirtyEntries(await statusPorcelainAsync(worktreePath));
+  const status = await runGit(worktreePath, ["status", "--porcelain"]);
+  if (status.exitCode !== 0) {
+    return { discard: [], blockers: [STATUS_FAILED_BLOCKER] };
+  }
+  const entries = parseDirtyEntries(status.stdout);
 
   const discard: string[] = [];
   const blockers: string[] = [];
@@ -105,7 +117,12 @@ export interface DisposeDeps {
   /** Branch-keyed MR cache (daemon `ctx.cache.entries`). */
   cacheEntries: Record<string, { mr: any; repoName?: string }>;
   emit: (type: string, data: unknown) => void;
-  log: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void };
+  log: {
+    info: (...args: unknown[]) => void;
+    warn: (...args: unknown[]) => void;
+    /** Optional: auto-path refusals log here (they re-fire every reactor pass). */
+    debug?: (...args: unknown[]) => void;
+  };
   killProcesses: boolean;
 }
 
@@ -126,8 +143,13 @@ function joinedMr(deps: DisposeDeps, rec: TreeRecord): { iid?: number; sha?: str
  * Guard 3, MR-anchored: under squash/rebase merge the branch tip is never an
  * ancestor of the default branch, and delete-source-branch removes
  * origin/<branch> before the tick sees the merge — so the MR head sha from the
- * branch cache is the only anchor that survives both. Unknown sha → fetch once,
- * then refuse rather than guess.
+ * branch cache is the only anchor that survives both. A sha that is present but
+ * unknown locally → fetch once, then refuse rather than guess.
+ *
+ * Only reached when the MR actually carries a sha: roughly a quarter of merged
+ * entries in the live cache have no `sha` field at all, and refusing those
+ * would strand every one of them as disposable. Those fall back to the remote
+ * anchor (the caller decides), which is a real containment check, not a guess.
  */
 async function mrAnchorRefusal(deps: DisposeDeps, rec: TreeRecord, sha: string): Promise<string | null> {
   if (!(await gitOk(rec.path, ["cat-file", "-e", sha]))) {
@@ -163,7 +185,11 @@ export async function disposeTree(
   const auto = opts.auto === true;
 
   const refuse = (refusal: string): DisposeOutcome => {
-    log.info("worktree dispose refused", { repo: repoName, tree: rec.name, refusal });
+    const fields = { repo: repoName, tree: rec.name, refusal };
+    // Auto refusals repeat every reactor pass for as long as the tree sits
+    // disposable, so they belong at debug; a human-driven refusal is a one-off.
+    if (auto && log.debug) log.debug(fields, "worktree dispose refused");
+    else log.info(fields, "worktree dispose refused");
     return { disposed: false, refusal };
   };
 
@@ -180,11 +206,14 @@ export async function disposeTree(
 
     // 3. Nothing local-only, checked against the right anchor.
     const mr = joinedMr(deps, rec);
+    const mrSha = typeof mr?.sha === "string" && mr.sha.length > 0 ? mr.sha : null;
+    // An MR with no cached sha is common (the projection drops it for a
+    // sizeable slice of merged MRs) and is NOT an unresolvable sha — it falls
+    // back to the remote anchor. "mr-sha-unresolvable" is reserved for a sha
+    // that is present and still unknown after a fetch.
     const anchorRefusal =
-      auto && mr
-        ? typeof mr.sha === "string" && mr.sha.length > 0
-          ? await mrAnchorRefusal(deps, rec, mr.sha)
-          : "mr-sha-unresolvable"
+      auto && mrSha
+        ? await mrAnchorRefusal(deps, rec, mrSha)
         : await remoteAnchorRefusal(rec);
     if (anchorRefusal) return refuse(anchorRefusal);
 
@@ -203,9 +232,10 @@ export async function disposeTree(
   if (deps.killProcesses) {
     const { terminated } = killWorktreeProcesses(rec.path);
     if (terminated.length > 0) {
-      log.info("worktree processes terminated", {
-        repo: repoName, tree: rec.name, count: terminated.length,
-      });
+      log.info(
+        { repo: repoName, tree: rec.name, count: terminated.length },
+        "worktree processes terminated",
+      );
     }
   }
 
@@ -214,11 +244,17 @@ export async function disposeTree(
   // explicit force) already made the decision.
   const removal = await runGit(repoPath, ["worktree", "remove", "--force", rec.path]);
   if (removal.exitCode !== 0) {
-    // Tolerated (the dir may already be gone by hand), but never silent.
-    log.warn("git worktree remove failed during dispose", {
-      repo: repoName, tree: rec.name, path: rec.path,
-      output: (removal.stdout + removal.stderr).trim(),
-    });
+    const output = (removal.stdout + removal.stderr).trim();
+    log.warn(
+      { repo: repoName, tree: rec.name, path: rec.path, output },
+      "git worktree remove failed during dispose",
+    );
+    // A directory that is already gone is the expected failure and disposal
+    // continues (the registry row is the thing left to clean up). A tree still
+    // on disk means removal genuinely failed — locked file, permissions — and
+    // pruning the registry there would orphan a real worktree with its
+    // metadata lost. Refuse instead; the caller retries or forces.
+    if (existsSync(rec.path)) return refuse("remove-failed");
   }
 
   if (rec.branch) {
@@ -236,7 +272,7 @@ export async function disposeTree(
     branch: rec.branch,
     discarded,
   });
-  log.info("worktree disposed", { repo: repoName, tree: rec.name, path: rec.path });
+  log.info({ repo: repoName, tree: rec.name, path: rec.path }, "worktree disposed");
 
   return { disposed: true };
 }
