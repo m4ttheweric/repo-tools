@@ -1,12 +1,16 @@
-const locks = new Map<string, true>();
+const locks = new Map<string, symbol>();
 
 export function tryLockTree(path: string): (() => void) | null {
   if (locks.has(path)) {
     return null;
   }
-  locks.set(path, true);
+  const token = Symbol("lock");
+  locks.set(path, token);
   return () => {
-    locks.delete(path);
+    // Only delete if the token still matches (ownership check prevents stale releases)
+    if (locks.get(path) === token) {
+      locks.delete(path);
+    }
   };
 }
 
