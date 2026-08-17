@@ -1,15 +1,20 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { execSync } from "child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { basename, join } from "path";
 import type { Logger } from "pino";
-import { writeJson } from "../../json-store.ts";
-import { repoDataDir } from "../../rt-paths.ts";
+import { readJson, writeJson } from "../../json-store.ts";
+import { repoDataDir, rtDir } from "../../rt-paths.ts";
 import { findByPath, loadRegistry, saveRegistry, type TreeRecord } from "../../worktree/registry.ts";
-import { branchExistsLocalAsync, listWorktreesAsync } from "../../worktree/git-async.ts";
+import {
+  branchExistsLocalAsync,
+  currentBranchAsync,
+  findDesktopStashAsync,
+  listWorktreesAsync,
+} from "../../worktree/git-async.ts";
 import { createTree } from "../../worktree/create.ts";
-import { reconcileRepoRegistry, createWorktreeReconciler } from "../worktree-reconciler.ts";
+import { reconcileRepoRegistry, createWorktreeReconciler, __test__ } from "../worktree-reconciler.ts";
 
 function makeRepo(): string {
   // realpathSync: git canonicalizes /var -> /private/var on macOS (Global Constraints)
@@ -200,5 +205,251 @@ describe("createWorktreeReconciler", () => {
     await new Promise((r) => setTimeout(r, 50));
 
     expect(loadRegistry(repoName).length).toBe(1); // just main, adopted once
+  });
+});
+
+// ─── Merge reactor ───────────────────────────────────────────────────────────
+
+const GIT_ID = "-c user.email=t@t -c user.name=t";
+
+function sh(cmd: string, cwd?: string): void {
+  execSync(cmd, { cwd, shell: "/bin/zsh", stdio: "pipe" });
+}
+
+describe("merge reactor (detectTransitions)", () => {
+  const repoName = "acme";
+  let repo: string;
+  let events: Array<{ type: string; data: any }>;
+
+  beforeEach(() => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtreact-home-")));
+    repo = makeRepo();
+    addBareOrigin(repo);
+    // killProcesses off: the reactor must not go scanning this machine's
+    // process table during a unit test.
+    writeJson(join(rtDir(), "worktrees.json"), { enabled: true, killProcesses: false });
+    events = [];
+  });
+
+  function detect(entries: Record<string, unknown>): Promise<void> {
+    return __test__.detectTransitions({
+      repoName,
+      repoPath: repo,
+      cacheEntries: entries as any,
+      emit: (type: string, data: unknown) => events.push({ type, data }),
+      log: fakeLog(),
+    });
+  }
+
+  function mrCache(branch: string, state: string, iid = 42): Record<string, unknown> {
+    return { [branch]: { repoName, mr: { iid, state }, fetchedAt: Date.now() } };
+  }
+
+  function reactorState(): { mrState: Record<string, string | null>; fired: string[] } {
+    return readJson(__test__.reactorStatePath(), { mrState: {}, fired: [] });
+  }
+
+  function tracked(path: string): TreeRecord | undefined {
+    return loadRegistry(repoName).find((t) => t.path === path);
+  }
+
+  /** Ephemeral worktree on a pushed feature branch, registered as claimed. */
+  function ephemeralTree(name: string, branch: string, extra: Partial<TreeRecord> = {}): TreeRecord {
+    const path = join(repo, ".worktrees", name);
+    sh(`git -C ${repo} worktree add -b ${branch} ${path} origin/main`);
+    writeFileSync(join(path, `${name}.txt`), "work\n");
+    sh(`git add -A && git ${GIT_ID} commit -m work`, path);
+    sh(`git push -q origin ${branch}`, path);
+
+    const old = new Date(Date.now() - 3600_000).toISOString();
+    const rec: TreeRecord = {
+      name,
+      path,
+      kind: "ephemeral",
+      state: "claimed",
+      branch,
+      disposal: "merge",
+      createdAt: old,
+      claimedAt: old, // outside dispose's 10-minute stale-event grace
+      ...extra,
+    };
+    saveRegistry(repoName, [...loadRegistry(repoName), rec]);
+    return rec;
+  }
+
+  /** Put the main clone itself on a pushed feature branch, registered as main. */
+  function mainOnBranch(branch: string): void {
+    sh(`git ${GIT_ID} checkout -q -b ${branch} origin/main`, repo);
+    writeFileSync(join(repo, "feature.txt"), "main work\n");
+    sh(`git add -A && git ${GIT_ID} commit -m mainwork`, repo);
+    sh(`git push -q origin ${branch}`, repo);
+    saveRegistry(repoName, [
+      { name: basename(repo), path: repo, kind: "main", branch, createdAt: new Date().toISOString() },
+    ]);
+  }
+
+  test("merged MR on a clean claimed tree disposes it, emits, and records a fired key", async () => {
+    const rec = ephemeralTree("alpha", "feat-alpha");
+
+    await detect(mrCache("feat-alpha", "opened"));
+    expect(reactorState().mrState[`${repoName}:feat-alpha`]).toBe("opened");
+
+    await detect(mrCache("feat-alpha", "merged"));
+
+    expect(existsSync(rec.path)).toBe(false);
+    expect(tracked(rec.path)).toBeUndefined();
+    expect(events.filter((e) => e.type === "worktree:disposed").length).toBe(1);
+    expect(reactorState().fired).toContain(`disposed:${repoName}:42:merged`);
+  });
+
+  test("a dirty tree flips to disposable once and never re-notifies", async () => {
+    const rec = ephemeralTree("bravo", "feat-bravo");
+    writeFileSync(join(rec.path, "scratch.txt"), "uncommitted\n");
+
+    await detect(mrCache("feat-bravo", "opened"));
+    await detect(mrCache("feat-bravo", "merged"));
+
+    expect(existsSync(rec.path)).toBe(true);
+    expect(tracked(rec.path)!.state).toBe("disposable");
+    expect(tracked(rec.path)!.disposableReason).toBe("dirty");
+    expect(events.filter((e) => e.type === "worktree:disposable").length).toBe(1);
+
+    await detect(mrCache("feat-bravo", "merged"));
+    expect(events.filter((e) => e.type === "worktree:disposable").length).toBe(1);
+  });
+
+  test("a closed MR flips the tree disposable and leaves the branch intact", async () => {
+    const rec = ephemeralTree("charlie", "feat-charlie");
+
+    await detect(mrCache("feat-charlie", "opened"));
+    await detect(mrCache("feat-charlie", "closed"));
+
+    expect(existsSync(rec.path)).toBe(true);
+    expect(tracked(rec.path)!.state).toBe("disposable");
+    expect(tracked(rec.path)!.disposableReason).toBe("MR closed without merge");
+    expect(await branchExistsLocalAsync(repo, "feat-charlie")).toBe(true);
+    expect(reactorState().fired).toContain(`disposed:${repoName}:42:closed`);
+  });
+
+  test("reopening claims the tree back and prunes its fired keys; a later merge disposes", async () => {
+    const rec = ephemeralTree("delta", "feat-delta");
+    const dirt = join(rec.path, "scratch.txt");
+    writeFileSync(dirt, "uncommitted\n");
+
+    await detect(mrCache("feat-delta", "opened"));
+    await detect(mrCache("feat-delta", "merged"));
+    expect(tracked(rec.path)!.state).toBe("disposable");
+    expect(reactorState().fired).toContain(`disposed:${repoName}:42:merged`);
+
+    await detect(mrCache("feat-delta", "opened"));
+    expect(tracked(rec.path)!.state).toBe("claimed");
+    expect(tracked(rec.path)!.disposableReason).toBeUndefined();
+    expect(reactorState().fired).not.toContain(`disposed:${repoName}:42:merged`);
+
+    rmSync(dirt);
+    await detect(mrCache("feat-delta", "merged"));
+    expect(existsSync(rec.path)).toBe(false);
+    expect(tracked(rec.path)).toBeUndefined();
+  });
+
+  test("main holding the merged branch auto-returns to default, stashing and leaving the dirt", async () => {
+    mainOnBranch("feat-main");
+    writeFileSync(join(repo, "dirty.txt"), "uncommitted\n");
+
+    await detect(mrCache("feat-main", "opened"));
+    await detect(mrCache("feat-main", "merged"));
+
+    expect(await currentBranchAsync(repo)).toBe("main");
+    const stash = await findDesktopStashAsync(repo, "feat-main");
+    expect(stash).not.toBeNull();
+    // stash-and-LEAVE: the dirt belonged to the branch that left, so it is
+    // never popped back onto the default branch.
+    expect(existsSync(join(repo, "dirty.txt"))).toBe(false);
+  });
+
+  test("a failed auto-return holds the edge armed and fires again once the repo is repaired", async () => {
+    mainOnBranch("feat-lock");
+    const lock = join(repo, ".git", "index.lock");
+
+    await detect(mrCache("feat-lock", "opened"));
+    writeFileSync(lock, "");
+    await detect(mrCache("feat-lock", "merged"));
+
+    expect(await currentBranchAsync(repo)).toBe("feat-lock");
+    // The snapshot must NOT advance to "merged", or the edge never re-arms.
+    expect(reactorState().mrState[`${repoName}:feat-lock`]).toBe("opened");
+    expect(reactorState().fired).not.toContain(`disposed:${repoName}:42:merged`);
+
+    rmSync(lock);
+    await detect(mrCache("feat-lock", "merged"));
+
+    expect(await currentBranchAsync(repo)).toBe("main");
+    expect(reactorState().mrState[`${repoName}:feat-lock`]).toBe("merged");
+  });
+
+  test("a failed worktree removal is retried, never advertised as disposable", async () => {
+    const rec = ephemeralTree("hotel", "feat-hotel");
+    // A locked worktree makes `git worktree remove --force` refuse (it wants
+    // --force twice) without touching the directory: a mechanical, transient
+    // removal failure, which must NOT be reported to the user as "disposable".
+    sh(`git -C ${repo} worktree lock ${rec.path}`);
+
+    await detect(mrCache("feat-hotel", "opened"));
+    await detect(mrCache("feat-hotel", "merged"));
+
+    expect(existsSync(rec.path)).toBe(true);
+    expect(tracked(rec.path)!.state).toBe("claimed");
+    expect(tracked(rec.path)!.disposableReason).toBeUndefined();
+    expect(events.some((e) => e.type === "worktree:disposable")).toBe(false);
+    expect(reactorState().mrState[`${repoName}:feat-hotel`]).toBe("opened");
+
+    sh(`git -C ${repo} worktree unlock ${rec.path}`);
+    await detect(mrCache("feat-hotel", "merged"));
+
+    expect(existsSync(rec.path)).toBe(false);
+    expect(tracked(rec.path)).toBeUndefined();
+  });
+
+  test('a disposal:"job" tree with a merged MR is untouched', async () => {
+    const rec = ephemeralTree("echo", "feat-echo", { disposal: "job" });
+
+    await detect(mrCache("feat-echo", "opened"));
+    await detect(mrCache("feat-echo", "merged"));
+
+    expect(existsSync(rec.path)).toBe(true);
+    expect(tracked(rec.path)!.state).toBe("claimed");
+    expect(tracked(rec.path)!.disposableReason).toBeUndefined();
+    expect(events.length).toBe(0);
+  });
+
+  test("cache entries belonging to another repo never join this repo's trees", async () => {
+    const rec = ephemeralTree("foxtrot", "feat-foxtrot");
+    const foreign = { "feat-foxtrot": { repoName: "other", mr: { iid: 42, state: "opened" } } };
+
+    await detect(foreign);
+    await detect({ "feat-foxtrot": { repoName: "other", mr: { iid: 42, state: "merged" } } });
+
+    expect(existsSync(rec.path)).toBe(true);
+    expect(tracked(rec.path)!.state).toBe("claimed");
+  });
+
+  test("runOnce runs the reactor after the reconcile pass", async () => {
+    const rec = ephemeralTree("golf", "feat-golf");
+    writeJson(join(repoDataDir(repoName), "config.json"), { worktrees: {} });
+
+    const cache = { entries: mrCache("feat-golf", "opened") as Record<string, any> };
+    const reconciler = createWorktreeReconciler({
+      cache,
+      repoIndex: () => ({ [repoName]: repo }),
+      emit: (type: string, data: unknown) => events.push({ type, data }),
+      log: fakeLog(),
+    });
+
+    await reconciler.runOnce();
+    cache.entries = mrCache("feat-golf", "merged") as Record<string, any>;
+    await reconciler.runOnce();
+
+    expect(existsSync(rec.path)).toBe(false);
+    expect(events.some((e) => e.type === "worktree:disposed")).toBe(true);
   });
 });
