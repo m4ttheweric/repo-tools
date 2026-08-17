@@ -15,6 +15,7 @@ import { readJson, writeJson } from "../json-store.ts";
 import { repoDataDir, rtDir } from "../rt-paths.ts";
 import {
   findByBranch,
+  findByPath,
   loadRegistry,
   saveRegistry,
   type TreeKind,
@@ -630,7 +631,11 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<void> {
   const label = rec.branch ?? rec.name;
   if (classify.blockers.length > 0) {
     await stashChangesAsync(rec.path, label);
-    stashName = (await findDesktopStashAsync(rec.path, label))?.name ?? null;
+    // A pushed stash whose name we then fail to resolve must still get a
+    // restore attempt, not be silently abandoned — "stash@{0}" is the entry
+    // we just pushed absent a race with something else stashing concurrently
+    // (harvested fallback from parking-lot.ts's ff-sweep).
+    stashName = (await findDesktopStashAsync(rec.path, label))?.name ?? "stash@{0}";
   }
 
   const popStash = async (): Promise<void> => {
@@ -677,15 +682,36 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<void> {
   log.debug?.(fields, `worktree ${rec.name} freshened`);
 }
 
-/** Freshen every eligible tree in one repo, each under its own tree lock. */
+/**
+ * Freshen every eligible tree in one repo, each under its own tree lock.
+ *
+ * `trees` is one snapshot for the whole pass, but candidacy for tree N+1
+ * isn't evaluated until tree N's (potentially slow — real fetches, ready
+ * steps) freshen finishes, so by the time a later tree's lock is acquired its
+ * snapshot `rec` can be minutes stale: a provision claim (T13, same event
+ * loop) could have landed in between. Re-reading the registry as the first
+ * thing inside the lock and bailing on any state/branch drift closes that
+ * window — the alternative is running a ff + ready steps inside a tree a
+ * human just claimed.
+ */
 async function freshenRepo(deps: FreshenDeps): Promise<void> {
-  const { repoName } = deps;
+  const { repoName, log } = deps;
   const now = Date.now();
   const trees = loadRegistry(repoName);
   for (const rec of trees) {
     if (rec.nextRetryAt && Date.parse(rec.nextRetryAt) > now) continue;
     if (!(await freshenCandidate(deps, rec))) continue;
-    await withTreeLock(rec.path, () => freshenOne(deps, rec));
+    await withTreeLock(rec.path, async () => {
+      const fresh = findByPath(loadRegistry(repoName), rec.path);
+      if (!fresh || fresh.state !== rec.state || fresh.branch !== rec.branch) {
+        log.debug?.(
+          { repo: repoName, tree: rec.name, path: rec.path },
+          "freshen: skipping — tree changed since candidacy was decided",
+        );
+        return;
+      }
+      await freshenOne(deps, fresh);
+    });
   }
 }
 
@@ -764,13 +790,25 @@ async function replenishAndShrink(
       Date.parse(a.readyAt ?? a.createdAt) <= Date.parse(b.readyAt ?? b.createdAt) ? a : b,
     );
     attempted.add(stalest.path);
-    await withTreeLock(stalest.path, () =>
-      disposeTree(
+    await withTreeLock(stalest.path, async () => {
+      // Same revalidation as freshen: `stalest` is a snapshot from this
+      // iteration's `poolCounts()` read; re-check it under the lock before
+      // disposing so a claim that landed since (no grace guard applies here —
+      // auto is false) can't get its tree deleted out from under it.
+      const fresh = findByPath(loadRegistry(repoName), stalest.path);
+      if (!fresh || fresh.kind !== "ephemeral" || fresh.state !== "on-deck") {
+        log.debug?.(
+          { repo: repoName, tree: stalest.name, path: stalest.path },
+          "shrink: skipping — tree changed since candidacy was decided",
+        );
+        return;
+      }
+      await disposeTree(
         { repoName, repoPath, cacheEntries: {}, emit, log, killProcesses: appConfig.killProcesses },
-        stalest,
+        fresh,
         { auto: false },
-      ),
-    );
+      );
+    });
     counts = poolCounts(repoName);
   }
 }
@@ -795,6 +833,12 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
    *  null when nothing is in flight. Task 13's provision handler awaits this
    *  instead of racing its own create against replenish's. */
   creationInFlight: (repoName: string) => Promise<void> | null;
+  /** Whether a `kick()`-triggered pass is currently running. Test-only: lets a
+   *  test that calls `kick()` (deliberately not awaited — that's the point of
+   *  `kick`) poll for true completion instead of guessing at a sleep, so no
+   *  background pass survives into a later test's HOME once its own
+   *  `beforeEach` repoints that (shared, global) env var. */
+  passInFlight: () => boolean;
 } {
   let inFlight: Promise<void> | null = null;
   const creationPromises = new Map<string, Promise<void>>();
@@ -860,7 +904,11 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
     return creationPromises.get(repoName) ?? null;
   }
 
-  return { kick, runOnce, creationInFlight };
+  function passInFlight(): boolean {
+    return inFlight !== null;
+  }
+
+  return { kick, runOnce, creationInFlight, passInFlight };
 }
 
 export const __test__ = { detectTransitions, reactorStatePath, freshenRepo, replenishAndShrink, poolCounts };

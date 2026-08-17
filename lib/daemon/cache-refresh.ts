@@ -100,7 +100,7 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
 
             for (const name of localBranchOutput.split("\n")) {
               const trimmed = name.trim().replace(/^'|'$/g, "");
-              if (!trimmed || worktreeBranchSet.has(trimmed)) continue;
+              if (!trimmed || worktreeBranchSet.has(trimmed) || trimmed.startsWith("on-deck/")) continue;
               if (extractLinearId(trimmed)) {
                 branches.push({ path: repoPath, branch: trimmed });
               }
