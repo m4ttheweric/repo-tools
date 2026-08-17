@@ -11,9 +11,11 @@ import {
   branchExistsLocalAsync,
   currentBranchAsync,
   findDesktopStashAsync,
+  headSha,
   listWorktreesAsync,
 } from "../../worktree/git-async.ts";
 import { createTree } from "../../worktree/create.ts";
+import type { WorktreeAppConfig } from "../../worktree/config.ts";
 import { reconcileRepoRegistry, createWorktreeReconciler, __test__ } from "../worktree-reconciler.ts";
 
 function makeRepo(): string {
@@ -570,4 +572,309 @@ describe("merge reactor (detectTransitions)", () => {
     expect(existsSync(rec.path)).toBe(false);
     expect(events.some((e) => e.type === "worktree:disposed")).toBe(true);
   });
+});
+
+// ─── Freshen ─────────────────────────────────────────────────────────────────
+
+/** Clone `repo`'s own bare origin to a scratch dir, for pushing "upstream" advances. */
+function cloneOrigin(repo: string): string {
+  const originUrl = execSync(`git -C ${repo} remote get-url origin`, { encoding: "utf8" }).trim();
+  const clone = realpathSync(mkdtempSync(join(tmpdir(), "rtrecon-clone-")));
+  sh(`git clone -q ${originUrl} ${clone}`);
+  return clone;
+}
+
+function pushFile(clone: string, relPath: string, contents: string): string {
+  writeFileSync(join(clone, relPath), contents);
+  sh(`git add -A && git ${GIT_ID} commit -m ${relPath}`, clone);
+  sh(`git push -q origin main`, clone);
+  return execSync("git rev-parse HEAD", { cwd: clone, encoding: "utf8" }).trim();
+}
+
+describe("freshen", () => {
+  const repoName = "acme";
+  let repo: string;
+
+  beforeEach(() => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtfreshen-home-")));
+    repo = makeRepo();
+    addBareOrigin(repo);
+    writeJson(join(rtDir(), "worktrees.json"), { enabled: true, killProcesses: false });
+  });
+
+  test("idle main behind origin gets ff'd; readyStamp advances only when a triggered step ran; worktree:freshened emitted", async () => {
+    writeJson(join(repoDataDir(repoName), "config.json"), {
+      worktrees: { ready: [{ run: "touch triggered.marker", when: "changed:*.txt" }] },
+    });
+    // Tracked and pushed so the ready step's own marker file never shows up as
+    // untracked dirt on a later pass (which would otherwise flip "idle main"
+    // non-idle and stall freshen on itself).
+    writeFileSync(join(repo, ".gitignore"), "*.marker\n");
+    sh(`git add -A && git ${GIT_ID} commit -m gitignore`, repo);
+    sh(`git push -q origin main`, repo);
+
+    saveRegistry(repoName, [
+      { name: basename(repo), path: repo, kind: "main", branch: "main", createdAt: new Date().toISOString() },
+    ]);
+
+    const clone = cloneOrigin(repo);
+    const sha1 = pushFile(clone, "feature.txt", "hi\n");
+
+    const events: Array<{ type: string; data: any }> = [];
+    await __test__.freshenRepo({
+      repoName,
+      repoPath: repo,
+      emit: (type: string, data: unknown) => events.push({ type, data }),
+      log: fakeLog(),
+    });
+
+    expect(await headSha(repo)).toBe(sha1);
+    expect(existsSync(join(repo, "triggered.marker"))).toBe(true);
+    const rec1 = loadRegistry(repoName).find((t) => t.path === repo)!;
+    expect(rec1.readyStamp).toBe(sha1);
+    expect(events.some((e) => e.type === "worktree:freshened")).toBe(true);
+
+    // Second pass: origin advances again, but with a change the glob does not
+    // match. The ff still moves HEAD; readyStamp must NOT follow it, since no
+    // step actually validated content as of the new commit.
+    const sha2 = pushFile(clone, "notes.md", "hi\n");
+    await __test__.freshenRepo({ repoName, repoPath: repo, emit: () => {}, log: fakeLog() });
+
+    expect(await headSha(repo)).toBe(sha2);
+    const rec2 = loadRegistry(repoName).find((t) => t.path === repo)!;
+    expect(rec2.readyStamp).toBe(sha1);
+  });
+
+  test("on-deck tree ff's its on-deck branch", async () => {
+    writeJson(join(repoDataDir(repoName), "config.json"), {
+      worktrees: { onDeck: 1, root: join(repo, ".worktrees") },
+    });
+
+    const created = await createTree({
+      repoName,
+      repoPath: repo,
+      emit: () => {},
+      log: { info: () => {}, warn: () => {} },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const treePath = created.tree.path;
+    const beforeSha = await headSha(treePath);
+
+    const clone = cloneOrigin(repo);
+    const sha1 = pushFile(clone, "feature.txt", "hi\n");
+
+    await __test__.freshenRepo({ repoName, repoPath: repo, emit: () => {}, log: fakeLog() });
+
+    const afterSha = await headSha(treePath);
+    expect(afterSha).not.toBe(beforeSha);
+    expect(afterSha).toBe(sha1);
+  });
+
+  test("a failing ready step sets nextRetryAt; the next immediate pass skips the tree", async () => {
+    const cfgPath = join(repoDataDir(repoName), "config.json");
+    writeJson(cfgPath, { worktrees: { onDeck: 1, root: join(repo, ".worktrees") } });
+
+    const created = await createTree({
+      repoName,
+      repoPath: repo,
+      emit: () => {},
+      log: { info: () => {}, warn: () => {} },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const treePath = created.tree.path;
+
+    // Reconfigure with a step that always fails once triggered.
+    writeJson(cfgPath, {
+      worktrees: { onDeck: 1, root: join(repo, ".worktrees"), ready: [{ run: "exit 1", when: "changed:*.txt" }] },
+    });
+
+    const clone = cloneOrigin(repo);
+    pushFile(clone, "feature.txt", "hi\n");
+
+    await __test__.freshenRepo({ repoName, repoPath: repo, emit: () => {}, log: fakeLog() });
+
+    const rec1 = loadRegistry(repoName).find((t) => t.path === treePath)!;
+    expect(rec1.retryFailures).toBe(1);
+    expect(rec1.nextRetryAt).toBeDefined();
+    expect(Date.parse(rec1.nextRetryAt!)).toBeGreaterThan(Date.now());
+
+    // Immediate second pass: nextRetryAt is in the future, so the tree must
+    // be skipped entirely, not retried (and re-failed) again.
+    await __test__.freshenRepo({ repoName, repoPath: repo, emit: () => {}, log: fakeLog() });
+
+    const rec2 = loadRegistry(repoName).find((t) => t.path === treePath)!;
+    expect(rec2.retryFailures).toBe(1);
+    expect(rec2.nextRetryAt).toBe(rec1.nextRetryAt);
+  });
+
+  test("dirty non-idle main is left untouched", async () => {
+    writeFileSync(join(repo, "dirty.txt"), "uncommitted\n");
+    saveRegistry(repoName, [
+      { name: basename(repo), path: repo, kind: "main", branch: "main", createdAt: new Date().toISOString() },
+    ]);
+
+    const beforeSha = await headSha(repo);
+    const events: Array<{ type: string; data: any }> = [];
+    await __test__.freshenRepo({
+      repoName,
+      repoPath: repo,
+      emit: (type: string, data: unknown) => events.push({ type, data }),
+      log: fakeLog(),
+    });
+
+    expect(await headSha(repo)).toBe(beforeSha);
+    expect(existsSync(join(repo, "dirty.txt"))).toBe(true);
+    expect(events.length).toBe(0);
+    const rec = loadRegistry(repoName).find((t) => t.path === repo)!;
+    expect(rec.readyAt).toBeUndefined();
+  });
+});
+
+// ─── Replenish / shrink ───────────────────────────────────────────────────────
+
+function fakeAppConfig(overrides: Partial<WorktreeAppConfig> = {}): WorktreeAppConfig {
+  return { enabled: true, killProcesses: false, ...overrides };
+}
+
+describe("replenish / shrink", () => {
+  const repoName = "acme";
+  let repo: string;
+
+  beforeEach(() => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtpool-home-")));
+    repo = makeRepo();
+    addBareOrigin(repo);
+  });
+
+  test("onDeck=2 with an empty registry creates 2, serially", async () => {
+    writeJson(join(repoDataDir(repoName), "config.json"), {
+      worktrees: { onDeck: 2, root: join(repo, ".worktrees") },
+    });
+
+    await __test__.replenishAndShrink(
+      { repoName, repoPath: repo, emit: () => {}, log: fakeLog() },
+      new Map(),
+      fakeAppConfig(),
+    );
+
+    const trees = loadRegistry(repoName).filter((t) => t.kind === "ephemeral" && t.state === "on-deck");
+    expect(trees.length).toBe(2);
+    expect(new Set(trees.map((t) => t.name)).size).toBe(2);
+  });
+
+  test("an all-failing pool does not overshoot the onDeck cap", async () => {
+    writeJson(join(repoDataDir(repoName), "config.json"), {
+      worktrees: { onDeck: 2, root: join(repo, ".worktrees"), ready: [{ run: "exit 1" }] },
+    });
+
+    const warns: string[] = [];
+    const log = {
+      info: () => {},
+      error: () => {},
+      debug: () => {},
+      warn: (_fields: unknown, msg?: string) => warns.push(msg ?? ""),
+    } as unknown as Logger;
+
+    await __test__.replenishAndShrink(
+      { repoName, repoPath: repo, emit: () => {}, log },
+      new Map(),
+      fakeAppConfig(),
+    );
+
+    const trees = loadRegistry(repoName).filter((t) => t.kind === "ephemeral");
+    expect(trees.length).toBe(0); // every attempt failed and self-scrapped
+
+    // Bounded to the cap: exactly onDeck attempts, never more (no runaway loop).
+    expect(warns.filter((w) => w.includes("replenish create failed")).length).toBe(2);
+  });
+
+  test("lowering onDeck disposes the stalest ready entry", async () => {
+    const cfgPath = join(repoDataDir(repoName), "config.json");
+    writeJson(cfgPath, { worktrees: { onDeck: 2, root: join(repo, ".worktrees") } });
+
+    await __test__.replenishAndShrink(
+      { repoName, repoPath: repo, emit: () => {}, log: fakeLog() },
+      new Map(),
+      fakeAppConfig(),
+    );
+
+    let trees = loadRegistry(repoName).filter((t) => t.kind === "ephemeral" && t.state === "on-deck");
+    expect(trees.length).toBe(2);
+
+    // Force a deterministic staleness ordering rather than relying on the
+    // sub-millisecond gap between two serial creates.
+    const [older, newer] = trees;
+    saveRegistry(
+      repoName,
+      loadRegistry(repoName).map((t) => {
+        if (t.path === older!.path) return { ...t, readyAt: new Date(Date.now() - 60_000).toISOString() };
+        if (t.path === newer!.path) return { ...t, readyAt: new Date().toISOString() };
+        return t;
+      }),
+    );
+
+    writeJson(cfgPath, { worktrees: { onDeck: 1, root: join(repo, ".worktrees") } });
+    await __test__.replenishAndShrink(
+      { repoName, repoPath: repo, emit: () => {}, log: fakeLog() },
+      new Map(),
+      fakeAppConfig(),
+    );
+
+    trees = loadRegistry(repoName).filter((t) => t.kind === "ephemeral" && t.state === "on-deck");
+    expect(trees.length).toBe(1);
+    expect(trees[0]!.path).toBe(newer!.path);
+    expect(existsSync(older!.path)).toBe(false);
+  });
+});
+
+// ─── Detached trigger / latency ───────────────────────────────────────────────
+
+async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitFor: timed out");
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+describe("detached trigger / latency", () => {
+  test("kick() returns synchronously, coalesces a second kick during the pass, and creationInFlight tracks it", async () => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtkick-home-")));
+    const repoName = "acme";
+    const repo = makeRepo();
+    addBareOrigin(repo);
+    // Non-idle main (real, unrelated dirt): keeps freshen from also picking
+    // up main and running its own "sleep 3" pass, which would confound the
+    // timing assertions below without changing what's under test here.
+    writeFileSync(join(repo, "wip.txt"), "not idle\n");
+
+    writeJson(join(repoDataDir(repoName), "config.json"), {
+      worktrees: { onDeck: 1, root: join(repo, ".worktrees"), ready: [{ run: "sleep 3" }] },
+    });
+
+    const events: Array<{ type: string; data: any }> = [];
+    const reconciler = createWorktreeReconciler({
+      cache: { entries: {} },
+      repoIndex: () => ({ [repoName]: repo }),
+      emit: (type: string, data: unknown) => events.push({ type, data }),
+      log: fakeLog(),
+    });
+
+    const t0 = Date.now();
+    reconciler.kick();
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeLessThan(500); // kick() itself never awaits the pass
+
+    await waitFor(() => reconciler.creationInFlight(repoName) !== null, 2000);
+    expect(reconciler.creationInFlight(repoName)).not.toBeNull();
+
+    reconciler.kick(); // overlap guard: must not start a second concurrent pass
+
+    await waitFor(() => reconciler.creationInFlight(repoName) === null, 6000);
+    expect(reconciler.creationInFlight(repoName)).toBeNull();
+
+    expect(events.filter((e) => e.type === "worktree:created").length).toBe(1);
+  }, 10_000);
 });

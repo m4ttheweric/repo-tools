@@ -23,7 +23,9 @@ import {
 import {
   branchExistsLocalAsync,
   currentBranchAsync,
+  findDesktopStashAsync,
   gitOk,
+  headSha,
   listWorktreesAsync,
   remoteDefaultRef,
   runGit,
@@ -31,9 +33,15 @@ import {
   type WorktreeEntry,
 } from "../worktree/git-async.ts";
 import { isTreeLocked, withTreeLock } from "../worktree/locks.ts";
-import { scrapTree, type CreateDeps } from "../worktree/create.ts";
-import { disposeTree } from "../worktree/dispose.ts";
-import { loadWorktreeAppConfig, type WorktreeAppConfig } from "../worktree/config.ts";
+import { createTree, scrapTree, type CreateDeps } from "../worktree/create.ts";
+import { classifyDirtyAsync, disposeTree } from "../worktree/dispose.ts";
+import { changedSince, stepsToRun, runReadySteps } from "../worktree/ready.ts";
+import {
+  loadWorktreeAppConfig,
+  loadWorktreeRepoConfig,
+  resolveReadySteps,
+  type WorktreeAppConfig,
+} from "../worktree/config.ts";
 import { killWorktreeProcesses } from "./worktree-process-kill.ts";
 
 export interface ReconcilerDeps {
@@ -87,9 +95,14 @@ export async function reconcileRepoRegistry(deps: {
   // still locked (genuinely in-flight) pass through untouched. Scrapping
   // mutates git state (worktree remove + branch -D), so the git listing used
   // by (a)-(c) below is captured AFTER this loop, not before.
+  //
+  // This is the one mutating step in an otherwise read-only reconcile, so
+  // (unlike (a)-(c)/(e), which only ever sync the registry file to ground
+  // truth) it is gated on the app-level enabled flag same as freshen/replenish.
+  const appConfig = loadWorktreeAppConfig();
   const afterScrap: TreeRecord[] = [];
   for (const rec of trees) {
-    if (rec.state === "creating" && !isTreeLocked(rec.path)) {
+    if (appConfig.enabled && rec.state === "creating" && !isTreeLocked(rec.path)) {
       log.info({ repo: repoName, tree: rec.name, path: rec.path }, "reconcile: scrapping orphaned creating tree");
       await scrapTree(createDeps, rec);
       changed = true;
@@ -468,6 +481,7 @@ async function resumeTrees(deps: ReactorDeps, branch: string): Promise<void> {
 export async function detectTransitions(deps: ReactorDeps): Promise<void> {
   const { repoName, cacheEntries, log } = deps;
   const appConfig = loadWorktreeAppConfig();
+  if (!appConfig.enabled) return;
 
   const state = loadReactorState();
   const fired = new Set(state.fired);
@@ -530,6 +544,237 @@ export async function detectTransitions(deps: ReactorDeps): Promise<void> {
   saveReactorState({ mrState: nextMrState, fired: [...fired] }, log);
 }
 
+// ─── Freshen (spec §6.3) ─────────────────────────────────────────────────────
+
+const FRESHEN_FETCH_TIMEOUT_MS = 5 * 60_000;
+/** The backoff "pass" unit: failure N waits pass * 2^(N-1), capped below. */
+const FRESHEN_PASS_MS = 5 * 60_000;
+const FRESHEN_MAX_BACKOFF_MS = 30 * 60_000;
+
+export interface FreshenDeps {
+  repoName: string;
+  repoPath: string;
+  emit: (type: string, data: unknown) => void;
+  log: Logger;
+}
+
+/**
+ * Whether a registered tree is a freshen candidate: any on-deck ephemeral
+ * tree, or "idle main" — sitting on the default branch with no blocking dirt.
+ * A main clone on a feature branch is the merge reactor's concern (auto-return
+ * on merge); a main clone with real uncommitted work, even on the default
+ * branch, is the user's and must be left alone.
+ *
+ * `rec.branch` is trusted as ground truth here rather than re-reading git:
+ * `reconcileRepoRegistry` (T10) already ran earlier in the same `runOnce` pass
+ * and synced it.
+ */
+async function freshenCandidate(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> {
+  if (rec.kind === "ephemeral") return rec.state === "on-deck";
+  if (rec.kind !== "main") return false;
+
+  const defaultRef = await remoteDefaultRef(rec.path);
+  const defaultBranchName = defaultRef.replace(/^origin\//, "");
+  if (rec.branch !== defaultBranchName) return false;
+
+  const { blockers } = await classifyDirtyAsync(rec.path, deps.repoName);
+  return blockers.length === 0;
+}
+
+/**
+ * Freshen one tree: fetch the default branch, ff-only merge it in, then run
+ * whatever ready steps that advance triggers. Caller holds the tree lock and
+ * has already verified `freshenCandidate` and that any `nextRetryAt` has
+ * passed.
+ *
+ * `readyStamp` (and therefore future `changedSince` diffs) only advances when
+ * a ready step actually ran and succeeded — a ff that triggers nothing hasn't
+ * validated anything new, so claiming otherwise would let a later real change
+ * hide behind a stamp nothing ever checked.
+ */
+async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<void> {
+  const { repoName, log, emit } = deps;
+  const fields = { repo: repoName, tree: rec.name, path: rec.path };
+
+  const fail = (): void => {
+    const failures = (rec.retryFailures ?? 0) + 1;
+    const backoffMs = Math.min(FRESHEN_PASS_MS * 2 ** (failures - 1), FRESHEN_MAX_BACKOFF_MS);
+    patchTree(repoName, rec.path, (r) => {
+      r.retryFailures = failures;
+      r.nextRetryAt = new Date(Date.now() + backoffMs).toISOString();
+    });
+  };
+
+  const defaultRef = await remoteDefaultRef(rec.path);
+  const defaultBranchName = defaultRef.replace(/^origin\//, "");
+
+  const fetchResult = await runGit(rec.path, ["fetch", "origin", defaultBranchName], {
+    timeoutMs: FRESHEN_FETCH_TIMEOUT_MS,
+  });
+  if (fetchResult.exitCode !== 0) {
+    log.warn({ ...fields, output: fetchResult.stderr.trim() }, "freshen: fetch failed");
+    fail();
+    return;
+  }
+
+  const classify = await classifyDirtyAsync(rec.path, repoName);
+  if (classify.discard.length > 0) {
+    await runGit(rec.path, ["checkout", "--", ...classify.discard]);
+  }
+
+  // Blockers stashed under the tree's own branch name (Desktop-compatible
+  // marker), harvested from parking-lot.ts's ff-sweep. On-deck trees are
+  // expected to be clean by construction; the idle-main case can legitimately
+  // have generated-only dirt left after the discard reset above.
+  let stashName: string | null = null;
+  const label = rec.branch ?? rec.name;
+  if (classify.blockers.length > 0) {
+    await stashChangesAsync(rec.path, label);
+    stashName = (await findDesktopStashAsync(rec.path, label))?.name ?? null;
+  }
+
+  const popStash = async (): Promise<void> => {
+    if (!stashName) return;
+    const pop = await runGit(rec.path, ["stash", "pop", stashName]);
+    if (pop.exitCode !== 0) {
+      log.warn(
+        { ...fields, stashName },
+        `freshen: stash ${stashName} did not reapply cleanly in ${rec.path}... it is preserved, restore it with: git stash pop ${stashName}`,
+      );
+    }
+  };
+
+  const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef]);
+  if (ff.exitCode !== 0) {
+    log.warn({ ...fields, defaultRef, output: ff.stderr.trim() }, "freshen: fast-forward failed");
+    await popStash();
+    fail();
+    return;
+  }
+  await popStash();
+
+  const cfg = loadWorktreeRepoConfig(repoName, deps.repoPath);
+  const readySteps = resolveReadySteps(cfg, deps.repoPath);
+  const changed = rec.readyStamp ? await changedSince(rec.path, rec.readyStamp) : null;
+  const toRun = stepsToRun(readySteps, changed);
+
+  const readyResult = await runReadySteps(rec.path, toRun);
+  if (!readyResult.ok) {
+    log.warn({ ...fields, failedStep: readyResult.failedStep }, "freshen: ready step failed");
+    fail();
+    return;
+  }
+
+  const newStamp = toRun.length > 0 ? await headSha(rec.path) : null;
+  patchTree(repoName, rec.path, (r) => {
+    r.readyAt = new Date().toISOString();
+    r.retryFailures = 0;
+    delete r.nextRetryAt;
+    if (newStamp) r.readyStamp = newStamp;
+  });
+
+  emit("worktree:freshened", { repo: repoName, tree: rec.name, path: rec.path });
+  log.debug?.(fields, `worktree ${rec.name} freshened`);
+}
+
+/** Freshen every eligible tree in one repo, each under its own tree lock. */
+async function freshenRepo(deps: FreshenDeps): Promise<void> {
+  const { repoName } = deps;
+  const now = Date.now();
+  const trees = loadRegistry(repoName);
+  for (const rec of trees) {
+    if (rec.nextRetryAt && Date.parse(rec.nextRetryAt) > now) continue;
+    if (!(await freshenCandidate(deps, rec))) continue;
+    await withTreeLock(rec.path, () => freshenOne(deps, rec));
+  }
+}
+
+// ─── Replenish / shrink (spec §6.4) ──────────────────────────────────────────
+
+/** On-deck / creating counts used to decide whether to grow or shrink the pool. */
+function poolCounts(repoName: string): {
+  ready: number;
+  totalUnclaimed: number;
+  onDeckEntries: TreeRecord[];
+} {
+  const trees = loadRegistry(repoName);
+  const now = Date.now();
+  const onDeckEntries = trees.filter((t) => t.kind === "ephemeral" && t.state === "on-deck");
+  const creatingEntries = trees.filter((t) => t.kind === "ephemeral" && t.state === "creating");
+  const ready = onDeckEntries.filter((t) => !t.nextRetryAt || Date.parse(t.nextRetryAt) <= now).length;
+  return { ready, totalUnclaimed: onDeckEntries.length + creatingEntries.length, onDeckEntries };
+}
+
+/**
+ * Grow the on-deck pool toward `onDeck` (serially — one `createTree` in
+ * flight at a time, which `runOnce` awaiting each pass makes natural), then
+ * shrink it back down by disposing the stalest ready entries when it's over.
+ *
+ * Replenish is bounded to the deficit measured once at the start of the pass,
+ * not re-derived from live state on every iteration: `createTree` scraps its
+ * own registry row on failure (no trace, no retry bookkeeping), so an
+ * always-failing config would otherwise re-read "still short" forever and spin
+ * this pass indefinitely. Bounding to the initial deficit caps attempts at
+ * `onDeck` per pass either way — every attempt succeeds and fills a slot, or
+ * fails and wastes one of the budgeted attempts — and lets the next pass pick
+ * up any remaining shortfall.
+ */
+async function replenishAndShrink(
+  deps: FreshenDeps,
+  creationPromises: Map<string, Promise<void>>,
+  appConfig: WorktreeAppConfig,
+): Promise<void> {
+  const { repoName, repoPath, emit, log } = deps;
+  const cfg = loadWorktreeRepoConfig(repoName, repoPath);
+  if (cfg.onDeck <= 0) return;
+
+  let { ready, totalUnclaimed } = poolCounts(repoName);
+  let budget = Math.max(0, cfg.onDeck - totalUnclaimed);
+  while (budget > 0 && ready < cfg.onDeck && totalUnclaimed < cfg.onDeck) {
+    budget--;
+    const p: Promise<void> = createTree({ repoName, repoPath, emit, log })
+      .then((result) => {
+        if (!result.ok) {
+          log.warn({ repo: repoName, error: result.error }, "worktree reconciler: replenish create failed");
+        }
+      })
+      .catch((err) => {
+        log.warn({ err, repo: repoName }, "worktree reconciler: replenish create threw");
+      })
+      .finally(() => {
+        if (creationPromises.get(repoName) === p) creationPromises.delete(repoName);
+      });
+    creationPromises.set(repoName, p);
+    await p;
+    ({ ready, totalUnclaimed } = poolCounts(repoName));
+  }
+
+  // `attempted` guards against spinning forever on an entry disposeTree keeps
+  // refusing (e.g. a guard failure) — each path gets one shrink attempt per
+  // pass; a refusal just leaves it for the next pass rather than looping here.
+  let counts = poolCounts(repoName);
+  const attempted = new Set<string>();
+  while (counts.ready > cfg.onDeck) {
+    const now = Date.now();
+    const eligible = counts.onDeckEntries.filter(
+      (t) => !attempted.has(t.path) && (!t.nextRetryAt || Date.parse(t.nextRetryAt) <= now),
+    );
+    if (eligible.length === 0) break;
+    const stalest = eligible.reduce((a, b) =>
+      Date.parse(a.readyAt ?? a.createdAt) <= Date.parse(b.readyAt ?? b.createdAt) ? a : b,
+    );
+    attempted.add(stalest.path);
+    await withTreeLock(stalest.path, () =>
+      disposeTree(
+        { repoName, repoPath, cacheEntries: {}, emit, log, killProcesses: appConfig.killProcesses },
+        stalest,
+        { auto: false },
+      ),
+    );
+    counts = poolCounts(repoName);
+  }
+}
+
 /** Whether a repo has any worktree state worth reconciling: registry entries or a declared "worktrees" config. */
 function repoHasWorktreeActivity(repoName: string): boolean {
   if (loadRegistry(repoName).length > 0) return true;
@@ -546,11 +791,19 @@ function repoHasWorktreeActivity(repoName: string): boolean {
 export function createWorktreeReconciler(deps: ReconcilerDeps): {
   kick: () => void;
   runOnce: () => Promise<void>;
+  /** The live `createTree` promise replenish kicked off for `repoName`, or
+   *  null when nothing is in flight. Task 13's provision handler awaits this
+   *  instead of racing its own create against replenish's. */
+  creationInFlight: (repoName: string) => Promise<void> | null;
 } {
   let inFlight: Promise<void> | null = null;
+  const creationPromises = new Map<string, Promise<void>>();
 
   async function runOnce(): Promise<void> {
     const repos = deps.repoIndex();
+    // One read for the whole pass: every repo shares the same app-level file.
+    const appConfig = loadWorktreeAppConfig();
+
     for (const [repoName, repoPath] of Object.entries(repos)) {
       if (!repoHasWorktreeActivity(repoName)) continue;
       try {
@@ -558,8 +811,8 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
       } catch (err) {
         deps.log.warn({ err, repo: repoName }, "worktree reconciler: reconcile pass failed");
       }
-      // Separate catch: a reactor that throws must not cost the next repo its
-      // reconcile, and vice versa.
+      // Separate catches throughout: any one duty throwing must not cost the
+      // next repo (or the next duty) its own pass.
       try {
         await detectTransitions({
           repoName,
@@ -570,6 +823,23 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
         });
       } catch (err) {
         deps.log.warn({ err, repo: repoName }, "worktree reconciler: merge reactor pass failed");
+      }
+
+      if (!appConfig.enabled) continue;
+
+      try {
+        await freshenRepo({ repoName, repoPath, emit: deps.emit, log: deps.log });
+      } catch (err) {
+        deps.log.warn({ err, repo: repoName }, "worktree reconciler: freshen pass failed");
+      }
+      try {
+        await replenishAndShrink(
+          { repoName, repoPath, emit: deps.emit, log: deps.log },
+          creationPromises,
+          appConfig,
+        );
+      } catch (err) {
+        deps.log.warn({ err, repo: repoName }, "worktree reconciler: replenish/shrink pass failed");
       }
     }
   }
@@ -586,7 +856,11 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
     inFlight = p;
   }
 
-  return { kick, runOnce };
+  function creationInFlight(repoName: string): Promise<void> | null {
+    return creationPromises.get(repoName) ?? null;
+  }
+
+  return { kick, runOnce, creationInFlight };
 }
 
-export const __test__ = { detectTransitions, reactorStatePath };
+export const __test__ = { detectTransitions, reactorStatePath, freshenRepo, replenishAndShrink, poolCounts };
