@@ -231,14 +231,28 @@ describe("merge reactor (detectTransitions)", () => {
     events = [];
   });
 
-  function detect(entries: Record<string, unknown>): Promise<void> {
+  function detect(entries: Record<string, unknown>, log: Logger = fakeLog()): Promise<void> {
     return __test__.detectTransitions({
       repoName,
       repoPath: repo,
       cacheEntries: entries as any,
       emit: (type: string, data: unknown) => events.push({ type, data }),
-      log: fakeLog(),
+      log,
     });
+  }
+
+  /** A logger that keeps its warnings, for the "give up, don't spin" paths. */
+  function capturingLog(): { log: Logger; warns: string[] } {
+    const warns: string[] = [];
+    return {
+      warns,
+      log: {
+        info: () => {},
+        error: () => {},
+        debug: () => {},
+        warn: (_fields: unknown, msg?: string) => warns.push(msg ?? ""),
+      } as unknown as Logger,
+    };
   }
 
   function mrCache(branch: string, state: string, iid = 42): Record<string, unknown> {
@@ -287,6 +301,22 @@ describe("merge reactor (detectTransitions)", () => {
       { name: basename(repo), path: repo, kind: "main", branch, createdAt: new Date().toISOString() },
     ]);
   }
+
+  test("cold boot on an already-merged cache entry deletes nothing", async () => {
+    const rec = ephemeralTree("cold", "feat-cold");
+
+    // FIRST call ever against an empty state file: the daemon has no "opened"
+    // snapshot to compare against, so there is no edge and nothing may happen.
+    await detect(mrCache("feat-cold", "merged"));
+
+    expect(existsSync(rec.path)).toBe(true);
+    expect(tracked(rec.path)!.state).toBe("claimed");
+    expect(tracked(rec.path)!.disposableReason).toBeUndefined();
+    expect(events.length).toBe(0);
+    expect(reactorState().fired).toEqual([]);
+    // The snapshot still records what it saw, so a later reopen→merge fires.
+    expect(reactorState().mrState[`${repoName}:feat-cold`]).toBe("merged");
+  });
 
   test("merged MR on a clean claimed tree disposes it, emits, and records a fired key", async () => {
     const rec = ephemeralTree("alpha", "feat-alpha");
@@ -405,6 +435,94 @@ describe("merge reactor (detectTransitions)", () => {
 
     sh(`git -C ${repo} worktree unlock ${rec.path}`);
     await detect(mrCache("feat-hotel", "merged"));
+
+    expect(existsSync(rec.path)).toBe(false);
+    expect(tracked(rec.path)).toBeUndefined();
+  });
+
+  test("auto-return gives up (does not spin) when another worktree holds the default branch", async () => {
+    mainOnBranch("feat-elsewhere");
+    // A second worktree parks on main, so `git checkout main` in the main
+    // clone can never succeed — a configuration, not a transient.
+    sh(`git -C ${repo} worktree add ${join(repo, ".worktrees", "holder")} main`);
+    writeFileSync(join(repo, "dirty.txt"), "uncommitted\n");
+
+    await detect(mrCache("feat-elsewhere", "opened"));
+    const { log, warns } = capturingLog();
+    await detect(mrCache("feat-elsewhere", "merged"), log);
+
+    expect(warns.length).toBe(1);
+    expect(warns[0]).toContain("main is checked out at");
+    expect(await currentBranchAsync(repo)).toBe("feat-elsewhere");
+    // The dirt is untouched: nothing may be stashed for a return that cannot happen.
+    expect(existsSync(join(repo, "dirty.txt"))).toBe(true);
+    expect(await findDesktopStashAsync(repo, "feat-elsewhere")).toBeNull();
+    // Edge is spent, not re-armed — an unfixable config must not retry forever.
+    expect(reactorState().mrState[`${repoName}:feat-elsewhere`]).toBe("merged");
+  });
+
+  test("auto-return gives up (does not spin) when the default branch cannot be resolved", async () => {
+    // A repo whose default is "develop": remoteDefaultRef falls back to an
+    // unverified "origin/master", so the checkout could never succeed.
+    const odd = realpathSync(mkdtempSync(join(tmpdir(), "rtreact-odd-")));
+    sh(`git init -q -b develop ${odd}`);
+    sh(`git ${GIT_ID} commit -q --allow-empty -m init`, odd);
+    const bare = join(realpathSync(mkdtempSync(join(tmpdir(), "rtreact-oddbare-"))), "o.git");
+    sh(`git clone -q --bare ${odd} ${bare} && git -C ${odd} remote add origin ${bare} && git -C ${odd} fetch -q origin`);
+    sh(`git ${GIT_ID} checkout -q -b feat-odd origin/develop`, odd);
+    writeFileSync(join(odd, "dirty.txt"), "uncommitted\n");
+    saveRegistry(repoName, [
+      { name: "odd", path: odd, kind: "main", branch: "feat-odd", createdAt: new Date().toISOString() },
+    ]);
+
+    const pass = (state: string, log: Logger) =>
+      __test__.detectTransitions({
+        repoName,
+        repoPath: odd,
+        cacheEntries: { "feat-odd": { repoName, mr: { iid: 42, state } } } as any,
+        emit: (type: string, data: unknown) => events.push({ type, data }),
+        log,
+      });
+
+    await pass("opened", fakeLog());
+    const { log, warns } = capturingLog();
+    await pass("merged", log);
+
+    expect(warns.length).toBe(1);
+    expect(warns[0]).toContain("neither master nor origin/master exists");
+    expect(await currentBranchAsync(odd)).toBe("feat-odd");
+    expect(existsSync(join(odd, "dirty.txt"))).toBe(true);
+    expect(reactorState().mrState[`${repoName}:feat-odd`]).toBe("merged");
+  });
+
+  test("a successful auto-return leaves main's registry branch on the default", async () => {
+    mainOnBranch("feat-ground");
+
+    await detect(mrCache("feat-ground", "opened"));
+    await detect(mrCache("feat-ground", "merged"));
+
+    expect(tracked(repo)!.branch).toBe("main");
+  });
+
+  test("another repo's snapshot and fired keys survive a single-repo pass", async () => {
+    writeJson(__test__.reactorStatePath(), {
+      mrState: { "otherrepo:feat-theirs": "opened" },
+      fired: ["disposed:otherrepo:9:merged"],
+    });
+    ephemeralTree("india", "feat-india");
+
+    await detect(mrCache("feat-india", "opened"));
+
+    expect(reactorState().mrState["otherrepo:feat-theirs"]).toBe("opened");
+    expect(reactorState().fired).toContain("disposed:otherrepo:9:merged");
+  });
+
+  test("a cache entry with no repoName joins this repo and acts", async () => {
+    const rec = ephemeralTree("juliet", "feat-juliet");
+    const unattributed = (state: string) => ({ "feat-juliet": { mr: { iid: 42, state } } });
+
+    await detect(unattributed("opened"));
+    await detect(unattributed("merged"));
 
     expect(existsSync(rec.path)).toBe(false);
     expect(tracked(rec.path)).toBeUndefined();
