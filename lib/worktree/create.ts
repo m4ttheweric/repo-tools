@@ -86,7 +86,7 @@ async function runCreate(
   saveRegistry(repoName, trees);
 
   const fail = async (failedStep: string, output: string): Promise<CreateResult> => {
-    log.warn("worktree create failed", { repo: repoName, tree: name, failedStep });
+    log.warn({ repo: repoName, tree: name, failedStep }, "worktree create failed");
     await scrapTree(deps, rec);
     return { ok: false, error: "create-failed", failedStep, output };
   };
@@ -131,7 +131,7 @@ async function runCreate(
   saveRegistry(repoName, finalTrees);
 
   emit("worktree:created", { repo: repoName, tree: name, path });
-  log.info("worktree created", { repo: repoName, tree: name, path });
+  log.info({ repo: repoName, tree: name, path }, "worktree created");
 
   return { ok: true, tree: updated };
 }

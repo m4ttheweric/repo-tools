@@ -8,7 +8,12 @@ import { saveSyncConfig } from "../../sync-config.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../registry.ts";
 import { branchExistsLocalAsync, listWorktreesAsync } from "../git-async.ts";
 import { hasFreshAttendantLease } from "../lease.ts";
-import { classifyDirtyAsync, disposeTree, type DisposeDeps } from "../dispose.ts";
+import {
+  classifyDirtyAsync,
+  disposeTree,
+  STATUS_FAILED_BLOCKER,
+  type DisposeDeps,
+} from "../dispose.ts";
 
 const GIT_ID = "-c user.email=t@t -c user.name=t";
 
@@ -209,6 +214,18 @@ describe("classifyDirtyAsync", () => {
     const result = await classifyDirtyAsync(tree, repoName);
     expect(result.blockers).toEqual(["gen.txt"]);
   });
+
+  test("a failing git status fails CLOSED, never clean", async () => {
+    const gone = join(tree, "nope", "not-a-worktree");
+    const result = await classifyDirtyAsync(gone, repoName);
+    expect(result.blockers).toEqual([STATUS_FAILED_BLOCKER]);
+    expect(result.discard).toEqual([]);
+
+    // Same for a directory git refuses to read as a repo.
+    const notARepo = realpathSync(mkdtempSync(join(tmpdir(), "rtdispose-bare-dir-")));
+    const outside = await classifyDirtyAsync(notARepo, repoName);
+    expect(outside.blockers).toEqual([STATUS_FAILED_BLOCKER]);
+  });
 });
 
 describe("disposeTree", () => {
@@ -353,7 +370,7 @@ describe("disposeTree", () => {
     expect(existsSync(path)).toBe(false);
   });
 
-  test("auto disposal with an unknown MR sha refuses with \"mr-sha-unresolvable\"", async () => {
+  test("a present-but-unresolvable MR sha refuses with \"mr-sha-unresolvable\"", async () => {
     const path = addTree(repo, "tree-a", "feature-a");
     const rec = register(repoName, ephemeral("tree-a", path, "feature-a", {
       claimedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
@@ -367,6 +384,33 @@ describe("disposeTree", () => {
     const result = await disposeTree(deps, rec, { auto: true });
     expect(result).toEqual({ disposed: false, refusal: "mr-sha-unresolvable" });
     expect(existsSync(path)).toBe(true);
+  });
+
+  test("an MR with NO sha falls back to the remote anchor instead of refusing", async () => {
+    const path = addTree(repo, "tree-a", "feature-a");
+    const rec = register(repoName, ephemeral("tree-a", path, "feature-a", {
+      claimedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+    }));
+
+    // sha absent entirely (the projection drops it for many merged MRs)
+    const deps = makeDeps({ cacheEntries: { "feature-a": { mr: { iid: 42 }, repoName } } });
+    const result = await disposeTree(deps, rec, { auto: true });
+    expect(result).toEqual({ disposed: true });
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test("an MR with a null sha still gets a real containment check", async () => {
+    const path = addTree(repo, "tree-a", "feature-a");
+    commitIn(path, "new.txt", "local only\n");
+    const rec = register(repoName, ephemeral("tree-a", path, "feature-a", {
+      claimedAt: new Date(Date.now() - 60 * 60_000).toISOString(),
+    }));
+
+    const deps = makeDeps({
+      cacheEntries: { "feature-a": { mr: { iid: 42, sha: null }, repoName } },
+    });
+    const result = await disposeTree(deps, rec, { auto: true });
+    expect(result).toEqual({ disposed: false, refusal: "unpushed" });
   });
 
   test("auto disposal refuses \"unpushed\" when HEAD is ahead of the MR head sha", async () => {
@@ -444,6 +488,60 @@ describe("disposeTree", () => {
 
     const result = await disposeTree(makeDeps(), rec, { auto: true });
     expect(result).toEqual({ disposed: true });
+  });
+
+  test("a cache entry with no repoName still joins its MR", async () => {
+    const path = addTree(repo, "tree-a", "feature-a");
+    const rec = register(repoName, ephemeral("tree-a", path, "feature-a"));
+    writeLease("acme-42.json", {
+      mr: "https://gitlab.com/acme/acme/-/merge_requests/42",
+      heartbeatAt: Date.now(),
+      ttlSeconds: 300,
+    });
+
+    const deps = makeDeps({ cacheEntries: { "feature-a": { mr: { iid: 42, sha: null } } } });
+    expect(await disposeTree(deps, rec, {})).toEqual({ disposed: false, refusal: "attended" });
+  });
+
+  test("a cache entry attributed to another repo does not join", async () => {
+    const path = addTree(repo, "tree-a", "feature-a");
+    const rec = register(repoName, ephemeral("tree-a", path, "feature-a"));
+    writeLease("other-42.json", {
+      mr: "https://gitlab.com/other/other/-/merge_requests/42",
+      heartbeatAt: Date.now(),
+      ttlSeconds: 300,
+    });
+
+    const deps = makeDeps({
+      cacheEntries: { "feature-a": { mr: { iid: 42, sha: null }, repoName: "other-repo" } },
+    });
+    expect(await disposeTree(deps, rec, {})).toEqual({ disposed: true });
+  });
+
+  test("a failing git status refuses \"dirty\" rather than disposing", async () => {
+    const path = addTree(repo, "tree-a", "feature-a");
+    const rec = register(repoName, {
+      ...ephemeral("tree-a", path, "feature-a"),
+      path: join(path, "gone", "missing"),
+    });
+
+    const result = await disposeTree(makeDeps(), rec, {});
+    expect(result).toEqual({ disposed: false, refusal: "dirty" });
+    expect(existsSync(path)).toBe(true);
+    expect(loadRegistry(repoName).length).toBe(1);
+  });
+
+  test("a worktree git refuses to remove refuses \"remove-failed\" and keeps the registry row", async () => {
+    const path = addTree(repo, "tree-a", "feature-a");
+    const rec = register(repoName, ephemeral("tree-a", path, "feature-a"));
+    // A locked worktree needs --force twice; one --force fails and leaves the tree.
+    execSync(`git -C ${repo} worktree lock ${path}`, { shell: "/bin/zsh", stdio: "pipe" });
+
+    const result = await disposeTree(makeDeps(), rec, { force: true });
+    expect(result).toEqual({ disposed: false, refusal: "remove-failed" });
+    expect(existsSync(path)).toBe(true);
+    expect(loadRegistry(repoName).length).toBe(1);
+    expect(await branchExistsLocalAsync(repo, "feature-a")).toBe(true);
   });
 
   test("guard order: dirty is reported before unpushed", async () => {
