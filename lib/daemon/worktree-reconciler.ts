@@ -1,27 +1,38 @@
 /**
  * Worktree reconciler — brings the on-disk registry back in line with git
- * ground truth. First slice (Task 10): registry reconcile only. Tasks 11-12
- * extend `runOnce` in place with the merge reactor, freshen, and
- * replenish/shrink passes, so structure here is deliberately left open for
- * that: `reconcileRepoRegistry` is a standalone step `runOnce` calls per
- * repo, and `createWorktreeReconciler`'s returned object is the single
- * surface later tasks add to (e.g. `creationInFlight`).
+ * ground truth, then reacts to the MR transitions that end a tree's life.
+ * Task 12 extends `runOnce` in place with the freshen and replenish/shrink
+ * passes, so structure here is deliberately left open for that: each duty is
+ * a standalone step `runOnce` calls per repo, and `createWorktreeReconciler`'s
+ * returned object is the single surface later tasks add to (e.g.
+ * `creationInFlight`).
  */
 
 import { basename, join } from "path";
 import { realpathSync } from "fs";
 import type { Logger } from "pino";
-import { readJson } from "../json-store.ts";
-import { repoDataDir } from "../rt-paths.ts";
+import { readJson, writeJson } from "../json-store.ts";
+import { repoDataDir, rtDir } from "../rt-paths.ts";
 import {
+  findByBranch,
   loadRegistry,
   saveRegistry,
   type TreeKind,
   type TreeRecord,
 } from "../worktree/registry.ts";
-import { runGit, listWorktreesAsync, type WorktreeEntry } from "../worktree/git-async.ts";
-import { isTreeLocked } from "../worktree/locks.ts";
+import {
+  currentBranchAsync,
+  listWorktreesAsync,
+  remoteDefaultRef,
+  runGit,
+  stashChangesAsync,
+  type WorktreeEntry,
+} from "../worktree/git-async.ts";
+import { isTreeLocked, withTreeLock } from "../worktree/locks.ts";
 import { scrapTree, type CreateDeps } from "../worktree/create.ts";
+import { disposeTree } from "../worktree/dispose.ts";
+import { loadWorktreeAppConfig, type WorktreeAppConfig } from "../worktree/config.ts";
+import { killWorktreeProcesses } from "./worktree-process-kill.ts";
 
 export interface ReconcilerDeps {
   cache: { entries: Record<string, any> };
@@ -153,6 +164,332 @@ export async function reconcileRepoRegistry(deps: {
   return trees;
 }
 
+// ─── Merge reactor (spec §6.2) ───────────────────────────────────────────────
+
+/**
+ * The reactor's own memory, at `~/.rt/worktree-reactor-state.json`.
+ *
+ * `mrState` is the last-seen MR state per `<repo>:<branch>`, compared against
+ * the live cache to find `opened → merged|closed` edges. A branch the file has
+ * never seen fails the `prev === "opened"` gate, which is what makes a cold
+ * boot on an already-merged cache entry a no-op rather than a mass disposal.
+ *
+ * `fired` is keyed by MR, not branch: `disposed:<repo>:<mr-iid>:<state>`.
+ * Branch keys are wrong here because this design derives branch names from
+ * tickets, so a recut MR reuses the branch and a branch-keyed fire would
+ * silently never act a second time. The MR's keys are pruned when it returns
+ * to `opened`.
+ */
+interface ReactorState {
+  mrState: Record<string, string | null>;
+  fired: string[];
+}
+
+export function reactorStatePath(): string {
+  return join(rtDir(), "worktree-reactor-state.json");
+}
+
+function loadReactorState(): ReactorState {
+  const raw = readJson<Partial<ReactorState>>(reactorStatePath(), {});
+  return {
+    mrState: raw?.mrState ?? {},
+    fired: Array.isArray(raw?.fired) ? raw.fired : [],
+  };
+}
+
+function saveReactorState(state: ReactorState, log: Logger): void {
+  try {
+    writeJson(reactorStatePath(), state);
+  } catch (err) {
+    log.warn({ err }, "worktree reactor: could not persist state");
+  }
+}
+
+/** Branch-keyed MR cache entry, as the daemon holds it (`ctx.cache.entries`). */
+interface ReactorCacheEntry {
+  mr?: { iid?: number; state?: string | null } | null;
+  repoName?: string;
+}
+
+export interface ReactorDeps {
+  repoName: string;
+  repoPath: string;
+  /** Branch-keyed MR cache (daemon `ctx.cache.entries`). */
+  cacheEntries: Record<string, ReactorCacheEntry>;
+  emit: (type: string, data: unknown) => void;
+  log: Logger;
+}
+
+const TERMINAL_STATES = new Set(["merged", "closed"]);
+
+/**
+ * What one tree's reaction did, which is also what the snapshot is allowed to
+ * do afterwards:
+ *  - `done`  — nothing to react to (wrong kind, job disposal, main already
+ *              moved on). The edge is spent; advance the snapshot.
+ *  - `fired` — the reaction happened (disposed / flipped disposable /
+ *              auto-returned). Advance the snapshot AND record the fired key
+ *              so a cache churn can't re-notify.
+ *  - `retry` — the reaction failed for a mechanical, transient reason. The
+ *              snapshot must stay at "opened" or the edge never re-arms; this
+ *              is the correctness fix over the harvested parking-lot version,
+ *              which advanced the snapshot unconditionally and so silently
+ *              defeated its own retry.
+ */
+type Reaction = "done" | "fired" | "retry";
+
+/** Load-mutate-save one registry row without clobbering concurrent edits. */
+function patchTree(repoName: string, path: string, patch: (rec: TreeRecord) => void): void {
+  const trees = loadRegistry(repoName);
+  const rec = trees.find((t) => t.path === path);
+  if (!rec) return;
+  patch(rec);
+  saveRegistry(repoName, trees);
+}
+
+function markDisposable(deps: ReactorDeps, rec: TreeRecord, reason: string): void {
+  patchTree(deps.repoName, rec.path, (r) => {
+    r.state = "disposable";
+    r.disposableReason = reason;
+  });
+  deps.emit("worktree:disposable", {
+    repo: deps.repoName,
+    tree: rec.name,
+    path: rec.path,
+    branch: rec.branch,
+    reason,
+  });
+  deps.log.info(
+    { repo: deps.repoName, tree: rec.name, reason },
+    `worktree ${rec.name} is disposable: ${reason}`,
+  );
+}
+
+/**
+ * Return the main clone to its default branch after its branch merged.
+ *
+ * Harvested from `park()` minus the parking-slot branch: verify main is still
+ * on the merged branch, stop its workload, stash-and-LEAVE any dirt under the
+ * GitHub Desktop-compatible marker keyed to the branch that left, check out the
+ * default branch, fast-forward it. The stash is deliberately never popped — it
+ * belongs to the merged branch, not to the default branch main now sits on.
+ *
+ * Any mechanical failure returns "retry" so the snapshot holds and the next
+ * pass tries again; main has no disposable-equivalent state to park a failure
+ * in, so without the retry a transient failure would strand main on a dead
+ * branch forever.
+ */
+async function autoReturnMain(
+  deps: ReactorDeps,
+  rec: TreeRecord,
+  mergedBranch: string,
+  appConfig: WorktreeAppConfig,
+): Promise<Reaction> {
+  const { repoName, log } = deps;
+  const fields = { repo: repoName, tree: rec.name, path: rec.path, branch: mergedBranch };
+
+  const current = await currentBranchAsync(rec.path);
+  if (current !== mergedBranch) {
+    log.debug?.({ ...fields, current }, "auto-return skipped: main is no longer on the merged branch");
+    return "done";
+  }
+
+  if (appConfig.killProcesses) {
+    // The ruled execSync exception (the process killer is sync by design);
+    // a failure here never blocks the return.
+    try {
+      const { terminated } = killWorktreeProcesses(rec.path);
+      if (terminated.length > 0) log.info({ ...fields, count: terminated.length }, "worktree processes terminated");
+    } catch (err) {
+      log.warn({ err, ...fields }, "auto-return: process kill failed; returning anyway");
+    }
+  }
+
+  const status = await runGit(rec.path, ["status", "--porcelain"]);
+  if (status.exitCode !== 0) {
+    log.warn({ ...fields, output: status.stderr.trim() }, "auto-return: git status failed");
+    return "retry";
+  }
+  if (status.stdout.trim().length > 0) {
+    await stashChangesAsync(rec.path, mergedBranch);
+    const after = await runGit(rec.path, ["status", "--porcelain"]);
+    if (after.exitCode !== 0 || after.stdout.trim().length > 0) {
+      log.warn({ ...fields }, "auto-return: stash did not clear the worktree");
+      return "retry";
+    }
+    log.info({ ...fields }, `stashed uncommitted changes on "${mergedBranch}"`);
+  }
+
+  const defaultRef = await remoteDefaultRef(rec.path);
+  const defaultBranch = defaultRef.replace(/^origin\//, "");
+
+  const checkout = await runGit(rec.path, ["checkout", defaultBranch]);
+  if (checkout.exitCode !== 0) {
+    log.warn({ ...fields, defaultBranch, output: checkout.stderr.trim() }, "auto-return: checkout failed");
+    return "retry";
+  }
+
+  const ff = await runGit(rec.path, ["merge", "--ff-only", defaultRef]);
+  if (ff.exitCode !== 0) {
+    log.warn({ ...fields, defaultRef, output: ff.stderr.trim() }, "auto-return: fast-forward failed");
+    return "retry";
+  }
+
+  log.info({ ...fields, defaultRef }, `returned ${rec.name} to ${defaultBranch} after ${mergedBranch} merged`);
+  return "fired";
+}
+
+/** React to one terminal MR state on one registered tree. Caller holds the tree lock. */
+async function actOnTree(
+  deps: ReactorDeps,
+  rec: TreeRecord,
+  branch: string,
+  mrState: string,
+  appConfig: WorktreeAppConfig,
+): Promise<Reaction> {
+  if (rec.kind === "main") {
+    // Closed-without-merge leaves main alone: the branch's commits are still
+    // only on that branch, and a closed MR often means recut.
+    return mrState === "merged" ? autoReturnMain(deps, rec, branch, appConfig) : "done";
+  }
+  if (rec.kind !== "ephemeral") return "done";
+  // Job trees are the caller's to end, MR or no MR.
+  if (rec.disposal === "job") return "done";
+  // claimed AND disposable both react, so a reopened-then-merged MR still
+  // disposes; on-deck/creating trees never carry MR branches.
+  if (rec.state !== "claimed" && rec.state !== "disposable") return "done";
+
+  if (mrState === "closed") {
+    markDisposable(deps, rec, "MR closed without merge");
+    return "fired";
+  }
+
+  const outcome = await disposeTree(
+    {
+      repoName: deps.repoName,
+      repoPath: deps.repoPath,
+      cacheEntries: deps.cacheEntries as Record<string, { mr: any; repoName?: string }>,
+      emit: deps.emit,
+      log: deps.log,
+      killProcesses: appConfig.killProcesses,
+    },
+    rec,
+    { auto: true },
+  );
+  if (outcome.disposed) return "fired";
+
+  // "remove-failed" is mechanical and transient (a locked file, a busy
+  // directory) — the tree is still perfectly claimable, so it must NOT be
+  // advertised as disposable. Hold the edge and try again next pass.
+  if (outcome.refusal === "remove-failed") {
+    deps.log.warn(
+      { repo: deps.repoName, tree: rec.name, path: rec.path },
+      "auto-dispose: worktree removal failed; retrying next pass",
+    );
+    return "retry";
+  }
+
+  markDisposable(deps, rec, outcome.refusal);
+  return "fired";
+}
+
+/** Worst outcome wins: any retry re-arms the edge, otherwise any fire records it. */
+function worse(a: Reaction, b: Reaction): Reaction {
+  if (a === "retry" || b === "retry") return "retry";
+  if (a === "fired" || b === "fired") return "fired";
+  return "done";
+}
+
+/** An MR back to `opened` un-disposables the trees on its branch: work resumed. */
+async function resumeTrees(deps: ReactorDeps, branch: string): Promise<void> {
+  for (const rec of findByBranch(loadRegistry(deps.repoName), branch)) {
+    if (rec.kind !== "ephemeral" || rec.state !== "disposable") continue;
+    await withTreeLock(rec.path, async () => {
+      patchTree(deps.repoName, rec.path, (r) => {
+        r.state = "claimed";
+        delete r.disposableReason;
+      });
+      deps.log.info(
+        { repo: deps.repoName, tree: rec.name, branch },
+        `MR reopened — ${rec.name} is claimed again`,
+      );
+    });
+  }
+}
+
+/**
+ * Detect `opened → merged|closed` MR transitions for one repo and react.
+ *
+ * Port of `parking-lot.ts` checkAndPark's detector with three deliberate
+ * changes: the retry fix (see `Reaction`), MR-keyed fired keys with reopen
+ * pruning, and a merged/closed/reopened dispatch that branches on tree kind
+ * and disposal mode instead of parking everything onto a slot branch.
+ */
+export async function detectTransitions(deps: ReactorDeps): Promise<void> {
+  const { repoName, cacheEntries, log } = deps;
+  const appConfig = loadWorktreeAppConfig();
+
+  const state = loadReactorState();
+  const fired = new Set(state.fired);
+
+  // Snapshots are per repo; other repos' keys ride through untouched so a
+  // single-repo pass can't erase their memory, while this repo's stale
+  // branches drop out by being rebuilt from the live cache.
+  const prefix = `${repoName}:`;
+  const nextMrState: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(state.mrState)) {
+    if (!key.startsWith(prefix)) nextMrState[key] = value;
+  }
+
+  for (const [branch, entry] of Object.entries(cacheEntries)) {
+    // Unattributed entries (older caches predate repoName) may join any repo;
+    // an entry attributed elsewhere never does.
+    if (entry.repoName && entry.repoName !== repoName) continue;
+    if (!entry.mr) continue;
+
+    const cur = entry.mr.state ?? null;
+    const key = prefix + branch;
+    const prev = state.mrState[key] ?? null;
+    const iid = typeof entry.mr.iid === "number" ? String(entry.mr.iid) : branch;
+
+    if (cur === "opened") {
+      nextMrState[key] = "opened";
+      // Reopen: forget this MR's fires so a later merge acts again, and hand
+      // any disposable tree back to its owner.
+      for (const fireKey of [...fired]) {
+        if (fireKey.startsWith(`disposed:${repoName}:${iid}:`)) fired.delete(fireKey);
+      }
+      await resumeTrees(deps, branch);
+      continue;
+    }
+
+    nextMrState[key] = cur;
+    if (prev !== "opened") continue; // cold-boot safety: unknown prev never fires
+    if (!cur || !TERMINAL_STATES.has(cur)) continue;
+
+    const fireKey = `disposed:${repoName}:${iid}:${cur}`;
+    if (fired.has(fireKey)) continue;
+
+    const trees = findByBranch(loadRegistry(repoName), branch);
+    if (trees.length === 0) {
+      log.debug?.({ repo: repoName, branch, mrState: cur }, "reactor: no registered tree on the branch");
+      continue;
+    }
+
+    let reaction: Reaction = "done";
+    for (const rec of trees) {
+      const result = await withTreeLock(rec.path, () => actOnTree(deps, rec, branch, cur, appConfig));
+      // A locked tree is someone else's in-flight work; come back next pass.
+      reaction = worse(reaction, result === "busy" ? "retry" : result);
+    }
+
+    if (reaction === "retry") nextMrState[key] = "opened";
+    else if (reaction === "fired") fired.add(fireKey);
+  }
+
+  saveReactorState({ mrState: nextMrState, fired: [...fired] }, log);
+}
+
 /** Whether a repo has any worktree state worth reconciling: registry entries or a declared "worktrees" config. */
 function repoHasWorktreeActivity(repoName: string): boolean {
   if (loadRegistry(repoName).length > 0) return true;
@@ -162,9 +499,9 @@ function repoHasWorktreeActivity(repoName: string): boolean {
 }
 
 /**
- * Assembles the worktree reconciler. This slice's `runOnce` only runs the
- * registry reconcile pass per qualifying repo; Tasks 11-12 extend `runOnce`
- * in place to add the merge reactor, freshen, and replenish/shrink passes.
+ * Assembles the worktree reconciler. `runOnce` runs reconcile then the merge
+ * reactor per qualifying repo; Task 12 extends it in place with the freshen
+ * and replenish/shrink passes.
  */
 export function createWorktreeReconciler(deps: ReconcilerDeps): {
   kick: () => void;
@@ -179,7 +516,20 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
       try {
         await reconcileRepoRegistry({ repoName, repoPath, emit: deps.emit, log: deps.log });
       } catch (err) {
-        deps.log.warn({ err, repo: repoName }, "worktree reconciler: repo pass failed");
+        deps.log.warn({ err, repo: repoName }, "worktree reconciler: reconcile pass failed");
+      }
+      // Separate catch: a reactor that throws must not cost the next repo its
+      // reconcile, and vice versa.
+      try {
+        await detectTransitions({
+          repoName,
+          repoPath,
+          cacheEntries: deps.cache.entries,
+          emit: deps.emit,
+          log: deps.log,
+        });
+      } catch (err) {
+        deps.log.warn({ err, repo: repoName }, "worktree reconciler: merge reactor pass failed");
       }
     }
   }
@@ -198,3 +548,5 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
 
   return { kick, runOnce };
 }
+
+export const __test__ = { detectTransitions, reactorStatePath };
