@@ -171,6 +171,22 @@ describe("worktree config", () => {
       expect(resolveReadySteps(cfg, repoPath)).toEqual(cfg.ready);
     });
 
+    test("a declared non-install step for the manager does not suppress the implicit install", () => {
+      const repoPath = tmpRepoPath("rtcfg-resolve4-");
+      writeFileSync(join(repoPath, "package.json"), JSON.stringify({ name: "x" }));
+      writeFileSync(join(repoPath, "pnpm-lock.yaml"), "");
+      const cfg: WorktreeRepoConfig = {
+        onDeck: 0,
+        root: join(repoPath, ".worktrees"),
+        branchFormat: "<ticket>-<slug>",
+        ready: [{ run: "pnpm lint" }],
+      };
+      expect(resolveReadySteps(cfg, repoPath)).toEqual([
+        { run: "pnpm install --side-effects-cache", when: "changed:pnpm-lock.yaml" },
+        { run: "pnpm lint" },
+      ]);
+    });
+
     test("no implicit install (no package.json) -> just declared steps", () => {
       const repoPath = tmpRepoPath("rtcfg-resolve3-");
       const cfg: WorktreeRepoConfig = {

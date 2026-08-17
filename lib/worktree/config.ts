@@ -108,14 +108,18 @@ export function resolveImplicitInstall(repoPath: string): ReadyStep | null {
 }
 
 /**
- * Implicit install first UNLESS cfg.ready already contains a step whose run
- * starts with the detected manager name; then cfg.ready in order.
+ * Implicit install first UNLESS cfg.ready already declares its own install
+ * step for the detected manager (run starts with "<manager> install", e.g.
+ * "pnpm install --side-effects-cache") — only an install step replaces the
+ * implicit one; any other declared command for that manager (e.g. "pnpm
+ * lint") does not suppress it. Otherwise cfg.ready in order.
  */
 export function resolveReadySteps(cfg: WorktreeRepoConfig, repoPath: string): ReadyStep[] {
   const manager = detectManager(repoPath);
   if (!manager) return cfg.ready;
 
-  const alreadyDeclared = cfg.ready.some((step) => step.run.startsWith(manager));
+  const installPrefix = `${manager} install`;
+  const alreadyDeclared = cfg.ready.some((step) => step.run.startsWith(installPrefix));
   if (alreadyDeclared) return cfg.ready;
 
   return [MANAGER_STEP[manager], ...cfg.ready];
