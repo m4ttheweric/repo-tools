@@ -38,11 +38,6 @@ import * as parkingLot from "../commands/parking-lot.ts";
 import * as sdm from "../commands/sdm.ts";
 import * as plugin from "../commands/plugin.ts";
 import * as worktree from "../commands/worktree.ts";
-import * as validate from "../commands/validate.ts";
-import * as cloud from "../commands/cloud.ts";
-import * as db from "../commands/db.ts";
-import * as sandbox from "../commands/sandbox.ts";
-import * as evidence from "../commands/evidence.ts";
 
 export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/branch.ts": branch,
@@ -77,9 +72,4 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/sdm.ts": sdm,
   "./commands/plugin.ts": plugin,
   "./commands/worktree.ts": worktree,
-  "./commands/validate.ts": validate,
-  "./commands/cloud.ts": cloud,
-  "./commands/db.ts": db,
-  "./commands/sandbox.ts": sandbox,
-  "./commands/evidence.ts": evidence,
 };

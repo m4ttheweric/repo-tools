@@ -12,8 +12,15 @@ Live branch dashboard with MR actions, pipeline &amp; review status
 ## Usage
 
 ```bash
-rt status
+rt status [flags]
 ```
+
+## Arguments & flags
+
+| Flag / Arg | Type | Default | Description |
+| --- | --- | --- | --- |
+| `--fresh` | boolean |  | Refresh the cache before rendering |
+| `--max-age` | text |  | Refresh first if the cache is older than this (45, 45s, 2m, 1h) |
 
 _See code: [commands/status/index.tsx › showStatus](https://github.com/m4ttheweric/repo-tools/blob/main/commands/status/index.tsx)_
 
