@@ -15,24 +15,17 @@ export function slugifyTicketTitle(
   const titleLower = title.toLowerCase();
 
   // Replace non-alphanumeric characters with dashes
-  const titleSlug = titleLower
+  let titleSlug = titleLower
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, ""); // Trim dashes from start/end
 
+  // Cap the slug portion at 40 characters BEFORE assembling
+  titleSlug = titleSlug.substring(0, 40).replace(/-+$/, ""); // Trim trailing dashes after cap
+
   // Build the result based on format
-  let result = format
+  const result = format
     .replace("<ticket>", ticketLower)
     .replace("<slug>", titleSlug);
-
-  // Cap the overall slug portion at 40 characters
-  // Find where the slug starts in the result
-  const slashIndex = result.indexOf("-");
-  if (slashIndex !== -1) {
-    const prefix = result.substring(0, slashIndex + 1); // include the dash
-    const slug = result.substring(slashIndex + 1);
-    const cappedSlug = slug.substring(0, 40);
-    result = prefix + cappedSlug;
-  }
 
   return result;
 }

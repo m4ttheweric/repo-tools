@@ -58,25 +58,29 @@ export function pickName(pool: string[] | undefined, used: Set<string>): string 
 
 /**
  * Generate a neutral name in format "<adj>-<noun>" with retry on collision.
+ * Generates base pair once, then retries with numeric suffixes.
  */
 function generateNeutralName(used: Set<string>): string {
-  let suffix = "";
-  let attempt = 1;
+  // Generate the base pair
+  const adjIndex = Math.floor(Math.random() * ADJECTIVES.length);
+  const nounIndex = Math.floor(Math.random() * NOUNS.length);
 
+  const adj = ADJECTIVES[adjIndex]!;
+  const noun = NOUNS[nounIndex]!;
+  const baseName = `${adj}-${noun}`;
+
+  // Return base if unused
+  if (!used.has(baseName)) {
+    return baseName;
+  }
+
+  // Retry with numeric suffixes until unused
+  let counter = 2;
   while (true) {
-    const adjIndex = Math.floor(Math.random() * ADJECTIVES.length);
-    const nounIndex = Math.floor(Math.random() * NOUNS.length);
-
-    const adj = ADJECTIVES[adjIndex]!;
-    const noun = NOUNS[nounIndex]!;
-
-    const candidate = `${adj}-${noun}${suffix}`;
-
+    const candidate = `${baseName}-${counter}`;
     if (!used.has(candidate)) {
       return candidate;
     }
-
-    attempt++;
-    suffix = `-${attempt}`;
+    counter++;
   }
 }

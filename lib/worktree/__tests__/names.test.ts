@@ -40,26 +40,24 @@ describe("pickName", () => {
   });
 
   it("retries generator with numeric suffix on collision", () => {
-    const used = new Set<string>();
-    // Pre-populate used set with all possible combinations (force collision)
-    // We'll just add a few key ones and monkeypatch to force collisions
-
     let callCount = 0;
 
-    // First call returns 0.0 (first adj, first noun), second returns 0.0 again, third different
+    // Mock Math.random to return predictable sequence
+    // First two calls return 0.0 (first adj, first noun)
     const spy = spyOn(Math, "random").mockImplementation((): number => {
-      const sequence: number[] = [0.0, 0.0, 0.001];
+      const sequence: number[] = [0.0, 0.0];
       const value = sequence[callCount % sequence.length]!;
       callCount++;
       return value;
     });
 
-    // Add the first generated name to used set manually to force collision
+    // Based on the mock, first generation would be "amber-anvil" (indices 0, 0)
+    const used = new Set(["amber-anvil"]);
+
     const result = pickName(undefined, used);
 
-    // The result should either have a numeric suffix or be different
-    // For this test, we'll verify it's a valid format
-    expect(result).toMatch(/^[a-z]+-[a-z]+(-\d+)?$/);
+    // Should have tried "amber-anvil", found collision, and returned "amber-anvil-2"
+    expect(result).toBe("amber-anvil-2");
 
     spy.mockRestore();
   });
@@ -82,11 +80,12 @@ describe("slugifyTicketTitle", () => {
   });
 
   it("caps slug at 40 characters", () => {
-    const longTitle = "This is a very long title that exceeds forty characters when slugified";
-    const result = slugifyTicketTitle("ID-1", longTitle, "<ticket>-<slug>");
-
-    // The slug part should not exceed 40 chars total from the format
-    expect(result.length).toBeLessThanOrEqual(7 + 40); // "id-1-" is 5 chars + hyphen buffer
+    // Title that produces a slug longer than 40 chars
+    // "aaaaa bbbbb ccccc ddddd eeeee fffff ggggg" → slug "aaaaa-bbbbb-ccccc-ddddd-eeeee-fffff-ggggg" (41 chars)
+    // Capped at 40: "aaaaa-bbbbb-ccccc-ddddd-eeeee-fffff-gggg"
+    const result = slugifyTicketTitle("ID-1", "aaaaa bbbbb ccccc ddddd eeeee fffff ggggg", "<ticket>-<slug>");
+    // Exact expected: "id-1-" (5 chars) + slug capped at 40 chars
+    expect(result).toBe("id-1-aaaaa-bbbbb-ccccc-ddddd-eeeee-fffff-gggg");
   });
 
   it("trims whitespace from slug", () => {
