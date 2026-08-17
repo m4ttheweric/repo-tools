@@ -21,7 +21,9 @@ import {
   type TreeRecord,
 } from "../worktree/registry.ts";
 import {
+  branchExistsLocalAsync,
   currentBranchAsync,
+  gitOk,
   listWorktreesAsync,
   remoteDefaultRef,
   runGit,
@@ -294,6 +296,41 @@ async function autoReturnMain(
     return "done";
   }
 
+  // Resolve and vet the destination BEFORE touching anything. Every step below
+  // is destructive-ish (kill, stash) and every failure after them re-arms the
+  // edge, so a destination that can never work would stash the user's dirt and
+  // then spin on it forever. Both of these are configurations, not transients:
+  // they return "done" (edge spent) with one warn, not "retry".
+  const defaultRef = await remoteDefaultRef(rec.path);
+  const defaultBranch = defaultRef.replace(/^origin\//, "");
+
+  // (a) remoteDefaultRef falls back to "origin/master" unverified, so a repo
+  //     whose default is develop/trunk yields a ref that resolves nowhere and a
+  //     checkout that can never succeed.
+  const haveLocal = await branchExistsLocalAsync(rec.path, defaultBranch);
+  const haveRemote = await gitOk(rec.path, ["rev-parse", "--verify", defaultRef]);
+  if (!haveLocal && !haveRemote) {
+    log.warn(
+      { ...fields, defaultRef },
+      `auto-return skipped: neither ${defaultBranch} nor ${defaultRef} exists — set the repo's default branch`,
+    );
+    return "done";
+  }
+
+  // (b) git refuses to check out a branch another worktree holds. park()
+  //     refused up front for exactly this; without the check the checkout
+  //     fails after the stash and retries every pass.
+  const holder = (await listWorktreesAsync(deps.repoPath)).find(
+    (w) => w.branch === defaultBranch && canon(w.path) !== canon(rec.path),
+  );
+  if (holder) {
+    log.warn(
+      { ...fields, defaultBranch, holder: holder.path },
+      `auto-return skipped: ${defaultBranch} is checked out at ${holder.path}`,
+    );
+    return "done";
+  }
+
   if (appConfig.killProcesses) {
     // The ruled execSync exception (the process killer is sync by design);
     // a failure here never blocks the return.
@@ -320,9 +357,6 @@ async function autoReturnMain(
     log.info({ ...fields }, `stashed uncommitted changes on "${mergedBranch}"`);
   }
 
-  const defaultRef = await remoteDefaultRef(rec.path);
-  const defaultBranch = defaultRef.replace(/^origin\//, "");
-
   const checkout = await runGit(rec.path, ["checkout", defaultBranch]);
   if (checkout.exitCode !== 0) {
     log.warn({ ...fields, defaultBranch, output: checkout.stderr.trim() }, "auto-return: checkout failed");
@@ -334,6 +368,12 @@ async function autoReturnMain(
     log.warn({ ...fields, defaultRef, output: ff.stderr.trim() }, "auto-return: fast-forward failed");
     return "retry";
   }
+
+  // Ground truth now, not next reconcile: `rt worktree list` must not show
+  // main sitting on a branch it already left.
+  patchTree(repoName, rec.path, (r) => {
+    r.branch = defaultBranch;
+  });
 
   log.info({ ...fields, defaultRef }, `returned ${rec.name} to ${defaultBranch} after ${mergedBranch} merged`);
   return "fired";
