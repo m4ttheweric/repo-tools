@@ -1,6 +1,6 @@
 import { describe, it, expect, spyOn } from "bun:test";
-import { pickName } from "../names";
-import { slugifyTicketTitle, disambiguate } from "../branch-name";
+import { pickName } from "../names.ts";
+import { slugifyTicketTitle, disambiguate } from "../branch-name.ts";
 
 describe("pickName", () => {
   it("picks a random unused name from pool", () => {
@@ -8,7 +8,6 @@ describe("pickName", () => {
     const used = new Set(["bravo"]);
 
     // Monkeypatch Math.random to return 0.5 (middle of pool after filter)
-    const originalRandom = Math.random;
     const spy = spyOn(Math, "random").mockReturnValue(0.5);
 
     const result = pickName(pool, used);
@@ -45,13 +44,12 @@ describe("pickName", () => {
     // Pre-populate used set with all possible combinations (force collision)
     // We'll just add a few key ones and monkeypatch to force collisions
 
-    const originalRandom = Math.random;
     let callCount = 0;
 
     // First call returns 0.0 (first adj, first noun), second returns 0.0 again, third different
-    const spy = spyOn(Math, "random").mockImplementation(() => {
-      const sequence = [0.0, 0.0, 0.001];
-      const value = sequence[callCount % sequence.length];
+    const spy = spyOn(Math, "random").mockImplementation((): number => {
+      const sequence: number[] = [0.0, 0.0, 0.001];
+      const value = sequence[callCount % sequence.length]!;
       callCount++;
       return value;
     });
@@ -87,7 +85,6 @@ describe("slugifyTicketTitle", () => {
     const longTitle = "This is a very long title that exceeds forty characters when slugified";
     const result = slugifyTicketTitle("ID-1", longTitle, "<ticket>-<slug>");
 
-    const parts = result.split("-");
     // The slug part should not exceed 40 chars total from the format
     expect(result.length).toBeLessThanOrEqual(7 + 40); // "id-1-" is 5 chars + hyphen buffer
   });
