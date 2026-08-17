@@ -48,7 +48,7 @@ export function pickName(pool: string[] | undefined, used: Set<string>): string 
     const available = pool.filter((name) => !used.has(name));
     if (available.length > 0) {
       const randomIndex = Math.floor(Math.random() * available.length);
-      return available[randomIndex];
+      return available[randomIndex]!;
     }
   }
 
@@ -67,8 +67,8 @@ function generateNeutralName(used: Set<string>): string {
     const adjIndex = Math.floor(Math.random() * ADJECTIVES.length);
     const nounIndex = Math.floor(Math.random() * NOUNS.length);
 
-    const adj = ADJECTIVES[adjIndex];
-    const noun = NOUNS[nounIndex];
+    const adj = ADJECTIVES[adjIndex]!;
+    const noun = NOUNS[nounIndex]!;
 
     const candidate = `${adj}-${noun}${suffix}`;
 
