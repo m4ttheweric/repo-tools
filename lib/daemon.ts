@@ -98,6 +98,9 @@ const emit: typeof broadcast = (type, data) => {
 const worktreeReconciler = createWorktreeReconciler({
   cache,
   repoIndex: loadRepoIndex,
+  // `emit` (not bare `broadcast`), deliberately: reconciler events (e.g.
+  // "worktree:freshened") should also reach the cron trigger layer, same as
+  // every other broadcast frame.
   emit,
   log,
 });

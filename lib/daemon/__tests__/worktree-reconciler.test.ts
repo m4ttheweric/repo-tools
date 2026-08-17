@@ -203,10 +203,64 @@ describe("createWorktreeReconciler", () => {
     reconciler.kick();
     reconciler.kick(); // should be a no-op overlap guard, not a second pass
 
-    // kick is fire-and-forget; give the microtask queue a turn to let it land.
-    await new Promise((r) => setTimeout(r, 50));
+    // kick is fire-and-forget; poll `passInFlight()` for TRUE completion
+    // rather than a blind sleep or a registry-state proxy — a pass that's
+    // still running (even past its registry write) but hasn't returned yet
+    // would otherwise dangle past this test, and since every internal path
+    // (repoDataDir, rtDir, ...) resolves HOME dynamically at call time, that
+    // stale pass can read/write into a LATER test's HOME once that test's
+    // beforeEach repoints the (shared, global) env var.
+    await waitFor(() => !reconciler.passInFlight(), 5000);
 
     expect(loadRegistry(repoName).length).toBe(1); // just main, adopted once
+  });
+
+  test("runOnce with the app disabled still syncs the registry, but skips reactor/freshen/replenish", async () => {
+    // A dedicated repoName (not the shared "acme" the other tests in this
+    // describe use): the prior test's `kick()` is deliberately unawaited by
+    // design, and since every internal path resolves HOME dynamically at call
+    // time, a still-running background pass from that test reading a fresh
+    // `worktrees.json`/onDeck config off "acme" could otherwise land its own
+    // (stale, enabled=true-baked-in) replenish attempt into this test's
+    // registry. A distinct repoName makes that collision structurally
+    // impossible regardless of any other test's timing.
+    const disabledRepoName = "acme-disabled";
+    addBareOrigin(repo);
+    writeJson(join(repoDataDir(disabledRepoName), "config.json"), {
+      worktrees: { onDeck: 1, root: join(repo, ".worktrees") },
+    });
+    writeJson(join(rtDir(), "worktrees.json"), { enabled: false, killProcesses: false });
+
+    // Advance origin so a freshen (if it ran) would have something to do.
+    const originUrl = execSync(`git -C ${repo} remote get-url origin`, { encoding: "utf8" }).trim();
+    const clone = realpathSync(mkdtempSync(join(tmpdir(), "rtrecon-clone-")));
+    sh(`git clone -q ${originUrl} ${clone}`);
+    writeFileSync(join(clone, "feature.txt"), "hi\n");
+    sh(`git add -A && git ${GIT_ID} commit -m feat`, clone);
+    sh(`git push -q origin main`, clone);
+
+    const beforeSha = await headSha(repo);
+    const events: Array<{ type: string; data: any }> = [];
+    const reconciler = createWorktreeReconciler({
+      cache: { entries: {} },
+      repoIndex: () => ({ [disabledRepoName]: repo }),
+      emit: (type: string, data: unknown) => events.push({ type, data }),
+      log: fakeLog(),
+    });
+
+    await reconciler.runOnce();
+
+    // Read-only reconcile still ran: main got adopted into the registry.
+    const trees = loadRegistry(disabledRepoName);
+    expect(trees.some((t) => t.path === repo && t.kind === "main")).toBe(true);
+
+    // Freshen skipped: main never fetched/ff'd despite being idle and behind.
+    expect(await headSha(repo)).toBe(beforeSha);
+    // Replenish skipped: no on-deck tree created despite onDeck:1.
+    expect(trees.some((t) => t.kind === "ephemeral")).toBe(false);
+    // Reactor skipped: it never even opened/wrote its state file.
+    expect(existsSync(__test__.reactorStatePath())).toBe(false);
+    expect(events.length).toBe(0);
   });
 });
 
@@ -730,6 +784,57 @@ describe("freshen", () => {
     const rec = loadRegistry(repoName).find((t) => t.path === repo)!;
     expect(rec.readyAt).toBeUndefined();
   });
+
+  test("a candidate claimed mid-pass is revalidated under the lock and skipped", async () => {
+    writeJson(join(repoDataDir(repoName), "config.json"), {
+      worktrees: { onDeck: 2, root: join(repo, ".worktrees"), ready: [{ run: "sleep 1", when: "changed:*.txt" }] },
+    });
+
+    // Two on-deck trees. `freshenRepo` snapshots the whole registry once and
+    // processes them in order — A first (slow: its ready step triggers below),
+    // B only after A finishes. That gap is the window under test.
+    const a = await createTree({ repoName, repoPath: repo, emit: () => {}, log: { info: () => {}, warn: () => {} } });
+    const b = await createTree({ repoName, repoPath: repo, emit: () => {}, log: { info: () => {}, warn: () => {} } });
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+    const pathA = a.tree.path;
+    const pathB = b.tree.path;
+    const bBeforeSha = await headSha(pathB);
+
+    const clone = cloneOrigin(repo);
+    const pushedSha = pushFile(clone, "feature.txt", "hi\n");
+
+    const events: Array<{ type: string; data: any }> = [];
+    const freshenPromise = __test__.freshenRepo({
+      repoName,
+      repoPath: repo,
+      emit: (type: string, data: unknown) => events.push({ type, data }),
+      log: fakeLog(),
+    });
+
+    // Land well inside A's ~1s triggered ready step, long before the loop's
+    // (already-stale, in-memory) snapshot for B is ever acted on. This proves
+    // the fix, not the unmodified outer candidacy check: B's candidacy was
+    // already decided (true, "on-deck") against the pre-claim snapshot before
+    // this write lands on disk.
+    await new Promise((r) => setTimeout(r, 300));
+    saveRegistry(
+      repoName,
+      loadRegistry(repoName).map((t) => (t.path === pathB ? { ...t, state: "claimed" as const } : t)),
+    );
+
+    await freshenPromise;
+
+    // A freshened normally — the fix doesn't cost the happy path.
+    expect(await headSha(pathA)).toBe(pushedSha);
+    expect(events.some((e) => e.type === "worktree:freshened" && e.data.path === pathA)).toBe(true);
+
+    // B was claimed mid-pass: freshen must not have touched it.
+    expect(await headSha(pathB)).toBe(bBeforeSha);
+    expect(events.some((e) => e.data?.path === pathB)).toBe(false);
+    expect(loadRegistry(repoName).find((t) => t.path === pathB)!.state).toBe("claimed");
+  }, 10_000);
 });
 
 // ─── Replenish / shrink ───────────────────────────────────────────────────────
