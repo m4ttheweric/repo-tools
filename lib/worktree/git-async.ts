@@ -23,10 +23,6 @@ export interface WorktreeEntry {
   branch: string | null;
 }
 
-export interface DesktopStashEntry {
-  name: string; // e.g. "stash@{0}"
-}
-
 // rt drives git inside target repos but must never fire their hooks (repo
 // stealth). A broken husky post-checkout/post-merge hook otherwise makes the
 // checkout exit non-zero *after* it already succeeded, surfacing as a spurious
