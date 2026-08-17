@@ -63,6 +63,9 @@ function numericUserId(id: string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+const BOT_USERNAME = /^(?:project|group)_\d+_bot_/;
+const isBot = (n: Note) => BOT_USERNAME.test(n.author.username ?? "");
+
 const TERMINAL = new Set(["merged", "closed"]);
 
 /**
@@ -148,6 +151,7 @@ function collectNewNotes(
       if (n.system) continue;
       if (prev.has(n.id)) continue;
       if (isSelf(n)) continue;
+      if (isBot(n)) continue;
       out.push(buildNewNote(n));
     }
   }
