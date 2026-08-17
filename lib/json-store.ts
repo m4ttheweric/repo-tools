@@ -3,13 +3,15 @@
  * hand-rolled the same "read JSON or return a default" and "write JSON, creating
  * the parent dir" boilerplate.
  *
+ * Writes are write-temp-then-rename atomic — stores never tear (spec §4).
+ *
  * Scope note: adopted in the per-repo store modules touched by the ~/.rt/repos
  * move (repo-index, workspace-sync, parking-lot). Other hand-rolled callsites
  * are intentionally left alone — converting all of them is a separate, app-wide
  * sweep, not part of the path refactor.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync, renameSync } from "fs";
 import { dirname } from "path";
 
 /**
@@ -32,5 +34,7 @@ export function readJson<T>(path: string, fallback: T): T {
  */
 export function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(value, null, 2));
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(value, null, 2));
+  renameSync(tmp, path);
 }
