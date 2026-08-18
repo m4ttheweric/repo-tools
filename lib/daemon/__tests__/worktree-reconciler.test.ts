@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { execSync } from "child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 import type { Logger } from "pino";
@@ -326,6 +326,36 @@ describe("createWorktreeReconciler", () => {
     expect(loadRegistry(repoName).length).toBe(1); // just main, adopted once
   });
 
+  test("runOnce reaps .trash-* leftovers in the default and configured roots", async () => {
+    // What a daemon crash mid-reap leaves behind: the dispose renamed the tree
+    // but its detached `rm -rf` never finished (or never started).
+    const configuredRoot = realpathSync(mkdtempSync(join(tmpdir(), "rtrecon-root-")));
+    writeJson(join(repoDataDir(repoName), "config.json"), {
+      worktrees: { root: configuredRoot },
+    });
+
+    const defaultRootTrash = join(repo, ".worktrees", ".trash-hotel-1700000000000");
+    const configuredTrash = join(configuredRoot, ".trash-india-1700000000001");
+    const live = join(configuredRoot, "juliet");
+    for (const dir of [defaultRootTrash, configuredTrash, live]) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "file.txt"), "x\n");
+    }
+
+    const reconciler = createWorktreeReconciler({
+      cache: { entries: {} },
+      repoIndex: () => ({ [repoName]: repo }),
+      emit: () => {},
+      log: fakeLog(),
+    });
+
+    await reconciler.runOnce();
+
+    expect(existsSync(defaultRootTrash)).toBe(false);
+    expect(existsSync(configuredTrash)).toBe(false);
+    expect(existsSync(live)).toBe(true);
+  });
+
   test("runOnce with the app disabled still syncs the registry, but skips reactor/freshen/replenish", async () => {
     // A dedicated repoName (not the shared "acme" the other tests in this
     // describe use): the prior test's `kick()` is deliberately unawaited by
@@ -350,6 +380,9 @@ describe("createWorktreeReconciler", () => {
     sh(`git add -A && git ${GIT_ID} commit -m feat`, clone);
     sh(`git push -q origin main`, clone);
 
+    const seededTrash = join(repo, ".worktrees", ".trash-kilo-1700000000002");
+    mkdirSync(seededTrash, { recursive: true });
+
     const beforeSha = await headSha(repo);
     const events: Array<{ type: string; data: any }> = [];
     const reconciler = createWorktreeReconciler({
@@ -372,6 +405,9 @@ describe("createWorktreeReconciler", () => {
     // Reactor skipped: it never even opened/wrote its state file.
     expect(existsSync(__test__.reactorStatePath())).toBe(false);
     expect(events.length).toBe(0);
+    // Reap skipped: it deletes directories, so it is gated like every other
+    // mutating duty.
+    expect(existsSync(seededTrash)).toBe(true);
   });
 });
 
@@ -587,21 +623,26 @@ describe("merge reactor (detectTransitions)", () => {
 
   test("a failed worktree removal is retried, never advertised as disposable", async () => {
     const rec = ephemeralTree("hotel", "feat-hotel");
-    // A locked worktree makes `git worktree remove --force` refuse (it wants
-    // --force twice) without touching the directory: a mechanical, transient
-    // removal failure, which must NOT be reported to the user as "disposable".
-    sh(`git -C ${repo} worktree lock ${rec.path}`);
+    // Disposal renames the tree into a sibling trash dir, so the mechanical,
+    // transient failure to reproduce is a root nothing can be renamed within.
+    // The tree survives untouched, and that must NOT be reported to the user
+    // as "disposable".
+    const root = join(repo, ".worktrees");
+    chmodSync(root, 0o555);
 
-    await detect(mrCache("feat-hotel", "opened"));
-    await detect(mrCache("feat-hotel", "merged"));
+    try {
+      await detect(mrCache("feat-hotel", "opened"));
+      await detect(mrCache("feat-hotel", "merged"));
 
-    expect(existsSync(rec.path)).toBe(true);
-    expect(tracked(rec.path)!.state).toBe("claimed");
-    expect(tracked(rec.path)!.disposableReason).toBeUndefined();
-    expect(events.some((e) => e.type === "worktree:disposable")).toBe(false);
-    expect(reactorState().mrState[`${repoName}:feat-hotel`]).toBe("opened");
+      expect(existsSync(rec.path)).toBe(true);
+      expect(tracked(rec.path)!.state).toBe("claimed");
+      expect(tracked(rec.path)!.disposableReason).toBeUndefined();
+      expect(events.some((e) => e.type === "worktree:disposable")).toBe(false);
+      expect(reactorState().mrState[`${repoName}:feat-hotel`]).toBe("opened");
+    } finally {
+      chmodSync(root, 0o755);
+    }
 
-    sh(`git -C ${repo} worktree unlock ${rec.path}`);
     await detect(mrCache("feat-hotel", "merged"));
 
     expect(existsSync(rec.path)).toBe(false);
@@ -881,6 +922,9 @@ describe("freshen", () => {
     saveRegistry(repoName, [
       { name: basename(repo), path: repo, kind: "main", branch: "main", createdAt: new Date().toISOString() },
     ]);
+
+    const seededTrash = join(repo, ".worktrees", ".trash-kilo-1700000000002");
+    mkdirSync(seededTrash, { recursive: true });
 
     const beforeSha = await headSha(repo);
     const events: Array<{ type: string; data: any }> = [];

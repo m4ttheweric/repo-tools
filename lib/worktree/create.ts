@@ -9,6 +9,7 @@
  * (worktree + on-deck branch + registry row) and reports typed detail.
  */
 
+import { existsSync } from "fs";
 import { join } from "path";
 import {
   loadRegistry,
@@ -27,13 +28,10 @@ import { pickName } from "./names.ts";
 import { loadWorktreeRepoConfig, resolveReadySteps, type WorktreeRepoConfig } from "./config.ts";
 import { runReadySteps } from "./ready.ts";
 import { withTreeLock } from "./locks.ts";
+import { reapTrashDir, trashTree } from "./trash.ts";
 import { reconcileForRepo } from "../daemon/doppler-sync.ts";
 
 const CREATE_TIMEOUT_MS = 5 * 60_000;
-
-/** `git worktree remove` deletes node_modules by hand; a pnpm-scale tree on
- *  APFS routinely outruns runGit's 60s default. */
-const REMOVE_TIMEOUT_MS = 5 * 60_000;
 
 /** Longest slice of a failed step's output carried into the log line. */
 const MAX_LOGGED_OUTPUT = 2000;
@@ -160,15 +158,29 @@ async function runCreate(
 }
 
 /**
- * Force-remove the worktree, delete its on-deck/<name> branch, and prune the
- * registry entry. Tolerant of partial existence: the worktree may not exist
- * yet (git worktree add never ran or failed before creating it), and the
- * branch may not exist either.
+ * Get rid of a half-built tree: rename it into trash (see trash.ts) with a
+ * detached reap behind it, prune the registration, delete its on-deck/<name>
+ * branch, and drop the registry entry. Tolerant of partial existence — the
+ * worktree may not exist yet (git worktree add never ran or failed before
+ * creating it), and the branch may not exist either — and, since it renames
+ * rather than asking git to unlink, it returns instantly however far the
+ * install got before the create failed.
  */
 export async function scrapTree(deps: CreateDeps, rec: TreeRecord): Promise<void> {
-  await runGit(deps.repoPath, ["worktree", "remove", "--force", rec.path], {
-    timeoutMs: REMOVE_TIMEOUT_MS,
-  });
+  const trashed = await trashTree(rec.path, rec.name);
+  if (trashed.ok) {
+    void reapTrashDir(trashed.trashPath, deps.log);
+  } else if (existsSync(rec.path)) {
+    // Absent is the normal case here (`git worktree add` may never have run);
+    // present-and-unrenameable is the one worth a line.
+    deps.log.warn(
+      { repo: deps.repoName, tree: rec.name, path: rec.path, err: trashed.err },
+      "worktree scrap: trash rename failed",
+    );
+  }
+  // Collects the registration whose directory just went missing. Unconditional:
+  // scrap is the tolerant path, and every step below runs on best effort.
+  await runGit(deps.repoPath, ["worktree", "prune"]);
   if (rec.branch) {
     await runGit(deps.repoPath, ["branch", "-D", rec.branch]);
   }
