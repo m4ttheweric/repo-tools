@@ -477,6 +477,11 @@ describe("worktree:adopt", () => {
     sh(`git worktree add -b parking-lot/1 ${parked} origin/main`, repo);
     sh(`git worktree add -b cv-1-feature ${feature} origin/main`, repo);
 
+    const repoIndexPath = join(repoDataDir(repoName), "parking-lot.json");
+    const appStatePath = join(rtDir(), "parking-lot-state.json");
+    writeJson(repoIndexPath, { [parked]: { branch: "parking-lot/1" } });
+    writeJson(appStatePath, { transitions: [] });
+
     const { h } = makeHandlers({ [repoName]: repo });
     const res: any = await h["worktree:adopt"]!({ repoName });
 
@@ -497,5 +502,8 @@ describe("worktree:adopt", () => {
     expect(feat.state).toBe("claimed");
     expect(feat.disposal).toBe("merge");
     expect(feat.branch).toBe("cv-1-feature");
+
+    expect(existsSync(repoIndexPath)).toBe(false);
+    expect(existsSync(appStatePath)).toBe(false);
   });
 });
