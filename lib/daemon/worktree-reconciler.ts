@@ -163,7 +163,9 @@ async function reconcilePass(deps: ReconcileDeps, attempt: number): Promise<Pass
 
   if (scrapped) {
     // scrapTree persists its own removal (fresh-load → filter → save), so the
-    // scrap is already on disk and has already bumped the epoch. Re-read from
+    // scrap is already on disk and has already bumped the epoch. (A scrap
+    // whose rename failed keeps its record for retry and writes nothing; the
+    // re-read below is correct either way.) Re-read from
     // that write instead of carrying the pre-scrap snapshot forward: anything
     // another writer landed during the scrap's git awaits is in the file now,
     // and re-capturing the epoch here is what keeps our own intentional write
