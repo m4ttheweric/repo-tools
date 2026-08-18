@@ -37,9 +37,14 @@ export type TrashResult = { ok: true; trashPath: string } | { ok: false; err: un
  * The sibling directory `path` gets renamed to. A sibling (not a shared trash
  * root) so the rename never crosses a filesystem, which is what makes it
  * atomic and instant; the epoch stamp keeps repeat disposals of the same tree
- * name from colliding.
+ * name from colliding. A name with a path separator could steer the rename
+ * outside the root (and past the basename guard in reapTrashDir), so it is
+ * rejected outright.
  */
 export function trashPathFor(path: string, name: string, now: number = Date.now()): string {
+  if (!name || name.includes("/") || name.includes("\\")) {
+    throw new Error(`worktree trash name must be a single path component: ${JSON.stringify(name)}`);
+  }
   return join(dirname(path), `${TRASH_PREFIX}${name}-${now}`);
 }
 
@@ -50,8 +55,8 @@ export function trashPathFor(path: string, name: string, now: number = Date.now(
  * at all.
  */
 export async function trashTree(path: string, name: string): Promise<TrashResult> {
-  const trashPath = trashPathFor(path, name);
   try {
+    const trashPath = trashPathFor(path, name);
     await rename(path, trashPath);
     return { ok: true, trashPath };
   } catch (err) {
@@ -106,8 +111,12 @@ export async function reapTrashInRoots(roots: string[], log: TrashLog): Promise<
     let entries: string[];
     try {
       entries = await readdir(root);
-    } catch {
-      continue; // no such root yet
+    } catch (err) {
+      // A root that never existed is normal; anything else hides stale trash.
+      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        log.warn({ err, root }, "worktree trash sweep could not read root");
+      }
+      continue;
     }
     for (const entry of entries) {
       if (!entry.startsWith(TRASH_PREFIX)) continue;
