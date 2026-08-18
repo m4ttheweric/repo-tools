@@ -17,6 +17,7 @@ import {
   findByBranch,
   findByPath,
   loadRegistry,
+  registryEpoch,
   saveRegistry,
   type TreeKind,
   type TreeRecord,
@@ -61,6 +62,26 @@ function canon(path: string): string {
   }
 }
 
+export interface ReconcileDeps {
+  repoName: string;
+  repoPath: string;
+  emit: (type: string, data: unknown) => void;
+  log: Logger;
+  /**
+   * Test-only seam, invoked right after an attempt captures its registry
+   * snapshot and epoch — the exact window a competing writer (a provision
+   * claim, a dispose prune) lands in on the shared event loop. Production
+   * callers never pass it.
+   */
+  onAfterLoad?: (attempt: number) => void;
+}
+
+/** One attempt's outcome: its trees, or "a concurrent write invalidated me". */
+type PassResult = { trees: TreeRecord[] } | { conflict: true };
+
+/** Attempts before a contended pass gives up and leaves the work to the next tick. */
+const RECONCILE_MAX_ATTEMPTS = 3;
+
 /**
  * Reconcile one repo's worktree registry against git ground truth (spec §4).
  *
@@ -77,18 +98,43 @@ function canon(path: string): string {
  *     truth; kind/state/owner are left untouched.
  *  6. (e) duplicate branches across registered trees are left as-is —
  *     surfaced elsewhere (findByBranch / T13's list handler).
+ *
+ * Concurrency: this is the one registry writer that saves a WHOLE snapshot
+ * taken before a long run of git awaits. Every other writer is a synchronous
+ * fresh-load → mutate → save of one row, so per-tree locks are enough for them;
+ * they are not enough here, because reconcile holds no lock on the trees it
+ * rewrites (and taking a repo-wide one would reintroduce the coarse locking
+ * this design avoids). Instead each attempt captures `registryEpoch` with its
+ * snapshot and re-checks it in the same synchronous block as its save: if
+ * anyone else wrote in between, the snapshot is stale and the whole pass is
+ * retried against fresh state rather than overwriting them. Retries are bounded
+ * — a pass that keeps losing simply skips its save and lets the next tick redo
+ * it, since every correction here is derived from ground truth and idempotent.
  */
-export async function reconcileRepoRegistry(deps: {
-  repoName: string;
-  repoPath: string;
-  emit: (type: string, data: unknown) => void;
-  log: Logger;
-}): Promise<TreeRecord[]> {
+export async function reconcileRepoRegistry(deps: ReconcileDeps): Promise<TreeRecord[]> {
+  for (let attempt = 1; attempt <= RECONCILE_MAX_ATTEMPTS; attempt++) {
+    const result = await reconcilePass(deps, attempt);
+    if (!("conflict" in result)) return result.trees;
+    deps.log.debug?.(
+      { repo: deps.repoName, attempt },
+      "reconcile: registry changed mid-pass; retrying against a fresh snapshot",
+    );
+  }
+  deps.log.warn(
+    { repo: deps.repoName, attempts: RECONCILE_MAX_ATTEMPTS },
+    "reconcile: registry kept changing mid-pass; skipping this pass's save",
+  );
+  return loadRegistry(deps.repoName);
+}
+
+async function reconcilePass(deps: ReconcileDeps, attempt: number): Promise<PassResult> {
   const { repoName, repoPath, emit, log } = deps;
 
   await runGit(repoPath, ["worktree", "prune"]);
 
   let trees = loadRegistry(repoName);
+  let epoch = registryEpoch(repoName);
+  deps.onAfterLoad?.(attempt);
   let changed = false;
   const createDeps: CreateDeps = { repoName, repoPath, emit, log };
 
@@ -102,22 +148,35 @@ export async function reconcileRepoRegistry(deps: {
   // truth) it is gated on the app-level enabled flag same as freshen/replenish.
   const appConfig = loadWorktreeAppConfig();
   const afterScrap: TreeRecord[] = [];
+  let scrapped = false;
   for (const rec of trees) {
     if (appConfig.enabled && rec.state === "creating" && !isTreeLocked(rec.path)) {
       log.info({ repo: repoName, tree: rec.name, path: rec.path }, "reconcile: scrapping orphaned creating tree");
       await scrapTree(createDeps, rec);
-      changed = true;
+      scrapped = true;
       continue;
     }
     afterScrap.push(rec);
   }
   trees = afterScrap;
 
+  if (scrapped) {
+    // scrapTree persists its own removal (fresh-load → filter → save), so the
+    // scrap is already on disk and has already bumped the epoch. Re-read from
+    // that write instead of carrying the pre-scrap snapshot forward: anything
+    // another writer landed during the scrap's git awaits is in the file now,
+    // and re-capturing the epoch here is what keeps our own intentional write
+    // from reading as somebody else's.
+    trees = loadRegistry(repoName);
+    epoch = registryEpoch(repoName);
+  }
+
   const gitEntries = await listWorktreesAsync(repoPath);
   if (gitEntries === null) {
-    if (changed) saveRegistry(repoName, trees);
+    // Nothing to save: the scrap above already persisted itself, and writing
+    // this snapshot back would be exactly the stale-snapshot clobber.
     log.warn({ repo: repoName, repoPath }, "reconcile: git worktree list failed; skipping this repo's pass");
-    return trees;
+    return { trees };
   }
   const gitByCanon = new Map<string, WorktreeEntry>();
   for (const entry of gitEntries) {
@@ -179,10 +238,13 @@ export async function reconcileRepoRegistry(deps: {
   // (e) duplicate branches across registered trees: leave records as-is.
 
   if (changed) {
+    // Check and save in one synchronous block — an await between them would
+    // reopen the very window this closes.
+    if (registryEpoch(repoName) !== epoch) return { conflict: true };
     saveRegistry(repoName, trees);
   }
 
-  return trees;
+  return { trees };
 }
 
 // ─── Merge reactor (spec §6.2) ───────────────────────────────────────────────

@@ -173,6 +173,99 @@ describe("reconcileRepoRegistry", () => {
     expect(trees).toEqual(before);
     expect(loadRegistry(repoName)).toEqual(before);
   });
+
+  /**
+   * The concurrency contract: reconcile loads a whole-registry snapshot and
+   * then awaits git for a long time, so every other writer (provision's claim,
+   * dispose's prune, freshen's patch) runs on the same event loop inside that
+   * window. `onAfterLoad` is the deterministic stand-in for that writer — it
+   * fires right after reconcile captures its snapshot and epoch.
+   */
+  function claimConcurrently(path: string, owner: string): void {
+    const cur = loadRegistry(repoName);
+    const rec = cur.find((t) => t.path === path);
+    if (!rec) throw new Error(`no registry row at ${path}`);
+    rec.state = "claimed";
+    rec.owner = owner;
+    rec.claimedAt = new Date().toISOString();
+    saveRegistry(repoName, cur);
+  }
+
+  function onDeckRow(path: string): TreeRecord {
+    return {
+      name: basename(path),
+      path,
+      kind: "ephemeral",
+      state: "on-deck",
+      branch: `on-deck/${basename(path)}`,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  test("a claim landing mid-pass survives; reconcile retries instead of saving its stale snapshot", async () => {
+    const treePath = join(repo, ".worktrees", "claimable");
+    execSync(`git worktree add -b on-deck/claimable ${treePath}`, { cwd: repo, shell: "/bin/zsh" });
+    // Only the ephemeral tree is registered, so reconcile's own correction this
+    // pass is adopting the main clone (changed -> a whole-snapshot save).
+    saveRegistry(repoName, [onDeckRow(treePath)]);
+
+    let fired = false;
+    const trees = await reconcileRepoRegistry({
+      ...makeDeps(repoName, repo, events),
+      onAfterLoad: () => {
+        if (fired) return;
+        fired = true;
+        claimConcurrently(treePath, "matt");
+      },
+    });
+
+    const final = loadRegistry(repoName);
+    const claim = findByPath(final, treePath);
+    expect(claim).toBeDefined();
+    expect(claim!.state).toBe("claimed"); // NOT reverted to on-deck
+    expect(claim!.owner).toBe("matt");
+
+    // ...and reconcile's own correction still landed, on the retry pass.
+    expect(findByPath(final, repo)?.kind).toBe("main");
+    expect(findByPath(trees, repo)?.kind).toBe("main");
+    expect(findByPath(trees, treePath)?.state).toBe("claimed");
+  });
+
+  test("a writer landing on every attempt exhausts the retries: reconcile warns and skips its save", async () => {
+    const treePath = join(repo, ".worktrees", "contended");
+    execSync(`git worktree add -b on-deck/contended ${treePath}`, { cwd: repo, shell: "/bin/zsh" });
+    saveRegistry(repoName, [onDeckRow(treePath)]);
+
+    const warns: unknown[][] = [];
+    let attempts = 0;
+    const log = {
+      info: () => {},
+      warn: (...args: unknown[]) => warns.push(args),
+      error: () => {},
+      debug: () => {},
+    } as unknown as Logger;
+
+    const trees = await reconcileRepoRegistry({
+      repoName,
+      repoPath: repo,
+      emit: (type: string, data: unknown) => events.push({ type, data }),
+      log,
+      onAfterLoad: () => {
+        attempts++;
+        claimConcurrently(treePath, `w${attempts}`);
+      },
+    });
+
+    expect(attempts).toBe(3); // bounded: three attempts, then give up
+    expect(warns.length).toBe(1);
+
+    const final = loadRegistry(repoName);
+    // The last competing write stands; reconcile's adoption of main is dropped
+    // rather than written over it. The next pass picks it up again.
+    expect(findByPath(final, treePath)!.owner).toBe("w3");
+    expect(findByPath(final, repo)).toBeUndefined();
+    expect(findByPath(trees, treePath)!.owner).toBe("w3");
+  });
 });
 
 describe("createWorktreeReconciler", () => {
