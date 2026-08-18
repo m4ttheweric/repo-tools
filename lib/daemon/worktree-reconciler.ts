@@ -45,6 +45,7 @@ import {
   type WorktreeAppConfig,
 } from "../worktree/config.ts";
 import { killWorktreeProcesses } from "./worktree-process-kill.ts";
+import { reapTrashInRoots } from "../worktree/trash.ts";
 
 export interface ReconcilerDeps {
   cache: { entries: Record<string, any> };
@@ -162,7 +163,9 @@ async function reconcilePass(deps: ReconcileDeps, attempt: number): Promise<Pass
 
   if (scrapped) {
     // scrapTree persists its own removal (fresh-load → filter → save), so the
-    // scrap is already on disk and has already bumped the epoch. Re-read from
+    // scrap is already on disk and has already bumped the epoch. (A scrap
+    // whose rename failed keeps its record for retry and writes nothing; the
+    // re-read below is correct either way.) Re-read from
     // that write instead of carrying the pre-scrap snapshot forward: anything
     // another writer landed during the scrap's git awaits is in the file now,
     // and re-capturing the epoch here is what keeps our own intentional write
@@ -958,6 +961,26 @@ async function replenishAndShrink(
   }
 }
 
+/**
+ * Reap duty: delete any `.trash-*` directory sitting in a worktree root.
+ *
+ * Disposal renames a tree to trash and fires a detached `rm -rf` at it (see
+ * worktree/trash.ts). That process can die — a daemon crash, a reboot mid
+ * delete — and what it leaves behind is a directory nobody will ever look at
+ * again. This is the sweep that collects them, so a crash costs disk and
+ * nothing else.
+ *
+ * Both roots are swept: the repo's default `.worktrees` and whatever root the
+ * repo config declares, because a root that changed after a disposal still has
+ * the old root's leftovers in it.
+ */
+async function reapRepoTrash(deps: { repoName: string; repoPath: string; log: Logger }): Promise<void> {
+  const { repoName, repoPath, log } = deps;
+  const cfg = loadWorktreeRepoConfig(repoName, repoPath);
+  const reaped = await reapTrashInRoots([join(repoPath, ".worktrees"), cfg.root], log);
+  if (reaped > 0) log.info({ repo: repoName, count: reaped }, "worktree trash reaped");
+}
+
 /** Whether a repo has any worktree state worth reconciling: registry entries or a declared "worktrees" config. */
 function repoHasWorktreeActivity(repoName: string): boolean {
   if (loadRegistry(repoName).length > 0) return true;
@@ -1030,6 +1053,11 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
       } catch (err) {
         deps.log.warn({ err, repo: repoName }, "worktree reconciler: replenish/shrink pass failed");
       }
+      try {
+        await reapRepoTrash({ repoName, repoPath, log: deps.log });
+      } catch (err) {
+        deps.log.warn({ err, repo: repoName }, "worktree reconciler: trash reap pass failed");
+      }
     }
   }
 
@@ -1058,6 +1086,7 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
 
 export const __test__ = {
   detectTransitions,
+  reapRepoTrash,
   reactorStatePath,
   freshenRepo,
   replenishAndShrink,

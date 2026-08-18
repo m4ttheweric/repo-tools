@@ -71,7 +71,9 @@ export function loadWorktreeRepoConfig(repoName: string, repoPath: string): Work
     branchFormat: declared.branchFormat ?? "<ticket>-<slug>",
     ready: declared.ready ?? [],
   };
-  if (declared.namePool) cfg.namePool = declared.namePool;
+  // A dot-leading name would build a tree the reconciler's reap duty then
+  // deletes as a `.trash-*` leftover, so the pool never gets to declare one.
+  if (declared.namePool) cfg.namePool = declared.namePool.filter((n) => !n.startsWith("."));
   return cfg;
 }
 
@@ -79,8 +81,18 @@ export function loadWorktreeRepoConfig(repoName: string, repoPath: string): Work
 
 type Manager = "pnpm" | "bun" | "yarn" | "npm";
 
+/**
+ * pnpm's default is deliberately a PLAIN install, not `--side-effects-cache`:
+ * that cache replays a dependency's recorded postinstall effects instead of
+ * re-running it, and it only ever captured files written inside node_modules.
+ * A dep whose postinstall writes outside the package dir (prisma generating
+ * into apps/backend/generated/, say) is therefore silently skipped on a fresh
+ * tree — the install "succeeds" and the tree is missing generated code. The
+ * flag stays available as a declared ready step for repos verified free of
+ * out-of-tree generators; it is not safe as a blind default.
+ */
 const MANAGER_STEP: Record<Manager, ReadyStep> = {
-  pnpm: { run: "pnpm install --side-effects-cache", when: "changed:pnpm-lock.yaml" },
+  pnpm: { run: "pnpm install", when: "changed:pnpm-lock.yaml" },
   bun: { run: "bun install", when: "changed:bun.lock*" },
   yarn: { run: "yarn install", when: "changed:yarn.lock" },
   npm: { run: "npm install", when: "changed:package-lock.json" },
@@ -120,19 +132,67 @@ export function resolveImplicitInstall(repoPath: string): ReadyStep | null {
   return manager ? MANAGER_STEP[manager] : null;
 }
 
+/** One leading `VAR=value` assignment (value optionally quoted). */
+const ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+/;
+const ENV_WORD = /^env\s+/;
+const OPTION_TOKEN = /^(-\S*)\s+/;
+/** env(1) short options whose argument is the NEXT token (`-u NAME` etc.). */
+const ENV_ARG_OPTIONS = new Set(["-u", "-C", "-P", "-S"]);
+
+/**
+ * Drop a shell env prefix from a declared run, leaving the command word first:
+ * `SKIP_GEN_TYPES=1 pnpm install` → `pnpm install`, `env -i FOO=bar pnpm
+ * install` → `pnpm install`. Purely for recognising WHICH command a step runs
+ * (the install-dedup test below); the step itself is always executed verbatim,
+ * env prefix included. Option words are only consumed after an `env`, so a
+ * command's own flags are never eaten. Every token match requires trailing
+ * whitespace, so a run that is nothing but a prefix (`A=1`, `env`) is left
+ * alone rather than emptied.
+ */
+export function stripEnvPrefix(run: string): string {
+  let rest = run.trimStart();
+  let inEnv = false;
+  for (;;) {
+    if (ASSIGNMENT_TOKEN.test(rest)) {
+      rest = rest.replace(ASSIGNMENT_TOKEN, "");
+      continue;
+    }
+    if (ENV_WORD.test(rest)) {
+      rest = rest.replace(ENV_WORD, "");
+      inEnv = true;
+      continue;
+    }
+    const option = inEnv ? rest.match(OPTION_TOKEN) : null;
+    if (option) {
+      rest = rest.slice(option[0].length);
+      if (ENV_ARG_OPTIONS.has(option[1] ?? "")) rest = rest.replace(/^\S+\s+/, "");
+      continue;
+    }
+    return rest;
+  }
+}
+
 /**
  * Implicit install first UNLESS cfg.ready already declares its own install
  * step for the detected manager (run starts with "<manager> install", e.g.
  * "pnpm install --side-effects-cache") — only an install step replaces the
  * implicit one; any other declared command for that manager (e.g. "pnpm
  * lint") does not suppress it. Otherwise cfg.ready in order.
+ *
+ * The prefix test runs against the env-stripped run: declaring
+ * `SKIP_GEN_TYPES=1 pnpm install` is still declaring the install, and letting
+ * an env prefix hide it from the dedup made the tree install twice.
  */
 export function resolveReadySteps(cfg: WorktreeRepoConfig, repoPath: string): ReadyStep[] {
   const manager = detectManager(repoPath);
   if (!manager) return cfg.ready;
 
-  const installPrefix = `${manager} install`;
-  const alreadyDeclared = cfg.ready.some((step) => step.run.startsWith(installPrefix));
+  const installWords = `${manager} install`;
+  const alreadyDeclared = cfg.ready.some((step) => {
+    const command = stripEnvPrefix(step.run);
+    // Whole-token match: `pnpm install --flag` counts, `pnpm installer` does not.
+    return command === installWords || command.startsWith(`${installWords} `);
+  });
   if (alreadyDeclared) return cfg.ready;
 
   return [MANAGER_STEP[manager], ...cfg.ready];

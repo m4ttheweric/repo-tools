@@ -1,8 +1,8 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync, realpathSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync, realpathSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { basename, dirname, join } from "path";
 import { repoDataDir } from "../../rt-paths.ts";
 import { saveSyncConfig } from "../../sync-config.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../registry.ts";
@@ -48,6 +48,15 @@ function addTree(repo: string, name: string, branch: string, base = "origin/main
     stdio: "pipe",
   });
   return path;
+}
+
+/** Poll until `cond` holds — for the detached reaper, which nobody awaits. */
+async function waitFor(cond: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error("timed out waiting for condition");
+    await new Promise((r) => setTimeout(r, 20));
+  }
 }
 
 function commitIn(worktree: string, file: string, content: string): void {
@@ -566,17 +575,57 @@ describe("disposeTree", () => {
     expect(loadRegistry(repoName).length).toBe(1);
   });
 
-  test("a worktree git refuses to remove refuses \"remove-failed\" and keeps the registry row", async () => {
+  test("a tree that cannot be renamed refuses \"remove-failed\" and keeps the registry row", async () => {
     const path = addTree(repo, "tree-a", "feature-a");
     const rec = register(repoName, ephemeral("tree-a", path, "feature-a"));
-    // A locked worktree needs --force twice; one --force fails and leaves the tree.
-    execSync(`git -C ${repo} worktree lock ${path}`, { shell: "/bin/zsh", stdio: "pipe" });
+    // A rename needs write permission on the PARENT: a read-only .worktrees is
+    // the mechanical, transient failure that stands in for a busy/held tree.
+    const root = join(repo, ".worktrees");
+    chmodSync(root, 0o555);
 
-    const result = await disposeTree(makeDeps(), rec, { force: true });
-    expect(result).toEqual({ disposed: false, refusal: "remove-failed" });
-    expect(existsSync(path)).toBe(true);
-    expect(loadRegistry(repoName).length).toBe(1);
-    expect(await branchExistsLocalAsync(repo, "feature-a")).toBe(true);
+    try {
+      const result = await disposeTree(makeDeps(), rec, { force: true });
+      expect(result).toEqual({ disposed: false, refusal: "remove-failed" });
+      // Nothing downstream of the rename ran: the tree, its branch, and its
+      // registry row are all still there for the retry.
+      expect(existsSync(path)).toBe(true);
+      expect(loadRegistry(repoName).length).toBe(1);
+      expect(await branchExistsLocalAsync(repo, "feature-a")).toBe(true);
+      expect((await listWorktreesAsync(repo))!.some((w) => w.path === path)).toBe(true);
+      expect(events.length).toBe(0);
+    } finally {
+      chmodSync(root, 0o755);
+    }
+  });
+
+  test("disposal renames the tree to a .trash-* sibling and reaps it in the background", async () => {
+    const path = addTree(repo, "tree-a", "feature-a");
+    const rec = register(repoName, ephemeral("tree-a", path, "feature-a"));
+    const root = join(repo, ".worktrees");
+
+    const infos: Array<Record<string, unknown>> = [];
+    const deps = makeDeps({
+      log: { info: (fields: unknown) => infos.push(fields as Record<string, unknown>), warn: () => {} },
+    });
+    const result = await disposeTree(deps, rec, { force: true });
+    expect(result).toEqual({ disposed: true });
+
+    // The tree is gone from its own path the moment dispose returns, moved to
+    // a trash sibling the log names (the reaper may already have eaten it).
+    expect(existsSync(path)).toBe(false);
+    const trash = infos.find((f) => typeof f.trash === "string")!.trash as string;
+    expect(dirname(trash)).toBe(root);
+    expect(basename(trash).startsWith(".trash-tree-a-")).toBe(true);
+    expect(readdirSync(root).every((e) => e.startsWith(".trash-tree-a-"))).toBe(true);
+
+    // The registration, branch, and registry row all went with it.
+    expect((await listWorktreesAsync(repo))!.some((w) => w.path === path)).toBe(false);
+    expect(await branchExistsLocalAsync(repo, "feature-a")).toBe(false);
+    expect(loadRegistry(repoName).length).toBe(0);
+    expect(events.some((e) => e.type === "worktree:disposed")).toBe(true);
+
+    // …and the detached reaper finishes the delete without anyone awaiting it.
+    await waitFor(() => readdirSync(root).length === 0);
   });
 
   test("guard order: dirty is reported before unpushed", async () => {
