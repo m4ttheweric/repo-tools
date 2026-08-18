@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { execSync } from "child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync } from "fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { writeJson } from "../../json-store.ts";
@@ -143,6 +143,34 @@ describe("scrapTree", () => {
     await scrapTree(makeDeps(repoName, repo, events), rec);
 
     expect(loadRegistry(repoName).length).toBe(0);
+  });
+
+  test("a rename that fails with the tree still on disk keeps branch and record for retry", async () => {
+    const path = join(repo, ".worktrees", "stuck");
+    execSync(`git -C ${repo} worktree add -b on-deck/stuck ${path}`, { shell: "/bin/zsh", stdio: "pipe" });
+    const rec: TreeRecord = {
+      name: "stuck",
+      path,
+      kind: "ephemeral",
+      state: "creating",
+      branch: "on-deck/stuck",
+      createdAt: new Date().toISOString(),
+    };
+    saveRegistry(repoName, [rec]);
+
+    // A read-only parent makes the trash rename fail while the tree remains.
+    const worktreesRoot = join(repo, ".worktrees");
+    chmodSync(worktreesRoot, 0o555);
+    try {
+      await scrapTree(makeDeps(repoName, repo, events), rec);
+    } finally {
+      chmodSync(worktreesRoot, 0o755);
+    }
+
+    expect(existsSync(path)).toBe(true);
+    expect(loadRegistry(repoName)).toEqual([rec]);
+    const branches = execSync(`git -C ${repo} branch --list on-deck/stuck`, { shell: "/bin/zsh" }).toString();
+    expect(branches).toContain("on-deck/stuck");
   });
 
   test("scraps a tree git itself would refuse to remove", async () => {

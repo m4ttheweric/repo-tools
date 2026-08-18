@@ -172,11 +172,15 @@ export async function scrapTree(deps: CreateDeps, rec: TreeRecord): Promise<void
     void reapTrashDir(trashed.trashPath, deps.log);
   } else if (existsSync(rec.path)) {
     // Absent is the normal case here (`git worktree add` may never have run);
-    // present-and-unrenameable is the one worth a line.
+    // present-and-unrenameable means the tree is still on disk, so keep its
+    // branch and registry record — dropping them would strand a live
+    // directory as unmanaged. The reconciler scraps orphaned `creating`
+    // entries every pass, so this retries until the rename goes through.
     deps.log.warn(
       { repo: deps.repoName, tree: rec.name, path: rec.path, err: trashed.err },
       "worktree scrap: trash rename failed",
     );
+    return;
   }
   // Collects the registration whose directory just went missing. Unconditional:
   // scrap is the tolerant path, and every step below runs on best effort.
