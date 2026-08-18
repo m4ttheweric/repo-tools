@@ -19,7 +19,7 @@ import { join } from "path";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import { RT_DIR } from "../lib/daemon-config.ts";
 import { getRepoIdentity } from "../lib/repo.ts";
-import { daemonQuery, type DaemonResponse } from "../lib/daemon-client.ts";
+import { daemonQuery, lastQueryTimedOut, type DaemonResponse } from "../lib/daemon-client.ts";
 import { listWorktrees } from "../lib/git-worktrees.ts";
 import {
   parseEachArgs,
@@ -31,16 +31,31 @@ import {
   type WorktreeBinding,
 } from "../lib/worktree-each.ts";
 
-// Provision does a targeted `git fetch` (up to 5 min server-side per
-// lib/daemon/handlers/worktree.ts) — give the round trip room beyond that.
+// Provision and create both do a targeted `git fetch` / cold clone (up to
+// 5 min server-side per lib/daemon/handlers/worktree.ts) — give the round
+// trip room beyond that. Dispose and freshen get their own generous budgets
+// (freshen's fetch alone is budgeted 5min server-side, and a repo-wide sweep
+// with no `tree` given can touch many trees in one call). The default 2s
+// daemonQuery timeout used elsewhere is a client-not-a-daemon-op number —
+// using it here would make the CLI report "daemon unavailable" while the
+// daemon is still working.
 const PROVISION_TIMEOUT_MS = 6 * 60_000;
+const DISPOSE_TIMEOUT_MS = 2 * 60_000;
+const FRESHEN_TIMEOUT_MS = 10 * 60_000;
 const ADOPT_TIMEOUT_MS = 2 * 60_000;
 
 // ─── Arg parsing (pure — unit tested in lib/__tests__/worktree-cli-args.test.ts) ──
 
+/** A value token that itself looks like a flag (starts with "-") is never a value — the flag was passed bare. */
+function isFlagLike(token: string | undefined): boolean {
+  return token !== undefined && token.startsWith("-");
+}
+
 function takeFlag(args: string[], flag: string): { value: string | undefined; rest: string[] } {
   const idx = args.indexOf(flag);
-  if (idx === -1 || args[idx + 1] === undefined) return { value: undefined, rest: args };
+  if (idx === -1 || args[idx + 1] === undefined || isFlagLike(args[idx + 1])) {
+    return { value: undefined, rest: args };
+  }
   return { value: args[idx + 1], rest: [...args.slice(0, idx), ...args.slice(idx + 2)] };
 }
 
@@ -153,10 +168,18 @@ export function parseAdoptArgs(args: string[]): AdoptArgs {
 // ─── Shared IO helpers ───────────────────────────────────────────────────────
 
 const DAEMON_DOWN_MESSAGE = "daemon unavailable — worktree lifecycle needs the daemon (rt daemon start)";
+const DAEMON_TIMEOUT_MESSAGE = "timed out — the daemon may still be working; check rt worktree list";
 
-/** `daemonQuery` returned null: hard stop, no inline fallback (spec §3). */
+/**
+ * `daemonQuery` returned null: hard stop, no inline fallback (spec §3). Two
+ * very different reasons collapse to null — genuinely down, or a slow
+ * operation (provision's fetch, a repo-wide freshen sweep) outran its
+ * timeout while the daemon kept working — so `lastQueryTimedOut()` picks the
+ * message that doesn't lie about which one happened.
+ */
 function daemonUnavailable(): never {
-  console.log(`\n  ${red}✗${reset} ${DAEMON_DOWN_MESSAGE}\n`);
+  const message = lastQueryTimedOut() ? DAEMON_TIMEOUT_MESSAGE : DAEMON_DOWN_MESSAGE;
+  console.log(`\n  ${red}✗${reset} ${message}\n`);
   process.exit(1);
 }
 
@@ -282,7 +305,7 @@ export async function worktreeCreate(args: string[], _ctx: unknown): Promise<voi
   const repoName = parsed.repoName ?? currentRepoName();
   if (!repoName) failText(parsed.json, "no repo — pass --repo <name> or run from inside a registered repo");
 
-  const res = await daemonQuery("worktree:create", { repoName, onDeck: parsed.onDeck });
+  const res = await daemonQuery("worktree:create", { repoName, onDeck: parsed.onDeck }, PROVISION_TIMEOUT_MS);
   const ok = requireQueryResult(parsed.json, res);
 
   if (parsed.json) { console.log(JSON.stringify(ok.data, null, 2)); return; }
@@ -303,7 +326,11 @@ export async function worktreeDispose(args: string[], _ctx: unknown): Promise<vo
     if (!process.stdin.isTTY) {
       failText(parsed.json, "no target — pass a tree name or --owner (no TTY for the picker)");
     }
-    const rows = sortDisposableFirst(await fetchTreeRows(parsed.json, repoName));
+    // Only rt-managed (ephemeral) trees are ever disposable — offering the
+    // main clone here would just earn every pick a pointless "kind-main" refusal.
+    const rows = sortDisposableFirst(
+      (await fetchTreeRows(parsed.json, repoName)).filter((r) => r.kind === "ephemeral"),
+    );
     const picked = await pickOneTree(rows, "Dispose which worktree?");
     if (!picked) { console.log(`\n  ${dim}nothing selected${reset}\n`); return; }
     treeName = picked.name;
@@ -315,12 +342,15 @@ export async function worktreeDispose(args: string[], _ctx: unknown): Promise<vo
   if (parsed.owner) payload.owner = parsed.owner;
   if (treeName) payload.tree = treeName;
 
-  const res = await daemonQuery("worktree:dispose", payload);
+  const res = await daemonQuery("worktree:dispose", payload, DISPOSE_TIMEOUT_MS);
   const ok = requireQueryResult(parsed.json, res);
+
+  const { disposed, refused } = ok.data as { disposed: string[]; refused: Array<{ tree: string; reason: string }> };
+  // Set before either return path — --json must not exit 0 on a partial failure.
+  if (refused.length > 0) process.exitCode = 1;
 
   if (parsed.json) { console.log(JSON.stringify(ok.data, null, 2)); return; }
 
-  const { disposed, refused } = ok.data as { disposed: string[]; refused: Array<{ tree: string; reason: string }> };
   console.log("");
   for (const name of disposed) console.log(`  ${green}✓${reset} ${name} disposed`);
   for (const r of refused) {
@@ -329,7 +359,6 @@ export async function worktreeDispose(args: string[], _ctx: unknown): Promise<vo
   }
   if (disposed.length === 0 && refused.length === 0) console.log(`  ${dim}nothing to dispose${reset}`);
   console.log("");
-  if (refused.length > 0) process.exitCode = 1;
 }
 
 // ─── list ────────────────────────────────────────────────────────────────────
@@ -362,8 +391,11 @@ export async function worktreeFreshen(args: string[], _ctx: unknown): Promise<vo
   let repoName = parsed.repoName;
 
   if (!treeName && process.stdin.isTTY) {
+    // Mirrors freshenCandidate (lib/daemon/worktree-reconciler.ts): only
+    // on-deck ephemeral trees and the main clone are ever freshened — a
+    // claimed tree is someone's active work and always comes back ran:[].
     const rows = (await fetchTreeRows(parsed.json, repoName))
-      .filter((r) => r.kind === "ephemeral" && r.state !== "disposable")
+      .filter((r) => (r.kind === "ephemeral" && r.state === "on-deck") || r.kind === "main")
       .sort((a, b) => a.name.localeCompare(b.name));
     const picked = await pickOneTree(rows, "Freshen which worktree?");
     if (!picked) { console.log(`\n  ${dim}nothing selected${reset}\n`); return; }
@@ -375,7 +407,7 @@ export async function worktreeFreshen(args: string[], _ctx: unknown): Promise<vo
   if (repoName) payload.repoName = repoName;
   if (treeName) payload.tree = treeName;
 
-  const res = await daemonQuery("worktree:freshen", payload);
+  const res = await daemonQuery("worktree:freshen", payload, FRESHEN_TIMEOUT_MS);
   const ok = requireQueryResult(parsed.json, res);
 
   if (parsed.json) { console.log(JSON.stringify(ok.data, null, 2)); return; }
@@ -416,20 +448,26 @@ export async function worktreeAdopt(args: string[], _ctx: unknown): Promise<void
  * wrapper can `cd` into it.
  */
 export async function worktreeNav(_args: string[], _ctx: unknown): Promise<void> {
-  const res = await daemonQuery("worktree:list");
-  if (res === null) daemonUnavailable();
-  if (!res.ok) {
-    console.log(`\n  ${red}✗${reset} ${explainError(res.error ?? "unknown error")}\n`);
-    process.exit(1);
-  }
-  const rows = (res.data?.trees ?? []) as TreeRow[];
-  if (rows.length === 0) { console.log(`\n  ${dim}no worktrees${reset}\n`); return; }
-
+  // Redirect FIRST, before any output at all — real stdout is reserved for
+  // the one line the shell wrapper reads (the selected path). Every early
+  // exit below (daemon down, refusal, empty list) goes through console.log,
+  // which now lands on stderr too, same as cd.ts's contract.
   const realStdoutWrite = process.stdout.write.bind(process.stdout);
   process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
+  const restore = (): void => { process.stdout.write = realStdoutWrite; };
 
   let selected: string | null;
   try {
+    const res = await daemonQuery("worktree:list");
+    if (res === null) { restore(); daemonUnavailable(); }
+    if (!res.ok) {
+      restore();
+      console.log(`\n  ${red}✗${reset} ${explainError(res.error ?? "unknown error")}\n`);
+      process.exit(1);
+    }
+    const rows = (res.data?.trees ?? []) as TreeRow[];
+    if (rows.length === 0) { restore(); console.log(`\n  ${dim}no worktrees${reset}\n`); return; }
+
     const { filterableSelect } = await import("../lib/rt-render.tsx");
     const nameWidth = Math.max(...rows.map((r) => r.name.length));
     const stateWidth = Math.max(...rows.map((r) => (r.state ?? r.kind).length));
@@ -440,7 +478,7 @@ export async function worktreeNav(_args: string[], _ctx: unknown): Promise<void>
     }));
     selected = await filterableSelect({ message: "Jump to worktree", options, stderr: true });
   } finally {
-    process.stdout.write = realStdoutWrite;
+    restore();
   }
 
   if (!selected) process.exit(0);
