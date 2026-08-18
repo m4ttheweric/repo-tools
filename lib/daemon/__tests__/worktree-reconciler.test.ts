@@ -57,6 +57,7 @@ describe("reconcileRepoRegistry", () => {
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtrecon-home-")));
+    __test__.createBackoff.clear();
     repo = makeRepo();
     repoName = "acme";
     events = [];
@@ -164,6 +165,7 @@ describe("createWorktreeReconciler", () => {
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtrecon-home-")));
+    __test__.createBackoff.clear();
     repo = makeRepo();
     repoName = "acme";
   });
@@ -279,6 +281,7 @@ describe("merge reactor (detectTransitions)", () => {
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtreact-home-")));
+    __test__.createBackoff.clear();
     repo = makeRepo();
     addBareOrigin(repo);
     // killProcesses off: the reactor must not go scanning this machine's
@@ -651,6 +654,7 @@ describe("freshen", () => {
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtfreshen-home-")));
+    __test__.createBackoff.clear();
     repo = makeRepo();
     addBareOrigin(repo);
     writeJson(join(rtDir(), "worktrees.json"), { enabled: true, killProcesses: false });
@@ -849,6 +853,7 @@ describe("replenish / shrink", () => {
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtpool-home-")));
+    __test__.createBackoff.clear();
     repo = makeRepo();
     addBareOrigin(repo);
   });
@@ -889,10 +894,67 @@ describe("replenish / shrink", () => {
     );
 
     const trees = loadRegistry(repoName).filter((t) => t.kind === "ephemeral");
-    expect(trees.length).toBe(0); // every attempt failed and self-scrapped
+    expect(trees.length).toBe(0); // the attempt failed and self-scrapped
 
-    // Bounded to the cap: exactly onDeck attempts, never more (no runaway loop).
-    expect(warns.filter((w) => w.includes("replenish create failed")).length).toBe(2);
+    // Bounded twice over: never more than onDeck attempts, and the first
+    // failure's backoff ends the pass before the second is even tried.
+    expect(warns.filter((w) => w.includes("replenish create failed")).length).toBe(1);
+  });
+
+  test("a failed create backs off, and the next pass skips replenish for that repo", async () => {
+    writeJson(join(repoDataDir(repoName), "config.json"), {
+      worktrees: { onDeck: 2, root: join(repo, ".worktrees"), ready: [{ run: "exit 1" }] },
+    });
+
+    const warns: string[] = [];
+    const log = {
+      info: () => {},
+      error: () => {},
+      debug: () => {},
+      warn: (_fields: unknown, msg?: string) => warns.push(msg ?? ""),
+    } as unknown as Logger;
+    const deps = { repoName, repoPath: repo, emit: () => {}, log };
+
+    await __test__.replenishAndShrink(deps, new Map(), fakeAppConfig());
+    expect(warns.filter((w) => w.includes("replenish create failed")).length).toBe(1);
+
+    const backoff = __test__.createBackoff.get(repoName);
+    expect(backoff?.failures).toBe(1);
+    expect(Date.parse(backoff!.nextRetryAt)).toBeGreaterThan(Date.now());
+
+    // The very next pass (the next cache tick, seconds later) must not burn
+    // another multi-minute build on the same broken step.
+    await __test__.replenishAndShrink(deps, new Map(), fakeAppConfig());
+    expect(warns.filter((w) => w.includes("replenish create failed")).length).toBe(1);
+    expect(__test__.createBackoff.get(repoName)?.failures).toBe(1);
+  });
+
+  test("a successful create clears the backoff", async () => {
+    writeJson(join(repoDataDir(repoName), "config.json"), {
+      worktrees: { onDeck: 1, root: join(repo, ".worktrees") },
+    });
+    // An expired backoff from earlier failures: the pass runs, and success wipes it.
+    __test__.createBackoff.set(repoName, {
+      failures: 3,
+      nextRetryAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+
+    await __test__.replenishAndShrink(
+      { repoName, repoPath: repo, emit: () => {}, log: fakeLog() },
+      new Map(),
+      fakeAppConfig(),
+    );
+
+    expect(loadRegistry(repoName).filter((t) => t.state === "on-deck").length).toBe(1);
+    expect(__test__.createBackoff.has(repoName)).toBe(false);
+  });
+
+  test("backoff doubles one pass at a time and caps at 30 minutes", () => {
+    expect(__test__.backoffDelayMs(1)).toBe(5 * 60_000);
+    expect(__test__.backoffDelayMs(2)).toBe(10 * 60_000);
+    expect(__test__.backoffDelayMs(3)).toBe(20 * 60_000);
+    expect(__test__.backoffDelayMs(4)).toBe(30 * 60_000); // 40 min, capped
+    expect(__test__.backoffDelayMs(12)).toBe(30 * 60_000);
   });
 
   test("lowering onDeck disposes the stalest ready entry", async () => {
@@ -947,6 +1009,7 @@ async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<voi
 describe("detached trigger / latency", () => {
   test("kick() returns synchronously, coalesces a second kick during the pass, and creationInFlight tracks it", async () => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtkick-home-")));
+    __test__.createBackoff.clear();
     const repoName = "acme";
     const repo = makeRepo();
     addBareOrigin(repo);

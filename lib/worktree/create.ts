@@ -31,6 +31,19 @@ import { reconcileForRepo } from "../daemon/doppler-sync.ts";
 
 const CREATE_TIMEOUT_MS = 5 * 60_000;
 
+/** `git worktree remove` deletes node_modules by hand; a pnpm-scale tree on
+ *  APFS routinely outruns runGit's 60s default. */
+const REMOVE_TIMEOUT_MS = 5 * 60_000;
+
+/** Longest slice of a failed step's output carried into the log line. */
+const MAX_LOGGED_OUTPUT = 2000;
+
+/** The tail of a step's output — a failing install reports at the end, not the start. */
+function outputTail(output: string, maxChars: number): string {
+  const trimmed = output.trim();
+  return trimmed.length <= maxChars ? trimmed : `…${trimmed.slice(-maxChars)}`;
+}
+
 export interface CreateDeps {
   repoName: string;
   repoPath: string;
@@ -86,7 +99,12 @@ async function runCreate(
   saveRegistry(repoName, trees);
 
   const fail = async (failedStep: string, output: string): Promise<CreateResult> => {
-    log.warn({ repo: repoName, tree: name, failedStep }, "worktree create failed");
+    // The output is the whole diagnosis (which install died, and why); without
+    // it the log says only which step's name failed.
+    log.warn(
+      { repo: repoName, tree: name, failedStep, output: outputTail(output, MAX_LOGGED_OUTPUT) },
+      "worktree create failed",
+    );
     await scrapTree(deps, rec);
     return { ok: false, error: "create-failed", failedStep, output };
   };
@@ -143,7 +161,9 @@ async function runCreate(
  * branch may not exist either.
  */
 export async function scrapTree(deps: CreateDeps, rec: TreeRecord): Promise<void> {
-  await runGit(deps.repoPath, ["worktree", "remove", "--force", rec.path]);
+  await runGit(deps.repoPath, ["worktree", "remove", "--force", rec.path], {
+    timeoutMs: REMOVE_TIMEOUT_MS,
+  });
   if (rec.branch) {
     await runGit(deps.repoPath, ["branch", "-D", rec.branch]);
   }

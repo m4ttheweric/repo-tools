@@ -61,6 +61,9 @@ const NO_REMOTE_REF_RE = /couldn't find remote ref/i;
 
 const PARKING_LOT_BRANCH_RE = /^parking-lot\/\d+$/;
 
+/** Lines of failed-step output carried into a `create-failed:` refusal. */
+const CREATE_FAILED_TAIL_LINES = 10;
+
 export type BranchState = "new" | "tracking-remote" | "existing-clean" | "diverged" | "behind";
 
 export interface WorktreeHandlerOpts {
@@ -89,6 +92,23 @@ function patchTree(repoName: string, path: string, patch: (rec: TreeRecord) => v
   if (!rec) return;
   patch(rec);
   saveRegistry(repoName, trees);
+}
+
+/**
+ * `create-failed:<step>` carrying the tail of that step's output, same shape as
+ * `checkout-failed:<detail>`. The step name alone tells the caller which install
+ * died but nothing about why, and the output is not otherwise reachable from the
+ * CLI.
+ */
+function createFailedError(created: { failedStep?: string; output?: string }): string {
+  const step = created.failedStep ?? "unknown";
+  const tail = (created.output ?? "")
+    .trim()
+    .split("\n")
+    .slice(-CREATE_FAILED_TAIL_LINES)
+    .join("\n")
+    .trim();
+  return tail.length > 0 ? `create-failed:${step}\n${tail}` : `create-failed:${step}`;
 }
 
 /** Every local branch name in the repo, for the sync `exists()` disambiguation predicate. */
@@ -262,7 +282,7 @@ export function createWorktreeHandlers(
         });
         if (!created.ok) {
           if (created.error === "busy") return { ok: false, error: "busy" };
-          return { ok: false, error: `create-failed:${created.failedStep ?? "unknown"}` };
+          return { ok: false, error: createFailedError(created) };
         }
         rec = created.tree;
         wasOnDeck = false;
@@ -411,7 +431,7 @@ export function createWorktreeHandlers(
       const created = await createTree({ repoName, repoPath, emit: opts.emit, log: ctx.log });
       if (!created.ok) {
         if (created.error === "busy") return { ok: false, error: "busy" };
-        return { ok: false, error: `create-failed:${created.failedStep ?? "unknown"}` };
+        return { ok: false, error: createFailedError(created) };
       }
 
       // Default is a tree for the caller to use; `--on-deck` puts it in the
