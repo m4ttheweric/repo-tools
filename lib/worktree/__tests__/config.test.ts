@@ -101,7 +101,7 @@ describe("worktree config", () => {
         JSON.stringify({ name: "x", packageManager: "pnpm@9.1.0" })
       );
       expect(resolveImplicitInstall(repoPath)).toEqual({
-        run: "pnpm install --side-effects-cache",
+        run: "pnpm install",
         when: "changed:pnpm-lock.yaml",
       });
     });
@@ -131,7 +131,7 @@ describe("worktree config", () => {
       writeFileSync(join(repoPath, "package.json"), JSON.stringify({ name: "x" }));
       writeFileSync(join(repoPath, "pnpm-lock.yaml"), "");
       expect(resolveImplicitInstall(repoPath)).toEqual({
-        run: "pnpm install --side-effects-cache",
+        run: "pnpm install",
         when: "changed:pnpm-lock.yaml",
       });
     });
@@ -168,7 +168,7 @@ describe("worktree config", () => {
         ready: [{ run: "node scripts/gen-types.js", when: "changed:db/schema/**" }],
       };
       expect(resolveReadySteps(cfg, repoPath)).toEqual([
-        { run: "pnpm install --side-effects-cache", when: "changed:pnpm-lock.yaml" },
+        { run: "pnpm install", when: "changed:pnpm-lock.yaml" },
         { run: "node scripts/gen-types.js", when: "changed:db/schema/**" },
       ]);
     });
@@ -200,7 +200,7 @@ describe("worktree config", () => {
         ready: [{ run: "pnpm lint" }],
       };
       expect(resolveReadySteps(cfg, repoPath)).toEqual([
-        { run: "pnpm install --side-effects-cache", when: "changed:pnpm-lock.yaml" },
+        { run: "pnpm install", when: "changed:pnpm-lock.yaml" },
         { run: "pnpm lint" },
       ]);
     });
