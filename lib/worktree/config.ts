@@ -79,8 +79,18 @@ export function loadWorktreeRepoConfig(repoName: string, repoPath: string): Work
 
 type Manager = "pnpm" | "bun" | "yarn" | "npm";
 
+/**
+ * pnpm's default is deliberately a PLAIN install, not `--side-effects-cache`:
+ * that cache replays a dependency's recorded postinstall effects instead of
+ * re-running it, and it only ever captured files written inside node_modules.
+ * A dep whose postinstall writes outside the package dir (prisma generating
+ * into apps/backend/generated/, say) is therefore silently skipped on a fresh
+ * tree — the install "succeeds" and the tree is missing generated code. The
+ * flag stays available as a declared ready step for repos verified free of
+ * out-of-tree generators; it is not safe as a blind default.
+ */
 const MANAGER_STEP: Record<Manager, ReadyStep> = {
-  pnpm: { run: "pnpm install --side-effects-cache", when: "changed:pnpm-lock.yaml" },
+  pnpm: { run: "pnpm install", when: "changed:pnpm-lock.yaml" },
   bun: { run: "bun install", when: "changed:bun.lock*" },
   yarn: { run: "yarn install", when: "changed:yarn.lock" },
   npm: { run: "npm install", when: "changed:package-lock.json" },
