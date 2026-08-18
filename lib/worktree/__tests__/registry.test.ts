@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
   loadRegistry,
+  registryEpoch,
   saveRegistry,
   findByBranch,
   registryPath,
@@ -39,6 +40,20 @@ describe("worktree registry", () => {
   });
   test("usedNames includes creating", () => {
     expect(usedNames([rec({ state: "creating" })]).has("bellatrix")).toBe(true);
+  });
+  test("registryEpoch bumps on every save, per repo", () => {
+    const before = registryEpoch("r");
+    const otherBefore = registryEpoch("other");
+
+    saveRegistry("r", [rec({})]);
+    const afterFirst = registryEpoch("r");
+    expect(afterFirst).not.toBe(before);
+
+    saveRegistry("r", [rec({ name: "dobby" })]);
+    expect(registryEpoch("r")).not.toBe(afterFirst);
+
+    // A write to one repo never disturbs another repo's epoch.
+    expect(registryEpoch("other")).toBe(otherBefore);
   });
   test("malformed registry file ({}) loads as []", () => {
     const path = registryPath("r");

@@ -37,9 +37,29 @@ export function loadRegistry(repoName: string): TreeRecord[] {
   return Array.isArray(data?.trees) ? data.trees : [];
 }
 
+/**
+ * Per-repo write counter, bumped by every `saveRegistry`.
+ *
+ * The registry has exactly one writer process (the daemon), but not one writer
+ * *task*: provision, dispose, freshen and reconcile all interleave on the same
+ * event loop. Anything that loads a whole-registry snapshot, awaits, and then
+ * saves that snapshot back would silently overwrite whatever landed in between.
+ * An in-memory counter is enough to detect that (no cross-process concern) and
+ * lives here because `saveRegistry` is the seam every write already funnels
+ * through. Callers compare `registryEpoch(repo)` captured right after their
+ * load against its value in the same synchronous block as their save.
+ */
+const epochs = new Map<string, number>();
+
+/** How many times this repo's registry has been saved in this process. */
+export function registryEpoch(repoName: string): number {
+  return epochs.get(repoName) ?? 0;
+}
+
 export function saveRegistry(repoName: string, trees: TreeRecord[]): void {
   const path = registryPath(repoName);
   writeJson(path, { trees });
+  epochs.set(repoName, registryEpoch(repoName) + 1);
 }
 
 export function findByPath(
