@@ -46,11 +46,10 @@ describe("worktree registry", () => {
     const otherBefore = registryEpoch("other");
 
     saveRegistry("r", [rec({})]);
-    const afterFirst = registryEpoch("r");
-    expect(afterFirst).not.toBe(before);
+    expect(registryEpoch("r")).toBe(before + 1);
 
     saveRegistry("r", [rec({ name: "dobby" })]);
-    expect(registryEpoch("r")).not.toBe(afterFirst);
+    expect(registryEpoch("r")).toBe(before + 2);
 
     // A write to one repo never disturbs another repo's epoch.
     expect(registryEpoch("other")).toBe(otherBefore);
