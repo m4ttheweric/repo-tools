@@ -593,7 +593,7 @@ async function freshenCandidate(deps: FreshenDeps, rec: TreeRecord): Promise<boo
  * validated anything new, so claiming otherwise would let a later real change
  * hide behind a stamp nothing ever checked.
  */
-async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<void> {
+async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> {
   const { repoName, log, emit } = deps;
   const fields = { repo: repoName, tree: rec.name, path: rec.path };
 
@@ -615,7 +615,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<void> {
   if (fetchResult.exitCode !== 0) {
     log.warn({ ...fields, output: fetchResult.stderr.trim() }, "freshen: fetch failed");
     fail();
-    return;
+    return false;
   }
 
   const classify = await classifyDirtyAsync(rec.path, repoName);
@@ -654,7 +654,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<void> {
     log.warn({ ...fields, defaultRef, output: ff.stderr.trim() }, "freshen: fast-forward failed");
     await popStash();
     fail();
-    return;
+    return false;
   }
   await popStash();
 
@@ -667,7 +667,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<void> {
   if (!readyResult.ok) {
     log.warn({ ...fields, failedStep: readyResult.failedStep }, "freshen: ready step failed");
     fail();
-    return;
+    return false;
   }
 
   const newStamp = toRun.length > 0 ? await headSha(rec.path) : null;
@@ -680,6 +680,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<void> {
 
   emit("worktree:freshened", { repo: repoName, tree: rec.name, path: rec.path });
   log.debug?.(fields, `worktree ${rec.name} freshened`);
+  return true;
 }
 
 /**
@@ -694,25 +695,34 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<void> {
  * window — the alternative is running a ff + ready steps inside a tree a
  * human just claimed.
  */
-async function freshenRepo(deps: FreshenDeps): Promise<void> {
+export async function freshenRepo(
+  deps: FreshenDeps,
+  opts: { only?: string } = {},
+): Promise<string[]> {
   const { repoName, log } = deps;
   const now = Date.now();
   const trees = loadRegistry(repoName);
+  const ran: string[] = [];
   for (const rec of trees) {
-    if (rec.nextRetryAt && Date.parse(rec.nextRetryAt) > now) continue;
+    if (opts.only && rec.name !== opts.only) continue;
+    // Backoff is a shield for the unattended pass, not for a human who just
+    // asked for this one tree by name: an explicit `only` retries now.
+    if (!opts.only && rec.nextRetryAt && Date.parse(rec.nextRetryAt) > now) continue;
     if (!(await freshenCandidate(deps, rec))) continue;
-    await withTreeLock(rec.path, async () => {
+    const outcome = await withTreeLock(rec.path, async () => {
       const fresh = findByPath(loadRegistry(repoName), rec.path);
       if (!fresh || fresh.state !== rec.state || fresh.branch !== rec.branch) {
         log.debug?.(
           { repo: repoName, tree: rec.name, path: rec.path },
           "freshen: skipping — tree changed since candidacy was decided",
         );
-        return;
+        return false;
       }
-      await freshenOne(deps, fresh);
+      return await freshenOne(deps, fresh);
     });
+    if (outcome === true) ran.push(rec.name);
   }
+  return ran;
 }
 
 // ─── Replenish / shrink (spec §6.4) ──────────────────────────────────────────
