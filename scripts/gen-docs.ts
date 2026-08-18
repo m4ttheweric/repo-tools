@@ -21,7 +21,7 @@ const opts: RenderOpts = {
   common: { flags: COMMON_FLAGS, href: "/guides/common-flags" },
   sourceBase:
     process.env.RT_DOCS_SOURCE_BASE ??
-    "https://github.com/m4ttheweric/repo-tools/blob/main/",
+    "https://github.com/m4ttstack/rt/blob/main/",
   hasPartial: (rel) => existsSync(join(OUT, "_partials", `${rel}.mdx`)),
 };
 

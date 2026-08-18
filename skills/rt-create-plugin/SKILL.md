@@ -10,7 +10,7 @@ rt supports user plugins: a folder at `~/.rt/plugins/<name>/` with a declarative
 Two contract references, in order of authority:
 
 1. `~/.rt/plugin-api/index.d.ts` ... the exact injected-API types for the rt version installed on this machine (rt writes and refreshes this file itself). Trust it over anything else.
-2. The full plugin guide (manifest reference, exec env vars, troubleshooting): `docs/plugins.md` in the repo-tools repo if it is checked out locally, otherwise fetch <https://raw.githubusercontent.com/m4ttheweric/repo-tools/main/docs/plugins.md>.
+2. The full plugin guide (manifest reference, exec env vars, troubleshooting): `docs/plugins.md` in the repo-tools repo if it is checked out locally, otherwise fetch <https://raw.githubusercontent.com/m4ttstack/rt/main/docs/plugins.md>.
 
 ## Workflow
 

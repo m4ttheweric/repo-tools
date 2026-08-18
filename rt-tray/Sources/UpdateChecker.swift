@@ -3,7 +3,7 @@ import AppKit
 
 /// Checks for new rt releases on GitHub and notifies the user.
 ///
-/// Polls `https://api.github.com/repos/m4ttheweric/repo-tools/releases/latest`
+/// Polls `https://api.github.com/repos/m4ttstack/rt/releases/latest`
 /// on launch and every 6 hours. Compares the release tag against the installed
 /// rt CLI version. When a newer version is found, fires a native macOS notification
 /// and updates the menu item -- prompting the user to run `rt update`.
@@ -19,8 +19,8 @@ class UpdateChecker {
         return Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
     }()
 
-    private let repoOwner = "m4ttheweric"
-    private let repoName = "repo-tools"
+    private let repoOwner = "m4ttstack"
+    private let repoName = "rt"
     private let checkInterval: TimeInterval = 6 * 60 * 60 // 6 hours
 
     private var timer: Timer?

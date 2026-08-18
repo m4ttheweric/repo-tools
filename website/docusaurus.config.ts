@@ -8,8 +8,8 @@ const config: Config = {
   favicon: "img/favicon.svg",
   url: "https://rt.cool",
   baseUrl: "/",
-  organizationName: "m4ttheweric",
-  projectName: "repo-tools",
+  organizationName: "m4ttstack",
+  projectName: "rt",
   onBrokenLinks: "throw",
   onBrokenAnchors: "throw",
   markdown: {
@@ -25,7 +25,7 @@ const config: Config = {
         docs: {
           routeBasePath: "/",
           sidebarPath: "./sidebars.ts",
-          editUrl: "https://github.com/m4ttheweric/repo-tools/tree/main/website/",
+          editUrl: "https://github.com/m4ttstack/rt/tree/main/website/",
         },
         blog: false,
         theme: { customCss: "./src/css/custom.css" },
@@ -37,7 +37,7 @@ const config: Config = {
       title: "rt",
       items: [
         {
-          href: "https://github.com/m4ttheweric/repo-tools",
+          href: "https://github.com/m4ttstack/rt",
           label: "GitHub",
           position: "right",
         },

@@ -7,7 +7,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/m4ttheweric/repo-tools"
+    "url": "https://github.com/m4ttstack/rt"
   },
   "engines": {
     "vscode": "^1.85.0"
