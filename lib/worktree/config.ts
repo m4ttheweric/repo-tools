@@ -71,7 +71,9 @@ export function loadWorktreeRepoConfig(repoName: string, repoPath: string): Work
     branchFormat: declared.branchFormat ?? "<ticket>-<slug>",
     ready: declared.ready ?? [],
   };
-  if (declared.namePool) cfg.namePool = declared.namePool;
+  // A dot-leading name would build a tree the reconciler's reap duty then
+  // deletes as a `.trash-*` leftover, so the pool never gets to declare one.
+  if (declared.namePool) cfg.namePool = declared.namePool.filter((n) => !n.startsWith("."));
   return cfg;
 }
 
