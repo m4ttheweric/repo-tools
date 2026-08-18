@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { execSync } from "child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { writeJson } from "../../json-store.ts";
@@ -158,13 +158,17 @@ describe("scrapTree", () => {
     };
     saveRegistry(repoName, [rec]);
 
-    // A read-only parent makes the trash rename fail while the tree remains.
-    const worktreesRoot = join(repo, ".worktrees");
-    chmodSync(worktreesRoot, 0o555);
+    // A non-empty directory already at the trash destination makes the rename
+    // fail (ENOTEMPTY) while the tree remains — deterministic even as root,
+    // unlike a read-only parent. Freeze Date.now so the destination is known.
+    const stamp = 1234567890;
+    const realNow = Date.now;
+    Date.now = () => stamp;
+    mkdirSync(join(repo, ".worktrees", `.trash-stuck-${stamp}`, "occupied"), { recursive: true });
     try {
       await scrapTree(makeDeps(repoName, repo, events), rec);
     } finally {
-      chmodSync(worktreesRoot, 0o755);
+      Date.now = realNow;
     }
 
     expect(existsSync(path)).toBe(true);
