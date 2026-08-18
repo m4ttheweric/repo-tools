@@ -237,17 +237,17 @@ jobs:
           cat > Formula/rt.rb << FORMULA
           class Rt < Formula
             desc "Developer CLI for branch management, service runner, daemon, and notifications"
-            homepage "https://github.com/m4ttheweric/repo-tools"
+            homepage "https://github.com/m4ttstack/rt"
             version "${VERSION_NUM}"
             license "MIT"
 
             on_macos do
               on_arm do
-                url "https://github.com/m4ttheweric/repo-tools/releases/download/${VERSION}/rt-darwin-arm64-${VERSION}.tar.gz"
+                url "https://github.com/m4ttstack/rt/releases/download/${VERSION}/rt-darwin-arm64-${VERSION}.tar.gz"
                 sha256 "${SHA_ARM}"
               end
               on_intel do
-                url "https://github.com/m4ttheweric/repo-tools/releases/download/${VERSION}/rt-darwin-x64-${VERSION}.tar.gz"
+                url "https://github.com/m4ttstack/rt/releases/download/${VERSION}/rt-darwin-x64-${VERSION}.tar.gz"
                 sha256 "${SHA_X64}"
               end
             end

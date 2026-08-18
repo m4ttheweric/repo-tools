@@ -19,7 +19,7 @@ describe("isGitLabRemote", () => {
 
   // These are the exact remotes that flooded the daemon log with 422 warnings.
   test("false for GitHub remotes", () => {
-    expect(isGitLabRemote("git@github.com:m4ttheweric/repo-tools.git")).toBe(false);
+    expect(isGitLabRemote("git@github.com:m4ttstack/rt.git")).toBe(false);
     expect(isGitLabRemote("https://github.com/m4ttheweric/soribashi.git")).toBe(false);
     expect(isGitLabRemote("git@github.com:m4ttheweric/grift.git")).toBe(false);
     expect(isGitLabRemote("git@github.com:m4ttheweric/tfp-four-directions.git")).toBe(false);
@@ -33,8 +33,8 @@ describe("isGitLabRemote", () => {
   // A GitHub URL still parses into host/projectPath — which is exactly why a
   // parse-success check alone was insufficient and a host gate is required.
   test("GitHub remote parses but must not be treated as GitLab", () => {
-    const parsed = parseRemoteUrl("git@github.com:m4ttheweric/repo-tools.git");
-    expect(parsed).toEqual({ host: "https://github.com", projectPath: "m4ttheweric/repo-tools" });
-    expect(isGitLabRemote("git@github.com:m4ttheweric/repo-tools.git")).toBe(false);
+    const parsed = parseRemoteUrl("git@github.com:m4ttstack/rt.git");
+    expect(parsed).toEqual({ host: "https://github.com", projectPath: "m4ttstack/rt" });
+    expect(isGitLabRemote("git@github.com:m4ttstack/rt.git")).toBe(false);
   });
 });

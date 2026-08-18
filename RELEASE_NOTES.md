@@ -56,4 +56,4 @@ the worktree lifecycle release. `rt worktree` replaces the parking lot with a pr
 - tests isolate HOME via a bunfig preload, and log writers resolve `~/.rt/logs` at call time, so test runs stop polluting real logs
 - README refreshed for the public profile
 
-**Full Changelog**: https://github.com/m4ttheweric/repo-tools/compare/v2.5.0...v2.6.0
+**Full Changelog**: https://github.com/m4ttstack/rt/compare/v2.5.0...v2.6.0

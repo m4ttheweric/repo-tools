@@ -22,7 +22,7 @@ test("buildReleaseNotes groups by scope, orders sections, adds changelog link, d
     "docs(site): write guides",
     "chore(release): v2.4.0",
   ].map(parseCommit);
-  const md = buildReleaseNotes(commits, "v2.4.0", "HEAD", "https://github.com/m4ttheweric/repo-tools");
+  const md = buildReleaseNotes(commits, "v2.4.0", "HEAD", "https://github.com/m4ttstack/rt");
   // release chore excluded (no Release section, no bullet for it) ... note the
   // base tag still legitimately appears in the Full Changelog compare link below,
   // so assert on the section/bullet, not the bare string "v2.4.0".
@@ -35,7 +35,7 @@ test("buildReleaseNotes groups by scope, orders sections, adds changelog link, d
   // a bullet uses the cleaned description
   expect(md).toContain("- add red flicker guard");
   // changelog compare link at the bottom
-  expect(md).toContain("**Full Changelog**: https://github.com/m4ttheweric/repo-tools/compare/v2.4.0...HEAD");
+  expect(md).toContain("**Full Changelog**: https://github.com/m4ttstack/rt/compare/v2.4.0...HEAD");
   // Daemon (2 commits) sorts before Tray (1) is NOT required; but Daemon appears before Tray via preferred order
   expect(md.indexOf("### Daemon")).toBeLessThan(md.indexOf("### Tray"));
 });

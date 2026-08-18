@@ -2,7 +2,7 @@
 
 A VS Code / Cursor extension that keeps you oriented when working across multiple git worktrees. It shows the current worktree name, branch, and linked Linear ticket in the status bar — and lets you quickly switch between worktrees.
 
-Part of the [repo-tools](https://github.com/m4ttheweric/repo-tools) suite.
+Part of the [repo-tools](https://github.com/m4ttstack/rt) suite.
 
 ## Features
 

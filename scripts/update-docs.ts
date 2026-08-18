@@ -15,7 +15,7 @@ import { spawnSync } from "child_process";
 import { writeFileSync } from "fs";
 import { parseCommit, buildReleaseNotes } from "./lib/release-notes.ts";
 
-const REPO_URL = "https://github.com/m4ttheweric/repo-tools";
+const REPO_URL = "https://github.com/m4ttstack/rt";
 const SKILL_PATH = "skills/rt-docs/SKILL.md";
 const NOTES_FILE = "RELEASE_NOTES.md";
 
