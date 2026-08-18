@@ -923,9 +923,6 @@ describe("freshen", () => {
       { name: basename(repo), path: repo, kind: "main", branch: "main", createdAt: new Date().toISOString() },
     ]);
 
-    const seededTrash = join(repo, ".worktrees", ".trash-kilo-1700000000002");
-    mkdirSync(seededTrash, { recursive: true });
-
     const beforeSha = await headSha(repo);
     const events: Array<{ type: string; data: any }> = [];
     await __test__.freshenRepo({

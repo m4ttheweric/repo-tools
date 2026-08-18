@@ -79,6 +79,18 @@ describe("worktree config", () => {
       expect(cfg.root).toBe(join(process.env.HOME!, "wt-root"));
     });
 
+    test("drops dot-leading namePool entries", () => {
+      // A pool entry named ".trash-x" would build a tree the reconciler's reap
+      // duty then deletes as a leftover. The reaper is the only rm -rf in the
+      // codebase; this is the door it can come through.
+      const repoPath = tmpRepoPath("rtcfg-repo-");
+      writeJson(join(repoDataDir("myrepo"), "config.json"), {
+        worktrees: { namePool: [".trash-x", "luna"] },
+      });
+      const cfg = loadWorktreeRepoConfig("myrepo", repoPath);
+      expect(cfg.namePool).toEqual(["luna"]);
+    });
+
     test("leaves an absolute root unchanged", () => {
       const repoPath = tmpRepoPath("rtcfg-repo-");
       writeJson(join(repoDataDir("myrepo"), "config.json"), {
