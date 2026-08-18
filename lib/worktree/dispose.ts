@@ -18,15 +18,12 @@ import { hasFreshAttendantLease } from "./lease.ts";
 import { loadSyncConfig, matchRule } from "../sync-config.ts";
 import { repoDataDir } from "../rt-paths.ts";
 import { killWorktreeProcesses } from "../daemon/worktree-process-kill.ts";
+import { reapTrashDir, trashTree } from "./trash.ts";
 
 /** Merge-reactor disposals ignore claims younger than this (stale-event protection). */
 const GRACE_MS = 10 * 60_000;
 
 const FETCH_TIMEOUT_MS = 2 * 60_000;
-
-/** `git worktree remove` deletes node_modules by hand; a pnpm-scale tree on
- *  APFS routinely outruns runGit's 60s default. */
-const REMOVE_TIMEOUT_MS = 5 * 60_000;
 
 // ─── Dirty classification (harvested from parking-lot.ts, execSync → runGit) ──
 
@@ -252,25 +249,25 @@ export async function disposeTree(
     }
   }
 
-  // --force here is plumbing, not a safety statement: `git worktree remove`
-  // refuses on any untracked file, and the guard above (or the caller's
-  // explicit force) already made the decision.
-  const removal = await runGit(repoPath, ["worktree", "remove", "--force", rec.path], {
-    timeoutMs: REMOVE_TIMEOUT_MS,
-  });
-  if (removal.exitCode !== 0) {
-    const output = (removal.stdout + removal.stderr).trim();
+  // One atomic rename, not a recursive unlink: see trash.ts. Everything below
+  // is fast, so the verb returns in seconds however large the tree was.
+  const trashed = await trashTree(rec.path, rec.name);
+  if (!trashed.ok) {
     log.warn(
-      { repo: repoName, tree: rec.name, path: rec.path, output },
-      "git worktree remove failed during dispose",
+      { repo: repoName, tree: rec.name, path: rec.path, err: trashed.err },
+      "worktree trash rename failed during dispose",
     );
     // A directory that is already gone is the expected failure and disposal
     // continues (the registry row is the thing left to clean up). A tree still
-    // on disk means removal genuinely failed — locked file, permissions — and
-    // pruning the registry there would orphan a real worktree with its
-    // metadata lost. Refuse instead; the caller retries or forces.
+    // at rec.path means the rename genuinely failed — held directory,
+    // permissions — and pruning the registry there would orphan a real
+    // worktree with its metadata lost. Refuse instead; the caller retries.
     if (existsSync(rec.path)) return refuse("remove-failed");
   }
+
+  // The registration now points at a path that no longer exists, which is
+  // exactly what prune collects.
+  await runGit(repoPath, ["worktree", "prune"]);
 
   if (rec.branch) {
     // Already-gone branches are expected (the reactor disposes after a merge
@@ -287,7 +284,19 @@ export async function disposeTree(
     branch: rec.branch,
     discarded,
   });
-  log.info({ repo: repoName, tree: rec.name, path: rec.path }, "worktree disposed");
+  log.info(
+    {
+      repo: repoName,
+      tree: rec.name,
+      path: rec.path,
+      ...(trashed.ok ? { trash: trashed.trashPath } : {}),
+    },
+    "worktree disposed",
+  );
+
+  // Fire-and-forget: the bytes go away on their own time, and a trash dir this
+  // process never gets to finish is swept by the reconciler's reap duty.
+  if (trashed.ok) void reapTrashDir(trashed.trashPath, log);
 
   return { disposed: true };
 }
