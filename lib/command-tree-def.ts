@@ -525,61 +525,91 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   park: {
-    description: "Auto-park worktrees when their MR merges or closes",
-    subcommands: {
-      status: {
-        description: "Show whether auto-park is enabled + worktree bindings",
-        module: "./commands/parking-lot.ts",
-        fn: "statusCommand",
-        args: [],
-      },
-      enable: {
-        description: "Turn on auto-park",
-        module: "./commands/parking-lot.ts",
-        fn: "enableCommand",
-        args: [],
-      },
-      disable: {
-        description: "Turn off auto-park (daemon scans become no-ops)",
-        module: "./commands/parking-lot.ts",
-        fn: "disableCommand",
-        args: [],
-      },
-      scan: {
-        description: "Run the park check immediately against the live cache",
-        module: "./commands/parking-lot.ts",
-        fn: "scanCommand",
-        args: [],
-      },
-      this: {
-        description: "Park the current worktree now (manual override; ignores enabled flag)",
-        module: "./commands/parking-lot.ts",
-        fn: "parkThisCommand",
-        context: "worktree",
-        args: [],
-      },
-      pick: {
-        description: "Pick worktrees in this repo to park (multi-select)",
-        module: "./commands/parking-lot.ts",
-        fn: "parkPickCommand",
-        context: "repo",
-        requiresTTY: true,
-        args: [],
-      },
-    },
+    description: "Deprecated — replaced by rt worktree",
+    module: "./commands/worktree.ts",
+    fn: "parkDeprecated",
+    args: [],
   },
 
   worktree: {
-    description: "Worktree-wide operations",
+    description: "Worktree lifecycle (provision/dispose/list) + worktree-wide operations",
+    module: "./commands/worktree.ts",
+    fn: "worktreeNav",
+    requiresTTY: true,
+    args: [],
     subcommands: {
+      provision: {
+        description: "Claim a worktree for a ticket or branch (from the on-deck pool, or freshly created)",
+        module: "./commands/worktree.ts",
+        fn: "worktreeProvision",
+        args: [
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (defaults to the current repo)" },
+          { name: "Ticket", flag: "--ticket", type: "text", placeholder: "RT-40", hint: "Linear ticket id — derives the branch name" },
+          { name: "Title", flag: "--title", type: "text", placeholder: "Prune the parking lot", hint: "Ticket title, used with --ticket to derive the branch slug" },
+          { name: "Branch", flag: "--branch", type: "text", placeholder: "feature/my-branch", hint: "Explicit branch name (overrides --ticket)" },
+          { name: "Owner", flag: "--owner", type: "text", placeholder: "matt", hint: "Who's claiming this tree" },
+          { name: "Disposal", flag: "--disposal", type: "text", placeholder: "merge", hint: "Disposal mode: merge (default) or job" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
+        ],
+      },
+      create: {
+        description: "Create a fresh worktree (optionally straight into the on-deck pool)",
+        module: "./commands/worktree.ts",
+        fn: "worktreeCreate",
+        args: [
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (defaults to the current repo)" },
+          { name: "On-deck", flag: "--on-deck", type: "boolean", default: false, hint: "Put the new tree in the on-deck pool instead of claiming it" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
+        ],
+      },
+      dispose: {
+        description: "Dispose a worktree (no target + TTY → picker)",
+        module: "./commands/worktree.ts",
+        fn: "worktreeDispose",
+        args: [
+          { name: "Tree", type: "text", placeholder: "my-tree", hint: "Tree name to dispose; omit to pick interactively" },
+          { name: "Owner", flag: "--owner", type: "text", placeholder: "matt", hint: "Dispose every tree owned by this owner (can span repos)" },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Narrow to this registered repo" },
+          { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Override the dirty/unpushed guard" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
+        ],
+      },
+      list: {
+        description: "List worktrees",
+        module: "./commands/worktree.ts",
+        fn: "worktreeList",
+        args: [
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Narrow to this registered repo (default: every registered repo)" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
+        ],
+      },
+      freshen: {
+        description: "Freshen worktrees (no arg + TTY → picker over freshenable trees)",
+        module: "./commands/worktree.ts",
+        fn: "worktreeFreshen",
+        args: [
+          { name: "Tree", type: "text", placeholder: "my-tree", hint: "Tree name to freshen; omit to pick interactively (or run for every repo, headless)" },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Narrow to this registered repo" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
+        ],
+      },
+      adopt: {
+        description: "One-shot migration: adopt an unmanaged repo's worktrees into the registry",
+        module: "./commands/worktree.ts",
+        fn: "worktreeAdopt",
+        args: [
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "repo-tools", hint: "Registered repo name (required)" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the raw result as JSON" },
+        ],
+      },
       each: {
-        description: "Run a command in each worktree (--all | --parked, else pick)",
+        description: "Run a command in each worktree (--all | --on-deck, else pick)",
         module: "./commands/worktree.ts",
         fn: "worktreeEach",
         context: "repo",
         args: [
-          { name: "All", flag: "--all", type: "boolean", default: false, hint: "Run in every worktree (mutually exclusive with --parked)" },
-          { name: "Parked", flag: "--parked", type: "boolean", default: false, hint: "Run only in parked worktrees" },
+          { name: "All", flag: "--all", type: "boolean", default: false, hint: "Run in every worktree (mutually exclusive with --on-deck)" },
+          { name: "On-deck", flag: "--on-deck", type: "boolean", default: false, hint: "Run only in on-deck worktrees (alias --parked)" },
           { name: "Command", type: "text", placeholder: "git status", hint: "Command to run in each selected worktree; omit both flags to pick interactively" },
         ],
       },

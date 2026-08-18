@@ -22,7 +22,6 @@ import { loadRepoTracking, grants } from "../repo-tracking.ts";
 import { syncProjectMRs } from "./project-sync.ts";
 import { getProjectMRs } from "./project-mrs-store.ts";
 import { pruneDiscussionsStore } from "./discussions-file-store.ts";
-import { checkAndPark } from "./parking-lot.ts";
 import { reconcileForRepo } from "./doppler-sync.ts";
 import { listWorktreeRoots, listWorktrees } from "../git-worktrees.ts";
 
@@ -38,6 +37,8 @@ export interface CacheRefresherDeps {
   statusSnapshot: () => Promise<any>;
   /** Reconcile freshness watchers against the freshly-loaded repo index. */
   reconcileSubscriptions: () => Promise<void>;
+  /** Fire-and-forget kick of the worktree reconciler after each refresh. */
+  worktreeKick?: () => void;
 }
 
 export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<void> {
@@ -82,9 +83,12 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
         if (!g.caches.has("branches")) continue;
 
         try {
-          // 1. Discover worktree branches (detached worktrees have no branch)
-          const branches: Array<{ path: string; branch: string }> =
-            listWorktrees(repoPath).filter((w) => w.branch);
+          // 1. Discover worktree branches (detached worktrees have no branch).
+          // on-deck/* branches are pool plumbing, not feature work — never
+          // worth MR/Linear enrichment.
+          const branches: Array<{ path: string; branch: string }> = listWorktrees(repoPath).filter(
+            (w) => w.branch && !w.branch.startsWith("on-deck/"),
+          );
 
           // 2. Discover local branches (not just worktrees)
           const worktreeBranchSet = new Set(branches.map(b => b.branch));
@@ -96,7 +100,7 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
 
             for (const name of localBranchOutput.split("\n")) {
               const trimmed = name.trim().replace(/^'|'$/g, "");
-              if (!trimmed || worktreeBranchSet.has(trimmed)) continue;
+              if (!trimmed || worktreeBranchSet.has(trimmed) || trimmed.startsWith("on-deck/")) continue;
               if (extractLinearId(trimmed)) {
                 branches.push({ path: repoPath, branch: trimmed });
               }
@@ -146,13 +150,6 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       // Check for state transitions and fire notifications
       checkAndNotify(cache.entries, portCacheRef.ports, getCurrentUserId());
 
-      // Auto-park worktrees whose MRs just merged/closed.
-      try {
-        checkAndPark({ cache, repoIndex });
-      } catch (err) {
-        log.warn({ err }, "parking-lot check failed");
-      }
-
       // Doppler-template reconciliation: keeps ~/.doppler/.doppler.yaml in sync
       // with each repo's ~/.rt/repos/<repo>/doppler-template.yaml. Cheap (file I/O
       // only) and additive — never overwrites existing entries.
@@ -178,6 +175,11 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
 
       // Broadcast to WebSocket clients
       broadcast("status", await deps.statusSnapshot());
+
+      // Kick the worktree reconciler (freshen/replenish/shrink/reactor).
+      // Detached: `kick()` itself is fire-and-forget and coalesces overlap,
+      // so this never delays the refresh cycle it rides in on.
+      deps.worktreeKick?.();
 
       // Reconcile events watchers against the repo index. Starts/stops
       // per-repo watchers as repos are added/removed.
