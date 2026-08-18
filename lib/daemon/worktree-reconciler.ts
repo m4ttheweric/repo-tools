@@ -552,6 +552,15 @@ const FRESHEN_FETCH_TIMEOUT_MS = 5 * 60_000;
 const FRESHEN_PASS_MS = 5 * 60_000;
 const FRESHEN_MAX_BACKOFF_MS = 30 * 60_000;
 
+/**
+ * Delay after the Nth consecutive failure: one pass, doubled N-1 times, capped.
+ * Shared by the freshen retry stamp and the per-repo create backoff (spec §6.4)
+ * — both count in passes and both cap at 30 minutes.
+ */
+function backoffDelayMs(failures: number): number {
+  return Math.min(FRESHEN_PASS_MS * 2 ** (failures - 1), FRESHEN_MAX_BACKOFF_MS);
+}
+
 export interface FreshenDeps {
   repoName: string;
   repoPath: string;
@@ -599,7 +608,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
 
   const fail = (): void => {
     const failures = (rec.retryFailures ?? 0) + 1;
-    const backoffMs = Math.min(FRESHEN_PASS_MS * 2 ** (failures - 1), FRESHEN_MAX_BACKOFF_MS);
+    const backoffMs = backoffDelayMs(failures);
     patchTree(repoName, rec.path, (r) => {
       r.retryFailures = failures;
       r.nextRetryAt = new Date(Date.now() + backoffMs).toISOString();
@@ -727,6 +736,36 @@ export async function freshenRepo(
 
 // ─── Replenish / shrink (spec §6.4) ──────────────────────────────────────────
 
+/**
+ * Per-repo create backoff (spec §6.4): failure N waits one pass doubled N-1
+ * times, capped at 30 minutes.
+ *
+ * A failed `createTree` scraps its own registry row, so there is no on-disk row
+ * left to hang retry bookkeeping off — without this, a persistently failing
+ * ready step (a broken install costing minutes per attempt) is retried on every
+ * cache tick, forever. The state is deliberately in-memory, same as the
+ * in-flight creation map above it: a daemon restart clearing the backoff costs
+ * one wasted attempt, which is cheaper than persisting a transient.
+ */
+const createBackoff = new Map<string, { failures: number; nextRetryAt: string }>();
+
+/** The active backoff deadline for a repo, or null when creates may run now. */
+function createBlockedUntil(repoName: string): string | null {
+  const entry = createBackoff.get(repoName);
+  if (!entry) return null;
+  return Date.parse(entry.nextRetryAt) > Date.now() ? entry.nextRetryAt : null;
+}
+
+function noteCreateFailure(repoName: string): { failures: number; nextRetryAt: string } {
+  const failures = (createBackoff.get(repoName)?.failures ?? 0) + 1;
+  const entry = {
+    failures,
+    nextRetryAt: new Date(Date.now() + backoffDelayMs(failures)).toISOString(),
+  };
+  createBackoff.set(repoName, entry);
+  return entry;
+}
+
 /** On-deck / creating counts used to decide whether to grow or shrink the pool. */
 function poolCounts(repoName: string): {
   ready: number;
@@ -746,14 +785,14 @@ function poolCounts(repoName: string): {
  * flight at a time, which `runOnce` awaiting each pass makes natural), then
  * shrink it back down by disposing the stalest ready entries when it's over.
  *
- * Replenish is bounded to the deficit measured once at the start of the pass,
- * not re-derived from live state on every iteration: `createTree` scraps its
- * own registry row on failure (no trace, no retry bookkeeping), so an
+ * Replenish is bounded on both axes. Within a pass it is bounded to the deficit
+ * measured once at the start, not re-derived from live state on every
+ * iteration: `createTree` scraps its own registry row on failure, so an
  * always-failing config would otherwise re-read "still short" forever and spin
- * this pass indefinitely. Bounding to the initial deficit caps attempts at
- * `onDeck` per pass either way — every attempt succeeds and fills a slot, or
- * fails and wastes one of the budgeted attempts — and lets the next pass pick
- * up any remaining shortfall.
+ * this pass indefinitely. Across passes it is bounded by `createBackoff` — the
+ * first failure of a pass ends replenish for that repo and holds it off for the
+ * doubling backoff window, so a broken ready step costs one multi-minute
+ * attempt per window instead of `onDeck` attempts per cache tick.
  */
 async function replenishAndShrink(
   deps: FreshenDeps,
@@ -767,15 +806,39 @@ async function replenishAndShrink(
   let { ready, totalUnclaimed } = poolCounts(repoName);
   let budget = Math.max(0, cfg.onDeck - totalUnclaimed);
   while (budget > 0 && ready < cfg.onDeck && totalUnclaimed < cfg.onDeck) {
+    // Checked per iteration, not once per pass: a failure recorded by the
+    // attempt above must end this pass's replenish too, or the pass still
+    // burns `onDeck` full builds on the same broken step.
+    const blockedUntil = createBlockedUntil(repoName);
+    if (blockedUntil) {
+      log.debug?.(
+        { repo: repoName, nextRetryAt: blockedUntil },
+        "replenish: skipped — create backoff in effect",
+      );
+      break;
+    }
     budget--;
     const p: Promise<void> = createTree({ repoName, repoPath, emit, log })
       .then((result) => {
-        if (!result.ok) {
-          log.warn({ repo: repoName, error: result.error }, "worktree reconciler: replenish create failed");
+        if (result.ok) {
+          createBackoff.delete(repoName);
+          return;
         }
+        // "busy" is another holder of the tree lock, not a failing build: it
+        // neither earns a backoff nor clears one.
+        if (result.error === "busy") return;
+        const { failures, nextRetryAt } = noteCreateFailure(repoName);
+        log.warn(
+          { repo: repoName, error: result.error, failedStep: result.failedStep, failures, nextRetryAt },
+          "worktree reconciler: replenish create failed",
+        );
       })
       .catch((err) => {
-        log.warn({ err, repo: repoName }, "worktree reconciler: replenish create threw");
+        const { failures, nextRetryAt } = noteCreateFailure(repoName);
+        log.warn(
+          { err, repo: repoName, failures, nextRetryAt },
+          "worktree reconciler: replenish create threw",
+        );
       })
       .finally(() => {
         if (creationPromises.get(repoName) === p) creationPromises.delete(repoName);
@@ -921,4 +984,12 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
   return { kick, runOnce, creationInFlight, passInFlight };
 }
 
-export const __test__ = { detectTransitions, reactorStatePath, freshenRepo, replenishAndShrink, poolCounts };
+export const __test__ = {
+  detectTransitions,
+  reactorStatePath,
+  freshenRepo,
+  replenishAndShrink,
+  poolCounts,
+  backoffDelayMs,
+  createBackoff,
+};

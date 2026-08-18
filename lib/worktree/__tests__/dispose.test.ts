@@ -6,7 +6,7 @@ import { join } from "path";
 import { repoDataDir } from "../../rt-paths.ts";
 import { saveSyncConfig } from "../../sync-config.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../registry.ts";
-import { branchExistsLocalAsync, listWorktreesAsync } from "../git-async.ts";
+import { branchExistsLocalAsync, listWorktreesAsync, remoteRefExists } from "../git-async.ts";
 import { hasFreshAttendantLease } from "../lease.ts";
 import {
   classifyDirtyAsync,
@@ -363,7 +363,7 @@ describe("disposeTree", () => {
     }));
 
     const deps = makeDeps({
-      cacheEntries: { "feature-a": { mr: { iid: 42, sha }, repoName } },
+      cacheEntries: { "feature-a": { mr: { iid: 42, sha, state: "merged" }, repoName } },
     });
     const result = await disposeTree(deps, rec, { auto: true });
     expect(result).toEqual({ disposed: true });
@@ -378,7 +378,7 @@ describe("disposeTree", () => {
 
     const deps = makeDeps({
       cacheEntries: {
-        "feature-a": { mr: { iid: 42, sha: "0".repeat(40) }, repoName },
+        "feature-a": { mr: { iid: 42, sha: "0".repeat(40), state: "merged" }, repoName },
       },
     });
     const result = await disposeTree(deps, rec, { auto: true });
@@ -393,7 +393,7 @@ describe("disposeTree", () => {
     }));
 
     // sha absent entirely (the projection drops it for many merged MRs)
-    const deps = makeDeps({ cacheEntries: { "feature-a": { mr: { iid: 42 }, repoName } } });
+    const deps = makeDeps({ cacheEntries: { "feature-a": { mr: { iid: 42, state: "merged" }, repoName } } });
     const result = await disposeTree(deps, rec, { auto: true });
     expect(result).toEqual({ disposed: true });
     expect(existsSync(path)).toBe(false);
@@ -407,7 +407,7 @@ describe("disposeTree", () => {
     }));
 
     const deps = makeDeps({
-      cacheEntries: { "feature-a": { mr: { iid: 42, sha: null }, repoName } },
+      cacheEntries: { "feature-a": { mr: { iid: 42, sha: null, state: "merged" }, repoName } },
     });
     const result = await disposeTree(deps, rec, { auto: true });
     expect(result).toEqual({ disposed: false, refusal: "unpushed" });
@@ -423,10 +423,45 @@ describe("disposeTree", () => {
     }));
 
     const deps = makeDeps({
-      cacheEntries: { "feature-a": { mr: { iid: 42, sha }, repoName } },
+      cacheEntries: { "feature-a": { mr: { iid: 42, sha, state: "merged" }, repoName } },
     });
     const result = await disposeTree(deps, rec, { auto: true });
     expect(result).toEqual({ disposed: false, refusal: "unpushed" });
+  });
+
+  test("MANUAL disposal of a squash-merged tree uses the MR sha anchor", async () => {
+    // The shape that broke: squash-merged upstream, source branch deleted, so
+    // the tip is an ancestor of nothing the remote still has. Before the fix a
+    // human got "unpushed" here and was pushed toward --force, which also
+    // strips the dirty guard.
+    const path = addTree(repo, "tree-a", "feature-a");
+    commitIn(path, "new.txt", "squash-merged upstream\n");
+    const sha = execSync(`git -C ${path} rev-parse HEAD`, { encoding: "utf8" }).trim();
+    const rec = register(repoName, ephemeral("tree-a", path, "feature-a"));
+    expect(await remoteRefExists(path, "feature-a")).toBe(false);
+
+    const deps = makeDeps({
+      cacheEntries: { "feature-a": { mr: { iid: 42, sha, state: "merged" }, repoName } },
+    });
+    const result = await disposeTree(deps, rec, { auto: false });
+    expect(result).toEqual({ disposed: true });
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test("manual disposal with an OPEN MR still uses the remote anchor", async () => {
+    // An open MR's head sha would happily contain HEAD; the tree is still the
+    // author's live work, so it must be judged on what is actually pushed.
+    const path = addTree(repo, "tree-a", "feature-a");
+    commitIn(path, "new.txt", "not pushed yet\n");
+    const sha = execSync(`git -C ${path} rev-parse HEAD`, { encoding: "utf8" }).trim();
+    const rec = register(repoName, ephemeral("tree-a", path, "feature-a"));
+
+    const deps = makeDeps({
+      cacheEntries: { "feature-a": { mr: { iid: 42, sha, state: "opened" }, repoName } },
+    });
+    const result = await disposeTree(deps, rec, { auto: false });
+    expect(result).toEqual({ disposed: false, refusal: "unpushed" });
+    expect(existsSync(path)).toBe(true);
   });
 
   test("a fresh attendant lease on the joined MR refuses with \"attended\"", async () => {
@@ -566,7 +601,9 @@ describe("disposeTree", () => {
     });
 
     const sha = execSync(`git -C ${path} rev-parse HEAD`, { encoding: "utf8" }).trim();
-    const deps = makeDeps({ cacheEntries: { "feature-a": { mr: { iid: 42, sha }, repoName } } });
+    const deps = makeDeps({
+      cacheEntries: { "feature-a": { mr: { iid: 42, sha, state: "merged" }, repoName } },
+    });
     const result = await disposeTree(deps, rec, { auto: true });
     expect(result).toEqual({ disposed: false, refusal: "attended" });
   });

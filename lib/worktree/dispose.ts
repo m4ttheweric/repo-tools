@@ -24,6 +24,10 @@ const GRACE_MS = 10 * 60_000;
 
 const FETCH_TIMEOUT_MS = 2 * 60_000;
 
+/** `git worktree remove` deletes node_modules by hand; a pnpm-scale tree on
+ *  APFS routinely outruns runGit's 60s default. */
+const REMOVE_TIMEOUT_MS = 5 * 60_000;
+
 // ─── Dirty classification (harvested from parking-lot.ts, execSync → runGit) ──
 
 /** One entry from `git status --porcelain`. */
@@ -129,14 +133,17 @@ export interface DisposeDeps {
 export type DisposeOutcome = { disposed: true } | { disposed: false; refusal: string };
 
 /** The MR joined to this tree, if the branch cache knows one for this repo. */
-function joinedMr(deps: DisposeDeps, rec: TreeRecord): { iid?: number; sha?: string | null } | null {
+function joinedMr(
+  deps: DisposeDeps,
+  rec: TreeRecord,
+): { iid?: number; sha?: string | null; state?: string | null } | null {
   if (!rec.branch) return null;
   const entry = deps.cacheEntries[rec.branch];
   if (!entry || !entry.mr) return null;
   // Entries carry repoName once freshness has attributed them; an unattributed
   // entry is accepted (single-repo caches predate the field).
   if (entry.repoName && entry.repoName !== deps.repoName) return null;
-  return entry.mr as { iid?: number; sha?: string | null };
+  return entry.mr as { iid?: number; sha?: string | null; state?: string | null };
 }
 
 /**
@@ -145,6 +152,12 @@ function joinedMr(deps: DisposeDeps, rec: TreeRecord): { iid?: number; sha?: str
  * origin/<branch> before the tick sees the merge — so the MR head sha from the
  * branch cache is the only anchor that survives both. A sha that is present but
  * unknown locally → fetch once, then refuse rather than guess.
+ *
+ * Selected on the MR's state, NOT on `auto`: the anchor is a fact about the
+ * branch's history, not about who asked. A human disposing a squash-merged tree
+ * needs exactly the same anchor the reactor does — gating it on `auto` handed
+ * them "unpushed" and pushed them toward `--force`, which also strips the dirty
+ * guard.
  *
  * Only reached when the MR actually carries a sha: roughly a quarter of merged
  * entries in the live cache have no `sha` field at all, and refusing those
@@ -212,7 +225,7 @@ export async function disposeTree(
     // back to the remote anchor. "mr-sha-unresolvable" is reserved for a sha
     // that is present and still unknown after a fetch.
     const anchorRefusal =
-      auto && mrSha
+      mrSha && mr?.state === "merged"
         ? await mrAnchorRefusal(deps, rec, mrSha)
         : await remoteAnchorRefusal(rec);
     if (anchorRefusal) return refuse(anchorRefusal);
@@ -242,7 +255,9 @@ export async function disposeTree(
   // --force here is plumbing, not a safety statement: `git worktree remove`
   // refuses on any untracked file, and the guard above (or the caller's
   // explicit force) already made the decision.
-  const removal = await runGit(repoPath, ["worktree", "remove", "--force", rec.path]);
+  const removal = await runGit(repoPath, ["worktree", "remove", "--force", rec.path], {
+    timeoutMs: REMOVE_TIMEOUT_MS,
+  });
   if (removal.exitCode !== 0) {
     const output = (removal.stdout + removal.stderr).trim();
     log.warn(
