@@ -131,7 +131,16 @@ const handlerCtx: HandlerContext = {
 /** Env bundle for the live-freshness subsystem. */
 const freshnessEnv: FreshnessEnv = { ctx: handlerCtx, broadcast: emit };
 
-const routedHandlers = buildRoutedHandlers({ ctx: handlerCtx, broadcast: emit, systemProcessScanner });
+const routedHandlers = buildRoutedHandlers({
+  ctx: handlerCtx,
+  broadcast: emit,
+  systemProcessScanner,
+  worktree: {
+    emit,
+    kick: worktreeReconciler.kick,
+    creationInFlight: worktreeReconciler.creationInFlight,
+  },
+});
 
 async function handleCommand(cmd: string, payload: any): Promise<any> {
   const t0 = Date.now();

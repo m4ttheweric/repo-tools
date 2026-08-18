@@ -35,6 +35,7 @@ describe("rt-client command coverage", () => {
       ctx: stubCtx,
       broadcast: () => {},
       systemProcessScanner: {} as any,
+      worktree: { emit: () => {}, kick: () => {}, creationInFlight: () => null },
     });
     for (const name of COMMAND_NAMES) {
       expect(handlers[name]).toBeDefined();
