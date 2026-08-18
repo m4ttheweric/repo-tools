@@ -23,7 +23,8 @@
  * nothing here logs request/response.
  */
 
-import { realpathSync } from "fs";
+import { realpathSync, rmSync } from "fs";
+import { join } from "path";
 
 import type { HandlerContext, HandlerMap } from "./types.ts";
 import {
@@ -51,6 +52,7 @@ import {
 } from "../../worktree/config.ts";
 import { changedSince, runReadySteps, stepsToRun } from "../../worktree/ready.ts";
 import { freshenRepo, reconcileRepoRegistry } from "../worktree-reconciler.ts";
+import { repoDataDir, rtDir } from "../../rt-paths.ts";
 
 const PROVISION_FETCH_TIMEOUT_MS = 5 * 60_000;
 
@@ -589,6 +591,15 @@ export function createWorktreeHandlers(
       });
 
       if (result === "busy") return { ok: false, error: "busy" };
+      if (result.ok) {
+        // Adopt supersedes the parking lot: its per-repo index and app-level
+        // transition state are dead once every tree is registry-tracked. The
+        // app CONFIG file (~/.rt/parking-lot.json, no "-state" suffix) is left
+        // alone — loadWorktreeAppConfig still compat-reads it once to seed
+        // worktrees.json.
+        rmSync(join(repoDataDir(repoName), "parking-lot.json"), { force: true });
+        rmSync(join(rtDir(), "parking-lot-state.json"), { force: true });
+      }
       return result;
     },
   };

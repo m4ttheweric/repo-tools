@@ -34,7 +34,6 @@ import * as verify from "../commands/verify.ts";
 import * as update from "../commands/update.ts";
 import * as doppler from "../commands/doppler.ts";
 import * as nav from "../commands/nav.ts";
-import * as parkingLot from "../commands/parking-lot.ts";
 import * as sdm from "../commands/sdm.ts";
 import * as plugin from "../commands/plugin.ts";
 import * as worktree from "../commands/worktree.ts";
@@ -68,7 +67,6 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/update.ts": update,
   "./commands/doppler.ts": doppler,
   "./commands/nav.ts": nav,
-  "./commands/parking-lot.ts": parkingLot,
   "./commands/sdm.ts": sdm,
   "./commands/plugin.ts": plugin,
   "./commands/worktree.ts": worktree,
