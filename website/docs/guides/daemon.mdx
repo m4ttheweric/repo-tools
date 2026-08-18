@@ -11,16 +11,17 @@ title: The daemon
 
 The daemon is a long-lived process (managed by launchd) that:
 
-- **Caches MR/branch data.** It refreshes the branch and merge-request cache for every registered repo roughly every 5 minutes, and can be nudged to refresh sooner. Commands like `rt status` read this cache instead of re-fetching from GitLab/Linear on every invocation.
+- **Caches MR/branch data.** It keeps branch and merge-request caches warm for every registered repo, and commands like `rt status` read those caches instead of re-fetching from GitLab/Linear on every invocation. How warm depends on the repo's tracking level, set with [`rt daemon track`](/reference/daemon/track): `live` repos hold a realtime events watcher and sync incrementally (with a daily deep reconcile), `poll` repos refresh on a timer, and `off` repos are left alone. Consumers can also demand freshness explicitly (a max-age on reads), so a stale cache is refreshed on the spot instead of served as-is.
 - **Scans ports.** It scans listening ports roughly every 30 seconds, so `rt port` can show you what's running across your repos with zero configuration.
 - **Guards git hooks.** For repos where rt manages hooks, it watches each repo's `.git/config` and re-applies rt's hooks shim path if something else (another tool running `git config`) clobbers it.
 - **Answers status polls.** CLI commands and the tray app both query the daemon over a local Unix socket (and a REST/WebSocket API) for cached data and health.
-- **Kills a worktree's workload on park.** When you park a worktree (its feature is done), the daemon finds the dev servers, watchers, and compilers rooted in that worktree, SIGTERMs them, and escalates any survivor to SIGKILL after about 5 seconds. It deliberately spares AI agent sessions (Claude, Codex, and the like) and everything they spawned, plus shells and `.app` bundle processes, since those aren't workload.
+- **Runs the worktree lifecycle.** [`rt worktree`](/reference/worktree)'s provision/dispose/freshen verbs execute in the daemon, which owns the worktree registry, keeps the on-deck pool replenished, and reacts to merged MRs (auto-return plus guarded auto-dispose of the finished tree).
+- **Kills a worktree's workload on dispose.** When a worktree is disposed (its feature is done), the daemon finds the dev servers, watchers, and compilers rooted in that worktree, SIGTERMs them, and escalates any survivor to SIGKILL after about 5 seconds. It deliberately spares AI agent sessions (Claude, Codex, and the like) and everything they spawned, plus shells and `.app` bundle processes, since those aren't workload.
 - **Scans for and notifies on runaway processes.** Roughly every 10 seconds it scans system processes for anything rooted in a tracked repo, tracks a rolling CPU sample window per process, and notifies once a process has sustained high CPU for long enough (5 minutes above 80% by default, after a 2-minute grace period). AI agent sessions are excluded from this too.
 
 The tray app (menu-bar icon) shows the daemon's health at a glance, polling its status so you can tell at a look whether it's up.
 
-It does not run or supervise your dev servers for you the way the old managed-process feature did, and it does not provide tunnels: there's no "start this script and keep it alive" concept. The process-related behaviors above are reactive (park-time cleanup) and observational (runaway detection), not a general-purpose process supervisor.
+It does not run or supervise your dev servers for you the way the old managed-process feature did, and it does not provide tunnels: there's no "start this script and keep it alive" concept. The process-related behaviors above are reactive (dispose-time cleanup) and observational (runaway detection), not a general-purpose process supervisor.
 
 ## Installing, starting, and stopping
 
@@ -45,4 +46,4 @@ rt daemon logs            # open the log viewer
 
 `rt daemon logs` opens a browser-based log viewer by default; pass `--terminal` (or `-t`) for a live tail in your terminal instead. All daemon (and other rt surface) logs live under `~/.rt/logs/`; see the [logging guide](/guides/logging) for the file convention and how the viewer discovers them.
 
-See the full command reference: [`rt daemon`](/reference/daemon), [`rt daemon status`](/reference/daemon/status), [`rt daemon logs`](/reference/daemon/logs), [`rt daemon install`](/reference/daemon/install), [`rt daemon start`](/reference/daemon/start), [`rt daemon stop`](/reference/daemon/stop), [`rt daemon restart`](/reference/daemon/restart), and [`rt daemon uninstall`](/reference/daemon/uninstall).
+See the full command reference: [`rt daemon`](/reference/daemon), [`rt daemon status`](/reference/daemon/status), [`rt daemon logs`](/reference/daemon/logs), [`rt daemon track`](/reference/daemon/track), [`rt daemon install`](/reference/daemon/install), [`rt daemon start`](/reference/daemon/start), [`rt daemon stop`](/reference/daemon/stop), [`rt daemon restart`](/reference/daemon/restart), and [`rt daemon uninstall`](/reference/daemon/uninstall).
