@@ -130,19 +130,44 @@ export function resolveImplicitInstall(repoPath: string): ReadyStep | null {
   return manager ? MANAGER_STEP[manager] : null;
 }
 
+/** One leading `env` word, or one `VAR=value` assignment (value optionally quoted). */
+const ENV_PREFIX_TOKEN = /^(?:env|[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*))\s+/;
+
+/**
+ * Drop a shell env prefix from a declared run, leaving the command word first:
+ * `SKIP_GEN_TYPES=1 pnpm install` → `pnpm install`, `env FOO=bar pnpm install`
+ * → `pnpm install`. Purely for recognising WHICH command a step runs (the
+ * install-dedup test below); the step itself is always executed verbatim, env
+ * prefix included. Requires trailing whitespace, so a run that is nothing but
+ * an assignment (`A=1`) is left alone rather than emptied.
+ */
+export function stripEnvPrefix(run: string): string {
+  let rest = run.trimStart();
+  while (ENV_PREFIX_TOKEN.test(rest)) {
+    rest = rest.replace(ENV_PREFIX_TOKEN, "");
+  }
+  return rest;
+}
+
 /**
  * Implicit install first UNLESS cfg.ready already declares its own install
  * step for the detected manager (run starts with "<manager> install", e.g.
  * "pnpm install --side-effects-cache") — only an install step replaces the
  * implicit one; any other declared command for that manager (e.g. "pnpm
  * lint") does not suppress it. Otherwise cfg.ready in order.
+ *
+ * The prefix test runs against the env-stripped run: declaring
+ * `SKIP_GEN_TYPES=1 pnpm install` is still declaring the install, and letting
+ * an env prefix hide it from the dedup made the tree install twice.
  */
 export function resolveReadySteps(cfg: WorktreeRepoConfig, repoPath: string): ReadyStep[] {
   const manager = detectManager(repoPath);
   if (!manager) return cfg.ready;
 
   const installPrefix = `${manager} install`;
-  const alreadyDeclared = cfg.ready.some((step) => step.run.startsWith(installPrefix));
+  const alreadyDeclared = cfg.ready.some((step) =>
+    stripEnvPrefix(step.run).startsWith(installPrefix),
+  );
   if (alreadyDeclared) return cfg.ready;
 
   return [MANAGER_STEP[manager], ...cfg.ready];
