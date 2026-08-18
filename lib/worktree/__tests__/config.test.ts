@@ -8,6 +8,7 @@ import {
   loadWorktreeRepoConfig,
   resolveImplicitInstall,
   resolveReadySteps,
+  stripEnvPrefix,
   loadWorktreeAppConfig,
   type WorktreeRepoConfig,
 } from "../config.ts";
@@ -214,6 +215,75 @@ describe("worktree config", () => {
         ready: [{ run: "echo hi" }],
       };
       expect(resolveReadySteps(cfg, repoPath)).toEqual(cfg.ready);
+    });
+
+    test("an env-var prefix on the declared install still suppresses the implicit one", () => {
+      const repoPath = tmpRepoPath("rtcfg-resolve5-");
+      writeFileSync(join(repoPath, "package.json"), JSON.stringify({ name: "x" }));
+      writeFileSync(join(repoPath, "pnpm-lock.yaml"), "");
+      const cfg: WorktreeRepoConfig = {
+        onDeck: 0,
+        root: join(repoPath, ".worktrees"),
+        branchFormat: "<ticket>-<slug>",
+        ready: [{ run: "SKIP_GEN_TYPES=1 pnpm install --side-effects-cache" }],
+      };
+      expect(resolveReadySteps(cfg, repoPath)).toEqual(cfg.ready);
+    });
+
+    test("an `env VAR=value` prefix on the declared install still suppresses the implicit one", () => {
+      const repoPath = tmpRepoPath("rtcfg-resolve6-");
+      writeFileSync(join(repoPath, "package.json"), JSON.stringify({ name: "x" }));
+      writeFileSync(join(repoPath, "pnpm-lock.yaml"), "");
+      const cfg: WorktreeRepoConfig = {
+        onDeck: 0,
+        root: join(repoPath, ".worktrees"),
+        branchFormat: "<ticket>-<slug>",
+        ready: [{ run: "env FOO=bar pnpm install" }],
+      };
+      expect(resolveReadySteps(cfg, repoPath)).toEqual(cfg.ready);
+    });
+
+    test("an env-var prefix on a NON-install step does not suppress the implicit install", () => {
+      const repoPath = tmpRepoPath("rtcfg-resolve7-");
+      writeFileSync(join(repoPath, "package.json"), JSON.stringify({ name: "x" }));
+      writeFileSync(join(repoPath, "pnpm-lock.yaml"), "");
+      const cfg: WorktreeRepoConfig = {
+        onDeck: 0,
+        root: join(repoPath, ".worktrees"),
+        branchFormat: "<ticket>-<slug>",
+        ready: [{ run: "SKIP_X=1 pnpm lint" }],
+      };
+      expect(resolveReadySteps(cfg, repoPath)).toEqual([
+        { run: "pnpm install", when: "changed:pnpm-lock.yaml" },
+        { run: "SKIP_X=1 pnpm lint" },
+      ]);
+    });
+  });
+
+  describe("stripEnvPrefix", () => {
+    test("leaves a bare command alone", () => {
+      expect(stripEnvPrefix("pnpm install")).toBe("pnpm install");
+    });
+
+    test("strips one or many leading assignments", () => {
+      expect(stripEnvPrefix("A=1 pnpm install")).toBe("pnpm install");
+      expect(stripEnvPrefix("A=1 B=2 pnpm install --frozen-lockfile")).toBe(
+        "pnpm install --frozen-lockfile",
+      );
+    });
+
+    test("strips a leading `env`, with or without assignments after it", () => {
+      expect(stripEnvPrefix("env pnpm install")).toBe("pnpm install");
+      expect(stripEnvPrefix("env FOO=bar pnpm install")).toBe("pnpm install");
+    });
+
+    test("tolerates quoted assignment values containing spaces", () => {
+      expect(stripEnvPrefix('FOO="a b" pnpm install')).toBe("pnpm install");
+    });
+
+    test("never eats the command itself", () => {
+      expect(stripEnvPrefix("A=1")).toBe("A=1");
+      expect(stripEnvPrefix("env")).toBe("env");
     });
   });
 
