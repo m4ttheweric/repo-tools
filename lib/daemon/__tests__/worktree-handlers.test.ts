@@ -221,6 +221,39 @@ describe("worktree:provision", () => {
     expect(await currentBranchAsync(rec.path)).toBe("mate-branch");
   });
 
+  test("local branches report existing-clean, behind, or diverged and are never reconciled", async () => {
+    const repo = makeRepo();
+    const gitId = "git -c user.email=t@t -c user.name=t";
+
+    // (c) local only, no upstream at all.
+    sh(`${gitId} branch feat-local origin/main`, repo);
+
+    // (c) local trails its upstream: origin's copy gained a commit the local ref never saw.
+    sh(`${gitId} checkout -q -b feat-behind origin/main && git push -q origin feat-behind`, repo);
+    sh(`${gitId} commit -q --allow-empty -m ahead && git push -q origin feat-behind && ${gitId} reset -q --hard HEAD~1 && git checkout -q main`, repo);
+
+    // (e) both sides moved independently.
+    sh(`${gitId} checkout -q -b tmp-div origin/main && ${gitId} commit -q --allow-empty -m theirs && git push -q origin tmp-div:refs/heads/feat-div && git checkout -q main && git branch -qD tmp-div`, repo);
+    sh(`${gitId} checkout -q -b feat-div origin/main && ${gitId} commit -q --allow-empty -m mine && git checkout -q main`, repo);
+    const mineSha = sh("git rev-parse feat-div", repo).trim();
+
+    seedOnDeck(repo, repoName, "one", new Date().toISOString());
+    seedOnDeck(repo, repoName, "two", new Date().toISOString());
+    seedOnDeck(repo, repoName, "three", new Date().toISOString());
+    const { h } = makeHandlers({ [repoName]: repo });
+
+    const plain: any = await h["worktree:provision"]!({ repoName, branch: "feat-local" });
+    expect(plain.data.branchState).toBe("existing-clean");
+
+    const behind: any = await h["worktree:provision"]!({ repoName, branch: "feat-behind" });
+    expect(behind.data.branchState).toBe("behind");
+
+    const diverged: any = await h["worktree:provision"]!({ repoName, branch: "feat-div" });
+    expect(diverged.data.branchState).toBe("diverged");
+    // Reported, never reconciled: the local tip is checked out untouched.
+    expect(await headSha(diverged.data.path)).toBe(mineSha);
+  });
+
   test("a failure after the claim rolls the tree back to on-deck", async () => {
     const repo = makeRepo();
     const rec = seedOnDeck(repo, repoName, "alpha", new Date().toISOString());
