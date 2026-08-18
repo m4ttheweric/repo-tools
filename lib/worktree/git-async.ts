@@ -108,12 +108,18 @@ export async function headSha(cwd: string): Promise<string | null> {
  * that exist on disk (a worktree removed via `rm -rf` still shows up in
  * git's porcelain output, but it's not one we can operate on).
  *
+ * Returns null on a nonzero exit (e.g. a broken or nonexistent git dir) so
+ * callers can tell "git failed" apart from "git succeeded and reported no
+ * worktrees" -- treating a failed listing as an empty one is how a registry
+ * gets mass-pruned against a repo git briefly couldn't read.
+ *
  * NOTE: returns git's canonicalized paths (/private/var/... on macOS
  * tmpdirs); callers comparing against stored paths rely on the
  * canonical-fixtures rule in Global Constraints.
  */
-export async function listWorktreesAsync(repoPath: string): Promise<WorktreeEntry[]> {
+export async function listWorktreesAsync(repoPath: string): Promise<WorktreeEntry[] | null> {
   const r = await runGit(repoPath, ["worktree", "list", "--porcelain"]);
+  if (r.exitCode !== 0) return null;
   const results: WorktreeEntry[] = [];
   let curPath: string | null = null;
   let curBranch: string | null = null;

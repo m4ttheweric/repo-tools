@@ -114,6 +114,11 @@ export async function reconcileRepoRegistry(deps: {
   trees = afterScrap;
 
   const gitEntries = await listWorktreesAsync(repoPath);
+  if (gitEntries === null) {
+    if (changed) saveRegistry(repoName, trees);
+    log.warn({ repo: repoName, repoPath }, "reconcile: git worktree list failed; skipping this repo's pass");
+    return trees;
+  }
   const gitByCanon = new Map<string, WorktreeEntry>();
   for (const entry of gitEntries) {
     gitByCanon.set(canon(entry.path), entry);
@@ -334,7 +339,12 @@ async function autoReturnMain(
   // (b) git refuses to check out a branch another worktree holds. park()
   //     refused up front for exactly this; without the check the checkout
   //     fails after the stash and retries every pass.
-  const holder = (await listWorktreesAsync(deps.repoPath)).find(
+  const gitEntries = await listWorktreesAsync(deps.repoPath);
+  if (gitEntries === null) {
+    log.warn({ ...fields }, "auto-return: git worktree list failed; retrying next pass");
+    return "retry";
+  }
+  const holder = gitEntries.find(
     (w) => w.branch === defaultBranch && canon(w.path) !== canon(rec.path),
   );
   if (holder) {

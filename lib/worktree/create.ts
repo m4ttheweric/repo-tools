@@ -134,8 +134,13 @@ async function runCreate(
     return fail(readyResult.failedStep, readyResult.output);
   }
 
-  const worktreeRoots = (await listWorktreesAsync(repoPath)).map((w) => w.path);
-  await reconcileForRepo({ repoName, worktreeRoots });
+  const gitEntries = await listWorktreesAsync(repoPath);
+  if (gitEntries === null) {
+    log.warn({ repo: repoName, tree: name, path }, "worktree create: git worktree list failed; skipping doppler sync");
+  } else {
+    const worktreeRoots = gitEntries.map((w) => w.path);
+    await reconcileForRepo({ repoName, worktreeRoots });
+  }
 
   const readyStamp = await headSha(path);
   const updated: TreeRecord = {

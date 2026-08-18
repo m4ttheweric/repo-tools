@@ -154,8 +154,24 @@ describe("reconcileRepoRegistry", () => {
     expect(existsSync(ghostPath)).toBe(false);
     expect(await branchExistsLocalAsync(repo, "on-deck/ghost")).toBe(false);
 
-    const worktrees = await listWorktreesAsync(repo);
+    const worktrees = (await listWorktreesAsync(repo))!;
     expect(worktrees.some((w) => w.path === ghostPath)).toBe(false);
+  });
+
+  test("a broken git dir leaves an existing registry row untouched instead of pruning it", async () => {
+    // Adopt the main clone into the registry on a healthy pass first.
+    await reconcileRepoRegistry(makeDeps(repoName, repo, events));
+    const before = loadRegistry(repoName);
+    expect(before.length).toBe(1);
+    expect(before[0]!.kind).toBe("main");
+
+    // Break the git dir so `git worktree list --porcelain` fails.
+    rmSync(join(repo, ".git"), { recursive: true, force: true });
+
+    const trees = await reconcileRepoRegistry(makeDeps(repoName, repo, events));
+
+    expect(trees).toEqual(before);
+    expect(loadRegistry(repoName)).toEqual(before);
   });
 });
 

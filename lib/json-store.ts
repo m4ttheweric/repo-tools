@@ -11,8 +11,9 @@
  * sweep, not part of the path refactor.
  */
 
-import { mkdirSync, readFileSync, writeFileSync, renameSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "fs";
 import { dirname } from "path";
+import { randomBytes } from "crypto";
 
 /**
  * Read and parse a JSON file. Returns `fallback` on any failure — missing file,
@@ -34,7 +35,16 @@ export function readJson<T>(path: string, fallback: T): T {
  */
 export function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(value, null, 2));
-  renameSync(tmp, path);
+  const tmp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(value, null, 2));
+    renameSync(tmp, path);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // tmp file never got created, or was already cleaned up... nothing to do
+    }
+    throw err;
+  }
 }

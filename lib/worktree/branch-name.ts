@@ -6,26 +6,35 @@
  * Example: slugifyTicketTitle("RT-34", "Ephemeral Worktrees: rule!", "<ticket>-<slug>")
  *   → "rt-34-ephemeral-worktrees-rule"
  */
+/** Lowercase, non-alphanumerics -> dash, collapsed, trimmed at both edges. */
+function sanitize(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 export function slugifyTicketTitle(
   ticketId: string,
   title: string,
   format: string
 ): string {
-  const ticketLower = ticketId.toLowerCase();
-  const titleLower = title.toLowerCase();
+  const ticketSlug = sanitize(ticketId);
 
   // Replace non-alphanumeric characters with dashes
-  let titleSlug = titleLower
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, ""); // Trim dashes from start/end
+  let titleSlug = sanitize(title);
 
   // Cap the slug portion at 40 characters BEFORE assembling
   titleSlug = titleSlug.substring(0, 40).replace(/-+$/, ""); // Trim trailing dashes after cap
 
-  // Build the result based on format
+  // Build the result based on format. replaceAll (not replace): String.replace
+  // only substitutes the first occurrence of a repeated placeholder. A
+  // function replacer (not a plain string) because $-sequences in a string
+  // replacement value are interpreted as patterns by both replace AND
+  // replaceAll... a slug containing "$&" would otherwise get mangled.
   const result = format
-    .replace("<ticket>", ticketLower)
-    .replace("<slug>", titleSlug);
+    .replaceAll("<ticket>", () => ticketSlug)
+    .replaceAll("<slug>", () => titleSlug);
 
   return result;
 }

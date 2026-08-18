@@ -33,8 +33,8 @@ export function registryPath(repoName: string): string {
 
 export function loadRegistry(repoName: string): TreeRecord[] {
   const path = registryPath(repoName);
-  const data = readJson<RegistryFile>(path, { trees: [] });
-  return data.trees;
+  const data = readJson<Partial<RegistryFile>>(path, { trees: [] });
+  return Array.isArray(data?.trees) ? data.trees : [];
 }
 
 export function saveRegistry(repoName: string, trees: TreeRecord[]): void {
