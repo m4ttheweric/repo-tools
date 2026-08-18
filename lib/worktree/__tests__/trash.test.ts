@@ -38,6 +38,14 @@ describe("worktree trash", () => {
       expect(basename(path)).toBe(`${TRASH_PREFIX}hotel-1700000000000`);
     });
 
+    test("rejects a name containing a path separator", () => {
+      expect(() => trashPathFor(join(root, "x"), "x/../../outside")).toThrow(
+        /single path component/,
+      );
+      expect(() => trashPathFor(join(root, "x"), "x\\y")).toThrow(/single path component/);
+      expect(() => trashPathFor(join(root, "x"), "")).toThrow(/single path component/);
+    });
+
     test("two disposals of the same name never collide", () => {
       const a = trashPathFor(join(root, "hotel"), "hotel", 1);
       const b = trashPathFor(join(root, "hotel"), "hotel", 2);
@@ -57,6 +65,13 @@ describe("worktree trash", () => {
       expect(existsSync(result.trashPath)).toBe(true);
       expect(readFileSync(join(result.trashPath, "file.txt"), "utf8")).toBe("content\n");
       expect(basename(result.trashPath).startsWith(TRASH_PREFIX)).toBe(true);
+    });
+
+    test("a separator-containing name reports the failure without renaming", async () => {
+      const tree = makeTree(root, "sierra");
+      const result = await trashTree(tree, "sierra/../escape");
+      expect(result.ok).toBe(false);
+      expect(existsSync(tree)).toBe(true);
     });
 
     test("a path that cannot be renamed reports the failure instead of throwing", async () => {
@@ -116,6 +131,15 @@ describe("worktree trash", () => {
       const { log, warns } = capturingLog();
       expect(await reapTrashInRoots([join(root, "nope")], log)).toBe(0);
       expect(warns.length).toBe(0);
+    });
+
+    test("a root that cannot be read (not just missing) is warned about", async () => {
+      const file = join(root, "not-a-dir");
+      writeFileSync(file, "");
+      const { log, warns } = capturingLog();
+      expect(await reapTrashInRoots([file], log)).toBe(0);
+      expect(warns.length).toBe(1);
+      expect(warns[0]?.[0]).toMatchObject({ root: file });
     });
 
     test("the same root listed twice is swept once", async () => {

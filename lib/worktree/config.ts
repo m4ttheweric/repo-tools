@@ -132,23 +132,44 @@ export function resolveImplicitInstall(repoPath: string): ReadyStep | null {
   return manager ? MANAGER_STEP[manager] : null;
 }
 
-/** One leading `env` word, or one `VAR=value` assignment (value optionally quoted). */
-const ENV_PREFIX_TOKEN = /^(?:env|[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*))\s+/;
+/** One leading `VAR=value` assignment (value optionally quoted). */
+const ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+/;
+const ENV_WORD = /^env\s+/;
+const OPTION_TOKEN = /^(-\S*)\s+/;
+/** env(1) short options whose argument is the NEXT token (`-u NAME` etc.). */
+const ENV_ARG_OPTIONS = new Set(["-u", "-C", "-P", "-S"]);
 
 /**
  * Drop a shell env prefix from a declared run, leaving the command word first:
- * `SKIP_GEN_TYPES=1 pnpm install` → `pnpm install`, `env FOO=bar pnpm install`
- * → `pnpm install`. Purely for recognising WHICH command a step runs (the
- * install-dedup test below); the step itself is always executed verbatim, env
- * prefix included. Requires trailing whitespace, so a run that is nothing but
- * an assignment (`A=1`) is left alone rather than emptied.
+ * `SKIP_GEN_TYPES=1 pnpm install` → `pnpm install`, `env -i FOO=bar pnpm
+ * install` → `pnpm install`. Purely for recognising WHICH command a step runs
+ * (the install-dedup test below); the step itself is always executed verbatim,
+ * env prefix included. Option words are only consumed after an `env`, so a
+ * command's own flags are never eaten. Every token match requires trailing
+ * whitespace, so a run that is nothing but a prefix (`A=1`, `env`) is left
+ * alone rather than emptied.
  */
 export function stripEnvPrefix(run: string): string {
   let rest = run.trimStart();
-  while (ENV_PREFIX_TOKEN.test(rest)) {
-    rest = rest.replace(ENV_PREFIX_TOKEN, "");
+  let inEnv = false;
+  for (;;) {
+    if (ASSIGNMENT_TOKEN.test(rest)) {
+      rest = rest.replace(ASSIGNMENT_TOKEN, "");
+      continue;
+    }
+    if (ENV_WORD.test(rest)) {
+      rest = rest.replace(ENV_WORD, "");
+      inEnv = true;
+      continue;
+    }
+    const option = inEnv ? rest.match(OPTION_TOKEN) : null;
+    if (option) {
+      rest = rest.slice(option[0].length);
+      if (ENV_ARG_OPTIONS.has(option[1] ?? "")) rest = rest.replace(/^\S+\s+/, "");
+      continue;
+    }
+    return rest;
   }
-  return rest;
 }
 
 /**
@@ -166,10 +187,12 @@ export function resolveReadySteps(cfg: WorktreeRepoConfig, repoPath: string): Re
   const manager = detectManager(repoPath);
   if (!manager) return cfg.ready;
 
-  const installPrefix = `${manager} install`;
-  const alreadyDeclared = cfg.ready.some((step) =>
-    stripEnvPrefix(step.run).startsWith(installPrefix),
-  );
+  const installWords = `${manager} install`;
+  const alreadyDeclared = cfg.ready.some((step) => {
+    const command = stripEnvPrefix(step.run);
+    // Whole-token match: `pnpm install --flag` counts, `pnpm installer` does not.
+    return command === installWords || command.startsWith(`${installWords} `);
+  });
   if (alreadyDeclared) return cfg.ready;
 
   return [MANAGER_STEP[manager], ...cfg.ready];

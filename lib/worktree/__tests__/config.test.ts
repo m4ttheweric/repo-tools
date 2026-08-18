@@ -255,6 +255,35 @@ describe("worktree config", () => {
       expect(resolveReadySteps(cfg, repoPath)).toEqual(cfg.ready);
     });
 
+    test("an `env -i` prefix on the declared install still suppresses the implicit one", () => {
+      const repoPath = tmpRepoPath("rtcfg-resolve8-");
+      writeFileSync(join(repoPath, "package.json"), JSON.stringify({ name: "x" }));
+      writeFileSync(join(repoPath, "pnpm-lock.yaml"), "");
+      const cfg: WorktreeRepoConfig = {
+        onDeck: 0,
+        root: join(repoPath, ".worktrees"),
+        branchFormat: "<ticket>-<slug>",
+        ready: [{ run: "env -i PATH=/usr/bin pnpm install" }],
+      };
+      expect(resolveReadySteps(cfg, repoPath)).toEqual(cfg.ready);
+    });
+
+    test("a command that merely starts with the letters `install` does not suppress it", () => {
+      const repoPath = tmpRepoPath("rtcfg-resolve9-");
+      writeFileSync(join(repoPath, "package.json"), JSON.stringify({ name: "x" }));
+      writeFileSync(join(repoPath, "pnpm-lock.yaml"), "");
+      const cfg: WorktreeRepoConfig = {
+        onDeck: 0,
+        root: join(repoPath, ".worktrees"),
+        branchFormat: "<ticket>-<slug>",
+        ready: [{ run: "pnpm installer" }],
+      };
+      expect(resolveReadySteps(cfg, repoPath)).toEqual([
+        { run: "pnpm install", when: "changed:pnpm-lock.yaml" },
+        { run: "pnpm installer" },
+      ]);
+    });
+
     test("an env-var prefix on a NON-install step does not suppress the implicit install", () => {
       const repoPath = tmpRepoPath("rtcfg-resolve7-");
       writeFileSync(join(repoPath, "package.json"), JSON.stringify({ name: "x" }));
@@ -287,6 +316,17 @@ describe("worktree config", () => {
     test("strips a leading `env`, with or without assignments after it", () => {
       expect(stripEnvPrefix("env pnpm install")).toBe("pnpm install");
       expect(stripEnvPrefix("env FOO=bar pnpm install")).toBe("pnpm install");
+    });
+
+    test("strips env's own options, including ones that take an argument", () => {
+      expect(stripEnvPrefix("env -i PATH=/usr/bin pnpm install")).toBe("pnpm install");
+      expect(stripEnvPrefix("env --ignore-environment pnpm install")).toBe("pnpm install");
+      expect(stripEnvPrefix("env -u FOO pnpm install")).toBe("pnpm install");
+    });
+
+    test("never eats a command's own flags — options only strip after `env`", () => {
+      expect(stripEnvPrefix("pnpm -r install")).toBe("pnpm -r install");
+      expect(stripEnvPrefix("A=1 pnpm --filter x install")).toBe("pnpm --filter x install");
     });
 
     test("tolerates quoted assignment values containing spaces", () => {
