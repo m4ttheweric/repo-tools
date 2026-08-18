@@ -159,6 +159,19 @@ async function divergence(
   return { ahead: ahead!, behind: behind! };
 }
 
+/**
+ * Whether the entry a provision selected may still be claimed by it.
+ *
+ * ONLY `on-deck` qualifies. `claimed` is exactly the state that means another
+ * provision won the race: accepting it would overwrite that caller's owner and
+ * disposal mode and re-checkout their tree underneath them. `creating` and
+ * `disposable` are equally not ours to take, and a vanished entry means the
+ * reconciler pruned the tree while we were selecting it.
+ */
+export function isClaimable(rec: TreeRecord | undefined): boolean {
+  return rec !== undefined && rec.kind === "ephemeral" && rec.state === "on-deck";
+}
+
 export function createWorktreeHandlers(
   ctx: HandlerContext,
   opts: WorktreeHandlerOpts,
@@ -192,7 +205,7 @@ export function createWorktreeHandlers(
       r.disposableReason = reason;
     });
     opts.emit("worktree:disposable", {
-      repo: repoName, tree: rec.name, path: rec.path, reason,
+      repo: repoName, tree: rec.name, path: rec.path, branch: current, reason,
     });
   }
 
@@ -261,11 +274,16 @@ export function createWorktreeHandlers(
       > => {
         // The registry may have moved between selection and the lock.
         const fresh = loadRegistry(repoName).find((t) => t.path === tree.path);
-        if (!fresh || fresh.kind !== "ephemeral" || (fresh.state !== "on-deck" && fresh.state !== "claimed")) {
-          return { ok: false, error: "busy" };
-        }
+        if (!isClaimable(fresh)) return { ok: false, error: "busy" };
 
-        // ── 3. Claim.
+        // ── 3. Claim. `branch` is deliberately NOT written here: reconcile
+        // step (c) owns that field as git ground truth and would reset it to
+        // `on-deck/<name>` on its next pass anyway, so recording the work
+        // branch before the checkout only invents a fact git disagrees with.
+        // The window that leaves open (another provision naming the same
+        // branch between claim and checkout) is closed by git itself — the
+        // second checkout fails with "already checked out", which rolls that
+        // caller back rather than handing two trees the same branch.
         const disposal: DisposalMode = payload.disposal === "job" ? "job" : "merge";
         patchTree(repoName, tree.path, (r) => {
           r.state = "claimed";
@@ -345,9 +363,11 @@ export function createWorktreeHandlers(
         const stamp = loadRegistry(repoName).find((t) => t.path === tree.path)?.readyStamp;
         const changed = stamp ? await changedSince(tree.path, stamp) : null;
         const toRun = stepsToRun(readySteps, changed);
+        let readyFailure: string | null = null;
         if (toRun.length > 0) {
           const ready = await runReadySteps(tree.path, toRun);
           if (!ready.ok) {
+            readyFailure = ready.failedStep;
             ctx.log.warn(
               { repo: repoName, tree: tree.name, failedStep: ready.failedStep },
               "provision: ready step failed after claim",
@@ -367,6 +387,9 @@ export function createWorktreeHandlers(
             wasOnDeck,
             readyAt: final?.readyAt ?? null,
             branchState,
+            // Additive, and only present when it happened: the tree is usable
+            // and handed over, but its dependencies may be stale.
+            ...(readyFailure ? { readyFailed: true as const, failedStep: readyFailure } : {}),
           },
         };
       });
@@ -538,6 +561,9 @@ export function createWorktreeHandlers(
             patchTree(repoName, rec.path, (r) => {
               r.kind = "ephemeral";
               r.state = "claimed";
+              // Same shape as the else-branch below, so a tree the guard
+              // refuses is left a plain adopted claimed tree, not a hybrid.
+              r.disposal = "merge";
               r.claimedAt = new Date().toISOString();
             });
             const deps = disposeDeps(ctx, opts, repoName, repoPath);
