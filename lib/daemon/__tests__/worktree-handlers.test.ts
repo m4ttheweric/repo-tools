@@ -14,11 +14,11 @@ import { tmpdir } from "os";
 import { basename, join } from "path";
 import type { Logger } from "pino";
 import { writeJson } from "../../json-store.ts";
-import { rtDir } from "../../rt-paths.ts";
+import { repoDataDir, rtDir } from "../../rt-paths.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../../worktree/registry.ts";
 import { tryLockTree } from "../../worktree/locks.ts";
 import { branchExistsLocalAsync, currentBranchAsync, headSha } from "../../worktree/git-async.ts";
-import { createWorktreeHandlers } from "../handlers/worktree.ts";
+import { createWorktreeHandlers, isClaimable } from "../handlers/worktree.ts";
 import type { HandlerContext, HandlerMap } from "../handlers/types.ts";
 
 function sh(cmd: string, cwd?: string): string {
@@ -273,6 +273,68 @@ describe("worktree:provision", () => {
     expect(stored.claimedAt).toBeUndefined();
     expect(stored.branch).toBe("on-deck/alpha");
     expect(await currentBranchAsync(rec.path)).toBe("on-deck/alpha");
+  });
+
+  test("only an on-deck entry is still claimable when the lock is finally taken", () => {
+    const base: TreeRecord = {
+      name: "alpha",
+      path: "/tmp/alpha",
+      kind: "ephemeral",
+      state: "on-deck",
+      branch: "on-deck/alpha",
+      createdAt: new Date().toISOString(),
+    };
+    expect(isClaimable(base)).toBe(true);
+    // `claimed` is precisely "another provision got here first": re-claiming
+    // would overwrite that caller's owner/disposal and re-checkout their tree.
+    expect(isClaimable({ ...base, state: "claimed" })).toBe(false);
+    expect(isClaimable({ ...base, state: "creating" })).toBe(false);
+    expect(isClaimable({ ...base, state: "disposable" })).toBe(false);
+    expect(isClaimable({ ...base, kind: "unmanaged", state: undefined })).toBe(false);
+    expect(isClaimable(undefined)).toBe(false);
+  });
+
+  test("a tree that has already left its on-deck branch flips disposable on failure", async () => {
+    const repo = makeRepo();
+    const rec = seedOnDeck(repo, repoName, "alpha", new Date().toISOString());
+    // Registry drift: the tree is off its pool branch while the registry still
+    // says on-deck, so the rollback has no on-deck branch to return it to.
+    sh("git checkout -q -b drifted", rec.path);
+    sh(`git remote set-url origin ${join(tmpdir(), "rtwh-gone-nowhere.git")}`, repo);
+    const { h, events } = makeHandlers({ [repoName]: repo });
+
+    const res: any = await h["worktree:provision"]!({ repoName, branch: "rt-8-boom", owner: "pane-1" });
+
+    expect(res.ok).toBe(false);
+    expect(String(res.error).startsWith("checkout-failed:")).toBe(true);
+
+    const stored = loadRegistry(repoName).find((t) => t.name === "alpha")!;
+    expect(stored.state).toBe("disposable");
+    expect(stored.branch).toBe("drifted");
+    expect(String(stored.disposableReason).startsWith("checkout-failed:")).toBe(true);
+
+    const flipped = events.find((e) => e.type === "worktree:disposable");
+    expect(flipped).toBeDefined();
+    expect(flipped!.data).toMatchObject({ repo: repoName, tree: "alpha", branch: "drifted" });
+    expect(String(flipped!.data.reason).startsWith("checkout-failed:")).toBe(true);
+  });
+
+  test("a ready step that fails after the claim hands the tree over flagged", async () => {
+    const repo = makeRepo();
+    writeJson(join(repoDataDir(repoName), "config.json"), {
+      worktrees: { ready: [{ run: "exit 3" }] },
+    });
+    seedOnDeck(repo, repoName, "alpha", new Date().toISOString());
+    const { h } = makeHandlers({ [repoName]: repo });
+
+    const res: any = await h["worktree:provision"]!({ repoName, branch: "rt-9-degraded" });
+
+    // Non-fatal: the caller has a usable tree, but must be able to see that
+    // its readiness is degraded.
+    expect(res.ok).toBe(true);
+    expect(res.data.readyFailed).toBe(true);
+    expect(res.data.failedStep).toBe("exit 3");
+    expect(loadRegistry(repoName).find((t) => t.name === "alpha")!.state).toBe("claimed");
   });
 
   test("skips a locked on-deck tree and picks the next best", async () => {
