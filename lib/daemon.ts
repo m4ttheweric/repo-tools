@@ -31,6 +31,7 @@ import { evictStaleDaemon } from "./daemon/boot-reconcile.ts";
 import { resolveUserPath } from "./daemon/user-path.ts";
 import { createBranchCache } from "./daemon/branch-cache.ts";
 import { createCacheRefresher } from "./daemon/cache-refresh.ts";
+import { createWorktreeReconciler } from "./daemon/worktree-reconciler.ts";
 import { loadRepoIndex, REPOS_JSON_PATH } from "./daemon/repo-index.ts";
 import { createHooksGuard } from "./daemon/hooks-guard.ts";
 import { buildRoutedHandlers } from "./daemon/command-router.ts";
@@ -90,12 +91,27 @@ const emit: typeof broadcast = (type, data) => {
   cron.onBroadcast(type, data);
 };
 
+// Worktree lifecycle reconciler: reconcile → merge reactor → freshen →
+// replenish/shrink. Kicked detached off the tail of every cache refresh
+// (see `worktreeKick` below), plus its own periodic pass isn't needed since
+// the refresh timer already provides one.
+const worktreeReconciler = createWorktreeReconciler({
+  cache,
+  repoIndex: loadRepoIndex,
+  // `emit` (not bare `broadcast`), deliberately: reconciler events (e.g.
+  // "worktree:freshened") should also reach the cron trigger layer, same as
+  // every other broadcast frame.
+  emit,
+  log,
+});
+
 const refreshCache = createCacheRefresher({
   log, cache, loadCache, refreshStatusRef, portCacheRef,
   repoIndex: loadRepoIndex,
   broadcast: emit,
   statusSnapshot: () => handleCommand("tray:status", {}),
   reconcileSubscriptions: () => reconcileFreshness(freshnessEnv),
+  worktreeKick: worktreeReconciler.kick,
 });
 
 // ─── Handler context + command routing ───────────────────────────────────────
@@ -115,7 +131,16 @@ const handlerCtx: HandlerContext = {
 /** Env bundle for the live-freshness subsystem. */
 const freshnessEnv: FreshnessEnv = { ctx: handlerCtx, broadcast: emit };
 
-const routedHandlers = buildRoutedHandlers({ ctx: handlerCtx, broadcast: emit, systemProcessScanner });
+const routedHandlers = buildRoutedHandlers({
+  ctx: handlerCtx,
+  broadcast: emit,
+  systemProcessScanner,
+  worktree: {
+    emit,
+    kick: worktreeReconciler.kick,
+    creationInFlight: worktreeReconciler.creationInFlight,
+  },
+});
 
 async function handleCommand(cmd: string, payload: any): Promise<any> {
   const t0 = Date.now();

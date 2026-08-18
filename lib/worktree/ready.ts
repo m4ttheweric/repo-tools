@@ -1,0 +1,62 @@
+/**
+ * Ready-step engine: which steps a worktree freshen needs to run, and
+ * running them.
+ *
+ * "changed" steps only fire when their glob matches a path that actually
+ * changed since the worktree's last ready stamp; a null changed set (stamp
+ * unknown to git, e.g. cold create) means run everything.
+ */
+
+import { runGit } from "./git-async.ts";
+import { runCapture } from "../subprocess.ts";
+import type { ReadyStep } from "./config.ts";
+
+/**
+ * Paths changed between readyStamp and HEAD, or null when readyStamp is
+ * unknown to git (treat as "everything changed").
+ */
+export async function changedSince(worktreePath: string, readyStamp: string): Promise<string[] | null> {
+  const r = await runGit(worktreePath, ["diff", "--name-only", `${readyStamp}..HEAD`]);
+  if (r.exitCode !== 0) return null;
+  return r.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+const CHANGED_WHEN_RE = /^changed:(.+)$/;
+
+/**
+ * changed === null → every step (cold create / unknown stamp). Otherwise:
+ * steps whose `when` is "changed:<glob>" and the glob matches some changed
+ * path; steps with no `when` are skipped.
+ */
+export function stepsToRun(steps: ReadyStep[], changed: string[] | null): ReadyStep[] {
+  if (changed === null) return steps;
+
+  return steps.filter((step) => {
+    if (!step.when) return false;
+    const match = CHANGED_WHEN_RE.exec(step.when);
+    if (!match) return false;
+    const glob = new Bun.Glob(match[1]!);
+    return changed.some((path) => glob.match(path));
+  });
+}
+
+/** Run ready steps in order via zsh, stopping at the first failure. */
+export async function runReadySteps(
+  worktreePath: string,
+  steps: ReadyStep[],
+): Promise<{ ok: true } | { ok: false; failedStep: string; output: string }> {
+  for (const step of steps) {
+    const r = await runCapture(["/bin/zsh", "-lc", step.run], {
+      cwd: worktreePath,
+      timeoutMs: 15 * 60_000,
+      stderr: "pipe",
+    });
+    if (r.exitCode !== 0) {
+      return { ok: false, failedStep: step.run, output: r.stdout + r.stderr };
+    }
+  }
+  return { ok: true };
+}

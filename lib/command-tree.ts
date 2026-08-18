@@ -222,17 +222,21 @@ export async function dispatch(
   const commandLabel = breadcrumb.slice(1).concat(resolvedName).join(" ");
   beginCommand(commandLabel, rest);
 
-  // Extract --repo <name> flag if present (allows callers to pre-select the repo
-  // but still trigger the worktree picker)
-  let repoFlag: string | null = null;
-  const repoFlagIdx = rest.indexOf("--repo");
-  if (repoFlagIdx !== -1 && rest[repoFlagIdx + 1]) {
-    repoFlag = rest[repoFlagIdx + 1]!;
-    rest.splice(repoFlagIdx, 2);
-  }
-
   if (node.context === "worktree") {
     const cwdBefore = process.cwd();
+
+    // Extract --repo <name> flag if present (allows callers to pre-select the repo
+    // but still trigger the worktree picker). Scoped to context:"worktree" nodes
+    // only — a node without this context (e.g. the daemon-backed worktree
+    // lifecycle verbs, which take their own `--repo <registeredName>` payload
+    // flag) must see `--repo` untouched in its own args, not have it silently
+    // consumed here.
+    let repoFlag: string | null = null;
+    const repoFlagIdx = rest.indexOf("--repo");
+    if (repoFlagIdx !== -1 && rest[repoFlagIdx + 1]) {
+      repoFlag = rest[repoFlagIdx + 1]!;
+      rest.splice(repoFlagIdx, 2);
+    }
 
     if (repoFlag) {
       // --repo provided: resolve that repo and show worktree picker (skip repo picker + cwd detection)

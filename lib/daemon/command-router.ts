@@ -12,7 +12,7 @@ import { createHooksHandlers }     from "./handlers/hooks.ts";
 import { createStatusHandlers }    from "./handlers/status.ts";
 import { createWorkspaceHandlers } from "./handlers/workspace.ts";
 import { createMRHandlers }        from "./handlers/mr.ts";
-import { createParkingLotHandlers } from "./handlers/parking-lot.ts";
+import { createWorktreeHandlers, type WorktreeHandlerOpts } from "./handlers/worktree.ts";
 import { createDiscussionHandlers } from "./handlers/discussions.ts";
 import { createSystemProcessHandlers } from "./handlers/system-processes.ts";
 import { createSdmHandlers } from "./handlers/sdm.ts";
@@ -30,6 +30,8 @@ export function buildRoutedHandlers(opts: {
   ctx: HandlerContext;
   broadcast: (type: string, data: any) => void;
   systemProcessScanner: SystemProcessScanner;
+  /** Reconciler seams the worktree verbs drive (spec §7): claim events, replenish kicks, in-flight creates. */
+  worktree: WorktreeHandlerOpts;
 }): TypedHandlers & HandlerMap {
   const { ctx, broadcast, systemProcessScanner } = opts;
   return {
@@ -38,7 +40,7 @@ export function buildRoutedHandlers(opts: {
     ...createStatusHandlers(ctx),
     ...createWorkspaceHandlers(ctx),
     ...createMRHandlers(ctx, broadcast),
-    ...createParkingLotHandlers(ctx),
+    ...createWorktreeHandlers(ctx, opts.worktree),
     ...createDiscussionHandlers(ctx, broadcast),
     ...createSystemProcessHandlers(systemProcessScanner, ctx),
     ...createSdmHandlers(ctx),

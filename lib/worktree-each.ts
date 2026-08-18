@@ -2,12 +2,11 @@
  * Pure logic for `rt worktree each` — arg parsing, target selection, name
  * formatting, and result summary. No IO: everything here is deterministic and
  * unit-tested. The command module (commands/worktree.ts) supplies the real
- * worktree list, picker, and process execution.
+ * worktree list (sourced from the daemon's `worktree:list`, or the read-only
+ * git fallback when the daemon is down), the picker, and process execution.
  */
 
-import type { WorktreeBinding } from "./daemon/parking-lot.ts";
-
-export type SelectionMode = "all" | "parked" | "pick";
+export type SelectionMode = "all" | "on-deck" | "pick";
 
 export interface ParsedEachArgs {
   mode: SelectionMode;
@@ -26,27 +25,47 @@ export interface EachResult {
 }
 
 /**
- * Split raw CLI args into a selection mode and the command string. `--all` and
- * `--parked` are recognized anywhere in the args; every other token is part of
- * the command, joined with spaces. Neither flag → interactive pick mode.
+ * A worktree binding as `worktree each` needs it. `{path, branch}` always
+ * comes from either the daemon's `worktree:list` (registry-aware — `state`
+ * present) or the read-only git fallback (`lib/git-worktrees.ts`, no `state`)
+ * used when the daemon is unreachable — `each` is the one lifecycle command
+ * allowed that fallback, since it's read-only.
+ */
+export interface WorktreeBinding {
+  path: string;
+  branch: string | null;
+  /** Registry state ("on-deck", "claimed", ...); absent from the git-only fallback. */
+  state?: string;
+}
+
+/**
+ * Split raw CLI args into a selection mode and the command string. `--all`
+ * and `--on-deck` are recognized anywhere in the args; every other token is
+ * part of the command, joined with spaces. `--parked` is a hidden alias for
+ * `--on-deck`, kept for one release so muscle memory doesn't break mid-
+ * migration off the old parking-lot terminology. Neither flag → interactive
+ * pick mode.
  */
 export function parseEachArgs(args: string[]): ParsedEachArgs {
   const all    = args.includes("--all");
-  const parked = args.includes("--parked");
-  if (all && parked) {
-    return { mode: "all", command: "", error: "--all and --parked are mutually exclusive" };
+  const onDeck = args.includes("--on-deck") || args.includes("--parked");
+  if (all && onDeck) {
+    return { mode: "all", command: "", error: "--all and --on-deck are mutually exclusive" };
   }
-  const mode: SelectionMode = all ? "all" : parked ? "parked" : "pick";
-  const command = args.filter(a => a !== "--all" && a !== "--parked").join(" ").trim();
+  const mode: SelectionMode = all ? "all" : onDeck ? "on-deck" : "pick";
+  const command = args
+    .filter((a) => a !== "--all" && a !== "--on-deck" && a !== "--parked")
+    .join(" ")
+    .trim();
   if (!command) {
     return { mode, command: "", error: "no command given — usage: rt worktree each '<command>'" };
   }
   return { mode, command };
 }
 
-/** A worktree is parked when it sits on its own parking-lot/<index> slot. */
-export function isParked(b: WorktreeBinding): boolean {
-  return b.index > 0 && b.branch === `parking-lot/${b.index}`;
+/** A binding is on-deck when the registry says so (never true for the git-only fallback). */
+export function isOnDeck(b: WorktreeBinding): boolean {
+  return b.state === "on-deck";
 }
 
 /**
@@ -54,7 +73,7 @@ export function isParked(b: WorktreeBinding): boolean {
  * unchanged — the caller runs the picker over the full list.
  */
 export function filterTargets(bindings: WorktreeBinding[], mode: SelectionMode): WorktreeBinding[] {
-  if (mode === "parked") return bindings.filter(isParked);
+  if (mode === "on-deck") return bindings.filter(isOnDeck);
   return bindings; // "all" and "pick" both start from the full list
 }
 

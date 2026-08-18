@@ -8,27 +8,32 @@
 
 export interface RunResult {
   stdout: string;
+  stderr: string;
   exitCode: number;
 }
 
 /**
  * Run argv and capture stdout. Never throws: spawn failures and timeouts
  * surface as a non-zero exitCode with whatever stdout was collected.
+ *
+ * stderr is discarded by default (`opts.stderr` defaults to `"ignore"`); pass
+ * `"pipe"` to capture it for callers that need failure detail (e.g. git).
  */
 export async function runCapture(
   argv: [string, ...string[]],
-  opts: { cwd?: string; timeoutMs?: number } = {},
+  opts: { cwd?: string; timeoutMs?: number; stderr?: "ignore" | "pipe" } = {},
 ): Promise<RunResult> {
+  const captureStderr = opts.stderr === "pipe";
   let proc: ReturnType<typeof Bun.spawn>;
   try {
     proc = Bun.spawn(argv, {
       cwd: opts.cwd,
       stdin: "ignore",
       stdout: "pipe",
-      stderr: "ignore",
+      stderr: captureStderr ? "pipe" : "ignore",
     });
   } catch {
-    return { stdout: "", exitCode: -1 };
+    return { stdout: "", stderr: "", exitCode: -1 };
   }
 
   const timer = setTimeout(() => {
@@ -36,11 +41,15 @@ export async function runCapture(
   }, opts.timeoutMs ?? 10_000);
 
   try {
-    const stdout = await new Response(proc.stdout as ReadableStream).text();
+    const stdoutPromise = new Response(proc.stdout as ReadableStream).text();
+    const stderrPromise = captureStderr
+      ? new Response(proc.stderr as ReadableStream).text()
+      : Promise.resolve("");
+    const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
     const exitCode = await proc.exited;
-    return { stdout, exitCode };
+    return { stdout, stderr, exitCode };
   } catch {
-    return { stdout: "", exitCode: -1 };
+    return { stdout: "", stderr: "", exitCode: -1 };
   } finally {
     clearTimeout(timer);
   }

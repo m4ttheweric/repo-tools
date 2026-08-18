@@ -88,18 +88,18 @@ function generateShims(dataDir: string, discoveredHooks: string[]): void {
 
   const configFile = hooksConfigPath(dataDir);
 
-  // Always include pre-commit so the parking-lot guard runs even if the repo
+  // Always include pre-commit so the on-deck guard runs even if the repo
   // has no .husky/pre-commit of its own.
   const hookNames = [...new Set(["pre-commit", ...discoveredHooks])];
 
   for (const hookName of hookNames) {
     const shimPath = join(hooksDir, hookName);
 
-    const parkingLotGuard = hookName === "pre-commit" ? `
-# Parking-lot guard: block commits on parking-lot/* branches.
+    const onDeckGuard = hookName === "pre-commit" ? `
+# On-deck guard: block commits on on-deck/* branches.
 CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null)
-if [[ "$CURRENT_BRANCH" == parking-lot/* ]]; then
-  echo "rt: commits are not allowed on parking-lot branches (on \\"$CURRENT_BRANCH\\")"
+if [[ "$CURRENT_BRANCH" == on-deck/* ]]; then
+  echo "rt: commits are not allowed on on-deck branches (on \\"$CURRENT_BRANCH\\")"
   echo "rt: switch to a feature branch before committing"
   exit 1
 fi
@@ -108,7 +108,7 @@ fi
     const shim = `#!/bin/bash
 # rt hook shim — checks ~/.rt config before running the real hook
 # Fail-safe: if config is missing or unreadable, the real hook runs
-${parkingLotGuard}
+${onDeckGuard}
 HOOKS_CONFIG="${configFile}"
 HOOK_NAME="${hookName}"
 
