@@ -13,9 +13,22 @@
  */
 
 import { existsSync, readFileSync } from "fs";
+import { homedir } from "os";
 import { join } from "path";
 import { readJson, writeJson } from "../json-store.ts";
 import { repoDataDir, rtDir } from "../rt-paths.ts";
+
+/**
+ * Expand a leading `~` against call-time HOME (matching rt-paths convention:
+ * `process.env.HOME ?? homedir()`, resolved at call time so tests can repoint
+ * the whole tree by setting process.env.HOME before calling). Only a leading
+ * `~` or `~/...` is special; `~foo` and mid-string `~` are left alone.
+ */
+function expandHome(path: string): string {
+  if (path === "~") return process.env.HOME ?? homedir();
+  if (path.startsWith("~/")) return join(process.env.HOME ?? homedir(), path.slice(2));
+  return path;
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -54,7 +67,7 @@ export function loadWorktreeRepoConfig(repoName: string, repoPath: string): Work
 
   const cfg: WorktreeRepoConfig = {
     onDeck: declared.onDeck ?? 0,
-    root: declared.root ?? join(repoPath, ".worktrees"),
+    root: declared.root ? expandHome(declared.root) : join(repoPath, ".worktrees"),
     branchFormat: declared.branchFormat ?? "<ticket>-<slug>",
     ready: declared.ready ?? [],
   };

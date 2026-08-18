@@ -56,9 +56,14 @@ describe("git-async", () => {
 
   test("listWorktreesAsync lists main + added tree with branches", async () => {
     execSync(`git -C ${repo} worktree add ${repo}-wt -b side`, { shell: "/bin/zsh" });
-    const trees = await listWorktreesAsync(repo);
+    const trees = (await listWorktreesAsync(repo))!;
     expect(trees.length).toBe(2);
     expect(trees[1]).toEqual({ path: `${repo}-wt`, branch: "side" });
+  });
+
+  test("listWorktreesAsync returns null on a nonzero git exit", async () => {
+    const notARepo = mkdtempSync(join(tmpdir(), "rtgit-notrepo-"));
+    expect(await listWorktreesAsync(notARepo)).toBeNull();
   });
 
   test("runGit captures stderr", async () => {

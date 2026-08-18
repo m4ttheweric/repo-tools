@@ -55,7 +55,7 @@ describe("worktree config", () => {
       const declared = {
         onDeck: 2,
         namePool: ["hogwarts", "bellatrix"],
-        root: "~/Documents/GitHub/assured",
+        root: "/absolute/path/to/assured",
         branchFormat: "<ticket>",
         ready: [
           { run: "pnpm genTypes", when: "changed:db/schema/**" },
@@ -67,6 +67,24 @@ describe("worktree config", () => {
       });
       const cfg = loadWorktreeRepoConfig("myrepo", repoPath);
       expect(cfg).toEqual(declared);
+    });
+
+    test("expands a leading ~/ in root against call-time HOME", () => {
+      const repoPath = tmpRepoPath("rtcfg-repo-");
+      writeJson(join(repoDataDir("myrepo"), "config.json"), {
+        worktrees: { root: "~/wt-root" },
+      });
+      const cfg = loadWorktreeRepoConfig("myrepo", repoPath);
+      expect(cfg.root).toBe(join(process.env.HOME!, "wt-root"));
+    });
+
+    test("leaves an absolute root unchanged", () => {
+      const repoPath = tmpRepoPath("rtcfg-repo-");
+      writeJson(join(repoDataDir("myrepo"), "config.json"), {
+        worktrees: { root: "/absolute/wt-root" },
+      });
+      const cfg = loadWorktreeRepoConfig("myrepo", repoPath);
+      expect(cfg.root).toBe("/absolute/wt-root");
     });
   });
 

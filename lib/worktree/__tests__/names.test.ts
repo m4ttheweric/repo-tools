@@ -94,6 +94,26 @@ describe("slugifyTicketTitle", () => {
     expect(result).not.toMatch(/^x-1-\s/);
     expect(result).not.toMatch(/\s$/);
   });
+
+  it("sanitizes a ticket ID with spaces the same way as the slug", () => {
+    const result = slugifyTicketTitle("RT 34", "Worktree lifecycle", "<ticket>-<slug>");
+    expect(result).toBe("rt-34-worktree-lifecycle");
+  });
+
+  it("sanitizes a ticket ID with non-alphanumeric punctuation", () => {
+    const result = slugifyTicketTitle("RT^9", "Fix it", "<ticket>-<slug>");
+    expect(result).toBe("rt-9-fix-it");
+  });
+
+  it("substitutes every occurrence of a repeated placeholder", () => {
+    const result = slugifyTicketTitle("RT-34", "Worktrees", "<ticket>/<ticket>-<slug>");
+    expect(result).toBe("rt-34/rt-34-worktrees");
+  });
+
+  it("a title containing $& does not corrupt the substitution", () => {
+    const result = slugifyTicketTitle("RT-34", "Fix $& in prod", "<ticket>-<slug>");
+    expect(result).toBe("rt-34-fix-in-prod");
+  });
 });
 
 describe("disambiguate", () => {

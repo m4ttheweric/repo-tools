@@ -345,7 +345,7 @@ describe("disposeTree", () => {
 
     // worktree, branch, and registry entry all gone
     expect(existsSync(path)).toBe(false);
-    expect((await listWorktreesAsync(repo)).some((w) => w.path === path)).toBe(false);
+    expect((await listWorktreesAsync(repo))!.some((w) => w.path === path)).toBe(false);
     expect(await branchExistsLocalAsync(repo, "feature-a")).toBe(false);
     expect(loadRegistry(repoName).length).toBe(0);
 

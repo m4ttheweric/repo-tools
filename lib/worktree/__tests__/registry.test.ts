@@ -1,11 +1,12 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { mkdtempSync } from "fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import {
   loadRegistry,
   saveRegistry,
   findByBranch,
+  registryPath,
   usedNames,
   type TreeRecord,
 } from "../registry.ts";
@@ -38,5 +39,17 @@ describe("worktree registry", () => {
   });
   test("usedNames includes creating", () => {
     expect(usedNames([rec({ state: "creating" })]).has("bellatrix")).toBe(true);
+  });
+  test("malformed registry file ({}) loads as []", () => {
+    const path = registryPath("r");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "{}");
+    expect(loadRegistry("r")).toEqual([]);
+  });
+  test("malformed registry file ({\"trees\": null}) loads as []", () => {
+    const path = registryPath("r");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ trees: null }));
+    expect(loadRegistry("r")).toEqual([]);
   });
 });

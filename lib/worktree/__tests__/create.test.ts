@@ -68,7 +68,7 @@ describe("createTree", () => {
     expect(registry[0]!.state).toBe("on-deck");
     expect(registry[0]!.name).toBe(result.tree.name);
 
-    const worktrees = await listWorktreesAsync(repo);
+    const worktrees = (await listWorktreesAsync(repo))!;
     const entry = worktrees.find((w) => w.path === result.tree.path);
     expect(entry).toBeDefined();
     expect(entry!.branch).toBe(`on-deck/${result.tree.name}`);
@@ -106,7 +106,7 @@ describe("createTree", () => {
     const path = join(repo, ".worktrees", "failtree");
     expect(existsSync(path)).toBe(false);
 
-    const worktrees = await listWorktreesAsync(repo);
+    const worktrees = (await listWorktreesAsync(repo))!;
     expect(worktrees.some((w) => w.path === path)).toBe(false);
 
     expect(await branchExistsLocalAsync(repo, "on-deck/failtree")).toBe(false);
