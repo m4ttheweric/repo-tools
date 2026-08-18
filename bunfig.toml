@@ -1,0 +1,4 @@
+[test]
+# HOME isolation for every `bun test` run — see test-setup.ts. Never remove:
+# without it, tests that skip faking HOME write into the real ~/.rt.
+preload = ["./test-setup.ts"]
