@@ -157,7 +157,7 @@ export function createEndpointHandlers(
       if (!repo || !worktree) return { ok: false, error: "missing repo or worktree" };
 
       const { claims: remaining, released } = releaseWorktree(loadClaims(repo), worktree, role);
-      saveClaims(repo, remaining);
+      if (released.length > 0) saveClaims(repo, remaining);
       return { ok: true, data: { released: released.length } };
     },
 
@@ -180,18 +180,29 @@ export function createEndpointHandlers(
  * `worktree:disposed` broadcast fan-out (fire-and-forget), not through the
  * command router, so it has no `HandlerMap` entry and takes only the slice
  * of `HandlerContext` it needs.
+ *
+ * Called synchronously from inside `emit`, so a throw here (e.g. `saveClaims`
+ * hitting a write failure) would propagate out of `emit("worktree:disposed",
+ * ...)` and make an otherwise-successful disposal report as failed — never
+ * let that happen; log at `warn` and swallow instead, per the repo's catch
+ * policy (this is exactly the "genuinely expected condition" carve-out: a
+ * disposal's endpoint bookkeeping failing is not worth aborting the
+ * reconciler pass over).
  */
 export function releaseEndpointsForWorktree(
   ctx: Pick<HandlerContext, "log">,
   repo: string,
   worktreePath: string,
 ): void {
-  const { claims: remaining, released } = releaseWorktree(loadClaims(repo), worktreePath);
-  saveClaims(repo, remaining);
-  if (released.length > 0) {
+  try {
+    const { claims: remaining, released } = releaseWorktree(loadClaims(repo), worktreePath);
+    if (released.length === 0) return;
+    saveClaims(repo, remaining);
     ctx.log.info(
       { repo, worktree: worktreePath, released: released.length },
       "endpoint claims released on disposal",
     );
+  } catch (err) {
+    ctx.log.warn({ err, repo, worktree: worktreePath }, "failed to release endpoint claims on disposal");
   }
 }

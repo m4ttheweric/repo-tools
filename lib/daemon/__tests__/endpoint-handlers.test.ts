@@ -1,9 +1,9 @@
 import { describe, expect, test, beforeEach } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import pino from "pino";
 import { repoDataDir } from "../../rt-paths.ts";
-import { loadClaims } from "../../endpoint/store.ts";
+import { endpointsPath, loadClaims } from "../../endpoint/store.ts";
 import { createEndpointHandlers, releaseEndpointsForWorktree } from "../handlers/endpoint.ts";
 import type { HandlerContext } from "../handlers/types.ts";
 
@@ -46,5 +46,34 @@ describe("endpoint handlers", () => {
     await handlers["endpoint:claim"]({ repo: "repoB", worktree: "/wt/x", role: "backend", pid: 1 });
     releaseEndpointsForWorktree(ctx, "repoB", "/wt/x");
     expect(loadClaims("repoB")).toEqual([]);
+  });
+
+  test("releasing a worktree with no claims writes nothing — no endpoints.json for a repo that never claimed", async () => {
+    declareRoles("repoNoClaims");
+    expect(existsSync(endpointsPath("repoNoClaims"))).toBe(false);
+
+    releaseEndpointsForWorktree(ctx, "repoNoClaims", "/wt/never-claimed");
+    expect(existsSync(endpointsPath("repoNoClaims"))).toBe(false);
+
+    const r = await handlers["endpoint:release"]({ repo: "repoNoClaims", worktree: "/wt/never-claimed" });
+    expect(r).toMatchObject({ ok: true, data: { released: 0 } });
+    expect(existsSync(endpointsPath("repoNoClaims"))).toBe(false);
+  });
+
+  test("releaseEndpointsForWorktree swallows a save failure instead of throwing", async () => {
+    // root bypasses directory permission bits entirely — chmod 0o555 would not
+    // actually block the write, so the throw this test exercises can't occur.
+    if (process.getuid?.() === 0) return;
+
+    declareRoles("repoReadonly");
+    await handlers["endpoint:claim"]({ repo: "repoReadonly", worktree: "/wt/z", role: "backend", pid: 1 });
+
+    const dir = repoDataDir("repoReadonly");
+    chmodSync(dir, 0o555);
+    try {
+      expect(() => releaseEndpointsForWorktree(ctx, "repoReadonly", "/wt/z")).not.toThrow();
+    } finally {
+      chmodSync(dir, 0o755);
+    }
   });
 });
