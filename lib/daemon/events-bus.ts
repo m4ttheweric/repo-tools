@@ -76,6 +76,25 @@ export function createEventsBus(opts: { dbPath: string; log: Logger }): EventsBu
     return limit != null ? matched.slice(0, limit) : matched;
   };
 
+  const MAX_WAIT_MS = 240_000; // under the 255s socket idle timeout; the daemon clamp, not the client's
+  interface Waiter {
+    pattern: string;
+    afterId: number;
+    resolve: (r: WaitResult) => void;
+    timer: ReturnType<typeof setTimeout>;
+    onAbort?: () => void;
+    signal?: AbortSignal;
+  }
+  const waiters = new Set<Waiter>();
+
+  const settle = (w: Waiter, result: WaitResult): void => {
+    if (!waiters.has(w)) return;
+    waiters.delete(w);
+    clearTimeout(w.timer);
+    if (w.signal && w.onAbort) w.signal.removeEventListener("abort", w.onAbort);
+    w.resolve(result);
+  };
+
   return {
     emit(topic, payload) {
       const row = insertStmt.get(
@@ -84,6 +103,14 @@ export function createEventsBus(opts: { dbPath: string; log: Logger }): EventsBu
         Date.now(),
       ) as { id: number };
       log.debug({ topic, id: row.id }, "event emitted");
+      for (const w of [...waiters]) {
+        if (!matchTopic(w.pattern, topic)) continue;
+        const events = eventsAfter(w.pattern, w.afterId);
+        if (events.length) {
+          log.debug({ pattern: w.pattern, delivered: events.length }, "waiter woken");
+          settle(w, { events, cursor: events[events.length - 1]!.id });
+        }
+      }
       return row.id;
     },
 
@@ -98,10 +125,48 @@ export function createEventsBus(opts: { dbPath: string; log: Logger }): EventsBu
       return { events, cursor };
     },
 
-    wait() { throw new Error("implemented in Task 2"); },
+    wait({ pattern, after, waitMs, signal }) {
+      const head = maxId();
+      const effAfter = after == null ? head : Math.min(after, head);
+      // Atomic check-then-register: NO await between this query and waiters.add.
+      const ready = eventsAfter(pattern, effAfter);
+      if (ready.length) {
+        return Promise.resolve({ events: ready, cursor: ready[ready.length - 1]!.id });
+      }
+      const capMs = Math.min(Math.max(waitMs ?? MAX_WAIT_MS, 0), MAX_WAIT_MS);
+      // Empty results return `head` (the registration-time journal head), NOT
+      // effAfter: with a caller cursor below the head, effAfter would never
+      // advance past non-matching traffic, so every empty re-poll would
+      // rescan an ever-growing tail. Any matching event <= head would have
+      // resolved the catch-up above, so advancing to head skips only
+      // non-matching rows. (This is the spec's "snapshots the max rowid at
+      // waiter registration".)
+      return new Promise<WaitResult>((resolve) => {
+        const w: Waiter = {
+          pattern,
+          afterId: effAfter,
+          resolve,
+          signal,
+          timer: setTimeout(() => settle(w, { events: [], cursor: head }), capMs),
+        };
+        if (signal) {
+          w.onAbort = () => {
+            log.debug({ pattern }, "waiter aborted (connection closed)");
+            settle(w, { events: [], cursor: head });
+          };
+          if (signal.aborted) { clearTimeout(w.timer); resolve({ events: [], cursor: head }); return; }
+          signal.addEventListener("abort", w.onAbort, { once: true });
+        }
+        waiters.add(w);
+      });
+    },
     sweep() { throw new Error("implemented in Task 3"); },
-    waiterCount() { return 0; },
+    waiterCount() { return waiters.size; },
 
-    close() { db.close(); },
+    close() {
+      const head = maxId();
+      for (const w of [...waiters]) settle(w, { events: [], cursor: head });
+      db.close();
+    },
   };
 }

@@ -79,3 +79,85 @@ describe("events bus journal", () => {
     expect(res.events[0]!.payload).toEqual({ keep: true });
   });
 });
+
+describe("events bus wait", () => {
+  let dir: string;
+  let bus: EventsBus;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "rt-events-"));
+    bus = createEventsBus({ dbPath: join(dir, "events.db"), log });
+  });
+  afterEach(() => {
+    bus.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("wait resolves immediately when matching events already exist past cursor", async () => {
+    const id = bus.emit("job/x/question", { q: 1 });
+    const res = await bus.wait({ pattern: "job/x/*", after: 0 });
+    expect(res.events.map(e => e.id)).toEqual([id]);
+    expect(res.cursor).toBe(id);
+  });
+
+  test("wait blocks then wakes on a matching emit", async () => {
+    const p = bus.wait({ pattern: "job/x/*" });          // no after → from now on
+    expect(bus.waiterCount()).toBe(1);
+    const id = bus.emit("job/x/report", { done: true });
+    const res = await p;
+    expect(res.events.map(e => e.id)).toEqual([id]);
+    expect(res.cursor).toBe(id);
+    expect(bus.waiterCount()).toBe(0);
+  });
+
+  test("non-matching emit does not wake the waiter", async () => {
+    const p = bus.wait({ pattern: "job/x/*", waitMs: 150 });
+    bus.emit("other/topic");
+    const res = await p; // resolves via cap expiry
+    expect(res.events).toEqual([]);
+  });
+
+  test("cap expiry returns empty events WITH the registration-time cursor", async () => {
+    const preId = bus.emit("seed/event");
+    const res = await bus.wait({ pattern: "job/**", waitMs: 100 });
+    expect(res.events).toEqual([]);
+    expect(res.cursor).toBe(preId);
+    expect(bus.waiterCount()).toBe(0);
+  });
+
+  test("abort removes the waiter and resolves empty", async () => {
+    const ac = new AbortController();
+    const p = bus.wait({ pattern: "job/**", signal: ac.signal, waitMs: 240_000 });
+    expect(bus.waiterCount()).toBe(1);
+    ac.abort();
+    const res = await p;
+    expect(res.events).toEqual([]);
+    expect(bus.waiterCount()).toBe(0);
+  });
+
+  test("empty expiry advances the cursor to the registration-time head, not the caller's after", async () => {
+    const a = bus.emit("job/x/seen");
+    bus.emit("noise/1");
+    const head = bus.emit("noise/2");
+    // Caller is caught up on job/* (cursor a); newer events are all non-matching.
+    const res = await bus.wait({ pattern: "job/**", after: a, waitMs: 100 });
+    expect(res.events).toEqual([]);
+    expect(res.cursor).toBe(head); // NOT a — empty polls must not rescan the non-matching tail forever
+  });
+
+  test("ahead cursor (stale db generation) clamps to journal head instead of hanging", async () => {
+    bus.emit("job/x/a");
+    const p = bus.wait({ pattern: "job/**", after: 99_999, waitMs: 240_000 });
+    const id = bus.emit("job/x/b"); // must wake it — clamp made effAfter = head
+    const res = await p;
+    expect(res.events.map(e => e.id)).toEqual([id]);
+  });
+
+  test("no-await atomicity: emit racing registration is not lost", async () => {
+    // Deterministic given single-threaded Bun: the emit lands after wait()
+    // returns its promise, so it must be delivered via the waiter path.
+    const p = bus.wait({ pattern: "job/**", waitMs: 5_000 });
+    const id = bus.emit("job/race");
+    const res = await p;
+    expect(res.events.map(e => e.id)).toEqual([id]);
+  });
+});
