@@ -93,10 +93,50 @@ export function applyArgInject(args: string[], inject: ArgInject | undefined, en
 // ─── runRoleHook ─────────────────────────────────────────────────────────────
 
 /**
+ * Reads a subprocess pipe to EOF, returning both the accumulated text and a
+ * `cancel()` that abandons the read.
+ *
+ * A hook is `sh -c`, so a backgrounded child (`sleep 60 & echo '{}'`) inherits
+ * the stdout/stderr pipes and holds them open long after sh itself exits.
+ * `new Response(stream).text()` would then never resolve, and killing sh does
+ * nothing (it is already gone) — so the read must be abandonable, not merely
+ * raced. We own the reader (rather than handing the stream to Response) purely
+ * so `cancel()` can release the pipe on the deadline path.
+ */
+function readPipe(stream: ReadableStream<Uint8Array>): { text: Promise<string>; cancel: () => void } {
+  const reader = stream.getReader();
+  const text = (async () => {
+    const decoder = new TextDecoder();
+    let out = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) out += decoder.decode(value, { stream: true });
+    }
+    return out + decoder.decode();
+  })().catch(() => "");
+  return {
+    text,
+    cancel: () => {
+      // Cancel rejects the in-flight read; the `.catch` above absorbs it.
+      reader.cancel().catch(() => {});
+    },
+  };
+}
+
+const HOOK_KILL_GRACE_MS = 200;
+
+/**
  * Runs a role hook as `sh -c <hook>`, feeding it `input` as JSON on stdin
  * and expecting `{ env: Record<string,string> }` back as JSON on stdout.
  * Fails open (returns null) on ANY failure: nonzero exit, bad/non-object
  * JSON, a non-string-valued env, timeout, or a spawn error.
+ *
+ * The timeout is a HARD bound on the whole call, not just on the child's
+ * lifetime: the deadline races the entire collect (both pipe reads + exit),
+ * and on expiry we SIGTERM, give the process a short grace, SIGKILL, abandon
+ * the reads and return null. Nothing after the deadline ever blocks on a pipe
+ * that a backgrounded grandchild may hold open forever.
  */
 export async function runRoleHook(hook: string, input: HookInput, timeoutMs = 5000): Promise<{ env?: Record<string, string> } | null> {
   let proc: Bun.Subprocess<"pipe", "pipe", "pipe"> | undefined;
@@ -109,19 +149,43 @@ export async function runRoleHook(hook: string, input: HookInput, timeoutMs = 50
     proc.stdin.write(JSON.stringify(input));
     proc.stdin.end();
 
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      proc?.kill();
-    }, timeoutMs);
+    const outPipe = readPipe(proc.stdout);
+    // stderr is drained (and discarded) purely so a chatty hook can't wedge on
+    // a full pipe buffer while we wait for stdout.
+    const errPipe = readPipe(proc.stderr);
 
-    const [stdout, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      proc.exited,
-    ]);
+    const TIMED_OUT = Symbol("timeout");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<typeof TIMED_OUT>((resolve) => {
+      timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs);
+    });
+
+    const collect = (async () => {
+      const [stdout, , exitCode] = await Promise.all([outPipe.text, errPipe.text, proc!.exited]);
+      return { stdout, exitCode };
+    })();
+
+    const settled = await Promise.race([collect, deadline]);
     clearTimeout(timer);
 
-    if (timedOut) return null;
+    if (settled === TIMED_OUT) {
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        // already gone
+      }
+      await Promise.race([proc.exited, new Promise((r) => setTimeout(r, HOOK_KILL_GRACE_MS))]);
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // already reaped
+      }
+      outPipe.cancel();
+      errPipe.cancel();
+      return null;
+    }
+
+    const { stdout, exitCode } = settled;
     if (exitCode !== 0) return null;
 
     let parsed: unknown;

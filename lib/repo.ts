@@ -38,7 +38,13 @@ export interface RepoIdentity {
   baseUrl: string;
 }
 
-function deriveRepoName(remoteUrl: string): string {
+/**
+ * Repo name from a remote URL: strip the scp-style or http(s) host prefix and
+ * the `.git` suffix, then take the last path segment. Exported because callers
+ * that must NOT trigger `getRepoIdentity`'s `updateRepoIndex` side effect
+ * (e.g. `commands/endpoint.ts`) still need the identical derivation.
+ */
+export function deriveRepoName(remoteUrl: string): string {
   return remoteUrl
     .replace(/^git@[^:]+:/, "")
     .replace(/^https?:\/\/[^/]+\//, "")

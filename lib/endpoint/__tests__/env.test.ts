@@ -35,4 +35,15 @@ describe("runRoleHook", () => {
     expect(await runRoleHook("false", { worktree: "/w", role: "r", port: 1, refs: {}, env: {} })).toBeNull();
     expect(await runRoleHook("sleep 30", { worktree: "/w", role: "r", port: 1, refs: {}, env: {} }, 200)).toBeNull();
   });
+
+  test("honors its deadline when a backgrounded grandchild holds the pipes open", async () => {
+    // sh exits immediately, but `sleep 30 &` inherits stdout/stderr — reading
+    // to EOF would block for 30s. The contract is the time bound, not which of
+    // (parsed env | null) comes back.
+    const started = Date.now();
+    const res = await runRoleHook("sleep 30 & echo '{}'", { worktree: "/w", role: "r", port: 1, refs: {}, env: {} }, 500);
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeLessThan(3000);
+    expect(res === null || (typeof res === "object" && res.env === undefined)).toBe(true);
+  });
 });

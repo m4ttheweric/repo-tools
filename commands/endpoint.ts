@@ -21,6 +21,9 @@ import { readJson } from "../lib/json-store.ts";
 import { rtDir } from "../lib/rt-paths.ts";
 import { runCapture } from "../lib/subprocess.ts";
 import { daemonQuery } from "../lib/daemon-client.ts";
+// deriveRepoName, not getRepoIdentity: the latter's updateRepoIndex side
+// effect would write to the repo index from a read-only lookup.
+import { deriveRepoName } from "../lib/repo.ts";
 
 function fail(msg: string): never {
   console.error(`rt endpoint: ${msg}`);
@@ -39,16 +42,6 @@ async function gitRemote(toplevel: string): Promise<string | null> {
   if (res.exitCode !== 0) return null;
   const trimmed = res.stdout.trim();
   return trimmed.length > 0 ? trimmed : null;
-}
-
-/** Same derivation as lib/repo.ts's private deriveRepoName (not exported there). */
-function deriveRepoName(remoteUrl: string): string {
-  return remoteUrl
-    .replace(/^git@[^:]+:/, "")
-    .replace(/^https?:\/\/[^/]+\//, "")
-    .replace(/\.git$/, "")
-    .split("/")
-    .pop() || "unknown";
 }
 
 interface LookupData {

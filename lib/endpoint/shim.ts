@@ -21,7 +21,7 @@
  * decision logic in one (testable, TypeScript) place.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join, relative } from "path";
 import { readJson, writeJson } from "../json-store.ts";
@@ -135,7 +135,7 @@ export async function buildInterceptRules(): Promise<InterceptRule[]> {
 // ─── shim render + path ──────────────────────────────────────────────────────
 
 /** `~/.local/bin`, resolved at call time so tests can fake HOME. */
-function localBinDir(): string {
+export function localBinDir(): string {
   return join(process.env.HOME ?? homedir(), ".local", "bin");
 }
 
@@ -207,6 +207,11 @@ export async function installShims(): Promise<{ installed: string[]; current: st
       writeFileSync(path, rendered, { mode: 0o755 });
       installed.push(command);
     }
+    // Unconditional, on BOTH paths: writeFileSync's `mode` is only honored
+    // when it creates the file (an existing file keeps its old mode), and a
+    // content-equal shim whose exec bit got stripped is silently dead. chmod
+    // every time so `rt intercept install` always repairs it.
+    chmodSync(path, 0o755);
   }
   return { installed, current, rules: rules.length };
 }

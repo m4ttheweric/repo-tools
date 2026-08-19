@@ -71,6 +71,11 @@ export async function runInterception(
     return deps.execReal(bin, args, baseEnv);
   };
 
+  // Cheapest possible passthrough: a command with no rule at all never pays
+  // for a git spawn. `rt intercept run` sits in front of EVERY invocation of
+  // an intercepted command name, so the no-match path is the hot path.
+  if (!deps.rules.some((rule) => rule.command === command)) return execUntouched();
+
   const toplevel = await deps.gitToplevel(cwd);
   const remote = toplevel ? await deps.gitRemote(toplevel) : null;
   const matched = matchInvocation(deps.rules, { command, args, cwd, toplevel, remote });
@@ -102,28 +107,42 @@ export async function runInterception(
     return execUntouched();
   }
 
-  const alloc: ResolvedAllocation = {
-    role: claimRes.data.role,
-    port: claimRes.data.port,
-    refs: claimRes.data.refs,
-  };
-  const rendered = renderEnvTemplates(roleCfg.env, alloc);
-  const preservedKeys = collectPreservedKeys(roleCfg.preserveEnv, callerEnv);
-  // Rendered env keys first, then caller-preserved keys — the order argInject
-  // templates (and any human reading the resulting flag) see.
-  const envKeys = [...Object.keys(rendered), ...preservedKeys];
+  // Everything after a successful claim is fail-open too: a malformed `ok`
+  // envelope (missing port/refs), a template render that throws, or a hook
+  // that blows up must never take the user's dev server down with it. One
+  // warning, then the real binary with the caller's original args and env.
+  let childEnv: Record<string, string>;
+  let finalArgs: string[];
+  try {
+    const alloc: ResolvedAllocation = {
+      role: claimRes.data.role,
+      port: claimRes.data.port,
+      refs: claimRes.data.refs,
+    };
+    if (typeof alloc.port !== "number" || !alloc.refs) {
+      throw new Error(`claim envelope missing port/refs: ${JSON.stringify(claimRes.data)}`);
+    }
+    const rendered = renderEnvTemplates(roleCfg.env, alloc);
+    const preservedKeys = collectPreservedKeys(roleCfg.preserveEnv, callerEnv);
+    // Rendered env keys first, then caller-preserved keys — the order argInject
+    // templates (and any human reading the resulting flag) see.
+    const envKeys = [...Object.keys(rendered), ...preservedKeys];
 
-  let hookEnv: Record<string, string> = {};
-  if (roleCfg.hook) {
-    const hookInput: HookInput = { worktree, role: match.role, port: alloc.port, refs: alloc.refs, env: rendered };
-    const hookResult = await runRoleHook(roleCfg.hook, hookInput);
-    if (hookResult?.env) hookEnv = hookResult.env;
+    let hookEnv: Record<string, string> = {};
+    if (roleCfg.hook) {
+      const hookInput: HookInput = { worktree, role: match.role, port: alloc.port, refs: alloc.refs, env: rendered };
+      const hookResult = await runRoleHook(roleCfg.hook, hookInput);
+      if (hookResult?.env) hookEnv = hookResult.env;
+    }
+
+    // Base = caller's env (inheritance preserves exported vars); rendered role
+    // env and hook env layer on top, in that order.
+    childEnv = { ...baseEnv, ...rendered, ...hookEnv };
+    finalArgs = applyArgInject(args, match.argInject, envKeys);
+  } catch (err) {
+    deps.warn(`rt-intercept: passthrough — applying the claim for role "${match.role}" failed: ${(err as Error).message}`);
+    return execUntouched();
   }
-
-  // Base = caller's env (inheritance preserves exported vars); rendered role
-  // env and hook env layer on top, in that order.
-  const childEnv: Record<string, string> = { ...baseEnv, ...rendered, ...hookEnv };
-  const finalArgs = applyArgInject(args, match.argInject, envKeys);
 
   const bin = deps.resolveRealBinary(command);
   if (!bin) throw new Error(`rt intercept: real binary for "${command}" could not be resolved`);
