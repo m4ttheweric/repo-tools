@@ -11,12 +11,40 @@ async function waitForSocket(sockPath: string, timeoutMs = 15_000): Promise<void
   }
 }
 
+/** Grab a free TCP port by binding port 0 and releasing it. */
+function freePort(): number {
+  const srv = Bun.serve({ port: 0, fetch: () => new Response("") });
+  const port = srv.port;
+  srv.stop(true);
+  if (!port) throw new Error("failed to allocate a free port");
+  return port;
+}
+
+// Assigned in beforeAll; every spawned rt process (daemon and CLI) shares it.
+let apiPort = 0;
+// Every spawned child, so afterAll can reap waiters orphaned by a mid-test
+// assertion failure instead of leaving them to their own --timeout.
+const children: Array<ReturnType<typeof Bun.spawn>> = [];
+
 function runRt(args: string[], home: string) {
-  return Bun.spawn([RT_BINARY, ...args], {
-    env: { ...process.env, HOME: home, RT_SKIP_SETUP: "1", CI: "true" },
+  // Hermetic env mirroring e2e/harness.ts run() — no ambient process.env
+  // leaking into children (that class of leak is what caused the original
+  // port-9401 collision).
+  const bunDir = join(process.execPath, "..");
+  const proc = Bun.spawn([RT_BINARY, ...args], {
+    env: {
+      HOME: home,
+      PATH: `${join(RT_BINARY, "..")}:${bunDir}:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin`,
+      TERM: "xterm-256color",
+      RT_SKIP_SETUP: "1",
+      CI: "true",
+      RT_API_PORT: String(apiPort),
+    },
     stdout: "pipe",
     stderr: "pipe",
   });
+  children.push(proc);
+  return proc;
 }
 
 async function finished(proc: ReturnType<typeof runRt>) {
@@ -34,27 +62,27 @@ describe("rt events (bus e2e)", () => {
   let daemon: ReturnType<typeof runRt>;
 
   beforeAll(async () => {
-    // Requires TCP port 9401 free — lib/daemon-config.ts hardcodes API_PORT
-    // with no env override, so this foreground daemon EADDRINUSEs (and the
-    // process dies) if a real local rt daemon is already running, even
-    // though the (HOME-scoped) Unix socket below comes up fine first. Stop
-    // any locally running rt daemon before this suite (`rt daemon stop`,
-    // restart after) — see RT-44 follow-up.
+    // The spawned foreground daemon binds its HTTP/WS server on RT_API_PORT
+    // (RT-45): a per-run free port, so this suite is hermetic and never
+    // collides with a live local rt daemon on the default 9401.
+    apiPort = freePort();
     ({ path: home, cleanup } = createTestHome());
     daemon = runRt(["--daemon"], home);
     await waitForSocket(join(home, ".rt", "rt.sock"));
     if (daemon.exitCode !== null) {
       throw new Error(
         `daemon process exited (code ${daemon.exitCode}) right after creating its socket — ` +
-          `likely a port-9401 collision with a real local rt daemon. Run \`rt daemon stop\` ` +
-          `before this suite, then \`rt daemon start\` after.`,
+          `port ${apiPort} collision or daemon boot crash; check the daemon's stderr.`,
       );
     }
   });
 
   afterAll(async () => {
-    daemon.kill();
-    await daemon.exited;
+    // Reap every child (waiters orphaned by failed assertions included).
+    for (const child of children) {
+      try { child.kill(); } catch { /* already gone */ }
+    }
+    await Promise.all(children.map((c) => c.exited));
     cleanup();
   });
 
