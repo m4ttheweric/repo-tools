@@ -3,13 +3,13 @@ import Network
 
 // MARK: - DaemonClient
 
-/// Communicates with the rt daemon via HTTP over Unix domain socket (~/.rt/rt.sock).
+/// Communicates with the rt daemon via HTTP over Unix domain socket (~/.mattstack/rt/rt.sock).
 class DaemonClient {
 
     private let socketPath: String
 
     init(socketPath: String? = nil) {
-        self.socketPath = socketPath ?? NSHomeDirectory() + "/.rt/rt.sock"
+        self.socketPath = socketPath ?? NSHomeDirectory() + "/.mattstack/rt/rt.sock"
     }
 
     // MARK: - Public API
