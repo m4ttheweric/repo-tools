@@ -38,6 +38,8 @@ import * as nav from "../commands/nav.ts";
 import * as sdm from "../commands/sdm.ts";
 import * as plugin from "../commands/plugin.ts";
 import * as worktree from "../commands/worktree.ts";
+import * as intercept from "../commands/intercept.ts";
+import * as endpoint from "../commands/endpoint.ts";
 
 export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/branch.ts": branch,
@@ -72,4 +74,6 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/sdm.ts": sdm,
   "./commands/plugin.ts": plugin,
   "./commands/worktree.ts": worktree,
+  "./commands/intercept.ts": intercept,
+  "./commands/endpoint.ts": endpoint,
 };

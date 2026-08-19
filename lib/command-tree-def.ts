@@ -89,6 +89,52 @@ const eventsSubcommands: Record<string, CommandNode> = {
   },
 };
 
+const interceptSubcommands: Record<string, CommandNode> = {
+  run: {
+    description: "Hidden verb the generated PATH shim execs — never call directly",
+    module: "./commands/intercept.ts",
+    fn: "interceptRun",
+    hidden: true,
+    args: [],
+  },
+  status: {
+    description: "Shim + rule health for command interception",
+    module: "./commands/intercept.ts",
+    fn: "interceptStatus",
+    args: [
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of a table" },
+    ],
+  },
+  install: {
+    description: "(Re)write PATH shims for every registered intercept command",
+    module: "./commands/intercept.ts",
+    fn: "interceptInstall",
+    args: [
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of a summary" },
+    ],
+  },
+  uninstall: {
+    description: "Remove every generated intercept shim",
+    module: "./commands/intercept.ts",
+    fn: "interceptUninstall",
+    args: [
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of a summary" },
+    ],
+  },
+};
+
+const endpointSubcommands: Record<string, CommandNode> = {
+  lookup: {
+    description: "Does this worktree hold a dev-endpoint claim for a role?",
+    module: "./commands/endpoint.ts",
+    fn: "endpointLookup",
+    args: [
+      { name: "Role", type: "text", placeholder: "backend", hint: "Role name declared in the repo's endpoint config" },
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Emit machine-readable JSON instead of a plain line" },
+    ],
+  },
+};
+
 // Shared so `rt commit` and `rt git commit` are one node (enrich once, render once).
 const commitNode: CommandNode = {
   description: "Interactive staged/unstaged commit picker with live diff preview",
@@ -757,6 +803,16 @@ export const TREE: Record<string, CommandNode> = {
   events: {
     description: "Optional event bus for panes and skills",
     subcommands: eventsSubcommands,
+  },
+
+  intercept: {
+    description: "Generic dev-command interception (PATH shims, port claiming)",
+    subcommands: interceptSubcommands,
+  },
+
+  endpoint: {
+    description: "Dev-endpoint claims (ports allocated for intercepted commands)",
+    subcommands: endpointSubcommands,
   },
 
   settings: {
