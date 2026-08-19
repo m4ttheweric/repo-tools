@@ -108,10 +108,12 @@ export async function eventsList(args: string[]): Promise<void> {
   const pattern = positional(args);
   if (!pattern) fail("usage: rt events list <pattern> [--after <cursor>] [--limit <n>]");
   const payload: Record<string, unknown> = { pattern };
-  const after = flagValue(args, "--after");
-  if (after !== undefined) payload.after = Number(after);
-  const limit = flagValue(args, "--limit");
-  if (limit !== undefined) payload.limit = Number(limit);
+  const after = flagValue(args, "--after") !== undefined ? Number(flagValue(args, "--after")) : undefined;
+  if (after !== undefined && !Number.isFinite(after)) fail("--after must be a number");
+  if (after !== undefined) payload.after = after;
+  const limit = flagValue(args, "--limit") !== undefined ? Number(flagValue(args, "--limit")) : undefined;
+  if (limit !== undefined && !Number.isFinite(limit)) fail("--limit must be a number");
+  if (limit !== undefined) payload.limit = limit;
   const res = await daemonQuery("events:list", payload, 10_000);
   if (!res) fail("daemon unavailable — the event bus needs the rt daemon (rt daemon start)");
   if (!res.ok) fail(res.error ?? "list failed");
