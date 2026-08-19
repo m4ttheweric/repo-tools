@@ -155,6 +155,8 @@ Expected: FAIL — cannot find module `../events-bus.ts`.
  */
 
 import { Database } from "bun:sqlite";
+import { mkdirSync } from "fs";
+import { dirname } from "path";
 import type { Logger } from "pino";
 
 export interface BusEvent { id: number; topic: string; payload: unknown; emittedAt: number }
@@ -191,6 +193,9 @@ function rowToEvent(row: EventRow): BusEvent {
 
 export function createEventsBus(opts: { dbPath: string; log: Logger }): EventsBus {
   const log = opts.log.child({ module: "events" });
+  // Self-sufficient about its parent dir — daemon.ts constructs the bus at
+  // module scope, before startDaemon()'s mkdirSync(RT_DIR) runs.
+  mkdirSync(dirname(opts.dbPath), { recursive: true });
   const db = new Database(opts.dbPath, { create: true });
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec(`
@@ -339,6 +344,16 @@ describe("events bus wait", () => {
     expect(bus.waiterCount()).toBe(0);
   });
 
+  test("empty expiry advances the cursor to the registration-time head, not the caller's after", async () => {
+    const a = bus.emit("job/x/seen");
+    bus.emit("noise/1");
+    const head = bus.emit("noise/2");
+    // Caller is caught up on job/* (cursor a); newer events are all non-matching.
+    const res = await bus.wait({ pattern: "job/**", after: a, waitMs: 100 });
+    expect(res.events).toEqual([]);
+    expect(res.cursor).toBe(head); // NOT a — empty polls must not rescan the non-matching tail forever
+  });
+
   test("ahead cursor (stale db generation) clamps to journal head instead of hanging", async () => {
     bus.emit("job/x/a");
     const p = bus.wait({ pattern: "job/**", after: 99_999, waitMs: 240_000 });
@@ -400,20 +415,27 @@ and in the returned object:
         return Promise.resolve({ events: ready, cursor: ready[ready.length - 1]!.id });
       }
       const capMs = Math.min(Math.max(waitMs ?? MAX_WAIT_MS, 0), MAX_WAIT_MS);
+      // Empty results return `head` (the registration-time journal head), NOT
+      // effAfter: with a caller cursor below the head, effAfter would never
+      // advance past non-matching traffic, so every empty re-poll would
+      // rescan an ever-growing tail. Any matching event <= head would have
+      // resolved the catch-up above, so advancing to head skips only
+      // non-matching rows. (This is the spec's "snapshots the max rowid at
+      // waiter registration".)
       return new Promise<WaitResult>((resolve) => {
         const w: Waiter = {
           pattern,
           afterId: effAfter,
           resolve,
           signal,
-          timer: setTimeout(() => settle(w, { events: [], cursor: effAfter }), capMs),
+          timer: setTimeout(() => settle(w, { events: [], cursor: head }), capMs),
         };
         if (signal) {
           w.onAbort = () => {
             log.debug({ pattern }, "waiter aborted (connection closed)");
-            settle(w, { events: [], cursor: effAfter });
+            settle(w, { events: [], cursor: head });
           };
-          if (signal.aborted) { clearTimeout(w.timer); resolve({ events: [], cursor: effAfter }); return; }
+          if (signal.aborted) { clearTimeout(w.timer); resolve({ events: [], cursor: head }); return; }
           signal.addEventListener("abort", w.onAbort, { once: true });
         }
         waiters.add(w);
@@ -639,16 +661,23 @@ git commit -m "feat(daemon): thread request AbortSignal through the command seam
 export interface EventsBusEvent { id: number; topic: string; payload: unknown; emittedAt: number }
 ```
 
-Add all three names to `COMMAND_NAMES`. Producer signature for the handler factory:
+Add all three names to `COMMAND_NAMES`. Producer signature for the handler factory (this exact type — a bare `HandlerMap` index signature does NOT satisfy `TypedHandlers`' required keys, so `events:wait` must be declared as a named member with the widened signature; the widened member is assignable to `TypedHandlers`' payload-only signature because the extra parameter is optional):
 
 ```ts
+import type { CommandResult } from "./types.ts";
+
 export function createEventsHandlers(
   bus: EventsBus,
   broadcast: (type: string, data: any) => void,
-): Pick<TypedHandlers, "events:emit" | "events:list"> & HandlerMap;
+): Pick<TypedHandlers, "events:emit" | "events:list"> & {
+  "events:wait": (
+    payload: Commands["events:wait"]["payload"],
+    signal?: AbortSignal,
+  ) => Promise<CommandResult<"events:wait">>;
+} & HandlerMap;
 ```
 
-(`events:wait` lives in the `HandlerMap` part because it takes the signal: `"events:wait": async (payload, signal) => ...`. The `TypedHandlers` intersection in `buildRoutedHandlers` still proves it exists — `HandlerMap` alone would satisfy the key, so ALSO add a line to the exhaustiveness test in `packages/rt-client/__tests__/rt-client-commands.test.ts` if present — check with `ls packages/rt-client/__tests__/` and mirror how existing commands are asserted.)
+Also update `lib/daemon/__tests__/rt-client-commands.test.ts` (the catalog exhaustiveness test): its `buildRoutedHandlers({...})` call (~line 34) must gain the new `eventsBus` opt — add `eventsBus: createEventsBus({ dbPath: ":memory:", log: stubLog as any })` (handlers are assembled there, never invoked, and `:memory:` needs no cleanup). No assertion changes are needed — the test iterates `COMMAND_NAMES` automatically.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -702,16 +731,16 @@ describe("events handlers", () => {
 
   test("events:wait passes the abort signal through to the bus", async () => {
     const ac = new AbortController();
-    const p = (handlers["events:wait"] as any)({ pattern: "job/**", waitMs: 240_000 }, ac.signal);
+    const p = handlers["events:wait"]({ pattern: "job/**", waitMs: 240_000 }, ac.signal);
     ac.abort();
     const res = await p;
     expect(res.ok).toBe(true);
-    expect(res.data.events).toEqual([]);
+    if (res.ok) expect(res.data.events).toEqual([]);
     expect(bus.waiterCount()).toBe(0);
   });
 
   test("events:wait rejects missing pattern", async () => {
-    const res = await (handlers["events:wait"] as any)({});
+    const res = await handlers["events:wait"]({} as any);
     expect(res.ok).toBe(false);
   });
 });
@@ -735,7 +764,7 @@ Catalog first (`packages/rt-client/src/commands.ts` — the three entries, `Even
  */
 
 import type { Commands } from "../../../packages/rt-client/src/commands.ts";
-import type { HandlerMap, TypedHandlers } from "./types.ts";
+import type { CommandResult, HandlerMap, TypedHandlers } from "./types.ts";
 import type { EventsBus } from "../events-bus.ts";
 
 const num = (v: unknown): number | undefined => {
@@ -744,10 +773,19 @@ const num = (v: unknown): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
+// events:wait is declared as a named member (not left to the HandlerMap index
+// signature — that would fail TypedHandlers' required-key check in
+// buildRoutedHandlers) with the widened (payload, signal?) shape, which stays
+// assignable to TypedHandlers' payload-only signature.
 export function createEventsHandlers(
   bus: EventsBus,
   broadcast: (type: string, data: any) => void,
-): Pick<TypedHandlers, "events:emit" | "events:list"> & HandlerMap {
+): Pick<TypedHandlers, "events:emit" | "events:list"> & {
+  "events:wait": (
+    payload: Commands["events:wait"]["payload"],
+    signal?: AbortSignal,
+  ) => Promise<CommandResult<"events:wait">>;
+} & HandlerMap {
   return {
     "events:emit": async (payload: Commands["events:emit"]["payload"]) => {
       const topic = typeof payload?.topic === "string" ? payload.topic.trim() : "";
@@ -840,7 +878,7 @@ git commit -m "feat(events): catalog entries, typed handlers, daemon wiring, RES
   - `rt events emit <topic> [--json '<json>']` → prints `{"ok":true,"id":N}`, exit 0. Invalid `--json` → error to stderr, exit 1, **no IPC call**.
   - `rt events wait <pattern> [--after <cursor>] [--timeout <dur>]` → blocks; on events prints `{"ok":true,"events":[...],"cursor":N}` exit 0; on timeout prints `{"ok":true,"timedOut":true,"cursor":N}` exit **124**; daemon unavailable → stderr message, exit 1.
   - `rt events list <pattern> [--after <cursor>] [--limit <n>]` → prints `{"ok":true,"events":[...],"cursor":N}` exit 0.
-  - `rt events tail <pattern> [--after <cursor>]` → catch-up via `events:list`, then the same poll loop as `wait`, printing one event JSON per line (NDJSON), forever until Ctrl-C.
+  - `rt events tail <pattern> [--after <cursor>]` → with `--after`, replays the journal from that cursor first; without it, starts from now (same default as `wait` — a follow-mode consumer must not get a 50k-event history dump). Then the same poll loop as `wait`, printing one event JSON per line (NDJSON), forever until Ctrl-C.
   - Durations: `<n>ms|s|m|h` suffix; bare number = seconds; no `--timeout` = wait forever.
   - Exported for tests: `parseDuration(s: string): number | null` (ms, null on garbage) and `nextWaitMs(deadline: number | null, now: number): number` (`min(240_000, deadline - now)`, or 240_000 when deadline is null).
 
@@ -924,8 +962,23 @@ function flagValue(args: string[], flag: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
+// Index-based scan (not value comparison — a positional that EQUALS a flag's
+// value, e.g. `rt events wait 42 --after 42`, must still parse).
+const FLAGS_WITH_VALUES = new Set(["--json", "--after", "--timeout", "--limit"]);
+function positional(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a.startsWith("--")) {
+      if (FLAGS_WITH_VALUES.has(a)) i++; // skip the flag's value slot
+      continue;
+    }
+    return a;
+  }
+  return undefined;
+}
+
 export async function eventsEmit(args: string[]): Promise<void> {
-  const topic = args.find(a => !a.startsWith("--") && a !== flagValue(args, "--json"));
+  const topic = positional(args);
   if (!topic) fail("usage: rt events emit <topic> [--json '<json>']");
   let payload: unknown;
   const raw = flagValue(args, "--json");
@@ -947,7 +1000,7 @@ async function pollOnce(pattern: string, after: number | undefined, waitMs: numb
 }
 
 export async function eventsWait(args: string[]): Promise<void> {
-  const pattern = args.find(a => !a.startsWith("--") && a !== flagValue(args, "--after") && a !== flagValue(args, "--timeout"));
+  const pattern = positional(args);
   if (!pattern) fail("usage: rt events wait <pattern> [--after <cursor>] [--timeout <dur>]");
   let after = flagValue(args, "--after") !== undefined ? Number(flagValue(args, "--after")) : undefined;
   if (after !== undefined && !Number.isFinite(after)) fail("--after must be a number");
@@ -975,7 +1028,7 @@ export async function eventsWait(args: string[]): Promise<void> {
 }
 
 export async function eventsList(args: string[]): Promise<void> {
-  const pattern = args.find(a => !a.startsWith("--") && a !== flagValue(args, "--after") && a !== flagValue(args, "--limit"));
+  const pattern = positional(args);
   if (!pattern) fail("usage: rt events list <pattern> [--after <cursor>] [--limit <n>]");
   const payload: Record<string, unknown> = { pattern };
   const after = flagValue(args, "--after");
@@ -989,13 +1042,18 @@ export async function eventsList(args: string[]): Promise<void> {
 }
 
 export async function eventsTail(args: string[]): Promise<void> {
-  const pattern = args.find(a => !a.startsWith("--") && a !== flagValue(args, "--after"));
+  const pattern = positional(args);
   if (!pattern) fail("usage: rt events tail <pattern> [--after <cursor>]");
   let after = flagValue(args, "--after") !== undefined ? Number(flagValue(args, "--after")) : undefined;
   if (after !== undefined && !Number.isFinite(after)) fail("--after must be a number");
 
   // Catch-up via list, then the same poll loop as wait, forever.
-  const res = await daemonQuery("events:list", { pattern, after }, 10_000);
+  // No --after means START FROM NOW (same default as wait) — never dump the
+  // whole journal on a follow-mode consumer. MAX_SAFE_INTEGER returns zero
+  // events plus cursor = journal head (list computes cursor = maxId() for
+  // untruncated results).
+  const listAfter = after ?? Number.MAX_SAFE_INTEGER;
+  const res = await daemonQuery("events:list", { pattern, after: listAfter }, 10_000);
   if (!res) fail("daemon unavailable — the event bus needs the rt daemon (rt daemon start)");
   if (!res.ok) fail(res.error ?? "tail failed");
   for (const ev of res.data.events) console.log(JSON.stringify(ev));
