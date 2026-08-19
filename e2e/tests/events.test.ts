@@ -34,9 +34,22 @@ describe("rt events (bus e2e)", () => {
   let daemon: ReturnType<typeof runRt>;
 
   beforeAll(async () => {
+    // Requires TCP port 9401 free — lib/daemon-config.ts hardcodes API_PORT
+    // with no env override, so this foreground daemon EADDRINUSEs (and the
+    // process dies) if a real local rt daemon is already running, even
+    // though the (HOME-scoped) Unix socket below comes up fine first. Stop
+    // any locally running rt daemon before this suite (`rt daemon stop`,
+    // restart after) — see RT-44 follow-up.
     ({ path: home, cleanup } = createTestHome());
     daemon = runRt(["--daemon"], home);
     await waitForSocket(join(home, ".rt", "rt.sock"));
+    if (daemon.exitCode !== null) {
+      throw new Error(
+        `daemon process exited (code ${daemon.exitCode}) right after creating its socket — ` +
+          `likely a port-9401 collision with a real local rt daemon. Run \`rt daemon stop\` ` +
+          `before this suite, then \`rt daemon start\` after.`,
+      );
+    }
   });
 
   afterAll(async () => {
