@@ -7,6 +7,11 @@ in the `mattstack` workspace.
 Read these before proposing anything about rt's scope, mr-board's shape, glance,
 gitq, or the assured skills:
 
+- **[distribution roadmap: status for agents](https://linear.app/mattstack/document/distribution-roadmap-status-for-agents-017c24a92fcf)**
+  The live status snapshot: phases with per-phase state, the settled rulings
+  (suite-only install, no rung ladder, rt always present, pipeline-state
+  design), and what is deliberately last. Start here for "what's next."
+
 - **[rt as substrate: architecture and 8-step roadmap](https://linear.app/mattstack/document/rt-as-substrate-architecture-and-8-step-roadmap-d4c19c8c7cf2)**
   The Substrate / Wrapper / Adapter taxonomy, the six seams, the target repo
   shape, the 8-step migration order with per-step status, and the explicit
