@@ -14,7 +14,7 @@ describe("first-run", () => {
   afterAll(() => cleanup());
 
   test("first run triggers post-install setup", async () => {
-    expect(existsSync(join(home, ".rt", "daemon.json"))).toBe(false);
+    expect(existsSync(join(home, ".mattstack", "rt", "daemon.json"))).toBe(false);
 
     // Use `daemon install` which enters the else block (triggering first-run)
     // and then directly runs the daemon install command, creating daemon.json.
@@ -24,11 +24,11 @@ describe("first-run", () => {
     expect(combined).toContain("first run detected");
     expect(combined).toContain("post-install");
 
-    expect(existsSync(join(home, ".rt", "daemon.json"))).toBe(true);
+    expect(existsSync(join(home, ".mattstack", "rt", "daemon.json"))).toBe(true);
   }, 30_000);
 
   test("subsequent run skips setup", async () => {
-    expect(existsSync(join(home, ".rt", "daemon.json"))).toBe(true);
+    expect(existsSync(join(home, ".mattstack", "rt", "daemon.json"))).toBe(true);
 
     const result = await rtRaw(["daemon", "install"], { home });
 

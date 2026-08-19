@@ -109,7 +109,7 @@ describe("toCommandNode", () => {
     home = mkdtempSync(join(tmpdir(), "rt-plugins-"));
     savedHome = process.env.HOME;
     process.env.HOME = home;
-    dir = join(home, ".rt", "plugins", "test-plugin");
+    dir = join(home, ".mattstack", "rt", "plugins", "test-plugin");
     mkdirSync(dir, { recursive: true });
   });
 
@@ -142,7 +142,7 @@ describe("toCommandNode", () => {
     `);
     const node = toCommandNode("test-plugin", dir, { description: "d", module: "./hello.ts" });
     await node.handler!(["x", "y"], {});
-    const seen = JSON.parse(readFileSync(join(home, ".rt", "plugin-data", "test-plugin", "seen.json"), "utf8"));
+    const seen = JSON.parse(readFileSync(join(home, ".mattstack", "rt", "plugin-data", "test-plugin", "seen.json"), "utf8"));
     expect(seen).toEqual({ args: ["x", "y"], hasIdentity: false });
   });
 
@@ -207,7 +207,7 @@ describe("toCommandNode", () => {
 });
 
 function writePlugin(home: string, dirName: string, manifest: unknown): void {
-  const dir = join(home, ".rt", "plugins", dirName);
+  const dir = join(home, ".mattstack", "rt", "plugins", dirName);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "plugin.json"), typeof manifest === "string" ? manifest : JSON.stringify(manifest));
 }
@@ -315,8 +315,8 @@ describe("discovery + merge", () => {
   });
 
   test("plugins path that is a file (not a dir) reports an error instead of throwing", () => {
-    mkdirSync(join(home, ".rt"), { recursive: true });
-    writeFileSync(join(home, ".rt", "plugins"), "not a directory");
+    mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
+    writeFileSync(join(home, ".mattstack", "rt", "plugins"), "not a directory");
     const found = discoverPlugins();
     expect(found).toHaveLength(1);
     expect(found[0]!.errors.join()).toContain("cannot read plugins directory");
@@ -340,11 +340,11 @@ describe("scaffoldPlugin", () => {
 
   test("creates a valid, discoverable plugin and the plugin-api dir", () => {
     const dir = scaffoldPlugin("my-tool");
-    expect(dir).toBe(join(home, ".rt", "plugins", "my-tool"));
+    expect(dir).toBe(join(home, ".mattstack", "rt", "plugins", "my-tool"));
     for (const f of ["plugin.json", "my-tool.ts", "tsconfig.json", "package.json"]) {
       expect(existsSync(join(dir, f))).toBe(true);
     }
-    expect(existsSync(join(home, ".rt", "plugin-api", "index.d.ts"))).toBe(true);
+    expect(existsSync(join(home, ".mattstack", "rt", "plugin-api", "index.d.ts"))).toBe(true);
 
     const manifest = JSON.parse(readFileSync(join(dir, "plugin.json"), "utf8"));
     expect(validateManifest(manifest)).toEqual([]);
@@ -377,7 +377,7 @@ describe("deepValidate", () => {
   });
 
   function plant(manifest: object, files: Record<string, string>): void {
-    const dir = join(home, ".rt", "plugins", "p");
+    const dir = join(home, ".mattstack", "rt", "plugins", "p");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "plugin.json"), JSON.stringify(manifest));
     for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);

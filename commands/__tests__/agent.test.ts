@@ -9,7 +9,7 @@ function identity(repoRoot: string): RepoIdentity {
   return {
     repoName: "repo",
     repoRoot,
-    dataDir: "/tmp/.rt/repo",
+    dataDir: "/tmp/.mattstack/rt/repo",
     remoteUrl: "git@example.com:org/repo.git",
     baseUrl: "https://example.com/org/repo",
   };
@@ -18,7 +18,7 @@ function identity(repoRoot: string): RepoIdentity {
 function repo(worktrees: string[]): KnownRepo {
   return {
     repoName: "repo",
-    dataDir: "/tmp/.rt/repo",
+    dataDir: "/tmp/.mattstack/rt/repo",
     worktrees: worktrees.map((path, index) => ({
       path,
       branch: index === 0 ? "main" : `feature-${index}`,

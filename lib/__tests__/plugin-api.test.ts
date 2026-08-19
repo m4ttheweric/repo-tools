@@ -55,13 +55,13 @@ describe("ensurePluginApiDir", () => {
 });
 
 describe("makeApi.store", () => {
-  test("round-trips JSON under ~/.rt/plugin-data/<plugin>/<key>.json", async () => {
+  test("round-trips JSON under ~/.mattstack/rt/plugin-data/<plugin>/<key>.json", async () => {
     const { makeApi } = await import("../plugin-api.ts");
     const store = makeApi("my-plugin").store<string[]>("notes");
     expect(await store.get()).toBeNull();
     await store.set(["a", "b"]);
     expect(await store.get()).toEqual(["a", "b"]);
-    expect(existsSync(join(home, ".rt", "plugin-data", "my-plugin", "notes.json"))).toBe(true);
+    expect(existsSync(join(home, ".mattstack", "rt", "plugin-data", "my-plugin", "notes.json"))).toBe(true);
   });
 
   test("rejects keys with path separators", async () => {
@@ -76,7 +76,7 @@ describe("makeApi.log", () => {
     const { makeApi } = await import("../plugin-api.ts");
     makeApi("my-plugin").log.info("hello", { n: 1 });
     const day = todayLocal();
-    const line = readFileSync(join(home, ".rt", "logs", `plugins.${day}.log`), "utf8").trim();
+    const line = readFileSync(join(home, ".mattstack", "rt", "logs", `plugins.${day}.log`), "utf8").trim();
     const entry = JSON.parse(line);
     expect(entry).toMatchObject({ level: "info", plugin: "my-plugin", msg: "hello", n: 1 });
   });
@@ -87,7 +87,7 @@ describe("makeApi.log", () => {
     delete process.env.RT_LOG_LEVEL;
     makeApi("p").log.debug("quiet");
     const day = todayLocal();
-    const file = join(home, ".rt", "logs", `plugins.${day}.log`);
+    const file = join(home, ".mattstack", "rt", "logs", `plugins.${day}.log`);
     expect(existsSync(file)).toBe(false);
     process.env.RT_LOG_LEVEL = "debug";
     makeApi("p").log.debug("loud");

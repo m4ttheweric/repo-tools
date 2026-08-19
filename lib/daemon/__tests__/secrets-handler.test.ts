@@ -1,7 +1,7 @@
 /**
  * secrets:forge-token (MAT-33): the grant gate is the point of the verb, so
  * every test here is about who gets refused. The old world was gitq opening
- * ~/.rt/secrets.json itself, where every caller got every token with no
+ * ~/.mattstack/rt/secrets.json itself, where every caller got every token with no
  * grant check anywhere.
  */
 import { describe, expect, test } from "bun:test";
