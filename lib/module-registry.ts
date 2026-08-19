@@ -12,6 +12,7 @@ import * as buildSelect from "../commands/build-select.ts";
 import * as commit from "../commands/commit.ts";
 import * as agent from "../commands/agent.ts";
 import * as daemon from "../commands/daemon.ts";
+import * as events from "../commands/events.ts";
 import * as extension from "../commands/extension.ts";
 import * as hooks from "../commands/hooks.ts";
 import * as open from "../commands/open.ts";
@@ -45,6 +46,7 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/commit.ts": commit,
   "./commands/agent.ts": agent,
   "./commands/daemon.ts": daemon,
+  "./commands/events.ts": events,
   "./commands/extension.ts": extension,
   "./commands/hooks.ts": hooks,
   "./commands/open.ts": open,

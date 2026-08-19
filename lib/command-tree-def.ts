@@ -48,6 +48,47 @@ const branchSubcommands: Record<string, CommandNode> = {
   },
 };
 
+const eventsSubcommands: Record<string, CommandNode> = {
+  emit: {
+    description: "Publish an event to a topic",
+    module: "./commands/events.ts",
+    fn: "eventsEmit",
+    args: [
+      { name: "Topic", type: "text", placeholder: "job/myherd/report", hint: "Topic string; slash-separated by convention" },
+      { name: "Payload", flag: "--json", type: "text", placeholder: "{\"k\":1}", hint: "Optional JSON payload (convention: small pointers, files carry data)" },
+    ],
+  },
+  wait: {
+    description: "Block until a matching event lands (long-poll; exit 124 on timeout)",
+    module: "./commands/events.ts",
+    fn: "eventsWait",
+    args: [
+      { name: "Pattern", type: "text", placeholder: "job/myherd/*", hint: "Glob pattern (* within a segment, ** across segments)" },
+      { name: "After", flag: "--after", type: "text", placeholder: "42", hint: "Cursor from a previous response; omit for only-new events" },
+      { name: "Timeout", flag: "--timeout", type: "text", placeholder: "5m", hint: "Give up after this long (30s, 5m, 500ms, bare seconds); omit to wait forever" },
+    ],
+  },
+  tail: {
+    description: "Stream matching events as NDJSON until interrupted",
+    module: "./commands/events.ts",
+    fn: "eventsTail",
+    args: [
+      { name: "Pattern", type: "text", placeholder: "job/**", hint: "Glob pattern to follow" },
+      { name: "After", flag: "--after", type: "text", placeholder: "42", hint: "Start from this cursor (replays the journal first)" },
+    ],
+  },
+  list: {
+    description: "Read matching events from the journal (non-blocking)",
+    module: "./commands/events.ts",
+    fn: "eventsList",
+    args: [
+      { name: "Pattern", type: "text", placeholder: "job/**", hint: "Glob pattern to match" },
+      { name: "After", flag: "--after", type: "text", placeholder: "0", hint: "Only events with id greater than this cursor" },
+      { name: "Limit", flag: "--limit", type: "text", placeholder: "100", hint: "Cap the number of returned events" },
+    ],
+  },
+};
+
 // Shared so `rt commit` and `rt git commit` are one node (enrich once, render once).
 const commitNode: CommandNode = {
   description: "Interactive staged/unstaged commit picker with live diff preview",
@@ -711,6 +752,11 @@ export const TREE: Record<string, CommandNode> = {
         ],
       },
     },
+  },
+
+  events: {
+    description: "Optional event bus for panes and skills",
+    subcommands: eventsSubcommands,
   },
 
   settings: {
