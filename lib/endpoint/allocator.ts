@@ -90,6 +90,11 @@ export function resolveClaim(
   }
 
   let winningPort: number | undefined;
+  // Counts ports that actually passed the bind probe, not just ports that
+  // weren't blocked by claim/listener bookkeeping — a candidate that every
+  // canBind call vetoes is not "free", so the exhaustion message below must
+  // not call it that.
+  let bindableCount = 0;
 
   if (selfClaim !== undefined && !blocked.has(selfClaim.port)) {
     winningPort = selfClaim.port;
@@ -97,13 +102,14 @@ export function resolveClaim(
     const candidates = roleCfg.pool.filter((p) => !blocked.has(p));
     for (const p of candidates) {
       if (probes.canBind(p)) {
+        bindableCount++;
         winningPort = p;
         break;
       }
     }
     if (winningPort === undefined) {
       return {
-        error: `no free port in pool for role "${role}" (${roleCfg.pool.length} declared, ${candidates.length} free)`,
+        error: `no free port in pool for role "${role}" (${roleCfg.pool.length} declared, ${bindableCount} free)`,
       };
     }
   }

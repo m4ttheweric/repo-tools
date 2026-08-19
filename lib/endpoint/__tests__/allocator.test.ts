@@ -67,6 +67,18 @@ describe("resolveClaim", () => {
     expect(r).toEqual({ error: 'no free port in pool for role "portal" (1 declared, 0 free)' });
   });
 
+  test("pool exhaustion when every unblocked candidate fails the bind probe (all vetoed, none truly free)", () => {
+    const r = resolveClaim(
+      [],
+      "portal",
+      { ...role, pool: [4001, 5001] },
+      "/wt/a",
+      1,
+      probes({ unbindable: [4001, 5001] }),
+    );
+    expect(r).toEqual({ error: 'no free port in pool for role "portal" (2 declared, 0 free)' });
+  });
+
   test("fixedPort role allocates nothing and returns the fixed port", () => {
     const r = resolveClaim([], "frontend", { pool: [], fixedPort: 4002, needs: [], preserveEnv: [], env: {} }, "/wt/a", 1, probes());
     if ("error" in r) throw new Error(r.error);
