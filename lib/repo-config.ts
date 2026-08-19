@@ -1,5 +1,5 @@
 /**
- * Per-repo config — ~/.rt/repos/<repo>/config.json.
+ * Per-repo config — ~/.mattstack/rt/repos/<repo>/config.json.
  *
  * Stores setup steps, clean commands, and dev preferences.
  * Port discovery is handled automatically by the daemon.
@@ -36,7 +36,7 @@ const DEFAULT_CONFIG: RepoConfig = {
 // ─── Load / Save ─────────────────────────────────────────────────────────────
 
 /**
- * Load the repo config from ~/.rt/repos/<repo>/config.json.
+ * Load the repo config from ~/.mattstack/rt/repos/<repo>/config.json.
  * Merges with defaults for any missing fields.
  */
 export function loadRepoConfig(dataDir: string): RepoConfig {
@@ -155,6 +155,6 @@ async function runConfigWizard(repoRoot: string, repoName: string): Promise<Repo
     open: { base: "" },
   };
 
-  console.log(`\n  Config saved to ~/.rt/repos/${repoName}/config.json\n`);
+  console.log(`\n  Config saved to ~/.mattstack/rt/repos/${repoName}/config.json\n`);
   return config;
 }

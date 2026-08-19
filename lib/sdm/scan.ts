@@ -8,6 +8,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { rtDir } from "../rt-paths.ts";
 import { dirname, join } from "node:path";
 import { fetchAccessCatalog, getSdmSnapshot } from "./core.ts";
 
@@ -51,7 +52,7 @@ export function parseCatalogResources(catalogOutput: string, statusNames: string
 export const CATALOG_CACHE_MS = 10 * 60_000;
 
 export function scanCachePath(): string {
-  return join(homedir(), ".rt", "sdm", "scan-cache.json");
+  return join(rtDir(), "sdm", "scan-cache.json");
 }
 
 interface PersistedScanCache {

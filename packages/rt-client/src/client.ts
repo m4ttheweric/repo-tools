@@ -58,7 +58,7 @@ export function readMrsByBranch(
  * side: an untracked repo comes back `ok: false` with the `rt daemon track`
  * command to run, which is the fail-closed shape callers should surface
  * verbatim. Callers keep env-var precedence on their own side; this is the
- * fallback that replaces reading ~/.rt/secrets.json directly.
+ * fallback that replaces reading ~/.mattstack/rt/secrets.json directly.
  */
 export function resolveForgeToken(
   repoName: string,

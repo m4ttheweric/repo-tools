@@ -15,7 +15,7 @@ export interface CacheEntry {
   linearId: string;
   mr: MRDashboardProps | null;
   fetchedAt: number;
-  /** Repo this entry belongs to (from ~/.rt/repos.json). Used to route
+  /** Repo this entry belongs to (from ~/.mattstack/rt/repos.json). Used to route
    *  daemon mr:action IPC calls. Optional for backward compatibility with
    *  older on-disk caches — filled in on the next daemon refresh. */
   repoName?: string;

@@ -1,7 +1,7 @@
 /**
  * lib/sync-log.ts — Append-only audit log for rt sync operations.
  *
- * Written to ~/.rt/sync.log.
+ * Written to ~/.mattstack/rt/sync.log.
  * Each "session" covers one rt sync invocation (single or all-worktrees).
  * Within a session, every git command is logged with:
  *   - timestamp
@@ -22,6 +22,7 @@
 
 import { appendFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
+import { rtDir } from "./rt-paths.ts";
 import { dirname, join } from "path";
 
 const MAX_OUTPUT_BYTES = 2048;
@@ -29,7 +30,7 @@ const MAX_OUTPUT_BYTES = 2048;
 // Resolved at write time (not module init) so tests can set
 // RT_SYNC_LOG_PATH after this module is already imported.
 function logPath(): string {
-  return process.env.RT_SYNC_LOG_PATH ?? join(homedir(), ".rt", "sync.log");
+  return process.env.RT_SYNC_LOG_PATH ?? join(rtDir(), "sync.log");
 }
 
 function ts(): string {

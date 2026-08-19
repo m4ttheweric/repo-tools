@@ -2,7 +2,7 @@
  * Per-repo Doppler template — the source of truth for which app subdir of a
  * worktree maps to which Doppler project + config.
  *
- * Path: ~/.rt/repos/<repo>/doppler-template.yaml. Format is a flat list of objects:
+ * Path: ~/.mattstack/rt/repos/<repo>/doppler-template.yaml. Format is a flat list of objects:
  *   - { path: apps/backend,  project: backend,  config: dev }
  *   - { path: apps/frontend, project: frontend, config: dev }
  *

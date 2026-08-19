@@ -15,6 +15,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
+import { rtDir } from "../rt-paths.ts";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { browserWebSocketUrl, connectCdp, type CdpSocket } from "./cdp.ts";
@@ -85,7 +86,7 @@ export interface BrowserLoginDeps {
 }
 
 export function chromeProfileDir(): string {
-  return join(homedir(), ".rt", "sdm", "chrome-profile");
+  return join(rtDir(), "sdm", "chrome-profile");
 }
 
 const BUTTON_RECT_EXPR = `(() => {

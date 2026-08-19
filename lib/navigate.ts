@@ -282,7 +282,7 @@ export function findResumePosition(
 let navSocketSeq = 0;
 function navWatchPaths(): { socketPath: string; listFile: string } {
   // fzf cannot bind --listen (and the whole picker fails, not just live
-  // refresh) if ~/.rt does not exist yet, e.g. on a machine's first run.
+  // refresh) if ~/.mattstack/rt does not exist yet, e.g. on a machine's first run.
   mkdirSync(rtDir(), { recursive: true });
   const stem = `nav-${process.pid}-${navSocketSeq++}`;
   return {

@@ -1,7 +1,7 @@
 /**
  * Events bus — the daemon's optional pane-communication backend (RT-44).
  *
- * A SQLite journal (~/.rt/events.db, WAL) plus an in-memory waiter registry.
+ * A SQLite journal (~/.mattstack/rt/events.db, WAL) plus an in-memory waiter registry.
  * Topics are plain strings the daemon never interprets; consumers match with
  * Bun.Glob patterns and hold their own cursors (rowids). See the spec:
  * docs/superpowers/specs/2026-08-18-rt-events-bus-design.md

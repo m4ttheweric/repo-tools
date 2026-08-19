@@ -16,6 +16,7 @@ const log = (await getDaemonLogger()).childLogger("process-scan");
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { rtDir } from "../rt-paths.ts";
 import {
   loadRepoIndex,
   buildWorktreeMap,
@@ -87,7 +88,7 @@ export interface ScannerConfig {
   graceMs?: number;
 }
 
-const RUNAWAY_CONFIG_PATH = join(homedir(), ".rt", "runaway-config.json");
+const RUNAWAY_CONFIG_PATH = join(rtDir(), "runaway-config.json");
 
 export function loadRunawayConfig(): ScannerConfig {
   try {

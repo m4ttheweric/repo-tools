@@ -419,7 +419,7 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/sdm.ts",
         fn: "enrichmentCmd",
         args: [
-          { name: "Subcommand", type: "select", hint: "Omit to show enrichment coverage; 'init' scaffolds the enrichment file", options: [{ value: "init", label: "init", hint: "Scaffold ~/.rt/sdm/enrichment.jsonc from the scanned catalog" }] },
+          { name: "Subcommand", type: "select", hint: "Omit to show enrichment coverage; 'init' scaffolds the enrichment file", options: [{ value: "init", label: "init", hint: "Scaffold ~/.mattstack/rt/sdm/enrichment.jsonc from the scanned catalog" }] },
         ],
       },
       "set-email": {
@@ -738,7 +738,7 @@ export const TREE: Record<string, CommandNode> = {
         fn: "manageTracking",
         aliases: ["events"],
         args: [
-          { name: "Repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.rt/repos.json (omit to list; repo alone opens the interactive editor)" },
+          { name: "Repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.mattstack/rt/repos.json (omit to list; repo alone opens the interactive editor)" },
           { name: "Level", type: "text", placeholder: "live|poll|off", hint: "live (events + poll), poll (5-min only), off (on-demand only); omit to pick interactively" },
           { name: "Caches", type: "text", placeholder: "branches project-mrs", hint: "Cache kinds, space-separated: branches, project-mrs, discussions (default: branches)" },
         ],

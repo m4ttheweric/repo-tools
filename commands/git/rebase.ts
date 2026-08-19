@@ -60,13 +60,13 @@ export interface RebaseResult {
 export interface RebaseOptions {
   /** Target ref to rebase onto (default: auto-detect origin/master or origin/main). */
   target?: string;
-  /** Auto-resolve rules (default: loaded from ~/.rt/repos/<repo>/sync.json). */
+  /** Auto-resolve rules (default: loaded from ~/.mattstack/rt/repos/<repo>/sync.json). */
   autoResolve?: AutoResolveRule[];
   /** If true, show what would happen without doing it. */
   dryRun?: boolean;
   /** Working directory. */
   cwd: string;
-  /** Repo data dir for loading config (e.g. ~/.rt/repos/<repo>). */
+  /** Repo data dir for loading config (e.g. ~/.mattstack/rt/repos/<repo>). */
   dataDir?: string;
   /** If true, suppress output (used when called from rt sync --all). */
   quiet?: boolean;

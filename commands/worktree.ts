@@ -529,7 +529,7 @@ export async function worktreeEach(args: string[], _ctx: unknown): Promise<void>
 
   const repos    = loadRepos();
   const repoPath = repos[identity.repoName];
-  if (!repoPath) fail(`repo "${identity.repoName}" not registered in ~/.rt/repos.json`);
+  if (!repoPath) fail(`repo "${identity.repoName}" not registered in ~/.mattstack/rt/repos.json`);
 
   const bindings = (await bindingsFromDaemon(identity.repoName)) ?? bindingsFromGit(repoPath);
   if (bindings.length === 0) {

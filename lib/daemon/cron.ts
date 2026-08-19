@@ -5,7 +5,7 @@
  * conditions, no chaining, no retries-with-policy, no output parsing, no
  * workflow. The moment logic needs "if X and Y", it belongs in the invoked
  * program. Ships with rt's installation (tray-app precedent); dormant when
- * ~/.rt/cron.jsonc is absent or empty.
+ * ~/.mattstack/rt/cron.jsonc is absent or empty.
  */
 import { readFileSync } from "fs";
 import { join } from "path";

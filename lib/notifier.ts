@@ -7,7 +7,7 @@
  *
  * Notification flow:
  *  1. Transition detected → event queued in memory + persisted to disk
- *  2. Push attempt to rt-tray.app via ~/.rt/tray.sock (instant delivery)
+ *  2. Push attempt to rt-tray.app via ~/.mattstack/rt/tray.sock (instant delivery)
  *  3. If tray is unavailable → event stays in queue for later drain
  *  4. Fallback: if no tray.sock exists, shell out to terminal-notifier/osascript
  *  5. Tray app can drain pending queue via drainNotifications() on startup

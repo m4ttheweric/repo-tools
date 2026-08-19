@@ -32,7 +32,7 @@ function packageVersion(): string {
 }
 
 /**
- * Write ~/.rt/plugin-api/ (the local "rt-plugin" package plugin authors
+ * Write ~/.mattstack/rt/plugin-api/ (the local "rt-plugin" package plugin authors
  * depend on via file:) whenever the embedded contract differs from what is
  * on disk. Content comparison, not version stamps: the bytes are the truth.
  */
