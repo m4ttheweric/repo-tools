@@ -31,13 +31,16 @@ export function createEventsHandlers(
     "events:emit": async (payload: Commands["events:emit"]["payload"]) => {
       const topic = typeof payload?.topic === "string" ? payload.topic.trim() : "";
       if (!topic) return { ok: false as const, error: "missing topic" };
-      const id = bus.emit(topic, payload.payload);
-      broadcast("event", { id, topic, payload: payload.payload ?? null, emittedAt: Date.now() });
+      // One timestamp for both the journal row and the broadcast frame, so a
+      // consumer comparing the two never sees them disagree.
+      const emittedAt = Date.now();
+      const id = bus.emitAt(topic, payload.payload, emittedAt);
+      broadcast("event", { id, topic, payload: payload.payload ?? null, emittedAt });
       return { ok: true as const, data: { id } };
     },
 
     "events:list": async (payload: Commands["events:list"]["payload"]) => {
-      const pattern = typeof payload?.pattern === "string" && payload.pattern ? payload.pattern : "";
+      const pattern = typeof payload?.pattern === "string" ? payload.pattern.trim() : "";
       if (!pattern) return { ok: false as const, error: "missing pattern" };
       const { events, cursor } = bus.list({ pattern, after: num(payload.after), limit: num(payload.limit) });
       return { ok: true as const, data: { events, cursor } };
@@ -46,7 +49,7 @@ export function createEventsHandlers(
     // Widened-Handler shape: receives the request AbortSignal from the seam
     // so a dead client's waiter is removed instead of lingering to the cap.
     "events:wait": async (payload: Commands["events:wait"]["payload"], signal?: AbortSignal) => {
-      const pattern = typeof payload?.pattern === "string" && payload.pattern ? payload.pattern : "";
+      const pattern = typeof payload?.pattern === "string" ? payload.pattern.trim() : "";
       if (!pattern) return { ok: false as const, error: "missing pattern" };
       const { events, cursor } = await bus.wait({
         pattern,

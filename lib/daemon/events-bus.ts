@@ -18,9 +18,11 @@ export interface WaitResult { events: BusEvent[]; cursor: number }
 export interface EventsBus {
   emit(topic: string, payload?: unknown): number;
   /**
-   * Test seam: emit with an explicit timestamp. Same as emit() but allows
-   * callers to override the emittedAt time (normally Date.now()). Must perform
-   * the same waiter wake-up scan as emit().
+   * emit with an explicit timestamp. Same as emit() but allows callers to
+   * pin the emittedAt time (normally Date.now()); performs the same waiter
+   * wake-up scan. Used by the events:emit handler so the broadcast frame's
+   * emittedAt agrees exactly with the journal row, and by retention tests
+   * to plant old rows.
    */
   emitAt(topic: string, payload: unknown, emittedAt: number): number;
   list(opts: { pattern: string; after?: number; limit?: number }): WaitResult;
@@ -33,10 +35,18 @@ export interface EventsBus {
 // One matcher for wait AND list. Bun.Glob: `*` does not cross `/`, `**` does.
 // Never use SQLite's GLOB operator — its `*` crosses slashes, which would make
 // wait and list match different event sets for the same pattern.
+// Patterns are client-supplied (one per shepherdr job name, etc.), so a
+// long-lived daemon would otherwise accumulate compiled globs forever; the
+// cap trades a rare recompile for a bounded map.
+const GLOB_CACHE_MAX = 256;
 const globCache = new Map<string, Bun.Glob>();
 export function matchTopic(pattern: string, topic: string): boolean {
   let glob = globCache.get(pattern);
-  if (!glob) { glob = new Bun.Glob(pattern); globCache.set(pattern, glob); }
+  if (!glob) {
+    if (globCache.size >= GLOB_CACHE_MAX) globCache.clear();
+    glob = new Bun.Glob(pattern);
+    globCache.set(pattern, glob);
+  }
   return glob.match(topic);
 }
 
