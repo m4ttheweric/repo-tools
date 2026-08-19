@@ -47,8 +47,10 @@ export const TRAY_SOCK_PATH = join(RT_DIR, "tray.sock");
 export const NOTIFY_QUEUE_PATH = join(RT_DIR, "notify-queue.json");
 
 /** Daemon HTTP/WS port. Shared so clients can open WS connections without
- *  re-declaring the constant. */
-export const API_PORT = 9401;
+ *  re-declaring the constant. RT_API_PORT overrides it so an isolated daemon
+ *  (e2e spawns a real foreground one) never collides with a live local
+ *  daemon's hardcoded port (RT-45). */
+export const API_PORT = Number(process.env.RT_API_PORT) || 9401;
 
 // ─── Read / Write ────────────────────────────────────────────────────────────
 
