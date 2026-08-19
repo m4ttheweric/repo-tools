@@ -163,7 +163,15 @@ export async function defaultProbes(): Promise<Probes> {
     },
     canBind(port) {
       try {
-        const server = Bun.listen({ hostname: "127.0.0.1", port, socket: {} });
+        // `socket` MUST carry at least a `data` (or `drain`) handler: Bun
+        // rejects an empty handler object with a synchronous
+        // ERR_INVALID_ARG_TYPE *before* it ever attempts the bind, which would
+        // make this probe answer "taken" for every port in the pool and fail
+        // every allocation with "no free port". The handler itself is dead
+        // code — the listener is stopped before it can ever accept anything;
+        // it exists purely to get past that argument check so the real
+        // EADDRINUSE signal comes through.
+        const server = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } });
         server.stop();
         return true;
       } catch {

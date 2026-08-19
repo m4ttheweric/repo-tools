@@ -1,7 +1,7 @@
 // lib/endpoint/__tests__/allocator.test.ts
 import { describe, expect, test } from "bun:test";
 import type { EndpointClaim } from "../store.ts";
-import { isLiveClaim, pruneDeadClaims, releaseWorktree, resolveClaim } from "../allocator.ts";
+import { defaultProbes, isLiveClaim, pruneDeadClaims, releaseWorktree, resolveClaim } from "../allocator.ts";
 
 const role = { pool: [4001, 5001, 6001], needs: [], preserveEnv: [], env: {} };
 const probes = (over: Partial<{ listeners: number[]; alive: number[]; unbindable: number[] }> = {}) => ({
@@ -106,5 +106,28 @@ describe("liveness (verbatim lessons)", () => {
   test("pruneDeadClaims spares self even when dead-looking", () => {
     const { claims } = pruneDeadClaims([claim("/wt/a", 4001)], "/wt/a", probes());
     expect(claims).toHaveLength(1);
+  });
+});
+
+describe("defaultProbes (real, not injected)", () => {
+  test("canBind answers true for a free port and false for one already bound", async () => {
+    // Regression guard: the probe used to call `Bun.listen` with an empty
+    // `socket: {}`, which throws ERR_INVALID_ARG_TYPE before any bind is
+    // attempted — so canBind answered false for EVERY port and every
+    // allocation failed with "no free port in pool". Injected probes in the
+    // tests above can't catch that; only the real one can.
+    const probe = await defaultProbes();
+
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("ok") });
+    const port = server.port;
+    if (port === undefined) throw new Error("Bun.serve did not report a port");
+    try {
+      expect(probe.canBind(port)).toBe(false);
+    } finally {
+      server.stop(true);
+    }
+
+    // The same port, once released, must come back as bindable.
+    expect(probe.canBind(port)).toBe(true);
   });
 });
