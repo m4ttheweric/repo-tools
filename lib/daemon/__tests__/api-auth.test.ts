@@ -27,6 +27,14 @@ describe("needsToken", () => {
   test("sdm recents does not require a token", () => {
     expect(needsToken("GET", "/api/sdm/recents")).toBe(false);
   });
+
+  test("events emit requires a token", () => {
+    expect(needsToken("POST", "/api/events/emit")).toBe(true);
+  });
+
+  test("events list does not require a token", () => {
+    expect(needsToken("GET", "/api/events")).toBe(false);
+  });
 });
 
 describe("tokenOk", () => {

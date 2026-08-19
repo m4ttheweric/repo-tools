@@ -18,8 +18,10 @@ import { createSystemProcessHandlers } from "./handlers/system-processes.ts";
 import { createSdmHandlers } from "./handlers/sdm.ts";
 import { createSecretsHandlers } from "./handlers/secrets.ts";
 import { createProjectMRsHandlers } from "./handlers/project-mrs.ts";
+import { createEventsHandlers } from "./handlers/events.ts";
 import { reconcileFreshness, getFreshnessSnapshot } from "./freshness.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
+import type { EventsBus } from "./events-bus.ts";
 
 // `TypedHandlers & HandlerMap`, not plain HandlerMap: the intersection makes
 // this function the compile-time proof that every command in the rt-client
@@ -32,6 +34,8 @@ export function buildRoutedHandlers(opts: {
   systemProcessScanner: SystemProcessScanner;
   /** Reconciler seams the worktree verbs drive (spec §7): claim events, replenish kicks, in-flight creates. */
   worktree: WorktreeHandlerOpts;
+  /** Events bus backing events:emit/wait/list (RT-44). */
+  eventsBus: EventsBus;
 }): TypedHandlers & HandlerMap {
   const { ctx, broadcast, systemProcessScanner } = opts;
   return {
@@ -46,6 +50,7 @@ export function buildRoutedHandlers(opts: {
     ...createSdmHandlers(ctx),
     ...createSecretsHandlers(ctx),
     ...createProjectMRsHandlers(ctx, broadcast),
+    ...createEventsHandlers(opts.eventsBus, broadcast),
 
     // Applies repo-tracking edits immediately (rt daemon track <repo>
     // live|poll|off) instead of waiting for the next refresh-tail reconcile.

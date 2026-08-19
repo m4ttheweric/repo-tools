@@ -41,6 +41,7 @@ export function needsToken(method: string, pathname: string): boolean {
   if (method === "OPTIONS") return false;
   if (pathname === "/api/shutdown") return true;
   if (pathname === "/api/sdm/reconnect") return true;
+  if (pathname === "/api/events/emit") return true;
   return false;
 }
 

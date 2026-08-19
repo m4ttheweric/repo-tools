@@ -19,6 +19,7 @@
  */
 
 import { existsSync, mkdirSync, watch, writeFileSync } from "fs";
+import { join } from "path";
 import type { Server } from "bun";
 
 import { RT_DIR, DAEMON_PID_PATH } from "./daemon-config.ts";
@@ -47,6 +48,7 @@ import {
 } from "./daemon/freshness.ts";
 import { startDiscussionsPoller } from "./daemon/discussions-poller.ts";
 import { createCleanup, installSignalHandlers } from "./daemon/shutdown.ts";
+import { createEventsBus } from "./daemon/events-bus.ts";
 import type { HandlerContext } from "./daemon/handlers/types.ts";
 import type { PortEntry } from "./port-scanner.ts";
 
@@ -83,6 +85,12 @@ const refreshStatusRef = { lastRefreshAt: 0 };
 const startedAt = Date.now();
 
 const hooksGuard = createHooksGuard(log);
+
+// Pane-communication events bus (RT-44): SQLite journal + in-memory waiters.
+const eventsBus = createEventsBus({ dbPath: join(RT_DIR, "events.db"), log });
+// Hourly retention sweep — cheap; rides its own interval rather than pollers
+// because it needs no poller deps.
+setInterval(() => eventsBus.sweep(), 60 * 60 * 1000);
 
 // Cron trigger layer (mechanism-only, MAT-161): sees every broadcast frame.
 const cron = startCron(loadCronConfig(undefined, log), { log });
@@ -140,6 +148,7 @@ const routedHandlers = buildRoutedHandlers({
     kick: worktreeReconciler.kick,
     creationInFlight: worktreeReconciler.creationInFlight,
   },
+  eventsBus,
 });
 
 async function handleCommand(cmd: string, payload: any, signal?: AbortSignal): Promise<any> {
@@ -190,6 +199,7 @@ const servers: { socket?: Server<any>; api?: Server<any> } = {};
 const cleanupCore = createCleanup({ servers, hooksGuard, flushCache, log });
 const cleanup = (): void => {
   cron.dispose();
+  eventsBus.close();
   cleanupCore();
 };
 

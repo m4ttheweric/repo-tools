@@ -52,6 +52,12 @@ export interface ForgeTokenData {
   token: string;
 }
 
+/**
+ * Duplicated shape on purpose (RT-44): rt-client cannot import daemon
+ * internals, so this mirrors lib/daemon/events-bus.ts's BusEvent.
+ */
+export interface EventsBusEvent { id: number; topic: string; payload: unknown; emittedAt: number }
+
 export interface Commands {
   "project-mrs:read": { payload: { repoName: string; maxAgeMs?: number; demand?: DemandDecl }; data: ProjectMRsData };
   "discussions:read": { payload: { repoName: string; iid: number }; data: DiscussionsData };
@@ -64,6 +70,9 @@ export interface Commands {
    * the caller's env vars keep precedence on the caller's side.
    */
   "secrets:forge-token": { payload: { repoName: string; forge: ForgeSlug }; data: ForgeTokenData };
+  "events:emit": { payload: { topic: string; payload?: unknown }; data: { id: number } };
+  "events:wait": { payload: { pattern: string; after?: number; waitMs?: number }; data: { events: EventsBusEvent[]; cursor: number } };
+  "events:list": { payload: { pattern: string; after?: number; limit?: number }; data: { events: EventsBusEvent[]; cursor: number } };
 }
 
 export type CommandName = keyof Commands;
@@ -73,4 +82,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "discussions:read",
   "mr:by-branch",
   "secrets:forge-token",
+  "events:emit",
+  "events:wait",
+  "events:list",
 ];
