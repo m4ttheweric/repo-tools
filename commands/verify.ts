@@ -94,6 +94,20 @@ async function runChecks(): Promise<CheckResult[]> {
     results.push(pass("legacy state dirs", `state lives only in ${RT_DIR_LABEL}`));
   }
 
+  // ── Intercept shims (RT-28) ────────────────────────────────────────────────
+  try {
+    const { shimReport } = await import("../lib/endpoint/shim.ts");
+    const report = shimReport();
+    const missing = report.filter((r) => !r.installed);
+    const stale = report.filter((r) => r.installed && !r.current);
+    if (report.length === 0) results.push(skip("intercept shims", "no intercepts declared"));
+    else if (missing.length > 0) results.push(warn("intercept shims", `declared but not installed: ${missing.map((r) => r.command).join(", ")} — run rt intercept install`));
+    else if (stale.length > 0) results.push(warn("intercept shims", `stale shim content: ${stale.map((r) => r.command).join(", ")} — run rt intercept install`));
+    else results.push(pass("intercept shims", `${report.length} installed and current`, "warning"));
+  } catch (err) {
+    results.push(warn("intercept shims", `check failed: ${(err as Error).message}`));
+  }
+
   // ── Required dependencies ─────────────────────────────────────────────────
 
   const fzfVersion = cmd("fzf --version");
