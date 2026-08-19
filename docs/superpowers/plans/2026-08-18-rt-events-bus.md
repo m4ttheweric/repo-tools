@@ -677,7 +677,7 @@ export function createEventsHandlers(
 } & HandlerMap;
 ```
 
-Also update `lib/daemon/__tests__/rt-client-commands.test.ts` (the catalog exhaustiveness test): its `buildRoutedHandlers({...})` call (~line 34) must gain the new `eventsBus` opt — add `eventsBus: createEventsBus({ dbPath: ":memory:", log: stubLog as any })` (handlers are assembled there, never invoked, and `:memory:` needs no cleanup). No assertion changes are needed — the test iterates `COMMAND_NAMES` automatically.
+Also update `lib/daemon/__tests__/rt-client-commands.test.ts` (the catalog exhaustiveness test): its `buildRoutedHandlers({...})` call (~line 34) must gain the new `eventsBus` opt — add `eventsBus: createEventsBus({ dbPath: ":memory:", log: pino({ level: "silent" }) })` with `import pino from "pino"` (do NOT reuse the file's existing logger stub — it has no `.child`, which `createEventsBus` calls at construction). Handlers are assembled there, never invoked, and `:memory:` needs no cleanup. No assertion changes are needed — the test iterates `COMMAND_NAMES` automatically.
 
 - [ ] **Step 1: Write the failing tests**
 
