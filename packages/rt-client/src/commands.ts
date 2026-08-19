@@ -65,7 +65,7 @@ export interface Commands {
   /**
    * The forge token for one tracked repo (MAT-33). Repo-scoped on purpose:
    * rt gates access per repo through repo-tracking.json, and this verb is
-   * what lets consumers stop reading ~/.rt/secrets.json directly, which
+   * what lets consumers stop reading ~/.mattstack/rt/secrets.json directly, which
    * walked around that grant model entirely. An untracked repo is refused;
    * the caller's env vars keep precedence on the caller's side.
    */

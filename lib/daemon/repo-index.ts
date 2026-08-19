@@ -1,5 +1,5 @@
 /**
- * Repo discovery — the ~/.rt/repos.json index (name → absolute path) and
+ * Repo discovery — the ~/.mattstack/rt/repos.json index (name → absolute path) and
  * per-repo git metadata resolution.
  */
 

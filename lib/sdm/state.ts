@@ -1,11 +1,12 @@
 /**
- * Recents persistence (~/.rt/sdm/state.json). Guarded parse per the
+ * Recents persistence (~/.mattstack/rt/sdm/state.json). Guarded parse per the
  * branch-cache pattern: a missing or corrupt file falls back to empty
  * state rather than throwing.
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { rtDir } from "../rt-paths.ts";
 import { dirname, join } from "node:path";
 
 export interface RecentEntry {
@@ -27,7 +28,7 @@ export interface SdmState {
 export const MAX_RECENTS = 10;
 
 export function sdmStatePath(): string {
-  return join(homedir(), ".rt", "sdm", "state.json");
+  return join(rtDir(), "sdm", "state.json");
 }
 
 export function loadSdmState(path = sdmStatePath()): SdmState {

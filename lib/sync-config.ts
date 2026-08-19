@@ -1,7 +1,7 @@
 /**
  * rt sync config — Auto-resolve rules and post-resolve steps.
  *
- * Config lives at ~/.rt/repos/<repo>/sync.json (zero footprint — never in the repo).
+ * Config lives at ~/.mattstack/rt/repos/<repo>/sync.json (zero footprint — never in the repo).
  * The rules define how to handle known-trivial conflicts during rebases:
  *   - glob pattern → strategy (theirs/ours)
  *   - per-rule postResolve steps (e.g. "pnpm install" after lockfile resolve)
@@ -43,10 +43,10 @@ const DEFAULT_CONFIG: SyncConfig = {
 // ─── Load / Save ─────────────────────────────────────────────────────────────
 
 /**
- * Load sync config from ~/.rt/repos/<repo>/sync.json.
+ * Load sync config from ~/.mattstack/rt/repos/<repo>/sync.json.
  * Returns default config if the file doesn't exist.
  *
- * @param dataDir - The repo's data directory (e.g. ~/.rt/repos/<repo>)
+ * @param dataDir - The repo's data directory (e.g. ~/.mattstack/rt/repos/<repo>)
  */
 export function loadSyncConfig(dataDir: string): SyncConfig {
   const configPath = join(dataDir, "sync.json");
@@ -63,7 +63,7 @@ export function loadSyncConfig(dataDir: string): SyncConfig {
 }
 
 /**
- * Save sync config to ~/.rt/repos/<repo>/sync.json.
+ * Save sync config to ~/.mattstack/rt/repos/<repo>/sync.json.
  */
 export function saveSyncConfig(dataDir: string, config: SyncConfig): void {
   const configPath = join(dataDir, "sync.json");

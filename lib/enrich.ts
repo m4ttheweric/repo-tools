@@ -12,6 +12,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { rtDir } from "./rt-paths.ts";
 import {
   GitLabProvider,
   type PullRequest,
@@ -77,9 +78,9 @@ export function toMRInfo(pr: PullRequest): MRInfo {
   return { ...getMRDashboardProps(pr, "idle"), sha: pr.sha };
 }
 
-// ─── Disk cache (~/.rt/branch-cache.json) ────────────────────────────────────
+// ─── Disk cache (~/.mattstack/rt/branch-cache.json) ────────────────────────────────────
 
-const CACHE_PATH = join(homedir(), ".rt", "branch-cache.json");
+const CACHE_PATH = join(rtDir(), "branch-cache.json");
 
 interface CacheEntry {
   ticket: LinearTicket | null;
@@ -103,7 +104,7 @@ function readDiskCache(): DiskCache {
 
 function writeDiskCache(cache: DiskCache): void {
   try {
-    const dir = join(homedir(), ".rt");
+    const dir = rtDir();
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(CACHE_PATH, JSON.stringify(cache, null, 2));
   } catch { /* best-effort */ }

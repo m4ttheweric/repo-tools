@@ -1,6 +1,6 @@
 /**
  * Per-repo background-tracking grants — the ONE parser for
- * ~/.rt/repo-tracking.json, shared by the daemon (pure reader) and the CLI
+ * ~/.mattstack/rt/repo-tracking.json, shared by the daemon (pure reader) and the CLI
  * (reader + writer). Spec: .local-dev/2026-07-26-typed-stores-board-rewire-design.md §4.
  *
  * v2 file shape:

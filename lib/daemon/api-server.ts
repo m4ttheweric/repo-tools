@@ -42,7 +42,7 @@ const API_INDEX = {
   ],
   auth: {
     header: "X-RT-Token",
-    description: "Required on mutating routes (shutdown, sdm reconnect, events emit). Token at ~/.rt/api-token.",
+    description: "Required on mutating routes (shutdown, sdm reconnect, events emit). Token at ~/.mattstack/rt/api-token.",
   },
 };
 

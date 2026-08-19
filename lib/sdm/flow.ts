@@ -5,7 +5,7 @@
  *
  * Org-visibility invariant: requestAccess reasons and durations come from a
  * human: typed at a prompt, passed as explicit flags, or authored once in
- * ~/.rt/sdm/enrichment.jsonc (reasonSuggestion). The only exception is the
+ * ~/.mattstack/rt/sdm/enrichment.jsonc (reasonSuggestion). The only exception is the
  * fixed `investigating <label> data` template -- the same default the
  * interactive prompt offers -- used when a target has no authored
  * suggestion; no caller may invent any other reason at runtime.

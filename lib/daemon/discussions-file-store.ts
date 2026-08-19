@@ -1,6 +1,6 @@
 /**
  * Discussions file store — one snapshot per MR, keyed "repo:iid", at
- * ~/.rt/discussions.json. Lifted out of CacheEntry.discussions (spec §5.5)
+ * ~/.mattstack/rt/discussions.json. Lifted out of CacheEntry.discussions (spec §5.5)
  * so teammate MRs (which have no branch entry) have a home.
  *
  * This module must not import freshness.ts (freshness imports it), so it

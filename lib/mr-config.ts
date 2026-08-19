@@ -1,7 +1,7 @@
 /**
  * rt mr config — per-repo defaults + describe-atom inputs.
  *
- * Lives at ~/.rt/repos/<repo>/mr.json (sibling of sync.json). All fields optional.
+ * Lives at ~/.mattstack/rt/repos/<repo>/mr.json (sibling of sync.json). All fields optional.
  * Extended from the open atom with `prompts`, `context`, `inline`, `agent`
  * so `rt mr describe` has a home for its cursor-rules-style setup.
  */
@@ -93,7 +93,7 @@ export function loadMRConfig(dataDir: string): MRConfig {
 
 /**
  * Resolve a config path: absolute → as-is, ~/... → homedir-relative,
- * otherwise → resolved relative to dataDir (~/.rt/repos/<repo>).
+ * otherwise → resolved relative to dataDir (~/.mattstack/rt/repos/<repo>).
  */
 export function resolveConfigPath(raw: string, dataDir: string): string {
   if (raw.startsWith("~/")) return join(homedir(), raw.slice(2));

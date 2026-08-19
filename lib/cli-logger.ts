@@ -1,7 +1,7 @@
 /**
  * CLI command logger -- automatic structured logging for every rt command invocation.
  *
- * Writes JSON lines to ~/.rt/logs/cli.YYYY-MM-DD.log with daily rotation
+ * Writes JSON lines to ~/.mattstack/rt/logs/cli.YYYY-MM-DD.log with daily rotation
  * and 14-day retention. Designed to be zero-cost to callers: logging never
  * throws, never blocks the command, and requires no per-module code.
  *

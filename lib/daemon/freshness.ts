@@ -285,11 +285,11 @@ export async function getRepoContext(
   // Provider not yet built — construct from git remote.
   if (!provider) {
     if (!repoPath) {
-      throw new Error(`repo "${repoName}" not in ~/.rt/repos.json (run rt repo add)`);
+      throw new Error(`repo "${repoName}" not in ~/.mattstack/rt/repos.json (run rt repo add)`);
     }
     const secrets = loadSecrets();
     if (!secrets.gitlabToken) {
-      throw new Error("missing gitlabToken in ~/.rt/secrets.json (run rt secret set gitlabToken <pat>)");
+      throw new Error("missing gitlabToken in ~/.mattstack/rt/secrets.json (run rt secret set gitlabToken <pat>)");
     }
     const remoteUrl = getRemoteUrl(repoPath);
     if (!remoteUrl) {

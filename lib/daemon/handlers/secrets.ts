@@ -1,7 +1,7 @@
 /**
  * secrets:forge-token — the forge token for one tracked repo (MAT-33).
  *
- * Exists so consumers (gitq first) stop opening ~/.rt/secrets.json
+ * Exists so consumers (gitq first) stop opening ~/.mattstack/rt/secrets.json
  * themselves: the direct file read depended on a format rt owns and walked
  * around the per-repo grant model in repo-tracking.json entirely. Going
  * through the daemon puts token access behind the same tracking grant every
@@ -55,7 +55,7 @@ export function createSecretsHandlers(
 
       const token = secrets()[SECRETS_KEY[forge]];
       if (!token) {
-        return { ok: false as const, error: `no ${forge} token in ~/.rt/secrets.json (${SECRETS_KEY[forge]})` };
+        return { ok: false as const, error: `no ${forge} token in ~/.mattstack/rt/secrets.json (${SECRETS_KEY[forge]})` };
       }
 
       ctx.log.info({ repoName, forge }, "secrets:forge-token grant-gated read");

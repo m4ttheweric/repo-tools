@@ -42,9 +42,10 @@ export function createHooksGuard(log: Logger): HooksGuard {
       const currentHooksPath = current.stdout.trim();
 
       // Repair unless hooksPath points EXACTLY at this repo's shims dir. The old
-      // check accepted any path merely containing ".rt", so it never repaired a
-      // stale-but-".rt" path — e.g. the pre-repos/ location ~/.rt/<repo>/hooks
-      // after the move to ~/.rt/repos/<repo>/hooks. Compare resolved paths.
+      // check accepted any path merely containing the rt state-dir name, so it
+      // never repaired a stale-but-rt-owned path — e.g. the pre-repos/ location
+      // <rtDir>/<repo>/hooks after the move to <rtDir>/repos/<repo>/hooks.
+      // Compare resolved paths.
       if (resolve(currentHooksPath) === resolve(shimsDir)) return false;
 
       // Hooks path was clobbered — re-apply

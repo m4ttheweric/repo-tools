@@ -5,7 +5,7 @@
  * `discussions-poller.ts` (periodic sweep that surfaces new comments as
  * notifications).
  *
- * Snapshots live in `~/.rt/discussions.json` (see `discussions-file-store.ts`),
+ * Snapshots live in `~/.mattstack/rt/discussions.json` (see `discussions-file-store.ts`),
  * keyed `repo:iid` — not on the branch-cache entry, so a teammate's MR (no
  * branch entry of its own) still has a home. MR metadata for titles/webUrl/
  * author/terminal-state resolves branch entry first, then the project store.

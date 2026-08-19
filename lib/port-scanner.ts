@@ -12,6 +12,7 @@
 
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
+import { rtDir } from "./rt-paths.ts";
 import { join } from "path";
 import { runCapture } from "./subprocess.ts";
 
@@ -54,7 +55,7 @@ export function parseEtimeMs(etime: string): number | null {
   );
 }
 
-const REPOS_JSON_PATH = join(homedir(), ".rt", "repos.json");
+const REPOS_JSON_PATH = join(rtDir(), "repos.json");
 
 export function loadRepoIndex(): Record<string, string> {
   try {
