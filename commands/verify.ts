@@ -94,6 +94,28 @@ async function runChecks(): Promise<CheckResult[]> {
     results.push(pass("legacy state dirs", `state lives only in ${RT_DIR_LABEL}`));
   }
 
+  // ── Intercept shims (RT-28) ────────────────────────────────────────────────
+  try {
+    const { shimReport, localBinDir } = await import("../lib/endpoint/shim.ts");
+    const report = shimReport();
+    const missing = report.filter((r) => !r.installed);
+    const stale = report.filter((r) => r.installed && !r.current);
+    // A perfectly installed shim is inert if its directory isn't on PATH —
+    // the intercept simply never fires and everything looks fine. Only worth
+    // saying once at least one shim actually exists on disk.
+    const binDir = localBinDir();
+    const onPath = (process.env.PATH ?? "").split(":").some((entry) => entry === binDir || entry.replace(/\/+$/, "") === binDir);
+    const pathBroken = report.some((r) => r.installed) && !onPath;
+    const pathNote = pathBroken ? ` — and ${binDir} is not on PATH, so intercepts will not fire` : "";
+    if (report.length === 0) results.push(skip("intercept shims", "no intercepts declared"));
+    else if (missing.length > 0) results.push(warn("intercept shims", `declared but not installed: ${missing.map((r) => r.command).join(", ")} — run rt intercept install${pathNote}`));
+    else if (stale.length > 0) results.push(warn("intercept shims", `stale shim content: ${stale.map((r) => r.command).join(", ")} — run rt intercept install${pathNote}`));
+    else if (pathBroken) results.push(warn("intercept shims", `shims installed but ${binDir} is not on PATH — intercepts will not fire`));
+    else results.push(pass("intercept shims", `${report.length} installed and current`, "warning"));
+  } catch (err) {
+    results.push(warn("intercept shims", `check failed: ${(err as Error).message}`));
+  }
+
   // ── Required dependencies ─────────────────────────────────────────────────
 
   const fzfVersion = cmd("fzf --version");
