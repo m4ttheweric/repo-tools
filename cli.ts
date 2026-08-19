@@ -16,6 +16,22 @@
 
 import { dispatch } from "./lib/command-tree.ts";
 import { TREE } from "./lib/command-tree-def.ts";
+import { rtDir, migrateLegacyRtDir, LEGACY_RT_LABEL, RT_DIR_LABEL } from "./lib/rt-paths.ts";
+
+// ─── Legacy state migration (RT-46) ──────────────────────────────────────────
+// Move a real legacy rt dir into place BEFORE anything (the CLI logger
+// included) can create the new tree and turn a clean rename into a conflict.
+// The daemon entry runs its own copy of this (lib/daemon.ts) for the
+// `bun run lib/daemon.ts` source path; the call is idempotent.
+{
+  const migration = migrateLegacyRtDir();
+  if (migration === "migrated") {
+    console.error(`  rt: migrated legacy ${LEGACY_RT_LABEL} state to ${RT_DIR_LABEL}`);
+  } else if (migration === "conflict") {
+    console.error(`\n  rt: WARNING — state is split between ${LEGACY_RT_LABEL} and ${RT_DIR_LABEL}.`);
+    console.error(`  rt reads only ${RT_DIR_LABEL}; merge the legacy ${LEGACY_RT_LABEL} directory into it by hand, then delete it.\n`);
+  }
+}
 
 // ─── Command Tree ────────────────────────────────────────────────────────────
 //
@@ -89,7 +105,7 @@ if (args[0] === "--version" || args[0] === "-V") {
     const { existsSync } = await import("fs");
     const { join } = await import("path");
     const { homedir } = await import("os");
-    if (!existsSync(join(homedir(), ".rt", "daemon.json"))) {
+    if (!existsSync(join(rtDir(), "daemon.json"))) {
       console.log("\n  rt — first run detected, completing setup…\n");
       const { runPostInstall } = await import("./commands/post-install.ts");
       await runPostInstall();

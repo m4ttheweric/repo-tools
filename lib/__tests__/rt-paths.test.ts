@@ -1,43 +1,55 @@
 /**
- * rt-paths — the single source of truth for ~/.rt layout.
+ * rt-paths — the single source of truth for the ~/.mattstack/rt layout.
  *
- * Includes a SOURCE-GUARD test that fails the build if the old per-repo-at-root
- * pattern (`join(RT_DIR, repoName, ...)` / `join(homedir(), ".rt", repoName)`)
- * reappears anywhere in lib/ outside this module. That tripwire is the point:
- * it keeps a future relayout a one-line change here instead of a scavenger hunt.
+ * Includes SOURCE-GUARD tests that fail the build if:
+ *  - the old per-repo-at-root pattern (`join(RT_DIR, repoName, ...)`) reappears
+ *    anywhere in lib/ outside this module, or
+ *  - the legacy `.rt` path literal reappears anywhere under lib/, commands/,
+ *    cli.ts, or packages/rt-client/src outside rt-paths.ts (RT-46: the
+ *    ~/.rt compat symlink is being removed; every path must build the real
+ *    ~/.mattstack/rt tree).
+ * Those tripwires are the point: they keep a future relayout a one-line change
+ * here instead of a scavenger hunt.
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "fs";
+import {
+  existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync,
+  rmSync, statSync, symlinkSync, writeFileSync,
+} from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
-import { rtDir, reposDir, repoDataDir, logsDir } from "../rt-paths.ts";
+import {
+  rtDir, reposDir, repoDataDir, logsDir,
+  migrateLegacyRtDir, legacyDirsPresent,
+} from "../rt-paths.ts";
 
 describe("rt-paths", () => {
   const origHome = process.env.HOME;
   afterEach(() => { process.env.HOME = origHome; });
 
-  test("per-repo data dir nests under ~/.rt/repos/<repo> at call-time HOME", () => {
+  test("per-repo data dir nests under ~/.mattstack/rt/repos/<repo> at call-time HOME", () => {
     process.env.HOME = "/tmp/fake-home-abc";
-    expect(rtDir()).toBe("/tmp/fake-home-abc/.rt");
-    expect(reposDir()).toBe("/tmp/fake-home-abc/.rt/repos");
-    expect(repoDataDir("my-repo")).toBe("/tmp/fake-home-abc/.rt/repos/my-repo");
+    expect(rtDir()).toBe("/tmp/fake-home-abc/.mattstack/rt");
+    expect(reposDir()).toBe("/tmp/fake-home-abc/.mattstack/rt/repos");
+    expect(repoDataDir("my-repo")).toBe("/tmp/fake-home-abc/.mattstack/rt/repos/my-repo");
   });
 
   test("HOME is resolved at call time (a later change takes effect)", () => {
     process.env.HOME = "/tmp/home-1";
-    expect(repoDataDir("r")).toBe("/tmp/home-1/.rt/repos/r");
+    expect(repoDataDir("r")).toBe("/tmp/home-1/.mattstack/rt/repos/r");
     process.env.HOME = "/tmp/home-2";
-    expect(repoDataDir("r")).toBe("/tmp/home-2/.rt/repos/r");
+    expect(repoDataDir("r")).toBe("/tmp/home-2/.mattstack/rt/repos/r");
   });
 
   test("logsDir follows HOME at call time (guards against test log pollution)", () => {
     // A module-load-time const here is what made the daemon and CLI loggers
-    // write into the developer's real ~/.rt/logs during tests, no matter what
+    // write into the developer's real logs dir during tests, no matter what
     // HOME the test had set.
     process.env.HOME = "/tmp/home-logs-1";
-    expect(logsDir()).toBe("/tmp/home-logs-1/.rt/logs");
+    expect(logsDir()).toBe("/tmp/home-logs-1/.mattstack/rt/logs");
     process.env.HOME = "/tmp/home-logs-2";
-    expect(logsDir()).toBe("/tmp/home-logs-2/.rt/logs");
+    expect(logsDir()).toBe("/tmp/home-logs-2/.mattstack/rt/logs");
   });
 
   test("log writers resolve the log dir at call time, not at module load", () => {
@@ -50,42 +62,169 @@ describe("rt-paths", () => {
     }
   });
 
-  test("a repo dir is NEVER directly under ~/.rt (regression guard for the move)", () => {
+  test("a repo dir is NEVER directly under the rt dir (regression guard for the move)", () => {
     process.env.HOME = "/tmp/h";
     expect(repoDataDir("x")).toBe(join(reposDir(), "x"));
     expect(repoDataDir("x")).not.toBe(join(rtDir(), "x"));
   });
 
-  // ── Source-guard: no per-repo-at-root paths outside this module ──────────────
-  test("no code in lib/ reconstructs ~/.rt/<repoName> by hand", () => {
+  // ── migrateLegacyRtDir ───────────────────────────────────────────────────────
+
+  const makeHome = () => mkdtempSync(join(tmpdir(), "rt-paths-migrate-"));
+
+  test("migrate: no ~/.rt at all → none, nothing created", () => {
+    const home = makeHome();
+    process.env.HOME = home;
+    expect(migrateLegacyRtDir()).toBe("none");
+    expect(existsSync(join(home, ".mattstack"))).toBe(false);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("migrate: ~/.rt is a symlink → none, symlink untouched", () => {
+    const home = makeHome();
+    process.env.HOME = home;
+    mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
+    symlinkSync(join(home, ".mattstack", "rt"), join(home, ".rt"));
+    expect(migrateLegacyRtDir()).toBe("none");
+    expect(lstatSync(join(home, ".rt")).isSymbolicLink()).toBe(true);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("migrate: real ~/.rt, no ~/.mattstack/rt → renamed, contents intact", () => {
+    const home = makeHome();
+    process.env.HOME = home;
+    mkdirSync(join(home, ".rt", "repos"), { recursive: true });
+    writeFileSync(join(home, ".rt", "repos.json"), "{}");
+    expect(migrateLegacyRtDir()).toBe("migrated");
+    expect(existsSync(join(home, ".rt"))).toBe(false);
+    expect(readFileSync(join(home, ".mattstack", "rt", "repos.json"), "utf8")).toBe("{}");
+    expect(statSync(join(home, ".mattstack", "rt", "repos")).isDirectory()).toBe(true);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("migrate: real ~/.rt AND ~/.mattstack/rt exists → conflict, both untouched", () => {
+    const home = makeHome();
+    process.env.HOME = home;
+    mkdirSync(join(home, ".rt"), { recursive: true });
+    writeFileSync(join(home, ".rt", "old.json"), "old");
+    mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
+    writeFileSync(join(home, ".mattstack", "rt", "new.json"), "new");
+    expect(migrateLegacyRtDir()).toBe("conflict");
+    expect(readFileSync(join(home, ".rt", "old.json"), "utf8")).toBe("old");
+    expect(readFileSync(join(home, ".mattstack", "rt", "new.json"), "utf8")).toBe("new");
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("migrate is idempotent: second call after a migration is a no-op", () => {
+    const home = makeHome();
+    process.env.HOME = home;
+    mkdirSync(join(home, ".rt"), { recursive: true });
+    expect(migrateLegacyRtDir()).toBe("migrated");
+    expect(migrateLegacyRtDir()).toBe("none");
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  // ── legacyDirsPresent (the canary probe) ────────────────────────────────────
+
+  test("canary: reports real legacy dirs, ignores symlinks, skips absent", () => {
+    const home = makeHome();
+    process.env.HOME = home;
+
+    // Nothing there at all.
+    expect(legacyDirsPresent()).toEqual({ real: [], symlinks: [] });
+
+    // ~/.rt as a symlink (compat shim) + ~/.shepherdr as a real dir.
+    mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
+    symlinkSync(join(home, ".mattstack", "rt"), join(home, ".rt"));
+    mkdirSync(join(home, ".shepherdr"), { recursive: true });
+    expect(legacyDirsPresent()).toEqual({
+      real: [join(home, ".shepherdr")],
+      symlinks: [join(home, ".rt")],
+    });
+
+    // Both as real dirs.
+    rmSync(join(home, ".rt"));
+    mkdirSync(join(home, ".rt"), { recursive: true });
+    expect(legacyDirsPresent()).toEqual({
+      real: [join(home, ".rt"), join(home, ".shepherdr")],
+      symlinks: [],
+    });
+
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  // ── Source-guards ────────────────────────────────────────────────────────────
+
+  /** Walk .ts sources (skipping tests, node_modules, dist) under a root. */
+  const walkSources = (root: string, visit: (file: string, src: string) => void) => {
+    const st = statSync(root);
+    if (!st.isDirectory()) {
+      visit(root, readFileSync(root, "utf8"));
+      return;
+    }
+    for (const entry of readdirSync(root)) {
+      const full = join(root, entry);
+      if (statSync(full).isDirectory()) {
+        if (entry === "node_modules" || entry === "__tests__" || entry === "dist") continue;
+        walkSources(full, visit);
+        continue;
+      }
+      if (!entry.endsWith(".ts") && !entry.endsWith(".tsx")) continue;
+      if (entry.endsWith(".test.ts")) continue;
+      if (full.endsWith("/rt-paths.ts")) continue; // the one allowed home
+      visit(full, readFileSync(full, "utf8"));
+    }
+  };
+
+  test("no code in lib/ reconstructs <rtDir>/<repoName> by hand", () => {
     const libDir = join(import.meta.dir, "..");
     // The old per-repo-at-root shapes. Per-repo paths MUST go through
     // repoDataDir(); app-level joins use string literals and are not matched.
     const antipatterns = [
       /join\(\s*RT_DIR\s*,\s*[a-zA-Z_$]/,                       // join(RT_DIR, repoName...
-      /join\(\s*homedir\(\)\s*,\s*"\.rt"\s*,\s*[a-zA-Z_$]/,     // join(homedir(), ".rt", repoName)
-      /["']\.rt["']\s*,\s*repoName/,                            // ".rt", repoName
+      /join\(\s*homedir\(\)\s*,\s*"\.rt"\s*,\s*[a-zA-Z_$]/,     // legacy join(homedir(), <dir>, repoName)
+      /["']\.rt["']\s*,\s*repoName/,                            // legacy literal, repoName
     ];
     const offenders: string[] = [];
-    const walk = (dir: string) => {
-      for (const entry of readdirSync(dir)) {
-        const full = join(dir, entry);
-        if (statSync(full).isDirectory()) {
-          if (entry === "node_modules" || entry === "__tests__") continue;
-          walk(full);
-          continue;
+    walkSources(libDir, (file, src) => {
+      src.split("\n").forEach((line, i) => {
+        if (antipatterns.some((re) => re.test(line))) {
+          offenders.push(`${file}:${i + 1}  ${line.trim()}`);
         }
-        if (!entry.endsWith(".ts")) continue;
-        if (full.endsWith("/rt-paths.ts")) continue; // the one allowed home
-        const src = readFileSync(full, "utf8");
+      });
+    });
+    expect(offenders, `Per-repo paths must use repoDataDir() from rt-paths.ts:\n${offenders.join("\n")}`).toEqual([]);
+  });
+
+  test("no source builds a legacy .rt path outside rt-paths.ts (RT-46)", () => {
+    // The ~/.rt → ~/.mattstack/rt move (RT-33/RT-46) is complete: nothing may
+    // reference the legacy tree except rt-paths.ts itself (which owns the
+    // migration + canary). Catches both quoted literals (".rt") and path-like
+    // occurrences in strings/comments (~/.rt/..., $HOME/.rt/...).
+    const repoRoot = join(import.meta.dir, "..", "..");
+    const roots = [
+      join(repoRoot, "lib"),
+      join(repoRoot, "commands"),
+      join(repoRoot, "cli.ts"),
+      join(repoRoot, "packages", "rt-client", "src"),
+    ];
+    const antipatterns = [
+      /["'`]\.rt["'`]/,        // the quoted literal ".rt"
+      /\/\.rt(\/|\b)/,         // a /.rt path segment (~/.rt/..., $HOME/.rt)
+    ];
+    const offenders: string[] = [];
+    for (const root of roots) {
+      walkSources(root, (file, src) => {
         src.split("\n").forEach((line, i) => {
           if (antipatterns.some((re) => re.test(line))) {
-            offenders.push(`${full}:${i + 1}  ${line.trim()}`);
+            offenders.push(`${file}:${i + 1}  ${line.trim()}`);
           }
         });
-      }
-    };
-    walk(libDir);
-    expect(offenders, `Per-repo paths must use repoDataDir() from rt-paths.ts:\n${offenders.join("\n")}`).toEqual([]);
+      });
+    }
+    expect(
+      offenders,
+      `Legacy .rt paths must go through rt-paths.ts (rtDir() et al.):\n${offenders.join("\n")}`,
+    ).toEqual([]);
   });
 });
