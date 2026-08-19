@@ -19,6 +19,7 @@ import { createSdmHandlers } from "./handlers/sdm.ts";
 import { createSecretsHandlers } from "./handlers/secrets.ts";
 import { createProjectMRsHandlers } from "./handlers/project-mrs.ts";
 import { createEventsHandlers } from "./handlers/events.ts";
+import { createEndpointHandlers } from "./handlers/endpoint.ts";
 import { reconcileFreshness, getFreshnessSnapshot } from "./freshness.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
 import type { EventsBus } from "./events-bus.ts";
@@ -51,6 +52,7 @@ export function buildRoutedHandlers(opts: {
     ...createSecretsHandlers(ctx),
     ...createProjectMRsHandlers(ctx, broadcast),
     ...createEventsHandlers(opts.eventsBus, broadcast),
+    ...createEndpointHandlers(ctx),
 
     // Applies repo-tracking edits immediately (rt daemon track <repo>
     // live|poll|off) instead of waiting for the next refresh-tail reconcile.

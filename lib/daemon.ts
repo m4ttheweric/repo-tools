@@ -49,6 +49,7 @@ import {
 import { startDiscussionsPoller } from "./daemon/discussions-poller.ts";
 import { createCleanup, installSignalHandlers } from "./daemon/shutdown.ts";
 import { createEventsBus } from "./daemon/events-bus.ts";
+import { releaseEndpointsForWorktree } from "./daemon/handlers/endpoint.ts";
 import type { HandlerContext } from "./daemon/handlers/types.ts";
 import type { PortEntry } from "./port-scanner.ts";
 
@@ -115,6 +116,10 @@ const cron = startCron(loadCronConfig(undefined, log), { log });
 const emit: typeof broadcast = (type, data) => {
   broadcast(type, data);
   cron.onBroadcast(type, data);
+  if (type === "worktree:disposed") {
+    const d = data as { repo?: string; path?: string };
+    if (d?.repo && d?.path) releaseEndpointsForWorktree({ log }, d.repo, d.path);
+  }
 };
 
 // Worktree lifecycle reconciler: reconcile → merge reactor → freshen →
