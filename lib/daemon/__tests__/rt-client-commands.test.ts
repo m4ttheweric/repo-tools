@@ -8,7 +8,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import pino from "pino";
 import { buildRoutedHandlers } from "../command-router.ts";
+import { createEventsBus } from "../events-bus.ts";
 import { COMMAND_NAMES } from "../../../packages/rt-client/src/commands.ts";
 import type { HandlerContext } from "../handlers/types.ts";
 
@@ -36,6 +38,7 @@ describe("rt-client command coverage", () => {
       broadcast: () => {},
       systemProcessScanner: {} as any,
       worktree: { emit: () => {}, kick: () => {}, creationInFlight: () => null },
+      eventsBus: createEventsBus({ dbPath: ":memory:", log: pino({ level: "silent" }) }),
     });
     for (const name of COMMAND_NAMES) {
       expect(handlers[name]).toBeDefined();

@@ -31,6 +31,8 @@ const API_INDEX = {
     { method: "POST", path: "/api/shutdown",        description: "Gracefully stop the daemon" },
     { method: "GET",  path: "/api/sdm/recents",     description: "Recent StrongDM connections with live connected state" },
     { method: "POST", path: "/api/sdm/reconnect",   description: "Reconnect a StrongDM recent (promptless; fails if an access request is needed)" },
+    { method: "POST", path: "/api/events/emit",     description: "Emit an event onto the pane-communication bus" },
+    { method: "GET",  path: "/api/events",          description: "List events matching a topic pattern" },
   ],
   websocket_events: [
     { type: "status",         description: "Full daemon status — after each cache refresh (~5 min)" },
@@ -55,6 +57,8 @@ const REST_ROUTES: Record<string, { cmd: string; method: string }> = {
   "/api/processes/system": { cmd: "system-processes", method: "GET" },
   "/api/sdm/recents":   { cmd: "sdm:recents", method: "GET" },
   "/api/sdm/reconnect": { cmd: "sdm:reconnect", method: "POST" },
+  "/api/events/emit":   { cmd: "events:emit", method: "POST" },
+  "/api/events":        { cmd: "events:list", method: "GET" },
 };
 
 /** Per-connection data on the :9401 WebSocket broadcast channel. */
