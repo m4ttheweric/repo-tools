@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { repoDataDir, rtDir } from "../../rt-paths.ts";
@@ -206,6 +206,25 @@ describe("installShims / uninstallShims / shimReport", () => {
     expect(removed.removed).toEqual(["fakecmd-a"]);
     expect(existsSync(shimPath("fakecmd-a"))).toBe(false);
     expect(existsSync(untouchedPath)).toBe(true);
+  });
+
+  test("re-install repairs a stripped exec bit even when the content is already current", async () => {
+    const repoPath = makeGitRepo(null);
+    writeRepoConfig("r-chmod", {
+      intercepts: [{ command: "fakecmd-chmod", matches: [{ cwdGlob: ".", role: "x" }] }],
+    });
+    writeRepoIndex({ "r-chmod": repoPath });
+
+    await installShims();
+    const path = shimPath("fakecmd-chmod");
+    expect(statSync(path).mode & 0o111).not.toBe(0);
+
+    chmodSync(path, 0o644); // exec bit stripped by hand / a hostile umask
+    expect(statSync(path).mode & 0o111).toBe(0);
+
+    const again = await installShims();
+    expect(again.current).toContain("fakecmd-chmod"); // content-equal path
+    expect(statSync(path).mode & 0o111).not.toBe(0); // …and still repaired
   });
 
   test("shimReport reports installed:false, current:false for a rule command never installed", () => {

@@ -63,6 +63,24 @@ describe("runInterception", () => {
     const { deps } = harness({ resolveRealBinary: () => null });
     await expect(run(deps, ["run", "serve"])).rejects.toThrow(/real binary/);
   });
+  test("no rule for this command at all → zero git spawns (hot passthrough)", async () => {
+    let gitCalls = 0;
+    const { deps, calls } = harness({
+      rules: [{ command: "othercmd", repo: "r1", repoRemote: null, matches: [{ cwdGlob: ".", argPattern: "serve", role: "web" }] }] as any,
+      gitToplevel: async () => { gitCalls++; return "/wt/a"; },
+      gitRemote: async () => { gitCalls++; return null; },
+    });
+    await run(deps, ["run", "serve"]);
+    expect(gitCalls).toBe(0);
+    expect(calls.exec!.args).toEqual(["run", "serve"]);
+  });
+  test("malformed ok:true claim envelope → warn and exec real untouched (fails open)", async () => {
+    const { deps, calls } = harness({ claim: async () => ({ ok: true, data: {} }) });
+    await run(deps, ["run", "serve"], { KEEP_ME: "1" });
+    expect(calls.warned.some((w) => w.includes("passthrough"))).toBe(true);
+    expect(calls.exec!.args).toEqual(["run", "serve"]); // no argInject spliced
+    expect(calls.exec!.env.PORT).toBeUndefined(); // no rendered role env
+  });
 });
 
 // ─── cli.ts fast path — byte-transparency ────────────────────────────────────
@@ -84,6 +102,13 @@ describe("cli.ts intercept run fast path", () => {
     const tmpHome = mkdtempSync(join(tmpdir(), "rt-intercept-transparency-"));
     // No ~/.mattstack/rt/daemon.json in tmpHome — first-run setup would fire
     // on any other command path (see cli.ts's "First-run auto-setup" block).
+    //
+    // …and both state trees exist, which is the RT-46 "conflict" migration
+    // state: on any other command path cli.ts prints a two-line WARNING for it
+    // on EVERY invocation, which would land on the wrapped command's stderr
+    // forever. The intercept fast path must stay silent about it.
+    mkdirSync(join(tmpHome, ".mattstack", "rt"), { recursive: true });
+    mkdirSync(join(tmpHome, ".rt"), { recursive: true });
 
     const proc = Bun.spawn([process.execPath, "run", CLI_PATH, "intercept", "run", "echo", "--", "hello"], {
       cwd: REPO_ROOT,
@@ -103,5 +128,7 @@ describe("cli.ts intercept run fast path", () => {
     expect(stdout).toBe("hello\n"); // exactly the wrapped `echo hello`'s output — nothing prepended/appended
     expect(stderr).not.toContain("\x1b"); // no ANSI escape (screen clear / breadcrumb) bytes
     expect(stderr.toLowerCase()).not.toContain("first run");
+    expect(stderr).not.toContain("WARNING"); // no legacy-state migration warning
+    expect(stderr).not.toContain("migrated legacy");
   }, 20_000);
 });
