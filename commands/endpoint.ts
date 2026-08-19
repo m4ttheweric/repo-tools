@@ -1,0 +1,92 @@
+#!/usr/bin/env bun
+
+/**
+ * rt endpoint — read-only surface over dev-endpoint claims (RT-28 Task 7).
+ *
+ *   rt endpoint lookup <role> [--json]   does this worktree hold a claim?
+ *
+ * Repo identification mirrors the pattern already used by `rt worktree each`
+ * (commands/worktree.ts): derive a repo name from the cwd's git toplevel +
+ * remote, then check it's a KEY in ~/.mattstack/rt/repos.json — read the same
+ * way `lib/endpoint/shim.ts`'s `buildInterceptRules` reads it. An unregistered
+ * repo is a clear, fail-loud error (there is nothing to fall open to for a
+ * read-only lookup). The git toplevel path string IS the worktree key
+ * `endpoint:lookup` expects — the same value the daemon's disposal release
+ * receives as `path`.
+ */
+
+import { basename, join } from "path";
+import { dim, green, reset, yellow } from "../lib/tui.ts";
+import { readJson } from "../lib/json-store.ts";
+import { rtDir } from "../lib/rt-paths.ts";
+import { runCapture } from "../lib/subprocess.ts";
+import { daemonQuery } from "../lib/daemon-client.ts";
+// deriveRepoName, not getRepoIdentity: the latter's updateRepoIndex side
+// effect would write to the repo index from a read-only lookup.
+import { deriveRepoName } from "../lib/repo.ts";
+
+function fail(msg: string): never {
+  console.error(`rt endpoint: ${msg}`);
+  process.exit(1);
+}
+
+async function gitToplevel(cwd: string): Promise<string | null> {
+  const res = await runCapture(["git", "-C", cwd, "rev-parse", "--show-toplevel"]);
+  if (res.exitCode !== 0) return null;
+  const trimmed = res.stdout.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+async function gitRemote(toplevel: string): Promise<string | null> {
+  const res = await runCapture(["git", "-C", toplevel, "config", "--get", "remote.origin.url"]);
+  if (res.exitCode !== 0) return null;
+  const trimmed = res.stdout.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+interface LookupData {
+  claimed: boolean;
+  port: number | null;
+  url: string | null;
+  running: boolean;
+}
+
+export async function endpointLookup(args: string[]): Promise<void> {
+  const json = args.includes("--json");
+  const role = args.find((a) => !a.startsWith("--"));
+  if (!role) fail("usage: rt endpoint lookup <role> [--json]");
+
+  const cwd = process.cwd();
+  const toplevel = await gitToplevel(cwd);
+  if (!toplevel) fail("not in a git repo");
+
+  const remote = await gitRemote(toplevel);
+  const repoName = remote ? deriveRepoName(remote) : basename(toplevel);
+
+  // Read the repo index the same way lib/endpoint/shim.ts's
+  // buildInterceptRules does — repo name is a KEY, not a path match (a
+  // secondary worktree's toplevel never equals the index's stored primary
+  // path, so equality-matching the path would false-negative every time).
+  const index = readJson<Record<string, string>>(join(rtDir(), "repos.json"), {});
+  if (!(repoName in index)) {
+    fail(`repo "${repoName}" is not registered in ~/.mattstack/rt/repos.json`);
+  }
+
+  const res = await daemonQuery("endpoint:lookup", { repo: repoName, worktree: toplevel, role }, 10_000);
+  if (!res) fail("daemon unavailable — rt endpoint lookup needs the rt daemon (rt daemon start)");
+  if (!res.ok) fail(res.error ?? "lookup failed");
+
+  const data = res.data as LookupData;
+
+  if (json) {
+    console.log(JSON.stringify({ ok: true, ...data }));
+    return;
+  }
+
+  if (!data.claimed) {
+    console.log(`\n  ${dim}no claim for role "${role}" in ${repoName}${reset}\n`);
+    return;
+  }
+  const statusColor = data.running ? green : yellow;
+  console.log(`\n  ${statusColor}${data.url}${reset} ${dim}(${data.running ? "running" : "claimed, not running"})${reset}\n`);
+}

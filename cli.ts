@@ -18,14 +18,32 @@ import { dispatch } from "./lib/command-tree.ts";
 import { TREE } from "./lib/command-tree-def.ts";
 import { rtDir, migrateLegacyRtDir, LEGACY_RT_LABEL, RT_DIR_LABEL } from "./lib/rt-paths.ts";
 
+const args = process.argv.slice(2);
+
+// The generated PATH shims (lib/endpoint/shim.ts) exec
+// `rt intercept run <command> -- "$@"` for every intercepted invocation, and
+// that path must be byte-transparent — its stderr belongs to the wrapped
+// command, not to rt. Decided here, before the migration block below, because
+// that block is the first thing on the entry path that prints.
+const isInterceptRun = args[0] === "intercept" && args[1] === "run";
+
 // ─── Legacy state migration (RT-46) ──────────────────────────────────────────
 // Move a real legacy rt dir into place BEFORE anything (the CLI logger
 // included) can create the new tree and turn a clean rename into a conflict.
 // The daemon entry runs its own copy of this (lib/daemon.ts) for the
 // `bun run lib/daemon.ts` source path; the call is idempotent.
+//
+// The migration itself runs on EVERY entry path, intercepts included — an
+// intercepted command really can be the first rt invocation after an upgrade,
+// and skipping it there would leave the state split. Only the reporting is
+// suppressed for intercepts: the one-shot "migrated" line would corrupt a
+// wrapped command's stderr once, and the "conflict" warning would do it on
+// every single invocation until a human merges the trees.
 {
   const migration = migrateLegacyRtDir();
-  if (migration === "migrated") {
+  if (isInterceptRun) {
+    // silent — see above
+  } else if (migration === "migrated") {
     console.error(`  rt: migrated legacy ${LEGACY_RT_LABEL} state to ${RT_DIR_LABEL}`);
   } else if (migration === "conflict") {
     console.error(`\n  rt: WARNING — state is split between ${LEGACY_RT_LABEL} and ${RT_DIR_LABEL}.`);
@@ -48,7 +66,6 @@ import { rtDir, migrateLegacyRtDir, LEGACY_RT_LABEL, RT_DIR_LABEL } from "./lib/
 declare const RT_VERSION: string;
 const _RT_VERSION = (typeof RT_VERSION !== "undefined" ? RT_VERSION : null) ?? process.env.RT_VERSION ?? "dev";
 
-const args = process.argv.slice(2);
 const baseDir = import.meta.dir; // resolve module paths relative to cli.ts
 
 // Invocation logging + crash capture for every CLI entry path, including the
@@ -67,6 +84,15 @@ if (args[0] === "--version" || args[0] === "-V") {
   // instead of `bun run lib/daemon.ts`.
   const { startDaemon } = await import("./lib/daemon.ts");
   startDaemon();
+} else if (isInterceptRun) {
+  // Hidden fast path: the generated PATH shims (lib/endpoint/shim.ts) exec
+  // `rt intercept run <command> -- "$@"` for every intercepted invocation
+  // (e.g. `pnpm start`), and that MUST be byte-transparent — no screen
+  // clear, no breadcrumb banner (dispatch()'s leaf-node ceremony), no
+  // first-run setup, no plugin-tree load/skip notices. Bypass all of that
+  // and call the handler directly, same tier as --daemon/--post-install.
+  const { interceptRun } = await import("./commands/intercept.ts");
+  await interceptRun(args.slice(2));
 } else if (args[0] === "--post-install") {
   // Hidden entry point: called by the Homebrew formula's post_install hook.
   // Handles tray app, extension install, daemon setup, and shell integration.
