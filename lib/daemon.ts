@@ -91,6 +91,8 @@ const eventsBus = createEventsBus({ dbPath: join(RT_DIR, "events.db"), log });
 // Hourly retention sweep — cheap; rides its own interval rather than pollers
 // because it needs no poller deps.
 setInterval(() => eventsBus.sweep(), 60 * 60 * 1000);
+// Boot-time sweep to handle frequent daemon restarts that would otherwise starve the hourly interval.
+setTimeout(() => eventsBus.sweep(), 30_000);
 
 // Cron trigger layer (mechanism-only, MAT-161): sees every broadcast frame.
 const cron = startCron(loadCronConfig(undefined, log), { log });
