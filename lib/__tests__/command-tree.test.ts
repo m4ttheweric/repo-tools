@@ -68,7 +68,7 @@ describe("walkTree", () => {
 // <registeredName>` payload flag would vanish before commands/worktree.ts
 // ever saw it. The fix scopes the extraction to context:"worktree" nodes.
 describe("dispatch --repo flag scoping", () => {
-  // Real repo resolution (getKnownRepos/getRepoIdentity) reads ~/.rt/repos.json
+  // Real repo resolution (getKnownRepos/getRepoIdentity) reads ~/.mattstack/rt/repos.json
   // via bare os.homedir(), which — unlike lib/rt-paths.ts's call-time
   // `process.env.HOME ?? homedir()` — is resolved once at process start and
   // can't be redirected from inside a test. So the context:"worktree" case

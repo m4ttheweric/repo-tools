@@ -15,7 +15,7 @@ describe("daemon", () => {
     afterAll(() => cleanup());
 
     test("rt daemon install creates daemon.json", async () => {
-      const daemonJson = join(home, ".rt", "daemon.json");
+      const daemonJson = join(home, ".mattstack", "rt", "daemon.json");
       expect(existsSync(daemonJson)).toBe(false);
 
       const result = await rt(["daemon", "install"], { home });

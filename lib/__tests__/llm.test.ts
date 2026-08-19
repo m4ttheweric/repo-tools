@@ -10,7 +10,7 @@ const TMP = "/tmp/llm-test-home";
 
 beforeEach(() => {
   rmSync(TMP, { recursive: true, force: true });
-  mkdirSync(join(TMP, ".rt"), { recursive: true });
+  mkdirSync(join(TMP, ".mattstack", "rt"), { recursive: true });
   process.env.HOME = TMP;
 });
 
@@ -30,9 +30,9 @@ describe("loadLlmConfig", () => {
   });
 
   test("reads existing config and fills in missing defaults", async () => {
-    mkdirSync(join(TMP, ".rt"), { recursive: true });
+    mkdirSync(join(TMP, ".mattstack", "rt"), { recursive: true });
     writeFileSync(
-      join(TMP, ".rt", "llm.json"),
+      join(TMP, ".mattstack", "rt", "llm.json"),
       JSON.stringify({ model: "qwen3:4b" }),
     );
     const { loadLlmConfig } = await import("../llm.ts");
@@ -43,9 +43,9 @@ describe("loadLlmConfig", () => {
   });
 
   test("reads full config", async () => {
-    mkdirSync(join(TMP, ".rt"), { recursive: true });
+    mkdirSync(join(TMP, ".mattstack", "rt"), { recursive: true });
     writeFileSync(
-      join(TMP, ".rt", "llm.json"),
+      join(TMP, ".mattstack", "rt", "llm.json"),
       JSON.stringify({
         provider: "ollama",
         url: "http://10.0.0.5:11434",
@@ -61,8 +61,8 @@ describe("loadLlmConfig", () => {
   });
 
   test("handles malformed JSON gracefully", async () => {
-    mkdirSync(join(TMP, ".rt"), { recursive: true });
-    writeFileSync(join(TMP, ".rt", "llm.json"), "not json");
+    mkdirSync(join(TMP, ".mattstack", "rt"), { recursive: true });
+    writeFileSync(join(TMP, ".mattstack", "rt", "llm.json"), "not json");
     const { loadLlmConfig } = await import("../llm.ts");
     const config = loadLlmConfig();
     expect(config.provider).toBe("ollama"); // falls back to defaults
@@ -79,8 +79,8 @@ describe("saveLlmConfig", () => {
     expect(config.url).toBe("http://localhost:11434"); // preserved from defaults
   });
 
-  test("creates ~/.rt directory if it does not exist", async () => {
-    rmSync(join(TMP, ".rt"), { recursive: true, force: true });
+  test("creates ~/.mattstack/rt directory if it does not exist", async () => {
+    rmSync(join(TMP, ".mattstack", "rt"), { recursive: true, force: true });
     const { saveLlmConfig, loadLlmConfig } = await import("../llm.ts");
     saveLlmConfig({ model: "llama3:8b" });
     const config = loadLlmConfig();

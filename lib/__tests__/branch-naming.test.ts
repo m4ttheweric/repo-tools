@@ -155,7 +155,7 @@ describe("resolveBranchName", () => {
   });
 
   test("falls back to mechanical slug when llmSlug errors", async () => {
-    // We'll test this by making the LLM unavailable ($~/.rt/llm.json won't
+    // We'll test this by making the LLM unavailable ($~/.mattstack/rt/llm.json won't
     // exist, so the model is ""), which causes llmPrompt to fail with
     // LlmUnavailableError. resolveBranchName should catch and use a
     // truncated mechanical slug instead.

@@ -96,9 +96,9 @@ exit 0
 
     // sdmEmail must be set or the orchestrator returns needs-manual before
     // ever launching a browser (the email preflight).
-    mkdirSync(join(home, ".rt"), { recursive: true });
+    mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
     writeFileSync(
-      join(home, ".rt", "secrets.json"),
+      join(home, ".mattstack", "rt", "secrets.json"),
       JSON.stringify({ sdmEmail: "nobody@example.test" }, null, 2),
     );
   });

@@ -108,7 +108,7 @@ describe("refreshDiscussions (lifted)", () => {
     const deps = { ctx, broadcast: (t: string) => events.push(t) };
     const overrides = {
       fileStore, projectStore: pStore, fetchDiscussions: async () => [disc(1)], currentUserId: 1,
-      // Without this the real emitter queues to ~/.rt and pops a desktop banner.
+      // Without this the real emitter queues to ~/.mattstack/rt and pops a desktop banner.
       notify: (c: string, t: string, m: string, u?: string) => { notified.push([c, t, m, u]); },
     };
 

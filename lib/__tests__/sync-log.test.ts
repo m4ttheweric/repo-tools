@@ -29,7 +29,7 @@ describe("syncLog", () => {
     syncLog.end();
 
     // write() resolves RT_SYNC_LOG_PATH at call time, so every write above
-    // landed in this temp file and none reached the real ~/.rt/sync.log.
+    // landed in this temp file and none reached the real ~/.mattstack/rt/sync.log.
     // We only ever read this temp file, never the real log.
     const content = readFileSync(logFile, "utf8");
     expect(content).toContain("verdict=completed");

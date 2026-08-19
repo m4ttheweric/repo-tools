@@ -68,7 +68,7 @@ describe("rt events (bus e2e)", () => {
     apiPort = freePort();
     ({ path: home, cleanup } = createTestHome());
     daemon = runRt(["--daemon"], home);
-    await waitForSocket(join(home, ".rt", "rt.sock"));
+    await waitForSocket(join(home, ".mattstack", "rt", "rt.sock"));
     if (daemon.exitCode !== null) {
       throw new Error(
         `daemon process exited (code ${daemon.exitCode}) right after creating its socket — ` +
@@ -134,7 +134,7 @@ describe("rt events (bus e2e)", () => {
     daemon.kill();
     await daemon.exited;
     daemon = runRt(["--daemon"], home);
-    await waitForSocket(join(home, ".rt", "rt.sock"));
+    await waitForSocket(join(home, ".mattstack", "rt", "rt.sock"));
 
     const waiter = runRt(["events", "wait", "job/restart/*", "--after", String(cursor), "--timeout", "20s"], home);
     await Bun.sleep(500);

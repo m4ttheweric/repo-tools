@@ -13,7 +13,7 @@ const { loadDopplerConfig, writeDopplerConfig } = await import("../../doppler-co
 const REPO = "test-repo";
 
 afterEach(() => {
-  try { rmSync(join(tmpHome, ".rt"),     { recursive: true, force: true }); } catch { /* */ }
+  try { rmSync(join(tmpHome, ".mattstack", "rt"),     { recursive: true, force: true }); } catch { /* */ }
   try { rmSync(join(tmpHome, ".doppler"), { recursive: true, force: true }); } catch { /* */ }
 });
 
@@ -90,9 +90,9 @@ describe("reconcileForRepo", () => {
   });
 
   test("returns skipped=malformed-template if template can't parse", async () => {
-    mkdirSync(join(tmpHome, ".rt", "repos", REPO), { recursive: true });
+    mkdirSync(join(tmpHome, ".mattstack", "rt", "repos", REPO), { recursive: true });
     writeFileSync(
-      join(tmpHome, ".rt", "repos", REPO, "doppler-template.yaml"),
+      join(tmpHome, ".mattstack", "rt", "repos", REPO, "doppler-template.yaml"),
       "[invalid yaml::",
     );
 
