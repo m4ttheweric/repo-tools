@@ -1,7 +1,7 @@
 /**
  * User plugins: discovery, validation, and command-tree integration.
  *
- * Plugins live at ~/.rt/plugins/<name>/plugin.json. Discovery is structural
+ * Plugins live at ~/.mattstack/rt/plugins/<name>/plugin.json. Discovery is structural
  * only (no plugin code executes); handlers are lazy import() closures, so a
  * broken plugin can only ever fail its own command, never rt itself.
  */
@@ -317,7 +317,7 @@ export function loadPluginTree(
   return tree;
 }
 
-/** Create ~/.rt/plugins/<name>/ with a starter command, tsconfig, and package.json. */
+/** Create ~/.mattstack/rt/plugins/<name>/ with a starter command, tsconfig, and package.json. */
 export function scaffoldPlugin(name: string): string {
   if (!KEBAB_RE.test(name)) throw new Error(`plugin name must be kebab-case (got "${name}")`);
   const dir = join(pluginsDir(), name);

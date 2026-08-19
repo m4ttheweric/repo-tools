@@ -4,7 +4,7 @@ import ServiceManagement
 
 // MARK: - TrayServer
 
-/// Small HTTP server on ~/.rt/tray.sock that receives push notifications from the daemon.
+/// Small HTTP server on ~/.mattstack/rt/tray.sock that receives push notifications from the daemon.
 /// The daemon POSTs to /notify with a NotificationEvent JSON body.
 class TrayServer {
 
@@ -18,7 +18,7 @@ class TrayServer {
     private let queue = DispatchQueue(label: "com.rt.tray-server", qos: .userInitiated)
 
     private init() {
-        socketPath = NSHomeDirectory() + "/.rt/tray.sock"
+        socketPath = NSHomeDirectory() + "/.mattstack/rt/tray.sock"
     }
 
     // MARK: - Start / Stop

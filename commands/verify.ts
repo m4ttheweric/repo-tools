@@ -18,6 +18,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { bold, cyan, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import { detectShell, shellRcPath } from "../lib/shell-integration.ts";
+import { legacyDirsPresent, RT_DIR_LABEL } from "../lib/rt-paths.ts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -72,6 +73,25 @@ async function runChecks(): Promise<CheckResult[]> {
     results.push(fail("rt binary", "rt not found on PATH"));
     // If binary doesn't exist, many other checks will also fail — return early
     return results;
+  }
+
+  // ── Legacy state dirs (RT-46 canary) ──────────────────────────────────────
+  // rt reads only the new tree; a REAL legacy dir means state is split and
+  // silently ignored. A symlink is just the inert RT-33 compat shim.
+
+  const legacy = legacyDirsPresent();
+  if (legacy.real.length > 0) {
+    results.push(fail(
+      "legacy state dirs",
+      `real legacy dir${legacy.real.length !== 1 ? "s" : ""} present: ${legacy.real.join(", ")} — rt reads only ${RT_DIR_LABEL}; merge by hand, then delete`,
+    ));
+  } else if (legacy.symlinks.length > 0) {
+    results.push(warn(
+      "legacy state dirs",
+      `compat symlink still present, deletable: ${legacy.symlinks.join(", ")}`,
+    ));
+  } else {
+    results.push(pass("legacy state dirs", `state lives only in ${RT_DIR_LABEL}`));
   }
 
   // ── Required dependencies ─────────────────────────────────────────────────
@@ -176,7 +196,7 @@ async function runChecks(): Promise<CheckResult[]> {
     return results;
   }
 
-  results.push(pass("daemon installed", "config exists at ~/.rt/daemon.json"));
+  results.push(pass("daemon installed", "config exists at ~/.mattstack/rt/daemon.json"));
 
   // Check launchd registration
   const launchctlCheck = cmd("launchctl list com.rt.daemon 2>/dev/null");

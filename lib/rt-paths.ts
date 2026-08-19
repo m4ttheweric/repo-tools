@@ -1,40 +1,52 @@
 /**
- * Single source of truth for ~/.rt path layout.
+ * Single source of truth for the ~/.mattstack/rt path layout.
  *
- * Per-repo data lives under ~/.rt/repos/<repoName>/ (NOT ~/.rt/<repoName>/).
- * Keeping the construction here means there is exactly one place that knows the
- * layout, so a future move is a one-line change and stray `join(RT_DIR,
- * repoName, ...)` callsites can't drift. The source-guard test
- * (lib/__tests__/rt-paths.test.ts) fails the build if that pattern reappears
- * outside this module.
+ * rt state lives at ~/.mattstack/rt (RT-33 moved it from ~/.rt; RT-46 removed
+ * the compat-symlink dependency). Per-repo data lives under
+ * ~/.mattstack/rt/repos/<repoName>/ (NOT ~/.mattstack/rt/<repoName>/).
+ * Keeping the construction here means there is exactly one place that knows
+ * the layout, so a future move is a one-line change and stray `join(RT_DIR,
+ * repoName, ...)` callsites can't drift. The source-guard tests
+ * (lib/__tests__/rt-paths.test.ts) fail the build if that pattern — or any
+ * legacy `.rt` literal — reappears outside this module.
  *
  * HOME is resolved at CALL time via `process.env.HOME ?? homedir()` so tests can
  * point the whole tree at a temp dir by setting process.env.HOME before calling.
  * This also unifies the two conventions that previously coexisted (some modules
  * used homedir() at module-load time, others process.env.HOME at call time) —
  * a real divergence if the two ever differed.
+ *
+ * This module is also the only place allowed to know the LEGACY locations
+ * (~/.rt, ~/.shepherdr): it owns the one-shot migration (migrateLegacyRtDir)
+ * and the canary probe (legacyDirsPresent) that `rt verify` uses to detect
+ * a machine still carrying real legacy dirs.
  */
 
+import { lstatSync, mkdirSync, renameSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
-/** ~/.rt — the root of all rt state. App-level files live directly here. */
-export function rtDir(): string {
-  return join(process.env.HOME ?? homedir(), ".rt");
+function home(): string {
+  return process.env.HOME ?? homedir();
 }
 
-/** ~/.rt/repos — the container for every per-repo data directory. */
+/** ~/.mattstack/rt — the root of all rt state. App-level files live directly here. */
+export function rtDir(): string {
+  return join(home(), ".mattstack", "rt");
+}
+
+/** ~/.mattstack/rt/repos — the container for every per-repo data directory. */
 export function reposDir(): string {
   return join(rtDir(), "repos");
 }
 
 /**
- * ~/.rt/logs... every surface's JSON-lines log files.
+ * ~/.mattstack/rt/logs — every surface's JSON-lines log files.
  *
  * Log *writers* must resolve through this (call-time HOME) rather than a
  * module-load-time const: a const is baked from whatever HOME was set when the
  * module first loaded, so a test that repoints HOME afterwards still writes
- * into the developer's real ~/.rt/logs. Readers (the `rt daemon logs` viewer)
+ * into the developer's real logs dir. Readers (the `rt daemon logs` viewer)
  * can keep using the const, since they only ever run against the real tree.
  */
 export function logsDir(): string {
@@ -42,10 +54,86 @@ export function logsDir(): string {
 }
 
 /**
- * ~/.rt/repos/<repoName> — a single repo's data directory (config, hooks,
- * scripts, run-history, etc.). This is `RepoIdentity.dataDir`.
+ * ~/.mattstack/rt/repos/<repoName> — a single repo's data directory (config,
+ * hooks, scripts, run-history, etc.). This is `RepoIdentity.dataDir`.
  */
 export function repoDataDir(repoName: string): string {
   return join(reposDir(), repoName);
 }
 
+// ─── Legacy-tree migration + canary (RT-46) ──────────────────────────────────
+
+/** The pre-RT-33 rt state root. Only this module may reference it. */
+function legacyRtDir(): string {
+  return join(home(), ".rt");
+}
+
+export type LegacyMigrationResult = "none" | "migrated" | "conflict";
+
+/**
+ * Human-readable path names for user-facing messages. Callers must use these
+ * instead of writing the literals — the RT-46 source-guard fails any file
+ * outside this module that spells the legacy path.
+ */
+export const LEGACY_RT_LABEL = "~/.rt";
+export const RT_DIR_LABEL = "~/.mattstack/rt";
+
+/**
+ * One-shot migration of a real legacy ~/.rt directory to ~/.mattstack/rt.
+ * Called early from the CLI entry and daemon boot — BEFORE anything (loggers
+ * included) can create ~/.mattstack/rt, or a machine that still has a real
+ * ~/.rt would land in "conflict" instead of migrating.
+ *
+ *  - ~/.rt absent, or a symlink (the RT-33 compat shim): "none", untouched.
+ *  - real ~/.rt, no ~/.mattstack/rt: rename it into place → "migrated".
+ *  - real ~/.rt AND ~/.mattstack/rt both exist: "conflict" — state is split
+ *    and a human must merge; nothing is touched.
+ */
+export function migrateLegacyRtDir(): LegacyMigrationResult {
+  const legacy = legacyRtDir();
+  let legacyStat;
+  try {
+    legacyStat = lstatSync(legacy);
+  } catch {
+    return "none"; // no ~/.rt at all
+  }
+  if (legacyStat.isSymbolicLink() || !legacyStat.isDirectory()) return "none";
+
+  const target = rtDir();
+  try {
+    lstatSync(target);
+    return "conflict"; // both trees exist — never guess which one wins
+  } catch {
+    // target absent — proceed
+  }
+  mkdirSync(join(home(), ".mattstack"), { recursive: true });
+  renameSync(legacy, target);
+  return "migrated";
+}
+
+export interface LegacyDirsReport {
+  /** Legacy paths that exist as REAL directories — state the code no longer
+   *  reads; must be merged into the new tree by hand. */
+  real: string[];
+  /** Legacy paths that exist as symlinks — inert compat shims, deletable. */
+  symlinks: string[];
+}
+
+/**
+ * Canary probe for `rt verify`: which legacy state dirs still exist, and how.
+ * A real directory is a failure (split state); a symlink is only a leftover.
+ */
+export function legacyDirsPresent(): LegacyDirsReport {
+  const report: LegacyDirsReport = { real: [], symlinks: [] };
+  for (const name of [".rt", ".shepherdr"]) {
+    const path = join(home(), name);
+    try {
+      const st = lstatSync(path);
+      if (st.isSymbolicLink()) report.symlinks.push(path);
+      else if (st.isDirectory()) report.real.push(path);
+    } catch {
+      // absent — the good state
+    }
+  }
+  return report;
+}

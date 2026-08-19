@@ -1,5 +1,5 @@
 /**
- * rt daemon transport: HTTP over a unix socket (`~/.rt/rt.sock`).
+ * rt daemon transport: HTTP over a unix socket (`~/.mattstack/rt/rt.sock`).
  *
  * POST http://localhost/<cmd> with a JSON payload, response envelope
  * `{ ok, data?, error? }`. Every call degrades to `{ ok: false, error }`
@@ -21,7 +21,10 @@ export interface RtClientOptions {
   wsUrl?: string;
 }
 
-export const DEFAULT_SOCK = join(homedir(), ".rt", "rt.sock");
+// Duplicates the ~/.mattstack/rt layout: rt-client has no dependency on rt's
+// lib/, so this literal cannot import rtDir(). repo-tools/lib/rt-paths.ts is
+// the authority — change there first, mirror here.
+export const DEFAULT_SOCK = join(homedir(), ".mattstack", "rt", "rt.sock");
 
 export async function rtCommand<T = unknown>(
   cmd: string,

@@ -45,10 +45,10 @@ export async function fetchStatusData(opts?: { maxAgeMs?: number }): Promise<Sta
     source = "cache-file";
     try {
       const { readFileSync } = await import("fs");
-      const { homedir } = await import("os");
       const { join } = await import("path");
+      const { rtDir } = await import("../../lib/rt-paths.ts");
       const raw = JSON.parse(
-        readFileSync(join(homedir(), ".rt", "branch-cache.json"), "utf8"),
+        readFileSync(join(rtDir(), "branch-cache.json"), "utf8"),
       );
       branches = raw.entries || {};
     } catch {

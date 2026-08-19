@@ -1,6 +1,6 @@
 import Foundation
 
-/// Durable tray logging — JSON lines appended to ~/.rt/logs/tray.YYYY-MM-DD.log
+/// Durable tray logging — JSON lines appended to ~/.mattstack/rt/logs/tray.YYYY-MM-DD.log
 /// (the same <surface>.<date>.log convention the daemon and CLI use, so the
 /// tray shows up in `rt daemon logs` automatically). Every call also mirrors
 /// to NSLog so Console.app keeps working.
@@ -8,7 +8,7 @@ import Foundation
 /// Never throws, never blocks the caller beyond a serial-queue append.
 enum TrayLog {
     private static let queue = DispatchQueue(label: "rt.tray-log", qos: .utility)
-    private static let logDir = NSString(string: "~/.rt/logs").expandingTildeInPath
+    private static let logDir = NSString(string: "~/.mattstack/rt/logs").expandingTildeInPath
     private static let retentionDays = 14
     private static var hasPruned = false
 
@@ -146,7 +146,7 @@ func installTrayCrashHandlers() {
                           ["stack": exception.callStackSymbols.joined(separator: "\n")])
     }
 
-    let logDir = NSString(string: "~/.rt/logs").expandingTildeInPath
+    let logDir = NSString(string: "~/.mattstack/rt/logs").expandingTildeInPath
     try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
     let crashPath = logDir + "/tray-crash.log"
     crashFd = open(crashPath, O_WRONLY | O_APPEND | O_CREAT, 0o644)

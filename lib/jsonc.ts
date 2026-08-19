@@ -3,7 +3,7 @@
  * with JSON.parse. String-aware (a real scanner, not regexes), so `//`
  * inside a string value — e.g. an origin URL like "https://gitlab.com/…" —
  * is content, never a comment. Single definition for every .jsonc rt reads
- * (sdm enrichment, ~/.rt/repos overlay files).
+ * (sdm enrichment, ~/.mattstack/rt/repos overlay files).
  */
 
 export function stripJsonc(text: string): string {

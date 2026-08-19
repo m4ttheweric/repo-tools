@@ -6,7 +6,7 @@
  *
  * Usage:
  *   rt doppler init    → capture existing entries from ~/.doppler/.doppler.yaml
- *                         into ~/.rt/repos/<repo>/doppler-template.yaml
+ *                         into ~/.mattstack/rt/repos/<repo>/doppler-template.yaml
  *   rt doppler sync    → reconcile ~/.doppler/.doppler.yaml against the template
  *                         + current worktrees
  *   rt doppler status  → show: which template entries are present, missing,

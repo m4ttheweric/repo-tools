@@ -1,6 +1,6 @@
 /**
  * Declarative enrichment overlay: a user-maintained JSONC file at
- * ~/.rt/sdm/enrichment.jsonc that layers labels, tiers, and db defaults on
+ * ~/.mattstack/rt/sdm/enrichment.jsonc that layers labels, tiers, and db defaults on
  * top of resources the catalog scanner (scan.ts) already discovered. Pure
  * and additive: loading never mutates the file and never throws, so a
  * missing or corrupt file just means "no enrichment" rather than a crash.
@@ -8,6 +8,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { rtDir } from "../rt-paths.ts";
 import { join } from "node:path";
 import { stripJsonc } from "../jsonc.ts";
 
@@ -20,7 +21,7 @@ export interface EnrichmentEntry {
 }
 
 export function enrichmentPath(): string {
-  return join(homedir(), ".rt", "sdm", "enrichment.jsonc");
+  return join(rtDir(), "sdm", "enrichment.jsonc");
 }
 
 // Re-exported for existing importers; the implementation moved to

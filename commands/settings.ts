@@ -10,6 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { homedir } from "os";
+import { rtDir } from "../lib/rt-paths.ts";
 import { spawnSync } from "child_process";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import {
@@ -247,7 +248,7 @@ export async function configureNotifications(): Promise<void> {
 
 // ─── Runaway process detection thresholds ────────────────────────────────────
 
-const RUNAWAY_CONFIG_PATH = join(homedir(), ".rt", "runaway-config.json");
+const RUNAWAY_CONFIG_PATH = join(rtDir(), "runaway-config.json");
 
 export async function configureRunaway(args: string[]): Promise<void> {
   const field = args[0];
@@ -309,7 +310,7 @@ export async function sendTestPushNotification(): Promise<void> {
 
   if (!existsSync(TRAY_SOCK_PATH)) {
     console.log(`\n  ${yellow}⚠${reset}  rt tray is not running`);
-    console.log(`     ${dim}(no socket at ~/.rt/tray.sock — start the tray app first)${reset}\n`);
+    console.log(`     ${dim}(no socket at ~/.mattstack/rt/tray.sock — start the tray app first)${reset}\n`);
     return;
   }
 
@@ -343,8 +344,8 @@ export async function sendTestPushNotification(): Promise<void> {
 // ─── Dev mode toggle ─────────────────────────────────────────────────────────
 
 const DEV_MODE_WRAPPER = `${Bun.env.HOME}/.local/bin/rt`;
-const DEV_MODE_CONFIG  = `${Bun.env.HOME}/.rt/dev-mode.json`;
-export const DEV_MODE_PRELOAD = `${Bun.env.HOME}/.rt/dev-restore-cwd.ts`;
+const DEV_MODE_CONFIG  = join(rtDir(), "dev-mode.json");
+export const DEV_MODE_PRELOAD = join(rtDir(), "dev-restore-cwd.ts");
 
 // Paths inside rt-tray.app that participate in the daemon-binary swap.
 const RT_TRAY_APP          = `${Bun.env.HOME}/Applications/rt-tray.app`;
@@ -405,7 +406,7 @@ function enableDevMode(sourcePath: string): void {
   const bunPath = detectBunPath();
 
   // Save source + bun paths — also read by rt-daemon-shim inside rt-tray.app
-  mkdirSync(`${Bun.env.HOME}/.rt`, { recursive: true });
+  mkdirSync(rtDir(), { recursive: true });
   writeFileSync(DEV_MODE_CONFIG, JSON.stringify({ sourcePath, bunPath }, null, 2));
 
   // Ensure ~/.local/bin exists

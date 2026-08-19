@@ -1,5 +1,6 @@
 /**
- * Repo-name resolution against rt's global index (~/.rt/repos.json), a flat
+ * Repo-name resolution against rt's global index (~/.mattstack/rt/repos.json),
+ * a flat
  * `{ "<repoName>": "<absolute path>" }` map. Lets a client resolve "what
  * directory am I in" to "what does the daemon call this repo" without
  * maintaining its own copy of the mapping.
@@ -9,7 +10,10 @@ import { homedir } from "os";
 import { join } from "path";
 
 function defaultReposJsonPath(): string {
-  return join(homedir(), ".rt", "repos.json");
+  // Duplicates the ~/.mattstack/rt layout: rt-client has no dependency on rt's
+  // lib/, so this literal cannot import rtDir(). repo-tools/lib/rt-paths.ts is
+  // the authority — change there first, mirror here.
+  return join(homedir(), ".mattstack", "rt", "repos.json");
 }
 
 /**

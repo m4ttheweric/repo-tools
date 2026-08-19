@@ -20,7 +20,7 @@ function localDay(): string {
 const tz: Record<string, string> = { TZ: process.env.TZ ?? "Etc/UTC" };
 
 function installPlugin(home: string, dirName: string, manifest: unknown, files: Record<string, string> = {}): string {
-  const dir = join(home, ".rt", "plugins", dirName);
+  const dir = join(home, ".mattstack", "rt", "plugins", dirName);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "plugin.json"), typeof manifest === "string" ? manifest : JSON.stringify(manifest, null, 2));
   for (const [name, content] of Object.entries(files)) {
@@ -90,10 +90,10 @@ export async function run(args: string[], ctx: RtCommandContext) {
     expect(second.stdout).toContain("HELLO 2");
 
     const day = localDay();
-    const domain = readFileSync(join(home, ".rt", "logs", `plugins.${day}.log`), "utf8");
+    const domain = readFileSync(join(home, ".mattstack", "rt", "logs", `plugins.${day}.log`), "utf8");
     expect(domain).toContain('"plugin":"e2e-plugin"');
 
-    const cli = readFileSync(join(home, ".rt", "logs", `cli.${day}.log`), "utf8");
+    const cli = readFileSync(join(home, ".mattstack", "rt", "logs", `cli.${day}.log`), "utf8");
     expect(cli).toContain('"command":"e2e-hello"');
     expect(cli).toContain('"outcome":"ok"');
   }, 30_000);
@@ -109,7 +109,7 @@ export async function run(args: string[], ctx: RtCommandContext) {
     const result = await rt(["e2e-boom"], { home, env: tz });
     expect(result.exitCode).toBe(1);
     const day = localDay();
-    const cli = readFileSync(join(home, ".rt", "logs", `cli.${day}.log`), "utf8");
+    const cli = readFileSync(join(home, ".mattstack", "rt", "logs", `cli.${day}.log`), "utf8");
     expect(cli).toContain("kaboom");
     expect(cli).toContain('"outcome":"error"');
   }, 30_000);
@@ -146,9 +146,9 @@ export async function run(args: string[], ctx: RtCommandContext) {
   test("rt plugin new scaffolds a working, typecheckable plugin", async () => {
     const created = await rt(["plugin", "new", "fresh-tool"], { home });
     expect(created.exitCode).toBe(0);
-    const dir = join(home, ".rt", "plugins", "fresh-tool");
+    const dir = join(home, ".mattstack", "rt", "plugins", "fresh-tool");
     expect(existsSync(join(dir, "plugin.json"))).toBe(true);
-    expect(existsSync(join(home, ".rt", "plugin-api", "index.d.ts"))).toBe(true);
+    expect(existsSync(join(home, ".mattstack", "rt", "plugin-api", "index.d.ts"))).toBe(true);
 
     const run = await rt(["fresh-tool"], { home });
     expect(run.stdout).toContain("hello from fresh-tool");

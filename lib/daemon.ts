@@ -4,7 +4,7 @@
  * rt daemon — entry point and orchestration layer.
  *
  * Runs as a long-lived Bun process managed by launchd.
- * Listens on a Unix domain socket at ~/.rt/rt.sock (CLI/tray IPC) and on
+ * Listens on a Unix domain socket at ~/.mattstack/rt/rt.sock (CLI/tray IPC) and on
  * 127.0.0.1:9401 (REST + WebSocket for external clients).
  *
  * Responsibilities:
@@ -52,6 +52,13 @@ import { createEventsBus } from "./daemon/events-bus.ts";
 import type { HandlerContext } from "./daemon/handlers/types.ts";
 import type { PortEntry } from "./port-scanner.ts";
 
+// ─── Legacy state migration (RT-46) ──────────────────────────────────────────
+// Must run BEFORE the logger's first write can create the new rt dir and turn
+// a clean rename of a real legacy tree into a conflict. Idempotent — the CLI
+// entry (cli.ts) also runs it, but `bun run lib/daemon.ts` skips cli.ts.
+import { migrateLegacyRtDir, LEGACY_RT_LABEL, RT_DIR_LABEL } from "./rt-paths.ts";
+const rtMigration = migrateLegacyRtDir();
+
 // ─── Logging ─────────────────────────────────────────────────────────────────
 // Pino-backed structured logger. See lib/daemon-logger.ts. Top-level await
 // initializes the singleton before any other startup code runs, so `log` is
@@ -59,6 +66,15 @@ import type { PortEntry } from "./port-scanner.ts";
 
 const loggerHandle = await getDaemonLogger();
 const log = loggerHandle.logger;
+
+if (rtMigration === "migrated") {
+  log.info(`migrated legacy ${LEGACY_RT_LABEL} state to ${RT_DIR_LABEL}`);
+} else if (rtMigration === "conflict") {
+  log.warn(
+    `rt state is split between ${LEGACY_RT_LABEL} and ${RT_DIR_LABEL} — the daemon reads only ` +
+    `${RT_DIR_LABEL}; merge the legacy ${LEGACY_RT_LABEL} directory into it by hand, then delete it`,
+  );
+}
 
 // ─── Daemon units ────────────────────────────────────────────────────────────
 

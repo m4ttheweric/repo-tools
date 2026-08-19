@@ -1,7 +1,7 @@
 /**
  * Public plugin API contract. This single file is BOTH:
  *  - the types rt's implementation is checked against (imported as types), and
- *  - the literal text written to ~/.rt/plugin-api/index.d.ts for plugin
+ *  - the literal text written to ~/.mattstack/rt/plugin-api/index.d.ts for plugin
  *    authors (imported with { type: "text" } and embedded in the binary).
  * Drift is impossible by construction, so it must contain ONLY type-level
  * declarations (interfaces and type aliases; no values, no imports).
@@ -36,9 +36,9 @@ export interface RtApi {
   /** Single-line text input. */
   prompt(label: string, opts?: { placeholder?: string; default?: string }): Promise<string | null>;
   confirm(label: string, opts?: { default?: boolean }): Promise<boolean>;
-  /** Scoped JSON storage at ~/.rt/plugin-data/<plugin>/<key>.json. */
+  /** Scoped JSON storage at ~/.mattstack/rt/plugin-data/<plugin>/<key>.json. */
   store<T>(key: string): RtStore<T>;
-  /** Domain events, written to ~/.rt/logs/plugins.YYYY-MM-DD.log as JSON lines. */
+  /** Domain events, written to ~/.mattstack/rt/logs/plugins.YYYY-MM-DD.log as JSON lines. */
   log: RtLogger;
 }
 

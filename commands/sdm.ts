@@ -438,7 +438,7 @@ export function enrichmentSkeleton(names: string[]): string {
 
 /**
  * `rt sdm enrichment`: show how much of the scanned catalog is enriched.
- * `rt sdm enrichment init`: scaffold ~/.rt/sdm/enrichment.jsonc with one
+ * `rt sdm enrichment init`: scaffold ~/.mattstack/rt/sdm/enrichment.jsonc with one
  * entry per scanned resource, refusing to clobber an existing file.
  */
 export async function enrichmentCmd(rest: string[]): Promise<void> {
