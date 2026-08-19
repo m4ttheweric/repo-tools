@@ -67,6 +67,15 @@ if (args[0] === "--version" || args[0] === "-V") {
   // instead of `bun run lib/daemon.ts`.
   const { startDaemon } = await import("./lib/daemon.ts");
   startDaemon();
+} else if (args[0] === "intercept" && args[1] === "run") {
+  // Hidden fast path: the generated PATH shims (lib/endpoint/shim.ts) exec
+  // `rt intercept run <command> -- "$@"` for every intercepted invocation
+  // (e.g. `pnpm start`), and that MUST be byte-transparent — no screen
+  // clear, no breadcrumb banner (dispatch()'s leaf-node ceremony), no
+  // first-run setup, no plugin-tree load/skip notices. Bypass all of that
+  // and call the handler directly, same tier as --daemon/--post-install.
+  const { interceptRun } = await import("./commands/intercept.ts");
+  await interceptRun(args.slice(2));
 } else if (args[0] === "--post-install") {
   // Hidden entry point: called by the Homebrew formula's post_install hook.
   // Handles tray app, extension install, daemon setup, and shell integration.
