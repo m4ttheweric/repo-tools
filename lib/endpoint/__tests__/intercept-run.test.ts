@@ -46,6 +46,16 @@ describe("runInterception", () => {
     expect(calls.exec!.env.PORT).toBe("3000");
     expect(calls.exec!.env.KEEP_ME).toBe("1");
   });
+  test("hook-contributed env keys ride argInject so wrappers cannot clobber them", async () => {
+    writeRepoConfig("r2", {
+      roles: { web: { env: { PORT: "${port}" }, hook: `echo '{"env":{"NODE_OPTIONS":"--require /x.cjs"}}'` } },
+    });
+    const { deps, calls } = harness();
+    deps.rules = [{ ...deps.rules[0]!, repo: "r2" }];
+    await run(deps, ["run", "serve"]);
+    expect(calls.exec!.args).toEqual(["run", "--keep=PORT,NODE_OPTIONS", "serve"]);
+    expect(calls.exec!.env.NODE_OPTIONS).toBe("--require /x.cjs");
+  });
   test("no match → exec real untouched, no claim call", async () => {
     let claimed = false;
     const { deps, calls } = harness({ claim: async () => { claimed = true; return null; } });
