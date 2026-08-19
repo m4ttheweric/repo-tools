@@ -7,16 +7,17 @@
  *  3. Fetch ticket title + status from Linear GraphQL API
  *  4. Cache results in memory (5-minute TTL)
  *
- * API keys stored in ~/.rt/secrets.json
+ * API keys stored in ~/.mattstack/rt/secrets.json
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { homedir } from "os";
+import { rtDir } from "./rt-paths.ts";
 
 // ─── Secrets ─────────────────────────────────────────────────────────────────
 
-const SECRETS_PATH = join(homedir(), ".rt", "secrets.json");
+const SECRETS_PATH = join(rtDir(), "secrets.json");
 
 interface Secrets {
   linearApiKey?: string;

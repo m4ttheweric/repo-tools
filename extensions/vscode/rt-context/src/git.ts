@@ -318,5 +318,5 @@ export function resolveDataDir(repo: GitRepository): string | null {
     .split("/")
     .pop() || "unknown";
 
-  return path.join(homedir(), ".rt", "repos", repoName);
+  return path.join(homedir(), ".mattstack", "rt", "repos", repoName);
 }

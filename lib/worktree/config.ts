@@ -2,11 +2,11 @@
  * Worktree config: repo overlay + app-level, with a one-time compat seed.
  *
  * Two files, two owners:
- *  - `~/.rt/repos/<repo>/config.json` — repo-config.ts owns most of this file
+ *  - `~/.mattstack/rt/repos/<repo>/config.json` — repo-config.ts owns most of this file
  *    (setup/clean/startScript/open). This module reads the SAME file but only
  *    ever looks at its optional "worktrees" key, and never writes it.
- *  - `~/.rt/worktrees.json` — owned entirely by this module. `{enabled,
- *    killProcesses}`, seeded once from the legacy `~/.rt/parking-lot.json`
+ *  - `~/.mattstack/rt/worktrees.json` — owned entirely by this module. `{enabled,
+ *    killProcesses}`, seeded once from the legacy `~/.mattstack/rt/parking-lot.json`
  *    (section 11.1 retires the old file after the seed) when the new file is
  *    absent and the old one exists. Both default to true, matching
  *    parking-lot-config.ts's legacy `raw?.enabled !== false` semantics.
@@ -57,7 +57,7 @@ interface RawRepoConfigFile {
 }
 
 /**
- * Reads the "worktrees" key of ~/.rt/repos/<repo>/config.json. repo-config.ts
+ * Reads the "worktrees" key of ~/.mattstack/rt/repos/<repo>/config.json. repo-config.ts
  * owns every other key in that file; this never writes it.
  */
 export function loadWorktreeRepoConfig(repoName: string, repoPath: string): WorktreeRepoConfig {
@@ -203,7 +203,7 @@ export function resolveReadySteps(cfg: WorktreeRepoConfig, repoPath: string): Re
 const APP_CONFIG_DEFAULTS: WorktreeAppConfig = { enabled: true, killProcesses: true };
 
 /**
- * ~/.rt/worktrees.json; if absent AND ~/.rt/parking-lot.json exists, seed from
+ * ~/.mattstack/rt/worktrees.json; if absent AND ~/.mattstack/rt/parking-lot.json exists, seed from
  * it once (write the new file), then read the new file. Defaults
  * { enabled: true, killProcesses: true }.
  */

@@ -1,5 +1,5 @@
 /**
- * Global repo index — tracks all known repos in ~/.rt/repos.json.
+ * Global repo index — tracks all known repos in ~/.mattstack/rt/repos.json.
  *
  * Provides repo discovery with worktree enumeration so commands
  * can offer pickers when run outside a git repo.
@@ -9,7 +9,7 @@ import { execSync } from "child_process";
 import { existsSync, readdirSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
-import { repoDataDir } from "./rt-paths.ts";
+import { repoDataDir, rtDir } from "./rt-paths.ts";
 import { readJson, writeJson } from "./json-store.ts";
 import { dim } from "./ansi.ts";
 
@@ -32,7 +32,7 @@ interface RepoIndex {
 }
 
 function repoIndexPath(): string {
-  return join(homedir(), ".rt", "repos.json");
+  return join(rtDir(), "repos.json");
 }
 
 function loadRepoIndex(): RepoIndex {

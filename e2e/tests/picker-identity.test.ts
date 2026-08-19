@@ -17,8 +17,8 @@ describe("picker identity", () => {
   function makeHome(): string {
     const { path, cleanup } = createTestHome();
     cleanups.push(cleanup);
-    mkdirSync(join(path, ".rt"), { recursive: true });
-    writeFileSync(join(path, ".rt", "daemon.json"), "{}");
+    mkdirSync(join(path, ".mattstack", "rt"), { recursive: true });
+    writeFileSync(join(path, ".mattstack", "rt", "daemon.json"), "{}");
     return path;
   }
 

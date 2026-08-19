@@ -1,5 +1,5 @@
 /**
- * Unix-socket IPC server at ~/.rt/rt.sock — the CLI/tray control channel.
+ * Unix-socket IPC server at ~/.mattstack/rt/rt.sock — the CLI/tray control channel.
  *
  * Commands are HTTP-shaped over the socket: the pathname is the command name
  * ("/cache:read" → "cache:read") and POST bodies carry the payload.

@@ -6,7 +6,7 @@
  *
  * Two exports:
  *   - createDaemonLogger(opts): async factory (testable, takes a logDir)
- *   - getDaemonLogger():        lazy singleton bound to ~/.rt/logs (production use)
+ *   - getDaemonLogger():        lazy singleton bound to ~/.mattstack/rt/logs (production use)
  *
  * Crash safety: the pino-roll stream uses sync:true so fatal lines flush
  * synchronously before exit when uncaught exceptions propagate.
@@ -87,7 +87,7 @@ export async function createDaemonLogger(opts: CreateOptions): Promise<DaemonLog
 let cached: DaemonLoggerHandle | undefined;
 
 /**
- * Lazily initialize the production logger bound to ~/.rt/logs.
+ * Lazily initialize the production logger bound to ~/.mattstack/rt/logs.
  * Multiple callers share the same handle.
  */
 export async function getDaemonLogger(): Promise<DaemonLoggerHandle> {
@@ -103,7 +103,7 @@ export async function getDaemonLogger(): Promise<DaemonLoggerHandle> {
 // ─── Native stderr capture ───────────────────────────────────────────────────
 
 /**
- * Point fd 2 at ~/.rt/logs/daemon-stderr.log so native output that bypasses
+ * Point fd 2 at ~/.mattstack/rt/logs/daemon-stderr.log so native output that bypasses
  * JS entirely (bun panics, segfault reports, runtime asserts) is captured no
  * matter how the daemon was launched. The launchd plist cannot do this
  * (macOS 26 broke $(HOME) expansion in SMAppService plists) and the dev shim

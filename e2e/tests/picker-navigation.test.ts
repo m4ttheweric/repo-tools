@@ -13,8 +13,8 @@ describe("picker navigation", () => {
 
   beforeAll(() => {
     ({ path: home, cleanup } = createTestHome());
-    mkdirSync(join(home, ".rt"), { recursive: true });
-    writeFileSync(join(home, ".rt", "daemon.json"), "{}");
+    mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
+    writeFileSync(join(home, ".mattstack", "rt", "daemon.json"), "{}");
 
     ({ path: monorepoPath } = createMonorepoFixture(home, {
       name: "nav-monorepo",

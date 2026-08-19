@@ -61,7 +61,7 @@ const SHELL_FUNCTION = [
   `  elif [ "$1" = "x" ]; then`,
   `    "$rt_bin" "$@"`,
   `    local rt_cwd`,
-  `    rt_cwd="$(cat "$HOME/.rt/.last-cwd" 2>/dev/null)"`,
+  `    rt_cwd="$(cat "$HOME/.mattstack/rt/.last-cwd" 2>/dev/null)"`,
   `    if [ -n "$rt_cwd" ] && [ "$rt_cwd" != "$PWD" ]; then`,
   `      builtin cd "$rt_cwd"`,
   `    fi`,

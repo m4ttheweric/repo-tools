@@ -35,7 +35,7 @@ exit 0
 describe("sdm enrichment", () => {
   const { path: home, cleanup } = createTestHome();
   const fakeSdm = writeFakeSdm(home);
-  const enrichmentPath = join(home, ".rt", "sdm", "enrichment.jsonc");
+  const enrichmentPath = join(home, ".mattstack", "rt", "sdm", "enrichment.jsonc");
   afterAll(() => cleanup());
 
   test("no-arg audit prints the enrichment path and an enriched/raw count", async () => {

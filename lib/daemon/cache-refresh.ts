@@ -151,7 +151,7 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       checkAndNotify(cache.entries, portCacheRef.ports, getCurrentUserId());
 
       // Doppler-template reconciliation: keeps ~/.doppler/.doppler.yaml in sync
-      // with each repo's ~/.rt/repos/<repo>/doppler-template.yaml. Cheap (file I/O
+      // with each repo's ~/.mattstack/rt/repos/<repo>/doppler-template.yaml. Cheap (file I/O
       // only) and additive — never overwrites existing entries.
       for (const [repoName, repoPath] of Object.entries(repoIndex())) {
         if (!existsSync(repoPath)) continue;

@@ -1,6 +1,6 @@
 /**
  * Branch cache persistence — the on-disk MR/Linear/pipeline cache at
- * ~/.rt/branch-cache.json.
+ * ~/.mattstack/rt/branch-cache.json.
  *
  * The cache object keeps a stable reference across reloads: loadCache()
  * mutates `cache.entries` in place so handler modules can hold a live

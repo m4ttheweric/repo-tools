@@ -18,6 +18,7 @@ import { spawnSync } from "child_process";
 import { existsSync, readFileSync, readdirSync, mkdirSync, rmSync, cpSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
+import { rtDir } from "../lib/rt-paths.ts";
 import { installShellIntegration, detectShell, shellRcPath } from "../lib/shell-integration.ts";
 
 const HOME = homedir();
@@ -240,7 +241,7 @@ function repairShellWrapper(): void {
 
 /**
  * Returns true when running inside the Homebrew post_install sandbox.
- * The sandbox blocks writes to ~/Applications, ~/.rt/, ~/.zshrc, etc.
+ * The sandbox blocks writes to ~/Applications, ~/.mattstack/rt/, ~/.zshrc, etc.
  * Extensions still work because they're installed via signed app subprocesses.
  */
 function isHomebrewSandboxed(): boolean {
@@ -250,7 +251,7 @@ function isHomebrewSandboxed(): boolean {
     // If we can't write to HOME, we're sandboxed
     (() => {
       try {
-        const testPath = join(homedir(), ".rt");
+        const testPath = rtDir();
         mkdirSync(testPath, { recursive: true });
         return false; // write worked — not sandboxed
       } catch {

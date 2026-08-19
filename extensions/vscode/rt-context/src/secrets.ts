@@ -1,7 +1,7 @@
 /**
  * Shared secrets reader for the VS Code extension.
  *
- * Reads from ~/.rt/secrets.json (shared with the rt CLI),
+ * Reads from ~/.mattstack/rt/secrets.json (shared with the rt CLI),
  * falling back to VS Code's secret store for backward compatibility.
  *
  * Write operations update BOTH stores so the CLI and extension stay in sync.
@@ -12,7 +12,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
-const SECRETS_PATH = join(homedir(), '.rt', 'secrets.json');
+const SECRETS_PATH = join(homedir(), '.mattstack', 'rt', 'secrets.json');
 
 interface RtSecrets {
   linearApiKey?: string;
@@ -30,13 +30,13 @@ function readRtSecrets(): RtSecrets {
 }
 
 function writeRtSecrets(secrets: RtSecrets): void {
-  const dir = join(homedir(), '.rt');
+  const dir = join(homedir(), '.mattstack', 'rt');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(SECRETS_PATH, JSON.stringify(secrets, null, 2));
 }
 
 /**
- * Get a secret, preferring ~/.rt/secrets.json over VS Code's secret store.
+ * Get a secret, preferring ~/.mattstack/rt/secrets.json over VS Code's secret store.
  */
 export async function getSecret(
   context: vscode.ExtensionContext,
@@ -55,7 +55,7 @@ export async function getSecret(
 }
 
 /**
- * Store a secret in both ~/.rt/secrets.json AND VS Code's secret store.
+ * Store a secret in both ~/.mattstack/rt/secrets.json AND VS Code's secret store.
  * This keeps both locations in sync during the transition period.
  */
 export async function setSecret(

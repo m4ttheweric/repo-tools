@@ -67,7 +67,7 @@ export async function install(_args: string[] = []): Promise<void> {
   // Persist the install marker so isDaemonInstalled() returns true and the
   // CLI will attempt to reach the daemon (rather than silently no-op).
   markDaemonInstalled();
-  console.log(`  ${green}✓${reset} saved config to ~/.rt/daemon.json`);
+  console.log(`  ${green}✓${reset} saved config to ~/.mattstack/rt/daemon.json`);
 
   // Migrate away from any pre-SMAppService launchd plist.
   if (cleanupLaunchdPlist()) {
@@ -226,8 +226,8 @@ export async function showStatus(): Promise<void> {
 
   for (const line of statusLines(verdict, Date.now())) console.log(line);
 
-  console.log(`    ${dim}config: ~/.rt/daemon.json${reset}`);
-  console.log(`    ${dim}logs: ~/.rt/logs/ ${reset}${dim}(view with: rt daemon logs)${reset}`);
+  console.log(`    ${dim}config: ~/.mattstack/rt/daemon.json${reset}`);
+  console.log(`    ${dim}logs: ~/.mattstack/rt/logs/ ${reset}${dim}(view with: rt daemon logs)${reset}`);
   console.log("");
 }
 
@@ -323,7 +323,7 @@ export async function manageTracking(args: string[] = []): Promise<void> {
     const freshness = ((status?.ok ? status.data?.freshness : undefined) ?? {}) as
       Record<string, { state: string }>;
 
-    console.log(`\n  ${bold}repo tracking${reset} ${dim}(opt-in · ~/.rt/repo-tracking.json · unlisted = off)${reset}\n`);
+    console.log(`\n  ${bold}repo tracking${reset} ${dim}(opt-in · ~/.mattstack/rt/repo-tracking.json · unlisted = off)${reset}\n`);
     for (const name of Object.keys(repos).sort()) {
       const g = grants(tracking, name);
       const watcher = freshness[name];
@@ -337,7 +337,7 @@ export async function manageTracking(args: string[] = []): Promise<void> {
     // Tracking entries that no longer match a registered repo do nothing;
     // surface them so a rename or typo isn't silently inert.
     for (const name of Object.keys(tracking).filter((n) => !repos[n])) {
-      console.log(`  ${yellow}!${reset} ${name} ${dim}(tracked but not in ~/.rt/repos.json)${reset}`);
+      console.log(`  ${yellow}!${reset} ${name} ${dim}(tracked but not in ~/.mattstack/rt/repos.json)${reset}`);
     }
     console.log(`\n  ${dim}set: rt daemon track <repo> live|poll|off [caches]   caches: ${[...CACHE_KINDS].join(",")} (default branches)${reset}\n`);
     return;
@@ -349,7 +349,7 @@ export async function manageTracking(args: string[] = []): Promise<void> {
   let interactiveWindowDays: number | null | undefined; // undefined = untouched, null = clear
   if (!levelArg) {
     if (!readRepoIndex()[repoArg]) {
-      console.log(`\n  ${red}✗${reset} repo "${repoArg}" not registered in ~/.rt/repos.json\n`);
+      console.log(`\n  ${red}✗${reset} repo "${repoArg}" not registered in ~/.mattstack/rt/repos.json\n`);
       return;
     }
     const { filterableSelect, filterableMultiselect, textInput } = await import("../lib/rt-render.tsx");
@@ -435,7 +435,7 @@ export async function manageTracking(args: string[] = []): Promise<void> {
   if (levelArg2 !== "off") {
     const repoPath = readRepoIndex()[repoArg];
     if (!repoPath) {
-      console.log(`\n  ${red}✗${reset} repo "${repoArg}" not registered in ~/.rt/repos.json\n`);
+      console.log(`\n  ${red}✗${reset} repo "${repoArg}" not registered in ~/.mattstack/rt/repos.json\n`);
       return;
     }
     if (levelArg2 === "live") {
@@ -531,7 +531,7 @@ export async function showLogs(args: string[] = []): Promise<void> {
     }
   }
 
-  // Convention: every surface appends to ~/.rt/logs/<surface>.YYYY-MM-DD[.N].log
+  // Convention: every surface appends to ~/.mattstack/rt/logs/<surface>.YYYY-MM-DD[.N].log
   // (daemon via pino-roll, cli via lib/cli-logger.ts, tray via TrayLog, ...).
   // Follow the newest file per surface — new surfaces show up in the viewer
   // automatically, nothing to register.
@@ -603,7 +603,7 @@ async function runTerminalViewer(logPaths: string[]): Promise<void> {
 
 /**
  * logdy UI config that breaks pino JSON lines into proper columns instead
- * of dumping the raw line into one cell. Written to ~/.rt/ on first invocation.
+ * of dumping the raw line into one cell. Written to ~/.mattstack/rt/ on first invocation.
  *
  * Schema (verified against logdy v0.17):
  *   - top-level: `name`, `settings`, `columns`

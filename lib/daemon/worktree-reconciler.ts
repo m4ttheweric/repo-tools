@@ -253,7 +253,7 @@ async function reconcilePass(deps: ReconcileDeps, attempt: number): Promise<Pass
 // ─── Merge reactor (spec §6.2) ───────────────────────────────────────────────
 
 /**
- * The reactor's own memory, at `~/.rt/worktree-reactor-state.json`.
+ * The reactor's own memory, at `~/.mattstack/rt/worktree-reactor-state.json`.
  *
  * `mrState` is the last-seen MR state per `<repo>:<branch>`, compared against
  * the live cache to find `opened → merged|closed` edges. A branch the file has

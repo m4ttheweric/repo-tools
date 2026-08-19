@@ -1,7 +1,8 @@
 /**
  * Persisted daemon configuration.
  *
- * Stores install state in ~/.rt/daemon.json so rt commands can distinguish
+ * Stores install state in ~/.mattstack/rt/daemon.json so rt commands can
+ * distinguish
  * "daemon not installed (silent fallback)" from "daemon installed but not
  * running (attempt restart, warn if that fails)".
  */
@@ -9,6 +10,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { rtDir } from "./rt-paths.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -28,7 +30,11 @@ export interface DaemonConfig {
 
 // ─── Paths ───────────────────────────────────────────────────────────────────
 
-export const RT_DIR = join(homedir(), ".rt");
+// Evaluated at module load, deliberately: the bun test preload (test-setup.ts)
+// repoints HOME before any module loads, so this const still lands in the
+// per-test throwaway tree. Anything needing true call-time resolution should
+// use rtDir() from rt-paths.ts directly.
+export const RT_DIR = rtDir();
 export const DAEMON_CONFIG_PATH = join(RT_DIR, "daemon.json");
 export const DAEMON_SOCK_PATH = join(RT_DIR, "rt.sock");
 export const DAEMON_PID_PATH = join(RT_DIR, "rt.pid");

@@ -3,7 +3,7 @@
  * rt mr describe / rt pr describe — draft a description with an agent (streams to stdout).
  * rt mr ship / rt pr ship         — composite: push + describe + open. The all-in-one.
  *
- * Config lives at ~/.rt/repos/<repo>/mr.json. All three commands share the same
+ * Config lives at ~/.mattstack/rt/repos/<repo>/mr.json. All three commands share the same
  * helpers (`generateDescription`, `runGlabCreate`) so behavior is consistent
  * whether a user chains atoms by hand or runs the composite.
  */

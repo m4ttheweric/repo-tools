@@ -114,7 +114,7 @@ export function seedRepoIndex(
   home: string,
   repos: Array<{ name: string; path: string }>,
 ): void {
-  const rtDir = join(home, ".rt");
+  const rtDir = join(home, ".mattstack", "rt");
   mkdirSync(rtDir, { recursive: true });
 
   const index: Record<string, string> = {};

@@ -18,26 +18,26 @@ export interface CacheEntry {
   mr:        any;
   fetchedAt: number;
   /**
-   * Repo this entry belongs to (from ~/.rt/repos.json). Optional for
+   * Repo this entry belongs to (from ~/.mattstack/rt/repos.json). Optional for
    * backward compat with older on-disk caches — populated on next
    * refreshAllMRs pass.
    */
   repoName?: string;
   /**
    * Legacy field, no longer written since the discussions lift — snapshots
-   * now live in ~/.rt/discussions.json (see discussions-file-store.ts). Kept
+   * now live in ~/.mattstack/rt/discussions.json (see discussions-file-store.ts). Kept
    * only so the one-time seed can read old caches; die by attrition.
    */
   discussions?: Discussion[];
   /**
    * Legacy field, no longer written since the discussions lift — snapshots
-   * now live in ~/.rt/discussions.json (see discussions-file-store.ts). Kept
+   * now live in ~/.mattstack/rt/discussions.json (see discussions-file-store.ts). Kept
    * only so the one-time seed can read old caches; die by attrition.
    */
   discussionsFetchedAt?: number;
 }
 
-/** Repo index (name → absolute path) as loaded from ~/.rt/repos.json. */
+/** Repo index (name → absolute path) as loaded from ~/.mattstack/rt/repos.json. */
 export interface RepoIndex {
   [repoName: string]: string;
 }

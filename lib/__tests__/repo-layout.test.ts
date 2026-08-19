@@ -1,6 +1,6 @@
 /**
- * Behavioral guard: the public per-repo save APIs write under ~/.rt/repos/<repo>/
- * and NOT directly under ~/.rt/<repo>/. Exercises the real modules (not just the
+ * Behavioral guard: the public per-repo save APIs write under ~/.mattstack/rt/repos/<repo>/
+ * and NOT directly under ~/.mattstack/rt/<repo>/. Exercises the real modules (not just the
  * path helper) so a regression in any one of them is caught.
  *
  * Uses an isolated HOME under a temp dir. rt-paths resolves HOME at call time,
@@ -15,7 +15,7 @@ import { repoDataDir } from "../rt-paths.ts";
 import { saveTemplate } from "../doppler-template.ts";
 import { saveSyncConfig } from "../daemon/workspace-sync.ts";
 
-describe("per-repo files land under ~/.rt/repos/<repo>/", () => {
+describe("per-repo files land under ~/.mattstack/rt/repos/<repo>/", () => {
   const origHome = process.env.HOME;
   let home: string;
 
@@ -28,11 +28,11 @@ describe("per-repo files land under ~/.rt/repos/<repo>/", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  const newPath = (repo: string, file: string) => join(home, ".rt", "repos", repo, file);
-  const oldPath = (repo: string, file: string) => join(home, ".rt", repo, file);
+  const newPath = (repo: string, file: string) => join(home, ".mattstack", "rt", "repos", repo, file);
+  const oldPath = (repo: string, file: string) => join(home, ".mattstack", "rt", repo, file);
 
   test("repoDataDir resolves under the isolated HOME", () => {
-    expect(repoDataDir("acme")).toBe(join(home, ".rt", "repos", "acme"));
+    expect(repoDataDir("acme")).toBe(join(home, ".mattstack", "rt", "repos", "acme"));
   });
 
   test("doppler saveTemplate writes under repos/", () => {

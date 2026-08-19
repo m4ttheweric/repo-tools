@@ -14,15 +14,16 @@ import { execSync } from "child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { rtDir } from "../lib/rt-paths.ts";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import {
   getRepoIdentity, getKnownRepos, updateRepoIndex, type KnownRepo,
 } from "../lib/repo.ts";
 import { pickWorktreeWithSwitch, pickFromAllRepos, isSwitchRepo } from "../lib/pickers.ts";
 
-// ─── Preference storage (~/.rt/workspace-prefs.json) ─────────────────────────
+// ─── Preference storage (~/.mattstack/rt/workspace-prefs.json) ─────────────────────────
 
-const PREFS_PATH = join(homedir(), ".rt", "workspace-prefs.json");
+const PREFS_PATH = join(rtDir(), "workspace-prefs.json");
 
 interface Prefs {
   editors: Record<string, string>;
@@ -43,7 +44,7 @@ function loadPrefs(): Prefs {
 
 function savePrefs(prefs: Prefs): void {
   try {
-    const dir = join(homedir(), ".rt");
+    const dir = rtDir();
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(PREFS_PATH, JSON.stringify(prefs, null, 2));
   } catch { /* best-effort */ }
@@ -405,7 +406,7 @@ export async function openInEditor(args: string[]): Promise<void> {
     console.log(`\n  ${green}✓${reset} Opened ${label} in ${editorLabel}`);
   } else {
     console.log(`\n  ${red}Failed to open ${editorLabel}. Is '${editor}' CLI installed?${reset}`);
-    console.log(`  ${dim}You can reset your editor preference by deleting ~/.rt/workspace-prefs.json${reset}\n`);
+    console.log(`  ${dim}You can reset your editor preference by deleting ~/.mattstack/rt/workspace-prefs.json${reset}\n`);
     process.exit(1);
   }
 }

@@ -3,8 +3,8 @@
 /**
  * rt hooks — Toggle husky git hooks on/off.
  *
- * Uses core.hooksPath to redirect git hooks to shim scripts in ~/.rt/repos/<repo>/hooks/.
- * Shims check ~/.rt/repos/<repo>/hooks.json and delegate to the real .husky/ scripts.
+ * Uses core.hooksPath to redirect git hooks to shim scripts in ~/.mattstack/rt/repos/<repo>/hooks/.
+ * Shims check ~/.mattstack/rt/repos/<repo>/hooks.json and delegate to the real .husky/ scripts.
  * Works with ALL git clients (Cursor, VS Code, GitHub Desktop, terminal).
  * Cross-worktree (all worktrees share the same git config).
  *
@@ -77,7 +77,7 @@ function saveHooksConfig(dataDir: string, config: HooksConfig): void {
 // ─── Shim generation ─────────────────────────────────────────────────────────
 
 /**
- * Generate shim scripts in ~/.rt/repos/<repo>/hooks/ that:
+ * Generate shim scripts in ~/.mattstack/rt/repos/<repo>/hooks/ that:
  * 1. Check hooks.json for enabled/disabled state
  * 2. If disabled → exit 0 (skip)
  * 3. If enabled or config missing → delegate to the real .husky/ hook (fail-safe)
@@ -106,7 +106,7 @@ fi
 ` : "";
 
     const shim = `#!/bin/bash
-# rt hook shim — checks ~/.rt config before running the real hook
+# rt hook shim — checks ~/.mattstack/rt config before running the real hook
 # Fail-safe: if config is missing or unreadable, the real hook runs
 ${onDeckGuard}
 HOOKS_CONFIG="${configFile}"
