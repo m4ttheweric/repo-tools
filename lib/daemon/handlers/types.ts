@@ -87,7 +87,7 @@ export interface HandlerContext {
   refreshStatusRef:        { lastRefreshAt: number };
 }
 
-export type Handler    = (payload: any) => Promise<any>;
+export type Handler    = (payload: any, signal?: AbortSignal) => Promise<any>;
 export type HandlerMap = Record<string, Handler>;
 
 // ── Typed command surface (MAT-31) ───────────────────────────────────────────

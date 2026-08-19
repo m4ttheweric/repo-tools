@@ -11,7 +11,7 @@ import type { Logger } from "pino";
 import { DAEMON_SOCK_PATH } from "../daemon-config.ts";
 
 export function startSocketServer(opts: {
-  handleCommand: (cmd: string, payload: any) => Promise<any>;
+  handleCommand: (cmd: string, payload: any, signal?: AbortSignal) => Promise<any>;
   log: Logger;
 }): Server<any> {
   const { handleCommand, log } = opts;
@@ -21,8 +21,18 @@ export function startSocketServer(opts: {
     try { unlinkSync(DAEMON_SOCK_PATH); } catch { /* */ }
   }
 
+  // @ts-expect-error bun-types (1.3.10) doesn't declare `idleTimeout` on the
+  // unix-socket Options variant (typed `never` there via the
+  // HostnamePortServeOptions/UnixServeOptions XOR) even though Bun accepts it
+  // at runtime for unix sockets too — verified empirically. Remove this
+  // suppression once bun-types catches up.
   const server = Bun.serve({
     unix: DAEMON_SOCK_PATH,
+    // Raise Bun's implicit 10s idle-request timeout so long-poll requests
+    // (events:wait, Task 5) aren't reaped mid-wait. This only raises the cap
+    // on how long an idle connection may sit before Bun kills it — it never
+    // holds connections open on its own.
+    idleTimeout: 255,
     async fetch(req) {
       try {
         const url = new URL(req.url);
@@ -33,7 +43,7 @@ export function startSocketServer(opts: {
           try { payload = await req.json(); } catch { /* empty body is fine */ }
         }
 
-        const result = await handleCommand(cmd, payload);
+        const result = await handleCommand(cmd, payload, req.signal);
         return Response.json(result);
       } catch (err) {
         log.error({ err, url: req.url }, "socket request failed");
