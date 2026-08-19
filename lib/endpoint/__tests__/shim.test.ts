@@ -212,4 +212,27 @@ describe("installShims / uninstallShims / shimReport", () => {
     writeInterceptRules([{ command: "never-installed", repo: "r", repoRemote: null, matches: [] }]);
     expect(shimReport()).toEqual([{ command: "never-installed", repo: "r", installed: false, current: false }]);
   });
+
+  test("shimReport tracks the full installed/current transition (RT-28 verify check)", async () => {
+    const repoPath = makeGitRepo(null);
+    writeRepoConfig("r-transition", {
+      intercepts: [{ command: "fakecmd-transition", matches: [{ cwdGlob: ".", role: "x" }] }],
+    });
+    writeRepoIndex({ "r-transition": repoPath });
+
+    const built = await buildInterceptRules();
+    writeInterceptRules(built);
+
+    // declared, nothing on disk yet
+    expect(shimReport()).toContainEqual({ command: "fakecmd-transition", repo: "r-transition", installed: false, current: false });
+
+    // installed → current
+    await installShims();
+    expect(shimReport()).toContainEqual({ command: "fakecmd-transition", repo: "r-transition", installed: true, current: true });
+
+    // shim content drifts from the rendered form → installed but stale
+    const path = shimPath("fakecmd-transition");
+    writeFileSync(path, readFileSync(path, "utf8") + "\n");
+    expect(shimReport()).toContainEqual({ command: "fakecmd-transition", repo: "r-transition", installed: true, current: false });
+  });
 });
