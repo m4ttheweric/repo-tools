@@ -19,12 +19,12 @@
  * of its own, by design (see that module's header comment).
  */
 
-import { statSync } from "fs";
+import { closeSync, openSync, readSync, realpathSync, statSync } from "fs";
 import { join } from "path";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import { daemonQuery } from "../lib/daemon-client.ts";
 import { runCapture } from "../lib/subprocess.ts";
-import { loadInterceptRules, shimPath, shimReport, installShims, uninstallShims } from "../lib/endpoint/shim.ts";
+import { GENERATED_MARKER, loadInterceptRules, shimPath, shimReport, installShims, uninstallShims } from "../lib/endpoint/shim.ts";
 import { runInterception, type RunDeps } from "../lib/endpoint/run.ts";
 
 function usageFail(msg: string): never {
@@ -57,13 +57,55 @@ async function gitRemote(toplevel: string): Promise<string | null> {
 }
 
 /**
- * Scans `PATH` for an executable file named `command`, skipping this
- * command's own generated shim path (so the search never resolves back to
- * itself) — `~/.local/bin` sits on PATH ahead of everything else so an
- * unfiltered scan would just find the shim again. `RT_INTERCEPT_REAL`
- * overrides the whole search (test/debug escape hatch).
+ * Reads just the first 512 bytes of `path` and checks for the generated-shim
+ * marker (always on line 2, well inside that window — see
+ * `renderInterceptShim`). Deliberately a raw partial read, not
+ * `readFileSync`, so this stays cheap even against a large real binary: a
+ * few bytes off disk, never the whole file. Any read failure (permission,
+ * ENOENT between stat and here, a directory) is treated as "not a shim" —
+ * this is a guard against recursion, not a correctness gate on resolution.
  */
-function resolveRealBinary(command: string): string | null {
+function looksLikeGeneratedShim(path: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch {
+    return false;
+  }
+  try {
+    const buf = Buffer.alloc(512);
+    const bytesRead = readSync(fd, buf, 0, buf.length, 0);
+    return buf.subarray(0, bytesRead).toString("utf8").includes(GENERATED_MARKER);
+  } catch {
+    return false;
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // already closed
+    }
+  }
+}
+
+/**
+ * Scans `PATH` for an executable file named `command` that is NOT one of
+ * rt's own generated intercept shims, skipping this command's own shim path
+ * (so the search never resolves back to itself) — `~/.local/bin` sits on
+ * PATH ahead of everything else so an unfiltered scan would just find the
+ * shim again.
+ *
+ * Path-string equality alone is not a sufficient recursion guard: a
+ * symlinked HOME makes the shim reachable under a different absolute path
+ * string, and a shim file COPIED (not symlinked) onto PATH ahead of
+ * `~/.local/bin` would never string-match `ownShimPath` at all — either
+ * would recurse `rt intercept run` into itself forever. So every candidate
+ * gets two additional, cheap checks before it's accepted: a realpath
+ * comparison against the resolved shim path (catches the symlink case), and
+ * a content sniff for the generated-shim marker (catches the copy case).
+ *
+ * `RT_INTERCEPT_REAL` overrides the whole search (test/debug escape hatch).
+ */
+export function resolveRealBinary(command: string): string | null {
   if (process.env.RT_INTERCEPT_REAL) return process.env.RT_INTERCEPT_REAL;
 
   let ownShimPath: string | null = null;
@@ -72,18 +114,40 @@ function resolveRealBinary(command: string): string | null {
   } catch {
     ownShimPath = null;
   }
+  let ownShimReal: string | null = null;
+  if (ownShimPath) {
+    try {
+      ownShimReal = realpathSync(ownShimPath);
+    } catch {
+      ownShimReal = null; // shim not actually on disk — nothing to compare against
+    }
+  }
 
   const pathVar = process.env.PATH ?? "";
   for (const dir of pathVar.split(":")) {
     if (!dir) continue;
     const candidate = join(dir, command);
     if (candidate === ownShimPath) continue;
+
+    let st;
     try {
-      const st = statSync(candidate);
-      if (st.isFile() && (st.mode & 0o111) !== 0) return candidate;
+      st = statSync(candidate);
     } catch {
       continue; // not present in this PATH entry
     }
+    if (!st.isFile() || (st.mode & 0o111) === 0) continue;
+
+    if (ownShimReal) {
+      try {
+        if (realpathSync(candidate) === ownShimReal) continue; // symlinked back to the shim
+      } catch {
+        continue; // vanished between stat and realpath — treat as absent
+      }
+    }
+
+    if (looksLikeGeneratedShim(candidate)) continue; // a copied (not symlinked) shim
+
+    return candidate;
   }
   return null;
 }

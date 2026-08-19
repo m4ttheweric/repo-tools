@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { repoDataDir } from "../../rt-paths.ts";
 import { runInterception } from "../run.ts";
@@ -62,4 +63,45 @@ describe("runInterception", () => {
     const { deps } = harness({ resolveRealBinary: () => null });
     await expect(run(deps, ["run", "serve"])).rejects.toThrow(/real binary/);
   });
+});
+
+// ─── cli.ts fast path — byte-transparency ────────────────────────────────────
+//
+// The generated PATH shims exec `rt intercept run <command> -- "$@"` for
+// every intercepted real-world invocation (e.g. `pnpm start`), so this path
+// through cli.ts must be byte-transparent: no dispatch() screen-clear/
+// breadcrumb, no first-run auto-setup, no plugin-tree load noise. A unit
+// test of runInterception alone can't see any of that — it only exists in
+// cli.ts, before dispatch() is ever reached — so this spawns the real CLI
+// entry point end to end against a throwaway HOME that deliberately has NO
+// daemon.json (the exact condition that triggers first-run setup on every
+// other command path).
+const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
+const CLI_PATH = join(REPO_ROOT, "cli.ts");
+
+describe("cli.ts intercept run fast path", () => {
+  test("stdout is exactly the child's output; stderr carries no screen-clear/banner/first-run noise", async () => {
+    const tmpHome = mkdtempSync(join(tmpdir(), "rt-intercept-transparency-"));
+    // No ~/.mattstack/rt/daemon.json in tmpHome — first-run setup would fire
+    // on any other command path (see cli.ts's "First-run auto-setup" block).
+
+    const proc = Bun.spawn([process.execPath, "run", CLI_PATH, "intercept", "run", "echo", "--", "hello"], {
+      cwd: REPO_ROOT,
+      env: { PATH: process.env.PATH ?? "", HOME: tmpHome },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toBe("hello\n"); // exactly the wrapped `echo hello`'s output — nothing prepended/appended
+    expect(stderr).not.toContain("\x1b"); // no ANSI escape (screen clear / breadcrumb) bytes
+    expect(stderr.toLowerCase()).not.toContain("first run");
+  }, 20_000);
 });

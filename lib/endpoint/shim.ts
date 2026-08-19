@@ -38,7 +38,14 @@ export interface InterceptRule {
   matches: InterceptMatch[];
 }
 
-const GENERATED_MARKER = "# rt intercept shim — generated; do not edit (rt intercept install)";
+/**
+ * Exported so `resolveRealBinary` (commands/intercept.ts) can content-sniff
+ * a PATH candidate rather than trust path-equality alone to keep it from
+ * ever resolving back to a shim (e.g. a symlinked HOME, or a shim file
+ * copied — not symlinked — onto PATH ahead of ~/.local/bin, either of which
+ * defeats a pure path comparison).
+ */
+export const GENERATED_MARKER = "# rt intercept shim — generated; do not edit (rt intercept install)";
 
 // ─── intercepts.json ─────────────────────────────────────────────────────────
 
