@@ -17,6 +17,12 @@ export interface WaitResult { events: BusEvent[]; cursor: number }
 
 export interface EventsBus {
   emit(topic: string, payload?: unknown): number;
+  /**
+   * Test seam: emit with an explicit timestamp. Same as emit() but allows
+   * callers to override the emittedAt time (normally Date.now()). Must perform
+   * the same waiter wake-up scan as emit().
+   */
+  emitAt(topic: string, payload: unknown, emittedAt: number): number;
   list(opts: { pattern: string; after?: number; limit?: number }): WaitResult;
   wait(opts: { pattern: string; after?: number; waitMs?: number; signal?: AbortSignal }): Promise<WaitResult>;
   sweep(): number;
@@ -44,8 +50,15 @@ function rowToEvent(row: EventRow): BusEvent {
   return { id: row.id, topic: row.topic, payload, emittedAt: row.emittedAt };
 }
 
-export function createEventsBus(opts: { dbPath: string; log: Logger }): EventsBus {
+export function createEventsBus(opts: {
+  dbPath: string;
+  log: Logger;
+  retentionFloor?: number;
+  retentionMs?: number;
+}): EventsBus {
   const log = opts.log.child({ module: "events" });
+  const retentionFloor = opts.retentionFloor ?? 50_000;
+  const retentionMs = opts.retentionMs ?? 7 * 24 * 60 * 60 * 1000;
   // Self-sufficient about its parent dir — daemon.ts constructs the bus at
   // module scope, before startDaemon()'s mkdirSync(RT_DIR) runs.
   mkdirSync(dirname(opts.dbPath), { recursive: true });
@@ -95,23 +108,35 @@ export function createEventsBus(opts: { dbPath: string; log: Logger }): EventsBu
     w.resolve(result);
   };
 
+  /**
+   * Shared insert+wake code path for both emit and emitAt.
+   * Inserts a row and wakes any matching waiters.
+   */
+  const insertAndWake = (topic: string, payload: unknown, emittedAt: number): number => {
+    const row = insertStmt.get(
+      topic,
+      payload === undefined ? null : JSON.stringify(payload),
+      emittedAt,
+    ) as { id: number };
+    log.debug({ topic, id: row.id }, "event emitted");
+    for (const w of [...waiters]) {
+      if (!matchTopic(w.pattern, topic)) continue;
+      const events = eventsAfter(w.pattern, w.afterId);
+      if (events.length) {
+        log.debug({ pattern: w.pattern, delivered: events.length }, "waiter woken");
+        settle(w, { events, cursor: events[events.length - 1]!.id });
+      }
+    }
+    return row.id;
+  };
+
   return {
     emit(topic, payload) {
-      const row = insertStmt.get(
-        topic,
-        payload === undefined ? null : JSON.stringify(payload),
-        Date.now(),
-      ) as { id: number };
-      log.debug({ topic, id: row.id }, "event emitted");
-      for (const w of [...waiters]) {
-        if (!matchTopic(w.pattern, topic)) continue;
-        const events = eventsAfter(w.pattern, w.afterId);
-        if (events.length) {
-          log.debug({ pattern: w.pattern, delivered: events.length }, "waiter woken");
-          settle(w, { events, cursor: events[events.length - 1]!.id });
-        }
-      }
-      return row.id;
+      return insertAndWake(topic, payload, Date.now());
+    },
+
+    emitAt(topic, payload, emittedAt) {
+      return insertAndWake(topic, payload, emittedAt);
     },
 
     list({ pattern, after, limit }) {
@@ -160,7 +185,19 @@ export function createEventsBus(opts: { dbPath: string; log: Logger }): EventsBu
         waiters.add(w);
       });
     },
-    sweep() { throw new Error("implemented in Task 3"); },
+
+    sweep() {
+      const cutoff = Date.now() - retentionMs;
+      const { changes } = db.run(
+        `DELETE FROM events
+         WHERE emittedAt < ?
+           AND id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ?)`,
+        [cutoff, retentionFloor],
+      );
+      if (changes > 0) log.debug({ deleted: changes }, "retention sweep");
+      return changes;
+    },
+
     waiterCount() { return waiters.size; },
 
     close() {

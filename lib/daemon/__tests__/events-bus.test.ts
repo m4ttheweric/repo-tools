@@ -161,3 +161,37 @@ describe("events bus wait", () => {
     expect(res.events.map(e => e.id)).toEqual([id]);
   });
 });
+
+describe("events bus retention", () => {
+  let dir: string;
+  let bus: EventsBus;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "rt-events-"));
+    bus = createEventsBus({ dbPath: join(dir, "events.db"), log, retentionFloor: 3 });
+  });
+  afterEach(() => {
+    bus.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("sweep deletes old rows beyond the floor, keeps recent and floor rows", () => {
+    // 5 old events (emittedAt 8 days ago) + 1 fresh one
+    const oldTs = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    for (let i = 0; i < 5; i++) bus.emitAt(`old/${i}`, undefined, oldTs);
+    bus.emit("fresh/1");
+    const deleted = bus.sweep();
+    // 6 total, floor keeps newest 3 (old/3 old/4 fresh/1 by id), age keeps fresh/1;
+    // deletable = old/0..old/2 → 3 rows
+    expect(deleted).toBe(3);
+    const res = bus.list({ pattern: "**", after: 0 });
+    expect(res.events.map(e => e.topic)).toEqual(["old/3", "old/4", "fresh/1"]);
+  });
+
+  test("ids stay monotonic after a sweep (AUTOINCREMENT)", () => {
+    const oldTs = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    for (let i = 0; i < 5; i++) bus.emitAt(`old/${i}`, undefined, oldTs);
+    const lastBefore = bus.emit("fresh/1");
+    bus.sweep();
+    expect(bus.emit("fresh/2")).toBe(lastBefore + 1);
+  });
+});
