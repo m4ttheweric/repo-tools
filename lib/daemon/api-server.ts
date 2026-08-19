@@ -79,7 +79,7 @@ export function clearWsClients(): void {
 }
 
 export interface ApiServerDeps {
-  handleCommand: (cmd: string, payload: any) => Promise<any>;
+  handleCommand: (cmd: string, payload: any, signal?: AbortSignal) => Promise<any>;
   log: Logger;
 }
 
@@ -130,14 +130,14 @@ export function startApiServer(deps: ApiServerDeps): Server<any> {
         // Single branch lookup: /api/cache/:branch
         if (url.pathname.startsWith("/api/cache/") && req.method === "GET") {
           const branch = decodeURIComponent(url.pathname.slice("/api/cache/".length));
-          const result = await handleCommand("cache:read", { branches: [branch] });
+          const result = await handleCommand("cache:read", { branches: [branch] }, req.signal);
           return Response.json(result, { headers: corsHeaders });
         }
 
         // Hooks repair: /api/hooks/:repo/repair
         if (url.pathname.startsWith("/api/hooks/") && url.pathname.endsWith("/repair") && req.method === "POST") {
           const repo = decodeURIComponent(url.pathname.slice("/api/hooks/".length, -"/repair".length));
-          const result = await handleCommand("hooks:repair", { repo });
+          const result = await handleCommand("hooks:repair", { repo }, req.signal);
           return Response.json(result, { headers: corsHeaders });
         }
 
@@ -159,7 +159,7 @@ export function startApiServer(deps: ApiServerDeps): Server<any> {
           payload = Object.fromEntries(url.searchParams);
         }
 
-        const result = await handleCommand(route.cmd, payload);
+        const result = await handleCommand(route.cmd, payload, req.signal);
         return Response.json(result, { headers: corsHeaders });
       } catch (err) {
         log.error({ err, url: req.url }, "api request failed");

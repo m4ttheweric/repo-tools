@@ -142,10 +142,10 @@ const routedHandlers = buildRoutedHandlers({
   },
 });
 
-async function handleCommand(cmd: string, payload: any): Promise<any> {
+async function handleCommand(cmd: string, payload: any, signal?: AbortSignal): Promise<any> {
   const t0 = Date.now();
   try {
-    const result = await routeCommand(cmd, payload);
+    const result = await routeCommand(cmd, payload, signal);
     if (result && result.ok === false) {
       log.warn({ cmd, error: result.error, durationMs: Date.now() - t0 }, "command rejected");
     } else {
@@ -158,9 +158,9 @@ async function handleCommand(cmd: string, payload: any): Promise<any> {
   }
 }
 
-async function routeCommand(cmd: string, payload: any): Promise<any> {
+async function routeCommand(cmd: string, payload: any, signal?: AbortSignal): Promise<any> {
   const routed = routedHandlers[cmd];
-  if (routed) return routed(payload);
+  if (routed) return routed(payload, signal);
 
   switch (cmd) {
     case "shutdown":
