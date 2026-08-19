@@ -124,9 +124,6 @@ export async function runInterception(
     }
     const rendered = renderEnvTemplates(roleCfg.env, alloc);
     const preservedKeys = collectPreservedKeys(roleCfg.preserveEnv, callerEnv);
-    // Rendered env keys first, then caller-preserved keys — the order argInject
-    // templates (and any human reading the resulting flag) see.
-    const envKeys = [...Object.keys(rendered), ...preservedKeys];
 
     let hookEnv: Record<string, string> = {};
     if (roleCfg.hook) {
@@ -134,6 +131,12 @@ export async function runInterception(
       const hookResult = await runRoleHook(roleCfg.hook, hookInput);
       if (hookResult?.env) hookEnv = hookResult.env;
     }
+
+    // Rendered env keys, then caller-preserved keys, then hook-contributed keys
+    // (deduped, insertion order) — hook env must ride argInject too, or a
+    // wrapper like doppler clobbers exactly what the hook injected
+    // (NODE_OPTIONS token capture, flag-file vars).
+    const envKeys = [...new Set([...Object.keys(rendered), ...preservedKeys, ...Object.keys(hookEnv)])];
 
     // Base = caller's env (inheritance preserves exported vars); rendered role
     // env and hook env layer on top, in that order.
