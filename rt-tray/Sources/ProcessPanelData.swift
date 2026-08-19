@@ -156,7 +156,7 @@ class ColumnSettings: ObservableObject {
 
     private static let configPath: String = {
         let home = NSHomeDirectory()
-        return "\(home)/.rt/panel-columns.json"
+        return "\(home)/.mattstack/rt/panel-columns.json"
     }()
 
     init() {
