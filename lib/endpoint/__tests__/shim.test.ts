@@ -52,12 +52,28 @@ test("renderInterceptShim is stable for the same command (idempotent render)", (
   expect(renderInterceptShim("pnpm")).toBe(renderInterceptShim("pnpm"));
 });
 
+test("renderInterceptShim refuses to render an unsafe command name (gated through shimPath)", () => {
+  expect(() => renderInterceptShim("x;y")).toThrow();
+});
+
 // ─── shimPath ──────────────────────────────────────────────────────────────
 
 test("shimPath refuses the rt name and path separators", () => {
   expect(() => shimPath("rt")).toThrow();
   expect(() => shimPath("a/b")).toThrow();
   expect(shimPath("doppler").endsWith("/.local/bin/doppler")).toBe(true);
+});
+
+test("shimPath refuses whitespace and shell metacharacters (no unescaped splice into the shim)", () => {
+  for (const bad of ["a b", "x;y", "$(x)", "`x`", "x|y", "x&y", "x>y", "x<y", "x\ny"]) {
+    expect(() => shimPath(bad)).toThrow();
+  }
+});
+
+test("shimPath refuses empty and dot-segment names", () => {
+  for (const bad of ["", ".", ".."]) {
+    expect(() => shimPath(bad)).toThrow();
+  }
 });
 
 // ─── matchInvocation ─────────────────────────────────────────────────────────

@@ -23,7 +23,7 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { join, relative, sep } from "path";
+import { join, relative } from "path";
 import { readJson, writeJson } from "../json-store.ts";
 import { rtDir } from "../rt-paths.ts";
 import { runCapture } from "../subprocess.ts";
@@ -136,8 +136,16 @@ function localBinDir(): string {
  * Renders the generated `/bin/sh` PATH shim for `command`. Fixed shape:
  * shebang, generated marker, and an unconditional exec into
  * `rt intercept run <command>` — no bypass branch here (see module header).
+ *
+ * `command` is interpolated unescaped into the exec line, so this calls
+ * `shimPath(command)` first purely to gate the name through the same
+ * allowlist used for the on-disk path — a command that isn't a safe path
+ * segment isn't safe to splice into a shell command line either. The
+ * resulting path is discarded; this function's contract is the render, not
+ * the path.
  */
 export function renderInterceptShim(command: string): string {
+  shimPath(command); // throws on anything not safe to both path-join and shell-splice
   return [
     "#!/bin/sh",
     GENERATED_MARKER,
@@ -146,17 +154,27 @@ export function renderInterceptShim(command: string): string {
   ].join("\n");
 }
 
+const SAFE_COMMAND_NAME = /^[A-Za-z0-9._-]+$/;
+
 /**
  * `~/.local/bin/<command>`. Throws on `"rt"` (dev-mode owns that path; see
- * `lib/command-tree.ts`'s `IS_DEV_MODE` check) or on any command name
- * containing a path separator.
+ * `lib/command-tree.ts`'s `IS_DEV_MODE` check), on `""`, `"."`, or `".."`
+ * (dot segments collapse under `join` and would otherwise escape
+ * `~/.local/bin`), and on any command name that doesn't match the allowlist
+ * `[A-Za-z0-9._-]+` — the allowlist alone already excludes path separators,
+ * whitespace, and shell metacharacters (`;`, backticks, `$()`, etc.), which
+ * matters because `renderInterceptShim` splices `command` unescaped into a
+ * generated shell script.
  */
 export function shimPath(command: string): string {
   if (command === "rt") {
     throw new Error('shimPath: refusing to shim "rt" — dev-mode owns ~/.local/bin/rt');
   }
-  if (command.includes("/") || command.includes(sep)) {
-    throw new Error(`shimPath: invalid command name "${command}" (contains a path separator)`);
+  if (command === "" || command === "." || command === "..") {
+    throw new Error(`shimPath: invalid command name ${JSON.stringify(command)}`);
+  }
+  if (!SAFE_COMMAND_NAME.test(command)) {
+    throw new Error(`shimPath: invalid command name ${JSON.stringify(command)} (must match ${SAFE_COMMAND_NAME})`);
   }
   return join(localBinDir(), command);
 }
