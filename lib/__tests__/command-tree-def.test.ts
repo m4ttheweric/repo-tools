@@ -13,6 +13,9 @@ test("TREE is importable without side effects and has expected roots", () => {
 
 test("commit description is consistent across both paths", () => {
   expect(TREE.commit!.description).toBe(TREE.git!.subcommands!.commit!.description);
+  // Shared by identity, not copy-pasted — a divergence here means the tree
+  // was edited to duplicate commitNode instead of reusing the constant.
+  expect(TREE.commit).toBe(TREE.git!.subcommands!.commit);
 });
 
 test("verify command is present in the tree", () => {

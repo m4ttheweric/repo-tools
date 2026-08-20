@@ -3,9 +3,10 @@
  * each repo's `~/.mattstack/rt/repos/<repo>/doppler-template.yaml` across all worktrees.
  *
  * Called once per cache-refresh tick by the daemon (`refreshCacheImpl` in
- * `lib/daemon.ts`) and on demand by `rt doppler sync`. The reconciler is
- * additive — it only writes missing entries and never overwrites existing
- * ones, so user overrides via `doppler setup -p X -c Y` are preserved.
+ * `lib/daemon.ts`) and once when a new worktree is created (`lib/worktree/create.ts`).
+ * The reconciler is additive — it only writes missing entries and never
+ * overwrites existing ones, so user overrides via `doppler setup -p X -c Y`
+ * are preserved.
  */
 
 import { existsSync } from "fs";

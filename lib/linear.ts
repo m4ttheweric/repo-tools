@@ -87,26 +87,6 @@ export interface LinearTicket {
   branchName: string | null;
 }
 
-const ISSUE_BY_ID_QUERY = `
-  query IssueById($id: String!) {
-    issue(id: $id) {
-      id identifier title description url branchName
-      state { name color }
-    }
-  }
-`;
-
-const SEARCH_ISSUES_QUERY = `
-  query SearchIssues($term: String!) {
-    searchIssues(term: $term, first: 5) {
-      nodes {
-        id identifier title description url branchName
-        state { name color }
-      }
-    }
-  }
-`;
-
 async function linearGraphql(apiKey: string, query: string, variables: Record<string, unknown>): Promise<unknown> {
   const response = await fetch(GRAPHQL_URL, {
     method: "POST",
@@ -134,27 +114,6 @@ function toTicket(raw: Record<string, unknown>): LinearTicket {
     stateColor: state?.color ?? null,
     branchName: (raw.branchName as string) ?? null,
   };
-}
-
-export async function fetchTicket(apiKey: string, identifier: string): Promise<LinearTicket | null> {
-  try {
-    const data = (await linearGraphql(apiKey, ISSUE_BY_ID_QUERY, { id: identifier })) as {
-      issue: Record<string, unknown> | null;
-    };
-    if (data.issue) return toTicket(data.issue);
-  } catch { /* direct lookup failed */ }
-
-  try {
-    const data = (await linearGraphql(apiKey, SEARCH_ISSUES_QUERY, { term: identifier })) as {
-      searchIssues: { nodes: Array<Record<string, unknown>> };
-    };
-    const match = data.searchIssues.nodes.find(
-      (n) => (n.identifier as string).toUpperCase() === identifier.toUpperCase(),
-    );
-    return match ? toTicket(match) : null;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -241,46 +200,6 @@ export function saveTeamConfig(teamId: string, teamKey: string): void {
   writeFileSync(SECRETS_PATH, JSON.stringify(secrets, null, 2));
 }
 
-// ─── Create issue ────────────────────────────────────────────────────────────
-
-const CREATE_ISSUE_MUTATION = `
-  mutation CreateIssue($teamId: String!, $title: String!, $description: String) {
-    issueCreate(input: { teamId: $teamId, title: $title, description: $description }) {
-      success
-      issue {
-        id identifier title description url branchName
-        state { name color }
-      }
-    }
-  }
-`;
-
-export async function createIssue(
-  apiKey: string,
-  teamId: string,
-  title: string,
-  description?: string,
-): Promise<LinearTicket | null> {
-  try {
-    const data = (await linearGraphql(apiKey, CREATE_ISSUE_MUTATION, {
-      teamId,
-      title,
-      description: description || undefined,
-    })) as {
-      issueCreate: {
-        success: boolean;
-        issue: Record<string, unknown> | null;
-      };
-    };
-    if (data.issueCreate.success && data.issueCreate.issue) {
-      return toTicket(data.issueCreate.issue);
-    }
-    return null;
-  } catch (err) {
-    throw new Error(`Failed to create issue: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-
 // ─── Fetch team tickets ──────────────────────────────────────────────────────
 
 // Tickets eligible for branch creation: assigned to the viewer, on the
@@ -355,16 +274,7 @@ export async function searchTickets(apiKey: string, term: string): Promise<Linea
   }
 }
 
-// ─── Claim ticket (assign to me + mark In Progress) ─────────────────────────
-
-const VIEWER_AND_STATES_QUERY = `
-  query ViewerAndTeamStates($teamId: String!) {
-    viewer { id }
-    team(id: $teamId) {
-      states { nodes { id type position } }
-    }
-  }
-`;
+// ─── Workflow state selection ────────────────────────────────────────────────
 
 interface WorkflowState {
   id: string;
@@ -385,28 +295,4 @@ export function pickStartedState<T extends WorkflowState>(states: T[]): T | null
   const started = states.filter((s) => s.type === "started");
   if (started.length === 0) return null;
   return started.reduce((lowest, s) => (s.position < lowest.position ? s : lowest));
-}
-
-const UPDATE_ISSUE_MUTATION = `
-  mutation UpdateIssue($id: String!, $stateId: String!, $assigneeId: String!) {
-    issueUpdate(id: $id, input: { stateId: $stateId, assigneeId: $assigneeId }) {
-      success
-    }
-  }
-`;
-
-export async function claimTicket(apiKey: string, issueId: string, teamId: string): Promise<void> {
-  const data = (await linearGraphql(apiKey, VIEWER_AND_STATES_QUERY, { teamId })) as {
-    viewer: { id: string };
-    team: { states: { nodes: WorkflowState[] } };
-  };
-
-  const startedState = pickStartedState(data.team.states.nodes);
-  if (!startedState) throw new Error("No 'started' state found for team");
-
-  await linearGraphql(apiKey, UPDATE_ISSUE_MUTATION, {
-    id: issueId,
-    stateId: startedState.id,
-    assigneeId: data.viewer.id,
-  });
 }

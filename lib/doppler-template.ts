@@ -72,8 +72,8 @@ import type { DopplerConfig } from "./doppler-config.ts";
  * given worktree path. Returns relative-pathed template entries, sorted by
  * path for deterministic output.
  *
- * Used by `rt doppler init` to bootstrap a template from whatever the user
- * already had set up via `make initDoppler` or `doppler setup`.
+ * Templates are hand-authored today (a settings-driven bootstrap is planned
+ * as a future migration); this capture helper backs its test coverage.
  */
 export function captureFromActualConfig(
   dopplerCfg: DopplerConfig,
