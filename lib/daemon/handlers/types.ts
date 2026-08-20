@@ -47,7 +47,7 @@ export interface HandlerContext {
   /** Async refresh from upstream (enrich + Linear batch). Fire-and-forget safe. */
   refreshCache:   () => Promise<void>;
 
-  // ── Extensions for hooks/status/workspace handlers ──────────────────────────
+  // ── Extensions for hooks/status handlers ─────────────────────────────────
 
   /** Daemon logger; handlers write side-effect logs through this. */
   log:            Logger;

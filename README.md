@@ -103,7 +103,7 @@ On first invocation rt will:
 
 If the daemon was already running, the next refresh cycle picks it up (MR data
 refreshes every 5 min, port scans every ~30s). From then on `rt status`,
-`rt runner`, ticket lookup, port scanning, and MR notifications all work from
+`rt run`, ticket lookup, port scanning, and MR notifications all work from
 anywhere on your machine.
 
 ### Optional per-repo config
@@ -119,7 +119,7 @@ Set these once; they apply to all repos:
 
 ```bash
 rt settings gitlab token       # required for rt status, MR actions, notifications
-rt settings linear token       # required for ticket lookup in rt status / branch names
+rt settings linear token       # required for ticket lookup in rt status
 rt settings linear team        # Set default Linear team
 rt settings notifications      # pick which events fire native macOS notifications
 ```
@@ -211,7 +211,6 @@ rt settings dev-mode          # Toggle between local source and Homebrew binary
 ### Other
 
 ```bash
-rt x                      # Script runner with setup/teardown lifecycle
 rt hooks                  # Toggle git hooks on/off
 rt verify                 # Installation verification
 rt version                # Print version + mode (dev/prod)
@@ -338,7 +337,6 @@ From the menu you can restart the daemon, stop it, toggle launch-at-login, and c
 | macOS | Required (Apple Silicon or Intel) |
 | `fzf` | 0.71.0 or newer (`--listen` and `--id-nth`, used by `rt nav`'s live refresh); auto-installed by Homebrew |
 | `tmux` | Auto-installed by Homebrew |
-| `zellij` | Optional, only needed for `rt x --zellij` mode (`brew install zellij`) |
 | `chafa` | Optional, renders image previews in `rt nav` as colored character art (`brew install chafa`) |
 | `kitten` | Optional, upgrades `rt nav` image previews to true pixels on Kitty-protocol terminals such as Ghostty. Ships with Kitty (`brew install --cask kitty`) |
 

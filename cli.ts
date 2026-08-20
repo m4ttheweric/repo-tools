@@ -11,7 +11,7 @@
  *   rt                        interactive menu
  *   rt daemon status          direct subcommand
  *   rt daemon                 subcommand picker
- *   rt build                  direct command
+ *   rt run                    direct command
  */
 
 import { dispatch } from "./lib/command-tree.ts";
