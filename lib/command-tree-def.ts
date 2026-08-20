@@ -709,6 +709,17 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print the plan without running it" },
         ],
       },
+      key: {
+        description: "The mattstack age key (keychain-custodied)",
+        subcommands: {
+          export: {
+            description: "Print the age private key once, for your password manager",
+            module: "./commands/home.ts",
+            fn: "homeKeyExport",
+            args: [],
+          },
+        },
+      },
     },
   },
 
