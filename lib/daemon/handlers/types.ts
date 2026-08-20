@@ -8,34 +8,16 @@
 
 import type { FSWatcher } from "fs";
 import type { Logger } from "pino";
-import type { Discussion } from "@mattstack/glance";
 import type { PortEntry } from "../../port-scanner.ts";
+import type { BranchCacheStore } from "../../state/index.ts";
 
-/** Daemon-local cache entry shape (mirrors the inline definition in daemon.ts). */
-export interface CacheEntry {
-  ticket:    any;
-  linearId:  string;
-  mr:        any;
-  fetchedAt: number;
-  /**
-   * Repo this entry belongs to (from ~/.mattstack/rt/repos.json). Optional for
-   * backward compat with older on-disk caches — populated on next
-   * refreshAllMRs pass.
-   */
-  repoName?: string;
-  /**
-   * Legacy field, no longer written since the discussions lift — snapshots
-   * now live in ~/.mattstack/rt/discussions.json (see discussions-file-store.ts). Kept
-   * only so the one-time seed can read old caches; die by attrition.
-   */
-  discussions?: Discussion[];
-  /**
-   * Legacy field, no longer written since the discussions lift — snapshots
-   * now live in ~/.mattstack/rt/discussions.json (see discussions-file-store.ts). Kept
-   * only so the one-time seed can read old caches; die by attrition.
-   */
-  discussionsFetchedAt?: number;
-}
+/**
+ * RT-48: `CacheEntry` used to be DECLARED here — a third copy of the same
+ * shape, alongside `lib/enrich.ts`'s and the daemon's. The single owner is
+ * now `lib/state/branch-cache.ts`; this is a pure re-export so the modules
+ * importing the type from this path keep compiling unchanged.
+ */
+export type { CacheEntry } from "../../state/index.ts";
 
 /** Repo index (name → absolute path) as loaded from ~/.mattstack/rt/repos.json. */
 export interface RepoIndex {
@@ -53,16 +35,17 @@ export interface PortCacheRef {
 
 export interface HandlerContext {
   /**
-   * Live cache object. Do not destructure `entries` — handlers must read
-   * `ctx.cache.entries` each call so disk reloads are visible.
+   * The process-wide branch-cache store (`lib/state/branch-cache.ts`) — its
+   * `entries` map IS the daemon's in-memory read model, and the db under it
+   * is the durability layer (spec "In-memory ownership"). Do not destructure
+   * `entries`: handlers must read `ctx.cache.entries` each call so a
+   * `reload()` performed elsewhere stays visible. Mutate through
+   * `ctx.cache.put`/`delete`, which write the row and the map together —
+   * there is no flush step to forget.
    */
-  cache:          { entries: Record<string, CacheEntry> };
+  cache:          BranchCacheStore;
   /** Async refresh from upstream (enrich + Linear batch). Fire-and-forget safe. */
   refreshCache:   () => Promise<void>;
-  /** Reload cache.entries in-place from disk; used after enrichBranches writes. */
-  loadCache:      () => void;
-  /** Persist cache.entries to disk. Handlers call this after mutating in-memory entries. */
-  flushCache:     () => void;
 
   // ── Extensions for hooks/status/workspace handlers ──────────────────────────
 

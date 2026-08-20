@@ -23,7 +23,6 @@
 
 import { refreshDiscussions, type BroadcastFn } from "./discussions-store.ts";
 import {
-  seedDiscussionsFromBranchCache,
   getDiscussionsFileStore,
   type DiscussionsFileStore,
 } from "./discussions-file-store.ts";
@@ -69,9 +68,12 @@ export function collectSweepTargets(
   for (const entry of Object.values(entries)) {
     if (!entry.repoName) continue;
     if (!grants(tracking, entry.repoName).caches.has("discussions")) continue;
-    const iid = entry.mr?.iid;
-    if (typeof iid !== "number") continue;
-    if (TERMINAL_STATES.has(entry.mr.status)) continue;
+    // `mr` is now typed `MRInfo | null` (RT-48 gave CacheEntry a real shape
+    // instead of `any`), so narrow once and use the local.
+    const mr = entry.mr;
+    const iid = mr?.iid;
+    if (!mr || typeof iid !== "number") continue;
+    if (TERMINAL_STATES.has(mr.status)) continue;
     add(entry.repoName, iid);
   }
 
@@ -113,10 +115,6 @@ async function sweep(env: PollerEnv): Promise<void> {
 
 export function startDiscussionsPoller(env: PollerEnv): void {
   if (timer) return;
-  // One-time upgrade: move any discussions still embedded in branch-cache
-  // entries into the file store before the first sweep reads it.
-  const seeded = seedDiscussionsFromBranchCache(env.ctx.cache.entries);
-  if (seeded > 0) log.info({ seeded }, "seeded discussions store from branch cache");
   log.info(`starting (every ${POLL_INTERVAL_MS / 1000}s)`);
   // Kick off a first sweep after a short delay so the daemon finishes
   // initializing freshness watchers before we start hitting GitLab.
