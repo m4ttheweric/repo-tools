@@ -10,7 +10,6 @@ import type { HandlerContext, HandlerMap, TypedHandlers } from "./handlers/types
 import { createCacheHandlers }     from "./handlers/cache.ts";
 import { createHooksHandlers }     from "./handlers/hooks.ts";
 import { createStatusHandlers }    from "./handlers/status.ts";
-import { createWorkspaceHandlers } from "./handlers/workspace.ts";
 import { createMRHandlers }        from "./handlers/mr.ts";
 import { createWorktreeHandlers, type WorktreeHandlerOpts } from "./handlers/worktree.ts";
 import { createDiscussionHandlers } from "./handlers/discussions.ts";
@@ -44,7 +43,6 @@ export function buildRoutedHandlers(opts: {
     ...createCacheHandlers(ctx),
     ...createHooksHandlers(ctx),
     ...createStatusHandlers(ctx),
-    ...createWorkspaceHandlers(ctx),
     ...createMRHandlers(ctx, broadcast),
     ...createWorktreeHandlers(ctx, opts.worktree),
     ...createDiscussionHandlers(ctx, broadcast),

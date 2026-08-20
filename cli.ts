@@ -9,9 +9,9 @@
  *
  * Usage:
  *   rt                        interactive menu
- *   rt branch switch          direct subcommand
- *   rt branch                 subcommand picker
- *   rt build                  direct command
+ *   rt daemon status          direct subcommand
+ *   rt daemon                 subcommand picker
+ *   rt run                    direct command
  */
 
 import { dispatch } from "./lib/command-tree.ts";

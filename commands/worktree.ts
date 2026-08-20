@@ -485,13 +485,6 @@ export async function worktreeNav(_args: string[], _ctx: unknown): Promise<void>
   realStdoutWrite(selected + "\n");
 }
 
-// ─── park is gone ────────────────────────────────────────────────────────────
-
-export async function parkDeprecated(_args: string[], _ctx: unknown): Promise<void> {
-  console.log(`\n  ${red}✗${reset} rt park is gone — the parking lot was replaced by rt worktree (provision/dispose/list). See RT-34.\n`);
-  process.exit(1);
-}
-
 // ─── each ────────────────────────────────────────────────────────────────────
 
 function fail(msg: string): never {

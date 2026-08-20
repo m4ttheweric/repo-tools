@@ -233,11 +233,11 @@ const spinnerTimer = setInterval(() => {
 | `openPopup(cmd, opts)` | `display-popup -E` | Pickers, editors, one-off scripts. **Blocks** until exit. No pane ID returned. |
 | `openTempPane(cmd, opts)` | `split-window -v` | Persistent log viewers, interactive shells. Returns a pane ID. |
 
-Example — opening a branch picker in a popup:
+Example — opening the interactive script runner in a popup:
 ```typescript
-openPopup(`${process.execPath} ${CLI_PATH} branch`, {
+openPopup(`${process.execPath} ${CLI_PATH} run`, {
   cwd: entry.worktree,
-  title: "rt branch",
+  title: "rt run",
   width: "100",
   height: "20",
 });
