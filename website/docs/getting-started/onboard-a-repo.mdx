@@ -9,7 +9,7 @@ There's no explicit "add repo" step. Any git repo with an `origin` remote is pic
 
 ```bash
 cd ~/code/my-repo
-rt status            # or rt cd, rt branch switch, anything repo-aware
+rt status            # or rt cd, anything repo-aware
 ```
 
 On first invocation rt will:
@@ -28,7 +28,6 @@ If the daemon was already running, the next refresh cycle picks the repo up (MR 
 | Command | When you need it |
 |---|---|
 | [`rt hooks`](/reference/hooks) | Repo uses husky and you want a quick on/off toggle |
-| [`rt workspace sync`](/reference/workspace/sync) | Repo has a `.code-workspace` file you want synced across worktrees |
 | [`rt settings extension`](/reference/settings/extension) | Install the `rt-context` status-bar extension into local editors |
 
 ## Global settings that affect every repo
@@ -38,7 +37,7 @@ Set these once; they apply to all repos, and are stored under `~/.rt/`, not in a
 ```bash
 rt settings gitlab token       # required for rt status, MR actions, notifications
 rt settings linear token       # required for ticket lookup in rt status / branch names
-rt settings linear team        # only needed if you use rt branch create to file new tickets
+rt settings linear team        # Set default Linear team
 rt settings notifications      # pick which events fire native macOS notifications
 ```
 

@@ -17,7 +17,7 @@ Show what a command *would* do without changing anything. On `rt sync` and `rt g
 
 ## `--repo <name>`
 
-Pre-select a repo instead of resolving it from the current working directory. Commands whose context is a worktree (they normally resolve "which repo/worktree am I in" from `cwd`, or show a repo picker) accept `--repo <name>` to skip that resolution and jump straight to `<name>`'s worktree picker (or directly into its one worktree, if it only has one). For example, `rt branch switch --repo <name>` resolves `<name>` and jumps to its worktree picker instead of resolving the repo from `cwd`.
+Pre-select a repo instead of resolving it from the current working directory. Commands whose context is a worktree (they normally resolve "which repo/worktree am I in" from `cwd`, or show a repo picker) accept `--repo <name>` to skip that resolution and jump straight to `<name>`'s worktree picker (or directly into its one worktree, if it only has one). For example, `rt commit --repo <name>` resolves `<name>` and jumps to its worktree picker instead of resolving the repo from `cwd`.
 
 Note that `rt cd --repo` is a different, unrelated flag: `rt cd` isn't a worktree-context command, so the generic `--repo <name>` mechanism above doesn't apply to it. It parses its own boolean `--repo` (no value) that means "show the all-repos picker instead of the current directory's repo," and it happens to share a name with the flag described here.
 
@@ -33,4 +33,4 @@ Note that `rt cd --repo` is a different, unrelated flag: `rt cd` isn't a worktre
 
 ## Which commands honor these
 
-Not every command accepts every flag above; each command's own reference page lists the flags it actually parses. `--dry-run`, `--json`, `--agent`, and `--no-agent` are used by `rt sync` and `rt git rebase` (the two commands that run rebases and can hit conflicts). `--repo <name>` is used by worktree-context commands, such as `rt branch switch` and `rt commit`. (`rt cd --repo` is the unrelated, cd-specific boolean flag described above, not this one.)
+Not every command accepts every flag above; each command's own reference page lists the flags it actually parses. `--dry-run`, `--json`, `--agent`, and `--no-agent` are used by `rt sync` and `rt git rebase` (the two commands that run rebases and can hit conflicts). `--repo <name>` is used by worktree-context commands, such as `rt commit`. (`rt cd --repo` is the unrelated, cd-specific boolean flag described above, not this one.)

@@ -23,10 +23,9 @@ describe("smoke", () => {
 
     const output = result.stderr;
     const expectedCommands = [
-      "git", "mr", "sync", "branch", "turbo", "run", "commit",
-      "port", "status", "update", "version", "open",
-      "cd", "nav", "code", "agent", "workspace", "park",
-      "doppler", "daemon", "settings", "hooks",
+      "git", "sync", "run", "commit",
+      "port", "status", "update", "version",
+      "cd", "nav", "daemon", "settings", "hooks",
     ];
     for (const cmd of expectedCommands) {
       expect(output).toContain(cmd);
