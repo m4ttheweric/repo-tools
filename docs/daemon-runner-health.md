@@ -130,7 +130,7 @@ Forced transitions remain permitted (needed for kill-of-warm, reconcile, etc.) b
 - [lib/daemon/handlers/remedy.ts](../lib/daemon/handlers/remedy.ts) — `remedy:set|clear|drain`
 - [lib/daemon/handlers/proxy.ts](../lib/daemon/handlers/proxy.ts) — `proxy:start|stop|set-upstream|status|list`
 
-Each module is a factory that takes a `HandlerContext` and returns a `HandlerMap`. Daemon.ts constructs the ctx once and merges the maps into `routedHandlers`; `handleCommand` does `routedHandlers[cmd] ?? switch` so non-extracted commands (ping, hooks:*, repos, ports, status, tcc:check, notifications*, tray:status, group:*, workspace:sync:*, port:*, shutdown) remain inline because they read daemon-local state (watchers, repos index, notifications, port allocator, workspace-sync, groups) that wouldn't benefit from being pushed out.
+Each module is a factory that takes a `HandlerContext` and returns a `HandlerMap`. Daemon.ts constructs the ctx once and merges the maps into `routedHandlers`; `handleCommand` does `routedHandlers[cmd] ?? switch` so non-extracted commands (ping, hooks:*, repos, ports, status, tcc:check, notifications*, tray:status, group:*, port:*, shutdown) remain inline because they read daemon-local state (watchers, repos index, notifications, port allocator, groups) that wouldn't benefit from being pushed out.
 
 Live cache access goes through `ctx.cache.entries` — `loadCache()` now mutates `cache.entries` in place instead of reassigning, so handlers see disk reloads without plumbing getters.
 

@@ -6,9 +6,9 @@
  * Writes are write-temp-then-rename atomic — stores never tear (spec §4).
  *
  * Scope note: adopted in the per-repo store modules touched by the ~/.mattstack/rt/repos
- * move (repo-index, workspace-sync, parking-lot). Other hand-rolled callsites
- * are intentionally left alone — converting all of them is a separate, app-wide
- * sweep, not part of the path refactor.
+ * move (repo-index, parking-lot). Other hand-rolled callsites are intentionally
+ * left alone — converting all of them is a separate, app-wide sweep, not part
+ * of the path refactor.
  */
 
 import { mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "fs";

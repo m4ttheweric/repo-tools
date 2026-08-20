@@ -44,7 +44,6 @@ import { startSocketServer } from "./daemon/socket-server.ts";
 import { startApiServer, broadcast } from "./daemon/api-server.ts";
 import { loadCronConfig, startCron } from "./daemon/cron.ts";
 import { startPollers } from "./daemon/pollers.ts";
-import { restoreWatchers } from "./daemon/workspace-sync.ts";
 import {
   initFreshness,
   reconcileFreshness,
@@ -281,13 +280,6 @@ export function startDaemon(): void {
 
   // Discover and watch repos
   hooksGuard.refreshWatchedRepos();
-
-  // Restore workspace sync watchers
-  try {
-    restoreWatchers(loadRepoIndex());
-  } catch (err) {
-    log.error({ err }, "workspace-sync: failed to restore watchers");
-  }
 
   // Watch repos.json for changes (new repos added)
   if (existsSync(REPOS_JSON_PATH)) {
