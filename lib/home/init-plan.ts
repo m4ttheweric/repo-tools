@@ -1,9 +1,8 @@
 /**
- * `rt home init` plan-of-record (RT-30, per MAT-374 rulings 1-3, 5).
+ * `rt home init` plan-of-record.
  *
  * Pure logic: turns a probed HomeState into an ordered InitStep[]. No fs, no
- * exec — Task 2's init-exec.ts is the seam that runs these against real git
- * and gh.
+ * exec — a separate execution seam runs these against real git and gh.
  */
 
 import { renderHomeGitignore } from "./boundary.ts";
@@ -16,14 +15,14 @@ export interface HomeState {
 }
 
 export type InitStep =
-  | { kind: "createRepo"; name: string; owner?: string }
+  | { kind: "createRepo"; name: string }
   | { kind: "gitInit"; branch: string }
   | { kind: "writeGitignore"; content: string }
   | { kind: "writeOwners"; content: string }
   | { kind: "deleteCruft"; paths: string[] }
   | { kind: "foldInPrefs" }
   | { kind: "adoptCommit"; message: string }
-  | { kind: "push" };
+  | { kind: "push"; branch: string };
 
 export interface InitPlan {
   steps: InitStep[];
@@ -32,6 +31,7 @@ export interface InitPlan {
 }
 
 export const DEFAULT_HOME_REPO_NAME = "mattstack-home";
+export const DEFAULT_HOME_BRANCH = "main";
 export const ADOPT_COMMIT_MESSAGE = "home: adopt the declarative layer";
 
 function renderOwnersFile(): string {
@@ -40,14 +40,14 @@ function renderOwnersFile(): string {
 
 /**
  * Idempotence lives here, not in the executor: a repo that already exists
- * gets an empty plan so Task 2's executor never has to re-derive the check.
+ * gets an empty plan so the executor never has to re-derive the check.
  */
 export function buildInitPlan(state: HomeState): InitPlan {
   if (state.isRepo) return { steps: [], reason: "already-initialized" };
 
   const steps: InitStep[] = [
     { kind: "createRepo", name: DEFAULT_HOME_REPO_NAME },
-    { kind: "gitInit", branch: "main" },
+    { kind: "gitInit", branch: DEFAULT_HOME_BRANCH },
     { kind: "writeGitignore", content: renderHomeGitignore() },
     { kind: "writeOwners", content: renderOwnersFile() },
   ];
@@ -56,7 +56,7 @@ export function buildInitPlan(state: HomeState): InitPlan {
   if (state.hasUserClone) steps.push({ kind: "foldInPrefs" });
 
   steps.push({ kind: "adoptCommit", message: ADOPT_COMMIT_MESSAGE });
-  steps.push({ kind: "push" });
+  steps.push({ kind: "push", branch: DEFAULT_HOME_BRANCH });
 
   return { steps };
 }

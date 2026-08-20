@@ -53,6 +53,16 @@ describe("buildInitPlan", () => {
     expect(plan.steps.map((s) => s.kind)).not.toContain("deleteCruft");
   });
 
+  test("push carries the same branch gitInit created", () => {
+    const state: HomeState = { isRepo: false, hasUserClone: false, hasTeamClones: [], cruft: [] };
+    const plan = buildInitPlan(state);
+    const gitInit = plan.steps.find((s) => s.kind === "gitInit");
+    const push = plan.steps.find((s) => s.kind === "push");
+    expect(gitInit).toBeDefined();
+    expect(push).toBeDefined();
+    expect((push as { branch: string }).branch).toBe((gitInit as { branch: string }).branch);
+  });
+
   test("already-initialized: returns no steps plus the reason", () => {
     const state: HomeState = {
       isRepo: true,

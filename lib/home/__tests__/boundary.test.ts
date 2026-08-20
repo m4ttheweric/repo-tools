@@ -2,11 +2,19 @@ import { describe, test, expect } from "bun:test";
 import { HOME_BOUNDARY, renderHomeGitignore } from "../boundary.ts";
 
 /**
- * Minimal gitignore-semantics matcher for the patterns this module emits
- * (trailing-slash directory prefixes, bare extension globs, bare filenames
- * matched by basename). Not a general gitignore engine — just enough to
- * prove renderHomeGitignore() draws the boundary the spec describes.
+ * Minimal gitignore-semantics matcher for the patterns this module emits.
+ * Models the one distinction that matters here: a pattern containing a "/"
+ * anywhere but the very end (a leading slash, or a slash in the middle) is
+ * anchored to the root and only matches there; a pattern with no such slash
+ * matches its directory/file name at ANY depth. Not a general gitignore
+ * engine — just enough to prove renderHomeGitignore() draws the boundary at
+ * the depth the spec describes.
  */
+function isAnchored(pattern: string): boolean {
+  const withoutTrailingSlash = pattern.endsWith("/") ? pattern.slice(0, -1) : pattern;
+  return withoutTrailingSlash.includes("/");
+}
+
 function gitignorePatterns(gitignore: string): string[] {
   return gitignore
     .split("\n")
@@ -15,29 +23,35 @@ function gitignorePatterns(gitignore: string): string[] {
 }
 
 function isIgnored(patterns: string[], path: string): boolean {
-  const base = path.split("/").pop()!;
+  const segments = path.split("/");
+  const base = segments[segments.length - 1]!;
+  const dirSegments = segments.slice(0, -1);
+
   return patterns.some((pattern) => {
-    if (pattern.endsWith("/")) {
-      const dir = pattern.slice(0, -1);
-      return path === dir || path.startsWith(`${dir}/`);
+    const anchored = isAnchored(pattern);
+    const body = pattern.startsWith("/") ? pattern.slice(1) : pattern;
+
+    if (body.endsWith("/")) {
+      const dir = body.slice(0, -1);
+      return anchored ? path === dir || path.startsWith(`${dir}/`) : dirSegments.includes(dir);
     }
-    if (pattern.startsWith("*.")) {
-      return base.endsWith(pattern.slice(1));
+    if (body.startsWith("*.")) {
+      return base.endsWith(body.slice(1));
     }
-    return base === pattern || path === pattern;
+    return anchored ? path === body : base === body;
   });
 }
 
 describe("HOME_BOUNDARY", () => {
-  test("declares exactly the ruled ignore set", () => {
+  test("declares exactly the ruled ignore set, root-anchored for single-segment dirs", () => {
     expect(HOME_BOUNDARY.ignored).toEqual([
-      "rt/",
-      "deck/",
-      "shepherdr/",
-      "repos/",
-      "ci-attendants/",
-      "work/",
-      "teams/",
+      "/rt/",
+      "/deck/",
+      "/shepherdr/",
+      "/repos/",
+      "/ci-attendants/",
+      "/work/",
+      "/teams/",
       "user/local/",
       "settings.local.jsonc",
       "*.sock",
@@ -71,6 +85,7 @@ describe("renderHomeGitignore", () => {
     "settings.local.jsonc",
     ".DS_Store",
     "user/.DS_Store",
+    "deck-api.sock",
   ];
 
   const trackedCases = [
@@ -93,4 +108,9 @@ describe("renderHomeGitignore", () => {
       expect(isIgnored(patterns, path)).toBe(false);
     });
   }
+
+  test("root-anchored dir patterns do not match the same name at depth", () => {
+    expect(isIgnored(patterns, "rt/x")).toBe(true);
+    expect(isIgnored(patterns, "user/rt/x")).toBe(false);
+  });
 });
