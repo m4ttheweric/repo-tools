@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { fetchStatusData } from "../data.ts";
-import { getBranchCacheStore, openStateDb } from "../../../lib/state/index.ts";
+import { closeStateDb, getBranchCacheStore, getStateDb, openStateDb } from "../../../lib/state/index.ts";
 
 let home: string;
 let realHome: string | undefined;
@@ -26,6 +26,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The lazy state singleton is process-wide and would otherwise outlive this
+  // file's isolated HOME, pointing at a directory the next test deletes.
+  closeStateDb();
   process.env.HOME = realHome;
   rmSync(home, { recursive: true, force: true });
 });
@@ -92,5 +95,27 @@ describe("rt status fallback (no daemon)", () => {
 
     expect(data.source).toBe("cache-file");
     expect(data.branches).toEqual({});
+  });
+});
+
+describe("rt status fallback does not disturb process-wide state", () => {
+  test("neither claims the branch-cache store singleton nor hands back its live map", async () => {
+    mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
+    openStateDb(stateDbPath()).close();
+
+    // The process-wide store singleton, as any long-lived caller would hold it.
+    const singletonStore = getBranchCacheStore(getStateDb());
+
+    const first = await fetchStatusData();
+    const second = await fetchStatusData();
+
+    // The fallback opens its own throwaway connection; rebinding the singleton
+    // to it (as getBranchCacheStore(openStateDb(...)) did) would leave the
+    // process holding a store bound to a handle the fallback then dropped.
+    expect(getBranchCacheStore(getStateDb())).toBe(singletonStore);
+    // And each call returns its own detached copy rather than a live map read
+    // through a connection that is already closed by the time it is used.
+    expect(first.branches).not.toBe(second.branches);
+    expect(first.branches).not.toBe(singletonStore.entries);
   });
 });

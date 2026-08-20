@@ -409,7 +409,15 @@ LEGACY_IMPORTS.push({
 
       for (const [iidStr, entry] of Object.entries(store.mrs ?? {})) {
         if (!entry || entry.pr === undefined) continue;
-        mrStmt.run(repoName, Number(iidStr), JSON.stringify(entry.pr), entry.fetchedAt ?? 0);
+        // Skip, never abort: a non-numeric key binds NaN -> NULL and violates
+        // project_mrs.iid NOT NULL, which throws INSIDE the v0->v1 BEGIN
+        // IMMEDIATE transaction — rolling the whole migration back and leaving
+        // the file unrenamed, so every later rt command retries and fails
+        // identically. Spec policy for bad legacy input is "corrupt = warn +
+        // skip"; the sibling discussions importer guards its iid the same way.
+        const iid = Number(iidStr);
+        if (!Number.isFinite(iid)) continue;
+        mrStmt.run(repoName, iid, JSON.stringify(entry.pr), entry.fetchedAt ?? 0);
       }
 
       for (const [client, demand] of Object.entries(store.demands ?? {})) {

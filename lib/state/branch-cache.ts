@@ -149,15 +149,26 @@ function createStore(db: Database): BranchCacheStore {
     }
     if (toDelete.length === 0) return;
 
-    const deleteStmt = db.query("DELETE FROM branch_cache WHERE branch = ?;");
+    // The DELETE re-states the staleness predicate the SELECT above chose on.
+    // Without it, a CLI `rt run` enrichment that upserts one of these branches
+    // in the window between the two statements loses its brand-new row to a
+    // decision made before it existed. With it, a row that moved forward
+    // simply reports 0 changes and survives.
+    const deleteStmt = db.query("DELETE FROM branch_cache WHERE branch = ? AND fetched_at < ?;");
+    const deleted: string[] = [];
     const runDeletes = db.transaction((branches: string[]) => {
-      for (const branch of branches) deleteStmt.run(branch);
+      deleted.length = 0;
+      for (const branch of branches) {
+        if (deleteStmt.run(branch, cutoff).changes > 0) deleted.push(branch);
+      }
     });
     // Rows and map evict as one unit: on a deferred (BUSY) transaction
-    // neither changes, so the next cycle simply re-prunes the same rows.
+    // neither changes, so the next cycle simply re-prunes the same rows — and
+    // a branch whose row survived the re-guard keeps its map entry too, so
+    // reload() can never resurrect a half-evicted pair.
     persistOrWarn("branch-cache", () => {
       runDeletes(toDelete);
-      for (const branch of toDelete) delete entries[branch];
+      for (const branch of deleted) delete entries[branch];
     }, { op: "gc", count: toDelete.length });
   }
 
