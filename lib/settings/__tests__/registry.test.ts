@@ -44,11 +44,11 @@ describe("settings/registry", () => {
       }
     });
 
-    test("exactly 4 keys are migrated:true", () => {
+    test("exactly 5 keys are migrated:true", () => {
       const migrated = allDefs().filter((d) => d.migrated);
 
       expect(migrated.map((d) => d.key).sort()).toEqual(
-        ["rt.intercepts", "rt.repoIdentityOverrides", "rt.roles", "rt.worktrees"].sort(),
+        ["rt.intercepts", "rt.repoIdentityOverrides", "rt.repoRoots", "rt.roles", "rt.worktrees"].sort(),
       );
     });
 
@@ -144,7 +144,7 @@ describe("settings/registry", () => {
       }
     });
 
-    test("has exactly the 14 wave-1 migrated:false keys plus the 4 migrated:true keys", () => {
+    test("has exactly the 14 wave-1 migrated:false keys plus the 5 migrated:true keys", () => {
       const migratedFalseKeys = [
         "rt.llm",
         "rt.cron",
@@ -161,7 +161,7 @@ describe("settings/registry", () => {
         "rt.runaway",
         "rt.hooks",
       ];
-      const migratedTrueKeys = ["rt.roles", "rt.intercepts", "rt.worktrees", "rt.repoIdentityOverrides"];
+      const migratedTrueKeys = ["rt.roles", "rt.intercepts", "rt.worktrees", "rt.repoIdentityOverrides", "rt.repoRoots"];
 
       expect(allDefs().map((d) => d.key).sort()).toEqual([...migratedFalseKeys, ...migratedTrueKeys].sort());
     });
