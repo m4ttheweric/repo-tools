@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { machineSettingsPath, teamSettingsPath, teamsDir, userSettingsPath } from "../../rt-paths.ts";
@@ -266,6 +266,95 @@ describe("settings/write", () => {
         console.error = orig;
       }
       expect(stderrWrites.length).toBe(0);
+    });
+  });
+
+  // ─── malformed stores refuse rather than edit around the damage ───────────
+
+  describe("malformed store refusal", () => {
+    test("refuses a duplicate top-level key, leaving the file byte-identical", () => {
+      // modify() edits the FIRST occurrence by offset; every reader (parse,
+      // JSON.parse) takes the LAST — so silently "fixing" this would report
+      // success while the effective value never changes. Must refuse instead.
+      const before = `{\n  "rt.worktrees": { "onDeck": 1 },\n  "rt.worktrees": { "onDeck": 2 }\n}\n`;
+      write(userSettingsPath(), before);
+
+      expect(() => setSetting("rt.worktrees", { onDeck: 9 }, "user")).toThrow(
+        /malformed|syntax error/i,
+      );
+      expect(readUser()).toBe(before);
+    });
+
+    test("refuses a duplicate key nested inside the repos section", () => {
+      const before = `{\n  "repos": {\n    "${IDENTITY}": { "rt.roles": {}, "rt.roles": {} }\n  }\n}\n`;
+      write(userSettingsPath(), before);
+
+      expect(() =>
+        setSetting("rt.worktrees", { onDeck: 9 }, "user"),
+      ).toThrow(/malformed|syntax error/i);
+      expect(readUser()).toBe(before);
+    });
+
+    test("refuses a stray-brace syntax error, leaving the file byte-identical", () => {
+      const before = `{ "rt.worktrees": { "onDeck": 1 } } }\n`;
+      write(userSettingsPath(), before);
+
+      expect(() => setSetting("rt.worktrees", { onDeck: 9 }, "user")).toThrow(
+        /malformed|syntax error/i,
+      );
+      expect(readUser()).toBe(before);
+    });
+
+    test("refuses an unterminated document, leaving the file byte-identical", () => {
+      const before = `{ "rt.worktrees": { "onDeck": 1 }\n`;
+      write(userSettingsPath(), before);
+
+      expect(() => setSetting("rt.worktrees", { onDeck: 9 }, "user")).toThrow(
+        /malformed|syntax error/i,
+      );
+      expect(readUser()).toBe(before);
+    });
+
+    test("refuses a store whose root is not an object", () => {
+      const before = `[1, 2, 3]\n`;
+      write(userSettingsPath(), before);
+
+      expect(() => setSetting("rt.worktrees", { onDeck: 9 }, "user")).toThrow(
+        /malformed|syntax error/i,
+      );
+      expect(readUser()).toBe(before);
+    });
+
+    test("a malformed store leaves no .tmp remnant behind", () => {
+      const before = `{ "a": 1 } }\n`;
+      write(userSettingsPath(), before);
+
+      expect(() => setSetting("rt.worktrees", { onDeck: 9 }, "user")).toThrow();
+
+      const entries = readdirSync(dirname(userSettingsPath()));
+      expect(entries.some((name) => name.endsWith(".tmp"))).toBe(false);
+    });
+  });
+
+  // ─── atomic write hygiene ───────────────────────────────────────────────────
+
+  describe("atomic write", () => {
+    test("leaves no .tmp remnant after a successful write", () => {
+      setSetting("rt.worktrees", { onDeck: 3 }, "user");
+
+      const entries = readdirSync(dirname(userSettingsPath()));
+      expect(entries.some((name) => name.endsWith(".tmp"))).toBe(false);
+      expect(entries).toContain("settings.jsonc");
+    });
+
+    test("a successful write's content matches what modify/applyEdits produced (no JSON.stringify round-trip)", () => {
+      write(userSettingsPath(), `// keep this comment\n{\n  // and this one\n  "rt.cron": true,\n}\n`);
+
+      setSetting("rt.worktrees", { onDeck: 3 }, "user");
+
+      const content = readUser();
+      expect(content).toContain("// keep this comment");
+      expect(content).toContain("// and this one");
     });
   });
 
