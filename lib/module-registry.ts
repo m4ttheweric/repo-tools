@@ -19,6 +19,7 @@ import * as open from "../commands/open.ts";
 import * as port from "../commands/port.ts";
 import * as run from "../commands/run.ts";
 import * as settings from "../commands/settings.ts";
+import * as settingsKeys from "../commands/settings-keys.ts";
 import * as sync from "../commands/sync.ts";
 import * as workspace from "../commands/workspace.ts";
 import * as mr from "../commands/mr.ts";
@@ -55,6 +56,7 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/port.ts": port,
   "./commands/run.ts": run,
   "./commands/settings.ts": settings,
+  "./commands/settings-keys.ts": settingsKeys,
   "./commands/sync.ts": sync,
   "./commands/workspace.ts": workspace,
   "./commands/mr.ts": mr,

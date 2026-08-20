@@ -818,6 +818,45 @@ export const TREE: Record<string, CommandNode> = {
   settings: {
     description: "Configure tokens, team, and repo data",
     subcommands: {
+      get: {
+        description: "Read a resolved setting (value + provenance) through the settings resolver",
+        module: "./commands/settings-keys.ts",
+        fn: "settingsGet",
+        args: [
+          { name: "Key", type: "text", placeholder: "rt.worktrees", hint: "Namespaced settings key (see rt settings list)" },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "assured-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — enables repo-scoped rungs and ${repoRoot}" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable output" },
+        ],
+      },
+      set: {
+        description: "Write a setting into one authored store (user/team/machine)",
+        module: "./commands/settings-keys.ts",
+        fn: "settingsSet",
+        args: [
+          { name: "Key", type: "text", placeholder: "rt.worktrees", hint: "Namespaced settings key (must be migrated:true)" },
+          { name: "Value", type: "text", placeholder: "{\"onDeck\":3}", hint: "JSON(C) value" },
+          { name: "Scope", flag: "--scope", type: "select", hint: "Which store to write into", options: [{ value: "user", label: "user", hint: "~/.mattstack/user/settings.jsonc" }, { value: "team", label: "team", hint: "the local team clone's settings.jsonc" }, { value: "machine", label: "machine", hint: "~/.mattstack/settings.local.jsonc" }] },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "assured-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — required for repo-scoped keys" },
+        ],
+      },
+      list: {
+        description: "List every registered setting resolved through the settings resolver",
+        module: "./commands/settings-keys.ts",
+        fn: "settingsList",
+        args: [
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "assured-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — enables repo-scoped rungs" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable output" },
+        ],
+      },
+      explain: {
+        description: "Show the full scope chain for one setting, weakest first",
+        module: "./commands/settings-keys.ts",
+        fn: "settingsExplain",
+        args: [
+          { name: "Key", type: "text", placeholder: "rt.worktrees", hint: "Namespaced settings key (see rt settings list)" },
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "assured-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — enables repo-scoped rungs" },
+        ],
+      },
       linear: {
         description: "Linear API configuration",
         subcommands: {
