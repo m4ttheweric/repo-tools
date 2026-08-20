@@ -53,9 +53,15 @@ export function buildInitPlan(state: HomeState): InitPlan {
   ];
 
   if (state.cruft.length > 0) steps.push({ kind: "deleteCruft", paths: state.cruft });
+
+  // adoptCommit runs BEFORE foldInPrefs: folding merges FETCH_HEAD with
+  // --allow-unrelated-histories, and a merge into a still-unborn HEAD (no
+  // commits yet) refuses to clobber the untracked user/ files already on
+  // disk. Committing first turns that merge into a clean 3-way add/add of
+  // identical blobs.
+  steps.push({ kind: "adoptCommit", message: ADOPT_COMMIT_MESSAGE });
   if (state.hasUserClone) steps.push({ kind: "foldInPrefs" });
 
-  steps.push({ kind: "adoptCommit", message: ADOPT_COMMIT_MESSAGE });
   steps.push({ kind: "push", branch: DEFAULT_HOME_BRANCH });
 
   return { steps };

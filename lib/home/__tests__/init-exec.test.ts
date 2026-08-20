@@ -1,5 +1,8 @@
 import { describe, test, expect } from "bun:test";
-import { executeInitPlan, type ExecResult, type ExecSeam } from "../init-exec.ts";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { createRealExecSeam, executeInitPlan, type ExecResult, type ExecSeam } from "../init-exec.ts";
 import type { InitStep } from "../init-plan.ts";
 
 type RecordedCall =
@@ -46,12 +49,34 @@ class FakeExecSeam implements ExecSeam {
 
 describe("executeInitPlan", () => {
   test("createRepo: gh repo create with the plan's name, private, no owner qualifier", async () => {
-    const seam = new FakeExecSeam();
+    const seam = new FakeExecSeam({
+      stdout: (cmd) => (cmd[0] === "gh" ? "https://github.com/testuser/mattstack-home\n" : ""),
+    });
     const steps: InitStep[] = [{ kind: "createRepo", name: "mattstack-home" }];
 
     const result = await executeInitPlan(steps, seam, noopLog);
 
     expect(result).toEqual({ ok: true });
+    expect(seam.calls).toEqual([
+      { kind: "run", cmd: ["gh", "repo", "create", "mattstack-home", "--private"], cwd: undefined },
+    ]);
+  });
+
+  test("createRepo: empty stdout fails the step instead of silently skipping remote add", async () => {
+    const seam = new FakeExecSeam(); // no stdout scripted -> gh prints nothing
+    const steps: InitStep[] = [
+      { kind: "createRepo", name: "mattstack-home" },
+      { kind: "gitInit", branch: "main" },
+    ];
+
+    const result = await executeInitPlan(steps, seam, noopLog);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.failedStep).toBe("createRepo");
+      expect(result.stderr).toBe("gh repo create printed no repo URL");
+    }
+    // gitInit never ran.
     expect(seam.calls).toEqual([
       { kind: "run", cmd: ["gh", "repo", "create", "mattstack-home", "--private"], cwd: undefined },
     ]);
@@ -111,7 +136,7 @@ describe("executeInitPlan", () => {
     ]);
   });
 
-  test("foldInPrefs: temp clone, filter-repo in the clone, fetch+merge in the home repo, then remove user/.git", async () => {
+  test("foldInPrefs: temp clone, filter-repo in the clone, fetch HEAD + merge in the home repo, then remove user/.git and the temp clone", async () => {
     const seam = new FakeExecSeam();
     const steps: InitStep[] = [{ kind: "foldInPrefs" }];
 
@@ -130,7 +155,9 @@ describe("executeInitPlan", () => {
         cmd: ["git", "filter-repo", "--to-subdirectory-filter", "user"],
         cwd: "/tmp/rt-home-fold-test",
       },
-      { kind: "run", cmd: ["git", "fetch", "/tmp/rt-home-fold-test", "main"], cwd: undefined },
+      // HEAD, not a hardcoded branch name: the tmp clone's default branch
+      // IS whatever the user/ remote's default branch is.
+      { kind: "run", cmd: ["git", "fetch", "/tmp/rt-home-fold-test", "HEAD"], cwd: undefined },
       {
         kind: "run",
         cmd: [
@@ -144,7 +171,24 @@ describe("executeInitPlan", () => {
         cwd: undefined,
       },
       { kind: "removeDir", path: "user/.git" },
+      { kind: "removeDir", path: "/tmp/rt-home-fold-test" },
     ]);
+  });
+
+  test("foldInPrefs: the temp clone is removed even when a step inside it fails", async () => {
+    const seam = new FakeExecSeam({
+      failRun: (cmd) => (cmd[1] === "filter-repo" ? "filter-repo: boom" : undefined),
+    });
+    const steps: InitStep[] = [{ kind: "foldInPrefs" }];
+
+    const result = await executeInitPlan(steps, seam, noopLog);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.failedStep).toBe("foldInPrefs");
+      expect(result.stderr).toBe("filter-repo: boom");
+    }
+    expect(seam.calls.at(-1)).toEqual({ kind: "removeDir", path: "/tmp/rt-home-fold-test" });
   });
 
   test("adoptCommit: add -A then commit with the plan's message", async () => {
@@ -180,8 +224,8 @@ describe("executeInitPlan", () => {
       { kind: "writeGitignore", content: "/rt/\n" },
       { kind: "writeOwners", content: "{}\n" },
       { kind: "deleteCruft", paths: ["skills.jsonc.pre-pack"] },
-      { kind: "foldInPrefs" },
       { kind: "adoptCommit", message: "home: adopt the declarative layer" },
+      { kind: "foldInPrefs" },
       { kind: "push", branch: "main" },
     ];
 
@@ -195,14 +239,15 @@ describe("executeInitPlan", () => {
       "writeFile", // .gitignore
       "writeFile", // snapshot-owners.jsonc
       "removeDir", // deleteCruft
+      "run", // git add -A
+      "run", // git commit
       "mkTempDir",
       "run", // git clone
       "run", // git filter-repo
       "run", // git fetch
       "run", // git merge
       "removeDir", // user/.git
-      "run", // git add -A
-      "run", // git commit
+      "removeDir", // temp clone cleanup
       "run", // git push
     ]);
   });
@@ -251,5 +296,37 @@ describe("executeInitPlan", () => {
     expect(seam.calls).toEqual([
       { kind: "run", cmd: ["gh", "repo", "create", "mattstack-home", "--private"], cwd: undefined },
     ]);
+  });
+});
+
+describe("createRealExecSeam", () => {
+  test("run() defaults cwd to home, writeFile/removeDir resolve relative paths against home, absolute paths pass through", async () => {
+    const home = mkdtempSync(join(tmpdir(), "rt-home-exec-test-"));
+    try {
+      const seam = createRealExecSeam(home);
+
+      const pwd = await seam.run(["pwd"]);
+      expect(pwd.code).toBe(0);
+      expect(realpathSync(pwd.stdout.trim())).toBe(realpathSync(home));
+
+      await seam.writeFile("hello.txt", "hi\n");
+      expect(readFileSync(join(home, "hello.txt"), "utf8")).toBe("hi\n");
+
+      await seam.removeDir("hello.txt");
+      expect(existsSync(join(home, "hello.txt"))).toBe(false);
+
+      const tmp = await seam.mkTempDir();
+      expect(existsSync(tmp)).toBe(true);
+      expect(tmp.startsWith(home)).toBe(false);
+
+      const outsideFile = join(tmpdir(), `rt-home-exec-outside-${Date.now()}`);
+      writeFileSync(outsideFile, "x");
+      await seam.removeDir(outsideFile);
+      expect(existsSync(outsideFile)).toBe(false);
+
+      await seam.removeDir(tmp);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
