@@ -19,8 +19,8 @@ describe("buildInitPlan", () => {
       "writeGitignore",
       "writeOwners",
       "deleteCruft",
-      "foldInPrefs",
       "adoptCommit",
+      "foldInPrefs",
       "push",
     ]);
   });

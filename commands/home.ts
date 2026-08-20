@@ -12,7 +12,7 @@ import { join } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { mattstackHome, teamsDir } from "../lib/rt-paths.ts";
 import { buildInitPlan, type HomeState, type InitStep } from "../lib/home/init-plan.ts";
-import { createRealExecSeam, executeInitPlan, type ExecSeam } from "../lib/home/init-exec.ts";
+import { createRealExecSeam, executeInitPlan, type ExecResult, type ExecSeam } from "../lib/home/init-exec.ts";
 
 /** Stray root cruft deleted at init time, not adopted into the repo. */
 const CRUFT_CANDIDATES = ["skills.jsonc.pre-pack", "skills.jsonc.retired-backup"];
@@ -73,16 +73,32 @@ function describeStep(step: InitStep): string {
   }
 }
 
-/** null = preflight passed. */
+const GH_AUTH_HINT = "gh is not authenticated. Run:\n  gh auth login";
+const FILTER_REPO_HINT = "git-filter-repo is not installed. Run:\n  brew install git-filter-repo";
+
+/**
+ * A missing binary makes the seam's `run()` throw (Bun.spawn rejects on
+ * ENOENT) rather than return a non-zero code, so each check needs its own
+ * catch — an uncaught throw here would surface as a raw stack instead of the
+ * install hint.
+ */
 async function preflight(exec: ExecSeam): Promise<string | null> {
-  const auth = await exec.run(["gh", "auth", "status"]);
-  if (auth.code !== 0) {
-    return "gh is not authenticated. Run:\n  gh auth login";
+  let auth: ExecResult;
+  try {
+    auth = await exec.run(["gh", "auth", "status"]);
+  } catch {
+    return GH_AUTH_HINT;
   }
-  const filterRepo = await exec.run(["git", "filter-repo", "--version"]);
-  if (filterRepo.code !== 0) {
-    return "git-filter-repo is not installed. Run:\n  brew install git-filter-repo";
+  if (auth.code !== 0) return GH_AUTH_HINT;
+
+  let filterRepo: ExecResult;
+  try {
+    filterRepo = await exec.run(["git", "filter-repo", "--version"]);
+  } catch {
+    return FILTER_REPO_HINT;
   }
+  if (filterRepo.code !== 0) return FILTER_REPO_HINT;
+
   return null;
 }
 

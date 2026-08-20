@@ -8,9 +8,9 @@
  * foldInPrefs temp clone overrides cwd explicitly.
  */
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { isAbsolute, join } from "path";
 import type { InitStep } from "./init-plan.ts";
 
 export interface ExecResult {
@@ -54,7 +54,11 @@ async function runStep(step: InitStep, exec: ExecSeam, log: StepLog, ctx: ExecCo
     case "createRepo": {
       log(`creating GitHub repo ${step.name}`);
       const stdout = await run(exec, ["gh", "repo", "create", step.name, "--private"]);
-      ctx.createdRepoUrl = stdout.trim().split("\n")[0] || undefined;
+      const url = stdout.trim().split("\n")[0];
+      // Silently skipping `remote add` here would surface as an unrelated
+      // failure six steps later, at push, with no way back to this step.
+      if (!url) throw new StepFailed("gh repo create printed no repo URL");
+      ctx.createdRepoUrl = url;
       return;
     }
     case "gitInit": {
@@ -83,14 +87,20 @@ async function runStep(step: InitStep, exec: ExecSeam, log: StepLog, ctx: ExecCo
     case "foldInPrefs": {
       log("folding mattstack-prefs history into user/");
       const tmp = await exec.mkTempDir();
-      // --no-hardlinks: a plain local clone hardlinks objects into the tmp
-      // clone; filter-repo rewrites history destructively, which would
-      // corrupt the objects the real user/ clone still shares.
-      await run(exec, ["git", "clone", "--no-hardlinks", "user", tmp]);
-      await run(exec, ["git", "filter-repo", "--to-subdirectory-filter", "user"], { cwd: tmp });
-      await run(exec, ["git", "fetch", tmp, "main"]);
-      await run(exec, ["git", "merge", "FETCH_HEAD", "--allow-unrelated-histories", "-m", FOLD_MERGE_MESSAGE]);
-      await exec.removeDir("user/.git");
+      try {
+        // --no-hardlinks: a plain local clone hardlinks objects into the tmp
+        // clone; filter-repo rewrites history destructively, which would
+        // corrupt the objects the real user/ clone still shares.
+        await run(exec, ["git", "clone", "--no-hardlinks", "user", tmp]);
+        await run(exec, ["git", "filter-repo", "--to-subdirectory-filter", "user"], { cwd: tmp });
+        // HEAD, not a hardcoded branch name: the tmp clone's default branch
+        // IS whatever the user/ remote's default branch is.
+        await run(exec, ["git", "fetch", tmp, "HEAD"]);
+        await run(exec, ["git", "merge", "FETCH_HEAD", "--allow-unrelated-histories", "-m", FOLD_MERGE_MESSAGE]);
+        await exec.removeDir("user/.git");
+      } finally {
+        await exec.removeDir(tmp);
+      }
       return;
     }
     case "adoptCommit": {
@@ -144,10 +154,11 @@ export function createRealExecSeam(home: string): ExecSeam {
       writeFileSync(join(home, path), content);
     },
     async removeDir(path) {
-      rmSync(join(home, path), { recursive: true, force: true });
+      // The foldInPrefs temp clone is already absolute (outside `home`);
+      // every other caller passes a home-relative path.
+      rmSync(isAbsolute(path) ? path : join(home, path), { recursive: true, force: true });
     },
     async mkTempDir() {
-      mkdirSync(tmpdir(), { recursive: true });
       return mkdtempSync(join(tmpdir(), "rt-home-fold-"));
     },
   };
