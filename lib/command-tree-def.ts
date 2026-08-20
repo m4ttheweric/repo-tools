@@ -837,6 +837,7 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Value", type: "text", placeholder: "{\"onDeck\":3}", hint: "JSON(C) value" },
           { name: "Scope", flag: "--scope", type: "select", hint: "Which store to write into", options: [{ value: "user", label: "user", hint: "~/.mattstack/user/settings.jsonc" }, { value: "team", label: "team", hint: "the local team clone's settings.jsonc" }, { value: "machine", label: "machine", hint: "~/.mattstack/settings.local.jsonc" }] },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "assured-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — required for repo-scoped keys" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "claimview", hint: "Which team's local store to write, for --scope team (only needed when several are cloned)" },
         ],
       },
       list: {
