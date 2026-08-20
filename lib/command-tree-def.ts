@@ -698,6 +698,20 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  home: {
+    description: "The git-backed ~/.mattstack home repo (RT-30)",
+    subcommands: {
+      init: {
+        description: "Provision the home repo and print (or run) the adoption plan",
+        module: "./commands/home.ts",
+        fn: "homeInit",
+        args: [
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print the plan without running it" },
+        ],
+      },
+    },
+  },
+
   plugin: {
     description: "Manage user plugins",
     subcommands: {

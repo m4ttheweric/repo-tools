@@ -10,6 +10,7 @@ import * as commit from "../commands/commit.ts";
 import * as daemon from "../commands/daemon.ts";
 import * as events from "../commands/events.ts";
 import * as extension from "../commands/extension.ts";
+import * as home from "../commands/home.ts";
 import * as hooks from "../commands/hooks.ts";
 import * as port from "../commands/port.ts";
 import * as run from "../commands/run.ts";
@@ -38,6 +39,7 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/daemon.ts": daemon,
   "./commands/events.ts": events,
   "./commands/extension.ts": extension,
+  "./commands/home.ts": home,
   "./commands/hooks.ts": hooks,
   "./commands/port.ts": port,
   "./commands/run.ts": run,
