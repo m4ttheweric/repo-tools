@@ -6,6 +6,8 @@ dist/
 extensions/vscode/rt-context/package-lock.json
 rt-tray/.build/
 rt-tray/rt-tray.app/
+rt-tray/mattstack.app/
+rt-tray/mattstack-dev.app/
 .worktrees/
 
 # Local-only superpowers spec/plan notes (untracked)
