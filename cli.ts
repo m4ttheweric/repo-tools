@@ -9,8 +9,8 @@
  *
  * Usage:
  *   rt                        interactive menu
- *   rt branch switch          direct subcommand
- *   rt branch                 subcommand picker
+ *   rt daemon status          direct subcommand
+ *   rt daemon                 subcommand picker
  *   rt build                  direct command
  */
 

@@ -63,7 +63,7 @@ export interface CommandNode {
   /** Subcommands — makes this a branch node (shows picker if no args). */
   subcommands?: Record<string, CommandNode>;
 
-  /** Lazy module path for handler (e.g. "./commands/branch.ts"). */
+  /** Lazy module path for handler (e.g. "./commands/sync.ts"). */
   module?: string;
 
   /** Function name to call in the module (default: "run"). */
