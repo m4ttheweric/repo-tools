@@ -14,7 +14,13 @@ import { fakeStore } from "./fake-cache-store.ts";
 import { getBranchCacheStore, openStateDb } from "../../state/index.ts";
 
 function tmpStorePath(): string {
-  return join(mkdtempSync(join(tmpdir(), "rt-freshness-mapping-")), "project-mrs.json");
+  return join(mkdtempSync(join(tmpdir(), "rt-freshness-mapping-")), "state.db");
+}
+
+// RT-48: project-mrs persistence moved off project-mrs.json to state.db —
+// fresh temp db per call, same isolation createProjectMRs(tmpStorePath(), 0) had.
+function pmrsStore() {
+  return createProjectMRs(openStateDb(tmpStorePath(), "cli"));
 }
 
 // Minimal PullRequest stand-in: toMRInfo (glance-sdk toMRDashboardProps) reads
@@ -397,7 +403,7 @@ describe("applyInvalidationBatch", () => {
   // ─── project-mrs fan-out (grant-scoped) ───────────────────────────────────
 
   test("mr event with project grant: unknown iid fetches once, upserts store, no gap-fill", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     store.fullSync("repo-x", "g/p", [], Date.now() - 1000);
     const { env, broadcasts } = makeEnv({});
     const fetched: number[] = [];
@@ -420,7 +426,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("mr event, iid on a local branch: ONE fetch feeds branch entry AND project store", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     const entries: Record<string, any> = {
       feat: { mr: { iid: 7 }, fetchedAt: 1, repoName: "repo-x" },
     };
@@ -443,7 +449,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("mr event, iid NOT in branchByIid but entry keyed by PR's sourceBranch has mr: null: ONE fetch feeds branch entry AND project store", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     const entries: Record<string, any> = {
       "branch-42": { mr: null, fetchedAt: 1, repoName: "repo-x" },
     };
@@ -469,7 +475,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("branch push with local entry + project grant: fetchPullRequestByBranch result reused, NO fetchSingleMR", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     const entries: Record<string, any> = {
       "feat-a": { mr: { iid: 42 }, fetchedAt: 1, repoName: "repo-x" },
     };
@@ -496,7 +502,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("teammate branch push (no local entry): store sourceBranch hit → fetchSingleMR by iid → upsert", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     store.fullSync("repo-x", "g/p", [fakePR(9, { sourceBranch: "feat-9", state: "opened" })], Date.now() - 1000);
     const { env } = makeEnv({});
     const singleCalls: number[] = [];
@@ -518,7 +524,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("teammate branch push with no store match: no fetch at all", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     const { env } = makeEnv({});
     let anyCalled = false;
     const target: RepoTarget = {
@@ -538,7 +544,7 @@ describe("applyInvalidationBatch", () => {
   // ─── events fan-out scope filter (Task 6) ─────────────────────────────────
 
   test("mr event, scope present + out-of-scope author: no upsert, no broadcast", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     store.fullSync("repo-x", "g/p", [], Date.now() - 1000);
     store.setScope("repo-x", { authors: ["alice"], windowDays: 30 });
     const { env, broadcasts } = makeEnv({});
@@ -559,7 +565,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("mr event, scope present + in-scope author: upsert proceeds", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     store.fullSync("repo-x", "g/p", [], Date.now() - 1000);
     store.setScope("repo-x", { authors: ["someone"], windowDays: 30 });
     const { env, broadcasts } = makeEnv({});
@@ -579,7 +585,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("mr event, no scope set: upsert proceeds regardless of author (legacy)", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     store.fullSync("repo-x", "g/p", [], Date.now() - 1000); // no setScope call
     const { env } = makeEnv({});
     const target: RepoTarget = {
@@ -597,7 +603,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("mr event, scope present + PR has no author: never guess-drop, upsert proceeds", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     store.fullSync("repo-x", "g/p", [], Date.now() - 1000);
     store.setScope("repo-x", { authors: ["alice"], windowDays: 30 });
     const { env } = makeEnv({});

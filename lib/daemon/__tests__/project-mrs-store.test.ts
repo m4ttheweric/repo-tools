@@ -1,16 +1,26 @@
+/**
+ * lib/daemon/project-mrs-store.ts behavioral suite, migrated to the
+ * openStateDb(tempPath) seam (RT-48 Task 4). Every test opens its own fresh
+ * temp-dir db — no cross-test sharing, matching the old fresh-tmpfile-per-
+ * test isolation. HOME isolation is handled by the repo-wide bun test
+ * preload (test-setup.ts) — never removed here.
+ */
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "fs";
+import { Database } from "bun:sqlite";
+import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createProjectMRs, freshnessOf } from "../project-mrs-store.ts";
+import { openStateDb } from "../../state/index.ts";
 import type { PullRequest } from "@mattstack/glance";
 
-function tmpStorePath(): string {
-  return join(mkdtempSync(join(tmpdir(), "rt-pmrs-")), "project-mrs.json");
+function tmpDb(): Database {
+  const dir = mkdtempSync(join(tmpdir(), "rt-pmrs-"));
+  return openStateDb(join(dir, "state.db"), "cli");
 }
 
 function tmpStore() {
-  return createProjectMRs(tmpStorePath(), 0);
+  return createProjectMRs(tmpDb());
 }
 
 /** Minimal PullRequest-shaped object; the store treats prs as opaque JSON. */
@@ -26,13 +36,13 @@ function pr(iid: number, over: Partial<PullRequest> = {}): PullRequest {
 
 describe("upsert", () => {
   test("no record + null projectPath → no-op", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     expect(s.upsert("repo", null, pr(1), "mutation")).toEqual([]);
     expect(s.read("repo")).toBeUndefined();
   });
 
   test("writes entry, returns changed iid, keeps terminal states", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     s.fullSync("repo", "g/p", [pr(1)], Date.now());
     expect(s.upsert("repo", null, pr(2, { state: "merged" } as any), "events")).toEqual([2]);
     expect(s.read("repo")!.mrs[2]!.pr.state).toBe("merged");
@@ -42,7 +52,7 @@ describe("upsert", () => {
 
 describe("fullSync reconcile", () => {
   test("replaces stale entries and prunes stale absentees", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     const t0 = Date.now() - 10_000;
     s.fullSync("repo", "g/p", [pr(1), pr(2)], t0);
     const changed = s.fullSync("repo", "g/p", [pr(1, { title: "updated" } as any)], Date.now() - 1000);
@@ -53,7 +63,7 @@ describe("fullSync reconcile", () => {
   });
 
   test("concurrent upsert survives: entry with fetchedAt > syncStartedAt is kept", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     const syncStartedAt = Date.now() - 5000;
     s.fullSync("repo", "g/p", [pr(1)], syncStartedAt - 1);
     s.upsert("repo", null, pr(1, { state: "merged" } as any), "mutation"); // fetchedAt = now > syncStartedAt
@@ -61,8 +71,23 @@ describe("fullSync reconcile", () => {
     expect(s.read("repo")!.mrs[1]!.pr.state).toBe("merged");               // mutation won
   });
 
+  // Spec test 6: an upsert with fetchedAt newer than syncStartedAt survives
+  // a concurrent fullSync PRUNE (not just a stale-value overwrite) — the
+  // prune loop's own fetchedAt guard, now exercised inside the one-txn-per-
+  // repo fullSync design.
+  test("[spec test 6] mid-sync upsert of a NEW mr survives the same fullSync's prune pass", () => {
+    const s = tmpStore();
+    const syncStartedAt = Date.now() - 5000;
+    s.fullSync("repo", "g/p", [pr(1)], syncStartedAt - 1);
+    s.upsert("repo", null, pr(9), "events"); // arrives after the sync started, absent from its result set
+    const changed = s.fullSync("repo", "g/p", [pr(1)], syncStartedAt); // sync result predates the upsert
+    expect(s.read("repo")!.mrs[9]).toBeDefined();  // survives the prune pass
+    expect(s.read("repo")!.mrs[1]).toBeDefined();
+    expect(changed).not.toContain(9);              // never touched by this sync — not pruned, not "changed"
+  });
+
   test("mid-sync-created entry survives pruning", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     const syncStartedAt = Date.now() - 5000;
     s.fullSync("repo", "g/p", [], syncStartedAt - 1);
     s.upsert("repo", null, pr(9), "events"); // arrives after record exists... see note below
@@ -71,7 +96,7 @@ describe("fullSync reconcile", () => {
   });
 
   test("null diverged in sync preserves an existing non-null value", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     s.fullSync("repo", "g/p", [pr(1)], Date.now() - 10_000);
     s.upsert("repo", null, pr(1, { divergedCommitsCount: 3 } as any), "events");
     s.fullSync("repo", "g/p", [pr(1, { divergedCommitsCount: null } as any)], Date.now());
@@ -79,16 +104,16 @@ describe("fullSync reconcile", () => {
   });
 
   test("listSyncedAt records the sync START time", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     const started = Date.now() - 1234;
     s.fullSync("repo", "g/p", [pr(1)], started);
     expect(s.read("repo")!.listSyncedAt).toBe(started);
   });
 });
 
-describe("findBySourceBranch / load tolerance / flush", () => {
+describe("findBySourceBranch / persistence", () => {
   test("findBySourceBranch matches any stored state", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     s.fullSync("repo", "g/p", [pr(1), pr(2, { state: "merged", sourceBranch: "feat-2" } as any)], Date.now());
     expect(s.findBySourceBranch("repo", "feat-1")!.iid).toBe(1);
     expect(s.findBySourceBranch("repo", "feat-2")!.iid).toBe(2);
@@ -96,7 +121,7 @@ describe("findBySourceBranch / load tolerance / flush", () => {
   });
 
   test("findBySourceBranch prefers an open match over a lower-iid terminal one (branch reuse)", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     s.fullSync("repo", "g/p", [pr(1, { state: "merged", sourceBranch: "reused" } as any)], Date.now());
     expect(s.findBySourceBranch("repo", "reused")!.iid).toBe(1);   // only the merged one exists so far
     s.upsert("repo", "g/p", pr(99, { state: "opened", sourceBranch: "reused" } as any), "events");
@@ -104,7 +129,7 @@ describe("findBySourceBranch / load tolerance / flush", () => {
   });
 
   test("findBySourceBranch with no open entry falls back to the newest terminal one", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     s.fullSync("repo", "g/p", [
       pr(1, { state: "merged", sourceBranch: "reused-2" } as any),
       pr(5, { state: "closed", sourceBranch: "reused-2" } as any),
@@ -112,21 +137,29 @@ describe("findBySourceBranch / load tolerance / flush", () => {
     expect(s.findBySourceBranch("repo", "reused-2")!.iid).toBe(5);  // newest terminal, not lowest iid
   });
 
-  test("corrupt file loads as empty; flushNow round-trips", () => {
-    const p = tmpStorePath();
-    writeFileSync(p, "{broken");
-    const s = createProjectMRs(p, 0);
+  test("reads as empty when the db is fresh (no legacy file, no prior writes)", () => {
+    const s = tmpStore();
     expect(s.read("repo")).toBeUndefined();
+  });
+
+  test("writes are immediate: a second store opened on the same db path sees them without any flush call", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-pmrs-"));
+    const dbPath = join(dir, "state.db");
+    const dbA = openStateDb(dbPath, "cli");
+    const s = createProjectMRs(dbA);
     s.fullSync("repo", "g/p", [pr(1)], Date.now());
-    s.flushNow();
-    const reloaded = createProjectMRs(p, 0);
+
+    const dbB = openStateDb(dbPath, "cli");
+    const reloaded = createProjectMRs(dbB);
     expect(reloaded.read("repo")!.mrs[1]!.pr.iid).toBe(1);
+    dbA.close();
+    dbB.close();
   });
 });
 
 describe("applyDelta", () => {
   test("upserts every incoming pr, including terminal states", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     s.fullSync("repo", "g/p", [pr(1), pr(2)], Date.now() - 10_000);
     const deltaStartedAt = Date.now();
     const changed = s.applyDelta("repo", "g/p", [
@@ -140,7 +173,7 @@ describe("applyDelta", () => {
   });
 
   test("creates the record when missing, source defaults to poll", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     const deltaStartedAt = Date.now();
     s.applyDelta("repo", "g/p", [pr(1)], deltaStartedAt);
     const record = s.read("repo")!;
@@ -150,7 +183,7 @@ describe("applyDelta", () => {
   });
 
   test("leaves source untouched when the record already exists", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     s.fullSync("repo", "g/p", [pr(1)], Date.now() - 10_000);
     s.upsert("repo", null, pr(2), "events"); // source → "events"
     expect(s.read("repo")!.source).toBe("events");
@@ -159,7 +192,7 @@ describe("applyDelta", () => {
   });
 
   test("bumps deltaSyncedAt, not listSyncedAt", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     const listSyncedAt = Date.now() - 60_000;
     s.fullSync("repo", "g/p", [pr(1)], listSyncedAt);
     const deltaStartedAt = Date.now();
@@ -170,7 +203,7 @@ describe("applyDelta", () => {
   });
 
   test("entry fetchedAt is 'now', not deltaStartedAt", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     const deltaStartedAt = Date.now() - 5000; // fetch took a while
     s.applyDelta("repo", "g/p", [pr(1)], deltaStartedAt);
     expect(s.read("repo")!.mrs[1]!.fetchedAt).toBeGreaterThan(deltaStartedAt);
@@ -179,7 +212,7 @@ describe("applyDelta", () => {
 
 describe("freshnessOf", () => {
   test("is the max of listSyncedAt and deltaSyncedAt", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     const listSyncedAt = Date.now() - 60_000;
     s.fullSync("repo", "g/p", [pr(1)], listSyncedAt);
     expect(freshnessOf(s.read("repo")!)).toBe(listSyncedAt);
@@ -190,7 +223,7 @@ describe("freshnessOf", () => {
   });
 
   test("defaults to listSyncedAt when deltaSyncedAt is unset", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     const listSyncedAt = Date.now() - 1000;
     s.fullSync("repo", "g/p", [pr(1)], listSyncedAt);
     expect(freshnessOf(s.read("repo")!)).toBe(listSyncedAt);
@@ -199,7 +232,7 @@ describe("freshnessOf", () => {
 
 describe("applyDelta guards (review fixes)", () => {
   test("delta preserves an event-fed diverged count when incoming is null", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     s.fullSync("repo", "g/p", [pr(1)], Date.now() - 10_000);
     s.upsert("repo", null, pr(1, { divergedCommitsCount: 4 } as any), "events");
     s.applyDelta("repo", "g/p", [pr(1, { divergedCommitsCount: null } as any)], Date.now() - 1000);
@@ -207,7 +240,7 @@ describe("applyDelta guards (review fixes)", () => {
   });
 
   test("delta never clobbers an entry written after the delta fetch began", () => {
-    const s = createProjectMRs(tmpStorePath(), 0);
+    const s = tmpStore();
     const deltaStartedAt = Date.now() - 5000;
     s.fullSync("repo", "g/p", [pr(1)], deltaStartedAt - 1);
     s.upsert("repo", null, pr(1, { state: "merged" } as any), "mutation"); // fetchedAt = now > deltaStartedAt
@@ -285,4 +318,74 @@ describe("scope", () => {
     s.setScope("ghost", null);
     expect(s.read("ghost")).toBeUndefined();
   });
+});
+
+describe("persistence — rows mirror the in-memory model", () => {
+  test("fullSync writes are visible as project_mrs / project_mrs_meta rows", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-pmrs-"));
+    const db = openStateDb(join(dir, "state.db"), "cli");
+    const s = createProjectMRs(db);
+    const syncedAt = Date.now();
+    s.fullSync("repo", "g/p", [pr(1), pr(2)], syncedAt);
+
+    const mrRows = db.query("SELECT repo, iid, fetched_at FROM project_mrs WHERE repo = ? ORDER BY iid;").all("repo") as any[];
+    expect(mrRows.map((r) => r.iid)).toEqual([1, 2]);
+    expect(mrRows[0].fetched_at).toBe(syncedAt);
+
+    const meta = db.query("SELECT project_path, list_synced_at, source FROM project_mrs_meta WHERE repo = ?;").get("repo") as any;
+    expect(meta).toMatchObject({ project_path: "g/p", list_synced_at: syncedAt, source: "poll" });
+    db.close();
+  });
+
+  test("fullSync prune deletes the row, not just the in-memory entry", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-pmrs-"));
+    const db = openStateDb(join(dir, "state.db"), "cli");
+    const s = createProjectMRs(db);
+    s.fullSync("repo", "g/p", [pr(1), pr(2)], Date.now() - 10_000);
+    s.fullSync("repo", "g/p", [pr(1)], Date.now());
+
+    const rows = db.query("SELECT iid FROM project_mrs WHERE repo = ?;").all("repo") as any[];
+    expect(rows.map((r) => r.iid)).toEqual([1]);
+    db.close();
+  });
+
+  test("registerDemand and expireDemands mirror project_mr_demands rows", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-pmrs-"));
+    const db = openStateDb(join(dir, "state.db"), "cli");
+    const s = createProjectMRs(db);
+    s.registerDemand("repo", "client-1", ["alice"], 100);
+    expect((db.query("SELECT client FROM project_mr_demands WHERE repo = ?;").all("repo") as any[]).map((r) => r.client)).toEqual(["client-1"]);
+
+    s.expireDemands("repo", -1); // maxIdleMs negative → cutoff in the future → everything idle
+    expect(db.query("SELECT client FROM project_mr_demands WHERE repo = ?;").all("repo")).toEqual([]);
+    db.close();
+  });
+});
+
+describe("daemon-flavor busy handling", () => {
+  test("a write that hits SQLITE_BUSY past the daemon busy_timeout logs a warn and does not throw; in-memory state still updates", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-pmrs-busy-"));
+    const dbPath = join(dir, "state.db");
+    // Daemon flavor: 250ms busy_timeout (spec "The database").
+    const db = openStateDb(dbPath, "daemon");
+    const s = createProjectMRs(db);
+
+    // A second connection holds the write lock (BEGIN IMMEDIATE, never
+    // committed) for longer than the first connection's busy_timeout, so
+    // the first connection's write is guaranteed to see SQLITE_BUSY.
+    const blocker = new Database(dbPath);
+    blocker.exec("PRAGMA busy_timeout = 0;");
+    blocker.exec("BEGIN IMMEDIATE;");
+    try {
+      expect(() => s.fullSync("repo", "g/p", [pr(1)], Date.now())).not.toThrow();
+      // The in-memory model is the source of truth regardless of whether
+      // the row persisted (spec: "state converges next poll").
+      expect(s.read("repo")!.mrs[1]).toBeDefined();
+    } finally {
+      blocker.exec("ROLLBACK;");
+      blocker.close();
+    }
+
+    db.close();
+  }, 10_000);
 });

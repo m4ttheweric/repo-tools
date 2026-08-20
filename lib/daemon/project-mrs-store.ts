@@ -1,27 +1,40 @@
 /**
  * Project open-MR store — the member-blind "all open MRs in the project"
  * view, one record per live/poll-tracked repo that granted "project-mrs".
- * Spec: .local-dev/2026-07-26-typed-stores-board-rewire-design.md §5.1.
+ * Spec: .local-dev/2026-07-26-typed-stores-board-rewire-design.md §5.1;
+ * persistence: docs/superpowers/specs/2026-08-20-rt-statedb.md "Tables
+ * (v1)" (project_mrs, project_mrs_meta, project_mr_demands) and
+ * "Store-by-store" item 2.
  *
  * Writers: the 5-min full sync (project-sync.ts), events-targeted upserts
  * (freshness.ts mapping), and mutation write-backs (handlers/mr.ts).
  * fullSync is a per-entry reconcile, never a blind replace, so a concurrent
  * event/mutation upsert can't be clobbered by a sync that fetched before it.
+ * That reconcile now runs as ONE sqlite transaction per repo (the row writes
+ * it produces commit atomically), but its visible outcome is unchanged.
  *
  * Terminal-state MRs ARE upserted (a merge must be visible instantly);
  * consumers filter by state, and the next full sync prunes them.
+ *
+ * RT-48: this module lives outside lib/state/ (it stays put per the task
+ * brief) but registers its legacy-JSON importer the same way every
+ * lib/state/ store does — imported by lib/state/index.ts for the side
+ * effect, importing lib/state/db.ts directly (not the barrel) to avoid a
+ * barrel <-> store import cycle. Its logger is obtained via a DYNAMIC import
+ * of daemon-logger.ts, on the rare SQLITE_BUSY warn path only: daemon-logger
+ * statically imports pino-roll, and pino-roll creates ~/Library merely by
+ * being imported (empirically, independent of any function call) — a
+ * top-level `import { getDaemonLogger } from "../daemon-logger.ts"` here
+ * would leak that side effect into every barrel import, breaking
+ * lib/state/__tests__/barrel.test.ts's "touches no file" contract. A type-
+ * only import (erased at compile time) keeps this file's logging typed
+ * without paying that cost.
  */
 
-import { readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { Database } from "bun:sqlite";
 import type { PullRequest } from "@mattstack/glance";
-import { RT_DIR } from "../daemon-config.ts";
-import { getDaemonLogger } from "../daemon-logger.ts";
-
-const log = (await getDaemonLogger()).childLogger("project-mrs");
-
-export const PROJECT_MRS_PATH = join(RT_DIR, "project-mrs.json");
-const FLUSH_DEBOUNCE_MS = 500;
+import type { DaemonLoggerHandle } from "../daemon-logger.ts";
+import { getStateDb, LEGACY_IMPORTS } from "../state/db.ts";
 
 export interface ProjectMREntry { pr: PullRequest; fetchedAt: number; }
 export interface DemandEntry { authors: string[]; declaredAt: number; lastSeenAt: number; }
@@ -51,36 +64,131 @@ export interface ProjectMRs {
   expireDemands(repoName: string, maxIdleMs: number): string[];
   /** Passing null clears an existing scope (the demand that motivated it is gone). */
   setScope(repoName: string, scope: { authors: string[]; windowDays: number } | null): void;
-  flushNow(): void;
 }
 
-export function createProjectMRs(
-  filePath: string = PROJECT_MRS_PATH,
-  flushDebounceMs: number = FLUSH_DEBOUNCE_MS,
-): ProjectMRs {
-  let data: Record<string, ProjectMRStore> = {};
+// ─── Lazy logger (see module doc: no module-load file access) ──────────────
+
+let logHandle: Promise<DaemonLoggerHandle> | null = null;
+
+/**
+ * Warn-and-defer on a daemon-flavor SQLITE_BUSY write (spec "Daemon-thread
+ * rule"): the connection's busy_timeout already did the waiting, so a thrown
+ * BUSY here means the lock was still held after that budget. Logging is
+ * fire-and-forget so this stays callable from the store's synchronous
+ * mutators; both the dynamic import of daemon-logger.ts and the logger
+ * handle it returns are only ever instantiated on this path, never at
+ * import time (see module doc for why the import must stay dynamic).
+ */
+function warnBusy(context: Record<string, unknown>): void {
+  logHandle ??= import("../daemon-logger.ts").then((m) => m.getDaemonLogger());
+  void logHandle.then((h) => h.childLogger("project-mrs").warn(context, "project-mrs write skipped: db busy, converges next cycle"));
+}
+
+function isBusyError(err: unknown): boolean {
+  return (err as { code?: string } | undefined)?.code === "SQLITE_BUSY";
+}
+
+/**
+ * Runs `fn` (a db.transaction()-wrapped write, or a single prepared-statement
+ * .run()); a thrown SQLITE_BUSY is caught, warned, and swallowed — the
+ * in-memory model the caller already updated stays the source of truth, and
+ * the row catches up on the next successful write (spec: "state converges
+ * next poll"). Any other error is not swallowed.
+ */
+function persistOrWarn(fn: () => void, context: Record<string, unknown>): void {
   try {
-    const parsed = JSON.parse(readFileSync(filePath, "utf8"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) data = parsed;
-  } catch { /* missing or corrupt file → cold start */ }
-
-  let flushTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function flushNow(): void {
-    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-    try {
-      writeFileSync(filePath, JSON.stringify(data, null, 2));
-    } catch (err) {
-      log.warn({ err }, "project-mrs flush failed; continuing in-memory");
+    fn();
+  } catch (err) {
+    if (isBusyError(err)) {
+      warnBusy(context);
+      return;
     }
+    throw err;
+  }
+}
+
+// ─── Row shapes ──────────────────────────────────────────────────────────
+
+interface MrRow { repo: string; iid: number; pr: string; fetched_at: number; }
+interface MetaRow {
+  repo: string;
+  list_synced_at: number;
+  delta_synced_at: number | null;
+  source: "poll" | "events" | "mutation";
+  project_path: string;
+  scope: string | null;
+}
+interface DemandRow { repo: string; client: string; authors: string; declared_at: number; last_seen_at: number; }
+
+function emptyStore(projectPath: string, source: ProjectMRStore["source"] = "poll"): ProjectMRStore {
+  return { projectPath, mrs: {}, listSyncedAt: 0, source };
+}
+
+function loadAll(db: Database): Record<string, ProjectMRStore> {
+  const data: Record<string, ProjectMRStore> = {};
+
+  const metaRows = db.query("SELECT repo, list_synced_at, delta_synced_at, source, project_path, scope FROM project_mrs_meta;").all() as MetaRow[];
+  for (const m of metaRows) {
+    data[m.repo] = {
+      projectPath: m.project_path,
+      mrs: {},
+      listSyncedAt: m.list_synced_at,
+      deltaSyncedAt: m.delta_synced_at ?? undefined,
+      source: m.source,
+      scope: m.scope !== null ? JSON.parse(m.scope) : undefined,
+    };
   }
 
-  // Event bursts arrive on a ~15s tick; debounce so N upserts in one tick
-  // cost one disk write. flushDebounceMs=0 (tests) flushes synchronously.
-  function flushSoon(): void {
-    if (flushDebounceMs === 0) { flushNow(); return; }
-    if (flushTimer) return;
-    flushTimer = setTimeout(() => { flushTimer = null; flushNow(); }, flushDebounceMs);
+  const mrRows = db.query("SELECT repo, iid, pr, fetched_at FROM project_mrs;").all() as MrRow[];
+  for (const r of mrRows) {
+    const store = data[r.repo] ?? (data[r.repo] = emptyStore(""));
+    store.mrs[r.iid] = { pr: JSON.parse(r.pr) as PullRequest, fetchedAt: r.fetched_at };
+  }
+
+  const demandRows = db.query("SELECT repo, client, authors, declared_at, last_seen_at FROM project_mr_demands;").all() as DemandRow[];
+  for (const d of demandRows) {
+    const store = data[d.repo] ?? (data[d.repo] = emptyStore(""));
+    store.demands ??= {};
+    store.demands[d.client] = { authors: JSON.parse(d.authors) as string[], declaredAt: d.declared_at, lastSeenAt: d.last_seen_at };
+  }
+
+  return data;
+}
+
+export function createProjectMRs(db: Database = getStateDb("daemon")): ProjectMRs {
+  const data = loadAll(db);
+
+  const upsertMrStmt = db.query(`
+    INSERT INTO project_mrs (repo, iid, pr, fetched_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(repo, iid) DO UPDATE SET pr = excluded.pr, fetched_at = excluded.fetched_at
+  `);
+  const deleteMrStmt = db.query(`DELETE FROM project_mrs WHERE repo = ? AND iid = ?;`);
+  const upsertMetaStmt = db.query(`
+    INSERT INTO project_mrs_meta (repo, list_synced_at, delta_synced_at, source, project_path, scope)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(repo) DO UPDATE SET
+      list_synced_at = excluded.list_synced_at,
+      delta_synced_at = excluded.delta_synced_at,
+      source = excluded.source,
+      project_path = excluded.project_path,
+      scope = excluded.scope
+  `);
+  const upsertDemandStmt = db.query(`
+    INSERT INTO project_mr_demands (repo, client, authors, declared_at, last_seen_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(repo, client) DO UPDATE SET
+      authors = excluded.authors, declared_at = excluded.declared_at, last_seen_at = excluded.last_seen_at
+  `);
+  const deleteDemandStmt = db.query(`DELETE FROM project_mr_demands WHERE repo = ? AND client = ?;`);
+
+  function writeMeta(repoName: string, store: ProjectMRStore): void {
+    upsertMetaStmt.run(
+      repoName,
+      store.listSyncedAt,
+      store.deltaSyncedAt ?? null,
+      store.source,
+      store.projectPath,
+      store.scope ? JSON.stringify(store.scope) : null,
+    );
   }
 
   function upsert(
@@ -92,12 +200,21 @@ export function createProjectMRs(
     const existing = data[repoName];
     const path = projectPath ?? existing?.projectPath;
     if (!path) return []; // never synced and caller has no path: no record to attach to
-    const store = existing ?? { projectPath: path, mrs: {}, listSyncedAt: 0, source };
+    const store = existing ?? emptyStore(path, source);
     store.projectPath = path;
-    store.mrs[pr.iid] = { pr, fetchedAt: Date.now() };
+    const fetchedAt = Date.now();
+    store.mrs[pr.iid] = { pr, fetchedAt };
     store.source = source;
     data[repoName] = store;
-    flushSoon();
+
+    persistOrWarn(() => {
+      const run = db.transaction(() => {
+        upsertMrStmt.run(repoName, pr.iid, JSON.stringify(pr), fetchedAt);
+        writeMeta(repoName, store);
+      });
+      run();
+    }, { repo: repoName, op: "upsert" });
+
     return [pr.iid];
   }
 
@@ -107,9 +224,11 @@ export function createProjectMRs(
     prs: PullRequest[],
     syncStartedAt: number,
   ): number[] {
-    const store = data[repoName] ?? { projectPath, mrs: {}, listSyncedAt: 0, source: "poll" as const };
+    const store = data[repoName] ?? emptyStore(projectPath);
     const changed: number[] = [];
     const incoming = new Set<number>();
+    const toWrite: Array<{ iid: number; pr: PullRequest; fetchedAt: number }> = [];
+    const toDelete: number[] = [];
 
     for (const pr of prs) {
       incoming.add(pr.iid);
@@ -127,6 +246,7 @@ export function createProjectMRs(
         : pr;
       store.mrs[pr.iid] = { pr: toStore, fetchedAt: syncStartedAt };
       changed.push(pr.iid);
+      toWrite.push({ iid: pr.iid, pr: toStore, fetchedAt: syncStartedAt });
     }
 
     for (const iidStr of Object.keys(store.mrs)) {
@@ -137,13 +257,27 @@ export function createProjectMRs(
       if (store.mrs[iid]!.fetchedAt > syncStartedAt) continue;
       delete store.mrs[iid];
       changed.push(iid);
+      toDelete.push(iid);
     }
 
     store.projectPath = projectPath;
     store.listSyncedAt = syncStartedAt;
     store.source = "poll";
     data[repoName] = store;
-    flushSoon();
+
+    // ONE transaction per repo: every row this reconcile touches (upserts +
+    // prunes) plus the meta row commit atomically (spec "Store-by-store"
+    // item 2). The reconcile ABOVE already decided what "touched" means —
+    // this only persists that decision.
+    persistOrWarn(() => {
+      const run = db.transaction(() => {
+        for (const w of toWrite) upsertMrStmt.run(repoName, w.iid, JSON.stringify(w.pr), w.fetchedAt);
+        for (const iid of toDelete) deleteMrStmt.run(repoName, iid);
+        writeMeta(repoName, store);
+      });
+      run();
+    }, { repo: repoName, op: "fullSync" });
+
     return changed;
   }
 
@@ -153,8 +287,9 @@ export function createProjectMRs(
     prs: PullRequest[],
     deltaStartedAt: number,
   ): number[] {
-    const store = data[repoName] ?? { projectPath, mrs: {}, listSyncedAt: 0, source: "poll" as const };
+    const store = data[repoName] ?? emptyStore(projectPath);
     const changed: number[] = [];
+    const toWrite: Array<{ iid: number; pr: PullRequest; fetchedAt: number }> = [];
     // Unlike fullSync, a delta is a window of updated MRs, not the whole
     // set: nothing to prune. But the same two write rules apply. An entry
     // written AFTER the delta's fetch began (event/mutation upsert racing
@@ -170,13 +305,23 @@ export function createProjectMRs(
       const toStore = incomingDiverged == null && prevDiverged != null
         ? ({ ...pr, divergedCommitsCount: prevDiverged } as PullRequest)
         : pr;
-      store.mrs[pr.iid] = { pr: toStore, fetchedAt: Date.now() };
+      const fetchedAt = Date.now();
+      store.mrs[pr.iid] = { pr: toStore, fetchedAt };
       changed.push(pr.iid);
+      toWrite.push({ iid: pr.iid, pr: toStore, fetchedAt });
     }
     store.projectPath = projectPath;
     store.deltaSyncedAt = deltaStartedAt;
     data[repoName] = store;
-    flushSoon();
+
+    persistOrWarn(() => {
+      const run = db.transaction(() => {
+        for (const w of toWrite) upsertMrStmt.run(repoName, w.iid, JSON.stringify(w.pr), w.fetchedAt);
+        writeMeta(repoName, store);
+      });
+      run();
+    }, { repo: repoName, op: "applyDelta" });
+
     return changed;
   }
 
@@ -203,16 +348,20 @@ export function createProjectMRs(
   }
 
   function registerDemand(repoName: string, client: string, authors: string[], declaredAt: number): boolean {
-    const store = data[repoName]
-      ?? (data[repoName] = { projectPath: "", mrs: {}, listSyncedAt: 0, source: "poll" as const });
+    const store = data[repoName] ?? (data[repoName] = emptyStore(""));
     store.demands ??= {};
     const prev = store.demands[client];
     if (prev && declaredAt < prev.declaredAt) return false;
     const unchanged = prev !== undefined
       && prev.authors.length === authors.length
       && prev.authors.every((a, i) => a === authors[i]);
-    store.demands[client] = { authors: [...authors], declaredAt, lastSeenAt: Date.now() };
-    flushSoon();
+    const lastSeenAt = Date.now();
+    store.demands[client] = { authors: [...authors], declaredAt, lastSeenAt };
+
+    persistOrWarn(() => {
+      upsertDemandStmt.run(repoName, client, JSON.stringify(authors), declaredAt, lastSeenAt);
+    }, { repo: repoName, op: "registerDemand" });
+
     return !unchanged;
   }
 
@@ -222,7 +371,14 @@ export function createProjectMRs(
     const cutoff = Date.now() - maxIdleMs;
     const dropped = Object.keys(demands).filter((c) => demands[c]!.lastSeenAt < cutoff);
     for (const c of dropped) delete demands[c];
-    if (dropped.length) flushSoon();
+    if (dropped.length) {
+      persistOrWarn(() => {
+        const run = db.transaction(() => {
+          for (const c of dropped) deleteDemandStmt.run(repoName, c);
+        });
+        run();
+      }, { repo: repoName, op: "expireDemands" });
+    }
     return dropped;
   }
 
@@ -234,7 +390,7 @@ export function createProjectMRs(
     } else {
       store.scope = { authors: [...scope.authors], windowDays: scope.windowDays };
     }
-    flushSoon();
+    persistOrWarn(() => writeMeta(repoName, store), { repo: repoName, op: "setScope" });
   }
 
   return {
@@ -247,7 +403,6 @@ export function createProjectMRs(
     registerDemand,
     expireDemands,
     setScope,
-    flushNow,
   };
 }
 
@@ -257,3 +412,55 @@ export function getProjectMRs(): ProjectMRs {
   if (!singleton) singleton = createProjectMRs();
   return singleton;
 }
+
+// ─── Legacy import (project-mrs.json → project_mrs / project_mrs_meta / project_mr_demands rows) ─
+
+interface LegacyProjectMREntry { pr?: PullRequest; fetchedAt?: number; }
+interface LegacyDemandEntry { authors?: string[]; declaredAt?: number; lastSeenAt?: number; }
+interface LegacyProjectMRStore {
+  projectPath?: string;
+  mrs?: Record<string, LegacyProjectMREntry | undefined>;
+  listSyncedAt?: number;
+  deltaSyncedAt?: number;
+  source?: "poll" | "events" | "mutation";
+  demands?: Record<string, LegacyDemandEntry | undefined>;
+  scope?: { authors: string[]; windowDays: number } | null;
+}
+
+LEGACY_IMPORTS.push({
+  file: "project-mrs.json",
+  import: (db, json) => {
+    const parsed = json as Record<string, LegacyProjectMRStore | undefined> | null;
+    if (!parsed || typeof parsed !== "object") return;
+
+    const mrStmt = db.query(`INSERT INTO project_mrs (repo, iid, pr, fetched_at) VALUES (?, ?, ?, ?);`);
+    const metaStmt = db.query(`
+      INSERT INTO project_mrs_meta (repo, list_synced_at, delta_synced_at, source, project_path, scope)
+      VALUES (?, ?, ?, ?, ?, ?);
+    `);
+    const demandStmt = db.query(`INSERT INTO project_mr_demands (repo, client, authors, declared_at, last_seen_at) VALUES (?, ?, ?, ?, ?);`);
+
+    for (const [repoName, store] of Object.entries(parsed)) {
+      if (!store || typeof store !== "object") continue;
+
+      metaStmt.run(
+        repoName,
+        store.listSyncedAt ?? 0,
+        store.deltaSyncedAt ?? null,
+        store.source ?? "poll",
+        store.projectPath ?? "",
+        store.scope ? JSON.stringify(store.scope) : null,
+      );
+
+      for (const [iidStr, entry] of Object.entries(store.mrs ?? {})) {
+        if (!entry || entry.pr === undefined) continue;
+        mrStmt.run(repoName, Number(iidStr), JSON.stringify(entry.pr), entry.fetchedAt ?? 0);
+      }
+
+      for (const [client, demand] of Object.entries(store.demands ?? {})) {
+        if (!demand) continue;
+        demandStmt.run(repoName, client, JSON.stringify(demand.authors ?? []), demand.declaredAt ?? 0, demand.lastSeenAt ?? 0);
+      }
+    }
+  },
+});

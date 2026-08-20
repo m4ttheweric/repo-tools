@@ -5,11 +5,19 @@ import { join } from "path";
 import { createDiscussionsFileStore, seedDiscussionsFromBranchCache } from "../discussions-file-store.ts";
 import { resolveMRMeta, refreshDiscussions } from "../discussions-store.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
+import { openStateDb } from "../../state/index.ts";
 import type { HandlerContext } from "../handlers/types.ts";
 import { fakeStore } from "./fake-cache-store.ts";
 
 function tmpPath(name: string): string {
   return join(mkdtempSync(join(tmpdir(), "rt-disc-")), name);
+}
+
+// RT-48: project-mrs persistence moved off project-mrs.json to state.db —
+// each call opens a fresh temp db, same fresh-store-per-call isolation the
+// old createProjectMRs(tmpPath(...), 0) pattern had.
+function pmrsStore() {
+  return createProjectMRs(openStateDb(tmpPath("state.db"), "cli"));
 }
 const note = (id: number) => ({ id, system: false, body: `n${id}`, createdAt: "2026-07-26T00:00:00Z", author: { id: "gitlab:user:777", name: "Luke", username: "luke" } });
 const disc = (id: number) => ({ id: `d${id}`, notes: [note(id)] }) as any;
@@ -55,7 +63,7 @@ describe("file store basics + seed", () => {
 
 describe("resolveMRMeta", () => {
   test("branch entry wins; project store is the fallback; neither → null", () => {
-    const pStore = createProjectMRs(tmpPath("p.json"), 0);
+    const pStore = pmrsStore();
     pStore.fullSync("repo", "g/p", [{ id: "gitlab:mr:9", iid: 9, title: "from project", state: "opened", sourceBranch: "x", targetBranch: "main", webUrl: "http://w/9", author: { id: "gitlab:user:42", username: "u", name: "U", avatarUrl: null }, divergedCommitsCount: null } as any], Date.now());
     const ctx = fakeCtx({
       feat: { repoName: "repo", mr: { iid: 5, title: "from branch", webUrl: "http://w/5", status: "open", author: { id: "gitlab:42" } }, ticket: null, linearId: "", fetchedAt: 0 },
@@ -74,7 +82,7 @@ describe("resolveMRMeta", () => {
 describe("refreshDiscussions (lifted)", () => {
   test("writes the file store, not the branch entry; first fetch is silent; second diff notifies", async () => {
     const fileStore = createDiscussionsFileStore(tmpPath("d.json"));
-    const pStore = createProjectMRs(tmpPath("p.json"), 0);
+    const pStore = pmrsStore();
     const entries = {
       feat: { repoName: "repo", mr: { iid: 5, title: "T", webUrl: "http://w/5", status: "open", author: { id: "gitlab:1" } }, ticket: null, linearId: "", fetchedAt: 0 },
     };
@@ -99,7 +107,7 @@ describe("refreshDiscussions (lifted)", () => {
 
   test("currentUserId override matching the branch entry's author marks isMrAuthor, surfacing new notes", async () => {
     const fileStore = createDiscussionsFileStore(tmpPath("d.json"));
-    const pStore = createProjectMRs(tmpPath("p.json"), 0);
+    const pStore = pmrsStore();
     const entries = {
       feat: { repoName: "repo", mr: { iid: 5, title: "T", webUrl: "http://w/5", status: "open", author: { id: "gitlab:1" } }, ticket: null, linearId: "", fetchedAt: 0 },
     };
@@ -135,7 +143,7 @@ describe("refreshDiscussions (lifted)", () => {
 
   test("own comments (scoped author id) never notify on my own MR", async () => {
     const fileStore = createDiscussionsFileStore(tmpPath("d.json"));
-    const pStore = createProjectMRs(tmpPath("p.json"), 0);
+    const pStore = pmrsStore();
     const ctx = fakeCtx({
       feat: { repoName: "repo", mr: { iid: 5, title: "T", webUrl: "http://w/5", status: "open", author: { id: "gitlab:1" } }, ticket: null, linearId: "", fetchedAt: 0 },
     });
@@ -159,7 +167,7 @@ describe("refreshDiscussions (lifted)", () => {
 
   test("teammate reply in a thread I participate in (scoped ids) notifies on someone else's MR", async () => {
     const fileStore = createDiscussionsFileStore(tmpPath("d.json"));
-    const pStore = createProjectMRs(tmpPath("p.json"), 0);
+    const pStore = pmrsStore();
     const ctx = fakeCtx({
       feat: { repoName: "repo", mr: { iid: 5, title: "T", webUrl: "http://w/5", status: "open", author: { id: "gitlab:2" } }, ticket: null, linearId: "", fetchedAt: 0 },
     });
@@ -183,7 +191,7 @@ describe("refreshDiscussions (lifted)", () => {
   });
 
   test("throws for an MR in neither store", async () => {
-    const overrides = { fileStore: createDiscussionsFileStore(tmpPath("d.json")), projectStore: createProjectMRs(tmpPath("p.json"), 0), fetchDiscussions: async () => [] };
+    const overrides = { fileStore: createDiscussionsFileStore(tmpPath("d.json")), projectStore: pmrsStore(), fetchDiscussions: async () => [] };
     await expect(refreshDiscussions({ ctx: fakeCtx({}), broadcast: () => {} }, "repo", 1, overrides)).rejects.toThrow("MR not cached");
   });
 });
