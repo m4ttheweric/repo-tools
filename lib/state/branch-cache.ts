@@ -14,12 +14,26 @@
  * stays a nullable attribute, exactly as `CacheEntry.repoName?` is optional
  * today. Consumer rewiring (daemon, enrich.ts, handlers) is Task 3 — this
  * module only produces the store; nothing outside lib/state/ imports it yet.
+ *
+ * SQLITE_BUSY policy: every row write here goes through `persistOrWarn`
+ * (lib/state/busy.ts), for BOTH connection flavors, deliberately. The store
+ * carries no flavor, and it does not need one:
+ *   - the daemon flavor (250ms busy_timeout) is what the wrapper exists for,
+ *     and this store's in-memory map is the authoritative read model (spec
+ *     "In-memory ownership") — a deferred row re-converges on the next
+ *     write, at worst costing one re-enrichment;
+ *   - the CLI flavor's 5000ms budget makes a BUSY here already pathological,
+ *     and when it does happen, aborting an interactive command over a CACHE
+ *     row is strictly worse than the same defer.
+ * `notify_queue` is the one documented exception to warn-and-defer (bounded
+ * retry, then an error) and lives in notifier-store.ts, not here.
  */
 
 import { Database } from "bun:sqlite";
 import type { LinearTicket } from "../linear.ts";
 import type { MRInfo } from "../enrich.ts";
 import { getStateDb, LEGACY_IMPORTS } from "./db.ts";
+import { persistOrWarn } from "./busy.ts";
 
 export interface CacheEntry {
   ticket: LinearTicket | null;
@@ -95,20 +109,30 @@ function createStore(db: Database): BranchCacheStore {
   }
 
   function put(branch: string, entry: CacheEntry): void {
-    db.query(UPSERT_SQL).run(
-      branch,
-      entry.repoName ?? null,
-      entry.ticket !== null ? JSON.stringify(entry.ticket) : null,
-      entry.linearId,
-      entry.mr !== null ? JSON.stringify(entry.mr) : null,
-      entry.fetchedAt,
-    );
+    // The map update sits OUTSIDE the wrapper on purpose: it is this cycle's
+    // freshly enriched truth and the thing handlers serve, so it must land
+    // even when the row defers. (gc/delete keep the two together instead —
+    // see below.)
+    persistOrWarn("branch-cache", () => {
+      db.query(UPSERT_SQL).run(
+        branch,
+        entry.repoName ?? null,
+        entry.ticket !== null ? JSON.stringify(entry.ticket) : null,
+        entry.linearId,
+        entry.mr !== null ? JSON.stringify(entry.mr) : null,
+        entry.fetchedAt,
+      );
+    }, { op: "put", branch });
     entries[branch] = entry;
   }
 
   function del(branch: string): void {
-    db.query("DELETE FROM branch_cache WHERE branch = ?;").run(branch);
-    delete entries[branch];
+    // Row and map evict together: a map-only eviction would be undone by the
+    // next reload(), so a deferred delete simply retries next cycle.
+    persistOrWarn("branch-cache", () => {
+      db.query("DELETE FROM branch_cache WHERE branch = ?;").run(branch);
+      delete entries[branch];
+    }, { op: "delete", branch });
   }
 
   function gc(succeededRepos: Set<string>, maxAgeMs: number): void {
@@ -129,8 +153,12 @@ function createStore(db: Database): BranchCacheStore {
     const runDeletes = db.transaction((branches: string[]) => {
       for (const branch of branches) deleteStmt.run(branch);
     });
-    runDeletes(toDelete);
-    for (const branch of toDelete) delete entries[branch];
+    // Rows and map evict as one unit: on a deferred (BUSY) transaction
+    // neither changes, so the next cycle simply re-prunes the same rows.
+    persistOrWarn("branch-cache", () => {
+      runDeletes(toDelete);
+      for (const branch of toDelete) delete entries[branch];
+    }, { op: "gc", count: toDelete.length });
   }
 
   reload();
