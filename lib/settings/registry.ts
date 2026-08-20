@@ -75,6 +75,16 @@ const REGISTRY: SettingDef[] = [
     migrated: true,
     description: "Map of observed remote URL to pinned repo identity, for forks/multi-remote repos on this machine.",
   },
+  {
+    key: "rt.repoRoots",
+    type: "array",
+    scopes: ["machine"],
+    default: [],
+    merge: "replace",
+    migrated: true,
+    description:
+      'Directories rt scans for git repos (rt cd, run-outside-a-repo pickers). Entries may start with "~/" or use "${home}". One level deep, plus worktree-pool parent folders one level deeper.',
+  },
 
   // --- migrated:false (wave 1 legacy-file keys) ---------------------------
   {
