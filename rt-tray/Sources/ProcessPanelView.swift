@@ -92,12 +92,22 @@ struct ProcessPanelView: View {
         return menu
     }
 
+    /// The user's start-at-login switch — and the authority on it.
+    ///
+    /// AppDelegate auto-registers the login item at startup so a flavor
+    /// switch (spec MAT-383 §3) doesn't silently lose it. That must never
+    /// undo a deliberate OFF, so turning it off here records an opt-out and
+    /// turning it back on clears it. The flag is written only after the
+    /// SMAppService call actually succeeds — a failed unregister leaves the
+    /// item enabled, and recording an opt-out for it would lie.
     private func toggleStartAtLogin() {
         do {
             if SMAppService.mainApp.status == .enabled {
                 try SMAppService.mainApp.unregister()
+                LoginItemPreference.isOptedOut = true
             } else {
                 try SMAppService.mainApp.register()
+                LoginItemPreference.isOptedOut = false
             }
         } catch {
             TrayLog.error("login item toggle failed", ["err": String(describing: error)])
