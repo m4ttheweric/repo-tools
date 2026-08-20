@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
-import { repoDataDir, rtDir } from "../../rt-paths.ts";
+import { dirname, join } from "path";
+import { machineSettingsPath, repoDataDir, rtDir, teamSettingsPath, userSettingsPath } from "../../rt-paths.ts";
 import {
   buildInterceptRules,
   installShims,
@@ -13,6 +13,7 @@ import {
   renderInterceptShim,
   shimPath,
   shimReport,
+  staleIntercepts,
   uninstallShims,
   writeInterceptRules,
   type InterceptRule,
@@ -161,6 +162,38 @@ describe("buildInterceptRules", () => {
     expect(byRepo["r-without"]).toBeUndefined();
   });
 
+  test("a repo whose intercepts live ONLY in a settings store still gets a rule (remote captured before the resolver is consulted)", async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "rt-shim-store-")));
+    const origHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const repoPath = makeGitRepo("git@gitlab.com:fake/store-repo.git");
+      writeRepoIndex({ "r-store": repoPath });
+      // No repos/r-store/config.json at all — the legacy rung is empty, so the
+      // rule can only come from the store, keyed by the repo's IDENTITY.
+      const store = teamSettingsPath("claimview");
+      mkdirSync(dirname(store), { recursive: true });
+      writeFileSync(store, JSON.stringify({
+        repos: {
+          "gitlab.com/fake/store-repo": {
+            "rt.intercepts": [{ command: "storecmd", matches: [{ cwdGlob: ".", role: "web" }] }],
+          },
+        },
+      }));
+
+      const built = await buildInterceptRules();
+      expect(built).toEqual([{
+        command: "storecmd",
+        repo: "r-store",
+        repoRemote: "git@gitlab.com:fake/store-repo.git",
+        matches: [{ cwdGlob: ".", role: "web" }],
+      }]);
+    } finally {
+      process.env.HOME = origHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("multiple intercept entries in one repo produce one rule each", async () => {
     const repoPath = makeGitRepo(null);
     writeRepoConfig("r-multi", {
@@ -253,5 +286,86 @@ describe("installShims / uninstallShims / shimReport", () => {
     const path = shimPath("fakecmd-transition");
     writeFileSync(path, readFileSync(path, "utf8") + "\n");
     expect(shimReport()).toContainEqual({ command: "fakecmd-transition", repo: "r-transition", installed: true, current: false });
+  });
+});
+
+// ─── staleIntercepts ─────────────────────────────────────────────────────────
+//
+// Its own fresh HOME per test: the probe compares real mtimes across the whole
+// ~/.mattstack tree, so a store file another test in this file left behind
+// would decide the answer. Every mtime is set EXPLICITLY with utimesSync —
+// touching two files in the same tick gives them the same mtime on some
+// filesystems, which would make "newer than" a coin flip.
+
+describe("staleIntercepts", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-stale-")));
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const T0 = new Date(1_700_000_000_000);
+  const NEWER = new Date(1_700_000_600_000);
+  const OLDER = new Date(1_699_999_400_000);
+
+  function writeAt(file: string, content: string, when: Date): void {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, content);
+    utimesSync(file, when, when);
+  }
+
+  /** intercepts.json holding one rule for `repo`, stamped at T0. */
+  function writeCache(repo: string): void {
+    writeInterceptRules([{ command: "c", repo, repoRemote: null, matches: [] }]);
+    utimesSync(interceptsPath(), T0, T0);
+  }
+
+  test("no cache file at all is not stale (there is nothing to be stale)", () => {
+    expect(staleIntercepts()).toEqual({ stale: false });
+  });
+
+  test("every source older than the cache is not stale", () => {
+    writeCache("r");
+    writeAt(userSettingsPath(), "{}", OLDER);
+    writeAt(machineSettingsPath(), "{}", OLDER);
+    writeAt(teamSettingsPath("claimview"), "{}", OLDER);
+    writeAt(join(repoDataDir("r"), "config.json"), "{}", OLDER);
+    expect(staleIntercepts()).toEqual({ stale: false });
+  });
+
+  test("a store file newer than the cache is stale and names the file", () => {
+    writeCache("r");
+    writeAt(userSettingsPath(), "{}", NEWER);
+    const probe = staleIntercepts();
+    expect(probe.stale).toBe(true);
+    expect(probe.reason).toContain(userSettingsPath());
+  });
+
+  test("a team store newer than the cache is stale", () => {
+    writeCache("r");
+    writeAt(teamSettingsPath("claimview"), "{}", NEWER);
+    expect(staleIntercepts().stale).toBe(true);
+  });
+
+  test("a per-repo legacy config.json named in the rules, newer than the cache, is stale", () => {
+    writeCache("r-legacy");
+    writeAt(join(repoDataDir("r-legacy"), "config.json"), "{}", NEWER);
+    const probe = staleIntercepts();
+    expect(probe.stale).toBe(true);
+    expect(probe.reason).toContain("r-legacy");
+  });
+
+  test("a legacy config.json for a repo NOT in the rules does not make the cache stale", () => {
+    writeCache("r-in-rules");
+    writeAt(join(repoDataDir("r-in-rules"), "config.json"), "{}", OLDER);
+    writeAt(join(repoDataDir("r-elsewhere"), "config.json"), "{}", NEWER);
+    expect(staleIntercepts()).toEqual({ stale: false });
   });
 });

@@ -40,6 +40,7 @@ import {
 } from "../lib/settings/resolve.ts";
 import { setSetting } from "../lib/settings/write.ts";
 import { getDef, type SettingDef, type SettingScope } from "../lib/settings/registry.ts";
+import { buildInterceptRules, writeInterceptRules } from "../lib/endpoint/shim.ts";
 
 // ─── arg parsing (commands/events.ts conventions) ────────────────────────────
 
@@ -211,7 +212,68 @@ export async function settingsSet(args: string[]): Promise<void> {
     failWithError(err);
   }
 
-  console.log(`\n  ${green}✓${reset} ${bold}${key}${reset} set (${scope}${repoName ? `, ${repoName}` : ""})\n`);
+  console.log(`\n  ${green}✓${reset} ${bold}${key}${reset} set (${scope}${repoName ? `, ${repoName}` : ""})`);
+
+  // See "the intercepts.json regeneration seam" below for why the write side
+  // owns this and why it is not a full `rt intercept install`.
+  const regen = await regenerateInterceptsCache(key);
+  if (regen.regenerated) {
+    console.log(`  ${dim}intercepts.json regenerated (${regen.rules} rule${regen.rules === 1 ? "" : "s"})${reset}`);
+  } else if (regen.error) {
+    console.log(`  ${yellow}could not regenerate intercepts.json (${regen.error}) — run \`rt intercept install\`${reset}`);
+  }
+  console.log("");
+}
+
+// ─── the intercepts.json regeneration seam ──────────────────────────────────
+//
+// ~/.mattstack/rt/intercepts.json is a CACHE of what `loadEndpointConfig`
+// would return for every registered repo; the intercept shim's match path
+// reads only that file, never the resolver (it must stay spawn-free and
+// instant). So a `set` of a key the cache is built from has to regenerate it,
+// or the next intercepted command matches against the pre-write rules.
+//
+// The dependency direction is deliberate and one-way: this command module
+// imports lib/endpoint/shim.ts, and nothing under lib/endpoint imports a
+// command module — so the writer (which is the only place that KNOWS a write
+// just happened) drives the regen, and no import cycle exists. Putting the
+// hook inside setSetting would have inverted that, dragging the endpoint
+// module (and its git spawns) into every settings write.
+//
+// Deliberately NOT `installShims()`: writing executables onto the user's PATH
+// is not a side effect `rt settings set` should have silently. A newly
+// intercepted command therefore lands in the cache but has no shim yet, which
+// `rt intercept status` and `rt verify` both already report as "declared but
+// not installed → run rt intercept install".
+
+/** The keys `buildInterceptRules` resolves; a write to either invalidates the cache. */
+const INTERCEPT_CACHE_KEYS = new Set(["rt.intercepts", "rt.roles"]);
+
+export interface RegenResult {
+  regenerated: boolean;
+  /** Rules written, when regenerated. */
+  rules?: number;
+  /** Why it failed, when it failed. Never thrown — the `set` itself already succeeded. */
+  error?: string;
+}
+
+/**
+ * Rebuilds intercepts.json when `key` is one the cache is derived from.
+ *
+ * Never throws: by the time this runs the store write has already landed, so
+ * a regen failure must be reported (the caller prints it) rather than turned
+ * into a failed `set` the user would retry pointlessly. `rt intercept install`
+ * is always the manual recovery.
+ */
+export async function regenerateInterceptsCache(key: string): Promise<RegenResult> {
+  if (!INTERCEPT_CACHE_KEYS.has(key)) return { regenerated: false };
+  try {
+    const rules = await buildInterceptRules();
+    writeInterceptRules(rules);
+    return { regenerated: true, rules: rules.length };
+  } catch (err) {
+    return { regenerated: false, error: (err as Error).message };
+  }
 }
 
 // ─── list ───────────────────────────────────────────────────────────────────

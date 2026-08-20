@@ -5,9 +5,13 @@
  *
  *  - `buildInterceptRules` reads the repo index the same way
  *    `lib/port-scanner.ts:loadRepoIndex` does, and flattens each registered
- *    repo's `intercepts[]` config (Task 1's `loadEndpointRepoConfig`) into a
- *    flat list of `InterceptRule`, one per intercept entry, each carrying the
- *    repo's git remote (captured once per repo, not once per rule).
+ *    repo's resolved `rt.intercepts` (`loadEndpointConfig`) into a flat list
+ *    of `InterceptRule`, one per intercept entry, each carrying the repo's git
+ *    remote (captured once per repo, not once per rule).
+ *  - `staleIntercepts` is the RT-47 staleness probe: the generated
+ *    intercepts.json is a CACHE of what the resolver would return, so an edit
+ *    to a settings store (or a `git pull` in a team zone) can leave it behind.
+ *    `rt intercept status` and the `rt verify` check render it.
  *  - `installShims` / `uninstallShims` write/remove tiny `/bin/sh` PATH shims
  *    under `~/.local/bin` for every distinct intercepted command.
  *  - `matchInvocation` is the pure matcher a real invocation is tested
@@ -21,13 +25,21 @@
  * decision logic in one (testable, TypeScript) place.
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join, relative } from "path";
 import { readJson, writeJson } from "../json-store.ts";
-import { rtDir } from "../rt-paths.ts";
+import {
+  machineSettingsPath,
+  repoDataDir,
+  rtDir,
+  teamSettingsPath,
+  userSettingsPath,
+} from "../rt-paths.ts";
+import { identityFromRemote } from "../settings/identity.ts";
+import { listTeams } from "../settings/stores.ts";
 import { runCapture } from "../subprocess.ts";
-import { loadEndpointRepoConfig, type InterceptMatch } from "./config.ts";
+import { loadEndpointConfig, type InterceptMatch } from "./config.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -112,24 +124,102 @@ async function captureRepoRemote(repoPath: string): Promise<string | null> {
 /**
  * Reads the repo index (mirrors `lib/port-scanner.ts:loadRepoIndex`'s read of
  * `~/.mattstack/rt/repos.json`) and, for each registered repo, flattens its
- * `intercepts[]` config into one `InterceptRule` per intercept entry. Repos
- * with no intercepts contribute nothing. `repoRemote` is captured once per
- * repo via an async `git config` call — the reason this function (and
- * `installShims`, which calls it) is async while the rest of this module is
- * synchronous.
+ * resolved `rt.intercepts` into one `InterceptRule` per intercept entry. Repos
+ * with no intercepts contribute nothing.
+ *
+ * The remote is captured for EVERY registered repo, before its config is
+ * consulted (RT-47) — it is no longer just the `repoRemote` field of the
+ * emitted rules, it is what `identityFromRemote` turns into the repo identity
+ * the settings stores are keyed by, so a repo whose intercepts live ONLY in a
+ * store would be invisible if we skipped the capture for repos with no legacy
+ * `intercepts` key. That inverts the old early-`continue`: capture, resolve,
+ * THEN decide to skip. The cost is one `git config` spawn per registered repo
+ * (~20) at install time, which the spec accepts.
+ *
+ * `identityFromRemote`, never bare `normalizeRemote`: the machine store's
+ * `rt.repoIdentityOverrides` is how a fork or multi-remote checkout is pinned
+ * to the upstream identity, and skipping it here would silently ignore that
+ * pin for exactly the repos that need it.
+ *
+ * These awaited spawns are the reason this function (and `installShims`, which
+ * calls it) is async while the rest of this module is synchronous.
  */
 export async function buildInterceptRules(): Promise<InterceptRule[]> {
   const index = readJson<Record<string, string>>(join(rtDir(), "repos.json"), {});
   const rules: InterceptRule[] = [];
   for (const [repo, repoPath] of Object.entries(index)) {
-    const config = loadEndpointRepoConfig(repo);
-    if (config.intercepts.length === 0) continue;
     const repoRemote = await captureRepoRemote(repoPath);
+    const repoIdentity = repoRemote === null ? null : identityFromRemote(repoRemote);
+    const config = loadEndpointConfig({ repoIdentity, repoName: repo });
+    if (config.intercepts.length === 0) continue;
     for (const intercept of config.intercepts) {
       rules.push({ command: intercept.command, repo, repoRemote, matches: intercept.matches });
     }
   }
   return rules;
+}
+
+// ─── staleness probe ─────────────────────────────────────────────────────────
+
+/**
+ * Every file a rule in the cache could have come from: the three authored
+ * store files (each cloned team's included) plus the legacy per-repo
+ * config.json of every repo the CACHED rules name.
+ *
+ * Using the cached rules' repos — rather than the whole repo index — keeps the
+ * probe cheap and spawn-free (no identity derivation), and it is the honest
+ * set: a legacy file for a repo that contributes no rules cannot make the
+ * rules wrong. The gap it leaves is a repo that would START contributing rules
+ * after an edit to a config.json it has never had; that is precisely what the
+ * store rungs are for now, and `rt intercept install` remains the manual regen
+ * (spec: three-part answer, part b).
+ */
+function interceptSourceFiles(): string[] {
+  const files = [userSettingsPath(), machineSettingsPath(), ...listTeams().map(teamSettingsPath)];
+  for (const repo of new Set(loadInterceptRules().map((rule) => rule.repo))) {
+    files.push(join(repoDataDir(repo), "config.json"));
+  }
+  return files;
+}
+
+/**
+ * Whether intercepts.json is older than any file it was generated from — the
+ * "you edited a store, now re-run `rt intercept install`" probe rendered by
+ * `rt intercept status` and the `rt verify` intercept check (spec: three-part
+ * answer, part c).
+ *
+ * A cache file that does not exist is NOT stale: there is nothing to be stale,
+ * and "no rules registered" is already what `shimReport`/`rt intercept status`
+ * say for that machine. Reporting staleness there would fire on every machine
+ * that has settings stores and no intercepts at all.
+ *
+ * mtime-only, deliberately: comparing resolved content would mean deriving an
+ * identity per repo (spawns) on a path that runs inside `rt verify`. An mtime
+ * that moved without the content changing costs one redundant `rt intercept
+ * install`; a content check that needed 20 git spawns would cost every verify
+ * run.
+ */
+export function staleIntercepts(): { stale: boolean; reason?: string } {
+  const cachePath = interceptsPath();
+  let cacheMtime: number;
+  try {
+    cacheMtime = statSync(cachePath).mtimeMs;
+  } catch {
+    return { stale: false }; // never generated (or unreadable) — nothing to compare
+  }
+
+  const newer: string[] = [];
+  for (const file of interceptSourceFiles()) {
+    try {
+      if (statSync(file).mtimeMs > cacheMtime) newer.push(file);
+    } catch {
+      // absent source (the common case — most machines have no team store);
+      // a file that isn't there cannot be newer than the cache.
+    }
+  }
+
+  if (newer.length === 0) return { stale: false };
+  return { stale: true, reason: `${newer.join(", ")} newer than ${cachePath}` };
 }
 
 // ─── shim render + path ──────────────────────────────────────────────────────

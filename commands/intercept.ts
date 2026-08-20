@@ -4,7 +4,7 @@
  * rt intercept — generic command interception CLI verbs (RT-28 Task 7).
  *
  *   rt intercept run <command> -- [args...]   hidden verb the shim execs
- *   rt intercept status [--json]              shim + rule health
+ *   rt intercept status [--json]              shim + rule health + cache staleness
  *   rt intercept install [--json]             (re)write PATH shims
  *   rt intercept uninstall [--json]           remove generated shims
  *
@@ -24,7 +24,7 @@ import { join } from "path";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import { daemonQuery } from "../lib/daemon-client.ts";
 import { runCapture } from "../lib/subprocess.ts";
-import { GENERATED_MARKER, loadInterceptRules, shimPath, shimReport, installShims, uninstallShims } from "../lib/endpoint/shim.ts";
+import { GENERATED_MARKER, loadInterceptRules, shimPath, shimReport, installShims, staleIntercepts, uninstallShims } from "../lib/endpoint/shim.ts";
 import { runInterception, type RunDeps } from "../lib/endpoint/run.ts";
 
 function usageFail(msg: string): never {
@@ -228,15 +228,30 @@ export async function interceptStatus(args: string[]): Promise<void> {
   for (const rule of rules) rulesByRepo[rule.repo] = (rulesByRepo[rule.repo] ?? 0) + 1;
 
   const daemonUp = (await daemonQuery("endpoint:status", {}, 5_000)) !== null;
+  // intercepts.json is a cache of what the resolver would return, so a
+  // settings-store edit (or a `git pull` in a team zone) can leave it behind
+  // without any shim looking wrong — hence a separate line from the per-shim
+  // marks below, which only ever describe the files under ~/.local/bin.
+  const stale = staleIntercepts();
 
   if (json) {
-    console.log(JSON.stringify({ ok: true, shims: report, rulesByRepo, daemonUp }));
+    console.log(JSON.stringify({ ok: true, shims: report, rulesByRepo, daemonUp, stale }));
     return;
   }
 
+  // Printed on BOTH the empty and populated paths: "no rules" plus a store
+  // that has moved since the cache was written is exactly the case where a
+  // regen would produce rules, so it is the one the user most needs to see.
+  const staleNotice = (): void => {
+    if (!stale.stale) return;
+    console.log(`  ${yellow}rules cache is stale${reset} — run ${bold}rt intercept install${reset}`);
+    console.log(`  ${dim}${stale.reason}${reset}\n`);
+  };
+
   console.log(`\n  ${bold}${cyan}rt intercept status${reset} ${dim}(daemon ${daemonUp ? "up" : "down"})${reset}\n`);
   if (report.length === 0) {
-    console.log(`  ${dim}no intercept rules registered — declare "intercepts" in a repo config, then rt intercept install${reset}\n`);
+    console.log(`  ${dim}no intercept rules registered — declare rt.intercepts in a settings store (or a repo config), then rt intercept install${reset}\n`);
+    staleNotice();
     return;
   }
   for (const entry of report) {
@@ -245,6 +260,7 @@ export async function interceptStatus(args: string[]): Promise<void> {
     console.log(`  ${mark} ${bold}${entry.command}${reset} ${dim}(${entry.repo}, ${count} rule${count === 1 ? "" : "s"})${reset}`);
   }
   console.log();
+  staleNotice();
 }
 
 // ─── rt intercept install / uninstall ────────────────────────────────────────
