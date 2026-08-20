@@ -39,17 +39,10 @@ const url = (port: number): string => `http://localhost:${port}`;
  * per-repo config.json to answer — which is exactly the pre-RT-47 behaviour.
  * A real failure is logged (never silently swallowed) per the repo's catch
  * policy.
- *
- * `ctx.repoIndex?.()` — optional CALL, not optional field: partial handler
- * contexts are a real pattern in this module (see
- * `releaseEndpointsForWorktree`'s `Pick<HandlerContext, "log">`), and a claim
- * must not die on a context that carries a logger but no index. The whole
- * chain short-circuits to undefined, which is the same "no path" answer as an
- * unregistered repo name.
  */
 async function repoIdentityFor(ctx: HandlerContext, repo: string): Promise<string | null> {
   try {
-    const repoPath = ctx.repoIndex?.()[repo];
+    const repoPath = ctx.repoIndex()[repo];
     return repoPath ? await deriveRepoIdentity(repoPath) : null;
   } catch (err) {
     ctx.log.warn({ err, repo }, "repo identity derivation failed; resolving endpoint config without repo scopes");
