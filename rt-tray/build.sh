@@ -5,29 +5,77 @@ set -euo pipefail
 # Compiles the Swift source, assembles the .app bundle, and optionally signs it.
 #
 # Usage:
-#   ./build.sh              Build debug
-#   ./build.sh release      Build release + assemble .app bundle
-#   ./build.sh install      Build release + install to ~/Applications
+#   ./build.sh              Build debug (rt-tray SwiftPM product, unbundled)
+#   ./build.sh release      Build release + assemble mattstack.app (prod)
+#   ./build.sh dev          Build release + assemble mattstack-dev.app (dev)
+#   ./build.sh install      Build release + install mattstack.app to ~/Applications
+#
+# PRODUCT_NAME is the SwiftPM executable target name (Package.swift never
+# renames it — see spec MAT-383 §1) and is where the compiled binary comes
+# FROM: .build/<config>/$PRODUCT_NAME. APP_NAME is the bundle identity — what
+# the binary is copied TO (Contents/MacOS/$APP_NAME) and the .app filename.
+# These diverge on purpose: prod APP_NAME=mattstack, dev APP_NAME=mattstack-dev.
+#
+# The bundle id, daemon label, and display name live ONLY here (never
+# hardcoded again in Info.plist/LaunchAgent.plist, which are sed templates
+# filled in below) so there is exactly one place that knows the two flavors'
+# identities.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 MODE="${1:-debug}"
-APP_NAME="rt-tray"
-BUNDLE_ID="com.rt.tray"
+PRODUCT_NAME="rt-tray"
+
+case "$MODE" in
+    debug)
+        IS_DEV=false
+        BUILD_CONFIG="debug"
+        ;;
+    dev)
+        IS_DEV=true
+        BUILD_CONFIG="release"
+        ;;
+    release|install)
+        IS_DEV=false
+        BUILD_CONFIG="release"
+        ;;
+    *)
+        echo "  ✗ Unknown mode: $MODE (expected debug|release|dev|install)" >&2
+        exit 1
+        ;;
+esac
+
+if [ "$IS_DEV" = true ]; then
+    APP_NAME="mattstack-dev"
+    DISPLAY_NAME="mattstack-dev"
+    BUNDLE_ID="com.mattstack.app.dev"
+    DAEMON_LABEL="com.rt.daemon.dev"
+else
+    APP_NAME="mattstack"
+    DISPLAY_NAME="mattstack"
+    BUNDLE_ID="com.mattstack.app"
+    DAEMON_LABEL="com.rt.daemon"
+fi
+
 APP_BUNDLE="$SCRIPT_DIR/$APP_NAME.app"
 
 # ─── Build ────────────────────────────────────────────────────────────────────
 
-echo "  Building $APP_NAME ($MODE)..."
+echo "  Building $PRODUCT_NAME ($MODE)..."
 
-if [ "$MODE" = "debug" ]; then
+if [ "$BUILD_CONFIG" = "debug" ]; then
     swift build 2>&1 | sed 's/^/  /'
-    BINARY="$SCRIPT_DIR/.build/debug/$APP_NAME"
-    SHIM_BINARY="$SCRIPT_DIR/.build/debug/rt-daemon-shim"
+    BINARY="$SCRIPT_DIR/.build/debug/$PRODUCT_NAME"
 else
-    swift build -c release 2>&1 | sed 's/^/  /'
-    BINARY="$SCRIPT_DIR/.build/release/$APP_NAME"
+    if [ "$IS_DEV" = true ]; then
+        # Dev flavor ships the shim as its rt-daemon (§3) — build both products.
+        swift build -c release 2>&1 | sed 's/^/  /'
+    else
+        # Prod flavor never ships rt-daemon-shim — drop its compile step entirely.
+        swift build -c release --product "$PRODUCT_NAME" 2>&1 | sed 's/^/  /'
+    fi
+    BINARY="$SCRIPT_DIR/.build/release/$PRODUCT_NAME"
     SHIM_BINARY="$SCRIPT_DIR/.build/release/rt-daemon-shim"
 fi
 
@@ -40,9 +88,9 @@ echo "  ✓ Build succeeded"
 
 # ─── Assemble .app bundle ────────────────────────────────────────────────────
 
-if [ "$MODE" = "debug" ]; then
+if [ "$BUILD_CONFIG" = "debug" ]; then
     echo "  Skipping .app bundle assembly for debug build."
-    echo "  Run: .build/debug/$APP_NAME"
+    echo "  Run: .build/debug/$PRODUCT_NAME"
     exit 0
 fi
 
@@ -96,45 +144,75 @@ else
     echo "  ⚠ mission-control-screenshot.png not found — conflict window will show placeholder"
 fi
 
-# Copy tray binary
+# Copy tray binary — source is $PRODUCT_NAME (SwiftPM), destination is $APP_NAME
+# (bundle identity). These are the same string in prod today but diverge for dev.
 cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 # ─── Embed daemon binary ──────────────────────────────────────────────────────
-# RT_DAEMON_BIN env var wins (CI passes the freshly-built rt binary). For local
-# dev, fall back to whatever `rt` resolves to on PATH — that's the same compiled
-# binary the user already has installed.
+# Prod: Contents/MacOS/rt-daemon is the real compiled `rt` binary.
+# Dev: Contents/MacOS/rt-daemon IS the shim (Sources-daemon-shim) — permanently
+# the source-runner, not a swap payload (spec §3). RT_DAEMON_BIN env var wins
+# for the prod path (CI passes the freshly-built rt binary); local dev falls
+# back to whatever `rt` resolves to on PATH.
 
-DAEMON_SRC="${RT_DAEMON_BIN:-}"
-if [ -z "$DAEMON_SRC" ]; then
-    DAEMON_SRC="$(command -v rt 2>/dev/null || true)"
-fi
-
-if [ -n "$DAEMON_SRC" ] && [ -f "$DAEMON_SRC" ]; then
-    cp "$DAEMON_SRC" "$APP_BUNDLE/Contents/MacOS/rt-daemon"
+if [ "$IS_DEV" = true ]; then
+    if [ ! -f "$SHIM_BINARY" ]; then
+        echo "  ✗ rt-daemon-shim not built — dev bundle has no daemon without it"
+        exit 1
+    fi
+    cp "$SHIM_BINARY" "$APP_BUNDLE/Contents/MacOS/rt-daemon"
     chmod +x "$APP_BUNDLE/Contents/MacOS/rt-daemon"
-    echo "  ✓ Embedded rt-daemon from $DAEMON_SRC"
+    echo "  ✓ Embedded rt-daemon-shim as Contents/MacOS/rt-daemon (dev source-runner)"
 else
-    echo "  ⚠ rt binary not found — daemon will not be embedded"
-    echo "    Set RT_DAEMON_BIN or install rt on PATH"
+    DAEMON_SRC="${RT_DAEMON_BIN:-}"
+    if [ -z "$DAEMON_SRC" ]; then
+        DAEMON_SRC="$(command -v rt 2>/dev/null || true)"
+    fi
+
+    if [ -n "$DAEMON_SRC" ] && [ -f "$DAEMON_SRC" ]; then
+        cp "$DAEMON_SRC" "$APP_BUNDLE/Contents/MacOS/rt-daemon"
+        chmod +x "$APP_BUNDLE/Contents/MacOS/rt-daemon"
+        echo "  ✓ Embedded rt-daemon from $DAEMON_SRC"
+    else
+        echo "  ⚠ rt binary not found — daemon will not be embedded"
+        echo "    Set RT_DAEMON_BIN or install rt on PATH"
+    fi
 fi
 
-# Embed rt-daemon-shim — the signed exec-proxy used by dev-mode. It execs into
-# `bun run lib/daemon.ts` so daemon edits don't require a release cycle.
-if [ -f "$SHIM_BINARY" ]; then
-    cp "$SHIM_BINARY" "$APP_BUNDLE/Contents/MacOS/rt-daemon-shim"
-    chmod +x "$APP_BUNDLE/Contents/MacOS/rt-daemon-shim"
-    echo "  ✓ Embedded rt-daemon-shim from $SHIM_BINARY"
-else
-    echo "  ⚠ rt-daemon-shim not built — dev-mode daemon swap will be unavailable"
-fi
-
-# Ship LaunchAgent plist inside the bundle (SMAppService reads it from here)
+# Ship LaunchAgent plist inside the bundle (SMAppService reads it from here).
+# Installed filename matches the Label: com.rt.daemon.plist / com.rt.daemon.dev.plist.
 mkdir -p "$APP_BUNDLE/Contents/Library/LaunchAgents"
-cp "$SCRIPT_DIR/LaunchAgent.plist" "$APP_BUNDLE/Contents/Library/LaunchAgents/com.rt.daemon.plist"
-echo "  ✓ LaunchAgent plist copied to Contents/Library/LaunchAgents"
+AGENT_PLIST="$APP_BUNDLE/Contents/Library/LaunchAgents/$DAEMON_LABEL.plist"
+sed -e "s/@@DAEMON_LABEL@@/$DAEMON_LABEL/g" \
+    -e "s/@@BUNDLE_ID@@/$BUNDLE_ID/g" \
+    "$SCRIPT_DIR/LaunchAgent.plist" > "$AGENT_PLIST"
 
-# Copy Info.plist and inject version from git tag
-cp "$SCRIPT_DIR/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+# KeepAlive shape diverges by flavor (spec §1/§3): prod is a plain bool true;
+# dev is { SuccessfulExit = false } so the shim's exit-0 (unconfigured
+# precondition) paths stay down while real crashes still restart. Injected via
+# PlistBuddy, not sed — a dict value can't be a single-line token substitution.
+if [ "$IS_DEV" = true ]; then
+    /usr/libexec/PlistBuddy -c "Add :KeepAlive dict" "$AGENT_PLIST"
+    /usr/libexec/PlistBuddy -c "Add :KeepAlive:SuccessfulExit bool false" "$AGENT_PLIST"
+else
+    /usr/libexec/PlistBuddy -c "Add :KeepAlive bool true" "$AGENT_PLIST"
+fi
+echo "  ✓ LaunchAgent plist ($DAEMON_LABEL.plist) copied to Contents/Library/LaunchAgents"
+
+# Fill in Info.plist template (BUNDLE_ID/APP_NAME/DISPLAY_NAME/DAEMON_LABEL live
+# ONLY in this script) and inject version from git tag.
+sed -e "s/@@APP_NAME@@/$APP_NAME/g" \
+    -e "s/@@BUNDLE_ID@@/$BUNDLE_ID/g" \
+    -e "s/@@DISPLAY_NAME@@/$DISPLAY_NAME/g" \
+    -e "s/@@DAEMON_LABEL@@/$DAEMON_LABEL/g" \
+    "$SCRIPT_DIR/Info.plist" > "$APP_BUNDLE/Contents/Info.plist"
+
+if [ "$IS_DEV" = true ]; then
+    /usr/libexec/PlistBuddy -c "Add :MSDevBuild bool true" "$APP_BUNDLE/Contents/Info.plist"
+else
+    /usr/libexec/PlistBuddy -c "Add :MSDevBuild bool false" "$APP_BUNDLE/Contents/Info.plist"
+fi
+
 RT_VERSION=$(cd "$SCRIPT_DIR/.." && git describe --tags --abbrev=0 2>/dev/null || echo "dev")
 RT_VERSION="${RT_VERSION#v}"  # strip leading 'v'
 if [ "$RT_VERSION" != "dev" ]; then
@@ -152,6 +230,11 @@ echo "  ✓ App bundle created at $APP_BUNDLE"
 # Sign the embedded daemon FIRST with Bun's JIT entitlements, then sign the
 # outer bundle with the tray's minimal entitlements. --deep would clobber the
 # daemon's JIT entitlements, so we sign each piece explicitly.
+#
+# Dev signs with the SAME identity, bundle-wide (spec §1/§3): a nested ad-hoc
+# binary inside a Developer-ID hardened-runtime bundle is an invalid signing
+# config, so there is no dev-specific branch here — this block already applies
+# uniformly to both flavors.
 
 SIGNING_IDENTITY=""
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
@@ -164,27 +247,25 @@ else
     SIGN_FLAGS=(--force --sign -)
 fi
 
-# 1. Embedded daemon — needs Bun JIT entitlements
+# 1. Embedded daemon — needs Bun JIT entitlements. In dev this file IS the
+# shim (see the embed step above), so it's signed here too, keeping the
+# `-i rt-daemon` identifier override: load-bearing, do not remove it — without
+# it codesign keeps SwiftPM's default (rt-daemon-shim) and launchd rejects the
+# binary with EX_CONFIG (cached LWCR was for identifier=rt-daemon).
 DAEMON_BIN="$APP_BUNDLE/Contents/MacOS/rt-daemon"
 if [ -f "$DAEMON_BIN" ]; then
-    codesign "${SIGN_FLAGS[@]}" \
-        --entitlements "$SCRIPT_DIR/../scripts/entitlements.plist" \
-        "$DAEMON_BIN"
-    echo "  ✓ Signed rt-daemon with JIT entitlements"
-fi
-
-# 1b. Daemon shim — same Team ID, same IDENTIFIER, and same JIT entitlements
-# so it can replace rt-daemon under launchd's LWCR check. The identifier
-# override is load-bearing: without -i rt-daemon, codesign keeps SwiftPM's
-# default (rt-daemon-shim) and launchd rejects the swapped binary with
-# EX_CONFIG (cached LWCR was for identifier=rt-daemon).
-SHIM_BUNDLE="$APP_BUNDLE/Contents/MacOS/rt-daemon-shim"
-if [ -f "$SHIM_BUNDLE" ]; then
-    codesign "${SIGN_FLAGS[@]}" \
-        -i rt-daemon \
-        --entitlements "$SCRIPT_DIR/../scripts/entitlements.plist" \
-        "$SHIM_BUNDLE"
-    echo "  ✓ Signed rt-daemon-shim as identifier=rt-daemon (JIT entitlements)"
+    if [ "$IS_DEV" = true ]; then
+        codesign "${SIGN_FLAGS[@]}" \
+            -i rt-daemon \
+            --entitlements "$SCRIPT_DIR/../scripts/entitlements.plist" \
+            "$DAEMON_BIN"
+        echo "  ✓ Signed rt-daemon (dev source-runner / shim) as identifier=rt-daemon"
+    else
+        codesign "${SIGN_FLAGS[@]}" \
+            --entitlements "$SCRIPT_DIR/../scripts/entitlements.plist" \
+            "$DAEMON_BIN"
+        echo "  ✓ Signed rt-daemon with JIT entitlements"
+    fi
 fi
 
 # 2. Outer .app bundle — tray entitlements (sandbox disabled)
@@ -206,11 +287,14 @@ echo "  ✓ Signed app bundle"
 codesign --verify "$APP_BUNDLE" 2>/dev/null && echo "  ✓ Signature verified" || echo "  ⚠ Signature verification failed"
 
 # ─── Install ──────────────────────────────────────────────────────────────────
+# install always installs the prod flavor ($APP_NAME=mattstack here — MODE
+# "install" forces IS_DEV=false above). There is no "dev install" mode yet;
+# the dev bundle is built and run in place until a later task wires it up.
 
 if [ "$MODE" = "install" ]; then
     INSTALL_DIR="$HOME/Applications"
     mkdir -p "$INSTALL_DIR"
-    
+
     # Kill existing instance and wait for it to fully exit
     if pkill -f "$APP_NAME.app/Contents/MacOS/$APP_NAME" 2>/dev/null; then
         echo "  Waiting for old instance to exit…"
@@ -223,7 +307,7 @@ if [ "$MODE" = "install" ]; then
     rm -rf "$INSTALL_DIR/$APP_NAME.app"
     cp -R "$APP_BUNDLE" "$INSTALL_DIR/$APP_NAME.app"
     echo "  ✓ Installed to $INSTALL_DIR/$APP_NAME.app"
-    
+
     # Launch
     open "$INSTALL_DIR/$APP_NAME.app"
     echo "  ✓ Launched $APP_NAME"
