@@ -30,6 +30,11 @@ function home(): string {
   return process.env.HOME ?? homedir();
 }
 
+/** ~/.mattstack — the home repo root (RT-30). */
+export function mattstackHome(): string {
+  return join(home(), ".mattstack");
+}
+
 /** ~/.mattstack/rt — the root of all rt state. App-level files live directly here. */
 export function rtDir(): string {
   return join(home(), ".mattstack", "rt");
