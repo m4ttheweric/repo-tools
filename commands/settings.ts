@@ -7,14 +7,14 @@
  *   settings gitlab token   — set GitLab personal access token
  */
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { homedir } from "os";
 import {
   rtDir,
   TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE, trayAppPath, devTrayAppPath,
 } from "../lib/rt-paths.ts";
-import { currentMode } from "../lib/dev-mode.ts";
+import { currentMode, installRtBinary } from "../lib/dev-mode.ts";
 import { spawnSync } from "child_process";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import {
@@ -458,13 +458,10 @@ export function renderDevModePreload(): string {
 }
 
 /**
- * Leaving dev mode must leave a WORKING `rt` behind (MAT-383 smoke, Matt's
- * ruling 2026-08-20). Deleting the wrapper used to be enough because Homebrew
- * owned the prod binary; with brew retired, the only compiled rt on this
- * machine is the one mattstack.app carries at Contents/MacOS/rt-daemon (the
- * daemon and the CLI are the same binary). So prod mode installs THAT over the
- * wrapper path — the same "the app provides the binary" model the installer
- * generalizes in phase 2.
+ * Leaving dev mode must leave a WORKING `rt` behind. The only compiled rt on
+ * this machine is the one mattstack.app carries at Contents/MacOS/rt-daemon
+ * (the daemon and the CLI are the same binary), so prod mode installs THAT
+ * over the wrapper path: the app provides the binary.
  *
  * Throws when the prod app is absent: stranding the CLI with no rt on PATH is
  * worse than refusing the switch.
@@ -477,10 +474,7 @@ function disableDevMode(): void {
     );
   }
 
-  mkdirSync(dirname(DEV_MODE_WRAPPER), { recursive: true });
-  if (existsSync(DEV_MODE_WRAPPER)) rmSync(DEV_MODE_WRAPPER);
-  copyFileSync(prodBinary, DEV_MODE_WRAPPER);
-  chmodSync(DEV_MODE_WRAPPER, 0o755);
+  installRtBinary(prodBinary);
 
   if (existsSync(DEV_MODE_PRELOAD)) {
     rmSync(DEV_MODE_PRELOAD);

@@ -39,10 +39,18 @@ class UpdateChecker {
         #endif
     }
 
-    /// The CLI is in dev mode when ~/.local/bin/rt exists (the dev-mode wrapper).
+    /// The installed CLI path. Both modes use it: dev mode writes a wrapper
+    /// script here, prod mode installs the compiled binary here.
+    private static var cliPath: String { NSHomeDirectory() + "/.local/bin/rt" }
+
+    /// Dev mode is signalled by the wrapper SCRIPT at the CLI path, not by a
+    /// file existing there (prod installs the binary at the same path). Same
+    /// rule as lib/dev-mode.ts currentMode(): a script starts with "#!".
     private static var isCliDevMode: Bool {
-        let home = NSHomeDirectory()
-        return FileManager.default.fileExists(atPath: home + "/.local/bin/rt")
+        guard let handle = FileHandle(forReadingAtPath: cliPath) else { return false }
+        defer { try? handle.close() }
+        let head = handle.readData(ofLength: 2)
+        return head == Data("#!".utf8)
     }
 
     func startPeriodicChecks() {
@@ -149,15 +157,17 @@ class UpdateChecker {
         alert.runModal()
     }
 
-    /// Shells out to the Homebrew-installed rt binary for its version string.
+    /// Version of the installed rt: the CLI at ~/.local/bin/rt, else this
+    /// bundle's own embedded daemon (the same binary). `rt --version` prints
+    /// "rt vX.Y.Z"; keep only the version.
     private static func resolveCliVersion() -> String? {
-        let paths = ["/opt/homebrew/bin/rt", "/usr/local/bin/rt"]
-        guard let rtPath = paths.first(where: { FileManager.default.fileExists(atPath: $0) }) else { return nil }
+        let paths = [cliPath, Bundle.main.bundlePath + "/Contents/MacOS/rt-daemon"]
+        guard let rtPath = paths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return nil }
 
         guard let data = TrayLog.runLogged(rtPath, ["--version"], label: "rt --version") else { return nil }
         guard let raw = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty else { return nil }
-        let version = raw.hasPrefix("v") ? String(raw.dropFirst()) : raw
+              let last = raw.split(separator: " ").last, !last.isEmpty else { return nil }
+        let version = last.hasPrefix("v") ? String(last.dropFirst()) : String(last)
         return version
     }
 
