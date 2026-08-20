@@ -166,6 +166,21 @@ describe("settings/identity", () => {
       }
     });
 
+    test("a failed derivation is not memoized: adding a remote after a null result is picked up on the next call, no clearIdentityMemo needed", async () => {
+      const dir = await initRepo();
+      try {
+        expect(await deriveRepoIdentity(dir)).toBeNull();
+
+        await runCapture(["git", "remote", "add", "origin", "https://gitlab.com/acme/acme-dev.git"], {
+          cwd: dir,
+        });
+
+        expect(await deriveRepoIdentity(dir)).toBe("gitlab.com/acme/acme-dev");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     test("clearIdentityMemo forces re-derivation", async () => {
       const dir = await initRepo("https://gitlab.com/acme/acme-dev.git");
       try {

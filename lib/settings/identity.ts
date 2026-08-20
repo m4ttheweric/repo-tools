@@ -93,25 +93,30 @@ const memo = new Map<string, Promise<string | null>>();
  * Async derivation from a repo path: `git -C <repoPath> config --get
  * remote.origin.url`, then identityFromRemote (so overrides apply to
  * derivation too). Never a sync spawn — safe to call from daemon contexts.
- * Memoized per path for the life of the process; a remote change after the
- * first successful derivation is NOT picked up until clearIdentityMemo() —
- * documented behavior, not a bug (see spec: derivation is a one-time capture
- * per process, not a live poll).
+ *
+ * Only a SUCCESSFUL derivation (non-null identity) is memoized, for the life
+ * of the process; a remote change after that first success is NOT picked up
+ * until clearIdentityMemo() — documented behavior, not a bug (see spec:
+ * derivation is a one-time capture per process, not a live poll). A FAILED
+ * derivation (no remote yet, git not initialized yet, etc.) is never cached
+ * and is retried on every subsequent call — a caller racing repo
+ * provisioning (mid-clone, daemon-startup) must not permanently lose
+ * identity for a path just because it asked too early.
  */
 export async function deriveRepoIdentity(repoPath: string): Promise<string | null> {
   const cached = memo.get(repoPath);
   if (cached) return cached;
 
-  const promise = (async (): Promise<string | null> => {
-    const result = await runCapture(["git", "-C", repoPath, "config", "--get", "remote.origin.url"]);
-    if (result.exitCode !== 0) return null;
-    const remote = result.stdout.trim();
+  const result = await (async (): Promise<string | null> => {
+    const spawned = await runCapture(["git", "-C", repoPath, "config", "--get", "remote.origin.url"]);
+    if (spawned.exitCode !== 0) return null;
+    const remote = spawned.stdout.trim();
     if (!remote) return null;
     return identityFromRemote(remote);
   })();
 
-  memo.set(repoPath, promise);
-  return promise;
+  if (result !== null) memo.set(repoPath, Promise.resolve(result));
+  return result;
 }
 
 /** Test-only: clear the derivation memo so a test can force re-derivation. */
