@@ -70,10 +70,31 @@
  * stderr: the edit only exists in this local clone until it is committed
  * and pushed. No such reminder for `user`/`machine` (nothing to push there
  * in wave 1).
+ *
+ * ── Malformed stores refuse rather than edit around the damage ─────────
+ * An existing store's on-disk text is parsed and checked (`assertEditableJsonc`)
+ * before `modify` ever runs: real parse errors, a non-object root, or a
+ * duplicate key anywhere in the tree all refuse with one message naming the
+ * file. The duplicate-key case is the sharp one — it is not a parse error at
+ * all (JSON's grammar permits it), but `modify` edits the FIRST occurrence by
+ * offset while every reader takes the LAST, so a naive edit-in-place would
+ * report success while the effective value never changes, and the file would
+ * still degrade to empty on the next `readStore`. Refusing is the only
+ * option that doesn't either lie about success or write a still-broken file.
+ *
+ * ── Writes are write-temp-then-rename ───────────────────────────────────
+ * Mirrors `lib/json-store.ts`'s `writeJson`: the edited text is written to a
+ * `<path>.<pid>.<random>.tmp` file in the SAME directory, then renamed onto
+ * the real path — stores never tear, matching the rest of rt's persistence
+ * (the machine store especially has no git fallback to recover a partial
+ * write from). The tmp file carries the edited TEXT exactly as `applyEdits`
+ * produced it, never round-tripped through `JSON.stringify` — that's what
+ * keeps comments alive.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { applyEdits, modify, type JSONPath } from "jsonc-parser";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
+import { applyEdits, modify, parseTree, type JSONPath, type Node, type ParseError } from "jsonc-parser";
+import { randomBytes } from "crypto";
 import { dirname } from "path";
 import { machineSettingsPath, teamSettingsPath, userSettingsPath } from "../rt-paths.ts";
 import { getDef, validateValue, type SettingDef, type SettingScope } from "./registry.ts";
@@ -171,11 +192,71 @@ function seedHeader(): string {
   return `// rt settings — created by \`rt settings set\`. JSONC: comments and trailing commas are fine.\n{}\n`;
 }
 
+/**
+ * Refuses to edit a store whose on-disk text is not a single well-formed
+ * JSONC object. Two failure classes:
+ *  - genuine parse errors (unbalanced braces, trailing garbage, etc.) —
+ *    caught by jsonc-parser's own error collection, the same check
+ *    `stores.ts#readStore` runs on the read side;
+ *  - a document that PARSES but is unsafe to `modify`: a non-object root, or
+ *    a duplicate key anywhere in the tree. `modify` edits the FIRST
+ *    occurrence of a duplicate key by offset, while every reader (`parse`,
+ *    `JSON.parse`) takes the LAST — so a naive edit-in-place would report
+ *    success while the effective value never changes (verified with a
+ *    throwaway script: `modify` touched offset 14 in `{"rt.llm":1,"rt.llm":2}`,
+ *    but re-parsing the "fixed" text still returned `2`). Both classes refuse
+ *    rather than silently editing around the damage — the alternative is a
+ *    write that reports success but does nothing, or one that writes a still-
+ *    broken file that the NEXT read honest-degrades to an empty store.
+ */
+function assertEditableJsonc(file: string, content: string): void {
+  const errors: ParseError[] = [];
+  const tree = parseTree(content, errors, { allowTrailingComma: true });
+
+  const malformed =
+    errors.length > 0 || tree === undefined || tree.type !== "object" || findDuplicateKey(tree) !== undefined;
+
+  if (malformed) {
+    refuse(`fix the JSONC syntax error in ${file} first — refusing to edit a malformed store`);
+  }
+}
+
+/** Depth-first search for the first duplicate property name in any object in the tree. */
+function findDuplicateKey(node: Node): string | undefined {
+  if (node.type === "object" && node.children) {
+    const seen = new Set<string>();
+    for (const property of node.children) {
+      const keyNode = property.children?.[0];
+      if (keyNode !== undefined && typeof keyNode.value === "string") {
+        if (seen.has(keyNode.value)) return keyNode.value;
+        seen.add(keyNode.value);
+      }
+      const valueNode = property.children?.[1];
+      if (valueNode !== undefined) {
+        const nested = findDuplicateKey(valueNode);
+        if (nested !== undefined) return nested;
+      }
+    }
+    return undefined;
+  }
+  if (node.type === "array" && node.children) {
+    for (const child of node.children) {
+      const nested = findDuplicateKey(child);
+      if (nested !== undefined) return nested;
+    }
+  }
+  return undefined;
+}
+
 function writeIntoStore(storePath: string, jsonPath: JSONPath, value: unknown, createIfMissing: boolean): void {
   let content: string;
   if (existsSync(storePath)) {
     content = readFileSync(storePath, "utf8");
-    if (content.trim() === "") content = seedHeader();
+    if (content.trim() === "") {
+      content = seedHeader();
+    } else {
+      assertEditableJsonc(storePath, content);
+    }
   } else {
     if (!createIfMissing) {
       // Unreachable via setSetting today: resolveStorePath already refuses
@@ -189,5 +270,23 @@ function writeIntoStore(storePath: string, jsonPath: JSONPath, value: unknown, c
 
   const edits = modify(content, jsonPath, value, { formattingOptions: FORMAT });
   const next = applyEdits(content, edits);
-  writeFileSync(storePath, next.endsWith("\n") ? next : `${next}\n`);
+  const finalText = next.endsWith("\n") ? next : `${next}\n`;
+
+  // Write-temp-then-rename in the same directory, mirroring
+  // lib/json-store.ts's writeJson — stores never tear, and the machine store
+  // especially has no git fallback to recover a partial write from. The
+  // edited TEXT is written as-is, never round-tripped through
+  // JSON.stringify, so comments and formatting survive.
+  const tmp = `${storePath}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    writeFileSync(tmp, finalText);
+    renameSync(tmp, storePath);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // tmp file never got created, or was already cleaned up — nothing to do
+    }
+    throw err;
+  }
 }
