@@ -6,8 +6,6 @@
  * command tree dispatcher works in both source and compiled modes.
  */
 
-import * as branch from "../commands/branch.ts";
-import * as branchClean from "../commands/branch-clean.ts";
 import * as buildSelect from "../commands/build-select.ts";
 import * as commit from "../commands/commit.ts";
 import * as agent from "../commands/agent.ts";
@@ -42,8 +40,6 @@ import * as intercept from "../commands/intercept.ts";
 import * as endpoint from "../commands/endpoint.ts";
 
 export const MODULE_REGISTRY: Record<string, any> = {
-  "./commands/branch.ts": branch,
-  "./commands/branch-clean.ts": branchClean,
   "./commands/build-select.ts": buildSelect,
   "./commands/commit.ts": commit,
   "./commands/agent.ts": agent,

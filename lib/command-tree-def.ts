@@ -7,47 +7,6 @@
  */
 import type { CommandNode } from "./command-tree.ts";
 
-const branchSubcommands: Record<string, CommandNode> = {
-  switch: {
-    description: "Checkout with stash handling",
-    module: "./commands/branch.ts",
-    fn: "switchBranch",
-    context: "worktree",
-    aliases: ["sw"],
-    args: [],
-  },
-  create: {
-    description: "From Linear ticket or scratch",
-    module: "./commands/branch.ts",
-    fn: "createBranchFlow",
-    context: "worktree",
-    aliases: ["new"],
-    args: [
-      { name: "Branch name", type: "text", placeholder: "feature/my-branch", hint: "Skip the interactive picker and create this branch directly" },
-      { name: "From", flag: "--from", type: "text", placeholder: "origin/main", hint: "Start point for the new branch" },
-    ],
-  },
-  rename: {
-    description: "Rename the current branch",
-    module: "./commands/branch.ts",
-    fn: "renameBranch",
-    context: "worktree",
-    aliases: ["mv"],
-    args: [],
-  },
-  clean: {
-    description: "Delete stale branches interactively",
-    module: "./commands/branch-clean.ts",
-    fn: "cleanBranches",
-    context: "worktree",
-    requiresTTY: true,
-    args: [
-      { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Preview deletions without deleting (alias -n)" },
-      { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Skip the open-MR warning and force-delete (alias -f)" },
-    ],
-  },
-};
-
 const eventsSubcommands: Record<string, CommandNode> = {
   emit: {
     description: "Publish an event to a topic",
@@ -202,10 +161,6 @@ export const TREE: Record<string, CommandNode> = {
           },
         },
       },
-      branch: {
-        description: "Branch management (switch, create, rename, clean)",
-        subcommands: branchSubcommands,
-      },
       commit: commitNode,
       backup: {
         description: "Back up the current branch",
@@ -294,12 +249,6 @@ export const TREE: Record<string, CommandNode> = {
         ],
       },
     },
-  },
-
-  // Aliases: rt branch and rt commit still work as before
-  branch: {
-    description: "Branch management (switch, create, rename, clean)",
-    subcommands: branchSubcommands,
   },
 
   turbo: {
