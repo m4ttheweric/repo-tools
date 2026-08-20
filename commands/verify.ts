@@ -96,10 +96,14 @@ async function runChecks(): Promise<CheckResult[]> {
 
   // ── Intercept shims (RT-28) ────────────────────────────────────────────────
   try {
-    const { shimReport, localBinDir } = await import("../lib/endpoint/shim.ts");
+    const { shimReport, localBinDir, staleIntercepts } = await import("../lib/endpoint/shim.ts");
     const report = shimReport();
     const missing = report.filter((r) => !r.installed);
     const stale = report.filter((r) => r.installed && !r.current);
+    // Distinct from a stale SHIM: the shims can all be current while
+    // intercepts.json itself predates a settings-store edit, in which case the
+    // rules being matched are last week's (RT-47).
+    const staleRules = staleIntercepts();
     // A perfectly installed shim is inert if its directory isn't on PATH —
     // the intercept simply never fires and everything looks fine. Only worth
     // saying once at least one shim actually exists on disk.
@@ -111,6 +115,7 @@ async function runChecks(): Promise<CheckResult[]> {
     else if (missing.length > 0) results.push(warn("intercept shims", `declared but not installed: ${missing.map((r) => r.command).join(", ")} — run rt intercept install${pathNote}`));
     else if (stale.length > 0) results.push(warn("intercept shims", `stale shim content: ${stale.map((r) => r.command).join(", ")} — run rt intercept install${pathNote}`));
     else if (pathBroken) results.push(warn("intercept shims", `shims installed but ${binDir} is not on PATH — intercepts will not fire`));
+    else if (staleRules.stale) results.push(warn("intercept shims", `shims are current but the rules cache is stale (${staleRules.reason}) — run rt intercept install`));
     else results.push(pass("intercept shims", `${report.length} installed and current`, "warning"));
   } catch (err) {
     results.push(warn("intercept shims", `check failed: ${(err as Error).message}`));
