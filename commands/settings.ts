@@ -7,10 +7,13 @@
  *   settings gitlab token   — set GitLab personal access token
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { homedir } from "os";
-import { rtDir } from "../lib/rt-paths.ts";
+import {
+  rtDir,
+  TRAY_APP_NAME, DEV_TRAY_APP_NAME, trayAppPath, devTrayAppPath,
+} from "../lib/rt-paths.ts";
 import { currentMode } from "../lib/dev-mode.ts";
 import { spawnSync } from "child_process";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
@@ -348,12 +351,6 @@ const DEV_MODE_WRAPPER = `${Bun.env.HOME}/.local/bin/rt`;
 const DEV_MODE_CONFIG  = join(rtDir(), "dev-mode.json");
 export const DEV_MODE_PRELOAD = join(rtDir(), "dev-restore-cwd.ts");
 
-// Paths inside rt-tray.app that participate in the daemon-binary swap.
-const RT_TRAY_APP          = `${Bun.env.HOME}/Applications/rt-tray.app`;
-const DAEMON_LIVE_PATH     = `${RT_TRAY_APP}/Contents/MacOS/rt-daemon`;
-const DAEMON_REAL_BACKUP   = `${RT_TRAY_APP}/Contents/MacOS/rt-daemon.real`;
-const DAEMON_SHIM_PATH     = `${RT_TRAY_APP}/Contents/MacOS/rt-daemon-shim`;
-
 function readDevModeConfig(): { sourcePath?: string; bunPath?: string } {
   try {
     return JSON.parse(readFileSync(DEV_MODE_CONFIG, "utf8"));
@@ -469,81 +466,105 @@ function disableDevMode(): void {
   }
 }
 
-// ─── Daemon binary swap ──────────────────────────────────────────────────────
+// ─── Flavor handoff (MAT-383 §3) ─────────────────────────────────────────────
 //
-// dev  → swap the real compiled daemon out for rt-daemon-shim (signed with the
-//        same Team ID), which execs `bun run lib/daemon.ts`. LWCR accepts it
-//        because the signature Team ID matches rt-tray.app; TCC inherits
-//        because the binary still lives inside the bundle.
-// prod → restore the compiled daemon from the .real backup.
+// `rt settings dev-mode on|off` is a handoff between two independently
+// registered tray apps (mattstack.app / mattstack-dev.app), not a binary
+// swap: (0) the incoming flavor's bundle must exist on disk BEFORE the
+// running flavor is touched at all; (1) the outgoing tray gives up its own
+// daemon LaunchAgent + login-item registrations via POST /flavor/retire;
+// (2) the outgoing tray is quit by ITS OWN flavor names (never the incoming
+// flavor's); (3) we poll until it is actually gone — a CONNECT-probe of the
+// shared tray socket (a pkill'd tray leaks the socket file, so existence
+// alone would lie) plus `launchctl list` on its own label; (4) the incoming
+// app is launched. Never mutates a bundle in place.
 
-type DaemonSwapResult =
-  | { status: "swapped" }
-  | { status: "already" }
-  | { status: "unavailable"; reason: string };
-
-function swapDaemonToShim(): DaemonSwapResult {
-  if (!existsSync(DAEMON_SHIM_PATH)) {
-    return {
-      status: "unavailable",
-      reason: "rt-daemon-shim not found in rt-tray.app — rebuild rt-tray (build.sh install) to enable dev-mode daemon swap",
-    };
-  }
-  if (existsSync(DAEMON_REAL_BACKUP)) {
-    return { status: "already" }; // already swapped previously
-  }
-  renameSync(DAEMON_LIVE_PATH, DAEMON_REAL_BACKUP);
-  // Clone (not rename) — we want to keep the shim in its canonical slot too
-  // so repeated toggles don't need rt-tray rebuilds.
-  const cp = spawnSync("cp", ["-c", DAEMON_SHIM_PATH, DAEMON_LIVE_PATH]); // APFS clone
-  if (cp.status !== 0 || cp.error) {
-    // Roll back so the daemon slot isn't left empty for launchd to crash-loop on.
-    renameSync(DAEMON_REAL_BACKUP, DAEMON_LIVE_PATH);
-    return {
-      status: "unavailable",
-      reason: `cp -c failed: ${cp.error?.message ?? (cp.stderr?.toString().trim() || `exit ${cp.status}`)}`,
-    };
-  }
-  return { status: "swapped" };
+interface FlavorInfo {
+  mode: "dev" | "prod";
+  /** CFBundleExecutable AND osascript display name — build.sh templates them identically. */
+  name: string;
+  appPath: string;
 }
 
-function swapDaemonToReal(): DaemonSwapResult {
-  if (!existsSync(DAEMON_REAL_BACKUP)) {
-    return { status: "already" };
-  }
-  if (existsSync(DAEMON_LIVE_PATH)) {
-    rmSync(DAEMON_LIVE_PATH);
-  }
-  renameSync(DAEMON_REAL_BACKUP, DAEMON_LIVE_PATH);
-  return { status: "swapped" };
+function flavorFor(mode: "dev" | "prod"): FlavorInfo {
+  return mode === "dev"
+    ? { mode, name: DEV_TRAY_APP_NAME, appPath: devTrayAppPath() }
+    : { mode, name: TRAY_APP_NAME, appPath: trayAppPath() };
 }
 
-/**
- * After swapping the daemon binary on disk, launchd caches a Launch With
- * Code Requirements (LWCR) entry that pins the binary's hash at registration
- * time. Neither `launchctl bootout` nor `SMAppService.agent.unregister()` +
- * `.register()` reliably forces a refresh — BTM retains the cached LWCR and
- * reuses it on re-register. The job then crash-loops with EX_CONFIG (78)
- * and launchd reports "needs LWCR update".
- *
- * The only thing that does reliably force a refresh is toggling the app's
- * Login Item registration (what System Settings → Login Items does). That
- * calls `SMAppService.mainApp.unregister()` + `.register()` — the parent-
- * app-level cycle cascades to all embedded agents with fresh LWCR reads.
- *
- * We delegate to rt-tray via `/login-item/reset` because SMAppService is
- * app-context only; the rt CLI can't call it directly.
- */
-async function reregisterDaemon(): Promise<{ ok: boolean; err?: string; status?: string }> {
+function launchdLabelFor(mode: "dev" | "prod"): string {
+  return mode === "dev" ? "com.rt.daemon.dev" : "com.rt.daemon";
+}
+
+const HANDOFF_POLL_TIMEOUT_MS = 3_000;
+const HANDOFF_POLL_INTERVAL_MS = 75;
+
+/** CONNECT-probe, not file existence — a pkill'd tray leaks the socket file. */
+async function traySocketIsLive(sockPath: string): Promise<boolean> {
+  if (!existsSync(sockPath)) return false;
+  try {
+    const response = await fetch("http://localhost/health", {
+      unix: sockPath,
+      method: "GET",
+      signal: AbortSignal.timeout(500),
+    } as any);
+    return response.status > 0;
+  } catch {
+    return false; // connection refused / socket gone / timed out
+  }
+}
+
+function launchdStillRegistered(label: string): boolean {
+  // env explicitly forwarded: Bun resolves a bare command against the
+  // process-start PATH snapshot unless an env is passed, so a runtime PATH
+  // fake (tests) would otherwise be silently ignored.
+  const result = spawnSync("launchctl", ["list", label], { encoding: "utf8", stdio: "pipe", env: process.env });
+  if (result.error || result.status !== 0) return false;
+  const out = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  return !out.includes("Could not find");
+}
+
+/** Bounded poll: both the socket AND the outgoing launchd label must clear. */
+async function waitUntilGone(sockPath: string, outgoingLabel: string): Promise<boolean> {
+  const deadline = Date.now() + HANDOFF_POLL_TIMEOUT_MS;
+  for (;;) {
+    const gone = !(await traySocketIsLive(sockPath)) && !launchdStillRegistered(outgoingLabel);
+    if (gone) return true;
+    if (Date.now() >= deadline) return false;
+    await Bun.sleep(HANDOFF_POLL_INTERVAL_MS);
+  }
+}
+
+async function handoffToFlavor(outgoing: FlavorInfo, incoming: FlavorInfo): Promise<void> {
   const { trayQuery } = await import("../lib/daemon-client.ts");
-  const result = await trayQuery("/login-item/reset", "POST");
-  if (!result) {
-    return { ok: false, err: "rt-tray not reachable" };
+  const { TRAY_SOCK_PATH } = await import("../lib/daemon-config.ts");
+  const outgoingLabel = launchdLabelFor(outgoing.mode);
+
+  // 1. Retire the outgoing tray's own registrations (its daemon LaunchAgent
+  // and its login item) before quitting it — TrayServer's /flavor/retire.
+  const retire = await trayQuery("/flavor/retire", "POST");
+  if (retire?.ok) {
+    console.log(`  ${green}✓${reset} ${outgoing.name} retired its registrations`);
+  } else {
+    console.log(`  ${yellow}⚠${reset} flavor retire: ${retire ? ((retire as any).error ?? "failed") : `${outgoing.name} not reachable`}`);
   }
-  if (!result.ok) {
-    return { ok: false, err: (result as any).error ?? "unknown tray error" };
-  }
-  return { ok: true, status: (result as any).status };
+
+  // 2. Quit the outgoing tray by ITS OWN flavor's names. env forwarded
+  // explicitly for the same reason as launchdStillRegistered above.
+  spawnSync("osascript", ["-e", `tell application "${outgoing.name}" to quit`], { stdio: "pipe", timeout: 3_000, env: process.env });
+  spawnSync("pkill", ["-x", outgoing.name], { stdio: "pipe", env: process.env });
+
+  // 3. Poll until the outgoing pair is actually gone — required because the
+  // incoming tray's ping-then-exit socket guard would otherwise see the
+  // dying socket and abort its own startup.
+  const gone = await waitUntilGone(TRAY_SOCK_PATH, outgoingLabel);
+  console.log(gone
+    ? `  ${green}✓${reset} ${outgoing.name} quit`
+    : `  ${yellow}⚠${reset} ${outgoing.name} did not fully quit — launching ${incoming.name} anyway`);
+
+  // 4. Launch the incoming app.
+  spawnSync("open", [incoming.appPath], { stdio: "pipe", env: process.env });
+  console.log(`  ${green}✓${reset} launched ${incoming.appPath}`);
 }
 
 export async function toggleDevMode(args: string[]): Promise<void> {
@@ -574,6 +595,22 @@ export async function toggleDevMode(args: string[]): Promise<void> {
         { value: "prod", label: "Prod", hint: "Homebrew binary — uses installed release" },
       ],
     }) as "dev" | "prod";
+  }
+
+  if (target === mode) {
+    console.log(`  ${dim}already in ${mode} mode${reset}\n`);
+    return;
+  }
+
+  const incoming = flavorFor(target);
+
+  // 0. Precondition — the incoming flavor's bundle must exist on disk BEFORE
+  // we touch the running flavor at all, so the toggle can never leave the
+  // machine tray-less.
+  if (!existsSync(incoming.appPath)) {
+    console.log(`  ${red}✗${reset} ${incoming.appPath} not found`);
+    console.log(`  ${dim}run: build.sh ${target === "dev" ? "dev" : "install"} first${reset}\n`);
+    return;
   }
 
   if (target === "dev") {
@@ -607,34 +644,11 @@ export async function toggleDevMode(args: string[]): Promise<void> {
       console.log(`  ${green}✓${reset} added shell integration to ${shellResult.rcPath}`);
     }
 
-    console.log(`  ${green}✓${reset} dev mode enabled`);
+    console.log(`  ${green}✓${reset} CLI switched to dev mode`);
     console.log(`  ${dim}wrapper → ${DEV_MODE_WRAPPER}${reset}`);
     console.log(`  ${dim}source  → ${resolvedPath}${reset}`);
 
-    // Swap daemon binary so launchd runs from source too
-    const swap = swapDaemonToShim();
-    if (swap.status === "swapped") {
-      console.log(`  ${green}✓${reset} daemon binary swapped to shim  ${dim}(re-registering…)${reset}`);
-      const reg = await reregisterDaemon();
-      if (reg.ok) {
-        if (reg.status === "requiresApproval") {
-          console.log(`  ${yellow}⚠${reset} rt-tray needs re-approval after reset`);
-          console.log(`  ${dim}  Opening System Settings → Login Items…${reset}`);
-          spawnSync("open", ["x-apple.systempreferences:com.apple.LoginItems-Settings.extension"]);
-        } else {
-          console.log(`  ${green}✓${reset} daemon re-registered — running ${reg.status ?? "enabled"}`);
-        }
-      } else {
-        console.log(`  ${yellow}⚠${reset} daemon re-register failed: ${reg.err}`);
-        console.log(`  ${dim}  fix manually: System Settings → General → Login Items & Extensions${reset}`);
-        console.log(`  ${dim}  → toggle rt-tray off/on (forces a fresh LWCR read)${reset}`);
-      }
-    } else if (swap.status === "already") {
-      console.log(`  ${dim}daemon already running as shim${reset}`);
-    } else {
-      console.log(`  ${yellow}⚠${reset} ${swap.reason}`);
-      console.log(`  ${dim}  CLI is in dev mode; daemon still runs the compiled binary${reset}`);
-    }
+    await handoffToFlavor(flavorFor(mode), incoming);
 
     console.log(`  ${dim}restart your terminal (or: source ${shellResult.rcPath ?? "~/.zshrc"}) to activate${reset}`);
 
@@ -642,20 +656,7 @@ export async function toggleDevMode(args: string[]): Promise<void> {
     disableDevMode();
     console.log(`  ${green}✓${reset} CLI restored to prod mode  ${dim}(Homebrew binary is now active)${reset}`);
 
-    const swap = swapDaemonToReal();
-    if (swap.status === "swapped") {
-      console.log(`  ${green}✓${reset} daemon binary restored  ${dim}(re-registering…)${reset}`);
-      const reg = await reregisterDaemon();
-      if (reg.ok) {
-        console.log(`  ${green}✓${reset} daemon re-registered — running compiled binary`);
-      } else {
-        console.log(`  ${yellow}⚠${reset} daemon re-register failed: ${reg.err}`);
-        console.log(`  ${dim}  fix manually: System Settings → General → Login Items & Extensions${reset}`);
-        console.log(`  ${dim}  → toggle rt-tray off/on (forces a fresh LWCR read)${reset}`);
-      }
-    } else {
-      console.log(`  ${dim}daemon already running compiled binary${reset}`);
-    }
+    await handoffToFlavor(flavorFor(mode), incoming);
   }
 
   console.log("");
