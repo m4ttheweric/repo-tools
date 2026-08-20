@@ -23,6 +23,7 @@ rt settings set <key> <value> [flags]
 | `<value>` | text |  | JSON(C) value |
 | `--scope` | select |  | Which store to write into |
 | [`--repo`](/guides/common-flags) | text |  | Repo name from ~/.mattstack/rt/repos.json — required for repo-scoped keys |
+| `--team` | text |  | Which team's local store to write, for --scope team (only needed when several are cloned) |
 
 _See code: [commands/settings-keys.ts › settingsSet](https://github.com/m4ttstack/rt/blob/main/commands/settings-keys.ts)_
 

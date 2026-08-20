@@ -4,7 +4,7 @@
  * dev-mode/runaway leaves) so this file owns only the four resolver verbs.
  *
  *   rt settings get <key> [--repo <name>] [--json]
- *   rt settings set <key> <json-value> --scope user|team|machine [--repo <name>]
+ *   rt settings set <key> <json-value> --scope user|team|machine [--repo <name>] [--team <name>]
  *   rt settings list [--repo <name>] [--json]
  *   rt settings explain <key> [--repo <name>]
  *
@@ -44,7 +44,7 @@ import { buildInterceptRules, writeInterceptRules } from "../lib/endpoint/shim.t
 
 // ─── arg parsing (commands/events.ts conventions) ────────────────────────────
 
-const FLAGS_WITH_VALUES = new Set(["--repo", "--scope"]);
+const FLAGS_WITH_VALUES = new Set(["--repo", "--scope", "--team"]);
 
 function positionals(args: string[]): string[] {
   const out: string[] = [];
@@ -88,11 +88,29 @@ function repoIndex(): Record<string, string> {
   return readJson<Record<string, string>>(join(rtDir(), "repos.json"), {});
 }
 
+/**
+ * Resolves `--repo <name>` for the READ verbs (get/list/explain).
+ *
+ * When the name resolves to a path but no identity derives (a local-path
+ * remote, no remote at all, an unrecognized host), the repo rungs of every
+ * store are simply unreachable — `${repoRoot}` and the legacy rung still
+ * answer, so the command succeeds with a strictly smaller ladder. That is an
+ * honest degrade, but a SILENT one is a trap: the user asked about a repo and
+ * got an answer that quietly ignored every repo-scoped value. So say it once,
+ * dim, on stderr — the resolved value still lands on stdout unpolluted, and
+ * `--json` output is untouched. `set` does not come through here; it refuses
+ * outright rather than writing into a section nothing will read back.
+ */
 async function resolveRepoContext(repoName: string | undefined): Promise<RepoContext> {
   if (!repoName) return { repoIdentity: null };
   const repoPath = repoIndex()[repoName];
   if (!repoPath) fail(`repo "${repoName}" is not registered in ~/.mattstack/rt/repos.json`);
   const identity = await deriveRepoIdentity(repoPath);
+  if (!identity) {
+    console.error(
+      `${dim}identity: none derivable for ${repoName} — repo sections unreachable (see rt.repoIdentityOverrides)${reset}`,
+    );
+  }
   return {
     repoIdentity: identity,
     expandCtx: { repoRoot: repoPath },
@@ -183,11 +201,22 @@ const VALID_SCOPES: SettingScope[] = ["user", "team", "machine"];
 export async function settingsSet(args: string[]): Promise<void> {
   const [key, rawValue] = positionals(args);
   const scope = flagValue(args, "--scope");
-  const usage = "usage: rt settings set <key> <json-value> --scope user|team|machine [--repo <name>]";
+  const usage = "usage: rt settings set <key> <json-value> --scope user|team|machine [--repo <name>] [--team <name>]";
   if (!key || rawValue === undefined) fail(usage);
   if (!scope) fail(`${usage} (--scope is required)`);
   if (!VALID_SCOPES.includes(scope as SettingScope)) {
     fail(`--scope must be one of ${VALID_SCOPES.join(", ")} (got "${scope}")`);
+  }
+
+  // `--team` is the CLI surface for `setSetting`'s team selection (see
+  // write.ts's "Team selection"). It only means anything at team scope; taking
+  // it silently at user/machine scope would let `rt settings set … --scope
+  // user --team acme` look like it targeted a team store while writing
+  // the user one.
+  const team = flagValue(args, "--team");
+  if (args.includes("--team")) {
+    if (scope !== "team") fail(`--team only applies to --scope team (got --scope ${scope})`);
+    if (team === undefined || team.startsWith("--") || team.trim() === "") fail("--team requires a team name");
   }
 
   const trimmed = rawValue.trim();
@@ -207,12 +236,13 @@ export async function settingsSet(args: string[]): Promise<void> {
   }
 
   try {
-    setSetting(key, value, scope as SettingScope, { repoIdentity });
+    setSetting(key, value, scope as SettingScope, { repoIdentity, team });
   } catch (err) {
     failWithError(err);
   }
 
-  console.log(`\n  ${green}✓${reset} ${bold}${key}${reset} set (${scope}${repoName ? `, ${repoName}` : ""})`);
+  const where = [scope === "team" && team ? `team:${team}` : scope, ...(repoName ? [repoName] : [])].join(", ");
+  console.log(`\n  ${green}✓${reset} ${bold}${key}${reset} set (${where})`);
 
   // See "the intercepts.json regeneration seam" below for why the write side
   // owns this and why it is not a full `rt intercept install`.
@@ -303,7 +333,11 @@ export async function settingsList(args: string[]): Promise<void> {
 export function renderListRow(s: ListedSetting): string {
   const labels: string[] = [];
   if (s.unregistered) labels.push("unregistered");
-  if (!s.migrated) {
+  // `migrated` is a registry fact, so an UNREGISTERED row has none — it comes
+  // back false by default. Labelling those "reads legacy" would name a
+  // migration window that does not exist for a key rt has never heard of;
+  // "unregistered" is the whole story there.
+  if (!s.migrated && !s.unregistered) {
     const def = getDef(s.key);
     labels.push(def ? (migratedNote(def) as string) : "reads legacy");
   }
