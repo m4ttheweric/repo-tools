@@ -165,16 +165,6 @@ const REGISTRY: SettingDef[] = [
     description: "Saved argument presets for frequently repeated rt commands.",
   },
   {
-    key: "rt.workspaceSync",
-    type: "object",
-    scopes: ALL_SCOPES,
-    merge: "deep",
-    repoScoped: true,
-    migrated: false,
-    legacyFile: "repos/<repo>/workspace-sync.json",
-    description: "Rules for keeping herdr workspace layout in sync with active worktrees.",
-  },
-  {
     key: "rt.dopplerTemplate",
     type: "object",
     scopes: ALL_SCOPES,

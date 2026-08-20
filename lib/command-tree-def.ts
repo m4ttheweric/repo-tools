@@ -417,23 +417,6 @@ export const TREE: Record<string, CommandNode> = {
     ],
   },
 
-  workspace: {
-    description: "VS Code workspace management",
-    subcommands: {
-      sync: {
-        description: "Auto-sync workspace file across worktrees",
-        module: "./commands/workspace.ts",
-        fn: "workspaceSyncCommand",
-        context: "repo",
-        requiresTTY: true,
-        args: [
-          { name: "Status", flag: "--status", type: "boolean", default: false, hint: "Show current sync config and watcher state" },
-          { name: "Off", flag: "--off", type: "boolean", default: false, hint: "Disable syncing and remove the file watcher" },
-        ],
-      },
-    },
-  },
-
   park: {
     description: "Deprecated — replaced by rt worktree",
     module: "./commands/worktree.ts",

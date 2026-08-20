@@ -8,7 +8,6 @@ import type { Server } from "bun";
 import type { Logger } from "pino";
 import { DAEMON_SOCK_PATH, DAEMON_PID_PATH } from "../daemon-config.ts";
 import { clearWsClients } from "./api-server.ts";
-import { cleanupAllWatchers } from "./workspace-sync.ts";
 import { disposeFreshness } from "./freshness.ts";
 import { stopDiscussionsPoller } from "./discussions-poller.ts";
 import type { HooksGuard } from "./hooks-guard.ts";
@@ -33,7 +32,6 @@ export function createCleanup(deps: ShutdownDeps): () => void {
     try { servers.api?.stop(true); } catch { /* */ }
     clearWsClients();
 
-    try { cleanupAllWatchers(); } catch { /* */ }
     try { disposeFreshness(); } catch { /* */ }
     try { stopDiscussionsPoller(); } catch { /* */ }
     try { hooksGuard.closeAll(); } catch { /* */ }

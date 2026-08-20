@@ -13,7 +13,6 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { repoDataDir } from "../rt-paths.ts";
 import { saveTemplate } from "../doppler-template.ts";
-import { saveSyncConfig } from "../daemon/workspace-sync.ts";
 
 describe("per-repo files land under ~/.mattstack/rt/repos/<repo>/", () => {
   const origHome = process.env.HOME;
@@ -39,11 +38,5 @@ describe("per-repo files land under ~/.mattstack/rt/repos/<repo>/", () => {
     saveTemplate("acme", [{ path: "apps/api", project: "api", config: "dev" }]);
     expect(existsSync(newPath("acme", "doppler-template.yaml"))).toBe(true);
     expect(existsSync(oldPath("acme", "doppler-template.yaml"))).toBe(false);
-  });
-
-  test("workspace-sync saveSyncConfig writes under repos/", () => {
-    saveSyncConfig("acme", { enabled: true } as never);
-    expect(existsSync(newPath("acme", "workspace-sync.json"))).toBe(true);
-    expect(existsSync(oldPath("acme", "workspace-sync.json"))).toBe(false);
   });
 });
