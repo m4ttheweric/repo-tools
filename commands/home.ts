@@ -2,9 +2,11 @@
  * rt home — the git-backed ~/.mattstack home repo.
  *
  *   rt home init [--dry-run]   print, then run, the adoption plan
+ *   rt home key export        print the age private key once, for a password manager
  *
- * Gathers state, prints the plan from lib/home/init-plan.ts, and (unless
- * --dry-run) runs it through lib/home/init-exec.ts's injected seam.
+ * `init` gathers state, prints the plan from lib/home/init-plan.ts, and
+ * (unless --dry-run) runs it through lib/home/init-exec.ts's injected seam.
+ * `key export` delegates entirely to lib/home/age-key.ts.
  */
 
 import { existsSync, readFileSync, readdirSync } from "fs";
@@ -14,6 +16,7 @@ import { mattstackHome, teamsDir } from "../lib/rt-paths.ts";
 import { buildInitPlan, type HomeState, type InitStep } from "../lib/home/init-plan.ts";
 import { createRealExecSeam, executeInitPlan, type ExecResult, type ExecSeam } from "../lib/home/init-exec.ts";
 import { parseOriginUrl } from "../lib/home/git-config.ts";
+import { createRealAgeKeySeam, keyExport, type AgeKeySeam } from "../lib/home/age-key.ts";
 
 /** Stray root cruft deleted at init time, not adopted into the repo. */
 const CRUFT_CANDIDATES = ["skills.jsonc.pre-pack", "skills.jsonc.retired-backup"];
@@ -166,4 +169,12 @@ export async function homeInit(
   }
 
   console.log(`\nrt home init: ${home} is now the git-backed home repo.`);
+}
+
+export async function homeKeyExport(
+  _args: string[],
+  _ctx: CommandContext = {},
+  seams: AgeKeySeam = createRealAgeKeySeam(),
+): Promise<void> {
+  await keyExport(seams, (text) => console.log(text));
 }
