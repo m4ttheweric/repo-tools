@@ -14,14 +14,21 @@ Full documentation: **https://rt.cool**
 
 ## Install
 
+Download the latest `rt-darwin-<arch>-<version>.tar.gz` from
+[GitHub Releases](https://github.com/m4ttstack/rt/releases), extract it, and run
+the installer it contains:
+
 ```bash
-brew install m4ttheweric/tap/rt
-rt verify                  # completes first-run setup, then verifies everything
+tar -xzf rt-darwin-arm64-*.tar.gz -C rt-release && cd rt-release
+./rt --post-install        # installs rt, mattstack.app, the editor extension, the daemon, shell integration
+rt verify                  # verifies everything
 ```
 
-`rt verify` runs setup on first use (tray app, daemon, editor extensions, shell
-integration) and then reports the health of each piece: use it any time you
-want to confirm the install is in good shape.
+(The mattstack.app installer + onboarding UI that replaces this step is in
+progress; `rt update` already upgrades in place from GitHub Releases.)
+
+`rt verify` runs setup on first use and then reports the health of each piece:
+use it any time you want to confirm the install is in good shape.
 
 Then configure your API tokens:
 
@@ -205,7 +212,7 @@ rt settings linear team       # Set default Linear team
 rt settings gitlab token      # Set GitLab personal access token
 rt settings extension         # Install RT Context extension into local editors
 rt settings notifications     # Toggle notification preferences
-rt settings dev-mode          # Toggle between local source and Homebrew binary
+rt settings dev-mode          # Toggle between local source and the installed binary
 ```
 
 ### Other
@@ -214,7 +221,7 @@ rt settings dev-mode          # Toggle between local source and Homebrew binary
 rt hooks                  # Toggle git hooks on/off
 rt verify                 # Installation verification
 rt version                # Print version + mode (dev/prod)
-rt update                 # Upgrade to the latest release via Homebrew
+rt update                 # Upgrade to the latest GitHub release
 rt --version              # Print version (short)
 ```
 
@@ -297,7 +304,7 @@ A resource missing from the file just shows its raw name and connects with Postg
 
 ## RT Context Extension
 
-The `rt-context` VS Code/Cursor extension shows your current worktree, branch, and linked Linear ticket in the status bar. It's installed automatically by Homebrew.
+The `rt-context` VS Code/Cursor extension shows your current worktree, branch, and linked Linear ticket in the status bar. The installer (`rt --post-install`) installs it into every detected editor.
 
 To reinstall or install into additional editors:
 
@@ -335,8 +342,8 @@ From the menu you can restart the daemon, stop it, toggle launch-at-login, and c
 | Dependency | Notes |
 |---|---|
 | macOS | Required (Apple Silicon or Intel) |
-| `fzf` | 0.71.0 or newer (`--listen` and `--id-nth`, used by `rt nav`'s live refresh); auto-installed by Homebrew |
-| `tmux` | Auto-installed by Homebrew |
+| `fzf` | 0.71.0 or newer (`--listen` and `--id-nth`, used by `rt nav`'s live refresh); `brew install fzf` |
+| `tmux` | `brew install tmux` |
 | `chafa` | Optional, renders image previews in `rt nav` as colored character art (`brew install chafa`) |
 | `kitten` | Optional, upgrades `rt nav` image previews to true pixels on Kitty-protocol terminals such as Ghostty. Ships with Kitty (`brew install --cask kitty`) |
 
@@ -363,19 +370,19 @@ bun run cli.ts verify   # run any subcommand the same way
 
 ### Switching between dev and production
 
-Once you have a Homebrew install alongside your source checkout, use the built-in toggle:
+Once mattstack.app is installed alongside your source checkout, use the built-in toggle:
 
 ```bash
 rt settings dev-mode        # interactive picker: dev ↔ prod
 rt settings dev-mode dev    # switch to local source
-rt settings dev-mode prod   # switch back to Homebrew binary
+rt settings dev-mode prod   # switch back to the installed binary
 ```
 
 **How it works:**
-- `dev` mode writes a wrapper script at `~/.local/bin/rt` that calls `bun run /path/to/cli.ts "$@"`
-- `prod` mode removes that wrapper, letting `/opt/homebrew/bin/rt` take over
-- `~/.local/bin` is added to your PATH automatically (in your shell rc file) during `brew install` and on first `dev-mode dev`
-- The source path is remembered in `~/.rt/dev-mode.json`, so there's no re-entry needed when toggling back
+- `dev` mode writes a wrapper script at `~/.local/bin/rt` that calls `bun run /path/to/cli.ts "$@"` and hands the tray over to `mattstack-dev.app`
+- `prod` mode installs the compiled binary carried inside `mattstack.app` at that same path and hands the tray back to `mattstack.app`
+- `~/.local/bin` is added to your PATH automatically (in your shell rc file) by the installer and on first `dev-mode dev`
+- The source path is remembered in `~/.mattstack/rt/dev-mode.json`, so there's no re-entry needed when toggling back
 
 `rt version` tells you which is active (and the source path in dev mode);
 `rt --version` is the short form that just prints the version string.
@@ -389,11 +396,13 @@ rt --post-install
 ```
 
 This is the same code that `rt` auto-runs on its first invocation (and that
-`rt update` re-runs after a Homebrew upgrade). It:
-1. Copies `rt-tray.app` to `~/Applications`
-2. Installs `rt-context.vsix` into all detected editors
-3. Installs the daemon as a launchd agent
-4. Writes shell integration to your rc file (PATH + rtcd, idempotent, supports zsh, bash, fish)
+`rt update` runs from the freshly downloaded release). Run from an extracted
+release tarball it:
+1. Installs the `rt` binary at `~/.local/bin/rt`
+2. Copies `mattstack.app` to `~/Applications`
+3. Installs `rt-context.vsix` into all detected editors
+4. Installs the daemon as a launchd agent
+5. Writes shell integration to your rc file (PATH + rtcd, idempotent, supports zsh, bash, fish)
 
 ### Verifying an installation
 
@@ -454,15 +463,12 @@ git push --tags
 
 GitHub Actions will:
 1. Compile `rt` for arm64 + x64
-2. Build `rt-tray.app` with version baked into `Info.plist`
+2. Build `mattstack.app` with version baked into `Info.plist`
 3. Package `rt-context.vsix`
 4. Create a GitHub Release with bundled tarballs
-5. Update `m4ttheweric/homebrew-tap` formula with real URLs + SHA256s
-6. Run `rt verify --ci` on a fresh `macos-latest` runner to confirm the install works
+5. Install from the published tarball on a fresh `macos-latest` runner and run `rt verify --ci`
 
-The formula has **no** `post_install` hook: Homebrew runs formula hooks in a
-sandbox that can't write to `~/Applications`, `~/.rt`, or shell rc files, so
-setup is deferred to the binary itself. `cli.ts` detects a missing
-`~/.rt/daemon.json` on first invocation and transparently runs
-`commands/post-install.ts`, which is also what `rt --post-install` and the
-post-upgrade step of `rt update` invoke.
+Setup lives in the binary itself: `cli.ts` detects a missing
+`~/.mattstack/rt/daemon.json` on first invocation and transparently runs
+`commands/post-install.ts`, which is also what `rt --post-install` and
+`rt update` invoke.

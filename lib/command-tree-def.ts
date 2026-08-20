@@ -372,7 +372,7 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   update: {
-    description: "Update rt to the latest version via Homebrew",
+    description: "Update rt to the latest GitHub release",
     module: "./commands/update.ts",
     fn: "runUpdate",
     args: [],
@@ -386,7 +386,7 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   verify: {
-    description: "Verify an rt installation end-to-end (run after brew install)",
+    description: "Verify an rt installation end-to-end (run after installing)",
     module: "./commands/verify.ts",
     fn: "runVerify",
     args: [
@@ -680,12 +680,12 @@ export const TREE: Record<string, CommandNode> = {
         args: [],
       },
       "dev-mode": {
-        description: "Toggle between local dev source and Homebrew production binary",
+        description: "Toggle between local dev source and the installed production binary",
         module: "./commands/settings.ts",
         fn: "toggleDevMode",
         requiresTTY: true,
         args: [
-          { name: "Target", type: "select", hint: "Omit to be prompted interactively", options: [{ value: "dev", label: "dev", hint: "Run from local source" }, { value: "prod", label: "prod", hint: "Run the Homebrew binary" }] },
+          { name: "Target", type: "select", hint: "Omit to be prompted interactively", options: [{ value: "dev", label: "dev", hint: "Run from local source" }, { value: "prod", label: "prod", hint: "Run the installed binary (from mattstack.app)" }] },
         ],
       },
       llm: {

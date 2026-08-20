@@ -1,80 +1,109 @@
 #!/usr/bin/env bun
 
 /**
- * rt update — Upgrade rt to the latest version via Homebrew.
+ * rt update — install the latest GitHub release.
  *
- * Equivalent to: brew upgrade m4ttheweric/tap/rt
+ * Downloads the release tarball (the same artifact mattstack.app ships in),
+ * then runs the EXTRACTED binary's --post-install so the rt binary, the app
+ * bundle, and the editor extension are installed by the one code path a fresh
+ * install uses. Nothing here knows how to install; post-install does.
  */
 
-import { spawnSync, execSync } from "child_process";
-import { existsSync } from "fs";
-import { homedir } from "os";
+import { spawnSync } from "child_process";
+import { existsSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
-import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
+import { currentMode } from "../lib/dev-mode.ts";
+import { rtDir } from "../lib/rt-paths.ts";
+import { bold, dim, green, red, reset, yellow } from "../lib/tui.ts";
 
 declare const RT_VERSION: string;
 
+export const RELEASES_API = "https://api.github.com/repos/m4ttstack/rt/releases/latest";
+
+interface ReleaseAsset { name: string; browser_download_url: string }
+interface Release { tag_name: string; assets: ReleaseAsset[] }
+
+export function releaseAssetName(tag: string, arch: string = process.arch): string {
+  return `rt-darwin-${arch === "arm64" ? "arm64" : "x64"}-${tag}.tar.gz`;
+}
+
+function stripV(v: string): string {
+  return v.startsWith("v") ? v.slice(1) : v;
+}
+
 export async function runUpdate(_args: string[]): Promise<void> {
-  // Detect dev mode — updating makes no sense when running from source.
-  // Use the wrapper script as the authoritative signal (same as settings.ts:currentMode()).
-  // dev-mode.json persists even after switching to prod, so it's not reliable.
-  const devModeWrapper = join(homedir(), ".local/bin/rt");
-  if (existsSync(devModeWrapper)) {
+  if (currentMode() === "dev") {
     console.log(`\n  ${yellow}⚠${reset}  dev mode is active — you're running from local source.`);
     console.log(`  ${dim}Switch to prod first: rt settings dev-mode prod${reset}\n`);
     process.exit(1);
   }
 
-  // Check brew is available
-  const brew = spawnSync("which", ["brew"], { encoding: "utf8" }).stdout.trim();
-  if (!brew) {
-    console.log(`\n  ${red}✗${reset}  Homebrew not found — rt was not installed via Homebrew.`);
-    console.log(`  ${dim}Install from: https://brew.sh${reset}\n`);
-    process.exit(1);
-  }
-
-  // Show current version — RT_VERSION is injected at compile time via bun build --define.
+  // RT_VERSION is injected at compile time via bun build --define.
   const current = (typeof RT_VERSION !== "undefined" ? RT_VERSION : null) ?? process.env.RT_VERSION ?? "dev";
   console.log(`  ${dim}current: ${current}${reset}`);
 
-  // Check if there's an update available first (non-blocking)
+  let release: Release;
   try {
-    execSync("brew update --quiet", { stdio: "pipe", timeout: 30_000 });
-    const outdated = execSync("brew outdated m4ttheweric/tap/rt 2>/dev/null || brew outdated rt 2>/dev/null", {
-      encoding: "utf8", stdio: "pipe",
-    }).trim();
-
-    if (!outdated) {
-      console.log(`  ${green}✓${reset}  already up to date\n`);
-      return;
-    }
-  } catch {
-    // brew update can fail (no network etc.) — attempt upgrade anyway
+    const res = await fetch(RELEASES_API, { headers: { Accept: "application/vnd.github+json" } });
+    if (!res.ok) throw new Error(`GitHub API ${res.status}`);
+    release = (await res.json()) as Release;
+  } catch (err: any) {
+    console.log(`\n  ${red}✗${reset}  could not check releases: ${err?.message ?? err}\n`);
+    process.exit(1);
   }
 
-  console.log(`  upgrading via Homebrew…\n`);
+  const tag = release.tag_name;
+  if (stripV(tag) === stripV(current)) {
+    console.log(`  ${green}✓${reset}  already up to date\n`);
+    return;
+  }
 
-  const result = spawnSync(brew, ["upgrade", "m4ttheweric/tap/rt"], {
+  const assetName = releaseAssetName(tag);
+  const asset = release.assets.find((a) => a.name === assetName);
+  if (!asset) {
+    console.log(`\n  ${red}✗${reset}  release ${tag} has no ${assetName}\n`);
+    process.exit(1);
+  }
+
+  console.log(`  ${dim}latest:  ${tag}${reset}\n`);
+  console.log(`  downloading ${bold}${assetName}${reset}…`);
+
+  const stage = join(rtDir(), "updates", tag);
+  rmSync(stage, { recursive: true, force: true });
+  mkdirSync(stage, { recursive: true });
+  const tarball = join(stage, assetName);
+
+  try {
+    const res = await fetch(asset.browser_download_url);
+    if (!res.ok) throw new Error(`download ${res.status}`);
+    await Bun.write(tarball, res);
+  } catch (err: any) {
+    console.log(`\n  ${red}✗${reset}  download failed: ${err?.message ?? err}\n`);
+    process.exit(1);
+  }
+
+  const untar = spawnSync("tar", ["-xzf", tarball, "-C", stage], { stdio: "pipe", env: process.env });
+  if (untar.status !== 0) {
+    console.log(`\n  ${red}✗${reset}  extract failed: ${untar.stderr?.toString().trim()}\n`);
+    process.exit(1);
+  }
+
+  const newRt = join(stage, "rt");
+  if (!existsSync(newRt)) {
+    console.log(`\n  ${red}✗${reset}  tarball has no rt binary\n`);
+    process.exit(1);
+  }
+
+  console.log(`\n  running post-install from ${tag}…\n`);
+  const post = spawnSync(newRt, ["--post-install"], {
     stdio: "inherit",
-    timeout: 5 * 60_000,
+    env: { ...process.env, RT_SKIP_SETUP: "1" },
   });
-
-  if (result.status !== 0) {
-    // Try without the tap prefix in case it's already linked differently
-    const fallback = spawnSync(brew, ["upgrade", "rt"], { stdio: "inherit", timeout: 5 * 60_000 });
-    if (fallback.status !== 0) {
-      console.log(`\n  ${red}✗${reset}  upgrade failed — run manually: brew upgrade m4ttheweric/tap/rt\n`);
-      process.exit(1);
-    }
+  if (post.status !== 0) {
+    console.log(`\n  ${red}✗${reset}  post-install failed — the extracted release is at ${stage}\n`);
+    process.exit(1);
   }
 
-  // Run post-install using the newly installed binary so it finds the new
-  // tray app / extension relative to its own path, and restarts the daemon.
-  const newRt = spawnSync("which", ["rt"], { encoding: "utf8" }).stdout.trim();
-  if (newRt) {
-    console.log(`\n  running post-install setup…\n`);
-    spawnSync(newRt, ["--post-install"], { stdio: "inherit", env: { ...process.env, RT_SKIP_SETUP: "1" } });
-  }
-
-  console.log(`\n  ${green}✓${reset}  rt updated — restart your terminal for the new version\n`);
+  rmSync(stage, { recursive: true, force: true });
+  console.log(`\n  ${green}✓${reset}  rt updated to ${tag} — restart your terminal for the new version\n`);
 }

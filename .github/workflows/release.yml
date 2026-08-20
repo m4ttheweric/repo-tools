@@ -221,92 +221,40 @@ jobs:
             rt-darwin-arm64-*.tar.gz
             rt-darwin-x64-*.tar.gz
 
-      # ── Update Homebrew formula ──────────────────────────────────────────────
-      - name: Update Homebrew tap
-        env:
-          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
-        run: |
-          VERSION="${GITHUB_REF_NAME}"
-          VERSION_NUM="${VERSION#v}"
-          SHA_ARM=$(shasum -a 256 rt-darwin-arm64-${VERSION}.tar.gz | cut -d' ' -f1)
-          SHA_X64=$(shasum -a 256 rt-darwin-x64-${VERSION}.tar.gz | cut -d' ' -f1)
-
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/m4ttheweric/homebrew-tap.git" /tmp/homebrew-tap
-          cd /tmp/homebrew-tap
-
-          cat > Formula/rt.rb << FORMULA
-          class Rt < Formula
-            desc "Developer CLI for branch management, service runner, daemon, and notifications"
-            homepage "https://github.com/m4ttstack/rt"
-            version "${VERSION_NUM}"
-            license "MIT"
-
-            on_macos do
-              on_arm do
-                url "https://github.com/m4ttstack/rt/releases/download/${VERSION}/rt-darwin-arm64-${VERSION}.tar.gz"
-                sha256 "${SHA_ARM}"
-              end
-              on_intel do
-                url "https://github.com/m4ttstack/rt/releases/download/${VERSION}/rt-darwin-x64-${VERSION}.tar.gz"
-                sha256 "${SHA_X64}"
-              end
-            end
-
-            depends_on :macos
-            depends_on "fzf"
-            depends_on "tmux"
-
-            def install
-              bin.install "rt"
-              prefix.install "mattstack.app"
-              prefix.install "rt-context.vsix"
-            end
-
-            # No post_install hook: Homebrew runs hooks in a sandbox that can't
-            # write to ~/Applications, ~/.rt, or shell rc files. Setup is handled
-            # by the binary on first invocation (or via \`rt verify\`).
-
-            def caveats
-              <<~EOS
-                Complete setup + verify the install:
-                  rt verify
-
-                Then configure your API tokens:
-                  rt settings linear token
-                  rt settings gitlab token
-              EOS
-            end
-          end
-          FORMULA
-
-          # Dedent the heredoc (remove leading spaces)
-          sed -i '' 's/^          //' Formula/rt.rb
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/rt.rb
-          git commit -m "rt ${VERSION}"
-          git push
-
   # ── Post-release install test ─────────────────────────────────────────────
+  # Installs from the published tarball on a fresh runner, the same artifact
+  # mattstack.app's installer and `rt update` consume.
   test-install:
     needs: release
     runs-on: macos-latest
     steps:
-      - name: Install from tap
+      - name: Download release tarball
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          brew tap m4ttheweric/tap
-          brew install m4ttheweric/tap/rt
+          gh release download "${GITHUB_REF_NAME}" -R "${GITHUB_REPOSITORY}" \
+            -p "rt-darwin-arm64-*.tar.gz" -D "$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/release"
+          tar -xzf "$RUNNER_TEMP"/rt-darwin-arm64-*.tar.gz -C "$RUNNER_TEMP/release"
+          ls -la "$RUNNER_TEMP/release"
+
+      - name: Install runtime dependencies
+        run: brew install fzf tmux
 
       - name: Verify binary
         run: |
-          rt --version
-          echo "Binary OK: $(rt --version)"
+          "$RUNNER_TEMP/release/rt" --version
+          echo "Binary OK: $("$RUNNER_TEMP/release/rt" --version)"
 
-      - name: Run post-install setup
+      - name: Run the installer
         run: |
-          # Run explicitly outside the Homebrew sandbox for full user-env access
-          rt --post-install
+          "$RUNNER_TEMP/release/rt" --post-install
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Installed binary on PATH
+        run: |
+          test -x "$HOME/.local/bin/rt"
+          rt --version
 
       - name: Install and start daemon
         run: |
@@ -315,7 +263,3 @@ jobs:
 
       - name: Verify installation
         run: rt verify --ci
-
-      - name: Smoke test
-        run: rt --version
-

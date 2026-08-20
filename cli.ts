@@ -94,8 +94,9 @@ if (args[0] === "--version" || args[0] === "-V") {
   const { interceptRun } = await import("./commands/intercept.ts");
   await interceptRun(args.slice(2));
 } else if (args[0] === "--post-install") {
-  // Hidden entry point: called by the Homebrew formula's post_install hook.
-  // Handles tray app, extension install, daemon setup, and shell integration.
+  // Hidden entry point: the installer. Run from an extracted release tarball
+  // it installs the binary, the app, the extension, the daemon, and shell
+  // integration; `rt update` re-execs it from the freshly downloaded release.
   const { runPostInstall } = await import("./commands/post-install.ts");
   await runPostInstall();
 } else if (args[0] === "--grant-fda") {
@@ -121,10 +122,10 @@ if (args[0] === "--version" || args[0] === "-V") {
   process.exit(0);
 } else {
   // ── First-run auto-setup ──────────────────────────────────────────────────
-  // If daemon.json doesn't exist, post-install hasn't completed outside the
-  // Homebrew sandbox. Run it now transparently before the requested command.
-  // This also applies to `rt verify`, which is the command we recommend users
-  // run after `brew install` — it should set up + then verify in one shot.
+  // If daemon.json doesn't exist, post-install has never completed. Run it
+  // now transparently before the requested command. This also applies to
+  // `rt verify`, the command we recommend after installing — it should set
+  // up + then verify in one shot.
   if (process.env.CI !== "true" && process.env.RT_SKIP_SETUP !== "1") {
     const { existsSync } = await import("fs");
     const { join } = await import("path");
