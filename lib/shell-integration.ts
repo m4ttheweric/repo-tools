@@ -14,7 +14,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
-const HOME = homedir();
+// Call-time HOME (mirrors lib/rt-paths.ts's home()): resolved on every call,
+// not baked in at module load. A module-load-time HOME let a test's temp-HOME
+// setup race this module's import and nearly touched the real ~/.zshrc.
+function home(): string {
+  return process.env.HOME ?? homedir();
+}
+
 const MARKER = "# rt — repo tools";
 const HISTORY_HOOK_MARKER = "# rt — shell history hook";
 
@@ -34,9 +40,9 @@ export function detectShell(): ShellType {
 
 export function shellRcPath(shell: ShellType): string | null {
   switch (shell) {
-    case "zsh":  return join(HOME, ".zshrc");
-    case "bash": return join(HOME, ".bash_profile");
-    case "fish": return join(HOME, ".config/fish/conf.d/rt.fish");
+    case "zsh":  return join(home(), ".zshrc");
+    case "bash": return join(home(), ".bash_profile");
+    case "fish": return join(home(), ".config/fish/conf.d/rt.fish");
     default:     return null;
   }
 }
@@ -158,7 +164,7 @@ export function installShellIntegration(): ShellIntegrationResult {
   try {
     // fish conf.d/ may not exist yet
     if (shell === "fish") {
-      mkdirSync(join(HOME, ".config/fish/conf.d"), { recursive: true });
+      mkdirSync(join(home(), ".config/fish/conf.d"), { recursive: true });
     }
     writeFileSync(rcPath, existing + block);
     return { shell, rcPath, alreadyInstalled: false, written: true };
@@ -185,7 +191,7 @@ export function ensureHistoryHook(): boolean {
 
     const block = shell === "fish" ? fishHistoryHook() : posixHistoryHook();
     if (shell === "fish") {
-      mkdirSync(join(HOME, ".config/fish/conf.d"), { recursive: true });
+      mkdirSync(join(home(), ".config/fish/conf.d"), { recursive: true });
     }
     writeFileSync(rcPath, existing + block);
     return true;

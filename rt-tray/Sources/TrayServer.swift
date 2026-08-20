@@ -18,7 +18,83 @@ class TrayServer {
     private let queue = DispatchQueue(label: "com.rt.tray-server", qos: .userInitiated)
 
     private init() {
-        socketPath = NSHomeDirectory() + "/.mattstack/rt/tray.sock"
+        socketPath = Self.socketPath
+    }
+
+    /// The one socket both flavors bind. Static so the startup guard can
+    /// probe it before any TrayServer instance exists.
+    static let socketPath = NSHomeDirectory() + "/.mattstack/rt/tray.sock"
+
+    // MARK: - Startup mutual exclusion
+
+    /// Exit if a live tray already owns the socket (spec MAT-383 §3).
+    ///
+    /// `start()` unlinks and rebinds blindly, so without this the
+    /// last-launched tray silently steals every `rt daemon *` command from
+    /// the running one. Both flavors bind the same path, so a mis-ordered
+    /// dev-mode toggle — or a plain double-launch — would leave two trays
+    /// with two registered daemon agents fighting over rt.pid.
+    ///
+    /// **Call this before ANY SMAppService registration.** An app that exits
+    /// here must not have registered a daemon agent or a login item on its
+    /// way out, or the loser's registrations outlive it. That's why the call
+    /// site is `main.swift`, ahead of the AppDelegate.
+    ///
+    /// A leaked socket file (pkill'd tray) is not a live tray: the probe is a
+    /// CONNECT + request/response, never a file-existence check.
+    static func exitIfAnotherTrayOwnsSocket() {
+        guard FileManager.default.fileExists(atPath: socketPath) else { return }
+        guard liveTrayAnswers(atPath: socketPath) else {
+            TrayLog.info("stale tray socket found, taking it over", ["socket": socketPath])
+            return
+        }
+        TrayLog.error("another tray owns the socket", ["socket": socketPath])
+        // Clean exit — a double-launch is not a crash, and nothing supervises
+        // the app. Nothing has been registered at this point.
+        exit(0)
+    }
+
+    /// CONNECT to the unix socket and require an actual HTTP answer.
+    /// Blocking + short-timeout on purpose: this runs on the main thread
+    /// before the run loop starts, and must produce a verdict, not a future.
+    private static func liveTrayAnswers(atPath path: String) -> Bool {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8)
+        let capacity = MemoryLayout.size(ofValue: addr.sun_path)
+        guard bytes.count < capacity else { return false }
+        withUnsafeMutablePointer(to: &addr.sun_path) { raw in
+            raw.withMemoryRebound(to: CChar.self, capacity: capacity) { dst in
+                for (i, b) in bytes.enumerated() { dst[i] = CChar(bitPattern: b) }
+                dst[bytes.count] = 0
+            }
+        }
+
+        var tv = timeval(tv_sec: 1, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+        let connected = withUnsafePointer(to: &addr) { ptr -> Bool in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.connect(fd, sa, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
+            }
+        }
+        // ECONNREFUSED here = the file is a leftover with no listener.
+        guard connected else { return false }
+
+        let request = "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        let sent = request.withCString { write(fd, $0, strlen($0)) }
+        guard sent > 0 else { return false }
+
+        var buf = [UInt8](repeating: 0, count: 256)
+        // A bound tray that never answers (wedged) reads 0/-1 on timeout and
+        // is treated as dead — better to take the socket than to refuse to
+        // start behind a hung process.
+        return read(fd, &buf, buf.count) > 0
     }
 
     // MARK: - Start / Stop
@@ -108,7 +184,7 @@ class TrayServer {
                 self.sendResponse(connection: connection, status: 400, body: "{\"ok\":false,\"error\":\"invalid body\"}", path: path)
 
             } else if method == "GET" && path == "/health" {
-                self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true,\"app\":\"rt-tray\"}")
+                self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true,\"app\":\"mattstack\"}")
 
             } else if method == "POST" && path == "/daemon/start" {
                 DispatchQueue.main.async {
@@ -128,62 +204,63 @@ class TrayServer {
                 }
                 self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true}")
 
-            } else if method == "POST" && path == "/login-item/reset" {
-                // Full SMAppService reset: unregister + register the parent
-                // app so BTM drops its cached LWCR for every embedded agent
-                // and re-hashes them on re-registration. This is the only
-                // reliable way to recover after a dev-mode binary swap —
-                // agent-level unregister/register leaves BTM's LWCR stale.
+            } else if method == "POST" && path == "/flavor/retire" {
+                // Flavor handoff (spec MAT-383 §3). `rt settings dev-mode
+                // on|off` calls this on the OUTGOING tray before quitting it:
+                // this app gives up both of its registrations — its own
+                // daemon LaunchAgent (its MSDaemonLabel job) and its own
+                // login item — so the incoming flavor is the only registered
+                // pair. Without it two agents stay registered and their
+                // daemons fight over rt.pid/rt.sock.
                 //
-                // Runs synchronously on main so the caller can trust the
-                // response reflects the actual outcome.
-                var ok = true
-                var errMsg = ""
-                var statusAfter = "unknown"
+                // Replaces the deleted login-item reset route (the LWCR
+                // re-register dance), which existed only for the in-place
+                // binary swaps that no longer happen.
+                //
+                // Runs synchronously on main so the reply reflects the
+                // actual post-state, not an intention.
+                var errs: [String] = []
+                var daemonAfter = "unknown"
+                var loginAfter = "unknown"
                 DispatchQueue.main.sync {
+                    if let lifecycle = self.daemonLifecycle {
+                        lifecycle.stopDaemon()   // service.unregister(), logs itself
+                        daemonAfter = Self.statusName(lifecycle.status)
+                    } else {
+                        errs.append("no daemonLifecycle wired")
+                    }
                     do {
-                        if SMAppService.mainApp.status == .enabled {
-                            try SMAppService.mainApp.unregister()
-                        }
+                        try SMAppService.mainApp.unregister()
                     } catch {
-                        // Best-effort — proceed to register even if this fails.
+                        // Unregistering an already-unregistered login item
+                        // throws; the status check below is the ground truth.
                         TrayLog.warn("mainApp.unregister failed", ["err": String(describing: error)])
+                        errs.append(String(describing: error))
                     }
-                    // Let BTM settle before the re-register.
-                    Thread.sleep(forTimeInterval: 1.0)
-                    do {
-                        try SMAppService.mainApp.register()
-                    } catch {
-                        ok = false
-                        errMsg = "\(error)".replacingOccurrences(of: "\"", with: "\\\"")
-                    }
-                    switch SMAppService.mainApp.status {
-                    case .enabled:          statusAfter = "enabled"
-                    case .requiresApproval: statusAfter = "requiresApproval"
-                    case .notRegistered:    statusAfter = "notRegistered"
-                    case .notFound:         statusAfter = "notFound"
-                    @unknown default:       statusAfter = "unknown"
-                    }
+                    loginAfter = Self.statusName(SMAppService.mainApp.status)
                 }
-                if ok {
-                    TrayLog.info("login-item reset", ["status": statusAfter])
+
+                // Ground truth, not intention: retired means neither
+                // registration is enabled any more.
+                let retired = daemonAfter != "enabled" && loginAfter != "enabled"
+                if retired {
+                    TrayLog.info("flavor retired",
+                                 ["daemon": daemonAfter, "loginItem": loginAfter,
+                                  "label": self.daemonLifecycle?.label ?? "(none)"])
                     self.sendResponse(connection: connection, status: 200,
-                                      body: "{\"ok\":true,\"status\":\"\(statusAfter)\"}")
+                                      body: "{\"ok\":true,\"daemon\":\"\(daemonAfter)\",\"loginItem\":\"\(loginAfter)\"}")
                 } else {
-                    TrayLog.error("login-item reset failed", ["err": errMsg])
+                    let errMsg = errs.joined(separator: "; ")
+                        .replacingOccurrences(of: "\"", with: "\\\"")
+                    TrayLog.error("flavor retire failed",
+                                  ["daemon": daemonAfter, "loginItem": loginAfter, "err": errMsg])
                     self.sendResponse(connection: connection, status: 500,
-                                      body: "{\"ok\":false,\"error\":\"\(errMsg)\"}")
+                                      body: "{\"ok\":false,\"daemon\":\"\(daemonAfter)\",\"loginItem\":\"\(loginAfter)\",\"error\":\"\(errMsg)\"}",
+                                      path: path)
                 }
 
             } else if method == "GET" && path == "/daemon/status" {
-                let statusStr: String
-                switch self.daemonLifecycle?.status {
-                case .enabled:          statusStr = "enabled"
-                case .requiresApproval: statusStr = "requiresApproval"
-                case .notRegistered:    statusStr = "notRegistered"
-                case .notFound:         statusStr = "notFound"
-                default:                statusStr = "unknown"
-                }
+                let statusStr = self.daemonLifecycle.map { Self.statusName($0.status) } ?? "unknown"
                 self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true,\"status\":\"\(statusStr)\"}")
 
             } else {
@@ -228,6 +305,16 @@ class TrayServer {
             } else {
                 self.readFullRequest(connection: connection, buffer: accumulated, completion: completion)
             }
+        }
+    }
+
+    static func statusName(_ status: SMAppService.Status) -> String {
+        switch status {
+        case .enabled:          return "enabled"
+        case .requiresApproval: return "requiresApproval"
+        case .notRegistered:    return "notRegistered"
+        case .notFound:         return "notFound"
+        @unknown default:       return "unknown"
         }
     }
 

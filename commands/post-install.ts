@@ -2,7 +2,7 @@
  * rt --post-install — First-run setup, auto-triggered on the first `rt` invocation.
  *
  * Handles all setup steps:
- *   1. Copy rt-tray.app → ~/Applications (remove quarantine)
+ *   1. Copy mattstack.app → ~/Applications (remove quarantine)
  *   2. Install rt-context.vsix into all detected editors (best-effort, non-interactive)
  *   3. Install daemon as a launchd agent (auto-starts on login)
  *   4. Write shell integration to the user's rc file (PATH + rtcd, idempotent)
@@ -16,9 +16,9 @@
 
 import { spawnSync } from "child_process";
 import { existsSync, readFileSync, readdirSync, mkdirSync, rmSync, cpSync, writeFileSync } from "fs";
-import { join, resolve } from "path";
+import { join, resolve, dirname } from "path";
 import { homedir } from "os";
-import { rtDir } from "../lib/rt-paths.ts";
+import { rtDir, TRAY_APP_NAME, TRAY_APP_BUNDLE, trayAppPath, legacyTrayAppPaths } from "../lib/rt-paths.ts";
 import { installShellIntegration, detectShell, shellRcPath } from "../lib/shell-integration.ts";
 
 const HOME = homedir();
@@ -37,38 +37,42 @@ function info(label: string, detail = "") { log("·", label, detail); }
 function installTrayApp(): void {
   // The tray app is bundled alongside the rt binary in the Homebrew prefix.
   // Homebrew Cellar structure: .../cellar/rt/<version>/bin/rt
-  //                                                   /../rt-tray.app
+  //                                                   /../mattstack.app
   const rtPath = process.execPath;
   const candidates = [
-    resolve(rtPath, "../rt-tray.app"),           // same dir as binary
-    resolve(rtPath, "../../rt-tray.app"),         // one level up (Cellar layout)
+    resolve(rtPath, `../${TRAY_APP_BUNDLE}`),    // same dir as binary
+    resolve(rtPath, `../../${TRAY_APP_BUNDLE}`), // one level up (Cellar layout)
   ];
 
   const srcTray = candidates.find(existsSync);
   if (!srcTray) {
-    fail("rt-tray.app", "not found alongside binary — skipping");
+    fail(TRAY_APP_BUNDLE, "not found alongside binary — skipping");
     return;
   }
 
-  const appsDir = join(HOME, "Applications");
-  const destTray = join(appsDir, "rt-tray.app");
+  const destTray = trayAppPath();
+  const appsDir = dirname(destTray);
 
   try {
     // Quit any running instance first — `open` on a running app just activates
-    // the existing process and never boots the newly-copied binary.
-    spawnSync("osascript", ["-e", 'tell application "rt-tray" to quit'], { stdio: "pipe", timeout: 3_000 });
-    spawnSync("pkill", ["-x", "rt-tray"], { stdio: "pipe" });
+    // the existing process and never boots the newly-copied binary. Uses the
+    // app's OWN current name (TRAY_APP_NAME) so upgrade-quit keeps working on
+    // the next rename (spec §4 risk 5) — this is distinct from the one-shot
+    // legacy sweep below, which quits the OLD rt-tray identity by its own
+    // never-changing name.
+    spawnSync("osascript", ["-e", `tell application "${TRAY_APP_NAME}" to quit`], { stdio: "pipe", timeout: 3_000, env: process.env });
+    spawnSync("pkill", ["-x", TRAY_APP_NAME], { stdio: "pipe", env: process.env });
 
     mkdirSync(appsDir, { recursive: true });
     if (existsSync(destTray)) rmSync(destTray, { recursive: true, force: true });
     cpSync(srcTray, destTray, { recursive: true });
 
     // Remove quarantine so macOS doesn't block launch
-    spawnSync("xattr", ["-cr", destTray], { stdio: "pipe" });
+    spawnSync("xattr", ["-cr", destTray], { stdio: "pipe", env: process.env });
 
-    ok("rt-tray.app", `→ ~/Applications/rt-tray.app`);
+    ok(TRAY_APP_BUNDLE, `→ ${destTray}`);
   } catch (err: any) {
-    fail("rt-tray.app", err?.message ?? String(err));
+    fail(TRAY_APP_BUNDLE, err?.message ?? String(err));
   }
 }
 
@@ -119,6 +123,7 @@ function installExtensions(): void {
       const result = spawnSync(cliPath, ["--install-extension", vsix, "--force"], {
         stdio: "pipe",
         timeout: 30_000,
+        env: process.env,
       });
       if (result.status === 0 && !result.error) {
         ok(`rt-context → ${pattern.displayName}`);
@@ -141,6 +146,7 @@ async function installDaemon(): Promise<void> {
     const result = spawnSync(process.execPath, ["daemon", "install"], {
       stdio: "pipe",
       timeout: 15_000,
+      env: process.env,
     });
 
     if (result.status !== 0) {
@@ -156,7 +162,7 @@ async function installDaemon(): Promise<void> {
       await Bun.sleep(250);
       if (await isDaemonRunning()) { ok("daemon", "running"); return; }
     }
-    info("daemon", "will start when rt-tray launches");
+    info("daemon", `will start when ${TRAY_APP_NAME} launches`);
   } catch (err: any) {
     fail("daemon", err?.message ?? String(err));
   }
@@ -193,11 +199,11 @@ async function checkTccAccess(): Promise<void> {
       console.log(`    ${b.path}`);
     }
     console.log("");
-    console.log("  The daemon inherits Full Disk Access from rt-tray.app.");
-    console.log("  Grant FDA to rt-tray, then restart the daemon:");
+    console.log(`  The daemon inherits Full Disk Access from ${TRAY_APP_BUNDLE}.`);
+    console.log(`  Grant FDA to ${TRAY_APP_NAME}, then restart the daemon:`);
     console.log("");
     console.log("    1. System Settings → Privacy & Security → Full Disk Access");
-    console.log("    2. Click + and add: ~/Applications/rt-tray.app");
+    console.log(`    2. Click + and add: ${trayAppPath()}`);
     console.log("    3. rt daemon restart");
     console.log("");
     spawnSync("open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"], { stdio: "pipe" });
@@ -235,6 +241,81 @@ function repairShellWrapper(): void {
   if (repaired === content) return;
   writeFileSync(rcPath, repaired);
   ok("shell wrapper", "repaired FUNCNEST recursion bug");
+}
+
+// ─── 0. One-shot legacy migration sweep (MAT-383 §4) ─────────────────────────
+//
+// `rt --post-install` runs on every fresh install AND re-execs on every
+// `rt update` (commands/update.ts:73-76) and every first-run-without-
+// daemon.json path (cli.ts). An unguarded sweep would therefore `launchctl
+// bootout` `com.rt.daemon` — the label prod KEEPS — on every routine update,
+// killing the live daemon forever. So: GUARDED, fires only when a legacy
+// rt-tray.app bundle is still found on disk, and this can NEVER move into
+// `rt daemon install` — post-install.ts already spawns that AFTER the new
+// app registers (see installDaemon()/runPostInstall() below), so a sweep
+// there would boot out the daemon it just started.
+//
+// Order (spec §4, all before installing the new app): quit the OLD app by
+// its own never-changing name → stop its launchd job → delete its bundle(s).
+// The caller (runPostInstall) then runs the existing install+launch flow
+// and reports migration success/failure loudly afterward.
+
+/** True only when at least one legacy rt-tray.app candidate still exists. */
+function legacySweepNeeded(): boolean {
+  return legacyTrayAppPaths().some(existsSync);
+}
+
+function runLegacySweep(): void {
+  info("legacy migration", "rt-tray.app found — migrating to " + TRAY_APP_BUNDLE);
+
+  // 1. Quit the OLD app by ITS OWN identity — "rt-tray" never changes no
+  //    matter what the new app gets renamed to next, unlike TRAY_APP_NAME
+  //    above (that's installTrayApp()'s own-app upgrade-quit).
+  spawnSync("osascript", ["-e", 'tell application "rt-tray" to quit'], { stdio: "pipe", timeout: 3_000, env: process.env });
+  spawnSync("pkill", ["-x", "rt-tray"], { stdio: "pipe", env: process.env });
+
+  // 2. Stop the old launchd job. Honest limitation (spec §4 step 2): bootout
+  //    stops the job but does NOT remove the old bundle's BTM/SMAppService
+  //    registration record — only the old app itself could unregister it,
+  //    and it's about to be deleted below. The inert record (a ghost row in
+  //    System Settings → Login Items) persists until manually removed; sole-
+  //    user cost accepted, no claim that macOS drops it on its own.
+  //    `rt verify` warns while a legacy bundle path still exists.
+  spawnSync("launchctl", ["bootout", `gui/${process.getuid?.() ?? 0}/com.rt.daemon`], { stdio: "pipe", env: process.env });
+
+  // 3. Remove every legacy bundle candidate that actually exists.
+  for (const legacyPath of legacyTrayAppPaths()) {
+    if (!existsSync(legacyPath)) continue;
+    spawnSync("rm", ["-rf", legacyPath], { stdio: "pipe", env: process.env });
+  }
+
+  ok("legacy migration", "rt-tray.app removed");
+}
+
+/**
+ * Success detection for the migration (spec §4 step 4): pings the daemon
+ * socket/health endpoint and reports LOUDLY if the new registration did not
+ * come up — migration must not end on an unverified "should work". Also
+ * prints the one-time note that notification + full-disk-access permissions
+ * must be re-granted, since the bundle id changed. Both only make sense (and
+ * only run) when a migration actually happened this run.
+ */
+async function reportMigrationOutcome(): Promise<void> {
+  const { isDaemonRunning } = await import("../lib/daemon-client.ts");
+  if (await isDaemonRunning()) {
+    ok("migration", "daemon healthy under the new registration");
+  } else {
+    console.log("");
+    fail("migration", "daemon did not come up under the new registration");
+    console.log("  The migration off rt-tray.app may not have completed cleanly.");
+    console.log("  Check: rt daemon status   /   rt verify");
+    console.log("");
+  }
+
+  console.log("");
+  console.log(`  NOTE: notification + full-disk-access permissions must be re-granted`);
+  console.log(`  for ${TRAY_APP_BUNDLE} — the bundle id changed as part of this migration.`);
+  console.log("");
 }
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
@@ -279,15 +360,21 @@ export async function runPostInstall(): Promise<void> {
     return;
   }
 
+  // One-shot legacy migration sweep (spec §4) — GUARDED and MUST run before
+  // the new app is installed/launched below. See runLegacySweep()'s docblock
+  // for why this can never move into `rt daemon install`.
+  const migrating = legacySweepNeeded();
+  if (migrating) runLegacySweep();
+
   installTrayApp();
   installExtensions();
 
-  // Launch rt-tray.app BEFORE installing the daemon so the tray's HTTP server
-  // is up when `rt daemon install` calls trayQuery("/daemon/start").
-  const trayDest = join(HOME, "Applications", "rt-tray.app");
+  // Launch mattstack.app BEFORE installing the daemon so the tray's HTTP
+  // server is up when `rt daemon install` calls trayQuery("/daemon/start").
+  const trayDest = trayAppPath();
   if (existsSync(trayDest)) {
-    spawnSync("open", [trayDest], { stdio: "pipe" });
-    ok("rt-tray.app", "launched — waiting for tray to start…");
+    spawnSync("open", [trayDest], { stdio: "pipe", env: process.env });
+    ok(TRAY_APP_BUNDLE, "launched — waiting for tray to start…");
     // Give the tray's NWListener a moment to bind the socket before we send
     // it the /daemon/start request.
     await Bun.sleep(2_000);
@@ -298,6 +385,8 @@ export async function runPostInstall(): Promise<void> {
   repairShellWrapper();
 
   await checkTccAccess();
+
+  if (migrating) await reportMigrationOutcome();
 
   console.log("");
   console.log("  Done. Restart your terminal, then run: rt verify");

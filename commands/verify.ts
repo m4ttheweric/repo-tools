@@ -12,13 +12,18 @@
  *   rt verify --ci      # minimal output, strict exit codes
  */
 
-import { execSync, spawnSync } from "child_process";
-import { existsSync, readFileSync } from "fs";
+import { execSync } from "child_process";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { bold, cyan, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import { detectShell, shellRcPath } from "../lib/shell-integration.ts";
-import { legacyDirsPresent, RT_DIR_LABEL } from "../lib/rt-paths.ts";
+import {
+  legacyDirsPresent, RT_DIR_LABEL,
+  trayAppPath, devTrayAppPath, legacyTrayAppPaths,
+  TRAY_APP_BUNDLE, DEV_TRAY_APP_BUNDLE,
+} from "../lib/rt-paths.ts";
+import { currentMode } from "../lib/dev-mode.ts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -56,6 +61,51 @@ function warn(name: string, detail: string): CheckResult {
 
 function skip(name: string, detail: string): CheckResult {
   return { name, status: "skip", detail, severity: "info" };
+}
+
+/**
+ * rt-context extension presence check (MAT-383 §5): pure directory reads,
+ * no subprocess, no version comparison — the extension versions
+ * independently of the CLI, so a version check is underivable here.
+ *
+ * - extension dir found under at least one editor's extensions dir → pass,
+ *   naming which editor(s).
+ * - an editor's extensions dir exists but no rt-context entry in it → warn.
+ * - no editor extensions dirs at all → skip.
+ *
+ * `home` is a parameter (not homedir() internally) so this is unit-testable
+ * against fixture dirs without touching the real filesystem HOME.
+ */
+export function checkRtContextExtension(home: string): CheckResult {
+  const editors = [
+    { name: "VS Code", dir: join(home, ".vscode", "extensions") },
+    { name: "Cursor", dir: join(home, ".cursor", "extensions") },
+  ];
+
+  const dirsFound: string[] = [];
+  const editorsWithExtension: string[] = [];
+
+  for (const editor of editors) {
+    if (!existsSync(editor.dir)) continue;
+    dirsFound.push(editor.name);
+    let entries: string[] = [];
+    try {
+      entries = readdirSync(editor.dir);
+    } catch {
+      continue;
+    }
+    if (entries.some((e) => e.toLowerCase().includes("rt-context"))) {
+      editorsWithExtension.push(editor.name);
+    }
+  }
+
+  if (editorsWithExtension.length > 0) {
+    return pass("rt-context extension", `installed in ${editorsWithExtension.join(", ")}`, "warning");
+  }
+  if (dirsFound.length > 0) {
+    return warn("rt-context extension", `not installed in ${dirsFound.join(", ")} — run: rt settings extension`);
+  }
+  return skip("rt-context extension", "no editor extensions directories found");
 }
 
 // ─── Checks ──────────────────────────────────────────────────────────────────
@@ -130,77 +180,41 @@ async function runChecks(): Promise<CheckResult[]> {
     results.push(fail("fzf", "not found — brew install fzf"));
   }
 
-  // ── Tray app ──────────────────────────────────────────────────────────────
+  // ── Tray app (MAT-383 §5) ─────────────────────────────────────────────────
+  // Hard-fail ONLY when the ACTIVE flavor's app is missing. currentMode() is
+  // the sole flavor signal (dev-mode.json's existence is deliberately not
+  // one — see lib/dev-mode.ts). The inactive flavor's absence is purely
+  // informational, and any legacyTrayAppPaths() hit is a warning, never a
+  // failure.
 
-  const trayPath = join(home, "Applications", "rt-tray.app");
-  const plistPath = join(trayPath, "Contents/Info.plist");
-  if (existsSync(trayPath)) {
+  const mode = currentMode();
+  const activeTrayPath = mode === "dev" ? devTrayAppPath() : trayAppPath();
+  const activeTrayBundle = mode === "dev" ? DEV_TRAY_APP_BUNDLE : TRAY_APP_BUNDLE;
+  const inactiveTrayPath = mode === "dev" ? trayAppPath() : devTrayAppPath();
+  const inactiveTrayBundle = mode === "dev" ? TRAY_APP_BUNDLE : DEV_TRAY_APP_BUNDLE;
+
+  if (existsSync(activeTrayPath)) {
+    const plistPath = join(activeTrayPath, "Contents/Info.plist");
     const trayVersion = existsSync(plistPath)
       ? cmd(`/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "${plistPath}" 2>/dev/null`)
       : null;
-    results.push(pass("rt-tray.app", trayVersion ? `v${trayVersion} in ~/Applications` : "installed in ~/Applications"));
+    results.push(pass(activeTrayBundle, trayVersion ? `v${trayVersion} in ~/Applications` : "installed in ~/Applications"));
   } else {
-    // Fallback: check if the tray is at least present in the Homebrew prefix
-    // (post_install may not have run yet, but the package IS correct)
-    const rtExec = process.execPath;
-    const prefixTray = [
-      join(rtExec, "../../rt-tray.app"),
-      join(rtExec, "../rt-tray.app"),
-    ].find(existsSync);
-    if (prefixTray) {
-      results.push(warn("rt-tray.app", "in Homebrew prefix but not yet in ~/Applications — re-run: rt --post-install"));
-    } else {
-      results.push(fail("rt-tray.app", "not found in ~/Applications or Homebrew prefix — formula may be missing it"));
-    }
+    results.push(fail(activeTrayBundle, `not found — expected ${activeTrayPath}`));
   }
 
+  results.push(existsSync(inactiveTrayPath)
+    ? skip(inactiveTrayBundle, `also installed at ${inactiveTrayPath} (inactive flavor)`)
+    : skip(inactiveTrayBundle, "not installed (inactive flavor)"));
 
-  // ── Extension VSIX in prefix ──────────────────────────────────────────────
-
-  const brewPrefix = cmd("brew --prefix m4ttheweric/tap/rt 2>/dev/null") ??
-                     cmd("brew --prefix rt 2>/dev/null");
-  if (brewPrefix) {
-    const vsixPath = join(brewPrefix, "rt-context.vsix");
-    if (existsSync(vsixPath)) {
-      results.push(pass("rt-context.vsix", `in ${brewPrefix}`));
-    } else {
-      results.push(fail("rt-context.vsix", `not found in ${brewPrefix}`));
-    }
-  } else {
-    // Not installed via Homebrew — check source mode
-    results.push(skip("rt-context.vsix", "Homebrew prefix not found (source install?)"));
+  const legacyHits = legacyTrayAppPaths().filter(existsSync);
+  if (legacyHits.length > 0) {
+    results.push(warn("legacy tray app", `old bundle still present: ${legacyHits.join(", ")}`));
   }
 
-  // ── Extension installed in editors ────────────────────────────────────────
+  // ── rt-context extension (MAT-383 §5) ─────────────────────────────────────
 
-  const editors = [
-    { name: "Cursor",             appPath: "/Applications/Cursor.app",             cliBinary: "cursor" },
-    { name: "Visual Studio Code", appPath: "/Applications/Visual Studio Code.app", cliBinary: "code" },
-    { name: "Antigravity",        appPath: "/Applications/Antigravity.app",         cliBinary: "antigravity" },
-  ];
-
-  let anyEditorFound = false;
-  for (const editor of editors) {
-    if (!existsSync(editor.appPath)) continue;
-    anyEditorFound = true;
-    const cliPath = join(editor.appPath, "Contents/Resources/app/bin", editor.cliBinary);
-    if (!existsSync(cliPath)) {
-      results.push(warn(`${editor.name} extension`, "app found but CLI missing"));
-      continue;
-    }
-    const result = spawnSync(cliPath, ["--list-extensions"], { encoding: "utf8", timeout: 15_000 });
-    const exts = (result.stdout ?? "").split("\n").map((e: string) => e.trim().toLowerCase());
-    const installed = exts.some((e: string) => e.includes("rt-context"));
-    if (installed) {
-      results.push(pass(`${editor.name} extension`, "rt-context installed", "warning"));
-    } else {
-      results.push(warn(`${editor.name} extension`, `rt-context not installed — run: rt settings extension`));
-    }
-  }
-
-  if (!anyEditorFound) {
-    results.push(skip("editor extension", "no VS Code-compatible editors found in /Applications"));
-  }
+  results.push(checkRtContextExtension(home));
 
   // ── Shell integration ─────────────────────────────────────────────────────
 
@@ -215,7 +229,7 @@ async function runChecks(): Promise<CheckResult[]> {
 
   // ── Daemon ────────────────────────────────────────────────────────────────
 
-  const { isDaemonInstalled } = await import("../lib/daemon-config.ts");
+  const { isDaemonInstalled, activeLaunchdLabel } = await import("../lib/daemon-config.ts");
   const { isDaemonRunning, daemonQuery } = await import("../lib/daemon-client.ts");
 
   if (!isDaemonInstalled()) {
@@ -225,12 +239,14 @@ async function runChecks(): Promise<CheckResult[]> {
 
   results.push(pass("daemon installed", "config exists at ~/.mattstack/rt/daemon.json"));
 
-  // Check launchd registration
-  const launchctlCheck = cmd("launchctl list com.rt.daemon 2>/dev/null");
+  // Check launchd registration (MAT-383 §5: activeLaunchdLabel() is the flavor-
+  // aware label — dev and prod daemons register under different jobs).
+  const launchdLabel = activeLaunchdLabel();
+  const launchctlCheck = cmd(`launchctl list ${launchdLabel} 2>/dev/null`);
   if (launchctlCheck && !launchctlCheck.includes("Could not find")) {
-    results.push(pass("daemon launchd", "registered with launchd (auto-starts on login)"));
+    results.push(pass("daemon launchd", `registered with launchd as ${launchdLabel} (auto-starts on login)`));
   } else {
-    results.push(warn("daemon launchd", "not registered with launchd — won't auto-start on login. Run: rt daemon install"));
+    results.push(warn("daemon launchd", `not registered with launchd as ${launchdLabel} — won't auto-start on login. Run: rt daemon install`));
   }
 
   const running = await isDaemonRunning();
@@ -242,7 +258,7 @@ async function runChecks(): Promise<CheckResult[]> {
     if (inCi) {
       results.push(warn("daemon running", "not booted (expected in CI — needs user approval in Login Items on first launch)"));
     } else {
-      results.push(fail("daemon running", "installed but not responding — open ~/Applications/rt-tray.app and approve in System Settings → General → Login Items"));
+      results.push(fail("daemon running", `installed but not responding — open ${activeTrayPath} and approve in System Settings → General → Login Items`));
     }
     return results;
   }

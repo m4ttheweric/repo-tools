@@ -5,13 +5,13 @@
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleExecutable</key>
-    <string>rt-tray</string>
+    <string>@@APP_NAME@@</string>
     <key>CFBundleIdentifier</key>
-    <string>com.rt.tray</string>
+    <string>@@BUNDLE_ID@@</string>
     <key>CFBundleName</key>
-    <string>rt-tray</string>
+    <string>@@APP_NAME@@</string>
     <key>CFBundleDisplayName</key>
-    <string>rt-tray</string>
+    <string>@@DISPLAY_NAME@@</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>CFBundleShortVersionString</key>
@@ -24,5 +24,14 @@
     <true/>
     <key>NSUserNotificationAlertStyle</key>
     <string>alert</string>
+    <!-- MSDaemonLabel: the launchd Label DaemonLifecycle.swift kickstarts and
+         the plist basename it loads ("\(label).plist"). Templated by build.sh
+         next to CFBundleIdentifier -- never hardcode this, it diverges by
+         flavor (com.rt.daemon prod / com.rt.daemon.dev dev). -->
+    <key>MSDaemonLabel</key>
+    <string>@@DAEMON_LABEL@@</string>
+    <!-- MSDevBuild is added by build.sh via PlistBuddy (a real bool, not a
+         sed token) so it can't be stringified by accident. Gates
+         UpdateChecker and the dev menu-bar mark. -->
 </dict>
 </plist>

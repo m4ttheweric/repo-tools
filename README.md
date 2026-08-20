@@ -466,8 +466,9 @@ rt settings extension
 ```bash
 cd rt-tray
 ./build.sh debug    # build and open in Xcode simulator
-./build.sh release  # build release .app
-./build.sh install  # build + copy to ~/Applications
+./build.sh release  # build release mattstack.app (prod)
+./build.sh dev      # build release mattstack-dev.app (dev, runs the daemon from source)
+./build.sh install  # build + copy mattstack.app to ~/Applications
 ```
 
 The tray app reads its version from `Info.plist` (`CFBundleShortVersionString`), which the CI build injects via `git describe`. Local builds report the version as whatever is in the plist at build time.
