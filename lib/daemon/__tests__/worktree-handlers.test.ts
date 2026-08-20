@@ -20,6 +20,7 @@ import { tryLockTree } from "../../worktree/locks.ts";
 import { branchExistsLocalAsync, currentBranchAsync, headSha } from "../../worktree/git-async.ts";
 import { createWorktreeHandlers, isClaimable } from "../handlers/worktree.ts";
 import type { HandlerContext, HandlerMap } from "../handlers/types.ts";
+import { fakeStore } from "./fake-cache-store.ts";
 
 function sh(cmd: string, cwd?: string): string {
   return execSync(cmd, { cwd, shell: "/bin/zsh", encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
@@ -52,11 +53,9 @@ function makeHandlers(
   const events: Array<{ type: string; data: any }> = [];
   const state = { kicks: 0 };
   const ctx = {
-    cache: { entries },
+    cache: fakeStore(entries),
     repoIndex: () => repos,
     log: fakeLog(),
-    loadCache: () => {},
-    flushCache: () => {},
     refreshCache: async () => {},
   } as unknown as HandlerContext;
   const h = createWorktreeHandlers(ctx, {

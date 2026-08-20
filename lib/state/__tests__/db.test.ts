@@ -22,16 +22,24 @@ import {
 const DB_TS_PATH = join(import.meta.dir, "..", "db.ts");
 
 let dir: string;
+let registeredImports: typeof LEGACY_IMPORTS;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "rt-state-db-"));
+  // LEGACY_IMPORTS is a process-global array that real store modules push
+  // into at import time. Snapshot it rather than assuming it starts empty:
+  // bun shares one module registry across test files, so a store module
+  // imported by ANY test file has already registered by the time this runs.
+  registeredImports = [...LEGACY_IMPORTS];
 });
 
 afterEach(() => {
   closeStateDb();
-  // db.ts registers legacy importers globally; each test that pushes a fake
-  // entry must clean up after itself so later tests don't see it.
+  // Tests here push fake entries; drop those and restore the real
+  // registrations, so later files (barrel.test.ts, branch-cache.test.ts)
+  // still see a complete registry no matter the file order.
   LEGACY_IMPORTS.length = 0;
+  LEGACY_IMPORTS.push(...registeredImports);
   rmSync(dir, { recursive: true, force: true });
 });
 

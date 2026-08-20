@@ -62,7 +62,10 @@ export function createCacheHandlers(ctx: HandlerContext): HandlerMap {
         const { enrichBranches } = await import("../../enrich.ts");
         await enrichBranches([{ path: repoPath, branch }], remoteUrl, { silent: true });
 
-        ctx.loadCache();
+        // enrichBranches wrote through the same singleton store in this
+        // process, so the map is already current; reload() is kept because
+        // it also picks up rows a racing CLI enrichment upserted.
+        ctx.cache.reload();
 
         if (ctx.cache.entries[branch]) {
           return { ok: true, data: ctx.cache.entries[branch], source: "fresh" };

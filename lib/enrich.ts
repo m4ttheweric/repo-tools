@@ -4,15 +4,25 @@
  * Single source of truth for enriching branches with:
  *  - GitLab MR data (via @mattstack/glance)
  *  - Linear ticket info (via Linear GraphQL API)
- *  - Disk cache with stale-while-revalidate
+ *  - state.db branch cache with stale-while-revalidate
  *
  * Every picker/display that shows branches imports from this module.
+ *
+ * RT-48: this module used to carry its OWN `CacheEntry`/`DiskCache` pair plus
+ * `readDiskCache`/`writeDiskCache` over ~/.mattstack/rt/branch-cache.json —
+ * a second, separately-declared copy of the daemon's cache, and one half of
+ * the cross-process full-file-rewrite race. Both copies are gone: the single
+ * owner is `lib/state/branch-cache.ts`, reached (per the barrel rule) through
+ * `lib/state/index.ts`. `MRInfo` still lives here and the store imports the
+ * type from this module.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
-import { rtDir } from "./rt-paths.ts";
+import {
+  getBranchCacheStore,
+  getStateDb,
+  type BranchCacheStore,
+  type CacheEntry,
+} from "./state/index.ts";
 import {
   GitLabProvider,
   type PullRequest,
@@ -78,36 +88,24 @@ export function toMRInfo(pr: PullRequest): MRInfo {
   return { ...getMRDashboardProps(pr, "idle"), sha: pr.sha };
 }
 
-// ─── Disk cache (~/.mattstack/rt/branch-cache.json) ────────────────────────────────────
+// ─── Branch cache (state.db, via lib/state) ──────────────────────────────────
 
-const CACHE_PATH = join(rtDir(), "branch-cache.json");
-
-interface CacheEntry {
-  ticket: LinearTicket | null;
-  linearId: string;
-  mr: MRInfo | null;
-  fetchedAt: number;
-  repoName?: string;
-}
-
-interface DiskCache {
-  entries: Record<string, CacheEntry>;
-}
-
-function readDiskCache(): DiskCache {
-  try {
-    return JSON.parse(readFileSync(CACHE_PATH, "utf8"));
-  } catch {
-    return { entries: {} };
-  }
-}
-
-function writeDiskCache(cache: DiskCache): void {
-  try {
-    const dir = rtDir();
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(CACHE_PATH, JSON.stringify(cache, null, 2));
-  } catch { /* best-effort */ }
+/**
+ * Upserts only the rows this process actually enriched, in ONE transaction
+ * (spec "Store-by-store" item 1: "CLI-process enrich.ts paths upsert only
+ * the rows they enriched, in a transaction"). `db.transaction` callbacks are
+ * sync — never pass an async function here.
+ *
+ * The transaction is taken on the process singleton, which is the connection
+ * every caller of `getBranchCacheStore()` (no argument) is already using —
+ * both in the CLI and inside the daemon.
+ */
+function writeEnriched(store: BranchCacheStore, rows: Array<[string, CacheEntry]>): void {
+  if (rows.length === 0) return;
+  const commit = getStateDb().transaction((batch: Array<[string, CacheEntry]>) => {
+    for (const [branch, entry] of batch) store.put(branch, entry);
+  });
+  commit(rows);
 }
 
 // ─── Label formatting ────────────────────────────────────────────────────────
@@ -261,16 +259,16 @@ export async function enrichBranches(
     }
   }
 
-  // ── Existing logic (disk cache + fetch) ──
+  // ── Existing logic (state.db cache + fetch) ──
   const secrets = loadSecrets();
   const willFetch = !!(secrets.linearApiKey || secrets.gitlabToken);
-  const diskCache = readDiskCache();
+  const store = getBranchCacheStore();
 
-  const allCached = !options?.forceRefresh && willFetch && branches.every((b) => b.branch in diskCache.entries);
+  const allCached = !options?.forceRefresh && willFetch && branches.every((b) => b.branch in store.entries);
 
   if (allCached) {
     const cachedResults = branches.map((b) => {
-      const entry = diskCache.entries[b.branch]!;
+      const entry = store.entries[b.branch]!;
       return {
         path: b.path,
         dirName: b.path.split("/").pop() || b.path,
@@ -288,13 +286,13 @@ export async function enrichBranches(
   }
 
   // Cold start
-  return fetchAndCache(branches, remoteUrl, diskCache, options?.silent ?? false);
+  return fetchAndCache(branches, remoteUrl, store, options?.silent ?? false);
 }
 
 async function fetchAndCache(
   branches: Array<{ path: string; branch: string }>,
   remoteUrl: string | undefined,
-  diskCache: DiskCache,
+  store: BranchCacheStore,
   silent: boolean,
 ): Promise<EnrichedBranch[]> {
   const secrets = loadSecrets();
@@ -360,10 +358,11 @@ async function fetchAndCache(
   // Mirrors refreshAllMRs: a failed (or skipped — missing secrets) fetch must
   // preserve existing cache entries, not clobber them with nulls; and entries
   // must keep their repoName, which rt status needs to bind MR actions.
+  const enriched: Array<[string, CacheEntry]> = [];
   const results: EnrichedBranch[] = branches.map((b, idx) => {
     const dirName = b.path.split("/").pop() || b.path;
     const { linearId } = branchLinearIds[idx]!;
-    const existing = diskCache.entries[b.branch];
+    const existing = store.entries[b.branch];
 
     const pr = mrMap.get(b.branch) ?? null;
     const mr = mrFetchSucceeded ? (pr ? toMRInfo(pr) : null) : (existing?.mr ?? null);
@@ -372,19 +371,18 @@ async function fetchAndCache(
       ? freshTicket
       : (existing?.ticket ?? freshTicket);
 
-    // Update disk cache
-    diskCache.entries[b.branch] = {
+    enriched.push([b.branch, {
       ticket,
       linearId: linearId || existing?.linearId || "",
       mr,
       fetchedAt: mrFetchSucceeded ? Date.now() : (existing?.fetchedAt ?? Date.now()),
       repoName: existing?.repoName,
-    };
+    }]);
 
     return { path: b.path, dirName, branch: b.branch, linearId, ticket, mr };
   });
 
-  writeDiskCache(diskCache);
+  writeEnriched(store, enriched);
 
   if (showSpinner) {
     const ticketCount = results.filter(r => r.ticket).length;
@@ -414,7 +412,10 @@ export async function refreshAllMRs(
   repoName?: string,
 ): Promise<void> {
   const secrets = loadSecrets();
-  const diskCache = readDiskCache();
+  // In the daemon this is the SAME singleton the handler context serves from
+  // (spec "Store-by-store" item 1) — writes below land in the live map and
+  // in state.db together, so the two can never diverge in one process.
+  const store = getBranchCacheStore();
   const now = Date.now();
 
   // ── Step 1: Fetch MRs for all branches in 1 GraphQL call ──────────────
@@ -476,6 +477,7 @@ export async function refreshAllMRs(
   }
 
   // ── Step 4: Assemble and write cache ──────────────────────────────────
+  const enriched: Array<[string, CacheEntry]> = [];
   for (let i = 0; i < branches.length; i++) {
     const b = branches[i]!;
     const { linearId } = branchLinearIds[i]!;
@@ -490,37 +492,37 @@ export async function refreshAllMRs(
       // preserve the existing entry to avoid overwriting good enrichment data that was
       // previously resolved via a full enrich (e.g., from an older/renamed MR title).
       if (!mr && !linearId) {
-        const existing = diskCache.entries[b.branch];
+        const existing = store.entries[b.branch];
         if (existing?.linearId || existing?.ticket) {
           // Keep existing enrichment — we have nothing better to replace it with
-          diskCache.entries[b.branch] = { ...existing, fetchedAt: now, repoName };
+          enriched.push([b.branch, { ...existing, fetchedAt: now, repoName }]);
           continue;
         }
       }
 
-      diskCache.entries[b.branch] = {
+      enriched.push([b.branch, {
         ticket,
         linearId: linearId || "",
         mr,
         fetchedAt: now,
         repoName,
-      };
+      }]);
     } else {
       // GitLab API failed entirely — preserve existing MR data to avoid false transitions.
       // If we also couldn't resolve a linearId (non-standard branch name, no MR title to fall
       // back on), preserve existing ticket/linearId too — we have nothing better to substitute.
-      const existing = diskCache.entries[b.branch];
-      diskCache.entries[b.branch] = {
+      const existing = store.entries[b.branch];
+      enriched.push([b.branch, {
         ticket:    linearId ? ticket : (existing?.ticket ?? null),
         linearId:  linearId || existing?.linearId || "",
         mr:        existing?.mr ?? null,
         fetchedAt: existing?.fetchedAt ?? now,
         repoName:  repoName ?? existing?.repoName,
-      };
+      }]);
     }
   }
 
-  writeDiskCache(diskCache);
+  writeEnriched(store, enriched);
 }
 
 // ─── Detached cache refresh ──────────────────────────────────────────────────
@@ -549,6 +551,5 @@ if (import.meta.main) {
     branches: Array<{ path: string; branch: string }>;
     remoteUrl?: string;
   };
-  const cache = readDiskCache();
-  await fetchAndCache(data.branches, data.remoteUrl, cache, true);
+  await fetchAndCache(data.branches, data.remoteUrl, getBranchCacheStore(), true);
 }

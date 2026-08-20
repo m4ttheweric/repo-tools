@@ -6,6 +6,7 @@ import { createDiscussionsFileStore, seedDiscussionsFromBranchCache } from "../d
 import { resolveMRMeta, refreshDiscussions } from "../discussions-store.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
 import type { HandlerContext } from "../handlers/types.ts";
+import { fakeStore } from "./fake-cache-store.ts";
 
 function tmpPath(name: string): string {
   return join(mkdtempSync(join(tmpdir(), "rt-disc-")), name);
@@ -14,7 +15,7 @@ const note = (id: number) => ({ id, system: false, body: `n${id}`, createdAt: "2
 const disc = (id: number) => ({ id: `d${id}`, notes: [note(id)] }) as any;
 
 function fakeCtx(entries: Record<string, any>): HandlerContext {
-  return { cache: { entries }, flushCache: () => {}, loadCache: () => {}, repoIndex: () => ({ repo: "/tmp/repo" }) } as unknown as HandlerContext;
+  return { cache: fakeStore(entries), repoIndex: () => ({ repo: "/tmp/repo" }) } as unknown as HandlerContext;
 }
 
 describe("file store basics + seed", () => {
