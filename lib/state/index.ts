@@ -32,6 +32,7 @@ import "./branch-cache.ts";
 import "../daemon/project-mrs-store.ts";
 import "../daemon/discussions-file-store.ts";
 import "./notifier-store.ts";
+import "./cursors-store.ts";
 
 export {
   SCHEMA_VERSION,
@@ -61,3 +62,5 @@ export {
   removeQueuedNotification,
   type NotificationEvent,
 } from "./notifier-store.ts";
+
+export { createCursorStore, type CursorStore } from "./cursors-store.ts";

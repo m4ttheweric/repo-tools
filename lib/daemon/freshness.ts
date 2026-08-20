@@ -27,10 +27,7 @@
  */
 
 import { execSync } from "child_process";
-import { readFileSync, writeFileSync } from "fs";
-import { join } from "path";
-import { GitLabProvider, type EventCursor, type InvalidationKey, type PullRequest } from "@mattstack/glance";
-import { RT_DIR } from "../daemon-config.ts";
+import { GitLabProvider, type InvalidationKey, type PullRequest } from "@mattstack/glance";
 import { loadRepoTracking, grants, type RepoGrants } from "../repo-tracking.ts";
 import { loadSecrets } from "../linear.ts";
 import { parseRemoteUrl, isGitLabRemote, toMRInfo } from "../enrich.ts";
@@ -39,6 +36,7 @@ import type { HandlerContext } from "./handlers/types.ts";
 import { getDaemonLogger } from "../daemon-logger.ts";
 import { getProjectMRs, type ProjectMRs } from "./project-mrs-store.ts";
 import { getDiscussionsFileStore } from "./discussions-file-store.ts";
+import { createCursorStore, type CursorStore } from "../state/index.ts";
 
 const log = (await getDaemonLogger()).childLogger("freshness");
 
@@ -50,41 +48,22 @@ export interface FreshnessEnv {
 }
 
 // ─── Cursor persistence ──────────────────────────────────────────────────────
+//
+// createCursorStore/CursorStore now live in lib/state/cursors-store.ts (spec
+// "Store-by-store" item 5: `kv` rows, ns='events-cursor', k=repoName),
+// imported above via the barrel and re-exported here so existing importers
+// of `../freshness.ts` don't break. The store itself is constructed lazily
+// on first use (never at module scope) so importing this module never
+// touches state.db (the "no module-load db access" rule — see
+// lib/state/db.ts).
 
-export const EVENTS_CURSORS_PATH = join(RT_DIR, "events-cursors.json");
+export { createCursorStore, type CursorStore };
 
-export interface CursorStore {
-  get(repoName: string): EventCursor | undefined;
-  set(repoName: string, cursor: EventCursor): void;
+let cursorStoreSingleton: CursorStore | null = null;
+
+function cursorStore(): CursorStore {
+  return cursorStoreSingleton ??= createCursorStore();
 }
-
-/**
- * Tiny synchronous JSON map of repoName → EventCursor. A corrupt or missing
- * file means every repo cold-starts, which the SDK handles by establishing a
- * fresh cursor without firing invalidations. Write failures degrade to
- * in-memory cursors (a daemon restart then cold-starts, which is safe).
- */
-export function createCursorStore(filePath: string): CursorStore {
-  let map: Record<string, EventCursor> = {};
-  try {
-    const parsed = JSON.parse(readFileSync(filePath, "utf8"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) map = parsed;
-  } catch { /* missing or corrupt file → cold start for all repos */ }
-
-  return {
-    get: (repoName) => map[repoName],
-    set: (repoName, cursor) => {
-      map[repoName] = cursor;
-      try {
-        writeFileSync(filePath, JSON.stringify(map, null, 2));
-      } catch (err) {
-        log.warn({ err }, "events-cursor write failed; continuing in-memory");
-      }
-    },
-  };
-}
-
-const cursorStore = createCursorStore(EVENTS_CURSORS_PATH);
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -715,7 +694,7 @@ function numericEventId(v: number | string | null | undefined): number | null {
 }
 
 function startWatch(env: FreshnessEnv, repoName: string, provider: GitLabProvider, projectPath: string): void {
-  const resumeCursor = cursorStore.get(repoName);
+  const resumeCursor = cursorStore().get(repoName);
 
   const watch: RepoWatch = {
     provider,
@@ -736,7 +715,7 @@ function startWatch(env: FreshnessEnv, repoName: string, provider: GitLabProvide
     {
       cursor: resumeCursor,
       onCursor: (c) => {
-        cursorStore.set(repoName, c);
+        cursorStore().set(repoName, c);
         watch.lastEventId = numericEventId(c.lastEventId);
       },
       onStatus: (s) => {
