@@ -8,6 +8,7 @@ function fakeProbes(overrides: Partial<HomeProbes>): HomeProbes {
     isGitRepo: () => false,
     exists: () => false,
     listTeamClones: () => [],
+    readFile: () => null,
     ...overrides,
   };
 }
@@ -33,6 +34,40 @@ describe("gatherHomeState", () => {
 
     const plan = buildInitPlan(state);
     expect(plan.steps.map((s) => s.kind)).not.toContain("foldInPrefs");
+  });
+
+  test("prefsRemoteUrl is parsed from user/.git/config while the clone still exists", () => {
+    const probes = fakeProbes({
+      isGitRepo: (dir) => dir.endsWith("/user"),
+      readFile: (path) =>
+        path.endsWith("/user/.git/config")
+          ? '[remote "origin"]\n\turl = https://github.com/mattgoodwin/mattstack-prefs.git\n'
+          : null,
+    });
+    const state = gatherHomeState("/home", probes);
+    expect(state.prefsRemoteUrl).toBe("https://github.com/mattgoodwin/mattstack-prefs.git");
+  });
+
+  test("prefsRemoteUrl is undefined when there is no user clone, even if readFile would return something", () => {
+    const probes = fakeProbes({
+      isGitRepo: () => false,
+      readFile: () => '[remote "origin"]\n\turl = https://example.com/should-not-be-read.git\n',
+    });
+    const state = gatherHomeState("/home", probes);
+    expect(state.prefsRemoteUrl).toBeUndefined();
+  });
+
+  test("prefsRemoteUrl is undefined when the config can't be read or parsed", () => {
+    const probes = fakeProbes({
+      isGitRepo: (dir) => dir.endsWith("/user"),
+      readFile: () => null,
+    });
+    const state = gatherHomeState("/home", probes);
+    expect(state.prefsRemoteUrl).toBeUndefined();
+
+    const plan = buildInitPlan(state);
+    expect(plan.steps).toEqual([]);
+    expect(plan.reason).toBe("prefs-remote-unreadable");
   });
 });
 
@@ -85,6 +120,18 @@ describe("homeInit", () => {
     const { exitCode } = await runHomeInit(fakeProbes({ isGitRepo: () => true }), seam);
 
     expect(exitCode).toBeUndefined();
+    expect(seam.calls).toEqual([]);
+  });
+
+  test("prefs-remote-unreadable: exits 1 and runs no preflight or step", async () => {
+    const seam = new FakeSeam();
+    const probes = fakeProbes({
+      isGitRepo: (dir) => dir.endsWith("/user"), // hasUserClone, home itself is not a repo
+      readFile: () => null, // config unreadable -> prefsRemoteUrl stays undefined
+    });
+    const { exitCode } = await runHomeInit(probes, seam);
+
+    expect(exitCode).toBe(1);
     expect(seam.calls).toEqual([]);
   });
 

@@ -52,6 +52,26 @@ interface ExecContext {
 async function runStep(step: InitStep, exec: ExecSeam, log: StepLog, ctx: ExecContext): Promise<void> {
   switch (step.kind) {
     case "createRepo": {
+      // Resume-safe: a prior run may have already created the repo (e.g. it
+      // crashed on a later step). `gh repo view` tells us which of three
+      // states we're in before mutating anything.
+      log(`checking for an existing GitHub repo ${step.name}`);
+      const view = await exec.run(["gh", "repo", "view", step.name, "--json", "isEmpty,url"]);
+      if (view.code === 0) {
+        let parsed: { isEmpty?: boolean; url?: string };
+        try {
+          parsed = JSON.parse(view.stdout);
+        } catch {
+          throw new StepFailed(`gh repo view printed unparseable JSON for ${step.name}`);
+        }
+        if (!parsed.isEmpty) {
+          throw new StepFailed(`GitHub repo "${step.name}" already exists and is not empty`);
+        }
+        if (!parsed.url) throw new StepFailed(`gh repo view printed no url for ${step.name}`);
+        ctx.createdRepoUrl = parsed.url;
+        return;
+      }
+
       log(`creating GitHub repo ${step.name}`);
       const stdout = await run(exec, ["gh", "repo", "create", step.name, "--private"]);
       const url = stdout.trim().split("\n")[0];
@@ -84,20 +104,28 @@ async function runStep(step: InitStep, exec: ExecSeam, log: StepLog, ctx: ExecCo
       }
       return;
     }
+    case "unlinkUserClone": {
+      // Must run before adoptCommit: see the ordering comment in
+      // init-plan.ts. foldInPrefs re-clones from step.sourceUrl instead, so
+      // this .git is never needed again.
+      log("unlinking user/.git (fold-in re-clones from the origin remote instead)");
+      await exec.removeDir("user/.git");
+      return;
+    }
     case "foldInPrefs": {
       log("folding mattstack-prefs history into user/");
       const tmp = await exec.mkTempDir();
       try {
-        // --no-hardlinks: a plain local clone hardlinks objects into the tmp
-        // clone; filter-repo rewrites history destructively, which would
-        // corrupt the objects the real user/ clone still shares.
-        await run(exec, ["git", "clone", "--no-hardlinks", "user", tmp]);
+        // --no-hardlinks: if sourceUrl resolves to a local path, a plain
+        // clone would hardlink objects into the tmp clone; filter-repo
+        // rewrites history destructively, which would corrupt objects the
+        // source still shares.
+        await run(exec, ["git", "clone", "--no-hardlinks", step.sourceUrl, tmp]);
         await run(exec, ["git", "filter-repo", "--to-subdirectory-filter", "user"], { cwd: tmp });
         // HEAD, not a hardcoded branch name: the tmp clone's default branch
-        // IS whatever the user/ remote's default branch is.
+        // IS whatever the source remote's default branch is.
         await run(exec, ["git", "fetch", tmp, "HEAD"]);
         await run(exec, ["git", "merge", "FETCH_HEAD", "--allow-unrelated-histories", "-m", FOLD_MERGE_MESSAGE]);
-        await exec.removeDir("user/.git");
       } finally {
         await exec.removeDir(tmp);
       }

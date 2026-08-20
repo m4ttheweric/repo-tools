@@ -12,6 +12,8 @@ export interface HomeState {
   hasUserClone: boolean;
   hasTeamClones: string[];
   cruft: string[];
+  /** origin URL of user/.git, parsed before it's ever unlinked. */
+  prefsRemoteUrl?: string;
 }
 
 export type InitStep =
@@ -20,14 +22,21 @@ export type InitStep =
   | { kind: "writeGitignore"; content: string }
   | { kind: "writeOwners"; content: string }
   | { kind: "deleteCruft"; paths: string[] }
-  | { kind: "foldInPrefs" }
+  | { kind: "unlinkUserClone" }
+  | { kind: "foldInPrefs"; sourceUrl: string }
   | { kind: "adoptCommit"; message: string }
   | { kind: "push"; branch: string };
 
 export interface InitPlan {
   steps: InitStep[];
-  /** Set only when the plan is empty because ~/.mattstack is already a repo. */
-  reason?: "already-initialized";
+  /**
+   * Set only when the plan is empty:
+   * - "already-initialized": ~/.mattstack is already a repo.
+   * - "prefs-remote-unreadable": there's a user/ clone to fold in, but its
+   *   origin URL couldn't be parsed — never emit a fold the executor can't
+   *   actually run.
+   */
+  reason?: "already-initialized" | "prefs-remote-unreadable";
 }
 
 export const DEFAULT_HOME_REPO_NAME = "mattstack-home";
@@ -44,6 +53,9 @@ function renderOwnersFile(): string {
  */
 export function buildInitPlan(state: HomeState): InitPlan {
   if (state.isRepo) return { steps: [], reason: "already-initialized" };
+  if (state.hasUserClone && !state.prefsRemoteUrl) {
+    return { steps: [], reason: "prefs-remote-unreadable" };
+  }
 
   const steps: InitStep[] = [
     { kind: "createRepo", name: DEFAULT_HOME_REPO_NAME },
@@ -54,13 +66,19 @@ export function buildInitPlan(state: HomeState): InitPlan {
 
   if (state.cruft.length > 0) steps.push({ kind: "deleteCruft", paths: state.cruft });
 
+  // unlinkUserClone runs BEFORE adoptCommit: a live user/.git left in place
+  // makes `git add -A` stage `user` as a GITLINK (mode 160000), not the real
+  // files under it — the fold-in merge below then sees those files as
+  // untracked and refuses. Removing .git first makes `user/**` ordinary
+  // tracked files, so the later merge is a clean add/add of identical blobs.
+  if (state.hasUserClone) steps.push({ kind: "unlinkUserClone" });
+
   // adoptCommit runs BEFORE foldInPrefs: folding merges FETCH_HEAD with
   // --allow-unrelated-histories, and a merge into a still-unborn HEAD (no
   // commits yet) refuses to clobber the untracked user/ files already on
-  // disk. Committing first turns that merge into a clean 3-way add/add of
-  // identical blobs.
+  // disk. Committing first turns that merge into a clean 3-way add/add.
   steps.push({ kind: "adoptCommit", message: ADOPT_COMMIT_MESSAGE });
-  if (state.hasUserClone) steps.push({ kind: "foldInPrefs" });
+  if (state.hasUserClone) steps.push({ kind: "foldInPrefs", sourceUrl: state.prefsRemoteUrl! });
 
   steps.push({ kind: "push", branch: DEFAULT_HOME_BRANCH });
 
