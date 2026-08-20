@@ -6,14 +6,11 @@
  * command tree dispatcher works in both source and compiled modes.
  */
 
-import * as buildSelect from "../commands/build-select.ts";
 import * as commit from "../commands/commit.ts";
-import * as agent from "../commands/agent.ts";
 import * as daemon from "../commands/daemon.ts";
 import * as events from "../commands/events.ts";
 import * as extension from "../commands/extension.ts";
 import * as hooks from "../commands/hooks.ts";
-import * as open from "../commands/open.ts";
 import * as port from "../commands/port.ts";
 import * as run from "../commands/run.ts";
 import * as settings from "../commands/settings.ts";
@@ -27,7 +24,6 @@ import * as pull from "../commands/git/pull.ts";
 import * as push from "../commands/git/push.ts";
 import * as status from "../commands/status/index.tsx";
 import * as cd from "../commands/cd.ts";
-import * as code from "../commands/code.ts";
 import * as version from "../commands/version.ts";
 import * as verify from "../commands/verify.ts";
 import * as update from "../commands/update.ts";
@@ -40,14 +36,11 @@ import * as intercept from "../commands/intercept.ts";
 import * as endpoint from "../commands/endpoint.ts";
 
 export const MODULE_REGISTRY: Record<string, any> = {
-  "./commands/build-select.ts": buildSelect,
   "./commands/commit.ts": commit,
-  "./commands/agent.ts": agent,
   "./commands/daemon.ts": daemon,
   "./commands/events.ts": events,
   "./commands/extension.ts": extension,
   "./commands/hooks.ts": hooks,
-  "./commands/open.ts": open,
   "./commands/port.ts": port,
   "./commands/run.ts": run,
   "./commands/settings.ts": settings,
@@ -61,7 +54,6 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/git/push.ts": push,
   "./commands/status/index.tsx": status,
   "./commands/cd.ts": cd,
-  "./commands/code.ts": code,
   "./commands/version.ts": version,
   "./commands/verify.ts": verify,
   "./commands/update.ts": update,
