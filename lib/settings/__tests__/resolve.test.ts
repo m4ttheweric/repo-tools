@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
@@ -538,6 +538,21 @@ describe("settings/resolve", () => {
       expect(scopes).not.toContain("team.repo");
       expect(scopes).not.toContain("user.repo");
       expect(scopes).not.toContain("machine.repo");
+    });
+
+    test("a broken entry in the teams dir never bricks resolution", () => {
+      // Regression (opus review of task 4): a team clone symlinked in and later
+      // moved leaves a dangling symlink under ~/.mattstack/teams, and the
+      // unguarded scan behind listTeams() made EVERY resolution throw ENOENT.
+      writeTeam(TEAM, { "rt.intercepts": [{ id: "team" }] });
+      symlinkSync(join(home, "moved-away"), join(teamsDir(), "moved-team"));
+
+      const got = getSetting("rt.intercepts", { repoIdentity: IDENTITY });
+
+      expect(got.value).toEqual([{ id: "team" }]);
+      expect(got.provenance).toEqual([{ scope: "team", file: teamSettingsPath(TEAM) }]);
+      expect(() => listSettings({ repoIdentity: IDENTITY })).not.toThrow();
+      expect(() => explainSetting("rt.intercepts", { repoIdentity: IDENTITY })).not.toThrow();
     });
   });
 

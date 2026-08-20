@@ -16,7 +16,7 @@
  * every settings read).
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from "fs";
+import { existsSync, readdirSync, readFileSync, statSync, type Dirent } from "fs";
 import { parse, type ParseError } from "jsonc-parser";
 import { join } from "path";
 import { teamsDir, teamSettingsPath } from "../rt-paths.ts";
@@ -85,16 +85,45 @@ export function readStore(file: string): StoreFile {
  * of teamsDir() that contain mattstack/settings.jsonc. A team dir without a
  * settings file (a clone mid-setup, or an unrelated directory) is not yet a
  * team as far as the resolver is concerned.
+ *
+ * Honest-degrade like readStore, and for a sharper reason: this scan is on the
+ * path of EVERY settings resolution, so one bad directory entry must never
+ * brick `rt settings` or any reader behind it. A team clone that was symlinked
+ * in and later moved leaves a dangling symlink here, and the follow-the-link
+ * stat that keeps symlinked clones working throws ENOENT on exactly that — so
+ * the scan is guarded twice: around the readdir (an unreadable teams dir means
+ * no teams), and around EACH entry (a dangling link, an EACCES, or a stat that
+ * loses a race with a concurrent move skips that entry and leaves the healthy
+ * teams intact).
  */
 export function listTeams(): string[] {
   const dir = teamsDir();
   if (!existsSync(dir)) return [];
 
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    console.warn(`rt: failed to list teams in ${dir}, treating as no teams: ${(err as Error).message}`);
+    return [];
+  }
+
   const teams: string[] = [];
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry);
-    if (!statSync(full).isDirectory()) continue;
-    if (existsSync(teamSettingsPath(entry))) teams.push(entry);
+  for (const entry of entries) {
+    try {
+      // isDirectory() is false for a symlink, but a symlinked team clone is a
+      // real team — those resolve through stat, which is also what throws on a
+      // dangling link, hence the per-entry try.
+      const isDir =
+        entry.isDirectory() ||
+        (entry.isSymbolicLink() && statSync(join(dir, entry.name)).isDirectory());
+      if (!isDir) continue;
+      if (existsSync(teamSettingsPath(entry.name))) teams.push(entry.name);
+    } catch (err) {
+      console.warn(
+        `rt: skipping unreadable teams entry ${join(dir, entry.name)}: ${(err as Error).message}`,
+      );
+    }
   }
   return teams;
 }
