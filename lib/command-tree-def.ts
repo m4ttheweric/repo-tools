@@ -702,7 +702,7 @@ export const TREE: Record<string, CommandNode> = {
     description: "The git-backed ~/.mattstack home repo",
     subcommands: {
       init: {
-        description: "Print the adoption plan for provisioning the home repo",
+        description: "Provision the home repo: print, then run, the adoption plan",
         module: "./commands/home.ts",
         fn: "homeInit",
         args: [
