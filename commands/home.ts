@@ -16,7 +16,7 @@ import { mattstackHome, teamsDir } from "../lib/rt-paths.ts";
 import { buildInitPlan, type HomeState, type InitStep } from "../lib/home/init-plan.ts";
 import { createRealExecSeam, executeInitPlan, type ExecResult, type ExecSeam } from "../lib/home/init-exec.ts";
 import { parseOriginUrl } from "../lib/home/git-config.ts";
-import { createRealAgeKeySeam, keyExport, type AgeKeySeam } from "../lib/home/age-key.ts";
+import { AgeKeyAbsentError, createRealAgeKeySeam, ensureAgeKey, keyExport, type AgeKeySeam } from "../lib/home/age-key.ts";
 
 /** Stray root cruft deleted at init time, not adopted into the repo. */
 const CRUFT_CANDIDATES = ["skills.jsonc.pre-pack", "skills.jsonc.retired-backup"];
@@ -96,6 +96,22 @@ function describeStep(step: InitStep): string {
   }
 }
 
+/**
+ * The sole mint site: `key export` (lib/home/age-key.ts:keyExport) refuses
+ * to mint, precisely so a keychain-access error there can never be mistaken
+ * for "no key yet". Idempotent (ensureAgeKey mints only on provable
+ * absence), so it's safe to run on every init — including the
+ * already-initialized short-circuit, for a home repo that predates this
+ * step.
+ */
+async function ensureHomeAgeKey(seams: AgeKeySeam): Promise<void> {
+  const { publicKey } = await ensureAgeKey(seams);
+  console.log(
+    `rt home init: age key ready — recipient ${publicKey}.\n` +
+      "  Run `rt home key export` to save the private key to your password manager.",
+  );
+}
+
 const GH_AUTH_HINT = "gh is not authenticated. Run:\n  gh auth login";
 const FILTER_REPO_HINT = "git-filter-repo is not installed. Run:\n  brew install git-filter-repo";
 
@@ -130,6 +146,7 @@ export async function homeInit(
   _ctx: CommandContext = {},
   probes: HomeProbes = defaultProbes(),
   exec: ExecSeam = createRealExecSeam(mattstackHome()),
+  ageKeySeam: AgeKeySeam = createRealAgeKeySeam(),
 ): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const home = mattstackHome();
@@ -138,6 +155,7 @@ export async function homeInit(
 
   if (plan.reason === "already-initialized") {
     console.log(`rt home init: ${home} is already a git repo — nothing to do.`);
+    if (!dryRun) await ensureHomeAgeKey(ageKeySeam);
     return;
   }
 
@@ -169,6 +187,7 @@ export async function homeInit(
   }
 
   console.log(`\nrt home init: ${home} is now the git-backed home repo.`);
+  await ensureHomeAgeKey(ageKeySeam);
 }
 
 export async function homeKeyExport(
@@ -176,5 +195,13 @@ export async function homeKeyExport(
   _ctx: CommandContext = {},
   seams: AgeKeySeam = createRealAgeKeySeam(),
 ): Promise<void> {
-  await keyExport(seams, (text) => console.log(text));
+  try {
+    await keyExport(seams, (text) => console.log(text));
+  } catch (err) {
+    if (err instanceof AgeKeyAbsentError) {
+      console.error(`rt home key export: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
 }
