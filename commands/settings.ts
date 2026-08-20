@@ -7,12 +7,12 @@
  *   settings gitlab token   — set GitLab personal access token
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { homedir } from "os";
 import {
   rtDir,
-  TRAY_APP_NAME, DEV_TRAY_APP_NAME, trayAppPath, devTrayAppPath,
+  TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE, trayAppPath, devTrayAppPath,
 } from "../lib/rt-paths.ts";
 import { currentMode } from "../lib/dev-mode.ts";
 import { spawnSync } from "child_process";
@@ -457,10 +457,31 @@ export function renderDevModePreload(): string {
   ].join("\n") + "\n";
 }
 
+/**
+ * Leaving dev mode must leave a WORKING `rt` behind (MAT-383 smoke, Matt's
+ * ruling 2026-08-20). Deleting the wrapper used to be enough because Homebrew
+ * owned the prod binary; with brew retired, the only compiled rt on this
+ * machine is the one mattstack.app carries at Contents/MacOS/rt-daemon (the
+ * daemon and the CLI are the same binary). So prod mode installs THAT over the
+ * wrapper path — the same "the app provides the binary" model the installer
+ * generalizes in phase 2.
+ *
+ * Throws when the prod app is absent: stranding the CLI with no rt on PATH is
+ * worse than refusing the switch.
+ */
 function disableDevMode(): void {
-  if (existsSync(DEV_MODE_WRAPPER)) {
-    rmSync(DEV_MODE_WRAPPER);
+  const prodBinary = join(trayAppPath(), "Contents", "MacOS", "rt-daemon");
+  if (!existsSync(prodBinary)) {
+    throw new Error(
+      `cannot switch to prod: ${TRAY_APP_BUNDLE} is not installed, so there is no compiled rt to install at ${DEV_MODE_WRAPPER}. Install the app first (rt --post-install), then retry.`,
+    );
   }
+
+  mkdirSync(dirname(DEV_MODE_WRAPPER), { recursive: true });
+  if (existsSync(DEV_MODE_WRAPPER)) rmSync(DEV_MODE_WRAPPER);
+  copyFileSync(prodBinary, DEV_MODE_WRAPPER);
+  chmodSync(DEV_MODE_WRAPPER, 0o755);
+
   if (existsSync(DEV_MODE_PRELOAD)) {
     rmSync(DEV_MODE_PRELOAD);
   }
@@ -577,7 +598,7 @@ export async function toggleDevMode(args: string[]): Promise<void> {
   console.log("");
   const modeLabel = mode === "dev"
     ? `${green}dev${reset}  ${dim}(local source)${reset}`
-    : `${bold}prod${reset}  ${dim}(Homebrew binary)${reset}`;
+    : `${bold}prod${reset}  ${dim}(mattstack.app binary)${reset}`;
   console.log(`  ${bold}${cyan}rt dev mode${reset}  currently: ${modeLabel}`);
   if (mode === "dev" && sourcePath) {
     console.log(`  ${dim}source: ${sourcePath}${reset}`);
@@ -591,8 +612,8 @@ export async function toggleDevMode(args: string[]): Promise<void> {
     target = await select({
       message: "Switch to",
       options: [
-        { value: "dev",  label: "Dev",  hint: `bun run cli.ts — uses local source` },
-        { value: "prod", label: "Prod", hint: "Homebrew binary — uses installed release" },
+        { value: "dev",  label: "Dev",  hint: `mattstack-dev.app — daemon and CLI run from local source` },
+        { value: "prod", label: "Prod", hint: "mattstack.app — daemon and CLI are its compiled binary" },
       ],
     }) as "dev" | "prod";
   }
@@ -654,7 +675,7 @@ export async function toggleDevMode(args: string[]): Promise<void> {
 
   } else {
     disableDevMode();
-    console.log(`  ${green}✓${reset} CLI restored to prod mode  ${dim}(Homebrew binary is now active)${reset}`);
+    console.log(`  ${green}✓${reset} CLI restored to prod mode  ${dim}(mattstack.app binary installed at ~/.local/bin/rt)${reset}`);
 
     await handoffToFlavor(flavorFor(mode), incoming);
   }

@@ -159,7 +159,7 @@ describe("toggleDevMode — flavor handoff", () => {
     expect(oneShotSteps(log)).toEqual(["retire", "osascript", "pkill", "open"]);
     // launchctl polled at least once — proves the poll loop actually ran,
     // not just a single fire-and-forget check.
-    expect(log.some((l) => l.startsWith("launchctl list com.rt.daemon"))).toBe(true);
+    expect(log.some((l) => l.startsWith("launchctl list com.mattstack.daemon"))).toBe(true);
     // Launched the INCOMING bundle, not the outgoing one.
     const openLine = log.find((l) => l.startsWith("open "))!;
     expect(openLine).toContain(devTrayAppPath());
@@ -171,7 +171,11 @@ describe("toggleDevMode — flavor handoff", () => {
     // Start in dev mode: wrapper present.
     mkdirSync(join(HOME, ".local", "bin"), { recursive: true });
     writeFileSync(WRAPPER_PATH, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    mkdirSync(trayAppPath(), { recursive: true }); // incoming (prod) bundle present
+    // The prod bundle must carry its binary: leaving dev mode installs
+    // Contents/MacOS/rt-daemon over the wrapper path so a working `rt`
+    // survives the switch (brew is retired; the app is the only source).
+    mkdirSync(join(trayAppPath(), "Contents", "MacOS"), { recursive: true });
+    writeFileSync(join(trayAppPath(), "Contents", "MacOS", "rt-daemon"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     setUpFakes();
 
     await toggleDevMode(["prod"]);
@@ -184,7 +188,11 @@ describe("toggleDevMode — flavor handoff", () => {
     expect(pkillLine).toContain("-x mattstack-dev");
     const openLine = log.find((l) => l.startsWith("open "))!;
     expect(openLine).toContain(trayAppPath());
-    expect(existsSync(WRAPPER_PATH)).toBe(false); // CLI half restored to prod
+    // CLI half restored to prod: the wrapper is REPLACED by the app's compiled
+    // binary (brew is retired, so the app is the only source of a prod rt) —
+    // leaving nothing at all here would strand the CLI.
+    expect(existsSync(WRAPPER_PATH)).toBe(true);
+    expect(readFileSync(WRAPPER_PATH, "utf8")).not.toContain("bun run"); // not the dev wrapper script
   }, 15_000);
 
   test("missing incoming bundle aborts BEFORE any retire/quit call, and before the CLI half is touched", async () => {
