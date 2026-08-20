@@ -301,6 +301,37 @@ describe("createWorktreeReconciler", () => {
     expect(loadRegistry("untouched").length).toBe(0); // never touched: no config, no entries
   });
 
+  test("runOnce reconciles a repo whose worktrees declaration lives ONLY in a settings store", async () => {
+    // RT-47: the opt-in signal used to be `worktrees` in the per-repo
+    // config.json. A repo migrated to the stores has no such file at all, and
+    // must still be reconciled — the gate now asks the resolver.
+    const identity = "gitlab.com/assured/store-gated";
+    execSync(`git remote add origin git@gitlab.com:assured/store-gated.git`, {
+      cwd: repo,
+      shell: "/bin/zsh",
+    });
+    const manualPath = join(repo, ".worktrees", "manual");
+    execSync(`git worktree add -b manual-branch ${manualPath}`, { cwd: repo, shell: "/bin/zsh" });
+
+    const teamStore = join(process.env.HOME!, ".mattstack", "teams", "claimview", "mattstack", "settings.jsonc");
+    mkdirSync(join(teamStore, ".."), { recursive: true });
+    writeFileSync(
+      teamStore,
+      JSON.stringify({ repos: { [identity]: { "rt.worktrees": { namePool: ["luna"] } } } }),
+    );
+
+    const reconciler = createWorktreeReconciler({
+      cache: { entries: {} },
+      repoIndex: () => ({ [repoName]: repo }),
+      emit: () => {},
+      log: fakeLog(),
+    });
+
+    await reconciler.runOnce();
+
+    expect(loadRegistry(repoName).length).toBe(2); // main + manual adopted
+  });
+
   test("kick fires runOnce without awaiting and coalesces overlapping calls", async () => {
     writeJson(join(repoDataDir(repoName), "config.json"), { worktrees: {} });
 
