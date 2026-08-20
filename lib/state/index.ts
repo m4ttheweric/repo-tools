@@ -30,6 +30,7 @@
 // its LEGACY_IMPORTS entry) even for consumers that only want types.
 import "./branch-cache.ts";
 import "../daemon/project-mrs-store.ts";
+import "../daemon/discussions-file-store.ts";
 
 export {
   SCHEMA_VERSION,
@@ -46,3 +47,5 @@ export {
   type BranchCacheStore,
   type CacheEntry,
 } from "./branch-cache.ts";
+
+export { isBusyError, persistOrWarn } from "./busy.ts";

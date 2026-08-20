@@ -17,7 +17,6 @@
  */
 
 import { Database } from "bun:sqlite";
-import type { Discussion } from "@mattstack/glance";
 import type { LinearTicket } from "../linear.ts";
 import type { MRInfo } from "../enrich.ts";
 import { getStateDb, LEGACY_IMPORTS } from "./db.ts";
@@ -28,16 +27,6 @@ export interface CacheEntry {
   mr: MRInfo | null;
   fetchedAt: number;
   repoName?: string;
-  /**
-   * @deprecated legacy embedded discussions — snapshots now live in the
-   * `discussions` table (see lib/state/discussions.ts, Task 5). Kept on the
-   * type only so nothing currently constructing a `CacheEntry` breaks;
-   * readers die in Task 5, and this store never writes these fields to a
-   * row or copies them out of a legacy import.
-   */
-  discussions?: Discussion[];
-  /** @deprecated see `discussions` above. */
-  discussionsFetchedAt?: number;
 }
 
 export interface BranchCacheStore {
