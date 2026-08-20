@@ -9,7 +9,7 @@ Update the rt.cool docs, write the GitHub release notes from the previous tag
 to HEAD, commit them, and push a version tag. Pushing the tag is what publishes:
 the `.github/workflows/release.yml` workflow (trigger `on: push: tags: v*`) builds
 the macOS binaries, creates the GitHub release from the committed `RELEASE_NOTES.md`,
-attaches the tarballs, and updates the Homebrew tap. You never create the GitHub
+attaches the tarballs, and smoke-installs from them. You never create the GitHub
 release yourself; CI owns the release object. Your job is docs, notes, the tag,
 verifying CI, and deploying rt.cool.
 
@@ -59,8 +59,8 @@ left as-is or reduced to a pointer here.
    git push origin <tag>
    ```
    Do NOT run `gh release create`. The tag push triggers `release.yml`, which
-   creates the release from `RELEASE_NOTES.md`, attaches the binaries, and updates
-   Homebrew.
+   creates the release from `RELEASE_NOTES.md`, attaches the binaries, and
+   smoke-installs from them on a fresh runner.
 
 8. **Verify the publish.** Find the run (`gh run list --workflow=release.yml`)
    and watch it to completion (`gh run watch <run-id> --exit-status`), then confirm with

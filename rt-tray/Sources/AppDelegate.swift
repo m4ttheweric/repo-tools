@@ -300,10 +300,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Spawn `rt daemon logs` detached. Prefers the dev wrapper at
-    /// ~/.local/bin/rt over the brew-installed binary (which may lag the
-    /// source tree by a release cycle). Falls back to a login-shell PATH
-    /// lookup if neither exists.
+    /// Spawn `rt daemon logs` detached. Uses the installed CLI at
+    /// ~/.local/bin/rt (wrapper script in dev mode, binary in prod), else this
+    /// bundle's own embedded daemon binary, else a login-shell PATH lookup.
     ///
     /// Logdy stays running in the background after this method returns;
     /// it's killed only if the user Ctrl-Cs the spawned rt OR the rt-tray
@@ -312,8 +311,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let home = NSHomeDirectory()
         let candidates = [
             "\(home)/.local/bin/rt",
-            "/opt/homebrew/bin/rt",
-            "/usr/local/bin/rt",
+            Bundle.main.bundlePath + "/Contents/MacOS/rt-daemon",
         ]
         let rtBin = candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
 
