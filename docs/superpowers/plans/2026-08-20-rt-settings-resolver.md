@@ -18,7 +18,7 @@
 - No new outcome logging in handlers; domain events only.
 - JSONC comments survive every programmatic write (jsonc-parser modify/applyEdits; never JSON.stringify a store file).
 - Unknown keys: hard error on explicit get/set; warn+skip+label when found in files. Type-mismatched values in files: warn+skip that scope.
-- Unit tests run under the bunfig HOME-isolation preload; store paths resolve inside the temp HOME via the new rt-paths constructors.
+- Unit tests run under the bunfig HOME-isolation preload; store paths resolve inside the temp HOME via the new rt-paths constructors. EVERY suite that seeds store files re-points HOME per test (mkdtempSync in beforeEach) — store files are process-global state.
 - Precedence (weakest→strongest): `default < legacy < team < user < team.repos < user.repos < machine < machine.repos`; per-key `merge: "replace"|"deep"`; deep = field-by-field overlay, arrays replace atomically; teamLocked keys resolve `team.repos > team > default` only, everything else shadowed.
 - Variables: expand ONLY `${repoRoot}`, `${worktree}`, `${home}`, `${team:<name>}` (lexical, no existence check); all other `${...}` pass through verbatim; closed-set variable without context = loud error.
 - Commit format `RT-47: <lowercase imperative>` + trailer `Co-Authored-By: Claude <noreply@anthropic.com>`.
@@ -66,7 +66,7 @@ export function listTeams(): string[];               // subdirs of teamsDir() co
 
 ```ts
 export type SettingScope = "user" | "team" | "machine";
-export interface SettingDef { key: string; type: "string"|"number"|"boolean"|"object"|"array"; scopes: SettingScope[]; default?: unknown; merge: "replace"|"deep"; teamLocked?: boolean; secret?: boolean; repoScoped?: boolean; migrated: boolean; legacyFile?: string; siblingCommand?: string; description: string }
+export interface SettingDef { key: string; type: "string"|"number"|"boolean"|"object"|"array"; scopes: SettingScope[]; default?: unknown; merge: "replace"|"deep"; teamLocked?: boolean; secret?: boolean; repoScoped?: boolean; migrated: boolean; legacyFile?: string; siblingCommand?: string; pathGuardFields?: string[]; description: string }
 export function getDef(key: string): SettingDef | undefined;
 export function allDefs(): SettingDef[];
 export function validateValue(def: SettingDef, value: unknown): { ok: true } | { ok: false; reason: string };
@@ -89,7 +89,7 @@ Registry contents (every def carries `scopes`; repoScoped keys allow all three, 
 
 ```ts
 export function normalizeRemote(remote: string): string | null;   // spec "Repo identity": https/ssh/git@ unify; lowercase host; strip .git, credentials; local paths & unrecognized → null
-export function applyIdentityOverrides(remote: string, identity: string | null, overrides: Record<string,string>): string | null;
+export function identityFromRemote(remote: string): string | null;  // SYNC: machine-store overrides (readStore) then normalizeRemote — THE one helper every non-derive site uses (run.ts, buildInterceptRules, tests); fork-pinning works everywhere or nowhere
 export async function deriveRepoIdentity(repoPath: string): Promise<string | null>;  // git config --get remote.origin.url via async Bun.spawn; memoized per path; null on failure; consults the machine store's rt.repoIdentityOverrides (via stores.ts readStore, keyed by observed remote) BEFORE normalizeRemote — the wiring that makes the overrides key real (test: override maps an unrecognized local-path remote to a chosen identity)
 export function clearIdentityMemo(): void; // tests
 ```
@@ -162,7 +162,7 @@ export function expandVariables(value: unknown, ctx: { repoRoot?: string; worktr
 - Test: extend `lib/endpoint/__tests__/config.test.ts` + `shim.test.ts`; keep every existing endpoint/intercept/worktree test green (they may need fixture stores now — prefer making legacy fallback carry them unchanged)
 
 **Interfaces:**
-- Produces: `loadEndpointConfig(args: { repoIdentity: string | null; repoName: string }): EndpointRepoConfig` (shape unchanged). `loadEndpointRepoConfig(repoName)` is DELETED (verified: no sync production caller exists). The four async callers each supply identity from data in hand: `run.ts` normalizes `rule.repoRemote` via `normalizeRemote`; `buildInterceptRules` passes the remote it captures per repo; the two daemon handler paths `await deriveRepoIdentity(repoPath)` (memoized; repoPath from `ctx.repoIndex()`). Unit tests that called the old name are updated in this task. Also `staleIntercepts(): { stale: boolean; reason?: string }` comparing store mtimes vs intercepts.json mtime.
+- Produces: `loadEndpointConfig(args: { repoIdentity: string | null; repoName: string }): EndpointRepoConfig` (shape unchanged). `loadEndpointRepoConfig(repoName)` is DELETED (verified: no sync production caller exists). The four async callers each supply identity from data in hand: `run.ts` and `buildInterceptRules` map remotes through `identityFromRemote` (overrides-aware, never bare normalizeRemote); the two daemon handler paths `await deriveRepoIdentity(repoPath)` (memoized; repoPath from `ctx.repoIndex()`). Unit tests that called the old name are updated in this task. Also `staleIntercepts(): { stale: boolean; reason?: string }` comparing store mtimes vs intercepts.json mtime.
 - Key behaviors to test (add a beforeEach fresh-HOME to the EXISTING lib/endpoint/__tests__/config.test.ts so stray store fixtures from other suites can never leak into its legacy-path assertions): fixture team store carrying roles/intercepts for a fake identity → loadEndpointConfig returns them with `${team:x}` hook expanded; absent stores → legacy config.json still honored byte-identically (existing tests prove this); `rt settings set` on rt.intercepts regenerates intercepts.json (test via commands layer or exported hook); staleness probe flags store-newer-than-cache.
 - [ ] Steps: failing tests → FAIL → implement → **full `bun test lib` green** + tsc → commit `RT-47: endpoint config reads through the resolver; intercept staleness probe`.
 
@@ -171,7 +171,7 @@ export function expandVariables(value: unknown, ctx: { repoRoot?: string; worktr
 ### Task 8: migrate the worktree consumer
 
 **Files:**
-- Modify: `lib/worktree/config.ts` (`loadWorktreeRepoConfig` async, resolver-backed, legacy fallback, header rewrite) and ALL FIVE callsites (find with `rg -n "loadWorktreeRepoConfig" lib commands` — verified async contexts: lib/worktree/create.ts:59, worktree-reconciler.ts:745/878/979, handlers/worktree.ts:240; plumb await), PLUS the hidden direct reader `repoHasWorktreeActivity` in `lib/daemon/worktree-reconciler.ts:985-989` (reads the raw `worktrees` key from config.json itself, gating the reconciler pass at :1020 — migrate it to the resolver or it permanently skips store-only repos, breaking invite bootstrap; dedicated test required), `lib/settings` legacy map if needed
+- Modify: `lib/worktree/config.ts` (`loadWorktreeRepoConfig` async, resolver-backed, legacy fallback, header rewrite) and ALL FIVE callsites (find with `rg -n "loadWorktreeRepoConfig" lib commands` — verified async contexts: lib/worktree/create.ts:59, worktree-reconciler.ts:745/878/979, handlers/worktree.ts:240; plumb await), PLUS the hidden direct reader `repoHasWorktreeActivity` in `lib/daemon/worktree-reconciler.ts:985-989` (reads the raw `worktrees` key from config.json itself, gating the reconciler pass at :1020 — migrate it to the resolver: activity = a `rt.worktrees` resolution whose provenance is STRONGER than `default` (registry default {onDeck:0} must NOT count as activity); dedicated tests for both the store-only-repo positive and the nothing-anywhere negative), `lib/settings` legacy map if needed
 - Test: extend `lib/worktree/__tests__/config.test.ts` (or its actual test home) with the deep-merge proof case through the REAL reader: team store onDeck/ready + user store namePool + legacy file everything → reader returns the spec's merged result; `root` computed default intact when nowhere set
 
 - [ ] Steps: failing tests → FAIL → implement (async signature, callsites) → **full `bun test lib commands packages` green** + tsc → commit `RT-47: worktree config reads through the resolver (deep-merge proof case)`.
@@ -188,7 +188,7 @@ Scenario against a real compiled binary + foreground daemon (copy `e2e/tests/end
 2. `rt settings get/list/explain --json` verify value, provenance chain incl. a deep-merge key, migrated:false labeling, unregistered-key labeling.
 3. `rt settings set` (user scope) → value change visible on next get; comment planted in the file beforehand survives (read file, assert comment line).
 4. Endpoint through stores: roles/intercepts ONLY in the team store (no per-repo config.json keys), `rt intercept install`, run the fake command through the shim → right PORT (proves resolver feeds interception end to end), `${team:e2eteam}` hook path expands (hook can be a stub echoing env).
-5. Stale probe: touch the team store, `rt intercept status --json` reports stale; `rt intercept install` clears it.
+5. Stale probe: set the team store's mtime explicitly into the future of the cache's (utimesSync +2s, never a bare touch — same-tick mtimes flake), `rt intercept status --json` reports stale; `rt intercept install` clears it.
 6. Worktree merge visible: `rt settings get rt.worktrees --repo <name> --json` shows team onDeck + user namePool with multi-scope provenance.
 - [ ] Steps: write → run (`rm -f dist/rt && bun test --preload ./e2e/setup.ts --timeout 60000 e2e/tests/settings.test.ts`) → fix reality frictions in source → full gates: `bunx tsc --noEmit && bun test lib commands packages && rm -f dist/rt && bun test --preload ./e2e/setup.ts --timeout 60000 e2e/` → commit `RT-47: e2e — stores to shim end to end, provenance, staleness`.
 
