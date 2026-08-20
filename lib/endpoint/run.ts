@@ -26,7 +26,8 @@
 
 import type { HookInput, ResolvedAllocation } from "./env.ts";
 import { applyArgInject, collectPreservedKeys, renderEnvTemplates, runRoleHook } from "./env.ts";
-import { loadEndpointRepoConfig } from "./config.ts";
+import { loadEndpointConfig } from "./config.ts";
+import { identityFromRemote } from "../settings/identity.ts";
 import { matchInvocation, type InterceptRule } from "./shim.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -87,7 +88,14 @@ export async function runInterception(
     deps.warn(`rt-intercept: match command=${command} repo=${rule.repo} role=${match.role} cwd=${cwd}`);
   }
 
-  const repoCfg = loadEndpointRepoConfig(rule.repo);
+  // Identity for the settings stores' repo sections, from the remote the rule
+  // already carries — no spawn, and `identityFromRemote` (never bare
+  // `normalizeRemote`) so a fork pinned in the machine store's
+  // `rt.repoIdentityOverrides` resolves to its upstream identity here too. A
+  // rule with no recorded remote resolves with a null identity: global +
+  // legacy scopes only, which is exactly what that repo had before RT-47.
+  const repoIdentity = rule.repoRemote === null ? null : identityFromRemote(rule.repoRemote);
+  const repoCfg = loadEndpointConfig({ repoIdentity, repoName: rule.repo });
   const roleCfg = repoCfg.roles[match.role];
   if (!roleCfg) {
     deps.warn(`rt-intercept: passthrough — role "${match.role}" is not declared for repo "${rule.repo}"`);

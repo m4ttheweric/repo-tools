@@ -12,7 +12,7 @@ import { basename, join } from "path";
 import { realpathSync } from "fs";
 import type { Logger } from "pino";
 import { readJson, writeJson } from "../json-store.ts";
-import { repoDataDir, rtDir } from "../rt-paths.ts";
+import { rtDir } from "../rt-paths.ts";
 import {
   findByBranch,
   findByPath,
@@ -42,6 +42,7 @@ import {
   loadWorktreeAppConfig,
   loadWorktreeRepoConfig,
   resolveReadySteps,
+  worktreeSettingsDeclared,
   type WorktreeAppConfig,
 } from "../worktree/config.ts";
 import { killWorktreeProcesses } from "./worktree-process-kill.ts";
@@ -742,7 +743,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
   }
   await popStash();
 
-  const cfg = loadWorktreeRepoConfig(repoName, deps.repoPath);
+  const cfg = await loadWorktreeRepoConfig(repoName, deps.repoPath);
   const readySteps = resolveReadySteps(cfg, deps.repoPath);
   const changed = rec.readyStamp ? await changedSince(rec.path, rec.readyStamp) : null;
   const toRun = stepsToRun(readySteps, changed);
@@ -875,7 +876,7 @@ async function replenishAndShrink(
   appConfig: WorktreeAppConfig,
 ): Promise<void> {
   const { repoName, repoPath, emit, log } = deps;
-  const cfg = loadWorktreeRepoConfig(repoName, repoPath);
+  const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
   if (cfg.onDeck <= 0) return;
 
   let { ready, totalUnclaimed } = poolCounts(repoName);
@@ -976,17 +977,24 @@ async function replenishAndShrink(
  */
 async function reapRepoTrash(deps: { repoName: string; repoPath: string; log: Logger }): Promise<void> {
   const { repoName, repoPath, log } = deps;
-  const cfg = loadWorktreeRepoConfig(repoName, repoPath);
+  const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
   const reaped = await reapTrashInRoots([join(repoPath, ".worktrees"), cfg.root], log);
   if (reaped > 0) log.info({ repo: repoName, count: reaped }, "worktree trash reaped");
 }
 
-/** Whether a repo has any worktree state worth reconciling: registry entries or a declared "worktrees" config. */
-function repoHasWorktreeActivity(repoName: string): boolean {
+/**
+ * Whether a repo has any worktree state worth reconciling: registry entries, or
+ * an `rt.worktrees` declaration on any rung stronger than the registry default.
+ *
+ * Since RT-47 the declaration can live in a settings store as well as in the
+ * legacy per-repo config.json, so this asks the reader rather than the file —
+ * a repo whose pool config lives ONLY in the team store must still be
+ * reconciled. Async for the same reason the reader is (identity derivation);
+ * the pass that calls it is async already.
+ */
+async function repoHasWorktreeActivity(repoName: string, repoPath: string): Promise<boolean> {
   if (loadRegistry(repoName).length > 0) return true;
-  const configPath = join(repoDataDir(repoName), "config.json");
-  const raw = readJson<{ worktrees?: unknown }>(configPath, {});
-  return raw.worktrees !== undefined;
+  return worktreeSettingsDeclared(repoName, repoPath);
 }
 
 /**
@@ -1017,7 +1025,7 @@ export function createWorktreeReconciler(deps: ReconcilerDeps): {
     const appConfig = loadWorktreeAppConfig();
 
     for (const [repoName, repoPath] of Object.entries(repos)) {
-      if (!repoHasWorktreeActivity(repoName)) continue;
+      if (!(await repoHasWorktreeActivity(repoName, repoPath))) continue;
       try {
         await reconcileRepoRegistry({ repoName, repoPath, emit: deps.emit, log: deps.log });
       } catch (err) {

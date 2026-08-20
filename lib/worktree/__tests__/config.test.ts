@@ -1,20 +1,46 @@
 import { describe, test, expect, beforeEach } from "bun:test";
+import { execSync } from "child_process";
 import { mkdtempSync, realpathSync, writeFileSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { writeJson } from "../../json-store.ts";
-import { repoDataDir, rtDir } from "../../rt-paths.ts";
+import {
+  machineSettingsPath,
+  repoDataDir,
+  rtDir,
+  teamSettingsPath,
+  userSettingsPath,
+} from "../../rt-paths.ts";
 import {
   loadWorktreeRepoConfig,
   resolveImplicitInstall,
   resolveReadySteps,
   stripEnvPrefix,
   loadWorktreeAppConfig,
+  worktreeSettingsDeclared,
   type WorktreeRepoConfig,
 } from "../config.ts";
 
 function tmpRepoPath(prefix: string): string {
   return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+}
+
+/**
+ * A real git repo with a real remote — the store rungs are keyed by repo
+ * IDENTITY, and identity comes from `git config --get remote.origin.url`.
+ * Faking the derivation would skip exactly the hop these tests exist to prove.
+ * Each call makes a FRESH temp path so `deriveRepoIdentity`'s per-path memo
+ * can never carry an identity between tests.
+ */
+function tmpRepoWithRemote(prefix: string, remote: string): string {
+  const dir = tmpRepoPath(prefix);
+  execSync(`git init -q && git remote add origin ${remote}`, { cwd: dir, shell: "/bin/zsh" });
+  return dir;
+}
+
+function writeStore(file: string, obj: unknown): void {
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(obj, null, 2));
 }
 
 describe("worktree config", () => {
@@ -23,9 +49,9 @@ describe("worktree config", () => {
   });
 
   describe("loadWorktreeRepoConfig", () => {
-    test("defaults when config.json is missing", () => {
+    test("defaults when config.json is missing", async () => {
       const repoPath = tmpRepoPath("rtcfg-repo-");
-      const cfg = loadWorktreeRepoConfig("myrepo", repoPath);
+      const cfg = await loadWorktreeRepoConfig("myrepo", repoPath);
       expect(cfg).toEqual({
         onDeck: 0,
         root: join(repoPath, ".worktrees"),
@@ -34,7 +60,7 @@ describe("worktree config", () => {
       });
     });
 
-    test("defaults when config.json exists but has no 'worktrees' key", () => {
+    test("defaults when config.json exists but has no 'worktrees' key", async () => {
       const repoPath = tmpRepoPath("rtcfg-repo-");
       writeJson(join(repoDataDir("myrepo"), "config.json"), {
         setup: [],
@@ -42,7 +68,7 @@ describe("worktree config", () => {
         startScript: "start",
         open: { base: "" },
       });
-      const cfg = loadWorktreeRepoConfig("myrepo", repoPath);
+      const cfg = await loadWorktreeRepoConfig("myrepo", repoPath);
       expect(cfg).toEqual({
         onDeck: 0,
         root: join(repoPath, ".worktrees"),
@@ -51,7 +77,7 @@ describe("worktree config", () => {
       });
     });
 
-    test("declared block round-trips", () => {
+    test("declared block round-trips", async () => {
       const repoPath = tmpRepoPath("rtcfg-repo-");
       const declared = {
         onDeck: 2,
@@ -66,20 +92,20 @@ describe("worktree config", () => {
         setup: [{ label: "x", command: "y" }],
         worktrees: declared,
       });
-      const cfg = loadWorktreeRepoConfig("myrepo", repoPath);
+      const cfg = await loadWorktreeRepoConfig("myrepo", repoPath);
       expect(cfg).toEqual(declared);
     });
 
-    test("expands a leading ~/ in root against call-time HOME", () => {
+    test("expands a leading ~/ in root against call-time HOME", async () => {
       const repoPath = tmpRepoPath("rtcfg-repo-");
       writeJson(join(repoDataDir("myrepo"), "config.json"), {
         worktrees: { root: "~/wt-root" },
       });
-      const cfg = loadWorktreeRepoConfig("myrepo", repoPath);
+      const cfg = await loadWorktreeRepoConfig("myrepo", repoPath);
       expect(cfg.root).toBe(join(process.env.HOME!, "wt-root"));
     });
 
-    test("drops dot-leading namePool entries", () => {
+    test("drops dot-leading namePool entries", async () => {
       // A pool entry named ".trash-x" would build a tree the reconciler's reap
       // duty then deletes as a leftover. The reaper is the only rm -rf in the
       // codebase; this is the door it can come through.
@@ -87,17 +113,154 @@ describe("worktree config", () => {
       writeJson(join(repoDataDir("myrepo"), "config.json"), {
         worktrees: { namePool: [".trash-x", "luna"] },
       });
-      const cfg = loadWorktreeRepoConfig("myrepo", repoPath);
+      const cfg = await loadWorktreeRepoConfig("myrepo", repoPath);
       expect(cfg.namePool).toEqual(["luna"]);
     });
 
-    test("leaves an absolute root unchanged", () => {
+    test("leaves an absolute root unchanged", async () => {
       const repoPath = tmpRepoPath("rtcfg-repo-");
       writeJson(join(repoDataDir("myrepo"), "config.json"), {
         worktrees: { root: "/absolute/wt-root" },
       });
-      const cfg = loadWorktreeRepoConfig("myrepo", repoPath);
+      const cfg = await loadWorktreeRepoConfig("myrepo", repoPath);
       expect(cfg.root).toBe("/absolute/wt-root");
+    });
+  });
+
+  // ─── Through the resolver (RT-47) ──────────────────────────────────────────
+
+  describe("loadWorktreeRepoConfig through the settings resolver", () => {
+    const IDENTITY = "gitlab.com/acme/acme-dev";
+    const REMOTE = "git@gitlab.com:acme/acme-dev.git";
+
+    test("the deep-merge proof case: team onDeck/ready + user namePool + legacy everything", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-merge-", REMOTE);
+
+      // team: the shared pool size and the shared ready ladder
+      writeStore(teamSettingsPath("acme"), {
+        repos: {
+          [IDENTITY]: {
+            "rt.worktrees": {
+              onDeck: 3,
+              ready: [{ run: "pnpm install", when: "changed:pnpm-lock.yaml" }],
+            },
+          },
+        },
+      });
+      // user: one personal field, restating nothing else
+      writeStore(userSettingsPath(), {
+        repos: { [IDENTITY]: { "rt.worktrees": { namePool: ["web", "bellatrix"] } } },
+      });
+      // legacy: the pre-migration file, still carrying everything
+      writeJson(join(repoDataDir("acme-dev"), "config.json"), {
+        worktrees: {
+          onDeck: 1,
+          namePool: ["legacy-name"],
+          root: "/legacy/wt-root",
+          branchFormat: "<ticket>",
+          ready: [{ run: "legacy-step" }],
+        },
+      });
+
+      const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
+
+      expect(cfg).toEqual({
+        onDeck: 3, // team beats legacy
+        namePool: ["web", "bellatrix"], // user beats legacy (arrays replace whole)
+        root: "/legacy/wt-root", // legacy-only field survives the merge
+        branchFormat: "<ticket>", // legacy-only field survives the merge
+        ready: [{ run: "pnpm install", when: "changed:pnpm-lock.yaml" }], // team beats legacy
+      });
+    });
+
+    test("a store-only repo resolves with no legacy config.json at all", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-storeonly-", REMOTE);
+      writeStore(teamSettingsPath("acme"), {
+        repos: { [IDENTITY]: { "rt.worktrees": { onDeck: 2, namePool: ["luna"] } } },
+      });
+
+      const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
+      expect(cfg.onDeck).toBe(2);
+      expect(cfg.namePool).toEqual(["luna"]);
+      // computed default still lives in the reader, not the registry
+      expect(cfg.root).toBe(join(repoPath, ".worktrees"));
+      expect(cfg.branchFormat).toBe("<ticket>-<slug>");
+    });
+
+    test("${repoRoot} in a shared-scope root expands to the repo path", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-var-", REMOTE);
+      writeStore(teamSettingsPath("acme"), {
+        repos: { [IDENTITY]: { "rt.worktrees": { root: "${repoRoot}/trees" } } },
+      });
+
+      const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
+      expect(cfg.root).toBe(join(repoPath, "trees"));
+    });
+
+    test("a machine-store root of ~/wt still expands: `~` is not a closed-set variable", async () => {
+      // The resolver's closed set is ${repoRoot}/${worktree}/${home}/${team:x}
+      // — a bare `~` passes straight through it, so the reader's own expandHome
+      // is what keeps a machine-store path literal working.
+      const repoPath = tmpRepoWithRemote("rtcfg-tilde-", REMOTE);
+      writeStore(machineSettingsPath(), {
+        repos: { [IDENTITY]: { "rt.worktrees": { root: "~/wt" } } },
+      });
+
+      const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
+      expect(cfg.root).toBe(join(process.env.HOME!, "wt"));
+    });
+
+    test("the namePool dot-filter applies to a store value, not just the legacy file", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-dotstore-", REMOTE);
+      writeStore(userSettingsPath(), {
+        repos: { [IDENTITY]: { "rt.worktrees": { namePool: [".trash-x", "luna"] } } },
+      });
+
+      const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
+      expect(cfg.namePool).toEqual(["luna"]);
+    });
+
+    test("a repo with no derivable identity still reads its legacy file", async () => {
+      const repoPath = tmpRepoPath("rtcfg-noident-"); // not a git repo: identity null
+      writeStore(teamSettingsPath("acme"), {
+        repos: { [IDENTITY]: { "rt.worktrees": { onDeck: 9 } } },
+      });
+      writeJson(join(repoDataDir("acme-dev"), "config.json"), {
+        worktrees: { onDeck: 4 },
+      });
+
+      const cfg = await loadWorktreeRepoConfig("acme-dev", repoPath);
+      expect(cfg.onDeck).toBe(4); // legacy answers; the repo section is unreachable
+    });
+  });
+
+  describe("worktreeSettingsDeclared", () => {
+    const IDENTITY = "gitlab.com/acme/store-only";
+    const REMOTE = "git@gitlab.com:acme/store-only.git";
+
+    test("nothing authored anywhere -> false (the registry default does not count)", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-act-none-", REMOTE);
+      expect(await worktreeSettingsDeclared("store-only", repoPath)).toBe(false);
+    });
+
+    test("a team store section with no legacy config.json -> true", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-act-store-", REMOTE);
+      writeStore(teamSettingsPath("acme"), {
+        repos: { [IDENTITY]: { "rt.worktrees": { onDeck: 2 } } },
+      });
+      expect(await worktreeSettingsDeclared("store-only", repoPath)).toBe(true);
+    });
+
+    test("an EMPTY legacy worktrees block still counts, exactly as it did pre-resolver", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-act-legacy-", REMOTE);
+      writeJson(join(repoDataDir("store-only"), "config.json"), { worktrees: {} });
+      expect(await worktreeSettingsDeclared("store-only", repoPath)).toBe(true);
+    });
+
+    test("a config.json with other keys but no worktrees block -> false", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-act-other-", REMOTE);
+      writeJson(join(repoDataDir("store-only"), "config.json"), { setup: [], startScript: "x" });
+      expect(await worktreeSettingsDeclared("store-only", repoPath)).toBe(false);
     });
   });
 

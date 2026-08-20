@@ -1,22 +1,74 @@
 /**
- * Worktree config: repo overlay + app-level, with a one-time compat seed.
+ * Worktree config: the per-repo pool declaration (`rt.worktrees`, resolved
+ * through the settings resolver since RT-47) plus the app-level on/off file.
  *
- * Two files, two owners:
- *  - `~/.mattstack/rt/repos/<repo>/config.json` — repo-config.ts owns most of this file
- *    (setup/clean/startScript/open). This module reads the SAME file but only
- *    ever looks at its optional "worktrees" key, and never writes it.
- *  - `~/.mattstack/rt/worktrees.json` — owned entirely by this module. `{enabled,
- *    killProcesses}`, seeded once from the legacy `~/.mattstack/rt/parking-lot.json`
- *    (section 11.1 retires the old file after the seed) when the new file is
- *    absent and the old one exists. Both default to true, matching
- *    parking-lot-config.ts's legacy `raw?.enabled !== false` semantics.
+ * ── Where the per-repo values come from ───────────────────────────────────
+ * `loadWorktreeRepoConfig` goes through `lib/settings/resolve.ts#getSetting`,
+ * which layers the authored stores over the legacy rung:
+ *
+ *   default < legacy < team < user < team.repo < user.repo < machine < machine.repo
+ *
+ * `rt.worktrees` is a **deep-merge** key (registry: `merge: "deep"`), which is
+ * the whole point of the migration: the team store can own `onDeck`/`ready`,
+ * the user store can add a personal `namePool`, and a repo that still has a
+ * legacy block keeps whatever fields nobody else supplied — all at once. Arrays
+ * inside the key still replace atomically, so one `ready` ladder or one
+ * `namePool` wins outright rather than being spliced.
+ *
+ * The store rungs are keyed by repo IDENTITY (a normalized remote), so this
+ * reader derives one from the repo path — which is why it is ASYNC (the
+ * derivation is a `git config` spawn, never a sync one; it is memoized per
+ * path). A repo with no derivable identity (local-path remote, not a git repo
+ * yet) simply makes the `*.repo` rungs unreachable; global keys and the legacy
+ * rung still answer. Honest degrade, not an error.
+ *
+ * ── The legacy window ─────────────────────────────────────────────────────
+ * `legacy` is `~/.mattstack/rt/repos/<repo>/config.json` and specifically its
+ * `worktrees` key. That file has multiple owners (repo-config.ts owns
+ * setup/clean/startScript/open); this module still only ever reads that one
+ * key, still never writes it, and now reaches it through the resolver's legacy
+ * rung — so a store value beats it and `rt settings explain rt.worktrees --repo
+ * <name>` says which one won. The window closes when the migrated key is
+ * removed from that file (spec: "Data migration", step 4). Until then a repo
+ * with no store section behaves exactly as it did before this migration.
+ *
+ * ── Computed defaults and sanitizers stay HERE ────────────────────────────
+ * The registry only carries `{ onDeck: 0 }`; `root` (= `<repoPath>/.worktrees`)
+ * and `branchFormat` cannot live there because they depend on the repo being
+ * read. And the resolver only type-checks the TOP level of a value (an object),
+ * while the legacy rung is raw file content — so the sanitizers below are what
+ * actually guarantee the `WorktreeRepoConfig` shape, from whichever rung a
+ * field arrived on. That includes the namePool dot-filter, which now guards
+ * team- and user-authored pools too.
+ *
+ * `expandHome` also stays: the resolver's closed variable set is
+ * `${repoRoot}/${worktree}/${home}/${team:<name>}` and a bare `~` is not in it,
+ * so a machine-store `"root": "~/wt"` would otherwise reach the filesystem
+ * verbatim. Shared scopes should use `${repoRoot}`-style variables (spec); the
+ * machine store is allowed literals, and this is what makes them work.
+ *
+ * ── This reader never throws ──────────────────────────────────────────────
+ * Its callers are the daemon reconciler's per-pass duties and the provision
+ * handler: both must answer rather than blow up. `getSetting` throws for
+ * exactly one input — an unsatisfiable closed-set variable — so that degrades
+ * to "nothing declared" with one warning rather than taking a reconcile pass
+ * (or every repo behind it) down.
+ *
+ * ── The app-level file is NOT migrated in wave 1 ──────────────────────────
+ * `~/.mattstack/rt/worktrees.json` — owned entirely by this module. `{enabled,
+ * killProcesses}`, seeded once from the legacy `~/.mattstack/rt/parking-lot.json`
+ * (section 11.1 retires the old file after the seed) when the new file is
+ * absent and the old one exists. Both default to true, matching
+ * parking-lot-config.ts's legacy `raw?.enabled !== false` semantics.
  */
 
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { readJson, writeJson } from "../json-store.ts";
-import { repoDataDir, rtDir } from "../rt-paths.ts";
+import { rtDir } from "../rt-paths.ts";
+import { deriveRepoIdentity } from "../settings/identity.ts";
+import { explainSetting, getSetting, type ResolveOpts } from "../settings/resolve.ts";
 
 /**
  * Expand a leading `~` against call-time HOME (matching rt-paths convention:
@@ -52,29 +104,141 @@ export interface WorktreeAppConfig {
 
 // ─── Repo overlay ────────────────────────────────────────────────────────────
 
-interface RawRepoConfigFile {
-  worktrees?: Partial<WorktreeRepoConfig>;
+const SETTING_KEY = "rt.worktrees";
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /**
- * Reads the "worktrees" key of ~/.mattstack/rt/repos/<repo>/config.json. repo-config.ts
- * owns every other key in that file; this never writes it.
+ * The resolve options every rung of this key is read with. `expand` is left at
+ * its default (true) so a shared-scope `"root": "${repoRoot}/trees"` works;
+ * `${worktree}` is NOT satisfiable here (this reader has no invocation
+ * context), so a value using it degrades — see the module header.
  */
-export function loadWorktreeRepoConfig(repoName: string, repoPath: string): WorktreeRepoConfig {
-  const path = join(repoDataDir(repoName), "config.json");
-  const raw = readJson<RawRepoConfigFile>(path, {});
-  const declared = raw.worktrees ?? {};
+function resolveOpts(repoName: string, repoIdentity: string | null, repoPath: string): ResolveOpts {
+  return {
+    repoIdentity,
+    legacy: { repoName },
+    expandCtx: { repoRoot: repoPath },
+  };
+}
+
+/**
+ * The resolved `rt.worktrees` object, or `{}` when nothing resolves. Never
+ * throws (module header): an unexpandable closed-set variable warns and
+ * degrades this key rather than propagating into a reconcile pass.
+ */
+function resolveDeclared(
+  repoName: string,
+  repoIdentity: string | null,
+  repoPath: string,
+): Record<string, unknown> {
+  try {
+    const { value } = getSetting<unknown>(SETTING_KEY, resolveOpts(repoName, repoIdentity, repoPath));
+    return isPlainObject(value) ? value : {};
+  } catch (err) {
+    console.warn(`rt: ignoring "${SETTING_KEY}" for repo "${repoName}" — ${(err as Error).message}`);
+    return {};
+  }
+}
+
+// ─── Sanitizers ──────────────────────────────────────────────────────────────
+// The resolver type-checks only the top level of the key and the legacy rung is
+// raw file content, so these are what guarantee WorktreeRepoConfig's shape.
+
+/** Pool size. Anything that isn't a non-negative integer means "no pool". */
+function sanitizeOnDeck(raw: unknown): number {
+  return typeof raw === "number" && Number.isInteger(raw) && raw >= 0 ? raw : 0;
+}
+
+/**
+ * Worktree root, with the reader's computed default. `expandHome` is applied
+ * after the resolver's own variable expansion — see the module header for why
+ * a bare `~` still has to work.
+ */
+function sanitizeRoot(raw: unknown, repoPath: string): string {
+  return typeof raw === "string" && raw.length > 0 ? expandHome(raw) : join(repoPath, ".worktrees");
+}
+
+function sanitizeBranchFormat(raw: unknown): string {
+  return typeof raw === "string" && raw.length > 0 ? raw : "<ticket>-<slug>";
+}
+
+/** Declared domain steps; an entry without a string `run` is not a step. */
+function sanitizeReady(raw: unknown): ReadyStep[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (step): step is ReadyStep => isPlainObject(step) && typeof step.run === "string",
+  );
+}
+
+/**
+ * Returns undefined when no pool was declared at all (an absent pool and an
+ * empty one mean different things to `pickName`).
+ *
+ * A dot-leading name would build a tree the reconciler's reap duty then deletes
+ * as a `.trash-*` leftover, so the pool never gets to declare one — and since
+ * RT-47 that guard covers team- and user-authored pools too, not just the
+ * legacy file.
+ */
+function sanitizeNamePool(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return raw.filter((name): name is string => typeof name === "string" && !name.startsWith("."));
+}
+
+/**
+ * The repo's worktree pool declaration, resolved across the whole settings
+ * ladder (module header). ASYNC because the store rungs are keyed by repo
+ * identity and deriving one from a path is a git spawn.
+ */
+export async function loadWorktreeRepoConfig(
+  repoName: string,
+  repoPath: string,
+): Promise<WorktreeRepoConfig> {
+  const identity = await deriveRepoIdentity(repoPath);
+  const declared = resolveDeclared(repoName, identity, repoPath);
 
   const cfg: WorktreeRepoConfig = {
-    onDeck: declared.onDeck ?? 0,
-    root: declared.root ? expandHome(declared.root) : join(repoPath, ".worktrees"),
-    branchFormat: declared.branchFormat ?? "<ticket>-<slug>",
-    ready: declared.ready ?? [],
+    onDeck: sanitizeOnDeck(declared.onDeck),
+    root: sanitizeRoot(declared.root, repoPath),
+    branchFormat: sanitizeBranchFormat(declared.branchFormat),
+    ready: sanitizeReady(declared.ready),
   };
-  // A dot-leading name would build a tree the reconciler's reap duty then
-  // deletes as a `.trash-*` leftover, so the pool never gets to declare one.
-  if (declared.namePool) cfg.namePool = declared.namePool.filter((n) => !n.startsWith("."));
+  const namePool = sanitizeNamePool(declared.namePool);
+  if (namePool) cfg.namePool = namePool;
   return cfg;
+}
+
+/**
+ * Whether anyone has actually DECLARED worktree settings for this repo — the
+ * opt-in signal the daemon reconciler gates its per-repo pass on.
+ *
+ * "Declared" means: some rung stronger than `default` has a value present for
+ * `rt.worktrees`. The registry default (`{ onDeck: 0 }`) exists for every repo
+ * on the machine, so counting it would opt every registered repo into worktree
+ * reconciliation.
+ *
+ * This asks `explainSetting` for rung PRESENCE rather than reading `getSetting`
+ * provenance, and the difference is load-bearing: provenance names the scopes
+ * that still own a surviving leaf, so an authored-but-empty block (`"worktrees":
+ * {}` — the established opt-in idiom, used in the reconciler's own tests)
+ * contributes no leaf and would vanish from provenance entirely. Presence keeps
+ * this function's answer identical to the pre-RT-47 `raw.worktrees !== undefined`
+ * test on the legacy file, while also seeing a repo whose declaration lives
+ * only in a store. An invalid value counts too, for the same reason it did
+ * before: somebody meant to declare something.
+ */
+export async function worktreeSettingsDeclared(repoName: string, repoPath: string): Promise<boolean> {
+  const identity = await deriveRepoIdentity(repoPath);
+  try {
+    return explainSetting(SETTING_KEY, resolveOpts(repoName, identity, repoPath)).some(
+      (row) => row.present && row.scope !== "default",
+    );
+  } catch (err) {
+    console.warn(`rt: ignoring "${SETTING_KEY}" for repo "${repoName}" — ${(err as Error).message}`);
+    return false;
+  }
 }
 
 // ─── Implicit install ladder ─────────────────────────────────────────────────

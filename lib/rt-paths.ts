@@ -61,6 +61,45 @@ export function repoDataDir(repoName: string): string {
   return join(reposDir(), repoName);
 }
 
+// ─── Settings stores (RT-47) ──────────────────────────────────────────────────
+//
+// These four paths live under ~/.mattstack directly, NOT under rtDir() —
+// they are shared with the rest of mattstack (skills, board, deck), not just
+// rt. The RT-46 source guards only police `.rt`/`rtDir()` reconstruction, so
+// they don't apply here; these constructors exist purely for the
+// one-layout-home rule (call-time HOME, single place that knows the path).
+
+/**
+ * ~/.mattstack/user/settings.jsonc — the user store (in the mattstack-prefs
+ * repo): global keys plus `repos.<identity>` sections, scoped to this human
+ * across every machine they use.
+ */
+export function userSettingsPath(): string {
+  return join(home(), ".mattstack", "user", "settings.jsonc");
+}
+
+/**
+ * ~/.mattstack/teams/<team>/mattstack/settings.jsonc — the team store (in the
+ * team repo zone): shared keys plus `repos.<identity>` sections. `team` is a
+ * team NAME (directory name under teamsDir()), not an identity.
+ */
+export function teamSettingsPath(team: string): string {
+  return join(teamsDir(), team, "mattstack", "settings.jsonc");
+}
+
+/**
+ * ~/.mattstack/settings.local.jsonc — the machine store: local overrides,
+ * never committed or synced. The ONLY store where path literals are legal.
+ */
+export function machineSettingsPath(): string {
+  return join(home(), ".mattstack", "settings.local.jsonc");
+}
+
+/** ~/.mattstack/teams — the container every team's local clone lives under. */
+export function teamsDir(): string {
+  return join(home(), ".mattstack", "teams");
+}
+
 // ─── Legacy-tree migration + canary (RT-46) ──────────────────────────────────
 
 /** The pre-RT-33 rt state root. Only this module may reference it. */

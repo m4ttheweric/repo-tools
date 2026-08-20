@@ -237,7 +237,7 @@ export function createWorktreeHandlers(
       const repoPath = repoName ? ctx.repoIndex()[repoName] : undefined;
       if (!repoName || !repoPath) return { ok: false, error: "repo-unknown" };
 
-      const cfg = loadWorktreeRepoConfig(repoName, repoPath);
+      const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
       const trees = loadRegistry(repoName);
 
       // ── 1. Intent + every registry-decidable refusal, before any tree moves.
