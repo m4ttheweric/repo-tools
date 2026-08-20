@@ -7,12 +7,13 @@
  * --dry-run) runs it through lib/home/init-exec.ts's injected seam.
  */
 
-import { existsSync, readdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { mattstackHome, teamsDir } from "../lib/rt-paths.ts";
 import { buildInitPlan, type HomeState, type InitStep } from "../lib/home/init-plan.ts";
 import { createRealExecSeam, executeInitPlan, type ExecResult, type ExecSeam } from "../lib/home/init-exec.ts";
+import { parseOriginUrl } from "../lib/home/git-config.ts";
 
 /** Stray root cruft deleted at init time, not adopted into the repo. */
 const CRUFT_CANDIDATES = ["skills.jsonc.pre-pack", "skills.jsonc.retired-backup"];
@@ -21,6 +22,8 @@ export interface HomeProbes {
   isGitRepo(dir: string): boolean;
   exists(path: string): boolean;
   listTeamClones(): string[];
+  /** Pure fs read; null when the file is missing or unreadable. */
+  readFile(path: string): string | null;
 }
 
 function defaultProbes(): HomeProbes {
@@ -38,17 +41,32 @@ function defaultProbes(): HomeProbes {
         return [];
       }
     },
+    readFile: (path) => {
+      try {
+        return readFileSync(path, "utf8");
+      } catch {
+        return null;
+      }
+    },
   };
 }
 
 export function gatherHomeState(home: string, probes: HomeProbes): HomeState {
+  // hasUserClone gates foldInPrefs, which runs `git filter-repo` against
+  // this directory — a plain (non-git) user/ must not trigger it.
+  const hasUserClone = probes.isGitRepo(join(home, "user"));
+  // Read while user/.git still exists — unlinkUserClone (lib/home/init-exec.ts)
+  // removes it before the fold-in re-clones from this URL.
+  const prefsRemoteUrl = hasUserClone
+    ? (parseOriginUrl(probes.readFile(join(home, "user", ".git", "config")) ?? "") ?? undefined)
+    : undefined;
+
   return {
     isRepo: probes.isGitRepo(home),
-    // hasUserClone gates foldInPrefs, which runs `git filter-repo` against
-    // this directory — a plain (non-git) user/ must not trigger it.
-    hasUserClone: probes.isGitRepo(join(home, "user")),
+    hasUserClone,
     hasTeamClones: probes.listTeamClones(),
     cruft: CRUFT_CANDIDATES.filter((name) => probes.exists(join(home, name))),
+    prefsRemoteUrl,
   };
 }
 
@@ -64,8 +82,10 @@ function describeStep(step: InitStep): string {
       return "write snapshot-owners.jsonc";
     case "deleteCruft":
       return `delete stray cruft: ${step.paths.join(", ")}`;
+    case "unlinkUserClone":
+      return "unlink user/.git (fold-in re-clones from the origin remote)";
     case "foldInPrefs":
-      return "fold mattstack-prefs history into user/ (git filter-repo)";
+      return `fold mattstack-prefs history into user/ (git filter-repo, from ${step.sourceUrl})`;
     case "adoptCommit":
       return `commit: "${step.message}"`;
     case "push":
@@ -116,6 +136,14 @@ export async function homeInit(
   if (plan.reason === "already-initialized") {
     console.log(`rt home init: ${home} is already a git repo — nothing to do.`);
     return;
+  }
+
+  if (plan.reason === "prefs-remote-unreadable") {
+    console.error(
+      `rt home init: could not read the origin URL from ${join(home, "user", ".git", "config")} — ` +
+        "refusing to fold in a remote it can't identify.",
+    );
+    process.exit(1);
   }
 
   console.log(`rt home init plan for ${home}:`);
