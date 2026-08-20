@@ -50,12 +50,12 @@ describe("walkTree", () => {
 
   test("returns null for an unknown segment", () => {
     expect(walkTree(TREE, ["nope"])).toBeNull();
-    expect(walkTree(TREE, ["branch", "nope"])).toBeNull();
+    expect(walkTree(TREE, ["daemon", "nope"])).toBeNull();
   });
 
   test("returns null when the path ends on a leaf", () => {
     expect(walkTree(TREE, ["cd"])).toBeNull();
-    expect(walkTree(TREE, ["branch", "switch"])).toBeNull();
+    expect(walkTree(TREE, ["daemon", "logs", "tail"])).toBeNull();
   });
 });
 
