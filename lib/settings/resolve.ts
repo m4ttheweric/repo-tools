@@ -206,8 +206,9 @@ const TEAM_VAR_RE = /^team:(.+)$/;
  * interceptor's `${port}` are not ours to expand, and the same string may hold
  * both kinds, so substitution is per-occurrence. `${team:<name>}` is lexical:
  * `<teamsDir>/<name>` with no existence check (a missing team surfaces at use
- * time through the consumer's own fail-open path). A closed-set variable with
- * no context in `ctx` throws — silently emitting a half-expanded path is the
+ * time through the consumer's own fail-open path), but the name must be a
+ * single directory segment — see `teamPath`. A closed-set variable with no
+ * context in `ctx` throws — silently emitting a half-expanded path is the
  * dishonesty this design bans.
  *
  * Recurses through arrays and plain objects; non-strings pass through. Never
@@ -230,9 +231,28 @@ function expandString(input: string, ctx: ExpandCtx): string {
     if (name === "repoRoot") return required(ctx.repoRoot, "repoRoot", "a repo path");
     if (name === "worktree") return required(ctx.worktree, "worktree", "a worktree path");
     const team = TEAM_VAR_RE.exec(name);
-    if (team) return join(ctx.teamsDir, team[1] as string);
+    if (team) return teamPath(ctx.teamsDir, team[1] as string);
     return match; // not ours — pass through verbatim
   });
+}
+
+/**
+ * `${team:<name>}` → `<teamsDir>/<name>`, but only for a name that is a single
+ * directory segment. `<name>` is a team NAME, and `join()` normalizes away
+ * `..`, so `${team:../../.ssh}` would quietly resolve to a path OUTSIDE the
+ * teams dir — a store value (a team store's own, even) that reads or executes
+ * from anywhere on disk while still looking like a team-relative reference.
+ * Any `/`, `\` or `..` therefore throws, on the same closed-set footing as an
+ * unsatisfiable `${repoRoot}`: `get` surfaces it, `list` degrades that one
+ * value to an `expandError`, and no half-expanded path is ever emitted.
+ */
+function teamPath(teamsDir: string, name: string): string {
+  if (name.includes("/") || name.includes("\\") || name.includes("..")) {
+    throw new Error(
+      `rt: cannot expand \${team:${name}} — a team name must be a single directory segment (no "/", "\\" or "..")`,
+    );
+  }
+  return join(teamsDir, name);
 }
 
 function required(value: string | undefined, name: string, needs: string): string {
