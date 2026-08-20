@@ -56,36 +56,51 @@ describe("endpoint handlers", () => {
    * A real `git init` + remote, not a stubbed derivation: the identity hop is
    * an actual `git config --get remote.origin.url` capture, and faking it
    * would skip exactly the normalization this test is here to prove.
+   *
+   * This is the ONE test in the file that writes a settings STORE, so it runs
+   * under its own HOME (and drops its repo-index entry afterwards). The
+   * bunfig preload gives the whole run a single shared temp HOME; a team store
+   * written into that shared tree would make `listTeams()` non-empty for every
+   * later suite in the process, which is exactly the cross-suite leak the
+   * per-test-HOME rule exists to prevent.
    */
   test("claim resolves roles from a settings store section (repoIndex → identity → repos.<identity>)", async () => {
-    const repoPath = mkdtempSync(join(tmpdir(), "rt-endpoint-store-repo-"));
-    execSync("git init -q", { cwd: repoPath });
-    execSync("git remote add origin git@gitlab.com:fake/store-claim-repo.git", { cwd: repoPath });
-    repoIndex["repoStore"] = repoPath;
+    const priorHome = process.env.HOME;
+    process.env.HOME = mkdtempSync(join(tmpdir(), "rt-endpoint-store-home-"));
+    try {
+      const repoPath = mkdtempSync(join(tmpdir(), "rt-endpoint-store-repo-"));
+      execSync("git init -q", { cwd: repoPath });
+      execSync("git remote add origin git@gitlab.com:fake/store-claim-repo.git", { cwd: repoPath });
+      repoIndex["repoStore"] = repoPath;
 
-    // No repos/repoStore/config.json anywhere — the legacy rung is empty, so
-    // a port can only come from the store.
-    const store = teamSettingsPath("acme");
-    mkdirSync(dirname(store), { recursive: true });
-    writeFileSync(store, JSON.stringify({
-      repos: {
-        "gitlab.com/fake/store-claim-repo": {
-          "rt.roles": { web: { pool: [{ from: 10600, to: 10602 }], env: { PORT: "${port}" } } },
+      // No repos/repoStore/config.json anywhere — the legacy rung is empty, so
+      // a port can only come from the store.
+      const store = teamSettingsPath("acme");
+      mkdirSync(dirname(store), { recursive: true });
+      writeFileSync(store, JSON.stringify({
+        repos: {
+          "gitlab.com/fake/store-claim-repo": {
+            "rt.roles": { web: { pool: [{ from: 10600, to: 10602 }], env: { PORT: "${port}" } } },
+          },
         },
-      },
-    }));
+      }));
 
-    const r = await handlers["endpoint:claim"]({ repo: "repoStore", worktree: "/wt/store", role: "web", pid: 11 });
-    expect(r.ok).toBe(true);
-    expect(r.data.port).toBe(10600);
+      const r = await handlers["endpoint:claim"]({ repo: "repoStore", worktree: "/wt/store", role: "web", pid: 11 });
+      expect(r.ok).toBe(true);
+      expect(r.data.port).toBe(10600);
 
-    const lk = await handlers["endpoint:lookup"]({ repo: "repoStore", worktree: "/wt/store", role: "web" });
-    expect(lk.data).toMatchObject({ claimed: true, port: 10600 });
+      const lk = await handlers["endpoint:lookup"]({ repo: "repoStore", worktree: "/wt/store", role: "web" });
+      expect(lk.data).toMatchObject({ claimed: true, port: 10600 });
 
-    // …and a repo with no index entry still derives a null identity, so this
-    // store's repo section cannot leak into the legacy-rung tests around it.
-    const other = await handlers["endpoint:claim"]({ repo: "repoUnindexed", worktree: "/wt/store", role: "web" });
-    expect(other).toMatchObject({ ok: false, error: 'role "web" is not declared for repo "repoUnindexed"' });
+      // …and a repo with no index entry still derives a null identity, so this
+      // store's repo section cannot leak into the legacy-rung tests around it.
+      const other = await handlers["endpoint:claim"]({ repo: "repoUnindexed", worktree: "/wt/store", role: "web" });
+      expect(other).toMatchObject({ ok: false, error: 'role "web" is not declared for repo "repoUnindexed"' });
+    } finally {
+      delete repoIndex["repoStore"];
+      if (priorHome === undefined) delete process.env.HOME;
+      else process.env.HOME = priorHome;
+    }
   });
 
   test("unknown role and unknown repo fail with named errors", async () => {
