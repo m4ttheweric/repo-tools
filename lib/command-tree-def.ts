@@ -251,22 +251,6 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
-  turbo: {
-    description: "Turborepo operations",
-    subcommands: {
-      build: {
-        description: "Interactive turbo build selector",
-        module: "./commands/build-select.ts",
-        fn: "buildSelect",
-        context: "worktree",
-        requiresTTY: true,
-        args: [
-          { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Force turbo to ignore its build cache" },
-        ],
-      },
-    },
-  },
-
   hooks: {
     description: "Toggle git hooks on/off (husky)",
     module: "./commands/hooks.ts",
@@ -411,42 +395,6 @@ export const TREE: Record<string, CommandNode> = {
     ],
   },
 
-  open: {
-    description: "Open external pages for the current branch",
-    subcommands: {
-      mr: {
-        description: "GitLab merge request",
-        module: "./commands/open.ts",
-        fn: "openMR",
-        context: "worktree",
-        args: [],
-      },
-      pipeline: {
-        description: "GitLab CI pipelines",
-        module: "./commands/open.ts",
-        fn: "openPipeline",
-        context: "worktree",
-        aliases: ["ci"],
-        args: [],
-      },
-      repo: {
-        description: "Repository page",
-        module: "./commands/open.ts",
-        fn: "openRepo",
-        context: "worktree",
-        args: [],
-      },
-      ticket: {
-        description: "Linear ticket for this branch",
-        module: "./commands/open.ts",
-        fn: "openTicket",
-        context: "worktree",
-        aliases: ["linear"],
-        args: [],
-      },
-    },
-  },
-
   cd: {
     description: "Worktree/repo directory picker",
     module: "./commands/cd.ts",
@@ -466,27 +414,6 @@ export const TREE: Record<string, CommandNode> = {
     requiresTTY: true,
     args: [
       { name: "Path", type: "text", placeholder: ".", hint: "Starting directory; defaults to the current directory" },
-    ],
-  },
-
-  code: {
-    description: "Open a worktree in your preferred editor",
-    module: "./commands/code.ts",
-    fn: "openInEditor",
-    requiresTTY: true,
-    args: [
-      { name: "Pick", flag: "--pick", type: "boolean", default: false, hint: "Force the worktree/repo picker instead of using the current repo (alias -p)" },
-    ],
-  },
-
-  agent: {
-    description: "Launch a CLI coding agent (Claude Code, Cursor, etc.) in a worktree",
-    module: "./commands/agent.ts",
-    fn: "launchAgent",
-    requiresTTY: true,
-    args: [
-      { name: "Here", flag: "--here", type: "boolean", default: false, hint: "Use the exact current directory instead of resolving a repo/worktree (alias -h)" },
-      { name: "Pick", flag: "--pick", type: "boolean", default: false, hint: "Force the repo/worktree picker before launching (alias -p)" },
     ],
   },
 
