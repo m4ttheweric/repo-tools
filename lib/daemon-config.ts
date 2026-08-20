@@ -50,7 +50,8 @@ export const LAUNCHD_PLIST_PATH = join(
 );
 export const LAUNCHD_LABEL = "com.rt.daemon";
 export const TRAY_SOCK_PATH = join(RT_DIR, "tray.sock");
-export const NOTIFY_QUEUE_PATH = join(RT_DIR, "notify-queue.json");
+// NOTE: NOTIFY_QUEUE_PATH removed (RT-48) — the notification queue is the
+// `notify_queue` table in state.db, not a file. See lib/state/notifier-store.ts.
 
 /** Daemon HTTP/WS port. Shared so clients can open WS connections without
  *  re-declaring the constant. RT_API_PORT overrides it so an isolated daemon

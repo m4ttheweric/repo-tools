@@ -17,12 +17,11 @@ export interface ShutdownDeps {
   /** Mutable holder — daemon.ts assigns the servers after boot. */
   servers: { socket?: Server<any>; api?: Server<any> };
   hooksGuard: HooksGuard;
-  flushCache: () => void;
   log: Logger;
 }
 
 export function createCleanup(deps: ShutdownDeps): () => void {
-  const { servers, hooksGuard, flushCache, log } = deps;
+  const { servers, hooksGuard, log } = deps;
 
   return function cleanup(): void {
     // Stop accepting new traffic first, and force-close all in-flight
@@ -39,7 +38,9 @@ export function createCleanup(deps: ShutdownDeps): () => void {
     try { stopDiscussionsPoller(); } catch { /* */ }
     try { hooksGuard.closeAll(); } catch { /* */ }
 
-    flushCache();
+    // RT-48: no cache flush here any more. The branch cache is written
+    // through at every mutation site (lib/state/branch-cache.ts), so there
+    // is nothing dirty in memory to race launchd's 5s ExitTimeOut.
 
     // Remove runtime files
     for (const path of [DAEMON_SOCK_PATH, DAEMON_PID_PATH]) {

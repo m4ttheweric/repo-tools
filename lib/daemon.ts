@@ -30,7 +30,11 @@ import { SystemProcessScanner } from "./daemon/system-process-scanner.ts";
 
 import { evictStaleDaemon } from "./daemon/boot-reconcile.ts";
 import { resolveUserPath } from "./daemon/user-path.ts";
-import { createBranchCache } from "./daemon/branch-cache.ts";
+// Every state.db API is reached through the lib/state barrel, never through
+// ./state/db.ts directly: importing the barrel is what guarantees every
+// store module has registered its legacy-JSON importer before the one-shot
+// v0->v1 migration runs (see lib/state/index.ts).
+import { getBranchCacheStore, getStateDb, type BranchCacheStore } from "./state/index.ts";
 import { createCacheRefresher } from "./daemon/cache-refresh.ts";
 import { createWorktreeReconciler } from "./daemon/worktree-reconciler.ts";
 import { loadRepoIndex, REPOS_JSON_PATH } from "./daemon/repo-index.ts";
@@ -92,7 +96,24 @@ const systemProcessScanner = new SystemProcessScanner();
 
 // ─── Shared state ────────────────────────────────────────────────────────────
 
-const { cache, loadCache, flushCache } = createBranchCache(log);
+// The branch-cache store, opened LAZILY on purpose. Module scope must not
+// touch state.db (spec "The database": no module-load db access); the daemon
+// opens it in startDaemon(), before it serves anything. Everything below is
+// wired at module scope, so it gets this façade: same BranchCacheStore
+// surface, resolved on first use. `entries` is a getter, never a captured
+// value, so it always yields the store's own live map object.
+let branchCacheStore: BranchCacheStore | null = null;
+function openBranchCacheStore(): BranchCacheStore {
+  if (!branchCacheStore) branchCacheStore = getBranchCacheStore(getStateDb("daemon"));
+  return branchCacheStore;
+}
+const cache: BranchCacheStore = {
+  get entries() { return openBranchCacheStore().entries; },
+  put:    (branch, entry)      => openBranchCacheStore().put(branch, entry),
+  delete: (branch)             => openBranchCacheStore().delete(branch),
+  reload: ()                   => openBranchCacheStore().reload(),
+  gc:     (repos, maxAgeMs)    => openBranchCacheStore().gc(repos, maxAgeMs),
+};
 // Port scan cache, held as a single mutable ref so handler modules can read
 // fresh values without getters. The port poller mutates it in place.
 const portCacheRef = { ports: [] as PortEntry[], updatedAt: 0 };
@@ -137,7 +158,7 @@ const worktreeReconciler = createWorktreeReconciler({
 });
 
 const refreshCache = createCacheRefresher({
-  log, cache, loadCache, refreshStatusRef, portCacheRef,
+  log, cache, refreshStatusRef, portCacheRef,
   repoIndex: loadRepoIndex,
   broadcast: emit,
   statusSnapshot: () => handleCommand("tray:status", {}),
@@ -148,7 +169,7 @@ const refreshCache = createCacheRefresher({
 // ─── Handler context + command routing ───────────────────────────────────────
 
 const handlerCtx: HandlerContext = {
-  cache, refreshCache, loadCache, flushCache,
+  cache, refreshCache,
   log,
   startedAt,
   portCacheRef,
@@ -219,7 +240,7 @@ async function routeCommand(cmd: string, payload: any, signal?: AbortSignal): Pr
 // it makes server.upgrade() require an explicit data arg.
 const servers: { socket?: Server<any>; api?: Server<any> } = {};
 
-const cleanupCore = createCleanup({ servers, hooksGuard, flushCache, log });
+const cleanupCore = createCleanup({ servers, hooksGuard, log });
 const cleanup = (): void => {
   cron.dispose();
   eventsBus.close();
@@ -244,8 +265,12 @@ export function startDaemon(): void {
   log.info("daemon starting");
   writeFileSync(DAEMON_PID_PATH, String(process.pid));
 
-  loadCache();
-  log.info({ count: Object.keys(cache.entries).length }, "cache loaded from disk");
+  // Open state.db and build the in-memory branch-cache map BEFORE serving
+  // (spec "Migration & contention"): the one long transaction is the
+  // legacy-JSON import, and it must never land inside the event loop. If a
+  // CLI process is mid-import right now, we block here, in startup.
+  openBranchCacheStore();
+  log.info({ count: Object.keys(cache.entries).length }, "branch cache loaded from state.db");
 
   // Socket server (Unix socket for CLI/tray) + REST/WS server (external clients)
   servers.socket = startSocketServer({ handleCommand, log });

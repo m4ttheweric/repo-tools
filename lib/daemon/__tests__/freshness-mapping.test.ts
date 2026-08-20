@@ -10,9 +10,17 @@ import {
 } from "../freshness.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
 import type { InvalidationKey } from "@mattstack/glance";
+import { fakeStore } from "./fake-cache-store.ts";
+import { getBranchCacheStore, openStateDb } from "../../state/index.ts";
 
 function tmpStorePath(): string {
-  return join(mkdtempSync(join(tmpdir(), "rt-freshness-mapping-")), "project-mrs.json");
+  return join(mkdtempSync(join(tmpdir(), "rt-freshness-mapping-")), "state.db");
+}
+
+// RT-48: project-mrs persistence moved off project-mrs.json to state.db —
+// fresh temp db per call, same isolation createProjectMRs(tmpStorePath(), 0) had.
+function pmrsStore() {
+  return createProjectMRs(openStateDb(tmpStorePath(), "cli"));
 }
 
 // Minimal PullRequest stand-in: toMRInfo (glance-sdk toMRDashboardProps) reads
@@ -66,17 +74,23 @@ function fakePR(iid: number, overrides: Record<string, any> = {}): any {
   };
 }
 
-function makeEnv(entries: Record<string, any>): { env: FreshnessEnv; broadcasts: Array<{ type: string; data: any }>; flushes: { count: number } } {
+function makeEnv(entries: Record<string, any>): { env: FreshnessEnv; broadcasts: Array<{ type: string; data: any }>; puts: string[] } {
   const broadcasts: Array<{ type: string; data: any }> = [];
-  const flushes = { count: 0 };
+  // RT-48: the old fake counted flushCache() calls. There is no flush any
+  // more — write-through happens at updateEntry via store.put — so the
+  // equivalent observation is which branches got put.
+  const puts: string[] = [];
+  const store = fakeStore(entries);
   const env: FreshnessEnv = {
     ctx: {
-      cache: { entries },
-      flushCache: () => { flushes.count++; },
+      cache: {
+        ...store,
+        put: (branch: string, entry: any) => { puts.push(branch); store.put(branch, entry); },
+      },
     } as any,
     broadcast: (type, data) => broadcasts.push({ type, data }),
   };
-  return { env, broadcasts, flushes };
+  return { env, broadcasts, puts };
 }
 
 function makeRunner(): BatchRunner {
@@ -103,7 +117,7 @@ describe("applyInvalidationBatch", () => {
     const entries: Record<string, any> = {
       "feat-a": { mr: { iid: 42 }, ticket: { id: "T-1" }, linearId: "T-1", fetchedAt: 1, repoName: "repo-x" },
     };
-    const { env, broadcasts, flushes } = makeEnv(entries);
+    const { env, broadcasts, puts } = makeEnv(entries);
     const calls: any[] = [];
     const target: RepoTarget = {
       repoName: "repo-x",
@@ -122,7 +136,7 @@ describe("applyInvalidationBatch", () => {
     expect(entries["feat-a"].fetchedAt).toBeGreaterThan(1);
     expect(entries["feat-a"].ticket).toEqual({ id: "T-1" });   // enrichment preserved
     expect(entries["feat-a"].linearId).toBe("T-1");
-    expect(flushes.count).toBe(1);
+    expect(puts).toEqual(["feat-a"]);
     expect(broadcasts.filter((b) => b.type === "mr:update").length).toBe(1);
     expect(broadcasts[0]!.data).toEqual({ repoName: "repo-x", mrs: { 42: entries["feat-a"].mr } });
   });
@@ -131,7 +145,7 @@ describe("applyInvalidationBatch", () => {
     const entries: Record<string, any> = {
       "feat-a": { mr: { iid: 42 }, fetchedAt: 1, repoName: "other-repo" },
     };
-    const { env, flushes } = makeEnv(entries);
+    const { env, puts } = makeEnv(entries);
     let called = false;
     const target: RepoTarget = {
       repoName: "repo-x", projectPath: "g/p",
@@ -144,7 +158,7 @@ describe("applyInvalidationBatch", () => {
     const runner = makeRunner();
     await applyInvalidationBatch(env, target, runner, [key("mr", "42")], noNotify);
     expect(called).toBe(false);
-    expect(flushes.count).toBe(0);
+    expect(puts).toEqual([]);
     // unknown iid schedules a gap-fill instead
     expect(runner.gapFillTimer).not.toBeNull();
     clearTimeout(runner.gapFillTimer!);
@@ -278,7 +292,7 @@ describe("applyInvalidationBatch", () => {
     const entries: Record<string, any> = {
       "feat-a": { mr: { iid: 42 }, ticket: null, linearId: "", fetchedAt: 1, repoName: "repo-x" },
     };
-    const { env, flushes } = makeEnv(entries);
+    const { env, puts } = makeEnv(entries);
     const target: RepoTarget = {
       repoName: "repo-x", projectPath: "g/p",
       provider: {
@@ -289,7 +303,7 @@ describe("applyInvalidationBatch", () => {
     };
     await applyInvalidationBatch(env, target, makeRunner(), [key("branch", "feat-a")], noNotify);
     expect(entries["feat-a"].mr).toBeNull();
-    expect(flushes.count).toBe(1);
+    expect(puts).toEqual(["feat-a"]);
   });
 
   test("concurrent batch merges into pending and processes after current run", async () => {
@@ -389,7 +403,7 @@ describe("applyInvalidationBatch", () => {
   // ─── project-mrs fan-out (grant-scoped) ───────────────────────────────────
 
   test("mr event with project grant: unknown iid fetches once, upserts store, no gap-fill", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     store.fullSync("repo-x", "g/p", [], Date.now() - 1000);
     const { env, broadcasts } = makeEnv({});
     const fetched: number[] = [];
@@ -412,7 +426,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("mr event, iid on a local branch: ONE fetch feeds branch entry AND project store", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     const entries: Record<string, any> = {
       feat: { mr: { iid: 7 }, fetchedAt: 1, repoName: "repo-x" },
     };
@@ -435,7 +449,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("mr event, iid NOT in branchByIid but entry keyed by PR's sourceBranch has mr: null: ONE fetch feeds branch entry AND project store", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     const entries: Record<string, any> = {
       "branch-42": { mr: null, fetchedAt: 1, repoName: "repo-x" },
     };
@@ -461,7 +475,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("branch push with local entry + project grant: fetchPullRequestByBranch result reused, NO fetchSingleMR", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     const entries: Record<string, any> = {
       "feat-a": { mr: { iid: 42 }, fetchedAt: 1, repoName: "repo-x" },
     };
@@ -488,7 +502,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("teammate branch push (no local entry): store sourceBranch hit → fetchSingleMR by iid → upsert", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     store.fullSync("repo-x", "g/p", [fakePR(9, { sourceBranch: "feat-9", state: "opened" })], Date.now() - 1000);
     const { env } = makeEnv({});
     const singleCalls: number[] = [];
@@ -510,7 +524,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("teammate branch push with no store match: no fetch at all", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     const { env } = makeEnv({});
     let anyCalled = false;
     const target: RepoTarget = {
@@ -530,7 +544,7 @@ describe("applyInvalidationBatch", () => {
   // ─── events fan-out scope filter (Task 6) ─────────────────────────────────
 
   test("mr event, scope present + out-of-scope author: no upsert, no broadcast", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     store.fullSync("repo-x", "g/p", [], Date.now() - 1000);
     store.setScope("repo-x", { authors: ["alice"], windowDays: 30 });
     const { env, broadcasts } = makeEnv({});
@@ -551,7 +565,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("mr event, scope present + in-scope author: upsert proceeds", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     store.fullSync("repo-x", "g/p", [], Date.now() - 1000);
     store.setScope("repo-x", { authors: ["someone"], windowDays: 30 });
     const { env, broadcasts } = makeEnv({});
@@ -571,7 +585,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("mr event, no scope set: upsert proceeds regardless of author (legacy)", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     store.fullSync("repo-x", "g/p", [], Date.now() - 1000); // no setScope call
     const { env } = makeEnv({});
     const target: RepoTarget = {
@@ -589,7 +603,7 @@ describe("applyInvalidationBatch", () => {
   });
 
   test("mr event, scope present + PR has no author: never guess-drop, upsert proceeds", async () => {
-    const store = createProjectMRs(tmpStorePath(), 0);
+    const store = pmrsStore();
     store.fullSync("repo-x", "g/p", [], Date.now() - 1000);
     store.setScope("repo-x", { authors: ["alice"], windowDays: 30 });
     const { env } = makeEnv({});
@@ -670,5 +684,96 @@ describe("applyInvalidationBatch", () => {
       });
     }
     expect(refreshed).toEqual([42, 999]);
+  });
+});
+
+// ─── RT-48 write-through (spec test 4) ───────────────────────────────────────
+
+/**
+ * `updateEntry` (the true mutation site behind every targeted refresh) writes
+ * the row, not just the map. The old design mutated `ctx.cache.entries` and
+ * relied on a batch-tail `ctx.flushCache()` to persist it; anything that
+ * ended the process in between lost the update. There is no flush to call any
+ * more — these tests prove persistence by throwing the in-memory map away and
+ * rebuilding it from the database on a second connection.
+ */
+describe("write-through at updateEntry (RT-48)", () => {
+  function realStoreEnv(dir: string, seed: Record<string, any>) {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath);
+    const store = getBranchCacheStore(db);
+    for (const [branch, entry] of Object.entries(seed)) store.put(branch, entry);
+
+    const broadcasts: Array<{ type: string; data: any }> = [];
+    const env: FreshnessEnv = {
+      ctx: { cache: store } as any,
+      broadcast: (type, data) => broadcasts.push({ type, data }),
+    };
+    return { env, store, db, dbPath, broadcasts };
+  }
+
+  /** The "kill the in-memory map" half: a fresh connection, a fresh map. */
+  function rebuildFromDb(dbPath: string): Record<string, any> {
+    const db = openStateDb(dbPath);
+    const entries = { ...getBranchCacheStore(db).entries };
+    db.close();
+    return entries;
+  }
+
+  test("a targeted MR refresh survives a map rebuild", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-writethrough-"));
+    const { env, db, dbPath } = realStoreEnv(dir, {
+      "feat-a": { ticket: { id: "T-1" }, linearId: "T-1", mr: null, fetchedAt: 1, repoName: "repo-x" },
+    });
+
+    const target: RepoTarget = {
+      repoName: "repo-x",
+      projectPath: "g/p",
+      provider: {
+        fetchSingleMR: async () => fakePR(42),
+        fetchPullRequestByBranch: async () => fakePR(42),
+        fetchPullRequestsByBranches: async () => new Map(),
+      } as any,
+    };
+    await applyInvalidationBatch(env, target, makeRunner(), [key("branch", "feat-a")], noNotify);
+    db.close(); // the daemon dies here — no flush, no shutdown hook, nothing
+
+    const rebuilt = rebuildFromDb(dbPath);
+    expect(rebuilt["feat-a"]).toBeDefined();
+    expect(rebuilt["feat-a"].mr.iid).toBe(42);
+    expect(rebuilt["feat-a"].fetchedAt).toBeGreaterThan(1);
+    // Enrichment the events path never touches is preserved through the row.
+    expect(rebuilt["feat-a"].ticket).toEqual({ id: "T-1" });
+    expect(rebuilt["feat-a"].linearId).toBe("T-1");
+    expect(rebuilt["feat-a"].repoName).toBe("repo-x");
+  });
+
+  test("a refresh that clears an MR persists the null, not the stale MR", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-writethrough-null-"));
+    const { env, db, dbPath } = realStoreEnv(dir, {
+      "feat-b": { ticket: null, linearId: "", mr: { iid: 7 }, fetchedAt: 1, repoName: "repo-x" },
+    });
+
+    const target: RepoTarget = {
+      repoName: "repo-x",
+      projectPath: "g/p",
+      provider: {
+        fetchSingleMR: async () => null,
+        fetchPullRequestByBranch: async () => null,
+        fetchPullRequestsByBranches: async () => new Map(),
+      } as any,
+    };
+    await applyInvalidationBatch(env, target, makeRunner(), [key("branch", "feat-b")], noNotify);
+    db.close();
+
+    expect(rebuildFromDb(dbPath)["feat-b"].mr).toBeNull();
+  });
+
+  test("the store exposes no flush of any kind — persistence is not optional", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-writethrough-api-"));
+    const db = openStateDb(join(dir, "state.db"));
+    const store = getBranchCacheStore(db);
+    expect(Object.keys(store).sort()).toEqual(["delete", "entries", "gc", "put", "reload"]);
+    db.close();
   });
 });

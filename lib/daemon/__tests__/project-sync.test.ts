@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { syncProjectMRs, backfillAuthors, DEEP_RECONCILE_MS, DEEP_RETRY_BACKOFF_MS, DELTA_OVERLAP_MS } from "../project-sync.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
+import { openStateDb } from "../../state/index.ts";
 import type { PullRequest } from "@mattstack/glance";
 
 function pr(iid: number, over: Partial<PullRequest> = {}): PullRequest {
@@ -13,8 +14,10 @@ function pr(iid: number, over: Partial<PullRequest> = {}): PullRequest {
     ...over,
   } as unknown as PullRequest;
 }
+// RT-48: project-mrs persistence moved off project-mrs.json to state.db —
+// fresh temp db per call, same isolation the old file-path helper had.
 function tmpStore() {
-  return createProjectMRs(join(mkdtempSync(join(tmpdir(), "rt-psync-")), "s.json"), 0);
+  return createProjectMRs(openStateDb(join(mkdtempSync(join(tmpdir(), "rt-psync-")), "state.db"), "cli"));
 }
 
 describe("syncProjectMRs", () => {

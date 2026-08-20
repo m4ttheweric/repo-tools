@@ -35,7 +35,8 @@ import { classifyDaemonStatus, type DaemonStatusVerdict } from "../lib/daemon-st
 import { isGitLabRemote } from "../lib/enrich.ts";
 import type { CacheKind } from "../lib/repo-tracking.ts";
 import { loadRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS, DEFAULT_PROJECT_MRS_WINDOW_DAYS } from "../lib/repo-tracking.ts";
-import { createProjectMRs, PROJECT_MRS_PATH } from "../lib/daemon/project-mrs-store.ts";
+import { createProjectMRs } from "../lib/daemon/project-mrs-store.ts";
+import { getStateDb } from "../lib/state/index.ts";
 import { timeAgo } from "../lib/tui/utils/label.ts";
 
 function formatUptime(ms: number): string {
@@ -360,8 +361,10 @@ export async function manageTracking(args: string[] = []): Promise<void> {
 
     console.log(`\n  ${bold}${repoArg}${reset} ${dim}window ${formatWindowLabel(rawEntry?.projectMrsWindowDays)}${reset}`);
     // Read-only: the store is written only by the daemon (deep sync,
-    // registerDemand), never by the CLI.
-    const demands = createProjectMRs(PROJECT_MRS_PATH).read(repoArg)?.demands;
+    // registerDemand), never by the CLI. CLI-side construction (spec
+    // "Store-by-store" item 2) — explicit cli-flavor db handle, since
+    // createProjectMRs' own default targets the daemon-flavor connection.
+    const demands = createProjectMRs(getStateDb()).read(repoArg)?.demands;
     if (demands && Object.keys(demands).length > 0) {
       console.log(`  ${dim}demands (read-only):${reset}`);
       for (const [client, d] of Object.entries(demands)) {
