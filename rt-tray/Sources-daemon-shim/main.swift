@@ -1,48 +1,75 @@
 // rt-daemon-shim
 //
 // Tiny signed exec-proxy that lets the daemon run from source under launchd
-// supervision. Launched by SMAppService in place of the compiled rt-daemon
-// binary; execs into `bun run <sourcePath>/lib/daemon.ts` so edits take effect
-// on the next daemon restart without a release cycle.
+// supervision. This binary IS the dev bundle's Contents/MacOS/rt-daemon
+// (spec MAT-383 §3) — permanently the dev flavor's daemon launcher, never a
+// swap payload dropped into the prod bundle. It execs
+// `bun run <sourcePath>/lib/daemon.ts` so edits take effect on the next
+// daemon restart without a release cycle.
 //
 // Configuration comes from ~/.mattstack/rt/dev-mode.json:
 //   { "sourcePath": "/path/to/repo-tools", "bunPath": "/Users/.../.bun/bin/bun" }
 //
-// Signed with the rt-tray Developer ID so launchd's LWCR check accepts it.
-// TCC inherits from rt-tray.app because the shim lives inside the bundle.
+// EXIT-CODE CONTRACT (spec MAT-383 §3) — the dev agent plist sets
+// KeepAlive = { SuccessfulExit = false }, which makes the exit code the only
+// signal launchd has:
+//
+//   exit 0  — a precondition isn't met (no dev-mode config, source tree moved,
+//             bun not installed). Nothing is wrong with the machine; the dev
+//             flavor simply has nothing to run. launchd leaves it down, and
+//             one log line says why. NOT an error, NOT a crash loop.
+//   exit >0 — something genuinely unexpected failed after every precondition
+//             checked out (execv into an existing bun refused). launchd
+//             restarts, which is the right response to a real crash.
+//
+// Signed with the same Developer ID as the rest of the dev bundle, keeping the
+// `-i rt-daemon` identifier override so launchd's LWCR check accepts it.
+// TCC inherits from the app bundle because the shim lives inside it.
 
 import Foundation
 
-@inline(__always)
-func die(_ msg: String) -> Never {
+private func log(_ msg: String) {
     FileHandle.standardError.write(Data("rt-daemon-shim: \(msg)\n".utf8))
-    exit(78) // EX_CONFIG
+}
+
+/// A precondition isn't met — say so once, exit cleanly (contract above).
+@inline(__always)
+func standDown(_ msg: String) -> Never {
+    log("standing down: \(msg)")
+    exit(0)
+}
+
+/// A genuine, unexpected failure — nonzero so launchd treats it as a crash.
+@inline(__always)
+func fail(_ msg: String) -> Never {
+    log("error: \(msg)")
+    exit(70) // EX_SOFTWARE
 }
 
 guard let home = ProcessInfo.processInfo.environment["HOME"] else {
-    die("HOME not set")
+    standDown("HOME not set")
 }
 
 let configPath = "\(home)/.mattstack/rt/dev-mode.json"
 guard let raw = FileManager.default.contents(atPath: configPath) else {
-    die("config not found: \(configPath)")
+    standDown("no dev-mode config at \(configPath)")
 }
 
 guard
     let parsed = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
     let sourcePath = parsed["sourcePath"] as? String
 else {
-    die("config missing sourcePath")
+    standDown("dev-mode config has no sourcePath: \(configPath)")
 }
 
 let bunPath = (parsed["bunPath"] as? String) ?? "\(home)/.bun/bin/bun"
 let daemonEntry = "\(sourcePath)/lib/daemon.ts"
 
 guard FileManager.default.fileExists(atPath: bunPath) else {
-    die("bun not found at \(bunPath)")
+    standDown("bun not found at \(bunPath)")
 }
 guard FileManager.default.fileExists(atPath: daemonEntry) else {
-    die("daemon source not found at \(daemonEntry)")
+    standDown("daemon source not found at \(daemonEntry)")
 }
 
 // Redirect fd 2 to ~/.mattstack/rt/logs/daemon-stderr.log so bun's native panics
@@ -68,5 +95,6 @@ var cArgs: [UnsafeMutablePointer<CChar>?] = execArgs.map { strdup($0) }
 cArgs.append(nil)
 
 execv(bunPath, &cArgs)
-// Only reached on failure
-die("execv(\(bunPath)) failed: \(String(cString: strerror(errno)))")
+// Only reached on failure. Every precondition passed and bun still refused to
+// exec — the genuine-failure branch of the contract, not a stand-down.
+fail("execv(\(bunPath)) failed: \(String(cString: strerror(errno)))")

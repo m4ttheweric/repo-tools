@@ -1,5 +1,19 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { existsSync } from "fs";
+import { join } from "path";
 import { createTestHome, rt, rtRaw } from "../harness.ts";
+import { TRAY_APP_BUNDLE, DEV_TRAY_APP_BUNDLE } from "../../lib/rt-paths.ts";
+
+// Mirrors lib/dev-mode.ts's currentMode() logic, but evaluated against the
+// SUBPROCESS's fixture `home` — currentMode() itself binds HOME at module
+// load time in *this* (outer) test process, so importing it here would check
+// the wrong HOME entirely. The e2e harness never writes a dev-mode wrapper
+// into the fixture home, so this is expected to always resolve "prod" today;
+// asserting it explicitly (rather than hardcoding the prod bundle name)
+// keeps this test honest if that ever changes.
+function activeFlavor(home: string): "dev" | "prod" {
+  return existsSync(join(home, ".local", "bin", "rt")) ? "dev" : "prod";
+}
 
 interface VerifyCheck {
   name: string;
@@ -66,10 +80,19 @@ describe("verify", () => {
     expect(check!.status).toBe("pass");
   });
 
-  test("tray app reports expected warning", () => {
-    const check = findCheck("rt-tray.app");
+  test("active flavor's tray app hard-fails when missing (no bundle is installed in this fixture home)", () => {
+    const activeBundle = activeFlavor(home) === "dev" ? DEV_TRAY_APP_BUNDLE : TRAY_APP_BUNDLE;
+    const check = findCheck(activeBundle);
     expect(check).toBeDefined();
-    expect(["warn", "fail"]).toContain(check!.status);
+    expect(check!.status).toBe("fail");
+  });
+
+  test("inactive flavor's tray app is informational, never a failure", () => {
+    const inactiveBundle = activeFlavor(home) === "dev" ? TRAY_APP_BUNDLE : DEV_TRAY_APP_BUNDLE;
+    const check = findCheck(inactiveBundle);
+    expect(check).toBeDefined();
+    expect(check!.status).toBe("skip");
+    expect(check!.severity).toBe("info");
   });
 
   test("daemon checks warn in CI (no Login Items approval)", () => {

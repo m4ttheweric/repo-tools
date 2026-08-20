@@ -2,8 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- Label: com.rt.daemon (prod) / com.rt.daemon.dev (dev). Templated by
+         build.sh -- must match the flavor's MSDaemonLabel in Info.plist, and
+         the installed filename inside the bundle is "$Label.plist". -->
     <key>Label</key>
-    <string>com.rt.daemon</string>
+    <string>@@DAEMON_LABEL@@</string>
 
     <key>BundleProgram</key>
     <string>Contents/MacOS/rt-daemon</string>
@@ -14,15 +17,21 @@
         <string>--daemon</string>
     </array>
 
+    <!-- Must match the bundle's own CFBundleIdentifier exactly -- FDA
+         inheritance to the daemon breaks silently otherwise. -->
     <key>AssociatedBundleIdentifiers</key>
     <array>
-        <string>com.rt.tray</string>
+        <string>@@BUNDLE_ID@@</string>
     </array>
 
     <key>RunAtLoad</key>
     <true/>
-    <key>KeepAlive</key>
-    <true/>
+
+    <!-- KeepAlive is injected by build.sh via PlistBuddy, not sed -- its
+         shape differs by flavor: prod is a plain bool true; dev is
+         { SuccessfulExit = false } so the shim's exit-0 (unconfigured)
+         paths stay down while real crashes still restart. -->
+
     <key>ThrottleInterval</key>
     <integer>10</integer>
 

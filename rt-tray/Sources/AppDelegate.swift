@@ -63,6 +63,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(showKeyboardConflictWindow), name: .showKeyboardConflict, object: nil)
         checkMissionControlConflict()
+        autoRegisterLoginItem()
 
         // Register the daemon as a LaunchAgent. Idempotent — if already
         // registered, this is a no-op. If the user hasn't approved it yet,
@@ -88,6 +89,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         TrayServer.shared.stop()
     }
 
+    // MARK: - Login Item
+
+    /// Idempotent start-at-login registration (spec MAT-383 §3).
+    ///
+    /// A flavor switch installs a DIFFERENT bundle id, so the outgoing
+    /// flavor's login item does nothing for the incoming one — without this
+    /// the user has to re-toggle "Start at Login" by hand after every
+    /// `rt settings dev-mode on|off`.
+    ///
+    /// The user's own choice still wins: the panel toggle records an opt-out
+    /// when they switch it OFF, and an explicitly disabled login item is
+    /// never re-enabled here. Only `.notRegistered` is acted on —
+    /// `.requiresApproval` is the user's pending decision in System Settings
+    /// and re-registering would not change it.
+    private func autoRegisterLoginItem() {
+        guard !LoginItemPreference.isOptedOut else {
+            TrayLog.info("login item auto-register skipped (user opted out)")
+            return
+        }
+        let status = SMAppService.mainApp.status
+        guard status == .notRegistered else { return }
+        do {
+            try SMAppService.mainApp.register()
+            TrayLog.info("login item auto-registered",
+                         ["status": TrayServer.statusName(SMAppService.mainApp.status)])
+        } catch {
+            TrayLog.error("login item auto-register failed", ["err": String(describing: error)])
+        }
+    }
+
     // MARK: - Menu Bar Setup
 
     private func setupMenuBar() {
@@ -104,7 +135,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Update the menu bar button with "rt" text + colored status dot.
+    /// Update the menu bar button with "m" text + colored status dot.
     private func updateMenuBarTitle(status: DaemonHealth) {
         guard let button = statusItem.button else { return }
 
@@ -124,12 +155,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let attributed = NSMutableAttributedString()
 
-        // "rt" in monospace
-        let rtAttrs: [NSAttributedString.Key: Any] = [
+        // "m" in monospace — matches the app icon's wordmark
+        let mAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium),
             .foregroundColor: NSColor.labelColor,
         ]
-        attributed.append(NSAttributedString(string: "rt", attributes: rtAttrs))
+        attributed.append(NSAttributedString(string: "m", attributes: mAttrs))
+
+        // Dev flavor wears a visible mark (spec MAT-383 §3) — the dev and
+        // prod trays are otherwise identical in the menu bar, and mistaking
+        // one for the other is how you debug the wrong daemon.
+        if BundleFlavor.isDevBuild {
+            let devAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold),
+                .foregroundColor: NSColor.systemOrange,
+            ]
+            attributed.append(NSAttributedString(string: " dev", attributes: devAttrs))
+        }
 
         // Space
         attributed.append(NSAttributedString(string: " "))
@@ -327,7 +369,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "rt processes"
+        window.title = "mattstack processes"
         window.contentViewController = NSHostingController(rootView: ProcessPanelView(isDetached: true))
         // Setting contentViewController shrinks the window to the SwiftUI
         // view's fitting size (its 600x400 minimum); re-apply the intended
@@ -360,7 +402,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Fire native notification — sound is played manually so the
         // category→sound mapping stays in one place (NotificationManager).
         let content = UNMutableNotificationContent()
-        content.title = "rt Update Available"
+        content.title = "mattstack Update Available"
         content.body = "\(release.tagName) is available — run: rt update"
         content.sound = nil
         content.categoryIdentifier = "UPDATE"
@@ -490,7 +532,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "rt -- Keyboard Shortcut Conflict"
+        window.title = "mattstack -- Keyboard Shortcut Conflict"
         let hostingController = NSHostingController(rootView: KeyboardConflictView())
         window.contentViewController = hostingController
 

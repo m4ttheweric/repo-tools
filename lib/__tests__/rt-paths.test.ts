@@ -22,6 +22,8 @@ import { join } from "path";
 import {
   rtDir, reposDir, repoDataDir, logsDir,
   migrateLegacyRtDir, legacyDirsPresent,
+  TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE, DEV_TRAY_APP_BUNDLE,
+  trayAppPath, devTrayAppPath, legacyTrayAppPaths,
 } from "../rt-paths.ts";
 
 describe("rt-paths", () => {
@@ -151,6 +153,54 @@ describe("rt-paths", () => {
     });
 
     rmSync(home, { recursive: true, force: true });
+  });
+
+  // ── Tray app paths (MAT-383 §2) ─────────────────────────────────────────────
+
+  test("tray app constants match the spec verbatim", () => {
+    expect(TRAY_APP_NAME).toBe("mattstack");
+    expect(DEV_TRAY_APP_NAME).toBe("mattstack-dev");
+    expect(TRAY_APP_BUNDLE).toBe("mattstack.app");
+    expect(DEV_TRAY_APP_BUNDLE).toBe("mattstack-dev.app");
+  });
+
+  test("trayAppPath resolves under ~/Applications at call-time HOME", () => {
+    process.env.HOME = "/tmp/fake-home-tray-1";
+    expect(trayAppPath()).toBe("/tmp/fake-home-tray-1/Applications/mattstack.app");
+    process.env.HOME = "/tmp/fake-home-tray-2";
+    expect(trayAppPath()).toBe("/tmp/fake-home-tray-2/Applications/mattstack.app");
+  });
+
+  test("devTrayAppPath resolves under ~/Applications at call-time HOME", () => {
+    process.env.HOME = "/tmp/fake-home-dev-tray-1";
+    expect(devTrayAppPath()).toBe("/tmp/fake-home-dev-tray-1/Applications/mattstack-dev.app");
+    process.env.HOME = "/tmp/fake-home-dev-tray-2";
+    expect(devTrayAppPath()).toBe("/tmp/fake-home-dev-tray-2/Applications/mattstack-dev.app");
+  });
+
+  test("legacyTrayAppPaths is a function (call-time HOME rule, not a const)", () => {
+    // The module docblock's call-time-HOME rule forbids baking HOME at module
+    // load — legacyTrayAppPaths must be callable, not a top-level array.
+    expect(typeof legacyTrayAppPaths).toBe("function");
+  });
+
+  test("legacyTrayAppPaths tracks HOME at call time and includes the old ~/Applications/rt-tray.app", () => {
+    process.env.HOME = "/tmp/fake-home-legacy-1";
+    const first = legacyTrayAppPaths();
+    expect(first).toContain("/tmp/fake-home-legacy-1/Applications/rt-tray.app");
+
+    process.env.HOME = "/tmp/fake-home-legacy-2";
+    const second = legacyTrayAppPaths();
+    expect(second).toContain("/tmp/fake-home-legacy-2/Applications/rt-tray.app");
+    expect(second).not.toContain("/tmp/fake-home-legacy-1/Applications/rt-tray.app");
+  });
+
+  test("legacyTrayAppPaths also carries the binary-relative candidates (mirrors verify.ts/post-install.ts)", () => {
+    process.env.HOME = "/tmp/fake-home-legacy-3";
+    const candidates = legacyTrayAppPaths();
+    const rtExec = process.execPath;
+    expect(candidates).toContain(join(rtExec, "../rt-tray.app"));
+    expect(candidates).toContain(join(rtExec, "../../rt-tray.app"));
   });
 
   // ── Source-guards ────────────────────────────────────────────────────────────

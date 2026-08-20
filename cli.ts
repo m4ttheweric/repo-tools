@@ -16,7 +16,7 @@
 
 import { dispatch } from "./lib/command-tree.ts";
 import { TREE } from "./lib/command-tree-def.ts";
-import { rtDir, migrateLegacyRtDir, LEGACY_RT_LABEL, RT_DIR_LABEL } from "./lib/rt-paths.ts";
+import { rtDir, migrateLegacyRtDir, LEGACY_RT_LABEL, RT_DIR_LABEL, trayAppPath } from "./lib/rt-paths.ts";
 
 const args = process.argv.slice(2);
 
@@ -100,12 +100,10 @@ if (args[0] === "--version" || args[0] === "-V") {
   await runPostInstall();
 } else if (args[0] === "--grant-fda") {
   // Hidden entry point: open System Settings → Privacy → Full Disk Access.
-  // The daemon inherits TCC grants from rt-tray.app via SMAppService's
-  // AssociatedBundleIdentifiers, so the grant goes on rt-tray, not on rt.
+  // The daemon inherits TCC grants from mattstack.app via SMAppService's
+  // AssociatedBundleIdentifiers, so the grant goes on the tray app, not on rt.
   const { execSync } = await import("child_process");
-  const { homedir } = await import("os");
-  const { join } = await import("path");
-  const trayPath = join(homedir(), "Applications", "rt-tray.app");
+  const trayPath = trayAppPath();
   console.log("\n  Opening System Settings → Privacy → Full Disk Access…\n");
   console.log(`  1. Click ${"\x1b[1m"}+${"\x1b[0m"} and add: ${"\x1b[1m"}${trayPath}${"\x1b[0m"}`);
   console.log(`     (the rt daemon inherits this grant via SMAppService)`);
