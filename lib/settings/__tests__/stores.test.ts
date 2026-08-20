@@ -6,7 +6,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { userSettingsPath, teamSettingsPath, teamsDir, machineSettingsPath } from "../../rt-paths.ts";
@@ -200,6 +200,50 @@ describe("settings/stores", () => {
       }
 
       expect(listTeams().sort()).toEqual(["alpha", "beta"]);
+    });
+
+    test("a symlinked team clone still counts as a team", () => {
+      const real = join(home, "elsewhere", "claimview");
+      mkdirSync(join(real, "mattstack"), { recursive: true });
+      writeFileSync(join(real, "mattstack", "settings.jsonc"), "{}");
+      mkdirSync(teamsDir(), { recursive: true });
+      symlinkSync(real, join(teamsDir(), "claimview"));
+
+      expect(listTeams()).toEqual(["claimview"]);
+    });
+
+    test("a DANGLING symlink is skipped with a warn — healthy teams still list", () => {
+      // The realistic trigger: a team clone symlinked in and later moved. The
+      // follow-the-link stat throws ENOENT, and listTeams is on the path of
+      // every settings resolution — so it must skip, not throw.
+      mkdirSync(join(home, ".mattstack", "teams", "claimview", "mattstack"), { recursive: true });
+      writeFileSync(teamSettingsPath("claimview"), "{}");
+      symlinkSync(join(home, "moved-away"), join(teamsDir(), "moved-team"));
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+      try {
+        expect(listTeams()).toEqual(["claimview"]);
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        expect(warnSpy.mock.calls[0]?.[0]).toContain("moved-team");
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    test("an unreadable teams dir → empty list, warn, no throw", () => {
+      const dir = teamsDir();
+      mkdirSync(dir, { recursive: true });
+      chmodSync(dir, 0o000);
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+      try {
+        expect(listTeams()).toEqual([]);
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        expect(warnSpy.mock.calls[0]?.[0]).toContain(dir);
+      } finally {
+        warnSpy.mockRestore();
+        chmodSync(dir, 0o755); // so afterEach can remove the temp HOME
+      }
     });
   });
 });
