@@ -44,7 +44,7 @@ For branches without a recognizable Linear ID in the name, the extension can loo
 
 ## Install
 
-Installed automatically with `brew install m4ttheweric/tap/rt`. To reinstall manually:
+Installed automatically by the rt installer (`rt --post-install`). To reinstall manually:
 
 ```bash
 rt extension install

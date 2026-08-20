@@ -38,7 +38,7 @@ const SHELL_FUNCTION = [
   `rt() {`,
   `  # Resolve rt by absolute path when the dev-mode wrapper exists. This bypasses`,
   `  # zsh's command-hash cache, which otherwise pins rt to whichever binary it`,
-  `  # first found (often Homebrew's compiled rt) and ignores later dev-mode`,
+  `  # first found and ignores later dev-mode`,
   `  # swaps until the shell calls 'hash -r' — leading to surprising "I'm in dev`,
   `  # mode but my changes don't show up" behaviour across shells.`,
   `  local rt_bin="$HOME/.local/bin/rt"`,
