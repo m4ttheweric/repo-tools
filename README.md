@@ -91,7 +91,7 @@ picked up automatically the first time you run an `rt` command inside it:
 
 ```bash
 cd ~/code/my-repo
-rt status            # or rt cd, rt branch switch, anything repo-aware
+rt status            # or rt cd, anything repo-aware
 ```
 
 On first invocation rt will:
@@ -111,7 +111,6 @@ anywhere on your machine.
 | Command | When you need it |
 |---|---|
 | `rt hooks` | Repo uses husky and you want a quick on/off toggle |
-| `rt workspace sync` | Repo has a `.code-workspace` file you want synced across worktrees |
 | `rt settings extension` | Install the `rt-context` status-bar extension into local editors |
 
 ### Global settings that affect every repo
@@ -121,7 +120,7 @@ Set these once; they apply to all repos:
 ```bash
 rt settings gitlab token       # required for rt status, MR actions, notifications
 rt settings linear token       # required for ticket lookup in rt status / branch names
-rt settings linear team        # only needed if you use `rt branch create` to file new tickets
+rt settings linear team        # Set default Linear team
 rt settings notifications      # pick which events fire native macOS notifications
 ```
 
@@ -139,8 +138,9 @@ rt <command> [subcommand] [args]
 
 ```bash
 rt cd                     # Fuzzy worktree/repo directory picker
-rt code                   # Open a worktree in your preferred editor
 ```
+
+In `rt nav`, `ctrl-o` opens the selected folder in your preferred editor.
 
 Shell alias added by install:
 ```bash
@@ -152,16 +152,6 @@ rtcd                      # cd into a picked worktree (wraps rt cd)
 ```bash
 rt run                    # Interactive script runner: repo → worktree → package → script
 ```
-
-### Branch
-
-```bash
-rt branch switch          # Checkout with automatic stash handling
-rt branch create          # Create from a Linear ticket or scratch
-rt branch clean           # Interactively delete stale branches
-```
-
-`rt branch switch` and `rt branch create` are also available as `rt git branch switch/create`.
 
 ### Git
 
@@ -193,23 +183,6 @@ rt port                   # Port scanner + killer (daemon-powered, zero-config)
 ```
 
 
-### Open
-
-```bash
-rt open mr                # Open the current branch's GitLab MR
-rt open pipeline          # Open GitLab CI pipelines (alias: rt open ci)
-rt open repo              # Open the repository page
-rt open ticket            # Open the Linear ticket for this branch
-```
-
-### Workspace
-
-```bash
-rt workspace sync         # Auto-sync a .code-workspace file across all worktrees
-```
-
-Keeps per-worktree settings (`peacock.color`, etc.) while syncing shared config.
-
 ### Daemon
 
 The daemon runs in the background, caching MR data, scanning ports, and guarding git hooks.
@@ -239,7 +212,6 @@ rt settings dev-mode          # Toggle between local source and Homebrew binary
 
 ```bash
 rt x                      # Script runner with setup/teardown lifecycle
-rt build                  # Interactive turbo build selector
 rt hooks                  # Toggle git hooks on/off
 rt verify                 # Installation verification
 rt version                # Print version + mode (dev/prod)
