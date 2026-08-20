@@ -20,21 +20,17 @@
  * brief) but registers its legacy-JSON importer the same way every
  * lib/state/ store does — imported by lib/state/index.ts for the side
  * effect, importing lib/state/db.ts directly (not the barrel) to avoid a
- * barrel <-> store import cycle. Its logger is obtained via a DYNAMIC import
- * of daemon-logger.ts, on the rare SQLITE_BUSY warn path only: daemon-logger
- * statically imports pino-roll, and pino-roll creates ~/Library merely by
- * being imported (empirically, independent of any function call) — a
- * top-level `import { getDaemonLogger } from "../daemon-logger.ts"` here
- * would leak that side effect into every barrel import, breaking
- * lib/state/__tests__/barrel.test.ts's "touches no file" contract. A type-
- * only import (erased at compile time) keeps this file's logging typed
- * without paying that cost.
+ * barrel <-> store import cycle. Its daemon-flavor SQLITE_BUSY handling
+ * (warn-and-defer) is the shared `lib/state/busy.ts` helper (extracted from
+ * this module by Task 5's orchestrator ruling, imported directly for the
+ * same avoid-the-barrel-cycle reason) — see that module's doc for why its
+ * logger import stays dynamic.
  */
 
 import { Database } from "bun:sqlite";
 import type { PullRequest } from "@mattstack/glance";
-import type { DaemonLoggerHandle } from "../daemon-logger.ts";
 import { getStateDb, LEGACY_IMPORTS } from "../state/db.ts";
+import { persistOrWarn } from "../state/busy.ts";
 
 export interface ProjectMREntry { pr: PullRequest; fetchedAt: number; }
 export interface DemandEntry { authors: string[]; declaredAt: number; lastSeenAt: number; }
@@ -64,47 +60,6 @@ export interface ProjectMRs {
   expireDemands(repoName: string, maxIdleMs: number): string[];
   /** Passing null clears an existing scope (the demand that motivated it is gone). */
   setScope(repoName: string, scope: { authors: string[]; windowDays: number } | null): void;
-}
-
-// ─── Lazy logger (see module doc: no module-load file access) ──────────────
-
-let logHandle: Promise<DaemonLoggerHandle> | null = null;
-
-/**
- * Warn-and-defer on a daemon-flavor SQLITE_BUSY write (spec "Daemon-thread
- * rule"): the connection's busy_timeout already did the waiting, so a thrown
- * BUSY here means the lock was still held after that budget. Logging is
- * fire-and-forget so this stays callable from the store's synchronous
- * mutators; both the dynamic import of daemon-logger.ts and the logger
- * handle it returns are only ever instantiated on this path, never at
- * import time (see module doc for why the import must stay dynamic).
- */
-function warnBusy(context: Record<string, unknown>): void {
-  logHandle ??= import("../daemon-logger.ts").then((m) => m.getDaemonLogger());
-  void logHandle.then((h) => h.childLogger("project-mrs").warn(context, "project-mrs write skipped: db busy, converges next cycle"));
-}
-
-function isBusyError(err: unknown): boolean {
-  return (err as { code?: string } | undefined)?.code === "SQLITE_BUSY";
-}
-
-/**
- * Runs `fn` (a db.transaction()-wrapped write, or a single prepared-statement
- * .run()); a thrown SQLITE_BUSY is caught, warned, and swallowed — the
- * in-memory model the caller already updated stays the source of truth, and
- * the row catches up on the next successful write (spec: "state converges
- * next poll"). Any other error is not swallowed.
- */
-function persistOrWarn(fn: () => void, context: Record<string, unknown>): void {
-  try {
-    fn();
-  } catch (err) {
-    if (isBusyError(err)) {
-      warnBusy(context);
-      return;
-    }
-    throw err;
-  }
 }
 
 // ─── Row shapes ──────────────────────────────────────────────────────────
@@ -207,7 +162,7 @@ export function createProjectMRs(db: Database = getStateDb("daemon")): ProjectMR
     store.source = source;
     data[repoName] = store;
 
-    persistOrWarn(() => {
+    persistOrWarn("project-mrs", () => {
       const run = db.transaction(() => {
         upsertMrStmt.run(repoName, pr.iid, JSON.stringify(pr), fetchedAt);
         writeMeta(repoName, store);
@@ -269,7 +224,7 @@ export function createProjectMRs(db: Database = getStateDb("daemon")): ProjectMR
     // prunes) plus the meta row commit atomically (spec "Store-by-store"
     // item 2). The reconcile ABOVE already decided what "touched" means —
     // this only persists that decision.
-    persistOrWarn(() => {
+    persistOrWarn("project-mrs", () => {
       const run = db.transaction(() => {
         for (const w of toWrite) upsertMrStmt.run(repoName, w.iid, JSON.stringify(w.pr), w.fetchedAt);
         for (const iid of toDelete) deleteMrStmt.run(repoName, iid);
@@ -314,7 +269,7 @@ export function createProjectMRs(db: Database = getStateDb("daemon")): ProjectMR
     store.deltaSyncedAt = deltaStartedAt;
     data[repoName] = store;
 
-    persistOrWarn(() => {
+    persistOrWarn("project-mrs", () => {
       const run = db.transaction(() => {
         for (const w of toWrite) upsertMrStmt.run(repoName, w.iid, JSON.stringify(w.pr), w.fetchedAt);
         writeMeta(repoName, store);
@@ -358,7 +313,7 @@ export function createProjectMRs(db: Database = getStateDb("daemon")): ProjectMR
     const lastSeenAt = Date.now();
     store.demands[client] = { authors: [...authors], declaredAt, lastSeenAt };
 
-    persistOrWarn(() => {
+    persistOrWarn("project-mrs", () => {
       upsertDemandStmt.run(repoName, client, JSON.stringify(authors), declaredAt, lastSeenAt);
     }, { repo: repoName, op: "registerDemand" });
 
@@ -372,7 +327,7 @@ export function createProjectMRs(db: Database = getStateDb("daemon")): ProjectMR
     const dropped = Object.keys(demands).filter((c) => demands[c]!.lastSeenAt < cutoff);
     for (const c of dropped) delete demands[c];
     if (dropped.length) {
-      persistOrWarn(() => {
+      persistOrWarn("project-mrs", () => {
         const run = db.transaction(() => {
           for (const c of dropped) deleteDemandStmt.run(repoName, c);
         });
@@ -390,7 +345,7 @@ export function createProjectMRs(db: Database = getStateDb("daemon")): ProjectMR
     } else {
       store.scope = { authors: [...scope.authors], windowDays: scope.windowDays };
     }
-    persistOrWarn(() => writeMeta(repoName, store), { repo: repoName, op: "setScope" });
+    persistOrWarn("project-mrs", () => writeMeta(repoName, store), { repo: repoName, op: "setScope" });
   }
 
   return {

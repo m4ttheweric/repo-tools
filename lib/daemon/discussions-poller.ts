@@ -23,7 +23,6 @@
 
 import { refreshDiscussions, type BroadcastFn } from "./discussions-store.ts";
 import {
-  seedDiscussionsFromBranchCache,
   getDiscussionsFileStore,
   type DiscussionsFileStore,
 } from "./discussions-file-store.ts";
@@ -116,10 +115,6 @@ async function sweep(env: PollerEnv): Promise<void> {
 
 export function startDiscussionsPoller(env: PollerEnv): void {
   if (timer) return;
-  // One-time upgrade: move any discussions still embedded in branch-cache
-  // entries into the file store before the first sweep reads it.
-  const seeded = seedDiscussionsFromBranchCache(env.ctx.cache.entries);
-  if (seeded > 0) log.info({ seeded }, "seeded discussions store from branch cache");
   log.info(`starting (every ${POLL_INTERVAL_MS / 1000}s)`);
   // Kick off a first sweep after a short delay so the daemon finishes
   // initializing freshness watchers before we start hitting GitLab.

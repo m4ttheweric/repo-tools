@@ -109,10 +109,15 @@ describe("legacy import", () => {
     expect(columns).not.toContain("discussionsFetchedAt");
 
     const store = getBranchCacheStore(db);
-    const entry = store.entries["feature/legacy-discussions"];
+    const entry = store.entries["feature/legacy-discussions"] as CacheEntry & { discussions?: unknown; discussionsFetchedAt?: unknown };
     expect(entry).toBeDefined();
-    expect(entry?.discussions).toBeUndefined();
-    expect(entry?.discussionsFetchedAt).toBeUndefined();
+    // RT-48 task 5 removed `discussions`/`discussionsFetchedAt` from the
+    // CacheEntry type itself (their last readers, discussions-file-store.ts's
+    // seed function, are gone) — the cast above is only so this legacy-JSON
+    // fixture (which still carries the fields) type-checks; the entry the
+    // import actually produced never had them to begin with.
+    expect(entry.discussions).toBeUndefined();
+    expect(entry.discussionsFetchedAt).toBeUndefined();
     db.close();
   });
 

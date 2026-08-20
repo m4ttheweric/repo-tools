@@ -1,23 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "fs";
+import { existsSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { createDiscussionsFileStore, seedDiscussionsFromBranchCache } from "../discussions-file-store.ts";
+import { createDiscussionsFileStore } from "../discussions-file-store.ts";
 import { resolveMRMeta, refreshDiscussions } from "../discussions-store.ts";
 import { createProjectMRs } from "../project-mrs-store.ts";
 import { openStateDb } from "../../state/index.ts";
 import type { HandlerContext } from "../handlers/types.ts";
 import { fakeStore } from "./fake-cache-store.ts";
 
-function tmpPath(name: string): string {
-  return join(mkdtempSync(join(tmpdir(), "rt-disc-")), name);
+// RT-48 task 5: discussions persistence moved off discussions.json onto
+// state.db's `discussions` table — stores are now constructed over a db
+// handle (openStateDb(tempPath) seam), not a file path.
+function tmpDb() {
+  return openStateDb(join(mkdtempSync(join(tmpdir(), "rt-disc-")), "state.db"), "cli");
 }
 
 // RT-48: project-mrs persistence moved off project-mrs.json to state.db —
 // each call opens a fresh temp db, same fresh-store-per-call isolation the
 // old createProjectMRs(tmpPath(...), 0) pattern had.
 function pmrsStore() {
-  return createProjectMRs(openStateDb(tmpPath("state.db"), "cli"));
+  return createProjectMRs(tmpDb());
 }
 const note = (id: number) => ({ id, system: false, body: `n${id}`, createdAt: "2026-07-26T00:00:00Z", author: { id: "gitlab:user:777", name: "Luke", username: "luke" } });
 const disc = (id: number) => ({ id: `d${id}`, notes: [note(id)] }) as any;
@@ -26,38 +29,75 @@ function fakeCtx(entries: Record<string, any>): HandlerContext {
   return { cache: fakeStore(entries), repoIndex: () => ({ repo: "/tmp/repo" }) } as unknown as HandlerContext;
 }
 
-describe("file store basics + seed", () => {
-  test("write/read/keys/remove round-trip and persist", () => {
-    const p = tmpPath("d.json");
-    const s = createDiscussionsFileStore(p);
+describe("discussions store — row basics", () => {
+  test("write/read/keys/remove round-trip against the discussions table", () => {
+    const db = tmpDb();
+    const s = createDiscussionsFileStore(db);
     s.write("repo", 7, { discussions: [disc(1)], fetchedAt: 123 });
     expect(s.read("repo", 7)!.fetchedAt).toBe(123);
     expect(s.keys()).toEqual([{ repoName: "repo", iid: 7 }]);
-    s.flushNow();
-    expect(createDiscussionsFileStore(p).read("repo", 7)!.fetchedAt).toBe(123);
     s.remove("repo", 7);
     expect(s.read("repo", 7)).toBeUndefined();
+    db.close();
   });
 
-  test("seed copies embedded discussions, skips entries without repoName", () => {
-    const s = createDiscussionsFileStore(tmpPath("d.json"));
-    const n = seedDiscussionsFromBranchCache({
-      a: { repoName: "repo", mr: { iid: 1 }, discussions: [disc(1)], discussionsFetchedAt: 5, ticket: null, linearId: "", fetchedAt: 0 },
-      b: { mr: { iid: 2 }, discussions: [disc(2)], discussionsFetchedAt: 6, ticket: null, linearId: "", fetchedAt: 0 } as any,
-      c: { repoName: "repo", mr: { iid: 3 }, ticket: null, linearId: "", fetchedAt: 0 } as any,
-    } as any, s);
-    expect(n).toBe(1);
-    expect(s.read("repo", 1)!.fetchedAt).toBe(5);
-    expect(s.read("repo", 2)).toBeUndefined();
+  test("write is a single-row upsert: touches exactly one row in the discussions table", () => {
+    const db = tmpDb();
+    const s = createDiscussionsFileStore(db);
+    s.write("repo", 1, { discussions: [disc(1)], fetchedAt: 100 });
+    s.write("repo", 2, { discussions: [disc(2)], fetchedAt: 200 });
+
+    let rows = db.query("SELECT repo, iid, fetched_at FROM discussions;").all() as Array<{ repo: string; iid: number; fetched_at: number }>;
+    expect(rows.length).toBe(2);
+
+    // Re-writing MR 1 updates only its row — MR 2's row is untouched.
+    s.write("repo", 1, { discussions: [disc(1), disc(3)], fetchedAt: 150 });
+    rows = db.query("SELECT repo, iid, fetched_at FROM discussions ORDER BY iid;").all() as Array<{ repo: string; iid: number; fetched_at: number }>;
+    expect(rows).toEqual([
+      { repo: "repo", iid: 1, fetched_at: 150 },
+      { repo: "repo", iid: 2, fetched_at: 200 },
+    ]);
+    db.close();
   });
 
-  test("seed never overwrites an existing store entry", () => {
-    const s = createDiscussionsFileStore(tmpPath("d.json"));
-    s.write("repo", 1, { discussions: [], fetchedAt: 999 });
-    seedDiscussionsFromBranchCache({
-      a: { repoName: "repo", mr: { iid: 1 }, discussions: [disc(1)], discussionsFetchedAt: 5, ticket: null, linearId: "", fetchedAt: 0 },
-    } as any, s);
-    expect(s.read("repo", 1)!.fetchedAt).toBe(999);
+  test("persists across store instances over the same db handle (no flush step)", () => {
+    const db = tmpDb();
+    createDiscussionsFileStore(db).write("repo", 7, { discussions: [disc(1)], fetchedAt: 123 });
+    expect(createDiscussionsFileStore(db).read("repo", 7)!.fetchedAt).toBe(123);
+    db.close();
+  });
+});
+
+describe("legacy import", () => {
+  test("imports discussions.json rows, splitting the repo:iid key into columns", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-disc-legacy-"));
+    const dbPath = join(dir, "state.db");
+    const legacyPath = join(dir, "discussions.json");
+    writeFileSync(
+      legacyPath,
+      JSON.stringify({
+        "repo-tools:7": { discussions: [disc(1)], fetchedAt: 111 },
+        "gitq:3": { discussions: [], fetchedAt: 222 },
+      }),
+    );
+
+    const db = openStateDb(dbPath, "cli");
+    const store = createDiscussionsFileStore(db);
+
+    expect(store.read("repo-tools", 7)).toEqual({ discussions: [disc(1)], fetchedAt: 111 });
+    expect(store.read("gitq", 3)).toEqual({ discussions: [], fetchedAt: 222 });
+    expect(store.keys().length).toBe(2);
+
+    expect(existsSync(legacyPath)).toBe(false);
+    expect(existsSync(`${legacyPath}.migrated`)).toBe(true);
+    db.close();
+  });
+
+  test("a dir with no discussions.json imports nothing and creates no rows", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rt-disc-legacy-"));
+    const db = openStateDb(join(dir, "state.db"), "cli");
+    expect(createDiscussionsFileStore(db).keys()).toEqual([]);
+    db.close();
   });
 });
 
@@ -81,7 +121,7 @@ describe("resolveMRMeta", () => {
 
 describe("refreshDiscussions (lifted)", () => {
   test("writes the file store, not the branch entry; first fetch is silent; second diff notifies", async () => {
-    const fileStore = createDiscussionsFileStore(tmpPath("d.json"));
+    const fileStore = createDiscussionsFileStore(tmpDb());
     const pStore = pmrsStore();
     const entries = {
       feat: { repoName: "repo", mr: { iid: 5, title: "T", webUrl: "http://w/5", status: "open", author: { id: "gitlab:1" } }, ticket: null, linearId: "", fetchedAt: 0 },
@@ -106,7 +146,7 @@ describe("refreshDiscussions (lifted)", () => {
   });
 
   test("currentUserId override matching the branch entry's author marks isMrAuthor, surfacing new notes", async () => {
-    const fileStore = createDiscussionsFileStore(tmpPath("d.json"));
+    const fileStore = createDiscussionsFileStore(tmpDb());
     const pStore = pmrsStore();
     const entries = {
       feat: { repoName: "repo", mr: { iid: 5, title: "T", webUrl: "http://w/5", status: "open", author: { id: "gitlab:1" } }, ticket: null, linearId: "", fetchedAt: 0 },
@@ -142,7 +182,7 @@ describe("refreshDiscussions (lifted)", () => {
     ({ id, system: false, body: `n${id}`, createdAt: "2026-07-26T00:00:00Z", author: { id: `gitlab:user:${userId}`, name: username, username } });
 
   test("own comments (scoped author id) never notify on my own MR", async () => {
-    const fileStore = createDiscussionsFileStore(tmpPath("d.json"));
+    const fileStore = createDiscussionsFileStore(tmpDb());
     const pStore = pmrsStore();
     const ctx = fakeCtx({
       feat: { repoName: "repo", mr: { iid: 5, title: "T", webUrl: "http://w/5", status: "open", author: { id: "gitlab:1" } }, ticket: null, linearId: "", fetchedAt: 0 },
@@ -166,7 +206,7 @@ describe("refreshDiscussions (lifted)", () => {
   });
 
   test("teammate reply in a thread I participate in (scoped ids) notifies on someone else's MR", async () => {
-    const fileStore = createDiscussionsFileStore(tmpPath("d.json"));
+    const fileStore = createDiscussionsFileStore(tmpDb());
     const pStore = pmrsStore();
     const ctx = fakeCtx({
       feat: { repoName: "repo", mr: { iid: 5, title: "T", webUrl: "http://w/5", status: "open", author: { id: "gitlab:2" } }, ticket: null, linearId: "", fetchedAt: 0 },
@@ -191,7 +231,7 @@ describe("refreshDiscussions (lifted)", () => {
   });
 
   test("throws for an MR in neither store", async () => {
-    const overrides = { fileStore: createDiscussionsFileStore(tmpPath("d.json")), projectStore: pmrsStore(), fetchDiscussions: async () => [] };
+    const overrides = { fileStore: createDiscussionsFileStore(tmpDb()), projectStore: pmrsStore(), fetchDiscussions: async () => [] };
     await expect(refreshDiscussions({ ctx: fakeCtx({}), broadcast: () => {} }, "repo", 1, overrides)).rejects.toThrow("MR not cached");
   });
 });
