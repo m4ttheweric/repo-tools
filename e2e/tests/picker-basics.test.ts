@@ -40,17 +40,16 @@ describe("picker basics", () => {
     session = await startInteractive({ args: [], home });
     await session.waitForText("filter:", 8000);
 
-    // First item is "git". Down once -> "mr". Select it.
-    await session.press("Down");
+    // First item is "git" (index 0). "daemon" sits at index 22 and is a
+    // pure branch node (subcommands, no top-level fn), so Enter opens its
+    // subpicker instead of dispatching a command.
+    for (let i = 0; i < 22; i++) await session.press("Down");
     await session.waitForIdle();
     await session.press("Enter");
 
-    // "mr" is a branch node -- its picker shows open/describe/ship.
-    // Wait for "ship" specifically since "open" also appears in the
-    // top-level picker and could match during the transition.
-    await session.waitForText("ship", 5000);
+    await session.waitForText("logs", 5000);
     const screen = await session.screen();
-    expect(screen).toContain("describe");
+    expect(screen).toContain("status");
     expect(screen).not.toContain("version");
   }, 15_000);
 
