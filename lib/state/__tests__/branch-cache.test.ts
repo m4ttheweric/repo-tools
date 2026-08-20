@@ -271,6 +271,75 @@ describe("gc — succeeded-repo gating and NULL-repo age rule", () => {
   });
 });
 
+describe("daemon-flavor busy handling", () => {
+  /**
+   * Spec test 12, on the branch-cache path (RT-48 Task 8; Task 4 shipped the
+   * same guarantee for project-mrs and Task 5 for discussions). A held write
+   * lock past the connection's busy_timeout must warn and defer, never
+   * throw, and never leave rows and the in-memory map disagreeing.
+   */
+  function holdWriteLock(dbPath: string): { release: () => void } {
+    const blocker = new Database(dbPath);
+    blocker.exec("PRAGMA busy_timeout = 0;");
+    blocker.exec("BEGIN IMMEDIATE;");
+    return {
+      release: () => { blocker.exec("ROLLBACK;"); blocker.close(); },
+    };
+  }
+
+  test("put() defers instead of throwing; the in-memory map still takes the write", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "daemon"); // 250ms busy_timeout
+    const store = getBranchCacheStore(db);
+    const lock = holdWriteLock(dbPath);
+    try {
+      expect(() => store.put("busy-branch", makeEntry({ repoName: "repo-a" }))).not.toThrow();
+      // The map is the daemon's read model (spec "In-memory ownership") —
+      // it must carry the enrichment even when the row could not.
+      expect(store.entries["busy-branch"]).toBeDefined();
+    } finally {
+      lock.release();
+    }
+    db.close();
+  }, 10_000);
+
+  test("gc() defers as a unit: neither rows nor the map are evicted when the write is blocked", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "daemon");
+    const store = getBranchCacheStore(db);
+    store.put("stale-busy", makeEntry({ repoName: "repo-a", fetchedAt: Date.now() - 40 * 24 * 60 * 60 * 1000 }));
+
+    const lock = holdWriteLock(dbPath);
+    try {
+      expect(() => store.gc(new Set(["repo-a"]), 30 * 24 * 60 * 60 * 1000)).not.toThrow();
+      // Rows survived, so the map must too — otherwise the next reload()
+      // would resurrect an entry the map had already dropped.
+      expect(store.entries["stale-busy"]).toBeDefined();
+    } finally {
+      lock.release();
+    }
+    expect(rowCount(db, "stale-busy")).toBe(1);
+    db.close();
+  }, 10_000);
+
+  test("delete() defers as a unit rather than throwing", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "daemon");
+    const store = getBranchCacheStore(db);
+    store.put("doomed", makeEntry({ repoName: "repo-a" }));
+
+    const lock = holdWriteLock(dbPath);
+    try {
+      expect(() => store.delete("doomed")).not.toThrow();
+      expect(store.entries["doomed"]).toBeDefined();
+    } finally {
+      lock.release();
+    }
+    expect(rowCount(db, "doomed")).toBe(1);
+    db.close();
+  }, 10_000);
+});
+
 describe("getBranchCacheStore — singleton behavior", () => {
   test("the same db handle returns the same store object", () => {
     const dbPath = join(dir, "state.db");

@@ -41,6 +41,12 @@ export interface CacheRefresherDeps {
   worktreeKick?: () => void;
 }
 
+/**
+ * Branch-cache rows older than this are eligible for GC. A constant, not a
+ * setting (spec "New: branch-cache GC": "30 days is a constant").
+ */
+const BRANCH_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
 export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<void> {
   const { log, cache, refreshStatusRef, portCacheRef, repoIndex, broadcast } = deps;
 
@@ -62,6 +68,12 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       const repos = repoIndex();
       const tracking = loadRepoTracking();
       const failedRepos = new Set<string>();
+      // The GC gate (spec "New: branch-cache GC"): a repo's rows may be
+      // aged out only in a cycle where ITS refresh completed with zero
+      // `onError` invocations. A repo that is skipped here — untracked, no
+      // "branches" grant, missing path — never enters this set, so its rows
+      // are never pruned on a cycle that did not refresh them.
+      const succeededRepos = new Set<string>();
 
       for (const [repoName, repoPath] of Object.entries(repos)) {
         if (!existsSync(repoPath)) continue;
@@ -81,6 +93,13 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
 
         // Branch-view enrichment requires the "branches" grant.
         if (!g.caches.has("branches")) continue;
+
+        // `refreshAllMRs` swallows per-MR fetch failures into `onError` and
+        // never throws, so a token-expired repo would sail through the
+        // catch below looking clean while its `fetchedAt` stays frozen.
+        // Counting onError calls is the only honest success signal (spec
+        // "New: branch-cache GC", review r2 finding 1).
+        let enrichErrors = 0;
 
         try {
           // 1. Discover worktree branches (detached worktrees have no branch).
@@ -121,8 +140,19 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
             // Optimized: 3 GraphQL calls for ALL open MRs + 1 Linear batch.
             // The onError callback fires on per-MR enrich failures (GitLab,
             // Linear) — recoverable, belongs at warn level.
-            await refreshAllMRs(branches, remoteUrl, (msg) => log.warn({ repo: repoName }, msg), repoName);
+            await refreshAllMRs(branches, remoteUrl, (msg) => {
+              enrichErrors++;
+              log.warn({ repo: repoName }, msg);
+            }, repoName);
           }
+
+          // Clean pass. `branches.length === 0` counts as clean on purpose:
+          // the repo was walked and has nothing to enrich, so any rows still
+          // attributed to it are leftovers and should age out normally.
+          // A project-sync failure earlier in this iteration disqualifies the
+          // repo too — a cycle that went wrong anywhere for a repo is not the
+          // cycle to delete its rows on.
+          if (enrichErrors === 0 && !failedRepos.has(repoName)) succeededRepos.add(repoName);
         } catch (err) {
           log.warn({ err, repo: repoName }, "cache refresh skipped repo");
           failedRepos.add(repoName);
@@ -136,6 +166,19 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       cache.reload();
       refreshStatusRef.lastRefreshAt = Date.now();
       log.debug({ count: Object.keys(cache.entries).length }, "cache refresh complete");
+
+      // Branch-cache GC: age out rows the succeeded repos no longer refresh.
+      // Runs BEFORE the discussions prune (spec "New: branch-cache GC",
+      // placement) so both prunes see the same membership in the same cycle —
+      // GC shrinks one leg of the discussions union, and a discussion whose
+      // only anchor was an evicted branch must go in this cycle, not the next.
+      // checkAndNotify's fired-ledger hygiene, further down, likewise sees the
+      // post-GC map, so an evicted branch leaks no fired keys.
+      try {
+        cache.gc(succeededRepos, BRANCH_CACHE_MAX_AGE_MS);
+      } catch (err) {
+        log.warn({ err }, "branch-cache gc failed");
+      }
 
       // Discussions prune: drop snapshots whose MR is in neither store.
       // failedRepos are exempt — never prune on a failed pass.
