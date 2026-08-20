@@ -26,7 +26,6 @@ import * as cd from "../commands/cd.ts";
 import * as version from "../commands/version.ts";
 import * as verify from "../commands/verify.ts";
 import * as update from "../commands/update.ts";
-import * as doppler from "../commands/doppler.ts";
 import * as nav from "../commands/nav.ts";
 import * as sdm from "../commands/sdm.ts";
 import * as plugin from "../commands/plugin.ts";
@@ -55,7 +54,6 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/version.ts": version,
   "./commands/verify.ts": verify,
   "./commands/update.ts": update,
-  "./commands/doppler.ts": doppler,
   "./commands/nav.ts": nav,
   "./commands/sdm.ts": sdm,
   "./commands/plugin.ts": plugin,

@@ -417,13 +417,6 @@ export const TREE: Record<string, CommandNode> = {
     ],
   },
 
-  park: {
-    description: "Deprecated — replaced by rt worktree",
-    module: "./commands/worktree.ts",
-    fn: "parkDeprecated",
-    args: [],
-  },
-
   worktree: {
     description: "Worktree lifecycle (provision/dispose/list) + worktree-wide operations",
     module: "./commands/worktree.ts",
@@ -505,41 +498,6 @@ export const TREE: Record<string, CommandNode> = {
           { name: "On-deck", flag: "--on-deck", type: "boolean", default: false, hint: "Run only in on-deck worktrees (alias --parked)" },
           { name: "Command", type: "text", placeholder: "git status", hint: "Command to run in each selected worktree; omit both flags to pick interactively" },
         ],
-      },
-    },
-  },
-
-  doppler: {
-    description: "Per-repo Doppler template + sync into ~/.doppler/.doppler.yaml",
-    subcommands: {
-      init: {
-        description: "Capture existing Doppler entries for this repo into a template",
-        module: "./commands/doppler.ts",
-        fn: "initCommand",
-        context: "repo",
-        args: [],
-      },
-      sync: {
-        description: "Apply the template across all worktrees (manual trigger)",
-        module: "./commands/doppler.ts",
-        fn: "syncCommand",
-        context: "repo",
-        args: [],
-      },
-      status: {
-        description: "Show template vs. actual config per worktree",
-        module: "./commands/doppler.ts",
-        fn: "statusCommand",
-        context: "repo",
-        args: [],
-      },
-      edit: {
-        description: "Open the template in $EDITOR",
-        module: "./commands/doppler.ts",
-        fn: "editCommand",
-        context: "repo",
-        requiresTTY: true,
-        args: [],
       },
     },
   },
