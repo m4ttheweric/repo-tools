@@ -69,10 +69,13 @@ export function readStore(file: string): StoreFile {
   }
 
   const { repos, ...global } = root as Record<string, unknown>;
-  const reposValid =
-    repos !== undefined && typeof repos === "object" && repos !== null && !Array.isArray(repos)
-      ? (repos as Record<string, Record<string, unknown>>)
-      : {};
+  const reposIsValid = repos !== undefined && typeof repos === "object" && repos !== null && !Array.isArray(repos);
+
+  if (repos !== undefined && !reposIsValid) {
+    console.warn(`rt: malformed "repos" section in settings store ${file}, ignoring repo sections (global keys still apply)`);
+  }
+
+  const reposValid = reposIsValid ? (repos as Record<string, Record<string, unknown>>) : {};
 
   return { global, repos: reposValid, file, exists: true };
 }
