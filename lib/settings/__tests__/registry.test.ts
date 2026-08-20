@@ -97,6 +97,53 @@ describe("settings/registry", () => {
       expect(getDef("rt.mr")?.legacyFile).toBe("repos/<repo>/mr.json");
     });
 
+    test("repoScoped is consistent with a repos/<repo>/... legacyFile prefix, in both directions", () => {
+      // Regression test for a metadata error a reviewer caught: a def whose
+      // legacy reader is rooted at repoDataDir() (i.e. its legacyFile is
+      // repo-scoped) must be marked repoScoped:true, and vice versa —
+      // repoScoped:true must never sit on a def whose legacyFile is actually
+      // a global (non-repo) path. Catches this class of drift for every
+      // migrated:false def, not just the ones with a dedicated spot-check
+      // below. (migrated:true defs carry no legacyFile at all — their reader
+      // goes through the resolver, not a legacy file path — so they're
+      // outside the scope of this check; rt.roles/rt.intercepts/rt.worktrees
+      // are repoScoped for reasons unrelated to any legacyFile prefix.)
+      for (const def of allDefs()) {
+        if (def.migrated) continue;
+        const legacyFileIsRepoScoped = def.legacyFile?.startsWith("repos/<repo>/") ?? false;
+        expect(
+          Boolean(def.repoScoped),
+          `${def.key}: repoScoped (${Boolean(def.repoScoped)}) must match legacyFile repo-scoping (${legacyFileIsRepoScoped}, legacyFile=${def.legacyFile ?? "none"})`,
+        ).toBe(legacyFileIsRepoScoped);
+      }
+    });
+
+    test("the seven traced repo-scoped legacy keys carry repoScoped:true and the repos/<repo>/ prefix", () => {
+      const repoScopedLegacyKeys: Record<string, string> = {
+        "rt.sync": "repos/<repo>/sync.json",
+        "rt.branchNaming": "repos/<repo>/branch-naming.json",
+        "rt.variations": "repos/<repo>/variations.json",
+        "rt.presets": "repos/<repo>/presets/<name>.json",
+        "rt.dopplerTemplate": "repos/<repo>/doppler-template.yaml",
+        "rt.workspaceSync": "repos/<repo>/workspace-sync.json",
+        "rt.hooks": "repos/<repo>/hooks.json",
+      };
+
+      for (const [key, legacyFile] of Object.entries(repoScopedLegacyKeys)) {
+        const def = getDef(key);
+        expect(def?.repoScoped, `${key} should be repoScoped:true`).toBe(true);
+        expect(def?.legacyFile, `${key} legacyFile`).toBe(legacyFile);
+      }
+    });
+
+    test("the six genuinely global legacy keys stay repoScoped:undefined with a bare (non-repos/) legacyFile", () => {
+      for (const key of ["rt.llm", "rt.cron", "rt.repoTracking", "rt.notifications", "rt.workspacePrefs", "rt.runaway"]) {
+        const def = getDef(key);
+        expect(def?.repoScoped, `${key} should not be repoScoped`).toBeFalsy();
+        expect(def?.legacyFile?.startsWith("repos/"), `${key} legacyFile should not be repo-prefixed`).toBe(false);
+      }
+    });
+
     test("has exactly the 14 wave-1 migrated:false keys plus the 4 migrated:true keys", () => {
       const migratedFalseKeys = [
         "rt.llm",
