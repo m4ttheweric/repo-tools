@@ -49,7 +49,7 @@ export const DAEMON_LOG_PATH = join(LOG_DIR, "daemon.log");
 export const LAUNCHD_PLIST_PATH = join(
   homedir(), "Library", "LaunchAgents", "com.rt.daemon.plist",
 );
-export const LAUNCHD_LABEL = "com.rt.daemon";
+export const LAUNCHD_LABEL = "com.mattstack.daemon";
 
 /**
  * The launchd label of whichever daemon flavor is ACTIVE right now
@@ -59,7 +59,7 @@ export const LAUNCHD_LABEL = "com.rt.daemon";
  * one (see that module's docblock).
  */
 export function activeLaunchdLabel(): string {
-  return currentMode() === "dev" ? "com.rt.daemon.dev" : "com.rt.daemon";
+  return currentMode() === "dev" ? "com.mattstack.daemon.dev" : "com.mattstack.daemon";
 }
 export const TRAY_SOCK_PATH = join(RT_DIR, "tray.sock");
 // NOTE: NOTIFY_QUEUE_PATH removed (RT-48) — the notification queue is the

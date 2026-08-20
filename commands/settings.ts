@@ -493,7 +493,7 @@ function flavorFor(mode: "dev" | "prod"): FlavorInfo {
 }
 
 function launchdLabelFor(mode: "dev" | "prod"): string {
-  return mode === "dev" ? "com.rt.daemon.dev" : "com.rt.daemon";
+  return mode === "dev" ? "com.mattstack.daemon.dev" : "com.mattstack.daemon";
 }
 
 const HANDOFF_POLL_TIMEOUT_MS = 3_000;
