@@ -1,13 +1,12 @@
 #!/usr/bin/env bun
 
 /**
- * rt code — Open a worktree in your preferred editor.
+ * Editor-preference and launch machinery shared with `rt nav`.
  *
- * Two-step picker:
- *   1. Pick a worktree (context-aware: worktrees if in a known repo, all repos otherwise)
- *   2. Pick a workspace file if multiple exist (choice is saved for next time)
- *
- * Opens via editor CLI command (code, cursor, zed, etc.)
+ * Tracks a per-repo editor choice and per-directory workspace-file choice
+ * (~/.mattstack/rt/workspace-prefs.json), detects installed editors, and
+ * launches one via its CLI command (code, cursor, zed, etc.), falling back
+ * to the app bundle when the CLI shim is missing or broken.
  */
 
 import { execSync } from "child_process";
@@ -15,11 +14,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 
 import { join } from "path";
 import { homedir } from "os";
 import { rtDir } from "../lib/rt-paths.ts";
-import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
-import {
-  getRepoIdentity, getKnownRepos, updateRepoIndex, type KnownRepo,
-} from "../lib/repo.ts";
-import { pickWorktreeWithSwitch, pickFromAllRepos, isSwitchRepo } from "../lib/pickers.ts";
+import { dim, green, red, reset } from "../lib/tui.ts";
 
 // ─── Preference storage (~/.mattstack/rt/workspace-prefs.json) ─────────────────────────
 
@@ -235,58 +230,6 @@ async function resolveWorkspaceTarget(dirPath: string, prefs: Prefs): Promise<st
   return dirPath;
 }
 
-// ─── Untracked repo picker ──────────────────────────────────────────────────
-
-async function pickWithCurrentUntracked(
-  identity: { repoName: string; repoRoot: string },
-  repos: KnownRepo[],
-): Promise<string> {
-  const { filterableSelect } = await import("../lib/rt-render.tsx");
-
-  const OPEN_THIS = "__open_this__";
-
-  const options = [
-    {
-      value: OPEN_THIS,
-      label: `${identity.repoName} (this repo — will be tracked)`,
-      hint: identity.repoRoot.replace(process.env.HOME || "", "~"),
-    },
-    ...repos.map(r => ({
-      value: r.repoName,
-      label: r.repoName,
-      hint: r.worktrees.length > 1
-        ? `${r.worktrees.length} worktrees`
-        : r.worktrees[0]?.path.replace(process.env.HOME || "", "~") || "",
-    })),
-  ];
-
-  const picked = await filterableSelect({
-    message: "Pick a repo to open",
-    options,
-  });
-
-  if (!picked) {
-    process.exit(0);
-  }
-
-  if (picked === OPEN_THIS) {
-    updateRepoIndex(identity.repoName, identity.repoRoot);
-    console.log(`  Now tracking ${identity.repoName}`);
-    return identity.repoRoot;
-  }
-
-  const selectedRepo = repos.find(r => r.repoName === picked)!;
-
-  if (selectedRepo.worktrees.length === 1) {
-    return selectedRepo.worktrees[0]!.path;
-  }
-
-  const { pickWorktreeFromRepo } = await import("../lib/repo.ts");
-  const wtPath = await pickWorktreeFromRepo(selectedRepo, `${selectedRepo.repoName} worktrees`);
-  if (!wtPath) process.exit(0); // Esc on worktree picker
-  return wtPath;
-}
-
 // ─── Editor launch (with app-bundle fallback) ───────────────────────────────
 
 function editorLabelFor(command: string): string {
@@ -301,8 +244,8 @@ function editorLabelFor(command: string): string {
  * command to launch it. Returns null when no app-bundle fallback applies
  * (already an app-bundle launch, unknown editor, or app not installed).
  *
- * This is what keeps `rt code` doing its one job — opening an IDE — even when
- * the `cursor` on PATH is the cursor-agent shim, which is a dead end.
+ * This is what keeps editor launches landing on an actual IDE even when the
+ * `cursor` on PATH is the cursor-agent shim, which is a dead end.
  */
 export function appBundleFallback(editorCommand: string): string | null {
   if (/^open\s+-a\s+/.test(editorCommand)) return null; // already an app launch
