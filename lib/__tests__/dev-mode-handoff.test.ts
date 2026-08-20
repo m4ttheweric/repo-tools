@@ -91,12 +91,12 @@ function setUpFakes(closeDelayMs = 150): void {
   originalPath = process.env.PATH ?? "";
   process.env.PATH = `${fakeBinDir}:${originalPath}`;
 
-  // lib/shell-integration.ts resolves HOME via os.homedir() at MODULE LOAD,
-  // not process.env.HOME at call time — a pre-existing isolation gap this
-  // test must not rely on being safe. Forcing an unrecognised shell makes
-  // installShellIntegration() (called unconditionally by the "dev" target
-  // path) a guaranteed no-op: shellRcPath() returns null and it never opens
-  // any rc file, real HOME or otherwise.
+  // lib/shell-integration.ts now resolves HOME at call time (MAT-383 T7), so
+  // shellRcPath() already lands under this test's isolated HOME rather than
+  // the real one. Forcing an unrecognised shell is kept as cheap belt-and-
+  // suspenders insurance anyway: it makes installShellIntegration() (called
+  // unconditionally by the "dev" target path) a guaranteed no-op — shellRcPath()
+  // returns null and it never opens any rc file, isolated HOME or otherwise.
   originalShell = process.env.SHELL;
   process.env.SHELL = "/bin/nonexistent-shell-for-tests";
 

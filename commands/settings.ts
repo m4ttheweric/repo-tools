@@ -399,7 +399,7 @@ function detectBunPath(): string {
 function enableDevMode(sourcePath: string): void {
   const bunPath = detectBunPath();
 
-  // Save source + bun paths — also read by rt-daemon-shim inside rt-tray.app
+  // Save source + bun paths — also read by rt-daemon-shim inside mattstack.app
   mkdirSync(rtDir(), { recursive: true });
   writeFileSync(DEV_MODE_CONFIG, JSON.stringify({ sourcePath, bunPath }, null, 2));
 
@@ -408,7 +408,7 @@ function enableDevMode(sourcePath: string): void {
 
   // Write wrapper script. Use the absolute bun path (not bare `bun`) and
   // prepend the common tool dirs to PATH so the wrapper works even when
-  // launched without the user's interactive PATH — e.g. rt-tray spawns
+  // launched without the user's interactive PATH — e.g. mattstack.app spawns
   // `rt daemon logs` under launchd, whose PATH is only
   // /usr/bin:/bin:/usr/sbin:/sbin. Without this, both `bun` (the wrapper's
   // own interpreter) and the tools cli.ts shells out to (logdy, lnav, bunx)

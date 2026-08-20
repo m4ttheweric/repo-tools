@@ -186,6 +186,39 @@ DEV_INNER_AUTH=$(codesign -dvv "$DEV/Contents/MacOS/rt-daemon" 2>&1 | grep '^Aut
 DEV_OUTER_AUTH=$(codesign -dvv "$DEV" 2>&1 | grep '^Authority=' | head -1)
 assert_eq "dev inner/outer signing identity match (bundle-wide, no nested ad-hoc)" "$DEV_OUTER_AUTH" "$DEV_INNER_AUTH"
 
+# ─── App icon (spec §7): per-flavor source, same bundle-internal name ───────
+# make-icon.swift generates AppIcon.icns (prod) and AppIcon-dev.icns (dev,
+# tinted) in one run; build.sh must copy the flavor-correct source into each
+# bundle as Contents/Resources/AppIcon.icns (Info.plist's CFBundleIconFile
+# names "AppIcon" for both flavors, so the bundle-internal name never varies —
+# only which source file was copied in does).
+PROD_ICON="$PROD/Contents/Resources/AppIcon.icns"
+DEV_ICON="$DEV/Contents/Resources/AppIcon.icns"
+if [ -f "$PROD_ICON" ]; then
+    pass "prod bundle ships Contents/Resources/AppIcon.icns"
+else
+    fail "prod bundle missing Contents/Resources/AppIcon.icns"
+fi
+if [ -f "$DEV_ICON" ]; then
+    pass "dev bundle ships Contents/Resources/AppIcon.icns"
+else
+    fail "dev bundle missing Contents/Resources/AppIcon.icns"
+fi
+if [ -f "$PROD_ICON" ] && [ -f "$DEV_ICON" ]; then
+    if cmp -s "$PROD_ICON" "$DEV_ICON"; then
+        fail "prod and dev AppIcon.icns are byte-identical — dev tint did not make it into the bundle"
+    else
+        pass "prod and dev AppIcon.icns differ — dev flavor got its tinted variant"
+    fi
+fi
+# Both source .icns must exist at the repo root too (git-tracked, regenerated
+# at change time — build.sh only regenerates when BOTH are absent).
+if [ -f "$SCRIPT_DIR/AppIcon.icns" ] && [ -f "$SCRIPT_DIR/AppIcon-dev.icns" ]; then
+    pass "source AppIcon.icns and AppIcon-dev.icns both present at rt-tray/"
+else
+    fail "source AppIcon.icns / AppIcon-dev.icns missing at rt-tray/ (make-icon.swift should generate both)"
+fi
+
 # ════════════════════════════════════════════════════════════════════════════
 # Task 4 — Swift runtime (spec §1 MSDaemonLabel, §3 socket guard /
 #          /flavor/retire / login item / exit codes / dev cosmetics)

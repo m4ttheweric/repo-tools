@@ -86,7 +86,7 @@ struct ProcessPanelView: View {
             NotificationCenter.default.post(name: .rtCheckUpdates, object: nil)
         })
         menu.addItem(.separator())
-        menu.addItem(ActionMenuItem("Quit rt-tray") {
+        menu.addItem(ActionMenuItem("Quit mattstack") {
             NSApplication.shared.terminate(nil)
         })
         return menu

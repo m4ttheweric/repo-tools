@@ -1,16 +1,24 @@
 #!/usr/bin/env swift
 /**
- * make-icon.swift — rt-tray app icon generator
+ * make-icon.swift — mattstack app icon generator
  *
- * Draws the "rt" wordmark at every required macOS iconset size using Core
+ * Draws the "m" wordmark at every required macOS iconset size using Core
  * Graphics, then shells out to `iconutil` to produce AppIcon.icns.
+ *
+ * Generates BOTH bundle flavors in one run (cheap — a couple dozen small
+ * PNGs each): the prod icon (AppIcon.iconset/AppIcon.icns) and a visibly
+ * tinted dev variant (AppIcon-dev.iconset/AppIcon-dev.icns). build.sh picks
+ * whichever .icns matches the flavor it's assembling and copies it into the
+ * bundle as Contents/Resources/AppIcon.icns — the bundle-internal name stays
+ * "AppIcon" for both flavors (that's what Info.plist's CFBundleIconFile
+ * names); only the source file build.sh copies FROM differs per flavor.
  *
  * Run from the rt-tray directory:
  *   swift make-icon.swift
  *
  * Output:
- *   ./AppIcon.iconset/   (intermediate PNGs, safe to delete)
- *   ./AppIcon.icns       (final icon — copied into the .app bundle by build.sh)
+ *   ./AppIcon.iconset/       ./AppIcon.icns       (prod — copied by build.sh)
+ *   ./AppIcon-dev.iconset/   ./AppIcon-dev.icns   (dev  — copied by build.sh)
  */
 
 import Foundation
@@ -18,16 +26,38 @@ import CoreGraphics
 import AppKit
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
-// Exact values from runner.tsx T palette — single source of truth.
+// Exact values from runner.tsx T palette — single source of truth for prod.
 // T.bgBase  = [22, 18, 36]   #161224  dark plum-black  (canvas fill)
 // T.pink    = [255, 107, 157] #FF6B9D  rose pink        (primary / borders / active)
-let bgR: CGFloat = 22  / 255   //  ╮
-let bgG: CGFloat = 18  / 255   //  ├─ T.bgBase  #161224
-let bgB: CGFloat = 36  / 255   //  ╯
+//
+// The dev flavor reuses the same background but swaps the wordmark to amber
+// (#FFB347) so the two flavors are unmistakable side by side in the menu bar
+// and in Finder/Launchpad, without standing up a separate icon pipeline.
+struct Palette {
+    let bg: (CGFloat, CGFloat, CGFloat)
+    let fg: (CGFloat, CGFloat, CGFloat)
+}
 
-let fgR: CGFloat = 255 / 255   //  ╮
-let fgG: CGFloat = 107 / 255   //  ├─ T.pink    #FF6B9D
-let fgB: CGFloat = 157 / 255   //  ╯
+let prodPalette = Palette(
+    bg: (22 / 255, 18 / 255, 36 / 255),    // #161224 dark plum-black
+    fg: (255 / 255, 107 / 255, 157 / 255)  // #FF6B9D rose pink
+)
+
+let devPalette = Palette(
+    bg: (22 / 255, 18 / 255, 36 / 255),    // same canvas — only the mark differs
+    fg: (255 / 255, 179 / 255, 71 / 255)   // #FFB347 amber — visibly distinct from prod pink
+)
+
+struct Flavor {
+    let iconsetDir: String
+    let icnsPath: String
+    let palette: Palette
+}
+
+let flavors: [Flavor] = [
+    Flavor(iconsetDir: "AppIcon.iconset", icnsPath: "AppIcon.icns", palette: prodPalette),
+    Flavor(iconsetDir: "AppIcon-dev.iconset", icnsPath: "AppIcon-dev.icns", palette: devPalette),
+]
 
 // ── Preferred fonts (in order) ────────────────────────────────────────────────
 let fontNames: [String] = ["SF Mono", "Menlo", "Courier New"]
@@ -72,7 +102,7 @@ func makeFont(size: CGFloat) -> CTFont {
 }
 
 /// Render one icon PNG into the iconset directory.
-func renderSlot(_ slot: Slot, into iconsetDir: String) {
+func renderSlot(_ slot: Slot, into iconsetDir: String, palette: Palette) {
     let px = slot.pixels
     let cs = CGColorSpaceCreateDeviceRGB()
     guard let ctx = CGContext(
@@ -92,14 +122,14 @@ func renderSlot(_ slot: Slot, into iconsetDir: String) {
     let radius = size * 0.225          // matches macOS icon corner rounding
 
     // ── Background ────────────────────────────────────────────────────────────
-    ctx.setFillColor(CGColor(red: bgR, green: bgG, blue: bgB, alpha: 1))
+    ctx.setFillColor(CGColor(red: palette.bg.0, green: palette.bg.1, blue: palette.bg.2, alpha: 1))
     let iconRect = CGRect(x: 0, y: 0, width: size, height: size)
     ctx.addPath(CGPath(roundedRect: iconRect,
                        cornerWidth: radius, cornerHeight: radius,
                        transform: nil))
     ctx.fillPath()
 
-    // ── "rt" text ─────────────────────────────────────────────────────────────
+    // ── "m" text ──────────────────────────────────────────────────────────────
     // Scale the font so the caps-height fills roughly 50% of the icon.
     let fontSize = size * 0.44
     let font     = makeFont(size: fontSize)
@@ -107,9 +137,9 @@ func renderSlot(_ slot: Slot, into iconsetDir: String) {
 
     let attrs: [NSAttributedString.Key: Any] = [
         .font:            nsFont,
-        .foregroundColor: NSColor(calibratedRed: fgR, green: fgG, blue: fgB, alpha: 1),
+        .foregroundColor: NSColor(calibratedRed: palette.fg.0, green: palette.fg.1, blue: palette.fg.2, alpha: 1),
     ]
-    let attrStr = NSAttributedString(string: "rt", attributes: attrs)
+    let attrStr = NSAttributedString(string: "m", attributes: attrs)
     let line    = CTLineCreateWithAttributedString(attrStr)
 
     // Measure the line for optical centering
@@ -145,42 +175,52 @@ func renderSlot(_ slot: Slot, into iconsetDir: String) {
     }
 }
 
+/// Render one full iconset + .icns for a given flavor. Returns the process
+/// exit status (0 on success).
+func buildFlavor(_ flavor: Flavor) -> Int32 {
+    do {
+        try FileManager.default.createDirectory(
+            atPath: flavor.iconsetDir,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+    } catch {
+        print("✗ Could not create iconset directory \(flavor.iconsetDir): \(error)")
+        return 1
+    }
+
+    print("  Drawing icon slices for \(flavor.icnsPath)…")
+    for slot in slots {
+        renderSlot(slot, into: flavor.iconsetDir, palette: flavor.palette)
+    }
+
+    // ── iconutil ──────────────────────────────────────────────────────────────
+    print("  Running iconutil…")
+    let iconutil = Process()
+    iconutil.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
+    iconutil.arguments     = ["-c", "icns", flavor.iconsetDir, "-o", flavor.icnsPath]
+    do {
+        try iconutil.run()
+        iconutil.waitUntilExit()
+    } catch {
+        print("✗ iconutil launch failed: \(error)")
+        return 1
+    }
+
+    if iconutil.terminationStatus == 0 {
+        print("  ✓ \(flavor.icnsPath) written")
+        return 0
+    } else {
+        print("✗ iconutil exited with status \(iconutil.terminationStatus)")
+        return iconutil.terminationStatus
+    }
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-let iconsetDir = "AppIcon.iconset"
-
-do {
-    try FileManager.default.createDirectory(
-        atPath: iconsetDir,
-        withIntermediateDirectories: true,
-        attributes: nil
-    )
-} catch {
-    print("✗ Could not create iconset directory: \(error)")
-    exit(1)
-}
-
-print("  Drawing icon slices…")
-for slot in slots {
-    renderSlot(slot, into: iconsetDir)
-}
-
-// ── iconutil ──────────────────────────────────────────────────────────────────
-print("  Running iconutil…")
-let iconutil = Process()
-iconutil.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
-iconutil.arguments     = ["-c", "icns", iconsetDir, "-o", "AppIcon.icns"]
-do {
-    try iconutil.run()
-    iconutil.waitUntilExit()
-} catch {
-    print("✗ iconutil launch failed: \(error)")
-    exit(1)
-}
-
-if iconutil.terminationStatus == 0 {
-    print("  ✓ AppIcon.icns written")
-} else {
-    print("✗ iconutil exited with status \(iconutil.terminationStatus)")
-    exit(Int32(iconutil.terminationStatus))
+for flavor in flavors {
+    let status = buildFlavor(flavor)
+    if status != 0 {
+        exit(status)
+    }
 }

@@ -14,12 +14,20 @@
  */
 
 import { existsSync } from "fs";
+import { homedir } from "os";
 
-// Deliberately module-load-time (matches the pre-move behavior): the bun test
-// preload (test-setup.ts) repoints HOME before any module loads, so this
-// still lands in the per-test throwaway tree.
-const DEV_MODE_WRAPPER = `${Bun.env.HOME}/.local/bin/rt`;
+// Call-time HOME (mirrors lib/rt-paths.ts's home()): resolved on every call,
+// not baked in at module load, so tests can repoint HOME per-test by setting
+// process.env.HOME before calling — module-load-time would freeze whatever
+// HOME was set when this module first got imported, not when the test set it.
+function home(): string {
+  return process.env.HOME ?? homedir();
+}
+
+function devModeWrapperPath(): string {
+  return `${home()}/.local/bin/rt`;
+}
 
 export function currentMode(): "dev" | "prod" {
-  return existsSync(DEV_MODE_WRAPPER) ? "dev" : "prod";
+  return existsSync(devModeWrapperPath()) ? "dev" : "prod";
 }

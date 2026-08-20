@@ -209,7 +209,7 @@ async function runChecks(): Promise<CheckResult[]> {
 
   const legacyHits = legacyTrayAppPaths().filter(existsSync);
   if (legacyHits.length > 0) {
-    results.push(warn("rt-tray.app (legacy)", `old rt-tray.app still present: ${legacyHits.join(", ")}`));
+    results.push(warn("legacy tray app", `old bundle still present: ${legacyHits.join(", ")}`));
   }
 
   // ── rt-context extension (MAT-383 §5) ─────────────────────────────────────

@@ -3,8 +3,8 @@
 /**
  * rt daemon — Manage the rt background daemon.
  *
- * The daemon is an SMAppService LaunchAgent registered by rt-tray. The agent
- * plist + daemon binary both live inside rt-tray.app, and TCC attributes the
+ * The daemon is an SMAppService LaunchAgent registered by the tray app. The agent
+ * plist + daemon binary both live inside mattstack.app, and TCC attributes the
  * daemon's file accesses to the signed parent app via AssociatedBundleIdentifiers.
  * launchd handles supervision (KeepAlive + ThrottleInterval).
  *
@@ -37,6 +37,7 @@ import type { CacheKind } from "../lib/repo-tracking.ts";
 import { loadRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS, DEFAULT_PROJECT_MRS_WINDOW_DAYS } from "../lib/repo-tracking.ts";
 import { createProjectMRs, PROJECT_MRS_PATH } from "../lib/daemon/project-mrs-store.ts";
 import { timeAgo } from "../lib/tui/utils/label.ts";
+import { trayAppPath, TRAY_APP_NAME, TRAY_APP_BUNDLE } from "../lib/rt-paths.ts";
 
 function formatUptime(ms: number): string {
   const seconds = Math.floor(ms / 1000);
@@ -80,8 +81,8 @@ export async function install(_args: string[] = []): Promise<void> {
   if (trayResult?.ok) {
     console.log(`  ${green}✓${reset} tray app is registering daemon`);
   } else {
-    console.log(`  ${yellow}⚠${reset} rt-tray not reachable — open it to finish setup`);
-    console.log(`  ${dim}  ${bold}open ~/Applications/rt-tray.app${reset}`);
+    console.log(`  ${yellow}⚠${reset} ${TRAY_APP_NAME} not reachable — open it to finish setup`);
+    console.log(`  ${dim}  ${bold}open ${trayAppPath()}${reset}`);
   }
 
   // Wait for daemon to come online
@@ -93,7 +94,7 @@ export async function install(_args: string[] = []): Promise<void> {
 
   if (connected) {
     console.log(`  ${green}✓${reset} daemon is running`);
-    console.log(`\n  ${green}${bold}✓ installed${reset} ${dim}— managed by rt-tray · launchd-supervised · TCC inherits from rt-tray.app${reset}\n`);
+    console.log(`\n  ${green}${bold}✓ installed${reset} ${dim}— managed by ${TRAY_APP_NAME} · launchd-supervised · TCC inherits from ${TRAY_APP_BUNDLE}${reset}\n`);
   } else {
     // Query the tray to find out WHY the daemon isn't responding
     const trayStatus = await trayQuery("/daemon/status", "GET");
@@ -103,11 +104,11 @@ export async function install(_args: string[] = []): Promise<void> {
 
     if (smStatus === "requiresApproval") {
       console.log(`  ${dim}macOS requires approval to run the background service.${reset}`);
-      console.log(`  ${dim}Opening System Settings → Login Items — click ${bold}Allow${reset}${dim} next to rt-tray.${reset}`);
+      console.log(`  ${dim}Opening System Settings → Login Items — click ${bold}Allow${reset}${dim} next to ${TRAY_APP_NAME}.${reset}`);
       console.log(`  ${dim}Then run: ${bold}rt daemon start${reset}\n`);
       try { execSync("open 'x-apple.systempreferences:com.apple.LoginItems-Settings.extension'", { stdio: "pipe" }); } catch { /* */ }
     } else if (smStatus === "notFound") {
-      console.log(`  ${red}✗${reset} daemon binary not found inside rt-tray.app`);
+      console.log(`  ${red}✗${reset} daemon binary not found inside ${TRAY_APP_BUNDLE}`);
       console.log(`  ${dim}Re-run: ${bold}rt --post-install${reset}${dim} to reinstall the tray app.${reset}\n`);
     } else if (smStatus === "enabled") {
       // Registered + approved, but daemon is crashing on launch
@@ -161,8 +162,8 @@ export async function start(): Promise<void> {
 
   const result = await trayQuery("/daemon/start", "POST");
   if (!result?.ok) {
-    console.log(`\n  ${yellow}rt-tray is not running${reset}`);
-    console.log(`  ${dim}open it: ${bold}open ~/Applications/rt-tray.app${reset}\n`);
+    console.log(`\n  ${yellow}${TRAY_APP_NAME} is not running${reset}`);
+    console.log(`  ${dim}open it: ${bold}open ${trayAppPath()}${reset}\n`);
     return;
   }
 
@@ -183,14 +184,14 @@ export async function stop(): Promise<void> {
     console.log(`\n  ${green}✓ daemon stopped${reset}\n`);
     return;
   }
-  console.log(`\n  ${yellow}rt-tray is not running — nothing to stop${reset}\n`);
+  console.log(`\n  ${yellow}${TRAY_APP_NAME} is not running — nothing to stop${reset}\n`);
 }
 
 export async function restart(): Promise<void> {
   const result = await trayQuery("/daemon/restart", "POST");
   if (!result?.ok) {
-    console.log(`\n  ${yellow}rt-tray is not running${reset}`);
-    console.log(`  ${dim}open it: ${bold}open ~/Applications/rt-tray.app${reset}\n`);
+    console.log(`\n  ${yellow}${TRAY_APP_NAME} is not running${reset}`);
+    console.log(`  ${dim}open it: ${bold}open ${trayAppPath()}${reset}\n`);
     return;
   }
   console.log(`  ${dim}restarting daemon via tray…${reset}`);

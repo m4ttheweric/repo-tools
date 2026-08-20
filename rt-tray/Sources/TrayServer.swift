@@ -184,7 +184,7 @@ class TrayServer {
                 self.sendResponse(connection: connection, status: 400, body: "{\"ok\":false,\"error\":\"invalid body\"}", path: path)
 
             } else if method == "GET" && path == "/health" {
-                self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true,\"app\":\"rt-tray\"}")
+                self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true,\"app\":\"mattstack\"}")
 
             } else if method == "POST" && path == "/daemon/start" {
                 DispatchQueue.main.async {
