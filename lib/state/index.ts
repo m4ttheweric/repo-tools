@@ -16,7 +16,11 @@
  * Registration is pure array pushes: importing this barrel opens no
  * database, creates no file, and runs no migration (spec "The database":
  * "No module-load db access, ever"). lib/state/__tests__/barrel.test.ts
- * locks both halves of that contract.
+ * locks both halves of that contract. project-mrs-store.ts lives outside
+ * lib/state/ (Task 4 keeps it in lib/daemon/ by design) but is held to the
+ * same discipline: it imports getStateDb/LEGACY_IMPORTS from ./db.ts
+ * directly (never from this barrel, which would cycle back into it) and
+ * obtains its logger lazily so importing it here creates no log file.
  *
  * Later RT-48 tasks add their store modules to the side-effect import list
  * and re-export block below.
@@ -25,6 +29,7 @@
 // Side-effect imports: these load each store module (and therefore register
 // its LEGACY_IMPORTS entry) even for consumers that only want types.
 import "./branch-cache.ts";
+import "../daemon/project-mrs-store.ts";
 
 export {
   SCHEMA_VERSION,
