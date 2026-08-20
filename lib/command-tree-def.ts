@@ -106,7 +106,7 @@ const commitNode: CommandNode = {
 
 export const TREE: Record<string, CommandNode> = {
   git: {
-    description: "Git operations (rebase, reset, branch, commit, backup)",
+    description: "Git operations (rebase, reset, commit, backup)",
     subcommands: {
       rebase: {
         description: "Smart rebase onto origin/master with auto-resolve",
