@@ -272,59 +272,6 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
-  mr: {
-    description: "Merge request operations (GitLab); `pr` works too",
-    aliases: ["pr"],
-    subcommands: {
-      open: {
-        description: "Open a bare MR on the current branch via glab",
-        module: "./commands/mr.ts",
-        fn: "openCommand",
-        context: "worktree",
-        args: [
-          { name: "Target branch", flag: "--target", type: "text", placeholder: "master", hint: "Target branch for the MR (defaults to config or repo default)" },
-          { name: "Title", flag: "--title", type: "text", placeholder: "...", hint: "MR title (defaults to the last commit subject)" },
-          { name: "Draft", flag: "--draft", type: "boolean", default: false, hint: "Open as a draft MR" },
-          { name: "No draft", flag: "--no-draft", type: "boolean", default: false, hint: "Force non-draft even if config defaults to draft" },
-          { name: "Description", flag: "--description", type: "text", placeholder: "...", hint: "Inline description body" },
-          { name: "Description file", flag: "--description-file", type: "text", placeholder: "path or -", hint: "Read description from a file (- for stdin)" },
-          { name: "Fill", flag: "--fill", type: "boolean", default: false, hint: "Let glab fill the description from commits" },
-          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Preview the glab command without creating the MR" },
-          { name: "Web", flag: "--web", type: "boolean", default: false, hint: "Open the new MR in the browser" },
-        ],
-      },
-      describe: {
-        description: "Draft an MR description with an agent (streams to stdout)",
-        module: "./commands/mr.ts",
-        fn: "describeCommand",
-        context: "worktree",
-        args: [
-          { name: "Target branch", flag: "--target", type: "text", placeholder: "master", hint: "Target branch to diff against" },
-          { name: "Inline guidance", flag: "--inline", type: "text", placeholder: "...", hint: "Extra inline guidance appended to the prompt" },
-          { name: "Debug", flag: "--debug", type: "boolean", default: false, hint: "Print the assembled prompt instead of calling the agent" },
-        ],
-      },
-      ship: {
-        description: "All-in-one: push + describe + open (the daily driver)",
-        module: "./commands/mr.ts",
-        fn: "shipCommand",
-        context: "worktree",
-        args: [
-          { name: "Target branch", flag: "--target", type: "text", placeholder: "master", hint: "Target branch for the MR" },
-          { name: "Title", flag: "--title", type: "text", placeholder: "...", hint: "MR title (overrides the agent-drafted title)" },
-          { name: "Draft", flag: "--draft", type: "boolean", default: false, hint: "Open as a draft MR" },
-          { name: "No draft", flag: "--no-draft", type: "boolean", default: false, hint: "Force non-draft even if config defaults to draft" },
-          { name: "Inline guidance", flag: "--inline", type: "text", placeholder: "...", hint: "Extra inline guidance appended to the description prompt" },
-          { name: "Debug", flag: "--debug", type: "boolean", default: false, hint: "Print the assembled prompt and stop before creating the MR" },
-          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Rehearse push + MR creation without doing either" },
-          { name: "Web", flag: "--web", type: "boolean", default: false, hint: "Open the new MR in the browser" },
-          { name: "Remote", flag: "--remote", type: "text", placeholder: "origin", hint: "Remote to push to (forwarded to the push step)" },
-          { name: "No verify", flag: "--no-verify", type: "boolean", default: false, hint: "Skip pre-push hooks (forwarded to the push step)" },
-        ],
-      },
-    },
-  },
-
   sync: {
     description: "Sync branches: rebase onto master + push (daily routine)",
     module: "./commands/sync.ts",

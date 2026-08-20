@@ -125,16 +125,6 @@ const REGISTRY: SettingDef[] = [
     description: "Desktop notification preferences (which events notify, sound on/off).",
   },
   {
-    key: "rt.mr",
-    type: "object",
-    scopes: ALL_SCOPES,
-    merge: "deep",
-    repoScoped: true,
-    migrated: false,
-    legacyFile: "repos/<repo>/mr.json",
-    description: "Per-repo merge-request workflow settings (review board wiring, defaults).",
-  },
-  {
     key: "rt.sync",
     type: "object",
     scopes: ALL_SCOPES,
