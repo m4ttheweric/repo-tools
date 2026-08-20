@@ -426,6 +426,18 @@ describe("settings/resolve", () => {
       expect(expandVariables("${team:never-cloned}", ctx())).toBe(join(teamsDir(), "never-cloned"));
     });
 
+    test("${team:<name>} refuses a name that escapes the teams dir", () => {
+      // join() would normalize `..` away and hand back a path OUTSIDE
+      // teamsDir() — a store value that reads/execs from anywhere on disk
+      // while still looking team-relative. Every traversing form throws, and
+      // nothing half-expanded comes back.
+      for (const name of ["../..", "../../.ssh", "a/b", "a\\b", "..", "cv/../.."]) {
+        expect(() => expandVariables(`\${team:${name}}/x`, ctx())).toThrow(/single directory segment/);
+      }
+      // …while an ordinary name is untouched by the guard.
+      expect(expandVariables("${team:claim.view-2}", ctx())).toBe(join(teamsDir(), "claim.view-2"));
+    });
+
     test("a foreign variable passes through verbatim in the SAME string as an expanded one", () => {
       const out = expandVariables("bun ${team:claimview}/hook.ts --port ${port} --keys ${envKeys}", ctx());
 
