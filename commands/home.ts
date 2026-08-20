@@ -1,10 +1,10 @@
 /**
  * rt home — the git-backed ~/.mattstack home repo.
  *
- *   rt home init [--dry-run]   print the adoption plan; --dry-run stops there
+ *   rt home init [--dry-run]   print, then run, the adoption plan
  *
- * This command only gathers state and prints the plan produced by
- * lib/home/init-plan.ts; it does not run it.
+ * Gathers state, prints the plan from lib/home/init-plan.ts, and (unless
+ * --dry-run) runs it through lib/home/init-exec.ts's injected seam.
  */
 
 import { existsSync, readdirSync } from "fs";
@@ -12,6 +12,7 @@ import { join } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { mattstackHome, teamsDir } from "../lib/rt-paths.ts";
 import { buildInitPlan, type HomeState, type InitStep } from "../lib/home/init-plan.ts";
+import { createRealExecSeam, executeInitPlan, type ExecSeam } from "../lib/home/init-exec.ts";
 
 /** Stray root cruft deleted at init time, not adopted into the repo. */
 const CRUFT_CANDIDATES = ["skills.jsonc.pre-pack", "skills.jsonc.retired-backup"];
@@ -72,10 +73,24 @@ function describeStep(step: InitStep): string {
   }
 }
 
+/** null = preflight passed. */
+async function preflight(exec: ExecSeam): Promise<string | null> {
+  const auth = await exec.run(["gh", "auth", "status"]);
+  if (auth.code !== 0) {
+    return "gh is not authenticated. Run:\n  gh auth login";
+  }
+  const filterRepo = await exec.run(["git", "filter-repo", "--version"]);
+  if (filterRepo.code !== 0) {
+    return "git-filter-repo is not installed. Run:\n  brew install git-filter-repo";
+  }
+  return null;
+}
+
 export async function homeInit(
   args: string[],
   _ctx: CommandContext = {},
   probes: HomeProbes = defaultProbes(),
+  exec: ExecSeam = createRealExecSeam(mattstackHome()),
 ): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const home = mattstackHome();
@@ -92,5 +107,19 @@ export async function homeInit(
 
   if (dryRun) return;
 
-  console.log("\nExecution lands with the next build — this plan was printed, not run.");
+  const preflightError = await preflight(exec);
+  if (preflightError) {
+    console.error(`\nrt home init: preflight failed — nothing was run.\n${preflightError}`);
+    process.exit(1);
+  }
+
+  console.log("");
+  const result = await executeInitPlan(plan.steps, exec, (message) => console.log(`  ${message}`));
+
+  if (!result.ok) {
+    console.error(`\nrt home init: failed at step "${result.failedStep}":\n${result.stderr}`);
+    process.exit(1);
+  }
+
+  console.log(`\nrt home init: ${home} is now the git-backed home repo.`);
 }
