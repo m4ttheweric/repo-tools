@@ -269,6 +269,59 @@ describe("gc — succeeded-repo gating and NULL-repo age rule", () => {
     expect(remaining.map(r => r.branch).sort()).toEqual(["keep"]);
     db.close();
   });
+
+  test("a row enriched between gc's SELECT and its DELETE survives (the DELETE re-guards on fetched_at)", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "cli");
+    const store = getBranchCacheStore(db);
+
+    store.put("racy", makeEntry({ repoName: "repo-a", fetchedAt: oldTs }));
+    store.put("doomed", makeEntry({ repoName: "repo-a", fetchedAt: oldTs }));
+
+    // A second connection standing in for the CLI `rt run` enrichment that
+    // races the daemon's 5-min cycle.
+    const cli = new Database(dbPath);
+    cli.exec("PRAGMA busy_timeout = 5000;");
+
+    // Land that enrichment in exactly the window the race needs — after gc()'s
+    // SELECT has picked its victims, before the DELETE transaction opens —
+    // which makes a real-world timing race deterministic here.
+    const realQuery = db.query.bind(db);
+    let armed = true;
+    (db as unknown as { query: unknown }).query = (sql: string) => {
+      const stmt = realQuery(sql);
+      if (armed && sql.includes("SELECT branch, repo, fetched_at")) {
+        armed = false;
+        const realAll = (stmt.all as (...a: never[]) => unknown).bind(stmt);
+        (stmt as unknown as { all: unknown }).all = (...args: never[]) => {
+          const rows = realAll(...args);
+          (stmt as unknown as { all: unknown }).all = realAll; // one-shot
+          cli.query("UPDATE branch_cache SET fetched_at = ? WHERE branch = ?;").run(freshTs, "racy");
+          return rows;
+        };
+      }
+      return stmt;
+    };
+
+    try {
+      store.gc(new Set(["repo-a"]), 30 * DAY_MS);
+    } finally {
+      (db as unknown as { query: unknown }).query = realQuery;
+    }
+
+    // The freshly enriched row survives with its new timestamp; its stale
+    // sibling is still pruned.
+    expect(rowCount(db, "racy")).toBe(1);
+    const { fetched_at } = db.query("SELECT fetched_at FROM branch_cache WHERE branch = ?;").get("racy") as { fetched_at: number };
+    expect(fetched_at).toBe(freshTs);
+    expect(rowCount(db, "doomed")).toBe(0);
+    // Row/map parity holds on both sides of the re-guard.
+    expect(store.entries["racy"]).toBeDefined();
+    expect(store.entries["doomed"]).toBeUndefined();
+
+    cli.close();
+    db.close();
+  });
 });
 
 describe("daemon-flavor busy handling", () => {

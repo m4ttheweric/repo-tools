@@ -7,7 +7,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync } from "fs";
+import { existsSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createProjectMRs, freshnessOf } from "../project-mrs-store.ts";
@@ -388,4 +388,54 @@ describe("daemon-flavor busy handling", () => {
 
     db.close();
   }, 10_000);
+});
+
+describe("legacy import (project-mrs.json)", () => {
+  test("a non-numeric mrs key is skipped; the rest of the file still imports and the file is renamed", () => {
+    // A key that Number() turns into NaN would bind NULL into
+    // project_mrs.iid (NOT NULL) and throw inside the v0->v1 BEGIN IMMEDIATE
+    // transaction — rolling back the WHOLE migration and leaving the source
+    // file in place, so every later rt command retries and fails identically.
+    // Spec policy for bad legacy input is "corrupt = warn + skip".
+    const dir = mkdtempSync(join(tmpdir(), "rt-pmrs-legacy-"));
+    const dbPath = join(dir, "state.db");
+    const legacyPath = join(dir, "project-mrs.json");
+    writeFileSync(
+      legacyPath,
+      JSON.stringify({
+        "repo-tools": {
+          projectPath: "g/p",
+          listSyncedAt: 111,
+          deltaSyncedAt: 222,
+          source: "poll",
+          mrs: {
+            "7": { pr: pr(7), fetchedAt: 700 },
+            "not-a-number": { pr: pr(8), fetchedAt: 800 },
+            "9": { pr: pr(9), fetchedAt: 900 },
+          },
+          demands: { "mr-board": { authors: ["matt"], declaredAt: 1, lastSeenAt: 2 } },
+        },
+      }),
+    );
+
+    const db = openStateDb(dbPath, "cli");
+
+    // Migration committed: v1 reached, source renamed, nothing rolled back.
+    const { user_version } = db.query("PRAGMA user_version;").get() as { user_version: number };
+    expect(user_version).toBe(1);
+    expect(existsSync(legacyPath)).toBe(false);
+    expect(existsSync(`${legacyPath}.migrated`)).toBe(true);
+
+    // The good rows landed; only the malformed entry was dropped.
+    const s = createProjectMRs(db);
+    const rec = s.read("repo-tools")!;
+    expect(Object.keys(rec.mrs).sort()).toEqual(["7", "9"]);
+    expect(rec.mrs[7]!.fetchedAt).toBe(700);
+    expect(rec.mrs[9]!.pr.iid).toBe(9);
+    expect(rec.projectPath).toBe("g/p");
+    expect(rec.listSyncedAt).toBe(111);
+    expect(rec.demands!["mr-board"]!.authors).toEqual(["matt"]);
+
+    db.close();
+  });
 });

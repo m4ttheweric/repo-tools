@@ -34,6 +34,25 @@ const BUSY_TIMEOUT_MS: Record<DbFlavor, number> = {
 };
 
 /**
+ * The busy budget for the open+migrate phase, for BOTH flavors.
+ *
+ * The daemon's 250ms is a SERVE-TIME policy ("the daemon loop must never
+ * block long"), and the spec draws that line explicitly: "the daemon
+ * performs open+migrate during startup, BEFORE serving ... and if a CLI
+ * process is mid-import when the daemon starts, the daemon blocks in
+ * startup, not in its event loop" (spec "Migration & contention").
+ *
+ * Under a flavor-timeout-first open, that promised block became a throw:
+ * `runMigrations()`'s BEGIN IMMEDIATE (and `execRetryingBusy`'s WAL
+ * conversion) would give up after 250ms while a racing CLI held the write
+ * lock through the one long transaction in the system — the ~3.4MB
+ * legacy-JSON import — and daemon startup would crash instead of waiting.
+ * So: startup budget for open+migrate, then the flavor's steady-state
+ * busy_timeout once migration has returned.
+ */
+const MIGRATION_BUSY_TIMEOUT_MS = 5000;
+
+/**
  * Legacy-JSON import registration seam. Tasks 2, 4, 5, 6, 7 each append one
  * entry here (for branch-cache, project-mrs, discussions, notifier state +
  * queue, events-cursors) — db.ts never needs per-store knowledge of shape.
@@ -144,9 +163,12 @@ function execRetryingBusy(db: Database, sql: string, budgetMs: number): void {
 /**
  * PRAGMA order matters (spec "The database"): busy_timeout FIRST so the WAL
  * conversion itself respects it, THEN journal_mode, THEN synchronous.
+ *
+ * `budgetMs` is the startup budget, not the flavor's steady-state timeout —
+ * see MIGRATION_BUSY_TIMEOUT_MS; `openStateDb` narrows it to the flavor's
+ * value after migration.
  */
-function applyPragmas(db: Database, flavor: DbFlavor): void {
-  const budgetMs = BUSY_TIMEOUT_MS[flavor];
+function applyPragmas(db: Database, budgetMs: number): void {
   db.exec(`PRAGMA busy_timeout = ${budgetMs};`);
   execRetryingBusy(db, "PRAGMA journal_mode = WAL;", budgetMs);
   db.exec("PRAGMA synchronous = NORMAL;");
@@ -248,7 +270,7 @@ export function openStateDb(path: string, flavor: DbFlavor = "cli"): Database {
   let db: Database;
   try {
     db = new Database(path, { create: true });
-    applyPragmas(db, flavor);
+    applyPragmas(db, MIGRATION_BUSY_TIMEOUT_MS);
     // Pragmas alone don't always force sqlite to validate the file header;
     // touch it now so a corrupt file surfaces here, not mid-migration.
     db.query("PRAGMA user_version;").get();
@@ -256,10 +278,13 @@ export function openStateDb(path: string, flavor: DbFlavor = "cli"): Database {
     if (!isCorruptionError(err)) throw err;
     quarantine(path);
     db = new Database(path, { create: true });
-    applyPragmas(db, flavor);
+    applyPragmas(db, MIGRATION_BUSY_TIMEOUT_MS);
   }
 
   runMigrations(db, dirname(path));
+  // Migration is done: drop from the startup budget to the flavor's
+  // steady-state serve-time policy (daemon = 250ms warn-and-defer).
+  db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS[flavor]};`);
   return db;
 }
 

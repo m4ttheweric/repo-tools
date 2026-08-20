@@ -183,6 +183,55 @@ describe("pragma values per flavor", () => {
   });
 });
 
+describe("startup busy budget — open+migrate blocks, it does not throw", () => {
+  test("a daemon-flavor open waits out a write lock held well past its 250ms serve-time budget", async () => {
+    // Spec "Migration & contention": "if a CLI process is mid-import when the
+    // daemon starts, the daemon blocks in startup, not in its event loop."
+    // Under the daemon flavor's 250ms steady-state timeout, runMigrations'
+    // BEGIN IMMEDIATE would instead throw SQLITE_BUSY and crash startup.
+    const dbPath = join(dir, "state.db");
+    openStateDb(dbPath, "cli").close(); // db already exists at v1
+
+    const markerPath = join(dir, "lock-held.marker");
+    const holderPath = join(dir, "lock-holder.ts");
+    writeFileSync(
+      holderPath,
+      [
+        `import { Database } from "bun:sqlite";`,
+        `import { writeFileSync } from "fs";`,
+        `const db = new Database(${JSON.stringify(dbPath)});`,
+        `db.exec("PRAGMA busy_timeout = 5000;");`,
+        `db.exec("BEGIN IMMEDIATE;");`,
+        `db.query("INSERT INTO kv (ns, k, v, updated_at) VALUES (?, ?, ?, ?);").run("startup-race", "held", "1", 1);`,
+        `writeFileSync(${JSON.stringify(markerPath)}, "held");`,
+        // Longer than 250ms, comfortably under the 5s startup budget — the
+        // exact window the spec promises the daemon will wait through.
+        `Bun.sleepSync(1200);`,
+        `db.exec("COMMIT;");`,
+        `db.close();`,
+      ].join("\n"),
+    );
+
+    const holder = Bun.spawn([process.execPath, "run", holderPath], { stdout: "pipe", stderr: "pipe" });
+    while (!existsSync(markerPath)) await Bun.sleep(10);
+
+    const started = Date.now();
+    const db = openStateDb(dbPath, "daemon"); // must not throw
+    const waitedMs = Date.now() - started;
+
+    expect(waitedMs).toBeGreaterThan(250);
+    // Proof it waited for the holder's COMMIT rather than racing past it.
+    const { n } = db.query("SELECT COUNT(*) as n FROM kv WHERE ns = 'startup-race';").get() as { n: number };
+    expect(n).toBe(1);
+    // ...and that the daemon's serve-time policy is back in force afterwards.
+    const { timeout } = db.query("PRAGMA busy_timeout;").get() as { timeout: number };
+    expect(timeout).toBe(250);
+
+    db.close();
+    expect(await holder.exited).toBe(0);
+  }, 20_000);
+});
+
 describe("corruption escape", () => {
   test("a file that cannot be opened as sqlite is quarantined, then a fresh v1 db is created", () => {
     const dbPath = join(dir, "state.db");
