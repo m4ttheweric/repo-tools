@@ -56,7 +56,7 @@ export type CreateResult =
 
 export async function createTree(deps: CreateDeps): Promise<CreateResult> {
   const { repoName, repoPath } = deps;
-  const cfg = loadWorktreeRepoConfig(repoName, repoPath);
+  const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
   const existing = loadRegistry(repoName);
   const name = pickName(cfg.namePool, usedNames(existing));
   const path = join(cfg.root, name);
