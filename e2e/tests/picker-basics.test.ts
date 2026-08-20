@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { createTestHome } from "../harness.ts";
 import { startInteractive, type TermwrightSession } from "../interactive.ts";
+import { TREE } from "../../lib/command-tree-def.ts";
 
 describe("picker basics", () => {
   let home: string;
@@ -40,10 +41,10 @@ describe("picker basics", () => {
     session = await startInteractive({ args: [], home });
     await session.waitForText("filter:", 8000);
 
-    // First item is "git" (index 0). "daemon" sits at index 22 and is a
-    // pure branch node (subcommands, no top-level fn), so Enter opens its
-    // subpicker instead of dispatching a command.
-    for (let i = 0; i < 22; i++) await session.press("Down");
+    // "daemon" is a pure branch node (subcommands, no top-level fn), so
+    // Enter opens its subpicker instead of dispatching a command.
+    const downs = Object.keys(TREE).indexOf("daemon");
+    for (let i = 0; i < downs; i++) await session.press("Down");
     await session.waitForIdle();
     await session.press("Enter");
 
