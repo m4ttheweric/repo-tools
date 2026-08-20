@@ -17,7 +17,7 @@ import { currentMode } from "./dev-mode.ts";
 
 /**
  * Only one mode now ("smappservice"): the daemon is a LaunchAgent registered
- * by rt-tray via SMAppService. The legacy values ("launchd", "manual", "tray")
+ * by mattstack.app via SMAppService. The legacy values ("launchd", "manual", "tray")
  * may appear in old daemon.json files written by previous rt versions —
  * `getDaemonConfig` migrates them on read.
  */

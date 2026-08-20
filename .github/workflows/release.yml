@@ -110,19 +110,19 @@ jobs:
             done
           fi
 
-      # ── Build rt-tray.app per arch (embeds matching rt as rt-daemon) ────────
+      # ── Build mattstack.app per arch (embeds matching rt as rt-daemon) ───────
       # build.sh reads RT_DAEMON_BIN to copy the daemon into Contents/MacOS,
       # ships LaunchAgent.plist into Contents/Library/LaunchAgents, and signs
       # the bundle.
-      - name: Build rt-tray (arm64)
+      - name: Build mattstack (arm64)
         run: |
           RT_DAEMON_BIN="$(pwd)/rt-arm64" rt-tray/build.sh release
-          mv rt-tray/rt-tray.app rt-tray/rt-tray-arm64.app
+          mv rt-tray/mattstack.app rt-tray/mattstack-arm64.app
 
-      - name: Build rt-tray (x64)
+      - name: Build mattstack (x64)
         run: |
           RT_DAEMON_BIN="$(pwd)/rt-x64" rt-tray/build.sh release
-          mv rt-tray/rt-tray.app rt-tray/rt-tray-x64.app
+          mv rt-tray/mattstack.app rt-tray/mattstack-x64.app
 
       # ── Package VS Code extension ────────────────────────────────────────────
       - name: Build extension
@@ -141,19 +141,19 @@ jobs:
           mkdir -p dist/arm64
           cp rt-arm64 dist/arm64/rt
           chmod +x dist/arm64/rt
-          cp -R rt-tray/rt-tray-arm64.app dist/arm64/rt-tray.app
+          cp -R rt-tray/mattstack-arm64.app dist/arm64/mattstack.app
           cp "$VSIX" dist/arm64/rt-context.vsix
 
           # x64 bundle
           mkdir -p dist/x64
           cp rt-x64 dist/x64/rt
           chmod +x dist/x64/rt
-          cp -R rt-tray/rt-tray-x64.app dist/x64/rt-tray.app
+          cp -R rt-tray/mattstack-x64.app dist/x64/mattstack.app
           cp "$VSIX" dist/x64/rt-context.vsix
 
-      # ── Notarize rt-tray.app (skipped if notarization secrets not set) ───────
+      # ── Notarize mattstack.app (skipped if notarization secrets not set) ─────
       # Submits the signed .app to Apple's notary service and staples the result
-      # so Gatekeeper accepts it offline. Without this, users see "rt-tray
+      # so Gatekeeper accepts it offline. Without this, users see "mattstack
       # cannot be opened because the developer cannot be verified" on first run.
       - name: Check notarization secrets
         id: notary
@@ -167,10 +167,10 @@ jobs:
             echo "available=true" >> $GITHUB_OUTPUT
           else
             echo "available=false" >> $GITHUB_OUTPUT
-            echo "::warning::Notarization secrets not set, rt-tray.app will trigger Gatekeeper warning on first launch"
+            echo "::warning::Notarization secrets not set, mattstack.app will trigger Gatekeeper warning on first launch"
           fi
 
-      - name: Notarize and staple rt-tray.app
+      - name: Notarize and staple mattstack.app
         if: steps.notary.outputs.available == 'true'
         continue-on-error: true
         env:
@@ -179,21 +179,21 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           # Notarize the tray app once; copy stapled result into both bundles
-          ditto -c -k --keepParent dist/arm64/rt-tray.app "$RUNNER_TEMP/rt-tray.zip"
+          ditto -c -k --keepParent dist/arm64/mattstack.app "$RUNNER_TEMP/mattstack.zip"
 
-          xcrun notarytool submit "$RUNNER_TEMP/rt-tray.zip" \
+          xcrun notarytool submit "$RUNNER_TEMP/mattstack.zip" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
 
           # Staple the original .app (notarytool checks by hash, not zip path)
-          xcrun stapler staple dist/arm64/rt-tray.app
-          xcrun stapler validate dist/arm64/rt-tray.app
+          xcrun stapler staple dist/arm64/mattstack.app
+          xcrun stapler validate dist/arm64/mattstack.app
 
           # Mirror stapled .app into x64 bundle (it's the same Swift binary, same signature)
-          rm -rf dist/x64/rt-tray.app
-          cp -R dist/arm64/rt-tray.app dist/x64/rt-tray.app
+          rm -rf dist/x64/mattstack.app
+          cp -R dist/arm64/mattstack.app dist/x64/mattstack.app
 
       - name: Create release tarballs
         run: |
@@ -258,7 +258,7 @@ jobs:
 
             def install
               bin.install "rt"
-              prefix.install "rt-tray.app"
+              prefix.install "mattstack.app"
               prefix.install "rt-context.vsix"
             end
 

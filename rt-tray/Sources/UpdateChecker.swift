@@ -142,7 +142,7 @@ class UpdateChecker {
 
     private func showRunUpdateAlert(release: GitHubRelease) {
         let alert = NSAlert()
-        alert.messageText = "rt \(release.tagName) Available"
+        alert.messageText = "mattstack \(release.tagName) Available"
         alert.informativeText = "Run the following in your terminal to upgrade:\n\n  rt update"
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")

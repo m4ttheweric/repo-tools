@@ -2,7 +2,7 @@
  * rt --post-install — First-run setup, auto-triggered on the first `rt` invocation.
  *
  * Handles all setup steps:
- *   1. Copy rt-tray.app → ~/Applications (remove quarantine)
+ *   1. Copy mattstack.app → ~/Applications (remove quarantine)
  *   2. Install rt-context.vsix into all detected editors (best-effort, non-interactive)
  *   3. Install daemon as a launchd agent (auto-starts on login)
  *   4. Write shell integration to the user's rc file (PATH + rtcd, idempotent)
@@ -162,7 +162,7 @@ async function installDaemon(): Promise<void> {
       await Bun.sleep(250);
       if (await isDaemonRunning()) { ok("daemon", "running"); return; }
     }
-    info("daemon", "will start when rt-tray launches");
+    info("daemon", `will start when ${TRAY_APP_NAME} launches`);
   } catch (err: any) {
     fail("daemon", err?.message ?? String(err));
   }
@@ -199,11 +199,11 @@ async function checkTccAccess(): Promise<void> {
       console.log(`    ${b.path}`);
     }
     console.log("");
-    console.log("  The daemon inherits Full Disk Access from rt-tray.app.");
-    console.log("  Grant FDA to rt-tray, then restart the daemon:");
+    console.log(`  The daemon inherits Full Disk Access from ${TRAY_APP_BUNDLE}.`);
+    console.log(`  Grant FDA to ${TRAY_APP_NAME}, then restart the daemon:`);
     console.log("");
     console.log("    1. System Settings → Privacy & Security → Full Disk Access");
-    console.log("    2. Click + and add: ~/Applications/rt-tray.app");
+    console.log(`    2. Click + and add: ${trayAppPath()}`);
     console.log("    3. rt daemon restart");
     console.log("");
     spawnSync("open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"], { stdio: "pipe" });

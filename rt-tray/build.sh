@@ -100,19 +100,30 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
-# Generate app icon (draws "rt" via Core Graphics → iconutil → AppIcon.icns)
-if [ ! -f "$SCRIPT_DIR/AppIcon.icns" ]; then
-    echo "  Generating AppIcon.icns..."
+# Generate app icons (draws "m" via Core Graphics → iconutil → .icns).
+# make-icon.swift produces BOTH flavors in one run: AppIcon.icns (prod) and
+# AppIcon-dev.icns (dev, tinted amber). Regenerate only if either is missing
+# — delete both to force a rebuild.
+if [ ! -f "$SCRIPT_DIR/AppIcon.icns" ] || [ ! -f "$SCRIPT_DIR/AppIcon-dev.icns" ]; then
+    echo "  Generating AppIcon.icns + AppIcon-dev.icns..."
     swift "$SCRIPT_DIR/make-icon.swift"
 else
-    echo "  AppIcon.icns already exists — skipping generation (delete to regenerate)"
+    echo "  AppIcon.icns + AppIcon-dev.icns already exist — skipping generation (delete to regenerate)"
 fi
 
-if [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
-    cp "$SCRIPT_DIR/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
-    echo "  ✓ AppIcon.icns copied to Resources"
+if [ "$IS_DEV" = true ]; then
+    ICON_SRC="$SCRIPT_DIR/AppIcon-dev.icns"
 else
-    echo "  ⚠ AppIcon.icns not found — notifications will show a default icon"
+    ICON_SRC="$SCRIPT_DIR/AppIcon.icns"
+fi
+
+if [ -f "$ICON_SRC" ]; then
+    # Bundle-internal name stays AppIcon.icns for both flavors — that's what
+    # Info.plist's CFBundleIconFile names; only the source file differs.
+    cp "$ICON_SRC" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+    echo "  ✓ $(basename "$ICON_SRC") copied to Resources as AppIcon.icns"
+else
+    echo "  ⚠ $(basename "$ICON_SRC") not found — notifications will show a default icon"
 fi
 
 # Convert notification sounds (mp3 → caf). UNNotificationSound only accepts
