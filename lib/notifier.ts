@@ -23,6 +23,16 @@ import { parseEtimeMs, type PortEntry } from "./port-scanner.ts";
 import type { SystemProcess } from "./daemon/system-process-scanner.ts";
 import { agentSessionPids } from "./daemon/worktree-process-kill.ts";
 import { getDaemonLogger } from "./daemon-logger.ts";
+import {
+  getNotifierStateBlob,
+  setNotifierStateBlob,
+  enqueueNotification,
+  drainNotificationQueue,
+  peekNotificationQueue,
+  isNotificationQueued,
+  removeQueuedNotification,
+  type NotificationEvent,
+} from "./state/index.ts";
 const log = (await getDaemonLogger()).childLogger("notifier");
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -66,23 +76,11 @@ interface NotifierState {
   fired: string[];
 }
 
-export interface NotificationEvent {
-  id: string;
-  title: string;
-  message: string;
-  url?: string;
-  category: string;
-  timestamp: number;
-  /** Offending process pids, when the notification is about processes —
-   *  lets the tray offer a Kill action. */
-  pids?: number[];
-}
+export type { NotificationEvent };
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-const STATE_PATH = join(RT_DIR, "notifier-state.json");
 const PREFS_PATH = join(RT_DIR, "notifications.json");
-const QUEUE_PATH = join(RT_DIR, "notify-queue.json");
 const TRAY_SOCK_PATH = join(RT_DIR, "tray.sock");
 
 // ─── Broadcast hook (set by daemon.ts to push to WebSocket clients) ──────────
@@ -157,50 +155,27 @@ function isEnabled(prefs: NotificationPrefs, key: string): boolean {
 }
 
 // ─── State persistence ───────────────────────────────────────────────────────
+//
+// The kv blob (ns='notifier', k='state') — one read + one write per
+// checkAndNotify() cycle, exactly as the old notifier-state.json rhythm
+// (RT-48 "Store-by-store" item 4). Cache write: shared warn-and-defer, not
+// the queue's bounded retry.
 
 function loadState(): NotifierState {
-  try {
-    return JSON.parse(readFileSync(STATE_PATH, "utf8"));
-  } catch {
-    return { branches: {}, ports: {}, fired: [] };
-  }
+  return getNotifierStateBlob<NotifierState>({ branches: {}, ports: {}, fired: [] });
 }
 
 function saveState(state: NotifierState): void {
-  try {
-    mkdirSync(RT_DIR, { recursive: true });
-    writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
-  } catch { /* best-effort */ }
+  setNotifierStateBlob(state);
 }
 
 // ─── Notification queue (durable) ────────────────────────────────────────────
-
-/** In-memory queue — also persisted to disk for durability */
-let notificationQueue: NotificationEvent[] = [];
-
-/** Load any persisted notifications from a previous daemon session */
-function loadQueue(): void {
-  try {
-    const raw = JSON.parse(readFileSync(QUEUE_PATH, "utf8"));
-    if (Array.isArray(raw)) notificationQueue = raw;
-  } catch { /* no queue file or corrupt — start fresh */ }
-}
-
-/** Persist the current queue to disk */
-function flushQueue(): void {
-  try {
-    mkdirSync(RT_DIR, { recursive: true });
-    if (notificationQueue.length === 0) {
-      // Clean up empty queue file
-      try { if (existsSync(QUEUE_PATH)) writeFileSync(QUEUE_PATH, "[]"); } catch { /* */ }
-    } else {
-      writeFileSync(QUEUE_PATH, JSON.stringify(notificationQueue, null, 2));
-    }
-  } catch { /* best-effort */ }
-}
-
-// Load persisted queue on module init (daemon startup)
-loadQueue();
+//
+// The notify_queue TABLE IS the queue (RT-48 "Store-by-store" item 4) — no
+// in-memory array, nothing loaded at module scope. Every mutation goes
+// through lib/state/notifier-store.ts, which retries bounded-and-logs
+// instead of warn-and-defer: a dropped queue write here loses a
+// notification permanently (see that module's doc).
 
 /**
  * Drain all pending notifications. Called by the tray app on startup
@@ -208,16 +183,14 @@ loadQueue();
  * Returns the events and clears the queue.
  */
 export function drainNotifications(): NotificationEvent[] {
-  const events = notificationQueue.splice(0);
-  flushQueue();
-  return events;
+  return drainNotificationQueue();
 }
 
 /**
  * Peek at pending notifications without draining.
  */
 export function peekNotifications(): NotificationEvent[] {
-  return [...notificationQueue];
+  return peekNotificationQueue();
 }
 
 // ─── Push to tray app ────────────────────────────────────────────────────────
@@ -240,9 +213,7 @@ async function pushToTray(event: NotificationEvent): Promise<boolean> {
 
     if (response.ok) {
       // Push succeeded — remove from queue
-      const idx = notificationQueue.findIndex(n => n.id === event.id);
-      if (idx !== -1) notificationQueue.splice(idx, 1);
-      flushQueue();
+      removeQueuedNotification(event.id);
       return true;
     }
     return false;
@@ -347,8 +318,7 @@ export function notify(
   };
 
   // 1. Queue + persist
-  notificationQueue.push(event);
-  flushQueue();
+  enqueueNotification(event);
 
   // 1b. Broadcast to WebSocket clients
   if (_broadcastHook) _broadcastHook("notification", event);
@@ -360,12 +330,9 @@ export function notify(
       // a setup without the tray app. Use the CLI fallback after a short delay
       // to give the tray a chance to come online.
       setTimeout(() => {
-        const stillQueued = notificationQueue.find(n => n.id === event.id);
-        if (stillQueued) {
+        if (isNotificationQueued(event.id)) {
           // Still not drained — remove from queue and use fallback
-          const idx = notificationQueue.findIndex(n => n.id === event.id);
-          if (idx !== -1) notificationQueue.splice(idx, 1);
-          flushQueue();
+          removeQueuedNotification(event.id);
           notifyFallback(title, message, url);
         }
       }, 10_000);
@@ -504,6 +471,49 @@ function shouldNotifyApprovalTransition(
   return selfNewlyApproved ? "self-approved" : "notify";
 }
 
+/**
+ * Every transition kind that produces a `fired` key. Shared by
+ * `firedKey` (creation, throughout detectBranchTransitions) and
+ * `pruneFiredForEvictedBranches` (hygiene, at the checkAndNotify cycle
+ * tail) so the two never drift apart into two different key formats.
+ */
+const TRANSITION_KINDS = [
+  "mr:merged",
+  "mr:closed",
+  "pipeline:failed",
+  "pipeline:success",
+  "mr:approved",
+  "mr:conflicts",
+  "mr:ready",
+  "mr:rebase",
+  "mr:merge_error",
+] as const;
+type TransitionKind = (typeof TRANSITION_KINDS)[number];
+
+/** The one place a fired key is built (spec "Store-by-store" item 4: "the same key-construction helper the notifier uses to CREATE fired keys"). */
+function firedKey(kind: TransitionKind, branch: string): string {
+  return `${kind}:${branch}`;
+}
+
+/**
+ * Drops `fired` keys belonging to branches with no branch-cache entry this
+ * cycle (review r1 finding 11): a branch-cache GC eviction must not leak a
+ * stale fired key that would suppress a real notification if the branch
+ * ever returns. Membership is computed by FORWARD construction — building
+ * every possible key for every still-live branch with the same `firedKey`
+ * helper used to create them — never by parsing a stored key string apart
+ * to recover its branch (spec: "no string parsing of key formats").
+ */
+function pruneFiredForEvictedBranches(fired: Set<string>, liveBranches: Iterable<string>): void {
+  const live = new Set<string>();
+  for (const branch of liveBranches) {
+    for (const kind of TRANSITION_KINDS) live.add(firedKey(kind, branch));
+  }
+  for (const key of fired) {
+    if (!live.has(key)) fired.delete(key);
+  }
+}
+
 function detectBranchTransitions(
   prev: Record<string, BranchSnapshot>,
   current: Record<string, CacheEntry>,
@@ -530,7 +540,7 @@ function detectBranchTransitions(
 
     // MR merged (opened → merged) — check BEFORE skipping merged MRs
     if (was.mrState === "opened" && now.mrState === "merged") {
-      const key = `mr:merged:${branch}`;
+      const key = firedKey("mr:merged", branch);
       if (!fired.has(key)) {
         fired.add(key);
         log.info(`MR merged on ${branch} [was=${was.mrState} now=${now.mrState}]`);
@@ -542,7 +552,7 @@ function detectBranchTransitions(
 
     // MR closed without merge (opened → closed)
     if (was.mrState === "opened" && now.mrState === "closed") {
-      const key = `mr:closed:${branch}`;
+      const key = firedKey("mr:closed", branch);
       if (!fired.has(key)) {
         fired.add(key);
         log.info(`MR closed on ${branch} [was=${was.mrState} now=${now.mrState}]`);
@@ -561,7 +571,7 @@ function detectBranchTransitions(
       ["running", "pending", "created"].includes(was.pipelineStatus) &&
       now.pipelineStatus === "failed"
     ) {
-      const key = `pipeline:failed:${branch}`;
+      const key = firedKey("pipeline:failed", branch);
       if (!fired.has(key)) {
         fired.add(key);
         log.info(`pipeline failed on ${branch} [was=${was.pipelineStatus} now=${now.pipelineStatus}]`);
@@ -578,7 +588,7 @@ function detectBranchTransitions(
       ["running", "pending", "created"].includes(was.pipelineStatus) &&
       now.pipelineStatus === "success"
     ) {
-      const key = `pipeline:success:${branch}`;
+      const key = firedKey("pipeline:success", branch);
       if (!fired.has(key)) {
         fired.add(key);
         log.info(`pipeline passed on ${branch} [was=${was.pipelineStatus} now=${now.pipelineStatus}]`);
@@ -590,7 +600,7 @@ function detectBranchTransitions(
 
     // MR approved (was not approved -> now approved)
     if (!was.approved && now.approved) {
-      const key = `mr:approved:${branch}`;
+      const key = firedKey("mr:approved", branch);
       if (fired.has(key)) {
         log.debug(`suppressed duplicate mr_approved on ${branch}`);
       } else {
@@ -607,7 +617,7 @@ function detectBranchTransitions(
 
     // Merge conflicts appeared
     if (!was.conflicts && now.conflicts) {
-      const key = `mr:conflicts:${branch}`;
+      const key = firedKey("mr:conflicts", branch);
       if (!fired.has(key)) {
         fired.add(key);
         log.info(`merge conflicts on ${branch} [was=${was.conflicts} now=${now.conflicts}]`);
@@ -619,7 +629,7 @@ function detectBranchTransitions(
 
     // MR ready to merge (all blockers cleared)
     if (!was.isReady && now.isReady) {
-      const key = `mr:ready:${branch}`;
+      const key = firedKey("mr:ready", branch);
       if (!fired.has(key)) {
         fired.add(key);
         log.info(`MR ready to merge on ${branch} [was=${was.isReady} now=${now.isReady}]`);
@@ -635,7 +645,7 @@ function detectBranchTransitions(
     // the GraphQL payload every fetch path shares, so it no longer flips false
     // on a bulk poll and re-arm the alert for an MR whose state never changed.
     if (!was.needsRebase && now.needsRebase) {
-      const key = `mr:rebase:${branch}`;
+      const key = firedKey("mr:rebase", branch);
       if (!fired.has(key)) {
         fired.add(key);
         log.info(`needs rebase on ${branch} [was=${was.needsRebase} now=${now.needsRebase}]`);
@@ -647,7 +657,7 @@ function detectBranchTransitions(
 
     // Merge error (auto-merge or merge train failed)
     if (!was.mergeError && now.mergeError) {
-      const key = `mr:merge_error:${branch}`;
+      const key = firedKey("mr:merge_error", branch);
       if (!fired.has(key)) {
         fired.add(key);
         log.info(`merge error on ${branch}: ${now.mergeError} [was=${was.mergeError}]`);
@@ -660,33 +670,33 @@ function detectBranchTransitions(
     // Clear fired keys when state changes back (so we can re-notify on next transition).
     // Log every clear so over-notification can be traced.
     if (was.pipelineStatus === "failed" && now.pipelineStatus !== "failed") {
-      if (fired.delete(`pipeline:failed:${branch}`))
+      if (fired.delete(firedKey("pipeline:failed", branch)))
         log.debug(`cleared pipeline:failed key for ${branch} (pipeline now ${now.pipelineStatus})`);
     }
     if (was.pipelineStatus === "success" && now.pipelineStatus !== "success") {
-      if (fired.delete(`pipeline:success:${branch}`))
+      if (fired.delete(firedKey("pipeline:success", branch)))
         log.debug(`cleared pipeline:success key for ${branch} (pipeline now ${now.pipelineStatus})`);
     }
     if (was.approved && !now.approved) {
-      if (fired.delete(`mr:approved:${branch}`))
+      if (fired.delete(firedKey("mr:approved", branch)))
         log.debug(`cleared mr:approved key for ${branch}`);
     }
     if (shouldRearmConflicts(was, now)) {
-      if (fired.delete(`mr:conflicts:${branch}`))
+      if (fired.delete(firedKey("mr:conflicts", branch)))
         log.debug(`cleared mr:conflicts key for ${branch} (statusDetail=${now.statusDetail}, conflict-free x${now.conflictFreeStreak})`);
     } else if (was.conflicts && !now.conflicts) {
       log.debug(`held mr:conflicts key for ${branch} (statusDetail=${now.statusDetail}, conflict-free x${now.conflictFreeStreak})`);
     }
     if (shouldRearmReady(was, now)) {
-      if (fired.delete(`mr:ready:${branch}`))
+      if (fired.delete(firedKey("mr:ready", branch)))
         log.debug(`cleared mr:ready key for ${branch} (statusDetail=${now.statusDetail})`);
     }
     if (was.needsRebase && !now.needsRebase) {
-      if (fired.delete(`mr:rebase:${branch}`))
+      if (fired.delete(firedKey("mr:rebase", branch)))
         log.debug(`cleared mr:rebase key for ${branch}`);
     }
     if (was.mergeError && !now.mergeError) {
-      if (fired.delete(`mr:merge_error:${branch}`))
+      if (fired.delete(firedKey("mr:merge_error", branch)))
         log.debug(`cleared mr:merge_error key for ${branch}`);
     }
   }
@@ -840,6 +850,11 @@ export function checkAndNotify(
     }
   }
 
+  // fired-ledger hygiene: drop keys for branches the branch-cache no longer
+  // carries an entry for (evicted by GC, or never present this cycle) — see
+  // pruneFiredForEvictedBranches.
+  pruneFiredForEvictedBranches(fired, Object.keys(cacheEntries));
+
   state.branches = newBranches;
   state.fired = [...fired];
   saveState(state);
@@ -852,6 +867,8 @@ export const __test__ = {
   shouldRearmConflicts,
   isSelfAuthored,
   notifyFallback,
+  firedKey,
+  pruneFiredForEvictedBranches,
   setTerminalNotifierPath(p: string | false | null): void {
     _terminalNotifierPath = p;
   },

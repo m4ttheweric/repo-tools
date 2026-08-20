@@ -31,6 +31,7 @@
 import "./branch-cache.ts";
 import "../daemon/project-mrs-store.ts";
 import "../daemon/discussions-file-store.ts";
+import "./notifier-store.ts";
 
 export {
   SCHEMA_VERSION,
@@ -49,3 +50,14 @@ export {
 } from "./branch-cache.ts";
 
 export { isBusyError, persistOrWarn } from "./busy.ts";
+
+export {
+  getNotifierStateBlob,
+  setNotifierStateBlob,
+  enqueueNotification,
+  drainNotificationQueue,
+  peekNotificationQueue,
+  isNotificationQueued,
+  removeQueuedNotification,
+  type NotificationEvent,
+} from "./notifier-store.ts";
