@@ -1,13 +1,14 @@
 import { describe, test, expect } from "bun:test";
 import { createCacheHandlers } from "../handlers/cache.ts";
+import { fakeStore } from "./fake-cache-store.ts";
 
 function makeCtx(entries: Record<string, any>) {
   const state = { refreshes: 0 };
   const ctx = {
-    cache: { entries },
+    cache: fakeStore(entries),
     refreshCache: async () => {
       state.refreshes++;
-      // Simulate the refresh updating entries in place (loadCache reload).
+      // Simulate the refresh updating entries in place (the store's reload()).
       for (const e of Object.values(entries)) (e as any).fetchedAt = Date.now();
     },
   } as any;

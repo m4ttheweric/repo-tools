@@ -14,8 +14,8 @@
 import { existsSync } from "fs";
 import { execSync } from "child_process";
 import type { Logger } from "pino";
-import type { DiskCache } from "./branch-cache.ts";
 import type { PortCacheRef, RepoIndex } from "./handlers/types.ts";
+import type { BranchCacheStore } from "../state/index.ts";
 import { checkAndNotify } from "../notifier.ts";
 import { getCurrentUserId } from "./freshness.ts";
 import { loadRepoTracking, grants } from "../repo-tracking.ts";
@@ -27,8 +27,8 @@ import { listWorktreeRoots, listWorktrees } from "../git-worktrees.ts";
 
 export interface CacheRefresherDeps {
   log: Logger;
-  cache: DiskCache;
-  loadCache: () => void;
+  /** The process-wide branch-cache store; `cache.reload()` replaces the old read-from-disk. */
+  cache: BranchCacheStore;
   refreshStatusRef: { lastRefreshAt: number };
   portCacheRef: PortCacheRef;
   repoIndex: () => RepoIndex;
@@ -42,7 +42,7 @@ export interface CacheRefresherDeps {
 }
 
 export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<void> {
-  const { log, cache, loadCache, refreshStatusRef, portCacheRef, repoIndex, broadcast } = deps;
+  const { log, cache, refreshStatusRef, portCacheRef, repoIndex, broadcast } = deps;
 
   let refreshInFlight: Promise<void> | null = null;
 
@@ -129,8 +129,11 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
         }
       }
 
-      // Reload cache from disk (enrichBranches writes to disk)
-      loadCache();
+      // Rebuild the in-memory map from state.db in one SELECT. refreshAllMRs
+      // above already wrote through the same singleton store in this process,
+      // but a CLI `rt run` enrichment may have upserted rows concurrently —
+      // this is where those become visible (spec "In-memory ownership").
+      cache.reload();
       refreshStatusRef.lastRefreshAt = Date.now();
       log.debug({ count: Object.keys(cache.entries).length }, "cache refresh complete");
 

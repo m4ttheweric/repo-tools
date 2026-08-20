@@ -535,8 +535,11 @@ async function processKeys(
     }
   }
 
+  // `mutated` survives RT-48 because it gates the NOTIFY, not a flush: only
+  // a batch that actually changed an entry is worth re-running transition
+  // detection over. The persistence it used to gate is gone — updateEntry
+  // writes the row itself.
   if (mutated) {
-    ctx.flushCache();
     const notify = overrides.notify
       ?? ((entries: Record<string, any>, uid: number | null) => checkAndNotify(entries, undefined, uid));
     notify(ctx.cache.entries, getCurrentUserId());
@@ -545,15 +548,21 @@ async function processKeys(
 
 /**
  * Write one refreshed MR into its cache entry, preserving enrichment fields
- * the events path never touches (ticket, linearId, discussions).
+ * the events path never touches (ticket, linearId).
  * Returns true if the entry was written.
+ *
+ * RT-48: this is the TRUE mutation site, so this is where write-through
+ * lands (spec "Store-by-store" item 1). `store.put` updates the row and the
+ * in-memory map in one call — the old batch-tail `ctx.flushCache()` calls
+ * are gone, and with them the window where a daemon crash between mutation
+ * and flush lost the update.
  */
 function updateEntry(env: FreshnessEnv, repoName: string, branch: string, pr: PullRequest | null): boolean {
   const { ctx } = env;
   const existing = ctx.cache.entries[branch];
   if (!existing) return false; // lost race with a full refresh — skip
   const mr = pr ? toMRInfo(pr) : null;
-  ctx.cache.entries[branch] = { ...existing, mr, fetchedAt: Date.now(), repoName };
+  ctx.cache.put(branch, { ...existing, mr, fetchedAt: Date.now(), repoName });
   if (mr && typeof mr.iid === "number") {
     env.broadcast("mr:update", { repoName, mrs: { [mr.iid]: mr } });
   }
@@ -571,7 +580,7 @@ export function applyMRWriteback(env: FreshnessEnv, repoName: string, projectPat
   for (const [b, entry] of Object.entries(env.ctx.cache.entries)) {
     if (entry.repoName === repoName && entry.mr?.iid === pr.iid) { branch = b; break; }
   }
-  if (branch && updateEntry(env, repoName, branch, pr)) env.ctx.flushCache();
+  if (branch) updateEntry(env, repoName, branch, pr);
 
   if (grants(loadRepoTracking(), repoName).caches.has("project-mrs")) {
     const changed = getProjectMRs().upsert(repoName, projectPath, pr, "mutation");
@@ -627,7 +636,6 @@ async function runGapFill(env: FreshnessEnv, target: RepoTarget, overrides: Mapp
     mutated = updateEntry(env, repoName, branch, pr) || mutated;
   }
   if (mutated) {
-    ctx.flushCache();
     const notify = overrides.notify
       ?? ((entries: Record<string, any>, uid: number | null) => checkAndNotify(entries, undefined, uid));
     notify(ctx.cache.entries, getCurrentUserId());

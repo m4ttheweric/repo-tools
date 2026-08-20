@@ -69,9 +69,12 @@ export function collectSweepTargets(
   for (const entry of Object.values(entries)) {
     if (!entry.repoName) continue;
     if (!grants(tracking, entry.repoName).caches.has("discussions")) continue;
-    const iid = entry.mr?.iid;
-    if (typeof iid !== "number") continue;
-    if (TERMINAL_STATES.has(entry.mr.status)) continue;
+    // `mr` is now typed `MRInfo | null` (RT-48 gave CacheEntry a real shape
+    // instead of `any`), so narrow once and use the local.
+    const mr = entry.mr;
+    const iid = mr?.iid;
+    if (!mr || typeof iid !== "number") continue;
+    if (TERMINAL_STATES.has(mr.status)) continue;
     add(entry.repoName, iid);
   }
 

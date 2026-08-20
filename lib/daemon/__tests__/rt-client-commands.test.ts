@@ -13,14 +13,13 @@ import { buildRoutedHandlers } from "../command-router.ts";
 import { createEventsBus } from "../events-bus.ts";
 import { COMMAND_NAMES } from "../../../packages/rt-client/src/commands.ts";
 import type { HandlerContext } from "../handlers/types.ts";
+import { fakeStore } from "./fake-cache-store.ts";
 
 // Handlers are only assembled here (never invoked), so the stub ctx/scanner
 // just need to satisfy the types -- no factory reaches into them eagerly.
 const stubCtx = {
-  cache: { entries: {} },
+  cache: fakeStore({}),
   refreshCache: async () => {},
-  loadCache: () => {},
-  flushCache: () => {},
   log: { warn: () => {}, debug: () => {}, info: () => {}, error: () => {} },
   startedAt: Date.now(),
   portCacheRef: { ports: [], updatedAt: 0 },
