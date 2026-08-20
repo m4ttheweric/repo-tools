@@ -93,6 +93,57 @@ describe("settings/stores", () => {
       }
     });
 
+    test("a present but non-object \"repos\" value warns and degrades to empty repos, but global keys still parse", () => {
+      const file = machineSettingsPath();
+      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      writeFileSync(file, `{ "rt.foo": 1, "repos": "not-an-object" }`);
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+      try {
+        const store = readStore(file);
+
+        expect(store.exists).toBe(true);
+        expect(store.global).toEqual({ "rt.foo": 1 }); // partial degrade, not total
+        expect(store.repos).toEqual({});
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        expect(warnSpy.mock.calls[0]?.[0]).toContain(file);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    test("a present but array \"repos\" value also warns and degrades", () => {
+      const file = machineSettingsPath();
+      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      writeFileSync(file, `{ "repos": [1, 2, 3] }`);
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+      try {
+        const store = readStore(file);
+
+        expect(store.repos).toEqual({});
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    test("an absent \"repos\" key is normal — no warn, empty repos", () => {
+      const file = machineSettingsPath();
+      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      writeFileSync(file, `{ "rt.foo": 1 }`);
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+      try {
+        const store = readStore(file);
+
+        expect(store.repos).toEqual({});
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
     test("a root that parses to a non-object (e.g. a bare array) is treated as malformed", () => {
       const file = machineSettingsPath();
       mkdirSync(join(home, ".mattstack"), { recursive: true });
