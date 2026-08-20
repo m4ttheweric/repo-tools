@@ -100,6 +100,50 @@ export function teamsDir(): string {
   return join(home(), ".mattstack", "teams");
 }
 
+// ─── Tray app (MAT-383) ───────────────────────────────────────────────────────
+//
+// The single source of truth for the tray app's on-disk names/paths, shared
+// by every consumer (cli.ts, commands/verify.ts, commands/daemon.ts,
+// commands/post-install.ts, lib/notifier.ts, lib/daemon-config.ts). Values
+// are exact per the MAT-383 phase-1 spec §2 — copy verbatim, don't paraphrase.
+
+/** prod CFBundleExecutable — pkill/osascript use this. */
+export const TRAY_APP_NAME = "mattstack";
+/** dev CFBundleExecutable — the flavor-aware quit needs it. */
+export const DEV_TRAY_APP_NAME = "mattstack-dev";
+export const TRAY_APP_BUNDLE = "mattstack.app";
+export const DEV_TRAY_APP_BUNDLE = "mattstack-dev.app";
+
+/** ~/Applications/mattstack.app — the prod tray bundle's install location. */
+export function trayAppPath(): string {
+  return join(home(), "Applications", TRAY_APP_BUNDLE);
+}
+
+/** ~/Applications/mattstack-dev.app — the dev tray bundle's install location. */
+export function devTrayAppPath(): string {
+  return join(home(), "Applications", DEV_TRAY_APP_BUNDLE);
+}
+
+/**
+ * Old rt-tray.app candidate locations, for migration (post-install's
+ * one-shot legacy sweep) and `rt verify` warnings. A FUNCTION, not a const —
+ * this module's call-time-HOME rule (see the docblock above) forbids baking
+ * HOME at module load, and the source-guard tests below enforce it.
+ *
+ * Mirrors the candidate list scattered across commands/verify.ts and
+ * commands/post-install.ts today: the installed location under
+ * ~/Applications, plus the two Homebrew-prefix-relative locations next to
+ * the running binary (same dir, and one level up for the Cellar layout).
+ */
+export function legacyTrayAppPaths(): string[] {
+  const rtExec = process.execPath;
+  return [
+    join(home(), "Applications", "rt-tray.app"),
+    join(rtExec, "../rt-tray.app"),
+    join(rtExec, "../../rt-tray.app"),
+  ];
+}
+
 // ─── Legacy-tree migration + canary (RT-46) ──────────────────────────────────
 
 /** The pre-RT-33 rt state root. Only this module may reference it. */

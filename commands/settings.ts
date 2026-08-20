@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { dirname, join } from "path";
 import { homedir } from "os";
 import { rtDir } from "../lib/rt-paths.ts";
+import { currentMode } from "../lib/dev-mode.ts";
 import { spawnSync } from "child_process";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import {
@@ -359,10 +360,6 @@ function readDevModeConfig(): { sourcePath?: string; bunPath?: string } {
   } catch {
     return {};
   }
-}
-
-function currentMode(): "dev" | "prod" {
-  return existsSync(DEV_MODE_WRAPPER) ? "dev" : "prod";
 }
 
 function detectSourcePath(): string | null {
