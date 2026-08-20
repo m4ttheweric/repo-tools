@@ -1,10 +1,10 @@
 /**
- * fzf is a hard dependency of rt. The Homebrew formula installs it alongside
- * rt, and every interactive picker (run, nav, commit, branch, …) shells out to
- * it. If it goes missing — e.g. `brew autoremove`/`brew cleanup` reaps it while
- * installing an unrelated formula — we want a single, actionable error rather
- * than silently degrading to a non-fuzzy picker or crashing with an opaque
- * spawn ENOENT. Every fzf spawn site calls ensureFzf() before spawning.
+ * fzf is a hard dependency of rt: every interactive picker (run, nav, commit,
+ * …) shells out to it, and nothing installs it for the user. If it is missing
+ * — never installed, or reaped by `brew autoremove`/`brew cleanup` — we want a
+ * single, actionable error rather than silently degrading to a non-fuzzy
+ * picker or crashing with an opaque spawn ENOENT. Every fzf spawn site calls
+ * ensureFzf() before spawning.
  */
 import { bold, dim, yellow, reset } from "./tui.ts";
 

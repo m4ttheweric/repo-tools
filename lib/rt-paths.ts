@@ -132,8 +132,9 @@ export function devTrayAppPath(): string {
  *
  * Mirrors the candidate list scattered across commands/verify.ts and
  * commands/post-install.ts today: the installed location under
- * ~/Applications, plus the two Homebrew-prefix-relative locations next to
- * the running binary (same dir, and one level up for the Cellar layout).
+ * ~/Applications, plus the two locations the old Homebrew install put it at
+ * relative to the running binary (same dir, and one level up for the Cellar
+ * layout).
  */
 export function legacyTrayAppPaths(): string[] {
   const rtExec = process.execPath;
