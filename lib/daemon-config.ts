@@ -11,6 +11,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "
 import { homedir } from "os";
 import { join } from "path";
 import { rtDir } from "./rt-paths.ts";
+import { currentMode } from "./dev-mode.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -49,6 +50,17 @@ export const LAUNCHD_PLIST_PATH = join(
   homedir(), "Library", "LaunchAgents", "com.rt.daemon.plist",
 );
 export const LAUNCHD_LABEL = "com.rt.daemon";
+
+/**
+ * The launchd label of whichever daemon flavor is ACTIVE right now
+ * (MAT-383 §1) — dev builds run under a separate label so the two flavors'
+ * daemon agents never fight over the same job. currentMode() (lib/dev-mode.ts)
+ * is the only flavor signal; dev-mode.json's existence is deliberately not
+ * one (see that module's docblock).
+ */
+export function activeLaunchdLabel(): string {
+  return currentMode() === "dev" ? "com.rt.daemon.dev" : "com.rt.daemon";
+}
 export const TRAY_SOCK_PATH = join(RT_DIR, "tray.sock");
 export const NOTIFY_QUEUE_PATH = join(RT_DIR, "notify-queue.json");
 
