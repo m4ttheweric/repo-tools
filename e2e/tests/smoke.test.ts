@@ -39,7 +39,7 @@ describe("smoke", () => {
 
     const output = result.stderr;
     const expectedSubs = [
-      "rebase", "reset", "branch", "commit",
+      "rebase", "reset", "commit",
       "backup", "restore", "pull", "push", "upstream",
     ];
     for (const sub of expectedSubs) {
