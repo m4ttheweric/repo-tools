@@ -19,7 +19,7 @@ enum BundleFlavor {
     /// Fallback when MSDaemonLabel is absent (an unbundled `swift run` build,
     /// or a bundle built before the key existed): the prod label, which is
     /// what every pre-MAT-383 build hardcoded.
-    static let defaultDaemonLabel = "com.rt.daemon"
+    static let defaultDaemonLabel = "com.mattstack.daemon"
 
     static var daemonLabel: String {
         guard let label = Bundle.main.object(forInfoDictionaryKey: "MSDaemonLabel") as? String,

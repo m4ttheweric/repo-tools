@@ -50,12 +50,12 @@ if [ "$IS_DEV" = true ]; then
     APP_NAME="mattstack-dev"
     DISPLAY_NAME="mattstack-dev"
     BUNDLE_ID="com.mattstack.app.dev"
-    DAEMON_LABEL="com.rt.daemon.dev"
+    DAEMON_LABEL="com.mattstack.daemon.dev"
 else
     APP_NAME="mattstack"
     DISPLAY_NAME="mattstack"
     BUNDLE_ID="com.mattstack.app"
-    DAEMON_LABEL="com.rt.daemon"
+    DAEMON_LABEL="com.mattstack.daemon"
 fi
 
 APP_BUNDLE="$SCRIPT_DIR/$APP_NAME.app"
@@ -175,9 +175,26 @@ if [ "$IS_DEV" = true ]; then
     chmod +x "$APP_BUNDLE/Contents/MacOS/rt-daemon"
     echo "  ✓ Embedded rt-daemon-shim as Contents/MacOS/rt-daemon (dev source-runner)"
 else
+    # Resolution order: an explicit RT_DAEMON_BIN (what CI sets), then the
+    # repo's own compiled binary, then whatever `rt` is on PATH. The PATH
+    # entry is LAST and is validated below, because on a dev-mode machine it
+    # is the wrapper SCRIPT (~/.local/bin/rt, which execs bun against the
+    # source checkout). Embedding that as a prod bundle's daemon produces an
+    # app that installs cleanly and then never starts its daemon.
     DAEMON_SRC="${RT_DAEMON_BIN:-}"
+    if [ -z "$DAEMON_SRC" ] && [ -f "$SCRIPT_DIR/../dist/rt" ]; then
+        DAEMON_SRC="$SCRIPT_DIR/../dist/rt"
+    fi
     if [ -z "$DAEMON_SRC" ]; then
         DAEMON_SRC="$(command -v rt 2>/dev/null || true)"
+    fi
+
+    # A prod daemon must be a real executable, never a script: `file` reports
+    # Mach-O for the compiled binary and "script text" for the dev wrapper.
+    if [ -n "$DAEMON_SRC" ] && [ -f "$DAEMON_SRC" ] && ! file -b "$DAEMON_SRC" | grep -q "Mach-O"; then
+        echo "  ✗ $DAEMON_SRC is not a compiled binary (dev-mode wrapper?)"
+        echo "    Build one with: bun run build   (or set RT_DAEMON_BIN)"
+        exit 1
     fi
 
     if [ -n "$DAEMON_SRC" ] && [ -f "$DAEMON_SRC" ]; then
