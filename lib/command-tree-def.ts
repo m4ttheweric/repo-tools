@@ -723,6 +723,40 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  secrets: {
+    description: "sops-encrypted secrets under ~/.mattstack/user/secrets/",
+    subcommands: {
+      set: {
+        description: "Write a secret (creates the domain file, or one key within it)",
+        module: "./commands/secrets.ts",
+        fn: "secretsSet",
+        args: [
+          { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
+          { name: "Key", type: "text", placeholder: "linearApiKey", hint: "Key name within the domain" },
+          { name: "Value", type: "text", placeholder: "lin_api_...", hint: "The secret value" },
+        ],
+      },
+      list: {
+        description: "List a domain's secret names (never prints values)",
+        module: "./commands/secrets.ts",
+        fn: "secretsList",
+        args: [
+          { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
+        ],
+      },
+      rotate: {
+        description: "Replace a secret's value; prints the rotation commit message",
+        module: "./commands/secrets.ts",
+        fn: "secretsRotate",
+        args: [
+          { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
+          { name: "Key", type: "text", placeholder: "gitlabToken", hint: "Key name within the domain" },
+          { name: "Value", type: "text", placeholder: "glpat-...", hint: "The new secret value" },
+        ],
+      },
+    },
+  },
+
   plugin: {
     description: "Manage user plugins",
     subcommands: {
