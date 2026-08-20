@@ -5,9 +5,9 @@
  *
  * All keychain/age-keygen calls route through the injected AgeKeySeam so
  * tests never touch the real keychain. The private key crosses process
- * boundaries only via argv (the keychain write, unavoidable — `security`
- * has no stdin form for `-w`) or stdin (age-keygen -y); it is never logged
- * in the clear — see withArgvRedaction.
+ * boundaries via argv (the keychain write — see addCmd's doc for the
+ * exposure that's accepted there) or stdin (age-keygen -y); it is never
+ * logged in the clear — see withArgvRedaction.
  */
 
 export interface AgeExecResult {
@@ -31,16 +31,51 @@ const KEYCHAIN_SERVICE = "mattstack-age-key";
 
 const FIND_CMD = ["security", "find-generic-password", "-a", KEYCHAIN_ACCOUNT, "-s", KEYCHAIN_SERVICE, "-w"];
 
+/**
+ * `security` has no stdin form for `-w` — the private key is unavoidably a
+ * literal argv value here, visible for this short-lived process's lifetime
+ * to anything that can read another process's argv on the machine (`ps
+ * auxww`, Activity Monitor). Accepted as a brief, single-machine exposure;
+ * never logged (withArgvRedaction) and never written to a file. No `-U`
+ * (update-if-exists): a duplicate item makes this call fail outright rather
+ * than silently overwrite — see ensureAgeKey's doc.
+ */
 function addCmd(privateKey: string): string[] {
-  return ["security", "add-generic-password", "-a", KEYCHAIN_ACCOUNT, "-s", KEYCHAIN_SERVICE, "-w", privateKey, "-U"];
+  return ["security", "add-generic-password", "-a", KEYCHAIN_ACCOUNT, "-s", KEYCHAIN_SERVICE, "-w", privateKey];
 }
 
-/** Null on any non-zero exit — `security` exits 44 when the item doesn't exist yet. */
-export async function readAgeKey(seams: AgeKeySeam): Promise<string | null> {
+const ITEM_NOT_FOUND_EXIT_CODE = 44; // macOS security's errSecItemNotFound
+const NOT_FOUND_STDERR_MARKER = "could not be found";
+
+export type AgeKeyReadResult = { key: string } | { absent: true };
+
+/**
+ * Three-way outcome, not a nullable string: a locked keychain or a denied
+ * access-control dialog also exits non-zero, and collapsing that into "no
+ * key" would let a caller mint a replacement over a key that still exists,
+ * orphaning every file already encrypted to it. Only the corroborated
+ * "item genuinely absent" case (exit 44 + the stderr marker) is `absent`;
+ * every other non-zero exit throws instead of guessing.
+ */
+export async function readAgeKey(seams: AgeKeySeam): Promise<AgeKeyReadResult> {
   const result = await seams.run(FIND_CMD, { sensitive: true });
-  if (result.code !== 0) return null;
-  const key = result.stdout.trim();
-  return key.length > 0 ? key : null;
+
+  if (result.code === 0) {
+    const key = result.stdout.trim();
+    if (key.length === 0) {
+      throw new Error("security find-generic-password: exited 0 but printed no key — unexpected keychain state");
+    }
+    return { key };
+  }
+
+  if (result.code === ITEM_NOT_FOUND_EXIT_CODE && result.stderr.toLowerCase().includes(NOT_FOUND_STDERR_MARKER)) {
+    return { absent: true };
+  }
+
+  throw new Error(
+    `security find-generic-password: keychain unreachable (exit ${result.code}) — refusing to mint, ` +
+      `minting now would destroy the existing key\n${result.stderr}`,
+  );
 }
 
 function parseAgeKeygenOutput(output: string): { publicKey: string; privateKey: string } {
@@ -53,14 +88,17 @@ function parseAgeKeygenOutput(output: string): { publicKey: string; privateKey: 
 }
 
 /**
- * Idempotent: reads the existing keychain entry first. Only mints and
- * stores a new key when none exists yet — a second call never overwrites
+ * Mints and stores a new key ONLY on readAgeKey's provable `absent` —
+ * anything else (including a keychain-access error) throws instead of
+ * risking a mint over a key that's still there. `addCmd` carries no `-U`
+ * on top of that: if an item exists anyway, the keychain write itself
+ * fails rather than overwriting, the last-resort guard against clobbering
  * the custodied key.
  */
 export async function ensureAgeKey(seams: AgeKeySeam): Promise<{ publicKey: string }> {
   const existing = await readAgeKey(seams);
-  if (existing) {
-    const derived = await seams.run(["age-keygen", "-y"], { input: existing, sensitive: true });
+  if ("key" in existing) {
+    const derived = await seams.run(["age-keygen", "-y"], { input: existing.key, sensitive: true });
     if (derived.code !== 0) {
       throw new Error(`age-keygen -y: could not derive the public key from the stored private key\n${derived.stderr}`);
     }
@@ -85,30 +123,34 @@ export function renderSopsYaml(publicKey: string): string {
   return ["creation_rules:", "  - path_regex: user/secrets/.*", `    age: ${publicKey}`, ""].join("\n");
 }
 
+/** Thrown by keyExport when the keychain provably holds no key yet — minting is `rt home init`'s job, never export's. */
+export class AgeKeyAbsentError extends Error {}
+
 const EXPORT_WARNING = [
   "############################################################",
   "# rt home key export — mattstack age private key",
   "#",
-  "# WARNING: this decrypts every secret in the home repo. Save",
-  "# it to your password manager now — it is never written to a",
-  "# file and rt will not print it again.",
+  "# WARNING: this decrypts every secret in the home repo. It",
+  "# lives only in the keychain and is never written to a file —",
+  "# save it to your password manager now.",
   "############################################################",
   "",
 ].join("\n");
 
 /**
- * Reads the private key and prints it, with a warning header, in one call
- * to `print` — the only place this module hands the key to the outside
- * world, and it is stdout only: never a file (see the module doc).
+ * Reads the existing key and prints it once, with a warning header — the
+ * only place this module hands the key to the outside world, and it is
+ * stdout only: never a file (see the module doc). Never mints: that keeps
+ * a keychain-access error here from ever being mistaken for "no key yet"
+ * and triggering a mint that would orphan the real one. Minting is
+ * `rt home init`'s job (ensureAgeKey), run once, ahead of time.
  */
 export async function keyExport(seams: AgeKeySeam, print: (text: string) => void): Promise<void> {
-  let key = await readAgeKey(seams);
-  if (!key) {
-    await ensureAgeKey(seams);
-    key = await readAgeKey(seams);
+  const result = await readAgeKey(seams);
+  if (!("key" in result)) {
+    throw new AgeKeyAbsentError("no age key found in the keychain yet — run `rt home init` first");
   }
-  if (!key) throw new Error("rt home key export: no age key found even after minting one");
-  print(`${EXPORT_WARNING}${key}`);
+  print(`${EXPORT_WARNING}${result.key}`);
 }
 
 /** Redacts the value following a `-w` flag; nothing else in argv can carry the key. */
@@ -132,8 +174,19 @@ export function withArgvRedaction(seam: AgeKeySeam, log: (cmd: string[]) => void
   };
 }
 
-/** The real seam: Bun.spawn-based capture, env passed live (PATH-snapshot gotcha). */
-export function createRealAgeKeySeam(): AgeKeySeam {
+const CLI_DEBUG = process.env.RT_LOG_LEVEL === "debug";
+
+/**
+ * The CLI process has no per-call debug channel of its own (that's a
+ * daemon-only seam — see CLAUDE.md's logging architecture); this mirrors
+ * its RT_LOG_LEVEL=debug gating rather than inventing a separate one.
+ */
+function debugLog(cmd: string[]): void {
+  if (CLI_DEBUG) console.error(`[age-key] ${cmd.join(" ")}`);
+}
+
+/** Bun.spawn-based capture, env passed live (PATH-snapshot gotcha). Unexported: only reachable wrapped, via createRealAgeKeySeam. */
+function createRawAgeKeySeam(): AgeKeySeam {
   return {
     async run(cmd, opts) {
       const proc = Bun.spawn(cmd, {
@@ -154,4 +207,13 @@ export function createRealAgeKeySeam(): AgeKeySeam {
       return { code, stdout, stderr };
     },
   };
+}
+
+/**
+ * The real seam. Always the redacting wrapper — the raw, unredacted seam
+ * above is never exported, so there is no reachable path to an unredacted
+ * default.
+ */
+export function createRealAgeKeySeam(): AgeKeySeam {
+  return withArgvRedaction(createRawAgeKeySeam(), debugLog);
 }
