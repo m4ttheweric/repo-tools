@@ -11,9 +11,12 @@ function writeRepoConfig(repo: string, obj: unknown): void {
   writeFileSync(join(dir, "config.json"), JSON.stringify(obj));
 }
 
-// Role "web" for repo "r1" — read via loadEndpointRepoConfig inside
-// runInterception's env step. env renders ${port}; preserveEnv protects the
-// caller's KEEP_* vars (both feed argInject's ${envKeys}).
+// Role "web" for repo "r1" — reached via `loadEndpointConfig`
+// (lib/endpoint/config.ts) inside runInterception's env step; this per-repo
+// config.json is the resolver's legacy rung, which is all these rules need
+// (their repoRemote is null, so the store's repo rungs are out of reach).
+// env renders ${port}; preserveEnv protects the caller's KEEP_* vars (both
+// feed argInject's ${envKeys}).
 writeRepoConfig("r1", {
   roles: { web: { env: { PORT: "${port}" }, preserveEnv: ["KEEP_*"] } },
 });

@@ -15,7 +15,8 @@
  */
 
 import type { EndpointRepoConfig, RoleConfig } from "../../endpoint/config.ts";
-import { loadEndpointRepoConfig } from "../../endpoint/config.ts";
+import { loadEndpointConfig } from "../../endpoint/config.ts";
+import { deriveRepoIdentity } from "../../settings/identity.ts";
 import type { EndpointClaim } from "../../endpoint/store.ts";
 import { claimsEpoch, loadClaims, saveClaims } from "../../endpoint/store.ts";
 import type { Probes } from "../../endpoint/allocator.ts";
@@ -23,6 +24,31 @@ import { defaultProbes, isLiveClaim, releaseWorktree, resolveClaim } from "../..
 import type { HandlerContext, HandlerMap } from "./types.ts";
 
 const url = (port: number): string => `http://localhost:${port}`;
+
+/**
+ * repo NAME → repo IDENTITY, the key the settings stores' `repos.<identity>`
+ * sections use (RT-47). The name→path hop is the daemon's repo index; the
+ * path→identity hop is `deriveRepoIdentity`, which is ASYNC (a `git config`
+ * capture, never a sync spawn — this runs on the daemon thread) and memoized
+ * per path, so the git call happens once per repo per daemon lifetime rather
+ * than once per claim.
+ *
+ * Degrades to null rather than failing a claim: an unregistered repo name, a
+ * path git can't answer for, or a remote that doesn't normalize all just make
+ * the store's repo sections unreachable, leaving global scopes and the legacy
+ * per-repo config.json to answer — which is exactly the pre-RT-47 behaviour.
+ * A real failure is logged (never silently swallowed) per the repo's catch
+ * policy.
+ */
+async function repoIdentityFor(ctx: HandlerContext, repo: string): Promise<string | null> {
+  try {
+    const repoPath = ctx.repoIndex()[repo];
+    return repoPath ? await deriveRepoIdentity(repoPath) : null;
+  } catch (err) {
+    ctx.log.warn({ err, repo }, "repo identity derivation failed; resolving endpoint config without repo scopes");
+    return null;
+  }
+}
 
 export interface RoleRef {
   port: number;
@@ -90,14 +116,14 @@ export function createEndpointHandlers(
       const pid: number | undefined = payload?.pid;
       if (!repo || !worktree || !role) return { ok: false, error: "missing repo, worktree, or role" };
 
-      const repoCfg = loadEndpointRepoConfig(repo);
+      const repoCfg = loadEndpointConfig({ repoIdentity: await repoIdentityFor(ctx, repo), repoName: repo });
       const roleCfg = repoCfg.roles[role];
       if (!roleCfg) return { ok: false, error: `role "${role}" is not declared for repo "${repo}"` };
 
       const probes = await probesFn();
 
-      // Epoch-guarded exactly like `patchTree`: the await above is the only
-      // yield point, so a concurrent claim/release could have saved a newer
+      // Epoch-guarded exactly like `patchTree`: the awaits above are the only
+      // yield points, so a concurrent claim/release could have saved a newer
       // claims file while we were suspended there. Reload-and-redo once if
       // that happened; the second pass always saves (same event loop, no
       // further awaits, so a second collision cannot occur).
@@ -130,7 +156,7 @@ export function createEndpointHandlers(
       const role = payload?.role;
       if (!repo || !worktree || !role) return { ok: false, error: "missing repo, worktree, or role" };
 
-      const repoCfg = loadEndpointRepoConfig(repo);
+      const repoCfg = loadEndpointConfig({ repoIdentity: await repoIdentityFor(ctx, repo), repoName: repo });
       const roleCfg = repoCfg.roles[role];
       if (!roleCfg) return { ok: false, error: `role "${role}" is not declared for repo "${repo}"` };
 
