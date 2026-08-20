@@ -72,15 +72,10 @@ function detectEditors(): DetectedEditor[] {
 // ─── VSIX Finder ─────────────────────────────────────────────────────────────
 
 function findVsix(): string | null {
-  // 1. Check Homebrew formula prefix (compiled binary install)
+  // 1. Next to the binary (extracted release tarball layout)
   const execPath = process.execPath;
-  const brewPrefix = resolve(execPath, "..");
-  const brewVsix = join(brewPrefix, "rt-context.vsix");
-  if (existsSync(brewVsix)) return brewVsix;
-
-  // Also check one level up (Homebrew Cellar structure: Cellar/rt/version/bin/rt)
-  const cellarVsix = resolve(execPath, "../../rt-context.vsix");
-  if (existsSync(cellarVsix)) return cellarVsix;
+  const bundledVsix = resolve(execPath, "../rt-context.vsix");
+  if (existsSync(bundledVsix)) return bundledVsix;
 
   // 2. Check relative to source repo (development mode only — skip in compiled binary)
   const metaUrl = new URL(import.meta.url).pathname;
@@ -118,7 +113,7 @@ export async function installExtension(): Promise<void> {
   const vsixPath = findVsix();
   if (!vsixPath) {
     console.log(`  ${red}✗${reset} rt-context.vsix not found`);
-    console.log(`  ${dim}expected in Homebrew prefix or extensions/vscode/rt-context/${reset}\n`);
+    console.log(`  ${dim}expected next to the rt binary or in extensions/vscode/rt-context/${reset}\n`);
     return;
   }
 

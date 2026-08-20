@@ -1,6 +1,6 @@
 # rt — repo tools
 
-Personal developer CLI built with Bun. Compiled to a standalone binary via `bun build --compile` and distributed through Homebrew.
+Personal developer CLI built with Bun. Compiled to a standalone binary via `bun build --compile` and distributed as a GitHub Release tarball that mattstack.app (and `rt --post-install`) installs.
 
 ## Architecture docs live in Linear, not this repo
 

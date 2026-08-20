@@ -1,24 +1,25 @@
 /**
- * rt --post-install — First-run setup, auto-triggered on the first `rt` invocation.
+ * rt --post-install — the installer. Auto-triggered on the first `rt`
+ * invocation, re-run by `rt update` from the freshly extracted release.
  *
- * Handles all setup steps:
- *   1. Copy mattstack.app → ~/Applications (remove quarantine)
- *   2. Install rt-context.vsix into all detected editors (best-effort, non-interactive)
- *   3. Install daemon as a launchd agent (auto-starts on login)
- *   4. Write shell integration to the user's rc file (PATH + rtcd, idempotent)
+ * Run from an extracted release tarball (rt + mattstack.app + rt-context.vsix
+ * side by side) it is a complete install:
+ *   1. Install this binary at ~/.local/bin/rt (unless dev mode owns that path)
+ *   2. Copy mattstack.app → ~/Applications (remove quarantine)
+ *   3. Install rt-context.vsix into all detected editors (best-effort, non-interactive)
+ *   4. Install daemon as a launchd agent (auto-starts on login)
+ *   5. Write shell integration to the user's rc file (PATH + rtcd, idempotent)
  *
- * Keeping this in the binary (not the formula) means:
- *   - Setup logic is versioned alongside the binary
- *   - Easy to test locally: rt --post-install
- *   - No Ruby needed to understand or change setup behaviour
- *   - Works correctly for both fresh install and upgrade
+ * Run from an already-installed binary, steps 1-3 find nothing beside it and
+ * skip; the rest still reconcile.
  */
 
 import { spawnSync } from "child_process";
-import { existsSync, readFileSync, readdirSync, mkdirSync, rmSync, cpSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, readdirSync, mkdirSync, rmSync, cpSync, writeFileSync, realpathSync } from "fs";
 import { join, resolve, dirname } from "path";
 import { homedir } from "os";
-import { rtDir, TRAY_APP_NAME, TRAY_APP_BUNDLE, trayAppPath, legacyTrayAppPaths } from "../lib/rt-paths.ts";
+import { TRAY_APP_NAME, TRAY_APP_BUNDLE, trayAppPath, legacyTrayAppPaths } from "../lib/rt-paths.ts";
+import { currentMode, installRtBinary, rtBinaryPath } from "../lib/dev-mode.ts";
 import { installShellIntegration, detectShell, shellRcPath } from "../lib/shell-integration.ts";
 
 const HOME = homedir();
@@ -32,20 +33,38 @@ function ok(label: string, detail = "")  { log("✓", label, detail); }
 function fail(label: string, detail = "") { log("✗", label, detail); }
 function info(label: string, detail = "") { log("·", label, detail); }
 
-// ─── 1. Tray app ──────────────────────────────────────────────────────────────
+// ─── 1. rt binary ─────────────────────────────────────────────────────────────
+
+function installRtBinaryStep(): void {
+  const dest = rtBinaryPath();
+  const src = process.execPath;
+  let alreadyThere = false;
+  try { alreadyThere = existsSync(dest) && realpathSync(dest) === realpathSync(src); } catch { /* unreadable dest: install over it */ }
+  if (alreadyThere) {
+    info("rt", `already installed at ${dest}`);
+    return;
+  }
+  if (currentMode() === "dev") {
+    info("rt", `dev mode owns ${dest} — leaving the wrapper in place`);
+    return;
+  }
+  if (!existsSync(resolve(src, `../${TRAY_APP_BUNDLE}`))) {
+    info("rt", "not running from an extracted release — skipping binary install");
+    return;
+  }
+  try {
+    installRtBinary(src);
+    ok("rt", `→ ${dest}`);
+  } catch (err: any) {
+    fail("rt", err?.message ?? String(err));
+  }
+}
+
+// ─── 2. Tray app ──────────────────────────────────────────────────────────────
 
 function installTrayApp(): void {
-  // The tray app is bundled alongside the rt binary in the Homebrew prefix.
-  // Homebrew Cellar structure: .../cellar/rt/<version>/bin/rt
-  //                                                   /../mattstack.app
-  const rtPath = process.execPath;
-  const candidates = [
-    resolve(rtPath, `../${TRAY_APP_BUNDLE}`),    // same dir as binary
-    resolve(rtPath, `../../${TRAY_APP_BUNDLE}`), // one level up (Cellar layout)
-  ];
-
-  const srcTray = candidates.find(existsSync);
-  if (!srcTray) {
+  const srcTray = resolve(process.execPath, `../${TRAY_APP_BUNDLE}`);
+  if (!existsSync(srcTray)) {
     fail(TRAY_APP_BUNDLE, "not found alongside binary — skipping");
     return;
   }
@@ -76,7 +95,7 @@ function installTrayApp(): void {
   }
 }
 
-// ─── 2. Extension ─────────────────────────────────────────────────────────────
+// ─── 3. Extension ─────────────────────────────────────────────────────────────
 
 const EDITOR_PATTERNS = [
   { appName: "Cursor.app",                        cliBinary: "cursor",      displayName: "Cursor" },
@@ -89,20 +108,14 @@ const EDITOR_PATTERNS = [
 ];
 
 function findVsix(): string | null {
-  const rtPath = process.execPath;
-  for (const candidate of [
-    resolve(rtPath, "../rt-context.vsix"),
-    resolve(rtPath, "../../rt-context.vsix"),
-  ]) {
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
+  const candidate = resolve(process.execPath, "../rt-context.vsix");
+  return existsSync(candidate) ? candidate : null;
 }
 
 function installExtensions(): void {
   const vsix = findVsix();
   if (!vsix) {
-    info("rt-context.vsix", "not found in Homebrew prefix — skipping");
+    info("rt-context.vsix", "not found alongside binary — skipping");
     return;
   }
 
@@ -139,7 +152,7 @@ function installExtensions(): void {
   }
 }
 
-// ─── 3. Daemon ────────────────────────────────────────────────────────────────
+// ─── 4. Daemon ────────────────────────────────────────────────────────────────
 
 async function installDaemon(): Promise<void> {
   try {
@@ -169,7 +182,7 @@ async function installDaemon(): Promise<void> {
 }
 
 
-// ─── 4. Shell integration ─────────────────────────────────────────────────────────
+// ─── 5. Shell integration ─────────────────────────────────────────────────────────
 
 function installShellIntegrationStep(): void {
   const result = installShellIntegration();
@@ -182,7 +195,7 @@ function installShellIntegrationStep(): void {
   }
 }
 
-// ─── 5. TCC / Full Disk Access check ─────────────────────────────────────────
+// ─── 6. TCC / Full Disk Access check ─────────────────────────────────────────
 
 async function checkTccAccess(): Promise<void> {
   try {
@@ -210,7 +223,7 @@ async function checkTccAccess(): Promise<void> {
   } catch { /* daemon not reachable — skip silently */ }
 }
 
-// ─── 6. Shell wrapper repair ─────────────────────────────────────────────────
+// ─── 7. Shell wrapper repair ─────────────────────────────────────────────────
 
 /**
  * The v0.x shell wrapper used `command -v rt` to resolve the binary path.
@@ -245,20 +258,15 @@ function repairShellWrapper(): void {
 
 // ─── 0. One-shot legacy migration sweep (MAT-383 §4) ─────────────────────────
 //
-// `rt --post-install` runs on every fresh install AND re-execs on every
-// `rt update` (commands/update.ts:73-76) and every first-run-without-
-// daemon.json path (cli.ts). An unguarded sweep would therefore `launchctl
-// bootout` `com.rt.daemon` — the label prod KEEPS — on every routine update,
-// killing the live daemon forever. So: GUARDED, fires only when a legacy
-// rt-tray.app bundle is still found on disk, and this can NEVER move into
-// `rt daemon install` — post-install.ts already spawns that AFTER the new
-// app registers (see installDaemon()/runPostInstall() below), so a sweep
-// there would boot out the daemon it just started.
+// `rt --post-install` runs on every fresh install, every `rt update`, and
+// every first-run-without-daemon.json path (cli.ts). An unguarded sweep would
+// `launchctl bootout` on every routine run, so it is GUARDED: it fires only
+// while a legacy rt-tray.app bundle is still on disk, and it can NEVER move
+// into `rt daemon install` (runPostInstall spawns that AFTER the new app
+// registers; a sweep there would boot out the daemon it just started).
 //
-// Order (spec §4, all before installing the new app): quit the OLD app by
-// its own never-changing name → stop its launchd job → delete its bundle(s).
-// The caller (runPostInstall) then runs the existing install+launch flow
-// and reports migration success/failure loudly afterward.
+// Order (all before installing the new app): quit the OLD app by its own
+// never-changing name → stop its old launchd job → delete its bundle(s).
 
 /** True only when at least one legacy rt-tray.app candidate still exists. */
 function legacySweepNeeded(): boolean {
@@ -320,45 +328,10 @@ async function reportMigrationOutcome(): Promise<void> {
 
 // ─── Entry ───────────────────────────────────────────────────────────────────
 
-/**
- * Returns true when running inside the Homebrew post_install sandbox.
- * The sandbox blocks writes to ~/Applications, ~/.mattstack/rt/, ~/.zshrc, etc.
- * Extensions still work because they're installed via signed app subprocesses.
- */
-function isHomebrewSandboxed(): boolean {
-  // Homebrew sets these env vars during formula post_install
-  return !!(process.env.HOMEBREW_CELLAR || process.env.HOMEBREW_PREFIX) &&
-    process.env.HOME !== undefined &&
-    // If we can't write to HOME, we're sandboxed
-    (() => {
-      try {
-        const testPath = rtDir();
-        mkdirSync(testPath, { recursive: true });
-        return false; // write worked — not sandboxed
-      } catch {
-        return true; // EPERM — sandboxed
-      }
-    })();
-}
-
 export async function runPostInstall(): Promise<void> {
   console.log("");
   console.log("  rt post-install");
   console.log("");
-
-  const sandboxed = isHomebrewSandboxed();
-
-  if (sandboxed) {
-    // Only install extensions — they work via signed app subprocesses.
-    // Home-directory writes (tray, daemon, shell) are blocked by the sandbox.
-    info("sandbox", "Homebrew sandbox detected — installing extensions only");
-    installExtensions();
-    console.log("");
-    console.log("  Run the following to complete setup:");
-    console.log("    rt --post-install");
-    console.log("");
-    return;
-  }
 
   // One-shot legacy migration sweep (spec §4) — GUARDED and MUST run before
   // the new app is installed/launched below. See runLegacySweep()'s docblock
@@ -366,6 +339,7 @@ export async function runPostInstall(): Promise<void> {
   const migrating = legacySweepNeeded();
   if (migrating) runLegacySweep();
 
+  installRtBinaryStep();
   installTrayApp();
   installExtensions();
 
