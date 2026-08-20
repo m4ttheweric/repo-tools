@@ -21,7 +21,6 @@ import {
   loadSecrets,
   saveSecret,
   fetchTeams,
-  getTeamConfig,
   saveTeamConfig,
 } from "../lib/linear.ts";
 import {

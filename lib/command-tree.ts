@@ -3,13 +3,13 @@
  *
  * Every command registers as a node in a tree. The dispatcher handles:
  *  - Screen clearing between steps
- *  - Breadcrumb headers (rt › branch › switch)
+ *  - Breadcrumb headers (rt › daemon › status)
  *  - fzf pickers for subcommand navigation
  *  - Context resolution (repo/worktree identity)
  *  - TTY guards
  *  - Lazy module loading for fast startup
  *
- * Direct args still work: `rt branch switch` traverses silently.
+ * Direct args still work: `rt daemon status` traverses silently.
  * No args at a branch node → shows picker.
  * ctrl-up at a subtree picker goes up one tree level (root picker exits,
  * same as Esc). Tree back-nav never crosses into a running command.
@@ -63,7 +63,7 @@ export interface CommandNode {
   /** Subcommands — makes this a branch node (shows picker if no args). */
   subcommands?: Record<string, CommandNode>;
 
-  /** Lazy module path for handler (e.g. "./commands/branch.ts"). */
+  /** Lazy module path for handler (e.g. "./commands/sync.ts"). */
   module?: string;
 
   /** Function name to call in the module (default: "run"). */
@@ -113,7 +113,7 @@ export interface CommandNode {
 /**
  * Navigate the command tree and execute the resolved handler.
  *
- * - Direct args: `rt branch switch` → resolve branch → resolve switch → execute
+ * - Direct args: `rt daemon status` → resolve daemon → resolve status → execute
  * - No args at branch: show fzf picker
  * - Leaf node: clear screen, show breadcrumb, execute handler
  */

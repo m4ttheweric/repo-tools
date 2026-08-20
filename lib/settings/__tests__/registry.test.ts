@@ -94,7 +94,6 @@ describe("settings/registry", () => {
       expect(getDef("rt.cron")?.legacyFile).toBe("cron.jsonc");
       expect(getDef("rt.repoTracking")?.legacyFile).toBe("repo-tracking.json");
       expect(getDef("rt.notifications")?.legacyFile).toBe("notifications.json");
-      expect(getDef("rt.mr")?.legacyFile).toBe("repos/<repo>/mr.json");
     });
 
     test("repoScoped is consistent with a repos/<repo>/... legacyFile prefix, in both directions", () => {
@@ -118,14 +117,13 @@ describe("settings/registry", () => {
       }
     });
 
-    test("the seven traced repo-scoped legacy keys carry repoScoped:true and the repos/<repo>/ prefix", () => {
+    test("the six traced repo-scoped legacy keys carry repoScoped:true and the repos/<repo>/ prefix", () => {
       const repoScopedLegacyKeys: Record<string, string> = {
         "rt.sync": "repos/<repo>/sync.json",
         "rt.branchNaming": "repos/<repo>/branch-naming.json",
         "rt.variations": "repos/<repo>/variations.json",
         "rt.presets": "repos/<repo>/presets/<name>.json",
         "rt.dopplerTemplate": "repos/<repo>/doppler-template.yaml",
-        "rt.workspaceSync": "repos/<repo>/workspace-sync.json",
         "rt.hooks": "repos/<repo>/hooks.json",
       };
 
@@ -144,18 +142,16 @@ describe("settings/registry", () => {
       }
     });
 
-    test("has exactly the 14 wave-1 migrated:false keys plus the 5 migrated:true keys", () => {
+    test("has exactly the 12 wave-1 migrated:false keys plus the 5 migrated:true keys", () => {
       const migratedFalseKeys = [
         "rt.llm",
         "rt.cron",
         "rt.repoTracking",
         "rt.notifications",
-        "rt.mr",
         "rt.sync",
         "rt.branchNaming",
         "rt.variations",
         "rt.presets",
-        "rt.workspaceSync",
         "rt.dopplerTemplate",
         "rt.workspacePrefs",
         "rt.runaway",

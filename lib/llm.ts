@@ -124,41 +124,6 @@ export async function llmPrompt(
 }
 
 /**
- * Generate a short, descriptive slug from `text` using the local LLM.
- *
- * The prompt instructs the model to produce a compact hyphenated slug; the
- * result is post-processed and truncated to `maxChars` at a word boundary.
- *
- * On failure, throws — callers should catch and fall back to a mechanical slug.
- */
-export async function llmSummarize(text: string, maxChars: number): Promise<string> {
-  const prompt = `Turn this ticket title into a short hyphenated branch slug (${maxChars} chars max). Output only the slug:\n\n"${text}"`;
-
-  // Don't set num_predict — thinking models (qwen3.6) use tokens for
-  // internal reasoning and need unconstrained budget to produce content.
-  const result = await llmPrompt(
-    "Reply with only a short hyphenated slug. No explanation.",
-    prompt,
-  );
-
-  // Post-process: lowercase, strip non-slug chars, collapse hyphens, trim to length
-  const slug = result
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-  return truncateAtWordBoundary(slug, maxChars);
-}
-
-function truncateAtWordBoundary(slug: string, maxChars: number): string {
-  if (slug.length <= maxChars) return slug;
-  const lastDash = slug.lastIndexOf("-", maxChars);
-  // If a dash exists within the limit, cut there; otherwise take the first word
-  return lastDash > 0 ? slug.slice(0, lastDash) : slug.slice(0, maxChars);
-}
-
-/**
  * List locally installed Ollama models.
  *
  * @throws {LlmUnavailableError} if Ollama is unreachable

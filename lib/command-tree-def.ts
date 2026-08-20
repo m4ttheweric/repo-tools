@@ -7,47 +7,6 @@
  */
 import type { CommandNode } from "./command-tree.ts";
 
-const branchSubcommands: Record<string, CommandNode> = {
-  switch: {
-    description: "Checkout with stash handling",
-    module: "./commands/branch.ts",
-    fn: "switchBranch",
-    context: "worktree",
-    aliases: ["sw"],
-    args: [],
-  },
-  create: {
-    description: "From Linear ticket or scratch",
-    module: "./commands/branch.ts",
-    fn: "createBranchFlow",
-    context: "worktree",
-    aliases: ["new"],
-    args: [
-      { name: "Branch name", type: "text", placeholder: "feature/my-branch", hint: "Skip the interactive picker and create this branch directly" },
-      { name: "From", flag: "--from", type: "text", placeholder: "origin/main", hint: "Start point for the new branch" },
-    ],
-  },
-  rename: {
-    description: "Rename the current branch",
-    module: "./commands/branch.ts",
-    fn: "renameBranch",
-    context: "worktree",
-    aliases: ["mv"],
-    args: [],
-  },
-  clean: {
-    description: "Delete stale branches interactively",
-    module: "./commands/branch-clean.ts",
-    fn: "cleanBranches",
-    context: "worktree",
-    requiresTTY: true,
-    args: [
-      { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Preview deletions without deleting (alias -n)" },
-      { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Skip the open-MR warning and force-delete (alias -f)" },
-    ],
-  },
-};
-
 const eventsSubcommands: Record<string, CommandNode> = {
   emit: {
     description: "Publish an event to a topic",
@@ -147,7 +106,7 @@ const commitNode: CommandNode = {
 
 export const TREE: Record<string, CommandNode> = {
   git: {
-    description: "Git operations (rebase, reset, branch, commit, backup)",
+    description: "Git operations (rebase, reset, commit, backup)",
     subcommands: {
       rebase: {
         description: "Smart rebase onto origin/master with auto-resolve",
@@ -201,10 +160,6 @@ export const TREE: Record<string, CommandNode> = {
             args: [],
           },
         },
-      },
-      branch: {
-        description: "Branch management (switch, create, rename, clean)",
-        subcommands: branchSubcommands,
       },
       commit: commitNode,
       backup: {
@@ -272,59 +227,6 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
-  mr: {
-    description: "Merge request operations (GitLab); `pr` works too",
-    aliases: ["pr"],
-    subcommands: {
-      open: {
-        description: "Open a bare MR on the current branch via glab",
-        module: "./commands/mr.ts",
-        fn: "openCommand",
-        context: "worktree",
-        args: [
-          { name: "Target branch", flag: "--target", type: "text", placeholder: "master", hint: "Target branch for the MR (defaults to config or repo default)" },
-          { name: "Title", flag: "--title", type: "text", placeholder: "...", hint: "MR title (defaults to the last commit subject)" },
-          { name: "Draft", flag: "--draft", type: "boolean", default: false, hint: "Open as a draft MR" },
-          { name: "No draft", flag: "--no-draft", type: "boolean", default: false, hint: "Force non-draft even if config defaults to draft" },
-          { name: "Description", flag: "--description", type: "text", placeholder: "...", hint: "Inline description body" },
-          { name: "Description file", flag: "--description-file", type: "text", placeholder: "path or -", hint: "Read description from a file (- for stdin)" },
-          { name: "Fill", flag: "--fill", type: "boolean", default: false, hint: "Let glab fill the description from commits" },
-          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Preview the glab command without creating the MR" },
-          { name: "Web", flag: "--web", type: "boolean", default: false, hint: "Open the new MR in the browser" },
-        ],
-      },
-      describe: {
-        description: "Draft an MR description with an agent (streams to stdout)",
-        module: "./commands/mr.ts",
-        fn: "describeCommand",
-        context: "worktree",
-        args: [
-          { name: "Target branch", flag: "--target", type: "text", placeholder: "master", hint: "Target branch to diff against" },
-          { name: "Inline guidance", flag: "--inline", type: "text", placeholder: "...", hint: "Extra inline guidance appended to the prompt" },
-          { name: "Debug", flag: "--debug", type: "boolean", default: false, hint: "Print the assembled prompt instead of calling the agent" },
-        ],
-      },
-      ship: {
-        description: "All-in-one: push + describe + open (the daily driver)",
-        module: "./commands/mr.ts",
-        fn: "shipCommand",
-        context: "worktree",
-        args: [
-          { name: "Target branch", flag: "--target", type: "text", placeholder: "master", hint: "Target branch for the MR" },
-          { name: "Title", flag: "--title", type: "text", placeholder: "...", hint: "MR title (overrides the agent-drafted title)" },
-          { name: "Draft", flag: "--draft", type: "boolean", default: false, hint: "Open as a draft MR" },
-          { name: "No draft", flag: "--no-draft", type: "boolean", default: false, hint: "Force non-draft even if config defaults to draft" },
-          { name: "Inline guidance", flag: "--inline", type: "text", placeholder: "...", hint: "Extra inline guidance appended to the description prompt" },
-          { name: "Debug", flag: "--debug", type: "boolean", default: false, hint: "Print the assembled prompt and stop before creating the MR" },
-          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Rehearse push + MR creation without doing either" },
-          { name: "Web", flag: "--web", type: "boolean", default: false, hint: "Open the new MR in the browser" },
-          { name: "Remote", flag: "--remote", type: "text", placeholder: "origin", hint: "Remote to push to (forwarded to the push step)" },
-          { name: "No verify", flag: "--no-verify", type: "boolean", default: false, hint: "Skip pre-push hooks (forwarded to the push step)" },
-        ],
-      },
-    },
-  },
-
   sync: {
     description: "Sync branches: rebase onto master + push (daily routine)",
     module: "./commands/sync.ts",
@@ -344,28 +246,6 @@ export const TREE: Record<string, CommandNode> = {
         context: "repo",
         args: [
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Show what would happen without doing it" },
-        ],
-      },
-    },
-  },
-
-  // Aliases: rt branch and rt commit still work as before
-  branch: {
-    description: "Branch management (switch, create, rename, clean)",
-    subcommands: branchSubcommands,
-  },
-
-  turbo: {
-    description: "Turborepo operations",
-    subcommands: {
-      build: {
-        description: "Interactive turbo build selector",
-        module: "./commands/build-select.ts",
-        fn: "buildSelect",
-        context: "worktree",
-        requiresTTY: true,
-        args: [
-          { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Force turbo to ignore its build cache" },
         ],
       },
     },
@@ -515,42 +395,6 @@ export const TREE: Record<string, CommandNode> = {
     ],
   },
 
-  open: {
-    description: "Open external pages for the current branch",
-    subcommands: {
-      mr: {
-        description: "GitLab merge request",
-        module: "./commands/open.ts",
-        fn: "openMR",
-        context: "worktree",
-        args: [],
-      },
-      pipeline: {
-        description: "GitLab CI pipelines",
-        module: "./commands/open.ts",
-        fn: "openPipeline",
-        context: "worktree",
-        aliases: ["ci"],
-        args: [],
-      },
-      repo: {
-        description: "Repository page",
-        module: "./commands/open.ts",
-        fn: "openRepo",
-        context: "worktree",
-        args: [],
-      },
-      ticket: {
-        description: "Linear ticket for this branch",
-        module: "./commands/open.ts",
-        fn: "openTicket",
-        context: "worktree",
-        aliases: ["linear"],
-        args: [],
-      },
-    },
-  },
-
   cd: {
     description: "Worktree/repo directory picker",
     module: "./commands/cd.ts",
@@ -571,51 +415,6 @@ export const TREE: Record<string, CommandNode> = {
     args: [
       { name: "Path", type: "text", placeholder: ".", hint: "Starting directory; defaults to the current directory" },
     ],
-  },
-
-  code: {
-    description: "Open a worktree in your preferred editor",
-    module: "./commands/code.ts",
-    fn: "openInEditor",
-    requiresTTY: true,
-    args: [
-      { name: "Pick", flag: "--pick", type: "boolean", default: false, hint: "Force the worktree/repo picker instead of using the current repo (alias -p)" },
-    ],
-  },
-
-  agent: {
-    description: "Launch a CLI coding agent (Claude Code, Cursor, etc.) in a worktree",
-    module: "./commands/agent.ts",
-    fn: "launchAgent",
-    requiresTTY: true,
-    args: [
-      { name: "Here", flag: "--here", type: "boolean", default: false, hint: "Use the exact current directory instead of resolving a repo/worktree (alias -h)" },
-      { name: "Pick", flag: "--pick", type: "boolean", default: false, hint: "Force the repo/worktree picker before launching (alias -p)" },
-    ],
-  },
-
-  workspace: {
-    description: "VS Code workspace management",
-    subcommands: {
-      sync: {
-        description: "Auto-sync workspace file across worktrees",
-        module: "./commands/workspace.ts",
-        fn: "workspaceSyncCommand",
-        context: "repo",
-        requiresTTY: true,
-        args: [
-          { name: "Status", flag: "--status", type: "boolean", default: false, hint: "Show current sync config and watcher state" },
-          { name: "Off", flag: "--off", type: "boolean", default: false, hint: "Disable syncing and remove the file watcher" },
-        ],
-      },
-    },
-  },
-
-  park: {
-    description: "Deprecated — replaced by rt worktree",
-    module: "./commands/worktree.ts",
-    fn: "parkDeprecated",
-    args: [],
   },
 
   worktree: {
@@ -699,41 +498,6 @@ export const TREE: Record<string, CommandNode> = {
           { name: "On-deck", flag: "--on-deck", type: "boolean", default: false, hint: "Run only in on-deck worktrees (alias --parked)" },
           { name: "Command", type: "text", placeholder: "git status", hint: "Command to run in each selected worktree; omit both flags to pick interactively" },
         ],
-      },
-    },
-  },
-
-  doppler: {
-    description: "Per-repo Doppler template + sync into ~/.doppler/.doppler.yaml",
-    subcommands: {
-      init: {
-        description: "Capture existing Doppler entries for this repo into a template",
-        module: "./commands/doppler.ts",
-        fn: "initCommand",
-        context: "repo",
-        args: [],
-      },
-      sync: {
-        description: "Apply the template across all worktrees (manual trigger)",
-        module: "./commands/doppler.ts",
-        fn: "syncCommand",
-        context: "repo",
-        args: [],
-      },
-      status: {
-        description: "Show template vs. actual config per worktree",
-        module: "./commands/doppler.ts",
-        fn: "statusCommand",
-        context: "repo",
-        args: [],
-      },
-      edit: {
-        description: "Open the template in $EDITOR",
-        module: "./commands/doppler.ts",
-        fn: "editCommand",
-        context: "repo",
-        requiresTTY: true,
-        args: [],
       },
     },
   },

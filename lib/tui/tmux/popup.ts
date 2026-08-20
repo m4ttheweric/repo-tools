@@ -7,7 +7,7 @@
  * ─── openPopup (ephemeral) ────────────────────────────────────────────────────
  * Opens a floating `display-popup -E` above the runner layout.
  * The popup closes automatically when the command exits.
- * Use for: pickers, editors, one-off scripts (rt branch, rt run, editors).
+ * Use for: pickers, editors, one-off scripts (rt run, rt commit, editors).
  *
  * ─── openTempPane (persistent) ───────────────────────────────────────────────
  * Opens a `split-window -v` in the current or target pane.
@@ -127,10 +127,10 @@ export interface PopupOptions {
  *
  * @example
  * ```typescript
- * // Open a branch picker:
- * openPopup(`${process.execPath} ${CLI_PATH} branch`, {
+ * // Open the interactive script runner:
+ * openPopup(`${process.execPath} ${CLI_PATH} run`, {
  *   cwd: entry.worktree,
- *   title: "rt branch",
+ *   title: "rt run",
  *   width: "100",
  *   height: "20",
  * });
