@@ -33,6 +33,7 @@ class UpdateChecker {
         #if DEBUG
         return true
         #else
+        if BundleFlavor.isDevBuild { return true }
         if Self.isCliDevMode { return true }
         return currentVersion == "dev"
         #endif
@@ -65,6 +66,15 @@ class UpdateChecker {
     /// - Parameter userInitiated: When true, always shows a result dialog (update available or up to date).
     ///   Background checks (the default) are silent and only fire the callback when a newer version is found.
     func checkForUpdates(userInitiated: Bool = false) {
+        // The dev bundle is fully silent (spec MAT-383 §3): no polling, and
+        // no alert even from the gear menu. A dev build's version has no
+        // meaningful relationship to the latest release, so every answer it
+        // could give — "up to date", "update available" — would be noise.
+        if BundleFlavor.isDevBuild {
+            TrayLog.info("update check skipped (dev build)", ["userInitiated": userInitiated])
+            return
+        }
+
         let urlString = "https://api.github.com/repos/\(repoOwner)/\(repoName)/releases/latest"
         guard let url = URL(string: urlString) else { return }
 

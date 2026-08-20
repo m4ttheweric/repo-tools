@@ -63,6 +63,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(showKeyboardConflictWindow), name: .showKeyboardConflict, object: nil)
         checkMissionControlConflict()
+        autoRegisterLoginItem()
 
         // Register the daemon as a LaunchAgent. Idempotent — if already
         // registered, this is a no-op. If the user hasn't approved it yet,
@@ -86,6 +87,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         notificationTimer?.invalidate()
         updateChecker.stopChecking()
         TrayServer.shared.stop()
+    }
+
+    // MARK: - Login Item
+
+    /// Idempotent start-at-login registration (spec MAT-383 §3).
+    ///
+    /// A flavor switch installs a DIFFERENT bundle id, so the outgoing
+    /// flavor's login item does nothing for the incoming one — without this
+    /// the user has to re-toggle "Start at Login" by hand after every
+    /// `rt settings dev-mode on|off`.
+    ///
+    /// The user's own choice still wins: the panel toggle records an opt-out
+    /// when they switch it OFF, and an explicitly disabled login item is
+    /// never re-enabled here. Only `.notRegistered` is acted on —
+    /// `.requiresApproval` is the user's pending decision in System Settings
+    /// and re-registering would not change it.
+    private func autoRegisterLoginItem() {
+        guard !LoginItemPreference.isOptedOut else {
+            TrayLog.info("login item auto-register skipped (user opted out)")
+            return
+        }
+        let status = SMAppService.mainApp.status
+        guard status == .notRegistered else { return }
+        do {
+            try SMAppService.mainApp.register()
+            TrayLog.info("login item auto-registered",
+                         ["status": TrayServer.statusName(SMAppService.mainApp.status)])
+        } catch {
+            TrayLog.error("login item auto-register failed", ["err": String(describing: error)])
+        }
     }
 
     // MARK: - Menu Bar Setup
@@ -130,6 +161,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .foregroundColor: NSColor.labelColor,
         ]
         attributed.append(NSAttributedString(string: "rt", attributes: rtAttrs))
+
+        // Dev flavor wears a visible mark (spec MAT-383 §3) — the dev and
+        // prod trays are otherwise identical in the menu bar, and mistaking
+        // one for the other is how you debug the wrong daemon.
+        if BundleFlavor.isDevBuild {
+            let devAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold),
+                .foregroundColor: NSColor.systemOrange,
+            ]
+            attributed.append(NSAttributedString(string: " dev", attributes: devAttrs))
+        }
 
         // Space
         attributed.append(NSAttributedString(string: " "))
