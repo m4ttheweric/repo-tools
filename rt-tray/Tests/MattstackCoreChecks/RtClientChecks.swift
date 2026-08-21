@@ -95,4 +95,14 @@ let rtClientChecks: [Check] = [
                                            environment: [:], home: "/Users/u", fileExists: { _ in false })
         c.expect(none == nil, "no rt anywhere → nil, never a guess")
     },
+    Check("ConnectResult decodes github's handle/owners and omits them for other integrations") { c in
+        let githubJSON = Data(#"{"integration":"github","status":"ready","handle":"mgoodwin","owners":["m4ttstack"]}"#.utf8)
+        let github = try JSONDecoder().decode(ConnectResult.self, from: githubJSON)
+        c.expectEqual(github.handle, "mgoodwin")
+        c.expectEqual(github.owners, ["m4ttstack"])
+        let slackJSON = Data(#"{"integration":"slack","status":"ready"}"#.utf8)
+        let slack = try JSONDecoder().decode(ConnectResult.self, from: slackJSON)
+        c.expect(slack.handle == nil, "handle absent for non-github integrations")
+        c.expect(slack.owners == nil, "owners absent for non-github integrations")
+    },
 ]
