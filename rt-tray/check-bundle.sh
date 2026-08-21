@@ -1,17 +1,23 @@
 #!/bin/bash
 # rt-tray/check-bundle.sh — asserts the mattstack.app bundle contract for BOTH
 # flavors. Builds them via build.sh (no notarization; that is CI-only), then
-# checks identity, layout, signing, Helpers, Sparkle, and the dev shim's exit
-# codes. Exit 0 only when every assertion passes.
+# checks identity, layout, signing, and the dev shim's exit codes (Helpers and
+# Sparkle assertions land in later tasks). Exit 0 only when every assertion
+# passes.
 #
 # Usage:
 #   RT_DAEMON_BIN=../dist/rt ./check-bundle.sh     # embed a compiled rt (a
 #                                                  # dev-mode machine's `rt`
 #                                                  # on PATH is a script)
 #   ./check-bundle.sh --app /Applications/mattstack.app   # assert an INSTALLED
-#                                                         # prod bundle, no build
+#                                                         # prod bundle, no build.
+#                                                         # A relative --app path
+#                                                         # resolves against the
+#                                                         # caller's cwd, not
+#                                                         # this script's dir.
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ORIG_PWD="$(pwd)"
 cd "$SCRIPT_DIR"
 
 PASS=0; FAIL=0
@@ -21,18 +27,37 @@ assert_eq() {
     local desc="$1" expected="$2" actual="$3"
     if [ "$expected" = "$actual" ]; then pass "$desc = $actual"; else fail "$desc: expected [$expected], got [$actual]"; fi
 }
-plist() { /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null; }
+# PlistBuddy prints "File Doesn't Exist, Will Create: …" to STDOUT (not
+# stderr) and exits nonzero on a missing plist — without the exit-status
+# check that text would leak into every "got […]" comparison as a fake value.
+plist() {
+    local out rc
+    out="$(/usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null)"
+    rc=$?
+    [ "$rc" -eq 0 ] && printf '%s' "$out"
+}
+
+CLEANUP=()
+cleanup() { local p; for p in "${CLEANUP[@]:-}"; do [ -n "$p" ] && rm -rf "$p"; done; }
+trap cleanup EXIT
 
 PROD="$SCRIPT_DIR/mattstack.app"
 DEV="$SCRIPT_DIR/mattstack-dev.app"
 INSTALLED_ONLY=false
 if [ "${1:-}" = "--app" ]; then
     INSTALLED_ONLY=true
-    PROD="$2"
+    APP_ARG="${2:?--app requires a bundle path}"
+    case "$APP_ARG" in
+        /*) PROD="$APP_ARG" ;;
+        *)  PROD="$ORIG_PWD/$APP_ARG" ;;
+    esac
     DEV=""
 else
-    echo "== Building prod flavor (release) =="; ./build.sh release; echo ""
-    echo "== Building dev flavor (dev) ==";      ./build.sh dev;     echo ""
+    # A stale bundle from a previous run must never survive a failed rebuild —
+    # otherwise a broken build can still show a full pass count below.
+    rm -rf "$SCRIPT_DIR/mattstack.app" "$SCRIPT_DIR/mattstack-dev.app"
+    echo "== Building prod flavor (release) =="; ./build.sh release || fail "build.sh release failed"; echo ""
+    echo "== Building dev flavor (dev) ==";      ./build.sh dev     || fail "build.sh dev failed";     echo ""
 fi
 echo "== Assertions =="
 
@@ -46,6 +71,8 @@ if grep -E 'codesign.*--deep' build.sh | grep -vq '^ *#'; then fail "build.sh si
 # ─── Identity ────────────────────────────────────────────────────────────────
 check_identity() { # app bundle-id exe label devbuild
     local app="$1" bid="$2" exe="$3" label="$4" devbuild="$5" info="$1/Contents/Info.plist"
+    if [ ! -d "$app" ]; then fail "$exe bundle not found at $app"; return; fi
+    if [ ! -f "$info" ]; then fail "$exe Info.plist missing at $info"; return; fi
     assert_eq "$exe CFBundleIdentifier" "$bid" "$(plist "$info" CFBundleIdentifier)"
     assert_eq "$exe CFBundleExecutable" "$exe" "$(plist "$info" CFBundleExecutable)"
     assert_eq "$exe CFBundleDisplayName" "$exe" "$(plist "$info" CFBundleDisplayName)"
@@ -117,18 +144,32 @@ is_devid() { codesign -dvv "$1" 2>&1 | grep -q 'Authority=Developer ID Applicati
 ent_has() { codesign -d --entitlements - --xml "$1" 2>/dev/null | grep -q "$2"; }
 check_signed() { # path label want-ent(none|jit)
     local p="$1" label="$2" want="$3"
+    [ -f "$p" ] || { fail "$label missing at $p"; return; }
     codesign --verify --strict "$p" 2>/dev/null && pass "$label signature verifies" || fail "$label signature does not verify"
     if is_devid "$p"; then has_runtime "$p" && pass "$label has hardened runtime" || fail "$label lacks hardened runtime ($(sign_flags "$p"))"; fi
     if ent_has "$p" 'allow-jit'; then [ "$want" = jit ] && pass "$label has allow-jit" || fail "$label unexpectedly has allow-jit"; else [ "$want" = none ] && pass "$label has no jit entitlement" || fail "$label missing allow-jit"; fi
     ent_has "$p" 'allow-unsigned-executable-memory' && fail "$label carries allow-unsigned-executable-memory (JIT-only entitlements only)" || pass "$label has no allow-unsigned-executable-memory"
 }
-for app in "$PROD" $DEV; do
+APPS=("$PROD")
+[ -n "$DEV" ] && APPS+=("$DEV")
+for app in "${APPS[@]}"; do
+    if [ ! -d "$app" ]; then fail "bundle not found for signing checks: $app"; continue; fi
+    if [ ! -f "$app/Contents/Info.plist" ]; then fail "Info.plist missing, cannot determine executable name for signing checks ($app)"; continue; fi
     exe="$(plist "$app/Contents/Info.plist" CFBundleExecutable)"
+    if [ -z "$exe" ]; then fail "CFBundleExecutable unreadable from $app/Contents/Info.plist, skipping signing checks"; continue; fi
     codesign --verify --deep --strict "$app" 2>/dev/null && pass "$exe bundle verifies (--deep --strict)" || fail "$exe bundle fails codesign --verify --deep --strict"
     check_signed "$app/Contents/MacOS/rt" "$exe rt" jit
     check_signed "$app/Contents/MacOS/$exe" "$exe tray" none
-    # Inner/outer identity must match (no nested ad-hoc inside a Developer ID bundle).
-    assert_eq "$exe inner/outer signing authority" "$(codesign -dvv "$app" 2>&1 | grep '^Authority=' | head -1)" "$(codesign -dvv "$app/Contents/MacOS/rt" 2>&1 | grep '^Authority=' | head -1)"
+    # Inner/outer identity must match (no nested ad-hoc inside a Developer ID
+    # bundle); an empty authority on either side means codesign found nothing
+    # to read, not a match, so it is reported as its own named failure.
+    AUTH_OUTER="$(codesign -dvv "$app" 2>&1 | grep '^Authority=' | head -1)"
+    AUTH_INNER="$(codesign -dvv "$app/Contents/MacOS/rt" 2>&1 | grep '^Authority=' | head -1)"
+    if [ -z "$AUTH_OUTER" ] || [ -z "$AUTH_INNER" ]; then
+        fail "$exe inner/outer signing authority: cannot compare (bundle=[${AUTH_OUTER:-<none>}] rt=[${AUTH_INNER:-<none>}])"
+    else
+        assert_eq "$exe inner/outer signing authority" "$AUTH_OUTER" "$AUTH_INNER"
+    fi
 done
 
 # ─── Icons ──────────────────────────────────────────────────────────────────
@@ -145,7 +186,7 @@ fi
 if [ -n "$DEV" ]; then
     SHIM="$DEV/Contents/MacOS/rt"
     SHIM_TMP=$(mktemp -d /tmp/mattstack-check-shim.XXXXXX)
-    trap 'rm -rf "$SHIM_TMP"' EXIT
+    CLEANUP+=("$SHIM_TMP")
     shim_case() {
         local desc="$1" expected_code="$2" home="$3" out rc
         out=$(env -i HOME="$home" "$SHIM" --daemon 2>&1); rc=$?
@@ -171,6 +212,9 @@ if ! $INSTALLED_ONLY; then
     grep_src() { grep -R --include='*.swift' -q "$1" Sources Sources-daemon-shim Sources-core 2>/dev/null; }
     grep_src 'forInfoDictionaryKey: "MSDaemonLabel"' && pass "BundleFlavor reads MSDaemonLabel" || fail "BundleFlavor does not read MSDaemonLabel"
     grep_src 'defaultDaemonLabel = "com.mattstack.daemon"' && pass "BundleFlavor falls back to com.mattstack.daemon" || fail "BundleFlavor fallback label wrong"
+    # Named so the widened source-gate directories are self-verifying instead
+    # of silently degrading to "no match found" when one of them is absent.
+    [ -d Sources-core ] && pass "Sources-core exists" || fail "Sources-core missing — the widened rt-daemon-artifact gate has nothing to check until it does"
     grep_src 'Contents/MacOS/rt-daemon' && fail "Swift still references Contents/MacOS/rt-daemon" || pass "no Swift reference to Contents/MacOS/rt-daemon"
     grep_src 'path == "/flavor/retire"' && pass "/flavor/retire endpoint present" || fail "/flavor/retire endpoint missing"
     GUARD_LINE=$(grep -n 'TrayServer.exitIfAnotherTrayOwnsSocket()' Sources/main.swift | head -1 | cut -d: -f1)
@@ -183,6 +227,7 @@ if ! $INSTALLED_ONLY; then
         fail "UpdaterController does not gate Sparkle on BundleFlavor.isDevBuild"
     fi
     TRAY_STRINGS=$(mktemp /tmp/mattstack-check-strings.XXXXXX)
+    CLEANUP+=("$TRAY_STRINGS")
     strings "$PROD/Contents/MacOS/$(plist "$PROD/Contents/Info.plist" CFBundleExecutable)" > "$TRAY_STRINGS" 2>/dev/null
     assert_bin_has() { # desc needle
         if grep -qF "$2" "$TRAY_STRINGS"; then pass "built tray binary contains: $2"; else fail "built tray binary is missing: $2 ($1)"; fi

@@ -69,7 +69,7 @@ if [ "$BUILD_CONFIG" = "debug" ]; then
     BINARY="$SCRIPT_DIR/.build/debug/$PRODUCT_NAME"
 else
     if [ "$IS_DEV" = true ]; then
-        # Dev flavor ships the shim as its rt-daemon (§3) — build both products.
+        # Dev flavor ships the shim as Contents/MacOS/rt — build both products.
         swift build -c release 2>&1 | sed 's/^/  /'
     else
         # Prod flavor never ships rt-daemon-shim — drop its compile step entirely.
@@ -241,20 +241,25 @@ else
     /usr/libexec/PlistBuddy -c "Add :MSDevBuild bool false" "$APP_BUNDLE/Contents/Info.plist"
 fi
 
+# Anchored at both ends: "2.8.0-rc1" must not silently pass as "2.8.0" and
+# collide with the real release's CFBundleVersion. A non-semver RT_VERSION
+# aborts the build instead of writing CFBundleVersion=0 (indistinguishable
+# from a real build-0 bug once it's in a shipped Info.plist).
 numeric_build() {
     local v="${1#v}"
-    if [[ "$v" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+    if [[ "$v" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
         echo $(( BASH_REMATCH[1] * 1000000 + BASH_REMATCH[2] * 1000 + BASH_REMATCH[3] ))
     else
-        echo 0
+        return 1
     fi
 }
 RT_VERSION="${RT_VERSION:-$(cd "$SCRIPT_DIR/.." && git describe --tags --abbrev=0 2>/dev/null || echo dev)}"
 RT_VERSION="${RT_VERSION#v}"  # strip leading 'v'
 if [ "$RT_VERSION" != "dev" ]; then
+    RT_BUILD="$(numeric_build "$RT_VERSION")" || { echo "  ✗ RT_VERSION '$RT_VERSION' is not semver (expected X.Y.Z)" >&2; exit 1; }
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $RT_VERSION" "$APP_BUNDLE/Contents/Info.plist"
-    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(numeric_build "$RT_VERSION")" "$APP_BUNDLE/Contents/Info.plist"
-    echo "  ✓ Version set to $RT_VERSION (build $(numeric_build "$RT_VERSION"))"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $RT_BUILD" "$APP_BUNDLE/Contents/Info.plist"
+    echo "  ✓ Version set to $RT_VERSION (build $RT_BUILD)"
 fi
 
 # Create PkgInfo
