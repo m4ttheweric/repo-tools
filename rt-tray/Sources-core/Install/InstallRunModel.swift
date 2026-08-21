@@ -73,32 +73,41 @@ public final class InstallRunModel: ObservableObject {
             logs = [:]
             streamNotes = []
         }
+        // Captured up front, without touching self, so the needs-ledger
+        // clear and stream creation never hold a strong self across their
+        // awaits — a dismissed owning view must be free to deallocate the
+        // model while a run is still in flight, not just after it ends.
+        let needs = self.needs
+        let makeStream = self.stream
         task = Task { [weak self] in
-            guard let self else { return }
             // A retry must forget only the failed step's need so earlier
             // steps' outcomes survive; a fresh run forgets everything. Both
             // are awaited before the stream factory runs, so rt never races
             // a poll against a ledger entry this run hasn't cleared yet.
-            if let from { await self.needs.forget(id: from) } else { await self.needs.forgetAll() }
-            guard self.generation == gen else { return }
-            let stream = self.stream(from)
+            if let from { await needs.forget(id: from) } else { await needs.forgetAll() }
+            guard self?.generation == gen else { return }
+            let stream = makeStream(from)
             do {
                 for try await line in stream {
-                    guard self.generation == gen else { return }
+                    // Re-derived every iteration and released at its end, so
+                    // no strong self is held while suspended waiting on the
+                    // next line — only for the synchronous work plus one
+                    // handle() call this iteration needs.
+                    guard let self, self.generation == gen else { return }
                     let event: ApplyEvent
                     do { event = try ApplyEvent.decode(line) }
                     catch { self.noteStreamIssue("unparsed: \(line)", gen: gen); continue }
                     await self.handle(event, gen: gen)
                 }
-                guard self.generation == gen, self.phase == .running else { return }
-                self.phase = .streamError("rt setup apply ended without a done event")
+                guard self?.generation == gen, self?.phase == .running else { return }
+                self?.phase = .streamError("rt setup apply ended without a done event")
             } catch {
                 // rt can throw after already emitting `done` (e.g. a nonzero
                 // exit racing the final line); a phase a `done` event already
                 // terminalized must not be clobbered, same as the normal-
                 // completion branch above.
-                guard self.generation == gen, self.phase == .running else { return }
-                self.phase = .streamError(Self.describe(error))
+                guard self?.generation == gen, self?.phase == .running else { return }
+                self?.phase = .streamError(Self.describe(error))
             }
         }
     }
