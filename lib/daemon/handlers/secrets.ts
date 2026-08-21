@@ -29,13 +29,46 @@
  * X-RT-Token header into the payload so HTTP callers (the extension) don't
  * need to change; a socket caller must read ~/.mattstack/rt/api-token
  * itself and pass it the same way.
+ *
+ * `payload.scope` (Task 3, deck lane) adds a second whitelist alongside the
+ * extension's, each reading its own encrypted domain — "extension" (default,
+ * so existing callers need no change) reads the `rt` domain's linearApiKey/
+ * gitlabToken; "deck" reads the `deck` domain's cfApiToken/cfZoneId. The
+ * token gate above applies identically to both; scope is checked only after
+ * it passes, and an unknown scope is refused before either domain reader
+ * runs — the two whitelists must never blend into one combined read.
  */
 
 import { loadSecrets } from "../../linear.ts";
 import { loadMachineRepoTracking, grants, type RepoTracking } from "../../repo-tracking.ts";
 import { loadOrCreateApiToken, tokenOk } from "../api-auth.ts";
+import { readSecret, createRealSecretsExecSeam, type SecretsSeams } from "../../secrets/store.ts";
+import { createRealAgeKeySeam } from "../../home/age-key.ts";
 import type { Commands, ForgeSlug } from "../../../packages/rt-client/src/commands.ts";
 import type { HandlerContext, HandlerMap, TypedHandlers } from "./types.ts";
+
+const DECK_SECRET_DOMAIN = "deck";
+const DECK_SECRET_KEYS = ["cfApiToken", "cfZoneId"] as const;
+
+let realDeckSecretsSeamsSingleton: SecretsSeams | null = null;
+
+/** Lazily-built real seams, separate from lib/linear.ts's `rt`-domain singleton since this reads a different domain file. */
+function defaultDeckSecretsSeams(): SecretsSeams {
+  return realDeckSecretsSeamsSingleton ??= {
+    ageKeySeam: createRealAgeKeySeam(),
+    execSeam: createRealSecretsExecSeam(),
+  };
+}
+
+async function loadDeckSecrets(): Promise<{ cfApiToken?: string; cfZoneId?: string }> {
+  const seams = defaultDeckSecretsSeams();
+  const out: { cfApiToken?: string; cfZoneId?: string } = {};
+  for (const key of DECK_SECRET_KEYS) {
+    const value = await readSecret(DECK_SECRET_DOMAIN, key, seams);
+    if (value !== null) out[key] = value;
+  }
+  return out;
+}
 
 const SECRETS_KEY: Record<ForgeSlug, "gitlabToken" | "githubToken"> = {
   gitlab: "gitlabToken",
@@ -45,8 +78,10 @@ const SECRETS_KEY: Record<ForgeSlug, "gitlabToken" | "githubToken"> = {
 export interface SecretsHandlerOverrides {
   tracking?: () => RepoTracking;
   secrets?: () => { gitlabToken?: string; githubToken?: string } | Promise<{ gitlabToken?: string; githubToken?: string }>;
-  /** Defaults to `loadSecrets` (the full encrypted-store + plaintext-fallback loader) for secrets:read. */
+  /** Defaults to `loadSecrets` (the full encrypted-store + plaintext-fallback loader) for secrets:read's "extension" scope. */
   extensionSecrets?: () => Promise<{ linearApiKey?: string; gitlabToken?: string }>;
+  /** Defaults to `loadDeckSecrets` (the `deck` encrypted domain) for secrets:read's "deck" scope. */
+  deckSecrets?: () => Promise<{ cfApiToken?: string; cfZoneId?: string }>;
   /** Defaults to `loadOrCreateApiToken` (the real ~/.mattstack/rt/api-token, shared with api-auth.ts). */
   apiToken?: () => string;
 }
@@ -62,6 +97,7 @@ export function createSecretsHandlers(
   const tracking = overrides.tracking ?? loadMachineRepoTracking;
   const secrets = overrides.secrets ?? loadSecrets;
   const extensionSecrets = overrides.extensionSecrets ?? loadSecrets;
+  const deckSecrets = overrides.deckSecrets ?? loadDeckSecrets;
   const apiToken = overrides.apiToken ?? (() => loadOrCreateApiToken());
 
   return {
@@ -101,11 +137,20 @@ export function createSecretsHandlers(
         return { ok: false as const, error: "bad-token" };
       }
 
-      const all = await extensionSecrets();
+      const scope = payload?.scope ?? "extension";
       const data: Commands["secrets:read"]["data"] = {};
-      if (all.linearApiKey) data.linearApiKey = all.linearApiKey;
-      if (all.gitlabToken) data.gitlabToken = all.gitlabToken;
-      ctx.log.debug({ keys: Object.keys(data) }, "secrets:read");
+      if (scope === "extension") {
+        const all = await extensionSecrets();
+        if (all.linearApiKey) data.linearApiKey = all.linearApiKey;
+        if (all.gitlabToken) data.gitlabToken = all.gitlabToken;
+      } else if (scope === "deck") {
+        const all = await deckSecrets();
+        if (all.cfApiToken) data.cfApiToken = all.cfApiToken;
+        if (all.cfZoneId) data.cfZoneId = all.cfZoneId;
+      } else {
+        return { ok: false as const, error: "bad-scope" };
+      }
+      ctx.log.debug({ scope, keys: Object.keys(data) }, "secrets:read");
       return { ok: true as const, data };
     },
   };
