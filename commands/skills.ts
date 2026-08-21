@@ -16,10 +16,12 @@
  * queries for real via `claude plugin list --json`.
  */
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { execFileSync, spawnSync } from "child_process";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
+import { resolveFzf } from "../lib/fzf.ts";
 import { mattstackHome } from "../lib/rt-paths.ts";
-import { compileSkill } from "../lib/skills/compile.ts";
+import { compileSkill, HEADER_COMMENT } from "../lib/skills/compile.ts";
 import {
   invocableRoster,
   loadAttachment,
@@ -28,6 +30,7 @@ import {
   readSurface,
   readVerbRoster,
   resolvePluginRoots,
+  stripFrontmatter,
   type PluginRoots,
   type SurfaceConfig,
 } from "../lib/skills/sources.ts";
@@ -335,5 +338,325 @@ export async function skillsCheck(args: string[]): Promise<void> {
     }
 
     if (anyStale) process.exitCode = 1;
+  });
+}
+
+// ─── rt skills surface -- list / set / apply / fzf palette ────────────────
+
+type SurfaceFlags = {
+  team: string;
+  dryRun: boolean;
+  packDir: string | null;
+  mattstackDir: string | null;
+  manifest: string | null;
+};
+
+type SurfaceRow = { name: string; kind: "compiled" | "hand-authored"; status: "public" | "internal" };
+
+function parseSurfaceFlags(args: string[]): { flags: SurfaceFlags; rest: string[] } {
+  let team = "claimview";
+  let dryRun = false;
+  let packDir: string | null = null;
+  let mattstackDir: string | null = null;
+  let manifest: string | null = null;
+  const rest: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    switch (a) {
+      case "--team": team = args[++i] ?? team; break;
+      case "--dry-run": dryRun = true; break;
+      case "--pack-dir": packDir = args[++i] ?? null; break;
+      case "--mattstack-dir": mattstackDir = args[++i] ?? null; break;
+      case "--manifest": manifest = args[++i] ?? null; break;
+      default: rest.push(a);
+    }
+  }
+
+  return { flags: { team, dryRun, packDir, mattstackDir, manifest }, rest };
+}
+
+function resolveSurfacePaths(flags: SurfaceFlags): { packDir: string } {
+  const mattstackRoot = flags.mattstackDir ?? mattstackHome();
+  const packDir = flags.packDir ?? packRootDir(mattstackRoot, flags.team);
+  return { packDir };
+}
+
+function isCompiledDir(dir: string): boolean {
+  const skillMdPath = join(dir, "SKILL.md");
+  if (!existsSync(skillMdPath)) return false;
+  const { body } = stripFrontmatter(readFileSync(skillMdPath, "utf8"));
+  return body.startsWith(HEADER_COMMENT);
+}
+
+/** Stub verb names are always compile targets; a materialized dir carrying the compiler header is one too, even if its verb was since retired from stubs.jsonc. */
+function classify(name: string, dir: string | null, verbNames: Set<string>): "compiled" | "hand-authored" {
+  if (verbNames.has(name)) return "compiled";
+  if (dir && isCompiledDir(dir)) return "compiled";
+  return "hand-authored";
+}
+
+function collectRegistry(packDir: string, verbNames: Set<string>) {
+  const skillsNames = new Set(listSubdirs(join(packDir, "skills")));
+  const attachmentNames = new Set(listSubdirs(join(packDir, "attachments")));
+  const allNames = new Set<string>([...skillsNames, ...attachmentNames, ...verbNames]);
+  return { skillsNames, attachmentNames, allNames };
+}
+
+/** The set `set`'s first use bootstraps surface.jsonc from -- so the first edit is a delta from reality, not a cliff. */
+function defaultPublicSet(skillsNames: Set<string>, verbNames: Set<string>): Set<string> {
+  return new Set<string>([...skillsNames, ...verbNames]);
+}
+
+function computeRows(
+  packDir: string,
+  verbNames: Set<string>,
+  surface: SurfaceConfig | null,
+): { source: string; rows: SurfaceRow[] } {
+  const { skillsNames, attachmentNames, allNames } = collectRegistry(packDir, verbNames);
+  const publicSet = surface ? new Set(surface.public) : defaultPublicSet(skillsNames, verbNames);
+  const source = surface
+    ? "pack/surface.jsonc"
+    : "(no surface.jsonc yet -- inferred from current skills/ + stubs.jsonc placement)";
+
+  const rows = [...allNames].sort().map((name) => {
+    const dir = skillsNames.has(name)
+      ? join(packDir, "skills", name)
+      : attachmentNames.has(name)
+        ? join(packDir, "attachments", name)
+        : null;
+    return {
+      name,
+      kind: classify(name, dir, verbNames),
+      status: (publicSet.has(name) ? "public" : "internal") as "public" | "internal",
+    };
+  });
+
+  return { source, rows };
+}
+
+function writeSurfaceConfig(packDir: string, publicList: string[]): void {
+  const path = join(packDir, "pack", "surface.jsonc");
+  mkdirSync(dirname(path), { recursive: true });
+  const json = JSON.stringify({ public: publicList }, null, 2);
+  writeFileSync(path, `// surface.jsonc -- names this pack's public skills/ directories.\n${json}\n`);
+}
+
+function compileArgs(flags: SurfaceFlags, packDir: string): string[] {
+  const args = ["--team", flags.team, "--pack-dir", packDir];
+  if (flags.mattstackDir) args.push("--mattstack-dir", flags.mattstackDir);
+  if (flags.manifest) args.push("--manifest", flags.manifest);
+  if (flags.dryRun) args.push("--dry-run");
+  return args;
+}
+
+function isInsideGitWorkTree(dir: string): boolean {
+  try {
+    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: dir, stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** git mv keeps rename history for the common case; fixtures (and any non-git pack dir) fall back to a plain rename. */
+function moveHandAuthoredDir(packDir: string, name: string, from: "skills" | "attachments", to: "skills" | "attachments"): string | null {
+  const fromRel = join(from, name);
+  const toRel = join(to, name);
+  mkdirSync(join(packDir, to), { recursive: true });
+
+  if (isInsideGitWorkTree(packDir)) {
+    execFileSync("git", ["mv", fromRel, toRel], { cwd: packDir, stdio: "pipe" });
+    return null;
+  }
+
+  renameSync(join(packDir, fromRel), join(packDir, toRel));
+  return "plain rename -- pack dir is not a git repo";
+}
+
+function printSurfaceRows(flags: SurfaceFlags, source: string, rows: SurfaceRow[]): void {
+  console.log(`rt skills surface -- team ${flags.team}`);
+  console.log(`source: ${source}`);
+  for (const row of rows) {
+    console.log(`  ${row.status.padEnd(9)}${row.kind.padEnd(15)}${row.name}`);
+  }
+}
+
+async function runList(flags: SurfaceFlags): Promise<void> {
+  const { packDir } = resolveSurfacePaths(flags);
+  const verbNames = new Set(readVerbRoster(packDir).map((v) => v.name));
+  const surface = readSurface(packDir);
+  const { source, rows } = computeRows(packDir, verbNames, surface);
+
+  printSurfaceRows(flags, source, rows);
+  if (rows.length === 0) console.log("(no skills registered in this pack)");
+}
+
+async function runApply(flags: SurfaceFlags): Promise<void> {
+  const { packDir } = resolveSurfacePaths(flags);
+  const verbNames = new Set(readVerbRoster(packDir).map((v) => v.name));
+  const surface = readSurface(packDir);
+  const { skillsNames, attachmentNames } = collectRegistry(packDir, verbNames);
+  const publicSet = surface ? new Set(surface.public) : defaultPublicSet(skillsNames, verbNames);
+
+  const candidates = [...new Set<string>([...skillsNames, ...attachmentNames])].sort();
+  let moved = 0;
+
+  for (const name of candidates) {
+    const currentlyUnderSkills = skillsNames.has(name);
+    const dir = join(packDir, currentlyUnderSkills ? "skills" : "attachments", name);
+    if (classify(name, dir, verbNames) === "compiled") continue; // regenerated/removed by the compile step below, never git-mv'd
+
+    const wantPublic = publicSet.has(name);
+    if (currentlyUnderSkills === wantPublic) continue;
+
+    const from = currentlyUnderSkills ? "skills" : "attachments";
+    const to = currentlyUnderSkills ? "attachments" : "skills";
+    moved++;
+
+    if (flags.dryRun) {
+      console.log(`would move ${name}: ${from}/ -> ${to}/`);
+      continue;
+    }
+
+    const note = moveHandAuthoredDir(packDir, name, from, to);
+    console.log(`moved ${name}: ${from}/ -> ${to}/${note ? ` (${note})` : ""}`);
+  }
+
+  if (moved === 0) console.log("no moves needed");
+
+  await skillsCompile(compileArgs(flags, packDir));
+}
+
+async function runSet(name: string, want: "public" | "internal", flags: SurfaceFlags): Promise<void> {
+  const { packDir } = resolveSurfacePaths(flags);
+  const verbNames = new Set(readVerbRoster(packDir).map((v) => v.name));
+  const { skillsNames, allNames } = collectRegistry(packDir, verbNames);
+
+  if (!allNames.has(name)) {
+    throw new SkillsUsageError(
+      `"${name}" is not a known skill or verb in this pack (checked skills/, attachments/, stubs.jsonc)`,
+    );
+  }
+
+  const surface = readSurface(packDir);
+  const publicSet = surface ? new Set(surface.public) : defaultPublicSet(skillsNames, verbNames);
+
+  if (want === "public") publicSet.add(name);
+  else publicSet.delete(name);
+
+  writeSurfaceConfig(packDir, [...publicSet].sort());
+  console.log(`${name}: ${want}`);
+
+  await runApply(flags);
+}
+
+async function runPalette(flags: SurfaceFlags): Promise<void> {
+  const { packDir } = resolveSurfacePaths(flags);
+  const verbNames = new Set(readVerbRoster(packDir).map((v) => v.name));
+  const surface = readSurface(packDir);
+  const { source, rows } = computeRows(packDir, verbNames, surface);
+
+  if (rows.length === 0) {
+    console.log("(no skills registered in this pack)");
+    return;
+  }
+
+  const fzfPath = resolveFzf();
+  if (!fzfPath || !process.stdin.isTTY) {
+    printSurfaceRows(flags, source, rows);
+    console.log("");
+    console.log("no tty or fzf not found -- edit one at a time: rt skills surface set <name> --public|--internal");
+    return;
+  }
+
+  const preselected = rows
+    .map((row, i) => (row.status === "public" ? i + 1 : null))
+    .filter((i): i is number => i !== null);
+  const loadBind = preselected.length
+    ? `load:${preselected.map((pos) => `pos(${pos})+toggle`).join("+")}+pos(1)`
+    : "load:pos(1)";
+
+  const input = rows
+    .map((row) => `${row.name}\t${row.status.padEnd(9)}${row.kind.padEnd(15)}${row.name}`)
+    .join("\n");
+
+  const result = spawnSync(
+    "fzf",
+    [
+      "--multi",
+      "--with-nth=2..",
+      "--delimiter=\t",
+      "--layout=reverse",
+      "--border=rounded",
+      "--border-label= rt skills surface ",
+      "--prompt=  filter: ",
+      "--header=space: toggle public  tab: toggle+next  enter: apply  esc: cancel",
+      "--no-mouse",
+      "--bind=space:toggle,tab:toggle+down",
+      `--bind=${loadBind}`,
+    ],
+    { input, stdio: ["pipe", "pipe", "inherit"], encoding: "utf8" },
+  );
+
+  if (result.status !== 0) {
+    console.log("cancelled -- no changes made");
+    return;
+  }
+
+  const selected = (result.stdout ?? "")
+    .replace(/\n$/, "")
+    .split("\n")
+    .map((line) => line.split("\t")[0]!)
+    .filter(Boolean);
+
+  writeSurfaceConfig(packDir, [...new Set(selected)].sort());
+  console.log(`surface.jsonc updated: ${selected.length} public`);
+
+  await runApply(flags);
+}
+
+export async function skillsSurface(args: string[]): Promise<void> {
+  await withCleanErrors(async () => {
+    const mode = args[0];
+
+    if (mode === "list") {
+      const { flags, rest } = parseSurfaceFlags(args.slice(1));
+      if (rest.length) throw new SkillsUsageError(`unrecognized argument "${rest[0]}"`);
+      await runList(flags);
+      return;
+    }
+
+    if (mode === "apply") {
+      const { flags, rest } = parseSurfaceFlags(args.slice(1));
+      if (rest.length) throw new SkillsUsageError(`unrecognized argument "${rest[0]}"`);
+      await runApply(flags);
+      return;
+    }
+
+    if (mode === "set") {
+      const name = args[1];
+      if (!name || name.startsWith("--")) {
+        throw new SkillsUsageError("set requires a skill name: rt skills surface set <name> --public|--internal");
+      }
+      const { flags, rest } = parseSurfaceFlags(args.slice(2));
+      let want: "public" | "internal" | null = null;
+      for (const a of rest) {
+        if (a === "--public") want = "public";
+        else if (a === "--internal") want = "internal";
+        else throw new SkillsUsageError(`unrecognized argument "${a}"`);
+      }
+      if (!want) throw new SkillsUsageError("set requires --public or --internal");
+      await runSet(name, want, flags);
+      return;
+    }
+
+    if (mode !== undefined && !mode.startsWith("--")) {
+      throw new SkillsUsageError(`unrecognized subcommand "${mode}" (expected list, set, or apply)`);
+    }
+
+    const { flags, rest } = parseSurfaceFlags(args);
+    if (rest.length) throw new SkillsUsageError(`unrecognized argument "${rest[0]}"`);
+    await runPalette(flags);
   });
 }

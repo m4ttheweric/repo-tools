@@ -2,7 +2,8 @@ import type { AttachmentSource, CompiledFile, CompileResult, StepSource, VerbDef
 
 const CLAUDE_SKILL_DIR_TOKEN = "${CLAUDE_SKILL_DIR}";
 
-const HEADER_COMMENT =
+/** Exported so `rt skills surface` can classify a directory as compiled by checking its SKILL.md body prefix. */
+export const HEADER_COMMENT =
   "<!-- compiled by rt skills compile from the sources below; slots pre-resolved; edits here are working-tree drift (rt skills promote) -->";
 
 const REGISTERED_NAME_RE = /\b(mattstack|claimview|assured):[a-z][a-z0-9-]*\b/g;
