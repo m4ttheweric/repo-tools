@@ -19,7 +19,7 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSUserNotificationAlertStyle</key>
@@ -33,5 +33,33 @@
     <!-- MSDevBuild is added by build.sh via PlistBuddy (a real bool, not a
          sed token) so it can't be stringified by accident. Gates
          UpdateChecker and the dev menu-bar mark. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>@@BUNDLE_ID@@.join</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>mattstack</string>
+            </array>
+        </dict>
+    </array>
+    <key>SUFeedURL</key>
+    <string>https://github.com/m4ttstack/rt/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>REPLACE_WITH_RELEASE_PUBLIC_ED_KEY</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <true/>
+    <key>SUVerifyUpdateBeforeExtraction</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>21600</integer>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
 </dict>
 </plist>
