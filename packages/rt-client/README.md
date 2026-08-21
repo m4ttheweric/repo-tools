@@ -20,6 +20,9 @@ const mrs = await readProjectMRs('group/repo');
 Requires a running rt daemon. Install rt from the latest GitHub Release
 (`./rt --post-install`), then `rt verify`.
 
+Bun-only: the settings exec path (`src/settings/exec.ts`) shells out via
+`Bun.spawn`, so this package does not run under Node.
+
 `@mattstack/glance` is a peer dependency: rt-client returns glance's forge types
 so merge request shapes stay identical across rt, gitq, and mr-board.
 

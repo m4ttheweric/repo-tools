@@ -13,6 +13,14 @@
  * settings map is visible even before a key's reader has been ported), but
  * `set` on them refuses — see the spec's "Schema registry" section for why
  * writing a value nothing reads is the dishonesty class this design bans.
+ *
+ * `migrated` is omitted entirely (not `undefined` written out) for suite keys
+ * outside rt's wave-1 legacy-file migration — deck/board/gitq/mattstack/claude
+ * defs have no legacy file to migrate FROM, so the flag is meaningless for
+ * them. `isMigrated()` is the one place that turns absence into "yes,
+ * resolver-backed" — every other module must call it rather than testing
+ * `def.migrated` directly, or a suite key's absent flag reads as `false` and
+ * `set` refuses it.
  */
 
 import { REGISTRY } from "./registry-defs.ts";
@@ -28,7 +36,7 @@ export interface SettingDef {
   teamLocked?: boolean;
   secret?: boolean;
   repoScoped?: boolean;
-  migrated: boolean;
+  migrated?: boolean;
   legacyFile?: string;
   siblingCommand?: string;
   pathGuardFields?: string[];
@@ -45,6 +53,11 @@ export function getDef(key: string): SettingDef | undefined {
 /** Every registered def, in registry declaration order. */
 export function allDefs(): SettingDef[] {
   return [...REGISTRY];
+}
+
+/** True unless `def.migrated` is explicitly `false` — see the module doc. */
+export function isMigrated(def: SettingDef): boolean {
+  return def.migrated !== false;
 }
 
 const PATH_LIKE = /^[/~]/;

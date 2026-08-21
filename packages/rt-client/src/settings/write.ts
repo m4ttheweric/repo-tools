@@ -97,7 +97,7 @@ import { applyEdits, modify, parseTree, type JSONPath, type Node, type ParseErro
 import { randomBytes } from "crypto";
 import { dirname } from "path";
 import { machineSettingsPath, teamSettingsPath, userSettingsPath } from "./paths.ts";
-import { getDef, validateValue, type SettingDef, type SettingScope } from "./registry-machinery.ts";
+import { getDef, isMigrated, validateValue, type SettingDef, type SettingScope } from "./registry-machinery.ts";
 import { listTeams } from "./stores.ts";
 
 export interface SetSettingOpts {
@@ -127,7 +127,7 @@ export function setSetting(key: string, value: unknown, scope: SettingScope, opt
     refuse(`unknown setting "${key}" — not in the settings registry (see \`rt settings list\`)`);
   }
 
-  if (!def.migrated) {
+  if (!isMigrated(def)) {
     refuse(migratedFalseMessage(key, def));
   }
 

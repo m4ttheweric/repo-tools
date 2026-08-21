@@ -65,7 +65,7 @@ import {
   teamsDir,
   userSettingsPath,
 } from "./paths.ts";
-import { allDefs, getDef, validateValue, type SettingDef, type SettingScope } from "./registry-machinery.ts";
+import { allDefs, getDef, isMigrated, validateValue, type SettingDef, type SettingScope } from "./registry-machinery.ts";
 import { listTeams, readStore, type StoreFile } from "./stores.ts";
 
 // ─── Public types ────────────────────────────────────────────────────────────
@@ -614,7 +614,7 @@ export function listSettings(opts: ResolveOpts = {}): ListedSetting[] {
       key: def.key,
       value: resolution.value,
       provenance: resolution.provenance,
-      migrated: def.migrated,
+      migrated: isMigrated(def),
     };
     if (resolution.invalid.length > 0) listed.invalid = resolution.invalid;
 

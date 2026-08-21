@@ -31,9 +31,13 @@
   "files": [
     "dist",
     "src",
+    "!src/**/__tests__",
     "LICENSE",
     "README.md"
   ],
+  "engines": {
+    "bun": ">=1.0.0"
+  },
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target node --format esm --packages external && tsc -p tsconfig.json",
     "check-types": "tsc --noEmit -p tsconfig.json"
