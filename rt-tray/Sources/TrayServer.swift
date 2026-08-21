@@ -1,4 +1,5 @@
 import Foundation
+import MattstackCore
 import Network
 import ServiceManagement
 
@@ -12,6 +13,7 @@ class TrayServer {
 
     var onNotification: ((NotificationEvent) -> Void)?
     var daemonLifecycle: DaemonLifecycle?
+    var routes: TrayRoutes?
 
     private var listener: NWListener?
     private let socketPath: String
@@ -165,6 +167,22 @@ class TrayServer {
             let method = parts.first ?? ""
             let path = parts.count > 1 ? parts[1] : ""
 
+            let bodyData: Data? = str.range(of: "\r\n\r\n").map { Data(String(str[$0.upperBound...]).utf8) }
+            if let routes = self.routes {
+                Task {
+                    if let reply = await routes.handle(method: method, path: path, body: bodyData) {
+                        self.sendResponse(connection: connection, status: reply.status, body: reply.body, path: path)
+                    } else {
+                        self.handleLegacy(method: method, path: path, str: str, connection: connection)
+                    }
+                }
+                return
+            }
+            self.handleLegacy(method: method, path: path, str: str, connection: connection)
+        }
+    }
+
+    private func handleLegacy(method: String, path: String, str: String, connection: NWConnection) {
             if method == "POST" && path == "/notify" {
                 // Extract JSON body (after blank line)
                 if let bodyRange = str.range(of: "\r\n\r\n") {
@@ -266,7 +284,6 @@ class TrayServer {
             } else {
                 self.sendResponse(connection: connection, status: 404, body: "{\"ok\":false,\"error\":\"not found\"}", path: path)
             }
-        }
     }
 
     private func readFullRequest(connection: NWConnection, buffer: Data = Data(), completion: @escaping (Data?) -> Void) {
@@ -329,6 +346,8 @@ class TrayServer {
         case 200: statusText = "OK"
         case 400: statusText = "Bad Request"
         case 404: statusText = "Not Found"
+        case 405: statusText = "Method Not Allowed"
+        case 500: statusText = "Error"
         default: statusText = "Error"
         }
 
