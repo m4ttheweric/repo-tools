@@ -65,6 +65,7 @@ enum AXID {
     static let settingsGeneralDevMode = "settings.general.devMode"
     static func settingsPermissionAction(_ id: String) -> String { "settings.permissions.row.\(id).action" }
     static let settingsPermissionsReset = "settings.permissions.reset"
+    static let settingsPermissionsRelaunch = "settings.permissions.relaunch"
     static let settingsTeamInviteHandle = "settings.team.inviteHandle"
     static let settingsTeamInvite = "settings.team.invite"
     static let settingsTeamCopyPaste = "settings.team.copyPasteBlock"
