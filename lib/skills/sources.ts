@@ -61,9 +61,10 @@ export function buildPluginRoots(list: PluginListEntry[]): PluginRoots {
 }
 
 /**
- * Thin by design: the subprocess call itself is not unit-tested (see plan
- * constraint); buildPluginRoots carries the tested logic. Task 5 exercises
- * this live against real installed plugins.
+ * Thin by design: shelling out to `claude plugin list` is slow and
+ * environment-dependent, so the subprocess call itself is not unit-tested;
+ * buildPluginRoots carries the tested logic and this wrapper is exercised
+ * live against real installed plugins in integration coverage instead.
  */
 export function resolvePluginRoots(): PluginRoots {
   const raw = execSync("claude plugin list --json", { encoding: "utf8" });

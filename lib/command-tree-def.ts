@@ -751,7 +751,7 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   skills: {
-    description: "Compile and check the pack's committed skills",
+    description: "Compile, check, and manage the surface of the pack's committed skills",
     subcommands: {
       compile: {
         description: "Compile pack verbs from step sources + manifest bindings into committed SKILL.md files",

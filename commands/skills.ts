@@ -192,7 +192,11 @@ type Resolved = {
  * internal by default -- this is what lets a fill inline through the
  * transition window before it physically moves. Non-public stub verbs seed
  * the roster too: a retired verb's dir is deleted, so the dir scan alone
- * would let dangling references to it slip through.
+ * would let dangling references to it slip through. attachments/ dirs seed
+ * it as well: `surface apply` moves a skill there once it goes internal, so
+ * without this a name that migrated from skills/ to attachments/ falls out
+ * of the roster and a body token naming it downgrades from a compile error
+ * to a mere "not invocable" warning.
  */
 function computeInternalRoster(
   team: string,
@@ -204,6 +208,9 @@ function computeInternalRoster(
   if (!surface) return internal;
   const publicSet = new Set(surface.public);
   for (const name of listSubdirs(join(packDir, "skills"))) {
+    if (!publicSet.has(name)) internal.add(`${team}:${name}`);
+  }
+  for (const name of listSubdirs(join(packDir, "attachments"))) {
     if (!publicSet.has(name)) internal.add(`${team}:${name}`);
   }
   for (const verb of fullRoster) {
