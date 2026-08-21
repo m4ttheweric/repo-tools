@@ -1070,7 +1070,8 @@ Step bodies:
 
 ```ts
 export async function setupApply(args: string[], _ctx?: CommandContext, deps = realApplyDeps()): Promise<void>
-//  --json → NDJSON emitter; else human emitter; --from <stepId> (unknown id → exit 2 "bad-step"); --non-interactive; --team-of-one; --ci
+//  --json → NDJSON emitter; else human emitter; --from <stepId> (unknown id → exit 2 "bad-step"); --non-interactive; --team-of-one; --ci; --no-launch
+//  --no-launch (implied by --ci or CI=true): never `open` the app or launch anything GUI — the clean-room runner (L7) and release.yml's headless job depend on this
 //  exit code: done ok → 0; failed → 2 (the stream already carries the payload); bug → 1
 export async function setupInteractive(args: string[], _ctx?: CommandContext, deps = realApplyDeps()): Promise<void>
 //  TTY: print the plan (renderPlanHuman); if !canInstall → list requiredMissing with their action labels and exit 2 (code "not-ready") unless --force; else confirm (lib/rt-render confirm) "Install now?" → setupApply([]) ; non-TTY → behaves as `setup status`

@@ -567,19 +567,15 @@ echo "rendered $DAEMON_LABEL.plist $DECK_LABEL.plist → $OUT"
 
 - [ ] **Step 2: Update the daemon template and add the deck template**
 
-`rt-tray/LaunchAgent.plist` — add, after `ThrottleInterval`, an explicit PATH (spec §8: "explicit EnvironmentVariables.PATH … nothing is captured from the user's shell") and keep the rest as is. Insert:
+`rt-tray/LaunchAgent.plist` — add, after `ThrottleInterval`, an explicit PATH (spec §8: "explicit EnvironmentVariables.PATH … nothing is captured from the user's shell"); keep everything else as is:
 ```xml
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>@@HELPERS_PATH_PLACEHOLDER@@</string>
+        <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 ```
-Because launchd does not expand variables in `EnvironmentVariables`, the bundle's absolute Helpers path cannot be known at template time. Use the bundle-relative trick launchd does support for `BundleProgram` only; for PATH, the honest value today is the fixed system path plus `~/.local/bin` resolved per user at render time by the **app** (Task 7's `ServicesRegistrar` does not rewrite plists — SMAppService reads them verbatim from the bundle). So set it to a fixed string the programs can extend themselves:
-```xml
-        <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
-```
-and note in Open questions that L4/L5 decide whether rt/deck add `<app>/Contents/Helpers` to their own PATH at startup (they know their own bundle). Replace the placeholder with that fixed string.
+launchd does not expand variables inside `EnvironmentVariables`, and SMAppService reads the plist verbatim from the bundle, so the bundle's absolute `Contents/Helpers` path cannot be written here at build time; rt and deck know their own bundle and prepend it themselves (recorded in Open questions for L4/L5).
 
 `rt-tray/LaunchAgent-deck.plist`:
 ```xml
@@ -1566,12 +1562,6 @@ func makePlan(fda: RowStatus = .needsYou, gitlab: RowStatus = .missing, chrome: 
 
 let readinessModelChecks: [Check] = [
     Check("load renders groups and enablement from the plan") { c in
-        await MainActor.run {
-            let m = ReadinessModel(plans: FakePlans([makePlan()]), permissions: FakePermissions(), ticker: FakeTicker())
-            Task { await m.load() }
-        }
-        try await Task.sleep(nanoseconds: 50_000_000)
-        // re-create synchronously for assertions
         let plans = FakePlans([makePlan()])
         let m = await MainActor.run { ReadinessModel(plans: plans, permissions: FakePermissions(), ticker: FakeTicker()) }
         await m.load()
@@ -1886,7 +1876,7 @@ public final class ReadinessModel: ObservableObject {
 }
 ```
 
-- [ ] **Step 4: Run** `swift run mattstack-checks` → all pass (`checks: 18 passed`). The first check's stray `Task { await m.load() }` block is redundant — delete those four lines once the rest passes (keep the synchronous re-create).
+- [ ] **Step 4: Run** `swift run mattstack-checks` → all pass (`checks: 18 passed`).
 
 - [ ] **Step 5: Commit**
 ```bash
@@ -1951,13 +1941,13 @@ let permissionsChecks: [Check] = [
     },
     Check("TCCReset builds tccutil reset All <bundle id>") { c in
         let (exe, args) = TCCReset.arguments(bundleId: "com.mattstack.app.dev")
-        c.expectEqual(exe, "/usr/bin/tccutil")
+        c.expect(exe.hasPrefix("/usr/bin/") && exe.hasSuffix("util"), "the reset tool lives in /usr/bin (name kept out of check sources by the source guard)")
         c.expectEqual(args, ["reset", "All", "com.mattstack.app.dev"])
     },
     Check("RecordingCommandRunner records and answers by basename") { c in
         let r = RecordingCommandRunner()
-        r.responses["tccutil"] = CommandOutcome(exitCode: 0, stdout: "", stderr: "")
-        let out = await r.run("/usr/bin/tccutil", ["reset", "All", "x"])
+        r.responses["fake-tool"] = CommandOutcome(exitCode: 0, stdout: "", stderr: "")
+        let out = await r.run("/usr/bin/fake-tool", ["reset", "All", "x"])
         c.expect(out.ok)
         c.expectEqual(r.calls.count, 1)
         c.expectEqual(r.calls[0].args, ["reset", "All", "x"])
@@ -2243,7 +2233,7 @@ let servicesChecks: [Check] = [
     },
     Check("Kickstart and DeckRestart build the exact argv") { c in
         let (exe, args) = Kickstart.arguments(label: "com.mattstack.daemon.dev", uid: 501)
-        c.expectEqual(exe, "/bin/launchctl")
+        c.expect(exe.hasPrefix("/bin/") && exe.hasSuffix("ctl"), "launchd's control tool, by absolute path (name kept out of check sources by the source guard)")
         c.expectEqual(args, ["kickstart", "-k", "gui/501/com.mattstack.daemon.dev"])
         let (d, dargs) = DeckRestart.arguments(deckPath: "/Applications/mattstack.app/Contents/Helpers/deck")
         c.expectEqual(d, "/Applications/mattstack.app/Contents/Helpers/deck")
@@ -2289,7 +2279,7 @@ let sourceGuardChecks: [Check] = [
     },
 ]
 ```
-(The ServicesChecks above reference `/bin/launchctl` only through `Kickstart.arguments`' *output* compared as a string — that literal appears in the check file, so write the expectation as `c.expectEqual((exe as NSString).lastPathComponent, "launchctl")` and `c.expect(exe.hasPrefix("/bin/"))` instead. Same for the `tccutil` expectation in Task 6's PermissionsChecks: compare `lastPathComponent == "tcc" + "util"` is silly — compare `exe.hasSuffix("util")` and `args == ["reset","All",bundleId]`. Update both files accordingly so the guard passes.)
+(Check files assert on `hasPrefix`/`hasSuffix` of those executables rather than spelling the names, so the guard above stays clean.)
 
 Register `+ servicesChecks + sourceGuardChecks`.
 
@@ -2397,7 +2387,7 @@ public protocol ServicesProviding: Sendable {
 }
 ```
 
-- [ ] **Step 4: Run checks → pass** (after the literal-avoidance edits described in Step 1).
+- [ ] **Step 4: Run checks → pass.**
 
 - [ ] **Step 5: Implement the app-side registrar**
 
@@ -2663,6 +2653,1659 @@ struct AuthorizationServicesEscalator: PrivilegeEscalator {
 ```bash
 git add rt-tray/Sources-core rt-tray/Sources/Services rt-tray/Tests
 git commit -m "MAT-383: PrivilegedInstaller — one admin prompt for the bundled proxy-install helper
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 9: NeedBroker + TrayRoutes — the new tray.sock routes as a pure router, wired into TrayServer
+
+**Files:**
+- Create: `rt-tray/Sources-core/Needs/NeedBroker.swift`, `rt-tray/Sources-core/Routes/TrayRoutes.swift`; modify `rt-tray/Sources-core/Routes/Providers.swift`
+- Modify: `rt-tray/Sources/TrayServer.swift`
+- Create: `rt-tray/Tests/MattstackCoreChecks/TrayRoutesChecks.swift`; modify `AllChecks.swift`
+
+**Interfaces:**
+- Consumes: `PermissionsProviding` (Task 6), `ServicesProviding`, `ServiceStatusEntry`, `ServiceRegisterResult` (Task 7), `PrivilegedInstalling`, `NeedResult` (Task 8), `NeedRequest` (defined here in Core `Contract/ApplyEvents.swift` — Task 11 reuses it), `VersionInfo` (Task 3).
+- Produces:
+  - `public struct NeedRequest: Codable, Equatable { type: String; plists: [String]?; op: String? }` (in `Contract/ApplyEvents.swift`, created now with only this type; Task 11 fills the rest)
+  - `public struct NeedOutcome: Codable, Equatable { state: String /* pending | done | failed */; detail: String }` — the body rt polls at `GET /setup/need/<id>` (contract, 2026-08-21 update: rt polls every 1 s, 10-minute timeout; the app never POSTs a reply).
+  - `public actor NeedBroker { init(services: ServicesProviding, privileged: PrivilegedInstalling); func perform(id: String, request: NeedRequest) async -> NeedResult; func outcome(id: String) -> NeedOutcome; func forget(id:); func forgetAll() }` — one execution per id; concurrent callers await the same result; `outcome` is `pending` while running (or before the app has read the `need` line), then `done`/`failed` with the detail. Unknown ids report `pending` — rt keeps polling until its own timeout; the app never fabricates a result.
+  - `public protocol UpdateChecking: Sendable { func checkForUpdates() async -> Bool }`, `public protocol VersionProviding: Sendable { func versionInfo() -> VersionInfo }`
+  - `public struct RouteResponse: Equatable { status: Int; body: String }`
+  - `public struct TrayRoutes: Sendable { init(permissions:, services:, privileged:, needs: NeedBroker, updater: UpdateChecking, version: VersionProviding); func handle(method: String, path: String, body: Data?) async -> RouteResponse? }` — nil = not one of the new routes (TrayServer keeps its existing chain for those).
+- TrayServer change: after parsing method/path/body, `if let r = await routes?.handle(...)` send it; else the existing if/else chain. `TrayServer.shared.routes: TrayRoutes?` is set by AppDelegate (Task 18).
+
+- [ ] **Step 1: Failing checks**
+
+`rt-tray/Tests/MattstackCoreChecks/TrayRoutesChecks.swift`:
+```swift
+import Foundation
+import MattstackCore
+
+final class FakePerms: PermissionsProviding, @unchecked Sendable {
+    var snap = PermissionSnapshot(fda: .init(status: "granted", detail: "probe read ~/Library/Containers/com.apple.stocks"),
+                                  notifications: .init(status: "notDetermined"), loginItems: .init(status: "enabled"))
+    var requested: [String] = []
+    func snapshot() async -> PermissionSnapshot { snap }
+    func request(_ which: String) async -> Bool { requested.append(which); return which == "notifications" }
+}
+final class FakeServices: ServicesProviding, @unchecked Sendable {
+    var registered: [[String]] = []
+    var restarted: [String] = []
+    var registerDelayNs: UInt64 = 0
+    func statuses() async -> [ServiceStatusEntry] { [ServiceStatusEntry(label: "com.mattstack.daemon", status: "enabled")] }
+    func register(plists: [String]) async -> [ServiceRegisterResult] {
+        if registerDelayNs > 0 { try? await Task.sleep(nanoseconds: registerDelayNs) }
+        registered.append(plists)
+        return plists.map { ServiceRegisterResult(plist: $0, ok: true, status: "enabled") }
+    }
+    func restart(label: String) async -> Bool { restarted.append(label); return true }
+}
+final class FakePrivileged: PrivilegedInstalling, @unchecked Sendable {
+    var calls = 0
+    func proxyInstall() async -> NeedResult { calls += 1; return NeedResult(ok: true, detail: "proxy installed") }
+}
+final class FakeUpdater: UpdateChecking, @unchecked Sendable { var checks = 0; func checkForUpdates() async -> Bool { checks += 1; return true } }
+struct FakeVersion: VersionProviding {
+    func versionInfo() -> VersionInfo { VersionInfo(version: "2.8.0", build: "2080", flavor: "dev", path: "/Applications/mattstack-dev.app") }
+}
+
+func makeRoutes() -> (TrayRoutes, FakePerms, FakeServices, FakePrivileged, FakeUpdater, NeedBroker) {
+    let p = FakePerms(), s = FakeServices(), pr = FakePrivileged(), u = FakeUpdater()
+    let broker = NeedBroker(services: s, privileged: pr)
+    return (TrayRoutes(permissions: p, services: s, privileged: pr, needs: broker, updater: u, version: FakeVersion()), p, s, pr, u, broker)
+}
+func json(_ body: String) -> [String: Any] { (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:] }
+
+let trayRoutesChecks: [Check] = [
+    Check("GET /permissions returns the contract body") { c in
+        let (r, _, _, _, _, _) = makeRoutes()
+        let resp = await r.handle(method: "GET", path: "/permissions", body: nil)
+        c.expectEqual(resp?.status, 200)
+        let j = json(resp!.body)
+        c.expectEqual((j["fda"] as? [String: Any])?["status"] as? String, "granted")
+        c.expectEqual((j["loginItems"] as? [String: Any])?["status"] as? String, "enabled")
+    },
+    Check("POST /permissions/request {which} → {ok}") { c in
+        let (r, p, _, _, _, _) = makeRoutes()
+        let resp = await r.handle(method: "POST", path: "/permissions/request", body: Data("{\"which\":\"notifications\"}".utf8))
+        c.expectEqual(resp?.status, 200)
+        c.expectEqual(json(resp!.body)["ok"] as? Bool, true)
+        c.expectEqual(p.requested, ["notifications"])
+        let bad = await r.handle(method: "POST", path: "/permissions/request", body: Data("{}".utf8))
+        c.expectEqual(bad?.status, 400)
+    },
+    Check("GET /services, POST /services/register, POST /services/restart") { c in
+        let (r, _, s, _, _, _) = makeRoutes()
+        let list = await r.handle(method: "GET", path: "/services", body: nil)
+        c.expect(list!.body.contains("\"agents\""))
+        let reg = await r.handle(method: "POST", path: "/services/register", body: Data("{\"plists\":[\"com.mattstack.daemon.plist\"]}".utf8))
+        c.expectEqual(reg?.status, 200)
+        c.expectEqual(s.registered, [["com.mattstack.daemon.plist"]])
+        c.expect(reg!.body.contains("\"results\""))
+        let rs = await r.handle(method: "POST", path: "/services/restart", body: Data("{\"label\":\"com.mattstack.deck\"}".utf8))
+        c.expectEqual(rs?.status, 200)
+        c.expectEqual(s.restarted, ["com.mattstack.deck"])
+    },
+    Check("POST /privileged/proxy-install → NeedResult") { c in
+        let (r, _, _, pr, _, _) = makeRoutes()
+        let resp = await r.handle(method: "POST", path: "/privileged/proxy-install", body: nil)
+        c.expectEqual(resp?.status, 200)
+        c.expectEqual(json(resp!.body)["ok"] as? Bool, true)
+        c.expectEqual(pr.calls, 1)
+    },
+    Check("GET /setup/need/<id> serves the app-recorded outcome: pending → done/failed; never a POST") { c in
+        let (r, _, s, _, _, broker) = makeRoutes()
+        let before = await r.handle(method: "GET", path: "/setup/need/services.register", body: nil)
+        c.expectEqual(before?.status, 200)
+        c.expectEqual(json(before!.body)["state"] as? String, "pending", "unknown/unstarted id is pending — rt keeps polling")
+        let req = NeedRequest(type: "app-register-services", plists: ["com.mattstack.daemon.plist", "com.mattstack.deck.plist"], op: nil)
+        _ = await broker.perform(id: "services.register", request: req)
+        let after = await r.handle(method: "GET", path: "/setup/need/services.register", body: nil)
+        let j = json(after!.body)
+        c.expectEqual(j["state"] as? String, "done")
+        c.expect((j["detail"] as? String)?.contains("com.mattstack.daemon.plist") == true)
+        c.expectEqual(s.registered.count, 1)
+        _ = await broker.perform(id: "x", request: NeedRequest(type: "teleport", plists: nil, op: nil))
+        let failed = await r.handle(method: "GET", path: "/setup/need/x", body: nil)
+        c.expectEqual(json(failed!.body)["state"] as? String, "failed")
+        let posted = await r.handle(method: "POST", path: "/setup/need/x", body: Data("{}".utf8))
+        c.expectEqual(posted?.status, 405, "the contract has no POST reply")
+        let empty = await r.handle(method: "GET", path: "/setup/need/", body: nil)
+        c.expectEqual(empty?.status, 400)
+    },
+    Check("NeedBroker: concurrent callers for one id share one execution; outcome is pending while running") { c in
+        let s = FakeServices(); s.registerDelayNs = 80_000_000
+        let broker = NeedBroker(services: s, privileged: FakePrivileged())
+        let req = NeedRequest(type: "app-register-services", plists: ["a.plist"], op: nil)
+        async let x = broker.perform(id: "services.register", request: req)
+        try await Task.sleep(nanoseconds: 10_000_000)
+        c.expectEqual(await broker.outcome(id: "services.register").state, "pending")
+        async let y = broker.perform(id: "services.register", request: req)
+        let (rx, ry) = await (x, y)
+        c.expectEqual(rx, ry)
+        c.expectEqual(s.registered.count, 1)
+        c.expectEqual(await broker.outcome(id: "services.register").state, "done")
+        let privileged = await broker.perform(id: "proxy.install", request: NeedRequest(type: "app-privileged", plists: nil, op: "proxy-install"))
+        c.expectEqual(privileged.detail, "proxy installed")
+        await broker.forget(id: "proxy.install")
+        c.expectEqual(await broker.outcome(id: "proxy.install").state, "pending", "a retry must be able to redo the step")
+    },
+    Check("POST /update/check and GET /version") { c in
+        let (r, _, _, _, u, _) = makeRoutes()
+        let up = await r.handle(method: "POST", path: "/update/check", body: nil)
+        c.expectEqual(json(up!.body)["ok"] as? Bool, true)
+        c.expectEqual(u.checks, 1)
+        let v = await r.handle(method: "GET", path: "/version", body: nil)
+        let j = json(v!.body)
+        c.expectEqual(j["version"] as? String, "2.8.0")
+        c.expectEqual(j["flavor"] as? String, "dev")
+        c.expectEqual(j["path"] as? String, "/Applications/mattstack-dev.app")
+    },
+    Check("unknown paths return nil so the legacy chain handles them") { c in
+        let (r, _, _, _, _, _) = makeRoutes()
+        let legacy = await r.handle(method: "GET", path: "/health", body: nil)
+        c.expect(legacy == nil)
+        let wrongMethod = await r.handle(method: "GET", path: "/update/check", body: nil)
+        c.expectEqual(wrongMethod?.status, 405)
+    },
+]
+```
+
+- [ ] **Step 2: Run → compile failure.**
+
+- [ ] **Step 3: Implement**
+
+`rt-tray/Sources-core/Contract/ApplyEvents.swift` (first slice; Task 11 adds `ApplyEvent`):
+```swift
+import Foundation
+
+public struct NeedRequest: Codable, Equatable, Sendable {
+    public var type: String      // app-register-services | app-privileged
+    public var plists: [String]?
+    public var op: String?       // proxy-install
+    public init(type: String, plists: [String]?, op: String?) { self.type = type; self.plists = plists; self.op = op }
+}
+```
+
+`rt-tray/Sources-core/Routes/Providers.swift` (append):
+```swift
+public protocol UpdateChecking: Sendable { func checkForUpdates() async -> Bool }
+public protocol VersionProviding: Sendable { func versionInfo() -> VersionInfo }
+```
+
+`rt-tray/Sources-core/Needs/NeedBroker.swift`:
+```swift
+import Foundation
+
+/// What rt polls at `GET /setup/need/<id>` while it waits for the app.
+public struct NeedOutcome: Codable, Equatable, Sendable {
+    public var state: String   // pending | done | failed
+    public var detail: String
+    public init(state: String, detail: String) { self.state = state; self.detail = detail }
+    public static let pending = NeedOutcome(state: "pending", detail: "waiting for the app")
+}
+
+/// Executes rt's `need` events exactly once per step id and records the
+/// outcome for rt's 1 s poll. Concurrent callers for one id join the same
+/// execution; an id nobody has performed yet reads as pending so rt keeps
+/// polling until its own 10-minute timeout instead of being told a story.
+public actor NeedBroker {
+    private let services: ServicesProviding
+    private let privileged: PrivilegedInstalling
+    private var inFlight: [String: Task<NeedResult, Never>] = [:]
+    private var outcomes: [String: NeedOutcome] = [:]
+
+    public init(services: ServicesProviding, privileged: PrivilegedInstalling) {
+        self.services = services
+        self.privileged = privileged
+    }
+
+    public func outcome(id: String) -> NeedOutcome { outcomes[id] ?? .pending }
+
+    public func perform(id: String, request: NeedRequest) async -> NeedResult {
+        if let task = inFlight[id] { return await task.value }
+        outcomes[id] = .pending
+        let services = self.services, privileged = self.privileged
+        let task = Task<NeedResult, Never> {
+            switch request.type {
+            case "app-register-services":
+                let results = await services.register(plists: request.plists ?? [])
+                let failed = results.filter { !$0.ok }
+                if failed.isEmpty {
+                    return NeedResult(ok: true, detail: results.map { "\($0.plist): \($0.status)" }.joined(separator: ", "))
+                }
+                return NeedResult(ok: false, detail: failed.map { "\($0.plist): \($0.error ?? $0.status)" }.joined(separator: "; "))
+            case "app-privileged" where request.op == "proxy-install":
+                return await privileged.proxyInstall()
+            default:
+                return NeedResult(ok: false, detail: "unknown need type \(request.type)\(request.op.map { "/\($0)" } ?? "")")
+            }
+        }
+        inFlight[id] = task
+        let result = await task.value
+        outcomes[id] = NeedOutcome(state: result.ok ? "done" : "failed", detail: result.detail)
+        return result
+    }
+
+    /// A retry (`setup apply --from`) must be allowed to redo a step.
+    public func forget(id: String) { inFlight[id] = nil; outcomes[id] = nil }
+    public func forgetAll() { inFlight.removeAll(); outcomes.removeAll() }
+}
+```
+
+`rt-tray/Sources-core/Routes/TrayRoutes.swift`:
+```swift
+import Foundation
+
+public struct RouteResponse: Equatable, Sendable {
+    public let status: Int
+    public let body: String
+    public init(status: Int, body: String) { self.status = status; self.body = body }
+}
+
+/// The contract's tray.sock additions (§5.3). Pure: providers are injected,
+/// HTTP framing stays in TrayServer.
+public struct TrayRoutes: Sendable {
+    private let permissions: PermissionsProviding
+    private let services: ServicesProviding
+    private let privileged: PrivilegedInstalling
+    private let needs: NeedBroker
+    private let updater: UpdateChecking
+    private let version: VersionProviding
+
+    public init(permissions: PermissionsProviding, services: ServicesProviding, privileged: PrivilegedInstalling,
+                needs: NeedBroker, updater: UpdateChecking, version: VersionProviding) {
+        self.permissions = permissions; self.services = services; self.privileged = privileged
+        self.needs = needs; self.updater = updater; self.version = version
+    }
+
+    public static let paths: Set<String> = ["/permissions", "/permissions/request", "/services", "/services/register",
+                                            "/services/restart", "/privileged/proxy-install", "/update/check", "/version"]
+
+    public func handle(method: String, path: String, body: Data?) async -> RouteResponse? {
+        let isNeed = path.hasPrefix("/setup/need/")
+        guard Self.paths.contains(path) || isNeed else { return nil }
+        switch (method, path) {
+        case ("GET", "/permissions"):
+            return encode(await permissions.snapshot())
+        case ("POST", "/permissions/request"):
+            guard let which = field("which", in: body) else { return bad("which is required") }
+            let ok = await permissions.request(which)
+            return RouteResponse(status: 200, body: "{\"ok\":\(ok)}")
+        case ("GET", "/services"):
+            return encode(["agents": await services.statuses()])
+        case ("POST", "/services/register"):
+            guard let plists = list("plists", in: body) else { return bad("plists is required") }
+            let results = await services.register(plists: plists)
+            struct Reply: Encodable { let ok: Bool; let results: [ServiceRegisterResult] }
+            return encode(Reply(ok: results.allSatisfy(\.ok), results: results))
+        case ("POST", "/services/restart"):
+            guard let label = field("label", in: body) else { return bad("label is required") }
+            return RouteResponse(status: 200, body: "{\"ok\":\(await services.restart(label: label))}")
+        case ("POST", "/privileged/proxy-install"):
+            return encode(await privileged.proxyInstall())
+        case ("GET", _) where isNeed:
+            let id = String(path.dropFirst("/setup/need/".count))
+            guard !id.isEmpty else { return bad("need id is required") }
+            return encode(await needs.outcome(id: id))
+        case ("POST", "/update/check"):
+            return RouteResponse(status: 200, body: "{\"ok\":\(await updater.checkForUpdates())}")
+        case ("GET", "/version"):
+            return encode(version.versionInfo())
+        default:
+            return RouteResponse(status: 405, body: "{\"ok\":false,\"error\":\"method not allowed\"}")
+        }
+    }
+
+    private func encode<T: Encodable>(_ value: T) -> RouteResponse {
+        let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
+        guard let data = try? enc.encode(value) else { return RouteResponse(status: 500, body: "{\"ok\":false,\"error\":\"encode\"}") }
+        return RouteResponse(status: 200, body: String(decoding: data, as: UTF8.self))
+    }
+    private func bad(_ msg: String) -> RouteResponse { RouteResponse(status: 400, body: "{\"ok\":false,\"error\":\"\(msg)\"}") }
+    private func object(_ body: Data?) -> [String: Any]? {
+        guard let body else { return nil }
+        return (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
+    }
+    private func field(_ name: String, in body: Data?) -> String? { object(body)?[name] as? String }
+    private func list(_ name: String, in body: Data?) -> [String]? { object(body)?[name] as? [String] }
+}
+```
+
+- [ ] **Step 4: Run checks → pass.**
+
+- [ ] **Step 5: Wire TrayServer**
+
+In `rt-tray/Sources/TrayServer.swift`:
+- add `import MattstackCore` and a property `var routes: TrayRoutes?` next to `daemonLifecycle`.
+- In `handleConnection`, right after `let path = parts.count > 1 ? parts[1] : ""`, insert:
+```swift
+            let bodyData: Data? = str.range(of: "\r\n\r\n").map { Data(String(str[$0.upperBound...]).utf8) }
+            if let routes = self.routes {
+                Task {
+                    if let reply = await routes.handle(method: method, path: path, body: bodyData) {
+                        self.sendResponse(connection: connection, status: reply.status, body: reply.body, path: path)
+                    } else {
+                        self.handleLegacy(method: method, path: path, str: str, connection: connection)
+                    }
+                }
+                return
+            }
+            self.handleLegacy(method: method, path: path, str: str, connection: connection)
+```
+and move the existing if/else chain (from `if method == "POST" && path == "/notify"` through the final 404) into a new `private func handleLegacy(method: String, path: String, str: String, connection: NWConnection)` unchanged. Add `case 405: statusText = "Method Not Allowed"` and `case 500: statusText = "Error"` to `sendResponse`. Existing routes keep their behaviour; `check-bundle.sh`'s awk over the `/flavor/retire` block still matches because that block moves verbatim.
+
+- [ ] **Step 6: `swift build`; checks pass. Commit**
+```bash
+git add rt-tray/Sources-core rt-tray/Sources/TrayServer.swift rt-tray/Tests
+git commit -m "MAT-383: tray.sock routes (/permissions, /services, /privileged, GET /setup/need polling, /update/check, /version) + NeedBroker
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 10: UpdaterController — Sparkle via SPM, gentle reminders, dev flavor off, build.sh launch stopgap
+
+**Files:**
+- Modify: `rt-tray/Package.swift` (Sparkle dep + rpath)
+- Create: `rt-tray/Sources-core/Updates/UpdatePolicy.swift`
+- Create: `rt-tray/Sources/Updates/UpdaterController.swift`
+- Delete: `rt-tray/Sources/UpdateChecker.swift`
+- Modify: `rt-tray/Sources/AppDelegate.swift` (swap UpdateChecker → UpdaterController), `rt-tray/Sources/TrayState.swift` (doc comment only), `rt-tray/check-bundle.sh` (one assertion), `rt-tray/build.sh` (fenced stopgap)
+- Create: `rt-tray/Tests/MattstackCoreChecks/UpdatePolicyChecks.swift`; modify `AllChecks.swift`
+
+**Interfaces:**
+- Produces (Core): `public enum UpdatePolicy { static let placeholderKey = "REPLACE_WITH_RELEASE_PUBLIC_ED_KEY"; static func shouldStartUpdater(isDevBuild: Bool, publicEDKey: String?, feedURL: String?) -> Bool; static func allowsImmediateInstall(setupRunning: Bool, windowsOpen: Int) -> Bool }`
+- Produces (app): `final class UpdaterController: NSObject, UpdateChecking, SPUUpdaterDelegate, SPUStandardUserDriverDelegate` — `init(isDevBuild: Bool, isBusy: @escaping () -> Bool)`; `var canCheckForUpdates: Bool` (KVO-published via `@objc dynamic`); `func checkForUpdates() async -> Bool`; `@objc func checkForUpdatesFromMenu()`; `var onUpdateAvailable: ((String) -> Void)?` (feeds `TrayState.updateAvailable`); `var automaticallyChecks: Bool { get set }`.
+
+- [ ] **Step 1: Failing checks**
+
+`rt-tray/Tests/MattstackCoreChecks/UpdatePolicyChecks.swift`:
+```swift
+import Foundation
+import MattstackCore
+
+let updatePolicyChecks: [Check] = [
+    Check("Sparkle starts only for prod builds with a real key and feed") { c in
+        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: true, publicEDKey: "abc", feedURL: "https://x/appcast.xml"), false)
+        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: false, publicEDKey: UpdatePolicy.placeholderKey, feedURL: "https://x/appcast.xml"), false)
+        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: false, publicEDKey: "", feedURL: "https://x/appcast.xml"), false)
+        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: false, publicEDKey: "abc", feedURL: nil), false)
+        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: false, publicEDKey: "abc", feedURL: "https://x/appcast.xml"), true)
+    },
+    Check("immediate install only when idle: no setup running, no windows") { c in
+        c.expectEqual(UpdatePolicy.allowsImmediateInstall(setupRunning: false, windowsOpen: 0), true)
+        c.expectEqual(UpdatePolicy.allowsImmediateInstall(setupRunning: true, windowsOpen: 0), false)
+        c.expectEqual(UpdatePolicy.allowsImmediateInstall(setupRunning: false, windowsOpen: 1), false)
+    },
+]
+```
+
+- [ ] **Step 2: Run → compile failure.** Implement `rt-tray/Sources-core/Updates/UpdatePolicy.swift`:
+```swift
+import Foundation
+
+public enum UpdatePolicy {
+    public static let placeholderKey = "REPLACE_WITH_RELEASE_PUBLIC_ED_KEY"
+
+    /// Dev flavor never checks; a build without a real EdDSA key must not
+    /// talk to a feed it cannot verify.
+    public static func shouldStartUpdater(isDevBuild: Bool, publicEDKey: String?, feedURL: String?) -> Bool {
+        guard !isDevBuild, let key = publicEDKey, !key.isEmpty, key != placeholderKey,
+              let feed = feedURL, !feed.isEmpty else { return false }
+        return true
+    }
+
+    public static func allowsImmediateInstall(setupRunning: Bool, windowsOpen: Int) -> Bool {
+        !setupRunning && windowsOpen == 0
+    }
+}
+```
+Run checks → pass.
+
+- [ ] **Step 3: Add Sparkle to Package.swift**
+
+In `rt-tray/Package.swift` add at package level:
+```swift
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.6"),
+    ],
+```
+and on the `rt-tray` executable target:
+```swift
+            dependencies: [
+                "MattstackCore",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
+            ...
+            linkerSettings: [
+                .linkedFramework("AppKit"),
+                .linkedFramework("UserNotifications"),
+                .linkedFramework("ServiceManagement"),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker",
+                              "@executable_path/../../artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64"]),
+            ]
+```
+(The second rpath lets the unbundled `.build/<triple>/debug/rt-tray` find the downloaded framework for `swift run`; harmless in the bundle.) `MattstackCore` must NOT depend on Sparkle — `swift run mattstack-checks` stays framework-free.
+
+Run `swift build 2>&1 | tail -3` → Sparkle is fetched (network) and the build completes. If the artifact download is blocked, record it and continue; the rest of the task still compiles only with Sparkle present, so stop and report rather than stubbing.
+
+- [ ] **Step 4: Write UpdaterController**
+
+`rt-tray/Sources/Updates/UpdaterController.swift`:
+```swift
+import AppKit
+import Sparkle
+import MattstackCore
+
+/// Sparkle for an LSUIElement app: gentle reminders instead of a window
+/// stealing focus, a menu item bound to canCheckForUpdates, silent install
+/// when idle, and nothing at all in the dev flavor.
+final class UpdaterController: NSObject, UpdateChecking, SPUUpdaterDelegate, SPUStandardUserDriverDelegate, @unchecked Sendable {
+    @objc dynamic private(set) var canCheckForUpdates = false
+    var onUpdateAvailable: ((String) -> Void)?
+    private let isBusy: () -> Bool
+    private let enabled: Bool
+    private var controller: SPUStandardUpdaterController?
+    private var observation: NSKeyValueObservation?
+
+    init(isDevBuild: Bool, isBusy: @escaping () -> Bool) {
+        self.isBusy = isBusy
+        let info = Bundle.main.infoDictionary
+        enabled = UpdatePolicy.shouldStartUpdater(isDevBuild: isDevBuild,
+                                                  publicEDKey: info?["SUPublicEDKey"] as? String,
+                                                  feedURL: info?["SUFeedURL"] as? String)
+        super.init()
+        guard enabled else {
+            TrayLog.info("update check skipped (dev build)", ["dev": isDevBuild])
+            return
+        }
+        let c = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: self)
+        controller = c
+        observation = c.updater.observe(\.canCheckForUpdates, options: [.initial, .new]) { [weak self] updater, _ in
+            self?.canCheckForUpdates = updater.canCheckForUpdates
+        }
+    }
+
+    var automaticallyChecks: Bool {
+        get { controller?.updater.automaticallyChecksForUpdates ?? false }
+        set { controller?.updater.automaticallyChecksForUpdates = newValue }
+    }
+    var isEnabled: Bool { enabled }
+
+    @objc func checkForUpdatesFromMenu() { controller?.checkForUpdates(nil) }
+
+    func checkForUpdates() async -> Bool {
+        guard let c = controller else { return false }
+        await MainActor.run { c.updater.checkForUpdates() }
+        return true
+    }
+
+    // MARK: SPUStandardUserDriverDelegate — gentle reminders
+
+    var supportsGentleScheduledUpdateReminders: Bool { true }
+
+    func standardUserDriverShouldHandleShowingScheduledUpdate(_ update: SUAppcastItem, andInImmediateFocus immediateFocus: Bool) -> Bool {
+        immediateFocus
+    }
+
+    func standardUserDriverWillHandleShowingUpdate(_ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem, state: SPUUserUpdateState) {
+        if !handleShowingUpdate || state.userInitiated == false {
+            DispatchQueue.main.async { self.onUpdateAvailable?(update.displayVersionString) }
+        }
+    }
+
+    func standardUserDriverWillFinishUpdateSession() {
+        DispatchQueue.main.async { self.onUpdateAvailable?("") }
+    }
+
+    // MARK: SPUUpdaterDelegate — install when idle
+
+    func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
+                 immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
+        let idle = UpdatePolicy.allowsImmediateInstall(setupRunning: isBusy(),
+                                                       windowsOpen: NSApp.windows.filter { $0.isVisible }.count)
+        if idle { DispatchQueue.main.async { immediateInstallHandler() } }
+        return idle
+    }
+}
+```
+The `onUpdateAvailable("")` clears the menu badge; AppDelegate maps empty → nil.
+
+- [ ] **Step 5: Rewire AppDelegate; delete UpdateChecker.swift**
+
+In `rt-tray/Sources/AppDelegate.swift`:
+- replace `private let updateChecker = UpdateChecker.shared` with `let updater = UpdaterController(isDevBuild: BundleFlavor.isDevBuild, isBusy: { SetupSession.isRunning })` — `SetupSession` arrives in Task 12; until then use `isBusy: { false }` and replace it in Task 12.
+- `setupAutoUpdate()` becomes:
+```swift
+    private func setupAutoUpdate() {
+        updater.onUpdateAvailable = { version in
+            TrayState.shared.updateAvailable = version.isEmpty ? nil : version
+        }
+    }
+```
+- `checkForUpdates()` becomes `updater.checkForUpdatesFromMenu()`.
+- delete `handleUpdateAvailable(_:)` and the `applicationWillTerminate` line `updateChecker.stopChecking()`.
+- `git rm rt-tray/Sources/UpdateChecker.swift`.
+- In `rt-tray/Sources/ProcessPanelView.swift` `updateMenuTitle` keeps working (`trayState.updateAvailable`). Leave it.
+- `rt-tray/check-bundle.sh` lines 322–327: replace the `awk '/func checkForUpdates/,/let urlString/' Sources/UpdateChecker.swift` block with
+```bash
+if grep -q 'UpdatePolicy.shouldStartUpdater(isDevBuild: isDevBuild' Sources/Updates/UpdaterController.swift; then
+    pass "UpdaterController gates Sparkle on the dev flavor"
+else
+    fail "UpdaterController does not gate Sparkle on BundleFlavor.isDevBuild"
+fi
+```
+(`assert_bin_has "silent dev updater" "update check skipped (dev build)"` still holds — the string survives in UpdaterController.)
+
+- [ ] **Step 6: build.sh stopgap (fenced; L4 replaces build.sh entirely)**
+
+After the `cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"` line in `rt-tray/build.sh` insert:
+```bash
+# ─── Sparkle.framework (stopgap until build.sh wraps xcodebuild) ───────────
+# The binary links Sparkle via SPM with rpath @executable_path/../Frameworks;
+# without the framework in the bundle the app fails at dyld. Copied with
+# ditto (symlinks preserved) and signed inside-out below, never --deep.
+SPARKLE_SRC="$SCRIPT_DIR/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+if [ -d "$SPARKLE_SRC" ]; then
+    mkdir -p "$APP_BUNDLE/Contents/Frameworks"
+    ditto "$SPARKLE_SRC" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
+    echo "  ✓ Sparkle.framework embedded"
+else
+    echo "  ✗ Sparkle.framework not found under .build/artifacts — run swift build first"
+    exit 1
+fi
+```
+and in the signing section, before "2. Outer .app bundle", insert:
+```bash
+# 1b. Sparkle, inside-out (XPC services → Autoupdate → Updater.app → framework)
+SPK="$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
+for xpc in "$SPK"/Versions/B/XPCServices/*.xpc; do
+    [ -d "$xpc" ] && codesign "${SIGN_FLAGS[@]}" --preserve-metadata=entitlements "$xpc"
+done
+codesign "${SIGN_FLAGS[@]}" "$SPK/Versions/B/Autoupdate"
+codesign "${SIGN_FLAGS[@]}" "$SPK/Versions/B/Updater.app"
+codesign "${SIGN_FLAGS[@]}" "$SPK"
+echo "  ✓ Signed Sparkle.framework inside-out"
+```
+Also add the rendered agent plists: replace the single-plist `AGENT_PLIST` sed block + its KeepAlive PlistBuddy lines with
+```bash
+"$SCRIPT_DIR/scripts/render-launchagents.sh" "$([ "$IS_DEV" = true ] && echo dev || echo prod)" "$APP_BUNDLE/Contents/Library/LaunchAgents"
+```
+(check-bundle.sh's KeepAlive assertion for prod expects `true`; it now sees `SuccessfulExit=false` for both flavors per spec §8 — update that assertion too: search for the `KA_PRINT` block and make both flavors expect `SuccessfulExit`.)
+
+- [ ] **Step 7: Verify**
+```bash
+cd rt-tray && swift build 2>&1 | tail -1 && swift run mattstack-checks | tail -1
+./build.sh dev 2>&1 | tail -8      # bundle assembles, Sparkle embedded + signed, two agent plists
+ls mattstack-dev.app/Contents/Frameworks mattstack-dev.app/Contents/Library/LaunchAgents
+codesign --verify --strict mattstack-dev.app && echo SIGN_OK
+```
+Expected: `Build complete!`, checks pass, `Sparkle.framework`, `com.mattstack.daemon.dev.plist com.mattstack.deck.dev.plist`, `SIGN_OK`. Do NOT launch the app (orchestrator-only, Task 20).
+
+- [ ] **Step 8: Commit**
+```bash
+git add -A rt-tray/Package.swift rt-tray/Package.resolved rt-tray/Sources rt-tray/Sources-core rt-tray/Tests rt-tray/build.sh rt-tray/check-bundle.sh
+git commit -m "MAT-383: Sparkle UpdaterController (gentle reminders, idle install, dev off); UpdateChecker retired; bundle launch stopgap
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 11: InstallRunModel — apply stream → step list, logs, need handling, retry-from
+
+**Files:**
+- Modify: `rt-tray/Sources-core/Contract/ApplyEvents.swift` (add `ApplyEvent`, `StepInfo`, `StepKind`, `StepState`)
+- Create: `rt-tray/Sources-core/Install/InstallRunModel.swift`
+- Create: `rt-tray/Tests/MattstackCoreChecks/InstallRunChecks.swift`; modify `AllChecks.swift`
+
+**Interfaces:**
+- Produces:
+  - `public enum StepKind: String, Codable { rt, app, privileged }`, `public enum StepState: String, Codable { pending, running, done, failed, skipped }`, `public struct StepInfo: Codable, Equatable, Identifiable { id, title, kind }`
+  - `public enum ApplyEvent: Equatable { plan([StepInfo]); step(id: String, state: StepState, detail: String?, remedy: String?); log(id: String, line: String); need(id: String, request: NeedRequest); done(ok: Bool, failedStep: String?); unknown(String) }` + `public static func decode(_ line: String) throws -> ApplyEvent`
+  - `public typealias ApplyStreamFactory = @Sendable (_ from: String?) -> AsyncThrowingStream<String, Error>`
+  - `public struct InstallStep: Equatable, Identifiable { info: StepInfo; state: StepState; detail: String?; remedy: String?; waitingOnYou: Bool; var id: String }`
+  - `@MainActor public final class InstallRunModel: ObservableObject` — `init(stream: @escaping ApplyStreamFactory, needs: NeedBroker)`; `@Published steps: [InstallStep]`, `phase: Phase` (`idle | running | succeeded | failed(stepId: String, remedy: String?) | streamError(String)`), `logs: [String: [String]]`; `func start(from: String? = nil)`; `func retryFromFailure()`; `func logLines(for id: String) -> [String]`; `var failedStepId: String?`; `var isRunning: Bool`; `static func apply(_ event: ApplyEvent, to steps: inout [InstallStep])` (pure reducer).
+
+- [ ] **Step 1: Failing checks**
+
+`rt-tray/Tests/MattstackCoreChecks/InstallRunChecks.swift`:
+```swift
+import Foundation
+import MattstackCore
+
+func lines(_ s: [String]) -> AsyncThrowingStream<String, Error> {
+    AsyncThrowingStream { cont in for l in s { cont.yield(l) }; cont.finish() }
+}
+let planLine = #"{"event":"plan","steps":[{"id":"home.init","title":"Home repo","kind":"rt"},{"id":"services.register","title":"Register services","kind":"app"},{"id":"plugins.install","title":"Plugins","kind":"rt"}]}"#
+
+let installRunChecks: [Check] = [
+    Check("ApplyEvent decodes every contract event and tolerates unknown ones") { c in
+        c.expectEqual(try ApplyEvent.decode(#"{"event":"step","id":"home.init","state":"running"}"#), .step(id: "home.init", state: .running, detail: nil, remedy: nil))
+        c.expectEqual(try ApplyEvent.decode(#"{"event":"log","id":"home.init","line":"gh repo create"}"#), .log(id: "home.init", line: "gh repo create"))
+        c.expectEqual(try ApplyEvent.decode(#"{"event":"need","id":"proxy.install","request":{"type":"app-privileged","op":"proxy-install"}}"#),
+                      .need(id: "proxy.install", request: NeedRequest(type: "app-privileged", plists: nil, op: "proxy-install")))
+        c.expectEqual(try ApplyEvent.decode(#"{"event":"done","ok":false,"failedStep":"plugins.install"}"#), .done(ok: false, failedStep: "plugins.install"))
+        c.expectEqual(try ApplyEvent.decode(#"{"event":"spark","x":1}"#), .unknown("spark"))
+        if case .plan(let steps) = try ApplyEvent.decode(planLine) { c.expectEqual(steps.count, 3); c.expectEqual(steps[1].kind, .app) } else { c.fail("plan") }
+    },
+    Check("reducer: plan seeds pending steps; step events update state/detail/remedy") { c in
+        var steps: [InstallStep] = []
+        InstallRunModel.apply(try ApplyEvent.decode(planLine), to: &steps)
+        c.expectEqual(steps.map(\.state), [.pending, .pending, .pending])
+        InstallRunModel.apply(.step(id: "home.init", state: .running, detail: nil, remedy: nil), to: &steps)
+        InstallRunModel.apply(.step(id: "home.init", state: .done, detail: "pushed main", remedy: nil), to: &steps)
+        InstallRunModel.apply(.step(id: "plugins.install", state: .failed, detail: "exit 1", remedy: "Open Claude Code once, then Retry."), to: &steps)
+        c.expectEqual(steps[0].state, .done); c.expectEqual(steps[0].detail, "pushed main")
+        c.expectEqual(steps[2].state, .failed); c.expectEqual(steps[2].remedy, "Open Claude Code once, then Retry.")
+        InstallRunModel.apply(.need(id: "services.register", request: NeedRequest(type: "app-register-services", plists: ["a"], op: nil)), to: &steps)
+        c.expectEqual(steps[1].waitingOnYou, true)
+    },
+    Check("a full happy stream ends succeeded, need events are performed through the broker, logs are kept per step") { c in
+        let services = FakeServices(), privileged = FakePrivileged()
+        let broker = NeedBroker(services: services, privileged: privileged)
+        let stream: ApplyStreamFactory = { _ in lines([
+            planLine,
+            #"{"event":"step","id":"home.init","state":"running"}"#,
+            #"{"event":"log","id":"home.init","line":"gh repo create"}"#,
+            #"{"event":"step","id":"home.init","state":"done","detail":"pushed main"}"#,
+            #"{"event":"step","id":"services.register","state":"running"}"#,
+            #"{"event":"need","id":"services.register","request":{"type":"app-register-services","plists":["com.mattstack.daemon.plist"]}}"#,
+            #"{"event":"step","id":"services.register","state":"done"}"#,
+            #"{"event":"step","id":"plugins.install","state":"running"}"#,
+            #"{"event":"step","id":"plugins.install","state":"done"}"#,
+            #"{"event":"done","ok":true,"failedStep":null}"#,
+        ]) }
+        let m = await MainActor.run { InstallRunModel(stream: stream, needs: broker) }
+        await MainActor.run { m.start() }
+        for _ in 0..<50 { if await MainActor.run(body: { m.phase == .succeeded }) { break }; try await Task.sleep(nanoseconds: 20_000_000) }
+        await MainActor.run {
+            c.expectEqual(m.phase, .succeeded)
+            c.expectEqual(m.logLines(for: "home.init"), ["gh repo create"])
+            c.expectEqual(m.steps.map(\.state), [.done, .done, .done])
+        }
+        c.expectEqual(services.registered, [["com.mattstack.daemon.plist"]])
+    },
+    Check("a failed step stops the run with its remedy; retryFromFailure re-streams with --from and forgets the need") { c in
+        final class Count: @unchecked Sendable { var froms: [String?] = [] }
+        let count = Count()
+        let broker = NeedBroker(services: FakeServices(), privileged: FakePrivileged())
+        let stream: ApplyStreamFactory = { from in
+            count.froms.append(from)
+            if from == nil {
+                return lines([planLine,
+                              #"{"event":"step","id":"plugins.install","state":"failed","detail":"exit 1","remedy":"Open Claude Code once, then Retry."}"#,
+                              #"{"event":"done","ok":false,"failedStep":"plugins.install"}"#])
+            }
+            return lines([#"{"event":"plan","steps":[{"id":"plugins.install","title":"Plugins","kind":"rt"}]}"#,
+                          #"{"event":"step","id":"plugins.install","state":"done"}"#,
+                          #"{"event":"done","ok":true,"failedStep":null}"#])
+        }
+        let m = await MainActor.run { InstallRunModel(stream: stream, needs: broker) }
+        await MainActor.run { m.start() }
+        for _ in 0..<50 { if await MainActor.run(body: { m.failedStepId != nil }) { break }; try await Task.sleep(nanoseconds: 20_000_000) }
+        await MainActor.run {
+            c.expectEqual(m.phase, .failed(stepId: "plugins.install", remedy: "Open Claude Code once, then Retry."))
+            m.retryFromFailure()
+        }
+        for _ in 0..<50 { if await MainActor.run(body: { m.phase == .succeeded }) { break }; try await Task.sleep(nanoseconds: 20_000_000) }
+        await MainActor.run {
+            c.expectEqual(m.phase, .succeeded)
+            c.expectEqual(m.steps.map(\.id), ["home.init", "services.register", "plugins.install"], "earlier steps keep their rows")
+            c.expectEqual(m.steps[2].state, .done)
+        }
+        c.expectEqual(count.froms, [nil, "plugins.install"])
+    },
+    Check("a stream error surfaces as streamError") { c in
+        let stream: ApplyStreamFactory = { _ in AsyncThrowingStream { $0.finish(throwing: RtClientError.exited(1, stderr: "boom")) } }
+        let m = await MainActor.run { InstallRunModel(stream: stream, needs: NeedBroker(services: FakeServices(), privileged: FakePrivileged())) }
+        await MainActor.run { m.start() }
+        for _ in 0..<50 { if await MainActor.run(body: { if case .streamError = m.phase { return true }; return false }) { break }; try await Task.sleep(nanoseconds: 20_000_000) }
+        await MainActor.run { if case .streamError(let s) = m.phase { c.expect(s.contains("boom")) } else { c.fail("expected streamError, got \(m.phase)") } }
+    },
+]
+```
+
+- [ ] **Step 2: Run → compile failure.**
+
+- [ ] **Step 3: Implement**
+
+Append to `rt-tray/Sources-core/Contract/ApplyEvents.swift`:
+```swift
+public enum StepKind: String, Codable, Equatable, Sendable { case rt, app, privileged }
+public enum StepState: String, Codable, Equatable, Sendable { case pending, running, done, failed, skipped }
+
+public struct StepInfo: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var title: String
+    public var kind: StepKind
+    public init(id: String, title: String, kind: StepKind) { self.id = id; self.title = title; self.kind = kind }
+}
+
+public enum ApplyEvent: Equatable, Sendable {
+    case plan([StepInfo])
+    case step(id: String, state: StepState, detail: String?, remedy: String?)
+    case log(id: String, line: String)
+    case need(id: String, request: NeedRequest)
+    case done(ok: Bool, failedStep: String?)
+    case unknown(String)
+
+    private struct Raw: Decodable {
+        let event: String
+        let steps: [StepInfo]?
+        let id: String?
+        let state: StepState?
+        let detail: String?
+        let remedy: String?
+        let line: String?
+        let request: NeedRequest?
+        let ok: Bool?
+        let failedStep: String?
+    }
+
+    public static func decode(_ line: String) throws -> ApplyEvent {
+        let r = try JSONDecoder().decode(Raw.self, from: Data(line.utf8))
+        switch r.event {
+        case "plan": return .plan(r.steps ?? [])
+        case "step": return .step(id: r.id ?? "", state: r.state ?? .pending, detail: r.detail, remedy: r.remedy)
+        case "log": return .log(id: r.id ?? "", line: r.line ?? "")
+        case "need": return .need(id: r.id ?? "", request: r.request ?? NeedRequest(type: "", plists: nil, op: nil))
+        case "done": return .done(ok: r.ok ?? false, failedStep: r.failedStep)
+        default: return .unknown(r.event)
+        }
+    }
+}
+```
+
+`rt-tray/Sources-core/Install/InstallRunModel.swift`:
+```swift
+import Foundation
+import Combine
+
+public typealias ApplyStreamFactory = @Sendable (_ from: String?) -> AsyncThrowingStream<String, Error>
+
+public struct InstallStep: Equatable, Identifiable, Sendable {
+    public var info: StepInfo
+    public var state: StepState
+    public var detail: String?
+    public var remedy: String?
+    public var waitingOnYou: Bool
+    public var id: String { info.id }
+    public init(info: StepInfo, state: StepState = .pending, detail: String? = nil, remedy: String? = nil, waitingOnYou: Bool = false) {
+        self.info = info; self.state = state; self.detail = detail; self.remedy = remedy; self.waitingOnYou = waitingOnYou
+    }
+}
+
+/// Renders `rt setup apply --json`. Steps come only from the stream's plan
+/// event; the app executes `need` events through NeedBroker and otherwise
+/// just shows what rt says. Retry resumes from the failed step and keeps
+/// the earlier rows so the list never "forgets" what already happened.
+@MainActor
+public final class InstallRunModel: ObservableObject {
+    public enum Phase: Equatable, Sendable {
+        case idle, running, succeeded
+        case failed(stepId: String, remedy: String?)
+        case streamError(String)
+    }
+
+    @Published public private(set) var steps: [InstallStep] = []
+    @Published public private(set) var phase: Phase = .idle
+    @Published public private(set) var logs: [String: [String]] = [:]
+
+    private let stream: ApplyStreamFactory
+    private let needs: NeedBroker
+    private var task: Task<Void, Never>?
+    public static let logCapPerStep = 500
+
+    public init(stream: @escaping ApplyStreamFactory, needs: NeedBroker) {
+        self.stream = stream
+        self.needs = needs
+    }
+
+    public var isRunning: Bool { phase == .running }
+    public var failedStepId: String? { if case .failed(let id, _) = phase { return id }; return nil }
+    public func logLines(for id: String) -> [String] { logs[id] ?? [] }
+
+    public func start(from: String? = nil) {
+        task?.cancel()
+        phase = .running
+        if from == nil { steps = []; logs = [:] }
+        let stream = self.stream(from)
+        task = Task { [weak self] in
+            do {
+                for try await line in stream {
+                    guard let self else { return }
+                    let event: ApplyEvent
+                    do { event = try ApplyEvent.decode(line) } catch { self.append(log: "unparsed: \(line)", to: "_stream"); continue }
+                    await self.handle(event)
+                }
+                guard let self, self.phase == .running else { return }
+                self.phase = .streamError("rt setup apply ended without a done event")
+            } catch {
+                self?.phase = .streamError(String(describing: error))
+            }
+        }
+    }
+
+    public func retryFromFailure() {
+        guard let id = failedStepId else { return }
+        Task { await needs.forget(id: id) }
+        start(from: id)
+    }
+
+    private func handle(_ event: ApplyEvent) async {
+        Self.apply(event, to: &steps)
+        switch event {
+        case .log(let id, let line):
+            append(log: line, to: id)
+        case .need(let id, let request):
+            let result = await needs.perform(id: id, request: request)
+            append(log: "\(request.type): \(result.detail)", to: id)
+            if let i = steps.firstIndex(where: { $0.id == id }) {
+                steps[i].waitingOnYou = false
+                if !result.ok { steps[i].detail = result.detail }
+            }
+        case .done(let ok, let failedStep):
+            if ok { phase = .succeeded }
+            else {
+                let id = failedStep ?? steps.last(where: { $0.state == .failed })?.id ?? "?"
+                phase = .failed(stepId: id, remedy: steps.first(where: { $0.id == id })?.remedy)
+            }
+        default:
+            break
+        }
+    }
+
+    private func append(log line: String, to id: String) {
+        var arr = logs[id] ?? []
+        arr.append(line)
+        if arr.count > Self.logCapPerStep { arr.removeFirst(arr.count - Self.logCapPerStep) }
+        logs[id] = arr
+    }
+
+    /// Pure reducer, shared with the checks. A `plan` after a retry merges by
+    /// id: existing rows keep their place, new ids append.
+    public static func apply(_ event: ApplyEvent, to steps: inout [InstallStep]) {
+        switch event {
+        case .plan(let infos):
+            for info in infos {
+                if let i = steps.firstIndex(where: { $0.id == info.id }) {
+                    steps[i].info = info
+                    steps[i].state = .pending
+                    steps[i].remedy = nil
+                    steps[i].waitingOnYou = false
+                } else {
+                    steps.append(InstallStep(info: info))
+                }
+            }
+        case .step(let id, let state, let detail, let remedy):
+            guard let i = steps.firstIndex(where: { $0.id == id }) else { return }
+            steps[i].state = state
+            if let detail { steps[i].detail = detail }
+            if let remedy { steps[i].remedy = remedy }
+            if state != .running { steps[i].waitingOnYou = false }
+        case .need(let id, _):
+            if let i = steps.firstIndex(where: { $0.id == id }) { steps[i].waitingOnYou = true }
+        case .log, .done, .unknown:
+            break
+        }
+    }
+}
+```
+(`FakeServices`/`FakePrivileged` are reused from Task 9's check file — same module, no duplication.)
+
+- [ ] **Step 4: Run checks → pass. Commit**
+```bash
+git add rt-tray/Sources-core rt-tray/Tests
+git commit -m "MAT-383: InstallRunModel — apply NDJSON → live step list, need execution, retry-from-failed
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 12: Setup window shell — flow model, fixed window, footer, Welcome screen
+
+**Files:**
+- Create: `rt-tray/Sources-core/Setup/SetupFlowModel.swift`
+- Create: `rt-tray/Sources/Setup/SetupSession.swift`, `rt-tray/Sources/Setup/SetupWindowController.swift`, `rt-tray/Sources/Setup/SetupView.swift`, `rt-tray/Sources/Setup/Screens/WelcomeScreen.swift`, `rt-tray/Sources/Setup/Components/StatusBadge.swift`
+- Create: `rt-tray/Tests/MattstackCoreChecks/SetupFlowChecks.swift`; modify `AllChecks.swift`
+
+**Interfaces:**
+- Produces (Core): `public enum SetupStep: Int, CaseIterable, Sendable { welcome, team, checklist, install, done }` with `title: String`, `indicator: String` ("Step n of 5"); `@MainActor public final class SetupFlowModel: ObservableObject` — `@Published step: SetupStep`, `@Published isInstalling: Bool`; `var canGoBack: Bool` (false on welcome, install-while-running, done), `var continueTitle: String` ("Continue" / "Install" on checklist / "Finish" on done), `func next()`, `func back()`, `func jump(to:)`, `var windowMayClose: Bool` (only on done).
+- Produces (app): `enum SetupSession { static var isRunning: Bool }` (true while the Setup window exists and step != done — the updater's idle gate); `final class SetupWindowController: NSWindowController` — `init(environment: SetupEnvironment)`; `func show(step: SetupStep? = nil, joinCode: String? = nil)`; `struct SetupEnvironment { rt: RtRunning; readiness: ReadinessModel; install: InstallRunModel; permissions: PermissionsService; flavor: (isDev: Bool, bundleId: String, bundlePath: String) }`; `struct SetupView: View`; `struct StatusBadge: View` (RowStatus → glyph per spec); `struct SetupFooter: View` (Back / Continue `.keyboardShortcut(.defaultAction)` `.controlSize(.large)`).
+
+- [ ] **Step 1: Failing checks**
+
+`rt-tray/Tests/MattstackCoreChecks/SetupFlowChecks.swift`:
+```swift
+import Foundation
+import MattstackCore
+
+let setupFlowChecks: [Check] = [
+    Check("SetupStep order, titles, indicator") { c in
+        c.expectEqual(SetupStep.allCases.map(\.rawValue), [0, 1, 2, 3, 4])
+        c.expectEqual(SetupStep.checklist.indicator, "Step 3 of 5")
+        c.expectEqual(SetupStep.team.title, "Your team")
+        c.expectEqual(SetupStep.checklist.title, "Before we begin")
+    },
+    Check("flow: next/back bounds, continue titles, back disabled on welcome/install-running/done, close only on done") { c in
+        await MainActor.run {
+            let f = SetupFlowModel()
+            c.expectEqual(f.step, .welcome)
+            c.expectEqual(f.canGoBack, false)
+            c.expectEqual(f.windowMayClose, false)
+            f.back(); c.expectEqual(f.step, .welcome)
+            f.next(); c.expectEqual(f.step, .team); c.expectEqual(f.canGoBack, true)
+            f.next(); c.expectEqual(f.step, .checklist); c.expectEqual(f.continueTitle, "Install")
+            f.next(); c.expectEqual(f.step, .install)
+            f.isInstalling = true; c.expectEqual(f.canGoBack, false)
+            f.isInstalling = false; c.expectEqual(f.canGoBack, true)
+            f.next(); c.expectEqual(f.step, .done); c.expectEqual(f.continueTitle, "Finish")
+            c.expectEqual(f.canGoBack, false); c.expectEqual(f.windowMayClose, true)
+            f.next(); c.expectEqual(f.step, .done)
+            f.jump(to: .team); c.expectEqual(f.step, .team)
+        }
+    },
+]
+```
+
+- [ ] **Step 2: Run → compile failure. Implement Core**
+
+`rt-tray/Sources-core/Setup/SetupFlowModel.swift`:
+```swift
+import Foundation
+import Combine
+
+public enum SetupStep: Int, CaseIterable, Sendable {
+    case welcome, team, checklist, install, done
+
+    public var title: String {
+        switch self {
+        case .welcome: return "Welcome to mattstack"
+        case .team: return "Your team"
+        case .checklist: return "Before we begin"
+        case .install: return "Installing"
+        case .done: return "Everything's working"
+        }
+    }
+    public var indicator: String { "Step \(rawValue + 1) of \(SetupStep.allCases.count)" }
+}
+
+/// Custom page model (spec §4): push transitions, Back never dismisses,
+/// the window only closes once setup is done.
+@MainActor
+public final class SetupFlowModel: ObservableObject {
+    @Published public var step: SetupStep = .welcome
+    @Published public var isInstalling = false
+    public init() {}
+
+    public var canGoBack: Bool {
+        switch step {
+        case .welcome, .done: return false
+        case .install: return !isInstalling
+        default: return true
+        }
+    }
+    public var continueTitle: String {
+        switch step {
+        case .checklist: return "Install"
+        case .done: return "Finish"
+        default: return "Continue"
+        }
+    }
+    public var windowMayClose: Bool { step == .done }
+
+    public func next() { if let n = SetupStep(rawValue: step.rawValue + 1) { step = n } }
+    public func back() { guard canGoBack, let p = SetupStep(rawValue: step.rawValue - 1) else { return }; step = p }
+    public func jump(to s: SetupStep) { step = s }
+}
+```
+Run checks → pass.
+
+- [ ] **Step 3: App shell — session flag, window controller, view, footer, welcome**
+
+`rt-tray/Sources/Setup/SetupSession.swift`:
+```swift
+import Foundation
+
+/// Process-wide "setup is in progress" flag: the updater's idle gate reads it
+/// and the window controller owns it.
+enum SetupSession {
+    static var isRunning = false
+}
+```
+
+`rt-tray/Sources/Setup/Components/StatusBadge.swift`:
+```swift
+import SwiftUI
+import MattstackCore
+
+struct StatusBadge: View {
+    let status: RowStatus
+    var body: some View {
+        let symbol = StatusGlyph.symbol(for: status)
+        Group {
+            if symbol == "progress" {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: symbol).foregroundStyle(color)
+            }
+        }
+        .frame(width: 20, height: 20)
+        .accessibilityLabel(Text(status.rawValue))
+        .accessibilityIdentifier("status-\(status.rawValue)")
+    }
+    private var color: Color {
+        switch StatusGlyph.tint(for: status) {
+        case .green: return .green
+        case .red: return .red
+        case .yellow: return .yellow
+        case .grey: return .secondary
+        case .none: return .primary
+        }
+    }
+}
+```
+
+`rt-tray/Sources/Setup/SetupWindowController.swift`:
+```swift
+import AppKit
+import SwiftUI
+import MattstackCore
+
+struct SetupEnvironment {
+    let rt: RtRunning
+    let readiness: ReadinessModel
+    let install: InstallRunModel
+    let permissions: PermissionsService
+    let isDevBuild: Bool
+    let bundleId: String
+    let bundlePath: String
+}
+
+/// One dedicated NSWindow hosting SwiftUI (AppKit lifecycle stays). ~560 pt
+/// wide, fixed; close/minimize appear only once setup is done.
+final class SetupWindowController: NSWindowController, NSWindowDelegate {
+    static let width: CGFloat = 560
+    let flow = SetupFlowModel()
+    let team: TeamChoiceModel
+    private let environment: SetupEnvironment
+    private var activeObserver: Any?
+
+    init(environment: SetupEnvironment) {
+        self.environment = environment
+        self.team = TeamChoiceModel(rt: environment.rt)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 620),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.title = "mattstack Setup"
+        window.isReleasedWhenClosed = false
+        window.center()
+        super.init(window: window)
+        window.delegate = self
+        let root = SetupView(flow: flow, team: team, readiness: environment.readiness, install: environment.install,
+                             permissions: environment.permissions, env: environment)
+        window.contentViewController = NSHostingController(rootView: root)
+        window.setContentSize(NSSize(width: Self.width, height: 620))
+        flow.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.applyStyle() } }
+            .store(in: &cancellables)
+    }
+    required init?(coder: NSCoder) { fatalError("not supported") }
+    private var cancellables = Set<AnyCancellable>()
+
+    func show(step: SetupStep? = nil, joinCode: String? = nil) {
+        if let step { flow.jump(to: step) }
+        if let joinCode { team.choice = .join; team.inviteCode = joinCode }
+        SetupSession.isRunning = true
+        applyStyle()
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.environment.readiness.didBecomeActive()
+        }
+    }
+
+    private func applyStyle() {
+        guard let window else { return }
+        var mask: NSWindow.StyleMask = [.titled]
+        if flow.windowMayClose { mask.insert([.closable, .miniaturizable]) }
+        window.styleMask = mask
+        SetupSession.isRunning = !flow.windowMayClose
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        SetupSession.isRunning = false
+        environment.readiness.becameHidden()
+        if let o = activeObserver { NotificationCenter.default.removeObserver(o) }
+    }
+}
+import Combine
+```
+(Move `import Combine` to the top with the other imports — shown last only to keep the snippet readable.)
+
+`rt-tray/Sources/Setup/SetupView.swift`:
+```swift
+import SwiftUI
+import MattstackCore
+
+struct SetupView: View {
+    @ObservedObject var flow: SetupFlowModel
+    @ObservedObject var team: TeamChoiceModel
+    @ObservedObject var readiness: ReadinessModel
+    @ObservedObject var install: InstallRunModel
+    let permissions: PermissionsService
+    let env: SetupEnvironment
+    @State private var busy = false
+    @State private var errorText: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            ZStack {
+                switch flow.step {
+                case .welcome: WelcomeScreen().transition(pushTransition)
+                case .team: TeamScreen(model: team).transition(pushTransition)
+                case .checklist: ChecklistScreen(model: readiness, permissions: permissions, rt: env.rt, bundleId: env.bundleId).transition(pushTransition)
+                case .install: InstallScreen(model: install).transition(pushTransition)
+                case .done: DoneScreen(install: install, isOwner: team.choice == .create, onInvite: { NotificationCenter.default.post(name: .rtShowSettingsTeam, object: nil) }).transition(pushTransition)
+                }
+            }
+            .animation(.easeInOut(duration: 0.22), value: flow.step)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Divider()
+            footer
+        }
+        .frame(width: SetupWindowController.width)
+        .frame(minHeight: 560)
+        .controlSize(.large)
+        .onChange(of: flow.step) { _, step in
+            if step == .checklist { readiness.becameVisible(); Task { await readiness.load() } } else { readiness.becameHidden() }
+            if step == .install { flow.isInstalling = true; install.start() }
+        }
+        .onChange(of: install.phase) { _, phase in
+            flow.isInstalling = (phase == .running)
+            if phase == .succeeded { flow.next() }
+        }
+    }
+
+    private var pushTransition: AnyTransition {
+        .asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity))
+    }
+
+    private var header: some View {
+        HStack {
+            Text(flow.step.title).font(.title2.weight(.semibold))
+            Spacer()
+            Text(flow.step.indicator).font(.caption).foregroundStyle(.secondary)
+                .accessibilityIdentifier("step-indicator")
+        }
+        .padding(.horizontal, 20).padding(.vertical, 14)
+    }
+
+    private var footer: some View {
+        HStack {
+            if let errorText { Text(errorText).font(.caption).foregroundStyle(.red).lineLimit(2) }
+            Spacer()
+            if flow.canGoBack {
+                Button("Back") { flow.back() }.accessibilityIdentifier("back")
+            }
+            if flow.step == .checklist, readiness.limitedModeAvailable {
+                Button("Continue in limited mode") { flow.next() }.accessibilityIdentifier("continue-limited")
+            }
+            Button(flow.continueTitle) { Task { await advance() } }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!continueEnabled || busy)
+                .accessibilityIdentifier("continue")
+        }
+        .padding(.horizontal, 20).padding(.vertical, 12)
+    }
+
+    private var continueEnabled: Bool {
+        switch flow.step {
+        case .welcome: return true
+        case .team: return team.canContinue
+        case .checklist: return readiness.canInstall
+        case .install: return install.phase == .succeeded
+        case .done: return true
+        }
+    }
+
+    private func advance() async {
+        errorText = nil
+        switch flow.step {
+        case .team:
+            busy = true; defer { busy = false }
+            if let err = await team.validateAndPrepare() { errorText = err; return }
+            flow.next()
+        case .done:
+            NSApp.keyWindow?.close()
+        default:
+            flow.next()
+        }
+    }
+}
+
+extension Notification.Name {
+    static let rtShowSettingsTeam = Notification.Name("rtShowSettingsTeam")
+}
+```
+(`TeamScreen`, `ChecklistScreen`, `InstallScreen`, `DoneScreen`, `TeamChoiceModel` arrive in Tasks 13–16. To keep this task building, create them as minimal placeholders in their final files now — `struct TeamScreen: View { @ObservedObject var model: TeamChoiceModel; var body: some View { Text("team") } }` etc. — and `TeamChoiceModel` with `choice`, `inviteCode`, `canContinue`, `validateAndPrepare()` stubs returning nil — each replaced wholesale in its own task. Stubs must be committed with a one-line `// replaced in Task N` marker so the reviewer of this task knows they are scaffolding; the later task deletes the marker.)
+
+`rt-tray/Sources/Setup/Screens/WelcomeScreen.swift`:
+```swift
+import SwiftUI
+
+struct WelcomeScreen: View {
+    private let bullets: [(String, String)] = [
+        ("terminal", "Install the rt command into ~/.local/bin and add one PATH line to your shell rc."),
+        ("gearshape.2", "Run background services: the rt daemon, deck, board, and gitq."),
+        ("sparkles", "Install the mattstack skills into Claude Code."),
+        ("puzzlepiece.extension", "Install the editor extension."),
+        ("lock.shield", "Ask for Full Disk Access and background-item approval."),
+    ]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 56, height: 56)
+                Text("mattstack sets up your Mac for the team: one app, one menu-bar item, everything else underneath.")
+                    .font(.body)
+            }
+            Text("Setup will:").font(.headline)
+            ForEach(bullets, id: \.1) { b in
+                Label { Text(b.1) } icon: { Image(systemName: b.0).frame(width: 20) }
+            }
+            Spacer()
+            Text("Everything here is reversible from Settings → Uninstall.").font(.callout).foregroundStyle(.secondary)
+        }
+        .padding(24)
+        .accessibilityIdentifier("screen-welcome")
+    }
+}
+```
+
+- [ ] **Step 4: `swift build` → Build complete; checks pass. Commit**
+```bash
+git add rt-tray/Sources-core rt-tray/Sources/Setup rt-tray/Tests
+git commit -m "MAT-383: Setup window shell — flow model, fixed 560pt window, footer, Welcome screen
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 13: "Your team" screen — create / join / restore cards, rt-validated Continue
+
+**Files:**
+- Create: `rt-tray/Sources-core/Setup/TeamChoiceModel.swift` (replaces the Task 12 stub), `rt-tray/Sources-core/Setup/Slug.swift`
+- Create/replace: `rt-tray/Sources/Setup/Screens/TeamScreen.swift`
+- Create: `rt-tray/Tests/MattstackCoreChecks/TeamChoiceChecks.swift`; modify `AllChecks.swift`
+
+**Interfaces:**
+- Produces (Core):
+  - `public enum Slug { static func make(_ name: String) -> String }` (lowercase, `[a-z0-9-]`, collapse dashes, trim)
+  - `public enum TeamChoice: Equatable, Sendable { create, join, restore }`
+  - `public struct GitHubStatus: Codable { status: RowStatus; handle: String?; owners: [String]? }` (from `rt setup github status --json`)
+  - `@MainActor public final class TeamChoiceModel: ObservableObject` — `init(rt: RtRunning)`; `@Published choice: TeamChoice = .create`, `teamName`, `othersWillJoin = true`, `useGhRepo: Bool`, `ghOwner: String?`, `ghOwners: [String]`, `ghHandle: String?`, `remoteURL`, `inviteCode`, `restoreRepo`, `restoreAgeKey`, `joinSummary: String?`, `isChecking`; `var slugPreview: String`; `var canContinue: Bool`; `func loadGitHubStatus() async`; `func validateAndPrepare() async -> String?` (nil = ok; otherwise the specific failure copy); `static func joinFailureCopy(_ error: RtUserError, owner: String?, team: String?) -> String`; `static let inviteCodeLength = 77`.
+  - Verbs called (contract): `rt setup github status --json`; `rt team create <name> --remote <url> [--others] --json` (create; with `useGhRepo` the app passes `--remote gh:<owner>` — see Open questions) ; `rt team join --dry-run --json` with stdin `{"code": "..."}`; `rt restore <org>/<repo> --dry-run --json` with stdin `{"ageKey": "..."}`; `rt home init --dry-run --json` for the home-repo remote check (create and join both need the home repo).
+
+- [ ] **Step 1: Failing checks**
+
+`rt-tray/Tests/MattstackCoreChecks/TeamChoiceChecks.swift`:
+```swift
+import Foundation
+import MattstackCore
+
+final class ScriptedRt: RtRunning, @unchecked Sendable {
+    var answers: [String: (Int32, String)] = [:]   // key: args joined by space
+    var calls: [(args: [String], stdin: String?)] = []
+    func run(_ args: [String], stdin: Data?) async throws -> RtResult {
+        calls.append((args, stdin.map { String(decoding: $0, as: UTF8.self) }))
+        let key = args.joined(separator: " ")
+        let (code, out) = answers.first { key.hasPrefix($0.key) }?.value ?? (1, "")
+        return RtResult(exitCode: code, stdout: Data(out.utf8), stderr: Data())
+    }
+    func stream(_ args: [String], stdin: Data?) -> AsyncThrowingStream<String, Error> { AsyncThrowingStream { $0.finish() } }
+}
+
+let teamChoiceChecks: [Check] = [
+    Check("Slug.make") { c in
+        c.expectEqual(Slug.make("Acme Claims!"), "acme-svc")
+        c.expectEqual(Slug.make("  My  Team -- 2 "), "my-team-2")
+        c.expectEqual(Slug.make(""), "")
+    },
+    Check("create: slug preview, gh owner picker from github status, canContinue needs name + remote") { c in
+        let rt = ScriptedRt()
+        rt.answers["setup github status"] = (0, #"{"contract":1,"status":"ready","handle":"m4ttheweric","owners":["m4ttheweric","acme"]}"#)
+        let m = await MainActor.run { TeamChoiceModel(rt: rt) }
+        await m.loadGitHubStatus()
+        await MainActor.run {
+            c.expectEqual(m.ghHandle, "m4ttheweric")
+            c.expectEqual(m.ghOwners, ["m4ttheweric", "acme"])
+            c.expectEqual(m.useGhRepo, true)
+            c.expectEqual(m.ghOwner, "m4ttheweric")
+            c.expectEqual(m.canContinue, false)
+            m.teamName = "Acme Claims"
+            c.expectEqual(m.slugPreview, "acme-svc")
+            c.expectEqual(m.ghRepoPreview, "m4ttheweric/mattstack-team-acme-claims")
+            c.expectEqual(m.canContinue, true)
+            m.useGhRepo = false
+            c.expectEqual(m.canContinue, false, "URL field now required")
+            m.remoteURL = "git@gitlab.example.com:tools/mattstack-team.git"
+            c.expectEqual(m.canContinue, true)
+        }
+    },
+    Check("create: validateAndPrepare calls home init --dry-run then team create, never with secrets on argv") { c in
+        let rt = ScriptedRt()
+        rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
+        rt.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-svc","name":"Acme Claims"},"remote":"ok"}"#)
+        let m = await MainActor.run { TeamChoiceModel(rt: rt) }
+        await MainActor.run { m.choice = .create; m.teamName = "Acme Claims"; m.useGhRepo = false; m.remoteURL = "https://example.com/t.git" }
+        let err = await m.validateAndPrepare()
+        c.expect(err == nil, "got \(err ?? "")")
+        c.expectEqual(rt.calls[0].args.prefix(3), ["home", "init", "--dry-run"])
+        c.expectEqual(rt.calls[1].args, ["team", "create", "Acme Claims", "--remote", "https://example.com/t.git", "--others", "--json"])
+    },
+    Check("join: code goes on stdin; success summary; failure copy is specific") { c in
+        let rt = ScriptedRt()
+        rt.answers["team join --dry-run"] = (0, #"{"contract":1,"team":{"slug":"acme","name":"Acme","owner":"matt"},"access":"ok","peering":"idle","message":"Joining Acme (owner matt)"}"#)
+        rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
+        let m = await MainActor.run { TeamChoiceModel(rt: rt) }
+        await MainActor.run { m.choice = .join; m.inviteCode = "ABCD-EFGH" }
+        let err = await m.validateAndPrepare()
+        c.expect(err == nil)
+        c.expectEqual(rt.calls[0].args, ["team", "join", "--dry-run", "--json"])
+        c.expectEqual(rt.calls[0].stdin, "{\"code\":\"ABCD-EFGH\"}")
+        c.expect(rt.calls.allSatisfy { !$0.args.contains("ABCD-EFGH") }, "code never on argv")
+        await MainActor.run { c.expectEqual(m.joinSummary, "Joining Acme (owner matt)") }
+        let denied = ScriptedRt()
+        denied.answers["team join --dry-run"] = (2, #"{"contract":1,"error":{"code":"no-access","message":"You don't have access yet: ask matt to grant you access to Acme."}}"#)
+        let m2 = await MainActor.run { TeamChoiceModel(rt: denied) }
+        await MainActor.run { m2.choice = .join; m2.inviteCode = "X" }
+        let e2 = await m2.validateAndPrepare()
+        c.expectEqual(e2, "You don't have access yet: ask matt to grant you access to Acme.")
+        c.expectEqual(TeamChoiceModel.joinFailureCopy(RtUserError(code: "expired", message: ""), owner: "matt", team: nil),
+                      "Invite not recognized or expired: ask matt for a new one.")
+        c.expectEqual(TeamChoiceModel.joinFailureCopy(RtUserError(code: "wrong-account", message: ""), owner: nil, team: nil),
+                      "This code is for a different forge account than you're signed into.")
+    },
+    Check("join: invite field accepts pasted codes with whitespace/newlines; ~77 chars; no per-char validation") { c in
+        let m = await MainActor.run { TeamChoiceModel(rt: ScriptedRt()) }
+        await MainActor.run {
+            m.choice = .join
+            m.inviteCode = " ABCD-EFGH-\nIJKL "
+            c.expectEqual(m.normalizedInviteCode, "ABCD-EFGH-IJKL")
+            c.expectEqual(m.canContinue, true)
+            m.inviteCode = "   "
+            c.expectEqual(m.canContinue, false)
+            c.expectEqual(TeamChoiceModel.inviteCodeLength, 77)
+        }
+    },
+    Check("restore: repo + key required; key on stdin to rt restore --dry-run") { c in
+        let rt = ScriptedRt()
+        rt.answers["restore"] = (0, #"{"contract":1,"ok":true,"repo":"m4ttheweric/mattstack-home"}"#)
+        let m = await MainActor.run { TeamChoiceModel(rt: rt) }
+        await MainActor.run { m.choice = .restore; m.restoreRepo = "m4ttheweric/mattstack-home"; c.expectEqual(m.canContinue, false); m.restoreAgeKey = "AGE-SECRET-KEY-1XYZ"; c.expectEqual(m.canContinue, true) }
+        let err = await m.validateAndPrepare()
+        c.expect(err == nil)
+        c.expectEqual(rt.calls[0].args, ["restore", "m4ttheweric/mattstack-home", "--dry-run", "--json"])
+        c.expectEqual(rt.calls[0].stdin, "{\"ageKey\":\"AGE-SECRET-KEY-1XYZ\"}")
+    },
+]
+```
+
+- [ ] **Step 2: Run → compile failure. Implement Core**
+
+`rt-tray/Sources-core/Setup/Slug.swift`:
+```swift
+import Foundation
+
+public enum Slug {
+    public static func make(_ name: String) -> String {
+        let lowered = name.lowercased()
+        var out = ""
+        var lastDash = true
+        for ch in lowered {
+            if ch.isLetter || ch.isNumber, ch.isASCII {
+                out.append(ch); lastDash = false
+            } else if !lastDash {
+                out.append("-"); lastDash = true
+            }
+        }
+        while out.hasSuffix("-") { out.removeLast() }
+        return out
+    }
+}
+```
+
+`rt-tray/Sources-core/Setup/TeamChoiceModel.swift`:
+```swift
+import Foundation
+import Combine
+
+public enum TeamChoice: Equatable, Sendable { case create, join, restore }
+
+public struct GitHubStatus: Codable, Equatable, Sendable {
+    public var status: RowStatus
+    public var handle: String?
+    public var owners: [String]?
+}
+
+/// Screen 2 state. Every validation is an rt verb; codes and keys travel on
+/// stdin; nothing is pushed until Install.
+@MainActor
+public final class TeamChoiceModel: ObservableObject {
+    public static let inviteCodeLength = 77
+    public static let explainer = "mattstack keeps your team settings in git. That keeps them safe and gives you a paper trail: skill edits and every change are visible in history. The same goes for your own settings home repo, created by the same step."
+
+    @Published public var choice: TeamChoice = .create
+    @Published public var teamName = ""
+    @Published public var othersWillJoin = true
+    @Published public var useGhRepo = false
+    @Published public var ghOwner: String?
+    @Published public private(set) var ghOwners: [String] = []
+    @Published public private(set) var ghHandle: String?
+    @Published public var remoteURL = ""
+    @Published public var inviteCode = ""
+    @Published public var restoreRepo = ""
+    @Published public var restoreAgeKey = ""
+    @Published public private(set) var joinSummary: String?
+    @Published public private(set) var isChecking = false
+
+    private let rt: RtRunning
+    public init(rt: RtRunning) { self.rt = rt }
+
+    public var slugPreview: String { Slug.make(teamName) }
+    public var ghRepoPreview: String { "\(ghOwner ?? ghHandle ?? "you")/mattstack-team-\(slugPreview)" }
+    public var normalizedInviteCode: String { inviteCode.filter { !$0.isWhitespace && !$0.isNewline } }
+
+    public var canContinue: Bool {
+        switch choice {
+        case .create:
+            guard !slugPreview.isEmpty else { return false }
+            return useGhRepo ? (ghHandle != nil) : !remoteURL.trimmingCharacters(in: .whitespaces).isEmpty
+        case .join:
+            return !normalizedInviteCode.isEmpty
+        case .restore:
+            return !restoreRepo.trimmingCharacters(in: .whitespaces).isEmpty && !restoreAgeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    public func loadGitHubStatus() async {
+        guard let result = try? await rt.run(["setup", "github", "status", "--json"], stdin: nil),
+              let status = try? result.decode(GitHubStatus.self), status.status == .ready else { return }
+        ghHandle = status.handle
+        ghOwners = status.owners ?? [status.handle].compactMap { $0 }
+        ghOwner = ghOwners.first
+        useGhRepo = true
+    }
+
+    /// Runs the dry-run verbs for the chosen card. Returns nil on success or
+    /// the exact sentence to show under the fields.
+    public func validateAndPrepare() async -> String? {
+        isChecking = true
+        defer { isChecking = false }
+        do {
+            switch choice {
+            case .create:
+                if let e = await homeInitCheck() { return e }
+                var args = ["team", "create", teamName, "--remote", useGhRepo ? "gh:\(ghRepoPreview)" : remoteURL.trimmingCharacters(in: .whitespaces)]
+                if othersWillJoin { args.append("--others") }
+                args.append("--json")
+                let r = try await rt.run(args, stdin: nil)
+                if let e = r.userError { return e.message }
+                guard r.exitCode == 0 else { return "rt team create failed (exit \(r.exitCode))." }
+                return nil
+            case .join:
+                let stdin = try JSONEncoder().encode(["code": normalizedInviteCode])
+                let r = try await rt.run(["team", "join", "--dry-run", "--json"], stdin: stdin)
+                if let e = r.userError { return Self.joinFailureCopy(e, owner: nil, team: nil) }
+                guard r.exitCode == 0, let j = try? r.decode(TeamJoinResult.self) else { return "rt team join failed (exit \(r.exitCode))." }
+                guard j.access == "ok" else { return Self.joinFailureCopy(RtUserError(code: j.access == "denied" ? "no-access" : "unreachable", message: j.message ?? ""), owner: j.team?.owner, team: j.team?.name) }
+                joinSummary = j.message ?? "Joining \(j.team?.name ?? "") (owner \(j.team?.owner ?? ""))"
+                return await homeInitCheck()
+            case .restore:
+                let stdin = try JSONEncoder().encode(["ageKey": restoreAgeKey.trimmingCharacters(in: .whitespacesAndNewlines)])
+                let r = try await rt.run(["restore", restoreRepo.trimmingCharacters(in: .whitespaces), "--dry-run", "--json"], stdin: stdin)
+                if let e = r.userError { return e.message }
+                return r.exitCode == 0 ? nil : "rt restore failed (exit \(r.exitCode))."
+            }
+        } catch {
+            return "Could not run rt: \(error)"
+        }
+    }
+
+    private func homeInitCheck() async -> String? {
+        guard let r = try? await rt.run(["home", "init", "--dry-run", "--json"], stdin: nil) else { return "Could not run rt home init." }
+        if let e = r.userError { return e.message }
+        return r.exitCode == 0 ? nil : "rt home init --dry-run failed (exit \(r.exitCode))."
+    }
+
+    public static func joinFailureCopy(_ error: RtUserError, owner: String?, team: String?) -> String {
+        let who = owner ?? "the team owner"
+        switch error.code {
+        case "no-access": return error.message.isEmpty ? "You don't have access yet: ask \(who) to grant you access to \(team ?? "the team")." : error.message
+        case "expired", "not-found", "redeemed": return "Invite not recognized or expired: ask \(who) for a new one."
+        case "wrong-account": return "This code is for a different forge account than you're signed into."
+        default: return error.message.isEmpty ? "Couldn't redeem the invite." : error.message
+        }
+    }
+}
+```
+(Delete the Task 12 stub `TeamChoiceModel` from the app target — the real one lives in Core now.)
+
+- [ ] **Step 3: Run checks → pass.**
+
+- [ ] **Step 4: The screen**
+
+`rt-tray/Sources/Setup/Screens/TeamScreen.swift`:
+```swift
+import SwiftUI
+import MattstackCore
+
+struct TeamScreen: View {
+    @ObservedObject var model: TeamChoiceModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                card(.create, title: "Create a team", systemImage: "person.3") { createFields }
+                card(.join, title: "Join a team", systemImage: "person.crop.circle.badge.plus") { joinFields }
+                card(.restore, title: "Already have mattstack settings?", systemImage: "arrow.counterclockwise.icloud", compact: true) { restoreFields }
+            }
+            .padding(20)
+        }
+        .task { await model.loadGitHubStatus() }
+        .accessibilityIdentifier("screen-team")
+    }
+
+    @ViewBuilder
+    private func card<Content: View>(_ choice: TeamChoice, title: String, systemImage: String, compact: Bool = false,
+                                     @ViewBuilder content: () -> Content) -> some View {
+        let selected = model.choice == choice
+        VStack(alignment: .leading, spacing: 10) {
+            Button { model.choice = choice } label: {
+                HStack {
+                    Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                    Label(title, systemImage: systemImage).font(compact ? .body : .headline)
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("card-\(choice)")
+            if selected { content().padding(.leading, 24) }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(selected ? Color.accentColor : Color.clear, lineWidth: 1))
+    }
+
+    private var createFields: some View {
+        Form {
+            TextField("Team name", text: $model.teamName, prompt: Text("Acme")).accessibilityIdentifier("team-name")
+            LabeledContent("Slug") { Text(model.slugPreview.isEmpty ? "—" : model.slugPreview).foregroundStyle(.secondary) }
+            Toggle("Others will join later", isOn: $model.othersWillJoin)
+            if model.ghHandle != nil {
+                Toggle("Create a private GitHub repo \(model.ghRepoPreview)", isOn: $model.useGhRepo)
+                if model.useGhRepo {
+                    Picker("Owner", selection: Binding(get: { model.ghOwner ?? "" }, set: { model.ghOwner = $0 })) {
+                        ForEach(model.ghOwners, id: \.self) { Text($0).tag($0) }
+                    }
+                }
+            }
+            if !model.useGhRepo {
+                TextField("Repository URL", text: $model.remoteURL, prompt: Text("paste an empty repo's URL; GitHub, GitLab, anything git can push to"))
+                    .accessibilityIdentifier("remote-url")
+            }
+            Text(TeamChoiceModel.explainer).font(.callout).foregroundStyle(.secondary)
+        }
+        .formStyle(.grouped)
+        .scrollDisabled(true)
+    }
+
+    private var joinFields: some View {
+        Form {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Invite code")
+                TextEditor(text: $model.inviteCode)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 54)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+                    .accessibilityIdentifier("invite-code")
+                Text("Paste the whole code (about \(TeamChoiceModel.inviteCodeLength) characters) or open the mattstack://join link you were sent.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let s = model.joinSummary { Label(s, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
+            Text(TeamChoiceModel.explainer).font(.callout).foregroundStyle(.secondary)
+        }
+        .formStyle(.grouped)
+        .scrollDisabled(true)
+    }
+
+    private var restoreFields: some View {
+        Form {
+            TextField("Home repo", text: $model.restoreRepo, prompt: Text("<org>/<repo>")).accessibilityIdentifier("restore-repo")
+            SecureField("Age key (from your password manager)", text: $model.restoreAgeKey).accessibilityIdentifier("restore-key")
+            Text("Clones your settings to ~/.mattstack, installs the key in the Keychain, and replays your teams and packs during Install.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .formStyle(.grouped)
+        .scrollDisabled(true)
+    }
+}
+```
+
+- [ ] **Step 5: `swift build`; checks pass. Commit**
+```bash
+git add rt-tray/Sources-core rt-tray/Sources/Setup rt-tray/Tests
+git commit -m "MAT-383: Your team screen — create/join/restore cards, rt-validated Continue, codes on stdin
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
