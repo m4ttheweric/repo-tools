@@ -159,6 +159,20 @@ fi
 # (bundle identity). These are the same string in prod today but diverge for dev.
 cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
+# ─── Sparkle.framework (stopgap until build.sh wraps xcodebuild) ───────────
+# The binary links Sparkle via SPM with rpath @executable_path/../Frameworks;
+# without the framework in the bundle the app fails at dyld. Copied with
+# ditto (symlinks preserved) and signed inside-out below, never --deep.
+SPARKLE_SRC="$SCRIPT_DIR/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+if [ -d "$SPARKLE_SRC" ]; then
+    mkdir -p "$APP_BUNDLE/Contents/Frameworks"
+    ditto "$SPARKLE_SRC" "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
+    echo "  ✓ Sparkle.framework embedded"
+else
+    echo "  ✗ Sparkle.framework not found under .build/artifacts — run swift build first"
+    exit 1
+fi
+
 # ─── Embed daemon binary ──────────────────────────────────────────────────────
 # Prod: Contents/MacOS/rt-daemon is the real compiled `rt` binary.
 # Dev: Contents/MacOS/rt-daemon IS the shim (Sources-daemon-shim) — permanently
@@ -207,25 +221,9 @@ else
     fi
 fi
 
-# Ship LaunchAgent plist inside the bundle (SMAppService reads it from here).
-# Installed filename matches the Label: com.rt.daemon.plist / com.rt.daemon.dev.plist.
+# Ship the LaunchAgent plists inside the bundle (SMAppService reads them from here).
 mkdir -p "$APP_BUNDLE/Contents/Library/LaunchAgents"
-AGENT_PLIST="$APP_BUNDLE/Contents/Library/LaunchAgents/$DAEMON_LABEL.plist"
-sed -e "s/@@DAEMON_LABEL@@/$DAEMON_LABEL/g" \
-    -e "s/@@BUNDLE_ID@@/$BUNDLE_ID/g" \
-    "$SCRIPT_DIR/LaunchAgent.plist" > "$AGENT_PLIST"
-
-# KeepAlive shape diverges by flavor (spec §1/§3): prod is a plain bool true;
-# dev is { SuccessfulExit = false } so the shim's exit-0 (unconfigured
-# precondition) paths stay down while real crashes still restart. Injected via
-# PlistBuddy, not sed — a dict value can't be a single-line token substitution.
-if [ "$IS_DEV" = true ]; then
-    /usr/libexec/PlistBuddy -c "Add :KeepAlive dict" "$AGENT_PLIST"
-    /usr/libexec/PlistBuddy -c "Add :KeepAlive:SuccessfulExit bool false" "$AGENT_PLIST"
-else
-    /usr/libexec/PlistBuddy -c "Add :KeepAlive bool true" "$AGENT_PLIST"
-fi
-echo "  ✓ LaunchAgent plist ($DAEMON_LABEL.plist) copied to Contents/Library/LaunchAgents"
+"$SCRIPT_DIR/scripts/render-launchagents.sh" "$([ "$IS_DEV" = true ] && echo dev || echo prod)" "$APP_BUNDLE/Contents/Library/LaunchAgents"
 
 # Fill in Info.plist template (BUNDLE_ID/APP_NAME/DISPLAY_NAME/DAEMON_LABEL live
 # ONLY in this script) and inject version from git tag.
@@ -295,6 +293,16 @@ if [ -f "$DAEMON_BIN" ]; then
         echo "  ✓ Signed rt-daemon with JIT entitlements"
     fi
 fi
+
+# 1b. Sparkle, inside-out (XPC services → Autoupdate → Updater.app → framework)
+SPK="$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
+for xpc in "$SPK"/Versions/B/XPCServices/*.xpc; do
+    [ -d "$xpc" ] && codesign "${SIGN_FLAGS[@]}" --preserve-metadata=entitlements "$xpc"
+done
+codesign "${SIGN_FLAGS[@]}" "$SPK/Versions/B/Autoupdate"
+codesign "${SIGN_FLAGS[@]}" "$SPK/Versions/B/Updater.app"
+codesign "${SIGN_FLAGS[@]}" "$SPK"
+echo "  ✓ Signed Sparkle.framework inside-out"
 
 # 2. Outer .app bundle — tray entitlements (sandbox disabled)
 codesign "${SIGN_FLAGS[@]}" \
