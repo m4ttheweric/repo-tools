@@ -81,6 +81,7 @@ struct TeamScreen: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let s = model.joinSummary { Label(s, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
+            if model.isChecking { checkingRow }
             Text(TeamChoiceModel.explainer).font(.callout).foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
