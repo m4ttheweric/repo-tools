@@ -436,3 +436,45 @@ describe("computeRows -- previously-public names absent from skills/, attachment
     }
   });
 });
+
+describe("grouped packs and pack selection", () => {
+  test("list reads grouped layouts (skills/<group>/<name>) and reports the root surface.jsonc", async () => {
+    const packDir = makePackDir();
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": ["subagent-review-loop"] }\n`);
+    writeFile(join(packDir, "skills", "review", "subagent-review-loop", "SKILL.md"), "---\nname: subagent-review-loop\n---\nbody\n");
+    writeFile(join(packDir, "attachments", "forge", "checkout", "SKILL.md"), "---\nname: checkout\n---\nbody\n");
+
+    await skillsSurface(["list", "--pack", "mattstack", "--pack-dir", packDir]);
+
+    const joined = logs.join("\n");
+    expect(joined).toContain("rt skills surface -- pack mattstack");
+    expect(joined).toContain("source: surface.jsonc");
+    expect(joined).toMatch(/public {3}hand-authored {2}subagent-review-loop/);
+    expect(joined).toMatch(/internal hand-authored {2}checkout/);
+  });
+
+  test("set --public on a grouped internal skill moves it keeping its group, and writes the root surface.jsonc", async () => {
+    const packDir = makePackDir();
+    const { mattstackDir, manifestPath } = makeEngineFixture();
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": [] }\n`);
+    writeFile(join(packDir, "attachments", "forge", "checkout", "SKILL.md"), "---\nname: checkout\n---\nbody\n");
+
+    await skillsSurface([
+      "set", "checkout", "--public",
+      "--pack", "mattstack", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
+    ]);
+
+    expect(existsSync(join(packDir, "skills", "forge", "checkout", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(packDir, "attachments", "forge", "checkout"))).toBe(false);
+    expect(existsSync(join(packDir, "pack", "surface.jsonc"))).toBe(false);
+    expect(readFileSync(join(packDir, "surface.jsonc"), "utf8")).toContain('"checkout"');
+    expect(logs.join("\n")).toContain("moved checkout: attachments/forge/ -> skills/forge/");
+  });
+
+  test("no pack named and no tty: clean error that names the flag instead of guessing", async () => {
+    const { mattstackDir } = makeEngineFixture();
+    const { exitCode, errors } = await runExpectingCleanExit(() => skillsSurface(["list", "--mattstack-dir", mattstackDir]));
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("--pack");
+  });
+});
