@@ -12,22 +12,43 @@ export interface RunResult {
   exitCode: number;
 }
 
+/** Longest slice of a failed step's output carried into a log line. */
+export const MAX_LOGGED_OUTPUT = 2000;
+
+/** The tail of a step's output — a failing install reports at the end, not the start. */
+export function outputTail(output: string, maxChars: number): string {
+  const trimmed = output.trim();
+  return trimmed.length <= maxChars ? trimmed : `…${trimmed.slice(-maxChars)}`;
+}
+
 /**
  * Run argv and capture stdout. Never throws: spawn failures and timeouts
  * surface as a non-zero exitCode with whatever stdout was collected.
  *
  * stderr is discarded by default (`opts.stderr` defaults to `"ignore"`); pass
  * `"pipe"` to capture it for callers that need failure detail (e.g. git).
+ *
+ * Children inherit the caller's live `process.env` unless `opts.env` overrides it.
  */
 export async function runCapture(
   argv: [string, ...string[]],
-  opts: { cwd?: string; timeoutMs?: number; stderr?: "ignore" | "pipe" } = {},
+  opts: {
+    cwd?: string;
+    timeoutMs?: number;
+    stderr?: "ignore" | "pipe";
+    env?: Record<string, string | undefined>;
+  } = {},
 ): Promise<RunResult> {
   const captureStderr = opts.stderr === "pipe";
   let proc: ReturnType<typeof Bun.spawn>;
   try {
     proc = Bun.spawn(argv, {
       cwd: opts.cwd,
+      // Bun.spawn ignores assignments made to process.env after startup, so an
+      // inherited env strands the PATH the daemon resolves at boot
+      // (lib/daemon.ts) and leaves `#!/usr/bin/env node` shebangs unresolvable
+      // under launchd. execSync, which this replaces, reads process.env per call.
+      env: opts.env ?? { ...process.env },
       stdin: "ignore",
       stdout: "pipe",
       stderr: captureStderr ? "pipe" : "ignore",
