@@ -31,6 +31,7 @@ const domainFill: AttachmentSource = {
   provides: "watch-ci-domain@1",
   allowedTools: ["Read(${CLAUDE_SKILL_DIR}/ci-config.json)"],
   extraFiles: ["ci-config.json"],
+  registered: false,
 };
 
 const forgeFill: AttachmentSource = {
@@ -42,6 +43,19 @@ const forgeFill: AttachmentSource = {
   provides: "ci-forge@1",
   allowedTools: ["Bash(glab:*)", "Read"],
   extraFiles: [],
+  registered: false,
+};
+
+const registeredForgeFill: AttachmentSource = {
+  binding: "mattstack:gitlab-forge",
+  plugin: "mattstack",
+  version: "1.2.0",
+  dir: "/plugins/mattstack/skills/gitlab-forge",
+  body: "Talk to GitLab via glab.",
+  provides: "ci-forge@1",
+  allowedTools: ["Bash(glab:*)", "Read(${CLAUDE_SKILL_DIR}/token.txt)"],
+  extraFiles: ["token.txt"],
+  registered: true,
 };
 
 const roster = new Set(["mattstack:watch-ci", "claimview:watch-ci-domain", "mattstack:gitlab-forge"]);
@@ -168,6 +182,42 @@ describe("compileSkill", () => {
       copyFrom: "/plugins/claimview/attachments/watch-ci-domain/ci-config.json",
     });
     expect(result.files.some((f) => f.path.startsWith("parts/forge/"))).toBe(false);
+  });
+
+  test("registered fill: reference line only, no seam/body, but still vendors extraFiles and joins allowed-tools", () => {
+    const result = compileSkill(
+      verb,
+      step,
+      { domain: domainFill, forge: registeredForgeFill },
+      roster,
+    );
+
+    expect(result.warnings).toEqual([]);
+
+    const content = skillFileContent(result.files);
+
+    expect(content).toContain(
+      "Slot forge is bound to `mattstack:gitlab-forge` (mattstack:gitlab-forge@1.2.0) -- invoke that skill when this flow needs it.",
+    );
+    expect(content).not.toContain("<!-- part: slot:forge");
+    expect(content).not.toContain("Talk to GitLab via glab.");
+
+    expect(result.files).toContainEqual({
+      path: "parts/forge/token.txt",
+      copyFrom: "/plugins/mattstack/skills/gitlab-forge/token.txt",
+    });
+
+    expect(toolLinesBetween(content)).toEqual([
+      '- "Bash(gh:*)"',
+      '- "Read"',
+      '- "Read(${CLAUDE_SKILL_DIR}/parts/domain/ci-config.json)"',
+      '- "Bash(glab:*)"',
+      '- "Read(${CLAUDE_SKILL_DIR}/parts/forge/token.txt)"',
+    ]);
+
+    expect(content).toContain(
+      'metadata:\n  compiled: "mattstack@1.2.0 + claimview:watch-ci-domain@0.3.0 + mattstack:gitlab-forge@1.2.0"',
+    );
   });
 
   test("name lint: unregistered token warns, roster member does not", () => {

@@ -20,6 +20,7 @@ export type AttachmentSource = {
   provides: string; // frontmatter metadata.provides, e.g. "watch-ci-domain@1"
   allowedTools: string[];
   extraFiles: string[]; // non-SKILL.md files relative to dir, vendored under parts/<slot>/
+  registered: boolean; // true = top-level skill under skills/, referenced not inlined; false = internal attachment under attachments/, inlined
 };
 
 export type VerbDef = { name: string; engine: string; description: string };
