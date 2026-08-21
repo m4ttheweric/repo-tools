@@ -31,17 +31,9 @@ import { withTreeLock } from "./locks.ts";
 import { reapTrashDir, trashTree } from "./trash.ts";
 import { reconcileForRepo } from "../daemon/doppler-sync.ts";
 import { deriveRepoIdentity } from "../settings/identity.ts";
+import { MAX_LOGGED_OUTPUT, outputTail } from "../subprocess.ts";
 
 const CREATE_TIMEOUT_MS = 5 * 60_000;
-
-/** Longest slice of a failed step's output carried into the log line. */
-const MAX_LOGGED_OUTPUT = 2000;
-
-/** The tail of a step's output — a failing install reports at the end, not the start. */
-function outputTail(output: string, maxChars: number): string {
-  const trimmed = output.trim();
-  return trimmed.length <= maxChars ? trimmed : `…${trimmed.slice(-maxChars)}`;
-}
 
 export interface CreateDeps {
   repoName: string;
