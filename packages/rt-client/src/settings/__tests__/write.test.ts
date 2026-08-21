@@ -76,6 +76,18 @@ describe("settings/write", () => {
       expect(parsed["rt.worktrees"]).toEqual({ onDeck: 5 });
     });
 
+    test("creates the machine store's nested user/local/<machineKey()> directory when none of it exists yet", () => {
+      // The machine store now lives two directories deeper than a bare
+      // ~/.mattstack — nothing under ~/.mattstack/user/local exists on a
+      // fresh HOME, so the write must mkdir the whole chain, not just the
+      // immediate parent.
+      expect(() => setSetting("rt.worktrees", { onDeck: 7 }, "machine")).not.toThrow();
+
+      const content = readMachine();
+      const parsed = JSON.parse(content.replace(/^\/\/.*\n/, ""));
+      expect(parsed["rt.worktrees"]).toEqual({ onDeck: 7 });
+    });
+
     test("the header comment lands before the closing brace, not after it", () => {
       // Regression for the verified jsonc-parser footgun: modify() on a
       // comment-only file with no braces at all pushes the header AFTER the
@@ -336,7 +348,7 @@ describe("settings/write", () => {
 
       const entries = readdirSync(dirname(userSettingsPath()));
       expect(entries.some((name) => name.endsWith(".tmp"))).toBe(false);
-      expect(entries).toContain("settings.jsonc");
+      expect(entries).toContain("settings.user.jsonc");
     });
 
     test("a successful write's content matches what modify/applyEdits produced (no JSON.stringify round-trip)", () => {

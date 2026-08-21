@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { runCapture } from "../exec.ts";
 import { machineSettingsPath } from "../paths.ts";
 import { normalizeRemote, identityFromRemote, deriveRepoIdentity, clearIdentityMemo } from "../identity.ts";
@@ -71,7 +71,7 @@ describe("settings/identity", () => {
     });
 
     test("exact remote match in the machine store's rt.repoIdentityOverrides wins", () => {
-      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      mkdirSync(dirname(machineSettingsPath()), { recursive: true });
       writeFileSync(
         machineSettingsPath(),
         JSON.stringify({
@@ -86,7 +86,7 @@ describe("settings/identity", () => {
     });
 
     test("override map present but remote not in it still falls through to normalizeRemote", () => {
-      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      mkdirSync(dirname(machineSettingsPath()), { recursive: true });
       writeFileSync(
         machineSettingsPath(),
         JSON.stringify({
@@ -132,7 +132,7 @@ describe("settings/identity", () => {
 
     test("routes through identityFromRemote so an override applies to derivation too", async () => {
       const dir = await initRepo("/private/tmp/some-local-remote");
-      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      mkdirSync(dirname(machineSettingsPath()), { recursive: true });
       writeFileSync(
         machineSettingsPath(),
         JSON.stringify({
