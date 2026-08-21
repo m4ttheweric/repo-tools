@@ -77,9 +77,11 @@ function buildFrontmatter(verb: VerbDef, allowedTools: string[], compiledParts: 
   const lines: string[] = ["---"];
   lines.push(`name: ${yamlQuote(verb.name)}`);
   lines.push(`description: ${yamlQuote(verb.description)}`);
-  lines.push("allowed-tools:");
-  for (const tool of allowedTools) {
-    lines.push(`  - ${yamlQuote(tool)}`);
+  if (allowedTools.length > 0) {
+    lines.push("allowed-tools:");
+    for (const tool of allowedTools) {
+      lines.push(`  - ${yamlQuote(tool)}`);
+    }
   }
   lines.push("metadata:");
   lines.push(`  compiled: ${yamlQuote(compiledParts.join(" + "))}`);
