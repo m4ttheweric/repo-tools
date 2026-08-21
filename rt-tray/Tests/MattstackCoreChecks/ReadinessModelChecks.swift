@@ -1,27 +1,61 @@
 import Foundation
 import MattstackCore
 
+struct FakePlansExhausted: Error {}
+
+/// The model fetches from the visible ticker's task and from user actions, so
+/// two fetchPlan calls can overlap; the lock keeps the queue and the counter
+/// consistent, and an exhausted queue reports an error the model can record
+/// rather than trapping the whole check process.
 final class FakePlans: PlanSource, @unchecked Sendable {
-    var plans: [Plan]
-    private(set) var fetches = 0
-    init(_ plans: [Plan]) { self.plans = plans }
-    func fetchPlan() async throws -> Plan {
-        fetches += 1
-        return plans.count > 1 ? plans.removeFirst() : plans[0]
+    private let lock = NSLock()
+    private var queue: [Plan]
+    private var fetchCount = 0
+    var fetches: Int { lock.lock(); defer { lock.unlock() }; return fetchCount }
+    init(_ plans: [Plan]) { self.queue = plans }
+    func fetchPlan() async throws -> Plan { try take() }
+    /// Synchronous so the lock is never held across an async boundary.
+    private func take() throws -> Plan {
+        lock.lock(); defer { lock.unlock() }
+        fetchCount += 1
+        guard let next = queue.first else { throw FakePlansExhausted() }
+        if queue.count > 1 { queue.removeFirst() }
+        return next
     }
 }
+/// Checks set `snapshot` from the check's task while the visible ticker's own
+/// task is calling `snapshot()`, so every field goes through the lock.
 final class FakePermissions: PermissionProbing, @unchecked Sendable {
-    var snapshot = PermissionSnapshot.unknown
-    var fdaNeedsRelaunch = false
-    private(set) var probes = 0
-    func snapshot() async -> PermissionSnapshot { probes += 1; return snapshot }
+    private let lock = NSLock()
+    private var stored = PermissionSnapshot.unknown
+    private var relaunch = false
+    private var probeCount = 0
+    var snapshot: PermissionSnapshot {
+        get { lock.lock(); defer { lock.unlock() }; return stored }
+        set { lock.lock(); stored = newValue; lock.unlock() }
+    }
+    var fdaNeedsRelaunch: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return relaunch }
+        set { lock.lock(); relaunch = newValue; lock.unlock() }
+    }
+    var probes: Int { lock.lock(); defer { lock.unlock() }; return probeCount }
+    func snapshot() async -> PermissionSnapshot { probe() }
+    /// Synchronous so the lock is never held across an async boundary.
+    private func probe() -> PermissionSnapshot {
+        lock.lock(); defer { lock.unlock() }
+        probeCount += 1
+        return stored
+    }
 }
 final class FakeTicker: TickerScheduling, @unchecked Sendable {
-    var ticks: [@Sendable () -> Void] = []
-    var cancelled = 0
+    private let lock = NSLock()
+    private var scheduled: [@Sendable () -> Void] = []
+    private var cancelCount = 0
+    var ticks: [@Sendable () -> Void] { lock.lock(); defer { lock.unlock() }; return scheduled }
+    var cancelled: Int { lock.lock(); defer { lock.unlock() }; return cancelCount }
     func schedule(every seconds: TimeInterval, _ tick: @escaping @Sendable () -> Void) -> TickerHandle {
-        ticks.append(tick)
-        return TickerHandle { [self] in cancelled += 1 }
+        lock.lock(); scheduled.append(tick); lock.unlock()
+        return TickerHandle { [self] in lock.lock(); cancelCount += 1; lock.unlock() }
     }
     func fire() { ticks.forEach { $0() } }
 }
@@ -84,7 +118,10 @@ let readinessModelChecks: [Check] = [
                                             notifications: .init(status: "authorized"),
                                             loginItems: .init(status: "requiresApproval"))
         ticker.fire()
-        try await Task.sleep(nanoseconds: 100_000_000)
+        for _ in 0..<100 {
+            if await MainActor.run(body: { m.row("perm.fda")?.status == .ready }) { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
         await MainActor.run {
             c.expectEqual(m.row("perm.fda")?.status, .ready)
             c.expectEqual(m.row("perm.fda")?.detail, "probe read ~/Library/Containers/com.apple.stocks")
@@ -100,7 +137,12 @@ let readinessModelChecks: [Check] = [
         let m = await MainActor.run { ReadinessModel(plans: plans, permissions: FakePermissions(), ticker: FakeTicker()) }
         await m.load()
         await MainActor.run { m.didBecomeActive() }
-        try await Task.sleep(nanoseconds: 100_000_000)
+        // didBecomeActive's work happens on a detached task; wait for the row
+        // the second plan changes, which lands after that task has applied it.
+        for _ in 0..<100 {
+            if await MainActor.run(body: { m.row("account.gitlab")?.status == .ready }) { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
         c.expectEqual(plans.fetches, 2)
         await m.afterAction(rowId: "account.gitlab")
         await MainActor.run {

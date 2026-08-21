@@ -44,8 +44,24 @@ let rtClientChecks: [Check] = [
         let client = RtClient(location: RtLocation(executable: exe, argumentPrefix: [], source: .bundled), environment: [:])
         var lines: [String] = []
         for try await line in client.stream(["setup", "apply", "--json"], stdin: nil) { lines.append(line) }
-        c.expectEqual(lines.count, 2)
+        try c.requireEqual(lines.count, 2)
         c.expect(lines[1].contains("\"done\""))
+    },
+    Check("stream delivers every line of a chatty child that exits immediately — the terminal event is never lost to the exit race") { c in
+        // The child buffers 2000 lines, emits them in a single write that fits
+        // the pipe, then exits — so termination lands while the reader is still
+        // draining. That is the window in which a second reader at termination
+        // stole parsed-but-unyielded lines, costing InstallRunModel rt's final
+        // `done`. Hitting it is timing-dependent, hence the repeats.
+        let exe = try fakeExecutable(#"out=$(i=1; while [ $i -le 2000 ]; do echo "{\"n\":$i}"; i=$((i+1)); done); printf '%s\n' "$out""#)
+        let client = RtClient(location: RtLocation(executable: exe, argumentPrefix: [], source: .bundled), environment: [:])
+        for attempt in 0..<40 {
+            var lines: [String] = []
+            for try await line in client.stream(["setup", "apply", "--json"], stdin: nil) { lines.append(line) }
+            try c.requireEqual(lines.count, 2000, "attempt \(attempt) lost lines")
+            try c.requireEqual(lines.last, #"{"n":2000}"#, "attempt \(attempt) lost the terminal line")
+            try c.requireEqual(lines.first, #"{"n":1}"#, "attempt \(attempt) lost the opening line")
+        }
     },
     Check("stream throws when the process exits non-zero and non-2") { c in
         let exe = try fakeExecutable("exit 1")
