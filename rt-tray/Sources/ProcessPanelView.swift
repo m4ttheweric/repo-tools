@@ -67,6 +67,10 @@ struct ProcessPanelView: View {
 
     private func makeGearMenu() -> NSMenu {
         let menu = NSMenu()
+        // NSMenu.autoenablesItems defaults true and re-enables any item whose
+        // target has no validateMenuItem — that would silently override the
+        // Check for Updates item's explicit isEnabled below.
+        menu.autoenablesItems = false
         menu.addItem(ActionMenuItem("Restart Daemon") {
             NotificationCenter.default.post(name: .rtRestartDaemon, object: nil)
         })

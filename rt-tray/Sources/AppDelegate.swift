@@ -7,10 +7,11 @@ import MattstackCore
 
 // MARK: - AppDelegate
 
-// AppKit invokes every delegate method on the main thread; `@unchecked`
-// because that guarantee lives in AppKit's contract, not in anything the
-// compiler can see. Needed once `VersionProviding` (a `Sendable` protocol)
-// is adopted below.
+// `VersionProviding` (a `Sendable` protocol, adopted below) lets `TrayRoutes`
+// call `versionInfo()` from its own async route-handling `Task`, off the main
+// actor — the only member of this class ever reached off-main, and it only
+// reads immutable process-global state (`Bundle.main`, `BundleFlavor`).
+// `@unchecked` because the compiler can't see that from the conformance site.
 class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
     // ── Menu bar ────────────────────────────────────────────────────────────
@@ -32,7 +33,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
     // ── State ───────────────────────────────────────────────────────────────
     private var currentHealth: DaemonHealth = .unknown
-    let updater = UpdaterController(isDevBuild: BundleFlavor.isDevBuild, isBusy: { SetupSession.isRunning })
+    // `lazy`: constructing it starts Sparkle (when enabled). A translocated
+    // or DMG-mounted launch returns before `buildServices()` (the first
+    // touch) ever runs, so Sparkle never spins up on a copy that's about to
+    // be told to quit.
+    lazy var updater = UpdaterController(isDevBuild: BundleFlavor.isDevBuild, isBusy: { SetupSession.isRunning })
     private var updaterObservation: NSKeyValueObservation?
 
     // ── Setup / Settings / rt ────────────────────────────────────────────────
@@ -41,6 +46,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     private var needBroker: NeedBroker!
     private var coordinator: SetupCoordinator?
     private var rtClient: RtClient?
+    /// A `mattstack://join/<code>` event can arrive before `buildServices()`
+    /// builds the coordinator (launch-by-link). Stashed here and drained at
+    /// the end of `buildServices()`.
+    private var pendingJoinCode: String?
 
     // MARK: - Lifecycle
 
@@ -107,6 +116,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             TrayLog.info("version change evaluated", ["change": String(describing: change)])
             await recordAppPath()
 
+            // First-run Setup has no daemon dependency — show it now rather
+            // than after the wait loop below, or a genuine first run (daemon
+            // not installed yet) sits at a blank menu bar for the full 4s.
+            if let coordinator, !coordinator.setupIsComplete { coordinator.showSetup() }
+
             // Wait for launchd to bring the daemon up
             for _ in 0..<8 {
                 try? await Task.sleep(nanoseconds: 500_000_000)
@@ -114,7 +128,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             }
             await refreshStatus()
             await drainPendingNotifications()
-            if let coordinator, !coordinator.setupIsComplete { coordinator.showSetup() }
         }
     }
 
@@ -131,6 +144,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         rtClient = RtClientFactory.make()
         if let rt = rtClient {
             coordinator = SetupCoordinator(rt: rt, permissions: permissionsService, needs: needBroker, updater: updater)
+            if let code = pendingJoinCode {
+                pendingJoinCode = nil
+                coordinator?.handleJoin(code: code)
+            }
+        } else if pendingJoinCode != nil {
+            pendingJoinCode = nil
+            TrayLog.warn("mattstack://join link received but rt could not be resolved; dropping")
         }
         updaterObservation = updater.observe(\.canCheckForUpdates, options: [.initial, .new]) { u, _ in
             DispatchQueue.main.async { TrayState.shared.canCheckForUpdates = u.canCheckForUpdates }
@@ -141,8 +161,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     /// owns the store, so the app only ever writes through `rt settings set`.
     private func recordAppPath() async {
         guard let rt = rtClient else { return }
-        let r = try? await rt.run(AppPathSetting.arguments(bundlePath: Bundle.main.bundlePath), stdin: nil)
-        if let r, r.exitCode != 0 { TrayLog.warn("mattstack.appPath write failed", ["exit": Int(r.exitCode), "err": r.userError?.message ?? ""]) }
+        do {
+            let r = try await rt.run(AppPathSetting.arguments(bundlePath: Bundle.main.bundlePath), stdin: nil)
+            if r.exitCode != 0 {
+                TrayLog.warn("mattstack.appPath write failed", ["exit": Int(r.exitCode), "err": r.userError?.message ?? r.failureCopy(verb: "settings set")])
+            }
+        } catch {
+            TrayLog.warn("mattstack.appPath write failed to start", ["err": (error as? RtClientError)?.copy ?? "rt settings set failed to start."])
+        }
     }
 
     /// The App menu carries the only global keyboard shortcut an LSUIElement
@@ -180,8 +206,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
     @objc private func handleGetURL(_ event: NSAppleEventDescriptor, with reply: NSAppleEventDescriptor) {
         guard let s = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue, let url = URL(string: s) else { return }
-        guard let code = JoinLink.code(from: url) else { TrayLog.warn("ignored URL", ["url": s]); return }
-        Task { @MainActor in coordinator?.handleJoin(code: code) }
+        guard let code = JoinLink.code(from: url) else {
+            // Never the raw string: an unrecognized URL can carry a
+            // malformed invite code in its path.
+            TrayLog.warn("ignored URL", ["scheme": url.scheme ?? "", "host": url.host ?? ""])
+            return
+        }
+        Task { @MainActor in
+            guard let coordinator else {
+                // Launch-by-link: the kAEGetURL event can arrive before
+                // buildServices() constructs the coordinator. buildServices()
+                // drains this once it exists.
+                pendingJoinCode = code
+                return
+            }
+            coordinator.handleJoin(code: code)
+        }
     }
 
     @objc private func showSetupStatus() { Task { @MainActor in coordinator?.openSetupStatus() } }
@@ -328,10 +368,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
             default:
                 TrayState.shared.statusText = "Daemon: not running"
             }
-            TrayState.shared.needsApproval = daemonLifecycle.status == .requiresApproval
+            TrayState.shared.needsApproval = needsLoginItemApproval()
         default:
             break
         }
+    }
+
+    /// The worst status across every agent this bundle registers (daemon,
+    /// deck, …), not just the daemon — a single-agent check would miss a
+    /// second agent stuck in Login Items while the daemon itself is fine.
+    private func needsLoginItemApproval() -> Bool {
+        PermissionsService.combinedLoginItems(servicesRegistrar?.smStatuses() ?? []) == "requiresApproval"
     }
 
     // MARK: - Actions
@@ -565,8 +612,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         updateMenuBarTitle(status: health)
         TrayState.shared.health = health
         TrayState.shared.statusText = "Daemon: running · pid \(status.pid) · \(formatUptime(status.uptime))"
-        // Daemon is reachable → approval clearly worked
-        TrayState.shared.needsApproval = false
+        // The daemon being reachable only proves the daemon's own agent is
+        // approved — another registered agent (deck) can still be pending.
+        TrayState.shared.needsApproval = needsLoginItemApproval()
     }
 
     private func drainPendingNotifications() async {
@@ -667,12 +715,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 extension AppDelegate: VersionProviding {
     /// `build` is the numeric CFBundleVersion L4 writes — major*1e6 +
     /// minor*1e3 + patch (e.g. 2.8.0 → 2008000) — never a string; a
-    /// non-numeric or missing value reads as 0.
+    /// non-numeric or missing value reads as 0, but never silently: a build
+    /// pipeline that regresses to a dotted string should show up in logs,
+    /// not just as a suspiciously-always-0 build number.
     func versionInfo() -> VersionInfo {
-        VersionInfo(version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev",
-                    build: (Bundle.main.infoDictionary?["CFBundleVersion"] as? String).flatMap(Int.init) ?? 0,
-                    flavor: BundleFlavor.isDevBuild ? "dev" : "prod",
-                    path: Bundle.main.bundlePath)
+        let raw = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+        let build = raw.flatMap(Int.init) ?? {
+            TrayLog.warn("CFBundleVersion not numeric", ["value": raw ?? "(missing)"])
+            return 0
+        }()
+        return VersionInfo(version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev",
+                           build: build,
+                           flavor: BundleFlavor.isDevBuild ? "dev" : "prod",
+                           path: Bundle.main.bundlePath)
     }
 }
 
