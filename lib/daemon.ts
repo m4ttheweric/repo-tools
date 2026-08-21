@@ -38,6 +38,7 @@ import { getBranchCacheStore, getStateDb, type BranchCacheStore } from "./state/
 import { createCacheRefresher } from "./daemon/cache-refresh.ts";
 import { createWorktreeReconciler } from "./daemon/worktree-reconciler.ts";
 import { loadRepoIndex, REPOS_JSON_PATH } from "./daemon/repo-index.ts";
+import { primeTeamTrackingIdentityMap } from "./repo-tracking.ts";
 import { createHooksGuard } from "./daemon/hooks-guard.ts";
 import { buildRoutedHandlers } from "./daemon/command-router.ts";
 import { startSocketServer } from "./daemon/socket-server.ts";
@@ -281,11 +282,21 @@ export function startDaemon(): void {
   // Discover and watch repos
   hooksGuard.refreshWatchedRepos();
 
+  // Team tracking intent (mattstack.tracking) resolves through a primed
+  // identity→name map, not live derivation — loadRepoTracking is sync and
+  // runs on every freshness tick. Team intent is inert until this completes.
+  primeTeamTrackingIdentityMap(loadRepoIndex()).catch((err) => {
+    log.warn({ err }, "repo-tracking: failed to prime team-intent identity map");
+  });
+
   // Watch repos.json for changes (new repos added)
   if (existsSync(REPOS_JSON_PATH)) {
     watch(REPOS_JSON_PATH, () => {
       log.info("repos.json changed; refreshing watched repos");
       hooksGuard.refreshWatchedRepos();
+      primeTeamTrackingIdentityMap(loadRepoIndex()).catch((err) => {
+        log.warn({ err }, "repo-tracking: failed to re-prime team-intent identity map");
+      });
     });
   }
 
