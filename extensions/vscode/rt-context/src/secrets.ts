@@ -82,15 +82,11 @@ export async function getSecret(
 /**
  * RT-32: no longer writes ~/.mattstack/rt/secrets.json (that file is being
  * retired as a write target — the encrypted store, written only via
- * `rt secrets set`, is the source of truth). Directs the user to the real
- * command instead of silently doing nothing while the caller's "saved"
- * message implies otherwise.
+ * `rt secrets set`, is the source of truth). There is nothing left to
+ * collect from the user here, so the command shows this directed message
+ * immediately rather than prompting for a token it can't save.
  */
-export async function setSecret(
-  _context: vscode.ExtensionContext,
-  key: DaemonSecretKey,
-  _value: string,
-): Promise<void> {
+export function showCantSaveSecretMessage(key: DaemonSecretKey): void {
   vscode.window.showErrorMessage(
     `RT Context: can't save secrets from the extension anymore. Set tokens with \`rt secrets set rt ${key}\` — this command no longer writes.`,
   );

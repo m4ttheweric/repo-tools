@@ -123,6 +123,11 @@ export function renderSopsYaml(publicKey: string): string {
   return ["creation_rules:", "  - path_regex: user/secrets/.*", `    age: ${publicKey}`, ""].join("\n");
 }
 
+/** The inverse of renderSopsYaml: the `age:` recipient from a rendered .sops.yaml, or null if the shape doesn't match (a hand-edited file with no recognizable recipient line). */
+export function sopsYamlRecipient(content: string): string | null {
+  return content.match(/^\s*age:\s*(\S+)/m)?.[1] ?? null;
+}
+
 /** Thrown by keyExport when the keychain provably holds no key yet — minting is `rt home init`'s job, never export's. */
 export class AgeKeyAbsentError extends Error {}
 

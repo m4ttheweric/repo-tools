@@ -9,13 +9,16 @@
  * (rt/ is gitignored — never a tracked path), fsync it, encrypt with
  * `--filename-override user/secrets/<domain>.json` (keeps the `.sops.yaml`
  * path_regex matching even though the real input lives in rt/tmp) into
- * `<target>.tmp`, fsync + rename that over the real target, then read the
- * result back and confirm it looks like sops ciphertext before declaring
- * success. Every staging/output-tmp path is unlinked in a `finally`, so a
- * failure never leaves plaintext at a path the user has to find and delete —
- * the original target (untouched until the rename) is always the fallback.
- * This keeps the new value out of every subprocess's argv too, unlike
- * `sops --set`, which would put it on the sops command line.
+ * `<target>.<pid>.tmp` (pid-qualified so two concurrent writers can't
+ * unlink each other's tmp output), decrypt that tmp output and confirm the
+ * newly written key round-trips — a real check that the encrypt used the
+ * right recipient, not a content heuristic — and only then fsync + rename
+ * it over the real target. Every staging/output-tmp path is unlinked in a
+ * `finally`, so a failure never leaves plaintext at a path the user has to
+ * find and delete — the original target (untouched until the rename) is
+ * always the fallback. This keeps the new value out of every subprocess's
+ * argv too, unlike `sops --set`, which would put it on the sops command
+ * line.
  *
  * No file locking: two concurrent `rt secrets set` calls against the same
  * domain race on the same rename target (last one to rename wins, silently
@@ -191,27 +194,31 @@ export async function listSecretNames(domain: string, seams: SecretsSeams): Prom
   return secrets === null ? [] : Object.keys(secrets);
 }
 
-function looksLikeSopsCiphertext(content: string): boolean {
-  try {
-    const parsed = JSON.parse(content);
-    return typeof parsed === "object" && parsed !== null && "sops" in parsed;
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Stage → encrypt-to-tmp → fsync+rename → readback. Every path this touches
- * outside the real target is removed in `finally`, so a thrown error never
- * needs to name a file for the user to clean up — there isn't one.
+ * Stage → encrypt-to-tmp → decrypt-readback → fsync+rename. The readback
+ * decrypts the tmp output (before it ever replaces the target) and checks
+ * that `key` round-trips to `value` — catching a wrong-recipient encrypt
+ * (a `.sops.yaml` shadowed from $HOME, a stale recipient after rotation)
+ * that a plaintext/heuristic check on the ciphertext shape could never see.
+ * Every path this touches outside the real target is removed in `finally`,
+ * so a thrown error never needs to name a file for the user to clean up —
+ * there isn't one, and the target is untouched on every failure.
  */
-async function encryptDomain(domain: string, targetPath: string, payload: Record<string, string>, execSeam: SecretsExecSeam): Promise<void> {
+async function encryptDomain(
+  domain: string,
+  targetPath: string,
+  payload: Record<string, string>,
+  key: string,
+  value: string,
+  env: Record<string, string>,
+  execSeam: SecretsExecSeam,
+): Promise<void> {
   const stagingDir = join(rtDir(), "tmp");
   execSeam.ensureDir(stagingDir, 0o700);
   execSeam.ensureDir(dirname(targetPath), 0o700);
 
   const stagingPath = join(stagingDir, `${domain}.${process.pid}.json`);
-  const outputTmpPath = `${targetPath}.tmp`;
+  const outputTmpPath = `${targetPath}.${process.pid}.tmp`;
   // Relative to the home root, matching .sops.yaml's `path_regex:
   // user/secrets/.*` — the real input path (under rt/tmp) would never match.
   const filenameOverride = join("user", "secrets", `${domain}.json`);
@@ -232,13 +239,25 @@ async function encryptDomain(domain: string, targetPath: string, payload: Record
 
     // sops creates outputTmpPath itself, at umask-derived (not 0600) perms.
     execSeam.chmod(outputTmpPath, 0o600);
+
+    const decryptResult = await execSeam.run(["sops", "-d", outputTmpPath], { env, sensitive: true });
+    let roundTripped: Record<string, string> | undefined;
+    if (decryptResult.code === 0) {
+      try {
+        roundTripped = JSON.parse(decryptResult.stdout);
+      } catch {
+        roundTripped = undefined;
+      }
+    }
+    if (roundTripped?.[key] !== value) {
+      throw new Error(
+        `sops -e ${domain}: post-encrypt read-back of ${outputTmpPath} does not round-trip "${key}" — ` +
+          `refusing to declare success (${targetPath} was left untouched)`,
+      );
+    }
+
     execSeam.fsyncAndRename(outputTmpPath, targetPath);
     execSeam.chmod(targetPath, 0o600);
-
-    const readback = execSeam.readFile(targetPath);
-    if (!looksLikeSopsCiphertext(readback)) {
-      throw new Error(`sops -e ${domain}: post-encrypt read-back of ${targetPath} does not look like sops ciphertext — refusing to declare success`);
-    }
   } finally {
     execSeam.removeFile(stagingPath);
     execSeam.removeFile(outputTmpPath);
@@ -268,7 +287,7 @@ export async function writeSecret(domain: string, key: string, value: string, se
   domainMemo.delete(domain);
 
   const updated = { ...existing, [key]: value };
-  await encryptDomain(domain, filePath, updated, seams.execSeam);
+  await encryptDomain(domain, filePath, updated, key, value, env, seams.execSeam);
 }
 
 /**

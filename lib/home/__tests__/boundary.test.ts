@@ -22,6 +22,12 @@ function gitignorePatterns(gitignore: string): string[] {
     .filter((line) => line.length > 0 && !line.startsWith("#"));
 }
 
+/** `*` never crosses a `/` — enough glob support for this module's own patterns (`*.sock`, `user/secrets/*.tmp`). */
+function globToRegExp(body: string): RegExp {
+  const escaped = body.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*");
+  return new RegExp(`^${escaped}$`);
+}
+
 function isIgnored(patterns: string[], path: string): boolean {
   const segments = path.split("/");
   const base = segments[segments.length - 1]!;
@@ -35,10 +41,8 @@ function isIgnored(patterns: string[], path: string): boolean {
       const dir = body.slice(0, -1);
       return anchored ? path === dir || path.startsWith(`${dir}/`) : dirSegments.includes(dir);
     }
-    if (body.startsWith("*.")) {
-      return base.endsWith(body.slice(1));
-    }
-    return anchored ? path === body : base === body;
+    const regex = globToRegExp(body);
+    return anchored ? regex.test(path) : regex.test(base);
   });
 }
 
@@ -54,6 +58,7 @@ describe("HOME_BOUNDARY", () => {
       "/teams/",
       "user/local/",
       "settings.local.jsonc",
+      "user/secrets/*.tmp",
       "*.sock",
       ".DS_Store",
     ]);
@@ -86,6 +91,7 @@ describe("renderHomeGitignore", () => {
     ".DS_Store",
     "user/.DS_Store",
     "deck-api.sock",
+    "user/secrets/rt.json.tmp",
   ];
 
   const trackedCases = [

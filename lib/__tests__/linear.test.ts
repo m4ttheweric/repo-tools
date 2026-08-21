@@ -28,9 +28,17 @@ function fakeAgeKeySeam(key = "AGE-SECRET-KEY-1TEST"): AgeKeySeam {
   };
 }
 
-/** domain -> basename ("rt.json" -> "rt"), works for both real paths and --filename-override values. */
+/**
+ * domain -> basename ("rt.json" -> "rt"), works for both real paths and
+ * --filename-override values, and for the pid-qualified `<domain>.json.<pid>.tmp`
+ * post-encrypt readback path store.ts decrypts before renaming.
+ */
 function domainFromPath(p: string): string {
-  return p.split("/").pop()!.replace(/\.json$/, "");
+  return p
+    .split("/")
+    .pop()!
+    .replace(/\.\d+\.tmp$/, "")
+    .replace(/\.json$/, "");
 }
 
 /**

@@ -25,6 +25,7 @@ export const HOME_BOUNDARY: { tracked: string[]; ignored: string[] } = {
     "/teams/",
     "user/local/",
     "settings.local.jsonc",
+    "user/secrets/*.tmp",
     "*.sock",
     ".DS_Store",
   ],

@@ -11,6 +11,9 @@ import {
   type AgeKeySeam,
 } from "../age-key.ts";
 
+/** Matches `fs`, `node:fs`, `fs/promises`, and `node:fs/promises` — every spelling age-key.ts must never import. */
+const FS_IMPORT_RE = /from\s+["'](?:node:)?fs(?:\/promises)?["']|require\(["'](?:node:)?fs(?:\/promises)?["']\)/;
+
 const FIND_CMD = ["security", "find-generic-password", "-a", "mattstack", "-s", "mattstack-age-key", "-w"];
 const ADD_CMD_PREFIX = ["security", "add-generic-password", "-a", "mattstack", "-s", "mattstack-age-key", "-w"];
 const NOT_FOUND_STDERR = "The specified item could not be found in the keychain.";
@@ -257,7 +260,19 @@ describe("keyExport", () => {
 
   test("the module has zero fs imports — the no-file guarantee is structural, not just runtime-observed", () => {
     const source = fs.readFileSync(new URL("../age-key.ts", import.meta.url), "utf8");
-    expect(source).not.toMatch(/from\s+["']fs["']/);
-    expect(source).not.toMatch(/require\(["']fs["']\)/);
+    expect(source).not.toMatch(FS_IMPORT_RE);
+  });
+
+  test("the fs-import guard also catches node:fs, fs/promises, and node:fs/promises spellings", () => {
+    expect('import { readFileSync } from "fs";').toMatch(FS_IMPORT_RE);
+    expect('import { readFileSync } from "node:fs";').toMatch(FS_IMPORT_RE);
+    expect('import { readFile } from "fs/promises";').toMatch(FS_IMPORT_RE);
+    expect('import { readFile } from "node:fs/promises";').toMatch(FS_IMPORT_RE);
+    expect('const fs = require("fs");').toMatch(FS_IMPORT_RE);
+    expect('const fs = require("node:fs");').toMatch(FS_IMPORT_RE);
+    expect('const fs = require("fs/promises");').toMatch(FS_IMPORT_RE);
+    expect('const fs = require("node:fs/promises");').toMatch(FS_IMPORT_RE);
+    // Never a false positive on an unrelated import that merely contains "fs".
+    expect('import { statfs } from "./statfs-helpers.ts";').not.toMatch(FS_IMPORT_RE);
   });
 });
