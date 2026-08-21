@@ -84,7 +84,8 @@ vm_render_report() {
     echo
     echo "| phase | status | seconds | reason | screenshots |"
     echo "|---|---|---|---|---|"
-    sed -E 's/^\{"phase":"([^"]*)","status":"([^"]*)","reason":"([^"]*)","at":"[^"]*","seconds":([0-9]+),"screenshots":\[([^]]*)\]\}$/| \1 | \2 | \4 | \3 | \5 |/' "$f"
+    sed -E 's/^\{"phase":"([^"]*)","status":"([^"]*)","reason":"((\\.|[^"\\])*)","at":"[^"]*","seconds":([0-9]+),"screenshots":\[([^]]*)\]\}$/| \1 | \2 | \5 | \3 | \6 |/' "$f" \
+      | sed -E 's/\\"/"/g; s/\\\\/\\/g'
     echo
     echo "Logs: \`logs/\` · Screenshots: \`screenshots/\` · Ledger: \`phases.jsonl\`"
   } > "$out"
@@ -103,10 +104,14 @@ vm_ip() {
   return 1
 }
 
-vm_ssh() {
+vm_ssh_try() {
   local user="$1" vm="$2"; shift 2
-  local ip; ip=$(vm_ip "$vm" 1) || vm_die "no ip for $vm"
+  local ip; ip=$(vm_ip "$vm" 1) || return 1
   ssh "${VM_SSH_OPTS[@]}" -i "$VM_SSH_KEY" "$user@$ip" "$@"
+}
+
+vm_ssh() {
+  vm_ssh_try "$@" || vm_die "ssh failed for $1@$2"
 }
 
 vm_scp() {
@@ -125,7 +130,7 @@ vm_ssh_pw() {
 vm_wait_ssh() {
   local user="$1" vm="$2" timeout="${3:-300}" start; start=$(date +%s)
   while :; do
-    if vm_ssh "$user" "$vm" true 2>/dev/null; then return 0; fi
+    if vm_ssh_try "$user" "$vm" true 2>/dev/null; then return 0; fi
     [ $(( $(date +%s) - start )) -ge "$timeout" ] && return 1
     sleep 3
   done
