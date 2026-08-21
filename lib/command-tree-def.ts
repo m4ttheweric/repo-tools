@@ -774,6 +774,16 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Manifest", flag: "--manifest", type: "text", placeholder: "/path/to/skills.jsonc", hint: "Manifest path; omit to auto-find the newest ~/.mattstack/repos/*/skills.jsonc naming this team" },
         ],
       },
+      surface: {
+        description: "List, set, or apply the pack's public/internal skill surface (bare invocation opens an fzf multi-toggle palette)",
+        module: "./commands/skills.ts",
+        fn: "skillsSurface",
+        args: [
+          { name: "Mode", type: "text", placeholder: "list", hint: "list | set <name> --public|--internal | apply; omit for the fzf palette" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Pack team; default acme" },
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "apply only: print planned moves without touching disk" },
+        ],
+      },
     },
   },
 
