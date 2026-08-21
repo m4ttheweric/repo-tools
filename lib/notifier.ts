@@ -9,7 +9,7 @@
  *  1. Transition detected → event queued in memory + persisted to disk
  *  2. Push attempt to mattstack.app via ~/.mattstack/rt/tray.sock (instant delivery)
  *  3. If tray is unavailable → event stays in queue for later drain
- *  4. Fallback: if no tray.sock exists, shell out to terminal-notifier/osascript
+ *  4. Fallback: if no tray.sock exists, shell out to osascript
  *  5. Tray app can drain pending queue via drainNotifications() on startup
  *
  * Called at the end of each daemon cache refresh cycle.
@@ -225,39 +225,7 @@ async function pushToTray(event: NotificationEvent): Promise<boolean> {
   }
 }
 
-// ─── Fallback dispatch (terminal-notifier / osascript) ───────────────────────
-
-/**
- * Resolve the absolute path to terminal-notifier.
- *
- * We can't rely on `which` because when the daemon is launched by launchd,
- * PATH is minimal (/usr/bin:/bin:/usr/sbin:/sbin) and won't include
- * Homebrew's bin dirs. Instead, probe well-known Homebrew install locations
- * directly, then fall back to `which` for non-standard installs.
- */
-let _terminalNotifierPath: string | false | null = null;
-
-function resolveTerminalNotifier(): string | false {
-  if (_terminalNotifierPath === null) {
-    // Check well-known Homebrew locations first (ARM + Intel)
-    const candidates = [
-      "/opt/homebrew/bin/terminal-notifier",    // Apple Silicon Homebrew
-      "/usr/local/bin/terminal-notifier",        // Intel Homebrew
-    ];
-
-    for (const p of candidates) {
-      if (existsSync(p)) {
-        _terminalNotifierPath = p;
-        return _terminalNotifierPath;
-      }
-    }
-
-    // PATH scan for custom installs (nix, macports, etc.) — in-process, no
-    // `which` subprocess (this runs on the daemon's main thread).
-    _terminalNotifierPath = Bun.which("terminal-notifier") ?? false;
-  }
-  return _terminalNotifierPath;
-}
+// ─── Fallback dispatch (osascript) ────────────────────────────────────────
 
 /** Escape for embedding inside an AppleScript double-quoted string literal. */
 function escapeAppleScript(s: string): string {
@@ -268,7 +236,10 @@ function escapeAppleScript(s: string): string {
 const FALLBACK_TERM_MS = 5000;
 const FALLBACK_KILL_MS = 7000;
 
-/** Direct notification via terminal-notifier or osascript (no queue).
+/** Fallback notifier executable; replaceable in tests with a fake that hangs. */
+let fallbackNotifier = "osascript";
+
+/** Direct notification via osascript (no queue).
  *  argv-array spawning — message content includes branch names and error
  *  text, which must never pass through a shell ($, backticks, quotes).
  *
@@ -279,16 +250,9 @@ const FALLBACK_KILL_MS = 7000;
  *  a SIGTERM-immune child wedged every API/socket surface for the child's
  *  lifetime (MAT-222). The kill escalation here is the bound the sync
  *  timeout could not provide. */
-function notifyFallback(title: string, message: string, url?: string): void {
-  const tnPath = resolveTerminalNotifier();
-  let argv: string[];
-  if (tnPath) {
-    argv = [tnPath, "-title", "rt", "-subtitle", title, "-message", message, "-group", "rt"];
-    if (url) argv.push("-open", url);
-  } else {
-    const body = `${title}: ${message}`;
-    argv = ["osascript", "-e", `display notification "${escapeAppleScript(body)}" with title "rt"`];
-  }
+function notifyFallback(title: string, message: string, _url?: string): void {
+  const body = `${title}: ${message}`;
+  const argv = [fallbackNotifier, "-e", `display notification "${escapeAppleScript(body)}" with title "rt"`];
   try {
     const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     const term = setTimeout(() => { try { proc.kill("SIGTERM"); } catch { /* already exited */ } }, FALLBACK_TERM_MS);
@@ -301,7 +265,7 @@ function notifyFallback(title: string, message: string, url?: string): void {
 
 /**
  * Queue a notification, persist it, and attempt to push to the tray app.
- * Falls back to terminal-notifier/osascript if no tray app is available.
+ * Falls back to osascript if no tray app is available.
  */
 export function notify(
   title: string,
@@ -872,7 +836,7 @@ export const __test__ = {
   notifyFallback,
   firedKey,
   pruneFiredForEvictedBranches,
-  setTerminalNotifierPath(p: string | false | null): void {
-    _terminalNotifierPath = p;
+  setFallbackNotifier(path: string | null): void {
+    fallbackNotifier = path ?? "osascript";
   },
 };
