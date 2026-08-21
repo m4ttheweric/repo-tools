@@ -45,9 +45,9 @@ cleanup() {
 trap cleanup EXIT
 
 collect_logs() {
-  vm_ssh "$VM_TESTER_USER" "$RUN_VM" 'tar -C "$HOME" -czf - .mattstack/rt/logs .mattstack/deck/logs Library/Logs/mattstack 2>/dev/null' > "$VM_RUN_DIR/logs/guest-home-logs.tgz" 2>/dev/null || true
-  vm_ssh "$VM_TESTER_USER" "$RUN_VM" 'log show --last 45m --predicate '"'"'process == "mattstack" OR process == "rt" OR subsystem CONTAINS "com.mattstack" OR process == "smd" OR process == "backgroundtaskmanagementd"'"'"' --style compact 2>/dev/null | tail -5000' > "$VM_RUN_DIR/logs/guest-unified.log" 2>/dev/null || true
-  vm_ssh "$VM_TESTER_USER" "$RUN_VM" 'launchctl print gui/$(id -u) 2>/dev/null | grep -iE "mattstack|com\.rt\." ' > "$VM_RUN_DIR/logs/guest-launchctl-grep.txt" 2>/dev/null || true
+  vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" 'tar -C "$HOME" -czf - .mattstack/rt/logs .mattstack/deck/logs Library/Logs/mattstack 2>/dev/null' > "$VM_RUN_DIR/logs/guest-home-logs.tgz" 2>/dev/null || true
+  vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" 'log show --last 45m --predicate '"'"'process == "mattstack" OR process == "rt" OR subsystem CONTAINS "com.mattstack" OR process == "smd" OR process == "backgroundtaskmanagementd"'"'"' --style compact 2>/dev/null | tail -5000' > "$VM_RUN_DIR/logs/guest-unified.log" 2>/dev/null || true
+  vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" 'launchctl print gui/$(id -u) 2>/dev/null | grep -iE "mattstack|com\.rt\." ' > "$VM_RUN_DIR/logs/guest-launchctl-grep.txt" 2>/dev/null || true
 }
 
 shot_watcher() {  # host loop: in/shot-<name>.req → screenshots/<name>.png
@@ -116,26 +116,31 @@ else vm_phase_end boot fail "ssh as tester never came up"; exit 1; fi
 
 # ── stage ────────────────────────────────────────────────────────────────────
 vm_phase_begin stage
-vm_ssh "$VM_TESTER_USER" "$RUN_VM" "mkdir -p $GUEST_BIN && cp -R '$GUEST_RUN/in/guest/.' $GUEST_BIN/ && chmod +x $GUEST_BIN/*.sh && test -f '$GUEST_RUN/in/mattstack.dmg'" \
+vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "mkdir -p $GUEST_BIN && cp -R '$GUEST_RUN/in/guest/.' $GUEST_BIN/ && chmod +x $GUEST_BIN/*.sh && test -f '$GUEST_RUN/in/mattstack.dmg'" \
   && vm_phase_end stage pass || { vm_phase_end stage fail "virtiofs share not visible in guest"; exit 1; }
 
 # ── install (admin copies) + launch (tester) ─────────────────────────────────
 vm_phase_begin install
 QFLAG=--quarantine; [ "$QUAR" = 0 ] && QFLAG=--no-quarantine
-vm_ssh "$VM_ADMIN_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash '$GUEST_RUN/in/guest/install-app.sh' copy '$GUEST_RUN/in/mattstack.dmg' $QFLAG" >>"$VM_RUN_DIR/logs/install.log" 2>&1 \
+vm_ssh_try "$VM_ADMIN_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash '$GUEST_RUN/in/guest/install-app.sh' copy '$GUEST_RUN/in/mattstack.dmg' $QFLAG" >>"$VM_RUN_DIR/logs/install.log" 2>&1 \
   && vm_phase_end install pass || { vm_phase_end install fail "copy failed (logs/install.log)"; exit 1; }
 
 vm_phase_begin launch
 # Prod builds honour MATTSTACK_APPCAST_URL only with --allow-appcast-override (L3 T10); the same env/arg is
 # replayed by drive-setup.sh on any driver-initiated relaunch (DRIVER_LAUNCH_ARGS).
 LAUNCH_ARGS=""; [ -n "$UPD" ] && LAUNCH_ARGS="--env MATTSTACK_APPCAST_URL=http://127.0.0.1:8765/appcast.xml --arg --allow-appcast-override"
-vm_ssh "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash $GUEST_BIN/install-app.sh launch $LAUNCH_ARGS" >>"$VM_RUN_DIR/logs/install.log" 2>&1
+vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash $GUEST_BIN/install-app.sh launch $LAUNCH_ARGS" >>"$VM_RUN_DIR/logs/install.log" 2>&1
 rc=$?
-: > "$VM_RUN_DIR/in/shot-00-first-launch.req"; sleep 3
+SHOT00=""
+if [ "$GRAPHICS" = 1 ]; then
+  : > "$VM_RUN_DIR/in/shot-00-first-launch.req"
+  t=0; while [ ! -e "$VM_RUN_DIR/in/shot-00-first-launch.done" ] && [ "$t" -lt 30 ]; do sleep 0.5; t=$((t+1)); done
+  [ -e "$VM_RUN_DIR/screenshots/00-first-launch.png" ] && SHOT00=screenshots/00-first-launch.png
+fi
 case $rc in
-  0) vm_phase_end launch pass "" screenshots/00-first-launch.png ;;
-  2) vm_phase_end launch fail "Gatekeeper blocked the app (unnotarised build? rerun with --no-quarantine)" screenshots/00-first-launch.png; exit 1 ;;
-  *) vm_phase_end launch fail "app did not start (logs/install.log)" screenshots/00-first-launch.png; exit 1 ;;
+  0) vm_phase_end launch pass "" ${SHOT00:+"$SHOT00"} ;;
+  2) vm_phase_end launch fail "Gatekeeper blocked the app (unnotarised build? rerun with --no-quarantine)" ${SHOT00:+"$SHOT00"}; exit 1 ;;
+  *) vm_phase_end launch fail "app did not start (logs/install.log)" ${SHOT00:+"$SHOT00"}; exit 1 ;;
 esac
 
 # ── screens / headless ───────────────────────────────────────────────────────
