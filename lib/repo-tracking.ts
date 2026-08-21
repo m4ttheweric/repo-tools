@@ -1,23 +1,19 @@
 /**
- * Per-repo background-tracking grants — the ONE parser for
- * ~/.mattstack/rt/repo-tracking.json, shared by the daemon (pure reader) and the CLI
+ * Per-repo background-tracking grants — the ONE parser for the rt.repoTracking
+ * machine-store setting, shared by the daemon (pure reader) and the CLI
  * (reader + writer). Spec: .local-dev/2026-07-26-typed-stores-board-rewire-design.md §4.
  *
- * v2 file shape:
- *   { "version": 2, "repos": { "<repo>": { "mode": "live"|"poll", "caches": [...] } } }
+ * Value shape: a flat repo → entry map, { "<repo>": { "mode": "live"|"poll", "caches": [...] } }.
  *
  * `mode` is the freshness transport (live = events watcher + 5-min cycle,
  * poll = 5-min cycle only); `caches` is what that transport may maintain.
  * Unlisted repo = off. Nothing is granted implicitly. Legacy flat entries
  * ({ "<repo>": "live" }) are read as { mode, caches: ["branches"] } and
- * rewritten as v2 on the next save.
+ * rewritten to the object shape on the next save.
  */
 
-import { readFileSync, writeFileSync } from "fs";
-import { join } from "path";
-import { RT_DIR } from "./daemon-config.ts";
-
-export const REPO_TRACKING_PATH = join(RT_DIR, "repo-tracking.json");
+import { getSetting } from "./settings/resolve.ts";
+import { setSetting } from "./settings/write.ts";
 
 export const CACHE_KINDS = ["branches", "project-mrs", "discussions"] as const;
 export type CacheKind = (typeof CACHE_KINDS)[number];
@@ -52,28 +48,18 @@ function normalizeEntry(value: unknown): RepoTrackingEntry | null {
 }
 
 /**
- * Read the tracking file, accepting BOTH the v2 envelope and the legacy flat
- * map. Missing/corrupt file, unknown modes, and unknown cache names all
- * degrade toward "off" — a typo must never cause accidental polling.
+ * Read the rt.repoTracking machine-store setting: a flat repo → entry map
+ * (each entry either the v2 shape or a legacy flat string — see
+ * normalizeEntry). Absent/malformed setting, unknown modes, and unknown
+ * cache names all degrade toward "off" — a typo must never cause accidental
+ * polling.
  */
-export function loadRepoTracking(filePath: string = REPO_TRACKING_PATH): RepoTracking {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(filePath, "utf8"));
-  } catch {
-    return {}; // missing file is the normal nothing-tracked state
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-
-  const isV2 = (parsed as { version?: unknown }).version === 2
-    && typeof (parsed as { repos?: unknown }).repos === "object"
-    && (parsed as { repos?: unknown }).repos !== null
-    && !Array.isArray((parsed as { repos?: unknown }).repos);
-  const repos = isV2 ? (parsed as { repos: Record<string, unknown> }).repos : parsed;
-  if (!repos || typeof repos !== "object" || Array.isArray(repos)) return {};
+export function loadRepoTracking(): RepoTracking {
+  const raw = getSetting<unknown>("rt.repoTracking").value;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
 
   const out: RepoTracking = {};
-  for (const [repo, value] of Object.entries(repos)) {
+  for (const [repo, value] of Object.entries(raw as Record<string, unknown>)) {
     const entry = normalizeEntry(value);
     if (entry) out[repo] = entry;
   }
@@ -87,12 +73,12 @@ export function grants(tracking: RepoTracking, repoName: string): RepoGrants {
     projectMrsWindowDays: entry.projectMrsWindowDays ?? DEFAULT_PROJECT_MRS_WINDOW_DAYS };
 }
 
-/** Write the v2 envelope, repos sorted for stable diffs. */
-export function saveRepoTracking(tracking: RepoTracking, filePath: string = REPO_TRACKING_PATH): void {
+/** Writes the flat repo → entry map to the machine store, repos sorted for stable diffs. */
+export function saveRepoTracking(tracking: RepoTracking): void {
   const repos = Object.fromEntries(
     Object.entries(tracking).sort(([a], [b]) => a.localeCompare(b)),
   );
-  writeFileSync(filePath, JSON.stringify({ version: 2, repos }, null, 2) + "\n");
+  setSetting("rt.repoTracking", repos, "machine");
 }
 
 /** "branches, project-mrs" → kinds. Null on empty input or any unknown name. */

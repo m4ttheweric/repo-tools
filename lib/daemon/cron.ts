@@ -5,12 +5,9 @@
  * conditions, no chaining, no retries-with-policy, no output parsing, no
  * workflow. The moment logic needs "if X and Y", it belongs in the invoked
  * program. Ships with rt's installation (tray-app precedent); dormant when
- * ~/.mattstack/rt/cron.jsonc is absent or empty.
+ * the rt.cron machine-store setting is absent or empty.
  */
-import { readFileSync } from "fs";
-import { join } from "path";
-import { stripJsonc } from "../jsonc.ts";
-import { rtDir } from "../rt-paths.ts";
+import { getSetting } from "../settings/resolve.ts";
 
 export interface CronTrigger {
   name: string;
@@ -33,41 +30,37 @@ export interface CronLog {
 
 const DEFAULT_DEBOUNCE_MS = 5000;
 
-export function parseCronConfig(text: string): CronConfig {
-  const raw = JSON.parse(stripJsonc(text)) as { triggers?: unknown };
+export function parseCronConfig(value: unknown): CronConfig {
+  const raw = (value ?? {}) as { triggers?: unknown };
   if (raw.triggers === undefined) return { triggers: [] };
-  if (!Array.isArray(raw.triggers)) throw new Error(`cron.jsonc "triggers" must be an array`);
+  if (!Array.isArray(raw.triggers)) throw new Error(`rt.cron "triggers" must be an array`);
   const triggers = raw.triggers.map((t, i): CronTrigger => {
     const o = t as Record<string, unknown>;
-    if (typeof o.name !== "string" || !o.name) throw new Error(`cron.jsonc triggers[${i}] needs a "name"`);
-    if (typeof o.event !== "string" || !o.event) throw new Error(`cron.jsonc trigger "${o.name}" needs an "event"`);
+    if (typeof o.name !== "string" || !o.name) throw new Error(`rt.cron triggers[${i}] needs a "name"`);
+    if (typeof o.event !== "string" || !o.event) throw new Error(`rt.cron trigger "${o.name}" needs an "event"`);
     if (!Array.isArray(o.run) || o.run.length === 0 || o.run.some((a) => typeof a !== "string")) {
-      throw new Error(`cron.jsonc trigger "${o.name}" needs a non-empty string[] "run"`);
+      throw new Error(`rt.cron trigger "${o.name}" needs a non-empty string[] "run"`);
     }
     if (o.repoName !== undefined && typeof o.repoName !== "string") {
-      throw new Error(`cron.jsonc trigger "${o.name}": "repoName" must be a string`);
+      throw new Error(`rt.cron trigger "${o.name}": "repoName" must be a string`);
     }
     if (o.debounceMs !== undefined && (typeof o.debounceMs !== "number" || o.debounceMs <= 0)) {
-      throw new Error(`cron.jsonc trigger "${o.name}": "debounceMs" must be a positive number`);
+      throw new Error(`rt.cron trigger "${o.name}": "debounceMs" must be a positive number`);
     }
     return { name: o.name, event: o.event, repoName: o.repoName as string | undefined, run: o.run as string[], debounceMs: o.debounceMs as number | undefined };
   });
   return { triggers };
 }
 
-/** Missing file → dormant. Invalid file → warn and dormant: a config typo
+/** Absent setting → dormant. Invalid value → warn and dormant: a config typo
     must never take the daemon down. */
-export function loadCronConfig(path: string = join(rtDir(), "cron.jsonc"), log?: CronLog): CronConfig {
-  let text: string;
+export function loadCronConfig(log?: CronLog): CronConfig {
+  const raw = getSetting<unknown>("rt.cron").value;
+  if (raw === undefined) return { triggers: [] };
   try {
-    text = readFileSync(path, "utf8");
-  } catch {
-    return { triggers: [] };
-  }
-  try {
-    return parseCronConfig(text);
+    return parseCronConfig(raw);
   } catch (err) {
-    log?.warn(`cron: ignoring invalid ${path}: ${err instanceof Error ? err.message : err}`);
+    log?.warn(`cron: ignoring invalid rt.cron setting: ${err instanceof Error ? err.message : err}`);
     return { triggers: [] };
   }
 }

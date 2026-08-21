@@ -44,11 +44,14 @@ describe("settings/registry", () => {
       }
     });
 
-    test("exactly 5 keys are migrated:true", () => {
+    test("exactly 10 keys are migrated:true", () => {
       const migrated = allDefs().filter((d) => d.migrated);
 
       expect(migrated.map((d) => d.key).sort()).toEqual(
-        ["rt.intercepts", "rt.repoIdentityOverrides", "rt.repoRoots", "rt.roles", "rt.worktrees"].sort(),
+        [
+          "rt.intercepts", "rt.repoIdentityOverrides", "rt.repoRoots", "rt.roles", "rt.worktrees",
+          "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runaway", "rt.workspacePrefs",
+        ].sort(),
       );
     });
 
@@ -84,16 +87,17 @@ describe("settings/registry", () => {
       expect(def?.default).toEqual({ onDeck: 0 });
     });
 
-    test("rt.notifications and rt.runaway carry their sibling commands", () => {
-      expect(getDef("rt.notifications")?.siblingCommand).toBe("rt settings notifications");
-      expect(getDef("rt.runaway")?.siblingCommand).toBe("rt settings runaway");
+    test("the five migrated global singletons carry no siblingCommand or legacyFile", () => {
+      for (const key of ["rt.notifications", "rt.cron", "rt.repoTracking", "rt.runaway", "rt.workspacePrefs"]) {
+        const def = getDef(key);
+        expect(def?.siblingCommand, `${key} should carry no siblingCommand`).toBeUndefined();
+        expect(def?.legacyFile, `${key} should carry no legacyFile`).toBeUndefined();
+      }
     });
 
-    test("legacyFile values match the trace for wave-1 migrated:false keys", () => {
+    test("legacyFile values match the trace for the remaining migrated:false keys", () => {
       expect(getDef("rt.llm")?.legacyFile).toBe("llm.json");
-      expect(getDef("rt.cron")?.legacyFile).toBe("cron.jsonc");
-      expect(getDef("rt.repoTracking")?.legacyFile).toBe("repo-tracking.json");
-      expect(getDef("rt.notifications")?.legacyFile).toBe("notifications.json");
+      expect(getDef("rt.sync")?.legacyFile).toBe("repos/<repo>/sync.json");
     });
 
     test("repoScoped is consistent with a repos/<repo>/... legacyFile prefix, in both directions", () => {
@@ -134,30 +138,26 @@ describe("settings/registry", () => {
       }
     });
 
-    test("the six genuinely global legacy keys stay repoScoped:undefined with a bare (non-repos/) legacyFile", () => {
-      for (const key of ["rt.llm", "rt.cron", "rt.repoTracking", "rt.notifications", "rt.workspacePrefs", "rt.runaway"]) {
-        const def = getDef(key);
-        expect(def?.repoScoped, `${key} should not be repoScoped`).toBeFalsy();
-        expect(def?.legacyFile?.startsWith("repos/"), `${key} legacyFile should not be repo-prefixed`).toBe(false);
-      }
+    test("the one remaining genuinely global legacy key stays repoScoped:undefined with a bare (non-repos/) legacyFile", () => {
+      const def = getDef("rt.llm");
+      expect(def?.repoScoped, "rt.llm should not be repoScoped").toBeFalsy();
+      expect(def?.legacyFile?.startsWith("repos/"), "rt.llm legacyFile should not be repo-prefixed").toBe(false);
     });
 
-    test("has exactly the 12 wave-1 migrated:false keys, the 5 migrated:true keys, and the 30 suite keys", () => {
+    test("has exactly the 7 remaining migrated:false keys, the 10 migrated:true keys, and the 30 suite keys", () => {
       const migratedFalseKeys = [
         "rt.llm",
-        "rt.cron",
-        "rt.repoTracking",
-        "rt.notifications",
         "rt.sync",
         "rt.branchNaming",
         "rt.variations",
         "rt.presets",
         "rt.dopplerTemplate",
-        "rt.workspacePrefs",
-        "rt.runaway",
         "rt.hooks",
       ];
-      const migratedTrueKeys = ["rt.roles", "rt.intercepts", "rt.worktrees", "rt.repoIdentityOverrides", "rt.repoRoots"];
+      const migratedTrueKeys = [
+        "rt.roles", "rt.intercepts", "rt.worktrees", "rt.repoIdentityOverrides", "rt.repoRoots",
+        "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runaway", "rt.workspacePrefs",
+      ];
       const suiteKeys = [
         "mattstack.integrations",
         "mattstack.tracking",

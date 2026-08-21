@@ -132,7 +132,7 @@ setInterval(() => eventsBus.sweep(), 60 * 60 * 1000);
 setTimeout(() => eventsBus.sweep(), 30_000);
 
 // Cron trigger layer (mechanism-only, MAT-161): sees every broadcast frame.
-const cron = startCron(loadCronConfig(undefined, log), { log });
+const cron = startCron(loadCronConfig(log), { log });
 const emit: typeof broadcast = (type, data) => {
   broadcast(type, data);
   cron.onBroadcast(type, data);

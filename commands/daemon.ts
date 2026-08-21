@@ -330,7 +330,7 @@ export async function manageTracking(args: string[] = []): Promise<void> {
     const freshness = ((status?.ok ? status.data?.freshness : undefined) ?? {}) as
       Record<string, { state: string }>;
 
-    console.log(`\n  ${bold}repo tracking${reset} ${dim}(opt-in · ~/.mattstack/rt/repo-tracking.json · unlisted = off)${reset}\n`);
+    console.log(`\n  ${bold}repo tracking${reset} ${dim}(opt-in · rt.repoTracking · unlisted = off)${reset}\n`);
     for (const name of Object.keys(repos).sort()) {
       const g = grants(tracking, name);
       const watcher = freshness[name];

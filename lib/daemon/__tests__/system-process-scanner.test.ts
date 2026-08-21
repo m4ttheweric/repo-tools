@@ -1,8 +1,34 @@
 import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { SystemProcessScanner } from "../system-process-scanner.ts";
+import { setSetting } from "../../settings/write.ts";
+import { SystemProcessScanner, loadRunawayConfig } from "../system-process-scanner.ts";
+
+describe("loadRunawayConfig through the settings resolver", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-runaway-")));
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("empty store → {} (today's defaults apply downstream)", () => {
+    expect(loadRunawayConfig()).toEqual({});
+  });
+
+  test("a store-seeded value resolves through the loader", () => {
+    setSetting("rt.runaway", { cpuThreshold: 90, sustainMs: 60_000 }, "machine");
+
+    expect(loadRunawayConfig()).toEqual({ cpuThreshold: 90, sustainMs: 60_000 });
+  });
+});
 
 describe("SystemProcessScanner", () => {
   let dataDir: string;

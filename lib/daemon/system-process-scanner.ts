@@ -13,10 +13,8 @@ import { getDaemonLogger } from "./../daemon-logger.ts";
 import { runCapture } from "../subprocess.ts";
 
 const log = (await getDaemonLogger()).childLogger("process-scan");
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
 import { homedir } from "os";
-import { rtDir } from "../rt-paths.ts";
+import { getSetting } from "../settings/resolve.ts";
 import {
   loadRepoIndex,
   buildWorktreeMap,
@@ -88,15 +86,9 @@ export interface ScannerConfig {
   graceMs?: number;
 }
 
-const RUNAWAY_CONFIG_PATH = join(rtDir(), "runaway-config.json");
-
 export function loadRunawayConfig(): ScannerConfig {
-  try {
-    if (!existsSync(RUNAWAY_CONFIG_PATH)) return {};
-    return JSON.parse(readFileSync(RUNAWAY_CONFIG_PATH, "utf8"));
-  } catch {
-    return {};
-  }
+  const raw = getSetting<ScannerConfig | undefined>("rt.runaway").value;
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
 }
 
 export function parseProcessList(
