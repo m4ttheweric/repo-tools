@@ -11,15 +11,25 @@ APP="$1"; OUT="$2"; IDENTITY="${3:-}"
 
 [ -d "$APP" ] || { echo "✗ no app bundle at $APP" >&2; exit 1; }
 
-STAGE="$(mktemp -d "${TMPDIR:-/tmp}/mattstack-release-stage.XXXXXX")"
-MOUNTPOINT="$(mktemp -d "${TMPDIR:-/tmp}/mattstack-release-mount.XXXXXX")"
+is_mounted() {
+    mount | grep -qF " on $1 ("
+}
+
+STAGE=""
+MOUNTPOINT=""
 cleanup() {
     # Runs on every exit path, including a failed attach/verify, so a busted
     # build never leaves a volume mounted behind it.
-    hdiutil detach "$MOUNTPOINT" -quiet -force >/dev/null 2>&1 || true
-    rm -rf "$STAGE" "$MOUNTPOINT"
+    if [ -n "$MOUNTPOINT" ] && is_mounted "$MOUNTPOINT"; then
+        hdiutil detach "$MOUNTPOINT" -quiet -force >/dev/null 2>&1 || true
+    fi
+    [ -n "$STAGE" ] && rm -rf "$STAGE"
+    [ -n "$MOUNTPOINT" ] && rm -rf "$MOUNTPOINT"
 }
 trap cleanup EXIT
+
+STAGE="$(mktemp -d "${TMPDIR:-/tmp}/mattstack-release-stage.XXXXXX")"
+MOUNTPOINT="$(mktemp -d "${TMPDIR:-/tmp}/mattstack-release-mount.XXXXXX")"
 
 ditto "$APP" "$STAGE/$(basename "$APP")"
 ln -s /Applications "$STAGE/Applications"
@@ -31,7 +41,7 @@ hdiutil create -volname "mattstack" -srcfolder "$STAGE" -ov -fs APFS -format ULF
 hdiutil attach "$OUT" -quiet -nobrowse -mountpoint "$MOUNTPOINT"
 [ -L "$MOUNTPOINT/Applications" ] || { echo "✗ built DMG missing Applications symlink" >&2; exit 1; }
 [ -d "$MOUNTPOINT/$(basename "$APP")" ] || { echo "✗ built DMG missing $(basename "$APP")" >&2; exit 1; }
-hdiutil detach "$MOUNTPOINT" -quiet
+hdiutil detach "$MOUNTPOINT" -quiet -force
 
 if [ -n "$IDENTITY" ]; then
     codesign --force --sign "$IDENTITY" --timestamp "$OUT"
