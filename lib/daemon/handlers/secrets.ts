@@ -32,7 +32,7 @@
  */
 
 import { loadSecrets } from "../../linear.ts";
-import { loadRepoTracking, grants, type RepoTracking } from "../../repo-tracking.ts";
+import { loadMachineRepoTracking, grants, type RepoTracking } from "../../repo-tracking.ts";
 import { loadOrCreateApiToken, tokenOk } from "../api-auth.ts";
 import type { Commands, ForgeSlug } from "../../../packages/rt-client/src/commands.ts";
 import type { HandlerContext, HandlerMap, TypedHandlers } from "./types.ts";
@@ -55,7 +55,11 @@ export function createSecretsHandlers(
   ctx: HandlerContext,
   overrides: SecretsHandlerOverrides = {},
 ): Pick<TypedHandlers, "secrets:forge-token" | "secrets:read"> & HandlerMap {
-  const tracking = overrides.tracking ?? loadRepoTracking;
+  // Machine-only, deliberately: mattstack.tracking is a SHARED team file, and
+  // a team-declared repo must not be enough on its own to unlock a token
+  // read — that consent has to be local (a machine rt.repoTracking grant),
+  // same as the "off" opt-out rule loadRepoTracking documents.
+  const tracking = overrides.tracking ?? loadMachineRepoTracking;
   const secrets = overrides.secrets ?? loadSecrets;
   const extensionSecrets = overrides.extensionSecrets ?? loadSecrets;
   const apiToken = overrides.apiToken ?? (() => loadOrCreateApiToken());
