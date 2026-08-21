@@ -30,7 +30,7 @@ class FakeSopsYamlSeam implements SopsYamlSeam {
   }
 }
 
-/** No key in the keychain yet; ensureAgeKey mints one — never touches the real keychain. */
+/** No key in the keychain yet; ensureAgeKey MINTS one — never touches the real keychain. */
 class FakeAgeKeySeam implements AgeKeySeam {
   calls: string[][] = [];
 
@@ -44,6 +44,22 @@ class FakeAgeKeySeam implements AgeKeySeam {
     }
     if (cmd[1] === "add-generic-password") return { code: 0, stdout: "", stderr: "" };
     throw new Error(`FakeAgeKeySeam: unexpected call ${cmd.join(" ")}`);
+  }
+}
+
+/** A key ALREADY exists in the keychain; ensureAgeKey only DERIVES its public half, never mints — never touches the real keychain. */
+class FakeAgeKeySeamWithExistingKey implements AgeKeySeam {
+  calls: string[][] = [];
+
+  async run(cmd: string[]): Promise<AgeExecResult> {
+    this.calls.push(cmd);
+    if (cmd[1] === "find-generic-password") {
+      return { code: 0, stdout: `${FAKE_PRIVATE_KEY}\n`, stderr: "" };
+    }
+    if (cmd[0] === "age-keygen" && cmd[1] === "-y") {
+      return { code: 0, stdout: `${FAKE_PUBLIC_KEY}\n`, stderr: "" };
+    }
+    throw new Error(`FakeAgeKeySeamWithExistingKey: unexpected call ${cmd.join(" ")}`);
   }
 }
 
@@ -134,8 +150,8 @@ class FakeSeam implements ExecSeam {
     this.calls.push({ kind: "exists", arg: path });
     return false;
   }
-  async isRealFile(path: string): Promise<boolean> {
-    this.calls.push({ kind: "isRealFile", arg: path });
+  async blocksSymlink(path: string): Promise<boolean> {
+    this.calls.push({ kind: "blocksSymlink", arg: path });
     return false;
   }
   async writeSymlink(path: string, target: string): Promise<void> {
@@ -207,14 +223,65 @@ describe("homeInit", () => {
     expect(sopsYamlSeam.writes).toEqual([]);
   });
 
-  test("fully provisioned: an existing .sops.yaml with a stale recipient (key rotation) is rewritten", async () => {
+  test("fully provisioned, key ALREADY in the keychain (not minted): a stale .sops.yaml recipient is rewritten — a deliberate rotation, not a fresh machine guessing", async () => {
     const seam = new FakeSeam();
-    const ageKeySeam = new FakeAgeKeySeam();
+    const ageKeySeam = new FakeAgeKeySeamWithExistingKey();
     const sopsYamlSeam = new FakeSopsYamlSeam({ path: SOPS_YAML_PATH, content: renderSopsYaml("age1stale") });
 
     await runHomeInit(FULLY_PROVISIONED_PROBES(), seam, ageKeySeam, [], sopsYamlSeam);
 
     expect(sopsYamlSeam.files.get(SOPS_YAML_PATH)).toBe(renderSopsYaml(FAKE_PUBLIC_KEY));
+  });
+
+  test("fully provisioned, key ALREADY in the keychain, recipient matches: no-op", async () => {
+    const seam = new FakeSeam();
+    const ageKeySeam = new FakeAgeKeySeamWithExistingKey();
+    const sopsYamlSeam = new FakeSopsYamlSeam({ path: SOPS_YAML_PATH, content: renderSopsYaml(FAKE_PUBLIC_KEY) });
+
+    const { exitCode } = await runHomeInit(FULLY_PROVISIONED_PROBES(), seam, ageKeySeam, [], sopsYamlSeam);
+
+    expect(exitCode).toBeUndefined();
+    expect(sopsYamlSeam.writes).toEqual([]);
+  });
+
+  test("fully provisioned, key JUST MINTED (fresh/empty keychain), a cloned .sops.yaml names a DIFFERENT recipient: refuses, leaves the file untouched, exits 1", async () => {
+    const seam = new FakeSeam();
+    const ageKeySeam = new FakeAgeKeySeam(); // empty keychain -> mints
+    const sopsYamlSeam = new FakeSopsYamlSeam({ path: SOPS_YAML_PATH, content: renderSopsYaml("age1the-other-machines-recipient") });
+
+    const { exitCode, errors } = await runHomeInit(FULLY_PROVISIONED_PROBES(), seam, ageKeySeam, [], sopsYamlSeam);
+
+    expect(exitCode).toBe(1);
+    expect(sopsYamlSeam.writes).toEqual([]);
+    expect(sopsYamlSeam.files.get(SOPS_YAML_PATH)).toBe(renderSopsYaml("age1the-other-machines-recipient"));
+    expect(errors.some((e) => e.includes("age1the-other-machines-recipient"))).toBe(true);
+    expect(errors.some((e) => e.includes("rt home key import"))).toBe(true);
+  });
+
+  test("fully provisioned, key JUST MINTED, a cloned .sops.yaml already names the SAME recipient: no-op (the astronomically unlikely match is still safe)", async () => {
+    const seam = new FakeSeam();
+    const ageKeySeam = new FakeAgeKeySeam();
+    const sopsYamlSeam = new FakeSopsYamlSeam({ path: SOPS_YAML_PATH, content: renderSopsYaml(FAKE_PUBLIC_KEY) });
+
+    const { exitCode } = await runHomeInit(FULLY_PROVISIONED_PROBES(), seam, ageKeySeam, [], sopsYamlSeam);
+
+    expect(exitCode).toBeUndefined();
+    expect(sopsYamlSeam.writes).toEqual([]);
+  });
+
+  test("the printed .sops.yaml commit hint pins cwd to user/, not the (no-longer-a-repo) root", async () => {
+    const seam = new FakeSeam();
+    const ageKeySeam = new FakeAgeKeySeam();
+    const sopsYamlSeam = new FakeSopsYamlSeam();
+
+    const { logs } = await runHomeInit(FULLY_PROVISIONED_PROBES(), seam, ageKeySeam, [], sopsYamlSeam);
+
+    const userDir = join(mattstackHome(), "user");
+    const hint = logs.find((l) => l.includes("git -C"));
+    expect(hint).toBeDefined();
+    expect(hint).toContain(`git -C ${userDir} add .sops.yaml`);
+    expect(hint).toContain(`git -C ${userDir} commit -m "home: sops recipient"`);
+    expect(hint).not.toContain(`git -C ${mattstackHome()} add`);
   });
 
   test("fully provisioned --dry-run: never touches the age key either", async () => {

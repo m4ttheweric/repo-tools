@@ -258,7 +258,11 @@ describe("settings/write", () => {
       expect(stderrWrites.some((line) => /commit|push/i.test(line))).toBe(true);
     });
 
-    test("a user-scope write prints no reminder", () => {
+    // Every scope is a tracked repo with nothing auto-committing a write
+    // (H2, the snapshot daemon, is unbuilt) — user and machine writes get
+    // the same local-only reminder team writes always have, naming their
+    // own store path.
+    test("a user-scope write also prints the local-only reminder, naming the user store", () => {
       const stderrWrites: string[] = [];
       const orig = console.error;
       console.error = (...args: unknown[]) => {
@@ -269,7 +273,23 @@ describe("settings/write", () => {
       } finally {
         console.error = orig;
       }
-      expect(stderrWrites.length).toBe(0);
+      expect(stderrWrites.some((line) => /commit|push/i.test(line))).toBe(true);
+      expect(stderrWrites.some((line) => line.includes(userSettingsPath()))).toBe(true);
+    });
+
+    test("a machine-scope write also prints the local-only reminder, naming the machine store", () => {
+      const stderrWrites: string[] = [];
+      const orig = console.error;
+      console.error = (...args: unknown[]) => {
+        stderrWrites.push(args.map(String).join(" "));
+      };
+      try {
+        setSetting("rt.worktrees", { onDeck: 3 }, "machine");
+      } finally {
+        console.error = orig;
+      }
+      expect(stderrWrites.some((line) => /commit|push/i.test(line))).toBe(true);
+      expect(stderrWrites.some((line) => line.includes(machineSettingsPath()))).toBe(true);
     });
   });
 

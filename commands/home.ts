@@ -124,6 +124,8 @@ function parseUrlArg(args: string[]): string {
   return value;
 }
 
+export type EnsureHomeAgeKeyResult = { ok: true } | { ok: false; message: string };
+
 /**
  * The sole mint site: `key export` (lib/home/age-key.ts:keyExport) refuses
  * to mint, precisely so a keychain-access error there can never be mistaken
@@ -137,23 +139,48 @@ function parseUrlArg(args: string[]): string {
  * right recipient is left untouched. `.sops.yaml` is a TRACKED file, so a
  * write here needs a human commit — the snapshot daemon doesn't exist yet.
  *
+ * EXCEPT when this call's key was JUST MINTED (readAgeKey found the
+ * keychain provably empty) and an existing `.sops.yaml` already names a
+ * DIFFERENT recipient: that recipient is what the just-cloned `user/secrets/*.json`
+ * were actually encrypted to, on some other machine. Rewriting here would
+ * silently orphan them (undecryptable on this machine) and, once committed,
+ * break every other machine still holding the real key — so this refuses
+ * instead, leaving the file untouched. A rotation on a machine that ALREADY
+ * held the right key (not minted) is unchanged: that's a deliberate rotation,
+ * not a fresh machine guessing.
+ *
  * Called only after the init plan (which clones user/ when it's missing)
  * has run to completion, so user/ always already exists by the time this
  * writes into it.
  */
-async function ensureHomeAgeKey(seams: AgeKeySeam, sopsYamlSeam: SopsYamlSeam = defaultSopsYamlSeam()): Promise<void> {
-  const { publicKey } = await ensureAgeKey(seams);
+async function ensureHomeAgeKey(
+  seams: AgeKeySeam,
+  sopsYamlSeam: SopsYamlSeam = defaultSopsYamlSeam(),
+): Promise<EnsureHomeAgeKeyResult> {
+  const { publicKey, minted } = await ensureAgeKey(seams);
 
   // Lives under user/ (not the repo root): sops matches path_regex cwd-relative
   // and every sops spawn pins cwd to <mattstackHome>/user (store.ts), so
   // .sops.yaml must sit there too for that discovery to find it.
-  const sopsYamlPath = join(mattstackHome(), "user", ".sops.yaml");
+  const userDir = join(mattstackHome(), "user");
+  const sopsYamlPath = join(userDir, ".sops.yaml");
   const existing = sopsYamlSeam.read(sopsYamlPath);
-  if (existing === null || sopsYamlRecipient(existing) !== publicKey) {
+  const existingRecipient = existing === null ? null : sopsYamlRecipient(existing);
+
+  if (minted && existing !== null && existingRecipient !== publicKey) {
+    return {
+      ok: false,
+      message:
+        `secrets are encrypted to ${existingRecipient ?? "an unrecognized recipient"}; ` +
+        "import the age key from your password manager (`rt home key import`) before initializing.",
+    };
+  }
+
+  if (existing === null || existingRecipient !== publicKey) {
     sopsYamlSeam.write(sopsYamlPath, renderSopsYaml(publicKey));
     console.log(
       `rt home init: wrote ${sopsYamlPath} (recipient ${publicKey}) — it's tracked, so commit it:\n` +
-        `  git -C ${mattstackHome()} add user/.sops.yaml && git -C ${mattstackHome()} commit -m "home: sops recipient"`,
+        `  git -C ${userDir} add .sops.yaml && git -C ${userDir} commit -m "home: sops recipient"`,
     );
   }
 
@@ -161,6 +188,8 @@ async function ensureHomeAgeKey(seams: AgeKeySeam, sopsYamlSeam: SopsYamlSeam = 
     `rt home init: age key ready — recipient ${publicKey}.\n` +
       "  Run `rt home key export` to save the private key to your password manager.",
   );
+
+  return { ok: true };
 }
 
 export async function homeInit(
@@ -228,7 +257,11 @@ export async function homeInit(
   // Mint (or backfill) BEFORE the success line: printing success ahead of a
   // failed mint would tell the operator init worked while `rt secrets set`
   // still has no key or creation rule to encrypt against.
-  await ensureHomeAgeKey(ageKeySeam, sopsYamlSeam);
+  const ageKeyResult = await ensureHomeAgeKey(ageKeySeam, sopsYamlSeam);
+  if (!ageKeyResult.ok) {
+    console.error(`\nrt home init: ${ageKeyResult.message}`);
+    process.exit(1);
+  }
 
   if (plan.blocked === "skills-symlink-real-file") {
     console.error(`\nrt home init: provisioning finished, but the skills.jsonc symlink is still blocked — see above.`);

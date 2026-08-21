@@ -12,7 +12,7 @@ type RecordedCall =
   | { kind: "writeFile"; path: string; content: string }
   | { kind: "mkdirp"; path: string }
   | { kind: "exists"; path: string }
-  | { kind: "isRealFile"; path: string }
+  | { kind: "blocksSymlink"; path: string }
   | { kind: "writeSymlink"; path: string; target: string };
 
 const noopLog = () => {};
@@ -25,7 +25,7 @@ class FakeExecSeam implements ExecSeam {
     private opts: {
       failRun?: (cmd: string[]) => string | undefined;
       exists?: (path: string) => boolean;
-      isRealFile?: (path: string) => boolean;
+      blocksSymlink?: (path: string) => boolean;
     } = {},
   ) {}
 
@@ -49,9 +49,9 @@ class FakeExecSeam implements ExecSeam {
     return this.opts.exists?.(path) ?? false;
   }
 
-  async isRealFile(path: string): Promise<boolean> {
-    this.calls.push({ kind: "isRealFile", path });
-    return this.opts.isRealFile?.(path) ?? false;
+  async blocksSymlink(path: string): Promise<boolean> {
+    this.calls.push({ kind: "blocksSymlink", path });
+    return this.opts.blocksSymlink?.(path) ?? false;
   }
 
   async writeSymlink(path: string, target: string): Promise<void> {
@@ -155,20 +155,20 @@ describe("executeInitPlan", () => {
 
   describe("writeSkillsSymlink — re-checked at exec time, never trusts the plan-build-time probe", () => {
     test("nothing (or a symlink) at the root path: links skills.jsonc -> user/skills.jsonc", async () => {
-      const seam = new FakeExecSeam({ isRealFile: () => false });
+      const seam = new FakeExecSeam({ blocksSymlink: () => false });
       const steps: InitStep[] = [{ kind: "writeSkillsSymlink" }];
 
       const result = await executeInitPlan(steps, seam, noopLog);
 
       expect(result).toEqual({ ok: true });
       expect(seam.calls).toEqual([
-        { kind: "isRealFile", path: "skills.jsonc" },
+        { kind: "blocksSymlink", path: "skills.jsonc" },
         { kind: "writeSymlink", path: "skills.jsonc", target: join("user", "skills.jsonc") },
       ]);
     });
 
     test("a REAL file at the root path: the step fails, and writeSymlink (so unlink) is never called", async () => {
-      const seam = new FakeExecSeam({ isRealFile: () => true });
+      const seam = new FakeExecSeam({ blocksSymlink: () => true });
       const steps: InitStep[] = [{ kind: "writeSkillsSymlink" }];
 
       const result = await executeInitPlan(steps, seam, noopLog);
@@ -178,13 +178,13 @@ describe("executeInitPlan", () => {
         expect(result.failedStep).toBe("writeSkillsSymlink");
         expect(result.stderr).toContain("refusing to overwrite");
       }
-      expect(seam.calls).toEqual([{ kind: "isRealFile", path: "skills.jsonc" }]);
+      expect(seam.calls).toEqual([{ kind: "blocksSymlink", path: "skills.jsonc" }]);
       expect(seam.calls.some((c) => c.kind === "writeSymlink")).toBe(false);
     });
   });
 
   test("runs a full fresh-machine plan's steps in order", async () => {
-    const seam = new FakeExecSeam({ exists: () => false, isRealFile: () => false });
+    const seam = new FakeExecSeam({ exists: () => false, blocksSymlink: () => false });
     const steps = buildInitPlan(
       {
         userRepoPresent: false,
@@ -215,7 +215,7 @@ describe("executeInitPlan", () => {
       "writeFile", // user/snapshot-owners.jsonc
       "writeFile", // machine-key
       "mkdirp", // user/local/mbp-14
-      "isRealFile", // skills.jsonc
+      "blocksSymlink", // skills.jsonc
       "writeSymlink", // skills.jsonc
     ]);
   });
@@ -258,12 +258,12 @@ describe("createRealExecSeam", () => {
       expect(readFileSync(join(home, "user", "skills.jsonc"), "utf8")).toBe("{}\n");
       expect(await seam.exists("user/skills.jsonc")).toBe(true);
 
-      expect(await seam.isRealFile("skills.jsonc")).toBe(false); // absent
+      expect(await seam.blocksSymlink("skills.jsonc")).toBe(false); // absent
       await seam.writeSymlink("skills.jsonc", join("user", "skills.jsonc"));
       const st = lstatSync(join(home, "skills.jsonc"));
       expect(st.isSymbolicLink()).toBe(true);
       expect(readlinkSync(join(home, "skills.jsonc"))).toBe(join("user", "skills.jsonc"));
-      expect(await seam.isRealFile("skills.jsonc")).toBe(false); // a symlink, not a real file
+      expect(await seam.blocksSymlink("skills.jsonc")).toBe(false); // a symlink, not a real file
 
       // writeSymlink replaces whatever was already there.
       await seam.writeSymlink("skills.jsonc", join("user", "skills.jsonc"));
@@ -273,15 +273,30 @@ describe("createRealExecSeam", () => {
     }
   });
 
-  // isRealFile is the guard runStep checks before any unlink; a genuine file
+  // blocksSymlink is the guard runStep checks before any unlink; a genuine file
   // (not a fake seam) must trip it, or writeSymlink would clobber user content.
-  test("isRealFile is true for a genuine file, distinguishing it from a symlink", async () => {
+  test("blocksSymlink is true for a genuine file, distinguishing it from a symlink", async () => {
     const home = mkdtempSync(join(tmpdir(), "rt-home-exec-realfile-"));
     try {
       const seam = createRealExecSeam(home);
       writeFileSync(join(home, "skills.jsonc"), '{"real": "content"}\n');
 
-      expect(await seam.isRealFile("skills.jsonc")).toBe(true);
+      expect(await seam.blocksSymlink("skills.jsonc")).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // A directory at the root path is exactly as unsafe to unlink+symlink over
+  // as a real file — the name says "blocks a symlink write", not "is a file",
+  // so this must read true too.
+  test("blocksSymlink is true for a directory, not just a plain file", async () => {
+    const home = mkdtempSync(join(tmpdir(), "rt-home-exec-realdir-"));
+    try {
+      const seam = createRealExecSeam(home);
+      mkdirSync(join(home, "skills.jsonc"));
+
+      expect(await seam.blocksSymlink("skills.jsonc")).toBe(true);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

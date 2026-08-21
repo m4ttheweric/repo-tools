@@ -99,15 +99,22 @@ function parseAgeKeygenOutput(output: string): { publicKey: string; privateKey: 
  * on top of that: if an item exists anyway, the keychain write itself
  * fails rather than overwriting, the last-resort guard against clobbering
  * the custodied key.
+ *
+ * `minted` tells the caller whether THIS call is the one that generated the
+ * key (vs. deriving the public half of one already in the keychain) — the
+ * signal `rt home init` needs to tell "a machine with no key yet" apart
+ * from "a machine that already has the right key", since only the former
+ * can safely treat a mismatched `.sops.yaml` recipient as stale rather than
+ * as evidence of secrets encrypted to a key this machine doesn't hold.
  */
-export async function ensureAgeKey(seams: AgeKeySeam): Promise<{ publicKey: string }> {
+export async function ensureAgeKey(seams: AgeKeySeam): Promise<{ publicKey: string; minted: boolean }> {
   const existing = await readAgeKey(seams);
   if ("key" in existing) {
     const derived = await seams.run(["age-keygen", "-y"], { input: existing.key, sensitive: true });
     if (derived.code !== 0) {
       throw new Error(`age-keygen -y: could not derive the public key from the stored private key\n${derived.stderr}`);
     }
-    return { publicKey: derived.stdout.trim() };
+    return { publicKey: derived.stdout.trim(), minted: false };
   }
 
   const generated = await seams.run(["age-keygen"], { sensitive: true });
@@ -121,7 +128,7 @@ export async function ensureAgeKey(seams: AgeKeySeam): Promise<{ publicKey: stri
     throw new Error(`security add-generic-password: failed to store the age key in the keychain\n${stored.stderr}`);
   }
 
-  return { publicKey };
+  return { publicKey, minted: true };
 }
 
 export function renderSopsYaml(publicKey: string): string {
