@@ -169,12 +169,23 @@ type SkillEntry = { name: string; group: string | null; dir: string };
  * (skills/<group>/<name>, the mattstack plugin's layout); a depth-1 dir
  * without its own SKILL.md is a group, and its leaves are the skills.
  */
-function enumerateSkillEntries(root: string): Map<string, SkillEntry> {
-  const entries = new Map<string, SkillEntry>();
+function enumerateSkillEntries(root: string, into: Map<string, SkillEntry> = new Map()): Map<string, SkillEntry> {
+  // surface.jsonc is keyed by bare skill name, so two groups carrying the same
+  // leaf would be indistinguishable to every surface operation -- refuse rather
+  // than let one silently shadow the other.
+  const add = (entry: SkillEntry) => {
+    const clash = into.get(entry.name);
+    if (clash && clash.dir !== entry.dir) {
+      throw new SkillsUsageError(
+        `skill name "${entry.name}" appears twice (${clash.dir} and ${entry.dir}); skill names must be unique within a pack`,
+      );
+    }
+    into.set(entry.name, entry);
+  };
   for (const top of listSubdirs(root)) {
     const topDir = join(root, top);
     if (existsSync(join(topDir, "SKILL.md"))) {
-      entries.set(top, { name: top, group: null, dir: topDir });
+      add({ name: top, group: null, dir: topDir });
       continue;
     }
     let sawLeaf = false;
@@ -182,10 +193,36 @@ function enumerateSkillEntries(root: string): Map<string, SkillEntry> {
       const leafDir = join(topDir, leaf);
       if (!existsSync(join(leafDir, "SKILL.md"))) continue;
       sawLeaf = true;
-      entries.set(leaf, { name: leaf, group: top, dir: leafDir });
+      add({ name: leaf, group: top, dir: leafDir });
     }
-    if (!sawLeaf) entries.set(top, { name: top, group: null, dir: topDir });
+    if (!sawLeaf) add({ name: top, group: null, dir: topDir });
   }
+  return into;
+}
+
+/**
+ * A plugin may register more than one skills root (plugin.json `skills`, e.g.
+ * ["./skills/review", "./plugin/skills"]); the registered surface is the union
+ * of those roots, defaulting to skills/ when the manifest lists none.
+ */
+function registeredSkillRoots(packDir: string): string[] {
+  const manifestPath = join(packDir, ".claude-plugin", "plugin.json");
+  if (existsSync(manifestPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(manifestPath, "utf8")) as { skills?: unknown };
+      if (Array.isArray(parsed.skills) && parsed.skills.length > 0) {
+        return parsed.skills.filter((s): s is string => typeof s === "string").map((s) => join(packDir, s));
+      }
+    } catch {
+      // an unreadable manifest falls back to the conventional root below
+    }
+  }
+  return [join(packDir, "skills")];
+}
+
+function enumerateRegistered(packDir: string): Map<string, SkillEntry> {
+  const entries = new Map<string, SkillEntry>();
+  for (const root of registeredSkillRoots(packDir)) enumerateSkillEntries(root, entries);
   return entries;
 }
 
@@ -295,7 +332,7 @@ function computeInternalRoster(
   const internal = new Set<string>();
   if (!surface) return internal;
   const publicSet = new Set(surface.public);
-  for (const name of enumerateSkillEntries(join(packDir, "skills")).keys()) {
+  for (const name of enumerateRegistered(packDir).keys()) {
     if (!publicSet.has(name)) internal.add(`${team}:${name}`);
   }
   for (const name of enumerateSkillEntries(join(packDir, "attachments")).keys()) {
@@ -316,8 +353,15 @@ async function resolve(flags: Flags): Promise<Resolved> {
   // A pack with no verb roster needs no manifest: bindings only feed compile targets.
   const manifestPath = fullRoster.length === 0 ? null : (flags.manifest ?? findDefaultManifest(mattstackRoot, team));
   const bindings = manifestPath ? readManifestBindings(manifestPath) : {};
-  const pluginRoots = flags.mattstackDir ? resolvePluginRootsFromDir(mattstackRoot) : resolvePluginRoots();
-  const invocable = invocableRoster(pluginRoots);
+  // No compile targets means nothing needs plugin roots or the invocable roster;
+  // skipping the `claude plugin list` subprocess keeps rosterless packs usable
+  // even where the Claude CLI is absent.
+  const pluginRoots: PluginRoots = fullRoster.length === 0
+    ? { byName: {} }
+    : flags.mattstackDir
+      ? resolvePluginRootsFromDir(mattstackRoot)
+      : resolvePluginRoots();
+  const invocable = fullRoster.length === 0 ? new Set<string>() : invocableRoster(pluginRoots);
   const surface = readSurface(packDir);
   const internalRoster = computeInternalRoster(team, packDir, surface, fullRoster);
 
@@ -405,7 +449,7 @@ export async function skillsCompile(args: string[]): Promise<void> {
     }
 
     if (publicSet) {
-      for (const name of enumerateSkillEntries(join(resolved.packDir, "skills")).keys()) {
+      for (const name of enumerateRegistered(resolved.packDir).keys()) {
         if (!publicSet.has(name)) {
           console.log(`misplaced: ${name} (run rt skills surface apply, or move it)`);
           process.exitCode = 1;
@@ -529,7 +573,7 @@ function classify(name: string, dir: string | null, verbNames: Set<string>): "co
 }
 
 function collectRegistry(packDir: string, verbNames: Set<string>) {
-  const skillEntries = enumerateSkillEntries(join(packDir, "skills"));
+  const skillEntries = enumerateRegistered(packDir);
   const attachmentEntries = enumerateSkillEntries(join(packDir, "attachments"));
   const skillsNames = new Set(skillEntries.keys());
   const attachmentNames = new Set(attachmentEntries.keys());
