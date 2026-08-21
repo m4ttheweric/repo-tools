@@ -25,12 +25,23 @@ EOF
   check)
     uid=$(id -u "$U" 2>/dev/null) || vm_die "user $U does not exist — $0 create"
     vm_log "user $U uid=$uid"
-    if sudo -n launchctl print "gui/$uid" >/dev/null 2>&1; then vm_log "GUI session present (gui/$uid) — SMAppService registration will work"
-    elif launchctl print "gui/$uid" >/dev/null 2>&1; then vm_log "GUI session present (gui/$uid)"
-    else vm_warn "no GUI session for $U — log the user in once ($0 switch); daemon will report not-booted otherwise"; exit 1; fi
+    if sudo -n true >/dev/null 2>&1; then
+      if sudo -n launchctl print "gui/$uid" >/dev/null 2>&1; then
+        vm_log "GUI session present (gui/$uid) — SMAppService registration will work"
+      else
+        vm_warn "no GUI session for $U — log the user in once ($0 switch); daemon will report not-booted otherwise"; exit 1
+      fi
+    elif launchctl print "gui/$uid" >/dev/null 2>&1; then
+      vm_log "GUI session present (gui/$uid)"
+    else
+      vm_warn "cannot verify GUI session without sudo — run: sudo launchctl print gui/$uid"; exit 1
+    fi
     ;;
   run)
+    [ "$U" != "$(id -un)" ] || vm_die "refusing to run against your own account ($U)"
+    case "$U" in mstest*|*smoke*) ;; *) vm_die "refusing to run against non-smoke user $U" ;; esac
     [ -n "$ART" ] && [ -f "$ART" ] || vm_die "run needs --artifact <file>"
+    [ -f "$VM_ROOT/../../scripts/e2e-cleanroom.sh" ] || vm_die "scripts/e2e-cleanroom.sh not found (Task 12 has not landed)"
     id -u "$U" >/dev/null 2>&1 || vm_die "user $U does not exist — $0 create"
     vm_run_init "second-user"
     HOME2=$(dscl . -read "/Users/$U" NFSHomeDirectory | awk '{print $2}')
@@ -38,7 +49,6 @@ EOF
     sudo install -o "$U" -m 600 "$ART" "$HOME2/mattstack-smoke/$(basename "$ART")"
     sudo install -o "$U" -m 700 "$VM_ROOT/../../scripts/e2e-cleanroom.sh" "$HOME2/mattstack-smoke/e2e-cleanroom.sh"
     sudo install -o "$U" -m 700 -d "$HOME2/mattstack-smoke/artifacts"
-    chmod 777 "$VM_RUN_DIR" "$VM_RUN_DIR/logs"
     # sudo -iu gives the user's login env; the user is (ideally) logged in so `open`/SMAppService land in gui/<uid>.
     if sudo -iu "$U" bash -lc "cd ~/mattstack-smoke && ./e2e-cleanroom.sh --artifact ~/mattstack-smoke/$(basename "$ART") --home \$HOME --artifacts-dir ~/mattstack-smoke/artifacts --allow-existing-install" > "$VM_RUN_DIR/logs/second-user.log" 2>&1; then
       vm_phase_begin second-user; vm_phase_end second-user pass
