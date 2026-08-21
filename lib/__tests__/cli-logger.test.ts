@@ -1,0 +1,57 @@
+import { describe, expect, test } from "bun:test";
+import { readFileSync, readdirSync } from "fs";
+import { join } from "path";
+import { logCommand } from "../cli-logger.ts";
+import { logsDir } from "../rt-paths.ts";
+
+/**
+ * Exercises the REAL logCommand write path (fake HOME, from test-setup.ts's
+ * preload — never the developer's real ~/.mattstack/rt/logs), not a mocked
+ * seam: this is the gap the store-level canary test couldn't cover, since
+ * that one only checked a command's stdout, never the on-disk CLI log every
+ * command writes to regardless of outcome.
+ */
+function readTodaysCliLogLines(): string[] {
+  const dir = logsDir();
+  const file = readdirSync(dir).find((f) => f.startsWith("cli.") && f.endsWith(".log"));
+  if (!file) throw new Error("expected today's cli log file to exist after logCommand()");
+  return readFileSync(join(dir, file), "utf8").trim().split("\n").filter(Boolean);
+}
+
+describe("logCommand: rt secrets set|rotate never reaches disk with a value attached", () => {
+  test("a canary trailing 'rt secrets set <domain> <key>' is redacted in the on-disk line", () => {
+    const CANARY = "sk_super_secret_canary_never_on_disk";
+
+    logCommand({
+      command: "rt secrets set",
+      args: ["rt", "gitlabToken", CANARY],
+      cwd: "/tmp",
+      durationMs: 1,
+      outcome: "ok",
+    });
+
+    const lines = readTodaysCliLogLines();
+    const line = lines.at(-1)!;
+    expect(line).not.toContain(CANARY);
+    expect(line).toContain("gitlabToken");
+    expect(JSON.parse(line).args).toEqual(["rt", "gitlabToken", "[redacted]"]);
+  });
+
+  test("the same holds for rotate, and for an error outcome (the crash/exit path)", () => {
+    const CANARY = "glpat_rotate_canary_never_on_disk";
+
+    logCommand({
+      command: "rt secrets rotate",
+      args: ["board", "slackToken", CANARY],
+      cwd: "/tmp",
+      durationMs: 1,
+      outcome: "error",
+      error: "boom",
+    });
+
+    const lines = readTodaysCliLogLines();
+    const line = lines.at(-1)!;
+    expect(line).not.toContain(CANARY);
+    expect(JSON.parse(line).args).toEqual(["board", "slackToken", "[redacted]"]);
+  });
+});
