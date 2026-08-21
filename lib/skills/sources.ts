@@ -166,7 +166,7 @@ export function loadStepSource(engineName: string, roots: PluginRoots): StepSour
     body,
     slots: parseSlots(frontmatter.slots),
     allowedTools: parseAllowedTools(frontmatter["allowed-tools"]),
-    scriptFiles: listFilesUnder(join(foundDir, "scripts"), new Set()).map((entry) => `scripts/${entry}`),
+    stepFiles: listFilesUnder(foundDir, new Set(["SKILL.md"])),
   };
 }
 
@@ -282,8 +282,11 @@ export function readManifestBindings(manifestPath: string): Record<string, Recor
 export type SurfaceConfig = { public: string[] };
 
 export function readSurface(packDir: string): SurfaceConfig | null {
-  const surfacePath = join(packDir, "pack", "surface.jsonc");
-  if (!existsSync(surfacePath)) return null;
+  // Packs without a pack/ config dir (the mattstack plugin repo) declare their
+  // surface at the plugin root beside .claude-plugin; pack/surface.jsonc wins.
+  const surfacePath = [join(packDir, "pack", "surface.jsonc"), join(packDir, "surface.jsonc")]
+    .find((candidate) => existsSync(candidate));
+  if (!surfacePath) return null;
   const parsed = JSON.parse(stripJsonc(readFileSync(surfacePath, "utf8"))) as { public?: unknown };
   const publicList = Array.isArray(parsed.public)
     ? parsed.public.filter((entry): entry is string => typeof entry === "string")

@@ -63,6 +63,7 @@ function makeFixtureRoots(): { rootDir: string; roots: PluginRoots } {
   const mattstackDir = join(rootDir, "mattstack");
   writeFile(join(mattstackDir, "skills", "pipeline", "watch-ci", "SKILL.md"), WATCH_CI_SKILL_MD);
   writeFile(join(mattstackDir, "skills", "pipeline", "watch-ci", "scripts", "ci-watch.sh"), WATCH_CI_SCRIPT);
+  writeFile(join(mattstackDir, "skills", "pipeline", "watch-ci", "references", "polling-notes.md"), "Polling notes.\n");
   writeFile(join(mattstackDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.2.0" }));
 
   const untypedSkillMd = WATCH_CI_SKILL_MD.replace("type: pipeline-step\n", "");
@@ -127,7 +128,7 @@ describe("stripFrontmatter", () => {
 });
 
 describe("loadStepSource", () => {
-  test("finds the engine under skills/pipeline/, parses slots, lists scriptFiles", () => {
+  test("finds the engine under skills/pipeline/, parses slots, lists stepFiles", () => {
     const { roots } = makeFixtureRoots();
 
     const step = loadStepSource("watch-ci", roots);
@@ -142,7 +143,7 @@ describe("loadStepSource", () => {
       forge: { contract: "ci-forge@1", required: true },
     });
     expect(step.allowedTools).toEqual(["Bash(gh:*)", "Read"]);
-    expect(step.scriptFiles).toEqual(["scripts/ci-watch.sh"]);
+    expect(step.stepFiles).toEqual(["references/polling-notes.md", "scripts/ci-watch.sh"]);
   });
 
   test("throws naming the file when the engine has no type: pipeline-step", () => {

@@ -36,6 +36,21 @@ describe("readSurface", () => {
 
     expect(readSurface(packDir)).toBeNull();
   });
+
+  test("falls back to a root-level surface.jsonc when pack/ has none", () => {
+    const packDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-surface-pack-")));
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": ["editing-skills"] }\n`);
+
+    expect(readSurface(packDir)).toEqual({ public: ["editing-skills"] });
+  });
+
+  test("pack/surface.jsonc wins over a root-level copy", () => {
+    const packDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-surface-pack-")));
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["from-pack"] }\n`);
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": ["from-root"] }\n`);
+
+    expect(readSurface(packDir)).toEqual({ public: ["from-pack"] });
+  });
 });
 
 describe("compileSkill with internalRoster", () => {
@@ -51,7 +66,7 @@ describe("compileSkill with internalRoster", () => {
       body: "This step defers to claimview:cvi-gates for the internal check and to claimview:watch-ci-domain for the public one.",
       slots: {},
       allowedTools: [],
-      scriptFiles: [],
+      stepFiles: [],
     };
     const internalRoster = new Set(["claimview:cvi-gates"]);
 
@@ -71,7 +86,7 @@ describe("compileSkill with internalRoster", () => {
       body: "This step defers to claimview:watch-ci-domain.",
       slots: {},
       allowedTools: [],
-      scriptFiles: [],
+      stepFiles: [],
     };
 
     const result = compileSkill(verb, step, {}, roster);
@@ -88,7 +103,7 @@ describe("compileSkill with internalRoster", () => {
       body: "Poll CI.",
       slots: { domain: { contract: "watch-ci-domain@1", required: true } },
       allowedTools: [],
-      scriptFiles: [],
+      stepFiles: [],
     };
     const registeredInternalFill: AttachmentSource = {
       binding: "claimview:cvi-gates",
@@ -124,7 +139,7 @@ describe("compileSkill with internalRoster", () => {
       body: "Poll CI.",
       slots: { domain: { contract: "watch-ci-domain@1", required: true } },
       allowedTools: [],
-      scriptFiles: [],
+      stepFiles: [],
     };
     const registeredPublicFill: AttachmentSource = {
       binding: "claimview:cvi-gates",

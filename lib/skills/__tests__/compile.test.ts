@@ -19,7 +19,7 @@ const step: StepSource = {
     forge: { contract: "ci-forge@1", required: true },
   },
   allowedTools: ["Bash(gh:*)", "Read"],
-  scriptFiles: ["scripts/ci-watch.sh"],
+  stepFiles: ["references/polling-notes.md", "scripts/ci-watch.sh"],
 };
 
 const domainFill: AttachmentSource = {
@@ -170,12 +170,16 @@ describe("compileSkill", () => {
     expect(error?.message).toContain("claimview:watch-ci-domain");
   });
 
-  test("vendoring: scriptFiles and extraFiles map to exact copyFrom paths", () => {
+  test("vendoring: stepFiles and extraFiles map to exact copyFrom paths", () => {
     const result = compileSkill(verb, step, { domain: domainFill, forge: forgeFill }, roster);
 
     expect(result.files).toContainEqual({
       path: "scripts/ci-watch.sh",
       copyFrom: "/plugins/mattstack/skills/pipeline/watch-ci/scripts/ci-watch.sh",
+    });
+    expect(result.files).toContainEqual({
+      path: "references/polling-notes.md",
+      copyFrom: "/plugins/mattstack/skills/pipeline/watch-ci/references/polling-notes.md",
     });
     expect(result.files).toContainEqual({
       path: "parts/domain/ci-config.json",
@@ -229,7 +233,7 @@ describe("compileSkill", () => {
       body: "This step defers domain judgment to claimview:watch-ci-domain and never invokes claimview:nonexistent.",
       slots: {},
       allowedTools: [],
-      scriptFiles: [],
+      stepFiles: [],
     };
     const lintRoster = new Set(["mattstack:watch-ci", "claimview:watch-ci-domain"]);
 
@@ -294,7 +298,7 @@ describe("compileSkill", () => {
       body: "Review your own diff before shipping.",
       slots: {},
       allowedTools: [],
-      scriptFiles: [],
+      stepFiles: [],
     };
     const bareVerb: VerbDef = {
       name: "self-review",
