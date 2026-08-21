@@ -3,7 +3,7 @@ import { execFileSync } from "child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { skillsSurface } from "../skills.ts";
+import { decidePaletteAction, skillsSurface } from "../skills.ts";
 
 function writeFile(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -319,5 +319,56 @@ describe("skillsSurface bare invocation (fzf palette)", () => {
     expect(exitCode).toBe(1);
     expect(errors[0]).toStartWith("rt skills: ");
     expect(errors[0]).toContain("bogus-mode");
+  });
+});
+
+describe("decidePaletteAction", () => {
+  test("zero-marked cursor-row artifact shows as a +1 delta the user can decline", () => {
+    // Everything was internal; fzf's default --multi accept on Enter with
+    // nothing marked emits the cursor row anyway -- that row now reads
+    // "public" in resultRows even though the user meant to uncheck everything.
+    const previousPublic = new Set<string>();
+    const resultRows = [{ name: "x", status: "public" as const }];
+
+    const action = decidePaletteAction(previousPublic, resultRows, false);
+
+    expect(action.kind).toBe("declined");
+    if (action.kind !== "no-changes") {
+      expect(action.delta.toPublic).toEqual(["x"]);
+      expect(action.delta.toInternal).toEqual([]);
+    }
+  });
+
+  test("decline writes nothing: the confirmed=false path never yields a write action", () => {
+    const previousPublic = new Set<string>();
+    const resultRows = [{ name: "x", status: "public" as const }];
+
+    const action = decidePaletteAction(previousPublic, resultRows, false);
+
+    expect(action.kind).not.toBe("write");
+  });
+
+  test("confirming a real delta yields a write action carrying it", () => {
+    const previousPublic = new Set(["y"]);
+    const resultRows = [
+      { name: "x", status: "public" as const },
+      { name: "y", status: "internal" as const },
+    ];
+
+    const action = decidePaletteAction(previousPublic, resultRows, true);
+
+    expect(action.kind).toBe("write");
+    if (action.kind === "write") {
+      expect(action.delta.toPublic).toEqual(["x"]);
+      expect(action.delta.toInternal).toEqual(["y"]);
+    }
+  });
+
+  test("no changes short-circuits regardless of the confirm answer", () => {
+    const previousPublic = new Set(["x"]);
+    const resultRows = [{ name: "x", status: "public" as const }];
+
+    expect(decidePaletteAction(previousPublic, resultRows, false).kind).toBe("no-changes");
+    expect(decidePaletteAction(previousPublic, resultRows, true).kind).toBe("no-changes");
   });
 });
