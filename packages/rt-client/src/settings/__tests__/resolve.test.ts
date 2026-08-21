@@ -19,8 +19,8 @@ import {
   teamSettingsPath,
   teamsDir,
   userSettingsPath,
-} from "../../rt-paths.ts";
-import { getDef, type SettingDef } from "../registry.ts";
+} from "../paths.ts";
+import { getDef, type SettingDef } from "../registry-machinery.ts";
 import {
   defaultLegacyReader,
   expandVariables,

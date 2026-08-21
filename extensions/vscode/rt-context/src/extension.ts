@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { exec } from 'child_process';
 import { branchCache, branchListCache } from './cache';
-import { setSecret } from './secrets';
+import { showCantSaveSecretMessage } from './secrets';
 import {
   initStatusBar,
   waitForGitAndStart,
@@ -77,36 +77,15 @@ export function activate(context: vscode.ExtensionContext) {
       showBranchSwitcher(context),
     ),
 
-    vscode.commands.registerCommand('rtContext.setLinearApiKey', async () => {
-      const key = await vscode.window.showInputBox({
-        prompt: 'Enter your Linear personal API key',
-        placeHolder: 'lin_api_...',
-        password: true,
-        ignoreFocusOut: true,
-      });
-      if (key) {
-        await setSecret(context, 'linearApiKey', key);
-        vscode.window.showInformationMessage('Linear API key saved (shared with rt CLI).');
-        branchCache.clear();
-        branchListCache.clear();
-        scheduleUpdate(context);
-      }
+    // RT-32: the extension can't save secrets anymore — show the directed
+    // `rt secrets set` message immediately rather than prompting for a
+    // token it would only throw away.
+    vscode.commands.registerCommand('rtContext.setLinearApiKey', () => {
+      showCantSaveSecretMessage('linearApiKey');
     }),
 
-    vscode.commands.registerCommand('rtContext.setGitlabToken', async () => {
-      const token = await vscode.window.showInputBox({
-        prompt: 'Enter your GitLab personal access token (for MR title fallback)',
-        placeHolder: 'glpat-...',
-        password: true,
-        ignoreFocusOut: true,
-      });
-      if (token) {
-        await setSecret(context, 'gitlabToken', token);
-        vscode.window.showInformationMessage('GitLab token saved (shared with rt CLI).');
-        branchCache.clear();
-        branchListCache.clear();
-        scheduleUpdate(context);
-      }
+    vscode.commands.registerCommand('rtContext.setGitlabToken', () => {
+      showCantSaveSecretMessage('gitlabToken');
     }),
 
     vscode.commands.registerCommand('rtContext.refresh', () => {

@@ -41,4 +41,58 @@ describe("redactSensitiveArgs", () => {
     redactSensitiveArgs(args);
     expect(args).toEqual(["--reason", "secret"]);
   });
+
+  describe("secrets set|rotate: anything past <domain> <key> is redacted, defense in depth", () => {
+    test("raw argv shape (installCliLogging's seed) — the 'secrets set' prefix is still in the array", () => {
+      expect(redactSensitiveArgs(["secrets", "set", "rt", "gitlabToken", "glpat-canary-value"])).toEqual([
+        "secrets",
+        "set",
+        "rt",
+        "gitlabToken",
+        "[redacted]",
+      ]);
+    });
+
+    test("raw argv shape: rotate, multiple trailing tokens all redacted", () => {
+      expect(redactSensitiveArgs(["secrets", "rotate", "board", "slackToken", "canary-1", "canary-2"])).toEqual([
+        "secrets",
+        "rotate",
+        "board",
+        "slackToken",
+        "[redacted]",
+        "[redacted]",
+      ]);
+    });
+
+    test("raw argv shape: exactly domain+key, nothing to redact", () => {
+      const args = ["secrets", "set", "rt", "gitlabToken"];
+      expect(redactSensitiveArgs(args)).toEqual(args);
+    });
+
+    test("leaf `rest` shape (logCommand's entry.args) — command carries the 'secrets set' context", () => {
+      expect(redactSensitiveArgs(["rt", "gitlabToken", "glpat-canary-value"], "rt secrets set")).toEqual([
+        "rt",
+        "gitlabToken",
+        "[redacted]",
+      ]);
+    });
+
+    test("leaf `rest` shape: rotate", () => {
+      expect(redactSensitiveArgs(["board", "slackToken", "canary-value"], "rt secrets rotate")).toEqual([
+        "board",
+        "slackToken",
+        "[redacted]",
+      ]);
+    });
+
+    test("a command that merely mentions 'secrets' elsewhere is not treated as a write verb", () => {
+      const args = ["rt"];
+      expect(redactSensitiveArgs(args, "rt secrets list")).toEqual(args);
+    });
+
+    test("unrelated commands are never affected by the secrets-write check", () => {
+      const args = ["sdm", "connect", "k"];
+      expect(redactSensitiveArgs(args, "rt sdm connect")).toEqual(args);
+    });
+  });
 });

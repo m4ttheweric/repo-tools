@@ -22,12 +22,18 @@
  * a machine still carrying real legacy dirs.
  */
 
-import { lstatSync, mkdirSync, renameSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, renameSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { basename, join } from "path";
+import { getSetting } from "./settings/resolve.ts";
 
 function home(): string {
   return process.env.HOME ?? homedir();
+}
+
+/** ~/.mattstack — the home repo root (RT-30). */
+export function mattstackHome(): string {
+  return join(home(), ".mattstack");
 }
 
 /** ~/.mattstack/rt — the root of all rt state. App-level files live directly here. */
@@ -125,20 +131,48 @@ export function devTrayAppPath(): string {
 }
 
 /**
+ * Where a bundle is ACTUALLY installed, not just where it's meant to go
+ * (that's `trayAppPath`/`devTrayAppPath` — install destinations, used by
+ * post-install.ts). The app's bundles legitimately live in `/Applications`
+ * now, not only `~/Applications`, so this checks every location rt could
+ * plausibly have been pointed at or find it in, strongest signal first, and
+ * verifies each candidate actually exists before trusting it — a stale
+ * machine setting or a since-removed bundle must never be handed back as
+ * fact. `exists` is injectable so tests never have to touch the real
+ * `/Applications`.
+ */
+export function installedTrayAppPath(bundle: string, exists: (path: string) => boolean = existsSync): string | null {
+  const { value } = getSetting<string>("mattstack.appPath");
+  // `mattstack.appPath` names one specific bundle (whichever flavor wrote
+  // it); a dev-bundle lookup must never be handed the prod bundle's path
+  // just because IT happens to exist on disk, or vice versa.
+  if (typeof value === "string" && value.length > 0 && basename(value) === bundle && exists(value)) return value;
+
+  const systemPath = join("/Applications", bundle);
+  if (exists(systemPath)) return systemPath;
+
+  const userPath = join(home(), "Applications", bundle);
+  if (exists(userPath)) return userPath;
+
+  return null;
+}
+
+/**
  * Old rt-tray.app candidate locations, for migration (post-install's
  * one-shot legacy sweep) and `rt verify` warnings. A FUNCTION, not a const —
  * this module's call-time-HOME rule (see the docblock above) forbids baking
  * HOME at module load, and the source-guard tests below enforce it.
  *
  * Mirrors the candidate list scattered across commands/verify.ts and
- * commands/post-install.ts today: the installed location under
- * ~/Applications, plus the two locations the old Homebrew install put it at
- * relative to the running binary (same dir, and one level up for the Cellar
- * layout).
+ * commands/post-install.ts today: both install dirs the app bundles
+ * themselves can now live in (/Applications and ~/Applications), plus the
+ * two locations the old Homebrew install put it at relative to the running
+ * binary (same dir, and one level up for the Cellar layout).
  */
 export function legacyTrayAppPaths(): string[] {
   const rtExec = process.execPath;
   return [
+    join("/Applications", "rt-tray.app"),
     join(home(), "Applications", "rt-tray.app"),
     join(rtExec, "../rt-tray.app"),
     join(rtExec, "../../rt-tray.app"),

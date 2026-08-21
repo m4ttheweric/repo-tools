@@ -38,7 +38,12 @@ import { loadRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS
 import { createProjectMRs } from "../lib/daemon/project-mrs-store.ts";
 import { getStateDb } from "../lib/state/index.ts";
 import { timeAgo } from "../lib/tui/utils/label.ts";
-import { trayAppPath, TRAY_APP_NAME, TRAY_APP_BUNDLE } from "../lib/rt-paths.ts";
+import { trayAppPath, installedTrayAppPath, TRAY_APP_NAME, TRAY_APP_BUNDLE } from "../lib/rt-paths.ts";
+
+/** Where to point an "open it" hint: the bundle's real install location if we can find one, else the conventional ~/Applications destination. */
+function trayAppHintPath(): string {
+  return installedTrayAppPath(TRAY_APP_BUNDLE) ?? trayAppPath();
+}
 
 function formatUptime(ms: number): string {
   const seconds = Math.floor(ms / 1000);
@@ -83,7 +88,7 @@ export async function install(_args: string[] = []): Promise<void> {
     console.log(`  ${green}✓${reset} tray app is registering daemon`);
   } else {
     console.log(`  ${yellow}⚠${reset} ${TRAY_APP_NAME} not reachable — open it to finish setup`);
-    console.log(`  ${dim}  ${bold}open ${trayAppPath()}${reset}`);
+    console.log(`  ${dim}  ${bold}open ${trayAppHintPath()}${reset}`);
   }
 
   // Wait for daemon to come online
@@ -164,7 +169,7 @@ export async function start(): Promise<void> {
   const result = await trayQuery("/daemon/start", "POST");
   if (!result?.ok) {
     console.log(`\n  ${yellow}${TRAY_APP_NAME} is not running${reset}`);
-    console.log(`  ${dim}open it: ${bold}open ${trayAppPath()}${reset}\n`);
+    console.log(`  ${dim}open it: ${bold}open ${trayAppHintPath()}${reset}\n`);
     return;
   }
 
@@ -192,7 +197,7 @@ export async function restart(): Promise<void> {
   const result = await trayQuery("/daemon/restart", "POST");
   if (!result?.ok) {
     console.log(`\n  ${yellow}${TRAY_APP_NAME} is not running${reset}`);
-    console.log(`  ${dim}open it: ${bold}open ${trayAppPath()}${reset}\n`);
+    console.log(`  ${dim}open it: ${bold}open ${trayAppHintPath()}${reset}\n`);
     return;
   }
   console.log(`  ${dim}restarting daemon via tray…${reset}`);

@@ -80,11 +80,18 @@ describe("verify", () => {
     expect(check!.status).toBe("pass");
   });
 
-  test("active flavor's tray app hard-fails when missing (no bundle is installed in this fixture home)", () => {
+  test("active flavor's tray app: hard-fails when genuinely nowhere on this machine", () => {
+    // installedTrayAppPath (Item 5) also checks the real, absolute
+    // /Applications — a location the fixture `home` (passed as the
+    // subprocess's HOME) can never isolate, unlike ~/Applications. A machine
+    // that genuinely has the bundle installed there is expected to pass this
+    // check even against an otherwise-empty fixture home, so assert against
+    // that reality instead of assuming a fixed "always fails" outcome.
     const activeBundle = activeFlavor(home) === "dev" ? DEV_TRAY_APP_BUNDLE : TRAY_APP_BUNDLE;
     const check = findCheck(activeBundle);
     expect(check).toBeDefined();
-    expect(check!.status).toBe("fail");
+    const reallyInstalledSystemWide = existsSync(join("/Applications", activeBundle));
+    expect(check!.status).toBe(reallyInstalledSystemWide ? "pass" : "fail");
   });
 
   test("inactive flavor's tray app is informational, never a failure", () => {

@@ -35,6 +35,10 @@ describe("needsToken", () => {
   test("events list does not require a token", () => {
     expect(needsToken("GET", "/api/events")).toBe(false);
   });
+
+  test("secrets requires a token even though it's a GET — the response body is a credential, not metadata", () => {
+    expect(needsToken("GET", "/api/secrets")).toBe(true);
+  });
 });
 
 describe("tokenOk", () => {

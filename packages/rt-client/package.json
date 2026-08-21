@@ -1,6 +1,6 @@
 {
   "name": "@mattstack/rt-client",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "exports": {
     ".": {
@@ -13,6 +13,9 @@
   },
   "peerDependencies": {
     "@mattstack/glance": ">=0.13.0"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1"
   },
   "description": "Typed client for the rt daemon: repos, worktrees, ports, tokens, and the event relay",
   "license": "MIT",
@@ -28,9 +31,13 @@
   "files": [
     "dist",
     "src",
+    "!src/**/__tests__",
     "LICENSE",
     "README.md"
   ],
+  "engines": {
+    "bun": ">=1.0.0"
+  },
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target node --format esm --packages external && tsc -p tsconfig.json",
     "check-types": "tsc --noEmit -p tsconfig.json"

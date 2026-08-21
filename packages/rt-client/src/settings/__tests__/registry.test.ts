@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { allDefs, getDef, validateValue, type SettingDef } from "../registry.ts";
+import { allDefs, getDef, isMigrated, validateValue, type SettingDef } from "../registry-machinery.ts";
 
 describe("settings/registry", () => {
   describe("getDef", () => {
@@ -39,7 +39,7 @@ describe("settings/registry", () => {
 
     test("every migrated:false def carries a legacyFile", () => {
       for (const def of allDefs()) {
-        if (def.migrated) continue;
+        if (isMigrated(def)) continue;
         expect(def.legacyFile, `${def.key} is migrated:false but has no legacyFile`).toBeTruthy();
       }
     });
@@ -108,7 +108,7 @@ describe("settings/registry", () => {
       // outside the scope of this check; rt.roles/rt.intercepts/rt.worktrees
       // are repoScoped for reasons unrelated to any legacyFile prefix.)
       for (const def of allDefs()) {
-        if (def.migrated) continue;
+        if (isMigrated(def)) continue;
         const legacyFileIsRepoScoped = def.legacyFile?.startsWith("repos/<repo>/") ?? false;
         expect(
           Boolean(def.repoScoped),
@@ -142,7 +142,7 @@ describe("settings/registry", () => {
       }
     });
 
-    test("has exactly the 12 wave-1 migrated:false keys plus the 5 migrated:true keys", () => {
+    test("has exactly the 12 wave-1 migrated:false keys, the 5 migrated:true keys, and the 30 suite keys", () => {
       const migratedFalseKeys = [
         "rt.llm",
         "rt.cron",
@@ -158,8 +158,111 @@ describe("settings/registry", () => {
         "rt.hooks",
       ];
       const migratedTrueKeys = ["rt.roles", "rt.intercepts", "rt.worktrees", "rt.repoIdentityOverrides", "rt.repoRoots"];
+      const suiteKeys = [
+        "mattstack.integrations",
+        "mattstack.tracking",
+        "mattstack.appPath",
+        "claude.marketplaces",
+        "claude.plugins",
+        "deck.apps",
+        "deck.access",
+        "deck.platform",
+        "board.gitlabHost",
+        "board.projects",
+        "board.members",
+        "board.title",
+        "board.botUsernames",
+        "board.ticketPrefixes",
+        "board.slack",
+        "board.doctorSkill",
+        "board.triage.doctorSkill",
+        "board.staleAfterDays",
+        "board.workspaces",
+        "board.defaultMember",
+        "board.hiddenMembers",
+        "board.triage",
+        "board.claudeCommand",
+        "board.cwds",
+        "board.rtRepos",
+        "board.triageMaxConcurrent",
+        "board.switchboardUrl",
+        "gitq.workSlots",
+        "gitq.forges",
+        "gitq.board",
+      ];
+      expect(suiteKeys).toHaveLength(30);
 
-      expect(allDefs().map((d) => d.key).sort()).toEqual([...migratedFalseKeys, ...migratedTrueKeys].sort());
+      expect(allDefs().map((d) => d.key).sort()).toEqual(
+        [...migratedFalseKeys, ...migratedTrueKeys, ...suiteKeys].sort(),
+      );
+    });
+
+    test("every suite key (no legacyFile, no explicit migrated flag) resolves as migrated via isMigrated", () => {
+      for (const def of allDefs()) {
+        if (def.legacyFile !== undefined) continue; // wave-1 keys, covered above
+        if (def.key.startsWith("rt.")) continue; // wave-1 migrated:true rows carry migrated:true explicitly
+        expect(def.migrated, `${def.key} should omit migrated`).toBeUndefined();
+        expect(isMigrated(def), `${def.key} should resolve as migrated`).toBe(true);
+      }
+    });
+
+    test("board.doctorSkill and board.triage.doctorSkill are distinct rows with distinct resolution semantics documented", () => {
+      const doctorSkill = getDef("board.doctorSkill");
+      const triageDoctorSkill = getDef("board.triage.doctorSkill");
+
+      expect(doctorSkill).toBeDefined();
+      expect(triageDoctorSkill).toBeDefined();
+      expect(doctorSkill?.key).not.toBe(triageDoctorSkill?.key);
+      expect(doctorSkill?.description).toContain("skills.jsonc");
+      expect(triageDoctorSkill?.description).toContain("never resolved");
+    });
+
+    test("board.triage and board.triage.doctorSkill document that they are siblings, not container/field", () => {
+      // Non-obvious invariant: both are independent flat keys at different
+      // scopes (user vs team) — a board reader assembles triage config from
+      // them separately, board.triage does not nest doctorSkill inside it.
+      const triage = getDef("board.triage");
+      const triageDoctorSkill = getDef("board.triage.doctorSkill");
+
+      expect(triage?.description).toContain("sibling");
+      expect(triageDoctorSkill?.description).toContain("sibling");
+    });
+
+    test("board.hiddenMembers is a user-scope overlay, distinct from the team-scope board.members roster", () => {
+      const hiddenMembers = getDef("board.hiddenMembers");
+      const members = getDef("board.members");
+
+      expect(hiddenMembers?.scopes).toEqual(["user"]);
+      expect(hiddenMembers?.type).toBe("array");
+      expect(hiddenMembers?.merge).toBe("replace");
+      expect(hiddenMembers?.description).toContain("board.members");
+      // The ruling this pins: board.members stays team-only array/replace —
+      // widening it to user scope would let a personal store shadow the
+      // whole team roster instead of just hiding entries from it.
+      expect(members?.scopes).toEqual(["team"]);
+    });
+
+    test("scope spot-checks: deck.access is user-only, board.gitlabHost is team-only, gitq.forges is user-only, mattstack.appPath is machine-only", () => {
+      expect(getDef("deck.access")?.scopes).toEqual(["user"]);
+      expect(getDef("board.gitlabHost")?.scopes).toEqual(["team"]);
+      expect(getDef("gitq.forges")?.scopes).toEqual(["user"]);
+      expect(getDef("mattstack.appPath")?.scopes).toEqual(["machine"]);
+    });
+
+    test("claude.marketplaces and claude.plugins are user+team arrays with replace merge", () => {
+      for (const key of ["claude.marketplaces", "claude.plugins"]) {
+        const def = getDef(key)!;
+        expect(def.scopes.sort()).toEqual(["team", "user"]);
+        expect(def.type).toBe("array");
+        expect(def.merge).toBe("replace");
+      }
+    });
+
+    test("none of the new suite keys carry repoScoped", () => {
+      for (const def of allDefs()) {
+        if (def.key.startsWith("rt.")) continue; // wave-1 rows, covered above
+        expect(def.repoScoped, `${def.key} should not be repoScoped`).toBeFalsy();
+      }
     });
   });
 

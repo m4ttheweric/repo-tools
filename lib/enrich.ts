@@ -260,7 +260,7 @@ export async function enrichBranches(
   }
 
   // ── Existing logic (state.db cache + fetch) ──
-  const secrets = loadSecrets();
+  const secrets = await loadSecrets();
   const willFetch = !!(secrets.linearApiKey || secrets.gitlabToken);
   const store = getBranchCacheStore();
 
@@ -295,7 +295,7 @@ async function fetchAndCache(
   store: BranchCacheStore,
   silent: boolean,
 ): Promise<EnrichedBranch[]> {
-  const secrets = loadSecrets();
+  const secrets = await loadSecrets();
   const willFetch = !!(secrets.linearApiKey || secrets.gitlabToken);
 
   let showSpinner = false;
@@ -411,7 +411,7 @@ export async function refreshAllMRs(
   onError?: (msg: string) => void,
   repoName?: string,
 ): Promise<void> {
-  const secrets = loadSecrets();
+  const secrets = await loadSecrets();
   // In the daemon this is the SAME singleton the handler context serves from
   // (spec "Store-by-store" item 1) — writes below land in the live map and
   // in state.db together, so the two can never diverge in one process.
