@@ -1,17 +1,15 @@
 /**
  * Shared secrets reader for the VS Code extension.
  *
- * Reads go through the rt daemon's `secrets:read` verb (RT-32) — the daemon
- * owns the encrypted store and, during the migration, its own plaintext
- * fallback (lib/linear.ts's loadSecrets), so this module no longer opens
- * ~/.mattstack/rt/secrets.json directly. VS Code's secret store is the
- * fallback when the daemon is unreachable or the key was never set.
+ * Reads go through the rt daemon's `secrets:read` verb — the daemon owns
+ * the encrypted sops/age store (lib/linear.ts's loadSecrets), the only
+ * source. VS Code's secret store is the fallback when the daemon is
+ * unreachable or the key was never set.
  *
- * Writes: there is no secrets:write daemon verb yet, and this module no
- * longer writes ~/.mattstack/rt/secrets.json either (a plaintext write here
- * would be a silently-ignored no-op from rt's perspective — the file is
- * being retired as a write target). `setSecret` tells the user what to run
- * instead rather than pretending to save.
+ * Writes: there is no secrets:write daemon verb, and this module never
+ * writes to disk itself — the encrypted store is written only via
+ * `rt secrets set`. `showCantSaveSecretMessage` tells the user what to run
+ * instead of pretending to save.
  */
 
 import * as vscode from 'vscode';
@@ -80,11 +78,10 @@ export async function getSecret(
 }
 
 /**
- * RT-32: no longer writes ~/.mattstack/rt/secrets.json (that file is being
- * retired as a write target — the encrypted store, written only via
- * `rt secrets set`, is the source of truth). There is nothing left to
- * collect from the user here, so the command shows this directed message
- * immediately rather than prompting for a token it can't save.
+ * This module never writes a secret itself — the encrypted store is
+ * written only via `rt secrets set`. There is nothing left to collect from
+ * the user here, so the command shows this directed message immediately
+ * rather than prompting for a token it can't save.
  */
 export function showCantSaveSecretMessage(key: DaemonSecretKey): void {
   vscode.window.showErrorMessage(
