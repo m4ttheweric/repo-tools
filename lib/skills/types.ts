@@ -27,4 +27,4 @@ export type VerbDef = { name: string; engine: string; description: string };
 
 export type CompiledFile = { path: string; content: string } | { path: string; copyFrom: string };
 
-export type CompileResult = { files: CompiledFile[]; warnings: string[] };
+export type CompileResult = { files: CompiledFile[]; warnings: string[]; errors: string[] };

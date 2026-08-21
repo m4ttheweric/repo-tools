@@ -89,25 +89,39 @@ function buildFrontmatter(verb: VerbDef, allowedTools: string[], compiledParts: 
   return lines.join("\n");
 }
 
-function buildBody(step: StepSource, boundSlots: BoundSlot[]): string {
+function buildBody(
+  step: StepSource,
+  boundSlots: BoundSlot[],
+  internalRoster: Set<string>,
+): { body: string; notes: string[] } {
   const sections: string[] = [HEADER_COMMENT];
+  const notes: string[] = [];
 
   sections.push(`<!-- part: step source=${step.plugin}:${step.name} version=${step.version} -->`);
   sections.push(step.body);
 
   for (const { slotName, fill } of boundSlots) {
-    if (fill.registered) {
-      // Registered skills stay singly-canonical: reference, never inline.
+    const internal = internalRoster.has(fill.binding);
+
+    if (fill.registered && !internal) {
+      // Registered, surface-public skills stay singly-canonical: reference, never inline.
       sections.push(
         `Slot ${slotName} is bound to \`${fill.binding}\` (${fill.binding}@${fill.version}) -- invoke that skill when this flow needs it.`,
       );
       continue;
     }
+
+    if (fill.registered && internal) {
+      // Transition window: the file already lives under skills/ but surface.jsonc
+      // has not declared it public yet -- inline so the compiled output stays correct.
+      notes.push(`note: ${fill.binding} is surface-internal; inlined`);
+    }
+
     sections.push(`<!-- part: slot:${slotName} binding=${fill.binding} version=${fill.version} -->`);
     sections.push(rewriteSkillDirRefs(fill.body, slotName));
   }
 
-  return sections.join("\n\n");
+  return { body: sections.join("\n\n"), notes };
 }
 
 function buildVendoredFiles(step: StepSource, boundSlots: BoundSlot[]): CompiledFile[] {
@@ -170,12 +184,33 @@ function lintReferences(body: string, roster: Set<string>, files: CompiledFile[]
   return warnings;
 }
 
+function lintInternalRoster(body: string, internalRoster: Set<string>): string[] {
+  const errors: string[] = [];
+  const lintableBody = stripCompilerComments(body);
+
+  const seenNames = new Set<string>();
+  for (const match of lintableBody.matchAll(REGISTERED_NAME_RE)) {
+    const token = match[0];
+    if (seenNames.has(token)) continue;
+    seenNames.add(token);
+    if (internalRoster.has(token)) {
+      errors.push(
+        `body references ${token} which is surface-internal; inline it, reference it by path, or list it in surface.jsonc's public array`,
+      );
+    }
+  }
+
+  return errors;
+}
+
 export function compileSkill(
   verb: VerbDef,
   step: StepSource,
   fills: Record<string, AttachmentSource | null>,
   roster: Set<string>,
+  opts?: { internalRoster?: Set<string> },
 ): CompileResult {
+  const internalRoster = opts?.internalRoster ?? new Set<string>();
   const boundSlots = resolveBoundSlots(verb, step, fills);
 
   const allowedTools = buildAllowedTools(step, boundSlots);
@@ -184,13 +219,14 @@ export function compileSkill(
     ...boundSlots.map(({ fill }) => `${fill.binding}@${fill.version}`),
   ];
 
-  const body = buildBody(step, boundSlots);
+  const { body, notes } = buildBody(step, boundSlots, internalRoster);
   const frontmatter = buildFrontmatter(verb, allowedTools, compiledParts);
   const content = `${frontmatter}\n\n${body}\n`;
 
   const files: CompiledFile[] = [{ path: "SKILL.md", content }, ...buildVendoredFiles(step, boundSlots)];
 
-  const warnings = lintReferences(body, roster, files);
+  const warnings = [...lintReferences(body, roster, files), ...notes];
+  const errors = lintInternalRoster(body, internalRoster);
 
-  return { files, warnings };
+  return { files, warnings, errors };
 }
