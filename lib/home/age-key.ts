@@ -1,7 +1,12 @@
 /**
  * The mattstack age key: one identity, custodied in the macOS keychain,
- * never written to any file. Every secret path under the home repo's
+ * never written to any file. Every secret under the home repo's
  * `user/secrets/` encrypts to its public recipient (see renderSopsYaml).
+ * renderSopsYaml's `path_regex` is `secrets/.*`, not `user/secrets/.*`: sops
+ * matches it against the filename relative to cwd, and every sops spawn
+ * pins cwd to `<mattstackHome>/user` (lib/secrets/store.ts) — the regex,
+ * the cwd pin, and the `--filename-override` all move together or sops
+ * silently matches no rule.
  *
  * All keychain/age-keygen calls route through the injected AgeKeySeam so
  * tests never touch the real keychain. The private key crosses process
@@ -120,7 +125,7 @@ export async function ensureAgeKey(seams: AgeKeySeam): Promise<{ publicKey: stri
 }
 
 export function renderSopsYaml(publicKey: string): string {
-  return ["creation_rules:", "  - path_regex: user/secrets/.*", `    age: ${publicKey}`, ""].join("\n");
+  return ["creation_rules:", "  - path_regex: secrets/.*", `    age: ${publicKey}`, ""].join("\n");
 }
 
 /** The inverse of renderSopsYaml: the `age:` recipient from a rendered .sops.yaml, or null if the shape doesn't match (a hand-edited file with no recognizable recipient line). */

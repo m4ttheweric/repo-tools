@@ -8,7 +8,7 @@ import { join } from "path";
 
 const FAKE_PUBLIC_KEY = "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
 const FAKE_PRIVATE_KEY = "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ";
-const SOPS_YAML_PATH = join(mattstackHome(), ".sops.yaml");
+const SOPS_YAML_PATH = join(mattstackHome(), "user", ".sops.yaml");
 
 /** In-memory .sops.yaml — never touches the real filesystem. */
 class FakeSopsYamlSeam implements SopsYamlSeam {
