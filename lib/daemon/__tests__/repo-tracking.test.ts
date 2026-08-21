@@ -2,16 +2,26 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { machineSettingsPath } from "../../rt-paths.ts";
+import { machineSettingsPath, teamSettingsPath } from "../../rt-paths.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import { setSetting } from "../../settings/write.ts";
+import { runCapture } from "../../subprocess.ts";
+import { clearIdentityMemo } from "../../settings/identity.ts";
 import {
   loadRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS,
+  primeTeamTrackingIdentityMap,
 } from "../../repo-tracking.ts";
 
 function writeStore(file: string, obj: unknown): void {
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(obj, null, 2));
+}
+
+/** setSetting("mattstack.tracking", ..., "team") refuses without a local team store. */
+function seedTeam(): void {
+  const path = teamSettingsPath("acme");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, "// team store\n{}\n");
 }
 
 describe("loadRepoTracking through the settings resolver", () => {
@@ -97,6 +107,142 @@ describe("loadRepoTracking through the settings resolver", () => {
 
     expect(t.a).toEqual({ mode: "live", caches: ["branches"] });
     expect(warnings.some((w) => w.includes("store the repos map, not the versioned envelope"))).toBe(true);
+  });
+});
+
+describe("loadRepoTracking merges mattstack.tracking team intent", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-tracking-team-")));
+    process.env.HOME = home;
+    seedTeam();
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("team intent for a cloned repo folds in as {mode: live, caches}", () => {
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["branches", "project-mrs"] } },
+    }, "team", { team: "acme" });
+
+    const t = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": "foo" } });
+    expect(t.foo).toEqual({ mode: "live", caches: ["branches", "project-mrs"] });
+  });
+
+  test("a machine grant for the same repo name wins the whole entry, team ignored", () => {
+    setSetting("rt.repoTracking", { foo: { mode: "poll", caches: ["branches"] } }, "machine");
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["discussions"] } },
+    }, "team", { team: "acme" });
+
+    const t = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": "foo" } });
+    expect(t.foo).toEqual({ mode: "poll", caches: ["branches"] });
+  });
+
+  test("an identity with no local resolution is silently dropped", () => {
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/not-cloned": { caches: ["branches"] } },
+    }, "team", { team: "acme" });
+
+    const t = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": "foo" } });
+    expect(t).toEqual({});
+  });
+
+  test("no mattstack.tracking value authored → unchanged from machine-only behavior", () => {
+    setSetting("rt.repoTracking", { foo: { mode: "live", caches: ["branches"] } }, "machine");
+
+    const withoutMap = loadRepoTracking();
+    const withMap = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": "foo" } });
+    expect(withoutMap).toEqual({ foo: { mode: "live", caches: ["branches"] } });
+    expect(withMap).toEqual(withoutMap);
+  });
+
+  test("an unresolvable mattstack.tracking value degrades to machine-only, warning once", () => {
+    setSetting("rt.repoTracking", { foo: { mode: "live", caches: ["branches"] } }, "machine");
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/bar": { caches: ["${repoRoot}"] } },
+    }, "team", { team: "acme" });
+
+    const warnings: string[] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+    let t: ReturnType<typeof loadRepoTracking>;
+    try {
+      t = loadRepoTracking({ identityMap: { "gitlab.com/acme/bar": "bar" } });
+    } finally {
+      console.warn = orig;
+    }
+
+    expect(t).toEqual({ foo: { mode: "live", caches: ["branches"] } });
+    expect(warnings.some((w) => w.includes("mattstack.tracking could not be resolved"))).toBe(true);
+  });
+
+  test("unknown cache names are dropped from team intent; an empty result drops the entry", () => {
+    setSetting("mattstack.tracking", {
+      repos: {
+        "gitlab.com/acme/foo": { caches: ["branches", "bogus"] },
+        "gitlab.com/acme/baz": { caches: ["bogus"] },
+      },
+    }, "team", { team: "acme" });
+
+    const t = loadRepoTracking({
+      identityMap: { "gitlab.com/acme/foo": "foo", "gitlab.com/acme/baz": "baz" },
+    });
+    expect(t.foo).toEqual({ mode: "live", caches: ["branches"] });
+    expect(t.baz).toBeUndefined();
+  });
+});
+
+describe("primeTeamTrackingIdentityMap", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+  let repoDir: string;
+
+  beforeEach(async () => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-tracking-prime-")));
+    process.env.HOME = home;
+    seedTeam();
+    clearIdentityMemo();
+
+    repoDir = mkdtempSync(join(tmpdir(), "rt-tracking-prime-repo-"));
+    await runCapture(["git", "init", "-q"], { cwd: repoDir });
+    await runCapture(["git", "remote", "add", "origin", "https://gitlab.com/acme/foo.git"], { cwd: repoDir });
+  });
+
+  afterEach(async () => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repoDir, { recursive: true, force: true });
+    clearIdentityMemo();
+    // Reset the module-level primed map so later tests in this file that rely
+    // on the default (unprimed) seam are not affected by this real prime.
+    await primeTeamTrackingIdentityMap({});
+  });
+
+  test("primes the identity map from a repo index, and the default seam picks it up", async () => {
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
+    }, "team", { team: "acme" });
+
+    await primeTeamTrackingIdentityMap({ foo: repoDir });
+
+    expect(loadRepoTracking().foo).toEqual({ mode: "live", caches: ["branches"] });
+  });
+
+  test("a repo whose identity fails to derive is left out of the primed map", async () => {
+    const noRemoteDir = mkdtempSync(join(tmpdir(), "rt-tracking-prime-noremote-"));
+    await runCapture(["git", "init", "-q"], { cwd: noRemoteDir });
+    try {
+      await primeTeamTrackingIdentityMap({ nope: noRemoteDir });
+      expect(loadRepoTracking()).toEqual({});
+    } finally {
+      rmSync(noRemoteDir, { recursive: true, force: true });
+    }
   });
 });
 

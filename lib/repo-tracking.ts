@@ -10,10 +10,21 @@
  * Unlisted repo = off. Nothing is granted implicitly. Legacy flat entries
  * ({ "<repo>": "live" }) are read as { mode, caches: ["branches"] } and
  * rewritten to the object shape on the next save.
+ *
+ * `loadRepoTracking` also folds in team-declared intent (`mattstack.tracking`,
+ * team scope, IDENTITY-keyed: `{repos: {"<identity>": {caches:[...]}}}`) as
+ * `{mode: "live", caches}` for any identity that resolves to a locally-known
+ * repo NAME — machine wins the whole entry per-repo when one exists, and an
+ * identity with no local resolution is silently dropped (repo not cloned
+ * here). Resolution goes through a primed identity→name map (see
+ * `primeTeamTrackingIdentityMap`) rather than deriving live, because this
+ * loader runs synchronously on every freshness tick while derivation shells
+ * out to git; an unprimed map means team intent is inert, not an error.
  */
 
 import { getSetting } from "./settings/resolve.ts";
 import { setSetting } from "./settings/write.ts";
+import { deriveRepoIdentity } from "./settings/identity.ts";
 
 export const CACHE_KINDS = ["branches", "project-mrs", "discussions"] as const;
 export type CacheKind = (typeof CACHE_KINDS)[number];
@@ -59,6 +70,60 @@ function isVersionedEnvelope(value: Record<string, unknown>): value is { version
     && value.repos !== null && typeof value.repos === "object" && !Array.isArray(value.repos);
 }
 
+export type IdentityNameMap = Record<string, string>;
+
+// Primed once (daemon boot) from the repo index, not derived per read —
+// loadRepoTracking is sync and called on every freshness tick.
+let primedIdentityMap: IdentityNameMap = {};
+
+/**
+ * Builds the identity→name map `loadRepoTracking` consults to resolve team
+ * intent, from the repo index (name → path) via `deriveRepoIdentity`. Call
+ * once at daemon boot (and again whenever the repo index changes); a repo
+ * whose identity fails to derive is left out, not retried here.
+ */
+export async function primeTeamTrackingIdentityMap(repoIndex: Record<string, string>): Promise<void> {
+  const map: IdentityNameMap = {};
+  for (const [name, path] of Object.entries(repoIndex)) {
+    const identity = await deriveRepoIdentity(path);
+    if (identity) map[identity] = name;
+  }
+  primedIdentityMap = map;
+}
+
+function normalizeTeamEntry(value: unknown): { caches: CacheKind[] } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const { caches } = value as { caches?: unknown };
+  if (!Array.isArray(caches)) return null;
+  const kept = [...new Set(caches.filter((c): c is CacheKind => typeof c === "string" && KINDS.has(c)))];
+  if (kept.length === 0) return null;
+  return { caches: kept };
+}
+
+// Dedupes the resolver-throw warning by message so a recurring per-tick
+// failure logs once, not once per tick, while a genuinely new failure still
+// surfaces.
+let lastTeamTrackingWarning: string | null = null;
+
+/** Reads mattstack.tracking's `repos` map; {} on absence, malformed shape, or resolver throw. */
+function loadTeamTracking(): Record<string, unknown> {
+  let raw: unknown;
+  try {
+    raw = getSetting<unknown>("mattstack.tracking").value;
+  } catch (err) {
+    const message = `rt: mattstack.tracking could not be resolved (${err instanceof Error ? err.message : err}) — team tracking intent contributes nothing`;
+    if (message !== lastTeamTrackingWarning) {
+      lastTeamTrackingWarning = message;
+      console.warn(message);
+    }
+    return {};
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const { repos } = raw as { repos?: unknown };
+  if (!repos || typeof repos !== "object" || Array.isArray(repos)) return {};
+  return repos as Record<string, unknown>;
+}
+
 /**
  * Read the rt.repoTracking machine-store setting: a flat repo → entry map
  * (each entry either the v2 shape or a legacy flat string — see
@@ -68,7 +133,7 @@ function isVersionedEnvelope(value: Record<string, unknown>): value is { version
  * polling, and this loader runs on every freshness tick so it can never
  * throw into the daemon.
  */
-export function loadRepoTracking(): RepoTracking {
+export function loadRepoTracking(opts?: { identityMap?: IdentityNameMap }): RepoTracking {
   let raw: unknown;
   try {
     raw = getSetting<unknown>("rt.repoTracking").value;
@@ -76,22 +141,33 @@ export function loadRepoTracking(): RepoTracking {
     console.warn(`rt: rt.repoTracking could not be resolved (${err instanceof Error ? err.message : err}) — tracking nothing`);
     return {};
   }
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-
-  let repos = raw as Record<string, unknown>;
-  if (isVersionedEnvelope(repos)) {
-    console.warn(
-      "rt: rt.repoTracking holds a versioned {version, repos} envelope — store the repos map, not the versioned envelope " +
-      "(e.g. `rt settings set rt.repoTracking` with just the inner repos object); using the inner repos map for now.",
-    );
-    repos = repos.repos;
-  }
 
   const out: RepoTracking = {};
-  for (const [repo, value] of Object.entries(repos)) {
-    const entry = normalizeEntry(value);
-    if (entry) out[repo] = entry;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    let repos = raw as Record<string, unknown>;
+    if (isVersionedEnvelope(repos)) {
+      console.warn(
+        "rt: rt.repoTracking holds a versioned {version, repos} envelope — store the repos map, not the versioned envelope " +
+        "(e.g. `rt settings set rt.repoTracking` with just the inner repos object); using the inner repos map for now.",
+      );
+      repos = repos.repos;
+    }
+    for (const [repo, value] of Object.entries(repos)) {
+      const entry = normalizeEntry(value);
+      if (entry) out[repo] = entry;
+    }
   }
+
+  const identityMap = opts?.identityMap ?? primedIdentityMap;
+  if (Object.keys(identityMap).length > 0) {
+    for (const [identity, value] of Object.entries(loadTeamTracking())) {
+      const name = identityMap[identity];
+      if (!name || out[name]) continue; // uncloned here, or machine wins the whole entry
+      const entry = normalizeTeamEntry(value);
+      if (entry) out[name] = { mode: "live", caches: entry.caches };
+    }
+  }
+
   return out;
 }
 
