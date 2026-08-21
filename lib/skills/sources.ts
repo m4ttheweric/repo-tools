@@ -26,18 +26,26 @@ export function stripFrontmatter(md: string): { body: string; frontmatter: Recor
 
 export type PluginRoots = { byName: Record<string, { dir: string; version: string }> };
 
+export type PluginListEntry = { id: string; installPath: string };
+
 /**
- * Thin by design: subprocess + filesystem reads, not unit-tested (see plan
- * constraint). Task 5 exercises it live against real installed plugins.
+ * Entry-processing half of resolvePluginRoots, split out so it's testable
+ * without shelling out to `claude`. `claude plugin list --json` can list an
+ * entry whose installPath was since removed or moved (an uninstalled or
+ * relocated plugin the cache index hasn't caught up with yet) -- that must
+ * not take down resolution for every other plugin, so a missing installPath
+ * is skipped with a warning instead of throwing.
  */
-export function resolvePluginRoots(): PluginRoots {
-  const raw = execSync("claude plugin list --json", { encoding: "utf8" });
-  const list = JSON.parse(raw) as Array<{ id: string; installPath: string }>;
+export function buildPluginRoots(list: PluginListEntry[]): PluginRoots {
   const byName: PluginRoots["byName"] = {};
 
   for (const entry of list) {
     const name = entry.id.split("@")[0];
     if (!name) continue;
+    if (!existsSync(entry.installPath)) {
+      console.error(`rt: skipping plugin "${name}" -- installPath does not exist: ${entry.installPath}`);
+      continue;
+    }
     const dir = realpathSync(entry.installPath);
     let version = "unknown";
     try {
@@ -50,6 +58,17 @@ export function resolvePluginRoots(): PluginRoots {
   }
 
   return { byName };
+}
+
+/**
+ * Thin by design: the subprocess call itself is not unit-tested (see plan
+ * constraint); buildPluginRoots carries the tested logic. Task 5 exercises
+ * this live against real installed plugins.
+ */
+export function resolvePluginRoots(): PluginRoots {
+  const raw = execSync("claude plugin list --json", { encoding: "utf8" });
+  const list = JSON.parse(raw) as PluginListEntry[];
+  return buildPluginRoots(list);
 }
 
 function parseSlots(raw: unknown): Record<string, SlotSpec> {

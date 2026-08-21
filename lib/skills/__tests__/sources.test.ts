@@ -1,8 +1,9 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
+  buildPluginRoots,
   invocableRoster,
   loadAttachment,
   loadStepSource,
@@ -309,5 +310,65 @@ describe("invocableRoster", () => {
     expect(roster.has("mattstack:untyped-step")).toBe(true);
     expect(roster.has("claimview:cvi-gates")).toBe(true);
     expect(roster.has("claimview:watch-ci-domain")).toBe(false);
+  });
+});
+
+describe("buildPluginRoots", () => {
+  test("skips an entry whose installPath does not exist, warns once, and still resolves the rest", () => {
+    const rootDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-plugin-roots-")));
+
+    const mattstackDir = join(rootDir, "mattstack");
+    writeFile(join(mattstackDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.2.0" }));
+
+    const claimviewDir = join(rootDir, "claimview");
+    writeFile(join(claimviewDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "0.3.0" }));
+
+    const staleInstallPath = join(rootDir, "current-time", "0.1.0");
+
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    let roots: PluginRoots;
+    let callCount: number;
+    let warning: string;
+    try {
+      roots = buildPluginRoots([
+        { id: "mattstack@mattstack", installPath: mattstackDir },
+        { id: "current-time@mattstack", installPath: staleInstallPath },
+        { id: "claimview@assured", installPath: claimviewDir },
+      ]);
+      // mockRestore() clears .mock.calls (bun, unlike jest), so read it before restoring.
+      callCount = errorSpy.mock.calls.length;
+      warning = errorSpy.mock.calls[0]?.join(" ") ?? "";
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(roots.byName.mattstack).toEqual({ dir: mattstackDir, version: "1.2.0" });
+    expect(roots.byName.claimview).toEqual({ dir: claimviewDir, version: "0.3.0" });
+    expect(roots.byName["current-time"]).toBeUndefined();
+
+    expect(callCount).toBe(1);
+    expect(warning).toContain("current-time");
+    expect(warning).toContain(staleInstallPath);
+  });
+
+  test("no missing entries: every plugin resolves, no warning printed", () => {
+    const { roots: fixtureRoots } = makeFixtureRoots();
+
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    let roots: PluginRoots;
+    let callCount: number;
+    try {
+      roots = buildPluginRoots([
+        { id: "mattstack@mattstack", installPath: fixtureRoots.byName.mattstack!.dir },
+        { id: "claimview@assured", installPath: fixtureRoots.byName.claimview!.dir },
+      ]);
+      callCount = errorSpy.mock.calls.length;
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(roots.byName.mattstack?.version).toBe("1.2.0");
+    expect(roots.byName.claimview?.version).toBe("0.3.0");
+    expect(callCount).toBe(0);
   });
 });
