@@ -22,6 +22,14 @@ public enum SetupStep: Int, CaseIterable, Sendable {
 public final class SetupFlowModel: ObservableObject {
     @Published public var step: SetupStep = .welcome
     @Published public var isInstalling = false
+    /// True while the checklist screen has an outstanding
+    /// `readiness.becameVisible()`. Both the step-transition site (entering
+    /// or leaving `.checklist`) and the window-close site read and clear
+    /// this same flag, so a `becameHidden()` from either one only ever
+    /// fires when a matching `becameVisible()` is still open — never an
+    /// extra decrement that could steal another window's share of
+    /// `ReadinessModel`'s shared visibility depth count.
+    public var readinessIsVisible = false
     public init() {}
 
     public var canGoBack: Bool {

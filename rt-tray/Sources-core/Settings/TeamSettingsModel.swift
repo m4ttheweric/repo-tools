@@ -30,6 +30,10 @@ public final class TeamSettingsModel: ObservableObject {
     }
 
     public func loadUninstallPlan() async {
+        // Cleared before the call, not just left alone on failure: an
+        // earlier successful load followed by Cancel must not let a later
+        // failed reload arm the confirmation sheet on stale actions.
+        uninstallPlan = nil
         if let decoded = await runJSON(["uninstall", "--dry-run", "--json"], verb: "uninstall --dry-run", as: UninstallPlan.self) { uninstallPlan = decoded }
     }
 

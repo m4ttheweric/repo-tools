@@ -41,6 +41,20 @@ let settingsChecks: [Check] = [
         c.expectEqual(rt.calls[2].args, ["uninstall", "--dry-run", "--json"])
         c.expectEqual(rt.calls[2].stdin, nil)
     },
+    Check("loadUninstallPlan clears a stale plan on a failed reload — Cancel then a failed reopen must not leave the sheet armable") { c in
+        let rt = ScriptedRt()
+        rt.answers["uninstall --dry-run"] = (0, #"{"contract":1,"actions":[{"id":"services.unregister","title":"Stop services"}]}"#)
+        let m = await MainActor.run { TeamSettingsModel(rt: rt) }
+        await m.loadUninstallPlan()
+        await MainActor.run { c.expectEqual(m.uninstallPlan?.actions.first?.id, "services.unregister") }
+        // User cancels the confirmation sheet here — no model call, uninstallPlan stays set.
+        rt.answers["uninstall --dry-run"] = (1, "")
+        await m.loadUninstallPlan()
+        await MainActor.run {
+            c.expectEqual(m.uninstallPlan, nil, "a failed reload must clear the earlier plan, not leave it armable on stale actions")
+            c.expect(m.error != nil, "the failure must be surfaced")
+        }
+    },
     Check("TeamSettingsModel.uninstall(keepData:) streams the exact argv for keep vs delete, no stdin") { c in
         let rt = ScriptedRt()
         let m = await MainActor.run { TeamSettingsModel(rt: rt) }

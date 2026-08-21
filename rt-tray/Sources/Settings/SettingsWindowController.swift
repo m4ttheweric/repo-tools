@@ -13,11 +13,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let env: SettingsEnvironment
     private var paneObserver: AnyCancellable?
     /// This window's own half of the paired becameVisible/becameHidden
-    /// calls into the shared `ReadinessModel` — tracked locally so
-    /// `windowWillClose` can balance it exactly once regardless of which
-    /// tab was selected, instead of relying on SwiftUI's onDisappear firing
-    /// on window close (unreliable for a non-selected TabView page).
+    /// calls into the shared `ReadinessModel` — tracked locally so a
+    /// `becameHidden` (from `windowWillClose` or the pane sink) only ever
+    /// fires when this controller actually holds a matching `becameVisible`,
+    /// never a stray extra decrement.
     private var readinessIsVisible = false
+    /// Whether `show()` has put the window on screen since the last close.
+    /// The pane sink acts only while this is true, since `Published`'s
+    /// publisher replays the just-restored pane synchronously on subscribe
+    /// (init time, well before the window exists on screen) and would
+    /// otherwise start the shared poller before anyone can see the row it
+    /// probes.
+    private var windowIsVisible = false
 
     init(env: SettingsEnvironment) {
         self.env = env
@@ -31,7 +38,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window.contentViewController = NSHostingController(rootView: SettingsView(pane: pane, env: env))
         window.setContentSize(NSSize(width: 560, height: 440))
         window.center()
-        paneObserver = pane.$current.sink { [weak self] p in self?.setReadinessVisible(p == .permissions) }
+        paneObserver = pane.$current.sink { [weak self] p in
+            guard let self, self.windowIsVisible else { return }
+            self.setReadinessVisible(p == .permissions)
+        }
     }
     required init?(coder: NSCoder) { fatalError("not supported") }
 
@@ -42,6 +52,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window?.makeKeyAndOrderFront(nil)
         window?.center()
         NSApp.activate(ignoringOtherApps: true)
+        windowIsVisible = true
+        // The pane sink doesn't re-emit on a reopen with an unchanged pane
+        // (and was suppressed above while the window was still hidden), so
+        // this is the only path that resumes the poller when reopening
+        // straight onto the Permissions tab.
+        setReadinessVisible(pane.current == .permissions)
     }
 
     private func setReadinessVisible(_ visible: Bool) {
@@ -51,6 +67,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        windowIsVisible = false
         setReadinessVisible(false)
     }
 }

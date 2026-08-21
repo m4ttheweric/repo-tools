@@ -147,6 +147,31 @@ let readinessModelChecks: [Check] = [
         await MainActor.run { m.becameHidden() }   // stray extra call
         c.expectEqual(ticker.cancelled, 1, "depth clamps at 0 — an extra becameHidden() must not cancel again")
     },
+    Check("two independent visibility owners each guard their own becameVisible/becameHidden pairing — one owner's repeated or unmatched hides never cancel the other's tick") { c in
+        // Mirrors how SetupFlowModel.readinessIsVisible / SettingsWindowController's
+        // readinessIsVisible guard their own becameVisible/becameHidden calls: an
+        // owner only ever sends becameHidden() to balance a becameVisible() it
+        // actually sent.
+        @MainActor final class Owner {
+            let model: ReadinessModel
+            private(set) var isVisible = false
+            init(_ model: ReadinessModel) { self.model = model }
+            func show() { guard !isVisible else { return }; isVisible = true; model.becameVisible() }
+            func hide() { guard isVisible else { return }; isVisible = false; model.becameHidden() }
+        }
+        let ticker = FakeTicker()
+        let m = await MainActor.run { ReadinessModel(plans: FakePlans([makePlan()]), permissions: FakePermissions(), ticker: ticker) }
+        let (setup, settings) = await MainActor.run { (Owner(m), Owner(m)) }
+        await MainActor.run { setup.show(); settings.show() }
+        c.expectEqual(ticker.ticks.count, 1, "one shared tick regardless of how many owners are visible")
+        await MainActor.run {
+            setup.hide()
+            setup.hide()   // e.g. window close after the step already left .checklist — must be a no-op
+        }
+        c.expectEqual(ticker.cancelled, 0, "settings is still visible; setup's repeated hide must not steal its share")
+        await MainActor.run { settings.hide() }
+        c.expectEqual(ticker.cancelled, 1, "the last real owner hiding cancels the shared tick")
+    },
     Check("didBecomeActive refetches the plan; afterAction marks the row checking then refetches") { c in
         let plans = FakePlans([makePlan(), makePlan(gitlab: .ready), makePlan(gitlab: .ready)])
         let m = await MainActor.run { ReadinessModel(plans: plans, permissions: FakePermissions(), ticker: FakeTicker()) }
