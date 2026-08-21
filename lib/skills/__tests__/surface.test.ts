@@ -524,4 +524,43 @@ describe("computeInternalRoster integration (pack dir doubles as plugin root)", 
     expect(errors[0]).toContain("surface-internal");
     expect(existsSync(join(claimviewDir, "skills", "gate-check"))).toBe(false);
   });
+
+  test("post-move steady state: a skill already under attachments/ still seeds the internal roster; a body reference errors", async () => {
+    const mattstackDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-surface-int-")));
+
+    const claimviewDir = join(mattstackDir, "plugins", "claimview");
+    writeFile(join(claimviewDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "0.3.0" }));
+    writeFile(
+      join(claimviewDir, "pack", "stubs.jsonc"),
+      `{ "verbs": { "gate-check": { "engine": "gate-check", "description": "Gate check." } } }\n`,
+    );
+    writeFile(join(claimviewDir, "pack", "surface.jsonc"), `{ "public": ["gate-check"] }\n`);
+    // cvi-gates already moved by a prior `surface apply` -- lives under
+    // attachments/, not skills/, and is absent from surface.public.
+    writeFile(join(claimviewDir, "attachments", "cvi-gates", "SKILL.md"), CVI_GATES_SKILL_MD);
+
+    const mattstackPluginDir = join(mattstackDir, "plugins", "mattstack");
+    writeFile(join(mattstackPluginDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.2.0" }));
+    writeFile(join(mattstackPluginDir, "skills", "pipeline", "gate-check", "SKILL.md"), GATE_CHECK_SKILL_MD);
+
+    const manifestPath = makeManifestAt("{}");
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile([
+        "--team", "claimview",
+        "--pack-dir", claimviewDir,
+        "--mattstack-dir", mattstackDir,
+        "--manifest", manifestPath,
+        "--verb", "gate-check",
+      ]),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toStartWith("rt skills: ");
+    expect(errors[0]).toContain("gate-check");
+    expect(errors[0]).toContain("claimview:cvi-gates");
+    expect(errors[0]).toContain("surface-internal");
+    expect(existsSync(join(claimviewDir, "skills", "gate-check"))).toBe(false);
+  });
 });
