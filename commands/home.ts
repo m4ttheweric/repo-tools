@@ -14,7 +14,7 @@ import { existsSync, readFileSync, readlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { machineKey, mattstackHome } from "../lib/rt-paths.ts";
-import { buildInitPlan, STATE_DIR_NAMES, type HomeState, type InitStep } from "../lib/home/init-plan.ts";
+import { buildInitPlan, InvalidMachineKeyError, STATE_DIR_NAMES, type HomeState, type InitStep } from "../lib/home/init-plan.ts";
 import { createRealExecSeam, executeInitPlan, type ExecSeam } from "../lib/home/init-exec.ts";
 import {
   AgeKeyAbsentError,
@@ -110,10 +110,18 @@ function describeStep(step: InitStep): string {
   }
 }
 
+/** Thrown by parseUrlArg for a `--url` with no usable value — never silently absorbed into the default or into the next flag. */
+export class InvalidUrlArgError extends Error {}
+
 function parseUrlArg(args: string[]): string {
   const idx = args.indexOf("--url");
-  const value = idx !== -1 ? args[idx + 1] : undefined;
-  return value && value.length > 0 ? value : DEFAULT_USER_REPO_URL;
+  if (idx === -1) return DEFAULT_USER_REPO_URL;
+
+  const value = args[idx + 1];
+  if (value === undefined || value.startsWith("--")) {
+    throw new InvalidUrlArgError("--url requires a value, e.g. --url https://github.com/org/mattstack-home");
+  }
+  return value;
 }
 
 /**
@@ -169,15 +177,36 @@ export async function homeInit(
 ): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const home = mattstackHome();
-  const url = parseUrlArg(args);
-  const state = gatherHomeState(home, probes, key);
-  const plan = buildInitPlan(state, { url, machineKey: key });
 
-  if (plan.steps.length === 0) {
-    console.log(`rt home init: ${home} is already fully provisioned — nothing to do.`);
-  } else {
+  let url: string;
+  try {
+    url = parseUrlArg(args);
+  } catch (err) {
+    if (err instanceof InvalidUrlArgError) {
+      console.error(`rt home init: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+
+  const state = gatherHomeState(home, probes, key);
+
+  let plan: ReturnType<typeof buildInitPlan>;
+  try {
+    plan = buildInitPlan(state, { url, machineKey: key });
+  } catch (err) {
+    if (err instanceof InvalidMachineKeyError) {
+      console.error(`rt home init: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+
+  if (plan.steps.length > 0) {
     console.log(`rt home init plan for ${home}:`);
     plan.steps.forEach((step, i) => console.log(`  ${i + 1}. ${describeStep(step)}`));
+  } else if (!plan.blocked) {
+    console.log(`rt home init: ${home} is already fully provisioned — nothing to do.`);
   }
 
   if (plan.blocked === "skills-symlink-real-file") {
