@@ -19,7 +19,7 @@
 import { execFileSync, spawnSync } from "child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { createInterface } from "node:readline";
-import { dirname, join } from "path";
+import { dirname, join, resolve as resolvePath } from "path";
 import { resolveFzf } from "../lib/fzf.ts";
 import { mattstackHome } from "../lib/rt-paths.ts";
 import { compileSkill, HEADER_COMMENT } from "../lib/skills/compile.ts";
@@ -211,7 +211,15 @@ function registeredSkillRoots(packDir: string): string[] {
     try {
       const parsed = JSON.parse(readFileSync(manifestPath, "utf8")) as { skills?: unknown };
       if (Array.isArray(parsed.skills) && parsed.skills.length > 0) {
-        return parsed.skills.filter((s): s is string => typeof s === "string").map((s) => join(packDir, s));
+        // A root is only honored inside the pack: a manifest value like "../x" or an
+        // absolute path would otherwise let the surface verbs enumerate (and move) dirs
+        // that belong to some other tree.
+        const packRoot = resolvePath(packDir);
+        const roots = parsed.skills
+          .filter((s): s is string => typeof s === "string")
+          .map((s) => resolvePath(packDir, s))
+          .filter((root) => root === packRoot || root.startsWith(packRoot + "/"));
+        if (roots.length > 0) return roots;
       }
     } catch {
       // an unreadable manifest falls back to the conventional root below

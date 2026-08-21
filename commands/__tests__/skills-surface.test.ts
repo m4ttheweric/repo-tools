@@ -507,3 +507,23 @@ describe("registered roots and name uniqueness", () => {
     expect(errors.join("\n")).toContain("pipeline/sync");
   });
 });
+
+describe("registered roots stay inside the pack", () => {
+  test("plugin.json skills entries that escape the pack (../ or absolute) are ignored; in-pack roots are kept", async () => {
+    const packDir = makePackDir();
+    const outside = makePackDir();
+    writeFile(join(outside, "stray", "SKILL.md"), "---\nname: stray\n---\nbody\n");
+    writeFile(
+      join(packDir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ version: "1.0.0", skills: ["./skills", "../" + outside.split("/").pop()!, outside] }),
+    );
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": ["inside"] }\n`);
+    writeFile(join(packDir, "skills", "inside", "SKILL.md"), "---\nname: inside\n---\nbody\n");
+
+    await skillsSurface(["list", "--pack", "p", "--pack-dir", packDir]);
+
+    const joined = logs.join("\n");
+    expect(joined).toMatch(/public {3}hand-authored {2}inside/);
+    expect(joined).not.toContain("stray");
+  });
+});
