@@ -16,6 +16,7 @@ import {
 } from "../../worktree/git-async.ts";
 import { createTree } from "../../worktree/create.ts";
 import type { WorktreeAppConfig } from "../../worktree/config.ts";
+import { RETENTION_MS } from "../../worktree/trash.ts";
 import { reconcileRepoRegistry, createWorktreeReconciler, __test__ } from "../worktree-reconciler.ts";
 
 function makeRepo(): string {
@@ -1226,4 +1227,35 @@ describe("detached trigger / latency", () => {
 
     expect(events.filter((e) => e.type === "worktree:created").length).toBe(1);
   }, 10_000);
+});
+
+describe("reapRepoTrash", () => {
+  let repo: string;
+
+  beforeEach(() => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtrecon-home-")));
+    repo = makeRepo();
+  });
+
+  /** Poll until `cond` holds — the reap is a detached process nobody awaits. */
+  async function waitFor(cond: () => boolean, timeoutMs = 5000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!cond()) {
+      if (Date.now() > deadline) throw new Error("timed out waiting for condition");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
+  test("sweeps crash leftovers immediately and retained trees only past retention", async () => {
+    const root = join(repo, ".worktrees");
+    const leftover = join(root, ".trash-hotel-123");
+    const expired = join(root, ".trash", `india-${Date.now() - RETENTION_MS - 60_000}`);
+    const fresh = join(root, ".trash", `juliet-${Date.now()}`);
+    for (const dir of [leftover, expired, fresh]) mkdirSync(dir, { recursive: true });
+
+    await __test__.reapRepoTrash({ repoName: "acme", repoPath: repo, log: fakeLog() });
+
+    await waitFor(() => !existsSync(leftover) && !existsSync(expired));
+    expect(existsSync(fresh)).toBe(true);
+  });
 });

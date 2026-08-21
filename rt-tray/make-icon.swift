@@ -101,6 +101,39 @@ func makeFont(size: CGFloat) -> CTFont {
         ?? CTFontCreateWithName("Menlo" as CFString, size, nil)
 }
 
+/// Stroke the lucide "layers" glyph (a stacked-diamonds mark) into `rect`.
+/// Straight segments with round caps/joins reproduce the rounded corners the
+/// SVG spells as tiny arcs, so no arc parsing is needed.
+func drawLayersGlyph(_ ctx: CGContext, in rect: CGRect, color: CGColor) {
+    // Point coordinates in the glyph's native 24×24 box (SVG y-down).
+    let diamond: [(CGFloat, CGFloat)] = [(12, 2.5), (21.8, 7.0), (12, 11.5), (2.2, 7.0)]
+    let midChevron: [(CGFloat, CGFloat)] = [(2.2, 12.3), (12, 16.8), (21.8, 12.3)]
+    let bottomChevron: [(CGFloat, CGFloat)] = [(2.2, 17.3), (12, 21.8), (21.8, 17.3)]
+
+    func point(_ p: (CGFloat, CGFloat)) -> CGPoint {
+        CGPoint(x: rect.minX + p.0 / 24 * rect.width,
+                y: rect.minY + (1 - p.1 / 24) * rect.height)   // flip: CG is y-up
+    }
+
+    let path = CGMutablePath()
+    path.addLines(between: diamond.map(point))
+    path.closeSubpath()
+    path.move(to: point(midChevron[0]))
+    path.addLines(between: midChevron.map(point))
+    path.move(to: point(bottomChevron[0]))
+    path.addLines(between: bottomChevron.map(point))
+
+    ctx.saveGState()
+    ctx.addPath(path)
+    ctx.setStrokeColor(color)
+    // 2/24 stroke like the SVG, clamped so the 16px slot doesn't vanish.
+    ctx.setLineWidth(max(1.0, rect.width * 2 / 24))
+    ctx.setLineCap(.round)
+    ctx.setLineJoin(.round)
+    ctx.strokePath()
+    ctx.restoreGState()
+}
+
 /// Render one icon PNG into the iconset directory.
 func renderSlot(_ slot: Slot, into iconsetDir: String, palette: Palette) {
     let px = slot.pixels
@@ -129,9 +162,10 @@ func renderSlot(_ slot: Slot, into iconsetDir: String, palette: Palette) {
                        transform: nil))
     ctx.fillPath()
 
-    // ── "m" text ──────────────────────────────────────────────────────────────
-    // Scale the font so the caps-height fills roughly 50% of the icon.
-    let fontSize = size * 0.44
+    // ── Mark: [layers glyph] + "m", centered as one group ────────────────────
+    let fgColor = CGColor(red: palette.fg.0, green: palette.fg.1, blue: palette.fg.2, alpha: 1)
+
+    let fontSize = size * 0.40
     let font     = makeFont(size: fontSize)
     let nsFont   = font as NSFont        // toll-free bridged
 
@@ -149,12 +183,19 @@ func renderSlot(_ slot: Slot, into iconsetDir: String, palette: Palette) {
     let lineW = CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
     let lineH = ascent + descent
 
-    // Nudge x slightly right and y slightly up for optical balance
-    let x = (size - lineW) / 2.0 + size * 0.01
-    let y = (size - lineH) / 2.0 + descent + size * 0.01
+    let glyphSide = size * 0.30
+    let gap       = size * 0.06
+    let groupW    = lineW + gap + glyphSide
+    let startX    = (size - groupW) / 2.0
 
-    ctx.textPosition = CGPoint(x: x, y: y)
+    // Nudge y slightly up for optical balance (as the centered-m icon did)
+    let y = (size - lineH) / 2.0 + descent + size * 0.01
+    ctx.textPosition = CGPoint(x: startX, y: y)
     CTLineDraw(line, ctx)
+
+    drawLayersGlyph(ctx, in: CGRect(x: startX + lineW + gap, y: (size - glyphSide) / 2.0,
+                                    width: glyphSide, height: glyphSide),
+                    color: fgColor)
 
     // ── Export PNG ────────────────────────────────────────────────────────────
     guard let cgImage = ctx.makeImage() else {

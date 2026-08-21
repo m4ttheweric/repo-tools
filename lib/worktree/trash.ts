@@ -20,11 +20,31 @@
  * sweeps on a later pass — a crash costs disk, never correctness.
  */
 
-import { readdir, rename } from "fs/promises";
+import { mkdir, readdir, rename } from "fs/promises";
 import { basename, dirname, join } from "path";
 
 /** Marks a directory as rt's to delete. Nothing without this prefix is ever reaped. */
 export const TRASH_PREFIX = ".trash-";
+
+/**
+ * The retention store: disposed trees live here (RT-51), stripped of
+ * reinstallables, until the reconciler ages them out. Inside `.worktrees` so it
+ * is per-repo and shares the repo's volume; the name deliberately lacks the
+ * trailing dash so the crash-leftover sweep's `.trash-` prefix match never
+ * descends into it.
+ */
+const RETAIN_DIR = ".trash";
+
+/** How long a retained tree survives before the reconciler reaps it. */
+export const RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * Top-level dirs inside a retained tree that are reinstallable and deleted at
+ * dispose time (exact names, plus the `dist-*` family). Mispredicting here
+ * costs disk for the retention window, never data — the safe direction.
+ */
+const STRIP_DIRS = new Set(["node_modules", "dist", ".turbo"]);
+const STRIP_PREFIX = "dist-";
 
 /** Minimal log surface: pino's, and the plain object the CLI paths pass. */
 export interface TrashLog {
@@ -64,6 +84,127 @@ export async function trashTree(path: string, name: string): Promise<TrashResult
   }
 }
 
+export function retainedTrashRoot(repoPath: string): string {
+  return join(repoPath, ".worktrees", RETAIN_DIR);
+}
+
+export type RetireResult =
+  | { ok: true; trashPath: string; retained: boolean }
+  | { ok: false; err: unknown };
+
+/**
+ * Rename the tree into the repo's retention store,
+ * `<repo>/.worktrees/.trash/<name>-<epoch>`, where it stays recoverable until
+ * the reconciler ages it out. When the store can't be used (unwritable, or the
+ * rename would cross a volume), falls back to the sibling `.trash-*` rename —
+ * the caller sees `retained: false` and reaps it the old way, so disposal
+ * never gets stuck behind the retention feature. Never throws.
+ */
+export async function retireTree(
+  path: string,
+  name: string,
+  repoPath: string,
+): Promise<RetireResult> {
+  let trashPath: string;
+  try {
+    if (!name || name.includes("/") || name.includes("\\")) {
+      throw new Error(`worktree trash name must be a single path component: ${JSON.stringify(name)}`);
+    }
+    const root = retainedTrashRoot(repoPath);
+    await mkdir(root, { recursive: true });
+    trashPath = join(root, `${name}-${Date.now()}`);
+  } catch {
+    const fallback = await trashTree(path, name);
+    return fallback.ok ? { ...fallback, retained: false } : fallback;
+  }
+  try {
+    await rename(path, trashPath);
+    return { ok: true, trashPath, retained: true };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "EXDEV") {
+      const fallback = await trashTree(path, name);
+      return fallback.ok ? { ...fallback, retained: false } : fallback;
+    }
+    return { ok: false, err };
+  }
+}
+
+/** Whether `path` is an entry of a `.trash` retention store. */
+function isRetainedEntry(path: string): boolean {
+  return basename(dirname(path)) === RETAIN_DIR;
+}
+
+/**
+ * Delete the reinstallable dirs inside a retained tree in one detached
+ * `rm -rf`, leaving everything human-touched in place. Same no-timeout,
+ * nobody-waits contract as reapTrashDir; refuses any path that is not inside a
+ * `.trash` retention store.
+ */
+export async function stripTrashDir(trashPath: string, log: TrashLog): Promise<void> {
+  if (!isRetainedEntry(trashPath)) {
+    log.warn({ path: trashPath }, "worktree strip refused: not a retained trash entry");
+    return;
+  }
+
+  try {
+    const entries = await readdir(trashPath);
+    const doomed = entries
+      .filter((e) => STRIP_DIRS.has(e) || e.startsWith(STRIP_PREFIX))
+      .map((e) => join(trashPath, e));
+    if (doomed.length === 0) return;
+
+    const proc = Bun.spawn(["rm", "-rf", "--", ...doomed], {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+      detached: true,
+    });
+    proc.unref();
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      log.warn({ path: trashPath, exitCode }, "worktree trash strip failed");
+    }
+  } catch (err) {
+    log.warn({ err, path: trashPath }, "worktree trash strip could not run");
+  }
+}
+
+/**
+ * Age out the retention store: reap every `<name>-<epoch>` entry older than
+ * RETENTION_MS. An entry whose name carries no epoch was not written by rt, so
+ * it is kept and warned about rather than guessed at. A repo with no store yet
+ * is normal. Returns how many were reaped.
+ */
+export async function reapExpiredTrash(
+  repoPath: string,
+  log: TrashLog,
+  now: number = Date.now(),
+): Promise<number> {
+  const root = retainedTrashRoot(repoPath);
+  let entries: string[];
+  try {
+    entries = await readdir(root);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      log.warn({ err, root }, "worktree retention sweep could not read trash dir");
+    }
+    return 0;
+  }
+
+  let reaped = 0;
+  for (const entry of entries) {
+    const epoch = /-(\d+)$/.exec(entry)?.[1];
+    if (!epoch) {
+      log.warn({ root, entry }, "worktree retention sweep skipped an entry it did not write");
+      continue;
+    }
+    if (now - Number(epoch) <= RETENTION_MS) continue;
+    await reapTrashDir(join(root, entry), log);
+    reaped += 1;
+  }
+  return reaped;
+}
+
 /**
  * Delete a trash directory in a detached `rm -rf` with no timeout: nothing
  * upstream waits for it, and a kill mid-unlink is the very failure mode this
@@ -71,11 +212,11 @@ export async function trashTree(path: string, name: string): Promise<TrashResult
  * for the reconciler's one-at-a-time sweep (and for tests); callers on the
  * dispose path drop it.
  *
- * Refuses any path not named `.trash-*` — the one guard between this and an
- * `rm -rf` of a live worktree.
+ * Refuses any path not named `.trash-*` and not inside a `.trash` retention
+ * store — the one guard between this and an `rm -rf` of a live worktree.
  */
 export async function reapTrashDir(trashPath: string, log: TrashLog): Promise<void> {
-  if (!basename(trashPath).startsWith(TRASH_PREFIX)) {
+  if (!basename(trashPath).startsWith(TRASH_PREFIX) && !isRetainedEntry(trashPath)) {
     log.warn({ path: trashPath }, "worktree reap refused: not a trash directory");
     return;
   }

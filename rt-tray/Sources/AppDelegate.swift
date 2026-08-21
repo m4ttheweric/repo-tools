@@ -162,6 +162,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ]
         attributed.append(NSAttributedString(string: "m", attributes: mAttrs))
 
+        // Stacked-layers mark trailing the "m" — the SF Symbol closest to the
+        // app icon's lucide "layers" glyph. Embedded as a text attachment so
+        // it sits between the wordmark and the dev tag / status dot; palette
+        // labelColor keeps it tracking menu bar light/dark like the "m" (the
+        // flavor colors belong to the app icon only).
+        if let symbol = NSImage(systemSymbolName: "square.3.layers.3d", accessibilityDescription: "stack")
+            ?? NSImage(systemSymbolName: "square.stack.3d.up", accessibilityDescription: "stack") {
+            let config = NSImage.SymbolConfiguration(pointSize: 10, weight: .medium)
+                .applying(NSImage.SymbolConfiguration(paletteColors: [.labelColor]))
+            let attachment = NSTextAttachment()
+            attachment.image = symbol.withSymbolConfiguration(config) ?? symbol
+            let mark = NSMutableAttributedString(attributedString: NSAttributedString(attachment: attachment))
+            mark.addAttribute(.baselineOffset, value: -0.5, range: NSRange(location: 0, length: mark.length))
+            attributed.append(NSAttributedString(string: " "))
+            attributed.append(mark)
+        }
+
         // Dev flavor wears a visible mark (spec MAT-383 §3) — the dev and
         // prod trays are otherwise identical in the menu bar, and mistaking
         // one for the other is how you debug the wrong daemon.

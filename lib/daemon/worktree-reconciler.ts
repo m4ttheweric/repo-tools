@@ -46,7 +46,7 @@ import {
   type WorktreeAppConfig,
 } from "../worktree/config.ts";
 import { killWorktreeProcesses } from "./worktree-process-kill.ts";
-import { reapTrashInRoots } from "../worktree/trash.ts";
+import { reapExpiredTrash, reapTrashInRoots } from "../worktree/trash.ts";
 
 export interface ReconcilerDeps {
   cache: { entries: Record<string, any> };
@@ -963,23 +963,26 @@ async function replenishAndShrink(
 }
 
 /**
- * Reap duty: delete any `.trash-*` directory sitting in a worktree root.
+ * Reap duty, two sweeps with different clocks.
  *
- * Disposal renames a tree to trash and fires a detached `rm -rf` at it (see
- * worktree/trash.ts). That process can die — a daemon crash, a reboot mid
- * delete — and what it leaves behind is a directory nobody will ever look at
- * again. This is the sweep that collects them, so a crash costs disk and
- * nothing else.
+ * Crash leftovers — sibling `.trash-*` dirs from a disposal whose detached
+ * delete died (daemon crash, reboot) — are reaped immediately: nobody will
+ * ever look at them again, so a crash costs disk and nothing else. Both roots
+ * are swept, the repo's default `.worktrees` and whatever root the repo config
+ * declares, because a root that changed after a disposal still has the old
+ * root's leftovers in it.
  *
- * Both roots are swept: the repo's default `.worktrees` and whatever root the
- * repo config declares, because a root that changed after a disposal still has
- * the old root's leftovers in it.
+ * Retained trees — `.worktrees/.trash/<name>-<epoch>` entries, where disposal
+ * parks trees stripped-but-recoverable (RT-51) — are reaped only past the
+ * retention window.
  */
 async function reapRepoTrash(deps: { repoName: string; repoPath: string; log: Logger }): Promise<void> {
   const { repoName, repoPath, log } = deps;
   const cfg = await loadWorktreeRepoConfig(repoName, repoPath);
   const reaped = await reapTrashInRoots([join(repoPath, ".worktrees"), cfg.root], log);
   if (reaped > 0) log.info({ repo: repoName, count: reaped }, "worktree trash reaped");
+  const expired = await reapExpiredTrash(repoPath, log);
+  if (expired > 0) log.info({ repo: repoName, count: expired }, "worktree retention trash reaped");
 }
 
 /**

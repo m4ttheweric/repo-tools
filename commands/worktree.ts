@@ -345,14 +345,22 @@ export async function worktreeDispose(args: string[], _ctx: unknown): Promise<vo
   const res = await daemonQuery("worktree:dispose", payload, DISPOSE_TIMEOUT_MS);
   const ok = requireQueryResult(parsed.json, res);
 
-  const { disposed, refused } = ok.data as { disposed: string[]; refused: Array<{ tree: string; reason: string }> };
+  const { disposed, refused, recoverable } = ok.data as {
+    disposed: string[];
+    refused: Array<{ tree: string; reason: string }>;
+    recoverable?: Array<{ tree: string; path: string; until: string }>;
+  };
   // Set before either return path — --json must not exit 0 on a partial failure.
   if (refused.length > 0) process.exitCode = 1;
 
   if (parsed.json) { console.log(JSON.stringify(ok.data, null, 2)); return; }
 
   console.log("");
-  for (const name of disposed) console.log(`  ${green}✓${reset} ${name} disposed`);
+  for (const name of disposed) {
+    const kept = recoverable?.find((r) => r.tree === name);
+    const note = kept ? ` ${dim}— recoverable at ${kept.path} until ${kept.until.slice(0, 10)}${reset}` : "";
+    console.log(`  ${green}✓${reset} ${name} disposed${note}`);
+  }
   for (const r of refused) {
     const hint = r.reason === "remove-failed" ? " — transient, try again" : "";
     console.log(`  ${red}✗${reset} ${r.tree} ${dim}(${r.reason}${hint})${reset}`);

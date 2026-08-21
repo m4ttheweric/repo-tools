@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { execSync } from "child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync, realpathSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
 import { repoDataDir } from "../../rt-paths.ts";
@@ -307,7 +307,7 @@ describe("disposeTree", () => {
     const rec = register(repoName, ephemeral("tree-a", path, "feature-a"));
 
     const result = await disposeTree(makeDeps(), rec, { force: true });
-    expect(result).toEqual({ disposed: true });
+    expect(result).toMatchObject({ disposed: true });
     expect(existsSync(path)).toBe(false);
   });
 
@@ -320,7 +320,7 @@ describe("disposeTree", () => {
     const rec = register(repoName, ephemeral("tree-a", path, "feature-a"));
 
     const result = await disposeTree(makeDeps(), rec, {});
-    expect(result).toEqual({ disposed: true });
+    expect(result).toMatchObject({ disposed: true });
     expect(existsSync(path)).toBe(false);
     const disposed = events.find((e) => e.type === "worktree:disposed");
     expect(disposed).toBeDefined();
@@ -337,7 +337,7 @@ describe("disposeTree", () => {
     expect(existsSync(path)).toBe(true);
 
     const forced = await disposeTree(makeDeps(), rec, { force: true });
-    expect(forced).toEqual({ disposed: true });
+    expect(forced).toMatchObject({ disposed: true });
   });
 
   test("pushed branch with no MR disposes via the origin/<branch> anchor", async () => {
@@ -350,7 +350,7 @@ describe("disposeTree", () => {
     const rec = register(repoName, ephemeral("tree-a", path, "feature-a"));
 
     const result = await disposeTree(makeDeps(), rec, {});
-    expect(result).toEqual({ disposed: true });
+    expect(result).toMatchObject({ disposed: true });
 
     // worktree, branch, and registry entry all gone
     expect(existsSync(path)).toBe(false);
@@ -375,7 +375,7 @@ describe("disposeTree", () => {
       cacheEntries: { "feature-a": { mr: { iid: 42, sha, state: "merged" }, repoName } },
     });
     const result = await disposeTree(deps, rec, { auto: true });
-    expect(result).toEqual({ disposed: true });
+    expect(result).toMatchObject({ disposed: true });
     expect(existsSync(path)).toBe(false);
   });
 
@@ -404,7 +404,7 @@ describe("disposeTree", () => {
     // sha absent entirely (the projection drops it for many merged MRs)
     const deps = makeDeps({ cacheEntries: { "feature-a": { mr: { iid: 42, state: "merged" }, repoName } } });
     const result = await disposeTree(deps, rec, { auto: true });
-    expect(result).toEqual({ disposed: true });
+    expect(result).toMatchObject({ disposed: true });
     expect(existsSync(path)).toBe(false);
   });
 
@@ -453,7 +453,7 @@ describe("disposeTree", () => {
       cacheEntries: { "feature-a": { mr: { iid: 42, sha, state: "merged" }, repoName } },
     });
     const result = await disposeTree(deps, rec, { auto: false });
-    expect(result).toEqual({ disposed: true });
+    expect(result).toMatchObject({ disposed: true });
     expect(existsSync(path)).toBe(false);
   });
 
@@ -490,7 +490,7 @@ describe("disposeTree", () => {
     expect(existsSync(path)).toBe(true);
 
     const forced = await disposeTree(deps, rec, { force: true });
-    expect(forced).toEqual({ disposed: true });
+    expect(forced).toMatchObject({ disposed: true });
   });
 
   test("a stale attendant lease does not refuse", async () => {
@@ -506,7 +506,7 @@ describe("disposeTree", () => {
       cacheEntries: { "feature-a": { mr: { iid: 42, sha: null }, repoName } },
     });
     const result = await disposeTree(deps, rec, {});
-    expect(result).toEqual({ disposed: true });
+    expect(result).toMatchObject({ disposed: true });
   });
 
   test("auto disposal of a just-claimed tree refuses with \"grace\"; explicit disposal proceeds", async () => {
@@ -520,7 +520,7 @@ describe("disposeTree", () => {
     expect(existsSync(path)).toBe(true);
 
     const explicit = await disposeTree(makeDeps(), rec, { auto: false });
-    expect(explicit).toEqual({ disposed: true });
+    expect(explicit).toMatchObject({ disposed: true });
     expect(existsSync(path)).toBe(false);
   });
 
@@ -531,7 +531,7 @@ describe("disposeTree", () => {
     }));
 
     const result = await disposeTree(makeDeps(), rec, { auto: true });
-    expect(result).toEqual({ disposed: true });
+    expect(result).toMatchObject({ disposed: true });
   });
 
   test("a cache entry with no repoName still joins its MR", async () => {
@@ -559,7 +559,7 @@ describe("disposeTree", () => {
     const deps = makeDeps({
       cacheEntries: { "feature-a": { mr: { iid: 42, sha: null }, repoName: "other-repo" } },
     });
-    expect(await disposeTree(deps, rec, {})).toEqual({ disposed: true });
+    expect(await disposeTree(deps, rec, {})).toMatchObject({ disposed: true });
   });
 
   test("a failing git status refuses \"dirty\" rather than disposing", async () => {
@@ -598,34 +598,40 @@ describe("disposeTree", () => {
     }
   });
 
-  test("disposal renames the tree to a .trash-* sibling and reaps it in the background", async () => {
+  test("disposal retires the tree into .worktrees/.trash — stripped, recoverable, unlinked", async () => {
     const path = addTree(repo, "tree-a", "feature-a");
+    // Gitignored human-authored content (the RT-51 loss) plus a reinstallable.
+    mkdirSync(join(path, ".local-dev"));
+    writeFileSync(join(path, ".local-dev", "spec.md"), "the plan\n");
+    mkdirSync(join(path, "node_modules", "dep"), { recursive: true });
+    writeFileSync(join(path, "node_modules", "dep", "index.js"), "//\n");
     const rec = register(repoName, ephemeral("tree-a", path, "feature-a"));
-    const root = join(repo, ".worktrees");
 
-    const infos: Array<Record<string, unknown>> = [];
-    const deps = makeDeps({
-      log: { info: (fields: unknown) => infos.push(fields as Record<string, unknown>), warn: () => {} },
-    });
-    const result = await disposeTree(deps, rec, { force: true });
-    expect(result).toEqual({ disposed: true });
+    const result = await disposeTree(makeDeps(), rec, { force: true });
+    expect(result.disposed).toBe(true);
+    if (!result.disposed) throw new Error("expected disposed");
 
-    // The tree is gone from its own path the moment dispose returns, moved to
-    // a trash sibling the log names (the reaper may already have eaten it).
+    // The outcome names where the tree went and how long it survives.
+    const trash = result.trash!;
+    expect(dirname(trash.path)).toBe(join(repo, ".worktrees", ".trash"));
+    expect(basename(trash.path)).toMatch(/^tree-a-\d+$/);
+    expect(Date.parse(trash.keptUntil)).toBeGreaterThan(Date.now());
+
+    // Gone from its own path, recoverable in the store — human files intact.
     expect(existsSync(path)).toBe(false);
-    const trash = infos.find((f) => typeof f.trash === "string")!.trash as string;
-    expect(dirname(trash)).toBe(root);
-    expect(basename(trash).startsWith(".trash-tree-a-")).toBe(true);
-    expect(readdirSync(root).every((e) => e.startsWith(".trash-tree-a-"))).toBe(true);
+    expect(readFileSync(join(trash.path, ".local-dev", "spec.md"), "utf8")).toBe("the plan\n");
+    expect(existsSync(join(trash.path, "gen.txt"))).toBe(true);
 
-    // The registration, branch, and registry row all went with it.
+    // The registration, branch, and registry row all went with it — the
+    // retained copy is plain files, not a worktree git knows about.
     expect((await listWorktreesAsync(repo))!.some((w) => w.path === path)).toBe(false);
     expect(await branchExistsLocalAsync(repo, "feature-a")).toBe(false);
     expect(loadRegistry(repoName).length).toBe(0);
     expect(events.some((e) => e.type === "worktree:disposed")).toBe(true);
 
-    // …and the detached reaper finishes the delete without anyone awaiting it.
-    await waitFor(() => readdirSync(root).length === 0);
+    // …and the detached strip eats the reinstallables without anyone awaiting it.
+    await waitFor(() => !existsSync(join(trash.path, "node_modules")));
+    expect(existsSync(join(trash.path, ".local-dev"))).toBe(true);
   });
 
   test("guard order: dirty is reported before unpushed", async () => {
@@ -662,7 +668,7 @@ describe("disposeTree", () => {
     const rec = register(repoName, ephemeral("tree-a", path, "feature-a"));
 
     const result = await disposeTree(makeDeps({ killProcesses: true }), rec, {});
-    expect(result).toEqual({ disposed: true });
+    expect(result).toMatchObject({ disposed: true });
     expect(existsSync(path)).toBe(false);
   });
 
@@ -671,7 +677,7 @@ describe("disposeTree", () => {
     const rec = register(repoName, { ...ephemeral("tree-a", path, "feature-a"), branch: null });
 
     const result = await disposeTree(makeDeps(), rec, {});
-    expect(result).toEqual({ disposed: true });
+    expect(result).toMatchObject({ disposed: true });
     expect(existsSync(path)).toBe(false);
     expect(loadRegistry(repoName).length).toBe(0);
   });
@@ -685,7 +691,7 @@ describe("disposeTree", () => {
     });
 
     const result = await disposeTree(makeDeps(), rec, { force: true });
-    expect(result).toEqual({ disposed: true });
+    expect(result).toMatchObject({ disposed: true });
     expect(loadRegistry(repoName).length).toBe(0);
   });
 });
