@@ -95,10 +95,9 @@ export function teamSettingsPath(team: string): string {
 
 /**
  * ~/.mattstack/user/local/<machineKey()>/settings.local.jsonc — the machine
- * store: local overrides, TRACKED and keyed per machine (ruling 2 — machine
- * scope travels, it just never collides, since each machine only ever
- * writes its own `local/<key>/`). Nested per machine so multiple machines
- * sharing the synced `user/` tree don't collide on one local-overrides file.
+ * store: local overrides, TRACKED and keyed per machine. Each machine writes
+ * only its own `local/<key>/`, so machines sharing the synced `user/` tree
+ * never collide on one local-overrides file.
  */
 export function machineSettingsPath(): string {
   return join(home(), ".mattstack", "user", "local", machineKey(), "settings.local.jsonc");
