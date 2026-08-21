@@ -1203,6 +1203,29 @@ describe("startHomeSnapshot — kill switch cancels pending push", () => {
     await handle.runNow("manual");
     expect([...timers.pending.values()].some((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000)).toBe(true);
   });
+
+  test("a push timer that fires while disabled never touches git — doPushInner's own kill switch, not just doRun's timer-cancel", async () => {
+    // Disabled WITHOUT a further doRun call in between (e.g. debounceSec >
+    // pushDelaySec, or the watcher never re-triggers) — doRun's own
+    // cancel-the-timer logic never gets a chance to run, so the ALREADY
+    // ARMED pushTimer is the only thing standing between this commit and
+    // a push while disabled.
+    let enabled = true;
+    const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0", pushExit: 0 }));
+    const { deps, timers } = baseDeps({ exec: execFn, readSettings: () => ({ ...DEFAULT_SETTINGS, enabled }) });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("manual");
+    const pushEntry = [...timers.pending.values()].find((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    expect(pushEntry).toBeDefined();
+
+    enabled = false;
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+
+    expect(execCalls.some((c) => c[1] === "push")).toBe(false);
+  });
 });
 
 // ─── home:push-failed broadcasts once per failure streak ────────────────────
@@ -1358,5 +1381,65 @@ describe("startHomeSnapshot — git spawn failure", () => {
 
     const result = await handle.runNow("manual");
     expect(result.skipped).toBe("init-failed");
+  });
+});
+
+// ─── settings-store failures after boot: watcher callback + status() ───────
+
+describe("startHomeSnapshot — settings-read resilience", () => {
+  test("a settings-read failure while arming the debounce falls back to the registry default; the warn dedupes by message, not a one-shot", async () => {
+    let failMessage: string | null = null;
+    const readSettings = () => {
+      if (failMessage !== null) throw new Error(failMessage);
+      return DEFAULT_SETTINGS;
+    };
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps, watch, timers, log } = baseDeps({ exec: execFn, readSettings });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+    // Armed fine while readSettings was still healthy (construction, init,
+    // scheduleJanitor all succeeded before failMessage was ever set).
+    expect(watch.calls.length).toBe(1);
+
+    failMessage = "settings store corrupt";
+    watch.emit("change", "a.txt");
+    const armed = [...timers.pending.values()].find((t) => t.ms === 20_000); // SETTINGS_FALLBACK.debounceSec * 1000
+    expect(armed).toBeDefined();
+    const warnLine = "home-snapshot: failed to read settings while arming the debounce; using the default";
+    expect(log.calls.filter((c) => c.level === "warn" && c.args[1] === warnLine).length).toBe(1);
+
+    // Recover before the run itself actually happens — doRun's OWN
+    // top-level settings read is a separate, unguarded call site (out of
+    // scope here); this test is only about the debounce-ARMING read.
+    failMessage = null;
+    timers.fire((t) => t.ms === 20_000);
+    await flushAsync();
+
+    // A NEW window, failing again but with a DIFFERENT message, warns again — dedup is per-message, not "ever only once".
+    failMessage = "a different settings failure";
+    watch.emit("change", "b.txt");
+    const armedAgain = [...timers.pending.values()].find((t) => t.ms === 20_000);
+    expect(armedAgain).toBeDefined();
+    expect(log.calls.filter((c) => c.level === "warn" && c.args[1] === warnLine).length).toBe(2);
+  });
+
+  test("status() falls back to the last-known enabled value and warns once when settings reads start failing", async () => {
+    let broken = false;
+    const readSettings = () => {
+      if (broken) throw new Error("settings store corrupt");
+      return DEFAULT_SETTINGS;
+    };
+    const { deps, log } = baseDeps({ readSettings });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    expect(handle.status().enabled).toBe(true);
+
+    broken = true;
+    expect(handle.status().enabled).toBe(true); // last-known, not a thrown error
+    expect(handle.status().enabled).toBe(true);
+
+    const warnLine = "home-snapshot: failed to read settings in status(); using the last-known value";
+    expect(log.calls.filter((c) => c.level === "warn" && c.args[1] === warnLine).length).toBe(1);
   });
 });
