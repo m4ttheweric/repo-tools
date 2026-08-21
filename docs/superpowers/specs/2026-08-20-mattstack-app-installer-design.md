@@ -480,9 +480,11 @@ once. Services' plists set `PATH=<app>/Contents/Helpers:/usr/bin:/bin` plus
 `~/.local/bin` for herdr/claude; nothing is captured from the user's shell.
 
 Consequences for other repos (lane L5): board and gitq ship as `bun --compile`
-binaries with published rt-client (no `file:` deps), read team config from
-`team.jsonc` + the stores (no `config.json`, no `.env`; Slack/forge tokens via
-the rt daemon; state in their own state.db), and their skills move into
+binaries with published rt-client (no `file:` deps), read their config from
+the stores in-process via rt-client's settings module (no `config.json`, no
+`.env`; secrets via the shared secrets module; state in their own state.db —
+the settings half is the settings lane's deck/board/gitq lanes), and their
+skills move into
 plugins (no `~/.claude/skills` symlinks); deck publishes releases and its
 platform registration moves to the app's SMAppService plist (`deck setup`
 narrows to registry/proxy; `deck uninstall` leaves the agent to the app);
