@@ -43,7 +43,7 @@ let permissionsChecks: [Check] = [
         r.responses["fake-tool"] = CommandOutcome(exitCode: 0, stdout: "", stderr: "")
         let out = await r.run("/usr/bin/fake-tool", ["reset", "All", "x"])
         c.expect(out.ok)
-        c.expectEqual(r.calls.count, 1)
+        try c.requireEqual(r.calls.count, 1)
         c.expectEqual(r.calls[0].args, ["reset", "All", "x"])
         let unknown = await r.run("/bin/nothing", [])
         c.expectEqual(unknown.exitCode, 127)

@@ -51,6 +51,7 @@ let teamChoiceChecks: [Check] = [
         await MainActor.run { m.choice = .create; m.teamName = "Acme Claims"; m.useGhRepo = false; m.remoteURL = "https://example.com/t.git" }
         let err = await m.validateAndPrepare()
         c.expect(err == nil, "got \(err ?? "")")
+        try c.require(rt.calls.count >= 2, "expected home init --dry-run then team create, got \(rt.calls.map(\.args))")
         c.expectEqual(rt.calls[0].args.prefix(3), ["home", "init", "--dry-run"])
         c.expectEqual(rt.calls[1].args, ["team", "create", "Acme Claims", "--remote", "https://example.com/t.git", "--others", "--json"])
         let gh = ScriptedRt()
@@ -59,6 +60,7 @@ let teamChoiceChecks: [Check] = [
         let m2 = await MainActor.run { TeamChoiceModel(rt: gh) }
         await MainActor.run { m2.choice = .create; m2.teamName = "Acme Claims"; m2.useGhRepo = true; m2.ghOwner = "acme"; m2.othersWillJoin = false }
         c.expect(await m2.validateAndPrepare() == nil)
+        try c.require(gh.calls.count >= 2, "expected home init --dry-run then team create, got \(gh.calls.map(\.args))")
         c.expectEqual(gh.calls[1].args, ["team", "create", "Acme Claims", "--create-repo", "acme", "--json"])
     },
     Check("create: loadGitHubStatus only queries rt once — a second call after Back doesn't clobber the user's edits") { c in
@@ -99,6 +101,7 @@ let teamChoiceChecks: [Check] = [
         await MainActor.run { m.choice = .join; m.inviteCode = "ABCD-EFGH" }
         let err = await m.validateAndPrepare()
         c.expect(err == nil)
+        try c.require(!rt.calls.isEmpty, "expected a team join --dry-run call")
         c.expectEqual(rt.calls[0].args, ["team", "join", "--dry-run", "--json"])
         c.expectEqual(rt.calls[0].stdin, "{\"code\":\"ABCD-EFGH\"}")
         c.expect(rt.calls.allSatisfy { !$0.args.contains("ABCD-EFGH") }, "code never on argv")
@@ -139,6 +142,7 @@ let teamChoiceChecks: [Check] = [
         await MainActor.run { m.choice = .restore; m.restoreRepo = "m4ttheweric/mattstack-home"; c.expectEqual(m.canContinue, false); m.restoreAgeKey = "AGE-SECRET-KEY-1XYZ"; c.expectEqual(m.canContinue, true) }
         let err = await m.validateAndPrepare()
         c.expect(err == nil)
+        try c.require(rt.calls.count >= 2, "expected restore then setup intent restore, got \(rt.calls.map(\.args))")
         c.expectEqual(rt.calls[0].args, ["restore", "m4ttheweric/mattstack-home", "--json"])
         c.expectEqual(rt.calls[0].stdin, "{\"ageKey\":\"AGE-SECRET-KEY-1XYZ\"}")
         c.expectEqual(rt.calls[1].args, ["setup", "intent", "restore", "m4ttheweric/mattstack-home", "--json"])

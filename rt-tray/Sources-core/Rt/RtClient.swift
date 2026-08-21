@@ -123,42 +123,117 @@ public final class RtClient: RtRunning, @unchecked Sendable {
             let p = makeProcess(args)
             let out = Pipe(), err = Pipe(), inPipe = Pipe()
             p.standardOutput = out; p.standardError = err; p.standardInput = inPipe
-            var splitter = NDJSONSplitter()
-            let lock = NSLock()
+            let state = StreamDrainState(continuation)
+
+            // The readability handler is the ONE reader of each fd. Process exit
+            // and pipe EOF are independent events in either order, so nothing
+            // here may read stdout a second time to "catch up" at termination:
+            // a second read races the in-flight readability callback and steals
+            // bytes it would have parsed, dropping lines already past the
+            // splitter but not yet yielded (rt's terminal `done` among them).
             out.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
-                lock.lock(); defer { lock.unlock() }
                 if data.isEmpty {
                     handle.readabilityHandler = nil
-                    if let tail = splitter.flush() { continuation.yield(tail) }
-                    return
-                }
-                for line in splitter.feed(data) { continuation.yield(line) }
-            }
-            p.terminationHandler = { proc in
-                // readabilityHandler delivery lags process exit; a fast child's
-                // trailing bytes (including the terminal event) can still be
-                // unread here, so drain the fd directly before finishing.
-                out.fileHandleForReading.readabilityHandler = nil
-                lock.lock()
-                let lines = splitter.feed(out.fileHandleForReading.readDataToEndOfFile())
-                let tail = splitter.flush()
-                lock.unlock()
-                for line in lines { continuation.yield(line) }
-                if let tail { continuation.yield(tail) }
-                let stderr = String(decoding: err.fileHandleForReading.readDataToEndOfFile().prefix(4000), as: UTF8.self)
-                switch proc.terminationStatus {
-                case 0, 2: continuation.finish()
-                default: continuation.finish(throwing: RtClientError.exited(proc.terminationStatus, stderr: stderr))
+                    state.stdoutClosed()
+                } else {
+                    state.appendStdout(data)
                 }
             }
+            err.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                if data.isEmpty {
+                    handle.readabilityHandler = nil
+                    state.stderrClosed()
+                } else {
+                    state.appendStderr(data)
+                }
+            }
+            p.terminationHandler = { proc in state.exited(proc.terminationStatus) }
+
             do { try p.run() } catch {
-                continuation.finish(throwing: RtClientError.spawnFailed(String(describing: error)))
+                out.fileHandleForReading.readabilityHandler = nil
+                err.fileHandleForReading.readabilityHandler = nil
+                state.failedToLaunch(RtClientError.spawnFailed(String(describing: error)))
                 return
             }
             if let stdin { inPipe.fileHandleForWriting.write(stdin) }
             try? inPipe.fileHandleForWriting.close()
             continuation.onTermination = { _ in if p.isRunning { p.terminate() } }
+        }
+    }
+}
+
+/// Serializes `stream`'s three callers — the stdout reader, the stderr reader
+/// and terminationHandler, each on its own queue — so the NDJSON splitter has a
+/// single owner, every line is yielded before the stream finishes, and the
+/// continuation finishes exactly once. Finishing waits for both pipes to reach
+/// EOF *and* the process to exit, in whatever order those land; finishing on
+/// exit alone would strand bytes the reader had not been handed yet.
+private final class StreamDrainState: @unchecked Sendable {
+    /// Only this much stderr can reach the error copy; the rest is read and
+    /// dropped so a chatty child never blocks on a full pipe.
+    private static let stderrCap = 4000
+
+    private let lock = NSLock()
+    private let continuation: AsyncThrowingStream<String, Error>.Continuation
+    private var splitter = NDJSONSplitter()
+    private var stderrBytes = Data()
+    private var stdoutAtEOF = false
+    private var stderrAtEOF = false
+    private var exitStatus: Int32?
+    private var finished = false
+
+    init(_ continuation: AsyncThrowingStream<String, Error>.Continuation) {
+        self.continuation = continuation
+    }
+
+    func appendStdout(_ data: Data) {
+        lock.lock(); defer { lock.unlock() }
+        for line in splitter.feed(data) { continuation.yield(line) }
+    }
+
+    func stdoutClosed() {
+        lock.lock(); defer { lock.unlock() }
+        if let tail = splitter.flush() { continuation.yield(tail) }
+        stdoutAtEOF = true
+        finishIfSettled()
+    }
+
+    func appendStderr(_ data: Data) {
+        lock.lock(); defer { lock.unlock() }
+        guard stderrBytes.count < Self.stderrCap else { return }
+        stderrBytes.append(data)
+    }
+
+    func stderrClosed() {
+        lock.lock(); defer { lock.unlock() }
+        stderrAtEOF = true
+        finishIfSettled()
+    }
+
+    func exited(_ status: Int32) {
+        lock.lock(); defer { lock.unlock() }
+        exitStatus = status
+        finishIfSettled()
+    }
+
+    /// The process never started, so neither EOF nor termination will ever fire.
+    func failedToLaunch(_ error: Error) {
+        lock.lock(); defer { lock.unlock() }
+        guard !finished else { return }
+        finished = true
+        continuation.finish(throwing: error)
+    }
+
+    private func finishIfSettled() {
+        guard !finished, stdoutAtEOF, stderrAtEOF, let status = exitStatus else { return }
+        finished = true
+        switch status {
+        case 0, 2: continuation.finish()
+        default:
+            continuation.finish(throwing: RtClientError.exited(
+                status, stderr: String(decoding: stderrBytes.prefix(Self.stderrCap), as: UTF8.self)))
         }
     }
 }

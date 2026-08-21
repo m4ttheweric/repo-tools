@@ -109,7 +109,7 @@ public final class TeamChoiceModel: ObservableObject {
                 let stdin = try JSONEncoder().encode(["ageKey": restoreAgeKey.trimmingCharacters(in: .whitespacesAndNewlines)])
                 let r = try await rt.run(["restore", repo, "--json"], stdin: stdin)
                 if let e = r.userError { return e.message }
-                guard r.exitCode == 0 else { return r.failureCopy(verb: "restore") }
+                guard r.exitCode == 0 else { return r.failureCopy(verb: "restore", redactStderr: true) }
                 let intent = try await rt.run(["setup", "intent", "restore", repo, "--json"], stdin: nil)
                 if let e = intent.userError { return e.message }
                 guard intent.exitCode == 0 else { return intent.failureCopy(verb: "setup intent restore") }
