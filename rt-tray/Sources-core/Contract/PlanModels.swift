@@ -1,6 +1,9 @@
 import Foundation
 
-public enum TeamMode: String, Codable, Equatable, Sendable { case join, create, restore, none }
+public enum TeamMode: String, Codable, Equatable, Sendable {
+    case join, create, restore
+    case noTeam = "none"
+}
 
 public struct TeamInfo: Codable, Equatable, Sendable {
     public var slug: String?
@@ -11,7 +14,16 @@ public struct TeamInfo: Codable, Equatable, Sendable {
     }
 }
 
-public enum RowKind: String, Codable, Equatable, Sendable { case permission, tool, account, access, info }
+/// Unknown values decode as `.info` so one new kind from a newer rt
+/// cannot blank the whole checklist.
+public enum RowKind: String, Codable, Equatable, Sendable {
+    case permission, tool, account, access, info
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = RowKind(rawValue: raw) ?? .info
+    }
+}
 
 /// Unknown values decode as `.error` so one new status from a newer rt
 /// cannot blank the whole checklist.
