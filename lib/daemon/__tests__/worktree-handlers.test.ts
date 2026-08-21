@@ -19,7 +19,12 @@ import { deriveRepoIdentity } from "../../settings/identity.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../../worktree/registry.ts";
 import { tryLockTree } from "../../worktree/locks.ts";
 import { branchExistsLocalAsync, currentBranchAsync, headSha } from "../../worktree/git-async.ts";
-import { createWorktreeHandlers, isClaimable } from "../handlers/worktree.ts";
+import {
+  backoffNote,
+  createFailedError,
+  createWorktreeHandlers,
+  isClaimable,
+} from "../handlers/worktree.ts";
 import type { HandlerContext, HandlerMap } from "../handlers/types.ts";
 import { fakeStore } from "./fake-cache-store.ts";
 
@@ -560,5 +565,79 @@ describe("worktree:adopt", () => {
 
     expect(existsSync(repoIndexPath)).toBe(false);
     expect(existsSync(appStatePath)).toBe(false);
+  });
+});
+
+describe("backoffNote", () => {
+  const now = Date.parse("2026-08-21T16:20:00.000Z");
+  const onDeck = (name: string, nextRetryAt?: string): TreeRecord => ({
+    name,
+    path: `/tmp/${name}`,
+    kind: "ephemeral",
+    state: "on-deck",
+    branch: `on-deck/${name}`,
+    createdAt: "2026-08-20T18:15:30.271Z",
+    ...(nextRetryAt ? { nextRetryAt } : {}),
+  });
+
+  test("is null when no on-deck tree is held", () => {
+    expect(backoffNote([onDeck("cho")], now)).toBeNull();
+  });
+
+  test("is null when a backoff has already expired", () => {
+    expect(backoffNote([onDeck("cho", "2026-08-21T16:19:59.000Z")], now)).toBeNull();
+  });
+
+  test("counts held trees and names the earliest retry", () => {
+    const note = backoffNote(
+      [
+        onDeck("cho", "2026-08-21T16:52:42.822Z"),
+        onDeck("dean", "2026-08-21T16:35:05.233Z"),
+        onDeck("dudley"),
+      ],
+      now,
+    );
+
+    expect(note).toBe("2 on-deck trees held by retry backoff until 2026-08-21T16:35:05.233Z");
+  });
+
+  test("singular for one held tree", () => {
+    const note = backoffNote([onDeck("cho", "2026-08-21T16:52:42.822Z")], now);
+
+    expect(note).toBe("1 on-deck tree held by retry backoff until 2026-08-21T16:52:42.822Z");
+  });
+});
+
+describe("createFailedError", () => {
+  test("keeps the prefix and output tail when there is no note", () => {
+    const error = createFailedError({
+      failedStep: "pnpm install",
+      output: "env: node: No such file or directory",
+    });
+
+    expect(error).toBe("create-failed:pnpm install\nenv: node: No such file or directory");
+  });
+
+  test("appends the note as its own line", () => {
+    const error = createFailedError(
+      { failedStep: "pnpm install", output: "env: node: No such file or directory" },
+      "2 on-deck trees held by retry backoff until 2026-08-21T16:35:05.233Z",
+    );
+
+    expect(error).toBe(
+      "create-failed:pnpm install\nenv: node: No such file or directory\n" +
+        "2 on-deck trees held by retry backoff until 2026-08-21T16:35:05.233Z",
+    );
+  });
+
+  test("appends the note even with no output", () => {
+    const error = createFailedError(
+      { failedStep: "pnpm install" },
+      "1 on-deck tree held by retry backoff until 2026-08-21T16:35:05.233Z",
+    );
+
+    expect(error).toBe(
+      "create-failed:pnpm install\n1 on-deck tree held by retry backoff until 2026-08-21T16:35:05.233Z",
+    );
   });
 });
