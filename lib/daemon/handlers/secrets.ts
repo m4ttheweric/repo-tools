@@ -118,7 +118,7 @@ const SECRETS_KEY: Record<ForgeSlug, "gitlabToken" | "githubToken"> = {
 export interface SecretsHandlerOverrides {
   tracking?: () => RepoTracking;
   secrets?: () => { gitlabToken?: string; githubToken?: string } | Promise<{ gitlabToken?: string; githubToken?: string }>;
-  /** Defaults to `loadSecrets` (the full encrypted-store + plaintext-fallback loader) for secrets:read's "extension" scope. */
+  /** Defaults to `loadSecrets` (the `rt` encrypted domain) for secrets:read's "extension" scope. */
   extensionSecrets?: () => Promise<{ linearApiKey?: string; gitlabToken?: string }>;
   /** Defaults to `loadDeckSecrets` (the `deck` encrypted domain) for secrets:read's "deck" scope. */
   deckSecrets?: () => Promise<{ cfApiToken?: string; cfZoneId?: string }>;
@@ -164,7 +164,7 @@ export function createSecretsHandlers(
 
       const token = (await secrets())[SECRETS_KEY[forge]];
       if (!token) {
-        return { ok: false as const, error: `no ${forge} token in ~/.mattstack/rt/secrets.json (${SECRETS_KEY[forge]})` };
+        return { ok: false as const, error: `no ${forge} token configured (run: rt secrets set rt ${SECRETS_KEY[forge]})` };
       }
 
       ctx.log.info({ repoName, forge }, "secrets:forge-token grant-gated read");
