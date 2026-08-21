@@ -20,9 +20,11 @@ import { createProjectMRsHandlers } from "./handlers/project-mrs.ts";
 import { createEventsHandlers } from "./handlers/events.ts";
 import { createEndpointHandlers } from "./handlers/endpoint.ts";
 import { createSettingsHandlers } from "./handlers/settings.ts";
+import { createHomeHandlers } from "./handlers/home.ts";
 import { reconcileFreshness, getFreshnessSnapshot } from "./freshness.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
 import type { EventsBus } from "./events-bus.ts";
+import type { HomeSnapshotHandle } from "./home-snapshot.ts";
 
 // `TypedHandlers & HandlerMap`, not plain HandlerMap: the intersection makes
 // this function the compile-time proof that every command in the rt-client
@@ -37,6 +39,8 @@ export function buildRoutedHandlers(opts: {
   worktree: WorktreeHandlerOpts;
   /** Events bus backing events:emit/wait/list (RT-44). */
   eventsBus: EventsBus;
+  /** Home-repo snapshot daemon (H2) — inert handle when disabled/not-a-repo. */
+  homeSnapshot: HomeSnapshotHandle;
 }): TypedHandlers & HandlerMap {
   const { ctx, broadcast, systemProcessScanner } = opts;
   return {
@@ -53,6 +57,7 @@ export function buildRoutedHandlers(opts: {
     ...createEventsHandlers(opts.eventsBus, broadcast),
     ...createEndpointHandlers(ctx),
     ...createSettingsHandlers(),
+    ...createHomeHandlers(opts.homeSnapshot),
 
     // Applies repo-tracking edits immediately (rt daemon track <repo>
     // live|poll|off) instead of waiting for the next refresh-tail reconcile.

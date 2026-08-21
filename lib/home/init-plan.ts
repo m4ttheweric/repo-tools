@@ -42,8 +42,26 @@ export interface InitPlan {
   blocked?: "skills-symlink-real-file";
 }
 
-function renderOwnersFile(): string {
-  return "{\n  // snapshot-owners.jsonc — claimed zones the snapshot daemon must never\n  // auto-commit. Empty until a zone is claimed.\n}\n";
+/**
+ * The seeded owners-file template — exported so lib/home/snapshot-owners.ts
+ * writes the identical text (one definition, no drift between init and the
+ * claim/release path). The "zones" property must already exist: jsonc-parser's
+ * `modify` inserting the FIRST property into a property-less-but-braced
+ * object reorders the header comment below it, but editing an EXISTING
+ * "zones": {} in place leaves the comment untouched (verified against the
+ * installed jsonc-parser 3.3.1).
+ */
+export function renderOwnersFile(): string {
+  return (
+    "{\n" +
+    "  // snapshot-owners.jsonc — claimed zones the snapshot daemon must never\n" +
+    "  // auto-commit. Empty until a zone is claimed.\n" +
+    '  // A key ending in "/" is a DIRECTORY zone (claims everything under it),\n' +
+    '  // e.g. "prefs/". A key with NO trailing slash is a single-FILE zone\n' +
+    '  // (claims exactly that path), e.g. "scripts/deploy.sh".\n' +
+    '  "zones": {}\n' +
+    "}\n"
+  );
 }
 
 /** A machine-key value that would fail machineKey()'s own override guard — refused before it can ever be written and then silently ignored. */
