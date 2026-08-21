@@ -273,9 +273,8 @@ describe("createRealExecSeam", () => {
     }
   });
 
-  // The reviewer proved the clobber live: writeSymlink alone unconditionally
-  // unlinked a real skills.jsonc. isRealFile is the guard runStep checks
-  // FIRST — this proves it against a genuine real file, not a fake.
+  // isRealFile is the guard runStep checks before any unlink; a genuine file
+  // (not a fake seam) must trip it, or writeSymlink would clobber user content.
   test("isRealFile is true for a genuine file, distinguishing it from a symlink", async () => {
     const home = mkdtempSync(join(tmpdir(), "rt-home-exec-realfile-"));
     try {
