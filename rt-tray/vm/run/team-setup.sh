@@ -21,6 +21,7 @@ case "$cmd" in
     ;;
   reset)
     need_pat
+    case "$ORG" in *vmtest*) ;; *) vm_die "refusing to reset non-vmtest org $ORG" ;; esac
     for r in "$HOME_REPO" "$TEAM_REPO" mattstack-home "mattstack-team-$SLUG"; do
       if ghp repo view "$ORG/$r" >/dev/null 2>&1; then ghp repo delete "$ORG/$r" --yes && vm_log "deleted $ORG/$r"; fi
     done
@@ -29,16 +30,23 @@ case "$cmd" in
     ;;
   invite)
     need_pat; [ -n "$HANDLE" ] && [ -n "$OUT" ] || vm_die "invite needs --handle and --out"
-    mkdir -p "$(dirname "$OUT")"; umask 077
+    umask 077; mkdir -p "$(dirname "$OUT")" "$VM_CACHE"
     if rt team invite --help >/dev/null 2>&1; then
       # Real path: owner mints against the shared relay (L1 + L6). Team must exist locally: rt team create … first.
       if ! rt team create "$SLUG" --remote "https://github.com/$ORG/$TEAM_REPO.git" --others --json >/dev/null 2>&1; then vm_warn "rt team create returned non-zero (team may already exist)"; fi
       rt team publish --remote "https://github.com/$ORG/$TEAM_REPO.git" --json >/dev/null 2>&1 || true
       if out=$(rt team invite --handle "$HANDLE" --json 2>"$VM_CACHE/invite.err"); then
-        printf '%s' "$out" | sed -n 's/.*"code": *"\([^"]*\)".*/\1/p' > "$OUT"
-        [ -s "$OUT" ] || vm_die "rt team invite returned no code: $(cat "$VM_CACHE/invite.err")"
-        vm_log "invite minted (real) → $OUT  expires: $(printf '%s' "$out" | sed -n 's/.*"expiresAt": *"\([^"]*\)".*/\1/p')"
+        tmp="$OUT.tmp.$$"
+        printf '%s' "$out" | sed -n 's/.*"code": *"\([^"]*\)".*/\1/p' > "$tmp"
+        if [ -s "$tmp" ]; then
+          mv "$tmp" "$OUT"
+          vm_log "invite minted (real) → $OUT  expires: $(printf '%s' "$out" | sed -n 's/.*"expiresAt": *"\([^"]*\)".*/\1/p')"
+        else
+          rm -f "$tmp"
+          vm_die "rt team invite returned no code: $(cat "$VM_CACHE/invite.err")"
+        fi
       else
+        rm -f "$OUT"
         vm_die "rt team invite failed (relay down? L6 not deployed?): $(cat "$VM_CACHE/invite.err")"
       fi
     else
