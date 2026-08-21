@@ -9,7 +9,7 @@ class DaemonClient {
     private let socketPath: String
 
     init(socketPath: String? = nil) {
-        self.socketPath = socketPath ?? NSHomeDirectory() + "/.mattstack/rt/rt.sock"
+        self.socketPath = socketPath ?? AppHome.current + "/.mattstack/rt/rt.sock"
     }
 
     // MARK: - Public API

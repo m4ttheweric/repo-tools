@@ -9,7 +9,7 @@ final class PermissionsService: PermissionProbing, PermissionsProviding, @unchec
     private let bundleId: String
     private let agentStatuses: @Sendable () -> [SMAppService.Status]
     private let runner: CommandRunner
-    private let home = NSHomeDirectory()
+    private let home = AppHome.current
     // snapshot() is async and called from whichever caller currently has
     // this instance (today: ReadinessModel's ticker) — the lock keeps
     // lastFDA/fdaNeedsRelaunch consistent if a second caller is ever added.

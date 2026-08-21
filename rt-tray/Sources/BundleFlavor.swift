@@ -31,6 +31,33 @@ enum BundleFlavor {
     static var isDevBuild: Bool {
         Bundle.main.object(forInfoDictionaryKey: "MSDevBuild") as? Bool ?? false
     }
+
+    /// True only in a DEBUG build launched with `RT_STUB_SCENARIO` set (the
+    /// XCUITest / manual-QA harness). Same detection `RtBinaryLocator` uses
+    /// to pick the stub `rt` — kept here too so callers that never touch rt
+    /// resolution (login-item and service registration) can gate on it.
+    static var isStubActive: Bool {
+        #if DEBUG
+        return !(ProcessInfo.processInfo.environment["RT_STUB_SCENARIO"] ?? "").isEmpty
+        #else
+        return false
+        #endif
+    }
+}
+
+// MARK: - AppHome
+
+/// `NSHomeDirectory()` resolves through the passwd entry and does not honor
+/// a `HOME` environment override on this platform for a plain (non-sandboxed)
+/// process -- every HOME-scoped path in this app (tray/daemon sockets,
+/// FirstRunDetector, PermissionsService) must read through here instead, or
+/// the stub/XCUITest harness's `HOME` override silently falls through to the
+/// real `~/.mattstack` and collides with whatever tray/daemon is really running.
+enum AppHome {
+    static var current: String {
+        if let override = ProcessInfo.processInfo.environment["HOME"], !override.isEmpty { return override }
+        return NSHomeDirectory()
+    }
 }
 
 // MARK: - LoginItemPreference

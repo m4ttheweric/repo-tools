@@ -49,7 +49,7 @@ final class SetupCoordinator {
     }
 
     var setupIsComplete: Bool {
-        !FirstRunDetector.needsSetup(home: NSHomeDirectory()) { FileManager.default.fileExists(atPath: $0) }
+        !FirstRunDetector.needsSetup(home: AppHome.current) { FileManager.default.fileExists(atPath: $0) }
     }
 
     func showSetup(step: SetupStep? = nil, joinCode: String? = nil) {

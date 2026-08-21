@@ -86,6 +86,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mattstack.core
         SKIP_INSTALL: YES
+        GENERATE_INFOPLIST_FILE: YES
 
   mattstack:
     templates: [MattstackApp]
@@ -133,6 +134,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mattstack.core.checks
+        GENERATE_INFOPLIST_FILE: YES
 
   MattstackCoreTests:
     type: bundle.unit-test
@@ -141,6 +143,9 @@ targets:
     dependencies:
       - target: MattstackCoreChecks
       - target: MattstackCore
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
 
   mattstackUITests:
     type: bundle.ui-testing
@@ -151,6 +156,7 @@ targets:
     settings:
       base:
         TEST_TARGET_NAME: mattstack
+        GENERATE_INFOPLIST_FILE: YES
 
 schemes:
   mattstack:
