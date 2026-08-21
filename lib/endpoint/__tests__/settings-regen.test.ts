@@ -82,7 +82,7 @@ describe("regenerateInterceptsCache", () => {
   test("any other key regenerates nothing and writes no cache file", async () => {
     registerRepo();
     expect(await regenerateInterceptsCache("rt.worktrees")).toEqual({ regenerated: false });
-    expect(await regenerateInterceptsCache("rt.llm")).toEqual({ regenerated: false });
+    expect(await regenerateInterceptsCache("rt.hooks")).toEqual({ regenerated: false });
     expect(loadInterceptRules()).toEqual([]);
     expect(Bun.file(interceptsPath()).size).toBe(0); // never created
   });

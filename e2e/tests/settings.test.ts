@@ -9,23 +9,20 @@
  *
  * The scenario is the whole RT-47 contract in one file:
  *
- *   three seeded stores (user + team + machine) plus a legacy per-repo
- *   config.json → `rt settings get/list/explain` report the resolved value,
- *   the multi-scope provenance of the deep-merge key, migrated:false labeling
- *   and an unregistered team key → `rt settings set` at user scope changes the
- *   answer while every comment in the file survives → `rt intercept install`
- *   builds the shim from STORE-ONLY roles/intercepts (the per-repo config.json
- *   deliberately has neither key) and the intercepted command comes back with
- *   the port the team store's role pool declares AND env from a hook whose path
- *   was written as `${team:e2eteam}` → the staleness probe fires when a store
+ *   three seeded stores (user + team + machine) → `rt settings get/list/explain`
+ *   report the resolved value, the multi-scope provenance of the deep-merge
+ *   key, migrated:false labeling and an unregistered team key → `rt settings
+ *   set` at user scope changes the answer while every comment in the file
+ *   survives → `rt intercept install` builds the shim from the stores' own
+ *   roles/intercepts and the intercepted command comes back with the port the
+ *   team store's role pool declares AND env from a hook whose path was
+ *   written as `${team:e2eteam}` → the staleness probe fires when a store
  *   file is newer than the rules cache and `rt intercept install` clears it.
  *
  * The load-bearing step is the intercept one: it is the only place where the
  * whole chain (store file → resolver → identity → intercepts.json → shim →
  * daemon claim → role hook → child env) has to agree, and no unit test can
- * reach it. If roles/intercepts ever leak back into the per-repo config.json
- * fixture, this test still passes for the WRONG reason — hence the explicit
- * assertion that the legacy file carries neither key.
+ * reach it.
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
@@ -107,7 +104,6 @@ const TEAM = "e2eteam";
 let userStore = "";
 let teamStore = "";
 let machineStore = "";
-let legacyConfig = "";
 let hookStub = "";
 
 const children: Array<ReturnType<typeof Bun.spawn>> = [];
@@ -297,11 +293,6 @@ describe("rt settings (four stores, one resolver — e2e)", () => {
     mkdirSync(join(rtDir, "repos", REPO_NAME), { recursive: true });
     writeFileSync(join(rtDir, "repos.json"), JSON.stringify({ [REPO_NAME]: repoPath }, null, 2));
 
-    // The legacy rung. Deliberately carries NEITHER `roles` NOR `intercepts`:
-    // the interception path below has to be fed by the stores alone.
-    legacyConfig = join(rtDir, "repos", REPO_NAME, "config.json");
-    writeFileSync(legacyConfig, JSON.stringify({ worktrees: { branchFormat: "legacy-<ticket>" } }, null, 2));
-
     userStore = join(home, ".mattstack", "user", "settings.jsonc");
     teamStore = join(home, ".mattstack", "teams", TEAM, "mattstack", "settings.jsonc");
     machineStore = join(home, ".mattstack", "settings.local.jsonc");
@@ -346,12 +337,6 @@ describe("rt settings (four stores, one resolver — e2e)", () => {
 
   // ── 1. reads ───────────────────────────────────────────────────────────────
 
-  test("the legacy per-repo file declares neither roles nor intercepts", () => {
-    const legacy = JSON.parse(readFileSync(legacyConfig, "utf8"));
-    expect(legacy.roles).toBeUndefined();
-    expect(legacy.intercepts).toBeUndefined();
-  });
-
   test("get resolves a store-only key, expands ${team:...} and passes ${port} through", async () => {
     const out = await rtJson(["settings", "get", "rt.roles", "--repo", REPO_NAME, "--json"]);
     expect(out.ok).toBe(true);
@@ -371,27 +356,19 @@ describe("rt settings (four stores, one resolver — e2e)", () => {
     expect(out.provenance).toEqual([{ scope: "team.repo", file: teamStore }]);
   }, 30_000);
 
-  test("the deep-merge key merges legacy + team + user + machine with multi-scope provenance", async () => {
+  test("the deep-merge key merges team + user + machine with multi-scope provenance", async () => {
     const out = await rtJson(["settings", "get", "rt.worktrees", "--repo", REPO_NAME, "--json"]);
     expect(out.value).toEqual({
       onDeck: 3,                                  // team.repo
       ready: [{ run: "echo team-ready" }],        // team.repo
       namePool: ["alpha", "beta"],                // user.repo
-      branchFormat: "legacy-<ticket>",            // legacy
       root: "~/machine-trees",                    // machine.repo (path literals are legal there)
     });
     expect(out.provenance).toEqual([
-      { scope: "legacy", file: legacyConfig },
       { scope: "team.repo", file: teamStore },
       { scope: "user.repo", file: userStore },
       { scope: "machine.repo", file: machineStore },
     ]);
-  }, 30_000);
-
-  test("get labels a migrated:false key with the legacy file it still reads", async () => {
-    const out = await rtJson(["settings", "get", "rt.llm", "--json"]);
-    expect(out.migrated).toBe(false);
-    expect(out.legacyFile).toBe("llm.json");
   }, 30_000);
 
   test("list reports migrated flags and labels the team store's unregistered key", async () => {
@@ -400,7 +377,7 @@ describe("rt settings (four stores, one resolver — e2e)", () => {
 
     expect(byKey.get("rt.worktrees").migrated).toBe(true);
     expect(byKey.get("rt.worktrees").value.onDeck).toBe(3);
-    expect(byKey.get("rt.llm").migrated).toBe(false);
+    expect(byKey.get("rt.hooks").migrated).toBe(false);
 
     const unknown = byKey.get("rt.e2eFutureKey");
     expect(unknown.unregistered).toBe(true);
@@ -415,12 +392,10 @@ describe("rt settings (four stores, one resolver — e2e)", () => {
 
     expect(out).toContain("rt.worktrees");
     expect(out).toContain("(registry default)");
-    expect(out).toMatch(new RegExp(`legacy\\s+${legacyConfig}\\s+\\{"branchFormat":"legacy-<ticket>"\\}`));
     expect(out).toMatch(new RegExp(`team\\.repo\\s+${teamStore}\\s+\\{"onDeck":3`));
     expect(out).toMatch(new RegExp(`user\\.repo\\s+${userStore}\\s+\\{"namePool"`));
     expect(out).toMatch(new RegExp(`machine\\.repo\\s+${machineStore}\\s+\\{"root"`));
     // Rung ORDER is the contract: weakest first.
-    expect(out.indexOf("legacy")).toBeLessThan(out.indexOf("team.repo"));
     expect(out.indexOf("team.repo")).toBeLessThan(out.indexOf("user.repo"));
     expect(out.indexOf("user.repo")).toBeLessThan(out.indexOf("machine.repo"));
   }, 30_000);
@@ -446,9 +421,7 @@ describe("rt settings (four stores, one resolver — e2e)", () => {
     expect(out.value.namePool).toEqual(["gamma"]);
     // The other scopes are untouched by a write that only owns namePool.
     expect(out.value.onDeck).toBe(3);
-    expect(out.value.branchFormat).toBe("legacy-<ticket>");
     expect(out.provenance.map((p: any) => p.scope)).toEqual([
-      "legacy",
       "team.repo",
       "user.repo",
       "machine.repo",

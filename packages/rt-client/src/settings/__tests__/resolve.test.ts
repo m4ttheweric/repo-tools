@@ -15,26 +15,21 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
   machineSettingsPath,
-  repoDataDir,
   teamSettingsPath,
   teamsDir,
   userSettingsPath,
 } from "../paths.ts";
 import { getDef, type SettingDef } from "../registry-machinery.ts";
 import {
-  defaultLegacyReader,
   expandVariables,
   explainSetting,
   getSetting,
   listSettings,
-  setLegacyReader,
   type ExplainRow,
-  type LegacyReader,
   type Provenance,
 } from "../resolve.ts";
 
 const IDENTITY = "gitlab.com/assured/assured-dev";
-const REPO_NAME = "assured-dev";
 const TEAM = "claimview";
 
 describe("settings/resolve", () => {
@@ -50,7 +45,6 @@ describe("settings/resolve", () => {
 
   afterEach(() => {
     warnSpy.mockRestore();
-    setLegacyReader(defaultLegacyReader);
     process.env.HOME = origHome;
     rmSync(home, { recursive: true, force: true });
   });
@@ -65,9 +59,6 @@ describe("settings/resolve", () => {
   const writeUser = (obj: unknown) => write(userSettingsPath(), obj);
   const writeMachine = (obj: unknown) => write(machineSettingsPath(), obj);
   const writeTeam = (name: string, obj: unknown) => write(teamSettingsPath(name), obj);
-  const writeLegacy = (obj: unknown) => write(join(repoDataDir(REPO_NAME), "config.json"), obj);
-
-  const legacyFile = () => join(repoDataDir(REPO_NAME), "config.json");
 
   /**
    * No wave-1 key carries `teamLocked` yet, but the resolver must implement
@@ -91,7 +82,6 @@ describe("settings/resolve", () => {
 
   describe("scope precedence", () => {
     type Layer =
-      | "legacy"
       | "team"
       | "user"
       | "team.repo"
@@ -103,7 +93,6 @@ describe("settings/resolve", () => {
     // (rt.intercepts has no registry default; the default rung is covered by
     // its own test below with rt.worktrees).
     const LADDER: Layer[] = [
-      "legacy",
       "team",
       "user",
       "team.repo",
@@ -115,19 +104,17 @@ describe("settings/resolve", () => {
     const marker = (layer: Layer) => [{ id: layer }];
 
     function fileFor(layer: Layer): string {
-      if (layer === "legacy") return legacyFile();
       if (layer === "team" || layer === "team.repo") return teamSettingsPath(TEAM);
       if (layer === "user" || layer === "user.repo") return userSettingsPath();
       return machineSettingsPath();
     }
 
-    /** Writes all four stores so that exactly `active` layers hold a value. */
+    /** Writes all three stores so that exactly `active` layers hold a value. */
     function writeLayers(active: Layer[]): void {
       const on = (l: Layer) => active.includes(l);
       const global = (l: Layer) => (on(l) ? { "rt.intercepts": marker(l) } : {});
       const repos = (l: Layer) => (on(l) ? { [IDENTITY]: { "rt.intercepts": marker(l) } } : {});
 
-      writeLegacy(on("legacy") ? { intercepts: marker("legacy") } : {});
       writeTeam(TEAM, { ...global("team"), repos: repos("team.repo") });
       writeUser({ ...global("user"), repos: repos("user.repo") });
       writeMachine({ ...global("machine"), repos: repos("machine.repo") });
@@ -141,7 +128,6 @@ describe("settings/resolve", () => {
 
         const got = getSetting<Array<{ id: string }>>("rt.intercepts", {
           repoIdentity: IDENTITY,
-          legacy: { repoName: REPO_NAME },
         });
 
         expect(got.value).toEqual([{ id: expected }]);
@@ -167,37 +153,35 @@ describe("settings/resolve", () => {
   // ─── deep merge ────────────────────────────────────────────────────────────
 
   describe("deep merge", () => {
-    test("the spec proof case: team + user + legacy fields all survive", () => {
-      writeLegacy({
-        worktrees: {
-          onDeck: 1,
-          root: "${repoRoot}/.worktrees",
-          branchFormat: "<ticket>-<slug>",
-          namePool: ["old"],
-        },
-      });
+    test("the spec proof case: team + user + machine fields all survive", () => {
       writeTeam(TEAM, {
         "rt.worktrees": { onDeck: 3, ready: [{ run: "bun install" }, { run: "bun run build" }] },
       });
       writeUser({ "rt.worktrees": { namePool: ["alpha", "bravo"] } });
+      writeMachine({
+        "rt.worktrees": {
+          onDeck: 5,
+          root: "${repoRoot}/.worktrees",
+          branchFormat: "<ticket>-<slug>",
+        },
+      });
 
       const got = getSetting<Record<string, unknown>>("rt.worktrees", {
         repoIdentity: IDENTITY,
-        legacy: { repoName: REPO_NAME },
         expandCtx: { repoRoot: "/repos/assured-dev" },
       });
 
       expect(got.value).toEqual({
-        onDeck: 3, // team beats legacy beats the registry default
-        root: "/repos/assured-dev/.worktrees", // legacy-only field survives (and expands)
-        branchFormat: "<ticket>-<slug>", // legacy-only field survives
+        onDeck: 5, // machine beats team beats the registry default
+        root: "/repos/assured-dev/.worktrees", // machine-only field (and expands)
+        branchFormat: "<ticket>-<slug>", // machine-only field survives
         namePool: ["alpha", "bravo"], // user-only field
         ready: [{ run: "bun install" }, { run: "bun run build" }], // team-only field
       });
       expect(got.provenance).toEqual([
-        { scope: "legacy", file: legacyFile() },
         { scope: "team", file: teamSettingsPath(TEAM) },
         { scope: "user", file: userSettingsPath() },
+        { scope: "machine", file: machineSettingsPath() },
       ]);
     });
 
@@ -212,20 +196,19 @@ describe("settings/resolve", () => {
     });
 
     test("arrays inside a deep key replace atomically — never element-wise", () => {
-      writeLegacy({ worktrees: { ready: [{ run: "legacy-1" }, { run: "legacy-2" }] } });
-      writeTeam(TEAM, { "rt.worktrees": { ready: [{ run: "team-only" }] } });
+      writeTeam(TEAM, { "rt.worktrees": { ready: [{ run: "team-1" }, { run: "team-2" }] } });
+      writeUser({ "rt.worktrees": { ready: [{ run: "user-only" }] } });
 
       const got = getSetting<{ ready: unknown[] }>("rt.worktrees", {
         repoIdentity: IDENTITY,
-        legacy: { repoName: REPO_NAME },
       });
 
-      expect(got.value.ready).toEqual([{ run: "team-only" }]);
-      // legacy set ONLY `ready`, which team replaced whole, so legacy drops out
+      expect(got.value.ready).toEqual([{ run: "user-only" }]);
+      // team set ONLY `ready`, which user replaced whole, so team drops out
       // of provenance; the default still owns onDeck, so it stays in.
       expect(got.provenance).toEqual([
         { scope: "default", file: null },
-        { scope: "team", file: teamSettingsPath(TEAM) },
+        { scope: "user", file: userSettingsPath() },
       ]);
     });
 
@@ -307,25 +290,15 @@ describe("settings/resolve", () => {
       });
     });
 
-    test("team.repo still beats team for a locked key, and legacy is shadowed too", () => {
-      writeLegacy({ intercepts: [{ id: "legacy" }] });
+    test("team.repo still beats team for a locked key", () => {
       writeTeam(TEAM, {
         "rt.intercepts": [{ id: "team" }],
         repos: { [IDENTITY]: { "rt.intercepts": [{ id: "team.repo" }] } },
       });
 
       withTeamLocked("rt.intercepts", () => {
-        const got = getSetting("rt.intercepts", {
-          repoIdentity: IDENTITY,
-          legacy: { repoName: REPO_NAME },
-        });
+        const got = getSetting("rt.intercepts", { repoIdentity: IDENTITY });
         expect(got.value).toEqual([{ id: "team.repo" }]);
-
-        const rows = explainSetting("rt.intercepts", {
-          repoIdentity: IDENTITY,
-          legacy: { repoName: REPO_NAME },
-        });
-        expect(rows.find((r) => r.scope === "legacy")?.shadowed).toBe("teamLocked");
       });
     });
   });
@@ -532,15 +505,15 @@ describe("settings/resolve", () => {
     });
 
     test("a non-repoScoped key ignores repo sections entirely", () => {
-      // rt.llm is not repoScoped.
+      // rt.notifications is not repoScoped.
       writeUser({
-        "rt.llm": { provider: "ollama" },
-        repos: { [IDENTITY]: { "rt.llm": { provider: "sneaky" } } },
+        "rt.notifications": { pushes: true },
+        repos: { [IDENTITY]: { "rt.notifications": { pushes: false } } },
       });
 
-      const got = getSetting("rt.llm", { repoIdentity: IDENTITY });
+      const got = getSetting("rt.notifications", { repoIdentity: IDENTITY });
 
-      expect(got.value).toEqual({ provider: "ollama" });
+      expect(got.value).toEqual({ pushes: true });
       expect(got.provenance).toEqual([{ scope: "user", file: userSettingsPath() }]);
     });
 
@@ -568,68 +541,6 @@ describe("settings/resolve", () => {
     });
   });
 
-  // ─── legacy layer ──────────────────────────────────────────────────────────
-
-  describe("legacy layer", () => {
-    test("the default reader maps the three wave-1 keys onto repos/<name>/config.json", () => {
-      writeLegacy({
-        roles: { be: { pool: [] } },
-        intercepts: [{ id: "legacy" }],
-        worktrees: { onDeck: 4 },
-        setup: "not a settings key",
-      });
-
-      const opts = { repoIdentity: IDENTITY, legacy: { repoName: REPO_NAME } };
-      expect(getSetting("rt.roles", opts).value).toEqual({ be: { pool: [] } });
-      expect(getSetting("rt.intercepts", opts).value).toEqual([{ id: "legacy" }]);
-      expect(getSetting("rt.worktrees", opts).value).toEqual({ onDeck: 4 });
-      expect(getSetting("rt.roles", opts).provenance).toEqual([
-        { scope: "legacy", file: legacyFile() },
-      ]);
-    });
-
-    test("the legacy layer is only consulted when the caller supplies a repoName", () => {
-      writeLegacy({ intercepts: [{ id: "legacy" }] });
-
-      expect(getSetting("rt.intercepts", { repoIdentity: IDENTITY }).value).toBeUndefined();
-    });
-
-    test("a key with no legacy mapping reads nothing from the legacy file", () => {
-      writeLegacy({ llm: { provider: "from-legacy" } });
-
-      expect(getSetting("rt.llm", { legacy: { repoName: REPO_NAME } }).value).toBeUndefined();
-    });
-
-    test("a malformed legacy file degrades to no legacy value", () => {
-      const file = legacyFile();
-      mkdirSync(dirname(file), { recursive: true });
-      writeFileSync(file, "{ not json");
-
-      expect(
-        getSetting("rt.intercepts", { repoIdentity: IDENTITY, legacy: { repoName: REPO_NAME } })
-          .value,
-      ).toBeUndefined();
-    });
-
-    test("setLegacyReader is a working test seam", () => {
-      const reader: LegacyReader = (key, repoName) =>
-        key === "rt.intercepts" && repoName === REPO_NAME ? [{ id: "injected" }] : undefined;
-      setLegacyReader(reader);
-
-      const got = getSetting("rt.intercepts", {
-        repoIdentity: IDENTITY,
-        legacy: { repoName: REPO_NAME },
-      });
-      expect(got.value).toEqual([{ id: "injected" }]);
-
-      setLegacyReader(defaultLegacyReader);
-      expect(
-        getSetting("rt.intercepts", { repoIdentity: IDENTITY, legacy: { repoName: REPO_NAME } })
-          .value,
-      ).toBeUndefined();
-    });
-  });
-
   // ─── listSettings / explainSetting shape ───────────────────────────────────
 
   describe("listSettings", () => {
@@ -638,24 +549,17 @@ describe("settings/resolve", () => {
 
       expect(listed[0]?.key).toBe("rt.roles");
       expect(listed.find((e) => e.key === "rt.roles")?.migrated).toBe(true);
-      expect(listed.find((e) => e.key === "rt.llm")?.migrated).toBe(false);
+      expect(listed.find((e) => e.key === "rt.hooks")?.migrated).toBe(false);
       expect(listed.every((e) => Array.isArray(e.provenance))).toBe(true);
     });
 
-    test("resolved values and the legacy layer flow into the listing", () => {
-      writeLegacy({ worktrees: { onDeck: 2, branchFormat: "x" } });
-      writeUser({ "rt.worktrees": { onDeck: 5 } });
+    test("resolved values flow into the listing", () => {
+      writeUser({ "rt.worktrees": { onDeck: 5, branchFormat: "x" } });
 
-      const entry = listSettings({
-        repoIdentity: IDENTITY,
-        legacy: { repoName: REPO_NAME },
-      }).find((e) => e.key === "rt.worktrees");
+      const entry = listSettings({ repoIdentity: IDENTITY }).find((e) => e.key === "rt.worktrees");
 
       expect(entry?.value).toEqual({ onDeck: 5, branchFormat: "x" });
-      expect(entry?.provenance).toEqual([
-        { scope: "legacy", file: legacyFile() },
-        { scope: "user", file: userSettingsPath() },
-      ]);
+      expect(entry?.provenance).toEqual([{ scope: "user", file: userSettingsPath() }]);
     });
 
     test("unregistered entries sort after the registered ones", () => {
@@ -673,14 +577,10 @@ describe("settings/resolve", () => {
     test("returns one row per reachable rung, weakest-first, with files and presence", () => {
       writeTeam(TEAM, { repos: { [IDENTITY]: { "rt.worktrees": { onDeck: 3 } } } });
 
-      const rows = explainSetting("rt.worktrees", {
-        repoIdentity: IDENTITY,
-        legacy: { repoName: REPO_NAME },
-      });
+      const rows = explainSetting("rt.worktrees", { repoIdentity: IDENTITY });
 
       expect(rows.map((r) => r.scope)).toEqual([
         "default",
-        "legacy",
         "team",
         "user",
         "team.repo",
@@ -689,7 +589,6 @@ describe("settings/resolve", () => {
         "machine.repo",
       ]);
       expect(rows[0]).toEqual({ scope: "default", file: null, present: true, value: { onDeck: 0 } });
-      expect(rows.find((r) => r.scope === "legacy")?.present).toBe(false);
       const teamRepo = rows.find((r) => r.scope === "team.repo") as ExplainRow;
       expect(teamRepo.present).toBe(true);
       expect(teamRepo.file).toBe(teamSettingsPath(TEAM));

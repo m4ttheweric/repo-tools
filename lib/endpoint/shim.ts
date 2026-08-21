@@ -31,7 +31,6 @@ import { join, relative } from "path";
 import { readJson, writeJson } from "../json-store.ts";
 import {
   machineSettingsPath,
-  repoDataDir,
   rtDir,
   teamSettingsPath,
   userSettingsPath,
@@ -163,23 +162,10 @@ export async function buildInterceptRules(): Promise<InterceptRule[]> {
 
 /**
  * Every file a rule in the cache could have come from: the three authored
- * store files (each cloned team's included) plus the legacy per-repo
- * config.json of every repo the CACHED rules name.
- *
- * Using the cached rules' repos — rather than the whole repo index — keeps the
- * probe cheap and spawn-free (no identity derivation), and it is the honest
- * set: a legacy file for a repo that contributes no rules cannot make the
- * rules wrong. The gap it leaves is a repo that would START contributing rules
- * after an edit to a config.json it has never had; that is precisely what the
- * store rungs are for now, and `rt intercept install` remains the manual regen
- * (spec: three-part answer, part b).
+ * store files, each cloned team's included.
  */
 function interceptSourceFiles(): string[] {
-  const files = [userSettingsPath(), machineSettingsPath(), ...listTeams().map(teamSettingsPath)];
-  for (const repo of new Set(loadInterceptRules().map((rule) => rule.repo))) {
-    files.push(join(repoDataDir(repo), "config.json"));
-  }
-  return files;
+  return [userSettingsPath(), machineSettingsPath(), ...listTeams().map(teamSettingsPath)];
 }
 
 /**

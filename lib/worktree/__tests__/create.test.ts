@@ -1,13 +1,52 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { writeJson } from "../../json-store.ts";
-import { repoDataDir } from "../../rt-paths.ts";
+import { machineSettingsPath } from "../../rt-paths.ts";
+import { deriveRepoIdentity } from "../../settings/identity.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../registry.ts";
 import { branchExistsLocalAsync, listWorktreesAsync } from "../git-async.ts";
 import { createTree, scrapTree, type CreateDeps } from "../create.ts";
+
+function readMachineStore(): Record<string, unknown> {
+  try {
+    return JSON.parse(readFileSync(machineSettingsPath(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeMachineStore(obj: Record<string, unknown>): void {
+  mkdirSync(join(machineSettingsPath(), ".."), { recursive: true });
+  writeFileSync(machineSettingsPath(), JSON.stringify(obj));
+}
+
+/**
+ * Gives `repoPath` a resolvable settings identity, pinning its (local
+ * bare-clone) origin via the machine store's `rt.repoIdentityOverrides` when
+ * it doesn't itself normalize — exactly the fork/local-remote mechanism
+ * production uses.
+ */
+async function ensureIdentity(repoPath: string, repoName: string): Promise<string> {
+  const remote = execSync("git config --get remote.origin.url", { cwd: repoPath, encoding: "utf8" }).trim();
+  const direct = await deriveRepoIdentity(repoPath);
+  if (direct) return direct;
+
+  const identity = `rttest.local/${repoName}`;
+  const store = readMachineStore();
+  const overrides = { ...(store["rt.repoIdentityOverrides"] as Record<string, string> ?? {}), [remote]: identity };
+  writeMachineStore({ ...store, "rt.repoIdentityOverrides": overrides });
+  return identity;
+}
+
+/** Seeds `rt.worktrees` for `repoPath` in the machine store — the store-only replacement for the old per-repo config.json fixture. */
+async function declareWorktrees(repoPath: string, repoName: string, declared: unknown): Promise<void> {
+  const identity = await ensureIdentity(repoPath, repoName);
+  const store = readMachineStore();
+  const repos = { ...(store.repos as Record<string, unknown> ?? {}), [identity]: { "rt.worktrees": declared } };
+  writeMachineStore({ ...store, repos });
+}
 
 function makeRepo(): string {
   // realpathSync: git canonicalizes /var -> /private/var on macOS (Global Constraints)
@@ -88,12 +127,7 @@ describe("createTree", () => {
   });
 
   test("failing ready step scraps the worktree, branch, and registry entry", async () => {
-    writeJson(join(repoDataDir(repoName), "config.json"), {
-      worktrees: {
-        namePool: ["failtree"],
-        ready: [{ run: "exit 1" }],
-      },
-    });
+    await declareWorktrees(repo, repoName, { namePool: ["failtree"], ready: [{ run: "exit 1" }] });
 
     const deps = makeDeps(repoName, repo, events);
     const result = await createTree(deps);

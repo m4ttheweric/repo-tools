@@ -6,7 +6,6 @@ import { dirname, join } from "path";
 import { writeJson } from "../../json-store.ts";
 import {
   machineSettingsPath,
-  repoDataDir,
   rtDir,
   teamSettingsPath,
   userSettingsPath,
@@ -49,7 +48,7 @@ describe("worktree config", () => {
   });
 
   describe("loadWorktreeRepoConfig", () => {
-    test("defaults when config.json is missing", async () => {
+    test("defaults when nothing is declared", async () => {
       const repoPath = tmpRepoPath("rtcfg-repo-");
       const cfg = await loadWorktreeRepoConfig("myrepo", repoPath);
       expect(cfg).toEqual({
@@ -58,72 +57,6 @@ describe("worktree config", () => {
         branchFormat: "<ticket>-<slug>",
         ready: [],
       });
-    });
-
-    test("defaults when config.json exists but has no 'worktrees' key", async () => {
-      const repoPath = tmpRepoPath("rtcfg-repo-");
-      writeJson(join(repoDataDir("myrepo"), "config.json"), {
-        setup: [],
-        clean: [],
-        startScript: "start",
-        open: { base: "" },
-      });
-      const cfg = await loadWorktreeRepoConfig("myrepo", repoPath);
-      expect(cfg).toEqual({
-        onDeck: 0,
-        root: join(repoPath, ".worktrees"),
-        branchFormat: "<ticket>-<slug>",
-        ready: [],
-      });
-    });
-
-    test("declared block round-trips", async () => {
-      const repoPath = tmpRepoPath("rtcfg-repo-");
-      const declared = {
-        onDeck: 2,
-        namePool: ["hogwarts", "bellatrix"],
-        root: "/absolute/path/to/assured",
-        branchFormat: "<ticket>",
-        ready: [
-          { run: "pnpm genTypes", when: "changed:db/schema/**" },
-        ],
-      };
-      writeJson(join(repoDataDir("myrepo"), "config.json"), {
-        setup: [{ label: "x", command: "y" }],
-        worktrees: declared,
-      });
-      const cfg = await loadWorktreeRepoConfig("myrepo", repoPath);
-      expect(cfg).toEqual(declared);
-    });
-
-    test("expands a leading ~/ in root against call-time HOME", async () => {
-      const repoPath = tmpRepoPath("rtcfg-repo-");
-      writeJson(join(repoDataDir("myrepo"), "config.json"), {
-        worktrees: { root: "~/wt-root" },
-      });
-      const cfg = await loadWorktreeRepoConfig("myrepo", repoPath);
-      expect(cfg.root).toBe(join(process.env.HOME!, "wt-root"));
-    });
-
-    test("drops dot-leading namePool entries", async () => {
-      // A pool entry named ".trash-x" would build a tree the reconciler's reap
-      // duty then deletes as a leftover. The reaper is the only rm -rf in the
-      // codebase; this is the door it can come through.
-      const repoPath = tmpRepoPath("rtcfg-repo-");
-      writeJson(join(repoDataDir("myrepo"), "config.json"), {
-        worktrees: { namePool: [".trash-x", "luna"] },
-      });
-      const cfg = await loadWorktreeRepoConfig("myrepo", repoPath);
-      expect(cfg.namePool).toEqual(["luna"]);
-    });
-
-    test("leaves an absolute root unchanged", async () => {
-      const repoPath = tmpRepoPath("rtcfg-repo-");
-      writeJson(join(repoDataDir("myrepo"), "config.json"), {
-        worktrees: { root: "/absolute/wt-root" },
-      });
-      const cfg = await loadWorktreeRepoConfig("myrepo", repoPath);
-      expect(cfg.root).toBe("/absolute/wt-root");
     });
   });
 
@@ -133,7 +66,24 @@ describe("worktree config", () => {
     const IDENTITY = "gitlab.com/assured/assured-dev";
     const REMOTE = "git@gitlab.com:assured/assured-dev.git";
 
-    test("the deep-merge proof case: team onDeck/ready + user namePool + legacy everything", async () => {
+    test("a full declared block round-trips through a store", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-roundtrip-", REMOTE);
+      const declared = {
+        onDeck: 2,
+        namePool: ["hogwarts", "bellatrix"],
+        root: "/absolute/path/to/assured",
+        branchFormat: "<ticket>",
+        ready: [
+          { run: "pnpm genTypes", when: "changed:db/schema/**" },
+        ],
+      };
+      writeStore(machineSettingsPath(), { repos: { [IDENTITY]: { "rt.worktrees": declared } } });
+
+      const cfg = await loadWorktreeRepoConfig("assured-dev", repoPath);
+      expect(cfg).toEqual(declared);
+    });
+
+    test("the deep-merge proof case: team onDeck/ready + user namePool + machine root/branchFormat", async () => {
       const repoPath = tmpRepoWithRemote("rtcfg-merge-", REMOTE);
 
       // team: the shared pool size and the shared ready ladder
@@ -151,29 +101,27 @@ describe("worktree config", () => {
       writeStore(userSettingsPath(), {
         repos: { [IDENTITY]: { "rt.worktrees": { namePool: ["hogwarts", "bellatrix"] } } },
       });
-      // legacy: the pre-migration file, still carrying everything
-      writeJson(join(repoDataDir("assured-dev"), "config.json"), {
-        worktrees: {
-          onDeck: 1,
-          namePool: ["legacy-name"],
-          root: "/legacy/wt-root",
-          branchFormat: "<ticket>",
-          ready: [{ run: "legacy-step" }],
+      // machine: the strongest rung — restates onDeck, adds root/branchFormat
+      writeStore(machineSettingsPath(), {
+        repos: {
+          [IDENTITY]: {
+            "rt.worktrees": { onDeck: 1, root: "/machine/wt-root", branchFormat: "<ticket>" },
+          },
         },
       });
 
       const cfg = await loadWorktreeRepoConfig("assured-dev", repoPath);
 
       expect(cfg).toEqual({
-        onDeck: 3, // team beats legacy
-        namePool: ["hogwarts", "bellatrix"], // user beats legacy (arrays replace whole)
-        root: "/legacy/wt-root", // legacy-only field survives the merge
-        branchFormat: "<ticket>", // legacy-only field survives the merge
-        ready: [{ run: "pnpm install", when: "changed:pnpm-lock.yaml" }], // team beats legacy
+        onDeck: 1, // machine beats team
+        namePool: ["hogwarts", "bellatrix"], // user-only field
+        root: "/machine/wt-root", // machine-only field
+        branchFormat: "<ticket>", // machine-only field
+        ready: [{ run: "pnpm install", when: "changed:pnpm-lock.yaml" }], // team-only field
       });
     });
 
-    test("a store-only repo resolves with no legacy config.json at all", async () => {
+    test("a store-only repo resolves with no store section at all", async () => {
       const repoPath = tmpRepoWithRemote("rtcfg-storeonly-", REMOTE);
       writeStore(teamSettingsPath("claimview"), {
         repos: { [IDENTITY]: { "rt.worktrees": { onDeck: 2, namePool: ["luna"] } } },
@@ -210,7 +158,20 @@ describe("worktree config", () => {
       expect(cfg.root).toBe(join(process.env.HOME!, "wt"));
     });
 
-    test("the namePool dot-filter applies to a store value, not just the legacy file", async () => {
+    test("a machine-store absolute root is left unchanged", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-abs-", REMOTE);
+      writeStore(machineSettingsPath(), {
+        repos: { [IDENTITY]: { "rt.worktrees": { root: "/absolute/wt-root" } } },
+      });
+
+      const cfg = await loadWorktreeRepoConfig("assured-dev", repoPath);
+      expect(cfg.root).toBe("/absolute/wt-root");
+    });
+
+    test("the namePool dot-filter applies to a store value", async () => {
+      // A pool entry named ".trash-x" would build a tree the reconciler's reap
+      // duty then deletes as a leftover. The reaper is the only rm -rf in the
+      // codebase; this is the door it can come through.
       const repoPath = tmpRepoWithRemote("rtcfg-dotstore-", REMOTE);
       writeStore(userSettingsPath(), {
         repos: { [IDENTITY]: { "rt.worktrees": { namePool: [".trash-x", "luna"] } } },
@@ -218,19 +179,6 @@ describe("worktree config", () => {
 
       const cfg = await loadWorktreeRepoConfig("assured-dev", repoPath);
       expect(cfg.namePool).toEqual(["luna"]);
-    });
-
-    test("a repo with no derivable identity still reads its legacy file", async () => {
-      const repoPath = tmpRepoPath("rtcfg-noident-"); // not a git repo: identity null
-      writeStore(teamSettingsPath("claimview"), {
-        repos: { [IDENTITY]: { "rt.worktrees": { onDeck: 9 } } },
-      });
-      writeJson(join(repoDataDir("assured-dev"), "config.json"), {
-        worktrees: { onDeck: 4 },
-      });
-
-      const cfg = await loadWorktreeRepoConfig("assured-dev", repoPath);
-      expect(cfg.onDeck).toBe(4); // legacy answers; the repo section is unreachable
     });
   });
 
@@ -243,7 +191,7 @@ describe("worktree config", () => {
       expect(await worktreeSettingsDeclared("store-only", repoPath)).toBe(false);
     });
 
-    test("a team store section with no legacy config.json -> true", async () => {
+    test("a team store section -> true", async () => {
       const repoPath = tmpRepoWithRemote("rtcfg-act-store-", REMOTE);
       writeStore(teamSettingsPath("claimview"), {
         repos: { [IDENTITY]: { "rt.worktrees": { onDeck: 2 } } },
@@ -251,16 +199,12 @@ describe("worktree config", () => {
       expect(await worktreeSettingsDeclared("store-only", repoPath)).toBe(true);
     });
 
-    test("an EMPTY legacy worktrees block still counts, exactly as it did pre-resolver", async () => {
-      const repoPath = tmpRepoWithRemote("rtcfg-act-legacy-", REMOTE);
-      writeJson(join(repoDataDir("store-only"), "config.json"), { worktrees: {} });
+    test("an EMPTY declared block still counts as declared", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-act-empty-", REMOTE);
+      writeStore(teamSettingsPath("claimview"), {
+        repos: { [IDENTITY]: { "rt.worktrees": {} } },
+      });
       expect(await worktreeSettingsDeclared("store-only", repoPath)).toBe(true);
-    });
-
-    test("a config.json with other keys but no worktrees block -> false", async () => {
-      const repoPath = tmpRepoWithRemote("rtcfg-act-other-", REMOTE);
-      writeJson(join(repoDataDir("store-only"), "config.json"), { setup: [], startScript: "x" });
-      expect(await worktreeSettingsDeclared("store-only", repoPath)).toBe(false);
     });
   });
 

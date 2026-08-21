@@ -2,17 +2,16 @@
  * lib/endpoint/config.ts — the resolver-backed endpoint reader.
  *
  * Every test re-points HOME to a fresh temp dir (the lib/settings/resolve.test.ts
- * pattern). That is load-bearing here, not hygiene: settings STORE files are
- * process-global state resolved through call-time HOME, so a store fixture
- * written by any other suite sharing the preload HOME would silently outrank
- * the legacy config.json these tests assert on.
+ * pattern): settings STORE files are process-global state resolved through
+ * call-time HOME, so a store fixture written by any other suite sharing the
+ * preload HOME would silently outrank these tests' own fixtures.
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { machineSettingsPath, repoDataDir, teamSettingsPath, teamsDir, userSettingsPath } from "../../rt-paths.ts";
+import { machineSettingsPath, teamSettingsPath, teamsDir, userSettingsPath } from "../../rt-paths.ts";
 import { loadEndpointConfig } from "../config.ts";
 
 const IDENTITY = "gitlab.com/fake/endpoint-repo";
@@ -42,32 +41,22 @@ describe("loadEndpointConfig", () => {
     writeFileSync(file, JSON.stringify(obj, null, 2));
   }
 
-  function writeRepoConfig(repo: string, obj: unknown): void {
-    const dir = repoDataDir(repo);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "config.json"), JSON.stringify(obj));
-  }
-
   /** Registers `repo` → a path in repos.json, which is where `${repoRoot}` comes from. */
   function writeRepoIndex(index: Record<string, string>): void {
     write(join(home, ".mattstack", "rt", "repos.json"), index);
   }
 
-  const legacy = (repoName: string) => loadEndpointConfig({ repoIdentity: null, repoName });
-
-  // ─── legacy rung: the pre-migration behaviour, unchanged ───────────────────
-
-  test("missing file yields empty config", () => {
-    const cfg = legacy("no-such-repo");
+  test("missing everything yields empty config", () => {
+    const cfg = loadEndpointConfig({ repoIdentity: null, repoName: "no-such-repo" });
     expect(cfg.roles).toEqual({});
     expect(cfg.intercepts).toEqual([]);
   });
 
   test("flattens ranges, sorts and dedupes pools, applies defaults", () => {
-    writeRepoConfig("r1", {
-      roles: { backend: { pool: [{ from: 10402, to: 10404 }, 10400, 10400] } },
+    write(machineSettingsPath(), {
+      repos: { [IDENTITY]: { "rt.roles": { backend: { pool: [{ from: 10402, to: 10404 }, 10400, 10400] } } } },
     });
-    const cfg = legacy("r1");
+    const cfg = loadEndpointConfig({ repoIdentity: IDENTITY, repoName: "r1" });
     expect(cfg.roles.backend!.pool).toEqual([10400, 10402, 10403, 10404]);
     expect(cfg.roles.backend!.needs).toEqual([]);
     expect(cfg.roles.backend!.preserveEnv).toEqual([]);
@@ -75,23 +64,22 @@ describe("loadEndpointConfig", () => {
   });
 
   test("drops malformed entries instead of throwing", () => {
-    writeRepoConfig("r2", {
-      roles: { ok: { fixedPort: 4002 }, bad: "nope" },
-      intercepts: [{ command: "doppler", matches: [{ cwdGlob: "apps/x/**", role: "ok" }] }, { matches: [] }],
+    write(machineSettingsPath(), {
+      repos: {
+        [IDENTITY]: {
+          "rt.roles": { ok: { fixedPort: 4002 }, bad: "nope" },
+          "rt.intercepts": [{ command: "doppler", matches: [{ cwdGlob: "apps/x/**", role: "ok" }] }, { matches: [] }],
+        },
+      },
     });
-    const cfg = legacy("r2");
+    const cfg = loadEndpointConfig({ repoIdentity: IDENTITY, repoName: "r2" });
     expect(Object.keys(cfg.roles)).toEqual(["ok"]);
     expect(cfg.roles.ok!.fixedPort).toBe(4002);
     expect(cfg.intercepts).toHaveLength(1);
     expect(cfg.intercepts[0]!.command).toBe("doppler");
   });
 
-  test("coexists with other keys in the same document (worktrees, setup)", () => {
-    writeRepoConfig("r3", { setup: [], worktrees: { onDeck: 2 }, roles: { web: { pool: [3000] } } });
-    expect(legacy("r3").roles.web!.pool).toEqual([3000]);
-  });
-
-  test("with no store files at all, a full legacy config resolves byte-identically", () => {
+  test("with a full store block, resolves byte-identically to the authored shape", () => {
     const authored = {
       roles: {
         backend: {
@@ -113,12 +101,14 @@ describe("loadEndpointConfig", () => {
         },
       ],
     };
-    writeRepoConfig("r-full", authored);
+    write(machineSettingsPath(), {
+      repos: { [IDENTITY]: { "rt.roles": authored.roles, "rt.intercepts": authored.intercepts } },
+    });
 
-    // Identical to what the pre-resolver reader produced: the domain templates
-    // (${port}, ${roles.*}, ${envKeys}) pass through unexpanded, and the legacy
-    // file's absolute hook path is untouched (path literals are legal there).
-    expect(legacy("r-full")).toEqual({
+    // The domain templates (${port}, ${roles.*}, ${envKeys}) pass through
+    // unexpanded, and the machine store's absolute hook path is untouched
+    // (path literals are legal there).
+    expect(loadEndpointConfig({ repoIdentity: IDENTITY, repoName: "r-full" })).toEqual({
       roles: {
         backend: {
           pool: [10400, 10401],
@@ -185,26 +175,30 @@ describe("loadEndpointConfig", () => {
   });
 
   test("rt.roles deep-merges across scopes; rt.intercepts replaces atomically", () => {
-    writeRepoConfig("r-merge", {
-      roles: { backend: { pool: [1000], preserveEnv: ["LEGACY_ONLY"] }, legacyOnly: { pool: [9000] } },
-      intercepts: [{ command: "legacy-cmd", matches: [{ cwdGlob: ".", role: "legacyOnly" }] }],
-    });
     write(teamSettingsPath(TEAM), {
-      repos: { [IDENTITY]: { "rt.roles": { backend: { pool: [{ from: 2000, to: 2000 }] } } } },
-    });
-    write(userSettingsPath(), {
       repos: {
         [IDENTITY]: {
-          "rt.intercepts": [{ command: "user-cmd", matches: [{ cwdGlob: ".", role: "backend" }] }],
+          "rt.roles": { backend: { pool: [1000], preserveEnv: ["TEAM_ONLY"] }, teamOnly: { pool: [9000] } },
+          "rt.intercepts": [{ command: "team-cmd", matches: [{ cwdGlob: ".", role: "teamOnly" }] }],
+        },
+      },
+    });
+    write(userSettingsPath(), {
+      repos: { [IDENTITY]: { "rt.roles": { backend: { pool: [{ from: 2000, to: 2000 }] } } } },
+    });
+    write(machineSettingsPath(), {
+      repos: {
+        [IDENTITY]: {
+          "rt.intercepts": [{ command: "machine-cmd", matches: [{ cwdGlob: ".", role: "backend" }] }],
         },
       },
     });
 
     const cfg = loadEndpointConfig({ repoIdentity: IDENTITY, repoName: "r-merge" });
-    expect(cfg.roles.backend!.pool).toEqual([2000]); // team wins the pool leaf
-    expect(cfg.roles.backend!.preserveEnv).toEqual(["LEGACY_ONLY"]); // legacy leaf survives
-    expect(cfg.roles.legacyOnly!.pool).toEqual([9000]); // legacy-only role survives
-    expect(cfg.intercepts.map((i) => i.command)).toEqual(["user-cmd"]); // replace, not splice
+    expect(cfg.roles.backend!.pool).toEqual([2000]); // user wins the pool leaf
+    expect(cfg.roles.backend!.preserveEnv).toEqual(["TEAM_ONLY"]); // team-only leaf survives
+    expect(cfg.roles.teamOnly!.pool).toEqual([9000]); // team-only role survives
+    expect(cfg.intercepts.map((i) => i.command)).toEqual(["machine-cmd"]); // replace, not splice
   });
 
   test("${repoRoot} expands from the repo index; an unresolvable one degrades to empty, never throws", () => {
@@ -229,11 +223,10 @@ describe("loadEndpointConfig", () => {
     expect(warnSpy.mock.calls.flat().join(" ")).toContain("repoRoot");
   });
 
-  test("a null identity makes repo store sections unreachable (legacy still answers)", () => {
-    writeRepoConfig("r-null", { roles: { web: { pool: [3000] } } });
+  test("a null identity makes repo store sections unreachable, even when one is authored", () => {
     write(teamSettingsPath(TEAM), {
       repos: { [IDENTITY]: { "rt.roles": { web: { pool: [{ from: 4000, to: 4000 }] } } } },
     });
-    expect(loadEndpointConfig({ repoIdentity: null, repoName: "r-null" }).roles.web!.pool).toEqual([3000]);
+    expect(loadEndpointConfig({ repoIdentity: null, repoName: "r-null" }).roles).toEqual({});
   });
 });

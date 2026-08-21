@@ -38,7 +38,6 @@ export interface SettingDef {
   repoScoped?: boolean;
   migrated?: boolean;
   legacyFile?: string;
-  siblingCommand?: string;
   pathGuardFields?: string[];
   description: string;
 }

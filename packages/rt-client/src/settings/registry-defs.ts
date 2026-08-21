@@ -148,16 +148,7 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Template used to generate a repo's Doppler secrets config.",
   },
 
-  // --- migrated:false (wave 1 legacy-file keys) ---------------------------
-  {
-    key: "rt.llm",
-    type: "object",
-    scopes: ALL_SCOPES,
-    merge: "deep",
-    migrated: false,
-    legacyFile: "llm.json",
-    description: "LLM provider and model selection for rt's AI-assisted commands.",
-  },
+  // --- migrated:false (deferred by ruling) --------------------------------
   {
     key: "rt.hooks",
     type: "object",

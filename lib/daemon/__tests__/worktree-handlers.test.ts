@@ -9,18 +9,58 @@
 
 import { describe, test, expect, beforeEach } from "bun:test";
 import { execSync } from "child_process";
-import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 import type { Logger } from "pino";
 import { writeJson } from "../../json-store.ts";
-import { repoDataDir, rtDir } from "../../rt-paths.ts";
+import { machineSettingsPath, repoDataDir, rtDir } from "../../rt-paths.ts";
+import { deriveRepoIdentity } from "../../settings/identity.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../../worktree/registry.ts";
 import { tryLockTree } from "../../worktree/locks.ts";
 import { branchExistsLocalAsync, currentBranchAsync, headSha } from "../../worktree/git-async.ts";
 import { createWorktreeHandlers, isClaimable } from "../handlers/worktree.ts";
 import type { HandlerContext, HandlerMap } from "../handlers/types.ts";
 import { fakeStore } from "./fake-cache-store.ts";
+
+function readMachineStore(): Record<string, unknown> {
+  try {
+    return JSON.parse(readFileSync(machineSettingsPath(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeMachineStore(obj: Record<string, unknown>): void {
+  mkdirSync(join(machineSettingsPath(), ".."), { recursive: true });
+  writeFileSync(machineSettingsPath(), JSON.stringify(obj));
+}
+
+/**
+ * Gives `repoPath` a resolvable settings identity, pinning its (local
+ * bare-clone) origin via the machine store's `rt.repoIdentityOverrides` when
+ * it doesn't itself normalize — exactly the fork/local-remote mechanism
+ * production uses.
+ */
+async function ensureIdentity(repoPath: string, repoName: string): Promise<string> {
+  const remote = execSync("git config --get remote.origin.url", { cwd: repoPath, encoding: "utf8" }).trim();
+  const direct = await deriveRepoIdentity(repoPath);
+  if (direct) return direct;
+
+  const identity = `rttest.local/${repoName}`;
+  const store = readMachineStore();
+  const overrides = { ...(store["rt.repoIdentityOverrides"] as Record<string, string> ?? {}), [remote]: identity };
+  writeMachineStore({ ...store, "rt.repoIdentityOverrides": overrides });
+  return identity;
+}
+
+/** Seeds `rt.worktrees` for `repoPath` in the machine store — the store-only replacement for the old per-repo config.json fixture. */
+async function declareWorktrees(repoPath: string, repoName: string, declared: unknown): Promise<void> {
+  const identity = await ensureIdentity(repoPath, repoName);
+  const store = readMachineStore();
+  const repos = { ...(store.repos as Record<string, unknown> ?? {}), [identity]: { "rt.worktrees": declared } };
+  writeMachineStore({ ...store, repos });
+}
 
 function sh(cmd: string, cwd?: string): string {
   return execSync(cmd, { cwd, shell: "/bin/zsh", encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
@@ -320,9 +360,7 @@ describe("worktree:provision", () => {
 
   test("a ready step that fails after the claim hands the tree over flagged", async () => {
     const repo = makeRepo();
-    writeJson(join(repoDataDir(repoName), "config.json"), {
-      worktrees: { ready: [{ run: "exit 3" }] },
-    });
+    await declareWorktrees(repo, repoName, { ready: [{ run: "exit 3" }] });
     seedOnDeck(repo, repoName, "alpha", new Date().toISOString());
     const { h } = makeHandlers({ [repoName]: repo });
 

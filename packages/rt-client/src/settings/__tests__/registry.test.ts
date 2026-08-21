@@ -27,7 +27,7 @@ describe("settings/registry", () => {
 
       expect(defs.length).toBeGreaterThan(0);
       expect(defs.map((d) => d.key)).toContain("rt.roles");
-      expect(defs.map((d) => d.key)).toContain("rt.llm");
+      expect(defs.map((d) => d.key)).toContain("rt.hooks");
     });
 
     test("every def has a non-empty one-line description", () => {
@@ -44,11 +44,10 @@ describe("settings/registry", () => {
       }
     });
 
-    test("every migrated:true (or suite, migrated-absent) def carries no legacyFile or siblingCommand", () => {
+    test("every migrated:true (or suite, migrated-absent) def carries no legacyFile", () => {
       for (const def of allDefs()) {
         if (!isMigrated(def)) continue;
         expect(def.legacyFile, `${def.key} is migrated but still carries a legacyFile`).toBeUndefined();
-        expect(def.siblingCommand, `${def.key} is migrated but still carries a siblingCommand`).toBeUndefined();
       }
     });
 
@@ -96,17 +95,11 @@ describe("settings/registry", () => {
       expect(def?.default).toEqual({ onDeck: 0 });
     });
 
-    test("the five migrated global singletons carry no siblingCommand or legacyFile", () => {
+    test("the five migrated global singletons carry no legacyFile", () => {
       for (const key of ["rt.notifications", "rt.cron", "rt.repoTracking", "rt.runaway", "rt.workspacePrefs"]) {
         const def = getDef(key);
-        expect(def?.siblingCommand, `${key} should carry no siblingCommand`).toBeUndefined();
         expect(def?.legacyFile, `${key} should carry no legacyFile`).toBeUndefined();
       }
-    });
-
-    test("legacyFile values match the trace for the remaining migrated:false keys", () => {
-      expect(getDef("rt.llm")?.legacyFile).toBe("llm.json");
-      expect(getDef("rt.hooks")?.legacyFile).toBe("repos/<repo>/hooks.json");
     });
 
     test("repoScoped is consistent with a repos/<repo>/... legacyFile prefix, in both directions", () => {
@@ -150,15 +143,8 @@ describe("settings/registry", () => {
       expect(def?.merge).toBe("replace");
     });
 
-    test("the one remaining genuinely global legacy key stays repoScoped:undefined with a bare (non-repos/) legacyFile", () => {
-      const def = getDef("rt.llm");
-      expect(def?.repoScoped, "rt.llm should not be repoScoped").toBeFalsy();
-      expect(def?.legacyFile?.startsWith("repos/"), "rt.llm legacyFile should not be repo-prefixed").toBe(false);
-    });
-
-    test("has exactly the 2 remaining migrated:false keys, the 15 migrated:true keys, and the 30 suite keys", () => {
+    test("has exactly the 1 remaining migrated:false key, the 15 migrated:true keys, and the 30 suite keys", () => {
       const migratedFalseKeys = [
-        "rt.llm",
         "rt.hooks",
       ];
       const migratedTrueKeys = [
