@@ -4,8 +4,8 @@
  * and the fzf resolver read it through here. Paths are relative to the .app
  * root unless a function says "absolute".
  */
-import { existsSync, readFileSync, realpathSync } from "fs";
-import { basename, dirname, join } from "path";
+import { existsSync, readFileSync, realpathSync, statSync } from "fs";
+import { basename, dirname, isAbsolute, join } from "path";
 import { currentMode } from "./dev-mode.ts";
 import { DEV_TRAY_APP_BUNDLE, TRAY_APP_BUNDLE, installedTrayAppPath } from "./rt-paths.ts";
 
@@ -29,7 +29,7 @@ export interface DepsLockTool {
    * (e.g. sparkle) it is relative to the deps directory instead — those
    * tools never ship inside the app — so it must never be joined against a
    * bundle root; bundledHelperPath/bundledExec refuse buildtool rows rather
-   * than resolve one.
+   * than resolve one. Never absolute or ".."-escaping either way.
    */
   bundlePath: string;
   /** Argv prefix that runs the tool, relative the same way bundlePath is. */
@@ -52,6 +52,12 @@ export const RT_BUNDLE_PATH = "Contents/MacOS/rt";
 
 const ARCHIVES = new Set<DepsLockArchive>(["raw", "tar.gz", "tar.xz", "zip", "npm"]);
 const SHA256 = /^[0-9a-f]{64}$/;
+const REQUIRED_STRING_FIELDS = ["name", "version", "license", "url", "sha256", "extract", "bundlePath"] as const;
+
+/** True for an absolute path or one that walks up via a ".." segment — neither is a safe archive-relative path. */
+function isUnsafeRelativePath(p: string): boolean {
+  return isAbsolute(p) || p.split("/").includes("..");
+}
 
 export function parseDepsLock(text: string): DepsLock {
   const raw = JSON.parse(text) as DepsLock;
@@ -60,30 +66,57 @@ export function parseDepsLock(text: string): DepsLock {
   if (!Array.isArray(raw.tools)) throw new Error("deps.lock: tools must be an array");
 
   const seen = new Set<string>();
-  for (const t of raw.tools) {
-    if (!t.name) throw new Error("deps.lock: tool without a name");
-    if (seen.has(t.name)) throw new Error(`deps.lock: duplicate tool ${t.name}`);
-    seen.add(t.name);
-    if (!ARCHIVES.has(t.archive)) throw new Error(`deps.lock: ${t.name} has unknown archive ${String(t.archive)}`);
-    if (t.kind !== "helper" && t.kind !== "buildtool") throw new Error(`deps.lock: ${t.name} has unknown kind`);
-    if (t.status !== "bundled" && t.status !== "pending") throw new Error(`deps.lock: ${t.name} has unknown status`);
+  raw.tools.forEach((t, i) => {
+    if (typeof t !== "object" || t === null) throw new Error(`deps.lock: tools[${i}] must be an object`);
+    for (const field of REQUIRED_STRING_FIELDS) {
+      if (typeof (t as unknown as Record<string, unknown>)[field] !== "string") {
+        throw new Error(`deps.lock: tools[${i}].${field} must be a string`);
+      }
+    }
+    const name = t.name;
+    if (!name) throw new Error(`deps.lock: tools[${i}] has no name`);
+    if (seen.has(name)) throw new Error(`deps.lock: duplicate tool ${name}`);
+    seen.add(name);
+
+    if (!ARCHIVES.has(t.archive)) throw new Error(`deps.lock: ${name} has unknown archive ${String(t.archive)}`);
+    if (t.kind !== "helper" && t.kind !== "buildtool") throw new Error(`deps.lock: ${name} has unknown kind`);
+    if (t.status !== "bundled" && t.status !== "pending") throw new Error(`deps.lock: ${name} has unknown status`);
     if (t.entitlements !== "none" && t.entitlements !== "jit") {
-      throw new Error(`deps.lock: ${t.name} has unknown entitlements`);
+      throw new Error(`deps.lock: ${name} has unknown entitlements`);
     }
-    if (typeof t.exposeByDefault !== "boolean") throw new Error(`deps.lock: ${t.name} exposeByDefault must be boolean`);
-    if (!Array.isArray(t.exec) || t.exec.length === 0) throw new Error(`deps.lock: ${t.name} needs a non-empty exec`);
+    if (typeof t.exposeByDefault !== "boolean") throw new Error(`deps.lock: ${name} exposeByDefault must be boolean`);
+
+    if (isUnsafeRelativePath(t.bundlePath)) {
+      throw new Error(`deps.lock: ${name} bundlePath must be relative with no ".." segments, got ${t.bundlePath}`);
+    }
     if (t.kind === "helper" && !t.bundlePath.startsWith(`${HELPERS_DIR}/`)) {
-      throw new Error(`deps.lock: ${t.name} bundlePath must live under ${HELPERS_DIR}/`);
+      throw new Error(`deps.lock: ${name} bundlePath must live under ${HELPERS_DIR}/`);
     }
+
+    if (!Array.isArray(t.exec) || t.exec.length === 0) throw new Error(`deps.lock: ${name} needs a non-empty exec`);
+    t.exec.forEach((e, j) => {
+      if (typeof e !== "string") throw new Error(`deps.lock: ${name} exec[${j}] must be a string`);
+      if (isUnsafeRelativePath(e)) {
+        throw new Error(`deps.lock: ${name} exec[${j}] must be relative with no ".." segments, got ${e}`);
+      }
+      if (t.kind === "helper" && !e.startsWith(`${HELPERS_DIR}/`)) {
+        throw new Error(`deps.lock: ${name} exec[${j}] must live under ${HELPERS_DIR}/`);
+      }
+    });
+
     if (t.status === "bundled") {
-      if (!t.url) throw new Error(`deps.lock: bundled tool ${t.name} needs a url`);
-      if (!SHA256.test(t.sha256)) throw new Error(`deps.lock: bundled tool ${t.name} needs a 64-hex sha256`);
-      if (!t.version) throw new Error(`deps.lock: bundled tool ${t.name} needs a version`);
+      if (!t.url) throw new Error(`deps.lock: bundled tool ${name} needs a url`);
+      if (!SHA256.test(t.sha256)) throw new Error(`deps.lock: bundled tool ${name} needs a 64-hex sha256`);
+      if (!t.version) throw new Error(`deps.lock: bundled tool ${name} needs a version`);
     } else if (t.url || t.sha256) {
-      throw new Error(`deps.lock: pending tool ${t.name} must not carry a url or sha256`);
+      throw new Error(`deps.lock: pending tool ${name} must not carry a url or sha256`);
     }
-  }
-  return raw;
+
+    Object.freeze(t.exec);
+    Object.freeze(t);
+  });
+  Object.freeze(raw.tools);
+  return Object.freeze(raw);
 }
 
 /** The .app root containing execPath (resolved through symlinks), or null. */
@@ -102,16 +135,20 @@ export function bundleRootFromExec(execPath: string = process.execPath): string 
   return root;
 }
 
-let appBundleRootMemo: { value: string | null } | null = null;
+// Only a successful resolution is cached: a miss is one getSetting() read plus
+// at most two existsSync() calls — negligible next to the fzf spawn this sits
+// in front of — so a daemon started before the app was installed still picks
+// it up on the next call instead of pinning "not installed" for its lifetime.
+let appBundleRootMemo: string | null = null;
 
 /**
  * The bundle rt belongs to: the one it runs from, else the installed active
- * flavor. Memoized per process — this sits on the fzf-picker hot path
- * (ensureFzf → appBundleRoot on every spawn) — so `exists` is only honoured
- * on the first call; reset via __test__.resetBundleLayoutMemo() between tests.
+ * flavor. Memoized per process on success only — this sits on the fzf-picker
+ * hot path (ensureFzf → appBundleRoot on every spawn) — so `exists` is only
+ * honoured until the first hit; reset via __test__.resetBundleLayoutMemo().
  */
 export function appBundleRoot(exists: (p: string) => boolean = existsSync): string | null {
-  if (appBundleRootMemo) return appBundleRootMemo.value;
+  if (appBundleRootMemo) return appBundleRootMemo;
   const fromExec = bundleRootFromExec();
   let value: string | null;
   if (fromExec) {
@@ -120,22 +157,41 @@ export function appBundleRoot(exists: (p: string) => boolean = existsSync): stri
     const bundle = currentMode() === "dev" ? DEV_TRAY_APP_BUNDLE : TRAY_APP_BUNDLE;
     value = installedTrayAppPath(bundle, exists);
   }
-  appBundleRootMemo = { value };
+  if (value) appBundleRootMemo = value;
   return value;
 }
 
-const depsLockMemo = new Map<string, DepsLock | null>();
+interface DepsLockCacheEntry {
+  mtimeMs: number;
+  size: number;
+  lock: DepsLock | null;
+}
 
-/** Memoized per root (see appBundleRoot's docblock); reset the same way. */
+// Keyed by root and invalidated by the lock file's mtime+size, not just root:
+// `rt update` replaces the bundle (and its deps.lock) in place at the same
+// path, so caching on root alone would keep serving the pre-update lock for
+// the rest of the process's life.
+const depsLockMemo = new Map<string, DepsLockCacheEntry>();
+
 export function readDepsLock(root: string): DepsLock | null {
-  if (depsLockMemo.has(root)) return depsLockMemo.get(root)!;
+  const path = join(root, DEPS_LOCK_BUNDLE_PATH);
+  let stat: ReturnType<typeof statSync>;
+  try {
+    stat = statSync(path);
+  } catch {
+    depsLockMemo.delete(root);
+    return null;
+  }
+  const cached = depsLockMemo.get(root);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.lock;
+
   let lock: DepsLock | null;
   try {
-    lock = parseDepsLock(readFileSync(join(root, DEPS_LOCK_BUNDLE_PATH), "utf8"));
+    lock = parseDepsLock(readFileSync(path, "utf8"));
   } catch {
     lock = null;
   }
-  depsLockMemo.set(root, lock);
+  depsLockMemo.set(root, { mtimeMs: stat.mtimeMs, size: stat.size, lock });
   return lock;
 }
 
@@ -156,7 +212,11 @@ function refuseBuildtool(tool: DepsLockTool): void {
   }
 }
 
-/** Absolute path of a bundled helper's bundlePath, only if it exists on disk. */
+/**
+ * Absolute path of a bundled helper's bundlePath, only if it exists on disk.
+ * @throws if `name` resolves to a `kind: "buildtool"` row — its bundlePath is
+ * deps-dir-relative, so there is no bundle-relative path to hand back.
+ */
 export function bundledHelperPath(
   name: string,
   root: string | null = appBundleRoot(),
@@ -169,7 +229,11 @@ export function bundledHelperPath(
   return exists(abs) ? abs : null;
 }
 
-/** Absolute argv prefix that runs a bundled helper, only if every exec path exists. */
+/**
+ * Absolute argv prefix that runs a bundled helper, only if every exec path exists.
+ * @throws if `name` resolves to a `kind: "buildtool"` row — its exec entries
+ * are deps-dir-relative, so there is no bundle-relative argv to hand back.
+ */
 export function bundledExec(
   name: string,
   root: string | null = appBundleRoot(),
