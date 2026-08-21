@@ -5,7 +5,7 @@ import { tmpdir } from "os";
 import { basename, join } from "path";
 import type { Logger } from "pino";
 import { readJson, writeJson } from "../../json-store.ts";
-import { machineSettingsPath, rtDir } from "../../rt-paths.ts";
+import { machineSettingsPath, rtDir, teamSettingsPath } from "../../rt-paths.ts";
 import { deriveRepoIdentity } from "../../settings/identity.ts";
 import { findByPath, loadRegistry, saveRegistry, type TreeRecord } from "../../worktree/registry.ts";
 import {
@@ -361,7 +361,7 @@ describe("createWorktreeReconciler", () => {
     const manualPath = join(repo, ".worktrees", "manual");
     execSync(`git worktree add -b manual-branch ${manualPath}`, { cwd: repo, shell: "/bin/zsh" });
 
-    const teamStore = join(process.env.HOME!, ".mattstack", "teams", "acme", "mattstack", "settings.jsonc");
+    const teamStore = teamSettingsPath("acme");
     mkdirSync(join(teamStore, ".."), { recursive: true });
     writeFileSync(
       teamStore,

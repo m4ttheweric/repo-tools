@@ -129,7 +129,7 @@ describe("reconcileForRepo", () => {
     // value with a warning before it ever reaches reconcileForRepo — so
     // this degrades the same way "nothing declared" does, honestly.
     const path = machineSettingsPath();
-    mkdirSync(join(tmpHome, ".mattstack"), { recursive: true });
+    mkdirSync(dirname(path), { recursive: true });
     writeFileSync(
       path,
       JSON.stringify({ repos: { [IDENTITY]: { "rt.dopplerTemplate": { oops: true } } } }),

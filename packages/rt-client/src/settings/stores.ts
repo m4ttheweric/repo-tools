@@ -82,7 +82,7 @@ export function readStore(file: string): StoreFile {
 
 /**
  * Names of every team that has a local settings store — i.e. subdirectories
- * of teamsDir() that contain mattstack/settings.jsonc. A team dir without a
+ * of teamsDir() that contain mattstack/settings.team.jsonc. A team dir without a
  * settings file (a clone mid-setup, or an unrelated directory) is not yet a
  * team as far as the resolver is concerned.
  *
