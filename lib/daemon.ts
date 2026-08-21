@@ -85,10 +85,11 @@ if (rtMigration === "migrated") {
 
 const systemProcessScanner = new SystemProcessScanner();
 
-// Resolve the user's full PATH once at startup, and overlay it onto the
-// daemon's own env so direct execSync calls (setup commands, agent
-// invocations) inherit pnpm/doppler/bun without re-resolving the shell
-// themselves.
+// Resolve the user's full PATH once at startup and overlay it onto the daemon's
+// own env. Under launchd the inherited PATH is /usr/bin:/bin:/usr/sbin:/sbin, so
+// without this nothing the daemon spawns can find node, pnpm, doppler or bun.
+// runCapture forwards process.env explicitly (lib/subprocess.ts) because
+// Bun.spawn would otherwise ignore this assignment.
 {
   const resolvedPath = resolveUserPath(log);
   if (resolvedPath) process.env.PATH = resolvedPath;
