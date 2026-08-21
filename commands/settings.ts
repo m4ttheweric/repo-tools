@@ -16,6 +16,7 @@ import {
   trayAppPath, devTrayAppPath, installedTrayAppPath,
 } from "../lib/rt-paths.ts";
 import { currentMode, installRtBinary } from "../lib/dev-mode.ts";
+import { RT_BUNDLE_PATH } from "../lib/bundle-layout.ts";
 import { spawnSync } from "child_process";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import {
@@ -459,7 +460,7 @@ export function renderDevModePreload(): string {
 
 /**
  * Leaving dev mode must leave a WORKING `rt` behind. The only compiled rt on
- * this machine is the one mattstack.app carries at Contents/MacOS/rt-daemon
+ * this machine is the one mattstack.app carries at Contents/MacOS/rt
  * (the daemon and the CLI are the same binary), so prod mode installs THAT
  * over the wrapper path: the app provides the binary.
  *
@@ -468,7 +469,7 @@ export function renderDevModePreload(): string {
  */
 function disableDevMode(exists: (path: string) => boolean = existsSync): void {
   const prodAppPath = installedTrayAppPath(TRAY_APP_BUNDLE, exists) ?? trayAppPath();
-  const prodBinary = join(prodAppPath, "Contents", "MacOS", "rt-daemon");
+  const prodBinary = join(prodAppPath, RT_BUNDLE_PATH);
   if (!existsSync(prodBinary)) {
     throw new Error(
       `cannot switch to prod: ${TRAY_APP_BUNDLE} is not installed, so there is no compiled rt to install at ${DEV_MODE_WRAPPER}. Install the app first (rt --post-install), then retry.`,
