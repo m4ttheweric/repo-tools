@@ -97,12 +97,27 @@ function parseAllowedTools(raw: unknown): string[] {
   return [];
 }
 
+/**
+ * Vendoring exclusions: development junk that must not ship inside a
+ * compiled verb -- dotfiles/dotdirs (.DS_Store, .gitignore), python
+ * bytecode, test harnesses, and READMEs. Load-bearing runtime files
+ * (scripts/, references/, data files) all pass.
+ */
+const VENDOR_EXCLUDED_DIRS = new Set(["__pycache__", "tests"]);
+
+function isVendorExcluded(name: string, isDir: boolean): boolean {
+  if (name.startsWith(".")) return true;
+  if (isDir) return VENDOR_EXCLUDED_DIRS.has(name);
+  return name.endsWith(".pyc") || name.endsWith(".test.sh") || name === "README.md";
+}
+
 function listFilesUnder(dir: string, exclude: Set<string>): string[] {
   const out: string[] = [];
   const walk = (sub: string) => {
     const abs = sub ? join(dir, sub) : dir;
     if (!existsSync(abs)) return;
     for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      if (isVendorExcluded(entry.name, entry.isDirectory())) continue;
       const rel = sub ? `${sub}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         walk(rel);

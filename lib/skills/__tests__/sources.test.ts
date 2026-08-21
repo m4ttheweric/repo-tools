@@ -64,6 +64,13 @@ function makeFixtureRoots(): { rootDir: string; roots: PluginRoots } {
   writeFile(join(mattstackDir, "skills", "pipeline", "watch-ci", "SKILL.md"), WATCH_CI_SKILL_MD);
   writeFile(join(mattstackDir, "skills", "pipeline", "watch-ci", "scripts", "ci-watch.sh"), WATCH_CI_SCRIPT);
   writeFile(join(mattstackDir, "skills", "pipeline", "watch-ci", "references", "polling-notes.md"), "Polling notes.\n");
+  writeFile(join(mattstackDir, "skills", "pipeline", "watch-ci", ".DS_Store"), "junk");
+  writeFile(join(mattstackDir, "skills", "pipeline", "watch-ci", "README.md"), "readme");
+  writeFile(join(mattstackDir, "skills", "pipeline", "watch-ci", "scripts", ".gitignore"), "*.pyc");
+  writeFile(join(mattstackDir, "skills", "pipeline", "watch-ci", "scripts", "__pycache__", "x.pyc"), "pyc");
+  writeFile(join(mattstackDir, "skills", "pipeline", "watch-ci", "scripts", "helper.pyc"), "pyc");
+  writeFile(join(mattstackDir, "skills", "pipeline", "watch-ci", "scripts", "poll.test.sh"), "test");
+  writeFile(join(mattstackDir, "skills", "pipeline", "watch-ci", "tests", "harness.sh"), "test");
   writeFile(join(mattstackDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.2.0" }));
 
   const untypedSkillMd = WATCH_CI_SKILL_MD.replace("type: pipeline-step\n", "");
