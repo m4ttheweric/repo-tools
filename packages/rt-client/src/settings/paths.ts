@@ -16,19 +16,6 @@ function home(): string {
   return process.env.HOME ?? homedir();
 }
 
-function rtDir(): string {
-  return join(home(), ".mattstack", "rt");
-}
-
-function reposDir(): string {
-  return join(rtDir(), "repos");
-}
-
-/** ~/.mattstack/rt/repos/<repoName> — a single repo's data directory. */
-export function repoDataDir(repoName: string): string {
-  return join(reposDir(), repoName);
-}
-
 /** ~/.mattstack/user/settings.jsonc — the user store. */
 export function userSettingsPath(): string {
   return join(home(), ".mattstack", "user", "settings.jsonc");

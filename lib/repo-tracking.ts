@@ -149,21 +149,27 @@ interface MachineTrackingRead {
    *  `{mode:"off"}` entry still names its repo here even though it produced no `out` entry.
    *  This is the set `loadRepoTracking` gates team intent on, not `out`'s keys. */
   rawNames: Set<string>;
+  /** Every repo name's RAW authored value, unnormalized — includes entries `out` drops
+   *  (a typo'd mode, or an explicit `{mode:"off"}` opt-out marker). The only base a
+   *  read-modify-write may rebuild the WHOLE map from without silently erasing one of
+   *  those — see `loadMachineRepoTrackingRaw`/`saveRepoTrackingRaw`. */
+  raw: Record<string, unknown>;
 }
 
 function readMachineTracking(): MachineTrackingRead {
-  let raw: unknown;
+  let rawValue: unknown;
   try {
-    raw = getSetting<unknown>("rt.repoTracking").value;
+    rawValue = getSetting<unknown>("rt.repoTracking").value;
   } catch (err) {
     console.warn(`rt: rt.repoTracking could not be resolved (${err instanceof Error ? err.message : err}) — tracking nothing`);
-    return { out: {}, rawNames: new Set() };
+    return { out: {}, rawNames: new Set(), raw: {} };
   }
 
   const out: RepoTracking = {};
   const rawNames = new Set<string>();
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    let repos = raw as Record<string, unknown>;
+  const raw: Record<string, unknown> = {};
+  if (rawValue && typeof rawValue === "object" && !Array.isArray(rawValue)) {
+    let repos = rawValue as Record<string, unknown>;
     if (isVersionedEnvelope(repos)) {
       console.warn(
         "rt: rt.repoTracking holds a versioned {version, repos} envelope — store the repos map, not the versioned envelope " +
@@ -173,11 +179,12 @@ function readMachineTracking(): MachineTrackingRead {
     }
     for (const [repo, value] of Object.entries(repos)) {
       rawNames.add(repo);
+      raw[repo] = value;
       const entry = normalizeEntry(value);
       if (entry) out[repo] = entry;
     }
   }
-  return { out, rawNames };
+  return { out, rawNames, raw };
 }
 
 /**
@@ -193,6 +200,19 @@ function readMachineTracking(): MachineTrackingRead {
  */
 export function loadMachineRepoTracking(): RepoTracking {
   return readMachineTracking().out;
+}
+
+/**
+ * The raw machine map, unnormalized — every repo's authored value exactly as
+ * stored, including entries `normalizeEntry` rejects (a typo'd mode, or an
+ * explicit `{mode:"off"}` opt-out marker). `loadMachineRepoTracking()` drops
+ * those, so a read-modify-write that rebuilds the WHOLE `rt.repoTracking`
+ * value must start here instead, or it silently erases another repo's
+ * off-marker (or any other raw value) the moment ANY repo's tracking is next
+ * written — see `saveRepoTrackingRaw`, the companion writer.
+ */
+export function loadMachineRepoTrackingRaw(): Record<string, unknown> {
+  return readMachineTracking().raw;
 }
 
 /**
@@ -233,11 +253,30 @@ export function grants(tracking: RepoTracking, repoName: string): RepoGrants {
 }
 
 /**
+ * Writes an already-assembled raw repo → value map to the machine store,
+ * sorted for stable diffs. The companion to `loadMachineRepoTrackingRaw`: a
+ * read-modify-write that must preserve an untouched repo's off-marker (or
+ * any other raw value) starts from that raw map, mutates only the repo(s) it
+ * means to change, and saves through here.
+ */
+export function saveRepoTrackingRaw(raw: Record<string, unknown>): void {
+  const repos = Object.fromEntries(
+    Object.entries(raw).sort(([a], [b]) => a.localeCompare(b)),
+  );
+  setSetting("rt.repoTracking", repos, "machine");
+}
+
+/**
  * Writes the flat repo → entry map to the machine store, repos sorted for
  * stable diffs. NEVER pass a merged/primed read (`loadRepoTracking`'s
  * output) here — a caller doing read-modify-write must start from
  * `loadMachineRepoTracking()`, or every other repo's team-synthesized entry
- * gets baked into the machine store as if a human had granted it.
+ * gets baked into the machine store as if a human had granted it. This is a
+ * fixture-convenience wrapper over `saveRepoTrackingRaw`: it only ever sees
+ * NORMALIZED entries, so it is NOT safe for a read-modify-write that must
+ * preserve an existing off-marker for some OTHER repo this write doesn't
+ * touch — that needs `loadMachineRepoTrackingRaw`/`saveRepoTrackingRaw`
+ * directly (see `commands/daemon.ts`'s `manageTracking`).
  *
  * `offMarkers` plants an explicit `{mode:"off"}` entry for each name listed —
  * `normalizeEntry` rejects that shape (mode "off" is not a valid grant), but
@@ -251,10 +290,7 @@ export function grants(tracking: RepoTracking, repoName: string): RepoGrants {
 export function saveRepoTracking(tracking: RepoTracking, offMarkers: string[] = []): void {
   const merged: Record<string, unknown> = { ...tracking };
   for (const name of offMarkers) merged[name] = { mode: "off" };
-  const repos = Object.fromEntries(
-    Object.entries(merged).sort(([a], [b]) => a.localeCompare(b)),
-  );
-  setSetting("rt.repoTracking", repos, "machine");
+  saveRepoTrackingRaw(merged);
 }
 
 /** "branches, project-mrs" → kinds. Null on empty input or any unknown name. */

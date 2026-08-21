@@ -137,10 +137,9 @@ export function formatProvenance(provenance: Provenance[]): string {
 }
 
 /**
- * The `migrated:false` loud-degrade label: "reads legacy: <file>" plus the
- * sibling live command when the registry names one — spec: "list LABELS
- * them (`reads legacy: <file>`)". Returns null for a migrated key (nothing
- * to render).
+ * The `migrated:false` loud-degrade label: "reads legacy: <file>" — spec:
+ * "list LABELS them (`reads legacy: <file>`)". Returns null for a migrated
+ * key (nothing to render).
  */
 export function migratedNote(def: SettingDef): string | null {
   if (isMigrated(def)) return null;

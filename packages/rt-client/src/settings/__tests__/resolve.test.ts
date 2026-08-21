@@ -553,13 +553,17 @@ describe("settings/resolve", () => {
       expect(listed.every((e) => Array.isArray(e.provenance))).toBe(true);
     });
 
-    test("resolved values flow into the listing", () => {
-      writeUser({ "rt.worktrees": { onDeck: 5, branchFormat: "x" } });
+    test("resolved values flow into the listing, with multi-scope provenance", () => {
+      writeTeam(TEAM, { "rt.worktrees": { onDeck: 3, branchFormat: "x" } });
+      writeUser({ "rt.worktrees": { onDeck: 5 } });
 
       const entry = listSettings({ repoIdentity: IDENTITY }).find((e) => e.key === "rt.worktrees");
 
       expect(entry?.value).toEqual({ onDeck: 5, branchFormat: "x" });
-      expect(entry?.provenance).toEqual([{ scope: "user", file: userSettingsPath() }]);
+      expect(entry?.provenance).toEqual([
+        { scope: "team", file: teamSettingsPath(TEAM) },
+        { scope: "user", file: userSettingsPath() },
+      ]);
     });
 
     test("unregistered entries sort after the registered ones", () => {
