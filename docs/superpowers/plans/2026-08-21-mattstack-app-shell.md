@@ -12,6 +12,8 @@
 
 **Worktree for execution:** `/Users/matt/Documents/GitHub/repo-tools-l3-wt`, branch `goodwinmattheweric/mat-383-app-shell` off `origin/main`. Main checkout `/Users/matt/Documents/GitHub/repo-tools` is read-only reference. Every path below is relative to the worktree root unless absolute.
 
+**Execution order (cross-plan review, `docs/superpowers/plans/2026-08-21-cross-plan-review.md` §3 — mandatory):** the worktree is cut off `origin/main` only after the settings lane's merge and the appspec docs branch (spec + contract) are on main. **Phase A:** T1–T11 (all inside `rt-tray/`, `Sources-core/`, `Tests/`), with T4's stub ids/shapes as corrected below; these merge before L4 T4/T5 run (L4's `build.sh`/`check-bundle.sh` rewrites consume L3's `Package.swift`, templates and `render-launchagents.sh`). **Phase B:** T12–T18 AFTER T1–T11; T13/T14/T17 carry the argv fixes (§5 #27–#29), T18 carries L4 T3's Swift string edits (§5 #30). **Merge order to main:** L4 phase A → L3 T1–T11 → L1 phase A → L4 T4/T5/T8 → L1 T5, T7–T12, T20–T30 → L3 T12–T19 → L7 → L4 T12 → L1 T31–T32 → MATT gates. Rebase onto `origin/main` before every merge.
+
 ## Machine facts (binding on task order and on what "verified" means)
 
 - macOS 26.6.1. **Swift 6.3.1 via Command Line Tools only; Xcode 26 is NOT installed** (Matt installs it later). `xcodebuild` on this machine is the CLT stub and cannot build an app target. `xcodegen` 2.46.0 IS installed at `/opt/homebrew/bin/xcodegen` (it needs no Xcode to *generate*).
@@ -41,6 +43,7 @@
 - Existing process panel / gear menu / daemon polling behaviour stays untouched except for the additive menu items listed in Task 18.
 - Clean-code comments only: a comment states a constraint the code cannot show; no narration, no ticket numbers, no decision history in source.
 - Commits: prefix `MAT-383:`; trailer `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`. Do not commit `mattstack.xcodeproj` (generated) or `.build/`.
+- **Cross-lane file ownership (cross-plan review §1):** rebase onto `origin/main` before every merge. `rt-tray/build.sh` and `rt-tray/check-bundle.sh` are **L4's** after Task 10 (L4 T3/T4 rewrite both; L3's Task 10 edits to them are a fenced stopgap that L4's rewrite deletes/absorbs). `rt-tray/Package.swift` (+ `Package.resolved`), the plist templates (`Info.plist`, `LaunchAgent.plist`, `LaunchAgent-deck.plist`), `rt-tray/project.yml`, `rt-tray/scripts/render-launchagents.sh`, `rt-tray/entitlements/*` and `rt-tray/Sources/**` are **L3's** (L4 T3 drops its edits to them; L4 T4/T5 consume them and wait for L3 T1/T2/T10 to merge). The root `.gitignore` line `rt-tray/*.xcodeproj/` is L3's (L4 T2 drops it). Spec/contract files under `docs/superpowers/specs/` are never committed from this branch (they merge to main first).
 
 ---
 
@@ -54,8 +57,8 @@ rt-tray/
   LaunchAgent.plist                   modified template: PATH env, KeepAlive dict for both flavors (build.sh keeps injecting)
   LaunchAgent-deck.plist              NEW template: com.mattstack.deck[.dev]
   scripts/render-launchagents.sh      NEW: templates → Contents/Library/LaunchAgents for a flavor (xcodegen prebuild; L4 build.sh may call it)
-  build.sh                            modified (stopgap only): copy + sign Sparkle.framework so a local bundle launches
-  check-bundle.sh                     modified: the UpdateChecker dev-silence grep now points at UpdaterController
+  build.sh                            modified (fenced stopgap only; L4 T4's rewrite deletes it): copy + sign Sparkle.framework, render both agent plists
+  check-bundle.sh                     modified (L4 T3 owns the rewrite; absorbs these assertions): the UpdateChecker dev-silence grep now points at UpdaterController
   Sources-core/                       NEW library target MattstackCore (Foundation + Combine only)
     Contract/PlanModels.swift         Plan/PlanGroup/PlanRow/RowAction… (contract v1)
     Contract/ApplyEvents.swift        ApplyEvent, StepInfo, NeedRequest, NDJSON decoding
@@ -118,7 +121,7 @@ swift build 2>&1 | tail -3
 ```
 Expected: `Build complete!` (baseline builds before any change).
 
-- [ ] **Step 2: Copy the spec + contract into the worktree if `docs/superpowers/specs/2026-08-20-mattstack-app-installer-design.md` / `2026-08-21-rt-setup-contract.md` are absent there** (they live on the `docs/mattstack-app-installer-spec` branch in `repo-tools-appspec-wt`): `cp` both files and the `research/2026-08-20-mattstack-app/` directory into the worktree's `docs/superpowers/specs/`, commit `MAT-383: carry the installer spec + rt setup contract into the L3 branch`.
+- [ ] **Step 2:** Dropped — spec/contract are merged to main first (cross-plan review §1 row 27); the worktree is cut after that merge, so the files are already present.
 
 ---
 
@@ -566,7 +569,7 @@ echo "rendered $DAEMON_LABEL.plist $DECK_LABEL.plist → $OUT"
 
 - [ ] **Step 2: Update the daemon template and add the deck template**
 
-`rt-tray/LaunchAgent.plist` — add, after `ThrottleInterval`, an explicit PATH (spec §8: "explicit EnvironmentVariables.PATH … nothing is captured from the user's shell"); keep everything else as is:
+`rt-tray/LaunchAgent.plist` — (a) rename the program (L4 renames the embedded binary `rt-daemon` → `rt`): `BundleProgram` → `Contents/MacOS/rt`, `ProgramArguments` → `[Contents/MacOS/rt, --daemon]`, and the Label comment → "Label: com.mattstack.daemon (prod) / com.mattstack.daemon.dev (dev)"; (b) replace the KeepAlive comment with "KeepAlive is injected by `scripts/render-launchagents.sh` as `{SuccessfulExit:false}` for both flavors"; (c) add, after `ThrottleInterval`, an explicit PATH (spec §8: "explicit EnvironmentVariables.PATH … nothing is captured from the user's shell"); keep everything else as is:
 ```xml
     <key>EnvironmentVariables</key>
     <dict>
@@ -574,7 +577,7 @@ echo "rendered $DAEMON_LABEL.plist $DECK_LABEL.plist → $OUT"
         <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 ```
-launchd does not expand variables inside `EnvironmentVariables`, and SMAppService reads the plist verbatim from the bundle, so the bundle's absolute `Contents/Helpers` path cannot be written here at build time; rt and deck know their own bundle and prepend it themselves (recorded in Open questions for L4/L5).
+**Ruling R2 (cross-plan review):** the plist PATH is this STATIC system list — never a hardcoded `/Applications/…` path and never `~/.local/bin` (launchd does not expand variables inside `EnvironmentVariables`, and SMAppService reads the plist verbatim from the bundle, so neither the bundle's absolute `Contents/Helpers` nor `$HOME` can be written here at build time). rt and deck prepend `<bundleRoot>/Contents/Helpers` (derived at runtime from their own `execPath`) and `$HOME/.local/bin` (HOME from the environment) to their `PATH` at process start; L4's `check-bundle.sh` asserts the static value.
 
 `rt-tray/LaunchAgent-deck.plist`:
 ```xml
@@ -631,7 +634,7 @@ In `rt-tray/Info.plist` change `LSMinimumSystemVersion` to `14.0` and add before
         </dict>
     </array>
     <key>SUFeedURL</key>
-    <string>https://m4ttstack.github.io/rt/appcast.xml</string>
+    <string>https://github.com/m4ttstack/rt/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>
     <string>REPLACE_WITH_RELEASE_PUBLIC_ED_KEY</string>
     <key>SUEnableAutomaticChecks</key>
@@ -641,14 +644,14 @@ In `rt-tray/Info.plist` change `LSMinimumSystemVersion` to `14.0` and add before
     <key>SUVerifyUpdateBeforeExtraction</key>
     <true/>
     <key>SUScheduledCheckInterval</key>
-    <integer>86400</integer>
+    <integer>21600</integer>
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>
         <true/>
     </dict>
 ```
-(`NSAllowsLocalNetworking` lets the clean-room VM (L7) serve a loopback appcast via `MATTSTACK_APPCAST_URL` — Task 10. `SUPublicEDKey` is a placeholder by design — L4's release job owns the real key; `UpdatePolicy` in Task 10 refuses to start Sparkle while the placeholder is present, so a local build never phones a feed it cannot verify.)
+(`NSAllowsLocalNetworking` lets the clean-room VM (L7) serve a loopback appcast via `MATTSTACK_APPCAST_URL` — Task 10. `SUPublicEDKey` is a placeholder by design — L4's release job owns the real key; `UpdatePolicy` in Task 10 refuses to start Sparkle while the placeholder is present, so a local build never phones a feed it cannot verify. The appcast is a GitHub Release asset (ruling R1), hence the `releases/latest/download` URL and the 21600 s interval — both are L4's canon and `check-bundle.sh` asserts them. `CFBundleURLName` stays `@@BUNDLE_ID@@.join` (L4 drops its `.url` spelling). **L4's `build.sh` overwrites the `SU*` values with PlistBuddy `Set` (create-if-missing; dev flavor `SUEnableAutomaticChecks false`) — it never `Add`s a key this template already declares.**)
 
 - [ ] **Step 4: Entitlements file** `rt-tray/entitlements/mattstack.entitlements`:
 ```xml
@@ -732,12 +735,12 @@ targetTemplates:
         CFBundleURLTypes:
           - CFBundleURLName: "$(PRODUCT_BUNDLE_IDENTIFIER).join"
             CFBundleURLSchemes: [mattstack]
-        SUFeedURL: https://m4ttstack.github.io/rt/appcast.xml
+        SUFeedURL: https://github.com/m4ttstack/rt/releases/latest/download/appcast.xml
         SUPublicEDKey: REPLACE_WITH_RELEASE_PUBLIC_ED_KEY
         SUEnableAutomaticChecks: true
         SUAutomaticallyUpdate: true
         SUVerifyUpdateBeforeExtraction: true
-        SUScheduledCheckInterval: 86400
+        SUScheduledCheckInterval: 21600
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
 
@@ -1062,10 +1065,10 @@ public struct UninstallPlan: Codable, Equatable, Sendable {
 
 public struct VersionInfo: Codable, Equatable, Sendable {
     public var version: String
-    public var build: String
+    public var build: Int        // numeric CFBundleVersion: major*1e6 + minor*1e3 + patch (L4 scheme; 2.8.0 → 2008000)
     public var flavor: String   // prod | dev
     public var path: String
-    public init(version: String, build: String, flavor: String, path: String) {
+    public init(version: String, build: Int, flavor: String, path: String) {
         self.version = version; self.build = build; self.flavor = flavor; self.path = path
     }
 }
@@ -1244,7 +1247,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `rt-tray/Tests/stub-rt/stub.test.ts`
 
 **Interfaces:**
-- Produces: `bun rt-tray/Tests/stub-rt/stub.ts <rt args…>` honouring `RT_STUB_SCENARIO` ∈ `create-happy | join-happy | join-no-access | perm-denied-then-granted | apply-fail-retry | restore | uninstall`, `RT_STUB_STATE_DIR` (default `rt-tray/Tests/stub-rt/.state/<scenario>`) for cross-invocation state, `RT_APP_SOCKET` (read, never required). Verbs: `setup plan`, `setup status`, `setup apply [--from id]`, `setup <integration> status|connect`, `team create`, `team join [--dry-run]`, `team invite`, `uninstall [--dry-run]`, `settings set`, `restore`, `home init`, `version`. Exit codes per contract. Used by Task 19's XCUITests and by hand with the dev app.
+- Produces: `bun rt-tray/Tests/stub-rt/stub.ts <rt args…>` honouring `RT_STUB_SCENARIO` ∈ `create-happy | join-happy | join-no-access | perm-denied-then-granted | apply-fail-retry | restore | uninstall`, `RT_STUB_STATE_DIR` (default `rt-tray/Tests/stub-rt/.state/<scenario>`) for cross-invocation state, `RT_APP_SOCKET` (read, never required). (The app side reads `RT_STUB_PATH` — absolute path to `stub.ts`, required — and `RT_STUB_BUN`, default `~/.bun/bin/bun`, in `RtBinaryLocator` (Task 3); the contract's Stub section lists all four variables.) Verbs: `setup plan`, `setup status`, `setup apply [--from id]`, `setup <integration> status|connect` (`setup github status` adds `handle`/`owners`), `team create`, `team join [--dry-run]`, `team invite`, `team status`, `uninstall [--dry-run] [--keep-data|--delete-data] [--yes]`, `settings set`, `restore`, `setup intent restore`, `home init`, `version`. Row ids, uninstall action ids and result shapes are L1's (contract): `perm.login-items`, `access.team-repo`, `tool.fast-browser`, `tool.path`; `team join --dry-run` no-access is exit 0 `{access:"denied", message}`. Exit codes per contract. Used by Task 19's XCUITests and by hand with the dev app.
 
 - [ ] **Step 1: Write the failing bun test**
 
@@ -1286,15 +1289,18 @@ test("perm-denied-then-granted: plan flips to installable on the second call", a
   expect(second.lines[0].canInstall).toBe(true);
 });
 
-test("team join --dry-run reads the code from stdin; no-access is exit 2 with a specific message", async () => {
+test("team join --dry-run reads the code from stdin; no-access is exit 0 {access:'denied'} with a specific message", async () => {
   const happy = await run("join-happy", ["team", "join", "--dry-run", "--json"], JSON.stringify({ code: "ABCD-EFGH" }));
   expect(happy.code).toBe(0);
   expect(happy.lines[0].access).toBe("ok");
   expect(happy.lines[0].team.name).toBe("Acme");
   const denied = await run("join-no-access", ["team", "join", "--dry-run", "--json"], JSON.stringify({ code: "ABCD-EFGH" }));
-  expect(denied.code).toBe(2);
-  expect(denied.lines[0].error.code).toBe("no-access");
-  expect(denied.lines[0].error.message).toContain("ask");
+  expect(denied.code).toBe(0);
+  expect(denied.lines[0].access).toBe("denied");
+  expect(denied.lines[0].message).toContain("ask");
+  const malformed = await run("join-happy", ["team", "join", "--dry-run", "--json"], JSON.stringify({ code: "" }));
+  expect(malformed.code).toBe(2);
+  expect(malformed.lines[0].error.code).toBe("invite-malformed");
 });
 
 test("setup apply streams plan/step/need/done; apply-fail-retry fails once then succeeds with --from", async () => {
@@ -1312,11 +1318,26 @@ test("setup apply streams plan/step/need/done; apply-fail-retry fails once then 
   expect(retry.lines.at(-1).ok).toBe(true);
 });
 
-test("uninstall --dry-run lists actions; version answers", async () => {
+test("uninstall --dry-run lists L1's action ids; --delete-data needs --yes; version build is numeric", async () => {
   const dry = await run("uninstall", ["uninstall", "--dry-run", "--json"]);
-  expect(dry.lines[0].actions.length).toBeGreaterThan(3);
+  expect(dry.lines[0].actions.map((a) => a.id)).toEqual(["services.unregister", "deck.managed-remove", "proxy.remove", "path.unlink", "shell.remove", "extension.uninstall", "plugins.uninstall", "app.trash"]);
+  const dryDelete = await run("uninstall", ["uninstall", "--dry-run", "--delete-data", "--json"]);
+  expect(dryDelete.lines[0].actions.map((a) => a.id)).toContain("data");
+  const noYes = await run("uninstall", ["uninstall", "--delete-data", "--json"]);
+  expect(noYes.code).toBe(2);
+  expect(noYes.lines[0].error.code).toBe("confirm-required");
   const v = await run("join-happy", ["version", "--json"]);
   expect(v.lines[0].version).toBeDefined();
+  expect(v.lines[0].build).toBe(0);
+});
+
+test("team status and setup github status answer the contract shapes", async () => {
+  const ts = await run("join-happy", ["team", "status", "--json"]);
+  expect(ts.lines[0].slug).toBe("acme");
+  expect(ts.lines[0].members[0].username).toBe("matt");
+  const gh = await run("join-happy", ["setup", "github", "status", "--json"]);
+  expect(gh.lines[0].handle).toBe("matt");
+  expect(gh.lines[0].owners).toContain("acme");
 });
 ```
 
@@ -1369,13 +1390,13 @@ function plan(): unknown {
         "Reads your repositories' git state so the daemon can show branch and MR status.", true,
         fdaGranted ? "ready" : "needs-you", fdaGranted ? "Granted" : "Not granted",
         fdaGranted ? null : { type: "open-settings", label: "Open Full Disk Access Settings…", target: "fda" }, "on-activate"),
-    row("perm.loginItems", "permission", "Background services",
+    row("perm.login-items", "permission", "Background services",
         "rt daemon and deck run in the background as login items.", true, "ready", "Enabled", null, "on-activate"),
     row("perm.notifications", "permission", "Notifications", "Pipeline and review alerts.", false, "skipped", "Not decided",
         { type: "request-permission", label: "Allow", which: "notifications" }, "on-activate",
         "Works without this; you'll see menu-bar badges instead."),
     row("tool.clt", "tool", "Apple command line tools", "git and python3 come from here.", true, "ready", "git 2.50.1", null),
-    row("info.path", "info", "~/.local/bin first on PATH", "Install adds one PATH line to your shell rc.", true, "ready", "Fixed by Install", null),
+    row("tool.path", "info", "~/.local/bin first on PATH", "Install adds one PATH line to your shell rc.", true, "ready", "Fixed by Install", null),
   ];
   const accounts = [
     row("account.gitlab", "account", "GitLab", "The team's merge requests live on gitlab.example.com.", true,
@@ -1384,10 +1405,10 @@ function plan(): unknown {
           fields: [{ name: "token", label: "Personal access token", secret: true, hint: "scopes: read_api, read_user" }],
           alternatives: [] }),
   ];
-  const access = [row("access.teamRepo", "access", "Team repo reachable", "github.com/acme/mattstack-team-acme", true, "ready", "ls-remote ok", null)];
+  const access = [row("access.team-repo", "access", "Team repo reachable", "github.com/acme/mattstack-team-acme", true, "ready", "ls-remote ok", null)];
   const tools = [
     row("tool.herdr", "tool", "herdr", "Runs the agents that do the work.", true, "ready", "0.9.2", null),
-    row("tool.fastbrowser", "tool", "Fast Browser", "Browser automation for evidence.", true, "needs-you", "extension not loaded",
+    row("tool.fast-browser", "tool", "Fast Browser", "Browser automation for evidence.", true, "needs-you", "extension not loaded",
         { type: "steps", label: "Show steps…", steps: ["Open chrome://extensions", "Turn on Developer mode", "Load unpacked → ~/.fast-browser/extension/current/unpacked"] }),
     row("tool.chrome", "tool", "Google Chrome", "Evidence capture.", false, "skipped", null,
         { type: "open-url", label: "Download", url: "https://www.google.com/chrome/" }, "manual", "Works without this."),
@@ -1451,6 +1472,8 @@ async function apply() {
 const [a0, a1, a2] = args;
 if (a0 === "setup" && (a1 === "plan" || a1 === "status")) emit(plan());
 else if (a0 === "setup" && a1 === "apply") await apply();
+else if (a0 === "setup" && a1 === "github" && a2 === "status") emit({ integration: "github", status: "ready", detail: "gh authenticated as matt", scopesSeen: ["repo", "read:org"], handle: "matt", owners: ["matt", "acme"] });
+else if (a0 === "setup" && a1 === "intent" && a2 === "restore") emit({ ok: true, intent: "restore", repo: args[3] });
 else if (a0 === "setup" && a2 === "status") emit({ integration: a1, status: stateGet(`${a1}-connected`) ? "ready" : "missing", detail: null });
 else if (a0 === "setup" && a2 === "connect") {
   const body = await readStdinJSON();
@@ -1461,32 +1484,38 @@ else if (a0 === "setup" && a2 === "connect") {
 else if (a0 === "team" && a1 === "create") emit({ team: { slug: "my-team", name: args[2] ?? "My team" }, remote: "ok" });
 else if (a0 === "team" && a1 === "join") {
   const body = await readStdinJSON();
-  if (!body.code) fail("no-code", "Paste an invite code.");
-  if (scenario === "join-no-access") fail("no-access", "You don't have access yet: ask matt to grant you access to Acme.");
-  emit({ team: { slug: "acme", name: "Acme", owner: "matt" }, access: "ok", peering: "idle", message: "Joining Acme (owner matt)" });
+  if (!body.code) fail("invite-malformed", "Paste an invite code.");
+  if (scenario === "join-no-access") emit({ team: { slug: "acme", name: "Acme", owner: "matt" }, access: "denied", peering: "idle", message: "You don't have access yet: ask matt to grant you access to Acme." });
+  else emit({ team: { slug: "acme", name: "Acme", owner: "matt" }, access: "ok", peering: "idle", message: "Joining Acme (owner matt)" });
 }
+else if (a0 === "team" && a1 === "status") emit({ slug: "acme", name: "Acme", remote: "git@github.com:acme/mattstack-team-acme.git", lastPush: "2026-08-21T03:00:00Z", members: [{ username: "matt" }, { username: "bob" }] });
 else if (a0 === "team" && a1 === "invite") emit({ code: "ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567", expiresAt: "2026-08-28T00:00:00Z",
   pasteBlock: "Install mattstack from https://github.com/m4ttstack/rt/releases, then open mattstack://join/ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567 or paste the code into Setup → Join a team.",
   forgeAccess: "granted", manualSteps: [] });
 else if (a0 === "uninstall" && args.includes("--dry-run")) emit({ actions: [
   { id: "services.unregister", title: "Stop and remove the rt daemon and deck services" },
-  { id: "deck.managed", title: "Remove board and gitq from deck" },
+  { id: "deck.managed-remove", title: "Remove board and gitq from deck" },
   { id: "proxy.remove", title: "Remove the local HTTPS proxy (admin prompt)" },
-  { id: "path.unlink", title: "Remove ~/.local/bin links and the shell rc block" },
-  { id: "plugins.remove", title: "Uninstall the mattstack plugins from Claude Code" },
+  { id: "path.unlink", title: "Remove ~/.local/bin links" },
+  { id: "shell.remove", title: "Remove the shell rc block" },
+  { id: "extension.uninstall", title: "Uninstall the rt-context editor extension" },
+  { id: "plugins.uninstall", title: "Uninstall the mattstack plugins from Claude Code" },
+  ...(args.includes("--delete-data") ? [{ id: "data", title: "Delete ~/.mattstack (settings, state, logs)" }] : []),
   { id: "app.trash", title: "Move mattstack.app to the Trash" } ] });
-else if (a0 === "uninstall") { for (const id of ["services.unregister", "path.unlink", "app.trash"]) {
+else if (a0 === "uninstall") {
+  if (args.includes("--delete-data") && !args.includes("--yes")) fail("confirm-required", "--delete-data needs --yes when not on a TTY.");
+  for (const id of ["services.unregister", "path.unlink", "app.trash"]) {
   process.stdout.write(JSON.stringify({ event: "step", id, state: "running" }) + "\n");
   process.stdout.write(JSON.stringify({ event: "step", id, state: "done" }) + "\n"); }
   process.stdout.write(JSON.stringify({ event: "done", ok: true }) + "\n"); }
 else if (a0 === "settings" && a1 === "set") emit({ ok: true, key: a2 });
 else if (a0 === "restore") emit({ ok: true, repo: a1 });
 else if (a0 === "home" && a1 === "init") emit({ ok: true });
-else if (a0 === "version" || a0 === "--version") emit({ version: "2.8.0-stub", build: "0" });
+else if (a0 === "version" || a0 === "--version") emit({ version: "2.8.0-stub", build: 0 });
 else fail("unknown-verb", `stub has no answer for: ${args.join(" ")}`);
 ```
 
-- [ ] **Step 4: Run** `cd rt-tray && bun test Tests/stub-rt/` → 5 pass. Also `RT_STUB_SCENARIO=join-happy bun Tests/stub-rt/stub.ts setup plan --json | head -c 200`.
+- [ ] **Step 4: Run** `cd rt-tray && bun test Tests/stub-rt/` → 6 pass. Also `RT_STUB_SCENARIO=join-happy bun Tests/stub-rt/stub.ts setup plan --json | head -c 200`.
 
 - [ ] **Step 5: Commit**
 ```bash
@@ -1512,7 +1541,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   - `public protocol PermissionProbing: Sendable { func snapshot() async -> PermissionSnapshot }`
   - `public protocol TickerScheduling: Sendable { func schedule(every seconds: TimeInterval, _ tick: @escaping @Sendable () -> Void) -> TickerHandle }`, `public final class TickerHandle { init(_ cancel: @escaping @Sendable () -> Void); let cancel: @Sendable () -> Void }`
   - `public struct PermissionSnapshot: Codable, Equatable, Sendable { fda: FDAState; notifications: NotificationsState; loginItems: LoginItemsState }` with nested `status` strings per contract, `PermissionSnapshot.unknown`
-  - `public enum PermissionRowOverlay { static func status(for rowId: String, in snapshot: PermissionSnapshot) -> (RowStatus, String)? }` — rows `perm.fda`, `perm.loginItems`, `perm.notifications`
+  - `public enum PermissionRowOverlay { static func status(for rowId: String, in snapshot: PermissionSnapshot) -> (RowStatus, String)? }` — rows `perm.fda`, `perm.login-items`, `perm.notifications`
   - `@MainActor public final class ReadinessModel: ObservableObject` — `init(plans: PlanSource, permissions: PermissionProbing, ticker: TickerScheduling)`; `@Published groups: [PlanGroup]`, `team: TeamInfo?`, `canInstall: Bool`, `requiredMissing: [String]`, `isLoading: Bool`, `lastError: String?`, `checkingRowIds: Set<String>`; `var limitedModeAvailable: Bool`; `func load() async`; `func becameVisible()`, `becameHidden()`, `didBecomeActive()`; `func afterAction(rowId: String) async`; `func recheckAll() async`; `func row(_ id: String) -> PlanRow?`
   - `public enum StatusGlyph { static func symbol(for: RowStatus) -> String; static func tint(for: RowStatus) -> GlyphTint }`, `public enum GlyphTint { green, red, yellow, grey, none }`
 
@@ -1647,17 +1676,17 @@ let readinessModelChecks: [Check] = [
                                    loginItems: .init(status: "notRegistered"))
         c.expectEqual(PermissionRowOverlay.status(for: "perm.fda", in: s)?.0, .needsYou)
         c.expectEqual(PermissionRowOverlay.status(for: "perm.notifications", in: s)?.0, .needsYou)
-        c.expectEqual(PermissionRowOverlay.status(for: "perm.loginItems", in: s)?.0, .missing)
+        c.expectEqual(PermissionRowOverlay.status(for: "perm.login-items", in: s)?.0, .missing)
         let u = PermissionSnapshot.unknown
         c.expectEqual(PermissionRowOverlay.status(for: "perm.fda", in: u)?.0, .checking)
         c.expect(PermissionRowOverlay.status(for: "tool.clt", in: s) == nil)
         let ok = PermissionSnapshot(fda: .init(status: "granted", detail: ""), notifications: .init(status: "provisional"),
                                     loginItems: .init(status: "enabled"))
-        c.expectEqual(PermissionRowOverlay.status(for: "perm.loginItems", in: ok)?.0, .ready)
+        c.expectEqual(PermissionRowOverlay.status(for: "perm.login-items", in: ok)?.0, .ready)
         c.expectEqual(PermissionRowOverlay.status(for: "perm.notifications", in: ok)?.0, .ready)
         let approval = PermissionSnapshot(fda: .init(status: "granted", detail: ""), notifications: .init(status: "notDetermined"),
                                           loginItems: .init(status: "requiresApproval"))
-        c.expectEqual(PermissionRowOverlay.status(for: "perm.loginItems", in: approval)?.0, .needsYou)
+        c.expectEqual(PermissionRowOverlay.status(for: "perm.login-items", in: approval)?.0, .needsYou)
         c.expectEqual(PermissionRowOverlay.status(for: "perm.notifications", in: approval)?.0, .skipped)
     },
     Check("StatusGlyph follows the spec's symbols") { c in
@@ -1712,7 +1741,7 @@ public struct PermissionSnapshot: Codable, Equatable, Sendable {
 
 public enum PermissionRowOverlay {
     public static let fdaRow = "perm.fda"
-    public static let loginItemsRow = "perm.loginItems"
+    public static let loginItemsRow = "perm.login-items"
     public static let notificationsRow = "perm.notifications"
 
     public static func status(for rowId: String, in s: PermissionSnapshot) -> (RowStatus, String)? {
@@ -2212,7 +2241,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   - `public protocol KeyValueStore { func string(forKey:) -> String?; func set(_ value: String?, forKey:) }` + `public final class MemoryKeyValueStore`
   - `public enum VersionChange: Equatable { firstLaunch, unchanged, changed(from: String, to: String) }`; `public enum VersionChangeDetector { static let key = "MSLastLaunchedVersion"; static func evaluate(current: String, store: KeyValueStore) -> VersionChange; static func record(current: String, store: KeyValueStore) }`
   - `public struct ServiceStatusEntry: Codable, Equatable { label: String; status: String }`, `public struct ServiceRegisterResult: Codable, Equatable { plist: String; ok: Bool; status: String; error: String? }`
-  - `public protocol ServicesProviding: Sendable { func statuses() async -> [ServiceStatusEntry]; func register(plists: [String]) async -> [ServiceRegisterResult]; func restart(label: String) async -> Bool }`
+  - `public protocol ServicesProviding: Sendable { func statuses() async -> [ServiceStatusEntry]; func register(plists: [String]) async -> [ServiceRegisterResult]; func unregister(plists: [String]) async -> [ServiceRegisterResult]; func restart(label: String) async -> Bool }` — `unregister` serves L1's `app-unregister-services` need (`rt uninstall` → `services.unregister`), via `SMAppService.unregister()`; a plist whose `BundleProgram` does not exist in the bundle registers as `notFound` and is reported `ok:false, status:"notFound"` — the app never hides it; L1 decides (it requests the deck plist only when deck is bundled).
 - Produces (app): `final class ServicesRegistrar: ServicesProviding` — `init(bundlePath: String, runner: CommandRunner, uid: uid_t = getuid())`; `var agents: [AgentPlist]`; `func registerAll() -> [ServiceRegisterResult]`; `func smStatuses() -> [SMAppService.Status]`; `func restartAll() async`; `func handleVersionChange(current: String, store: KeyValueStore) async -> VersionChange` (changed → registerAll + restartAll + deck restart + record).
 
 - [ ] **Step 1: Failing checks**
@@ -2389,6 +2418,7 @@ public struct ServiceRegisterResult: Codable, Equatable, Sendable {
 public protocol ServicesProviding: Sendable {
     func statuses() async -> [ServiceStatusEntry]
     func register(plists: [String]) async -> [ServiceRegisterResult]
+    func unregister(plists: [String]) async -> [ServiceRegisterResult]
     func restart(label: String) async -> Bool
 }
 ```
@@ -2454,6 +2484,27 @@ final class ServicesRegistrar: ServicesProviding, @unchecked Sendable {
         await MainActor.run { registerSync(plists: plists) }
     }
 
+    func unregister(plists: [String]) async -> [ServiceRegisterResult] {
+        await MainActor.run {
+            plists.map { name in
+                guard let plist = agents.first(where: { $0.fileName == name }) else {
+                    return ServiceRegisterResult(plist: name, ok: false, status: "notFound", error: "not shipped in this bundle")
+                }
+                let svc = service(plist)
+                do {
+                    try svc.unregister()
+                    TrayLog.info("agent unregistered", ["label": plist.label])
+                    return ServiceRegisterResult(plist: name, ok: true, status: TrayServer.statusName(svc.status))
+                } catch {
+                    let gone = svc.status == .notRegistered
+                    if !gone { TrayLog.error("agent unregister failed", ["label": plist.label, "err": String(describing: error)]) }
+                    return ServiceRegisterResult(plist: name, ok: gone, status: TrayServer.statusName(svc.status),
+                                                 error: gone ? nil : String(describing: error))
+                }
+            }
+        }
+    }
+
     func restart(label: String) async -> Bool {
         let (exe, args) = Kickstart.arguments(label: label, uid: uid)
         let out = await runner.run(exe, args)
@@ -2509,7 +2560,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `rt-tray/Tests/MattstackCoreChecks/NeedModelsChecks.swift`; modify `AllChecks.swift`
 
 **Interfaces:**
-- Produces (Core): `public struct NeedResult: Codable, Equatable { ok: Bool; detail: String }`; `public protocol PrivilegedInstalling: Sendable { func proxyInstall() async -> NeedResult }`; `public enum ProxyHelper { static let relativePath = "Contents/Helpers/mattstack-proxy-install"; static func path(bundlePath:) -> String; static let promptText = "mattstack needs administrator access once to install the local HTTPS proxy (portless) for the board and deck." }`; `public protocol PrivilegeEscalator: Sendable { func runAsAdmin(executable: String, args: [String], prompt: String) async -> CommandOutcome }`
+- Produces (Core): `public struct NeedResult: Codable, Equatable { ok: Bool; detail: String }`; `public protocol PrivilegedInstalling: Sendable { func proxyInstall() async -> NeedResult; func proxyRemove() async -> NeedResult }` (`proxyRemove` serves L1's `app-privileged {op:"proxy-remove"}` need from `rt uninstall`; helper arg `remove`); `public enum ProxyHelper { static let relativePath = "Contents/Helpers/mattstack-proxy-install"; static func path(bundlePath:) -> String; static let promptText = "mattstack needs administrator access once to install the local HTTPS proxy (portless) for the board and deck." }`; `public protocol PrivilegeEscalator: Sendable { func runAsAdmin(executable: String, args: [String], prompt: String) async -> CommandOutcome }`
 - Produces (app): `final class PrivilegedInstaller: PrivilegedInstalling` — `init(bundlePath: String, escalator: PrivilegeEscalator, fileExists: @escaping (String) -> Bool = FileManager.default.isExecutableFile(atPath:))`; `struct AuthorizationServicesEscalator: PrivilegeEscalator` (the real admin prompt).
 
 - [ ] **Step 1: Failing checks**
@@ -2548,6 +2599,7 @@ public struct NeedResult: Codable, Equatable, Sendable {
 
 public protocol PrivilegedInstalling: Sendable {
     func proxyInstall() async -> NeedResult
+    func proxyRemove() async -> NeedResult
 }
 
 public protocol PrivilegeEscalator: Sendable {
@@ -2577,12 +2629,15 @@ final class PrivilegedInstaller: PrivilegedInstalling, @unchecked Sendable {
         self.bundlePath = bundlePath; self.escalator = escalator; self.fileExists = fileExists
     }
 
-    func proxyInstall() async -> NeedResult {
+    func proxyInstall() async -> NeedResult { await run(op: "install") }
+    func proxyRemove() async -> NeedResult { await run(op: "remove") }
+
+    private func run(op: String) async -> NeedResult {
         let helper = ProxyHelper.path(bundlePath: bundlePath)
         guard fileExists(helper) else {
             return NeedResult(ok: false, detail: "proxy-install helper is not bundled at \(ProxyHelper.relativePath)")
         }
-        let out = await escalator.runAsAdmin(executable: helper, args: ["install"], prompt: ProxyHelper.promptText)
+        let out = await escalator.runAsAdmin(executable: helper, args: [op], prompt: ProxyHelper.promptText)
         if out.ok { TrayLog.info("proxy helper ran", ["stdout": String(out.stdout.suffix(500))]) }
         else { TrayLog.warn("proxy helper failed", ["exit": Int(out.exitCode), "stderr": String(out.stderr.suffix(1000))]) }
         return NeedResult(ok: out.ok, detail: out.ok ? out.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2653,7 +2708,7 @@ struct AuthorizationServicesEscalator: PrivilegeEscalator {
     }
 }
 ```
-(The helper's `MATTSTACK_EXIT=` trailer is a contract L4/L5 must honour; record it in Open questions. If the compiler rejects the pointer gymnastics, fall back to `osascript -e 'do shell script … with administrator privileges'` through `CommandRunner` — same prompt, same one-time ask — and note the swap in the report.)
+(The helper's `MATTSTACK_EXIT=` trailer is a contract L4/L5 must honour; record it in Open questions. L4 T2 carries a `status:"pending"` deps.lock row for `mattstack-proxy-install` so `check-bundle.sh` tolerates its absence until L5 ships it; until then this class honestly reports "helper is not bundled". If the compiler rejects the pointer gymnastics, fall back to `osascript -e 'do shell script … with administrator privileges'` through `CommandRunner` — same prompt, same one-time ask — and note the swap in the report.)
 
 - [ ] **Step 4: `swift build`; checks pass. Commit**
 ```bash
@@ -2675,7 +2730,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: `PermissionsProviding` (Task 6), `ServicesProviding`, `ServiceStatusEntry`, `ServiceRegisterResult` (Task 7), `PrivilegedInstalling`, `NeedResult` (Task 8), `NeedRequest` (defined here in Core `Contract/ApplyEvents.swift` — Task 11 reuses it), `VersionInfo` (Task 3).
 - Produces:
-  - `public struct NeedRequest: Codable, Equatable { type: String; plists: [String]?; op: String? }` (in `Contract/ApplyEvents.swift`, created now with only this type; Task 11 fills the rest)
+  - `public struct NeedRequest: Codable, Equatable { type: String; plists: [String]?; op: String? }` (in `Contract/ApplyEvents.swift`, created now with only this type; Task 11 fills the rest). NeedBroker handles every type L1 emits (contract): `app-register-services {plists}` → `services.register`, `app-unregister-services {plists}` → `services.unregister`, `app-privileged {op:"proxy-install"|"proxy-remove"}` → `privileged.proxyInstall()/proxyRemove()`; anything else → `failed: unknown need type`.
   - `public struct NeedOutcome: Codable, Equatable { state: String /* pending | done | failed */; detail: String }` — the body rt polls at `GET /setup/need/<id>` (contract, 2026-08-21 update: rt polls every 1 s, 10-minute timeout; the app never POSTs a reply).
   - `public actor NeedBroker { init(services: ServicesProviding, privileged: PrivilegedInstalling); func perform(id: String, request: NeedRequest) async -> NeedResult; func outcome(id: String) -> NeedOutcome; func forget(id:); func forgetAll() }` — one execution per id; concurrent callers await the same result; `outcome` is `pending` while running (or before the app has read the `need` line), then `done`/`failed` with the detail. Unknown ids report `pending` — rt keeps polling until its own timeout; the app never fabricates a result.
   - `public protocol UpdateChecking: Sendable { func checkForUpdates() async -> Bool }`, `public protocol VersionProviding: Sendable { func versionInfo() -> VersionInfo }`
@@ -2699,6 +2754,7 @@ final class FakePerms: PermissionsProviding, @unchecked Sendable {
 }
 final class FakeServices: ServicesProviding, @unchecked Sendable {
     var registered: [[String]] = []
+    var unregistered: [[String]] = []
     var restarted: [String] = []
     var registerDelayNs: UInt64 = 0
     func statuses() async -> [ServiceStatusEntry] { [ServiceStatusEntry(label: "com.mattstack.daemon", status: "enabled")] }
@@ -2707,15 +2763,21 @@ final class FakeServices: ServicesProviding, @unchecked Sendable {
         registered.append(plists)
         return plists.map { ServiceRegisterResult(plist: $0, ok: true, status: "enabled") }
     }
+    func unregister(plists: [String]) async -> [ServiceRegisterResult] {
+        unregistered.append(plists)
+        return plists.map { ServiceRegisterResult(plist: $0, ok: true, status: "notRegistered") }
+    }
     func restart(label: String) async -> Bool { restarted.append(label); return true }
 }
 final class FakePrivileged: PrivilegedInstalling, @unchecked Sendable {
     var calls = 0
+    var removes = 0
     func proxyInstall() async -> NeedResult { calls += 1; return NeedResult(ok: true, detail: "proxy installed") }
+    func proxyRemove() async -> NeedResult { removes += 1; return NeedResult(ok: true, detail: "proxy removed") }
 }
 final class FakeUpdater: UpdateChecking, @unchecked Sendable { var checks = 0; func checkForUpdates() async -> Bool { checks += 1; return true } }
 struct FakeVersion: VersionProviding {
-    func versionInfo() -> VersionInfo { VersionInfo(version: "2.8.0", build: "2080", flavor: "dev", path: "/Applications/mattstack-dev.app") }
+    func versionInfo() -> VersionInfo { VersionInfo(version: "2.8.0", build: 2008000, flavor: "dev", path: "/Applications/mattstack-dev.app") }
 }
 
 func makeRoutes() -> (TrayRoutes, FakePerms, FakeServices, FakePrivileged, FakeUpdater, NeedBroker) {
@@ -2799,6 +2861,16 @@ let trayRoutesChecks: [Check] = [
         await broker.forget(id: "proxy.install")
         c.expectEqual(await broker.outcome(id: "proxy.install").state, "pending", "a retry must be able to redo the step")
     },
+    Check("NeedBroker: uninstall needs — app-unregister-services and app-privileged/proxy-remove (L1 rt uninstall)") { c in
+        let s = FakeServices(), pr = FakePrivileged()
+        let broker = NeedBroker(services: s, privileged: pr)
+        let un = await broker.perform(id: "services.unregister", request: NeedRequest(type: "app-unregister-services", plists: ["com.mattstack.daemon.plist", "com.mattstack.deck.plist"], op: nil))
+        c.expectEqual(un.ok, true)
+        c.expectEqual(s.unregistered, [["com.mattstack.daemon.plist", "com.mattstack.deck.plist"]])
+        let rm = await broker.perform(id: "proxy.remove", request: NeedRequest(type: "app-privileged", plists: nil, op: "proxy-remove"))
+        c.expectEqual(rm.detail, "proxy removed")
+        c.expectEqual(pr.removes, 1)
+    },
     Check("POST /update/check and GET /version") { c in
         let (r, _, _, _, u, _) = makeRoutes()
         let up = await r.handle(method: "POST", path: "/update/check", body: nil)
@@ -2807,6 +2879,7 @@ let trayRoutesChecks: [Check] = [
         let v = await r.handle(method: "GET", path: "/version", body: nil)
         let j = json(v!.body)
         c.expectEqual(j["version"] as? String, "2.8.0")
+        c.expectEqual(j["build"] as? Int, 2008000, "build is the numeric CFBundleVersion, never a string")
         c.expectEqual(j["flavor"] as? String, "dev")
         c.expectEqual(j["path"] as? String, "/Applications/mattstack-dev.app")
     },
@@ -2829,9 +2902,9 @@ let trayRoutesChecks: [Check] = [
 import Foundation
 
 public struct NeedRequest: Codable, Equatable, Sendable {
-    public var type: String      // app-register-services | app-privileged
+    public var type: String      // app-register-services | app-unregister-services | app-privileged
     public var plists: [String]?
-    public var op: String?       // proxy-install
+    public var op: String?       // proxy-install | proxy-remove
     public init(type: String, plists: [String]?, op: String?) { self.type = type; self.plists = plists; self.op = op }
 }
 ```
@@ -2884,8 +2957,17 @@ public actor NeedBroker {
                     return NeedResult(ok: true, detail: results.map { "\($0.plist): \($0.status)" }.joined(separator: ", "))
                 }
                 return NeedResult(ok: false, detail: failed.map { "\($0.plist): \($0.error ?? $0.status)" }.joined(separator: "; "))
+            case "app-unregister-services":
+                let results = await services.unregister(plists: request.plists ?? [])
+                let failed = results.filter { !$0.ok }
+                if failed.isEmpty {
+                    return NeedResult(ok: true, detail: results.map { "\($0.plist): \($0.status)" }.joined(separator: ", "))
+                }
+                return NeedResult(ok: false, detail: failed.map { "\($0.plist): \($0.error ?? $0.status)" }.joined(separator: "; "))
             case "app-privileged" where request.op == "proxy-install":
                 return await privileged.proxyInstall()
+            case "app-privileged" where request.op == "proxy-remove":
+                return await privileged.proxyRemove()
             default:
                 return NeedResult(ok: false, detail: "unknown need type \(request.type)\(request.op.map { "/\($0)" } ?? "")")
             }
@@ -3002,7 +3084,7 @@ In `rt-tray/Sources/TrayServer.swift`:
             }
             self.handleLegacy(method: method, path: path, str: str, connection: connection)
 ```
-and move the existing if/else chain (from `if method == "POST" && path == "/notify"` through the final 404) into a new `private func handleLegacy(method: String, path: String, str: String, connection: NWConnection)` unchanged. Add `case 405: statusText = "Method Not Allowed"` and `case 500: statusText = "Error"` to `sendResponse`. Existing routes keep their behaviour; `check-bundle.sh`'s awk over the `/flavor/retire` block still matches because that block moves verbatim.
+and move the existing if/else chain (from `if method == "POST" && path == "/notify"` through the final 404) into a new `private func handleLegacy(method: String, path: String, str: String, connection: NWConnection)` unchanged. Add `case 405: statusText = "Method Not Allowed"` and `case 500: statusText = "Error"` to `sendResponse`. Existing routes keep their behaviour; `check-bundle.sh`'s awk over the `/flavor/retire` block still matches because that block moves verbatim. **L4 `check-bundle.sh` source gates this refactor must preserve (cross-plan review §1 row 14):** the literal `path == "/flavor/retire"` in `TrayServer.swift`; `forInfoDictionaryKey: "MSDaemonLabel"` and `defaultDaemonLabel = "com.mattstack.daemon"` in `Sources/` (today `BundleFlavor.swift`); and in `main.swift` the socket guard stays before `let delegate = AppDelegate()` (Task 18).
 
 - [ ] **Step 6: `swift build`; checks pass. Commit**
 ```bash
@@ -3021,7 +3103,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `rt-tray/Sources-core/Updates/UpdatePolicy.swift`
 - Create: `rt-tray/Sources/Updates/UpdaterController.swift`
 - Delete: `rt-tray/Sources/UpdateChecker.swift`
-- Modify: `rt-tray/Sources/AppDelegate.swift` (swap UpdateChecker → UpdaterController), `rt-tray/Sources/TrayState.swift` (doc comment only), `rt-tray/check-bundle.sh` (one assertion), `rt-tray/build.sh` (fenced stopgap)
+- Modify: `rt-tray/Sources/AppDelegate.swift` (swap UpdateChecker → UpdaterController), `rt-tray/Sources/TrayState.swift` (doc comment only), `rt-tray/check-bundle.sh` (one assertion — **drop this edit if L4 T3's rewrite has already merged; otherwise L4 absorbs it at rebase**), `rt-tray/build.sh` (**fenced stopgap — deleted by L4 T4's rewrite; L4 T4 must call `scripts/render-launchagents.sh`**)
 - Create: `rt-tray/Tests/MattstackCoreChecks/UpdatePolicyChecks.swift`; modify `AllChecks.swift`
 
 **Interfaces:**
@@ -3234,9 +3316,11 @@ else
     fail "UpdaterController does not gate Sparkle on BundleFlavor.isDevBuild"
 fi
 ```
-(`assert_bin_has "silent dev updater" "update check skipped (dev build)"` still holds — the string survives in UpdaterController.)
+(`assert_bin_has "silent dev updater" "update check skipped (dev build)"` still holds — the string survives in UpdaterController. L4 T3's `check-bundle.sh` rewrite carries both assertions — the `UpdatePolicy.shouldStartUpdater(isDevBuild: isDevBuild` grep and `assert_bin_has "silent dev updater"` — so if L4 T3 has merged before this task runs, skip the check-bundle edit here; if not, L4 absorbs it at rebase.)
 
-- [ ] **Step 6: build.sh stopgap (fenced; L4 replaces build.sh entirely)**
+**Relaunch survival (L7):** every self-relaunch the app performs (the post-FDA "Relaunch mattstack" in Task 14, or any future one) re-execs with the current `ProcessInfo.processInfo.arguments` and environment, so `--allow-appcast-override` and `MATTSTACK_APPCAST_URL` survive the relaunch and the clean-room Sparkle rehearsal keeps pointing at the loopback appcast. Task 14's `relaunch()` implements it (`open -n <app> --env MATTSTACK_APPCAST_URL=… --args <current args>`).
+
+- [ ] **Step 6: build.sh stopgap (fenced stopgap — deleted by L4 T4's rewrite; L4 T4 must call `scripts/render-launchagents.sh` itself, keep `embed_sparkle` + the inside-out Sparkle signing, and use PlistBuddy `Set` for every key the Info.plist template already declares)**
 
 After the `cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"` line in `rt-tray/build.sh` insert:
 ```bash
@@ -3270,7 +3354,7 @@ Also add the rendered agent plists: replace the single-plist `AGENT_PLIST` sed b
 ```bash
 "$SCRIPT_DIR/scripts/render-launchagents.sh" "$([ "$IS_DEV" = true ] && echo dev || echo prod)" "$APP_BUNDLE/Contents/Library/LaunchAgents"
 ```
-(check-bundle.sh's KeepAlive assertion for prod expects `true`; it now sees `SuccessfulExit=false` for both flavors per spec §8 — update that assertion too: search for the `KA_PRINT` block and make both flavors expect `SuccessfulExit`.)
+(check-bundle.sh's KeepAlive assertion for prod expects `true`; it now sees `SuccessfulExit=false` for both flavors per spec §8 — update that assertion too: search for the `KA_PRINT` block and make both flavors expect `SuccessfulExit`. L4 T3's rewrite carries the same flip; same drop-if-merged rule as above.)
 
 - [ ] **Step 7: Verify**
 ```bash
@@ -4065,7 +4149,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   - `public enum TeamChoice: Equatable, Sendable { create, join, restore }`
   - `public struct GitHubStatus: Codable { status: RowStatus; handle: String?; owners: [String]? }` (from `rt setup github status --json`)
   - `@MainActor public final class TeamChoiceModel: ObservableObject` — `init(rt: RtRunning)`; `@Published choice: TeamChoice = .create`, `teamName`, `othersWillJoin = true`, `useGhRepo: Bool`, `ghOwner: String?`, `ghOwners: [String]`, `ghHandle: String?`, `remoteURL`, `inviteCode`, `restoreRepo`, `restoreAgeKey`, `joinSummary: String?`, `isChecking`; `var slugPreview: String`; `var canContinue: Bool`; `func loadGitHubStatus() async`; `func validateAndPrepare() async -> String?` (nil = ok; otherwise the specific failure copy); `static func joinFailureCopy(_ error: RtUserError, owner: String?, team: String?) -> String`; `static let inviteCodeLength = 77`.
-  - Verbs called (contract): `rt setup github status --json`; `rt team create <name> --remote <url> [--others] --json` (create; with `useGhRepo` the app passes `--remote gh:<owner>` — see Open questions) ; `rt team join --dry-run --json` with stdin `{"code": "..."}`; `rt restore <org>/<repo> --dry-run --json` with stdin `{"ageKey": "..."}`; `rt home init --dry-run --json` for the home-repo remote check (create and join both need the home repo).
+  - Verbs called (contract): `rt setup github status --json` → `{status, handle, owners, …}` (L1 T12 adds `handle`/`owners`); `rt team create <name> (--remote <url> | --create-repo <owner>) [--others] --json` (create; with `useGhRepo` the app passes `--create-repo <owner>` and L1 names the repo `mattstack-team-<slug>`, which matches `ghRepoPreview`); `rt team join --dry-run --json` with stdin `{"code": "..."}` (exit 0 `{access:"ok"|"denied"|"unreachable", message}`; exit 2 only for `invite-unknown`/`invite-malformed`); **restore (ruling R3): the app runs the REAL `rt restore <org>/<repo> --json` with stdin `{"ageKey": "..."}` when the user presses Continue, then `rt setup intent restore <org>/<repo> --json`** (L1's `home.restore` apply step only verifies the clone + key; a `--dry-run` is used only if the settings lane ships `rt restore --dry-run --json`); `rt home init --dry-run --json` for the home-repo remote check (create and join both need the home repo).
 
 - [ ] **Step 1: Failing checks**
 
@@ -4123,6 +4207,13 @@ let teamChoiceChecks: [Check] = [
         c.expect(err == nil, "got \(err ?? "")")
         c.expectEqual(rt.calls[0].args.prefix(3), ["home", "init", "--dry-run"])
         c.expectEqual(rt.calls[1].args, ["team", "create", "Acme Claims", "--remote", "https://example.com/t.git", "--others", "--json"])
+        let gh = ScriptedRt()
+        gh.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
+        gh.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-svc","name":"Acme Claims"},"remote":"ok"}"#)
+        let m2 = await MainActor.run { TeamChoiceModel(rt: gh) }
+        await MainActor.run { m2.choice = .create; m2.teamName = "Acme Claims"; m2.useGhRepo = true; m2.ghOwner = "acme"; m2.othersWillJoin = false }
+        c.expect(await m2.validateAndPrepare() == nil)
+        c.expectEqual(gh.calls[1].args, ["team", "create", "Acme Claims", "--create-repo", "acme", "--json"])
     },
     Check("join: code goes on stdin; success summary; failure copy is specific") { c in
         let rt = ScriptedRt()
@@ -4137,11 +4228,16 @@ let teamChoiceChecks: [Check] = [
         c.expect(rt.calls.allSatisfy { !$0.args.contains("ABCD-EFGH") }, "code never on argv")
         await MainActor.run { c.expectEqual(m.joinSummary, "Joining Acme (owner matt)") }
         let denied = ScriptedRt()
-        denied.answers["team join --dry-run"] = (2, #"{"contract":1,"error":{"code":"no-access","message":"You don't have access yet: ask matt to grant you access to Acme."}}"#)
+        denied.answers["team join --dry-run"] = (0, #"{"contract":1,"team":{"slug":"acme","name":"Acme","owner":"matt"},"access":"denied","peering":"idle","message":"You don't have access yet: ask matt to grant you access to Acme."}"#)
         let m2 = await MainActor.run { TeamChoiceModel(rt: denied) }
         await MainActor.run { m2.choice = .join; m2.inviteCode = "X" }
         let e2 = await m2.validateAndPrepare()
-        c.expectEqual(e2, "You don't have access yet: ask matt to grant you access to Acme.")
+        c.expectEqual(e2, "You don't have access yet: ask matt to grant you access to Acme.", "access != ok comes back as an exit-0 result, not a user error")
+        let unknown = ScriptedRt()
+        unknown.answers["team join --dry-run"] = (2, #"{"contract":1,"error":{"code":"invite-unknown","message":""}}"#)
+        let m3 = await MainActor.run { TeamChoiceModel(rt: unknown) }
+        await MainActor.run { m3.choice = .join; m3.inviteCode = "X" }
+        c.expectEqual(await m3.validateAndPrepare(), "Invite not recognized or expired: ask the team owner for a new one.")
         c.expectEqual(TeamChoiceModel.joinFailureCopy(RtUserError(code: "expired", message: ""), owner: "matt", team: nil),
                       "Invite not recognized or expired: ask matt for a new one.")
         c.expectEqual(TeamChoiceModel.joinFailureCopy(RtUserError(code: "wrong-account", message: ""), owner: nil, team: nil),
@@ -4159,15 +4255,18 @@ let teamChoiceChecks: [Check] = [
             c.expectEqual(TeamChoiceModel.inviteCodeLength, 77)
         }
     },
-    Check("restore: repo + key required; key on stdin to rt restore --dry-run") { c in
+    Check("restore: repo + key required; the real rt restore runs with the key on stdin, then setup intent restore") { c in
         let rt = ScriptedRt()
         rt.answers["restore"] = (0, #"{"contract":1,"ok":true,"repo":"m4ttheweric/mattstack-home"}"#)
+        rt.answers["setup intent restore"] = (0, #"{"contract":1,"ok":true,"intent":"restore","repo":"m4ttheweric/mattstack-home"}"#)
         let m = await MainActor.run { TeamChoiceModel(rt: rt) }
         await MainActor.run { m.choice = .restore; m.restoreRepo = "m4ttheweric/mattstack-home"; c.expectEqual(m.canContinue, false); m.restoreAgeKey = "AGE-SECRET-KEY-1XYZ"; c.expectEqual(m.canContinue, true) }
         let err = await m.validateAndPrepare()
         c.expect(err == nil)
-        c.expectEqual(rt.calls[0].args, ["restore", "m4ttheweric/mattstack-home", "--dry-run", "--json"])
+        c.expectEqual(rt.calls[0].args, ["restore", "m4ttheweric/mattstack-home", "--json"])
         c.expectEqual(rt.calls[0].stdin, "{\"ageKey\":\"AGE-SECRET-KEY-1XYZ\"}")
+        c.expectEqual(rt.calls[1].args, ["setup", "intent", "restore", "m4ttheweric/mattstack-home", "--json"])
+        c.expect(rt.calls.allSatisfy { !$0.args.contains("AGE-SECRET-KEY-1XYZ") }, "key never on argv")
     },
 ]
 ```
@@ -4267,7 +4366,8 @@ public final class TeamChoiceModel: ObservableObject {
             switch choice {
             case .create:
                 if let e = await homeInitCheck() { return e }
-                var args = ["team", "create", teamName, "--remote", useGhRepo ? "gh:\(ghRepoPreview)" : remoteURL.trimmingCharacters(in: .whitespaces)]
+                var args = ["team", "create", teamName]
+                args += useGhRepo ? ["--create-repo", ghOwner ?? ghHandle ?? ""] : ["--remote", remoteURL.trimmingCharacters(in: .whitespaces)]
                 if othersWillJoin { args.append("--others") }
                 args.append("--json")
                 let r = try await rt.run(args, stdin: nil)
@@ -4283,10 +4383,17 @@ public final class TeamChoiceModel: ObservableObject {
                 joinSummary = j.message ?? "Joining \(j.team?.name ?? "") (owner \(j.team?.owner ?? ""))"
                 return await homeInitCheck()
             case .restore:
+                // Ruling R3: the app runs the real restore at Continue (clone
+                // + key into the Keychain), then records the intent so
+                // `setup apply`'s home.restore step only verifies.
+                let repo = restoreRepo.trimmingCharacters(in: .whitespaces)
                 let stdin = try JSONEncoder().encode(["ageKey": restoreAgeKey.trimmingCharacters(in: .whitespacesAndNewlines)])
-                let r = try await rt.run(["restore", restoreRepo.trimmingCharacters(in: .whitespaces), "--dry-run", "--json"], stdin: stdin)
+                let r = try await rt.run(["restore", repo, "--json"], stdin: stdin)
                 if let e = r.userError { return e.message }
-                return r.exitCode == 0 ? nil : "rt restore failed (exit \(r.exitCode))."
+                guard r.exitCode == 0 else { return "rt restore failed (exit \(r.exitCode))." }
+                let intent = try await rt.run(["setup", "intent", "restore", repo, "--json"], stdin: nil)
+                if let e = intent.userError { return e.message }
+                return intent.exitCode == 0 ? nil : "rt setup intent restore failed (exit \(intent.exitCode))."
             }
         } catch {
             return "Could not run rt: \(error)"
@@ -4303,7 +4410,8 @@ public final class TeamChoiceModel: ObservableObject {
         let who = owner ?? "the team owner"
         switch error.code {
         case "no-access": return error.message.isEmpty ? "You don't have access yet: ask \(who) to grant you access to \(team ?? "the team")." : error.message
-        case "expired", "not-found", "redeemed": return "Invite not recognized or expired: ask \(who) for a new one."
+        case "expired", "not-found", "redeemed", "invite-unknown": return "Invite not recognized or expired: ask \(who) for a new one."
+        case "invite-malformed": return "That doesn't look like an invite code — paste the whole code (about \(inviteCodeLength) characters)."
         case "wrong-account": return "This code is for a different forge account than you're signed into."
         default: return error.message.isEmpty ? "Couldn't redeem the invite." : error.message
         }
@@ -4436,7 +4544,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `rt-tray/Tests/MattstackCoreChecks/RowActionChecks.swift`; modify `AllChecks.swift`
 
 **Interfaces:**
-- Produces (Core): `public enum DispatchedAction: Equatable { openSettings(target: String); requestPermission(which: String); rtVerb(args: [String], stdin: Data?); openURL(URL); showSteps([String]); collectFields([ActionField], integration: String, alternatives: [ActionAlternative]); none }`; `public enum RowActionDispatcher { static func dispatch(_ action: RowAction, fieldValues: [String: String]?, alternative: String?) -> DispatchedAction }` — `connect` without values → `collectFields`; with values → `rtVerb(["setup", integration, "connect", "--json"], stdin: JSON of values)`; alternative `use-gh` → stdin `{"useGh":true}`; `oauth` → `rtVerb(verb + ["--json"])`; `owner-once` → collect then `rtVerb(["setup","slack","create-app","--config-token-stdin","--json"], stdin: {"configToken":…})`; `install` → `["tools","install",tool,"--json"]`; `link-bundled` → `["deps","link",tool,"--json"]`; `run` → verb + `--json`; `steps` → showSteps; `open-url` → openURL; `open-settings`/`request-permission` native; `unknown` → none.
+- Produces (Core): `public enum DispatchedAction: Equatable { openSettings(target: String); requestPermission(which: String); rtVerb(args: [String], stdin: Data?); openURL(URL); showSteps([String]); collectFields([ActionField], integration: String, alternatives: [ActionAlternative]); none }`; `public enum RowActionDispatcher { static func dispatch(_ action: RowAction, fieldValues: [String: String]?, alternative: String?) -> DispatchedAction }` — `connect` without values → `collectFields`; with values → `rtVerb(["setup", integration, "connect", "--json"], stdin: JSON of values)`; alternative `use-gh` → stdin `{"useGh":true}`; `oauth` → `rtVerb(verb + ["--json"])`; `owner-once` → collect then `rtVerb(["setup","slack","create-app","--json"], stdin: JSON `{"configToken":…}`)` (no `--config-token-stdin` flag — L1 reads a raw token line under that flag and JSON without it); `install` → `["tools","install",tool,"--json"]`; `link-bundled` → `["deps","link",tool,"--json"]`; `run` → verb + `--json`; `steps` → showSteps; `open-url` → openURL; `open-settings`/`request-permission` native; `unknown` → none.
 - Produces (app): `ChecklistScreen(model:permissions:rt:bundleId:)`, `RowView`, `ConnectSheet` (SecureField per secret field, hint text, "Use gh login" alternative button), `StepsSheet`.
 
 - [ ] **Step 1: Failing checks**
@@ -4463,7 +4571,7 @@ let rowActionChecks: [Check] = [
         c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .oauth, label: "Connect", integration: "slack", verb: ["setup", "slack", "connect"]), fieldValues: nil, alternative: nil), .rtVerb(args: ["setup", "slack", "connect", "--json"], stdin: nil))
         let owner = RowAction(type: .ownerOnce, label: "Create…", integration: "slack", fields: [ActionField(name: "configToken", label: "App configuration token", secret: true)])
         c.expectEqual(RowActionDispatcher.dispatch(owner, fieldValues: ["configToken": "xoxe-1"], alternative: nil),
-                      .rtVerb(args: ["setup", "slack", "create-app", "--config-token-stdin", "--json"], stdin: Data("{\"configToken\":\"xoxe-1\"}".utf8)))
+                      .rtVerb(args: ["setup", "slack", "create-app", "--json"], stdin: Data("{\"configToken\":\"xoxe-1\"}".utf8)))
         c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .install, label: "Install", tool: "herdr", via: "brew"), fieldValues: nil, alternative: nil), .rtVerb(args: ["tools", "install", "herdr", "--json"], stdin: nil))
         c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .linkBundled, label: "Use mattstack's", tool: "gh"), fieldValues: nil, alternative: nil), .rtVerb(args: ["deps", "link", "gh", "--json"], stdin: nil))
         c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .run, label: "Re-check", verb: ["setup", "status"]), fieldValues: nil, alternative: nil), .rtVerb(args: ["setup", "status", "--json"], stdin: nil))
@@ -4506,7 +4614,7 @@ public enum RowActionDispatcher {
             return .collectFields(action.fields ?? [], integration: integration, alternatives: action.alternatives ?? [])
         case .ownerOnce:
             guard let integration = action.integration else { return .none }
-            if let values = fieldValues { return .rtVerb(args: ["setup", integration, "create-app", "--config-token-stdin", "--json"], stdin: json(values)) }
+            if let values = fieldValues { return .rtVerb(args: ["setup", integration, "create-app", "--json"], stdin: json(values)) }
             return .collectFields(action.fields ?? [], integration: integration, alternatives: [])
         case .oauth, .run:
             guard let verb = action.verb, !verb.isEmpty else { return .none }
@@ -4748,7 +4856,14 @@ struct ChecklistScreen: View {
         let path = Bundle.main.bundlePath
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        task.arguments = ["-n", path]
+        // Re-exec with the current arguments + environment so a clean-room
+        // launch (`MATTSTACK_APPCAST_URL` + `--allow-appcast-override`)
+        // survives the relaunch; `open` does not inherit either on its own.
+        var args = ["-n", path]
+        if let feed = ProcessInfo.processInfo.environment[UpdatePolicy.overrideEnv] { args += ["--env", "\(UpdatePolicy.overrideEnv)=\(feed)"] }
+        let passthrough = Array(CommandLine.arguments.dropFirst())
+        if !passthrough.isEmpty { args += ["--args"] + passthrough }
+        task.arguments = args
         try? task.run()
         NSApp.terminate(nil)
     }
@@ -4977,7 +5092,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `rt-tray/Tests/MattstackCoreChecks/SettingsChecks.swift`; modify `AllChecks.swift`
 
 **Interfaces:**
-- Produces (Core): `public enum RemoteMasker { static func mask(_ remote: String) -> String }` (`git@gitlab.example.com:tools/team.git` → `gitlab.example.com/tools/team`; `https://github.com/o/r.git` → `github.com/o/r`; garbage → as-is); `public struct TeamSettingsInfo: Codable { name: String?; slug: String?; remote: String?; lastPush: String?; members: [String]? }` (from `rt team status --json` — see Open questions); `@MainActor public final class TeamSettingsModel: ObservableObject` — `init(rt: RtRunning)`; `@Published info: TeamSettingsInfo?`, `invite: InviteResult?`, `error: String?`, `uninstallPlan: UninstallPlan?`; `func load() async`; `func mintInvite(handle: String) async`; `func loadUninstallPlan() async`; `func uninstall(keepData: Bool) -> AsyncThrowingStream<String, Error>`.
+- Produces (Core): `public enum RemoteMasker { static func mask(_ remote: String) -> String }` (`git@gitlab.example.com:tools/team.git` → `gitlab.example.com/tools/team`; `https://github.com/o/r.git` → `github.com/o/r`; garbage → as-is); `public struct TeamSettingsInfo: Codable { name: String?; slug: String?; remote: String?; lastPush: String?; members: [Member]? }` with `Member { username: String }` (from `rt team status [--team <slug>] --json` → `{contract, slug, name, remote, lastPush, members:[{username}]}` — L1 T19 / contract); `@MainActor public final class TeamSettingsModel: ObservableObject` — `init(rt: RtRunning)`; `@Published info: TeamSettingsInfo?`, `invite: InviteResult?`, `error: String?`, `uninstallPlan: UninstallPlan?`; `func load() async`; `func mintInvite(handle: String) async`; `func loadUninstallPlan() async`; `func uninstall(keepData: Bool) -> AsyncThrowingStream<String, Error>`.
 - Produces (app): `SettingsWindowController` (`show(pane:)`, remembers last pane in UserDefaults `MSSettingsPane`), `SettingsView` with `TabView` of the four panes, `enum SettingsPane: String { general, permissions, team, uninstall }`.
 
 - [ ] **Step 1: Failing checks**
@@ -4996,7 +5111,7 @@ let settingsChecks: [Check] = [
     },
     Check("TeamSettingsModel loads status, mints invites through rt, loads the uninstall dry-run") { c in
         let rt = ScriptedRt()
-        rt.answers["team status"] = (0, #"{"contract":1,"name":"Acme","slug":"acme","remote":"git@github.com:acme/mattstack-team-acme.git","lastPush":"2026-08-21T03:00:00Z","members":["matt","bob"]}"#)
+        rt.answers["team status"] = (0, #"{"contract":1,"name":"Acme","slug":"acme","remote":"git@github.com:acme/mattstack-team-acme.git","lastPush":"2026-08-21T03:00:00Z","members":[{"username":"matt"},{"username":"bob"}]}"#)
         rt.answers["team invite --handle bob"] = (0, #"{"contract":1,"code":"ABCD","expiresAt":"2026-08-28T00:00:00Z","pasteBlock":"Install mattstack…","forgeAccess":"granted","manualSteps":[]}"#)
         rt.answers["uninstall --dry-run"] = (0, #"{"contract":1,"actions":[{"id":"services.unregister","title":"Stop services"}]}"#)
         let m = await MainActor.run { TeamSettingsModel(rt: rt) }
@@ -5046,11 +5161,12 @@ import Foundation
 import Combine
 
 public struct TeamSettingsInfo: Codable, Equatable, Sendable {
+    public struct Member: Codable, Equatable, Sendable { public var username: String }
     public var name: String?
     public var slug: String?
     public var remote: String?
     public var lastPush: String?
-    public var members: [String]?
+    public var members: [Member]?
 }
 
 @MainActor
@@ -5087,8 +5203,10 @@ public final class TeamSettingsModel: ObservableObject {
         } catch { self.error = String(describing: error) }
     }
 
+    /// `--yes`: the Uninstall pane's sheet is the confirmation; without it
+    /// rt exits 2 `confirm-required` for `--delete-data` on a non-TTY.
     public func uninstall(keepData: Bool) -> AsyncThrowingStream<String, Error> {
-        rt.stream(["uninstall", keepData ? "--keep-data" : "--delete-data", "--json"], stdin: nil)
+        rt.stream(["uninstall", keepData ? "--keep-data" : "--delete-data", "--yes", "--json"], stdin: nil)
     }
 }
 ```
@@ -5198,11 +5316,12 @@ struct GeneralPane: View {
                 LabeledContent("Flavor") { Text(env.isDevBuild ? "dev (mattstack-dev.app)" : "prod (mattstack.app)") }
                 Button(env.isDevBuild ? "Switch to the installed app (dev mode off)…" : "Switch to the dev app (dev mode on)…") {
                     devModeBusy = true
-                    Task { _ = try? await env.rt.run(["settings", "dev-mode", env.isDevBuild ? "off" : "on"], stdin: nil); devModeBusy = false }
+                    Task { _ = try? await env.rt.run(["settings", "dev-mode", env.isDevBuild ? "prod" : "dev"], stdin: nil); devModeBusy = false }
                 }
                 .disabled(devModeBusy)
                 .accessibilityIdentifier(AXID.settingsGeneralDevMode)
                 Text("The handoff quits this app and launches the other flavor.").font(.caption).foregroundStyle(.secondary)
+                // `rt settings dev-mode <dev|prod>`: L1 T31 drops `requiresTTY` when the target is given, so the app can spawn it.
             }
             Section { LabeledContent("Version") { Text(env.version) } }
         }
@@ -5302,7 +5421,7 @@ struct TeamPane: View {
                 LabeledContent("Backup") { Text(model.info?.lastPush.map { "last push \($0)" } ?? "no push recorded") }
             }
             Section("Members with access") {
-                if let m = model.info?.members, !m.isEmpty { ForEach(m, id: \.self) { Text($0) } }
+                if let m = model.info?.members, !m.isEmpty { ForEach(m, id: \.username) { Text($0.username) } }
                 else { Text("Not visible with the current token.").foregroundStyle(.secondary) }
             }
             Section("Invite") {
@@ -5410,7 +5529,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `rt-tray/Sources-core/Launch/LaunchGuard.swift`, `rt-tray/Sources/Rt/RtClientFactory.swift`, `rt-tray/Sources/Setup/SetupCoordinator.swift`
-- Modify: `rt-tray/Sources/AppDelegate.swift`, `rt-tray/Sources/main.swift`, `rt-tray/Sources/TrayState.swift`, `rt-tray/Sources/ProcessPanelView.swift` (gear-menu additions only)
+- Modify: `rt-tray/Sources/AppDelegate.swift`, `rt-tray/Sources/main.swift`, `rt-tray/Sources/TrayState.swift`, `rt-tray/Sources/ProcessPanelView.swift` (gear-menu additions only), `rt-tray/Sources/DaemonLifecycle.swift` + `rt-tray/Sources-daemon-shim/main.swift` (L4 T3's string/comment edits, carried here — `rt-tray/Sources/**` is L3's)
 - Create: `rt-tray/Tests/MattstackCoreChecks/LaunchChecks.swift`; modify `AllChecks.swift`
 
 **Interfaces:**
@@ -5640,7 +5759,9 @@ and before `Quit mattstack`:
 ```
 and make the update item reflect Sparkle: `let updateItem = ActionMenuItem(updateMenuTitle) { … }; updateItem.isEnabled = trayState.canCheckForUpdates || trayState.updateAvailable != nil; menu.addItem(updateItem)`. Nothing else in the panel changes.
 
-`rt-tray/Sources/main.swift` — unchanged except the activation policy stays `.accessory`; the URL handler must be registered before the first event, so AppDelegate implements `applicationWillFinishLaunching`.
+`rt-tray/Sources/main.swift` — unchanged except the activation policy stays `.accessory`; the URL handler must be registered before the first event, so AppDelegate implements `applicationWillFinishLaunching`. **L4 `check-bundle.sh` source gates (keep verbatim):** the tray.sock single-instance guard stays *before* `let delegate = AppDelegate()` in `main.swift`; `BundleFlavor.swift` keeps `Bundle.main.object(forInfoDictionaryKey: "MSDaemonLabel")` and `static let defaultDaemonLabel = "com.mattstack.daemon"`; `TrayServer.swift` keeps the literal `path == "/flavor/retire"`.
+
+**L4 T3's Swift edits (absorbed here — L4 T3 drops them):** `rt-tray/Sources/AppDelegate.swift:331` `Bundle.main.bundlePath + "/Contents/MacOS/rt-daemon"` → `"/Contents/MacOS/rt"` (the bundled binary is `rt` after L4's rename; Task 3's `RtBinaryLocator` already prefers it); `rt-tray/Sources/DaemonLifecycle.swift:8,17-18` doc comments `Contents/MacOS/rt-daemon` → `Contents/MacOS/rt`; `rt-tray/Sources-daemon-shim/main.swift:4,26` comments "dev bundle's `Contents/MacOS/rt-daemon`" → `Contents/MacOS/rt` and "`-i rt-daemon`" → "`-i rt`".
 
 `rt-tray/Sources/AppDelegate.swift` changes:
 ```swift
@@ -5756,16 +5877,17 @@ and make the update item reflect Sparkle: `let updateItem = ActionMenuItem(updat
     @objc private func showSettings() { Task { @MainActor in coordinator?.showSettings() } }
     @objc private func showUninstall() { Task { @MainActor in coordinator?.showSettings(pane: .uninstall) } }
 ```
-and `extension AppDelegate: VersionProviding { func versionInfo() -> VersionInfo { VersionInfo(version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev", build: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0", flavor: BundleFlavor.isDevBuild ? "dev" : "prod", path: Bundle.main.bundlePath) } }`.
+and `extension AppDelegate: VersionProviding { func versionInfo() -> VersionInfo { VersionInfo(version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev", build: (Bundle.main.infoDictionary?["CFBundleVersion"] as? String).flatMap(Int.init) ?? 0, flavor: BundleFlavor.isDevBuild ? "dev" : "prod", path: Bundle.main.bundlePath) } }` (`build` is the numeric CFBundleVersion L4 writes — `major*1e6+minor*1e3+patch`, e.g. `2008000` — never a string; a non-numeric or missing value reads as `0`).
 Keep `daemonLifecycle` for the existing stop/restart/retire routes; `registerAll()` now covers its plist (idempotent). Remove the old `daemonLifecycle.startDaemon()` call in the launch task. Replace the Task 10 placeholder `isBusy: { false }` with `{ SetupSession.isRunning }` (shown above). Also handle `.rtShowSettingsTeam` (posted by the Done screen): `NotificationCenter.default.addObserver(forName: .rtShowSettingsTeam, …) { coordinator?.showSettings(pane: .team) }`.
 
 - [ ] **Step 4: `swift build` → Build complete; `swift run mattstack-checks` → pass; `./build.sh dev` assembles. Commit**
 ```bash
 git add rt-tray/Sources-core rt-tray/Sources rt-tray/Tests
-git commit -m "MAT-383: AppDelegate integration — launch guard, appPath write, first-run setup, mattstack://join, menu, routes, version-change restart
+git commit -m "MAT-383: AppDelegate integration — launch guard, appPath write, first-run setup, mattstack://join, menu, routes, version-change restart; rt-daemon → rt strings
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
+(`git add` also `rt-tray/Sources/DaemonLifecycle.swift rt-tray/Sources-daemon-shim/main.swift` for the L4 T3 string edits.)
 
 ---
 
@@ -5915,7 +6037,7 @@ Not for implementer subagents. Matt's machine, dev flavor only, after Task 18 is
 - [ ] `cd rt-tray && swift build && swift run mattstack-checks && bun test Tests/stub-rt && ./build.sh dev` — all green.
 - [ ] Stub-driven run without touching real machine state. `RT_STUB_SCENARIO` is honoured only by DEBUG builds, and `build.sh dev` is a Release build, so run the debug binary directly (env passes through because it is not launched via `open`):
   `cd rt-tray && swift build && RT_STUB_SCENARIO=join-happy RT_STUB_PATH=$PWD/Tests/stub-rt/stub.ts RT_STUB_STATE_DIR=$(mktemp -d) HOME=$(mktemp -d) .build/debug/rt-tray` (foreground; ⌃C to stop; the second rpath makes Sparkle resolvable; unbundled SMAppService calls fail and log — expected). Walk the five screens; confirm the stub's plan renders, Install streams, `need` rows show "Waiting for you", the run finishes on Done.
-- [ ] Real dev run (`~/.local/bin/rt` wrapper): `rt settings dev-mode on` handoff as today, then confirm in the dev app: menu shows the new items; ⌘, opens Settings; Settings → Permissions rows match `rt setup status` (once L1 ships `setup status`; before that the pane still renders from the app's own probe); `GET /version` via `curl --unix-socket ~/.mattstack/rt/tray.sock http://x/version` shows `"flavor":"dev"` and the bundle path; `GET /permissions` shows the three statuses; `rt settings get mattstack.appPath --scope machine` (or `rt settings show`) reflects `~/Applications/mattstack-dev.app` (note: the dev bundle writes its own path — V3 says one key; confirm with the settings lane that dev writing it is acceptable or gate the write on `!isDevBuild` — Open questions).
+- [ ] Real dev run (`~/.local/bin/rt` wrapper): `rt settings dev-mode dev` handoff as today, then confirm in the dev app: menu shows the new items; ⌘, opens Settings; Settings → Permissions rows match `rt setup status` (once L1 ships `setup status`; before that the pane still renders from the app's own probe); `GET /version` via `curl --unix-socket ~/.mattstack/rt/tray.sock http://x/version` shows `"flavor":"dev"` and the bundle path; `GET /permissions` shows the three statuses; `rt settings get mattstack.appPath --scope machine` (or `rt settings show`) reflects `~/Applications/mattstack-dev.app` (note: the dev bundle writes its own path — V3 says one key; confirm with the settings lane that dev writing it is acceptable or gate the write on `!isDevBuild` — Open questions).
 - [ ] Real permissions: Settings → Permissions → Open Full Disk Access Settings… (the probe has already listed the dev app); toggle; row says relaunch; Reset & re-request runs `tccutil` for `com.mattstack.app.dev` only.
 - [ ] `mattstack://join/TESTCODE` via `open "mattstack://join/TESTCODE"` → Setup opens on screen 2 with the code filled (setup incomplete on a temp HOME) or Settings → Team (complete).
 - [ ] Version-change: bump `CFBundleShortVersionString` with PlistBuddy on the dev bundle, relaunch, tray log shows "app version changed; restarting agents" and `launchctl print gui/$UID/com.mattstack.daemon.dev` shows a fresh pid.
@@ -5948,16 +6070,17 @@ Not for implementer subagents. Matt's machine, dev flavor only, after Task 18 is
 ## Open questions (for the orchestrator / L1 / L4 / settings lane)
 
 1. **Need-event stdout race:** rt emits the `need` line then polls `GET /setup/need/<id>`; the app performs the step when it reads the line. If rt ever polls before flushing stdout, the app answers `pending` until the line arrives — fine, but L1 should flush the `need` line before the first poll so there's no 1 s wobble.
-2. **Restore card inputs:** the plan calls `rt restore <org>/<repo> --dry-run --json` with `{"ageKey"}` on stdin at Continue and assumes rt persists the intent so `setup apply`'s `home.restore` step needs no arguments. Likewise `rt team create`/`rt team join --dry-run` at Continue must leave the pending choice where `apply` finds it. Confirm with L1; if apply needs inputs, the contract should say how (stdin JSON to `setup apply`).
-3. **`rt setup github status --json` shape:** the Team screen's gh owner picker expects `{status, handle, owners}`; `owners` is not in the contract yet. Also the gh-created-repo form passes `--remote gh:<owner>/<repo>` to `rt team create` — agree the spelling with L1.
-4. **`rt team status --json`:** Settings → Team reads `{name, slug, remote, lastPush, members}`; not in the contract today.
+2. **Restore card inputs:** CLOSED (ruling R3, cross-plan review): the app runs the real `rt restore <org>/<repo> --json` (key on stdin `{"ageKey"}`) at Continue, then `rt setup intent restore <org>/<repo> --json`; L1's `home.restore` apply step only verifies (Task 13). `rt team create` / `rt team join --dry-run` at Continue leave the pending choice where `apply` finds it (L1 `setup intent`). Still pending on the settings lane: `rt restore --json` + key on stdin, and `--dry-run --json` if it ever ships.
+3. **`rt setup github status --json` shape:** CLOSED — L1 T12 adds `handle` + `owners`; the contract lists them. gh-created repo is `rt team create <name> --create-repo <owner>` (L1 names it `mattstack-team-<slug>`); the `--remote gh:` spelling is gone (Task 13).
+4. **`rt team status --json`:** CLOSED — L1 T19 adds it: `{contract, slug, name, remote, lastPush, members:[{username}]}` (Task 17).
 5. **Proxy helper exit trailer:** `AuthorizationExecuteWithPrivileges` does not return the child's exit status; the plan has the helper print `MATTSTACK_EXIT=<n>` as its last stdout line. L4/L5 must honour that (or the app falls back to the `osascript … with administrator privileges` path noted in Task 8).
-6. **Agent plist PATH:** `EnvironmentVariables.PATH` cannot name the bundle's absolute `Contents/Helpers` at build time; the templates ship `/usr/bin:/bin:/usr/sbin:/sbin` and the plan assumes rt/deck prepend their own bundle helper dir at startup. L4/L5 decision.
+6. **Agent plist PATH:** CLOSED (ruling R2): the templates ship the static `/usr/bin:/bin:/usr/sbin:/sbin`; rt and deck prepend `<bundleRoot>/Contents/Helpers` (from their own execPath) and `$HOME/.local/bin` at process start; no plist hardcodes `/Applications/…`; L4's `check-bundle.sh` asserts the static value (Task 2).
 7. **Dev flavor writing `mattstack.appPath`:** V3 says the app records its path at launch; with two flavors on one Mac the key holds whichever launched last. rt's `installedTrayAppPath(bundle:)` already guards on basename, so this is safe, but confirm the settings lane is fine with the dev bundle writing it (else gate on `!isDevBuild`).
 8. **Sparkle under CLT:** `swift build` fetching the Sparkle xcframework via SPM without Xcode is expected to work (binaryTarget + ld64 from CLT) but was not exercised before the plan was written; Task 10 says stop and report if it does not.
 9. **rpath for the unbundled debug binary:** the second rpath in Package.swift targets `.build/<triple>/debug/../../artifacts/...`; if `swift run` of the app still can't load Sparkle, set `DYLD_FRAMEWORK_PATH` for that run — cosmetic, the bundle is the real target.
-10. **`KeepAlive` in prod:** spec §8 says `{SuccessfulExit:false}` for both flavors; today's build.sh prod branch writes `true` and `check-bundle.sh` asserts it. Task 10 switches both to the render script; L4 should keep it that way.
-11. **`rt settings dev-mode` from Settings → General:** the button spawns the verb through the bundled/dev rt; the handoff quits this app (expected). Confirm that's acceptable UX or hide the button behind the dev flavor only.
+10. **`KeepAlive` in prod:** CLOSED — L4 T3/T4 adopt `{SuccessfulExit:false}` for both flavors (render script + check-bundle); Task 10's stopgap is deleted by L4 T4's rewrite.
+11. **`rt settings dev-mode` from Settings → General:** the button spawns `rt settings dev-mode <dev|prod>` (L1 T31 drops `requiresTTY` when the target is given); the handoff quits this app (expected). Confirm that's acceptable UX or hide the button behind the dev flavor only.
 12. **Uninstall on the dev flavor / self-trash:** `rt uninstall` trashes the app; from the dev bundle that would trash `mattstack-dev.app` — the plan shows the same pane in both flavors; consider disabling in dev.
 13. **XCUITest needs Xcode; `swift test` needs Xcode:** both gates stay red on this machine until Xcode 26 is installed; `swift run mattstack-checks` is the only automated gate today and is green by construction of Tasks 1–18.
-14. **`PermissionsService.combinedLoginItems` with zero agents:** reports `notRegistered`; in a bundle missing its LaunchAgents dir the row will honestly say "Not registered" — but `ServicesRegistrar.registerAll()` will have registered nothing. L4 must ship the plists (Task 2's render script is the source).
+14. **`PermissionsService.combinedLoginItems` with zero agents:** reports `notRegistered`; in a bundle missing its LaunchAgents dir the row will honestly say "Not registered" — but `ServicesRegistrar.registerAll()` will have registered nothing. CLOSED on the L4 side: L4 T4 bundles both plists via `scripts/render-launchagents.sh` (Task 2 is the source); L1 requests the deck plist only when deck is bundled, and a missing `BundleProgram` reports `notFound` honestly (Task 7).
+15. **Sparkle feed/interval and `CFBundleURLName`:** CLOSED — `SUFeedURL` is the GitHub Release asset `https://github.com/m4ttstack/rt/releases/latest/download/appcast.xml` (ruling R1), `SUScheduledCheckInterval` 21600, `CFBundleURLName` `@@BUNDLE_ID@@.join`; L4's build.sh `Set`s the `SU*` keys (Task 2).

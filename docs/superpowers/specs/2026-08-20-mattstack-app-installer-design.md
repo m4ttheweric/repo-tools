@@ -48,7 +48,7 @@ beyond giving them releasable artifacts, and the peering relay's encryption
 | 6 | Build tooling | Xcode project generated from a committed `project.yml` (xcodegen); `build.sh` wraps `xcodebuild`; `check-bundle.sh` keeps asserting the bundle contract. Matt installs Xcode 26. |
 | 7 | Distribution | The app IS the release (rt + helpers + suite binaries + extension inside). Notarized, stapled DMG for first install; zip enclosure + CI-signed appcast for Sparkle 2.9; `~/.local/bin/rt` is a symlink into the bundle; app re-registers + kickstarts agents when its version changes; `rt update` asks the app. **arm64-only** for now. |
 | 8 | Dependencies | Four-way policy (§7): BUNDLE for internal use by absolute path; PATH exposure per tool opt-in, tagged, yields to the user's copy — **except the default-exposed set `rt`, `fast-browser`, `gitq`, `deck` (V2), linked by Install because shipped skills call them bare**; PROVISION herdr + Claude Code via brew-if-present else vendor installer, version floors only; SYSTEM git/python3 via Apple CLT; TEAM-DECLARED tools from the pack's requirements. Deck's proxy via **one admin prompt**. tmux/zellij/terminal-notifier dropped. |
-| 9 | Services | SMAppService registers rt daemon + deck (one plist each in the bundle, one Login Items switch, FDA inherits); deck supervises board + gitq as managed deck apps (MAT-384); app monitors deck like the daemon; plist PATH set explicitly to the bundle's helper dir; portless proxy is a root LaunchDaemon owned by the privileged step. |
+| 9 | Services | SMAppService registers rt daemon + deck (one plist each in the bundle, one Login Items switch, FDA inherits); deck supervises board + gitq as managed deck apps (MAT-384); app monitors deck like the daemon; plist `EnvironmentVariables.PATH` is static (`/usr/bin:/bin:/usr/sbin:/sbin`; no hardcoded `/Applications/…`) and rt + deck prepend `<bundleRoot>/Contents/Helpers` (from their own execPath) and `$HOME/.local/bin` at process start; portless proxy is a root LaunchDaemon owned by the privileged step. |
 | 10 | Permissions | Full Disk Access + Login Items required; Notifications optional. No Accessibility/Screen Recording/Automation. |
 | 11 | Secrets | RT-32 as ruled: sops/age-encrypted in the user repo, age key generated at setup into the macOS Keychain, plaintext never in git; `secrets.json` is a one-time migration source; invitee's age public key is added as a recipient for team-scoped secrets. |
 | 12 | Dev + testing | Dev identity stays (mattstack-dev.app). XCTest + XCUITest against a stub rt; rt verbs under bun test. Clean room = (a) GitHub Actions macOS runner headless install + `rt verify --ci`; (b) local Apple-Silicon VM (Tart/VirtualBuddy) golden image, restored per run, scripted walkthrough; (c) second macOS user account as daily smoke. Release gate = (a) + (b) green. |
@@ -158,8 +158,11 @@ so the team repo *is* the team's marketplace. A team of one has no pack; `mattst
 
 **Already have mattstack settings?** (third, smaller card — the restore path,
 RT-31): paste the home repo (`<org>/<repo>`, or pick it via gh) and paste the
-age key from your password manager. `rt restore <org>/<repo>` clones it to
-`~/.mattstack`, installs the key in the Keychain, and materializes; the team(s)
+age key from your password manager. On Continue the app runs the real
+`rt restore <org>/<repo> --json` (key on stdin), which clones it to
+`~/.mattstack`, installs the key in the Keychain, and materializes, then
+`rt setup intent restore <org>/<repo>`; Install's `home.restore` step only
+verifies the clone and key. The team(s)
 recorded in the home repo (`claude.marketplaces`/`claude.plugins`, tracking)
 are cloned by Install and their packs replayed. This is Matt-on-a-new-Mac and
 any reinstall.
@@ -319,7 +322,7 @@ what), 1 bug.
 | `rt setup pack --json` | Marketplace add + plugin install + enable, materialize bindings, then the pipeline-resolves check for the team's default work type (exit 2 `stage-unresolved`). |
 | `rt setup apply [--from <stepId>] --json` | Run the install steps (NDJSON). |
 | `rt setup` (TTY) | Interactive walk of the same plan; the headless/catastrophe path. |
-| `rt team create <name> --remote <url> [--others] --json` | Init team repo with starter `mattstack/settings.jsonc`, set remote; push happens in apply. |
+| `rt team create <name> (--remote <url> \| --create-repo <owner>) [--others] --json` · `rt team status [--team <slug>] --json` | Init team repo with starter `mattstack/settings.jsonc`, set remote; push happens in apply. |
 | `rt team join [--dry-run] --json` | Code on stdin (no-echo prompt when TTY; never a process argument). Redeem invite (relay fetch + decrypt), clone under `~/.mattstack/teams/<name>/`, apply the board-peering invite when the team has a relay, report the invitee's age public key back (§6.3). |
 | `rt team invite --handle <forge-handle> --json` | Mint an invite: grant forge read access to the team repo (handle required when the repo is private), encrypt pointer, POST to relay, add roster entry; prints code + paste block. |
 | `rt team members sync\|remove <handle> --json` | Roster = `board.members` (team scope). Sync: collect invitee keys and add them as recipients. Remove: forge ACL revoke + `rt secrets rotate --team` re-encrypt to the remaining keys. |
@@ -335,8 +338,8 @@ what), 1 bug.
 | `rt deps resolve <tool> --json` | Absolute path of the bundled tool + whether a user copy exists; used by rt internally and by the Tools rows. |
 | `rt deps link <tool> / unlink` | Opt-in PATH exposure (tagged symlink), auto-unlink when a user copy appears. |
 | `rt services list/register/restart --json` | Facade over tray.sock for the app-registered agents + deck-managed apps. |
-| `rt update` | `POST /update/check` on tray.sock; if the app is not running, prints where updates come from. |
-| `rt uninstall [--keep-data|--delete-data] --json` | §12. |
+| `rt update [--json]` | `POST /update/check` on tray.sock; if the app is not running, exit 2 (`{error:{code:"app-not-running"}}` with `--json`) and prints where updates come from. |
+| `rt uninstall [--keep-data|--delete-data] [--yes] --json` | §12; `--delete-data` needs `--yes` (the app's sheet is the consent). |
 | `rt verify [--json]` | Existing command; its checks become the plan's validators (one implementation). |
 
 `rt install` (MAT-360's "internal package mechanism") is absorbed by `rt setup
@@ -361,8 +364,10 @@ Plan JSON (abridged):
 ```
 
 `status` ∈ `ready | missing | invalid | needs-you | checking | skipped | error`;
-`action.type` ∈ `open-settings | request-permission | connect | install |
-use-gh | open-url | none`. The app never invents rows; it renders what rt sends
+`action.type` ∈ `open-settings | request-permission | connect | oauth |
+owner-once | install | link-bundled | steps | open-url | run` (or `action: null`;
+the contract file is authoritative — `use-gh` is a `connect` alternative, not
+a type). The app never invents rows; it renders what rt sends
 and calls the action's verb. Permission rows are the exception in *evaluation*
 only: rt asks the app (`GET /permissions`) and folds the answer in, so one
 plan serves wizard and terminal.
@@ -373,8 +378,10 @@ plan serves wizard and terminal.
 `{status, detail}`; `POST /permissions/request` `{which}`; `GET /services` →
 registered agents + status; `POST /services/register` `{plist}` /
 `/restart` `{label}`; `POST /privileged/proxy-install` (app raises the admin
-prompt, runs the bundled installer helper, returns result); `POST /update/check`;
-`GET /version`. Existing routes unchanged.
+prompt, runs the bundled installer helper, returns result); `GET /setup/need/<id>`
+→ 200 `{state: pending|done|failed, detail}` always (rt polls until
+done/failed); `POST /update/check`; `GET /version` (`build` = numeric
+`CFBundleVersion`). Existing routes unchanged.
 
 ### 5.3b Settings and secrets substrate (settings lane)
 
@@ -423,7 +430,8 @@ Owner side (`rt team invite`):
 2. Generate 32-byte key; encrypt pointer (XChaCha20-Poly1305 or AES-256-GCM);
    `POST /v1/invites` to the relay with `{ciphertext, expiresAt}` → `{id}`.
    Relay stores `id`, ciphertext, created/expires/redeemed timestamps only.
-3. Code = base32(id ‖ key) chunked for reading (~40 chars). Paste block: "Install
+3. Code = base32(id ‖ key) chunked for reading (~77 chars; Crockford base32 of
+   16 + 32 bytes). Paste block: "Install
    mattstack from <download url>, then open `mattstack://join/<code>` or paste
    the code into Setup → Join a team."
 4. Forge access is **granted at mint** (the handle is required when the team
@@ -476,8 +484,11 @@ inventory):
 
 Accounts-bearing tools (gh, glab, doppler) keep their auth in the user's
 `~/.config`, so whether the bundled or the user's binary runs, login happens
-once. Services' plists set `PATH=<app>/Contents/Helpers:/usr/bin:/bin` plus
-`~/.local/bin` for herdr/claude; nothing is captured from the user's shell.
+once. Services' plists set a static `PATH=/usr/bin:/bin:/usr/sbin:/sbin`; rt
+and deck prepend `<bundleRoot>/Contents/Helpers` (derived at process start
+from their own execPath, so `/Applications`, `~/Applications` and the dev
+bundle all work) and `$HOME/.local/bin` (for herdr/claude) to their own
+`PATH` before spawning anything; nothing is captured from the user's shell.
 
 Consequences for other repos (lane L5): board and gitq ship as `bun --compile`
 binaries with published rt-client (no `file:` deps), read their config from
@@ -502,7 +513,9 @@ branches (`lib/enrich.ts`, `bunx pino-pretty`) switch to the bundled bun.
 - Bundle ships `Contents/Library/LaunchAgents/com.mattstack.daemon.plist` and
   `com.mattstack.deck.plist` (dev flavor: `.dev` labels), `BundleProgram` under
   `Contents/MacOS`/`Contents/Helpers`, `KeepAlive {SuccessfulExit:false}`,
-  `ThrottleInterval 10`, explicit `EnvironmentVariables.PATH`, no stdout/err
+  `ThrottleInterval 10`, static `EnvironmentVariables.PATH`
+  (`/usr/bin:/bin:/usr/sbin:/sbin`; the programs prepend the bundle's Helpers
+  dir and `~/.local/bin` themselves, §7), no stdout/err
   paths (macOS 26 `$(HOME)` breakage; logs go to `~/.mattstack/rt/logs` and
   `~/.mattstack/deck/logs` by the programs themselves). `AssociatedBundleIdentifiers`
   kept (harmless; needed only for legacy plists).
@@ -571,16 +584,20 @@ home is the user-scope RT-32 layer, which is where MAT-384 moves them.
 - **Release train** (m4ttstack/rt is public, so its Releases host the
   artifacts; the MAT-360 meta repo's role narrows to "the marketplace"): one
   tag on m4ttstack/rt builds rt (arm64), bundles helpers
-  per `deps.lock`, builds the app (xcodebuild archive/export, Developer ID,
-  hardened runtime, entitlements: `allow-jit` first; add
+  per `deps.lock`, builds the app (`xcodebuild build … CODE_SIGNING_ALLOWED=NO`
+  then `build.sh`'s own inside-out Developer ID signing — not
+  `archive/export`; hardened runtime, entitlements: `allow-jit` first; add
   `allow-unsigned-executable-memory` only if the bundled rt crashes), notarizes
   + staples, produces `mattstack-<ver>.dmg` (first install) and
   `mattstack-<ver>.zip` (`ditto --sequesterRsrc --keepParent`) for Sparkle,
   runs `generate_appcast` (EdDSA key from a CI secret, last 3 zips for deltas),
-  publishes the appcast to GitHub Pages, uploads DMG + zip to the GitHub
-  Release, then the headless clean-room job (§11.2 layer a).
+  uploads DMG + zip + `appcast.xml` (+ deltas, `SHA256SUMS`) as GitHub Release
+  assets — the feed URL is
+  `https://github.com/m4ttstack/rt/releases/latest/download/appcast.xml`
+  (not GitHub Pages) — then the headless clean-room job (§12.2 layer a).
 - **Sparkle**: SPM dependency, `SUFeedURL`, `SUPublicEDKey`, numeric increasing
-  `CFBundleVersion`, `SUEnableAutomaticChecks`, `SUAutomaticallyUpdate`,
+  `CFBundleVersion` = `major*1e6 + minor*1e3 + patch` (2.8.0 → 2008000),
+  `SUScheduledCheckInterval 21600`, `SUEnableAutomaticChecks`, `SUAutomaticallyUpdate`,
   `SUVerifyUpdateBeforeExtraction`; no sandbox XPC keys; gentle reminders
   (menu item "Update available") since the app is `LSUIElement`; sign inside-out,
   never `--deep`; dev flavor disables checks.
@@ -593,9 +610,11 @@ home is the user-scope RT-32 layer, which is where MAT-384 moves them.
 - **Identity** (ruling 13): frozen; macOS 14 floor; arm64-only; Info.plist gains
   `LSMinimumSystemVersion 14.0`, `CFBundleURLTypes` for `mattstack://`,
   `NSUserNotificationAlertStyle` kept, no `LSFileQuarantineEnabled`.
-- The `rt-darwin-*.tar.gz` remains as the internal headless artifact (a zip of
-  the app is equivalent: `ditto -x -k` + `<app>/Contents/MacOS/rt --post-install`);
-  `rt --post-install` becomes the headless entry into `rt setup apply`.
+- The `rt-darwin-*.tar.gz` is dropped; `mattstack-<ver>.zip` is the headless
+  artifact (`ditto -x -k` + `<app>/Contents/MacOS/rt --post-install`);
+  `rt --post-install` becomes the headless entry into `rt setup apply`
+  (`--non-interactive --team-of-one`; a plain first `rt` run only prints a
+  hint to run `rt setup`, it does not auto-install).
 
 ## 12. Dev mode, testing, uninstall
 
@@ -620,9 +639,11 @@ real `rt` from the checkout or the stub (env).
   recipe (Tart or VirtualBuddy, macOS 14 and 26 images, no CLT/brew, a
   throwaway Apple ID-free user) and `walkthrough.sh` which restores the
   snapshot, mounts the DMG, launches the app with `RT_STUB_SCENARIO` unset and
-  a test team on a throwaway forge org, drives XCUITest for the five screens
-  (including the real FDA/Login Items dance via the test runner's accessibility
-  session) and then Sparkle vN→vN+1 from a local appcast; screenshots are
+  a test team on a throwaway forge org, drives the five screens by
+  AppleScript UI scripting against the app's accessibility identifiers
+  (XCUITest runner gated on Xcode being installed in the guest; including the
+  real FDA/Login Items dance) and then Sparkle vN→vN+1 from a local appcast
+  (`MATTSTACK_APPCAST_URL` + `--allow-appcast-override`); screenshots are
   archived per run; (c) a second macOS user on Matt's Mac for daily smoke.
   Release gate: (a) and (b) green on the candidate.
 
