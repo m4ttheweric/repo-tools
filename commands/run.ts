@@ -138,6 +138,8 @@ function reportSave(kind: string, label: string, result: SaveOutcome, repoLabel:
   process.stderr.write(`  ${yellow}⚠${reset} ${dim}not saved — ${detail}${reset}\n`);
 }
 
+export const __test__ = { reportSave };
+
 /**
  * Package → script → variations picker loop.
  *
