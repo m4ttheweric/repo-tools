@@ -19,7 +19,7 @@
 import { execFileSync, spawnSync } from "child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { createInterface } from "node:readline";
-import { dirname, isAbsolute as isAbsolutePath, join, relative as relativePath, resolve as resolvePath } from "path";
+import { dirname, isAbsolute as isAbsolutePath, join, relative as relativePath, resolve as resolvePath, sep } from "path";
 import { resolveFzf } from "../lib/fzf.ts";
 import { mattstackHome } from "../lib/rt-paths.ts";
 import { compileSkill, HEADER_COMMENT } from "../lib/skills/compile.ts";
@@ -227,7 +227,7 @@ function registeredSkillRoots(packDir: string): string[] {
           .map((s) => canonical(resolvePath(packDir, s)))
           .filter((root) => {
             const rel = relativePath(packRoot, root);
-            if (!(rel === "" || (!rel.startsWith("..") && !isAbsolutePath(rel)))) return false;
+            if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolutePath(rel)) return false;
             try {
               return statSync(root).isDirectory();
             } catch {
