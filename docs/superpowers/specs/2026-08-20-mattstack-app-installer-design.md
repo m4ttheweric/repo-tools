@@ -147,10 +147,12 @@ password manager — the documented channel for a second machine).
 Continue validates both remotes with `git ls-remote` using the user's
 credentials and moves on; nothing is pushed until Install. Create scaffolds the
 team repo as a proper mattstack zone: `mattstack/mattstack.jsonc` (`role:
-team`, `namespace`, `org` — editable), `mattstack/team.jsonc` (roster,
-projects, forge host; the roster is the members list), `mattstack/settings.jsonc`,
-and a root `.claude-plugin/marketplace.json` so the team repo *is* the team's
-marketplace. A team of one has no pack; `mattstack:*` skills are the default.
+team`, `namespace`, `org` — editable), `mattstack/settings.jsonc` seeded with
+`mattstack.integrations` (forge from the remote) and the team-scope `board.*`
+keys (`board.gitlabHost`, `board.projects`, `board.members` — the roster —
+`board.title`; the team store IS the team layer, per the settings lane; there
+is no `team.jsonc`/`config.team.json`), and a root `.claude-plugin/marketplace.json`
+so the team repo *is* the team's marketplace. A team of one has no pack; `mattstack:*` skills are the default.
 `rt home init` owns the home-repo layout (`user/mattstack.jsonc` role marker,
 `prefs/`, `skills/`, `local/`, the boundary gitignore).
 
@@ -189,7 +191,9 @@ Rendered from `rt setup plan --json` (§5). Groups in order:
 - **Accounts** — only what the team declares (team-of-one default: the forge
   of the team remote). GitHub: *Use gh* when `gh auth status` is good, else
   token field (also signs the bundled `gh` in); GitLab token (also signs the
-  bundled `glab` in); Linear key + default team pick; Slack → *Connect*
+  bundled `glab` in); Linear key (the team key comes from
+  `mattstack.integrations.linear.teamKey`; `rt settings linear team` is deleted
+  by the settings lane); Slack → *Connect*
   (per-user OAuth in the browser against the **team's** Slack app; the
   callback port is a team setting). For an **owner**, Slack shows the
   owner-once row first: *Create the team's Slack app* (`rt setup slack
@@ -212,8 +216,7 @@ Rendered from `rt setup plan --json` (§5). Groups in order:
   as validator; pairing token optional); an editor we can install the
   extension into (optional); Google Chrome (optional unless the team's pack
   requires it; a pack may add "signed into <team app>" as a needs-you row);
-  Ollama (optional); Mission Control Control+Up unbound (optional, for `rt
-  nav`); **team-declared tools** from the pack's requirements (doppler, sdm,
+  Mission Control Control+Up unbound (optional, for `rt nav`); **team-declared tools** from the pack's requirements (doppler, sdm,
   ldcli, pnpm, Postgres…) each with *Install* / *Connect* and the pack's
   one-line why. MCP servers a pack needs ship inside the pack's plugin
   (`.mcp.json`) and arrive with the plugin install; the installer never edits
@@ -241,17 +244,21 @@ write collected secrets with `rt secrets set <domain> <key>` (sops/age,
 default-exposed tools (`rt`, `fast-browser`, `gitq`, `deck`) into
 `~/.local/bin` (+ rc PATH block, `.zshenv` precedence block, shell integration
 block); `rt intercept install` (team intercept shims); write machine settings
-(`rt.repoRoots` seeded, detected roots offered; `mattstack.appPath`); register
-the team's repos for daemon tracking per the team's tracking intent (so the
-board populates without a clone) and offer *Clone <repo> into <repoRoot>*;
+(`rt.repoRoots` seeded, detected roots offered; `mattstack.appPath`); clone the
+team's repos into `<repoRoot>` (default on for every repo in
+`mattstack.tracking`, each deselectable — tracking intent only activates for
+repos the repo index can resolve locally, so this is what makes the board
+populate);
 register rt daemon + deck (app, via socket request from rt); privileged step:
 install the private node+portless, write the proxy LaunchDaemon plist
 ourselves (absolute `~/.mattstack/deck/` paths, `PORTLESS_TLD=localhost,mattstack`,
 portless ≥ 0.15.5), CA trust, sudoers (one admin prompt, raised by the app);
 register board + gitq as managed deck apps; materialize bindings
-(`merge-manifests` → `~/.mattstack/repos/<slug>/skills.jsonc`) and board/gitq
-config from `team.jsonc` + stores (no `config.json`, no `.env`); register the
-board's triage trigger (`rt.cron`) when the team enables triage; install
+(`merge-manifests` → `~/.mattstack/repos/<slug>/skills.jsonc`); write the
+machine-scope board/gitq keys the installer knows (`board.rtRepos`,
+`board.cwds`, `gitq.board`, `gitq.workSlots`) — board/gitq read the stores
+in-process, nothing is materialized into their checkouts; register the board's
+triage trigger (`rt.cron`, machine) when the team enables triage; install
 marketplaces + plugins (mattstack, fast-browser, team pack — MCPs arrive inside
 the pack's plugin) per Claude config dir; run fast-browser's own setup from the
 bundled artifact (runtime, extension unpack, macros); `herdr integration
@@ -310,13 +317,12 @@ what), 1 bug.
 | `rt setup <integration> status\|connect [--token-stdin] --json` | MAT-382 r.4 shape: `setup github\|gitlab\|linear\|slack\|switchboard\|sdm\|doppler …`; connect validates + stores the credential via RT-32; `--use-gh` borrows gh auth. |
 | `rt setup slack create-app --config-token-stdin --json` | Owner-once: generated manifest from declared scope needs → app; client id/secret → team-scoped secrets; callback port recorded in team settings. |
 | `rt setup pack --json` | Marketplace add + plugin install + enable, materialize bindings, then the pipeline-resolves check for the team's default work type (exit 2 `stage-unresolved`). |
-| `rt setup team materialize --json` | `team.jsonc` + stores → board/gitq config and tracking registration. |
 | `rt setup apply [--from <stepId>] --json` | Run the install steps (NDJSON). |
 | `rt setup` (TTY) | Interactive walk of the same plan; the headless/catastrophe path. |
 | `rt team create <name> --remote <url> [--others] --json` | Init team repo with starter `mattstack/settings.jsonc`, set remote; push happens in apply. |
 | `rt team join [--dry-run] --json` | Code on stdin (no-echo prompt when TTY; never a process argument). Redeem invite (relay fetch + decrypt), clone under `~/.mattstack/teams/<name>/`, apply the board-peering invite when the team has a relay, report the invitee's age public key back (§6.3). |
 | `rt team invite --handle <forge-handle> --json` | Mint an invite: grant forge read access to the team repo (handle required when the repo is private), encrypt pointer, POST to relay, add roster entry; prints code + paste block. |
-| `rt team members sync\|remove <handle> --json` | Sync: collect invitee keys and add them as recipients. Remove: forge ACL revoke + `rt secrets rotate --team` re-encrypt to the remaining keys. |
+| `rt team members sync\|remove <handle> --json` | Roster = `board.members` (team scope). Sync: collect invitee keys and add them as recipients. Remove: forge ACL revoke + `rt secrets rotate --team` re-encrypt to the remaining keys. |
 | `rt repos register <path…> / rt daemon track` | Register + track repos per team intent (existing `track` verb reused). |
 | `rt skills materialize [--repo]` | Bindings merge → `~/.mattstack/repos/<slug>/skills.jsonc`. |
 | `rt cron install <trigger>` | Register a trigger (board triage) with bundled binary paths. |
@@ -370,6 +376,14 @@ registered agents + status; `POST /services/register` `{plist}` /
 prompt, runs the bundled installer helper, returns result); `POST /update/check`;
 `GET /version`. Existing routes unchanged.
 
+### 5.3b Settings and secrets substrate (settings lane)
+
+Every read/write goes through `@mattstack/rt-client`'s settings module (the
+RT-47 resolver + the one suite registry) and `lib/secrets` (sops/age over
+`user/secrets/<domain>.json`). The app never parses a store file; it asks rt.
+The home repo (`rt home init`), snapshot daemon (H2), and restore (R) are that
+lane's; this spec's verbs sit on top of them.
+
 ### 5.4 Where logic lives
 
 Validators, step logic, team/invite crypto, secrets, dependency resolution:
@@ -383,11 +397,13 @@ selected by an env var the app honours only in DEBUG builds.
 
 ### 6.1 Everyone has a team
 
-`~/.mattstack/teams/<slug>/` is a git clone with `mattstack/settings.jsonc`
-(team scope of the RT-47 resolver) and the team's pack(s). A team of one is the
-same shape. The user repo `~/.mattstack/user/` holds user-scope settings and
-the RT-32 encrypted secrets. Both repos have remotes from creation (ruling 3b);
-the wizard explains why in plain words and never asks the user to run git.
+`~/.mattstack/teams/<slug>/` is a git clone (nested inside the home repo,
+ignored by it) with `mattstack/settings.jsonc` (team scope of the RT-47
+resolver — `mattstack.integrations`, `mattstack.tracking`, team-scope `board.*`,
+`claude.*`) and the team's pack(s). A team of one is the same shape. The home
+repo `~/.mattstack` holds user-scope settings (`user/settings.jsonc`) and the
+encrypted secrets (`user/secrets/`). Both have remotes from creation (ruling
+3b); the wizard explains why in plain words and never asks the user to run git.
 
 ### 6.2 Create
 
@@ -413,8 +429,8 @@ Owner side (`rt team invite`):
 4. Forge access is **granted at mint** (the handle is required when the team
    repo is private; `gh api` / GitLab API with the owner's token) and
    **verified at redeem** — MAT-379 phase C's "first step is forge access"
-   maps to exactly this. The invitee is added to the `team.jsonc` roster so the
-   redeem can report back. Age recipient for team-scoped secrets is added when the invitee
+   maps to exactly this. The invitee is added to the roster (`board.members`,
+   team scope) so the redeem can report back. Age recipient for team-scoped secrets is added when the invitee
    reports their public key (redeem posts it to the relay as a second opaque
    blob keyed by the same id, readable once by the owner's next
    `rt team members sync`).
@@ -424,7 +440,8 @@ Owner side (`rt team invite`):
 Teammate side (`rt team join`): decode → `GET /v1/invites/<id>` → decrypt → `git
 ls-remote <remote>` with the user's credentials → clone → mark redeemed (`POST
 /v1/invites/<id>/redeem`, one-time) → materialize (pack marketplace add +
-install, bindings, tracking registration; settings now resolve at team scope)
+install, bindings; settings now resolve at team scope; tracking activates as
+team repos are cloned)
 → if the team settings carry a relay URL + team-scoped admin token, mint and
 apply the board-peering invite for this member (peering row otherwise shows
 idle) → post the member's age public key as the reply blob. Failure messages
