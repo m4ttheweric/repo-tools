@@ -13,7 +13,7 @@
  * flavor (dev vs prod); dev-mode.json's existence is NOT a flavor signal.
  */
 
-import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readSync, renameSync } from "fs";
+import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, rmSync, symlinkSync } from "fs";
 import { dirname } from "path";
 import { homedir } from "os";
 
@@ -35,16 +35,16 @@ function devModeWrapperPath(): string {
 }
 
 /**
- * Install a compiled rt at rtBinaryPath(). Copy-then-rename so a process
- * currently executing the old binary (rt update running from it, say) keeps
- * its mapped pages instead of having them overwritten underneath it.
+ * Link ~/.local/bin/rt at `src` (the rt inside the app bundle). Link-then-
+ * rename so a process executing the old target keeps its mapped pages and
+ * the switch is atomic whether the old entry was a file or a link.
  */
 export function installRtBinary(src: string): string {
   const dest = rtBinaryPath();
   mkdirSync(dirname(dest), { recursive: true });
   const tmp = `${dest}.new`;
-  copyFileSync(src, tmp);
-  chmodSync(tmp, 0o755);
+  rmSync(tmp, { force: true });
+  symlinkSync(src, tmp);
   renameSync(tmp, dest);
   return dest;
 }
