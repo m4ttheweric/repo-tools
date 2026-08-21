@@ -5,13 +5,22 @@
  * settings writer's `modify`/`applyEdits` pattern (packages/rt-client/src/
  * settings/write.ts) isn't reusable here — it's coupled to the settings
  * registry (key lookup, scope stores) — so this is a thin, single-file
- * version of the same write-temp-then-rename + jsonc-parser `modify` idiom.
+ * version of the same write-temp-then-rename + jsonc-parser `modify` idiom,
+ * including its "refuse rather than edit around damage" editability guard.
+ *
+ * Malformed input fails CLOSED, not open: a zone whose protection can't be
+ * trusted (an unparseable file, a `zones` that isn't an object, a duplicate
+ * `zones` key, a hand-edited zone key that doesn't survive normalization)
+ * throws rather than silently degrading to "no zones claimed" — the daemon
+ * (Task 2) must skip the cycle on that throw instead of auto-committing
+ * over a zone whose claim it couldn't actually read.
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { randomBytes } from "crypto";
 import { dirname } from "path";
-import { applyEdits, modify, parse, type ParseError } from "jsonc-parser";
+import { applyEdits, modify, parse, parseTree, type Node, type ParseError } from "jsonc-parser";
+import { renderOwnersFile } from "./init-plan.ts";
 
 export interface OwnerEntry {
   owner: string;
@@ -25,44 +34,55 @@ export interface Owners {
 
 export class InvalidZoneError extends Error {
   constructor(zone: string) {
-    super(`"${zone}" is not a valid snapshot zone (must be non-empty, no leading "/", no ".." segment)`);
+    super(`"${zone}" is not a valid snapshot zone (must be non-empty, no leading "/", no backslash, no "." or ".." segment)`);
   }
 }
 
 const FORMAT = { tabSize: 2, insertSpaces: true, eol: "\n" };
 
-const EMPTY_TEMPLATE =
-  "{\n  // snapshot-owners.jsonc — claimed zones the snapshot daemon must never\n  // auto-commit. Empty until a zone is claimed.\n}\n";
-
-/** "prefs" -> "prefs/"; throws InvalidZoneError on an empty zone, a leading "/", or any ".." segment. */
+/** "prefs" -> "prefs/"; throws InvalidZoneError on an empty zone, a leading "/", a backslash, or any "."/".." segment. */
 export function normalizeZone(zone: string): string {
-  if (zone.length === 0 || zone.startsWith("/")) throw new InvalidZoneError(zone);
+  if (zone.length === 0 || zone.startsWith("/") || zone.includes("\\")) throw new InvalidZoneError(zone);
   const segments = zone.split("/").filter((s) => s.length > 0);
-  if (segments.length === 0 || segments.includes("..")) throw new InvalidZoneError(zone);
+  if (segments.length === 0 || segments.some((s) => s === "." || s === "..")) throw new InvalidZoneError(zone);
   return zone.endsWith("/") ? zone : `${zone}/`;
 }
 
-/** Reads the owners file, tolerant of a missing file and the empty (comment-only) template. Throws on genuinely malformed jsonc. */
+/**
+ * Reads the owners file, tolerant of a missing file and a whitespace-only
+ * one. Every zone key is re-run through `normalizeZone` so a hand-edited
+ * key ("prefs" with no trailing slash, "./prefs/") converges on the same
+ * startsWith-anchored form the planner and claimZone/releaseZone use — an
+ * un-normalized key would either swallow an unrelated sibling ("prefs"
+ * matching "prefs-old/…") or match nothing at all. Throws (fails closed —
+ * see module doc) on malformed jsonc, a non-object `zones`, a non-object
+ * zone entry, or a zone key that fails normalization.
+ */
 export function readOwners(path: string): Owners {
   if (!existsSync(path)) return { zones: {} };
 
   const text = readFileSync(path, "utf8");
-  const errors: ParseError[] = [];
-  const parsed = parse(text, errors, { allowTrailingComma: true });
+  if (text.trim().length === 0) return { zones: {} };
 
-  if (errors.length > 0) {
-    throw new Error(`${path}: malformed jsonc`);
-  }
-  if (parsed === undefined || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { zones: {} };
-  }
+  assertEditableJsonc(path, text);
 
-  const zones = (parsed as { zones?: unknown }).zones;
-  if (zones === undefined || typeof zones !== "object" || Array.isArray(zones)) {
-    return { zones: {} };
+  const parsed = parse(text, [], { allowTrailingComma: true }) as Record<string, unknown>;
+  if (!("zones" in parsed)) return { zones: {} };
+
+  const zonesRaw = parsed.zones;
+  if (typeof zonesRaw !== "object" || zonesRaw === null || Array.isArray(zonesRaw)) {
+    throw new Error(`${path}: "zones" must be an object`);
   }
 
-  return { zones: zones as Record<string, OwnerEntry> };
+  const zones: Record<string, OwnerEntry> = {};
+  for (const [rawZone, rawEntry] of Object.entries(zonesRaw as Record<string, unknown>)) {
+    if (typeof rawEntry !== "object" || rawEntry === null || Array.isArray(rawEntry)) {
+      throw new Error(`${path}: zone "${rawZone}" entry must be an object`);
+    }
+    zones[normalizeZone(rawZone)] = rawEntry as OwnerEntry;
+  }
+
+  return { zones };
 }
 
 /** Claims `zone` for `owner`, comment-preserving. Throws InvalidZoneError before touching the file. */
@@ -81,7 +101,10 @@ export function releaseZone(path: string, zone: string): void {
 }
 
 function writeIntoOwnersFile(path: string, jsonPath: (string | number)[], value: unknown): void {
-  const content = existsSync(path) ? readFileSync(path, "utf8") : EMPTY_TEMPLATE;
+  const onDisk = existsSync(path) ? readFileSync(path, "utf8") : undefined;
+  const content = onDisk === undefined || onDisk.trim().length === 0 ? renderOwnersFile() : onDisk;
+
+  assertEditableJsonc(path, content);
 
   const edits = modify(content, jsonPath, value, { formattingOptions: FORMAT });
   const next = applyEdits(content, edits);
@@ -100,4 +123,53 @@ function writeIntoOwnersFile(path: string, jsonPath: (string | number)[], value:
     }
     throw err;
   }
+}
+
+/**
+ * Refuses to read or edit a document that isn't a single well-formed jsonc
+ * object: real parse errors, a non-object root, or a duplicate key anywhere
+ * in the tree (jsonc-parser's `modify` edits the FIRST occurrence by
+ * offset, while `parse` returns the LAST — a naive edit would report
+ * success while the effective value never changed). Mirrors
+ * packages/rt-client/src/settings/write.ts's assertEditableJsonc; not
+ * imported from there because that module is coupled to the settings
+ * registry store-resolution path, not reusable for an arbitrary file.
+ */
+function assertEditableJsonc(path: string, content: string): void {
+  const errors: ParseError[] = [];
+  const tree = parseTree(content, errors, { allowTrailingComma: true });
+
+  const malformed =
+    errors.length > 0 || tree === undefined || tree.type !== "object" || findDuplicateKey(tree) !== undefined;
+
+  if (malformed) {
+    throw new Error(`${path}: malformed jsonc — refusing to read/edit (parse error, non-object root, or a duplicate key)`);
+  }
+}
+
+/** Depth-first search for the first duplicate property name in any object in the tree. */
+function findDuplicateKey(node: Node): string | undefined {
+  if (node.type === "object" && node.children) {
+    const seen = new Set<string>();
+    for (const property of node.children) {
+      const keyNode = property.children?.[0];
+      if (keyNode !== undefined && typeof keyNode.value === "string") {
+        if (seen.has(keyNode.value)) return keyNode.value;
+        seen.add(keyNode.value);
+      }
+      const valueNode = property.children?.[1];
+      if (valueNode !== undefined) {
+        const nested = findDuplicateKey(valueNode);
+        if (nested !== undefined) return nested;
+      }
+    }
+    return undefined;
+  }
+  if (node.type === "array" && node.children) {
+    for (const child of node.children) {
+      const nested = findDuplicateKey(child);
+      if (nested !== undefined) return nested;
+    }
+  }
+  return undefined;
 }

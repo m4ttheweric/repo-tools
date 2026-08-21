@@ -111,8 +111,15 @@ describe("settings/registry", () => {
       });
     });
 
-    test("the five migrated global singletons carry no legacyFile", () => {
-      for (const key of ["rt.notifications", "rt.cron", "rt.repoTracking", "rt.runaway", "rt.workspacePrefs"]) {
+    test("the six migrated global singletons carry no legacyFile", () => {
+      for (const key of [
+        "rt.notifications",
+        "rt.cron",
+        "rt.repoTracking",
+        "rt.runaway",
+        "rt.workspacePrefs",
+        "rt.homeSnapshot",
+      ]) {
         const def = getDef(key);
         expect(def?.legacyFile, `${key} should carry no legacyFile`).toBeUndefined();
       }
