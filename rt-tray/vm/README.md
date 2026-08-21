@@ -126,7 +126,7 @@ Phases: preflight · clone · boot · stage · install · launch · screens · a
 
 ## Test team
 
-Throwaway GitHub org `mattstack-vmtest` (repos `mattstack-vmtest-home`, `mattstack-vmtest-team`, plus the wizard's own `mattstack-home` / `mattstack-team-<slug>`), fine-grained PAT in `MATTSTACK_VMTEST_PAT` (env only; never in the repo or artifacts). `run/team-setup.sh reset` before a `create` run. No real team data ever enters this org.
+Throwaway GitHub org (default `mattstack-vmtest`; override with `MATTSTACK_VMTEST_ORG`, and if the name lacks `vmtest` also set `MATTSTACK_VMTEST_ORG_CONFIRM=<org>`), repos `mattstack-vmtest-home`, `mattstack-vmtest-team`, plus the wizard's own `mattstack-home` / `mattstack-team-<slug>`. Token in `MATTSTACK_VMTEST_PAT` (env only; never in the repo or artifacts) — the `repo` scope is enough (`gh auth token` works): `reset` retires existing repos by rename+archive (`trash-<name>-<stamp>`), never deletes. Run `run/team-setup.sh reset` before a `create` run. No real team data ever enters this org.
 
 ## Costs (fill in after the first builds)
 
