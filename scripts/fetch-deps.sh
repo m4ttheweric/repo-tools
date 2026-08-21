@@ -1,28 +1,37 @@
 #!/bin/bash
-# scripts/fetch-deps.sh [arm64] [--lock]
-# Downloads every bundled tool in rt-tray/deps.lock, verifies sha256, and
-# unpacks it into rt-tray/deps/<arch>/<name> (helpers) or
-# rt-tray/deps/tools/<name> (build tools). --lock fills EMPTY sha256 fields
-# from the downloads and rewrites deps.lock (for adding a tool); it never
-# overwrites a non-empty hash.
+# scripts/fetch-deps.sh [arm64]
+# Downloads every bundled tool in rt-tray/deps.lock, verifies sha256 before
+# extracting, and unpacks it into rt-tray/deps/<arch>/<name> (helpers) or
+# rt-tray/deps/tools/<name> (build tools, dest derived from the lock's own
+# bundlePath). Idempotent: a tool whose unpack stamp already matches the
+# locked sha256 is skipped.
+#
+# To add a tool: download it once, run `shasum -a 256 <download>`, and paste
+# the url plus that hash into rt-tray/deps.lock by hand, then re-run this
+# script.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ARCH="arm64"
-WRITE_LOCK=false
 for a in "$@"; do
   case "$a" in
     arm64) ARCH=arm64 ;;
-    --lock) WRITE_LOCK=true ;;
-    *) echo "usage: $0 [arm64] [--lock]" >&2; exit 2 ;;
+    *) echo "usage: $0 [arm64]" >&2; exit 2 ;;
   esac
 done
 
-LOCK="$ROOT/rt-tray/deps.lock"
-DEPS="$ROOT/rt-tray/deps/$ARCH"
-TOOLS="$ROOT/rt-tray/deps/tools"
+DEPS_LOCK_TS="$ROOT/scripts/lib/deps-lock.ts"
+DEPS_ROOT="$ROOT/rt-tray/deps"
+DEPS="$DEPS_ROOT/$ARCH"
+TOOLS="$DEPS_ROOT/tools"
 CACHE="${RT_DEPS_CACHE:-$HOME/Library/Caches/mattstack-deps}"
 mkdir -p "$DEPS" "$TOOLS" "$CACHE"
+
+LOCK_ARCH="$(bun "$DEPS_LOCK_TS" --arch)"
+if [ "$LOCK_ARCH" != "$ARCH" ]; then
+  echo "  x deps.lock arch is $LOCK_ARCH, this run wants $ARCH" >&2
+  exit 1
+fi
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
@@ -31,7 +40,11 @@ fetch() { # url sha → prints cached path
   name="$(basename "$url")"
   dest="$CACHE/${want:-nohash}-$name"
   if [ ! -f "$dest" ]; then
-    curl -fsSL --retry 3 -o "$dest.part" "$url"
+    curl -fsSL --retry 3 -o "$dest.part" "$url" || {
+      rm -f "$dest.part"
+      echo "  x download failed: $url" >&2
+      exit 1
+    }
     mv "$dest.part" "$dest"
   fi
   if [ -n "$want" ] && [ "$(sha "$dest")" != "$want" ]; then
@@ -42,23 +55,39 @@ fetch() { # url sha → prints cached path
   echo "$dest"
 }
 
-unpack() { # archive-file archive-kind extract-path dest
-  local file="$1" kind="$2" extract="$3" dest="$4" tmp
+unpack() { # name archive-file archive-kind extract-path dest
+  local name="$1" file="$2" kind="$3" extract="$4" dest="$5" tmp
   rm -rf "$dest"
   mkdir -p "$(dirname "$dest")"
   case "$kind" in
-    raw) cp "$file" "$dest"; chmod 755 "$dest" ;;
+    raw)
+      cp "$file" "$dest"
+      chmod 755 "$dest" ;;
     tar.gz|tar.xz|npm)
       tmp="$(mktemp -d)"
       tar -xf "$file" -C "$tmp"
-      if [ -n "$extract" ]; then cp -R "$tmp/$extract" "$dest"; else cp -R "$tmp" "$dest"; fi
+      if [ -n "$extract" ]; then
+        if [ ! -e "$tmp/$extract" ]; then
+          echo "  x $name: archive no longer contains $extract" >&2
+          rm -rf "$tmp"
+          exit 1
+        fi
+        cp -R "$tmp/$extract" "$dest"
+      else
+        cp -R "$tmp" "$dest"
+      fi
       rm -rf "$tmp" ;;
     zip)
       tmp="$(mktemp -d)"
       ditto -x -k "$file" "$tmp"
+      if [ ! -e "$tmp/$extract" ]; then
+        echo "  x $name: archive no longer contains $extract" >&2
+        rm -rf "$tmp"
+        exit 1
+      fi
       cp -R "$tmp/$extract" "$dest"
       rm -rf "$tmp" ;;
-    *) echo "  x unknown archive kind $kind" >&2; exit 1 ;;
+    *) echo "  x $name: unknown archive kind $kind" >&2; exit 1 ;;
   esac
   [ -d "$dest" ] || chmod 755 "$dest"
 }
@@ -72,9 +101,9 @@ assert_safe_name() {
   esac
 }
 
-# bash's `read` treats tab as "IFS whitespace" and silently collapses runs of
-# it, dropping empty TSV fields (deps.lock has several: extract="", pending
-# rows' url/sha256) and shifting every field after one left. Split by hand.
+# bash's `read` treats tab as "IFS whitespace" and collapses runs of it even
+# when IFS is set to only tab, dropping empty TSV fields and shifting every
+# later field left. Split by hand so an empty field stays a field.
 split_tsv() {
   local rest="$1" field
   FIELDS=()
@@ -86,64 +115,63 @@ split_tsv() {
   FIELDS+=("$rest")
 }
 
-NEW_HASHES=()
-FAILED=false
+# Materialized to a file rather than streamed through `done < <(cmd)`: a
+# process-substitution loop never sees cmd's exit status, even under
+# `set -o pipefail` — an emitter crash (malformed lock, bun missing) would
+# otherwise iterate zero rows and this script would report Done. and exit 0.
+TSV="$(mktemp)"
+trap 'rm -f "$TSV"' EXIT
+bun "$DEPS_LOCK_TS" > "$TSV"
+ROWS="$(wc -l < "$TSV" | tr -d ' ')"
+if [ "$ROWS" -eq 0 ]; then
+  echo "  x deps.lock produced no rows" >&2
+  exit 1
+fi
+
 while IFS= read -r line; do
   split_tsv "$line"
+  if [ "${#FIELDS[@]}" -ne 11 ]; then
+    echo "  x deps.lock TSV row has ${#FIELDS[@]} fields, expected 11: $line" >&2
+    exit 1
+  fi
   name="${FIELDS[0]}"; version="${FIELDS[1]}"; url="${FIELDS[2]}"; sha="${FIELDS[3]}"
-  archive="${FIELDS[4]}"; extract="${FIELDS[5]}"; kind="${FIELDS[9]}"; status="${FIELDS[8]}"
+  archive="${FIELDS[4]}"; extract="${FIELDS[5]}"; bundlePath="${FIELDS[6]}"
+  status="${FIELDS[8]}"; kind="${FIELDS[9]}"
   if [ "$status" != "bundled" ]; then
     echo "  . $name: pending (not bundled in this build)"
     continue
   fi
   assert_safe_name "$name"
-  if [ "$kind" = "buildtool" ]; then dest="$TOOLS/$name"; else dest="$DEPS/$name"; fi
+  if [ "$kind" = "buildtool" ]; then dest="$DEPS_ROOT/$bundlePath"; else dest="$DEPS/$name"; fi
   stamp="$dest.sha256"
 
-  if [ -z "$sha" ]; then
-    if ! $WRITE_LOCK; then
-      echo "  x $name has no sha256 in deps.lock — run $0 --lock" >&2
-      FAILED=true
-      continue
-    fi
-    file="$(fetch "$url" "")"
-    sha="$(sha "$file")"
-    NEW_HASHES+=("$name=$sha")
-  fi
-
+  already=false
   if [ -e "$dest" ] && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$sha" ]; then
-    echo "  = $name $version already verified → ${dest#$ROOT/}"
+    already=true
+    # A raw dest *is* the downloaded file byte-for-byte, so re-hash it
+    # directly instead of trusting the stamp alone.
+    if [ "$archive" = "raw" ] && [ "$(sha "$dest")" != "$sha" ]; then
+      already=false
+    fi
+  fi
+  if $already; then
+    echo "  = $name $version already unpacked (archive ${sha:0:12} verified) -> ${dest#$ROOT/}"
     continue
   fi
 
   file="$(fetch "$url" "$sha")"
-  unpack "$file" "$archive" "$extract" "$dest"
+  unpack "$name" "$file" "$archive" "$extract" "$dest"
   echo "$sha" > "$stamp"
   echo "  + $name $version -> ${dest#$ROOT/}"
-done < <(bun "$ROOT/scripts/lib/deps-lock.ts")
-
-if $WRITE_LOCK && [ ${#NEW_HASHES[@]} -gt 0 ]; then
-  for kv in "${NEW_HASHES[@]}"; do
-    n="${kv%%=*}"
-    h="${kv#*=}"
-    bun -e '
-      const [path, name, hash] = Bun.argv.slice(2);
-      const lock = JSON.parse(await Bun.file(path).text());
-      const t = lock.tools.find((x) => x.name === name);
-      t.sha256 = hash;
-      await Bun.write(path, JSON.stringify(lock, null, 2) + "\n");
-    ' "$LOCK" "$n" "$h"
-    echo "  + wrote sha256 for $n into deps.lock"
-  done
-fi
-
-if $FAILED; then
-  echo "  Failed: one or more bundled tools have no sha256 and --lock was not passed." >&2
-  exit 1
-fi
+done < "$TSV"
 
 # Sparkle's tools are an xz tarball with bin/ at its root; --help proves they run.
 if [ -x "$TOOLS/sparkle/bin/generate_appcast" ]; then
-  "$TOOLS/sparkle/bin/generate_appcast" --help >/dev/null 2>&1 && echo "  + sparkle tools runnable"
+  if "$TOOLS/sparkle/bin/generate_appcast" --help >/dev/null 2>&1; then
+    echo "  + sparkle tools runnable"
+  else
+    echo "  x sparkle tools present but not runnable" >&2
+    exit 1
+  fi
 fi
 echo "  Done."

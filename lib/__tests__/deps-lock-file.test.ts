@@ -12,7 +12,7 @@ describe("rt-tray/deps.lock", () => {
     expect(lock.schema).toBe(1);
     expect(lock.arch).toBe("arm64");
   });
-  test("carries the ruling-8 bundle set, with deck/board/gitq pending until L5", () => {
+  test("bundles fzf/jq/gh/glab/bun/node/fast-browser; suite apps + proxy helper pending; sparkle is a build tool", () => {
     const by = Object.fromEntries(lock.tools.map((t) => [t.name, t]));
     for (const n of ["fzf", "jq", "gh", "glab", "bun", "node", "fast-browser"]) expect(by[n]?.status).toBe("bundled");
     for (const n of ["deck", "board", "gitq", "mattstack-proxy-install"]) expect(by[n]?.status).toBe("pending");
@@ -24,8 +24,8 @@ describe("rt-tray/deps.lock", () => {
   });
   test("bun-based helpers declare jit entitlements; Go/C helpers declare none", () => {
     const by = Object.fromEntries(lock.tools.map((t) => [t.name, t]));
-    expect(by["bun"]!.entitlements).toBe("jit");
-    expect(by["node"]!.entitlements).toBe("jit");
-    for (const n of ["fzf", "jq", "gh", "glab"]) expect(by[n]!.entitlements).toBe("none");
+    expect(by["bun"]?.entitlements).toBe("jit");
+    expect(by["node"]?.entitlements).toBe("jit");
+    for (const n of ["fzf", "jq", "gh", "glab"]) expect(by[n]?.entitlements).toBe("none");
   });
 });
