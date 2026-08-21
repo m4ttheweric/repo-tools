@@ -3,8 +3,12 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { claimZone, InvalidZoneError, normalizeZone, readOwners, releaseZone } from "../snapshot-owners.ts";
+import { renderOwnersFile } from "../init-plan.ts";
 
-const EMPTY_TEMPLATE =
+const EMPTY_TEMPLATE = renderOwnersFile();
+
+/** The pre-fix live template: comment-only, no "zones" property — still tolerated on READ. */
+const LEGACY_TEMPLATE =
   "{\n  // snapshot-owners.jsonc — claimed zones the snapshot daemon must never\n  // auto-commit. Empty until a zone is claimed.\n}\n";
 
 let dir: string | undefined;
@@ -44,18 +48,41 @@ describe("normalizeZone", () => {
     expect(() => normalizeZone("work/../etc")).toThrow(InvalidZoneError);
     expect(() => normalizeZone("..")).toThrow(InvalidZoneError);
   });
+
+  test("rejects a . segment", () => {
+    expect(() => normalizeZone("./prefs")).toThrow(InvalidZoneError);
+    expect(() => normalizeZone(".")).toThrow(InvalidZoneError);
+  });
+
+  test("rejects a backslash", () => {
+    expect(() => normalizeZone("work\\project")).toThrow(InvalidZoneError);
+  });
 });
 
 describe("readOwners", () => {
-  test("parses the empty template as zero zones", () => {
+  test("parses the seeded template (zones: {}) as zero zones", () => {
     const path = ownersPath();
     writeFileSync(path, EMPTY_TEMPLATE);
 
     expect(readOwners(path)).toEqual({ zones: {} });
   });
 
+  test("parses the legacy comment-only template (no zones key) as zero zones", () => {
+    const path = ownersPath();
+    writeFileSync(path, LEGACY_TEMPLATE);
+
+    expect(readOwners(path)).toEqual({ zones: {} });
+  });
+
   test("returns zero zones for a missing file", () => {
     const path = ownersPath();
+
+    expect(readOwners(path)).toEqual({ zones: {} });
+  });
+
+  test("returns zero zones for a whitespace-only file", () => {
+    const path = ownersPath();
+    writeFileSync(path, "   \n\n  ");
 
     expect(readOwners(path)).toEqual({ zones: {} });
   });
@@ -72,16 +99,61 @@ describe("readOwners", () => {
     });
   });
 
+  test("normalizes a hand-edited zone key missing its trailing slash", () => {
+    const path = ownersPath();
+    writeFileSync(path, '{ "zones": { "prefs": { "owner": "matt", "claimedAt": "2026-01-01T00:00:00.000Z" } } }\n');
+
+    expect(Object.keys(readOwners(path).zones)).toEqual(["prefs/"]);
+  });
+
   test("throws on malformed jsonc", () => {
     const path = ownersPath();
     writeFileSync(path, "{ not: valid");
 
     expect(() => readOwners(path)).toThrow();
   });
+
+  test("throws when zones is a string, not an object", () => {
+    const path = ownersPath();
+    writeFileSync(path, '{ "zones": "oops" }\n');
+
+    expect(() => readOwners(path)).toThrow();
+  });
+
+  test("throws when zones is an array, not an object", () => {
+    const path = ownersPath();
+    writeFileSync(path, '{ "zones": ["oops"] }\n');
+
+    expect(() => readOwners(path)).toThrow();
+  });
+
+  test("throws when a zone entry is not an object", () => {
+    const path = ownersPath();
+    writeFileSync(path, '{ "zones": { "prefs/": "matt" } }\n');
+
+    expect(() => readOwners(path)).toThrow();
+  });
+
+  test("throws on a duplicate top-level zones key (modify edits the first, parse reads the last)", () => {
+    const path = ownersPath();
+    writeFileSync(
+      path,
+      '{ "zones": { "prefs/": { "owner": "matt", "claimedAt": "2026-01-01T00:00:00.000Z" } }, "zones": {} }\n',
+    );
+
+    expect(() => readOwners(path)).toThrow();
+  });
+
+  test("throws on a hand-edited zone key that fails normalization", () => {
+    const path = ownersPath();
+    writeFileSync(path, '{ "zones": { "./prefs/": { "owner": "matt", "claimedAt": "2026-01-01T00:00:00.000Z" } } }\n');
+
+    expect(() => readOwners(path)).toThrow();
+  });
 });
 
 describe("claimZone / releaseZone", () => {
-  test("claim on the empty template creates the zones entry and preserves the header comment", () => {
+  test("claim on the empty template creates the zones entry and keeps the header comment above it", () => {
     const path = ownersPath();
     writeFileSync(path, EMPTY_TEMPLATE);
 
@@ -91,10 +163,15 @@ describe("claimZone / releaseZone", () => {
     expect(Object.keys(owners.zones)).toEqual(["prefs/"]);
     expect(owners.zones["prefs/"]?.owner).toBe("matt");
     expect(typeof owners.zones["prefs/"]?.claimedAt).toBe("string");
-    expect(readFileSync(path, "utf8")).toContain("snapshot-owners.jsonc — claimed zones");
+
+    const text = readFileSync(path, "utf8");
+    const headerIdx = text.indexOf("snapshot-owners.jsonc — claimed zones");
+    const zonesIdx = text.indexOf('"zones"');
+    expect(headerIdx).toBeGreaterThanOrEqual(0);
+    expect(zonesIdx).toBeGreaterThan(headerIdx);
   });
 
-  test("claim on a missing file creates it", () => {
+  test("claim on a missing file creates it from the seeded template", () => {
     const path = ownersPath();
 
     claimZone(path, "prefs", "matt", "personal prefs");
@@ -105,6 +182,12 @@ describe("claimZone / releaseZone", () => {
       claimedAt: owners.zones["prefs/"]?.claimedAt as string,
       note: "personal prefs",
     });
+
+    const text = readFileSync(path, "utf8");
+    const headerIdx = text.indexOf("snapshot-owners.jsonc — claimed zones");
+    const zonesIdx = text.indexOf('"zones"');
+    expect(headerIdx).toBeGreaterThanOrEqual(0);
+    expect(zonesIdx).toBeGreaterThan(headerIdx);
   });
 
   test("claim normalizes the zone before writing", () => {

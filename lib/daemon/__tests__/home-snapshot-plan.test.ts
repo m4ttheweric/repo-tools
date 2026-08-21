@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { planSnapshot } from "../home-snapshot-plan.ts";
+import { parsePorcelainZ, planSnapshot, type StatusEntry } from "../home-snapshot-plan.ts";
 import type { Owners } from "../../home/snapshot-owners.ts";
 
 const NOW = 1_000_000;
@@ -11,10 +11,52 @@ function ownersWith(zone: string, owner = "matt"): Owners {
   return { zones: { [zone]: { owner, claimedAt: "2026-01-01T00:00:00.000Z" } } };
 }
 
+function entry(path: string, xy = "??"): StatusEntry {
+  return { xy, path };
+}
+
+describe("parsePorcelainZ", () => {
+  test("a clean repo (empty buffer) parses to zero entries", () => {
+    expect(parsePorcelainZ("")).toEqual([]);
+  });
+
+  test("a single untracked entry with a trailing NUL", () => {
+    expect(parsePorcelainZ("?? a.txt\0")).toEqual([{ xy: "??", path: "a.txt" }]);
+  });
+
+  test("modified and untracked entries mixed", () => {
+    expect(parsePorcelainZ(" M skills.jsonc\0?? work/scratch.md\0")).toEqual([
+      { xy: " M", path: "skills.jsonc" },
+      { xy: "??", path: "work/scratch.md" },
+    ]);
+  });
+
+  test("a path containing a space — no quoting in -z output", () => {
+    expect(parsePorcelainZ("?? my file.txt\0")).toEqual([{ xy: "??", path: "my file.txt" }]);
+  });
+
+  test("a rename pair: new path, then a bare origPath with no XY prefix", () => {
+    expect(parsePorcelainZ("R  prefs/new.md\0prefs/old.md\0")).toEqual([
+      { xy: "R ", path: "prefs/new.md", origPath: "prefs/old.md" },
+    ]);
+  });
+
+  test("a copy pair", () => {
+    expect(parsePorcelainZ("C  b.txt\0a.txt\0")).toEqual([{ xy: "C ", path: "b.txt", origPath: "a.txt" }]);
+  });
+
+  test("a rename pair followed by an ordinary entry stays in sync", () => {
+    expect(parsePorcelainZ("R  new.md\0old.md\0?? untracked.txt\0")).toEqual([
+      { xy: "R ", path: "new.md", origPath: "old.md" },
+      { xy: "??", path: "untracked.txt" },
+    ]);
+  });
+});
+
 describe("planSnapshot", () => {
-  test("no status lines: everything empty, message null", () => {
+  test("no entries: everything empty, message null", () => {
     const plan = planSnapshot({
-      statusLines: [],
+      entries: [],
       owners: NO_OWNERS,
       now: NOW,
       firstSeenDirty: {},
@@ -32,7 +74,7 @@ describe("planSnapshot", () => {
 
   test("unclaimed paths only: all become autoPaths, no zones excluded", () => {
     const plan = planSnapshot({
-      statusLines: [" M skills.jsonc", "?? work/scratch.md"],
+      entries: [entry("skills.jsonc", " M"), entry("work/scratch.md", "??")],
       owners: NO_OWNERS,
       now: NOW,
       firstSeenDirty: {},
@@ -48,7 +90,7 @@ describe("planSnapshot", () => {
 
   test("mixed: paths under a claimed zone are excluded from autoPaths; the zone is dirty", () => {
     const plan = planSnapshot({
-      statusLines: [" M skills.jsonc", " M prefs/preferences.md"],
+      entries: [entry("skills.jsonc", " M"), entry("prefs/preferences.md", " M")],
       owners: ownersWith("prefs/"),
       now: NOW,
       firstSeenDirty: {},
@@ -63,7 +105,7 @@ describe("planSnapshot", () => {
 
   test("a zone newly dirty this run: firstSeen set to now, not a janitor candidate", () => {
     const plan = planSnapshot({
-      statusLines: [" M prefs/preferences.md"],
+      entries: [entry("prefs/preferences.md", " M")],
       owners: ownersWith("prefs/"),
       now: NOW,
       firstSeenDirty: {},
@@ -77,7 +119,7 @@ describe("planSnapshot", () => {
   test("a zone dirty past threshold: firstSeen carried forward, becomes a janitor zone", () => {
     const firstSeen = NOW - THRESHOLD_MS;
     const plan = planSnapshot({
-      statusLines: [" M prefs/preferences.md"],
+      entries: [entry("prefs/preferences.md", " M")],
       owners: ownersWith("prefs/", "matt"),
       now: NOW,
       firstSeenDirty: { "prefs/": firstSeen },
@@ -91,7 +133,7 @@ describe("planSnapshot", () => {
   test("a zone dirty but under threshold: carried forward, not a janitor zone", () => {
     const firstSeen = NOW - THRESHOLD_MS + 1;
     const plan = planSnapshot({
-      statusLines: [" M prefs/preferences.md"],
+      entries: [entry("prefs/preferences.md", " M")],
       owners: ownersWith("prefs/"),
       now: NOW,
       firstSeenDirty: { "prefs/": firstSeen },
@@ -104,7 +146,7 @@ describe("planSnapshot", () => {
 
   test("a zone that cleaned up: dropped from nextFirstSeenDirty", () => {
     const plan = planSnapshot({
-      statusLines: [" M skills.jsonc"],
+      entries: [entry("skills.jsonc", " M")],
       owners: ownersWith("prefs/"),
       now: NOW,
       firstSeenDirty: { "prefs/": NOW - 1000 },
@@ -115,9 +157,37 @@ describe("planSnapshot", () => {
     expect(plan.nextFirstSeenDirty).toEqual({});
   });
 
+  test("a rename OUT of a claimed zone still dirties that zone, even though the new path escapes it", () => {
+    const plan = planSnapshot({
+      entries: [{ xy: "R ", path: "work/moved.md", origPath: "prefs/old.md" }],
+      owners: ownersWith("prefs/"),
+      now: NOW,
+      firstSeenDirty: {},
+      thresholdMs: THRESHOLD_MS,
+    });
+
+    expect(plan.nextFirstSeenDirty).toEqual({ "prefs/": NOW });
+    // the new path isn't under any zone, so it's still auto-committable —
+    // the zone stays dirty (and eventually janitor-swept) via origPath alone.
+    expect(plan.autoPaths).toEqual(["work/moved.md"]);
+  });
+
+  test("a rename INTO a claimed zone dirties the zone and excludes the entry from autoPaths", () => {
+    const plan = planSnapshot({
+      entries: [{ xy: "R ", path: "prefs/new.md", origPath: "work/old.md" }],
+      owners: ownersWith("prefs/"),
+      now: NOW,
+      firstSeenDirty: {},
+      thresholdMs: THRESHOLD_MS,
+    });
+
+    expect(plan.autoPaths).toEqual([]);
+    expect(plan.nextFirstSeenDirty).toEqual({ "prefs/": NOW });
+  });
+
   test("message formatting: more than 5 distinct top-level paths collapses to +N more", () => {
     const plan = planSnapshot({
-      statusLines: ["?? a/x", "?? b/x", "?? c/x", "?? d/x", "?? e/x", "?? f/x", "?? g/x"],
+      entries: ["a/x", "b/x", "c/x", "d/x", "e/x", "f/x", "g/x"].map((p) => entry(p)),
       owners: NO_OWNERS,
       now: NOW,
       firstSeenDirty: {},
@@ -129,7 +199,7 @@ describe("planSnapshot", () => {
 
   test("message formatting: a root-level file's top-level path is the file name itself", () => {
     const plan = planSnapshot({
-      statusLines: ["?? README.md"],
+      entries: [entry("README.md")],
       owners: NO_OWNERS,
       now: NOW,
       firstSeenDirty: {},
@@ -141,7 +211,7 @@ describe("planSnapshot", () => {
 
   test("message formatting: repeated top-level paths count once", () => {
     const plan = planSnapshot({
-      statusLines: ["?? work/a.md", "?? work/b.md", "?? work/c.md"],
+      entries: ["work/a.md", "work/b.md", "work/c.md"].map((p) => entry(p)),
       owners: NO_OWNERS,
       now: NOW,
       firstSeenDirty: {},
@@ -149,5 +219,17 @@ describe("planSnapshot", () => {
     });
 
     expect(plan.message).toBe("snapshot: work");
+  });
+
+  test("fixtures can be routed through the real parser instead of built by hand", () => {
+    const plan = planSnapshot({
+      entries: parsePorcelainZ(" M skills.jsonc\0?? work/scratch.md\0"),
+      owners: NO_OWNERS,
+      now: NOW,
+      firstSeenDirty: {},
+      thresholdMs: THRESHOLD_MS,
+    });
+
+    expect(plan.autoPaths).toEqual(["skills.jsonc", "work/scratch.md"]);
   });
 });
