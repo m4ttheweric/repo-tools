@@ -223,6 +223,10 @@ export const REGISTRY: readonly SettingDef[] = [
   },
 
   // --- board (team) --------------------------------------------------------
+  // board.* rows carry NO `default`: the board's store-ownership latch is
+  // `getSetting(key).value === undefined`, and a registry default materializes
+  // as a present value — adding one flips that key store-authoritative on
+  // every install and blanks the file's value.
   {
     key: "board.gitlabHost",
     type: "string",
