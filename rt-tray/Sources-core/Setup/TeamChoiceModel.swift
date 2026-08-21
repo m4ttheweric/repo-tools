@@ -31,6 +31,16 @@ public final class TeamChoiceModel: ObservableObject {
     @Published public private(set) var isChecking = false
 
     private let rt: RtRunning
+    // rt.run is non-cancellable, so this is the only guard against a second
+    // Back→Continue re-fetch (the view is recreated but the model persists)
+    // clobbering fields the user has since edited by hand.
+    private var didLoadGitHubStatus = false
+    // What create/restore last ran successfully, so an unchanged
+    // Back→Continue doesn't repeat a side-effecting verb. join stays
+    // unlatched: it's a dry run, and re-running picks up access granted
+    // while the user was sitting on the screen.
+    private var preparedFingerprint: String?
+
     public init(rt: RtRunning) { self.rt = rt }
 
     public var slugPreview: String { Slug.make(teamName) }
@@ -50,17 +60,24 @@ public final class TeamChoiceModel: ObservableObject {
     }
 
     public func loadGitHubStatus() async {
+        guard !didLoadGitHubStatus else { return }
         guard let result = try? await rt.run(["setup", "github", "status", "--json"], stdin: nil),
               let status = try? result.decode(GitHubStatus.self), status.status == .ready else { return }
         ghHandle = status.handle
         ghOwners = status.owners ?? [status.handle].compactMap { $0 }
         ghOwner = ghOwners.first
         useGhRepo = true
+        didLoadGitHubStatus = true
     }
 
-    /// Runs the dry-run verbs for the chosen card. Returns nil on success or
-    /// the exact sentence to show under the fields.
+    /// Runs whatever the chosen card needs to reach Install: a dry-run check
+    /// for join, real side-effecting verbs for create and restore. Returns
+    /// nil on success or the exact sentence to show under the fields.
+    /// Idempotent for create/restore — a repeat call with unchanged inputs
+    /// (e.g. Back then Continue again) skips the verb rather than re-running it.
     public func validateAndPrepare() async -> String? {
+        let fingerprint = preparationFingerprint()
+        if let fingerprint, fingerprint == preparedFingerprint { return nil }
         isChecking = true
         defer { isChecking = false }
         do {
@@ -73,38 +90,55 @@ public final class TeamChoiceModel: ObservableObject {
                 args.append("--json")
                 let r = try await rt.run(args, stdin: nil)
                 if let e = r.userError { return e.message }
-                guard r.exitCode == 0 else { return "rt team create failed (exit \(r.exitCode))." }
+                guard r.exitCode == 0 else { return r.failureCopy(verb: "team create") }
+                preparedFingerprint = fingerprint
                 return nil
             case .join:
                 let stdin = try JSONEncoder().encode(["code": normalizedInviteCode])
                 let r = try await rt.run(["team", "join", "--dry-run", "--json"], stdin: stdin)
                 if let e = r.userError { return Self.joinFailureCopy(e, owner: nil, team: nil) }
-                guard r.exitCode == 0, let j = try? r.decode(TeamJoinResult.self) else { return "rt team join failed (exit \(r.exitCode))." }
+                guard r.exitCode == 0, let j = try? r.decode(TeamJoinResult.self) else { return r.failureCopy(verb: "team join") }
                 guard j.access == "ok" else { return Self.joinFailureCopy(RtUserError(code: j.access == "denied" ? "no-access" : "unreachable", message: j.message ?? ""), owner: j.team?.owner, team: j.team?.name) }
                 joinSummary = j.message ?? "Joining \(j.team?.name ?? "") (owner \(j.team?.owner ?? ""))"
                 return await homeInitCheck()
             case .restore:
-                // Ruling R3: the app runs the real restore at Continue (clone
-                // + key into the Keychain), then records the intent so
+                // The app runs the real restore at Continue (clone + key
+                // into the Keychain), then records the intent so
                 // `setup apply`'s home.restore step only verifies.
                 let repo = restoreRepo.trimmingCharacters(in: .whitespaces)
                 let stdin = try JSONEncoder().encode(["ageKey": restoreAgeKey.trimmingCharacters(in: .whitespacesAndNewlines)])
                 let r = try await rt.run(["restore", repo, "--json"], stdin: stdin)
                 if let e = r.userError { return e.message }
-                guard r.exitCode == 0 else { return "rt restore failed (exit \(r.exitCode))." }
+                guard r.exitCode == 0 else { return r.failureCopy(verb: "restore") }
                 let intent = try await rt.run(["setup", "intent", "restore", repo, "--json"], stdin: nil)
                 if let e = intent.userError { return e.message }
-                return intent.exitCode == 0 ? nil : "rt setup intent restore failed (exit \(intent.exitCode))."
+                guard intent.exitCode == 0 else { return intent.failureCopy(verb: "setup intent restore") }
+                preparedFingerprint = fingerprint
+                restoreAgeKey = ""
+                return nil
             }
         } catch {
             return "Could not run rt: \(error)"
         }
     }
 
+    /// nil for join (never latched). One value per (choice, the inputs that
+    /// matter) so a field edit invalidates the latch and re-runs the verb.
+    private func preparationFingerprint() -> String? {
+        switch choice {
+        case .create:
+            return ["create", teamName, "\(othersWillJoin)", "\(useGhRepo)", ghOwner ?? "", remoteURL].joined(separator: "\u{1}")
+        case .join:
+            return nil
+        case .restore:
+            return ["restore", restoreRepo.trimmingCharacters(in: .whitespaces), restoreAgeKey].joined(separator: "\u{1}")
+        }
+    }
+
     private func homeInitCheck() async -> String? {
         guard let r = try? await rt.run(["home", "init", "--dry-run", "--json"], stdin: nil) else { return "Could not run rt home init." }
         if let e = r.userError { return e.message }
-        return r.exitCode == 0 ? nil : "rt home init --dry-run failed (exit \(r.exitCode))."
+        return r.exitCode == 0 ? nil : r.failureCopy(verb: "home init --dry-run")
     }
 
     public nonisolated static func joinFailureCopy(_ error: RtUserError, owner: String?, team: String?) -> String {

@@ -1,13 +1,16 @@
 import Foundation
 import MattstackCore
 
-final class ScriptedRt: RtRunning, @unchecked Sendable {
+private final class ScriptedRt: RtRunning, @unchecked Sendable {
     var answers: [String: (Int32, String)] = [:]   // key: args joined by space
     var calls: [(args: [String], stdin: String?)] = []
     func run(_ args: [String], stdin: Data?) async throws -> RtResult {
         calls.append((args, stdin.map { String(decoding: $0, as: UTF8.self) }))
         let key = args.joined(separator: " ")
-        let (code, out) = answers.first { key.hasPrefix($0.key) }?.value ?? (1, "")
+        // Longest matching prefix wins — deterministic even when two answer
+        // keys are both prefixes of the same call (e.g. "restore" and a
+        // hypothetical "restore --dry-run").
+        let (code, out) = answers.filter { key.hasPrefix($0.key) }.max { $0.key.count < $1.key.count }?.value ?? (1, "")
         return RtResult(exitCode: code, stdout: Data(out.utf8), stderr: Data())
     }
     func stream(_ args: [String], stdin: Data?) -> AsyncThrowingStream<String, Error> { AsyncThrowingStream { $0.finish() } }
@@ -57,6 +60,36 @@ let teamChoiceChecks: [Check] = [
         await MainActor.run { m2.choice = .create; m2.teamName = "Acme Claims"; m2.useGhRepo = true; m2.ghOwner = "acme"; m2.othersWillJoin = false }
         c.expect(await m2.validateAndPrepare() == nil)
         c.expectEqual(gh.calls[1].args, ["team", "create", "Acme Claims", "--create-repo", "acme", "--json"])
+    },
+    Check("create: loadGitHubStatus only queries rt once — a second call after Back doesn't clobber the user's edits") { c in
+        let rt = ScriptedRt()
+        rt.answers["setup github status"] = (0, #"{"contract":1,"status":"ready","handle":"m4ttheweric","owners":["m4ttheweric","acme"]}"#)
+        let m = await MainActor.run { TeamChoiceModel(rt: rt) }
+        await m.loadGitHubStatus()
+        await MainActor.run {
+            c.expectEqual(m.useGhRepo, true)
+            m.useGhRepo = false
+            m.remoteURL = "git@gitlab.example.com:tools/mattstack-team.git"
+        }
+        await m.loadGitHubStatus()
+        await MainActor.run {
+            c.expectEqual(m.useGhRepo, false, "a second load must not re-overwrite the user's choice")
+            c.expectEqual(m.remoteURL, "git@gitlab.example.com:tools/mattstack-team.git")
+        }
+        c.expectEqual(rt.calls.filter { $0.args.prefix(3) == ["setup", "github", "status"] }.count, 1)
+    },
+    Check("create: validateAndPrepare is idempotent for unchanged inputs; a changed field re-runs it") { c in
+        let rt = ScriptedRt()
+        rt.answers["home init --dry-run"] = (0, #"{"contract":1,"ok":true}"#)
+        rt.answers["team create"] = (0, #"{"contract":1,"team":{"slug":"acme-svc","name":"Acme Claims"},"remote":"ok"}"#)
+        let m = await MainActor.run { TeamChoiceModel(rt: rt) }
+        await MainActor.run { m.choice = .create; m.teamName = "Acme Claims"; m.useGhRepo = false; m.remoteURL = "https://example.com/t.git" }
+        c.expect(await m.validateAndPrepare() == nil)
+        c.expect(await m.validateAndPrepare() == nil, "repeat call with unchanged inputs must still report success")
+        c.expectEqual(rt.calls.filter { $0.args.prefix(2) == ["team", "create"] }.count, 1, "unchanged inputs must not re-run team create")
+        await MainActor.run { m.teamName = "Acme Claims 2" }
+        c.expect(await m.validateAndPrepare() == nil)
+        c.expectEqual(rt.calls.filter { $0.args.prefix(2) == ["team", "create"] }.count, 2, "a changed field must re-run team create")
     },
     Check("join: code goes on stdin; success summary; failure copy is specific") { c in
         let rt = ScriptedRt()

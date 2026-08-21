@@ -18,6 +18,18 @@ public struct RtResult: Sendable {
         return (try? JSONDecoder().decode(ErrorEnvelope.self, from: stdout))?.error
             ?? RtUserError(code: nil, message: String(decoding: stderr.prefix(2000), as: UTF8.self))
     }
+
+    /// Copy for a non-`userError` failure: a nonzero exit gets a trimmed
+    /// stderr excerpt (real signal about what broke); exit 0 with no usable
+    /// reply gets its own sentence rather than the nonsensical "failed (exit 0)".
+    public func failureCopy(verb: String) -> String {
+        guard exitCode != 0 else { return "rt \(verb) returned an unexpected reply." }
+        let excerpt = String(decoding: stderr.prefix(200), as: UTF8.self)
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !excerpt.isEmpty else { return "rt \(verb) failed (exit \(exitCode))." }
+        return "rt \(verb) failed (exit \(exitCode)): \(excerpt)"
+    }
 }
 
 public enum RtClientError: Error, Equatable {
