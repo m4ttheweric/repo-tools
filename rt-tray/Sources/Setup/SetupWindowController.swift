@@ -34,7 +34,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
         let root = SetupView(flow: flow, team: team, readiness: environment.readiness, install: environment.install,
-                             permissions: environment.permissions, env: environment)
+                             permissions: environment.permissions, env: environment,
+                             onFinish: { [weak self] in self?.window?.close() })
         window.contentViewController = NSHostingController(rootView: root)
         window.setContentSize(NSSize(width: Self.width, height: 620))
         flow.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.applyStyle() } }
@@ -45,11 +46,14 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     func show(step: SetupStep? = nil, joinCode: String? = nil) {
         if let step { flow.jump(to: step) }
         if let joinCode { team.choice = .join; team.inviteCode = joinCode }
-        SetupSession.isRunning = true
-        applyStyle()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
+        applyStyle()
+        window?.center()
         NSApp.activate(ignoringOtherApps: true)
+        // A second show() while already open (deep link, tray re-click) must
+        // not accumulate observers — each would fire didBecomeActive() again.
+        if let o = activeObserver { NotificationCenter.default.removeObserver(o) }
         activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.environment.readiness.didBecomeActive() }
         }
@@ -60,7 +64,10 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         var mask: NSWindow.StyleMask = [.titled]
         if flow.windowMayClose { mask.insert([.closable, .miniaturizable]) }
         window.styleMask = mask
-        SetupSession.isRunning = !flow.windowMayClose
+        // Ground truth, not "we just showed it": a late write to flow after
+        // the window has actually closed must not re-arm the updater's idle
+        // gate forever.
+        SetupSession.isRunning = window.isVisible && !flow.windowMayClose
     }
 
     func windowWillClose(_ notification: Notification) {

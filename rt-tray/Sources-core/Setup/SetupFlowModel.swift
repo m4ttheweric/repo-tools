@@ -16,8 +16,8 @@ public enum SetupStep: Int, CaseIterable, Sendable {
     public var indicator: String { "Step \(rawValue + 1) of \(SetupStep.allCases.count)" }
 }
 
-/// Custom page model (spec §4): push transitions, Back never dismisses,
-/// the window only closes once setup is done.
+/// Custom page model: push transitions, Back never dismisses, the window
+/// only closes once setup is done.
 @MainActor
 public final class SetupFlowModel: ObservableObject {
     @Published public var step: SetupStep = .welcome
