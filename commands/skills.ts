@@ -18,6 +18,7 @@
 
 import { execFileSync, spawnSync } from "child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
+import { createInterface } from "node:readline";
 import { dirname, join } from "path";
 import { resolveFzf } from "../lib/fzf.ts";
 import { mattstackHome } from "../lib/rt-paths.ts";
@@ -551,10 +552,65 @@ async function runSet(name: string, want: "public" | "internal", flags: SurfaceF
   await runApply(flags);
 }
 
+export type SurfaceDelta = { toPublic: string[]; toInternal: string[] };
+
+export type PaletteAction =
+  | { kind: "no-changes" }
+  | { kind: "write"; delta: SurfaceDelta }
+  | { kind: "declined"; delta: SurfaceDelta };
+
+/**
+ * Pure decision seam for the palette's accept path -- fzf's default --multi
+ * semantics emit the cursor row on Enter even when nothing is marked, so a
+ * deliberate "uncheck everything" can silently reintroduce one row. Called
+ * once (confirmed=false) to compute the delta for the pre-write preview, and
+ * again with the real answer once the user has seen it.
+ */
+export function decidePaletteAction(
+  previousPublic: Set<string>,
+  resultRows: { name: string; status: "public" | "internal" }[],
+  confirmed: boolean,
+): PaletteAction {
+  const toPublic: string[] = [];
+  const toInternal: string[] = [];
+
+  for (const row of resultRows) {
+    const was = previousPublic.has(row.name);
+    const now = row.status === "public";
+    if (was === now) continue;
+    if (now) toPublic.push(row.name);
+    else toInternal.push(row.name);
+  }
+  toPublic.sort();
+  toInternal.sort();
+
+  if (toPublic.length === 0 && toInternal.length === 0) return { kind: "no-changes" };
+  const delta = { toPublic, toInternal };
+  return confirmed ? { kind: "write", delta } : { kind: "declined", delta };
+}
+
+function printDelta(delta: SurfaceDelta): void {
+  console.log("changes:");
+  for (const name of delta.toPublic) console.log(`  + public   ${name}`);
+  for (const name of delta.toInternal) console.log(`  - public   ${name}`);
+}
+
+function confirmYesNo(promptText: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+    rl.question(promptText, (answer) => {
+      rl.close();
+      resolve(answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes");
+    });
+  });
+}
+
 async function runPalette(flags: SurfaceFlags): Promise<void> {
   const { packDir } = resolveSurfacePaths(flags);
   const verbNames = new Set(readVerbRoster(packDir).map((v) => v.name));
   const surface = readSurface(packDir);
+  const { skillsNames } = collectRegistry(packDir, verbNames);
+  const previousPublic = surface ? new Set(surface.public) : defaultPublicSet(skillsNames, verbNames);
   const { source, rows } = computeRows(packDir, verbNames, surface);
 
   if (rows.length === 0) {
@@ -591,7 +647,7 @@ async function runPalette(flags: SurfaceFlags): Promise<void> {
       "--border=rounded",
       "--border-label= rt skills surface ",
       "--prompt=  filter: ",
-      "--header=space: toggle public  tab: toggle+next  enter: apply  esc: cancel",
+      "--header=space: toggle public  tab: toggle+next  enter: review changes  esc: cancel",
       "--no-mouse",
       "--bind=space:toggle,tab:toggle+down",
       `--bind=${loadBind}`,
@@ -604,14 +660,36 @@ async function runPalette(flags: SurfaceFlags): Promise<void> {
     return;
   }
 
-  const selected = (result.stdout ?? "")
-    .replace(/\n$/, "")
-    .split("\n")
-    .map((line) => line.split("\t")[0]!)
-    .filter(Boolean);
+  const selectedSet = new Set(
+    (result.stdout ?? "")
+      .replace(/\n$/, "")
+      .split("\n")
+      .map((line) => line.split("\t")[0]!)
+      .filter(Boolean),
+  );
 
-  writeSurfaceConfig(packDir, [...new Set(selected)].sort());
-  console.log(`surface.jsonc updated: ${selected.length} public`);
+  const resultRows = rows.map((row) => ({
+    name: row.name,
+    status: (selectedSet.has(row.name) ? "public" : "internal") as "public" | "internal",
+  }));
+
+  const preview = decidePaletteAction(previousPublic, resultRows, false);
+  if (preview.kind === "no-changes") {
+    console.log("no changes -- surface.jsonc left as is");
+    return;
+  }
+
+  printDelta(preview.delta);
+  const confirmed = await confirmYesNo("  apply these changes? [y/N] ");
+  const decision = decidePaletteAction(previousPublic, resultRows, confirmed);
+
+  if (decision.kind !== "write") {
+    console.log("declined -- no changes made");
+    return;
+  }
+
+  writeSurfaceConfig(packDir, [...selectedSet].sort());
+  console.log(`surface.jsonc updated: ${selectedSet.size} public`);
 
   await runApply(flags);
 }
