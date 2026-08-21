@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { execFileSync } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { computeRows, decidePaletteAction, skillsSurface } from "../skills.ts";
@@ -517,6 +517,25 @@ describe("registered roots stay inside the pack", () => {
       join(packDir, ".claude-plugin", "plugin.json"),
       JSON.stringify({ version: "1.0.0", skills: ["./skills", "../" + outside.split("/").pop()!, outside] }),
     );
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": ["inside"] }\n`);
+    writeFile(join(packDir, "skills", "inside", "SKILL.md"), "---\nname: inside\n---\nbody\n");
+
+    await skillsSurface(["list", "--pack", "p", "--pack-dir", packDir]);
+
+    const joined = logs.join("\n");
+    expect(joined).toMatch(/public {3}hand-authored {2}inside/);
+    expect(joined).not.toContain("stray");
+  });
+});
+
+describe("registered roots are canonicalized", () => {
+  test("a symlinked root inside the pack that points outside it is ignored", async () => {
+    const packDir = makePackDir();
+    const outside = makePackDir();
+    writeFile(join(outside, "stray", "SKILL.md"), "---\nname: stray\n---\nbody\n");
+    mkdirSync(join(packDir, "skills"), { recursive: true });
+    symlinkSync(outside, join(packDir, "linked-root"));
+    writeFile(join(packDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.0.0", skills: ["./skills", "./linked-root"] }));
     writeFile(join(packDir, "surface.jsonc"), `{ "public": ["inside"] }\n`);
     writeFile(join(packDir, "skills", "inside", "SKILL.md"), "---\nname: inside\n---\nbody\n");
 

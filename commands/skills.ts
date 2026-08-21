@@ -17,9 +17,9 @@
  */
 
 import { execFileSync, spawnSync } from "child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { createInterface } from "node:readline";
-import { dirname, join, resolve as resolvePath } from "path";
+import { dirname, isAbsolute as isAbsolutePath, join, relative as relativePath, resolve as resolvePath } from "path";
 import { resolveFzf } from "../lib/fzf.ts";
 import { mattstackHome } from "../lib/rt-paths.ts";
 import { compileSkill, HEADER_COMMENT } from "../lib/skills/compile.ts";
@@ -214,11 +214,21 @@ function registeredSkillRoots(packDir: string): string[] {
         // A root is only honored inside the pack: a manifest value like "../x" or an
         // absolute path would otherwise let the surface verbs enumerate (and move) dirs
         // that belong to some other tree.
-        const packRoot = resolvePath(packDir);
+        const canonical = (p: string) => {
+          try {
+            return realpathSync(p);
+          } catch {
+            return resolvePath(p);
+          }
+        };
+        const packRoot = canonical(packDir);
         const roots = parsed.skills
           .filter((s): s is string => typeof s === "string")
-          .map((s) => resolvePath(packDir, s))
-          .filter((root) => root === packRoot || root.startsWith(packRoot + "/"));
+          .map((s) => canonical(resolvePath(packDir, s)))
+          .filter((root) => {
+            const rel = relativePath(packRoot, root);
+            return rel === "" || (!rel.startsWith("..") && !isAbsolutePath(rel));
+          });
         if (roots.length > 0) return roots;
       }
     } catch {
