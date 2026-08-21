@@ -258,7 +258,12 @@ export async function configureRunaway(args: string[]): Promise<void> {
   const field = args[0];
   const value = args[1];
 
-  const stored = getSetting<Record<string, number> | undefined>("rt.runaway").value;
+  // A resolver throw (unexpandable ${...} variable) must not block editing
+  // the setting that would fix it — degrade to {} same as loadRunawayConfig.
+  let stored: Record<string, number> | undefined;
+  try {
+    stored = getSetting<Record<string, number> | undefined>("rt.runaway").value;
+  } catch { /* degrade below */ }
   const config: Record<string, number> = stored ? { ...stored } : {};
 
   if (!field) {

@@ -45,4 +45,11 @@ describe("workspace prefs through the settings resolver", () => {
     const raw = JSON.parse(readFileSync(machineSettingsPath(), "utf8").replace(/^\/\/.*\n/, ""));
     expect(raw["rt.workspacePrefs"].editors.myrepo).toBe("cursor");
   });
+
+  test("an unexpandable ${repoRoot} in a stored value degrades to empty prefs instead of throwing", () => {
+    setSetting("rt.workspacePrefs", { editors: { myrepo: "${repoRoot}" } }, "machine");
+
+    expect(() => __test__.loadPrefs()).not.toThrow();
+    expect(__test__.loadPrefs()).toEqual({ editors: {}, workspaces: {} });
+  });
 });

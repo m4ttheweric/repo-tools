@@ -72,6 +72,32 @@ describe("loadRepoTracking through the settings resolver", () => {
     expect(t.a).toBeDefined(); expect(t.a?.projectMrsWindowDays).toBeUndefined();
     expect(t.b).toBeDefined(); expect(t.b?.projectMrsWindowDays).toBeUndefined();
   });
+
+  test("an unexpandable ${repoRoot} in a stored value degrades to empty instead of throwing", () => {
+    setSetting("rt.repoTracking", { a: { mode: "${repoRoot}", caches: ["branches"] } }, "machine");
+
+    expect(() => loadRepoTracking()).not.toThrow();
+    expect(loadRepoTracking()).toEqual({});
+  });
+
+  test("a versioned {version, repos} envelope warns loudly and auto-unwraps to the inner repos map", () => {
+    writeStore(machineSettingsPath(), {
+      "rt.repoTracking": { version: 2, repos: { a: { mode: "live", caches: ["branches"] } } },
+    });
+
+    const warnings: string[] = [];
+    const orig = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+    let t: ReturnType<typeof loadRepoTracking>;
+    try {
+      t = loadRepoTracking();
+    } finally {
+      console.warn = orig;
+    }
+
+    expect(t.a).toEqual({ mode: "live", caches: ["branches"] });
+    expect(warnings.some((w) => w.includes("store the repos map, not the versioned envelope"))).toBe(true);
+  });
 });
 
 describe("grants", () => {

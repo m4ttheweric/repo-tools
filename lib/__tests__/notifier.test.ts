@@ -42,6 +42,14 @@ describe("notification prefs through the settings resolver", () => {
     const raw = JSON.parse(readFileSync(userSettingsPath(), "utf8").replace(/^\/\/.*\n/, ""));
     expect(raw["rt.notifications"]).toEqual({ pipeline_failed: false, mr_merged: true });
   });
+
+  test("an unexpandable ${repoRoot} in a stored value degrades to all-enabled defaults instead of throwing", () => {
+    setSetting("rt.notifications", { pipeline_failed: "${repoRoot}" }, "user");
+
+    expect(() => loadNotificationPrefs()).not.toThrow();
+    const prefs = loadNotificationPrefs();
+    for (const t of NOTIFICATION_TYPES) expect(prefs[t.key]).toBe(true);
+  });
 });
 
 const baseSnapshot = {

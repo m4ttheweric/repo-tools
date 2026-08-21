@@ -48,18 +48,47 @@ function normalizeEntry(value: unknown): RepoTrackingEntry | null {
 }
 
 /**
+ * A hand-authored (or freshly-imported) value still shaped like the old
+ * on-disk file: `{ version: 2, repos: {...} }`. The settings key IS the
+ * repos map now — the version wrapper is redundant — but silently
+ * normalizing this to "nothing tracked" would look like every grant vanished
+ * instead of naming the fixable mistake.
+ */
+function isVersionedEnvelope(value: Record<string, unknown>): value is { version: number; repos: Record<string, unknown> } {
+  return typeof value.version === "number"
+    && value.repos !== null && typeof value.repos === "object" && !Array.isArray(value.repos);
+}
+
+/**
  * Read the rt.repoTracking machine-store setting: a flat repo → entry map
  * (each entry either the v2 shape or a legacy flat string — see
- * normalizeEntry). Absent/malformed setting, unknown modes, and unknown
- * cache names all degrade toward "off" — a typo must never cause accidental
- * polling.
+ * normalizeEntry). Absent/malformed setting, an unresolvable resolver value
+ * (e.g. an unexpandable ${...} variable), unknown modes, and unknown cache
+ * names all degrade toward "off" — a typo must never cause accidental
+ * polling, and this loader runs on every freshness tick so it can never
+ * throw into the daemon.
  */
 export function loadRepoTracking(): RepoTracking {
-  const raw = getSetting<unknown>("rt.repoTracking").value;
+  let raw: unknown;
+  try {
+    raw = getSetting<unknown>("rt.repoTracking").value;
+  } catch (err) {
+    console.warn(`rt: rt.repoTracking could not be resolved (${err instanceof Error ? err.message : err}) — tracking nothing`);
+    return {};
+  }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
 
+  let repos = raw as Record<string, unknown>;
+  if (isVersionedEnvelope(repos)) {
+    console.warn(
+      "rt: rt.repoTracking holds a versioned {version, repos} envelope — store the repos map, not the versioned envelope " +
+      "(e.g. `rt settings set rt.repoTracking` with just the inner repos object); using the inner repos map for now.",
+    );
+    repos = repos.repos;
+  }
+
   const out: RepoTracking = {};
-  for (const [repo, value] of Object.entries(raw as Record<string, unknown>)) {
+  for (const [repo, value] of Object.entries(repos)) {
     const entry = normalizeEntry(value);
     if (entry) out[repo] = entry;
   }
