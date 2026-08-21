@@ -95,9 +95,16 @@ Same shape; `team.mode` reflects the installed state; used post-install and by
 ```
 
 `kind: "app"` and `"privileged"` steps are executed by the app when the `need`
-event arrives (ServicesRegistrar / PrivilegedInstaller), which then POSTs
-`/setup/need/<id>` `{ ok, detail }` on tray.sock; rt blocks on that reply with
-a 10-minute timeout. Steps are idempotent; `--from` resumes.
+event arrives (ServicesRegistrar / PrivilegedInstaller). The app records the
+outcome and serves it at `GET /setup/need/<id>` on tray.sock as
+`{ "state": "pending" | "done" | "failed", "detail": "..." }`; rt polls that
+route (1 s) until `done`/`failed`, with a 10-minute timeout. Steps are
+idempotent; `--from` resumes.
+
+Invite codes are copy-paste/deep-link only (16-byte id ‖ 32-byte key,
+Crockford base32, ~77 chars, chunked for display). Relay base URL defaults to
+`https://switchboard.mattstack.dev` (matt-gated DNS; `RT_INVITE_RELAY_URL`
+overrides).
 
 ## Step ids (v1, in rt's order)
 
@@ -115,7 +122,7 @@ a 10-minute timeout. Steps are idempotent; `--from` resumes.
 `GET /services` → `{ "agents": [ { "label": "com.mattstack.daemon", "status": "enabled"|"requiresApproval"|"notRegistered"|"notFound" } ] }`
 `POST /services/register` `{ "plists": [...] }` → `{ ok, results }` · `POST /services/restart` `{ "label" }`
 `POST /privileged/proxy-install` → `{ ok, detail }` (raises the admin prompt)
-`POST /setup/need/<id>` `{ ok, detail }` (reply to a `need` event)
+`GET /setup/need/<id>` → `{ state, detail }` (app-recorded outcome of a `need` event; rt polls)
 `POST /update/check` → `{ ok }` · `GET /version` → `{ "version": "2.8.0", "build": 2080, "flavor": "prod"|"dev", "path": "/Applications/mattstack.app" }`
 
 ## `rt team join --json` (stdin: `{"code": "..."}`) / `--dry-run`
