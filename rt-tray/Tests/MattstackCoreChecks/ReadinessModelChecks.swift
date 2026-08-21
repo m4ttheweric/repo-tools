@@ -267,6 +267,30 @@ let readinessModelChecks: [Check] = [
         await m.recheckAll()
         await MainActor.run { c.expectEqual(m.fdaNeedsRelaunch, true, "the model republishes the probe's own signal so the view can observe it") }
     },
+    Check("two ReadinessModels can share one PermissionProbing source while each keeps its own independent plan source — mirrors SetupCoordinator's onboarding + status-window models") { c in
+        let planA = FakePlans([makePlan(gitlab: .missing)])
+        let planB = FakePlans([makePlan(gitlab: .ready)])
+        let sharedPerms = FakePermissions()
+        let a = await MainActor.run { ReadinessModel(plans: planA, permissions: sharedPerms, ticker: FakeTicker()) }
+        let b = await MainActor.run { ReadinessModel(plans: planB, permissions: sharedPerms, ticker: FakeTicker()) }
+        await a.load()
+        await b.load()
+        await MainActor.run {
+            c.expectEqual(a.row("account.gitlab")?.status, .missing, "A's own plan source, untouched by B's verb/data")
+            c.expectEqual(b.row("account.gitlab")?.status, .ready, "B's own plan source, untouched by A's verb/data")
+        }
+        sharedPerms.snapshot = PermissionSnapshot(fda: .init(status: "granted", detail: ""), notifications: .init(status: "authorized"),
+                                                  loginItems: .init(status: "enabled"))
+        await a.recheckAll()
+        await b.recheckAll()
+        await MainActor.run {
+            c.expectEqual(a.row("perm.fda")?.status, .ready, "both models see the one shared permission source")
+            c.expectEqual(b.row("perm.fda")?.status, .ready, "both models see the one shared permission source")
+        }
+        c.expectEqual(sharedPerms.probes, 2, "each model's own recheckAll probed the shared source once")
+        c.expectEqual(planA.fetches, 2, "A's own fetch count is untouched by B's activity")
+        c.expectEqual(planB.fetches, 2, "B's own fetch count is untouched by A's activity")
+    },
     Check("StatusGlyph follows the spec's symbols") { c in
         c.expectEqual(StatusGlyph.symbol(for: .ready), "checkmark.circle.fill")
         c.expectEqual(StatusGlyph.symbol(for: .error), "xmark.circle")
