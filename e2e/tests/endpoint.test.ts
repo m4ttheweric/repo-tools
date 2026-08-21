@@ -48,6 +48,26 @@ function freePort(): number {
   return port;
 }
 
+/**
+ * The bunfig preload (test-setup.ts) already repointed THIS process's HOME to
+ * its own throwaway temp dir before any module loaded, so machineSettingsPath()
+ * needs a further, temporary swap to `fakeHome` to compute the path for the
+ * fixture under test rather than that preload dir. try/finally so a throwing
+ * constructor can't leave later tests in this same process running against
+ * the fixture's HOME; `delete` (not `= undefined`) because an unset
+ * `outerHome` must not stringify back in as `"undefined"`.
+ */
+function withHome<T>(fakeHome: string, fn: () => T): T {
+  const outerHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  try {
+    return fn();
+  } finally {
+    if (outerHome === undefined) delete process.env.HOME;
+    else process.env.HOME = outerHome;
+  }
+}
+
 /** Bind-probe, same shape as the allocator's real `canBind`. */
 function canBind(port: number): boolean {
   try {
@@ -240,10 +260,7 @@ describe("rt endpoint / intercept (just-works e2e)", () => {
     // Pin machineKey() before computing machineSettingsPath() — hostname
     // slugs vary per CI host, and this test's path must be deterministic.
     writeFileSync(join(home, ".mattstack", "machine-key"), "e2e-endpoint-machine");
-    const outerHome = process.env.HOME;
-    process.env.HOME = home;
-    const machineStorePath = machineSettingsPath();
-    process.env.HOME = outerHome;
+    const machineStorePath = withHome(home, () => machineSettingsPath());
     mkdirSync(join(machineStorePath, ".."), { recursive: true });
     writeFileSync(
       machineStorePath,

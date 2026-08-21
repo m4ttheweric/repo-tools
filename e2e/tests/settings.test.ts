@@ -51,6 +51,26 @@ function freePort(): number {
   return port;
 }
 
+/**
+ * The bunfig preload (test-setup.ts) already repointed THIS process's HOME to
+ * its own throwaway temp dir before any module loaded, so the rt-paths.ts
+ * constructors need a further, temporary swap to `fakeHome` to compute paths
+ * for the fixture under test rather than that preload dir. try/finally so a
+ * throwing constructor can't leave later tests in this same process running
+ * against the fixture's HOME; `delete` (not `= undefined`) because an unset
+ * `outerHome` must not stringify back in as `"undefined"`.
+ */
+function withHome<T>(fakeHome: string, fn: () => T): T {
+  const outerHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  try {
+    return fn();
+  } finally {
+    if (outerHome === undefined) delete process.env.HOME;
+    else process.env.HOME = outerHome;
+  }
+}
+
 /** Bind-probe, same shape as the allocator's real `canBind`. */
 function canBind(port: number): boolean {
   try {
@@ -301,16 +321,19 @@ describe("rt settings (four stores, one resolver — e2e)", () => {
     mkdirSync(join(home, ".mattstack"), { recursive: true });
     writeFileSync(join(home, ".mattstack", "machine-key"), MACHINE_KEY);
 
-    // rt-paths.ts resolves HOME at call time, so swap this (outer) process's
-    // HOME briefly to compute the fixture's paths through the same
-    // constructors the daemon subprocess uses, rather than re-deriving the
-    // layout as literals here.
-    const outerHome = process.env.HOME;
-    process.env.HOME = home;
-    userStore = userSettingsPath();
-    teamStore = teamSettingsPath(TEAM);
-    machineStore = machineSettingsPath();
-    process.env.HOME = outerHome;
+    withHome(home, () => {
+      userStore = userSettingsPath();
+      teamStore = teamSettingsPath(TEAM);
+      machineStore = machineSettingsPath();
+    });
+
+    // Pin the on-disk SHAPE too, not just internal agreement with the
+    // constructors — a layout regression inside rt-paths.ts would move the
+    // constructor output and this assertion's expectation together and the
+    // suite would stay green without these literals.
+    expect(userStore).toBe(join(home, ".mattstack", "user", "settings.user.jsonc"));
+    expect(teamStore).toBe(join(home, ".mattstack", "teams", TEAM, "mattstack", "settings.team.jsonc"));
+    expect(machineStore).toBe(join(home, ".mattstack", "user", "local", MACHINE_KEY, "settings.local.jsonc"));
 
     // The ZONE ROOT, not the mattstack/ dir the settings file lives in.
     hookStub = join(home, ".mattstack", "teams", TEAM, "hook.sh");
