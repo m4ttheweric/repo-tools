@@ -34,7 +34,7 @@ import { installShellIntegration } from "../lib/shell-integration.ts";
 
 export async function setLinearToken(): Promise<void> {
   const { textInput } = await import("../lib/rt-render.tsx");
-  const secrets = loadSecrets();
+  const secrets = await loadSecrets();
 
   // try scopes the prompt only — a failed *save* must surface as an error,
   // not masquerade as "keeping existing key".
@@ -63,7 +63,7 @@ export async function setLinearToken(): Promise<void> {
   }
 
   try {
-    saveSecret("linearApiKey", linearKey.trim());
+    await saveSecret("linearApiKey", linearKey.trim());
   } catch (err) {
     console.log(`\n  ${red}✗ failed to save Linear API key: ${err instanceof Error ? err.message : String(err)}${reset}\n`);
     process.exit(1);
@@ -75,7 +75,7 @@ export async function setLinearToken(): Promise<void> {
 
 export async function setGitlabToken(): Promise<void> {
   const { textInput } = await import("../lib/rt-render.tsx");
-  const secrets = loadSecrets();
+  const secrets = await loadSecrets();
 
   // try scopes the prompt only — a failed *save* must surface as an error,
   // not masquerade as "keeping existing token".
@@ -104,7 +104,7 @@ export async function setGitlabToken(): Promise<void> {
   }
 
   try {
-    saveSecret("gitlabToken", gitlabToken.trim());
+    await saveSecret("gitlabToken", gitlabToken.trim());
   } catch (err) {
     console.log(`\n  ${red}✗ failed to save GitLab token: ${err instanceof Error ? err.message : String(err)}${reset}\n`);
     process.exit(1);
@@ -115,7 +115,7 @@ export async function setGitlabToken(): Promise<void> {
 // ─── StrongDM email ──────────────────────────────────────────────────────────
 
 export async function setSdmEmail(args: string[]): Promise<void> {
-  const secrets = loadSecrets();
+  const secrets = await loadSecrets();
   const fromArgs = args.find(a => !a.startsWith("--"))?.trim();
 
   let email: string;
@@ -153,7 +153,7 @@ export async function setSdmEmail(args: string[]): Promise<void> {
   }
 
   try {
-    saveSecret("sdmEmail", email.trim());
+    await saveSecret("sdmEmail", email.trim());
   } catch (err) {
     console.log(`\n  ${red}✗ failed to save StrongDM email: ${err instanceof Error ? err.message : String(err)}${reset}\n`);
     process.exit(1);
@@ -164,7 +164,7 @@ export async function setSdmEmail(args: string[]): Promise<void> {
 // ─── Linear team ─────────────────────────────────────────────────────────────
 
 export async function setLinearTeam(): Promise<void> {
-  const secrets = loadSecrets();
+  const secrets = await loadSecrets();
   if (!secrets.linearApiKey) {
     console.log(`\n  ${yellow}Linear API key not configured${reset}`);
     console.log(`  ${dim}run: rt settings linear token${reset}\n`);
@@ -202,7 +202,7 @@ async function pickAndSaveTeam(apiKey: string): Promise<{ teamId: string; teamKe
   const team = teams.find((t) => t.id === selectedId);
   if (!team) return null;
 
-  saveTeamConfig(team.id, team.key);
+  await saveTeamConfig(team.id, team.key);
   return { teamId: team.id, teamKey: team.key };
 }
 

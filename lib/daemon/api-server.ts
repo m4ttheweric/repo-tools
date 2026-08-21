@@ -33,6 +33,7 @@ const API_INDEX = {
     { method: "POST", path: "/api/sdm/reconnect",   description: "Reconnect a StrongDM recent (promptless; fails if an access request is needed)" },
     { method: "POST", path: "/api/events/emit",     description: "Emit an event onto the pane-communication bus" },
     { method: "GET",  path: "/api/events",          description: "List events matching a topic pattern" },
+    { method: "GET",  path: "/api/secrets",          description: "Whitelisted secret values (linearApiKey, gitlabToken) — token-gated" },
   ],
   websocket_events: [
     { type: "status",         description: "Full daemon status — after each cache refresh (~5 min)" },
@@ -42,7 +43,7 @@ const API_INDEX = {
   ],
   auth: {
     header: "X-RT-Token",
-    description: "Required on mutating routes (shutdown, sdm reconnect, events emit). Token at ~/.mattstack/rt/api-token.",
+    description: "Required on mutating routes (shutdown, sdm reconnect, events emit) and /api/secrets. Token at ~/.mattstack/rt/api-token.",
   },
 };
 
@@ -59,6 +60,9 @@ const REST_ROUTES: Record<string, { cmd: string; method: string }> = {
   "/api/sdm/reconnect": { cmd: "sdm:reconnect", method: "POST" },
   "/api/events/emit":   { cmd: "events:emit", method: "POST" },
   "/api/events":        { cmd: "events:list", method: "GET" },
+  // Token-gated (api-auth.ts's needsToken) unlike the routes above: the
+  // response body carries raw credential values, not metadata.
+  "/api/secrets":       { cmd: "secrets:read", method: "GET" },
 };
 
 /** Per-connection data on the :9401 WebSocket broadcast channel. */

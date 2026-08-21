@@ -10,6 +10,15 @@
  * Deliberately narrow (a token for one forge for one tracked repo) rather
  * than a general secrets:read: the narrow verb leaks nothing a caller did
  * not name.
+ *
+ * secrets:read (RT-32) is a second, differently-scoped exception to that
+ * same narrowness rule: the VS Code extension needs a couple of raw values
+ * (not a repo-scoped token), so it whitelists exactly the fields
+ * extensions/vscode/rt-context/src/secrets.ts reads — linearApiKey and
+ * gitlabToken — and nothing else `Secrets` carries. Gated behind the local
+ * API token at the HTTP layer (api-auth.ts's needsToken), unlike the other
+ * read-only :9401 routes, because unlike branch/MR metadata this response
+ * body IS the credential.
  */
 
 import { loadSecrets } from "../../linear.ts";
@@ -24,15 +33,18 @@ const SECRETS_KEY: Record<ForgeSlug, "gitlabToken" | "githubToken"> = {
 
 export interface SecretsHandlerOverrides {
   tracking?: () => RepoTracking;
-  secrets?: () => { gitlabToken?: string; githubToken?: string };
+  secrets?: () => { gitlabToken?: string; githubToken?: string } | Promise<{ gitlabToken?: string; githubToken?: string }>;
+  /** Defaults to `loadSecrets` (the full encrypted-store + plaintext-fallback loader) for secrets:read. */
+  extensionSecrets?: () => Promise<{ linearApiKey?: string; gitlabToken?: string }>;
 }
 
 export function createSecretsHandlers(
   ctx: HandlerContext,
   overrides: SecretsHandlerOverrides = {},
-): Pick<TypedHandlers, "secrets:forge-token"> & HandlerMap {
+): Pick<TypedHandlers, "secrets:forge-token" | "secrets:read"> & HandlerMap {
   const tracking = overrides.tracking ?? loadRepoTracking;
   const secrets = overrides.secrets ?? loadSecrets;
+  const extensionSecrets = overrides.extensionSecrets ?? loadSecrets;
 
   return {
     "secrets:forge-token": async (payload: Commands["secrets:forge-token"]["payload"]) => {
@@ -53,13 +65,22 @@ export function createSecretsHandlers(
         };
       }
 
-      const token = secrets()[SECRETS_KEY[forge]];
+      const token = (await secrets())[SECRETS_KEY[forge]];
       if (!token) {
         return { ok: false as const, error: `no ${forge} token in ~/.mattstack/rt/secrets.json (${SECRETS_KEY[forge]})` };
       }
 
       ctx.log.info({ repoName, forge }, "secrets:forge-token grant-gated read");
       return { ok: true as const, data: { token } };
+    },
+
+    "secrets:read": async () => {
+      const all = await extensionSecrets();
+      const data: Commands["secrets:read"]["data"] = {};
+      if (all.linearApiKey) data.linearApiKey = all.linearApiKey;
+      if (all.gitlabToken) data.gitlabToken = all.gitlabToken;
+      ctx.log.info({ keys: Object.keys(data) }, "secrets:read");
+      return { ok: true as const, data };
     },
   };
 }
