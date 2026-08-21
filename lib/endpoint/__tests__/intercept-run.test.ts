@@ -1,34 +1,42 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { repoDataDir } from "../../rt-paths.ts";
+import { teamSettingsPath } from "../../rt-paths.ts";
 import { runInterception } from "../run.ts";
 
-function writeRepoConfig(repo: string, obj: unknown): void {
-  const dir = repoDataDir(repo);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "config.json"), JSON.stringify(obj));
+/** Merges `identity`'s roles into the shared team store rather than clobbering earlier entries — every test in this file shares one preload HOME. */
+function writeRepoRoles(identity: string, roles: unknown): void {
+  const path = teamSettingsPath("acme");
+  mkdirSync(join(path, ".."), { recursive: true });
+  let existing: { repos?: Record<string, unknown> } = {};
+  try {
+    existing = JSON.parse(readFileSync(path, "utf8"));
+  } catch { /* file absent or malformed — start fresh */ }
+  const repos = { ...(existing.repos ?? {}), [identity]: { "rt.roles": roles } };
+  writeFileSync(path, JSON.stringify({ ...existing, repos }));
 }
 
+const R1_IDENTITY = "x/test/r1";
+const R1_REMOTE = "git@x:test/r1.git";
+
 // Role "web" for repo "r1" — reached via `loadEndpointConfig`
-// (lib/endpoint/config.ts) inside runInterception's env step; this per-repo
-// config.json is the resolver's legacy rung, which is all these rules need
-// (their repoRemote is null, so the store's repo rungs are out of reach).
+// (lib/endpoint/config.ts) inside runInterception's env step, keyed by the
+// identity `identityFromRemote` derives from the rule's own `repoRemote`.
 // env renders ${port}; preserveEnv protects the caller's KEEP_* vars (both
 // feed argInject's ${envKeys}).
-writeRepoConfig("r1", {
-  roles: { web: { env: { PORT: "${port}" }, preserveEnv: ["KEEP_*"] } },
+writeRepoRoles(R1_IDENTITY, {
+  web: { env: { PORT: "${port}" }, preserveEnv: ["KEEP_*"] },
 });
 
 function harness(over: Partial<Parameters<typeof runInterception>[0]> = {}) {
   const calls: { exec?: { bin: string; args: string[]; env: Record<string, string> }; warned: string[] } = { warned: [] };
   const deps = {
-    rules: [{ command: "fakecmd", repo: "r1", repoRemote: null,
+    rules: [{ command: "fakecmd", repo: "r1", repoRemote: R1_REMOTE,
       matches: [{ cwdGlob: ".", argPattern: "serve", role: "web",
         argInject: { afterArg: "run", template: "--keep=${envKeys}", skipIfArgPresent: "--keep" } }] }],
     gitToplevel: async () => "/wt/a",
-    gitRemote: async () => null,
+    gitRemote: async () => R1_REMOTE,
     claim: async () => ({ ok: true, data: { role: "web", port: 3000, url: "http://localhost:3000", refs: {} } }),
     execReal: async (bin: string, args: string[], env: Record<string, string>) => { calls.exec = { bin, args, env }; throw new Error("EXEC"); },
     resolveRealBinary: () => "/usr/bin/fakecmd",
@@ -50,11 +58,13 @@ describe("runInterception", () => {
     expect(calls.exec!.env.KEEP_ME).toBe("1");
   });
   test("hook-contributed env keys ride argInject so wrappers cannot clobber them", async () => {
-    writeRepoConfig("r2", {
-      roles: { web: { env: { PORT: "${port}" }, hook: `echo '{"env":{"NODE_OPTIONS":"--require /x.cjs"}}'` } },
+    const R2_IDENTITY = "x/test/r2";
+    const R2_REMOTE = "git@x:test/r2.git";
+    writeRepoRoles(R2_IDENTITY, {
+      web: { env: { PORT: "${port}" }, hook: `echo '{"env":{"NODE_OPTIONS":"--require /x.cjs"}}'` },
     });
-    const { deps, calls } = harness();
-    deps.rules = [{ ...deps.rules[0]!, repo: "r2" }];
+    const { deps, calls } = harness({ gitRemote: async () => R2_REMOTE });
+    deps.rules = [{ ...deps.rules[0]!, repo: "r2", repoRemote: R2_REMOTE }];
     await run(deps, ["run", "serve"]);
     expect(calls.exec!.args).toEqual(["run", "--keep=PORT,NODE_OPTIONS", "serve"]);
     expect(calls.exec!.env.NODE_OPTIONS).toBe("--require /x.cjs");

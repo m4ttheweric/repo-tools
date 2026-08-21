@@ -4,42 +4,31 @@
  *
  * ── Where the per-repo values come from ───────────────────────────────────
  * `loadWorktreeRepoConfig` goes through `lib/settings/resolve.ts#getSetting`,
- * which layers the authored stores over the legacy rung:
+ * which layers the authored stores:
  *
- *   default < legacy < team < user < team.repo < user.repo < machine < machine.repo
+ *   default < team < user < team.repo < user.repo < machine < machine.repo
  *
- * `rt.worktrees` is a **deep-merge** key (registry: `merge: "deep"`), which is
- * the whole point of the migration: the team store can own `onDeck`/`ready`,
- * the user store can add a personal `namePool`, and a repo that still has a
- * legacy block keeps whatever fields nobody else supplied — all at once. Arrays
- * inside the key still replace atomically, so one `ready` ladder or one
- * `namePool` wins outright rather than being spliced.
+ * `rt.worktrees` is a **deep-merge** key (registry: `merge: "deep"`): the team
+ * store can own `onDeck`/`ready`, the user store can add a personal
+ * `namePool` — all at once. Arrays inside the key still replace atomically, so
+ * one `ready` ladder or one `namePool` wins outright rather than being
+ * spliced.
  *
  * The store rungs are keyed by repo IDENTITY (a normalized remote), so this
  * reader derives one from the repo path — which is why it is ASYNC (the
  * derivation is a `git config` spawn, never a sync one; it is memoized per
  * path). A repo with no derivable identity (local-path remote, not a git repo
- * yet) simply makes the `*.repo` rungs unreachable; global keys and the legacy
- * rung still answer. Honest degrade, not an error.
- *
- * ── The legacy window ─────────────────────────────────────────────────────
- * `legacy` is `~/.mattstack/rt/repos/<repo>/config.json` and specifically its
- * `worktrees` key. That file has multiple owners (repo-config.ts owns
- * setup/clean/startScript/open); this module still only ever reads that one
- * key, still never writes it, and now reaches it through the resolver's legacy
- * rung — so a store value beats it and `rt settings explain rt.worktrees --repo
- * <name>` says which one won. The window closes when the migrated key is
- * removed from that file (spec: "Data migration", step 4). Until then a repo
- * with no store section behaves exactly as it did before this migration.
+ * yet) simply makes the `*.repo` rungs unreachable; global keys still answer.
+ * Honest degrade, not an error.
  *
  * ── Computed defaults and sanitizers stay HERE ────────────────────────────
  * The registry only carries `{ onDeck: 0 }`; `root` (= `<repoPath>/.worktrees`)
  * and `branchFormat` cannot live there because they depend on the repo being
- * read. And the resolver only type-checks the TOP level of a value (an object),
- * while the legacy rung is raw file content — so the sanitizers below are what
- * actually guarantee the `WorktreeRepoConfig` shape, from whichever rung a
- * field arrived on. That includes the namePool dot-filter, which now guards
- * team- and user-authored pools too.
+ * read. And the resolver only type-checks the TOP level of a value (an
+ * object), so the sanitizers below are what actually guarantee the
+ * `WorktreeRepoConfig` shape, from whichever rung a field arrived on. That
+ * includes the namePool dot-filter, which now guards team- and user-authored
+ * pools too.
  *
  * `expandHome` also stays: the resolver's closed variable set is
  * `${repoRoot}/${worktree}/${home}/${team:<name>}` and a bare `~` is not in it,
@@ -116,10 +105,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * `${worktree}` is NOT satisfiable here (this reader has no invocation
  * context), so a value using it degrades — see the module header.
  */
-function resolveOpts(repoName: string, repoIdentity: string | null, repoPath: string): ResolveOpts {
+function resolveOpts(repoIdentity: string | null, repoPath: string): ResolveOpts {
   return {
     repoIdentity,
-    legacy: { repoName },
     expandCtx: { repoRoot: repoPath },
   };
 }
@@ -135,7 +123,7 @@ function resolveDeclared(
   repoPath: string,
 ): Record<string, unknown> {
   try {
-    const { value } = getSetting<unknown>(SETTING_KEY, resolveOpts(repoName, repoIdentity, repoPath));
+    const { value } = getSetting<unknown>(SETTING_KEY, resolveOpts(repoIdentity, repoPath));
     return isPlainObject(value) ? value : {};
   } catch (err) {
     console.warn(`rt: ignoring "${SETTING_KEY}" for repo "${repoName}" — ${(err as Error).message}`);
@@ -144,8 +132,8 @@ function resolveDeclared(
 }
 
 // ─── Sanitizers ──────────────────────────────────────────────────────────────
-// The resolver type-checks only the top level of the key and the legacy rung is
-// raw file content, so these are what guarantee WorktreeRepoConfig's shape.
+// The resolver type-checks only the top level of the key, so these are what
+// guarantee WorktreeRepoConfig's shape.
 
 /** Pool size. Anything that isn't a non-negative integer means "no pool". */
 function sanitizeOnDeck(raw: unknown): number {
@@ -232,7 +220,7 @@ export async function loadWorktreeRepoConfig(
 export async function worktreeSettingsDeclared(repoName: string, repoPath: string): Promise<boolean> {
   const identity = await deriveRepoIdentity(repoPath);
   try {
-    return explainSetting(SETTING_KEY, resolveOpts(repoName, identity, repoPath)).some(
+    return explainSetting(SETTING_KEY, resolveOpts(identity, repoPath)).some(
       (row) => row.present && row.scope !== "default",
     );
   } catch (err) {

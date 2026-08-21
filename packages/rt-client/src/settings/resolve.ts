@@ -1,16 +1,11 @@
 /**
- * The settings resolver (RT-47): one read path that layers the four stores,
- * the legacy per-repo file and the registry default into a single answer plus
- * the provenance that explains it.
+ * The settings resolver (RT-47): one read path that layers the four stores
+ * and the registry default into a single answer plus the provenance that
+ * explains it.
  *
  * Scope ladder, weakest → strongest:
  *
- *   default < legacy < team < user < team.repo < user.repo < machine < machine.repo
- *
- * `legacy` is the pre-migration per-tool file for a key (wave 1: the three
- * `repos/<name>/config.json` keys). It beats the registry default and loses to
- * every authored store, and it carries real provenance so migration progress is
- * observable rather than folklore.
+ *   default < team < user < team.repo < user.repo < machine < machine.repo
  *
  * Merge is per-key schema, never global (`SettingDef.merge`):
  *  - `replace` — the strongest valid scope wins atomically; provenance has
@@ -34,10 +29,8 @@
  * implementation:
  *  1. **The path-literal guard is scope-aware.** `validateValue`'s guarded
  *     fields (`rt.roles.hook`) are only illegal in SHARED scopes. The machine
- *     store is explicitly allowed path literals, and the legacy per-repo file
- *     is full of them today — guarding those would reject exactly the values
- *     wave 1 has to keep reading. So team/user rungs get the full check,
- *     machine/legacy rungs get the type check alone.
+ *     store is explicitly allowed path literals. So team/user rungs get the
+ *     full check, the machine rung gets the type check alone.
  *  2. **A value found in a store the def does not allow is skipped**, labeled
  *     like any other invalid value (`rt.repoIdentityOverrides` is machine-only;
  *     honouring a team-store copy of it would defeat the schema).
@@ -55,12 +48,10 @@
  * Writes (`setSetting`) land in a later task; this module is read-side only.
  */
 
-import { readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import {
   machineSettingsPath,
-  repoDataDir,
   teamSettingsPath,
   teamsDir,
   userSettingsPath,
@@ -77,13 +68,11 @@ export type Scope =
   | "team.repo"
   | "user"
   | "team"
-  | "legacy"
   | "default";
 
 /** The scope ladder, weakest first. Also the order every result is built in. */
 export const SCOPE_ORDER: Scope[] = [
   "default",
-  "legacy",
   "team",
   "user",
   "team.repo",
@@ -104,8 +93,6 @@ export interface ResolveOpts {
   /** Expand closed-set variables in the resolved value. Default true. */
   expand?: boolean;
   expandCtx?: { repoRoot?: string; worktree?: string };
-  /** Supplying a repoName enables the legacy rung for keys the reader maps. */
-  legacy?: { repoName?: string };
 }
 
 export interface Resolved<T> {
@@ -151,57 +138,6 @@ export interface ExpandCtx {
   worktree?: string;
   home: string;
   teamsDir: string;
-}
-
-// ─── The legacy rung ─────────────────────────────────────────────────────────
-
-export interface LegacyReader {
-  (key: string, repoName: string): unknown | undefined;
-}
-
-/**
- * The three wave-1 keys and the `repos/<name>/config.json` field each one used
- * to live in. A key that is not in this map has no legacy rung.
- */
-const LEGACY_KEY_MAP: Record<string, string> = {
-  "rt.roles": "roles",
-  "rt.intercepts": "intercepts",
-  "rt.worktrees": "worktrees",
-};
-
-function legacyFilePath(repoName: string): string {
-  return join(repoDataDir(repoName), "config.json");
-}
-
-/** Read and parse a JSON file; `fallback` on any failure (missing, malformed, or read error). */
-function readJson<T>(path: string, fallback: T): T {
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-/**
- * The shipped legacy reader: the named key's field out of the per-repo
- * config.json. `readJson` already degrades a missing or malformed file to the
- * fallback, which is exactly the "no legacy value" answer we want.
- */
-export const defaultLegacyReader: LegacyReader = (key, repoName) => {
-  const field = LEGACY_KEY_MAP[key];
-  if (field === undefined) return undefined;
-  const raw = readJson<Record<string, unknown>>(legacyFilePath(repoName), {});
-  return raw[field];
-};
-
-let legacyReader: LegacyReader = defaultLegacyReader;
-
-/**
- * TEST SEAM ONLY. Production code uses the shipped reader; pass
- * `defaultLegacyReader` back to restore it.
- */
-export function setLegacyReader(fn: LegacyReader): void {
-  legacyReader = fn;
 }
 
 // ─── Variables ───────────────────────────────────────────────────────────────
@@ -332,21 +268,6 @@ function collectSlots(def: SettingDef, stores: StoreBundle, opts: ResolveOpts): 
       : { scope: "default", file: null, present: true, value: structuredClone(def.default) },
   );
 
-  // legacy — only reachable when the caller supplies the repo NAME (repos.json
-  // is the name→path registry; the name/identity bridge is the caller's job).
-  const repoName = opts.legacy?.repoName;
-  if (repoName) {
-    const value = legacyReader(def.key, repoName);
-    const file = legacyFilePath(repoName);
-    slots.push(
-      value === undefined
-        ? { scope: "legacy", file, present: false }
-        : { scope: "legacy", file, present: true, value },
-    );
-  } else {
-    slots.push({ scope: "legacy", file: null, present: false });
-  }
-
   // The ladder itself, weakest → strongest. Repo rungs are omitted entirely
   // when they are unreachable (key not repoScoped, or no identity in hand) —
   // an unreachable rung in `explain` would be noise, not honesty.
@@ -376,13 +297,12 @@ function baseScope(scope: Scope): SettingScope | null {
   if (scope === "team" || scope === "team.repo") return "team";
   if (scope === "user" || scope === "user.repo") return "user";
   if (scope === "machine" || scope === "machine.repo") return "machine";
-  return null; // default and legacy are not authored in a store
+  return null; // default is not authored in a store
 }
 
 /**
  * The path-literal guard applies to SHARED scopes only — the machine store is
- * the one place path literals are legal, and the legacy per-repo file is full
- * of them today.
+ * the one place path literals are legal.
  */
 function validateForScope(
   def: SettingDef,

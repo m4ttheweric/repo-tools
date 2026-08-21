@@ -5,34 +5,21 @@
  *
  * ── Where the values come from ────────────────────────────────────────────
  * Everything goes through `lib/settings/resolve.ts#getSetting`, which layers
- * the authored stores over the legacy rung:
+ * the authored stores:
  *
- *   default < legacy < team < user < team.repo < user.repo < machine < machine.repo
+ *   default < team < user < team.repo < user.repo < machine < machine.repo
  *
  * The store rungs are keyed by repo IDENTITY (a normalized remote), which is
  * why the entry point takes one. A null identity — a repo whose remote is a
  * local path, or one whose identity could not be derived — simply makes the
- * `*.repo` rungs unreachable; global keys and the legacy rung still answer.
- * That is an honest degrade, not an error.
- *
- * ── The legacy window ─────────────────────────────────────────────────────
- * `legacy` is the pre-migration per-repo file, ~/.mattstack/rt/repos/<repo>/
- * config.json, and specifically its `roles` and `intercepts` keys. That file
- * has multiple owners (repo-config.ts owns setup/clean/startScript/open,
- * lib/worktree/config.ts owns `worktrees`); this module still only ever reads
- * those two keys of it, still never writes it, and now reaches it only through
- * the resolver's legacy rung — so a store value beats it and `rt settings
- * explain rt.roles --repo <name>` says which one won. The window closes when
- * the migrated keys are removed from that file (spec: "Data migration", step
- * 4); until then a repo with no store section behaves exactly as it did before
- * this migration.
+ * `*.repo` rungs unreachable; global keys still answer. That is an honest
+ * degrade, not an error.
  *
  * ── Sanitizers still apply to every rung ──────────────────────────────────
  * The resolver only type-checks the TOP level of a value (`rt.roles` is an
- * object, `rt.intercepts` is an array) and the legacy rung is raw file
- * content, so the sanitizers below are what actually guarantee the
- * `EndpointRepoConfig` shape. They run over whatever the resolver returns,
- * from whichever scope it came.
+ * object, `rt.intercepts` is an array), so the sanitizers below are what
+ * actually guarantee the `EndpointRepoConfig` shape. They run over whatever
+ * the resolver returns, from whichever scope it came.
  *
  * ── Variables ─────────────────────────────────────────────────────────────
  * Values are expanded (`expand: true`): `${team:<name>}` and `${home}` always,
@@ -256,8 +243,7 @@ function resolveKey(key: string, repoName: string, opts: ResolveOpts): unknown {
 /**
  * Resolves a repo's `rt.roles` and `rt.intercepts` into the endpoint config
  * shape. `repoIdentity` selects the stores' `repos.<identity>` sections (null
- * = unreachable, global + legacy scopes only); `repoName` names the legacy
- * per-repo config.json rung and resolves `${repoRoot}`.
+ * = unreachable, global scopes only); `repoName` resolves `${repoRoot}`.
  *
  * Never throws: missing files, malformed shapes and unexpandable values all
  * degrade to empty defaults (module header explains why every caller needs
@@ -269,7 +255,6 @@ export function loadEndpointConfig(args: { repoIdentity: string | null; repoName
   const opts: ResolveOpts = {
     repoIdentity,
     expand: true,
-    legacy: { repoName },
     ...(repoRoot === undefined ? {} : { expandCtx: { repoRoot } }),
   };
 

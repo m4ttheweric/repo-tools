@@ -195,6 +195,17 @@ export function loadMachineRepoTracking(): RepoTracking {
   return readMachineTracking().out;
 }
 
+/**
+ * Whether `mattstack.tracking`'s team-authored `repos` map names `identity`
+ * at all — any value, valid or not. What `rt daemon track <repo> off` needs
+ * before deciding whether turning a repo off can delete its machine grant
+ * outright or must instead plant an explicit `{mode:"off"}` marker (see
+ * `saveRepoTracking`'s `offMarkers` and the module doc's merge rule).
+ */
+export function teamNamesIdentity(identity: string): boolean {
+  return Object.prototype.hasOwnProperty.call(loadTeamTracking(), identity);
+}
+
 /** Read the merged view (machine grants + team intent) — see the module doc for the merge rule. */
 export function loadRepoTracking(opts?: { identityMap?: IdentityNameMap }): RepoTracking {
   const { out, rawNames } = readMachineTracking();
@@ -227,10 +238,21 @@ export function grants(tracking: RepoTracking, repoName: string): RepoGrants {
  * output) here — a caller doing read-modify-write must start from
  * `loadMachineRepoTracking()`, or every other repo's team-synthesized entry
  * gets baked into the machine store as if a human had granted it.
+ *
+ * `offMarkers` plants an explicit `{mode:"off"}` entry for each name listed —
+ * `normalizeEntry` rejects that shape (mode "off" is not a valid grant), but
+ * it still names the repo in the RAW machine map, which is what makes it a
+ * real local opt-out for a repo the team layer still declares intent for
+ * (module doc's merge rule: the raw machine map winning per-repo, not just a
+ * valid grant winning). A name must not appear in both `tracking` and
+ * `offMarkers` — the marker always wins ties, but callers should never rely
+ * on that.
  */
-export function saveRepoTracking(tracking: RepoTracking): void {
+export function saveRepoTracking(tracking: RepoTracking, offMarkers: string[] = []): void {
+  const merged: Record<string, unknown> = { ...tracking };
+  for (const name of offMarkers) merged[name] = { mode: "off" };
   const repos = Object.fromEntries(
-    Object.entries(tracking).sort(([a], [b]) => a.localeCompare(b)),
+    Object.entries(merged).sort(([a], [b]) => a.localeCompare(b)),
   );
   setSetting("rt.repoTracking", repos, "machine");
 }

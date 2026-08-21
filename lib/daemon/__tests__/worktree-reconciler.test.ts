@@ -1,11 +1,12 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { execSync } from "child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 import type { Logger } from "pino";
 import { readJson, writeJson } from "../../json-store.ts";
-import { repoDataDir, rtDir } from "../../rt-paths.ts";
+import { machineSettingsPath, rtDir } from "../../rt-paths.ts";
+import { deriveRepoIdentity } from "../../settings/identity.ts";
 import { findByPath, loadRegistry, saveRegistry, type TreeRecord } from "../../worktree/registry.ts";
 import {
   branchExistsLocalAsync,
@@ -36,6 +37,54 @@ function addBareOrigin(repo: string): void {
     `git clone --bare ${repo} ${bare}/o.git && git -C ${repo} remote add origin ${bare}/o.git && git -C ${repo} fetch origin`,
     { shell: "/bin/zsh" }
   );
+}
+
+function readMachineStore(): Record<string, unknown> {
+  try {
+    return JSON.parse(readFileSync(machineSettingsPath(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeMachineStore(obj: Record<string, unknown>): void {
+  mkdirSync(join(machineSettingsPath(), ".."), { recursive: true });
+  writeFileSync(machineSettingsPath(), JSON.stringify(obj));
+}
+
+/**
+ * Gives `repoPath` a resolvable settings identity: reuses its origin if it
+ * has one (adding a throwaway one if not) and, when the origin doesn't
+ * itself normalize (this file's bare-clone fixtures are local filesystem
+ * paths), pins it via the machine store's `rt.repoIdentityOverrides` —
+ * exactly the fork/local-remote mechanism production uses.
+ */
+async function ensureIdentity(repoPath: string, repoName: string): Promise<string> {
+  let remote: string | null = null;
+  try {
+    remote = execSync("git config --get remote.origin.url", { cwd: repoPath, encoding: "utf8" }).trim() || null;
+  } catch { /* no origin configured yet */ }
+  if (!remote) {
+    remote = `git@rttest:${repoName}.git`;
+    execSync(`git remote add origin ${remote}`, { cwd: repoPath, shell: "/bin/zsh" });
+  }
+
+  const direct = await deriveRepoIdentity(repoPath);
+  if (direct) return direct;
+
+  const identity = `rttest.local/${repoName}`;
+  const store = readMachineStore();
+  const overrides = { ...(store["rt.repoIdentityOverrides"] as Record<string, string> ?? {}), [remote]: identity };
+  writeMachineStore({ ...store, "rt.repoIdentityOverrides": overrides });
+  return identity;
+}
+
+/** Seeds `rt.worktrees` for `repoPath` in the machine store — the store-only replacement for the old per-repo config.json fixture. */
+async function declareWorktrees(repoPath: string, repoName: string, declared: unknown): Promise<void> {
+  const identity = await ensureIdentity(repoPath, repoName);
+  const store = readMachineStore();
+  const repos = { ...(store.repos as Record<string, unknown> ?? {}), [identity]: { "rt.worktrees": declared } };
+  writeMachineStore({ ...store, repos });
 }
 
 function fakeLog(): Logger {
@@ -102,9 +151,7 @@ describe("reconcileRepoRegistry", () => {
 
     // Reusing the same name must succeed now that `git worktree prune` ran;
     // without it git still holds the stale worktree registration at manualPath.
-    writeJson(join(repoDataDir(repoName), "config.json"), {
-      worktrees: { namePool: [name] },
-    });
+    await declareWorktrees(repo, repoName, { namePool: [name] });
 
     const result = await createTree({
       repoName,
@@ -285,7 +332,7 @@ describe("createWorktreeReconciler", () => {
     execSync(`git worktree add -b manual-branch ${manualPath}`, { cwd: repo, shell: "/bin/zsh" });
     // Opt this repo into worktree management so runOnce picks it up even
     // though its registry starts empty.
-    writeJson(join(repoDataDir(repoName), "config.json"), { worktrees: {} });
+    await declareWorktrees(repo, repoName, {});
 
     const untouchedRepo = makeRepo();
 
@@ -334,7 +381,7 @@ describe("createWorktreeReconciler", () => {
   });
 
   test("kick fires runOnce without awaiting and coalesces overlapping calls", async () => {
-    writeJson(join(repoDataDir(repoName), "config.json"), { worktrees: {} });
+    await declareWorktrees(repo, repoName, {});
 
     const reconciler = createWorktreeReconciler({
       cache: { entries: {} },
@@ -350,7 +397,7 @@ describe("createWorktreeReconciler", () => {
     // rather than a blind sleep or a registry-state proxy — a pass that's
     // still running (even past its registry write) but hasn't returned yet
     // would otherwise dangle past this test, and since every internal path
-    // (repoDataDir, rtDir, ...) resolves HOME dynamically at call time, that
+    // (machineSettingsPath, rtDir, ...) resolves HOME dynamically at call time, that
     // stale pass can read/write into a LATER test's HOME once that test's
     // beforeEach repoints the (shared, global) env var.
     await waitFor(() => !reconciler.passInFlight(), 5000);
@@ -362,9 +409,7 @@ describe("createWorktreeReconciler", () => {
     // What a daemon crash mid-reap leaves behind: the dispose renamed the tree
     // but its detached `rm -rf` never finished (or never started).
     const configuredRoot = realpathSync(mkdtempSync(join(tmpdir(), "rtrecon-root-")));
-    writeJson(join(repoDataDir(repoName), "config.json"), {
-      worktrees: { root: configuredRoot },
-    });
+    await declareWorktrees(repo, repoName, { root: configuredRoot });
 
     const defaultRootTrash = join(repo, ".worktrees", ".trash-hotel-1700000000000");
     const configuredTrash = join(configuredRoot, ".trash-india-1700000000001");
@@ -399,9 +444,7 @@ describe("createWorktreeReconciler", () => {
     // impossible regardless of any other test's timing.
     const disabledRepoName = "acme-disabled";
     addBareOrigin(repo);
-    writeJson(join(repoDataDir(disabledRepoName), "config.json"), {
-      worktrees: { onDeck: 1, root: join(repo, ".worktrees") },
-    });
+    await declareWorktrees(repo, disabledRepoName, { onDeck: 1, root: join(repo, ".worktrees") });
     writeJson(join(rtDir(), "worktrees.json"), { enabled: false, killProcesses: false });
 
     // Advance origin so a freshen (if it ran) would have something to do.
@@ -794,7 +837,7 @@ describe("merge reactor (detectTransitions)", () => {
 
   test("runOnce runs the reactor after the reconcile pass", async () => {
     const rec = ephemeralTree("golf", "feat-golf");
-    writeJson(join(repoDataDir(repoName), "config.json"), { worktrees: {} });
+    await declareWorktrees(repo, repoName, {});
 
     const cache = { entries: mrCache("feat-golf", "opened") as Record<string, any> };
     const reconciler = createWorktreeReconciler({
@@ -843,8 +886,8 @@ describe("freshen", () => {
   });
 
   test("idle main behind origin gets ff'd; readyStamp advances only when a triggered step ran; worktree:freshened emitted", async () => {
-    writeJson(join(repoDataDir(repoName), "config.json"), {
-      worktrees: { ready: [{ run: "touch triggered.marker", when: "changed:*.txt" }] },
+    await declareWorktrees(repo, repoName, {
+      ready: [{ run: "touch triggered.marker", when: "changed:*.txt" }],
     });
     // Tracked and pushed so the ready step's own marker file never shows up as
     // untracked dirt on a later pass (which would otherwise flip "idle main"
@@ -886,9 +929,7 @@ describe("freshen", () => {
   });
 
   test("on-deck tree ff's its on-deck branch", async () => {
-    writeJson(join(repoDataDir(repoName), "config.json"), {
-      worktrees: { onDeck: 1, root: join(repo, ".worktrees") },
-    });
+    await declareWorktrees(repo, repoName, { onDeck: 1, root: join(repo, ".worktrees") });
 
     const created = await createTree({
       repoName,
@@ -912,8 +953,7 @@ describe("freshen", () => {
   });
 
   test("a failing ready step sets nextRetryAt; the next immediate pass skips the tree", async () => {
-    const cfgPath = join(repoDataDir(repoName), "config.json");
-    writeJson(cfgPath, { worktrees: { onDeck: 1, root: join(repo, ".worktrees") } });
+    await declareWorktrees(repo, repoName, { onDeck: 1, root: join(repo, ".worktrees") });
 
     const created = await createTree({
       repoName,
@@ -926,8 +966,8 @@ describe("freshen", () => {
     const treePath = created.tree.path;
 
     // Reconfigure with a step that always fails once triggered.
-    writeJson(cfgPath, {
-      worktrees: { onDeck: 1, root: join(repo, ".worktrees"), ready: [{ run: "exit 1", when: "changed:*.txt" }] },
+    await declareWorktrees(repo, repoName, {
+      onDeck: 1, root: join(repo, ".worktrees"), ready: [{ run: "exit 1", when: "changed:*.txt" }],
     });
 
     const clone = cloneOrigin(repo);
@@ -972,8 +1012,8 @@ describe("freshen", () => {
   });
 
   test("a candidate claimed mid-pass is revalidated under the lock and skipped", async () => {
-    writeJson(join(repoDataDir(repoName), "config.json"), {
-      worktrees: { onDeck: 2, root: join(repo, ".worktrees"), ready: [{ run: "sleep 1", when: "changed:*.txt" }] },
+    await declareWorktrees(repo, repoName, {
+      onDeck: 2, root: join(repo, ".worktrees"), ready: [{ run: "sleep 1", when: "changed:*.txt" }],
     });
 
     // Two on-deck trees. `freshenRepo` snapshots the whole registry once and
@@ -1041,9 +1081,7 @@ describe("replenish / shrink", () => {
   });
 
   test("onDeck=2 with an empty registry creates 2, serially", async () => {
-    writeJson(join(repoDataDir(repoName), "config.json"), {
-      worktrees: { onDeck: 2, root: join(repo, ".worktrees") },
-    });
+    await declareWorktrees(repo, repoName, { onDeck: 2, root: join(repo, ".worktrees") });
 
     await __test__.replenishAndShrink(
       { repoName, repoPath: repo, emit: () => {}, log: fakeLog() },
@@ -1057,9 +1095,7 @@ describe("replenish / shrink", () => {
   });
 
   test("an all-failing pool does not overshoot the onDeck cap", async () => {
-    writeJson(join(repoDataDir(repoName), "config.json"), {
-      worktrees: { onDeck: 2, root: join(repo, ".worktrees"), ready: [{ run: "exit 1" }] },
-    });
+    await declareWorktrees(repo, repoName, { onDeck: 2, root: join(repo, ".worktrees"), ready: [{ run: "exit 1" }] });
 
     const warns: string[] = [];
     const log = {
@@ -1084,9 +1120,7 @@ describe("replenish / shrink", () => {
   });
 
   test("a failed create backs off, and the next pass skips replenish for that repo", async () => {
-    writeJson(join(repoDataDir(repoName), "config.json"), {
-      worktrees: { onDeck: 2, root: join(repo, ".worktrees"), ready: [{ run: "exit 1" }] },
-    });
+    await declareWorktrees(repo, repoName, { onDeck: 2, root: join(repo, ".worktrees"), ready: [{ run: "exit 1" }] });
 
     const warns: string[] = [];
     const log = {
@@ -1112,9 +1146,7 @@ describe("replenish / shrink", () => {
   });
 
   test("a successful create clears the backoff", async () => {
-    writeJson(join(repoDataDir(repoName), "config.json"), {
-      worktrees: { onDeck: 1, root: join(repo, ".worktrees") },
-    });
+    await declareWorktrees(repo, repoName, { onDeck: 1, root: join(repo, ".worktrees") });
     // An expired backoff from earlier failures: the pass runs, and success wipes it.
     __test__.createBackoff.set(repoName, {
       failures: 3,
@@ -1140,8 +1172,7 @@ describe("replenish / shrink", () => {
   });
 
   test("lowering onDeck disposes the stalest ready entry", async () => {
-    const cfgPath = join(repoDataDir(repoName), "config.json");
-    writeJson(cfgPath, { worktrees: { onDeck: 2, root: join(repo, ".worktrees") } });
+    await declareWorktrees(repo, repoName, { onDeck: 2, root: join(repo, ".worktrees") });
 
     await __test__.replenishAndShrink(
       { repoName, repoPath: repo, emit: () => {}, log: fakeLog() },
@@ -1164,7 +1195,7 @@ describe("replenish / shrink", () => {
       }),
     );
 
-    writeJson(cfgPath, { worktrees: { onDeck: 1, root: join(repo, ".worktrees") } });
+    await declareWorktrees(repo, repoName, { onDeck: 1, root: join(repo, ".worktrees") });
     await __test__.replenishAndShrink(
       { repoName, repoPath: repo, emit: () => {}, log: fakeLog() },
       new Map(),
@@ -1200,9 +1231,7 @@ describe("detached trigger / latency", () => {
     // timing assertions below without changing what's under test here.
     writeFileSync(join(repo, "wip.txt"), "not idle\n");
 
-    writeJson(join(repoDataDir(repoName), "config.json"), {
-      worktrees: { onDeck: 1, root: join(repo, ".worktrees"), ready: [{ run: "sleep 3" }] },
-    });
+    await declareWorktrees(repo, repoName, { onDeck: 1, root: join(repo, ".worktrees"), ready: [{ run: "sleep 3" }] });
 
     const events: Array<{ type: string; data: any }> = [];
     const reconciler = createWorktreeReconciler({

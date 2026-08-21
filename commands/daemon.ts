@@ -34,7 +34,8 @@ import { daemonQuery, isDaemonRunning, trayQuery } from "../lib/daemon-client.ts
 import { classifyDaemonStatus, type DaemonStatusVerdict } from "../lib/daemon-status.ts";
 import { isGitLabRemote } from "../lib/enrich.ts";
 import type { CacheKind } from "../lib/repo-tracking.ts";
-import { loadRepoTracking, loadMachineRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS, DEFAULT_PROJECT_MRS_WINDOW_DAYS } from "../lib/repo-tracking.ts";
+import { loadRepoTracking, loadMachineRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS, DEFAULT_PROJECT_MRS_WINDOW_DAYS, teamNamesIdentity } from "../lib/repo-tracking.ts";
+import { deriveRepoIdentity } from "../lib/settings/identity.ts";
 import { createProjectMRs } from "../lib/daemon/project-mrs-store.ts";
 import { getStateDb } from "../lib/state/index.ts";
 import { timeAgo } from "../lib/tui/utils/label.ts";
@@ -316,9 +317,13 @@ function readRepoIndex(): Record<string, string> {
  *   rt daemon track <repo> off           no background API calls (default)
  *   rt daemon track <repo> live|poll <caches>  opt-in to specific caches (branches,project-mrs,discussions)
  *
- * "off" removes the entry (off is the default for unlisted repos). Level
- * changes apply immediately for watchers; the 5-min poll picks up poll/off
- * changes on its next cycle, so `live`/`poll` also kick a refresh.
+ * "off" removes the entry (off is the default for unlisted repos) — UNLESS
+ * the team layer (`mattstack.tracking`) still names this repo, in which case
+ * a bare delete would let team intent resurrect it on the next merged read;
+ * "off" then plants an explicit `{mode:"off"}` marker instead, a real local
+ * opt-out (see lib/repo-tracking.ts's module doc). Level changes apply
+ * immediately for watchers; the 5-min poll picks up poll/off changes on its
+ * next cycle, so `live`/`poll` also kick a refresh.
  */
 export async function manageTracking(args: string[] = []): Promise<void> {
   const [repoArg, levelArg] = args;
@@ -469,8 +474,15 @@ export async function manageTracking(args: string[] = []): Promise<void> {
   // store as if a human had granted it.
   const tracking = loadMachineRepoTracking();
   const previousEntry = levelArg2 !== "off" ? tracking[repoArg] : undefined;
+  let offMarker: string | undefined;
   if (levelArg2 === "off") {
     delete tracking[repoArg];
+    // A repo the team layer still declares intent for needs a raw-named
+    // block, not a bare delete — otherwise the merge in loadRepoTracking
+    // resurrects team intent for it on the very next read.
+    const repoPath = readRepoIndex()[repoArg];
+    const identity = repoPath ? await deriveRepoIdentity(repoPath) : null;
+    if (identity && teamNamesIdentity(identity)) offMarker = repoArg;
   } else {
     // Only the interactive editor ever touches the window; the positional
     // CLI form (rt daemon track <repo> live [caches]) carries whatever the
@@ -484,8 +496,11 @@ export async function manageTracking(args: string[] = []): Promise<void> {
       ...(windowDays !== undefined ? { projectMrsWindowDays: windowDays } : {}),
     };
   }
-  saveRepoTracking(tracking);
+  saveRepoTracking(tracking, offMarker ? [offMarker] : []);
   console.log(`\n  ${green}✓${reset} ${repoArg} tracking: ${levelArg2}${levelArg2 === "off" ? "" : ` [${caches.join(", ")}] window ${formatWindowLabel(tracking[repoArg]?.projectMrsWindowDays)}`}`);
+  if (offMarker) {
+    console.log(`    ${dim}${repoArg} is still team-tracked — recorded as a local opt-out (rt daemon track ${repoArg} live to re-enable)${reset}`);
+  }
   // A write that omits the caches arg always resets to ["branches"] (see
   // default above). If the entry it replaced granted more than that, the
   // caller silently lost project-mrs/discussions grants — flag it.

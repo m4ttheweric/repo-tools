@@ -9,7 +9,7 @@ import { runCapture } from "../../subprocess.ts";
 import { clearIdentityMemo } from "../../settings/identity.ts";
 import {
   loadRepoTracking, loadMachineRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS,
-  primeTeamTrackingIdentityMap,
+  primeTeamTrackingIdentityMap, teamNamesIdentity,
 } from "../../repo-tracking.ts";
 
 function writeStore(file: string, obj: unknown): void {
@@ -218,6 +218,42 @@ describe("loadRepoTracking merges mattstack.tracking team intent", () => {
   });
 });
 
+describe("teamNamesIdentity", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-tracking-teamnames-")));
+    process.env.HOME = home;
+    seedTeam();
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("true when mattstack.tracking.repos names the identity, regardless of the value's shape", () => {
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
+    }, "team", { team: "acme" });
+
+    expect(teamNamesIdentity("gitlab.com/acme/foo")).toBe(true);
+  });
+
+  test("false when no mattstack.tracking value is authored at all", () => {
+    expect(teamNamesIdentity("gitlab.com/acme/foo")).toBe(false);
+  });
+
+  test("false for an identity the team layer never named", () => {
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
+    }, "team", { team: "acme" });
+
+    expect(teamNamesIdentity("gitlab.com/acme/bar")).toBe(false);
+  });
+});
+
 describe("loadMachineRepoTracking — the machine-only read (no team merge)", () => {
   const origHome = process.env.HOME;
   let home: string;
@@ -271,6 +307,45 @@ describe("loadMachineRepoTracking — the machine-only read (no team merge)", ()
 
     const savedAfterOff = getSetting<Record<string, unknown>>("rt.repoTracking").value;
     expect(savedAfterOff).toEqual({});
+  });
+
+  test("the rider: turning a team-tracked repo off writes an explicit {mode:\"off\"} marker, not a delete — and the merge stays off", () => {
+    setSetting("rt.repoTracking", { foo: { mode: "live", caches: ["branches"] } }, "machine");
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
+    }, "team", { team: "acme" });
+    const identityMap = { "gitlab.com/acme/foo": "foo" };
+
+    // Sanity: team still declares intent for foo.
+    expect(teamNamesIdentity("gitlab.com/acme/foo")).toBe(true);
+
+    // untrack foo off, team-named — the fix: pass it as an offMarker instead
+    // of deleting outright.
+    const tracking = loadMachineRepoTracking();
+    delete tracking.foo;
+    saveRepoTracking(tracking, ["foo"]);
+
+    const saved = getSetting<Record<string, unknown>>("rt.repoTracking").value;
+    expect(saved.foo).toEqual({ mode: "off" });
+
+    // The merge must NOT resurrect team intent for foo now that the raw
+    // machine map names it — this is the bug the rider fixes.
+    const merged = loadRepoTracking({ identityMap });
+    expect(merged.foo).toBeUndefined();
+    expect(grants(merged, "foo").mode).toBe("off");
+  });
+
+  test("turning a NON-team-tracked repo off still deletes outright (no marker planted)", () => {
+    setSetting("rt.repoTracking", { existing: { mode: "poll", caches: ["branches"] } }, "machine");
+    // No mattstack.tracking value at all — teamNamesIdentity is false for any identity.
+    expect(teamNamesIdentity("gitlab.com/acme/existing")).toBe(false);
+
+    const tracking = loadMachineRepoTracking();
+    delete tracking.existing;
+    saveRepoTracking(tracking, []); // no offMarkers — the untracked-by-team path
+
+    const saved = getSetting<Record<string, unknown>>("rt.repoTracking").value;
+    expect(saved).toEqual({});
   });
 });
 

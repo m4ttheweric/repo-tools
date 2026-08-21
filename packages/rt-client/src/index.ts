@@ -25,7 +25,7 @@ export { repoNameForPath } from "./repos.ts";
 
 // ─── Settings (RT-50) ────────────────────────────────────────────────────────
 
-export { getSetting, listSettings, explainSetting, expandVariables, setLegacyReader, defaultLegacyReader, SCOPE_ORDER } from "./settings/resolve.ts";
+export { getSetting, listSettings, explainSetting, expandVariables, SCOPE_ORDER } from "./settings/resolve.ts";
 export type {
   Scope,
   Provenance,
@@ -35,7 +35,6 @@ export type {
   ListedSetting,
   ExplainRow,
   ExpandCtx,
-  LegacyReader,
 } from "./settings/resolve.ts";
 
 export { setSetting } from "./settings/write.ts";
