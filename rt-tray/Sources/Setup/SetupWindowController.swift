@@ -19,6 +19,11 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     static let width: CGFloat = 560
     let flow = SetupFlowModel()
     let team: TeamChoiceModel
+    /// Set by the caller (e.g. re-entering an already-complete setup, or the
+    /// read-only "Setup status…" view) to make the window closable even
+    /// though `flow` itself hasn't reached `.done` — a wizard step must never
+    /// double as a trap once there's nothing left to walk the user through.
+    var allowsCloseAlways = false
     private let environment: SetupEnvironment
     private var activeObserver: Any?
     private var cancellables = Set<AnyCancellable>()
@@ -62,12 +67,14 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     private func applyStyle() {
         guard let window else { return }
         var mask: NSWindow.StyleMask = [.titled]
-        if flow.windowMayClose { mask.insert([.closable, .miniaturizable]) }
+        if flow.windowMayClose || allowsCloseAlways { mask.insert([.closable, .miniaturizable]) }
         window.styleMask = mask
         // Ground truth, not "we just showed it": a late write to flow after
         // the window has actually closed must not re-arm the updater's idle
-        // gate forever.
-        SetupSession.isRunning = window.isVisible && !flow.windowMayClose
+        // gate forever. A window that's only closable because the caller
+        // forced it (already-complete setup, the status view) isn't an
+        // active onboarding run either, so it must not hold the gate shut.
+        SetupSession.isRunning = window.isVisible && !flow.windowMayClose && !allowsCloseAlways
     }
 
     func windowWillClose(_ notification: Notification) {

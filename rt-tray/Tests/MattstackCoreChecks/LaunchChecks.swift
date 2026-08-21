@@ -22,6 +22,8 @@ let launchChecks: [Check] = [
     Check("AppPathSetting writes a JSON string through rt settings set --scope machine") { c in
         c.expectEqual(AppPathSetting.arguments(bundlePath: "/Applications/mattstack.app"),
                       ["settings", "set", "mattstack.appPath", "\"/Applications/mattstack.app\"", "--scope", "machine"])
-        c.expectEqual(AppPathSetting.arguments(bundlePath: "/Users/u/My \"Apps\"/mattstack.app")[3], "\"/Users/u/My \\\"Apps\\\"/mattstack.app\"")
+        let args = AppPathSetting.arguments(bundlePath: "/Users/u/My \"Apps\"/mattstack.app")
+        try c.requireEqual(args.count, 6)
+        c.expectEqual(args[3], "\"/Users/u/My \\\"Apps\\\"/mattstack.app\"")
     },
 ]
