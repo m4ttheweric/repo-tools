@@ -48,10 +48,10 @@ vm_ssh_pw "$VM_ADMIN_USER" "$VM_ADMIN_PASS" "$GOLDEN" "cat > /tmp/provision-gues
 vm_ssh_pw "$VM_ADMIN_USER" "$VM_ADMIN_PASS" "$GOLDEN" "bash /tmp/provision-guest.sh '$VER' '$VM_TESTER_PASS' '$PUB'"
 
 vm_log "rebooting into tester's auto-login session…"
-vm_ssh "$VM_ADMIN_USER" "$GOLDEN" "sudo reboot" || true
+vm_ssh_try "$VM_ADMIN_USER" "$GOLDEN" "sudo reboot" || true
 sleep 20
 vm_wait_ssh "$VM_TESTER_USER" "$GOLDEN" 600 || vm_die "tester ssh never came up after reboot"
-vm_ssh "$VM_TESTER_USER" "$GOLDEN" "sysadminctl -screenLock off -password '$VM_TESTER_PASS'" || true
+vm_ssh_try "$VM_TESTER_USER" "$GOLDEN" "sysadminctl -screenLock off -password '$VM_TESTER_PASS'" || true
 
 cat <<EOF
 
@@ -66,7 +66,7 @@ cat <<EOF
   └──────────────────────────────────────────────────────────────────────────┘
 EOF
 read -r -p "  Press Enter after step 1… " _
-vm_ssh "$VM_TESTER_USER" "$GOLDEN" 'osascript -e "tell application \"System Events\" to get name of first process whose frontmost is true"' || true
+vm_ssh_try "$VM_TESTER_USER" "$GOLDEN" 'osascript -e "tell application \"System Events\" to get name of first process whose frontmost is true"' || true
 read -r -p "  Approved the Automation prompt? Press Enter to verify… " _
 
 "$VM_ROOT/golden/verify-golden.sh" "$VER" "$GOLDEN"

@@ -42,5 +42,22 @@ check "report has no raw json passthrough" '! grep -q "{\"phase\":\"delta\"" "$V
 check "vm_ssh_try fails without killing script"  '! vm_ssh_try tester no-such-vm-xyz true 2>/dev/null'
 check "vm_wait_ssh times out without dying"      '! vm_wait_ssh tester no-such-vm-xyz 2'
 
+# verify-golden.sh's t()/a() helpers must accumulate failures via vm_ssh_try
+# and keep running the remaining checks — vm_ssh (which vm_die's on failure)
+# would silently abort the whole verifier after the first red check.
+check "t()-style helper counts failures without exiting"  '
+  out=$(
+    vm_ssh_try() { return 1; }
+    fails=0
+    ok()  { :; }
+    bad() { fails=$((fails+1)); }
+    t()   { if vm_ssh_try tester dummy-vm "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1"; fi; }
+    t "check one" "true"
+    t "check two" "true"
+    printf "%s" "$fails"
+  )
+  [ "$out" = "2" ]
+'
+
 rm -rf "$VM_ARTIFACTS"
 [ "$fails" -eq 0 ] && echo "common.test.sh: all ok" || { echo "common.test.sh: $fails failed"; exit 1; }

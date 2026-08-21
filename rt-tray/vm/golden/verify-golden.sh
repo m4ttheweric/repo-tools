@@ -6,8 +6,8 @@ VER="$1"; VM="${2:-$(vm_golden_name "$VER")}"
 fails=0
 ok()   { vm_log "  ✓ $1"; }
 bad()  { vm_warn "  ✗ $1"; fails=$((fails+1)); }
-t()    { if vm_ssh "$VM_TESTER_USER" "$VM" "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1"; fi; }
-a()    { if vm_ssh "$VM_ADMIN_USER" "$VM" "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1"; fi; }
+t()    { if vm_ssh_try "$VM_TESTER_USER" "$VM" "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1"; fi; }
+a()    { if vm_ssh_try "$VM_ADMIN_USER" "$VM" "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1"; fi; }
 
 a "ssh as admin (key)"                 'true'
 t "ssh as tester (key)"                'true'
@@ -24,7 +24,6 @@ t "macOS major matches"                "[ \"\$(sw_vers -productVersion | cut -d.
 # The manual TCC grants: UI scripting from an ssh session must work as tester.
 t "UI scripting allowed (Accessibility + Automation for sshd-keygen-wrapper)" \
   'osascript -e "tell application \"System Events\" to get name of first process whose frontmost is true"'
-t "screenshots dir writable (virtiofs share optional at verify time)" 'true'
 
 [ "$fails" -eq 0 ] && { vm_log "golden $VM verified"; exit 0; }
 vm_die "golden $VM: $fails check(s) failed"
