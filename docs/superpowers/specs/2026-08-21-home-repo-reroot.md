@@ -78,7 +78,7 @@ with the machine-profile namespace. Rulings (orchestrator, 2026-08-21):
 - **Inner `.gitignore`**: `user/.gitignore` today is the single line `local/`.
   After the re-root it is THE repo's gitignore, and that line would silently
   untrack every machine profile. It is REWRITTEN during migration to exactly:
-  `.DS_Store`, `*.sock`, `*.tmp`, `secrets/*.tmp` (no `local/`). The stray
+  `.DS_Store`, `*.sock`, `*.tmp` (no `local/`). The stray
   `user/.DS_Store` present today is deleted before the first commit. H2's
   allowlist ("whole repo minus ignores") composes with this list.
 - **Profile picker**: enumerates only `local/<dir>/` containing a
@@ -120,7 +120,10 @@ parallel to the board lane; the settings API is unchanged.
   `gitInit`, `foldInPrefs`, `unlinkUserClone`, `adoptCommit`,
   `HomeState.prefsRemoteUrl`, `reason: "prefs-remote-unreadable"` all go.
   Init becomes: ensure `~/.mattstack/` skeleton (state dirs), clone the user
-  repo to `user/`, write the machine-key file, create `local/<key>/` if new.
+  repo to `user/`, write the machine-key file, create `local/<key>/` if new,
+  and create the `skills.jsonc` compat symlink (load-bearing provisioning — a
+  restored machine needs it for the 27 unpatched readers, not just this
+  migration).
   `writeGitignore` writes the ruled inner-gitignore content; `writeOwners`
   targets `user/snapshot-owners.jsonc`. HOME_BOUNDARY guard simplifies to the
   user-repo tree.
@@ -164,4 +167,5 @@ parallel to the board lane; the settings API is unchanged.
 7. **Full verify (defined)**: `rt settings list`/`explain` resolve across all
    three scopes with the expected values; `rt secrets` decrypt round-trip on
    an existing domain + an encrypt round-trip on a scratch key (then removed);
-   daemon + deck restart clean; board serves; `rt verify` 12/12.
+   daemon + deck restart clean; board serves; `rt verify` with all critical
+   checks passing.
