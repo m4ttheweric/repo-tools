@@ -1,118 +1,163 @@
 import { describe, test, expect } from "bun:test";
-import { buildInitPlan, type HomeState } from "../init-plan.ts";
+import { buildInitPlan, InvalidMachineKeyError, STATE_DIR_NAMES, type HomeState, type InitPlanConfig } from "../init-plan.ts";
 
-const PREFS_URL = "https://github.com/mattgoodwin/mattstack-prefs.git";
+const CONFIG: InitPlanConfig = { url: "https://github.com/m4ttheweric/mattstack-home", machineKey: "mbp-14" };
+
+const FRESH_STATE: HomeState = {
+  userRepoPresent: false,
+  machineKeyFilePresent: false,
+  profileDirPresent: false,
+  skillsSymlinkPresent: false,
+  skillsSymlinkBlocked: false,
+  stateDirsMissing: [...STATE_DIR_NAMES],
+};
+
+const FULLY_PROVISIONED_STATE: HomeState = {
+  userRepoPresent: true,
+  machineKeyFilePresent: true,
+  profileDirPresent: true,
+  skillsSymlinkPresent: true,
+  skillsSymlinkBlocked: false,
+  stateDirsMissing: [],
+};
 
 describe("buildInitPlan", () => {
-  test("orders a fresh-adoption plan createRepo through push, unlink before adopt, adopt before fold", () => {
-    const state: HomeState = {
-      isRepo: false,
-      hasUserClone: true,
-      hasTeamClones: ["claimview"],
-      cruft: ["skills.jsonc.pre-pack", "skills.jsonc.retired-backup"],
-      prefsRemoteUrl: PREFS_URL,
-    };
+  test("fresh HOME: emits every step in order", () => {
+    const plan = buildInitPlan(FRESH_STATE, CONFIG);
 
-    const plan = buildInitPlan(state);
-
-    expect(plan.reason).toBeUndefined();
+    expect(plan.blocked).toBeUndefined();
     expect(plan.steps.map((s) => s.kind)).toEqual([
-      "createRepo",
-      "gitInit",
+      "ensureStateDirs",
+      "cloneUserRepo",
       "writeGitignore",
       "writeOwners",
-      "deleteCruft",
-      "unlinkUserClone",
-      "adoptCommit",
-      "foldInPrefs",
-      "push",
+      "writeMachineKey",
+      "ensureProfileDir",
+      "writeSkillsSymlink",
     ]);
-
-    const foldInPrefs = plan.steps.find((s) => s.kind === "foldInPrefs");
-    expect(foldInPrefs).toEqual({ kind: "foldInPrefs", sourceUrl: PREFS_URL });
-  });
-
-  test("carries the cruft paths onto the deleteCruft step", () => {
-    const state: HomeState = {
-      isRepo: false,
-      hasUserClone: true,
-      hasTeamClones: [],
-      cruft: ["skills.jsonc.pre-pack", "skills.jsonc.retired-backup"],
-      prefsRemoteUrl: PREFS_URL,
-    };
-
-    const plan = buildInitPlan(state);
-    const deleteCruft = plan.steps.find((s) => s.kind === "deleteCruft");
-    expect(deleteCruft).toEqual({
-      kind: "deleteCruft",
-      paths: ["skills.jsonc.pre-pack", "skills.jsonc.retired-backup"],
+    expect(plan.steps[0]).toEqual({ kind: "ensureStateDirs", dirs: STATE_DIR_NAMES });
+    expect(plan.steps[1]).toEqual({ kind: "cloneUserRepo", url: CONFIG.url });
+    expect(plan.steps.find((s) => s.kind === "writeMachineKey")).toEqual({
+      kind: "writeMachineKey",
+      key: "mbp-14",
+    });
+    expect(plan.steps.find((s) => s.kind === "ensureProfileDir")).toEqual({
+      kind: "ensureProfileDir",
+      key: "mbp-14",
     });
   });
 
-  test("omits foldInPrefs and unlinkUserClone when there is no user clone to adopt", () => {
-    const state: HomeState = { isRepo: false, hasUserClone: false, hasTeamClones: [], cruft: [] };
-    const plan = buildInitPlan(state);
-    expect(plan.steps.map((s) => s.kind)).not.toContain("foldInPrefs");
-    expect(plan.steps.map((s) => s.kind)).not.toContain("unlinkUserClone");
-  });
-
-  test("omits deleteCruft when there is no stray cruft", () => {
-    const state: HomeState = { isRepo: false, hasUserClone: false, hasTeamClones: [], cruft: [] };
-    const plan = buildInitPlan(state);
-    expect(plan.steps.map((s) => s.kind)).not.toContain("deleteCruft");
-  });
-
-  test("push carries the same branch gitInit created", () => {
-    const state: HomeState = { isRepo: false, hasUserClone: false, hasTeamClones: [], cruft: [] };
-    const plan = buildInitPlan(state);
-    const gitInit = plan.steps.find((s) => s.kind === "gitInit");
-    const push = plan.steps.find((s) => s.kind === "push");
-    expect(gitInit).toBeDefined();
-    expect(push).toBeDefined();
-    expect((push as { branch: string }).branch).toBe((gitInit as { branch: string }).branch);
-  });
-
-  test("already-initialized: returns no steps plus the reason", () => {
+  test("repo present: skips clone and the gitignore/owners that ride with it — provisioning-only", () => {
     const state: HomeState = {
-      isRepo: true,
-      hasUserClone: true,
-      hasTeamClones: ["claimview"],
-      cruft: ["skills.jsonc.pre-pack"],
-      prefsRemoteUrl: PREFS_URL,
+      ...FRESH_STATE,
+      userRepoPresent: true,
+      stateDirsMissing: [],
     };
 
-    const plan = buildInitPlan(state);
+    const plan = buildInitPlan(state, CONFIG);
 
+    expect(plan.steps.map((s) => s.kind)).toEqual(["writeMachineKey", "ensureProfileDir", "writeSkillsSymlink"]);
+  });
+
+  test("real file at the symlink path: blocked, but every other applicable step still runs", () => {
+    const state: HomeState = {
+      ...FRESH_STATE,
+      skillsSymlinkBlocked: true,
+    };
+
+    const plan = buildInitPlan(state, CONFIG);
+
+    expect(plan.blocked).toBe("skills-symlink-real-file");
+    expect(plan.steps.map((s) => s.kind)).not.toContain("writeSkillsSymlink");
+    expect(plan.steps.map((s) => s.kind)).toEqual([
+      "ensureStateDirs",
+      "cloneUserRepo",
+      "writeGitignore",
+      "writeOwners",
+      "writeMachineKey",
+      "ensureProfileDir",
+    ]);
+  });
+
+  test("machine-key file present: no writeMachineKey step, but profile dir and symlink are unaffected", () => {
+    const state: HomeState = { ...FRESH_STATE, machineKeyFilePresent: true };
+
+    const plan = buildInitPlan(state, CONFIG);
+
+    expect(plan.steps.map((s) => s.kind)).not.toContain("writeMachineKey");
+    expect(plan.steps.map((s) => s.kind)).toEqual([
+      "ensureStateDirs",
+      "cloneUserRepo",
+      "writeGitignore",
+      "writeOwners",
+      "ensureProfileDir",
+      "writeSkillsSymlink",
+    ]);
+  });
+
+  test("profile dir present: no ensureProfileDir step", () => {
+    const state: HomeState = { ...FRESH_STATE, profileDirPresent: true };
+    const plan = buildInitPlan(state, CONFIG);
+    expect(plan.steps.map((s) => s.kind)).not.toContain("ensureProfileDir");
+  });
+
+  test("skills symlink already correct: no writeSkillsSymlink step", () => {
+    const state: HomeState = { ...FRESH_STATE, skillsSymlinkPresent: true };
+    const plan = buildInitPlan(state, CONFIG);
+    expect(plan.steps.map((s) => s.kind)).not.toContain("writeSkillsSymlink");
+  });
+
+  test("no state dirs missing: no ensureStateDirs step", () => {
+    const state: HomeState = { ...FRESH_STATE, stateDirsMissing: [] };
+    const plan = buildInitPlan(state, CONFIG);
+    expect(plan.steps.map((s) => s.kind)).not.toContain("ensureStateDirs");
+  });
+
+  test("ensureStateDirs carries only the missing dirs, not the full list", () => {
+    const state: HomeState = { ...FRESH_STATE, stateDirsMissing: ["work", "teams"] };
+    const plan = buildInitPlan(state, CONFIG);
+    expect(plan.steps.find((s) => s.kind === "ensureStateDirs")).toEqual({
+      kind: "ensureStateDirs",
+      dirs: ["work", "teams"],
+    });
+  });
+
+  test("fully provisioned: empty plan, not blocked", () => {
+    const plan = buildInitPlan(FULLY_PROVISIONED_STATE, CONFIG);
     expect(plan.steps).toEqual([]);
-    expect(plan.reason).toBe("already-initialized");
+    expect(plan.blocked).toBeUndefined();
   });
 
-  test("prefs-remote-unreadable: a user clone with no parseable origin URL fails loudly instead of emitting an unrunnable fold", () => {
-    const state: HomeState = {
-      isRepo: false,
-      hasUserClone: true,
-      hasTeamClones: [],
-      cruft: [],
-      prefsRemoteUrl: undefined,
-    };
-
-    const plan = buildInitPlan(state);
-
+  test("blocked takes precedence even when nothing else needs doing", () => {
+    const state: HomeState = { ...FULLY_PROVISIONED_STATE, skillsSymlinkPresent: false, skillsSymlinkBlocked: true };
+    const plan = buildInitPlan(state, CONFIG);
     expect(plan.steps).toEqual([]);
-    expect(plan.reason).toBe("prefs-remote-unreadable");
+    expect(plan.blocked).toBe("skills-symlink-real-file");
   });
 
-  test("isRepo takes precedence over an unreadable prefs remote", () => {
-    const state: HomeState = {
-      isRepo: true,
-      hasUserClone: true,
-      hasTeamClones: [],
-      cruft: [],
-      prefsRemoteUrl: undefined,
-    };
+  test("STATE_DIR_NAMES includes ci-attendants (per the spec's state-zone tree)", () => {
+    expect(STATE_DIR_NAMES).toContain("ci-attendants");
+  });
 
-    const plan = buildInitPlan(state);
+  describe("machine-key guard — refuses before ever emitting writeMachineKey/ensureProfileDir", () => {
+    test.each([
+      ["empty", ""],
+      ["exactly \".\"", "."],
+      ["exactly \"..\"", ".."],
+      ["a forward slash", "evil/key"],
+      ["a backslash", "evil\\key"],
+    ])("%s: throws InvalidMachineKeyError, never returns a plan", (_label, badKey) => {
+      expect(() => buildInitPlan(FRESH_STATE, { ...CONFIG, machineKey: badKey })).toThrow(InvalidMachineKeyError);
+    });
 
-    expect(plan.reason).toBe("already-initialized");
+    test("a safe key still builds the plan normally", () => {
+      expect(() => buildInitPlan(FRESH_STATE, { ...CONFIG, machineKey: "mbp-14" })).not.toThrow();
+    });
+
+    test("the guard applies even when nothing else in the plan needs the key (fully provisioned)", () => {
+      expect(() => buildInitPlan(FULLY_PROVISIONED_STATE, { ...CONFIG, machineKey: "../escape" })).toThrow(
+        InvalidMachineKeyError,
+      );
+    });
   });
 });

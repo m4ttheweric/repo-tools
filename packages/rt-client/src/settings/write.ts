@@ -85,11 +85,12 @@
  * ── Writes are write-temp-then-rename ───────────────────────────────────
  * Mirrors `lib/json-store.ts`'s `writeJson`: the edited text is written to a
  * `<path>.<pid>.<random>.tmp` file in the SAME directory, then renamed onto
- * the real path — stores never tear, matching the rest of rt's persistence
- * (the machine store especially has no git fallback to recover a partial
- * write from). The tmp file carries the edited TEXT exactly as `applyEdits`
- * produced it, never round-tripped through `JSON.stringify` — that's what
- * keeps comments alive.
+ * the real path — stores never tear, matching the rest of rt's persistence.
+ * All three stores are tracked repos now, but nothing auto-commits a write
+ * (H2, the snapshot daemon, is unbuilt) — a torn write would sit as a
+ * corrupt uncommitted file until a human noticed. The tmp file carries the
+ * edited TEXT exactly as `applyEdits` produced it, never round-tripped
+ * through `JSON.stringify` — that's what keeps comments alive.
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
@@ -151,11 +152,12 @@ export function setSetting(key: string, value: unknown, scope: SettingScope, opt
 
   writeIntoStore(storePath, jsonPath, value, /* createIfMissing */ scope !== "team");
 
-  if (scope === "team") {
-    console.error(
-      `rt: wrote "${key}" to the local team store (${storePath}) — this is local only until you commit and push it.`,
-    );
-  }
+  // All three stores are tracked repos with nothing auto-committing a write
+  // (H2, the snapshot daemon, is unbuilt) — every scope gets the reminder,
+  // not just team.
+  console.error(
+    `rt: wrote "${key}" to the local ${scope} store (${storePath}) — this is local only until you commit and push it.`,
+  );
 }
 
 function migratedFalseMessage(key: string, def: SettingDef): string {
@@ -272,9 +274,10 @@ function writeIntoStore(storePath: string, jsonPath: JSONPath, value: unknown, c
   const finalText = next.endsWith("\n") ? next : `${next}\n`;
 
   // Write-temp-then-rename in the same directory, mirroring
-  // lib/json-store.ts's writeJson — stores never tear, and the machine store
-  // especially has no git fallback to recover a partial write from. The
-  // edited TEXT is written as-is, never round-tripped through
+  // lib/json-store.ts's writeJson — stores never tear. All three stores are
+  // tracked repos now, but nothing auto-commits a write (H2 is unbuilt), so
+  // a torn write would sit as a corrupt uncommitted file until a human
+  // noticed. The edited TEXT is written as-is, never round-tripped through
   // JSON.stringify, so comments and formatting survive.
   const tmp = `${storePath}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
   try {
