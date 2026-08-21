@@ -17,12 +17,13 @@
  */
 
 import { execFileSync, spawnSync } from "child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { createInterface } from "node:readline";
-import { dirname, join } from "path";
+import { dirname, isAbsolute as isAbsolutePath, join, relative as relativePath, resolve as resolvePath, sep } from "path";
 import { resolveFzf } from "../lib/fzf.ts";
 import { mattstackHome } from "../lib/rt-paths.ts";
 import { compileSkill, HEADER_COMMENT } from "../lib/skills/compile.ts";
+import { discoverPacks, surfaceFileFor, type PackInfo } from "../lib/skills/packs.ts";
 import {
   invocableRoster,
   loadAttachment,
@@ -58,7 +59,7 @@ async function withCleanErrors(fn: () => Promise<void>): Promise<void> {
 }
 
 type Flags = {
-  team: string;
+  team: string | null;
   verbs: string[] | null;
   manifest: string | null;
   dryRun: boolean;
@@ -68,7 +69,7 @@ type Flags = {
 
 function parseFlags(args: string[]): Flags {
   const verbs: string[] = [];
-  let team = "claimview";
+  let team: string | null = null;
   let manifest: string | null = null;
   let dryRun = false;
   let packDir: string | null = null;
@@ -77,6 +78,7 @@ function parseFlags(args: string[]): Flags {
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     switch (a) {
+      case "--pack":
       case "--team": team = args[++i] ?? team; break;
       case "--verb": { const v = args[++i]; if (v) verbs.push(v); break; }
       case "--manifest": manifest = args[++i] ?? null; break;
@@ -93,6 +95,51 @@ function parseFlags(args: string[]): Flags {
 
 function packRootDir(mattstackRoot: string, team: string): string {
   return join(mattstackRoot, "teams", team, "mattstack", "packs", team);
+}
+
+type PackTarget = { team: string; packDir: string };
+
+/**
+ * Which pack a command acts on. Explicit --pack-dir wins (tests); a named
+ * pack resolves through marketplace discovery, falling back to the teams-zone
+ * path for packs installed by hand; no name at all follows the rt convention
+ * -- offer a picker over what is actually installed, auto-selecting when only
+ * one pack exists, and name the choices instead of guessing when there is no tty.
+ */
+async function resolvePack(flags: { team: string | null; packDir: string | null; mattstackDir: string | null }): Promise<PackTarget> {
+  const mattstackRoot = flags.mattstackDir ?? mattstackHome();
+  if (flags.packDir) return { team: flags.team ?? "claimview", packDir: flags.packDir };
+
+  const packs = flags.mattstackDir ? [] : discoverPacks();
+  if (flags.team) {
+    const pack = packs.find((p) => p.name === flags.team);
+    if (pack) return { team: pack.name, packDir: pack.dir };
+    const legacy = packRootDir(mattstackRoot, flags.team);
+    if (existsSync(legacy)) return { team: flags.team, packDir: legacy };
+    throw new SkillsUsageError(
+      `no pack named "${flags.team}" (discovered: ${packs.map((p) => p.name).join(", ") || "none"}; checked ${legacy})`,
+    );
+  }
+
+  if (packs.length === 1) return { team: packs[0]!.name, packDir: packs[0]!.dir };
+  if (packs.length === 0) throw new SkillsUsageError("no packs discovered (no directory marketplace plugin carries a surface.jsonc); pass --pack <name>");
+
+  if (!process.stdin.isTTY) {
+    throw new SkillsUsageError(`which pack? pass --pack <name> (discovered: ${packs.map((p) => p.name).join(", ")})`);
+  }
+  const picked = await pickPack(packs);
+  if (!picked) process.exit(0);
+  return { team: picked.name, packDir: picked.dir };
+}
+
+async function pickPack(packs: PackInfo[]): Promise<PackInfo | null> {
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
+  const value = await filterableSelect({
+    message: "which pack?",
+    options: packs.map((p) => ({ value: p.name, label: p.name, hint: `${p.layout}  ${p.dir}` })),
+    stderr: true,
+  });
+  return packs.find((p) => p.name === value) ?? null;
 }
 
 function leadingCommentBlock(raw: string): string {
@@ -113,6 +160,93 @@ function listSubdirs(dir: string): string[] {
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort();
+}
+
+type SkillEntry = { name: string; group: string | null; dir: string };
+
+/**
+ * Skill dirs live either flat (skills/<name>) or one group deep
+ * (skills/<group>/<name>, the mattstack plugin's layout); a depth-1 dir
+ * without its own SKILL.md is a group, and its leaves are the skills.
+ */
+function enumerateSkillEntries(root: string, into: Map<string, SkillEntry> = new Map()): Map<string, SkillEntry> {
+  // surface.jsonc is keyed by bare skill name, so two groups carrying the same
+  // leaf would be indistinguishable to every surface operation -- refuse rather
+  // than let one silently shadow the other.
+  const add = (entry: SkillEntry) => {
+    const clash = into.get(entry.name);
+    if (clash && clash.dir !== entry.dir) {
+      throw new SkillsUsageError(
+        `skill name "${entry.name}" appears twice (${clash.dir} and ${entry.dir}); skill names must be unique within a pack`,
+      );
+    }
+    into.set(entry.name, entry);
+  };
+  for (const top of listSubdirs(root)) {
+    const topDir = join(root, top);
+    if (existsSync(join(topDir, "SKILL.md"))) {
+      add({ name: top, group: null, dir: topDir });
+      continue;
+    }
+    let sawLeaf = false;
+    for (const leaf of listSubdirs(topDir)) {
+      const leafDir = join(topDir, leaf);
+      if (!existsSync(join(leafDir, "SKILL.md"))) continue;
+      sawLeaf = true;
+      add({ name: leaf, group: top, dir: leafDir });
+    }
+    if (!sawLeaf) add({ name: top, group: null, dir: topDir });
+  }
+  return into;
+}
+
+/**
+ * A plugin may register more than one skills root (plugin.json `skills`, e.g.
+ * ["./skills/review", "./plugin/skills"]); the registered surface is the union
+ * of those roots, defaulting to skills/ when the manifest lists none.
+ */
+function registeredSkillRoots(packDir: string): string[] {
+  const manifestPath = join(packDir, ".claude-plugin", "plugin.json");
+  if (existsSync(manifestPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(manifestPath, "utf8")) as { skills?: unknown };
+      if (Array.isArray(parsed.skills) && parsed.skills.length > 0) {
+        // A root is only honored inside the pack: a manifest value like "../x" or an
+        // absolute path would otherwise let the surface verbs enumerate (and move) dirs
+        // that belong to some other tree.
+        const canonical = (p: string) => {
+          try {
+            return realpathSync(p);
+          } catch {
+            return resolvePath(p);
+          }
+        };
+        const packRoot = canonical(packDir);
+        const roots = parsed.skills
+          .filter((s): s is string => typeof s === "string")
+          .map((s) => canonical(resolvePath(packDir, s)))
+          .filter((root) => {
+            const rel = relativePath(packRoot, root);
+            if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolutePath(rel)) return false;
+            try {
+              return statSync(root).isDirectory();
+            } catch {
+              return false;
+            }
+          });
+        if (roots.length > 0) return roots;
+      }
+    } catch {
+      // an unreadable manifest falls back to the conventional root below
+    }
+  }
+  return [join(packDir, "skills")];
+}
+
+function enumerateRegistered(packDir: string): Map<string, SkillEntry> {
+  const entries = new Map<string, SkillEntry>();
+  for (const root of registeredSkillRoots(packDir)) enumerateSkillEntries(root, entries);
+  return entries;
 }
 
 function listFilesRecursive(dir: string, prefix = ""): string[] {
@@ -221,10 +355,10 @@ function computeInternalRoster(
   const internal = new Set<string>();
   if (!surface) return internal;
   const publicSet = new Set(surface.public);
-  for (const name of listSubdirs(join(packDir, "skills"))) {
+  for (const name of enumerateRegistered(packDir).keys()) {
     if (!publicSet.has(name)) internal.add(`${team}:${name}`);
   }
-  for (const name of listSubdirs(join(packDir, "attachments"))) {
+  for (const name of enumerateSkillEntries(join(packDir, "attachments")).keys()) {
     if (!publicSet.has(name)) internal.add(`${team}:${name}`);
   }
   for (const verb of fullRoster) {
@@ -233,18 +367,26 @@ function computeInternalRoster(
   return internal;
 }
 
-function resolve(flags: Flags): Resolved {
+async function resolve(flags: Flags): Promise<Resolved> {
   const mattstackRoot = flags.mattstackDir ?? mattstackHome();
-  const packDir = flags.packDir ?? packRootDir(mattstackRoot, flags.team);
-  const manifestPath = flags.manifest ?? findDefaultManifest(mattstackRoot, flags.team);
+  const { team, packDir } = await resolvePack(flags);
 
   const fullRoster = readVerbRoster(packDir);
   const roster = selectVerbs(fullRoster, flags.verbs);
-  const bindings = readManifestBindings(manifestPath);
-  const pluginRoots = flags.mattstackDir ? resolvePluginRootsFromDir(mattstackRoot) : resolvePluginRoots();
-  const invocable = invocableRoster(pluginRoots);
+  // A pack with no verb roster needs no manifest: bindings only feed compile targets.
+  const manifestPath = fullRoster.length === 0 ? null : (flags.manifest ?? findDefaultManifest(mattstackRoot, team));
+  const bindings = manifestPath ? readManifestBindings(manifestPath) : {};
+  // No compile targets means nothing needs plugin roots or the invocable roster;
+  // skipping the `claude plugin list` subprocess keeps rosterless packs usable
+  // even where the Claude CLI is absent.
+  const pluginRoots: PluginRoots = fullRoster.length === 0
+    ? { byName: {} }
+    : flags.mattstackDir
+      ? resolvePluginRootsFromDir(mattstackRoot)
+      : resolvePluginRoots();
+  const invocable = fullRoster.length === 0 ? new Set<string>() : invocableRoster(pluginRoots);
   const surface = readSurface(packDir);
-  const internalRoster = computeInternalRoster(flags.team, packDir, surface, fullRoster);
+  const internalRoster = computeInternalRoster(team, packDir, surface, fullRoster);
 
   return { packDir, roster, bindings, pluginRoots, invocable, surface, internalRoster };
 }
@@ -299,7 +441,7 @@ function writeCompiledVerb(outDir: string, result: CompileResult): void {
 export async function skillsCompile(args: string[]): Promise<void> {
   await withCleanErrors(async () => {
     const flags = parseFlags(args);
-    const resolved = resolve(flags);
+    const resolved = await resolve(flags);
     const publicSet = resolved.surface ? new Set(resolved.surface.public) : null;
 
     for (const verb of resolved.roster) {
@@ -330,7 +472,7 @@ export async function skillsCompile(args: string[]): Promise<void> {
     }
 
     if (publicSet) {
-      for (const name of listSubdirs(join(resolved.packDir, "skills"))) {
+      for (const name of enumerateRegistered(resolved.packDir).keys()) {
         if (!publicSet.has(name)) {
           console.log(`misplaced: ${name} (run rt skills surface apply, or move it)`);
           process.exitCode = 1;
@@ -343,7 +485,7 @@ export async function skillsCompile(args: string[]): Promise<void> {
 export async function skillsCheck(args: string[]): Promise<void> {
   await withCleanErrors(async () => {
     const flags = parseFlags(args);
-    const resolved = resolve(flags);
+    const resolved = await resolve(flags);
     // No surface.jsonc means the pack has no public/internal split yet -- every roster verb is public.
     const publicSet = resolved.surface ? new Set(resolved.surface.public) : null;
 
@@ -394,7 +536,7 @@ export async function skillsCheck(args: string[]): Promise<void> {
 // ─── rt skills surface -- list / set / apply / fzf palette ────────────────
 
 type SurfaceFlags = {
-  team: string;
+  team: string | null;
   dryRun: boolean;
   packDir: string | null;
   mattstackDir: string | null;
@@ -408,7 +550,7 @@ function kindLabel(kind: SurfaceRow["kind"]): string {
 }
 
 function parseSurfaceFlags(args: string[]): { flags: SurfaceFlags; rest: string[] } {
-  let team = "claimview";
+  let team: string | null = null;
   let dryRun = false;
   let packDir: string | null = null;
   let mattstackDir: string | null = null;
@@ -418,6 +560,7 @@ function parseSurfaceFlags(args: string[]): { flags: SurfaceFlags; rest: string[
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     switch (a) {
+      case "--pack":
       case "--team": team = args[++i] ?? team; break;
       case "--dry-run": dryRun = true; break;
       case "--pack-dir": packDir = args[++i] ?? null; break;
@@ -430,10 +573,12 @@ function parseSurfaceFlags(args: string[]): { flags: SurfaceFlags; rest: string[
   return { flags: { team, dryRun, packDir, mattstackDir, manifest }, rest };
 }
 
-function resolveSurfacePaths(flags: SurfaceFlags): { packDir: string } {
-  const mattstackRoot = flags.mattstackDir ?? mattstackHome();
-  const packDir = flags.packDir ?? packRootDir(mattstackRoot, flags.team);
-  return { packDir };
+/** Pins the pack on the flags so the compile delegation and the printed header name the same pack the user picked. */
+async function resolveSurfacePaths(flags: SurfaceFlags): Promise<{ packDir: string }> {
+  const target = await resolvePack(flags);
+  flags.team = target.team;
+  flags.packDir = target.packDir;
+  return { packDir: target.packDir };
 }
 
 function isCompiledDir(dir: string): boolean {
@@ -451,10 +596,12 @@ function classify(name: string, dir: string | null, verbNames: Set<string>): "co
 }
 
 function collectRegistry(packDir: string, verbNames: Set<string>) {
-  const skillsNames = new Set(listSubdirs(join(packDir, "skills")));
-  const attachmentNames = new Set(listSubdirs(join(packDir, "attachments")));
+  const skillEntries = enumerateRegistered(packDir);
+  const attachmentEntries = enumerateSkillEntries(join(packDir, "attachments"));
+  const skillsNames = new Set(skillEntries.keys());
+  const attachmentNames = new Set(attachmentEntries.keys());
   const allNames = new Set<string>([...skillsNames, ...attachmentNames, ...verbNames]);
-  return { skillsNames, attachmentNames, allNames };
+  return { skillsNames, attachmentNames, allNames, skillEntries, attachmentEntries };
 }
 
 /** The set `set`'s first use bootstraps surface.jsonc from -- so the first edit is a delta from reality, not a cliff. */
@@ -467,10 +614,11 @@ export function computeRows(
   verbNames: Set<string>,
   surface: SurfaceConfig | null,
 ): { source: string; rows: SurfaceRow[] } {
-  const { skillsNames, attachmentNames, allNames } = collectRegistry(packDir, verbNames);
+  const { skillsNames, attachmentNames, allNames, skillEntries, attachmentEntries } = collectRegistry(packDir, verbNames);
   const publicSet = surface ? new Set(surface.public) : defaultPublicSet(skillsNames, verbNames);
-  const source = surface
-    ? "pack/surface.jsonc"
+  const surfacePath = surfaceFileFor(packDir);
+  const source = surface && surfacePath
+    ? surfacePath.slice(packDir.length + 1)
     : "(no surface.jsonc yet -- inferred from current skills/ + stubs.jsonc placement)";
 
   // A name in surface.jsonc's public list but absent from skills/, attachments/, and
@@ -480,11 +628,7 @@ export function computeRows(
   for (const name of publicSet) names.add(name);
 
   const rows = [...names].sort().map((name) => {
-    const dir = skillsNames.has(name)
-      ? join(packDir, "skills", name)
-      : attachmentNames.has(name)
-        ? join(packDir, "attachments", name)
-        : null;
+    const dir = skillEntries.get(name)?.dir ?? attachmentEntries.get(name)?.dir ?? null;
     return {
       name,
       kind: allNames.has(name) ? classify(name, dir, verbNames) : ("missing" as const),
@@ -496,14 +640,16 @@ export function computeRows(
 }
 
 function writeSurfaceConfig(packDir: string, publicList: string[]): void {
-  const path = join(packDir, "pack", "surface.jsonc");
+  // Write back wherever the pack already keeps its surface (pack/ for team packs,
+  // the plugin root for packs without a pack/ dir); new packs get pack/.
+  const path = surfaceFileFor(packDir) ?? join(packDir, "pack", "surface.jsonc");
   mkdirSync(dirname(path), { recursive: true });
   const json = JSON.stringify({ public: publicList }, null, 2);
   writeFileSync(path, `// surface.jsonc -- names this pack's public skills/ directories.\n${json}\n`);
 }
 
 function compileArgs(flags: SurfaceFlags, packDir: string): string[] {
-  const args = ["--team", flags.team, "--pack-dir", packDir];
+  const args = ["--pack", flags.team ?? "claimview", "--pack-dir", packDir];
   if (flags.mattstackDir) args.push("--mattstack-dir", flags.mattstackDir);
   if (flags.manifest) args.push("--manifest", flags.manifest);
   if (flags.dryRun) args.push("--dry-run");
@@ -519,11 +665,11 @@ function isInsideGitWorkTree(dir: string): boolean {
   }
 }
 
-/** git mv keeps rename history for the common case; fixtures (and any non-git pack dir) fall back to a plain rename. */
-function moveHandAuthoredDir(packDir: string, name: string, from: "skills" | "attachments", to: "skills" | "attachments"): string | null {
-  const fromRel = join(from, name);
-  const toRel = join(to, name);
-  mkdirSync(join(packDir, to), { recursive: true });
+/** git mv keeps rename history for the common case; fixtures (and any non-git pack dir) fall back to a plain rename. A grouped skill keeps its group on the other side. */
+function moveHandAuthoredDir(packDir: string, name: string, from: "skills" | "attachments", to: "skills" | "attachments", group: string | null): string | null {
+  const fromRel = group ? join(from, group, name) : join(from, name);
+  const toRel = group ? join(to, group, name) : join(to, name);
+  mkdirSync(dirname(join(packDir, toRel)), { recursive: true });
 
   if (isInsideGitWorkTree(packDir)) {
     execFileSync("git", ["mv", fromRel, toRel], { cwd: packDir, stdio: "pipe" });
@@ -535,7 +681,7 @@ function moveHandAuthoredDir(packDir: string, name: string, from: "skills" | "at
 }
 
 function printSurfaceRows(flags: SurfaceFlags, source: string, rows: SurfaceRow[]): void {
-  console.log(`rt skills surface -- team ${flags.team}`);
+  console.log(`rt skills surface -- pack ${flags.team}`);
   console.log(`source: ${source}`);
   for (const row of rows) {
     console.log(`  ${row.status.padEnd(9)}${kindLabel(row.kind).padEnd(15)}${row.name}`);
@@ -543,7 +689,7 @@ function printSurfaceRows(flags: SurfaceFlags, source: string, rows: SurfaceRow[
 }
 
 async function runList(flags: SurfaceFlags): Promise<void> {
-  const { packDir } = resolveSurfacePaths(flags);
+  const { packDir } = await resolveSurfacePaths(flags);
   const verbNames = new Set(readVerbRoster(packDir).map((v) => v.name));
   const surface = readSurface(packDir);
   const { source, rows } = computeRows(packDir, verbNames, surface);
@@ -553,10 +699,10 @@ async function runList(flags: SurfaceFlags): Promise<void> {
 }
 
 async function runApply(flags: SurfaceFlags): Promise<void> {
-  const { packDir } = resolveSurfacePaths(flags);
+  const { packDir } = await resolveSurfacePaths(flags);
   const verbNames = new Set(readVerbRoster(packDir).map((v) => v.name));
   const surface = readSurface(packDir);
-  const { skillsNames, attachmentNames } = collectRegistry(packDir, verbNames);
+  const { skillsNames, attachmentNames, skillEntries, attachmentEntries } = collectRegistry(packDir, verbNames);
   const publicSet = surface ? new Set(surface.public) : defaultPublicSet(skillsNames, verbNames);
 
   const candidates = [...new Set<string>([...skillsNames, ...attachmentNames])].sort();
@@ -564,7 +710,8 @@ async function runApply(flags: SurfaceFlags): Promise<void> {
 
   for (const name of candidates) {
     const currentlyUnderSkills = skillsNames.has(name);
-    const dir = join(packDir, currentlyUnderSkills ? "skills" : "attachments", name);
+    const entry = (currentlyUnderSkills ? skillEntries : attachmentEntries).get(name)!;
+    const dir = entry.dir;
     if (classify(name, dir, verbNames) === "compiled") continue; // regenerated/removed by the compile step below, never git-mv'd
 
     const wantPublic = publicSet.has(name);
@@ -579,8 +726,9 @@ async function runApply(flags: SurfaceFlags): Promise<void> {
       continue;
     }
 
-    const note = moveHandAuthoredDir(packDir, name, from, to);
-    console.log(`moved ${name}: ${from}/ -> ${to}/${note ? ` (${note})` : ""}`);
+    const note = moveHandAuthoredDir(packDir, name, from, to, entry.group);
+    const where = entry.group ? `${entry.group}/` : "";
+    console.log(`moved ${name}: ${from}/${where} -> ${to}/${where}${note ? ` (${note})` : ""}`);
   }
 
   if (moved === 0) console.log("no moves needed");
@@ -589,7 +737,7 @@ async function runApply(flags: SurfaceFlags): Promise<void> {
 }
 
 async function runSet(name: string, want: "public" | "internal", flags: SurfaceFlags): Promise<void> {
-  const { packDir } = resolveSurfacePaths(flags);
+  const { packDir } = await resolveSurfacePaths(flags);
   const verbNames = new Set(readVerbRoster(packDir).map((v) => v.name));
   const { skillsNames, allNames } = collectRegistry(packDir, verbNames);
 
@@ -665,7 +813,7 @@ function confirmYesNo(promptText: string): Promise<boolean> {
 }
 
 async function runPalette(flags: SurfaceFlags): Promise<void> {
-  const { packDir } = resolveSurfacePaths(flags);
+  const { packDir } = await resolveSurfacePaths(flags);
   const verbNames = new Set(readVerbRoster(packDir).map((v) => v.name));
   const surface = readSurface(packDir);
   const { skillsNames } = collectRegistry(packDir, verbNames);

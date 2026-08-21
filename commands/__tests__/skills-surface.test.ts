@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { execFileSync } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { computeRows, decidePaletteAction, skillsSurface } from "../skills.ts";
@@ -434,5 +434,152 @@ describe("computeRows -- previously-public names absent from skills/, attachment
     if (decision.kind === "write") {
       expect(decision.delta.toInternal).toEqual(["ghost"]);
     }
+  });
+});
+
+describe("grouped packs and pack selection", () => {
+  test("list reads grouped layouts (skills/<group>/<name>) and reports the root surface.jsonc", async () => {
+    const packDir = makePackDir();
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": ["subagent-review-loop"] }\n`);
+    writeFile(join(packDir, "skills", "review", "subagent-review-loop", "SKILL.md"), "---\nname: subagent-review-loop\n---\nbody\n");
+    writeFile(join(packDir, "attachments", "forge", "checkout", "SKILL.md"), "---\nname: checkout\n---\nbody\n");
+
+    await skillsSurface(["list", "--pack", "mattstack", "--pack-dir", packDir]);
+
+    const joined = logs.join("\n");
+    expect(joined).toContain("rt skills surface -- pack mattstack");
+    expect(joined).toContain("source: surface.jsonc");
+    expect(joined).toMatch(/public {3}hand-authored {2}subagent-review-loop/);
+    expect(joined).toMatch(/internal hand-authored {2}checkout/);
+  });
+
+  test("set --public on a grouped internal skill moves it keeping its group, and writes the root surface.jsonc", async () => {
+    const packDir = makePackDir();
+    const { mattstackDir, manifestPath } = makeEngineFixture();
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": [] }\n`);
+    writeFile(join(packDir, "attachments", "forge", "checkout", "SKILL.md"), "---\nname: checkout\n---\nbody\n");
+
+    await skillsSurface([
+      "set", "checkout", "--public",
+      "--pack", "mattstack", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
+    ]);
+
+    expect(existsSync(join(packDir, "skills", "forge", "checkout", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(packDir, "attachments", "forge", "checkout"))).toBe(false);
+    expect(existsSync(join(packDir, "pack", "surface.jsonc"))).toBe(false);
+    expect(readFileSync(join(packDir, "surface.jsonc"), "utf8")).toContain('"checkout"');
+    expect(logs.join("\n")).toContain("moved checkout: attachments/forge/ -> skills/forge/");
+  });
+
+  test("no pack named and no tty: clean error that names the flag instead of guessing", async () => {
+    const { mattstackDir } = makeEngineFixture();
+    const { exitCode, errors } = await runExpectingCleanExit(() => skillsSurface(["list", "--mattstack-dir", mattstackDir]));
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("--pack");
+  });
+});
+
+describe("registered roots and name uniqueness", () => {
+  test("plugin.json skills roots are honored: a skill under a second root counts as registered", async () => {
+    const packDir = makePackDir();
+    writeFile(join(packDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.0.0", skills: ["./skills/review", "./plugin/skills"] }));
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": ["editing-skills", "subagent-review-loop"] }\n`);
+    writeFile(join(packDir, "skills", "review", "subagent-review-loop", "SKILL.md"), "---\nname: subagent-review-loop\n---\nbody\n");
+    writeFile(join(packDir, "plugin", "skills", "editing-skills", "SKILL.md"), "---\nname: editing-skills\n---\nbody\n");
+
+    await skillsSurface(["list", "--pack", "mattstack", "--pack-dir", packDir]);
+
+    const joined = logs.join("\n");
+    expect(joined).toMatch(/public {3}hand-authored {2}editing-skills/);
+    expect(joined).not.toContain("(no files on disk)editing-skills");
+  });
+
+  test("duplicate leaf names across groups are rejected with a clean error naming both dirs", async () => {
+    const packDir = makePackDir();
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": [] }\n`);
+    writeFile(join(packDir, "attachments", "forge", "sync", "SKILL.md"), "---\nname: sync\n---\nbody\n");
+    writeFile(join(packDir, "attachments", "pipeline", "sync", "SKILL.md"), "---\nname: sync\n---\nbody\n");
+
+    const { exitCode, errors } = await runExpectingCleanExit(() => skillsSurface(["list", "--pack", "mattstack", "--pack-dir", packDir]));
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain('skill name "sync" appears twice');
+    expect(errors.join("\n")).toContain("forge/sync");
+    expect(errors.join("\n")).toContain("pipeline/sync");
+  });
+});
+
+describe("registered roots stay inside the pack", () => {
+  test("plugin.json skills entries that escape the pack (../ or absolute) are ignored; in-pack roots are kept", async () => {
+    const packDir = makePackDir();
+    const outside = makePackDir();
+    writeFile(join(outside, "stray", "SKILL.md"), "---\nname: stray\n---\nbody\n");
+    writeFile(
+      join(packDir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ version: "1.0.0", skills: ["./skills", "../" + outside.split("/").pop()!, outside] }),
+    );
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": ["inside"] }\n`);
+    writeFile(join(packDir, "skills", "inside", "SKILL.md"), "---\nname: inside\n---\nbody\n");
+
+    await skillsSurface(["list", "--pack", "p", "--pack-dir", packDir]);
+
+    const joined = logs.join("\n");
+    expect(joined).toMatch(/public {3}hand-authored {2}inside/);
+    expect(joined).not.toContain("stray");
+  });
+});
+
+describe("registered roots are canonicalized", () => {
+  test("a symlinked root inside the pack that points outside it is ignored", async () => {
+    const packDir = makePackDir();
+    const outside = makePackDir();
+    writeFile(join(outside, "stray", "SKILL.md"), "---\nname: stray\n---\nbody\n");
+    mkdirSync(join(packDir, "skills"), { recursive: true });
+    symlinkSync(outside, join(packDir, "linked-root"));
+    writeFile(join(packDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.0.0", skills: ["./skills", "./linked-root"] }));
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": ["inside"] }\n`);
+    writeFile(join(packDir, "skills", "inside", "SKILL.md"), "---\nname: inside\n---\nbody\n");
+
+    await skillsSurface(["list", "--pack", "p", "--pack-dir", packDir]);
+
+    const joined = logs.join("\n");
+    expect(joined).toMatch(/public {3}hand-authored {2}inside/);
+    expect(joined).not.toContain("stray");
+  });
+});
+
+describe("registered roots may start with dots without escaping", () => {
+  test("a directory literally named ..skills inside the pack is accepted as a root", async () => {
+    const packDir = makePackDir();
+    writeFile(
+      join(packDir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ version: "1.0.0", skills: ["./skills", "./..skills"] }),
+    );
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": ["inside", "dotty"] }\n`);
+    writeFile(join(packDir, "skills", "inside", "SKILL.md"), "---\nname: inside\n---\nbody\n");
+    writeFile(join(packDir, "..skills", "dotty", "SKILL.md"), "---\nname: dotty\n---\nbody\n");
+
+    await skillsSurface(["list", "--pack", "p", "--pack-dir", packDir]);
+
+    const joined = logs.join("\n");
+    expect(joined).toMatch(/public {3}hand-authored {2}inside/);
+    expect(joined).toContain("dotty");
+  });
+});
+
+describe("registered roots must be directories", () => {
+  test("a plugin.json skills entry pointing at a regular file is ignored", async () => {
+    const packDir = makePackDir();
+    writeFile(join(packDir, "notes.md"), "not a skills root\n");
+    writeFile(
+      join(packDir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ version: "1.0.0", skills: ["./skills", "./notes.md", "./missing"] }),
+    );
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": ["inside"] }\n`);
+    writeFile(join(packDir, "skills", "inside", "SKILL.md"), "---\nname: inside\n---\nbody\n");
+
+    await skillsSurface(["list", "--pack", "p", "--pack-dir", packDir]);
+
+    const joined = logs.join("\n");
+    expect(joined).toMatch(/public {3}hand-authored {2}inside/);
   });
 });
