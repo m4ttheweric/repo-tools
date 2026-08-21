@@ -1008,6 +1008,51 @@ describe("startHomeSnapshot — real git integration", () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 15_000);
+
+  test("a claimed FILE zone is genuinely excluded end-to-end — the exclude pathspec, against real git, actually protects a single file", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-file-zone-")));
+    const { repoDir } = initRepoWithOrigin(root);
+    const statePath = join(root, "state.json");
+
+    try {
+      mkdirSync(join(repoDir, "scripts"), { recursive: true });
+      writeFileSync(join(repoDir, "scripts", "deploy.sh"), "#!/bin/sh\necho seed\n");
+      execFileSync("git", ["add", "-A"], { cwd: repoDir });
+      execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd: repoDir });
+
+      // Edit the claimed file AND a same-prefix sibling that must NOT be
+      // protected by it (the exact bug: a naive trailing-slash exclude would
+      // either miss the claimed file entirely or over-match this sibling).
+      writeFileSync(join(repoDir, "scripts", "deploy.sh"), "#!/bin/sh\necho changed\n");
+      writeFileSync(join(repoDir, "scripts", "deploy.sh.bak"), "backup\n");
+      writeFileSync(join(repoDir, "notes.md"), "new note\n");
+
+      const owners: Owners = { zones: { "scripts/deploy.sh": { owner: "matt", claimedAt: "2026-01-01T00:00:00.000Z" } } };
+      const handle = startHomeSnapshot({
+        log: fakeLog(),
+        broadcast: () => {},
+        repoDir,
+        statePath,
+        readSettings: () => ({ ...DEFAULT_SETTINGS, pushDelaySec: 3600 }),
+        readOwners: () => owners,
+      });
+      await handle.ready;
+
+      const result = await handle.runNow("manual");
+      expect(result.committed).toBe(true);
+
+      const committedFiles = execFileSync("git", ["show", "--name-only", "--pretty=format:", "HEAD"], { cwd: repoDir })
+        .toString().trim().split("\n").filter(Boolean).sort();
+      expect(committedFiles).toEqual(["notes.md", "scripts/deploy.sh.bak"]);
+
+      const status = execFileSync("git", ["status", "--porcelain"], { cwd: repoDir }).toString();
+      expect(status).toContain(" M scripts/deploy.sh");
+
+      handle.stop();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
 
 // ─── commit observability: one info log, persistent-failure visibility ─────
