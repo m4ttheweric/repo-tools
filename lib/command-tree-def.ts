@@ -692,14 +692,20 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   home: {
-    description: "The git-backed ~/.mattstack home repo",
+    description: "The git-backed ~/.mattstack/user personal repo",
     subcommands: {
       init: {
-        description: "Provision the home repo: print, then run, the adoption plan",
+        description: "Provision this machine: clone the user repo, then print and run the provisioning plan",
         module: "./commands/home.ts",
         fn: "homeInit",
         args: [
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print the plan without running it" },
+          {
+            name: "Clone URL",
+            flag: "--url",
+            type: "text",
+            hint: "The user repo to clone (default: https://github.com/m4ttheweric/mattstack-home)",
+          },
         ],
       },
       key: {

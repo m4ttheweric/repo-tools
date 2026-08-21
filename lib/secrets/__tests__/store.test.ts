@@ -549,7 +549,7 @@ describe("rotateSecret", () => {
   });
 });
 
-describe("real seam spawn options — cwd pin (Task 5 carried review item)", () => {
+describe("real seam spawn options — cwd pin", () => {
   test("pins cwd to <mattstackHome>/user so sops resolves THIS home's .sops.yaml (and secrets/.* regex), never a foreign cwd's", () => {
     const opts = buildSecretsSpawnOptions();
     expect(opts.cwd).toBe(join(mattstackHome(), "user"));
