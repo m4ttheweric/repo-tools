@@ -8,7 +8,7 @@ export type StepSource = {
   body: string; // frontmatter-stripped markdown
   slots: Record<string, SlotSpec>;
   allowedTools: string[]; // raw entries from frontmatter allowed-tools
-  scriptFiles: string[]; // paths relative to dir under scripts/, may be empty
+  stepFiles: string[]; // non-SKILL.md files relative to dir (scripts/, references/, ...), vendored path-preserving
 };
 
 export type AttachmentSource = {

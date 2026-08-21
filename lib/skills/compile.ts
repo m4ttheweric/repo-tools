@@ -128,9 +128,8 @@ function buildBody(
 function buildVendoredFiles(step: StepSource, boundSlots: BoundSlot[]): CompiledFile[] {
   const files: CompiledFile[] = [];
 
-  for (const entry of step.scriptFiles) {
-    const tail = entry.startsWith("scripts/") ? entry.slice("scripts/".length) : entry;
-    files.push({ path: `scripts/${tail}`, copyFrom: `${step.dir}/${entry}` });
+  for (const entry of step.stepFiles) {
+    files.push({ path: entry, copyFrom: `${step.dir}/${entry}` });
   }
 
   for (const { slotName, fill } of boundSlots) {
