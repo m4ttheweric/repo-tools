@@ -100,7 +100,10 @@ function patchTree(repoName: string, path: string, patch: (rec: TreeRecord) => v
  * died but nothing about why, and the output is not otherwise reachable from the
  * CLI.
  */
-function createFailedError(created: { failedStep?: string; output?: string }): string {
+export function createFailedError(
+  created: { failedStep?: string; output?: string },
+  note?: string | null,
+): string {
   const step = created.failedStep ?? "unknown";
   const tail = (created.output ?? "")
     .trim()
@@ -108,7 +111,27 @@ function createFailedError(created: { failedStep?: string; output?: string }): s
     .slice(-CREATE_FAILED_TAIL_LINES)
     .join("\n")
     .trim();
-  return tail.length > 0 ? `create-failed:${step}\n${tail}` : `create-failed:${step}`;
+  return [`create-failed:${step}`, tail, note].filter((part) => part).join("\n");
+}
+
+/**
+ * On-deck trees provision could not select because their last freshen failed and
+ * they are inside its retry backoff. Without this the refusal reads as one
+ * unlucky create when the whole pool is failing the same way.
+ */
+export function backoffNote(trees: TreeRecord[], now: number): string | null {
+  const held = trees.filter(
+    (t) =>
+      t.kind === "ephemeral" &&
+      t.state === "on-deck" &&
+      t.nextRetryAt !== undefined &&
+      Date.parse(t.nextRetryAt) > now,
+  );
+  if (held.length === 0) return null;
+
+  const earliest = Math.min(...held.map((t) => Date.parse(t.nextRetryAt!)));
+  const noun = held.length === 1 ? "tree" : "trees";
+  return `${held.length} on-deck ${noun} held by retry backoff until ${new Date(earliest).toISOString()}`;
 }
 
 /** Every local branch name in the repo, for the sync `exists()` disambiguation predicate. */
@@ -282,7 +305,10 @@ export function createWorktreeHandlers(
         });
         if (!created.ok) {
           if (created.error === "busy") return { ok: false, error: "busy" };
-          return { ok: false, error: createFailedError(created) };
+          return {
+            ok: false,
+            error: createFailedError(created, backoffNote(loadRegistry(repoName), Date.now())),
+          };
         }
         rec = created.tree;
         wasOnDeck = false;
