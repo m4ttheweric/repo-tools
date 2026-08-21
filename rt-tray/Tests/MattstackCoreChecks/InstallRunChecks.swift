@@ -207,6 +207,29 @@ let installRunChecks: [Check] = [
             c.expectEqual(m.resumableStepId, "plugins.install")
         }
     },
+    Check("dropping the last reference mid-run lets the model deinit and cancels its task") { c in
+        final class TerminationFlag: @unchecked Sendable { var cancelled = false }
+        let flag = TerminationFlag()
+        let stream: ApplyStreamFactory = { _ in
+            AsyncThrowingStream { cont in
+                cont.onTermination = { _ in flag.cancelled = true }
+                cont.yield(planLine)
+                // deliberately never finishes — mirrors a long-lived rt process stream
+            }
+        }
+        final class Holder: @unchecked Sendable { var model: InstallRunModel? }
+        let holder = Holder()
+        let broker = NeedBroker(services: FakeServices(), privileged: FakePrivileged())
+        holder.model = await MainActor.run { InstallRunModel(stream: stream, needs: broker) }
+        weak var weakModel = holder.model
+        await MainActor.run { holder.model?.start() }
+        for _ in 0..<50 { if await MainActor.run(body: { !(holder.model?.steps.isEmpty ?? true) }) { break }; try await Task.sleep(nanoseconds: 10_000_000) }
+        holder.model = nil
+        for _ in 0..<50 { if weakModel == nil { break }; try await Task.sleep(nanoseconds: 10_000_000) }
+        c.expect(weakModel == nil, "the model must be free to deinit while its run task is suspended between stream lines, not held strong for the run's whole lifetime")
+        for _ in 0..<50 { if flag.cancelled { break }; try await Task.sleep(nanoseconds: 10_000_000) }
+        c.expect(flag.cancelled, "deinit must cancel the in-flight task so the stream tears down")
+    },
     Check("generation guard: a stale need result cannot mutate a newer run's steps") { c in
         final class Calls: @unchecked Sendable { var n = 0 }
         let calls = Calls()
