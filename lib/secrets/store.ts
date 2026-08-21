@@ -5,17 +5,27 @@
  * argv, never a file — mirroring readAgeKey's own custody rule and its
  * `.sops.yaml` creation rule for `user/secrets/**` (lib/home/age-key.ts).
  *
- * Write idiom: decrypt (or start from `{}`), merge in JS, write plaintext to
- * the real path, then `sops -e -i` it in place. This keeps the new value out
- * of every subprocess's argv (the alternative, `sops --set`, would put it on
- * the sops command line). The brief window where the file holds plaintext
- * mid-write is the same one `sops <file>`'s own interactive edit flow
- * accepts; the file is written 0600 to bound the exposure.
+ * Write idiom: stage plaintext at `~/.mattstack/rt/tmp/<domain>.<pid>.json`
+ * (rt/ is gitignored — never a tracked path), fsync it, encrypt with
+ * `--filename-override user/secrets/<domain>.json` (keeps the `.sops.yaml`
+ * path_regex matching even though the real input lives in rt/tmp) into
+ * `<target>.tmp`, fsync + rename that over the real target, then read the
+ * result back and confirm it looks like sops ciphertext before declaring
+ * success. Every staging/output-tmp path is unlinked in a `finally`, so a
+ * failure never leaves plaintext at a path the user has to find and delete —
+ * the original target (untouched until the rename) is always the fallback.
+ * This keeps the new value out of every subprocess's argv too, unlike
+ * `sops --set`, which would put it on the sops command line.
+ *
+ * No file locking: two concurrent `rt secrets set` calls against the same
+ * domain race on the same rename target (last one to rename wins, silently
+ * dropping the other's merge). Acceptable for a single-operator CLI; not
+ * safe for concurrent/multi-process writers.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "fs";
 import { dirname, join } from "path";
-import { mattstackHome } from "../rt-paths.ts";
+import { mattstackHome, rtDir } from "../rt-paths.ts";
 import { readAgeKey, type AgeKeySeam } from "../home/age-key.ts";
 
 export interface SecretsExecResult {
@@ -27,7 +37,16 @@ export interface SecretsExecResult {
 export interface SecretsExecSeam {
   run(cmd: string[], opts?: { env?: Record<string, string>; sensitive?: boolean }): Promise<SecretsExecResult>;
   fileExists(path: string): boolean;
+  /** Raw fs read (no decryption) — used for the post-encrypt ciphertext readback. */
+  readFile(path: string): string;
+  /** Writes the plaintext staging file only: 0600, fsynced. Never used for the real target. */
   writeFile(path: string, content: string): void;
+  ensureDir(path: string, mode: number): void;
+  chmod(path: string, mode: number): void;
+  /** fsyncs `from`, then renames it over `to` — the atomic publish step. */
+  fsyncAndRename(from: string, to: string): void;
+  /** Best-effort unlink; never throws (cleanup must not mask the real error). */
+  removeFile(path: string): void;
 }
 
 export interface SecretsSeams {
@@ -42,7 +61,34 @@ export class NoAgeKeyError extends Error {
   }
 }
 
+// `domain` feeds a filesystem path directly, so it's held to the strict,
+// path-escape-proof shape. `key` never touches a path (it's a JSON object
+// key), and the brief's own inventory needs room a bare `[a-z0-9-]*` domain
+// pattern doesn't give: camelCase names (linearApiKey) and one dotted
+// compound (deck's passwordHash.<app>) — so it gets a calibrated pattern
+// that still rejects the dangerous shapes (spaces, slashes, control chars)
+// without breaking every real key this store is meant to hold.
+const DOMAIN_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+const KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+/** `domain`/`key` become path/object-key components — reject anything else before any fs/exec call. */
+export class InvalidSecretsSegmentError extends Error {
+  constructor(kind: "domain" | "key", value: string, pattern: RegExp) {
+    super(`invalid ${kind} "${value}" — must match ${pattern}`);
+  }
+}
+
+function validateDomain(domain: string): void {
+  if (!DOMAIN_PATTERN.test(domain)) throw new InvalidSecretsSegmentError("domain", domain, DOMAIN_PATTERN);
+}
+
+function validateKey(key: string): void {
+  if (!KEY_PATTERN.test(key)) throw new InvalidSecretsSegmentError("key", key, KEY_PATTERN);
+}
+
+/** Validates `domain` — every path construction routes through here, so this is the one choke point. */
 export function secretsFilePath(domain: string): string {
+  validateDomain(domain);
   return join(mattstackHome(), "user", "secrets", `${domain}.json`);
 }
 
@@ -57,34 +103,49 @@ async function sopsAgeKeyEnv(ageKeySeam: AgeKeySeam): Promise<Record<string, str
   return { SOPS_AGE_KEY: result.key };
 }
 
-/** One decrypted domain object per process per domain; writeSecret is the only invalidator. */
-const domainMemo = new Map<string, Record<string, string>>();
-
-/** Null means the file doesn't exist — distinct from a keychain error, which throws. */
-async function decryptDomain(domain: string, seams: SecretsSeams): Promise<Record<string, string> | null> {
-  if (domainMemo.has(domain)) return domainMemo.get(domain)!;
-
-  const filePath = secretsFilePath(domain);
-  if (!seams.execSeam.fileExists(filePath)) return null;
-
-  const env = await sopsAgeKeyEnv(seams.ageKeySeam);
-  const result = await seams.execSeam.run(["sops", "-d", filePath], { env, sensitive: true });
+async function sopsDecrypt(filePath: string, env: Record<string, string>, execSeam: SecretsExecSeam): Promise<Record<string, string>> {
+  const result = await execSeam.run(["sops", "-d", filePath], { env, sensitive: true });
   if (result.code !== 0) {
     throw new Error(`sops -d ${filePath}: ${result.stderr}`);
   }
-
-  let parsed: Record<string, string>;
   try {
-    parsed = JSON.parse(result.stdout);
+    return JSON.parse(result.stdout);
   } catch {
     throw new Error(`sops -d ${filePath}: decrypted output was not valid JSON`);
   }
+}
 
+/** One decrypted domain object per process per domain; writeSecret is the only invalidator. */
+const domainMemo = new Map<string, Record<string, string>>();
+
+/** Test-only: bun test shares one process across the whole file — clear cross-test state. */
+export function resetSecretsMemo(): void {
+  domainMemo.clear();
+}
+
+/**
+ * Null means the file doesn't exist — distinct from a keychain error, which
+ * throws. fileExists is checked BEFORE consulting the memo (not after) so a
+ * domain deleted out from under the process re-reads as missing instead of
+ * serving a stale cached value.
+ */
+async function decryptDomain(domain: string, seams: SecretsSeams): Promise<Record<string, string> | null> {
+  const filePath = secretsFilePath(domain);
+  if (!seams.execSeam.fileExists(filePath)) {
+    domainMemo.delete(domain);
+    return null;
+  }
+
+  if (domainMemo.has(domain)) return domainMemo.get(domain)!;
+
+  const env = await sopsAgeKeyEnv(seams.ageKeySeam);
+  const parsed = await sopsDecrypt(filePath, env, seams.execSeam);
   domainMemo.set(domain, parsed);
   return parsed;
 }
 
 export async function readSecret(domain: string, key: string, seams: SecretsSeams): Promise<string | null> {
+  validateKey(key);
   const secrets = await decryptDomain(domain, seams);
   if (secrets === null) return null;
   return secrets[key] ?? null;
@@ -96,21 +157,86 @@ export async function listSecretNames(domain: string, seams: SecretsSeams): Prom
   return secrets === null ? [] : Object.keys(secrets);
 }
 
+function looksLikeSopsCiphertext(content: string): boolean {
+  try {
+    const parsed = JSON.parse(content);
+    return typeof parsed === "object" && parsed !== null && "sops" in parsed;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Stage → encrypt-to-tmp → fsync+rename → readback. Every path this touches
+ * outside the real target is removed in `finally`, so a thrown error never
+ * needs to name a file for the user to clean up — there isn't one.
+ */
+async function encryptDomain(domain: string, targetPath: string, payload: Record<string, string>, execSeam: SecretsExecSeam): Promise<void> {
+  const stagingDir = join(rtDir(), "tmp");
+  execSeam.ensureDir(stagingDir, 0o700);
+  execSeam.ensureDir(dirname(targetPath), 0o700);
+
+  const stagingPath = join(stagingDir, `${domain}.${process.pid}.json`);
+  const outputTmpPath = `${targetPath}.tmp`;
+  // Relative to the home root, matching .sops.yaml's `path_regex:
+  // user/secrets/.*` — the real input path (under rt/tmp) would never match.
+  const filenameOverride = join("user", "secrets", `${domain}.json`);
+
+  try {
+    execSeam.writeFile(stagingPath, JSON.stringify(payload, null, 2));
+
+    const result = await execSeam.run(
+      ["sops", "-e", "--filename-override", filenameOverride, "--output", outputTmpPath, stagingPath],
+      { sensitive: true },
+    );
+    if (result.code !== 0) {
+      throw new Error(
+        `sops -e ${domain}: encryption failed — ${result.stderr}\n` +
+          "no plaintext was left on disk (staging files are always cleaned up)",
+      );
+    }
+
+    // sops creates outputTmpPath itself, at umask-derived (not 0600) perms.
+    execSeam.chmod(outputTmpPath, 0o600);
+    execSeam.fsyncAndRename(outputTmpPath, targetPath);
+    execSeam.chmod(targetPath, 0o600);
+
+    const readback = execSeam.readFile(targetPath);
+    if (!looksLikeSopsCiphertext(readback)) {
+      throw new Error(`sops -e ${domain}: post-encrypt read-back of ${targetPath} does not look like sops ciphertext — refusing to declare success`);
+    }
+  } finally {
+    execSeam.removeFile(stagingPath);
+    execSeam.removeFile(outputTmpPath);
+  }
+}
+
 export async function writeSecret(domain: string, key: string, value: string, seams: SecretsSeams): Promise<void> {
+  validateKey(key);
   const filePath = secretsFilePath(domain);
-  const existing = (await decryptDomain(domain, seams)) ?? {};
-  const updated = { ...existing, [key]: value };
+
+  // Encryption alone only needs the recipient's PUBLIC key (from .sops.yaml)
+  // — a brand-new domain would otherwise encrypt successfully even on a
+  // machine that holds no private key at all, silently writing a credential
+  // this machine can never read back. Assert it up front, unconditionally,
+  // not only when there happens to be an existing file to decrypt.
+  const env = await sopsAgeKeyEnv(seams.ageKeySeam);
+
+  let existing: Record<string, string>;
+  if (!seams.execSeam.fileExists(filePath)) {
+    existing = {};
+  } else if (domainMemo.has(domain)) {
+    existing = domainMemo.get(domain)!;
+  } else {
+    existing = await sopsDecrypt(filePath, env, seams.execSeam);
+  }
 
   // Invalidate before mutating disk: after a failed encrypt the file may
-  // hold plaintext, so a cached ciphertext-derived read would be stale too.
+  // hold nothing usable, so a cached ciphertext-derived read would be stale.
   domainMemo.delete(domain);
 
-  seams.execSeam.writeFile(filePath, JSON.stringify(updated, null, 2));
-
-  const result = await seams.execSeam.run(["sops", "-e", "-i", filePath], { sensitive: true });
-  if (result.code !== 0) {
-    throw new Error(`sops -e -i ${filePath}: encryption failed — ${filePath} may still hold plaintext: ${result.stderr}`);
-  }
+  const updated = { ...existing, [key]: value };
+  await encryptDomain(domain, filePath, updated, seams.execSeam);
 }
 
 /**
@@ -124,6 +250,8 @@ export async function rotateSecret(
   minter: () => string | Promise<string>,
   seams: SecretsSeams,
 ): Promise<string> {
+  validateDomain(domain);
+  validateKey(key);
   const newValue = await minter();
   await writeSecret(domain, key, newValue, seams);
   return `secrets: rotate ${domain}.${key}`;
@@ -132,15 +260,21 @@ export async function rotateSecret(
 const CLI_DEBUG = process.env.RT_LOG_LEVEL === "debug";
 
 /**
- * Mirrors age-key.ts's withArgvRedaction in spirit, not mechanics: the
- * secret here never touches argv (it's SOPS_AGE_KEY in env, or the decrypted
- * JSON on stdout), so there's no argv position to redact — instead the
- * `sensitive` marker suppresses env and stdout/stderr from the debug line,
- * logging only the command name and path.
+ * Pure formatter, exported so its redaction can be unit-tested without a
+ * real subprocess: for a sensitive call this must never echo `opts.env`
+ * (SOPS_AGE_KEY) or `result.stdout`/`stderr` (the decrypted payload),
+ * whatever they contain — only argv, which by this module's design never
+ * carries a secret (SOPS_AGE_KEY travels via env, values via files, never
+ * argv), so nothing needs positional redaction the way age-key.ts's `-w`
+ * value does.
  */
+export function formatDebugLine(cmd: string[], opts?: { sensitive?: boolean }): string {
+  return `[secrets] ${cmd.join(" ")}${opts?.sensitive ? " (env/output redacted)" : ""}`;
+}
+
 function debugLog(cmd: string[], sensitive: boolean | undefined): void {
   if (!CLI_DEBUG) return;
-  console.error(`[secrets] ${cmd.join(" ")}${sensitive ? " (env/output redacted)" : ""}`);
+  console.error(formatDebugLine(cmd, { sensitive }));
 }
 
 /** Real seam: Bun.spawn-based capture, real fs reads/writes. */
@@ -149,8 +283,11 @@ export function createRealSecretsExecSeam(): SecretsExecSeam {
     async run(cmd, opts) {
       debugLog(cmd, opts?.sensitive);
       const proc = Bun.spawn(cmd, {
-        // Live reference, not a snapshot: matches lib/home/init-exec.ts's
-        // PATH-resolution note. SOPS_AGE_KEY overrides via opts.env only.
+        // A fresh object every call (not a live reference/pass-through like
+        // init-exec.ts's raw `env: process.env`) — but since it's built from
+        // process.env at call time rather than cached once at module load, a
+        // runtime PATH mutation is still visible; opts.env only layers
+        // SOPS_AGE_KEY on top.
         env: { ...process.env, ...opts?.env },
         stdout: "pipe",
         stderr: "pipe",
@@ -165,9 +302,42 @@ export function createRealSecretsExecSeam(): SecretsExecSeam {
     fileExists(path) {
       return existsSync(path);
     },
+    readFile(path) {
+      return readFileSync(path, "utf8");
+    },
     writeFile(path, content) {
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, content, { mode: 0o600 });
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      const fd = openSync(path, "w", 0o600);
+      try {
+        writeSync(fd, content);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      chmodSync(path, 0o600); // mode at open() only applies to a freshly-created inode
+    },
+    ensureDir(path, mode) {
+      mkdirSync(path, { recursive: true, mode });
+      chmodSync(path, mode);
+    },
+    chmod(path, mode) {
+      chmodSync(path, mode);
+    },
+    fsyncAndRename(from, to) {
+      const fd = openSync(from, "r+");
+      try {
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(from, to);
+    },
+    removeFile(path) {
+      try {
+        unlinkSync(path);
+      } catch {
+        // already gone, or nothing was ever written — cleanup is best-effort
+      }
     },
   };
 }

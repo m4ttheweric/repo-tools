@@ -53,14 +53,42 @@ interface CommandLog {
   exitCode?: number;
 }
 
+const SECRETS_WRITE_VERBS = new Set(["set", "rotate"]);
+
+/**
+ * `rt secrets set|rotate <domain> <key>` never puts the value on argv by
+ * design (commands/secrets.ts prompts or reads stdin) — but this is defense
+ * in depth for any invocation that still carries a trailing token there
+ * (an old habit, a stray positional), so anything past `<domain> <key>` is
+ * redacted regardless of how it got there. Two shapes call this: the leaf
+ * `rest` args (dispatch's tree walk already consumed the "secrets set"
+ * prefix, so `command` carries that context instead) and the full raw argv
+ * seeded before dispatch resolves anything (the prefix is still IN the
+ * array).
+ */
+function redactSecretsWriteTail(args: string[], command?: string): string[] {
+  if (command && /(?:^|\s)secrets (?:set|rotate)$/.test(command)) {
+    return args.map((a, i) => (i < 2 ? a : "[redacted]"));
+  }
+
+  for (let i = 0; i + 1 < args.length; i++) {
+    if (args[i] === "secrets" && SECRETS_WRITE_VERBS.has(args[i + 1]!)) {
+      return args.map((a, idx) => (idx <= i + 3 ? a : "[redacted]"));
+    }
+  }
+  return args;
+}
+
 /**
  * Returns a copy of args with the value following any `--reason` flag
- * replaced by "[redacted]" (also handles the `--reason=value` form). Reason
- * text is free-form and often sensitive (e.g. `rt sdm connect`), so it must
- * never reach the on-disk CLI log. This only affects what gets logged --
- * the real args passed to command handlers are never touched.
+ * replaced by "[redacted]" (also handles the `--reason=value` form), plus
+ * anything past `secrets set|rotate <domain> <key>` (see
+ * redactSecretsWriteTail). Reason text is free-form and often sensitive
+ * (e.g. `rt sdm connect`), so it must never reach the on-disk CLI log. This
+ * only affects what gets logged -- the real args passed to command handlers
+ * are never touched.
  */
-export function redactSensitiveArgs(args: string[]): string[] {
+export function redactSensitiveArgs(args: string[], command?: string): string[] {
   const result: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -78,7 +106,7 @@ export function redactSensitiveArgs(args: string[]): string[] {
     }
     result.push(arg);
   }
-  return result;
+  return redactSecretsWriteTail(result, command);
 }
 
 export function logCommand(entry: CommandLog): void {
@@ -90,7 +118,7 @@ export function logCommand(entry: CommandLog): void {
     const line = JSON.stringify({
       time: new Date().toISOString(),
       ...entry,
-      args: redactSensitiveArgs(entry.args),
+      args: redactSensitiveArgs(entry.args, entry.command),
     }) + "\n";
 
     const fd = openSync(logPath(), "a");

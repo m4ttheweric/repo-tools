@@ -727,13 +727,13 @@ export const TREE: Record<string, CommandNode> = {
     description: "sops-encrypted secrets under ~/.mattstack/user/secrets/",
     subcommands: {
       set: {
-        description: "Write a secret (creates the domain file, or one key within it)",
+        description: "Write a secret (creates the domain file, or one key within it) — value prompted, never a CLI arg",
         module: "./commands/secrets.ts",
         fn: "secretsSet",
         args: [
           { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
           { name: "Key", type: "text", placeholder: "linearApiKey", hint: "Key name within the domain" },
-          { name: "Value", type: "text", placeholder: "lin_api_...", hint: "The secret value" },
+          { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the value from stdin instead of a no-echo prompt (scripting)" },
         ],
       },
       list: {
@@ -745,13 +745,13 @@ export const TREE: Record<string, CommandNode> = {
         ],
       },
       rotate: {
-        description: "Replace a secret's value; prints the rotation commit message",
+        description: "Replace a secret's value; prints the rotation commit message — value prompted, never a CLI arg",
         module: "./commands/secrets.ts",
         fn: "secretsRotate",
         args: [
           { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
           { name: "Key", type: "text", placeholder: "gitlabToken", hint: "Key name within the domain" },
-          { name: "Value", type: "text", placeholder: "glpat-...", hint: "The new secret value" },
+          { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the new value from stdin instead of a no-echo prompt (scripting)" },
         ],
       },
     },
