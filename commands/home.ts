@@ -1,21 +1,21 @@
 /**
- * rt home — the git-backed ~/.mattstack home repo.
+ * rt home — the git-backed ~/.mattstack/user personal repo, plus per-machine
+ * provisioning of the ~/.mattstack tree around it.
  *
- *   rt home init [--dry-run]   print, then run, the adoption plan
- *   rt home key export        print the age private key once, for a password manager
+ *   rt home init [--dry-run] [--url <remote>]   print, then run, the provisioning plan
+ *   rt home key export                          print the age private key once, for a password manager
  *
  * `init` gathers state, prints the plan from lib/home/init-plan.ts, and
  * (unless --dry-run) runs it through lib/home/init-exec.ts's injected seam.
  * `key export` delegates entirely to lib/home/age-key.ts.
  */
 
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, readlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
-import { mattstackHome, teamsDir } from "../lib/rt-paths.ts";
-import { buildInitPlan, type HomeState, type InitStep } from "../lib/home/init-plan.ts";
-import { createRealExecSeam, executeInitPlan, type ExecResult, type ExecSeam } from "../lib/home/init-exec.ts";
-import { parseOriginUrl } from "../lib/home/git-config.ts";
+import { machineKey, mattstackHome } from "../lib/rt-paths.ts";
+import { buildInitPlan, InvalidMachineKeyError, STATE_DIR_NAMES, type HomeState, type InitStep } from "../lib/home/init-plan.ts";
+import { createRealExecSeam, executeInitPlan, type ExecSeam } from "../lib/home/init-exec.ts";
 import {
   AgeKeyAbsentError,
   createRealAgeKeySeam,
@@ -26,15 +26,13 @@ import {
   type AgeKeySeam,
 } from "../lib/home/age-key.ts";
 
-/** Stray root cruft deleted at init time, not adopted into the repo. */
-const CRUFT_CANDIDATES = ["skills.jsonc.pre-pack", "skills.jsonc.retired-backup"];
+export const DEFAULT_USER_REPO_URL = "https://github.com/m4ttheweric/mattstack-home";
 
 export interface HomeProbes {
   isGitRepo(dir: string): boolean;
   exists(path: string): boolean;
-  listTeamClones(): string[];
-  /** Pure fs read; null when the file is missing or unreadable. */
-  readFile(path: string): string | null;
+  /** The symlink's target, or null when `path` is absent or not a symlink. */
+  readSymlinkTarget(path: string): string | null;
 }
 
 export interface SopsYamlSeam {
@@ -59,20 +57,9 @@ function defaultProbes(): HomeProbes {
   return {
     isGitRepo: (dir) => existsSync(join(dir, ".git")),
     exists: (path) => existsSync(path),
-    listTeamClones: () => {
-      const dir = teamsDir();
-      if (!existsSync(dir)) return [];
+    readSymlinkTarget: (path) => {
       try {
-        return readdirSync(dir, { withFileTypes: true })
-          .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
-          .map((entry) => entry.name);
-      } catch {
-        return [];
-      }
-    },
-    readFile: (path) => {
-      try {
-        return readFileSync(path, "utf8");
+        return readlinkSync(path);
       } catch {
         return null;
       }
@@ -80,72 +67,120 @@ function defaultProbes(): HomeProbes {
   };
 }
 
-export function gatherHomeState(home: string, probes: HomeProbes): HomeState {
-  // hasUserClone gates foldInPrefs, which runs `git filter-repo` against
-  // this directory — a plain (non-git) user/ must not trigger it.
-  const hasUserClone = probes.isGitRepo(join(home, "user"));
-  // Read while user/.git still exists — unlinkUserClone (lib/home/init-exec.ts)
-  // removes it before the fold-in re-clones from this URL.
-  const prefsRemoteUrl = hasUserClone
-    ? (parseOriginUrl(probes.readFile(join(home, "user", ".git", "config")) ?? "") ?? undefined)
-    : undefined;
+const SKILLS_SYMLINK_TARGET = join("user", "skills.jsonc");
+
+export function gatherHomeState(home: string, probes: HomeProbes, machineKeyValue: string): HomeState {
+  const userRepoPresent = probes.isGitRepo(join(home, "user"));
+  const machineKeyFilePresent = probes.exists(join(home, "machine-key"));
+  const profileDirPresent = probes.exists(join(home, "user", "local", machineKeyValue));
+
+  const skillsPath = join(home, "skills.jsonc");
+  const symlinkTarget = probes.readSymlinkTarget(skillsPath);
+  const skillsSymlinkPresent = symlinkTarget === SKILLS_SYMLINK_TARGET;
+  const skillsSymlinkBlocked = symlinkTarget === null && probes.exists(skillsPath);
+
+  const stateDirsMissing = STATE_DIR_NAMES.filter((name) => !probes.exists(join(home, name)));
 
   return {
-    isRepo: probes.isGitRepo(home),
-    hasUserClone,
-    hasTeamClones: probes.listTeamClones(),
-    cruft: CRUFT_CANDIDATES.filter((name) => probes.exists(join(home, name))),
-    prefsRemoteUrl,
+    userRepoPresent,
+    machineKeyFilePresent,
+    profileDirPresent,
+    skillsSymlinkPresent,
+    skillsSymlinkBlocked,
+    stateDirsMissing,
   };
 }
 
 function describeStep(step: InitStep): string {
   switch (step.kind) {
-    case "createRepo":
-      return `create the private GitHub repo ${step.name}`;
-    case "gitInit":
-      return `git init -b ${step.branch}`;
+    case "ensureStateDirs":
+      return `create missing state dirs: ${step.dirs.join(", ")}`;
+    case "cloneUserRepo":
+      return `clone ${step.url} into user/`;
     case "writeGitignore":
-      return "write the boundary .gitignore";
+      return "write the user repo's .gitignore";
     case "writeOwners":
-      return "write snapshot-owners.jsonc";
-    case "deleteCruft":
-      return `delete stray cruft: ${step.paths.join(", ")}`;
-    case "unlinkUserClone":
-      return "unlink user/.git (fold-in re-clones from the origin remote)";
-    case "foldInPrefs":
-      return `fold mattstack-prefs history into user/ (git filter-repo, from ${step.sourceUrl})`;
-    case "adoptCommit":
-      return `commit: "${step.message}"`;
-    case "push":
-      return `push -u origin ${step.branch}`;
+      return "write user/snapshot-owners.jsonc";
+    case "writeMachineKey":
+      return `write the machine-key file (${step.key})`;
+    case "ensureProfileDir":
+      return `create user/local/${step.key}/`;
+    case "writeSkillsSymlink":
+      return "link skills.jsonc -> user/skills.jsonc";
   }
 }
+
+/** Thrown by parseUrlArg for a `--url` with no usable value — never silently absorbed into the default or into the next flag. */
+export class InvalidUrlArgError extends Error {}
+
+function parseUrlArg(args: string[]): string {
+  const idx = args.indexOf("--url");
+  if (idx === -1) return DEFAULT_USER_REPO_URL;
+
+  const value = args[idx + 1];
+  if (value === undefined || value.startsWith("--")) {
+    throw new InvalidUrlArgError("--url requires a value, e.g. --url https://github.com/org/mattstack-home");
+  }
+  return value;
+}
+
+export type EnsureHomeAgeKeyResult = { ok: true } | { ok: false; message: string };
 
 /**
  * The sole mint site: `key export` (lib/home/age-key.ts:keyExport) refuses
  * to mint, precisely so a keychain-access error there can never be mistaken
  * for "no key yet". Idempotent (ensureAgeKey mints only on provable
- * absence), so it's safe to run on every init — including the
- * already-initialized short-circuit, for a home repo that predates this
- * step.
+ * absence), so it's safe to run on every init — including a fully-
+ * provisioned machine, for a home repo that predates this step.
  *
  * Also (re)writes `.sops.yaml` whenever it's missing or its recipient
  * doesn't match the current key — the one place `rt secrets set` gets a
  * creation rule to encrypt against. A hand-edited file already carrying the
  * right recipient is left untouched. `.sops.yaml` is a TRACKED file, so a
  * write here needs a human commit — the snapshot daemon doesn't exist yet.
+ *
+ * EXCEPT when this call's key was JUST MINTED (readAgeKey found the
+ * keychain provably empty) and an existing `.sops.yaml` already names a
+ * DIFFERENT recipient: that recipient is what the just-cloned `user/secrets/*.json`
+ * were actually encrypted to, on some other machine. Rewriting here would
+ * silently orphan them (undecryptable on this machine) and, once committed,
+ * break every other machine still holding the real key — so this refuses
+ * instead, leaving the file untouched. A rotation on a machine that ALREADY
+ * held the right key (not minted) is unchanged: that's a deliberate rotation,
+ * not a fresh machine guessing.
+ *
+ * Called only after the init plan (which clones user/ when it's missing)
+ * has run to completion, so user/ always already exists by the time this
+ * writes into it.
  */
-async function ensureHomeAgeKey(seams: AgeKeySeam, sopsYamlSeam: SopsYamlSeam = defaultSopsYamlSeam()): Promise<void> {
-  const { publicKey } = await ensureAgeKey(seams);
+async function ensureHomeAgeKey(
+  seams: AgeKeySeam,
+  sopsYamlSeam: SopsYamlSeam = defaultSopsYamlSeam(),
+): Promise<EnsureHomeAgeKeyResult> {
+  const { publicKey, minted } = await ensureAgeKey(seams);
 
-  const sopsYamlPath = join(mattstackHome(), ".sops.yaml");
+  // Lives under user/ (not the repo root): sops matches path_regex cwd-relative
+  // and every sops spawn pins cwd to <mattstackHome>/user (store.ts), so
+  // .sops.yaml must sit there too for that discovery to find it.
+  const userDir = join(mattstackHome(), "user");
+  const sopsYamlPath = join(userDir, ".sops.yaml");
   const existing = sopsYamlSeam.read(sopsYamlPath);
-  if (existing === null || sopsYamlRecipient(existing) !== publicKey) {
+  const existingRecipient = existing === null ? null : sopsYamlRecipient(existing);
+
+  if (minted && existing !== null && existingRecipient !== publicKey) {
+    return {
+      ok: false,
+      message:
+        `secrets are encrypted to ${existingRecipient ?? "an unrecognized recipient"}; ` +
+        "import the age key from your password manager (`rt home key import`) before initializing.",
+    };
+  }
+
+  if (existing === null || existingRecipient !== publicKey) {
     sopsYamlSeam.write(sopsYamlPath, renderSopsYaml(publicKey));
     console.log(
       `rt home init: wrote ${sopsYamlPath} (recipient ${publicKey}) — it's tracked, so commit it:\n` +
-        `  git -C ${mattstackHome()} add .sops.yaml && git -C ${mattstackHome()} commit -m "home: sops recipient"`,
+        `  git -C ${userDir} add .sops.yaml && git -C ${userDir} commit -m "home: sops recipient"`,
     );
   }
 
@@ -153,35 +188,8 @@ async function ensureHomeAgeKey(seams: AgeKeySeam, sopsYamlSeam: SopsYamlSeam = 
     `rt home init: age key ready — recipient ${publicKey}.\n` +
       "  Run `rt home key export` to save the private key to your password manager.",
   );
-}
 
-const GH_AUTH_HINT = "gh is not authenticated. Run:\n  gh auth login";
-const FILTER_REPO_HINT = "git-filter-repo is not installed. Run:\n  brew install git-filter-repo";
-
-/**
- * A missing binary makes the seam's `run()` throw (Bun.spawn rejects on
- * ENOENT) rather than return a non-zero code, so each check needs its own
- * catch — an uncaught throw here would surface as a raw stack instead of the
- * install hint.
- */
-async function preflight(exec: ExecSeam): Promise<string | null> {
-  let auth: ExecResult;
-  try {
-    auth = await exec.run(["gh", "auth", "status"]);
-  } catch {
-    return GH_AUTH_HINT;
-  }
-  if (auth.code !== 0) return GH_AUTH_HINT;
-
-  let filterRepo: ExecResult;
-  try {
-    filterRepo = await exec.run(["git", "filter-repo", "--version"]);
-  } catch {
-    return FILTER_REPO_HINT;
-  }
-  if (filterRepo.code !== 0) return FILTER_REPO_HINT;
-
-  return null;
+  return { ok: true };
 }
 
 export async function homeInit(
@@ -191,38 +199,54 @@ export async function homeInit(
   exec: ExecSeam = createRealExecSeam(mattstackHome()),
   ageKeySeam: AgeKeySeam = createRealAgeKeySeam(),
   sopsYamlSeam: SopsYamlSeam = defaultSopsYamlSeam(),
+  // Evaluated at call time, like every other default here — a real fs read
+  // (~/.mattstack/machine-key), so tests inject a fixed value instead of
+  // depending on the test-runner's actual hostname/override file.
+  key: string = machineKey(),
 ): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const home = mattstackHome();
-  const state = gatherHomeState(home, probes);
-  const plan = buildInitPlan(state);
 
-  if (plan.reason === "already-initialized") {
-    console.log(`rt home init: ${home} is already a git repo — nothing to do.`);
-    if (!dryRun) await ensureHomeAgeKey(ageKeySeam, sopsYamlSeam);
-    return;
+  let url: string;
+  try {
+    url = parseUrlArg(args);
+  } catch (err) {
+    if (err instanceof InvalidUrlArgError) {
+      console.error(`rt home init: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
   }
 
-  if (plan.reason === "prefs-remote-unreadable") {
+  const state = gatherHomeState(home, probes, key);
+
+  let plan: ReturnType<typeof buildInitPlan>;
+  try {
+    plan = buildInitPlan(state, { url, machineKey: key });
+  } catch (err) {
+    if (err instanceof InvalidMachineKeyError) {
+      console.error(`rt home init: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+
+  if (plan.steps.length > 0) {
+    console.log(`rt home init plan for ${home}:`);
+    plan.steps.forEach((step, i) => console.log(`  ${i + 1}. ${describeStep(step)}`));
+  } else if (!plan.blocked) {
+    console.log(`rt home init: ${home} is already fully provisioned — nothing to do.`);
+  }
+
+  if (plan.blocked === "skills-symlink-real-file") {
     console.error(
-      `rt home init: could not read the origin URL from ${join(home, "user", ".git", "config")} — ` +
-        "refusing to fold in a remote it can't identify.",
+      `\nrt home init: a real file already exists at ${join(home, "skills.jsonc")} — refusing to overwrite it. ` +
+        "Move it aside by hand, then rerun.",
     );
-    process.exit(1);
   }
-
-  console.log(`rt home init plan for ${home}:`);
-  plan.steps.forEach((step, i) => console.log(`  ${i + 1}. ${describeStep(step)}`));
 
   if (dryRun) return;
 
-  const preflightError = await preflight(exec);
-  if (preflightError) {
-    console.error(`\nrt home init: preflight failed — nothing was run.\n${preflightError}`);
-    process.exit(1);
-  }
-
-  console.log("");
   const result = await executeInitPlan(plan.steps, exec, (message) => console.log(`  ${message}`));
 
   if (!result.ok) {
@@ -233,8 +257,18 @@ export async function homeInit(
   // Mint (or backfill) BEFORE the success line: printing success ahead of a
   // failed mint would tell the operator init worked while `rt secrets set`
   // still has no key or creation rule to encrypt against.
-  await ensureHomeAgeKey(ageKeySeam, sopsYamlSeam);
-  console.log(`\nrt home init: ${home} is now the git-backed home repo.`);
+  const ageKeyResult = await ensureHomeAgeKey(ageKeySeam, sopsYamlSeam);
+  if (!ageKeyResult.ok) {
+    console.error(`\nrt home init: ${ageKeyResult.message}`);
+    process.exit(1);
+  }
+
+  if (plan.blocked === "skills-symlink-real-file") {
+    console.error(`\nrt home init: provisioning finished, but the skills.jsonc symlink is still blocked — see above.`);
+    process.exit(1);
+  }
+
+  console.log(`\nrt home init: ${home} is provisioned.`);
 }
 
 export async function homeKeyExport(

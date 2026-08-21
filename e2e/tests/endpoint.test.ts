@@ -25,8 +25,9 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { execFileSync } from "child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { createTestHome, RT_BINARY } from "../harness.ts";
+import { machineSettingsPath } from "../../lib/rt-paths.ts";
 
 // ─── Shared helpers (mirroring e2e/tests/events.test.ts) ─────────────────────
 
@@ -45,6 +46,26 @@ function freePort(): number {
   srv.stop(true);
   if (!port) throw new Error("failed to allocate a free port");
   return port;
+}
+
+/**
+ * The bunfig preload (test-setup.ts) already repointed THIS process's HOME to
+ * its own throwaway temp dir before any module loaded, so machineSettingsPath()
+ * needs a further, temporary swap to `fakeHome` to compute the path for the
+ * fixture under test rather than that preload dir. try/finally so a throwing
+ * constructor can't leave later tests in this same process running against
+ * the fixture's HOME; `delete` (not `= undefined`) because an unset
+ * `outerHome` must not stringify back in as `"undefined"`.
+ */
+function withHome<T>(fakeHome: string, fn: () => T): T {
+  const outerHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  try {
+    return fn();
+  } finally {
+    if (outerHome === undefined) delete process.env.HOME;
+    else process.env.HOME = outerHome;
+  }
 }
 
 /** Bind-probe, same shape as the allocator's real `canBind`. */
@@ -236,8 +257,13 @@ describe("rt endpoint / intercept (just-works e2e)", () => {
     // settings resolver instead of the (now-gone) per-repo config.json).
     const identity = "github.com/rt-test/endpoint-repo";
     mkdirSync(join(home, ".mattstack"), { recursive: true });
+    // Pin machineKey() before computing machineSettingsPath() — hostname
+    // slugs vary per CI host, and this test's path must be deterministic.
+    writeFileSync(join(home, ".mattstack", "machine-key"), "e2e-endpoint-machine");
+    const machineStorePath = withHome(home, () => machineSettingsPath());
+    mkdirSync(dirname(machineStorePath), { recursive: true });
     writeFileSync(
-      join(home, ".mattstack", "settings.local.jsonc"),
+      machineStorePath,
       JSON.stringify(
         {
           repos: {
