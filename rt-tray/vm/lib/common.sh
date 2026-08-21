@@ -10,6 +10,7 @@ VM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${VM_ADMIN_PASS:=admin}"
 : "${VM_TESTER_USER:=tester}"
 : "${VM_TESTER_PASS:=tester}"
+: "${VM_APPCAST_PORT:=8765}"
 
 VM_SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5)
 
@@ -40,6 +41,9 @@ vm_run_init() {
   VM_RUN_ID="$(date +%Y%m%d-%H%M%S)-$label"
   VM_RUN_DIR="$VM_ARTIFACTS/$VM_RUN_ID"
   mkdir -p "$VM_RUN_DIR/screenshots" "$VM_RUN_DIR/logs" "$VM_RUN_DIR/in"
+  # virtiofs maps host/guest uids numerically; admin and tester write into this
+  # share from different guest uids, so it must be world-writable on the host.
+  chmod -R a+rwX "$VM_RUN_DIR"
   printf '{\n  "id": "%s",\n  "label": "%s",\n  "startedAt": "%s",\n  "host": "%s"\n}\n' \
     "$VM_RUN_ID" "$label" "$(vm_now)" "$(sw_vers -productVersion 2>/dev/null || echo unknown)" > "$VM_RUN_DIR/run.json"
   export VM_RUN_ID VM_RUN_DIR
@@ -110,6 +114,8 @@ vm_ssh_try() {
   ssh "${VM_SSH_OPTS[@]}" -i "$VM_SSH_KEY" "$user@$ip" "$@"
 }
 
+# vm_ssh/vm_scp exit the whole script on failure — preconditions only.
+# Inside a ledgered phase, use vm_ssh_try so the failure can be ledgered instead.
 vm_ssh() {
   vm_ssh_try "$@" || vm_die "ssh failed for $1@$2"
 }

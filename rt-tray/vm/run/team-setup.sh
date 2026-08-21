@@ -10,16 +10,17 @@ PAT="${MATTSTACK_VMTEST_PAT:-}"
 cmd="${1:-}"; shift || true
 SLUG=vmtest; HANDLE=""; OUT=""
 while [ $# -gt 0 ]; do case "$1" in --slug) SLUG="$2"; shift 2;; --handle) HANDLE="$2"; shift 2;; --out) OUT="$2"; shift 2;; *) vm_die "unknown arg $1";; esac; done
-vm_require_cmd gh "brew install gh"
 ghp() { GH_TOKEN="$PAT" gh "$@"; }
 need_pat() { [ -n "$PAT" ] || vm_die "MATTSTACK_VMTEST_PAT is empty — export a fine-grained PAT scoped to org $ORG (MATT step; never commit it)"; }
 
 case "$cmd" in
   status)
+    vm_require_cmd gh "brew install gh"
     vm_log "org=$ORG home=$HOME_REPO team=$TEAM_REPO pat=$([ -n "$PAT" ] && echo present || echo MISSING)"
     [ -n "$PAT" ] && ghp repo list "$ORG" --limit 20 --json name -q '.[].name' | sed 's/^/  repo: /' || true
     ;;
   reset)
+    vm_require_cmd gh "brew install gh"
     need_pat
     case "$ORG" in *vmtest*) ;; *) vm_die "refusing to reset non-vmtest org $ORG" ;; esac
     for r in "$HOME_REPO" "$TEAM_REPO" mattstack-home "mattstack-team-$SLUG"; do
@@ -29,9 +30,11 @@ case "$cmd" in
     ghp repo create "$ORG/$TEAM_REPO" --private --description "mattstack VM test team repo (throwaway)" >/dev/null && vm_log "created $ORG/$TEAM_REPO"
     ;;
   invite)
-    need_pat; [ -n "$HANDLE" ] && [ -n "$OUT" ] || vm_die "invite needs --handle and --out"
+    [ -n "$HANDLE" ] && [ -n "$OUT" ] || vm_die "invite needs --handle and --out"
     umask 077; mkdir -p "$(dirname "$OUT")" "$VM_CACHE"
     if rt team invite --help >/dev/null 2>&1; then
+      vm_require_cmd gh "brew install gh"
+      need_pat
       # Real path: owner mints against the shared relay (L1 + L6). Team must exist locally: rt team create … first.
       if ! rt team create "$SLUG" --remote "https://github.com/$ORG/$TEAM_REPO.git" --others --json >/dev/null 2>&1; then vm_warn "rt team create returned non-zero (team may already exist)"; fi
       rt team publish --remote "https://github.com/$ORG/$TEAM_REPO.git" --json >/dev/null 2>&1 || true

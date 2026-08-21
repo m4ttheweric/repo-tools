@@ -65,10 +65,13 @@ step "rt daemon install";               run rt daemon install; sleep 3
 step "rt verify --ci";                  rt verify --ci 2>&1 | tee "$OUTDIR/verify-ci.txt" | tee -a "$LOG"
 RC=${PIPESTATUS[0]}
 CHECK="$(cd "$(dirname "$0")/.." && pwd)/rt-tray/check-bundle.sh"
-if [ -x "$CHECK" ]; then
+# Static probe, never executed: check-bundle.sh today has no argument parsing at all (any invocation,
+# including --help, falls through to its unconditional `./build.sh release && ./build.sh dev`), so
+# invoking it to test for --app support would itself trigger the working-tree clobber this guards against.
+if [ -x "$CHECK" ] && grep -q -- '--app' "$CHECK"; then
   step "check-bundle.sh --app";         run "$CHECK" --app "$APP" || RC=1
 else
-  step "check-bundle.sh";               echo "skipped: rt-tray/check-bundle.sh not in this checkout" | tee -a "$LOG"
+  step "check-bundle.sh";               echo "skipped: check-bundle.sh has no --app mode" | tee -a "$LOG"
 fi
 printf '\nexit=%s\nartifacts=%s\n' "$RC" "$OUTDIR" | tee -a "$LOG"
 exit "$RC"

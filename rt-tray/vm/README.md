@@ -22,7 +22,7 @@ gated on other lanes:
   Items/Notifications dances) — gated on L3 landing its setup screens and
   `AccessibilityIDs.swift`. Until then `--scenario create`/`join` will reach
   the `screens` phase and fail there (guest script not staged); `--scenario
-  headless` does not depend on this and works now.
+  headless` does not depend on this, but it fails too today — see fzf below.
 - **`run/guest/trigger-update.sh`** (drives Sparkle, asserts vN→vN+1 +
   daemon restart) — beyond the appcast server and `--update-dir` preflight
   that `walkthrough.sh` already carries, the update phase reports `skip`
@@ -35,11 +35,14 @@ gated on other lanes:
   the behavioural gates do not return by themselves).
 
 A few other things worth knowing before running this layer:
-- **fzf**: nothing in this layer provisions it into a golden or a clean-room
-  guest. The intended closer is L4 bundling it under `Contents/Helpers/` with
-  a `deps.lock` (pending confirmation); if that doesn't land, `rt verify`'s
-  fzf check will fail every clean-room run and golden-image provisioning
-  will need to gain it directly.
+- **fzf**: confirmed not provisioned into any golden or clean-room guest, and
+  no closer exists yet (no `Contents/Helpers`, no `fzf`, no `scripts/release/`
+  bundling step). `rt verify` fails the fzf check at critical severity on a
+  Homebrew-less guest, so **`--scenario headless` currently fails at the
+  `screens` and `assert` phases** — it is not an end-to-end-green path today.
+  The intended closer is L4 bundling fzf under `Contents/Helpers/` with a
+  `deps.lock`; until it lands, every clean-room run and golden-image
+  provisioning trips this.
 - **`scripts/e2e-cleanroom.sh --allow-existing-install`**: pre-L1, `rt
   --post-install` launches the app unconditionally and discards post-install
   args, so this flag is only safe on a disposable target (inside the VM, or
@@ -107,7 +110,7 @@ run/second-user.sh run --artifact ~/Downloads/mattstack-2.9.0.zip
 ../../scripts/e2e-cleanroom.sh --tag v2.9.0   # refuses on a user that already runs mattstack
 ../../scripts/e2e-cleanroom.sh ~/Downloads/mattstack-2.9.0.zip --home "$(mktemp -d)"   # what release.yml runs
 ```
-Today, the first line's `screens` phase and both lines' `update` phase report `fail`/`skip` honestly (see Status above) — `--scenario headless` (line 2) is the one path that runs end to end right now. `--dry-run` exercises the whole orchestrator (phase ledger, report) against any golden name without Tart or a real DMG/app.
+Today, the first line's `screens` phase and both lines' `update` phase report `fail`/`skip` honestly (see Status above) — `--scenario headless` (line 2) also fails today, at its `screens` and `assert` phases, because fzf is not provisioned (see fzf above); no scenario currently runs fully green end to end. `--dry-run` exercises the whole orchestrator (phase ledger, report) against any golden name without Tart or a real DMG/app.
 
 Phases: preflight · clone · boot · stage · install · launch · screens · assert · update · teardown. Each is `pass|fail|skip` with a reason in `artifacts/<run>/phases.jsonl`; `report.md` is the human summary; `screenshots/` are numbered per screen (`00-first-launch`, `01-welcome`, `02-team-*`, `03-readiness-*`, `04-install-*`, `05-done`, `06-update-*`); `logs/` holds guest logs (`~/.mattstack/rt/logs`, unified log slice for mattstack/smd/backgroundtaskmanagementd, `launchctl print` grep, `rt verify --json`, tray `/version`). Exit 1 iff any phase failed; skips are reported, never counted green.
 

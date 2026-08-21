@@ -41,10 +41,30 @@ EOF
     [ "$U" != "$(id -un)" ] || vm_die "refusing to run against your own account ($U)"
     case "$U" in mstest*|*smoke*) ;; *) vm_die "refusing to run against non-smoke user $U" ;; esac
     [ -n "$ART" ] && [ -f "$ART" ] || vm_die "run needs --artifact <file>"
-    [ -f "$VM_ROOT/../../scripts/e2e-cleanroom.sh" ] || vm_die "scripts/e2e-cleanroom.sh not found (Task 12 has not landed)"
-    id -u "$U" >/dev/null 2>&1 || vm_die "user $U does not exist — $0 create"
+    [ -f "$VM_ROOT/../../scripts/e2e-cleanroom.sh" ] || vm_die "scripts/e2e-cleanroom.sh not found (layer (a) recipe not present in this checkout)"
+    uid=$(id -u "$U" 2>/dev/null) || vm_die "user $U does not exist — $0 create"
     vm_run_init "second-user"
+    # Layer (c) exists only to prove SMAppService against a live GUI session — never let CI=true demote this away.
+    GUI_OK=0
+    if sudo -n true >/dev/null 2>&1; then
+      sudo -n launchctl print "gui/$uid" >/dev/null 2>&1 || GUI_OK=1
+    elif launchctl print "gui/$uid" >/dev/null 2>&1; then
+      GUI_OK=0
+    else
+      GUI_OK=2
+    fi
+    if [ "$GUI_OK" -ne 0 ]; then
+      vm_phase_begin second-user
+      if [ "$GUI_OK" -eq 2 ]; then
+        vm_phase_end second-user skip "cannot verify GUI session for $U without sudo — run: sudo launchctl print gui/$uid"
+      else
+        vm_phase_end second-user skip "no GUI session for $U — log the user in once ($0 switch); a smoke run without one proves nothing about SMAppService"
+      fi
+      vm_render_report
+      exit 1
+    fi
     HOME2=$(dscl . -read "/Users/$U" NFSHomeDirectory | awk '{print $2}')
+    case "$HOME2" in /Users/*) ;; *) vm_die "unexpected home dir for $U: '$HOME2' (expected /Users/*)" ;; esac
     sudo install -d -o "$U" -m 700 "$HOME2/mattstack-smoke"
     sudo install -o "$U" -m 600 "$ART" "$HOME2/mattstack-smoke/$(basename "$ART")"
     sudo install -o "$U" -m 700 "$VM_ROOT/../../scripts/e2e-cleanroom.sh" "$HOME2/mattstack-smoke/e2e-cleanroom.sh"
