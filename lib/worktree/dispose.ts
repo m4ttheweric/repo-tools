@@ -60,8 +60,8 @@ async function isWhitespaceOnlyChange(cwd: string, path: string): Promise<boolea
 /**
  * Split a worktree's dirt into what may be thrown away and what must not be.
  *
- * `discard` covers tracked modifications to files the repo's sync.json declares
- * auto-resolvable with `strategy: "theirs"`, whose local diff is pure
+ * `discard` covers tracked modifications to files the repo's `rt.sync` setting
+ * declares auto-resolvable with `strategy: "theirs"`, whose local diff is pure
  * whitespace. These are generated artifacts that drift by a trailing newline
  * and are rebuilt by the next build; the declaration says upstream wins.
  *
@@ -81,7 +81,6 @@ export const STATUS_FAILED_BLOCKER = "<status-failed>";
 
 export async function classifyDirtyAsync(
   worktreePath: string,
-  repoName: string,
 ): Promise<{ discard: string[]; blockers: string[] }> {
   const repoIdentity = await deriveRepoIdentity(worktreePath);
   const rules = loadSyncConfig(repoIdentity).autoResolve;
@@ -213,7 +212,7 @@ export async function disposeTree(
 
   if (!force) {
     // 2. Clean modulo declared generated drift.
-    const { discard, blockers } = await classifyDirtyAsync(rec.path, repoName);
+    const { discard, blockers } = await classifyDirtyAsync(rec.path);
     if (blockers.length > 0) return refuse("dirty");
     discarded = discard;
 

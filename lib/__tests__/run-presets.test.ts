@@ -99,12 +99,21 @@ describe("run-presets over the settings resolver", () => {
     expect(findPreset(IDENTITY, "full")).not.toBeNull();
   });
 
-  it("savePreset is a no-op when no repo identity is available", () => {
-    savePreset(null, {
+  it("savePreset reports no-identity and is a no-op when no repo identity is available", () => {
+    const result = savePreset(null, {
       name: "lite",
       entries: [{ packageRelPath: "apps/backend", packageLabel: "backend", script: "start:lite" }],
     });
+    expect(result).toEqual({ ok: false, reason: "no-identity" });
     expect(loadPresets(null)).toEqual([]);
+  });
+
+  it("savePreset reports ok:true on a successful write", () => {
+    const result = savePreset(IDENTITY, {
+      name: "lite",
+      entries: [{ packageRelPath: "apps/backend", packageLabel: "backend", script: "start:lite" }],
+    });
+    expect(result).toEqual({ ok: true });
   });
 
   it("stores the shape as { <name>: { entries: [...] } } under the key", () => {

@@ -9,8 +9,12 @@
  * (worktree roots differ, but the relative package path within the repo
  * is stable).
  *
- * Best-effort I/O — silently swallows errors so a broken/missing store value
- * never blocks the user's actual command invocation.
+ * Reads are best-effort — a broken/missing store value degrades to empty
+ * rather than blocking the user's actual command invocation. Writes are NOT
+ * silently swallowed: `saveVariation` reports success/failure (including a
+ * team-store refusal, e.g. zero or multiple local team stores — see
+ * settings/write.ts's team-selection rule) so a caller can tell the user the
+ * truth instead of pretending the save landed.
  */
 
 import { relative } from "path";
@@ -60,14 +64,28 @@ export function loadVariations(
 
 // ─── Write ──────────────────────────────────────────────────────────────────
 
+export type SaveResult =
+  | { ok: true }
+  | { ok: false; reason: "no-identity" }
+  | { ok: false; reason: "write-failed"; message: string };
+
+/**
+ * Appends `variation` under its key and writes the whole map to team scope
+ * (ruling: team.repo) — but the base it merges onto is the RESOLVED value
+ * across every scope the key allows, not just what's already in the team
+ * store. Variations are meant to live in team scope only, so this only
+ * matters if one was ever hand-authored into user or machine: the next save
+ * here copies the whole merged map — that foreign variation included — into
+ * the team store too. Accepted, not guarded.
+ */
 export function saveVariation(
   repoIdentity: string | null,
   repoRoot: string,
   packagePath: string,
   script: string,
   variation: Variation,
-): void {
-  if (repoIdentity === null) return; // best effort: no identity, nowhere repo-scoped to write
+): SaveResult {
+  if (repoIdentity === null) return { ok: false, reason: "no-identity" };
 
   const key = variationKey(repoRoot, packagePath, script);
   const all = loadVariations(repoIdentity);
@@ -76,7 +94,8 @@ export function saveVariation(
 
   try {
     setSetting("rt.variations", all, "team", { repoIdentity });
-  } catch {
-    // best effort — don't break the user's command over a write error
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: "write-failed", message: err instanceof Error ? err.message : String(err) };
   }
 }

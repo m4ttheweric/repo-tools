@@ -71,8 +71,8 @@ export function matchRule(
   filePath: string,
   rules: AutoResolveRule[],
 ): AutoResolveRule | null {
-  // Bun.Glob can throw at match time on an invalid pattern (hand-edited
-  // sync.json) — catch per call so a bad rule degrades to basic matching
+  // Bun.Glob can throw at match time on an invalid pattern (hand-authored
+  // into rt.sync) — catch per call so a bad rule degrades to basic matching
   // instead of blowing up mid-rebase. (The previous try/catch wrapped only
   // the closure *creation*, which can never throw.)
   const basicMatch = (glob: string, path: string): boolean => {

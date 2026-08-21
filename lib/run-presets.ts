@@ -8,8 +8,11 @@
  * worktrees (worktree roots differ, but the relative package path within
  * the repo is stable).
  *
- * Best-effort I/O — silently swallows errors so a broken/missing store value
- * never blocks the user's actual command invocation.
+ * Reads are best-effort — a broken/missing store value degrades to empty
+ * rather than blocking the user's actual command invocation. Writes are NOT
+ * silently swallowed: `savePreset` reports success/failure so a caller (`rt
+ * run`) can tell the user the truth instead of printing a checkmark for a
+ * save that never landed.
  */
 
 import { getSetting } from "./settings/resolve.ts";
@@ -75,16 +78,30 @@ export function findPreset(repoIdentity: string | null, name: string): Preset | 
 
 // ─── Write ──────────────────────────────────────────────────────────────────
 
-/** Overwrites `preset.name`'s entry; every other saved preset survives the write. */
-export function savePreset(repoIdentity: string | null, preset: Preset): void {
-  if (repoIdentity === null) return; // best effort: no identity, nowhere repo-scoped to write
+export type SaveResult =
+  | { ok: true }
+  | { ok: false; reason: "no-identity" }
+  | { ok: false; reason: "write-failed"; message: string };
+
+/**
+ * Overwrites `preset.name`'s entry; every other saved preset survives the
+ * write — but the base it merges onto is the RESOLVED value across every
+ * scope the key allows (user/team/machine), not just what's already in the
+ * user store. Presets are single-scope in practice (personal, written only
+ * to "user"), so this only matters if a preset was ever hand-authored into
+ * team or machine: the next save here copies the whole merged map — that
+ * foreign preset included — into the user store too. Accepted, not guarded.
+ */
+export function savePreset(repoIdentity: string | null, preset: Preset): SaveResult {
+  if (repoIdentity === null) return { ok: false, reason: "no-identity" };
 
   const all = presetsMap(repoIdentity);
   all[preset.name] = { entries: preset.entries };
 
   try {
     setSetting("rt.presets", all, "user", { repoIdentity });
-  } catch {
-    // best effort — don't break the user's command over a write error
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: "write-failed", message: err instanceof Error ? err.message : String(err) };
   }
 }

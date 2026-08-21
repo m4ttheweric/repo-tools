@@ -191,7 +191,6 @@ describe("hasFreshAttendantLease", () => {
 describe("classifyDirtyAsync", () => {
   let repo: string;
   let tree: string;
-  const repoName = "acme";
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtdispose-home-")));
@@ -201,14 +200,14 @@ describe("classifyDirtyAsync", () => {
   });
 
   test("clean tree classifies as nothing at all", async () => {
-    const result = await classifyDirtyAsync(tree, repoName);
+    const result = await classifyDirtyAsync(tree);
     expect(result.discard).toEqual([]);
     expect(result.blockers).toEqual([]);
   });
 
   test("untracked file is a blocker", async () => {
     writeFileSync(join(tree, "scratch.txt"), "hi\n");
-    const result = await classifyDirtyAsync(tree, repoName);
+    const result = await classifyDirtyAsync(tree);
     expect(result.blockers).toEqual(["scratch.txt"]);
     expect(result.discard).toEqual([]);
   });
@@ -219,7 +218,7 @@ describe("classifyDirtyAsync", () => {
     });
     writeFileSync(join(tree, "gen.txt"), "alpha  \nbeta\n");
 
-    const result = await classifyDirtyAsync(tree, repoName);
+    const result = await classifyDirtyAsync(tree);
     expect(result.discard).toEqual(["gen.txt"]);
     expect(result.blockers).toEqual([]);
   });
@@ -230,26 +229,26 @@ describe("classifyDirtyAsync", () => {
     });
     writeFileSync(join(tree, "gen.txt"), "alpha\nbeta\ngamma\n");
 
-    const result = await classifyDirtyAsync(tree, repoName);
+    const result = await classifyDirtyAsync(tree);
     expect(result.discard).toEqual([]);
     expect(result.blockers).toEqual(["gen.txt"]);
   });
 
   test("undeclared modified file is a blocker even when whitespace-only", async () => {
     writeFileSync(join(tree, "gen.txt"), "alpha  \nbeta\n");
-    const result = await classifyDirtyAsync(tree, repoName);
+    const result = await classifyDirtyAsync(tree);
     expect(result.blockers).toEqual(["gen.txt"]);
   });
 
   test("a failing git status fails CLOSED, never clean", async () => {
     const gone = join(tree, "nope", "not-a-worktree");
-    const result = await classifyDirtyAsync(gone, repoName);
+    const result = await classifyDirtyAsync(gone);
     expect(result.blockers).toEqual([STATUS_FAILED_BLOCKER]);
     expect(result.discard).toEqual([]);
 
     // Same for a directory git refuses to read as a repo.
     const notARepo = realpathSync(mkdtempSync(join(tmpdir(), "rtdispose-bare-dir-")));
-    const outside = await classifyDirtyAsync(notARepo, repoName);
+    const outside = await classifyDirtyAsync(notARepo);
     expect(outside.blockers).toEqual([STATUS_FAILED_BLOCKER]);
   });
 });

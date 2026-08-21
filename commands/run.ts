@@ -115,6 +115,29 @@ interface QueuedItem {
 /** Sentinel returned when the picker loop built and launched a queue. */
 const QUEUE_LAUNCHED = Symbol("queue-launched");
 
+/** The shape savePreset/saveVariation both return — structurally, not by import, so either fits. */
+type SaveOutcome =
+  | { ok: true }
+  | { ok: false; reason: "no-identity" }
+  | { ok: false; reason: "write-failed"; message: string };
+
+/**
+ * Prints the truth about a save: a checkmark only when it actually landed,
+ * one honest line otherwise. `savePreset`/`saveVariation` no-op or refuse
+ * rather than throw (best-effort I/O), so this is the only place that ever
+ * tells the user whether their save happened.
+ */
+function reportSave(kind: string, label: string, result: SaveOutcome, repoLabel: string): void {
+  if (result.ok) {
+    process.stderr.write(`  ${green}✓${reset} ${dim}saved ${kind} "${label}"${reset}\n`);
+    return;
+  }
+  const detail = result.reason === "no-identity"
+    ? `no repo identity for ${repoLabel}; pin one with \`rt settings set rt.repoIdentityOverrides\``
+    : result.message;
+  process.stderr.write(`  ${yellow}⚠${reset} ${dim}not saved — ${detail}${reset}\n`);
+}
+
 /**
  * Package → script → variations picker loop.
  *
@@ -306,7 +329,7 @@ async function selectPackageAndScript(
             stderr: true,
           });
           if (name) {
-            savePreset(repoIdentity, {
+            const result = savePreset(repoIdentity, {
               name,
               entries: q.map((qi) => ({
                 packageRelPath: qi.packageRelPath,
@@ -316,7 +339,8 @@ async function selectPackageAndScript(
                 command: qi.variationName ? qi.command : undefined,
               })),
             });
-            process.stderr.write(`  ${green}✓${reset} ${dim}saved preset "${name}"${reset}\n\n`);
+            reportSave("preset", name, result, label || worktreePath);
+            process.stderr.write("\n");
             const runNow = await confirm({
               message: `Run "${name}" now?`,
               initialValue: true,
@@ -519,7 +543,12 @@ async function selectPackageAndScript(
           });
           if (!command) process.exit(1);
 
-          saveVariation(repoIdentity, worktreePath, packagePath, scriptName, { name, command });
+          reportSave(
+            "variation",
+            name,
+            saveVariation(repoIdentity, worktreePath, packagePath, scriptName, { name, command }),
+            label || worktreePath,
+          );
 
           // Tab or Enter-with-queue: queue the new variation
           if (varResult.key === "tab" || q.length > 0) {

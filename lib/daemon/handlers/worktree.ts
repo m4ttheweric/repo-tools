@@ -580,7 +580,7 @@ export function createWorktreeHandlers(
           const parked =
             rec.branch !== null &&
             PARKING_LOT_BRANCH_RE.test(rec.branch) &&
-            (await classifyDirtyAsync(rec.path, repoName)).blockers.length === 0;
+            (await classifyDirtyAsync(rec.path)).blockers.length === 0;
 
           if (parked) {
             // Ephemeral+claimed first: the guard only ever deletes rt's own

@@ -1,20 +1,27 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { dirname, join } from "path";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
 
 const tmpHome = mkdtempSync(join(tmpdir(), "rt-doppler-sync-"));
 process.env.HOME = tmpHome;
 
 const { reconcileForRepo } = await import("../doppler-sync.ts");
 const { setSetting } = await import("../../settings/write.ts");
-const { machineSettingsPath } = await import("../../rt-paths.ts");
+const { machineSettingsPath, teamSettingsPath } = await import("../../rt-paths.ts");
 const { loadDopplerConfig, writeDopplerConfig } = await import("../../doppler-config.ts");
 
 const IDENTITY = "gitlab.com/acme/test-repo";
 
 function seedTemplate(entries: unknown[]): void {
   setSetting("rt.dopplerTemplate", entries, "machine", { repoIdentity: IDENTITY });
+}
+
+/** setSetting(..., "team", ...) refuses without a local team store (write.ts's team-selection rule). */
+function seedTeam(): void {
+  const path = teamSettingsPath("acme");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, "// team store\n{}\n");
 }
 
 afterEach(() => {
@@ -60,6 +67,27 @@ describe("reconcileForRepo", () => {
     });
     expect(cfg.scoped["/repo/wktree-2/apps/frontend"]).toEqual({
       "enclave.project": "frontend",
+      "enclave.config":  "dev",
+    });
+  });
+
+  test("resolves a template declared at team.repo scope — where the cutover actually writes it", async () => {
+    seedTeam();
+    setSetting(
+      "rt.dopplerTemplate",
+      [{ path: "apps/backend", project: "backend", config: "dev" }],
+      "team",
+      { repoIdentity: IDENTITY },
+    );
+
+    const summary = await reconcileForRepo({
+      repoIdentity: IDENTITY,
+      worktreeRoots: ["/repo/primary"],
+    });
+
+    expect(summary.wrote).toBe(1);
+    expect(loadDopplerConfig().scoped["/repo/primary/apps/backend"]).toEqual({
+      "enclave.project": "backend",
       "enclave.config":  "dev",
     });
   });

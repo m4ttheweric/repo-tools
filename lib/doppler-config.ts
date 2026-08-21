@@ -2,9 +2,9 @@
  * Read/write `~/.doppler/.doppler.yaml`, the global Doppler CLI config.
  *
  * Treated by rt as a cache: the reconciler keeps it in sync with each repo's
- * doppler-template.yaml. Doppler CLI reads this file at runtime, so any
- * process anywhere on the machine that calls `doppler` works as long as the
- * cache is up to date.
+ * `rt.dopplerTemplate` setting. Doppler CLI reads this file at runtime, so
+ * any process anywhere on the machine that calls `doppler` works as long as
+ * the cache is up to date.
  *
  * Writes are atomic (write to .tmp, rename over original) so Doppler CLI
  * never sees a half-written file.
