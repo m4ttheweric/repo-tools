@@ -73,12 +73,15 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         // the window has actually closed must not re-arm the updater's idle
         // gate forever. A window that's only closable because the caller
         // forced it (already-complete setup, the status view) isn't an
-        // active onboarding run either, so it must not hold the gate shut.
-        SetupSession.isRunning = window.isVisible && !flow.windowMayClose && !allowsCloseAlways
+        // active onboarding run either, so it contributes `false` — keyed by
+        // this controller's own identity so one window's restyle can never
+        // clobber another window's still-genuine "running" state.
+        let running = window.isVisible && !flow.windowMayClose && !allowsCloseAlways
+        SetupSession.setRunning(running, for: ObjectIdentifier(self))
     }
 
     func windowWillClose(_ notification: Notification) {
-        SetupSession.isRunning = false
+        SetupSession.setRunning(false, for: ObjectIdentifier(self))
         // Only balances an outstanding becameVisible() (see
         // SetupFlowModel.readinessIsVisible) — closing on a step that
         // already left .checklist must not send a second, unmatched hide.

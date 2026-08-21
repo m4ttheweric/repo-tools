@@ -9,18 +9,25 @@ final class SetupCoordinator {
     private let permissions: PermissionsService
     private let needs: NeedBroker
     private let updater: UpdaterController
+    /// Onboarding + Settings' shared, live view of `setup plan`.
     private let readiness: ReadinessModel
-    private let planSource: RtPlanSource
+    /// The read-only "Setup status…" view's own `setup status` model. Kept
+    /// separate from `readiness` rather than steering one model's verb: both
+    /// controllers can be open at once (first run auto-opens Setup, the gear
+    /// menu stays clickable), and a shared, mutable verb would let one
+    /// window's `.checklist` render the other's rows and gate Install on the
+    /// wrong plan. Sharing `permissions` (below) across both is still safe —
+    /// it's a stateless probe with its own internal locking.
+    private let statusReadiness: ReadinessModel
     private let install: InstallRunModel
     private let teamSettings: TeamSettingsModel
     private var setupWindow: SetupWindowController?
     /// "Setup status…" reuses this SAME controller across repeat opens —
     /// never a fresh one per click. A second `SetupWindowController` here
-    /// would be a second, undelegated owner of `readiness`'s visibility
-    /// depth count and `SetupSession.isRunning`: NSWindow (not this class)
-    /// would be the only thing keeping it alive, `windowWillClose` would
-    /// never fire for the orphaned one, and the idle-install gate and the
-    /// 1 Hz permission poller would both wedge on.
+    /// would be a second, undelegated owner of `statusReadiness`'s
+    /// visibility depth count: NSWindow (not this class) would be the only
+    /// thing keeping it alive, `windowWillClose` would never fire for the
+    /// orphaned one, and its 1 Hz permission poller would wedge on.
     private var statusWindow: SetupWindowController?
     private var settingsWindow: SettingsWindowController?
     /// Set by `handleJoin` when setup is already complete; consumed the next
@@ -29,8 +36,10 @@ final class SetupCoordinator {
 
     init(rt: RtRunning, permissions: PermissionsService, needs: NeedBroker, updater: UpdaterController) {
         self.rt = rt; self.permissions = permissions; self.needs = needs; self.updater = updater
-        planSource = RtPlanSource(rt: rt, verb: ["setup", "plan", "--json"])
-        readiness = ReadinessModel(plans: planSource, permissions: permissions, ticker: MainTicker())
+        readiness = ReadinessModel(plans: RtPlanSource(rt: rt, verb: ["setup", "plan", "--json"]),
+                                   permissions: permissions, ticker: MainTicker())
+        statusReadiness = ReadinessModel(plans: RtPlanSource(rt: rt, verb: ["setup", "status", "--json"]),
+                                         permissions: permissions, ticker: MainTicker())
         install = InstallRunModel(stream: { from in
             var args = ["setup", "apply"]
             if let from { args += ["--from", from] }
@@ -44,9 +53,6 @@ final class SetupCoordinator {
     }
 
     func showSetup(step: SetupStep? = nil, joinCode: String? = nil) {
-        // The status window may have repointed the shared plan source at
-        // `setup status`; the onboarding flow always reads `setup plan`.
-        planSource.verb = ["setup", "plan", "--json"]
         if setupWindow == nil {
             let env = SetupEnvironment(rt: rt, readiness: readiness, install: install, permissions: permissions,
                                        isDevBuild: BundleFlavor.isDevBuild, bundleId: Bundle.main.bundleIdentifier ?? "com.mattstack.app",
@@ -60,13 +66,11 @@ final class SetupCoordinator {
     }
 
     /// "Setup status…": screen 3 as a read-only health view over
-    /// `rt setup status`. Reuses the one shared `readiness` model (steered
-    /// at the "setup status" verb) rather than standing up a second poller;
-    /// always closable since it's diagnostics, not a wizard.
+    /// `rt setup status`, driven by its own `statusReadiness` model; always
+    /// closable since it's diagnostics, not a wizard.
     func openSetupStatus() {
-        planSource.verb = ["setup", "status", "--json"]
         if statusWindow == nil {
-            let env = SetupEnvironment(rt: rt, readiness: readiness, install: install, permissions: permissions,
+            let env = SetupEnvironment(rt: rt, readiness: statusReadiness, install: install, permissions: permissions,
                                        isDevBuild: BundleFlavor.isDevBuild, bundleId: Bundle.main.bundleIdentifier ?? "com.mattstack.app",
                                        bundlePath: Bundle.main.bundlePath)
             let wc = SetupWindowController(environment: env)
@@ -111,21 +115,9 @@ final class SetupCoordinator {
     }
 }
 
-/// Mutable so the coordinator's one shared `ReadinessModel` can be steered
-/// between `setup plan` (onboarding) and `setup status` (read-only health
-/// view) without a second model/poller. The two windows are not expected to
-/// be visible on `.checklist` at the same instant — `showSetup`/
-/// `openSetupStatus` each repoint it before showing — so a rare simultaneous
-/// view briefly sees the other window's verb rather than a crash.
-final class RtPlanSource: PlanSource, @unchecked Sendable {
+struct RtPlanSource: PlanSource {
     let rt: RtRunning
-    private let lock = NSLock()
-    private var _verb: [String]
-    var verb: [String] {
-        get { lock.lock(); defer { lock.unlock() }; return _verb }
-        set { lock.lock(); _verb = newValue; lock.unlock() }
-    }
-    init(rt: RtRunning, verb: [String]) { self.rt = rt; self._verb = verb }
+    let verb: [String]
     func fetchPlan() async throws -> Plan {
         let r = try await rt.run(verb, stdin: nil)
         if let e = r.userError { throw e }
