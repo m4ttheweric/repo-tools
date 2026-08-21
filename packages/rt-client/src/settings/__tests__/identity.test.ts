@@ -9,8 +9,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { runCapture } from "../../subprocess.ts";
-import { machineSettingsPath } from "../../rt-paths.ts";
+import { runCapture } from "../exec.ts";
+import { machineSettingsPath } from "../paths.ts";
 import { normalizeRemote, identityFromRemote, deriveRepoIdentity, clearIdentityMemo } from "../identity.ts";
 
 describe("settings/identity", () => {
