@@ -750,6 +750,43 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  skills: {
+    description: "Compile, check, and manage the surface of the pack's committed skills",
+    subcommands: {
+      compile: {
+        description: "Compile pack verbs from step sources + manifest bindings into committed SKILL.md files",
+        module: "./commands/skills.ts",
+        fn: "skillsCompile",
+        args: [
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Pack team; default acme" },
+          { name: "Verb", flag: "--verb", type: "text", placeholder: "watch-ci", hint: "Compile only this verb (repeatable); omit for every verb in the roster" },
+          { name: "Manifest", flag: "--manifest", type: "text", placeholder: "/path/to/skills.jsonc", hint: "Manifest path; omit to auto-find the newest ~/.mattstack/repos/*/skills.jsonc naming this team" },
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print what would be written without touching disk" },
+        ],
+      },
+      check: {
+        description: "Report compiled skills that no longer match their sources",
+        module: "./commands/skills.ts",
+        fn: "skillsCheck",
+        args: [
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Pack team; default acme" },
+          { name: "Verb", flag: "--verb", type: "text", placeholder: "watch-ci", hint: "Check only this verb (repeatable); omit for every compiled verb" },
+          { name: "Manifest", flag: "--manifest", type: "text", placeholder: "/path/to/skills.jsonc", hint: "Manifest path; omit to auto-find the newest ~/.mattstack/repos/*/skills.jsonc naming this team" },
+        ],
+      },
+      surface: {
+        description: "List, set, or apply the pack's public/internal skill surface (bare invocation opens an fzf multi-toggle palette)",
+        module: "./commands/skills.ts",
+        fn: "skillsSurface",
+        args: [
+          { name: "Mode", type: "text", placeholder: "list", hint: "list | set <name> --public|--internal | apply; omit for the fzf palette" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Pack team; default acme" },
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "apply only: print planned moves without touching disk" },
+        ],
+      },
+    },
+  },
+
   plugin: {
     description: "Manage user plugins",
     subcommands: {
