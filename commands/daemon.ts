@@ -34,7 +34,7 @@ import { daemonQuery, isDaemonRunning, trayQuery } from "../lib/daemon-client.ts
 import { classifyDaemonStatus, type DaemonStatusVerdict } from "../lib/daemon-status.ts";
 import { isGitLabRemote } from "../lib/enrich.ts";
 import type { CacheKind } from "../lib/repo-tracking.ts";
-import { loadRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS, DEFAULT_PROJECT_MRS_WINDOW_DAYS } from "../lib/repo-tracking.ts";
+import { loadRepoTracking, loadMachineRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS, DEFAULT_PROJECT_MRS_WINDOW_DAYS } from "../lib/repo-tracking.ts";
 import { createProjectMRs } from "../lib/daemon/project-mrs-store.ts";
 import { getStateDb } from "../lib/state/index.ts";
 import { timeAgo } from "../lib/tui/utils/label.ts";
@@ -463,7 +463,11 @@ export async function manageTracking(args: string[] = []): Promise<void> {
     }
   }
 
-  const tracking = loadRepoTracking();
+  // Machine-only read: this is a read-modify-write, and saveRepoTracking
+  // writes back everything it's handed — a merged (loadRepoTracking) read
+  // would bake every other repo's team-synthesized entry into the machine
+  // store as if a human had granted it.
+  const tracking = loadMachineRepoTracking();
   const previousEntry = levelArg2 !== "off" ? tracking[repoArg] : undefined;
   if (levelArg2 === "off") {
     delete tracking[repoArg];

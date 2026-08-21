@@ -182,7 +182,7 @@ export const REGISTRY: readonly SettingDef[] = [
     type: "object",
     scopes: ["team"],
     merge: "deep",
-    description: "Team-declared repo tracking intent, identity-keyed; the daemon layers it under machine-scoped rt.repoTracking, machine winning per repo.",
+    description: "Team-declared repo tracking intent, identity-keyed; the daemon layers it under machine-scoped rt.repoTracking, which wins per repo whenever it names that repo at all — including an explicit local {mode:\"off\"} entry, the way to opt a repo out of team-declared tracking.",
   },
   {
     key: "mattstack.appPath",

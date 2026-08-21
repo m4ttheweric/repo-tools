@@ -8,7 +8,7 @@ import { setSetting } from "../../settings/write.ts";
 import { runCapture } from "../../subprocess.ts";
 import { clearIdentityMemo } from "../../settings/identity.ts";
 import {
-  loadRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS,
+  loadRepoTracking, loadMachineRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS,
   primeTeamTrackingIdentityMap,
 } from "../../repo-tracking.ts";
 
@@ -196,6 +196,82 @@ describe("loadRepoTracking merges mattstack.tracking team intent", () => {
     expect(t.foo).toEqual({ mode: "live", caches: ["branches"] });
     expect(t.baz).toBeUndefined();
   });
+
+  test("a typo'd machine entry (rejected by normalizeEntry) still blocks team intent for that name", () => {
+    setSetting("rt.repoTracking", { foo: { mode: "sideways", caches: ["branches"] } }, "machine");
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
+    }, "team", { team: "acme" });
+
+    const t = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": "foo" } });
+    expect(t.foo).toBeUndefined();
+  });
+
+  test("an explicit {mode:\"off\"} machine entry opts a team-tracked repo out", () => {
+    setSetting("rt.repoTracking", { foo: { mode: "off" } }, "machine");
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
+    }, "team", { team: "acme" });
+
+    const t = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": "foo" } });
+    expect(t.foo).toBeUndefined();
+  });
+});
+
+describe("loadMachineRepoTracking — the machine-only read (no team merge)", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-tracking-machine-only-")));
+    process.env.HOME = home;
+    seedTeam();
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("never contains team-declared entries, even with a primed map and team intent present", () => {
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
+    }, "team", { team: "acme" });
+
+    // Sanity: the merged view WOULD show foo if this test used loadRepoTracking.
+    const merged = loadRepoTracking({ identityMap: { "gitlab.com/acme/foo": "foo" } });
+    expect(merged.foo).toBeDefined();
+
+    expect(loadMachineRepoTracking()).toEqual({});
+  });
+
+  test("a read-modify-write through loadMachineRepoTracking + saveRepoTracking never bakes team intent into the machine store", () => {
+    setSetting("rt.repoTracking", { existing: { mode: "poll", caches: ["branches"] } }, "machine");
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["branches", "project-mrs"] } },
+    }, "team", { team: "acme" });
+    const identityMap = { "gitlab.com/acme/foo": "foo" };
+
+    // Prove the merged view sees "foo" (the state a track/untrack call must NOT capture).
+    expect(loadRepoTracking({ identityMap }).foo).toBeDefined();
+
+    // track <existing> live — a read-modify-write exactly like commands/daemon.ts's manageTracking.
+    const tracking = loadMachineRepoTracking();
+    tracking.existing = { mode: "live", caches: ["branches"] };
+    saveRepoTracking(tracking);
+
+    const saved = getSetting<Record<string, unknown>>("rt.repoTracking").value;
+    expect(Object.keys(saved)).toEqual(["existing"]);
+    expect(saved.foo).toBeUndefined();
+
+    // untrack <existing> off — same primitive, same guarantee.
+    const tracking2 = loadMachineRepoTracking();
+    delete tracking2.existing;
+    saveRepoTracking(tracking2);
+
+    const savedAfterOff = getSetting<Record<string, unknown>>("rt.repoTracking").value;
+    expect(savedAfterOff).toEqual({});
+  });
 });
 
 describe("primeTeamTrackingIdentityMap", () => {
@@ -234,12 +310,20 @@ describe("primeTeamTrackingIdentityMap", () => {
     expect(loadRepoTracking().foo).toEqual({ mode: "live", caches: ["branches"] });
   });
 
-  test("a repo whose identity fails to derive is left out of the primed map", async () => {
+  // A no-op prime (one that never populates the map) would make "nope" absent
+  // for the right reason but ALSO leave "foo" absent — this only passes if
+  // priming a mixed index actually resolves the repo that CAN derive, not
+  // just skips the one that can't.
+  test("a mixed index: the repo that fails to derive is left out, the one that succeeds is folded in", async () => {
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
+    }, "team", { team: "acme" });
+
     const noRemoteDir = mkdtempSync(join(tmpdir(), "rt-tracking-prime-noremote-"));
     await runCapture(["git", "init", "-q"], { cwd: noRemoteDir });
     try {
-      await primeTeamTrackingIdentityMap({ nope: noRemoteDir });
-      expect(loadRepoTracking()).toEqual({});
+      await primeTeamTrackingIdentityMap({ nope: noRemoteDir, foo: repoDir });
+      expect(Object.keys(loadRepoTracking())).toEqual(["foo"]);
     } finally {
       rmSync(noRemoteDir, { recursive: true, force: true });
     }

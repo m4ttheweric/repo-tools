@@ -285,11 +285,17 @@ export function startDaemon(): void {
   // Team tracking intent (mattstack.tracking) resolves through a primed
   // identity→name map, not live derivation — loadRepoTracking is sync and
   // runs on every freshness tick. Team intent is inert until this completes.
+  // The RELIABLE re-prime is the 60s hooks-scan poller (pollers.ts); the
+  // repos.json watch below is best-effort only — see its own comment.
   primeTeamTrackingIdentityMap(loadRepoIndex()).catch((err) => {
     log.warn({ err }, "repo-tracking: failed to prime team-intent identity map");
   });
 
-  // Watch repos.json for changes (new repos added)
+  // Watch repos.json for changes (new repos added). Best-effort: repos.json
+  // is typically rewritten via an atomic rename, which changes the file's
+  // inode, and fs.watch on most platforms stops delivering events after
+  // that — this fires once, maybe, and the 60s poller is what actually
+  // keeps the team-tracking identity map current.
   if (existsSync(REPOS_JSON_PATH)) {
     watch(REPOS_JSON_PATH, () => {
       log.info("repos.json changed; refreshing watched repos");
