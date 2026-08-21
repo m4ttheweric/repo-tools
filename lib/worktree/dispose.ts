@@ -16,7 +16,7 @@ import { gitOk, isAncestorAsync, remoteDefaultRef, remoteRefExists, runGit } fro
 import { loadRegistry, saveRegistry, type TreeRecord } from "./registry.ts";
 import { hasFreshAttendantLease } from "./lease.ts";
 import { loadSyncConfig, matchRule } from "../sync-config.ts";
-import { repoDataDir } from "../rt-paths.ts";
+import { deriveRepoIdentity } from "../settings/identity.ts";
 import { killWorktreeProcesses } from "../daemon/worktree-process-kill.ts";
 import { RETENTION_MS, reapTrashDir, retireTree, stripTrashDir } from "./trash.ts";
 
@@ -83,7 +83,8 @@ export async function classifyDirtyAsync(
   worktreePath: string,
   repoName: string,
 ): Promise<{ discard: string[]; blockers: string[] }> {
-  const rules = loadSyncConfig(repoDataDir(repoName)).autoResolve;
+  const repoIdentity = await deriveRepoIdentity(worktreePath);
+  const rules = loadSyncConfig(repoIdentity).autoResolve;
   const status = await runGit(worktreePath, ["status", "--porcelain"]);
   if (status.exitCode !== 0) {
     return { discard: [], blockers: [STATUS_FAILED_BLOCKER] };

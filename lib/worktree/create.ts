@@ -30,6 +30,7 @@ import { runReadySteps } from "./ready.ts";
 import { withTreeLock } from "./locks.ts";
 import { reapTrashDir, trashTree } from "./trash.ts";
 import { reconcileForRepo } from "../daemon/doppler-sync.ts";
+import { deriveRepoIdentity } from "../settings/identity.ts";
 
 const CREATE_TIMEOUT_MS = 5 * 60_000;
 
@@ -137,7 +138,8 @@ async function runCreate(
     log.warn({ repo: repoName, tree: name, path }, "worktree create: git worktree list failed; skipping doppler sync");
   } else {
     const worktreeRoots = gitEntries.map((w) => w.path);
-    await reconcileForRepo({ repoName, worktreeRoots });
+    const repoIdentity = await deriveRepoIdentity(repoPath);
+    await reconcileForRepo({ repoIdentity, worktreeRoots });
   }
 
   const readyStamp = await headSha(path);

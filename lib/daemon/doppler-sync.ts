@@ -1,6 +1,6 @@
 /**
  * Doppler-sync reconciler — keeps `~/.doppler/.doppler.yaml` consistent with
- * each repo's `~/.mattstack/rt/repos/<repo>/doppler-template.yaml` across all worktrees.
+ * each repo's `rt.dopplerTemplate` setting across all worktrees.
  *
  * Called once per cache-refresh tick by the daemon (`refreshCacheImpl` in
  * `lib/daemon.ts`) and once when a new worktree is created (`lib/worktree/create.ts`).
@@ -9,9 +9,9 @@
  * are preserved.
  */
 
-import { existsSync } from "fs";
 import { join } from "path";
-import { loadTemplate, templatePath } from "../doppler-template.ts";
+import { loadTemplate } from "../doppler-template.ts";
+import { getSetting } from "../settings/resolve.ts";
 import { loadDopplerConfig, writeDopplerConfig, addScopedEntry } from "../doppler-config.ts";
 
 export interface ReconcileSummary {
@@ -23,17 +23,27 @@ export interface ReconcileSummary {
 }
 
 export interface ReconcileOpts {
-  repoName:      string;
+  repoIdentity:  string | null;
   worktreeRoots: string[];
 }
 
 export async function reconcileForRepo(opts: ReconcileOpts): Promise<ReconcileSummary> {
-  // Distinguish "no template" (silent opt-out) from "malformed template" (error).
-  const path = templatePath(opts.repoName);
-  if (!existsSync(path)) {
+  // Distinguish "no template declared" (silent opt-out) from "declared but
+  // unusable" (error) — a presence check on the raw resolved value, not
+  // explainSetting, so an authored-but-empty array still counts as declared.
+  // A resolver throw (e.g. an unexpandable ${...} variable authored by hand)
+  // counts as "declared but unusable", not "nothing declared" — this runs
+  // once per repo per cache-refresh tick and must never take the cycle down.
+  let value: unknown;
+  try {
+    value = getSetting<unknown>("rt.dopplerTemplate", { repoIdentity: opts.repoIdentity }).value;
+  } catch {
+    return { wrote: 0, overridden: 0, unchanged: 0, skipped: "malformed-template" };
+  }
+  if (value === undefined) {
     return { wrote: 0, overridden: 0, unchanged: 0, skipped: "no-template" };
   }
-  const template = loadTemplate(opts.repoName);
+  const template = loadTemplate(opts.repoIdentity);
   if (template === null) {
     return { wrote: 0, overridden: 0, unchanged: 0, skipped: "malformed-template" };
   }

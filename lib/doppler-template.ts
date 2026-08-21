@@ -2,7 +2,8 @@
  * Per-repo Doppler template — the source of truth for which app subdir of a
  * worktree maps to which Doppler project + config.
  *
- * Path: ~/.mattstack/rt/repos/<repo>/doppler-template.yaml. Format is a flat list of objects:
+ * Resolved through the settings resolver (`rt.dopplerTemplate`, team.repo
+ * scope): a flat array of objects:
  *   - { path: apps/backend,  project: backend,  config: dev }
  *   - { path: apps/frontend, project: frontend, config: dev }
  *
@@ -11,10 +12,7 @@
  * `make initDoppler`. See docs/superpowers/specs/2026-04-30-doppler-template-sync-design.md.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
-import { parse, stringify } from "yaml";
-import { repoDataDir } from "./rt-paths.ts";
+import { getSetting } from "./settings/resolve.ts";
 
 export interface DopplerTemplateEntry {
   /** Path relative to the worktree root (e.g. "apps/backend"). */
@@ -25,69 +23,31 @@ export interface DopplerTemplateEntry {
   config: string;
 }
 
-export function templatePath(repoName: string): string {
-  return join(repoDataDir(repoName), "doppler-template.yaml");
-}
-
-/** Load the template. Returns `null` if missing or malformed. */
-export function loadTemplate(repoName: string): DopplerTemplateEntry[] | null {
-  const path = templatePath(repoName);
-  if (!existsSync(path)) return null;
+/**
+ * The resolved template, or `null` when nothing resolves or the resolved
+ * value isn't a template-shaped array — the same "opt out" answer a missing
+ * or malformed file gave before. A resolver throw (e.g. an unexpandable
+ * ${...} variable authored by hand) degrades the same way.
+ */
+export function loadTemplate(repoIdentity: string | null): DopplerTemplateEntry[] | null {
+  let raw: unknown;
   try {
-    const raw = readFileSync(path, "utf8");
-    const parsed = parse(raw);
-    if (!Array.isArray(parsed)) return null;
-    const entries: DopplerTemplateEntry[] = [];
-    for (const item of parsed) {
-      if (
-        item && typeof item === "object" &&
-        typeof item.path    === "string" &&
-        typeof item.project === "string" &&
-        typeof item.config  === "string"
-      ) {
-        entries.push({ path: item.path, project: item.project, config: item.config });
-      }
-    }
-    return entries;
+    raw = getSetting<unknown>("rt.dopplerTemplate", { repoIdentity }).value;
   } catch {
     return null;
   }
-}
+  if (raw === undefined || !Array.isArray(raw)) return null;
 
-/** Persist entries to disk. Creates the parent directory if needed. */
-export function saveTemplate(
-  repoName: string,
-  entries: DopplerTemplateEntry[],
-): void {
-  const path = templatePath(repoName);
-  mkdirSync(repoDataDir(repoName), { recursive: true });
-  const yaml = stringify(entries);
-  writeFileSync(path, yaml);
-}
-
-import type { DopplerConfig } from "./doppler-config.ts";
-
-/**
- * Walk a loaded Doppler config and capture every `enclave.*` entry under the
- * given worktree path. Returns relative-pathed template entries, sorted by
- * path for deterministic output.
- *
- * Templates are hand-authored today (a settings-driven bootstrap is planned
- * as a future migration); this capture helper backs its test coverage.
- */
-export function captureFromActualConfig(
-  dopplerCfg: DopplerConfig,
-  worktreeRoot: string,
-): DopplerTemplateEntry[] {
-  const prefix = worktreeRoot.endsWith("/") ? worktreeRoot : worktreeRoot + "/";
-  const out: DopplerTemplateEntry[] = [];
-  for (const [absPath, entry] of Object.entries(dopplerCfg.scoped)) {
-    if (!absPath.startsWith(prefix)) continue;
-    const project = entry["enclave.project"];
-    const config  = entry["enclave.config"];
-    if (typeof project !== "string" || typeof config !== "string") continue;
-    out.push({ path: absPath.slice(prefix.length), project, config });
+  const entries: DopplerTemplateEntry[] = [];
+  for (const item of raw) {
+    if (
+      item && typeof item === "object" &&
+      typeof item.path    === "string" &&
+      typeof item.project === "string" &&
+      typeof item.config  === "string"
+    ) {
+      entries.push({ path: item.path, project: item.project, config: item.config });
+    }
   }
-  out.sort((a, b) => a.path.localeCompare(b.path));
-  return out;
+  return entries;
 }

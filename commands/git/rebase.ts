@@ -31,6 +31,7 @@ import {
   ruleGlobs,
   type AutoResolveRule,
 } from "../../lib/sync-config.ts";
+import { deriveRepoIdentity } from "../../lib/settings/identity.ts";
 import type { CommandContext } from "../../lib/command-tree.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -60,14 +61,12 @@ export interface RebaseResult {
 export interface RebaseOptions {
   /** Target ref to rebase onto (default: auto-detect origin/master or origin/main). */
   target?: string;
-  /** Auto-resolve rules (default: loaded from ~/.mattstack/rt/repos/<repo>/sync.json). */
+  /** Auto-resolve rules (default: loaded from the rt.sync setting for cwd's repo identity). */
   autoResolve?: AutoResolveRule[];
   /** If true, show what would happen without doing it. */
   dryRun?: boolean;
   /** Working directory. */
   cwd: string;
-  /** Repo data dir for loading config (e.g. ~/.mattstack/rt/repos/<repo>). */
-  dataDir?: string;
   /** If true, suppress output (used when called from rt sync --all). */
   quiet?: boolean;
   /** If true, skip git fetch (caller already fetched). */
@@ -243,7 +242,7 @@ export async function rebaseOnto(opts: RebaseOptions): Promise<RebaseResult> {
   }
 
   // 4. Load auto-resolve rules
-  const rules = opts.autoResolve ?? (opts.dataDir ? loadSyncConfig(opts.dataDir).autoResolve : []);
+  const rules = opts.autoResolve ?? loadSyncConfig(await deriveRepoIdentity(cwd)).autoResolve;
 
   // 5. Dry run
   if (dryRun) {
@@ -516,7 +515,6 @@ async function runRebaseWithEscalation(
 
   const result = await rebaseOnto({
     cwd,
-    dataDir,
     target,
     dryRun,
     quiet: mode === "json",

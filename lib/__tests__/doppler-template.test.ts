@@ -1,123 +1,94 @@
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
+import { setSetting } from "../settings/write.ts";
+import { machineSettingsPath } from "../rt-paths.ts";
+import { loadTemplate } from "../doppler-template.ts";
 
-// Pin HOME to a tmpdir BEFORE importing the module under test, since
-// daemon-config.ts reads RT_DIR at import time from the user's home.
-const origHome = process.env.HOME;
-const tmpHome = mkdtempSync(join(tmpdir(), "rt-doppler-template-"));
-process.env.HOME = tmpHome;
+const IDENTITY = "gitlab.com/acme/test-repo";
 
-// bun test runs every file in one shared process — restore HOME so later
-// test files (and their per-test HOME juggling) don't inherit the temp dir.
-afterAll(() => {
-  process.env.HOME = origHome;
-  rmSync(tmpHome, { recursive: true, force: true });
-});
+describe("doppler-template over the settings resolver", () => {
+  const origHome = process.env.HOME;
+  let home: string;
 
-const { loadTemplate, saveTemplate, templatePath } =
-  await import("../doppler-template.ts");
-
-describe("doppler-template I/O", () => {
-  const repo = "test-repo";
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-doppler-template-")));
+    process.env.HOME = home;
+  });
 
   afterEach(() => {
-    try { rmSync(join(tmpHome, ".mattstack", "rt", "repos", repo), { recursive: true, force: true }); } catch { /* */ }
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
   });
 
-  test("templatePath is ~/.mattstack/rt/repos/<repo>/doppler-template.yaml", () => {
-    expect(templatePath(repo)).toBe(join(tmpHome, ".mattstack", "rt", "repos", repo, "doppler-template.yaml"));
+  test("loadTemplate returns null when nothing is declared", () => {
+    expect(loadTemplate(IDENTITY)).toBeNull();
   });
 
-  test("loadTemplate returns null when the file is missing", () => {
-    expect(loadTemplate(repo)).toBeNull();
+  test("loadTemplate returns null when no repo identity is available", () => {
+    expect(loadTemplate(null)).toBeNull();
   });
 
-  test("loadTemplate returns null on malformed YAML", () => {
-    mkdirSync(join(tmpHome, ".mattstack", "rt", "repos", repo), { recursive: true });
-    writeFileSync(templatePath(repo), "this: is: not: valid: yaml::");
-    expect(loadTemplate(repo)).toBeNull();
-  });
+  test("a store-seeded array resolves through the loader", () => {
+    setSetting(
+      "rt.dopplerTemplate",
+      [
+        { path: "apps/backend", project: "backend", config: "dev" },
+        { path: "apps/frontend", project: "frontend", config: "dev" },
+      ],
+      "machine",
+      { repoIdentity: IDENTITY },
+    );
 
-  test("saveTemplate then loadTemplate round-trips entries", () => {
-    const entries = [
-      { path: "apps/backend",  project: "backend",  config: "dev" },
+    expect(loadTemplate(IDENTITY)).toEqual([
+      { path: "apps/backend", project: "backend", config: "dev" },
       { path: "apps/frontend", project: "frontend", config: "dev" },
-    ];
-    saveTemplate(repo, entries);
-    expect(loadTemplate(repo)).toEqual(entries);
-  });
-
-  test("saveTemplate creates the parent directory if missing", () => {
-    saveTemplate(repo, [{ path: "apps/x", project: "x", config: "dev" }]);
-    const raw = readFileSync(templatePath(repo), "utf8");
-    expect(raw).toContain("project: x");
-  });
-});
-
-const { captureFromActualConfig } = await import("../doppler-template.ts");
-
-describe("captureFromActualConfig", () => {
-  test("captures enclave entries under the given worktree path, relative-pathed", () => {
-    const dopplerCfg: any = {
-      scoped: {
-        "/repo/primary": { token: "secret-xxx" },
-        "/repo/primary/apps/backend": {
-          "enclave.project": "backend",
-          "enclave.config":  "dev",
-        },
-        "/repo/primary/apps/frontend": {
-          "enclave.project": "frontend",
-          "enclave.config":  "dev",
-        },
-        "/repo/primary/packages/sidekick": {
-          "enclave.project": "portal",
-          "enclave.config":  "dev",
-        },
-        "/repo/wktree-2/apps/backend": {
-          "enclave.project": "backend",
-          "enclave.config":  "dev",
-        },
-      },
-    };
-    const captured = captureFromActualConfig(dopplerCfg, "/repo/primary");
-    expect(captured).toEqual([
-      { path: "apps/backend",       project: "backend",  config: "dev" },
-      { path: "apps/frontend",      project: "frontend", config: "dev" },
-      { path: "packages/sidekick",  project: "portal", config: "dev" },
     ]);
   });
 
-  test("ignores token-only entries (no enclave fields)", () => {
-    const dopplerCfg: any = {
-      scoped: {
-        "/repo/primary": { token: "secret-xxx" },
-        "/repo/primary/apps/x": {
-          "enclave.project": "x",
-          "enclave.config":  "dev",
-        },
-      },
-    };
-    expect(captureFromActualConfig(dopplerCfg, "/repo/primary")).toEqual([
-      { path: "apps/x", project: "x", config: "dev" },
+  test("filters out entries missing a required field", () => {
+    setSetting(
+      "rt.dopplerTemplate",
+      [
+        { path: "apps/backend", project: "backend", config: "dev" },
+        { path: "apps/broken" },
+      ],
+      "machine",
+      { repoIdentity: IDENTITY },
+    );
+
+    expect(loadTemplate(IDENTITY)).toEqual([
+      { path: "apps/backend", project: "backend", config: "dev" },
     ]);
   });
 
-  test("returns empty array if no enclave entries exist under the worktree", () => {
-    const dopplerCfg: any = { scoped: { "/": { token: "x" } } };
-    expect(captureFromActualConfig(dopplerCfg, "/repo/primary")).toEqual([]);
+  test("returns null when the resolved value isn't array-shaped", () => {
+    // setSetting refuses a non-array write (registry type is "array"); a
+    // hand-edited store can still hold one, and the resolver's own type
+    // check degrades it away rather than throwing — loadTemplate must
+    // return null for that "nothing usable" case too.
+    const path = machineSettingsPath();
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(
+      path,
+      JSON.stringify({ repos: { [IDENTITY]: { "rt.dopplerTemplate": { oops: true } } } }),
+    );
+
+    expect(loadTemplate(IDENTITY)).toBeNull();
   });
 
-  test("returns entries sorted by path for deterministic output", () => {
-    const dopplerCfg: any = {
-      scoped: {
-        "/repo/primary/zebra":  { "enclave.project": "z", "enclave.config": "dev" },
-        "/repo/primary/alpha":  { "enclave.project": "a", "enclave.config": "dev" },
-        "/repo/primary/middle": { "enclave.project": "m", "enclave.config": "dev" },
-      },
-    };
-    const captured = captureFromActualConfig(dopplerCfg, "/repo/primary");
-    expect(captured.map(e => e.path)).toEqual(["alpha", "middle", "zebra"]);
+  test("an unexpandable ${repoRoot} in a stored value degrades to null instead of throwing", () => {
+    setSetting(
+      "rt.dopplerTemplate",
+      [{ path: "${repoRoot}", project: "backend", config: "dev" }],
+      "machine",
+      { repoIdentity: IDENTITY },
+    );
+
+    // ${repoRoot} has no expand context here, so the resolver throws on
+    // expansion — loadTemplate must degrade to null rather than propagate.
+    expect(() => loadTemplate(IDENTITY)).not.toThrow();
+    expect(loadTemplate(IDENTITY)).toBeNull();
   });
 });

@@ -21,6 +21,7 @@ import { exec, execSync, spawnSync } from "child_process";
 import { bold, cyan, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import { getCurrentBranch, getRemoteDefaultBranch, hasUncommittedChanges } from "../lib/git-ops.ts";
 import { loadSyncConfig } from "../lib/sync-config.ts";
+import { deriveRepoIdentity } from "../lib/settings/identity.ts";
 import { rebaseOnto, type RebaseResult } from "./git/rebase.ts";
 import { resetToOrigin, type ResetResult } from "./git/reset.ts";
 import { syncLog } from "../lib/sync-log.ts";
@@ -95,7 +96,6 @@ function hasDivergedFromRemote(branch: string, cwd: string): boolean {
 
 async function syncBranch(
   cwd: string,
-  dataDir: string,
   opts: { dryRun?: boolean; quiet?: boolean; onConflict?: "abort" | "pause" },
 ): Promise<SyncSummary> {
   // Guard: rebase-in-progress takes priority — getCurrentBranch returns null
@@ -158,7 +158,7 @@ async function syncBranch(
     };
   }
 
-  const config = loadSyncConfig(dataDir);
+  const config = loadSyncConfig(await deriveRepoIdentity(cwd));
   let resetResult: ResetResult | null = null;
   let rebaseResult: RebaseResult | null = null;
   let needsPush = false;
@@ -229,7 +229,6 @@ async function syncBranch(
   // 3. Check if behind origin/master — rebase
   rebaseResult = await rebaseOnto({
     cwd,
-    dataDir,
     autoResolve: config.autoResolve,
     dryRun: opts.dryRun,
     quiet: opts.quiet,
@@ -387,7 +386,7 @@ async function syncAll(
       continue;
     }
 
-    const summary = await syncBranch(wt.path, identity.dataDir, {
+    const summary = await syncBranch(wt.path, {
       dryRun: opts.dryRun,
       quiet: false,
       onConflict: "abort",
@@ -458,7 +457,7 @@ export async function syncCommand(
   // the try/finally below has fully completed.
   let escalationExit: number | null = null;
   try {
-    summary = await syncBranch(cwd, dataDir, {
+    summary = await syncBranch(cwd, {
       dryRun,
       quiet: mode === "json",
       onConflict: mode === "off" ? "abort" : "pause",
