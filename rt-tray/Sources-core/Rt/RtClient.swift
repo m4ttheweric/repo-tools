@@ -279,8 +279,10 @@ private final class StreamDrainState: @unchecked Sendable {
         }
     }
 
-    /// Runs outside the lock. Safe because `finished` implies both EOFs, so no
-    /// reader can still be yielding by the time this finishes the stream.
+    /// Runs outside the lock. On the settle path `finished` implies both real
+    /// EOFs, so no reader is still yielding; on the grace path a reader may still
+    /// yield after the finish, which is a defined no-op on a finished continuation
+    /// (those post-grace bytes are deliberately abandoned).
     private func deliver(_ outcome: Outcome?) {
         guard let outcome else { return }
         switch outcome {
