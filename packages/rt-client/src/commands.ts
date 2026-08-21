@@ -72,12 +72,14 @@ export interface Commands {
   "secrets:forge-token": { payload: { repoName: string; forge: ForgeSlug }; data: ForgeTokenData };
   /**
    * A per-`scope` whitelisted subset of secrets, each scope reading its own
-   * encrypted domain (RT-32, extended by Task 3 for deck): "extension"
-   * (default, so the VS Code extension needs no change) is linearApiKey/
-   * gitlabToken from the `rt` domain; "deck" is cfApiToken/cfZoneId from the
-   * `deck` domain. Both optional per key (present only when set). Not a
-   * general secrets export — extend a whitelist here, in lockstep with
-   * lib/daemon/handlers/secrets.ts and (for "extension")
+   * encrypted domain: "extension" (default, so the VS Code extension needs
+   * no change) is linearApiKey/gitlabToken from the `rt` domain; "deck" is
+   * cfApiToken/cfZoneId from the `deck` domain. `data` is a union of the two
+   * exact per-scope shapes, not a merged bag of all four keys — that makes
+   * a caller narrowing on the wrong scope's fields a compile error instead
+   * of a silent `undefined`. Both optional per key (present only when set).
+   * Not a general secrets export — extend a whitelist here, in lockstep
+   * with lib/daemon/handlers/secrets.ts and (for "extension")
    * extensions/vscode/rt-context/src/secrets.ts, if a consumer needs another
    * key.
    *
@@ -90,7 +92,7 @@ export interface Commands {
    */
   "secrets:read": {
     payload: { token?: string; scope?: "extension" | "deck" };
-    data: { linearApiKey?: string; gitlabToken?: string; cfApiToken?: string; cfZoneId?: string };
+    data: { linearApiKey?: string; gitlabToken?: string } | { cfApiToken?: string; cfZoneId?: string };
   };
   "events:emit": { payload: { topic: string; payload?: unknown }; data: { id: number } };
   "events:wait": { payload: { pattern: string; after?: number; waitMs?: number }; data: { events: EventsBusEvent[]; cursor: number } };

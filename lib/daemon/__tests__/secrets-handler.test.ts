@@ -196,10 +196,10 @@ describe("secrets:read", () => {
   });
 });
 
-// scope: "deck" (Task 3) reads a wholly different encrypted domain
-// (lib/secrets/store.ts readSecret("deck", ...)) — the whitelist and the
-// domain are both per-scope, so an rt-domain value seeded for the extension
-// scope must never leak into a deck-scope read, and vice versa.
+// scope: "deck" reads a wholly different encrypted domain (lib/secrets/
+// store.ts readSecret("deck", ...)) — the whitelist and the domain are both
+// per-scope, so an rt-domain value seeded for the extension scope must
+// never leak into a deck-scope read, and vice versa.
 describe("secrets:read scope", () => {
   test("deck scope returns only cfApiToken/cfZoneId, never an rt-domain key seeded for extension scope", async () => {
     const h = readHandler({
@@ -256,5 +256,36 @@ describe("secrets:read scope", () => {
     expect(wrong).toEqual({ ok: false, error: "bad-token" });
 
     expect(deckCalled).toBe(false);
+  });
+
+  test("a case-variant scope (\"Deck\") is refused, not treated as \"deck\"", async () => {
+    let deckCalled = false;
+    const h = readHandler({ deckSecrets: async () => { deckCalled = true; return {}; } });
+
+    const res = await h({ token: "test-token", scope: "Deck" as any });
+
+    expect(res).toEqual({ ok: false, error: "bad-scope" });
+    expect(deckCalled).toBe(false);
+  });
+
+  test("a non-string scope (array) is refused, not coerced into a match", async () => {
+    let extensionCalled = false;
+    let deckCalled = false;
+    const h = readHandler({
+      extensionSecrets: async () => { extensionCalled = true; return {}; },
+      deckSecrets: async () => { deckCalled = true; return {}; },
+    });
+
+    const res = await h({ token: "test-token", scope: ["deck"] as any });
+
+    expect(res).toEqual({ ok: false, error: "bad-scope" });
+    expect(extensionCalled).toBe(false);
+    expect(deckCalled).toBe(false);
+  });
+
+  test("a deck-reader throw surfaces as a rejected promise (transport error), never a partial ok", async () => {
+    const h = readHandler({ deckSecrets: async () => { throw new Error("sops -d exploded"); } });
+
+    await expect(h({ token: "test-token", scope: "deck" })).rejects.toThrow("sops -d exploded");
   });
 });
