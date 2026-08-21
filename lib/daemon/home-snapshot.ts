@@ -11,6 +11,14 @@
  * `watch`/`setTimeout`/`clearTimeout`/`now` are also injected so the test
  * suite can drive the debounce/push-delay/janitor timers and the fs watcher
  * without touching a real filesystem or clock.
+ *
+ * A `runNow()` call that lands while another is already in flight (e.g. `rt
+ * home snapshot` fired during an in-flight watch-triggered run) does NOT
+ * queue a follow-up run of its own — it reuses the in-flight run's promise
+ * and returns THAT run's result. A manual invocation timed that way can
+ * therefore report a result whose `reason` is "watch", with janitor zones
+ * (gated to "janitor"/"manual" reasons) left unprocessed even though the
+ * caller asked for "manual". Running it again gets a fresh manual cycle.
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, watch as fsWatch, writeFileSync } from "fs";
@@ -33,6 +41,8 @@ export type SkipReason =
   | "detached"
   | "merge-in-progress"
   | "owners-read-error"
+  | "index-locked"
+  | "add-failed"
   | "no-changes";
 
 export interface SnapshotResult {
@@ -50,6 +60,8 @@ export interface SnapshotStatus {
   repoDir: string;
   lastRunAt: number;
   lastCommit: { sha: string; message: string; at: number } | null;
+  /** The stderr of the most recent FAILED commit attempt (auto or janitor); null once a later commit succeeds. A persistent failure here is otherwise invisible — nothing else in status() distinguishes "nothing to commit" from "tried and failed every cycle". */
+  lastCommitError: string | null;
   pushPending: boolean;
   lastPushAt: number;
   lastPushError: string | null;
@@ -97,6 +109,35 @@ export interface HomeSnapshotDeps {
 const GIT_TIMEOUT_MS = 15_000;
 const PUSH_TIMEOUT_MS = 30_000;
 
+// Registry defaults (packages/rt-client/src/settings/registry-defs.ts's
+// rt.homeSnapshot row) — also the NaN/non-finite fallback for clampSettings,
+// so a corrupt or missing setting degrades to the same values a fresh
+// machine starts with, not to some other arbitrary number.
+const SETTINGS_FALLBACK = {
+  debounceSec: 20,
+  pushDelaySec: 60,
+  janitorThresholdHours: 6,
+  janitorIntervalMin: 30,
+} as const;
+
+/**
+ * Every interval setting is user-editable jsonc — 0, a negative number, or
+ * NaN (a typo, a bad merge) must not reach a `setTimeout` call or a
+ * threshold comparison. Clamped once here, centrally, rather than at each
+ * of the several call sites that read `deps.readSettings()`.
+ */
+function clampSettings(raw: HomeSnapshotSettings): HomeSnapshotSettings {
+  const clamp = (value: number, min: number, fallback: number): number =>
+    Number.isFinite(value) ? Math.max(value, min) : fallback;
+  return {
+    enabled: raw.enabled,
+    debounceSec: clamp(raw.debounceSec, 1, SETTINGS_FALLBACK.debounceSec),
+    pushDelaySec: clamp(raw.pushDelaySec, 1, SETTINGS_FALLBACK.pushDelaySec),
+    janitorThresholdHours: clamp(raw.janitorThresholdHours, 0.1, SETTINGS_FALLBACK.janitorThresholdHours),
+    janitorIntervalMin: clamp(raw.janitorIntervalMin, 1, SETTINGS_FALLBACK.janitorIntervalMin),
+  };
+}
+
 function ownersPathFor(repoDir: string): string {
   return join(repoDir, "snapshot-owners.jsonc");
 }
@@ -135,6 +176,7 @@ function persistState(path: string, firstSeenDirty: Record<string, number>, log:
 
 export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle {
   const repoDir = rawDeps.repoDir ?? join(mattstackHome(), "user");
+  const rawReadSettings = rawDeps.readSettings ?? (() => getSetting<HomeSnapshotSettings>("rt.homeSnapshot").value);
   const deps = {
     log: rawDeps.log,
     broadcast: rawDeps.broadcast,
@@ -144,7 +186,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     setTimeout: rawDeps.setTimeout ?? ((cb: () => void, ms: number) => setTimeout(cb, ms)),
     clearTimeout: rawDeps.clearTimeout ?? ((h: ReturnType<typeof setTimeout>) => clearTimeout(h)),
     now: rawDeps.now ?? (() => Date.now()),
-    readSettings: rawDeps.readSettings ?? (() => getSetting<HomeSnapshotSettings>("rt.homeSnapshot").value),
+    readSettings: () => clampSettings(rawReadSettings()),
     readOwners: rawDeps.readOwners ?? readOwnersReal,
     statePath: rawDeps.statePath ?? join(rtDir(), "home-snapshot-state.json"),
   };
@@ -162,17 +204,31 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
 
   let lastRunAt = 0;
   let lastCommit: { sha: string; message: string; at: number } | null = null;
+  let lastCommitError: string | null = null;
+  let lastLoggedCommitError: string | null = null;
+  let lastLoggedAddError: string | null = null;
   let pushPending = false;
   let pushInFlight: Promise<void> | null = null;
   /** A commit landed (or a retry is due) while a push was already running — the in-flight one has already captured its HEAD snapshot, so this must not be silently coalesced away or the new commit never gets pushed until some unrelated future commit happens to re-arm the timer. */
   let pushAgainRequested = false;
   let lastPushAt = 0;
   let lastPushError: string | null = null;
+  /** True once `home:push-failed` has been broadcast for the CURRENT unbroken run of push failures — reset to false the moment a push succeeds, so a retry storm broadcasts once, not on every attempt. */
+  let pushFailureBroadcast = false;
   let firstSeenDirty: Record<string, number> = loadState(deps.statePath, deps.log);
   let lastLoggedOwnersError: string | null = null;
 
-  const startupSettings = deps.readSettings();
-  if (startupSettings.enabled === false) {
+  // Guarded: this runs at construction time, synchronously, in whatever
+  // calls startHomeSnapshot() (module scope in lib/daemon.ts) — an
+  // unregistered key or a broken settings store must degrade to "stay
+  // inert, warn", never throw out of the daemon's boot sequence.
+  let startupSettings: HomeSnapshotSettings | null = null;
+  try {
+    startupSettings = deps.readSettings();
+  } catch (err) {
+    deps.log.warn({ err }, "home-snapshot: failed to read rt.homeSnapshot settings at startup");
+  }
+  if (startupSettings !== null && startupSettings.enabled === false) {
     // Logged once, informationally, but NOT sticky: `disabledReason` stays
     // null so a live `rt.homeSnapshot.enabled` flip is picked up by doRun's
     // own top-of-run check without a daemon restart (only "not-a-repo" and
@@ -213,6 +269,14 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
         stderr: "pipe",
       });
       if (stopped) return;
+      if (check.exitCode === -1) {
+        // runCapture's own convention for "the process never even started"
+        // (spawn failure — git missing from PATH, permissions, ...), distinct
+        // from git itself running and saying "not a repository".
+        disabledReason = "init-failed";
+        deps.log.warn({ repoDir: deps.repoDir }, "home-snapshot: could not run git (is it on PATH?); inert");
+        return;
+      }
       if (check.exitCode !== 0 || check.stdout.trim() !== "true") {
         disabledReason = "not-a-repo";
         deps.log.warn({ repoDir: deps.repoDir }, "home-snapshot: repoDir is not a git repository; inert");
@@ -331,6 +395,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     });
     if (result.exitCode === 0) {
       pushPending = false;
+      pushFailureBroadcast = false;
       lastPushAt = deps.now();
       lastPushError = null;
       if (pushRetryTimer) {
@@ -346,6 +411,13 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       pushPending = true;
       lastPushError = redactedStderr;
       deps.log.warn({ stderr: redactedStderr }, "home-snapshot: push failed");
+      // Only the FIRST failure of an unbroken streak broadcasts — a retry
+      // storm (schedulePushRetry firing every pushDelaySec*5) would
+      // otherwise spam every WS/socket client with the same event.
+      if (!pushFailureBroadcast) {
+        deps.broadcast("home:push-failed", { error: redactedStderr, pushPending: true });
+        pushFailureBroadcast = true;
+      }
       schedulePushRetry();
     }
   }
@@ -368,6 +440,13 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
 
     const settings = deps.readSettings();
     if (settings.enabled === false) {
+      // Kill switch: a scheduled push must not survive a live disable — the
+      // whole point of flipping this off is "stop touching origin right
+      // now." pushPending itself stays true (there's still an unpushed
+      // commit); once re-enabled, the `committed || pushPending` check at
+      // the end of a later run re-arms schedulePush() naturally.
+      if (pushTimer) { deps.clearTimeout(pushTimer); pushTimer = null; }
+      if (pushRetryTimer) { deps.clearTimeout(pushRetryTimer); pushRetryTimer = null; }
       // debug, not info/warn: this fires on every debounce/janitor tick
       // while the watcher stays armed but the setting is off — an info line
       // per tick would spam the log for as long as the user leaves it
@@ -440,7 +519,25 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     let sha: string | null = null;
 
     if (plan.autoPaths.length > 0 && plan.message !== null) {
+      // `plan.autoPaths` describes what the STATUS SNAPSHOT at the top of
+      // this run looked like — a purely descriptive record of intent. The
+      // exclude pathspec built from `plan.excludedZones` (identical on both
+      // the add and the commit below) is what's actually AUTHORITATIVE:
+      // whatever changed on disk between the status read and this add/commit
+      // pair is governed by the live pathspec, not by the stale path list.
       const excludeArgs = plan.excludedZones.map((zone) => `:(exclude)${zone}`);
+      const addResult = await deps.exec(["git", "add", "-A", "--", ".", ...excludeArgs], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+      if (addResult.exitCode !== 0) {
+        const addSkipped: SkipReason = addResult.stderr.toLowerCase().includes("index.lock") ? "index-locked" : "add-failed";
+        if (addResult.stderr !== lastLoggedAddError) {
+          deps.log.warn({ stderr: addResult.stderr }, "home-snapshot: git add failed; skipping cycle");
+          lastLoggedAddError = addResult.stderr;
+        }
+        if (pushPending) schedulePush();
+        return { committed: false, sha: null, paths: [], reason, skipped: addSkipped };
+      }
+      lastLoggedAddError = null;
+
       // The same exclude pathspec rides the commit too, not just the add:
       // `git add -A -- . :(exclude)Z` only governs what THIS add stages —
       // a plain `git commit` afterward commits the WHOLE index regardless,
@@ -449,7 +546,6 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       // commit to the same pathspec makes it self-contained: only matched
       // paths are committed, whatever sits staged for the zone is left
       // exactly as it was.
-      await deps.exec(["git", "add", "-A", "--", ".", ...excludeArgs], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
       const message = reason === "manual" ? plan.message.replace(/^snapshot:/, "snapshot (manual):") : plan.message;
       const commitResult = await deps.exec(["git", "commit", "-q", "-m", message, "--", ".", ...excludeArgs], {
         cwd: deps.repoDir,
@@ -460,9 +556,16 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
         sha = await getHeadSha();
         committed = true;
         lastCommit = { sha, message, at: deps.now() };
+        lastCommitError = null;
+        lastLoggedCommitError = null;
+        deps.log.info({ sha, paths: plan.autoPaths.length, reason }, "home-snapshot: committed");
         deps.broadcast("home:snapshot", { sha, paths: plan.autoPaths, reason });
       } else {
-        deps.log.warn({ stderr: commitResult.stderr }, "home-snapshot: commit failed");
+        lastCommitError = commitResult.stderr;
+        if (commitResult.stderr !== lastLoggedCommitError) {
+          deps.log.warn({ stderr: commitResult.stderr }, "home-snapshot: commit failed");
+          lastLoggedCommitError = commitResult.stderr;
+        }
       }
     }
 
@@ -470,7 +573,11 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       for (const jz of plan.janitorZones) {
         const dirtyHours = Math.floor((deps.now() - jz.dirtySinceMs) / (60 * 60 * 1000));
         const message = `snapshot (janitor): ${jz.zone} dirty >${dirtyHours}h, owner ${jz.owner}`;
-        await deps.exec(["git", "add", "-A", "--", jz.zone], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+        const addResult = await deps.exec(["git", "add", "-A", "--", jz.zone], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+        if (addResult.exitCode !== 0) {
+          deps.log.warn({ stderr: addResult.stderr, zone: jz.zone }, "home-snapshot: janitor add failed; skipping this zone this cycle");
+          continue;
+        }
         // Same self-contained-commit reasoning as the auto commit above.
         const commitResult = await deps.exec(["git", "commit", "-q", "-m", message, "--", jz.zone], {
           cwd: deps.repoDir,
@@ -481,9 +588,16 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
           sha = await getHeadSha();
           committed = true;
           lastCommit = { sha, message, at: deps.now() };
+          lastCommitError = null;
+          lastLoggedCommitError = null;
+          deps.log.info({ sha, paths: 1, reason }, "home-snapshot: committed");
           deps.broadcast("home:snapshot", { sha, paths: [jz.zone], reason });
         } else {
-          deps.log.warn({ stderr: commitResult.stderr, zone: jz.zone }, "home-snapshot: janitor commit failed");
+          lastCommitError = commitResult.stderr;
+          if (commitResult.stderr !== lastLoggedCommitError) {
+            deps.log.warn({ stderr: commitResult.stderr, zone: jz.zone }, "home-snapshot: janitor commit failed");
+            lastLoggedCommitError = commitResult.stderr;
+          }
         }
       }
     }
@@ -525,6 +639,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       repoDir: deps.repoDir,
       lastRunAt,
       lastCommit,
+      lastCommitError,
       pushPending,
       lastPushAt,
       lastPushError,

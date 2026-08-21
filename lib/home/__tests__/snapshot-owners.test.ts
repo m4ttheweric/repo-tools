@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { claimZone, InvalidZoneError, normalizeZone, readOwners, releaseZone } from "../snapshot-owners.ts";
+import { claimZone, InvalidZoneError, normalizeZone, readOwners, releaseZone, ZoneOwnedByOthersError } from "../snapshot-owners.ts";
 import { renderOwnersFile } from "../init-plan.ts";
 
 const EMPTY_TEMPLATE = renderOwnersFile();
@@ -57,6 +57,14 @@ describe("normalizeZone", () => {
   test("rejects a backslash", () => {
     expect(() => normalizeZone("work\\project")).toThrow(InvalidZoneError);
   });
+
+  test("kind:'file' never appends a trailing slash", () => {
+    expect(normalizeZone("scripts/deploy.sh", "file")).toBe("scripts/deploy.sh");
+  });
+
+  test("kind:'file' still rejects a .. segment", () => {
+    expect(() => normalizeZone("../etc", "file")).toThrow(InvalidZoneError);
+  });
 });
 
 describe("readOwners", () => {
@@ -99,11 +107,11 @@ describe("readOwners", () => {
     });
   });
 
-  test("normalizes a hand-edited zone key missing its trailing slash", () => {
+  test("a hand-edited zone key WITH a trailing slash still normalizes as a dir zone (idempotent double-slash cleanup)", () => {
     const path = ownersPath();
-    writeFileSync(path, '{ "zones": { "prefs": { "owner": "matt", "claimedAt": "2026-01-01T00:00:00.000Z" } } }\n');
+    writeFileSync(path, '{ "zones": { "work//project/": { "owner": "matt", "claimedAt": "2026-01-01T00:00:00.000Z" } } }\n');
 
-    expect(Object.keys(readOwners(path).zones)).toEqual(["prefs/"]);
+    expect(Object.keys(readOwners(path).zones)).toEqual(["work/project/"]);
   });
 
   test("throws on malformed jsonc", () => {
@@ -150,6 +158,34 @@ describe("readOwners", () => {
 
     expect(() => readOwners(path)).toThrow();
   });
+
+  test("throws when a zone's owner is missing", () => {
+    const path = ownersPath();
+    writeFileSync(path, '{ "zones": { "prefs/": { "claimedAt": "2026-01-01T00:00:00.000Z" } } }\n');
+
+    expect(() => readOwners(path)).toThrow();
+  });
+
+  test("throws when a zone's owner is an empty string", () => {
+    const path = ownersPath();
+    writeFileSync(path, '{ "zones": { "prefs/": { "owner": "", "claimedAt": "2026-01-01T00:00:00.000Z" } } }\n');
+
+    expect(() => readOwners(path)).toThrow();
+  });
+
+  test("throws when a zone's owner is not a string", () => {
+    const path = ownersPath();
+    writeFileSync(path, '{ "zones": { "prefs/": { "owner": 42, "claimedAt": "2026-01-01T00:00:00.000Z" } } }\n');
+
+    expect(() => readOwners(path)).toThrow();
+  });
+
+  test("a raw zone key with no trailing slash is read back as a FILE zone (exact key, no slash appended)", () => {
+    const path = ownersPath();
+    writeFileSync(path, '{ "zones": { "scripts/deploy.sh": { "owner": "matt", "claimedAt": "2026-01-01T00:00:00.000Z" } } }\n');
+
+    expect(Object.keys(readOwners(path).zones)).toEqual(["scripts/deploy.sh"]);
+  });
 });
 
 describe("claimZone / releaseZone", () => {
@@ -174,7 +210,7 @@ describe("claimZone / releaseZone", () => {
   test("claim on a missing file creates it from the seeded template", () => {
     const path = ownersPath();
 
-    claimZone(path, "prefs", "matt", "personal prefs");
+    claimZone(path, "prefs", "matt", { note: "personal prefs" });
 
     const owners = readOwners(path);
     expect(owners.zones["prefs/"]).toEqual({
@@ -188,6 +224,50 @@ describe("claimZone / releaseZone", () => {
     const zonesIdx = text.indexOf('"zones"');
     expect(headerIdx).toBeGreaterThanOrEqual(0);
     expect(zonesIdx).toBeGreaterThan(headerIdx);
+  });
+
+  test("claim with kind:'file' stores the exact path, no trailing slash", () => {
+    const path = ownersPath();
+    writeFileSync(path, EMPTY_TEMPLATE);
+
+    claimZone(path, "scripts/deploy.sh", "matt", { kind: "file" });
+
+    expect(Object.keys(readOwners(path).zones)).toEqual(["scripts/deploy.sh"]);
+  });
+
+  test("claim by the SAME owner re-claims without needing force (e.g. refreshing a note)", () => {
+    const path = ownersPath();
+    writeFileSync(path, EMPTY_TEMPLATE);
+    claimZone(path, "prefs", "matt");
+
+    expect(() => claimZone(path, "prefs", "matt", { note: "still editing" })).not.toThrow();
+    expect(readOwners(path).zones["prefs/"]?.note).toBe("still editing");
+  });
+
+  test("claim by a DIFFERENT owner refuses with ZoneOwnedByOthersError, naming the existing owner", () => {
+    const path = ownersPath();
+    writeFileSync(path, EMPTY_TEMPLATE);
+    claimZone(path, "prefs", "matt");
+
+    let caught: unknown;
+    try {
+      claimZone(path, "prefs", "alice");
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ZoneOwnedByOthersError);
+    expect((caught as ZoneOwnedByOthersError).existingOwner).toBe("matt");
+    expect(readOwners(path).zones["prefs/"]?.owner).toBe("matt"); // untouched
+  });
+
+  test("claim by a different owner with force:true reassigns it", () => {
+    const path = ownersPath();
+    writeFileSync(path, EMPTY_TEMPLATE);
+    claimZone(path, "prefs", "matt");
+
+    claimZone(path, "prefs", "alice", { force: true });
+
+    expect(readOwners(path).zones["prefs/"]?.owner).toBe("alice");
   });
 
   test("claim normalizes the zone before writing", () => {
@@ -207,25 +287,51 @@ describe("claimZone / releaseZone", () => {
     expect(readFileSync(path, "utf8")).toBe(EMPTY_TEMPLATE);
   });
 
-  test("release removes a claimed zone, preserving comments and any remaining zones", () => {
+  test("release removes a claimed zone, preserving comments and any remaining zones, and reports who owned it", () => {
     const path = ownersPath();
     writeFileSync(path, EMPTY_TEMPLATE);
     claimZone(path, "prefs", "matt");
     claimZone(path, "work", "matt");
 
-    releaseZone(path, "prefs");
+    const result = releaseZone(path, "prefs");
 
+    expect(result).toEqual({ released: true, zone: "prefs/", owner: "matt" });
     const owners = readOwners(path);
     expect(Object.keys(owners.zones)).toEqual(["work/"]);
     expect(readFileSync(path, "utf8")).toContain("snapshot-owners.jsonc — claimed zones");
   });
 
-  test("release on an unclaimed zone is a no-op", () => {
+  test("release on an unclaimed zone is a no-op and reports released:false", () => {
     const path = ownersPath();
     writeFileSync(path, EMPTY_TEMPLATE);
 
-    releaseZone(path, "prefs");
+    const result = releaseZone(path, "prefs");
 
+    expect(result).toEqual({ released: false });
     expect(readOwners(path)).toEqual({ zones: {} });
+  });
+
+  test("release finds a FILE zone even though the caller passed no kind", () => {
+    const path = ownersPath();
+    writeFileSync(path, EMPTY_TEMPLATE);
+    claimZone(path, "scripts/deploy.sh", "matt", { kind: "file" });
+
+    const result = releaseZone(path, "scripts/deploy.sh");
+
+    expect(result).toEqual({ released: true, zone: "scripts/deploy.sh", owner: "matt" });
+    expect(readOwners(path).zones).toEqual({});
+  });
+
+  test("release still finds a FILE zone after the underlying file no longer exists (no stat dependency)", () => {
+    const path = ownersPath();
+    writeFileSync(path, EMPTY_TEMPLATE);
+    claimZone(path, "scripts/gone.sh", "matt", { kind: "file" });
+    // No filesystem entry for "scripts/gone.sh" ever existed in this test —
+    // release must not need one.
+
+    const result = releaseZone(path, "scripts/gone.sh");
+
+    expect(result.released).toBe(true);
+    expect(result.zone).toBe("scripts/gone.sh");
   });
 });

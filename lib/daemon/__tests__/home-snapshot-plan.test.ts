@@ -232,4 +232,64 @@ describe("planSnapshot", () => {
 
     expect(plan.autoPaths).toEqual(["skills.jsonc", "work/scratch.md"]);
   });
+
+  describe("file zones (stored without a trailing slash)", () => {
+    test("a claimed FILE excludes exactly that path from autoPaths", () => {
+      const plan = planSnapshot({
+        entries: [entry("scripts/deploy.sh"), entry("scripts/other.sh")],
+        owners: ownersWith("scripts/deploy.sh"),
+        now: NOW,
+        firstSeenDirty: {},
+        thresholdMs: THRESHOLD_MS,
+      });
+
+      expect(plan.autoPaths).toEqual(["scripts/other.sh"]);
+      expect(plan.excludedZones).toEqual(["scripts/deploy.sh"]);
+    });
+
+    test("a claimed FILE does NOT exclude a sibling that merely shares its name as a prefix", () => {
+      // The original bug this guards: naive startsWith("scripts/deploy.sh")
+      // would ALSO match "scripts/deploy.sh.bak", which was never claimed.
+      const plan = planSnapshot({
+        entries: [entry("scripts/deploy.sh.bak")],
+        owners: ownersWith("scripts/deploy.sh"),
+        now: NOW,
+        firstSeenDirty: {},
+        thresholdMs: THRESHOLD_MS,
+      });
+
+      expect(plan.autoPaths).toEqual(["scripts/deploy.sh.bak"]);
+    });
+
+    test("a claimed FILE left dirty past the threshold becomes a janitor zone, same as a dir zone", () => {
+      const firstSeen = NOW - THRESHOLD_MS;
+      const plan = planSnapshot({
+        entries: [entry("scripts/deploy.sh")],
+        owners: ownersWith("scripts/deploy.sh", "matt"),
+        now: NOW,
+        firstSeenDirty: { "scripts/deploy.sh": firstSeen },
+        thresholdMs: THRESHOLD_MS,
+      });
+
+      expect(plan.janitorZones).toEqual([{ zone: "scripts/deploy.sh", owner: "matt", dirtySinceMs: firstSeen }]);
+    });
+
+    test("a dir zone and a file zone coexist without either swallowing the other's paths", () => {
+      const owners: Owners = {
+        zones: {
+          "prefs/": { owner: "matt", claimedAt: "2026-01-01T00:00:00.000Z" },
+          "scripts/deploy.sh": { owner: "matt", claimedAt: "2026-01-01T00:00:00.000Z" },
+        },
+      };
+      const plan = planSnapshot({
+        entries: [entry("prefs/settings.json"), entry("scripts/deploy.sh"), entry("notes.md")],
+        owners,
+        now: NOW,
+        firstSeenDirty: {},
+        thresholdMs: THRESHOLD_MS,
+      });
+
+      expect(plan.autoPaths).toEqual(["notes.md"]);
+    });
+  });
 });

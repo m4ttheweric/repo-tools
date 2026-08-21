@@ -84,6 +84,7 @@ function fakeProbes(overrides: Partial<HomeProbes>): HomeProbes {
     isGitRepo: () => false,
     exists: () => false,
     readSymlinkTarget: () => null,
+    isFile: () => false,
     ...overrides,
   };
 }
@@ -534,6 +535,7 @@ describe("homeSnapshot", () => {
     repoDir: "/home/.mattstack",
     lastRunAt: 1_700_000_000_000,
     lastCommit: { sha: "abc123def456", message: "snapshot: 2 paths", at: 1_700_000_000_000 },
+    lastCommitError: null,
     pushPending: false,
     lastPushAt: 1_700_000_000_000,
     lastPushError: null,
@@ -581,6 +583,14 @@ describe("homeSnapshot", () => {
     expect(logs.some((l) => l.includes("push failed: non-fast-forward"))).toBe(true);
   });
 
+  test("--status surfaces a persistent commit failure instead of hiding it", async () => {
+    const status: SnapshotStatus = { ...okStatus, lastCommitError: "fatal: unable to create index.lock" };
+    const seam = new FakeDaemonSeam(() => ({ ok: true, data: status }));
+    const { logs } = await runCatchingExit(() => homeSnapshot(["--status"], {}, seam));
+
+    expect(logs.some((l) => l.includes("fatal: unable to create index.lock"))).toBe(true);
+  });
+
   test("daemon down (null response): exits 1 with the directed 'rt daemon start' message, no stack trace", async () => {
     const seam = new FakeDaemonSeam(() => null);
     const { exitCode, errors } = await runCatchingExit(() => homeSnapshot([], {}, seam));
@@ -610,12 +620,17 @@ describe("homeClaim / homeRelease", () => {
   let dir: string;
   let ownersPath: string;
   let realUser: string | undefined;
+  // The default fixture for most tests: the home repo IS provisioned, and
+  // the claimed path is never a real file on disk (so claim defaults to a
+  // dir zone) — file-zone-specific tests override isFile explicitly.
+  let provisioned: HomeProbes;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "rt-home-owners-"));
     ownersPath = join(dir, "snapshot-owners.jsonc");
     realUser = process.env.USER;
     process.env.USER = "matt";
+    provisioned = fakeProbes({ isGitRepo: () => true });
   });
 
   afterEach(() => {
@@ -624,7 +639,7 @@ describe("homeClaim / homeRelease", () => {
   });
 
   test("claim writes the zone with the default owner (<user>@<machine-key>) when --owner is omitted", async () => {
-    const { exitCode, logs } = await runCatchingExit(() => homeClaim(["prefs/"], {}, ownersPath));
+    const { exitCode, logs } = await runCatchingExit(() => homeClaim(["prefs/"], {}, ownersPath, provisioned));
 
     expect(exitCode).toBeUndefined();
     const owners = readOwners(ownersPath);
@@ -635,58 +650,109 @@ describe("homeClaim / homeRelease", () => {
   });
 
   test("claim honors an explicit --owner and --note", async () => {
-    await runCatchingExit(() => homeClaim(["scripts/", "--owner", "someone-else@laptop", "--note", "work in progress"], {}, ownersPath));
+    await runCatchingExit(() => homeClaim(["scripts/", "--owner", "someone-else@laptop", "--note", "work in progress"], {}, ownersPath, provisioned));
 
     const owners = readOwners(ownersPath);
     expect(owners.zones["scripts/"]).toMatchObject({ owner: "someone-else@laptop", note: "work in progress" });
   });
 
   test("claim's output says the daemon snapshots the owners file like any other path", async () => {
-    const { logs } = await runCatchingExit(() => homeClaim(["prefs/"], {}, ownersPath));
+    const { logs } = await runCatchingExit(() => homeClaim(["prefs/"], {}, ownersPath, provisioned));
     expect(logs.some((l) => l.includes("daemon") && l.includes("snapshot"))).toBe(true);
   });
 
   test("claim with an invalid zone: exits 1 with a clean CLI error, not a raw stack trace", async () => {
-    const { exitCode, errors } = await runCatchingExit(() => homeClaim(["../escape"], {}, ownersPath));
+    const { exitCode, errors } = await runCatchingExit(() => homeClaim(["../escape"], {}, ownersPath, provisioned));
 
     expect(exitCode).toBe(1);
     expect(errors.some((e) => e.includes("not a valid snapshot zone"))).toBe(true);
   });
 
   test("claim with no zone argument: exits 1, explains a zone is required", async () => {
-    const { exitCode, errors } = await runCatchingExit(() => homeClaim([], {}, ownersPath));
+    const { exitCode, errors } = await runCatchingExit(() => homeClaim([], {}, ownersPath, provisioned));
 
     expect(exitCode).toBe(1);
     expect(errors.some((e) => e.includes("zone is required"))).toBe(true);
   });
 
-  test("release removes a previously claimed zone", async () => {
-    await runCatchingExit(() => homeClaim(["prefs/"], {}, ownersPath));
+  test("claim refuses when ~/.mattstack/user isn't provisioned yet, and never touches the owners file", async () => {
+    const unprovisioned = fakeProbes({ isGitRepo: () => false });
+    const { exitCode, errors } = await runCatchingExit(() => homeClaim(["prefs/"], {}, ownersPath, unprovisioned));
+
+    expect(exitCode).toBe(1);
+    expect(errors.some((e) => e.includes("rt home init"))).toBe(true);
+    expect(readOwners(ownersPath)).toEqual({ zones: {} });
+  });
+
+  test("claim on a path that's a real file on disk stores a FILE zone (no trailing slash), not a dir zone", async () => {
+    const withFile = fakeProbes({ isGitRepo: () => true, isFile: (p) => p.endsWith("scripts/deploy.sh") });
+    const { logs } = await runCatchingExit(() => homeClaim(["scripts/deploy.sh"], {}, ownersPath, withFile));
+
+    expect(Object.keys(readOwners(ownersPath).zones)).toEqual(["scripts/deploy.sh"]);
+    expect(logs.some((l) => l.includes("scripts/deploy.sh") && !l.includes("scripts/deploy.sh/"))).toBe(true);
+  });
+
+  test("claim on a zone already claimed by a DIFFERENT owner refuses, naming the owner, unless --force", async () => {
+    await runCatchingExit(() => homeClaim(["prefs/", "--owner", "matt@laptop"], {}, ownersPath, provisioned));
+
+    const refused = await runCatchingExit(() => homeClaim(["prefs/", "--owner", "alice@desktop"], {}, ownersPath, provisioned));
+    expect(refused.exitCode).toBe(1);
+    expect(refused.errors.some((e) => e.includes("matt@laptop"))).toBe(true);
+    expect(readOwners(ownersPath).zones["prefs/"]!.owner).toBe("matt@laptop"); // untouched
+
+    const forced = await runCatchingExit(() => homeClaim(["prefs/", "--owner", "alice@desktop", "--force"], {}, ownersPath, provisioned));
+    expect(forced.exitCode).toBeUndefined();
+    expect(readOwners(ownersPath).zones["prefs/"]!.owner).toBe("alice@desktop");
+  });
+
+  test("release removes a previously claimed zone and names who owned it", async () => {
+    await runCatchingExit(() => homeClaim(["prefs/", "--owner", "matt@laptop"], {}, ownersPath, provisioned));
     expect(Object.keys(readOwners(ownersPath).zones)).toEqual(["prefs/"]);
 
-    const { exitCode, logs } = await runCatchingExit(() => homeRelease(["prefs/"], {}, ownersPath));
+    const { exitCode, logs } = await runCatchingExit(() => homeRelease(["prefs/"], {}, ownersPath, provisioned));
 
     expect(exitCode).toBeUndefined();
     expect(Object.keys(readOwners(ownersPath).zones)).toEqual([]);
     expect(logs.some((l) => l.includes("released"))).toBe(true);
+    expect(logs.some((l) => l.includes("matt@laptop"))).toBe(true);
   });
 
-  test("release on a never-claimed zone is a harmless no-op, not an error", async () => {
-    const { exitCode } = await runCatchingExit(() => homeRelease(["never-claimed/"], {}, ownersPath));
+  test("release on a never-claimed zone prints 'nothing to release', not a ✓", async () => {
+    const { exitCode, logs } = await runCatchingExit(() => homeRelease(["never-claimed/"], {}, ownersPath, provisioned));
     expect(exitCode).toBeUndefined();
+    expect(logs.some((l) => l.includes("nothing to release"))).toBe(true);
+    expect(logs.some((l) => l.includes("✓"))).toBe(false);
+  });
+
+  test("release finds a FILE zone claimed earlier, without needing --kind or a fresh stat", async () => {
+    const withFile = fakeProbes({ isGitRepo: () => true, isFile: (p) => p.endsWith("scripts/deploy.sh") });
+    await runCatchingExit(() => homeClaim(["scripts/deploy.sh"], {}, ownersPath, withFile));
+
+    const { logs } = await runCatchingExit(() => homeRelease(["scripts/deploy.sh"], {}, ownersPath, provisioned));
+
+    expect(logs.some((l) => l.includes("scripts/deploy.sh"))).toBe(true);
+    expect(readOwners(ownersPath).zones).toEqual({});
   });
 
   test("release with an invalid zone: exits 1 with a clean CLI error", async () => {
-    const { exitCode, errors } = await runCatchingExit(() => homeRelease(["../escape"], {}, ownersPath));
+    const { exitCode, errors } = await runCatchingExit(() => homeRelease(["../escape"], {}, ownersPath, provisioned));
 
     expect(exitCode).toBe(1);
     expect(errors.some((e) => e.includes("not a valid snapshot zone"))).toBe(true);
   });
 
   test("release with no zone argument: exits 1, explains a zone is required", async () => {
-    const { exitCode, errors } = await runCatchingExit(() => homeRelease([], {}, ownersPath));
+    const { exitCode, errors } = await runCatchingExit(() => homeRelease([], {}, ownersPath, provisioned));
 
     expect(exitCode).toBe(1);
     expect(errors.some((e) => e.includes("zone is required"))).toBe(true);
+  });
+
+  test("release refuses when ~/.mattstack/user isn't provisioned yet", async () => {
+    const unprovisioned = fakeProbes({ isGitRepo: () => false });
+    const { exitCode, errors } = await runCatchingExit(() => homeRelease(["prefs/"], {}, ownersPath, unprovisioned));
+
+    expect(exitCode).toBe(1);
+    expect(errors.some((e) => e.includes("rt home init"))).toBe(true);
   });
 });

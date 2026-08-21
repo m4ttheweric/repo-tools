@@ -212,19 +212,24 @@ pushes) everything in it except paths inside a claimed zone — you never run
 `git add`/`git commit` there yourself for ordinary changes.
 
 ```bash
-rt home init                        # Provision this machine's ~/.mattstack tree
-rt home snapshot                    # Run the auto-commit cycle right now (reason: manual)
-rt home snapshot --status           # Show daemon state: enabled, last run/commit, push state, claimed zones
-rt home claim <zone> [--owner] [--note]   # Tell the daemon to stop auto-committing a path
-rt home release <zone>              # Let the daemon resume auto-committing a path
-rt home key export                  # Print the age private key once, for your password manager
+rt home init                                       # Provision this machine's ~/.mattstack tree
+rt home snapshot                                   # Run the auto-commit cycle right now (reason: manual)
+rt home snapshot --status                          # Show daemon state: enabled, last run/commit, push state, claimed zones
+rt home claim <zone> [--owner] [--note] [--force]   # Tell the daemon to stop auto-committing a path
+rt home release <zone>                              # Let the daemon resume auto-committing a path
+rt home key export                                  # Print the age private key once, for your password manager
 ```
 
-A **zone** is a path relative to `~/.mattstack/user` (e.g. `prefs/`,
-`scripts/deploy.sh`). Claim one when you're mid-edit on something and don't
-want the daemon committing a half-finished state out from under you —
-`--owner` defaults to `<you>@<machine-key>`, and `--note` is a free-text
-reason anyone reading the owners file can see. Claiming and releasing write
+A **zone** is a path relative to `~/.mattstack/user`, and is either a
+**directory** (`prefs/`, or just `prefs` — claims everything under it) or a
+**single file** (`scripts/deploy.sh` — claims exactly that path and nothing
+else). `claim` decides which by checking whether the path is currently a
+real file on disk; `release` works either way without needing to guess.
+Claim a zone when you're mid-edit on something and don't want the daemon
+committing a half-finished state out from under you — `--owner` defaults to
+`<you>@<machine-key>`, and `--note` is a free-text reason anyone reading the
+owners file can see. Claiming a zone someone else already owns refuses
+(naming them) unless you pass `--force`. Claiming and releasing write
 `user/snapshot-owners.jsonc` directly (no daemon round trip); the daemon then
 snapshots that file itself, like any other change.
 
@@ -242,6 +247,18 @@ behavior is configured by the `rt.homeSnapshot` settings key (machine-scoped):
   "janitorIntervalMin": 30     // how often the janitor sweep runs
 }
 ```
+
+Flipping `enabled` to `false` is a kill switch: the daemon stops committing
+AND cancels any already-scheduled push (including a pending retry) on its
+very next cycle — nothing new reaches `origin` while it's off, though a
+commit already pushed stays pushed. Re-enabling picks a pending push back up
+on the next run.
+
+`rt home snapshot` (manual) reuses an already-in-flight run instead of
+queuing its own: if it lands while the watcher is mid-cycle, it returns THAT
+run's result — which can report `reason: "watch"` and skip janitor zones
+(gated to `"janitor"`/`"manual"`) even though you asked for a manual run.
+Run it again for a fresh manual cycle.
 
 ### Settings
 
