@@ -2,6 +2,7 @@
 # Guest side of the install phase. See header of each subcommand.
 set -euo pipefail
 GUEST_RUN="${GUEST_RUN:-/Volumes/My Shared Files/run}"
+[ -d "$GUEST_RUN" ] || { echo "install-app.sh runs in the guest; $GUEST_RUN is not mounted" >&2; exit 1; }
 LOG="$GUEST_RUN/logs/install-app.log"; mkdir -p "$(dirname "$LOG")"
 say() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$LOG" >&2; }
 APP=/Applications/mattstack.app
@@ -42,15 +43,22 @@ case "$cmd" in
       sleep 1
       if pgrep -x mattstack >/dev/null; then say "process up after ${i}s"; break; fi
       # Gatekeeper refusal shows a CoreServicesUIAgent alert; detect and report, don't dismiss.
-      if osascript -e 'tell application "System Events" to exists (window 1 of process "CoreServicesUIAgent")' 2>/dev/null | grep -q true; then
+      gk_rc=0; gk_out=$(osascript -e 'tell application "System Events" to exists (window 1 of process "CoreServicesUIAgent")' 2>>"$LOG") || gk_rc=$?
+      if [ "$gk_rc" -ne 0 ]; then
+        say "osascript probe unavailable (TCC?)"
+      elif [ "$gk_out" = "true" ]; then
         say "Gatekeeper dialog present — app blocked"; exit 2
       fi
     done
     pgrep -x mattstack >/dev/null || { say "mattstack never started"; exit 1; }
     # Menu bar extra = the app's own status item; give it a few seconds to appear.
     for i in $(seq 1 20); do
-      if osascript -e 'tell application "System Events" to tell process "mattstack" to count menu bar items of menu bar 2' 2>/dev/null | grep -qE '^[1-9]'; then
-        say "menu bar item present"; exit 0; fi
+      mb_rc=0; mb_out=$(osascript -e 'tell application "System Events" to tell process "mattstack" to count menu bar items of menu bar 2' 2>>"$LOG") || mb_rc=$?
+      if [ "$mb_rc" -ne 0 ]; then
+        say "osascript probe unavailable (TCC?)"
+      elif printf '%s' "$mb_out" | grep -qE '^[1-9]'; then
+        say "menu bar item present"; exit 0
+      fi
       sleep 1
     done
     say "no menu bar item after 20s (app running)"; exit 0
