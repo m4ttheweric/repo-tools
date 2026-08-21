@@ -45,7 +45,13 @@ struct SetupView: View {
         // deep link that opens straight into .checklist or .install still
         // loads/starts — onChange alone would silently no-op on first appear.
         .task(id: flow.step) {
-            if flow.step == .checklist { readiness.becameVisible(); await readiness.load() } else { readiness.becameHidden() }
+            if flow.step == .checklist {
+                if !flow.readinessIsVisible { flow.readinessIsVisible = true; readiness.becameVisible() }
+                await readiness.load()
+            } else if flow.readinessIsVisible {
+                flow.readinessIsVisible = false
+                readiness.becameHidden()
+            }
             if flow.step == .install { flow.isInstalling = true; install.start() }
         }
         .onChange(of: install.phase) { _, phase in

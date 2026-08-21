@@ -72,7 +72,13 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         SetupSession.isRunning = false
-        environment.readiness.becameHidden()
+        // Only balances an outstanding becameVisible() (see
+        // SetupFlowModel.readinessIsVisible) — closing on a step that
+        // already left .checklist must not send a second, unmatched hide.
+        if flow.readinessIsVisible {
+            flow.readinessIsVisible = false
+            environment.readiness.becameHidden()
+        }
         if let o = activeObserver { NotificationCenter.default.removeObserver(o) }
     }
 }
