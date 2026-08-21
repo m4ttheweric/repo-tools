@@ -23,7 +23,7 @@
  * safe for concurrent/multi-process writers.
  */
 
-import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from "fs";
 import { dirname, join } from "path";
 import { mattstackHome, rtDir } from "../rt-paths.ts";
 import { readAgeKey, type AgeKeySeam } from "../home/age-key.ts";
@@ -37,6 +37,14 @@ export interface SecretsExecResult {
 export interface SecretsExecSeam {
   run(cmd: string[], opts?: { env?: Record<string, string>; sensitive?: boolean }): Promise<SecretsExecResult>;
   fileExists(path: string): boolean;
+  /**
+   * mtime/size signature for the domain memo's staleness check — a rotation
+   * landing on disk from another process (a CLI `rt secrets set` next to a
+   * long-lived daemon) changes this even though nothing in THIS process
+   * called writeSecret to invalidate the memo. Null when the file can't be
+   * stat'd (treated as "can't prove freshness" — never trust the memo then).
+   */
+  statFile(path: string): { mtimeMs: number; size: number } | null;
   /** Raw fs read (no decryption) — used for the post-encrypt ciphertext readback. */
   readFile(path: string): string;
   /** Writes the plaintext staging file only: 0600, fsynced. Never used for the real target. */
@@ -115,12 +123,36 @@ async function sopsDecrypt(filePath: string, env: Record<string, string>, execSe
   }
 }
 
-/** One decrypted domain object per process per domain; writeSecret is the only invalidator. */
-const domainMemo = new Map<string, Record<string, string>>();
+interface DomainSig { mtimeMs: number; size: number }
+interface DomainMemoEntry { payload: Record<string, string>; sig: DomainSig }
+
+/**
+ * One decrypted domain object per process per domain, valid only while the
+ * file's mtime/size match the sig it was decrypted under — see
+ * `freshMemoEntry`. writeSecret still deletes its own entry outright (the
+ * simplest possible invalidation for the writer's own process); the sig
+ * check is what catches a rotation from a DIFFERENT process (the long-lived
+ * daemon sitting next to a CLI `rt secrets set`) that never touches this
+ * process's memo directly.
+ */
+const domainMemo = new Map<string, DomainMemoEntry>();
 
 /** Test-only: bun test shares one process across the whole file — clear cross-test state. */
 export function resetSecretsMemo(): void {
   domainMemo.clear();
+}
+
+function sameSig(a: DomainSig, b: DomainSig): boolean {
+  return a.mtimeMs === b.mtimeMs && a.size === b.size;
+}
+
+/** Cached payload if the file's current stat still matches the sig it was decrypted under; undefined otherwise (miss OR can't-stat). */
+function freshMemoEntry(domain: string, filePath: string, seams: SecretsSeams): Record<string, string> | undefined {
+  const cached = domainMemo.get(domain);
+  if (!cached) return undefined;
+  const sig = seams.execSeam.statFile(filePath);
+  if (!sig || !sameSig(cached.sig, sig)) return undefined;
+  return cached.payload;
 }
 
 /**
@@ -136,11 +168,13 @@ async function decryptDomain(domain: string, seams: SecretsSeams): Promise<Recor
     return null;
   }
 
-  if (domainMemo.has(domain)) return domainMemo.get(domain)!;
+  const fresh = freshMemoEntry(domain, filePath, seams);
+  if (fresh) return fresh;
 
   const env = await sopsAgeKeyEnv(seams.ageKeySeam);
   const parsed = await sopsDecrypt(filePath, env, seams.execSeam);
-  domainMemo.set(domain, parsed);
+  const sig = seams.execSeam.statFile(filePath) ?? { mtimeMs: -1, size: -1 };
+  domainMemo.set(domain, { payload: parsed, sig });
   return parsed;
 }
 
@@ -225,10 +259,8 @@ export async function writeSecret(domain: string, key: string, value: string, se
   let existing: Record<string, string>;
   if (!seams.execSeam.fileExists(filePath)) {
     existing = {};
-  } else if (domainMemo.has(domain)) {
-    existing = domainMemo.get(domain)!;
   } else {
-    existing = await sopsDecrypt(filePath, env, seams.execSeam);
+    existing = freshMemoEntry(domain, filePath, seams) ?? await sopsDecrypt(filePath, env, seams.execSeam);
   }
 
   // Invalidate before mutating disk: after a failed encrypt the file may
@@ -320,6 +352,14 @@ export function createRealSecretsExecSeam(): SecretsExecSeam {
     },
     fileExists(path) {
       return existsSync(path);
+    },
+    statFile(path) {
+      try {
+        const st = statSync(path);
+        return { mtimeMs: st.mtimeMs, size: st.size };
+      } catch {
+        return null;
+      }
     },
     readFile(path) {
       return readFileSync(path, "utf8");

@@ -85,11 +85,10 @@ export function activate(context: vscode.ExtensionContext) {
         ignoreFocusOut: true,
       });
       if (key) {
+        // setSecret no longer saves anything (RT-32) — it shows the
+        // directed error itself. Nothing here changed, so no cache-clear /
+        // refresh and no separate "saved" message that would contradict it.
         await setSecret(context, 'linearApiKey', key);
-        vscode.window.showInformationMessage('Linear API key saved (shared with rt CLI).');
-        branchCache.clear();
-        branchListCache.clear();
-        scheduleUpdate(context);
       }
     }),
 
@@ -102,10 +101,6 @@ export function activate(context: vscode.ExtensionContext) {
       });
       if (token) {
         await setSecret(context, 'gitlabToken', token);
-        vscode.window.showInformationMessage('GitLab token saved (shared with rt CLI).');
-        branchCache.clear();
-        branchListCache.clear();
-        scheduleUpdate(context);
       }
     }),
 

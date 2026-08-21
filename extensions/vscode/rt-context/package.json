@@ -78,6 +78,7 @@
     "install-local": "bun run package && cursor --install-extension rt-context-0.1.0.vsix"
   },
   "devDependencies": {
+    "@types/bun": "latest",
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^3.0.0",
     "esbuild": "^0.24.0",

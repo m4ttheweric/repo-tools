@@ -13,7 +13,7 @@
  * delete once the live import (a later lane) retires the plaintext file.
  */
 
-import { readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { rtDir } from "./rt-paths.ts";
 import { readSecret, writeSecret, createRealSecretsExecSeam, type SecretsSeams } from "./secrets/store.ts";
@@ -47,55 +47,79 @@ function defaultSecretsSeams(): SecretsSeams {
   };
 }
 
+function plaintextSecretsPath(): string {
+  return join(rtDir(), "secrets.json");
+}
+
 /**
  * RT-32 transition fallback: the plaintext file still holds the real values
  * until the live import runs, and stays readable afterward only because
- * nothing has deleted it yet. Delete this function (and its one call site in
- * loadSecrets) when that import retires ~/.mattstack/rt/secrets.json — no
+ * nothing has deleted it yet. Delete this function (and its two call sites
+ * in loadSecrets) when that import retires ~/.mattstack/rt/secrets.json — no
  * other code path should ever read this file directly.
  */
 function readPlaintextSecretsFallback(): Secrets {
   try {
-    return JSON.parse(readFileSync(join(rtDir(), "secrets.json"), "utf8"));
+    return JSON.parse(readFileSync(plaintextSecretsPath(), "utf8"));
   } catch {
     return {};
   }
 }
 
-/**
- * One key at a time (not a single domain-wide decrypt) so a mid-domain
- * failure still returns everything read before it; readSecret's own
- * per-domain memo keeps the repeat decrypts cheap. Stops at the first
- * failure rather than retrying every remaining key against the same broken
- * read — a locked keychain fails the same way five more times, and merging
- * with the plaintext fallback (loadSecrets) already covers what's left.
- */
-async function readEncryptedRtSecrets(seams: SecretsSeams): Promise<Partial<Secrets>> {
-  const out: Partial<Secrets> = {};
-  for (const key of RT_SECRET_KEYS) {
-    let value: string | null;
-    try {
-      value = await readSecret(RT_SECRET_DOMAIN, key, seams);
-    } catch (err) {
-      console.error(
-        `[secrets] rt.${key}: encrypted store read failed, falling back to plaintext — ${err instanceof Error ? err.message : String(err)}`,
-      );
-      break;
-    }
-    if (value !== null) out[key] = value;
-  }
-  return out;
+interface EncryptedRtSecretsResult {
+  values: Partial<Secrets>;
+  /** Set when a decrypt attempt threw (keychain unreachable, corrupt ciphertext, …) — loadSecrets decides whether that's fatal. */
+  failure?: Error;
 }
 
 /**
- * Encrypted store wins per-key when present; the plaintext file (transition
- * only — see readPlaintextSecretsFallback) fills whatever the encrypted
- * store doesn't have yet.
+ * Loops per key rather than one bulk call because `Secrets` has no "read the
+ * whole domain" shape — but the decrypt itself is all-or-nothing per FILE,
+ * not per key: `readSecret`'s per-domain memo means every key after the
+ * first is a cheap object-property lookup, so a decrypt failure always
+ * surfaces on the very first key attempted. Returning immediately on that
+ * first failure (instead of looping through the rest) just skips five
+ * guaranteed-identical failures against the same broken read — it is not
+ * "returning partial data," since a real decrypt failure never leaves any.
+ */
+async function readEncryptedRtSecrets(seams: SecretsSeams): Promise<EncryptedRtSecretsResult> {
+  const values: Partial<Secrets> = {};
+  for (const key of RT_SECRET_KEYS) {
+    try {
+      const value = await readSecret(RT_SECRET_DOMAIN, key, seams);
+      if (value !== null) values[key] = value;
+    } catch (err) {
+      return { values, failure: err instanceof Error ? err : new Error(String(err)) };
+    }
+  }
+  return { values };
+}
+
+/**
+ * Encrypted store wins per-key when present. On a clean read, the plaintext
+ * file (transition only — see readPlaintextSecretsFallback) fills whatever
+ * the encrypted store doesn't have yet.
+ *
+ * On a FAILED encrypted read (the store's own fail-closed contract —
+ * NoAgeKeyError, keychain-unreachable, corrupt ciphertext), this only
+ * degrades to the plaintext file when that file actually still exists: an
+ * absent file means there is nothing to fail open TO, so returning `{}`
+ * here would silently hide a real error behind "no secrets configured."
+ * Propagate the store's error instead — that's the fail-closed behavior the
+ * store itself refused to give up.
  */
 export async function loadSecrets(seams: SecretsSeams = defaultSecretsSeams()): Promise<Secrets> {
-  const plaintext = readPlaintextSecretsFallback();
-  const encrypted = await readEncryptedRtSecrets(seams);
-  return { ...plaintext, ...encrypted };
+  const { values: encrypted, failure } = await readEncryptedRtSecrets(seams);
+  if (!failure) {
+    return { ...readPlaintextSecretsFallback(), ...encrypted };
+  }
+
+  if (!existsSync(plaintextSecretsPath())) {
+    throw failure;
+  }
+
+  console.error(`[secrets] encrypted store unreadable (${failure.message}); using plaintext secrets.json`);
+  return { ...readPlaintextSecretsFallback(), ...encrypted };
 }
 
 export async function saveSecret(

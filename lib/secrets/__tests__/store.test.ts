@@ -57,10 +57,12 @@ type Call = { cmd: string[]; opts?: { env?: Record<string, string>; sensitive?: 
 class FakeSecretsExecSeam implements SecretsExecSeam {
   calls: Call[] = [];
   files = new Map<string, string>();
+  stats = new Map<string, { mtimeMs: number; size: number }>();
   ensureDirCalls: { path: string; mode: number }[] = [];
   chmodCalls: { path: string; mode: number }[] = [];
   removeFileCalls: string[] = [];
   fsyncAndRenameCalls: { from: string; to: string }[] = [];
+  private mtimeCounter = 0;
 
   constructor(
     private opts: {
@@ -74,6 +76,16 @@ class FakeSecretsExecSeam implements SecretsExecSeam {
     return this.files.has(path);
   }
 
+  /** Fake mtime/size signature — bumped on every write this class knows about, so freshMemoEntry sees a real change. */
+  private touch(path: string): void {
+    this.mtimeCounter += 1;
+    this.stats.set(path, { mtimeMs: this.mtimeCounter, size: this.files.get(path)?.length ?? 0 });
+  }
+
+  statFile(path: string): { mtimeMs: number; size: number } | null {
+    return this.stats.get(path) ?? null;
+  }
+
   readFile(path: string): string {
     const content = this.files.get(path);
     if (content === undefined) throw new Error(`FakeSecretsExecSeam: readFile of missing path ${path}`);
@@ -82,6 +94,7 @@ class FakeSecretsExecSeam implements SecretsExecSeam {
 
   writeFile(path: string, content: string): void {
     this.files.set(path, content);
+    this.touch(path);
   }
 
   ensureDir(path: string, mode: number): void {
@@ -98,12 +111,15 @@ class FakeSecretsExecSeam implements SecretsExecSeam {
     if (content !== undefined) {
       this.files.set(to, content);
       this.files.delete(from);
+      this.stats.delete(from);
+      this.touch(to);
     }
   }
 
   removeFile(path: string): void {
     this.removeFileCalls.push(path);
     this.files.delete(path);
+    this.stats.delete(path);
   }
 
   async run(cmd: string[], runOpts?: { env?: Record<string, string>; sensitive?: boolean }): Promise<SecretsExecResult> {
@@ -118,6 +134,7 @@ class FakeSecretsExecSeam implements SecretsExecSeam {
       const result = this.opts.encrypt ? this.opts.encrypt(outputPath) : { code: 0, stdout: "", stderr: "" };
       if (result.code === 0) {
         this.files.set(outputPath, this.opts.encryptOutputContent ?? DEFAULT_CIPHERTEXT);
+        this.touch(outputPath);
       }
       return result;
     }
@@ -394,6 +411,33 @@ describe("per-process memo", () => {
     execSeam.files.delete(path); // simulate external deletion
 
     expect(await readSecret(domain, "k", seams)).toBeNull();
+  });
+
+  test("an mtime/size change from OUTSIDE writeSecret (a rotation landing on disk from another process) invalidates the memo on the next read", async () => {
+    // Models a long-lived daemon process sitting on a memoized read while a
+    // sibling `rt secrets set` CLI process rewrites the same file — nothing
+    // in THIS process ever calls writeSecret, so writeSecret's own
+    // domainMemo.delete() never fires. Only the mtime/size check catches it.
+    const domain = "rt";
+    const path = secretsFilePath(domain);
+    let decryptCalls = 0;
+    const execSeam = new FakeSecretsExecSeam({
+      decrypt: () => {
+        decryptCalls++;
+        return { code: 0, stdout: JSON.stringify({ k: `v${decryptCalls}` }), stderr: "" };
+      },
+    });
+    execSeam.writeFile(path, "ciphertext-v1");
+    const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-X"), execSeam };
+
+    expect(await readSecret(domain, "k", seams)).toBe("v1");
+    expect(decryptCalls).toBe(1);
+
+    // Directly mutate the fake's fs, bypassing writeSecret entirely.
+    execSeam.writeFile(path, "ciphertext-v2-different-bytes");
+
+    expect(await readSecret(domain, "k", seams)).toBe("v2");
+    expect(decryptCalls).toBe(2);
   });
 });
 

@@ -6,28 +6,33 @@ import { pickDaemonSecret } from '../secretsMapping';
 // mapping (secretsMapping.ts), which is the part RT-32 actually changed and
 // the one piece of secrets.ts's logic reachable without a vscode host.
 describe('pickDaemonSecret', () => {
-  test('returns the requested key from an ok response', () => {
+  test('ok + value present -> {status: "ok", value}', () => {
     const response = { ok: true, data: { linearApiKey: 'lin_api_x', gitlabToken: 'glpat-x' } };
-    expect(pickDaemonSecret(response, 'linearApiKey')).toBe('lin_api_x');
-    expect(pickDaemonSecret(response, 'gitlabToken')).toBe('glpat-x');
+    expect(pickDaemonSecret(response, 'linearApiKey')).toEqual({ status: 'ok', value: 'lin_api_x' });
+    expect(pickDaemonSecret(response, 'gitlabToken')).toEqual({ status: 'ok', value: 'glpat-x' });
   });
 
-  test('undefined when the key is absent from the response (never set)', () => {
+  test('ok but the key is absent from the response (never configured) -> "unset", not a failure', () => {
     const response = { ok: true, data: { linearApiKey: 'lin_api_x' } };
-    expect(pickDaemonSecret(response, 'gitlabToken')).toBeUndefined();
+    expect(pickDaemonSecret(response, 'gitlabToken')).toEqual({ status: 'unset' });
   });
 
-  test('undefined on a null response (daemon unreachable) without throwing', () => {
-    expect(pickDaemonSecret(null, 'linearApiKey')).toBeUndefined();
-  });
-
-  test('undefined on ok:false (e.g. missing/invalid api token)', () => {
-    const response = { ok: false, error: 'unauthorized' };
-    expect(pickDaemonSecret(response, 'linearApiKey')).toBeUndefined();
-  });
-
-  test('undefined on an empty string value, same as unset', () => {
+  test('an empty string value -> "unset", same as absent', () => {
     const response = { ok: true, data: { linearApiKey: '' } };
-    expect(pickDaemonSecret(response, 'linearApiKey')).toBeUndefined();
+    expect(pickDaemonSecret(response, 'linearApiKey')).toEqual({ status: 'unset' });
+  });
+
+  test('null response (daemonQuery couldn\'t reach the daemon) -> "daemon-down", distinct from a gate failure', () => {
+    expect(pickDaemonSecret(null, 'linearApiKey')).toEqual({ status: 'daemon-down' });
+  });
+
+  test('ok:false (the handler\'s token gate refused) -> "gate-failed", carrying the reason, distinct from daemon-down', () => {
+    const response = { ok: false, error: 'bad-token' };
+    expect(pickDaemonSecret(response, 'linearApiKey')).toEqual({ status: 'gate-failed', error: 'bad-token' });
+  });
+
+  test('ok:false with no error field still reports gate-failed rather than falling through silently', () => {
+    const response = { ok: false };
+    expect(pickDaemonSecret(response, 'linearApiKey')).toEqual({ status: 'gate-failed', error: 'unknown' });
   });
 });
