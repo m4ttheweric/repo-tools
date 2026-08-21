@@ -38,8 +38,15 @@ function loadPrefs(): Prefs {
   }
 }
 
+/** A store typo (e.g. a duplicate key anywhere in the machine document) must
+    never brick editor launch — degrade to a warning, same as loadPrefs. */
 function savePrefs(prefs: Prefs): void {
-  setSetting("rt.workspacePrefs", prefs, "machine");
+  try {
+    setSetting("rt.workspacePrefs", prefs, "machine");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("rt: could not save workspace prefs — " + message);
+  }
 }
 
 export const __test__ = { loadPrefs, savePrefs };

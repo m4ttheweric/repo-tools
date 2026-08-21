@@ -365,9 +365,9 @@ export async function manageTracking(args: string[] = []): Promise<void> {
       return;
     }
     const { filterableSelect, filterableMultiselect, textInput } = await import("../lib/rt-render.tsx");
-    const rawTracking = loadRepoTracking();
-    const rawEntry = rawTracking[repoArg];
-    const current = grants(rawTracking, repoArg);
+    const displayTracking = loadRepoTracking();
+    const rawEntry = displayTracking[repoArg];
+    const current = grants(displayTracking, repoArg);
     const modeHint = (m: string) => (current.mode === m ? "current" : undefined);
 
     console.log(`\n  ${bold}${repoArg}${reset} ${dim}window ${formatWindowLabel(rawEntry?.projectMrsWindowDays)}${reset}`);

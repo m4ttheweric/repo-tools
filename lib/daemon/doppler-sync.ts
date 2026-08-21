@@ -43,7 +43,7 @@ export async function reconcileForRepo(opts: ReconcileOpts): Promise<ReconcileSu
   if (value === undefined) {
     return { wrote: 0, overridden: 0, unchanged: 0, skipped: "no-template" };
   }
-  const template = loadTemplate(opts.repoIdentity);
+  const template = loadTemplate(value);
   if (template === null) {
     return { wrote: 0, overridden: 0, unchanged: 0, skipped: "malformed-template" };
   }

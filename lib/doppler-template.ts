@@ -10,9 +10,11 @@
  * The reconciler reads this and writes corresponding entries to
  * ~/.doppler/.doppler.yaml so Doppler CLI works in any worktree without
  * `make initDoppler`. See docs/superpowers/specs/2026-04-30-doppler-template-sync-design.md.
+ *
+ * loadTemplate takes the already-resolved setting value rather than
+ * resolving it itself — the caller (reconcileForRepo) is the one place that
+ * calls getSetting("rt.dopplerTemplate"), once per repo per tick.
  */
-
-import { getSetting } from "./settings/resolve.ts";
 
 export interface DopplerTemplateEntry {
   /** Path relative to the worktree root (e.g. "apps/backend"). */
@@ -24,18 +26,11 @@ export interface DopplerTemplateEntry {
 }
 
 /**
- * The resolved template, or `null` when nothing resolves or the resolved
- * value isn't a template-shaped array — the same "opt out" answer a missing
- * or malformed file gave before. A resolver throw (e.g. an unexpandable
- * ${...} variable authored by hand) degrades the same way.
+ * Parses an already-resolved `rt.dopplerTemplate` value into entries, or
+ * `null` when nothing was declared or the value isn't a template-shaped
+ * array — the same "opt out" answer a missing or malformed file gave before.
  */
-export function loadTemplate(repoIdentity: string | null): DopplerTemplateEntry[] | null {
-  let raw: unknown;
-  try {
-    raw = getSetting<unknown>("rt.dopplerTemplate", { repoIdentity }).value;
-  } catch {
-    return null;
-  }
+export function loadTemplate(raw: unknown): DopplerTemplateEntry[] | null {
   if (raw === undefined || !Array.isArray(raw)) return null;
 
   const entries: DopplerTemplateEntry[] = [];
