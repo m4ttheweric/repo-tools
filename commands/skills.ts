@@ -227,7 +227,12 @@ function registeredSkillRoots(packDir: string): string[] {
           .map((s) => canonical(resolvePath(packDir, s)))
           .filter((root) => {
             const rel = relativePath(packRoot, root);
-            return rel === "" || (!rel.startsWith("..") && !isAbsolutePath(rel));
+            if (!(rel === "" || (!rel.startsWith("..") && !isAbsolutePath(rel)))) return false;
+            try {
+              return statSync(root).isDirectory();
+            } catch {
+              return false;
+            }
           });
         if (roots.length > 0) return roots;
       }
