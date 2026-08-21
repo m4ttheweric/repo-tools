@@ -30,7 +30,7 @@ struct InstallScreen: View {
                 HStack {
                     Label("Install stopped: \(e)", systemImage: "xmark.circle").foregroundStyle(.red).font(.callout)
                     Spacer()
-                    Button("Retry") { model.start() }.accessibilityIdentifier(AXID.installRetryStream)
+                    Button("Retry") { model.retryFromFailure() }.accessibilityIdentifier(AXID.installRetryStream)
                 }
                 .padding(.horizontal, 20).padding(.vertical, 8)
             }
@@ -54,7 +54,7 @@ struct InstallScreen: View {
     private func stepRow(_ step: InstallStep) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
-                StatusBadge(status: badge(step), id: AXID.installStep(step.id) + ".status")
+                StatusBadge(status: badge(step), id: AXID.installStepStatus(step.id))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(step.info.title)
                     if step.waitingOnYou {
