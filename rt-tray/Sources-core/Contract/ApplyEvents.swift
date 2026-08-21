@@ -7,8 +7,22 @@ public struct NeedRequest: Codable, Equatable, Sendable {
     public init(type: String, plists: [String]?, op: String?) { self.type = type; self.plists = plists; self.op = op }
 }
 
-public enum StepKind: String, Codable, Equatable, Sendable { case rt, app, privileged }
-public enum StepState: String, Codable, Equatable, Sendable { case pending, running, done, failed, skipped }
+/// Raw-value decoding is deliberately lenient: an unrecognized `kind`/`state`
+/// must not throw and discard the whole event (a plan carries many steps —
+/// one unfamiliar kind shouldn't blank the rest), so it falls back to
+/// `.unknown` instead of failing decode.
+public enum StepKind: String, Equatable, Sendable, Codable {
+    case rt, app, privileged, unknown
+    public init(from decoder: Decoder) throws {
+        self = StepKind(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown
+    }
+}
+public enum StepState: String, Equatable, Sendable, Codable {
+    case pending, running, done, failed, skipped, unknown
+    public init(from decoder: Decoder) throws {
+        self = StepState(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown
+    }
+}
 
 public struct StepInfo: Codable, Equatable, Identifiable, Sendable {
     public var id: String
