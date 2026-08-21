@@ -599,7 +599,7 @@ export const TREE: Record<string, CommandNode> = {
         args: [
           { name: "Key", type: "text", placeholder: "rt.worktrees", hint: "Namespaced settings key (must be migrated:true)" },
           { name: "Value", type: "text", placeholder: "{\"onDeck\":3}", hint: "JSON(C) value" },
-          { name: "Scope", flag: "--scope", type: "select", hint: "Which store to write into", options: [{ value: "user", label: "user", hint: "~/.mattstack/user/settings.jsonc" }, { value: "team", label: "team", hint: "the local team clone's settings.jsonc" }, { value: "machine", label: "machine", hint: "~/.mattstack/settings.local.jsonc" }] },
+          { name: "Scope", flag: "--scope", type: "select", hint: "Which store to write into", options: [{ value: "user", label: "user", hint: "~/.mattstack/user/settings.user.jsonc" }, { value: "team", label: "team", hint: "the local team clone's settings.team.jsonc" }, { value: "machine", label: "machine", hint: "~/.mattstack/user/local/<machine-key>/settings.local.jsonc" }] },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — required for repo-scoped keys" },
           { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which team's local store to write, for --scope team (only needed when several are cloned)" },
         ],
@@ -692,14 +692,20 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   home: {
-    description: "The git-backed ~/.mattstack home repo",
+    description: "The git-backed ~/.mattstack/user personal repo",
     subcommands: {
       init: {
-        description: "Provision the home repo: print, then run, the adoption plan",
+        description: "Provision this machine: print, then run, the plan (which clones the user repo as one of its steps)",
         module: "./commands/home.ts",
         fn: "homeInit",
         args: [
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print the plan without running it" },
+          {
+            name: "Clone URL",
+            flag: "--url",
+            type: "text",
+            hint: "The user repo to clone (default: https://github.com/m4ttheweric/mattstack-home)",
+          },
         ],
       },
       key: {

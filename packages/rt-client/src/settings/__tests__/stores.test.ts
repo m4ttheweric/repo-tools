@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { userSettingsPath, teamSettingsPath, teamsDir, machineSettingsPath } from "../paths.ts";
 import { readStore, listTeams } from "../stores.ts";
 
@@ -55,7 +55,7 @@ describe("settings/stores", () => {
 
     test("global map never contains the repos key itself", () => {
       const file = machineSettingsPath();
-      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, `{ "rt.foo": 1, "repos": {} }`);
 
       const store = readStore(file);
@@ -76,7 +76,7 @@ describe("settings/stores", () => {
 
     test("malformed JSONC: exists true, empty maps, warns once", () => {
       const file = machineSettingsPath();
-      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, `{ "rt.foo": ,,, this is not json`);
       const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
@@ -95,7 +95,7 @@ describe("settings/stores", () => {
 
     test("a present but non-object \"repos\" value warns and degrades to empty repos, but global keys still parse", () => {
       const file = machineSettingsPath();
-      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, `{ "rt.foo": 1, "repos": "not-an-object" }`);
       const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
@@ -114,7 +114,7 @@ describe("settings/stores", () => {
 
     test("a present but array \"repos\" value also warns and degrades", () => {
       const file = machineSettingsPath();
-      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, `{ "repos": [1, 2, 3] }`);
       const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
@@ -130,7 +130,7 @@ describe("settings/stores", () => {
 
     test("an absent \"repos\" key is normal — no warn, empty repos", () => {
       const file = machineSettingsPath();
-      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, `{ "rt.foo": 1 }`);
       const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
@@ -146,7 +146,7 @@ describe("settings/stores", () => {
 
     test("a root that parses to a non-object (e.g. a bare array) is treated as malformed", () => {
       const file = machineSettingsPath();
-      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, `[1, 2, 3]`);
       const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
@@ -175,7 +175,7 @@ describe("settings/stores", () => {
   });
 
   describe("listTeams", () => {
-    test("finds only team dirs that contain mattstack/settings.jsonc", () => {
+    test("finds only team dirs that contain mattstack/settings.team.jsonc", () => {
       // acme: has a settings file.
       mkdirSync(join(home, ".mattstack", "teams", "acme", "mattstack"), { recursive: true });
       writeFileSync(teamSettingsPath("acme"), "{}");
@@ -187,6 +187,13 @@ describe("settings/stores", () => {
       writeFileSync(join(teamsDir(), "not-a-team.txt"), "junk");
 
       expect(listTeams().sort()).toEqual(["acme"]);
+    });
+
+    test("a team dir with only the OLD-name settings.jsonc (no settings.team.jsonc) is NOT listed", () => {
+      mkdirSync(join(home, ".mattstack", "teams", "stale-team", "mattstack"), { recursive: true });
+      writeFileSync(join(home, ".mattstack", "teams", "stale-team", "mattstack", "settings.jsonc"), "{}");
+
+      expect(listTeams()).toEqual([]);
     });
 
     test("no teams dir at all → empty list, no throw", () => {
@@ -205,7 +212,7 @@ describe("settings/stores", () => {
     test("a symlinked team clone still counts as a team", () => {
       const real = join(home, "elsewhere", "acme");
       mkdirSync(join(real, "mattstack"), { recursive: true });
-      writeFileSync(join(real, "mattstack", "settings.jsonc"), "{}");
+      writeFileSync(join(real, "mattstack", "settings.team.jsonc"), "{}");
       mkdirSync(teamsDir(), { recursive: true });
       symlinkSync(real, join(teamsDir(), "acme"));
 
