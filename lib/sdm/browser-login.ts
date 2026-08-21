@@ -10,6 +10,11 @@
  * an on-screen window is required for the click to land (an off-screen window
  * does not lay out, so getBoundingClientRect returns nothing); and StrongDM's
  * SAML button only responds to a TRUSTED CDP mouse click, not a synthetic one.
+ *
+ * `SDM_EMAIL` overrides the store's `sdmEmail` for the email preflight
+ * (`runBrowserLogin`'s `email` seam) — the one env escape hatch into an
+ * otherwise store-only read, kept narrow so e2e can drive the flow without
+ * writing to the encrypted secrets store.
  */
 
 import { spawn } from "node:child_process";
@@ -316,7 +321,7 @@ export function runBrowserLogin(opts: { visible?: boolean; onLine?: (line: strin
     waitForCdp: realWaitForCdp,
     startLogin: startLoginCapture,
     showWindow: realShowWindow,
-    email: async () => (await loadSecrets()).sdmEmail ?? null,
+    email: async () => process.env.SDM_EMAIL || (await loadSecrets()).sdmEmail || null,
     onLine,
   });
 }
