@@ -1,16 +1,15 @@
 /**
  * rt sync config — Auto-resolve rules and post-resolve steps.
  *
- * Config lives at ~/.mattstack/rt/repos/<repo>/sync.json (zero footprint — never in the repo).
- * The rules define how to handle known-trivial conflicts during rebases:
+ * Resolved through the settings resolver (`rt.sync`, team.repo scope). The
+ * rules define how to handle known-trivial conflicts during rebases:
  *   - glob pattern → strategy (theirs/ours)
  *   - per-rule postResolve steps (e.g. "pnpm install" after lockfile resolve)
  *
  * Only the postResolve steps for rules that actually matched are executed.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join, dirname } from "path";
+import { getSetting } from "./settings/resolve.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -40,35 +39,24 @@ const DEFAULT_CONFIG: SyncConfig = {
   autoResolve: [],
 };
 
-// ─── Load / Save ─────────────────────────────────────────────────────────────
+// ─── Load ────────────────────────────────────────────────────────────────────
 
 /**
- * Load sync config from ~/.mattstack/rt/repos/<repo>/sync.json.
- * Returns default config if the file doesn't exist.
- *
- * @param dataDir - The repo's data directory (e.g. ~/.mattstack/rt/repos/<repo>)
+ * The resolved `rt.sync` value for a repo, or defaults when nothing resolves.
+ * A resolver throw (e.g. an unexpandable ${...} variable authored by hand)
+ * degrades the same way a missing/corrupt file did before — this runs on
+ * every rebase/dispose call and must never take that down.
  */
-export function loadSyncConfig(dataDir: string): SyncConfig {
-  const configPath = join(dataDir, "sync.json");
-  if (!existsSync(configPath)) return { ...DEFAULT_CONFIG };
-
+export function loadSyncConfig(repoIdentity: string | null): SyncConfig {
   try {
-    const raw = JSON.parse(readFileSync(configPath, "utf8"));
-    return {
-      autoResolve: Array.isArray(raw.autoResolve) ? raw.autoResolve : [],
-    };
+    const raw = getSetting<unknown>("rt.sync", { repoIdentity }).value;
+    if (raw && typeof raw === "object" && !Array.isArray(raw) && Array.isArray((raw as { autoResolve?: unknown }).autoResolve)) {
+      return { autoResolve: (raw as { autoResolve: AutoResolveRule[] }).autoResolve };
+    }
+    return { ...DEFAULT_CONFIG };
   } catch {
     return { ...DEFAULT_CONFIG };
   }
-}
-
-/**
- * Save sync config to ~/.mattstack/rt/repos/<repo>/sync.json.
- */
-export function saveSyncConfig(dataDir: string, config: SyncConfig): void {
-  const configPath = join(dataDir, "sync.json");
-  mkdirSync(dirname(configPath), { recursive: true });
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
 }
 
 // ─── Rule Matching ───────────────────────────────────────────────────────────

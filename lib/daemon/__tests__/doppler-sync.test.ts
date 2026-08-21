@@ -7,33 +7,46 @@ const tmpHome = mkdtempSync(join(tmpdir(), "rt-doppler-sync-"));
 process.env.HOME = tmpHome;
 
 const { reconcileForRepo } = await import("../doppler-sync.ts");
-const { saveTemplate } = await import("../../doppler-template.ts");
+const { setSetting } = await import("../../settings/write.ts");
+const { machineSettingsPath } = await import("../../rt-paths.ts");
 const { loadDopplerConfig, writeDopplerConfig } = await import("../../doppler-config.ts");
 
-const REPO = "test-repo";
+const IDENTITY = "gitlab.com/acme/test-repo";
+
+function seedTemplate(entries: unknown[]): void {
+  setSetting("rt.dopplerTemplate", entries, "machine", { repoIdentity: IDENTITY });
+}
 
 afterEach(() => {
-  try { rmSync(join(tmpHome, ".mattstack", "rt"),     { recursive: true, force: true }); } catch { /* */ }
-  try { rmSync(join(tmpHome, ".doppler"), { recursive: true, force: true }); } catch { /* */ }
+  try { rmSync(join(tmpHome, ".mattstack"), { recursive: true, force: true }); } catch { /* */ }
+  try { rmSync(join(tmpHome, ".doppler"),   { recursive: true, force: true }); } catch { /* */ }
 });
 
 describe("reconcileForRepo", () => {
-  test("returns wrote=0 when no template exists", async () => {
+  test("returns wrote=0 when no template is declared", async () => {
     const summary = await reconcileForRepo({
-      repoName: REPO,
+      repoIdentity: IDENTITY,
+      worktreeRoots: ["/repo/primary"],
+    });
+    expect(summary).toEqual({ wrote: 0, overridden: 0, unchanged: 0, skipped: "no-template" });
+  });
+
+  test("returns wrote=0 when identity can't be derived (no repo section reachable)", async () => {
+    const summary = await reconcileForRepo({
+      repoIdentity: null,
       worktreeRoots: ["/repo/primary"],
     });
     expect(summary).toEqual({ wrote: 0, overridden: 0, unchanged: 0, skipped: "no-template" });
   });
 
   test("writes per-app entries for each worktree × template entry", async () => {
-    saveTemplate(REPO, [
+    seedTemplate([
       { path: "apps/backend",  project: "backend",  config: "dev" },
       { path: "apps/frontend", project: "frontend", config: "dev" },
     ]);
 
     const summary = await reconcileForRepo({
-      repoName: REPO,
+      repoIdentity: IDENTITY,
       worktreeRoots: ["/repo/primary", "/repo/wktree-2"],
     });
 
@@ -52,16 +65,10 @@ describe("reconcileForRepo", () => {
   });
 
   test("is idempotent — second run reports unchanged", async () => {
-    saveTemplate(REPO, [{ path: "apps/backend", project: "backend", config: "dev" }]);
+    seedTemplate([{ path: "apps/backend", project: "backend", config: "dev" }]);
 
-    await reconcileForRepo({
-      repoName: REPO,
-      worktreeRoots: ["/repo/primary"],
-    });
-    const second = await reconcileForRepo({
-      repoName: REPO,
-      worktreeRoots: ["/repo/primary"],
-    });
+    await reconcileForRepo({ repoIdentity: IDENTITY, worktreeRoots: ["/repo/primary"] });
+    const second = await reconcileForRepo({ repoIdentity: IDENTITY, worktreeRoots: ["/repo/primary"] });
 
     expect(second.wrote).toBe(0);
     expect(second.unchanged).toBe(1);
@@ -69,7 +76,7 @@ describe("reconcileForRepo", () => {
   });
 
   test("does not overwrite a user override (different config)", async () => {
-    saveTemplate(REPO, [{ path: "apps/backend", project: "backend", config: "dev" }]);
+    seedTemplate([{ path: "apps/backend", project: "backend", config: "dev" }]);
     writeDopplerConfig({
       scoped: {
         "/repo/primary/apps/backend": {
@@ -80,7 +87,7 @@ describe("reconcileForRepo", () => {
     });
 
     const summary = await reconcileForRepo({
-      repoName: REPO,
+      repoIdentity: IDENTITY,
       worktreeRoots: ["/repo/primary"],
     });
     expect(summary.wrote).toBe(0);
@@ -89,15 +96,29 @@ describe("reconcileForRepo", () => {
       .toBe("staging");
   });
 
-  test("returns skipped=malformed-template if template can't parse", async () => {
-    mkdirSync(join(tmpHome, ".mattstack", "rt", "repos", REPO), { recursive: true });
+  test("a value present but wrong-shaped at every scope resolves as absent, not malformed", async () => {
+    // The resolver's own per-scope type check already skips a non-array
+    // value with a warning before it ever reaches reconcileForRepo — so
+    // this degrades the same way "nothing declared" does, honestly.
+    const path = machineSettingsPath();
+    mkdirSync(join(tmpHome, ".mattstack"), { recursive: true });
     writeFileSync(
-      join(tmpHome, ".mattstack", "rt", "repos", REPO, "doppler-template.yaml"),
-      "[invalid yaml::",
+      path,
+      JSON.stringify({ repos: { [IDENTITY]: { "rt.dopplerTemplate": { oops: true } } } }),
     );
 
     const summary = await reconcileForRepo({
-      repoName: REPO,
+      repoIdentity: IDENTITY,
+      worktreeRoots: ["/repo/primary"],
+    });
+    expect(summary).toEqual({ wrote: 0, overridden: 0, unchanged: 0, skipped: "no-template" });
+  });
+
+  test("returns skipped=malformed-template when a declared entry can't be expanded", async () => {
+    seedTemplate([{ path: "${repoRoot}", project: "backend", config: "dev" }]);
+
+    const summary = await reconcileForRepo({
+      repoIdentity: IDENTITY,
       worktreeRoots: ["/repo/primary"],
     });
     expect(summary).toEqual({
