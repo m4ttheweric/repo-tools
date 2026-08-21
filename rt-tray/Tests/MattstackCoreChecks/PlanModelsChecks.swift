@@ -41,7 +41,7 @@ let planModelsChecks: [Check] = [
         c.expectEqual(plan.requiredMissing, ["perm.fda", "account.gitlab"])
         c.expectEqual(plan.canInstall, false)
     },
-    Check("unknown action type and status degrade instead of failing the whole plan") { c in
+    Check("unknown action type, status, and kind degrade instead of failing the whole plan") { c in
         let plan = try JSONDecoder().decode(Plan.self, from: Data(samplePlanJSON.utf8))
         let chrome = plan.groups[1].rows[1]
         c.expectEqual(chrome.action?.type, .unknown)
@@ -49,6 +49,11 @@ let planModelsChecks: [Check] = [
         lenient = lenient.replacingOccurrences(of: "\"status\": \"skipped\"", with: "\"status\": \"brand-new\"")
         let plan2 = try JSONDecoder().decode(Plan.self, from: Data(lenient.utf8))
         c.expectEqual(plan2.groups[1].rows[1].status, .error)
+        var lenientKind = samplePlanJSON
+        lenientKind = lenientKind.replacingOccurrences(of: "\"id\": \"tool.chrome\", \"kind\": \"tool\"",
+                                                        with: "\"id\": \"tool.chrome\", \"kind\": \"brand-new-kind\"")
+        let plan3 = try JSONDecoder().decode(Plan.self, from: Data(lenientKind.utf8))
+        c.expectEqual(plan3.groups[1].rows[1].kind, .info)
     },
     Check("Plan round-trips through the encoder") { c in
         let plan = try JSONDecoder().decode(Plan.self, from: Data(samplePlanJSON.utf8))
