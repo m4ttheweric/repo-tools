@@ -7,13 +7,13 @@
  *   settings gitlab token   — set GitLab personal access token
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { homedir } from "os";
 import {
   rtDir,
-  TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE, DEV_TRAY_APP_BUNDLE,
-  trayAppPath, devTrayAppPath, installedTrayAppPath,
+  TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE,
+  trayAppPath, devTrayAppPath,
 } from "../lib/rt-paths.ts";
 import { currentMode, installRtBinary } from "../lib/dev-mode.ts";
 import { RT_BUNDLE_PATH } from "../lib/bundle-layout.ts";
@@ -415,7 +415,23 @@ function enableDevMode(sourcePath: string): void {
   // own interpreter) and the tools cli.ts shells out to (logdy, lnav, bunx)
   // fail to resolve, so the log viewer never starts.
   writeFileSync(DEV_MODE_PRELOAD, renderDevModePreload());
-  writeFileSync(DEV_MODE_WRAPPER, renderDevModeWrapper(sourcePath, bunPath), { mode: 0o755 });
+  writeDevModeWrapperFile(renderDevModeWrapper(sourcePath, bunPath));
+}
+
+/**
+ * Prod mode may have left a SYMLINK at DEV_MODE_WRAPPER (installRtBinary, ->
+ * Contents/MacOS/rt inside the app bundle). writeFileSync opens-and-
+ * truncates through a symlink, which would overwrite the bundle's real
+ * binary instead of replacing the wrapper — corrupting the app's code
+ * signature. Write to a sibling tmp file and rename over the destination
+ * instead: rename always replaces the directory entry itself, never what it
+ * points at.
+ */
+function writeDevModeWrapperFile(content: string): void {
+  const tmp = `${DEV_MODE_WRAPPER}.new`;
+  rmSync(tmp, { force: true });
+  writeFileSync(tmp, content, { mode: 0o755 });
+  renameSync(tmp, DEV_MODE_WRAPPER);
 }
 
 // Bun transpiles with the tsconfig found in the *cwd*, so running rt from a
@@ -468,9 +484,9 @@ export function renderDevModePreload(): string {
  * worse than refusing the switch.
  */
 function disableDevMode(exists: (path: string) => boolean = existsSync): void {
-  const prodAppPath = installedTrayAppPath(TRAY_APP_BUNDLE, exists) ?? trayAppPath(exists);
+  const prodAppPath = trayAppPath(exists);
   const prodBinary = join(prodAppPath, RT_BUNDLE_PATH);
-  if (!existsSync(prodBinary)) {
+  if (!exists(prodBinary)) {
     throw new Error(
       `cannot switch to prod: ${TRAY_APP_BUNDLE} is not installed, so there is no compiled rt to install at ${DEV_MODE_WRAPPER}. Install the app first (rt --post-install), then retry.`,
     );
@@ -504,11 +520,8 @@ interface FlavorInfo {
 }
 
 function flavorFor(mode: "dev" | "prod", exists: (path: string) => boolean = existsSync): FlavorInfo {
-  const bundle = mode === "dev" ? DEV_TRAY_APP_BUNDLE : TRAY_APP_BUNDLE;
-  // trayAppPath/devTrayAppPath already run the same installedTrayAppPath
-  // resolution and default to /Applications, so a genuinely-missing bundle
-  // still fails existsSync with a sensible path in the error message rather
-  // than null; passing `exists` through keeps that resolution testable.
+  // passing `exists` through keeps this resolution testable without ever
+  // touching the real /Applications.
   const appPath = mode === "dev" ? devTrayAppPath(exists) : trayAppPath(exists);
   return {
     mode,
