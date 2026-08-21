@@ -30,7 +30,7 @@
  * need to change; a socket caller must read ~/.mattstack/rt/api-token
  * itself and pass it the same way.
  *
- * `payload.scope` (Task 3, deck lane) adds a second whitelist alongside the
+ * `payload.scope` adds a second whitelist alongside the
  * extension's, each reading its own encrypted domain — "extension" (default,
  * so existing callers need no change) reads the `rt` domain's linearApiKey/
  * gitlabToken; "deck" reads the `deck` domain's cfApiToken/cfZoneId. The
@@ -52,7 +52,7 @@ const DECK_SECRET_KEYS = ["cfApiToken", "cfZoneId"] as const;
 
 let realDeckSecretsSeamsSingleton: SecretsSeams | null = null;
 
-/** Lazily-built real seams, separate from lib/linear.ts's `rt`-domain singleton since this reads a different domain file. */
+/** Lazily-built real seams, private to this module — a separate instance from lib/linear.ts's own singleton only because module scope doesn't let this file reuse that one, not because the seams themselves are domain-bound (`readSecret` takes `domain` as a parameter). */
 function defaultDeckSecretsSeams(): SecretsSeams {
   return realDeckSecretsSeamsSingleton ??= {
     ageKeySeam: createRealAgeKeySeam(),
@@ -138,20 +138,23 @@ export function createSecretsHandlers(
       }
 
       const scope = payload?.scope ?? "extension";
-      const data: Commands["secrets:read"]["data"] = {};
       if (scope === "extension") {
         const all = await extensionSecrets();
+        const data: { linearApiKey?: string; gitlabToken?: string } = {};
         if (all.linearApiKey) data.linearApiKey = all.linearApiKey;
         if (all.gitlabToken) data.gitlabToken = all.gitlabToken;
-      } else if (scope === "deck") {
+        ctx.log.debug({ scope, keys: Object.keys(data) }, "secrets:read");
+        return { ok: true as const, data };
+      }
+      if (scope === "deck") {
         const all = await deckSecrets();
+        const data: { cfApiToken?: string; cfZoneId?: string } = {};
         if (all.cfApiToken) data.cfApiToken = all.cfApiToken;
         if (all.cfZoneId) data.cfZoneId = all.cfZoneId;
-      } else {
-        return { ok: false as const, error: "bad-scope" };
+        ctx.log.debug({ scope, keys: Object.keys(data) }, "secrets:read");
+        return { ok: true as const, data };
       }
-      ctx.log.debug({ scope, keys: Object.keys(data) }, "secrets:read");
-      return { ok: true as const, data };
+      return { ok: false as const, error: "bad-scope" };
     },
   };
 }
