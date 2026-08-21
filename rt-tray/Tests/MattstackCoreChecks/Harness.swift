@@ -76,10 +76,21 @@ public struct CheckReport: Sendable {
     public var ok: Bool { failures.isEmpty }
 }
 
+/// "all" means the same as no filter — `mattstack-checks all` is meant to run
+/// everything, not the ~19 checks whose description happens to contain the
+/// substring "all". Any other filter that matches nothing is a mistake, not
+/// a report of zero failures, so it's recorded as a failure rather than
+/// silently producing a green 0-passed run.
 public func runAllChecks(filter: String? = nil) async -> CheckReport {
+    let normalized = filter == "all" ? nil : filter
+    let matching = allChecks.filter { normalized == nil || $0.name.contains(normalized!) }
     var passed = 0
     var failures: [CheckFailure] = []
-    for check in allChecks where filter == nil || check.name.contains(filter!) {
+    if let normalized, matching.isEmpty {
+        failures.append(CheckFailure(check: "filter", message: "filter \"\(normalized)\" matched no checks",
+                                     file: #filePath, line: #line))
+    }
+    for check in matching {
         let ctx = CheckContext(name: check.name)
         // Named on stderr before the body runs so a process-level trap or hang
         // still identifies which check owned it; the harness itself can only
