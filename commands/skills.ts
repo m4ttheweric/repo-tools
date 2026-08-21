@@ -115,6 +115,20 @@ function listSubdirs(dir: string): string[] {
     .sort();
 }
 
+function listFilesRecursive(dir: string, prefix = ""): string[] {
+  if (!existsSync(dir)) return [];
+  const files: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      files.push(...listFilesRecursive(join(dir, entry.name), relPath));
+    } else {
+      files.push(relPath);
+    }
+  }
+  return files;
+}
+
 function findDefaultManifest(mattstackRoot: string, team: string): string {
   const reposRoot = join(mattstackRoot, "repos");
   const candidates: { path: string; mtimeMs: number }[] = [];
@@ -330,15 +344,26 @@ export async function skillsCheck(args: string[]): Promise<void> {
   await withCleanErrors(async () => {
     const flags = parseFlags(args);
     const resolved = resolve(flags);
+    // No surface.jsonc means the pack has no public/internal split yet -- every roster verb is public.
+    const publicSet = resolved.surface ? new Set(resolved.surface.public) : null;
 
     let anyStale = false;
 
     for (const verb of resolved.roster) {
       const outDir = join(resolved.packDir, "skills", verb.name);
-      if (!existsSync(outDir)) continue;
+      const isPublic = !publicSet || publicSet.has(verb.name);
+
+      if (!existsSync(outDir)) {
+        if (isPublic) {
+          anyStale = true;
+          console.log(`${verb.name}: stale (never compiled -- outDir missing; run rt skills compile)`);
+        }
+        continue;
+      }
 
       const result = compileVerb(verb, resolved);
       const staleFiles: string[] = [];
+      const expectedPaths = new Set(result.files.map((f) => f.path));
 
       for (const file of result.files) {
         const dest = join(outDir, file.path);
@@ -346,6 +371,12 @@ export async function skillsCheck(args: string[]): Promise<void> {
         if (!existsSync(dest) || !readFileSync(dest).equals(expected)) {
           staleFiles.push(file.path);
         }
+      }
+
+      // A file left behind by an earlier compile: writeCompiledVerb would delete it on
+      // the next real compile, so "current" here would be a false clean bill of health.
+      for (const onDisk of listFilesRecursive(outDir)) {
+        if (!expectedPaths.has(onDisk)) staleFiles.push(`${onDisk} (orphan)`);
       }
 
       if (staleFiles.length > 0) {
@@ -370,7 +401,11 @@ type SurfaceFlags = {
   manifest: string | null;
 };
 
-type SurfaceRow = { name: string; kind: "compiled" | "hand-authored"; status: "public" | "internal" };
+type SurfaceRow = { name: string; kind: "compiled" | "hand-authored" | "missing"; status: "public" | "internal" };
+
+function kindLabel(kind: SurfaceRow["kind"]): string {
+  return kind === "missing" ? "(no files on disk)" : kind;
+}
 
 function parseSurfaceFlags(args: string[]): { flags: SurfaceFlags; rest: string[] } {
   let team = "acme";
@@ -427,7 +462,7 @@ function defaultPublicSet(skillsNames: Set<string>, verbNames: Set<string>): Set
   return new Set<string>([...skillsNames, ...verbNames]);
 }
 
-function computeRows(
+export function computeRows(
   packDir: string,
   verbNames: Set<string>,
   surface: SurfaceConfig | null,
@@ -438,7 +473,13 @@ function computeRows(
     ? "pack/surface.jsonc"
     : "(no surface.jsonc yet -- inferred from current skills/ + stubs.jsonc placement)";
 
-  const rows = [...allNames].sort().map((name) => {
+  // A name in surface.jsonc's public list but absent from skills/, attachments/, and
+  // stubs.jsonc would otherwise never become a row -- the palette write derives the new
+  // public list from rows alone, so omitting it here means the write silently drops it.
+  const names = new Set<string>(allNames);
+  for (const name of publicSet) names.add(name);
+
+  const rows = [...names].sort().map((name) => {
     const dir = skillsNames.has(name)
       ? join(packDir, "skills", name)
       : attachmentNames.has(name)
@@ -446,7 +487,7 @@ function computeRows(
         : null;
     return {
       name,
-      kind: classify(name, dir, verbNames),
+      kind: allNames.has(name) ? classify(name, dir, verbNames) : ("missing" as const),
       status: (publicSet.has(name) ? "public" : "internal") as "public" | "internal",
     };
   });
@@ -497,7 +538,7 @@ function printSurfaceRows(flags: SurfaceFlags, source: string, rows: SurfaceRow[
   console.log(`rt skills surface -- team ${flags.team}`);
   console.log(`source: ${source}`);
   for (const row of rows) {
-    console.log(`  ${row.status.padEnd(9)}${row.kind.padEnd(15)}${row.name}`);
+    console.log(`  ${row.status.padEnd(9)}${kindLabel(row.kind).padEnd(15)}${row.name}`);
   }
 }
 
@@ -652,7 +693,7 @@ async function runPalette(flags: SurfaceFlags): Promise<void> {
     : "load:pos(1)";
 
   const input = rows
-    .map((row) => `${row.name}\t${row.status.padEnd(9)}${row.kind.padEnd(15)}${row.name}`)
+    .map((row) => `${row.name}\t${row.status.padEnd(9)}${kindLabel(row.kind).padEnd(15)}${row.name}`)
     .join("\n");
 
   const result = spawnSync(
