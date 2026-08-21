@@ -59,7 +59,8 @@ beyond giving them releasable artifacts, and the peering relay's encryption
 | V1 | Auto-snapshot | **RT-30 joins lane L2**: rt commits every settings/secrets write to the user or team repo and pushes in the background (daemon timer + on-write); Team pane shows last push; conflicts surface as a needs-you row. The "paper trail" promise is backed by this. |
 | V2 | PATH defaults | Default-exposed: `rt`, `fast-browser`, `gitq`, `deck` (tagged links, still yielding to a user copy). Everything else internal + opt-in. |
 | V3 | App location | DMG target `/Applications`, fallback `~/Applications` when not writable; the app records its bundle path in the machine store (`mattstack.appPath`) at launch and rt reads that; legacy sweep covers `~/Applications/mattstack.app`; Matt's machine re-grants FDA once. |
-| V4 | Schema home | **Deferred to the settings lane (RT-50 step 2 / MAT-384)**: where team declarations (integrations, tracking intent, pack requirements, declared plugins) and board/gitq/deck keys live is that lane's ruling; this spec states the needs (§13.2) and consumes whatever it rules. |
+| V4 | Schema home | Ruled by the settings lane (reply 2026-08-20 16:45, spec `2026-08-20-suite-settings-migration.md`): `mattstack.integrations` (team), `mattstack.tracking` (team, identity-keyed; merged under machine `rt.repoTracking`), pack-side `requirements.jsonc` (not a key), `claude.marketplaces`/`claude.plugins` (user+team), `mattstack.appPath` (machine), `rt.cron` (machine), full `deck.*`/`board.*`/`gitq.*` tables — all in ONE suite registry in `@mattstack/rt-client`; **apps read in-process via the shared module** (not through the daemon). Registry merged to main 2026-08-20 (PR #5). |
+| V5 | Home repo (settings lane, ratified by Matt) | `~/.mattstack` **is** the git-backed home repo (`rt home init`, private `mattstack-home` via gh); mattstack-prefs folded in as `user/`; team clones nested and ignored; secrets at `user/secrets/<domain>.json` sops/age-encrypted to the Keychain-held age key; `rt home key export` → the user's password manager is the key-migration channel; `rt restore <org>/<repo>` = clone + key paste + materialize (RT-31); H2 snapshot daemon = RT-30. All live on Matt's machine as of 2026-08-20 evening. This supersedes this spec's earlier "container" wording. |
 
 ### Invariants (binding on every lane)
 
@@ -82,9 +83,11 @@ beyond giving them releasable artifacts, and the peering relay's encryption
 - The **app owns ceremony — setup and restore**; Deck does not (supersedes the
   "Deck owns ceremony" wording of MAT-374 r.6, DECK-56's skin, MAT-372's
   framing; DECK-56's snapshot-timeline *view* may still live in Deck).
-- `~/.mattstack` is a **container**; the tracked layer is `user/` (and
-  `teams/<slug>/`). This closes MAT-374 r.2 / RT-30's "`~/.mattstack` IS the
-  clone" wording.
+- `~/.mattstack` **is the home repo** (V5): the gitignore is the layer
+  boundary — tracked = declarative (`user/`, `skills.jsonc`,
+  `snapshot-owners.jsonc`), encrypted-tracked = `user/secrets/`, ignored =
+  runtime (`rt/`, `deck/`, `repos/`, `teams/`, `user/local/`,
+  `settings.local.jsonc`). "User repo" below means the home repo.
 - Third-party tools may write their own Claude Code hooks (herdr's
   `integration install claude`); the installer itself never edits
   `settings.json`.
@@ -136,8 +139,11 @@ owner selectable (user or an org the token can see); otherwise a URL field
 ("paste an empty repo's URL; GitHub, GitLab, anything git can push to"). A short
 explainer under the fields: *mattstack keeps your team settings in git. That
 keeps them safe and gives you a paper trail: skill edits and every change are
-visible in history.* The same explainer covers the user repo, created by the
-same step (`~/.mattstack/user/`, remote `<owner>/mattstack-prefs` by default).
+visible in history.* The same explainer covers the **home repo**, created by
+the same step (`rt home init`: `~/.mattstack` becomes the clone of a private
+`<owner>/mattstack-home`, the age key is generated into the Keychain, and
+`rt home key export` is offered once so the user can store the key in their
+password manager — the documented channel for a second machine).
 Continue validates both remotes with `git ls-remote` using the user's
 credentials and moves on; nothing is pushed until Install. Create scaffolds the
 team repo as a proper mattstack zone: `mattstack/mattstack.jsonc` (`role:
@@ -145,15 +151,16 @@ team`, `namespace`, `org` — editable), `mattstack/team.jsonc` (roster,
 projects, forge host; the roster is the members list), `mattstack/settings.jsonc`,
 and a root `.claude-plugin/marketplace.json` so the team repo *is* the team's
 marketplace. A team of one has no pack; `mattstack:*` skills are the default.
-`rt user init` writes `mattstack.jsonc` (`role: user`) plus `prefs/`, `skills/`,
-`local/`.
+`rt home init` owns the home-repo layout (`user/mattstack.jsonc` role marker,
+`prefs/`, `skills/`, `local/`, the boundary gitignore).
 
 **Already have mattstack settings?** (third, smaller card — the restore path,
-RT-31): paste the user repo URL (or pick `<owner>/mattstack-prefs` via gh) and
-import the age key (Keychain export paste or file — RT-32's documented
-migration channel). `rt user init --remote <existing>` clones instead of
-initializing; the team(s) recorded in that repo are cloned by Install and
-their packs materialized. This is Matt-on-a-new-Mac and any reinstall.
+RT-31): paste the home repo (`<org>/<repo>`, or pick it via gh) and paste the
+age key from your password manager. `rt restore <org>/<repo>` clones it to
+`~/.mattstack`, installs the key in the Keychain, and materializes; the team(s)
+recorded in the home repo (`claude.marketplaces`/`claude.plugins`, tracking)
+are cloned by Install and their packs replayed. This is Matt-on-a-new-Mac and
+any reinstall.
 
 **Join a team.** One field: invite code (prefilled from a deep link). Continue
 redeems it through rt (`rt team join --dry-run`, code passed on stdin, never
@@ -226,10 +233,11 @@ so the terminal `rt setup` shows identical rows.
 
 A live list driven by `rt setup apply --json` (NDJSON stream): each step has
 title, state (pending/running/done/failed/skipped), detail, and a log handle.
-Steps (order is rt's; shown here for the reader): create user repo (+ zone
-marker, dirs) + push — or clone the existing one (restore); create team repo
-(scaffolded zone) + push / clone team repo; generate age key into Keychain
-(RT-32) — or import it (restore) — and write collected secrets; link the
+Steps (order is rt's; shown here for the reader): `rt home init` (home repo +
+boundary + age key + push) — or `rt restore` (clone + key paste) for the
+restore card; create team repo (scaffolded zone) + push / clone team repo;
+write collected secrets with `rt secrets set <domain> <key>` (sops/age,
+`user/secrets/`); link the
 default-exposed tools (`rt`, `fast-browser`, `gitq`, `deck`) into
 `~/.local/bin` (+ rc PATH block, `.zshenv` precedence block, shell integration
 block); `rt intercept install` (team intercept shims); write machine settings
@@ -314,7 +322,9 @@ what), 1 bug.
 | `rt cron install <trigger>` | Register a trigger (board triage) with bundled binary paths. |
 | `rt tools setup <tool>` | Tool-owned setup wrappers (fast-browser setup, herdr integration). |
 | `rt team publish --remote <url> --json` | Push a team repo to a remote (also used when a remote must change). |
-| `rt user init --remote <url> [--existing] --json` | Init user repo (`~/.mattstack/user/`, zone marker + dirs), set remote; `--existing` clones (restore) and lists the teams it records. |
+| `rt home init [--dry-run]` / `rt home key export` (exist, settings lane) | Home repo provisioning + boundary + age key; key export once to the password manager. |
+| `rt restore <org>/<repo>` (settings lane R) | Clone home repo, key paste → Keychain, materialize (replays `claude.*`, tracking, packs). |
+| `rt secrets set\|list\|rotate` (exist, settings lane) | Domains `rt`, `deck`, `board` (+ team-scope in L2); `setup <integration> connect` writes through this. |
 | `rt secrets init/set/get/rotate` | RT-32 surface; `setup connect` uses it. |
 | `rt deps resolve <tool> --json` | Absolute path of the bundled tool + whether a user copy exists; used by rt internally and by the Tools rows. |
 | `rt deps link <tool> / unlink` | Opt-in PATH exposure (tagged symlink), auto-unlink when a user copy appears. |
@@ -515,17 +525,19 @@ rt and need none.
 
 ## 10. Secrets (RT-32)
 
-Setup generates the age key into the login Keychain at the first *Connect*
-(or at Install if none were needed), writes every collected secret into the
-user repo's sops-encrypted layer via `rt secrets set`, and commits. Team-scoped
-secrets (the team's switchboard admin token, shared service tokens the pack
-declares) live in the team repo encrypted to every member's public key; invite
-redeem contributes the invitee's key (§6.3). `~/.mattstack/rt/secrets.json` (`linearApiKey`, `gitlabToken`, `githubToken`,
-`linearTeamId/Key`, `sdmEmail`, `switchboardToken`, `switchboardAdminToken`,
-`slackToken`), the board's `.env` (`GITLAB_TOKEN`, `SLACK_*`,
-`SWITCHBOARD_TOKEN`), and deck's `platform.json.secrets` (CF token/zone, today
-plaintext) are imported once and deleted. Board/gitq keep reading secrets
-through the rt daemon under the same key names. Member removal = forge ACL
+`rt home init` generates the age key into the login Keychain (settings lane,
+live today); setup writes every collected secret into `user/secrets/<domain>.json`
+via `rt secrets set` (sops/age; domains `rt`, `deck`, `board`), and the
+snapshot daemon commits + pushes. Readers use the shared secrets module
+in-process; the daemon's grant-gated `secrets:forge-token` stays the
+out-of-process path (gitq precedent). **Team-scoped secrets** (the team's
+switchboard admin token, Slack client secret, shared service tokens the pack
+declares) are this spec's addition: `teams/<slug>/mattstack/secrets/*.json`
+encrypted to every member's public key (`.sops.yaml` in the team repo with N
+recipients); invite redeem contributes the invitee's key (§6.3). The plaintext inventory (`~/.mattstack/rt/secrets.json`, board `.env`
+Slack values, deck `platform.json` CF token/zone + session secret + password
+hashes) is imported and retired by the settings lane (workstream S; `rt` domain
+already live). Board/gitq/deck read through the shared module; key names stay. Member removal = forge ACL
 revoke + `rt secrets rotate --team` (the residue — a removed member's old
 copies — is documented, not hidden). Plaintext never touches git; lanes/pods
 never receive the key. Auto-snapshot (RT-30, V1) commits and pushes these
@@ -610,27 +622,28 @@ confirmation sheet.
 | Lane | Team | Contents | Depends on |
 |---|---|---|---|
 | L1 rt setup verbs | RT | §5.2 verbs, validators, plan/apply, team create/join/invite/publish, deps resolve/link, uninstall, permissions merge, `--post-install` → apply | L2 for account rows; MAT-384 for deck managed-app steps (stubbed behind the contract until then); RT-50 keys the tray reads |
-| L2 secrets + snapshot | RT | RT-32 as ruled (sops/age, Keychain custody) **extended with team-scope recipients and the invite-reply key exchange**, `rotate --team`; **RT-30 auto-snapshot** (V1: commit on write + background push, last-push status, conflict row) | — |
+| L2 team secrets | RT | **Shrunk**: RT-32 core, RT-30 snapshot (V1) and RT-31 restore are the settings lane's (S, H2, R). L2 = team-scope recipients (`teams/<slug>/mattstack/secrets/`, N-recipient `.sops.yaml`), the invite-reply key exchange, `rt secrets rotate --team`, `rt team members sync\|remove` | settings lane S (merged) |
 | L3 app | MAT | xcodegen project + schemes, Sparkle, setup window + 5 screens, Settings panes, PermissionsService, ServicesRegistrar, PrivilegedInstaller, tray.sock routes, RtClient, stub rt, XCTest/XCUITest | L1 contract (JSON shapes agreed first; stub carries it) |
 | L4 release | RT/MAT | deps.lock + helper bundling, rt-daemon→rt rename, DMG, appcast, notarization, headless install job, thin `rt update`, README/verify sweep | L3 project |
-| L5 suite artifacts | BOARD/GITQ/DECK/SKILLS/FB | board + gitq binaries (publish rt-client; config from team.jsonc + stores, no `.env`/config.json; skills as plugins; state.db), deck release + SMAppService-owned platform registration + private node/portless + privileged helper + our own proxy plist, fast-browser artifact + own setup + marketplace source fix, mattstack marketplace = MAT-360 meta repo, acme pack requirements + `dev-ports.state.json` writer + local-db-mcp decision, rt-context extension via daemon | MAT-384 for TLD/managed apps; settings lane for key names (§13.2) |
+| L5 suite artifacts | BOARD/GITQ/DECK/SKILLS/FB | board + gitq `bun --compile` binaries with published rt-client (their settings/secrets reads are the settings lane's deck/board/gitq lanes; their state.db adoption is a follow-on), skills as plugins (no `~/.claude/skills` symlinks), deck release + SMAppService-owned platform registration + private node/portless + privileged helper + our own proxy plist, fast-browser artifact + own setup + marketplace source fix, mattstack marketplace = MAT-360 meta repo, acme pack `requirements.jsonc` + `dev-ports.state.json` writer + local-db-mcp decision | MAT-384 for TLD/managed apps; settings lane's deck/board/gitq lanes for config reads |
 | L6 relay invites | BOARD | `/v1/invites*` opaque endpoints on the shared Railway relay; rate limiting; prune | — (matt-gated deploy) |
 | L7 clean room | MAT | `rt-tray/vm/` golden images + walkthrough, second-user smoke notes | — |
 
-### 13.2 Requirements on the settings lane (RT-50 step 2 / MAT-384) — V4
+### 13.2 What the settings lane ruled and ships (V4/V5)
 
-The installer reads and writes only through `rt settings`. It needs, in shapes
-that lane rules (proposals in the handoff note
-`~/.mattstack/user/local/handoff-2026-08-20-installer-needs-from-settings-lane.md`):
-team-declared integrations (forge, slack client id/channel/callback port,
-linear team, switchboard url); team tracking intent layered onto
-`rt.repoTracking`; pack requirements (tools/plugins/mcps — proposed
-`pack/requirements.jsonc`, leaving the skills-manifest schema closed);
-declared marketplaces + plugins (user + team scope) so restore can replay them;
-board/gitq/deck keys the installer materializes; `mattstack.appPath` (machine);
-the board triage trigger via `rt.cron`; and the rt-context extension moved off
-direct `secrets.json` reads before the legacy rung dies. Until those land, L1
-carries the proposals behind its plan contract.
+Reply file: `~/.mattstack/user/local/reply-2026-08-20-settings-lane-to-installer.md`;
+program spec: `docs/superpowers/specs/2026-08-20-suite-settings-migration.md`.
+Ruled and merged (PR #5, 2026-08-20): one suite registry in `@mattstack/rt-client`
+with `mattstack.integrations` `{forge:{host,provider}, slack?:{appId,clientId,channel,callbackPort}, linear?:{teamKey}, switchboard?:{url}}` (team),
+`mattstack.tracking` `{repos:{"<host/group/repo>":{caches}}}` (team, merged under machine
+`rt.repoTracking`), `mattstack.appPath` (machine), `claude.marketplaces`/`claude.plugins`
+(user+team), `deck.*`/`board.*`/`gitq.*`; pack requirements are pack-side
+`requirements.jsonc`; apps read in-process; `rt home init`, `rt home key
+export`, `rt secrets set|list|rotate` live. In flight overnight (their mandate:
+run to completion, merge as green): rt keys wave (incl. `rt.cron` to machine,
+legacy rung deletion, `rt settings llm` deletion), deck/board/gitq settings
+lanes (incl. the rt-context extension off `secrets.json`), H2 snapshot daemon,
+R restore. L1 reads these keys directly; nothing is stubbed.
 
 ### 13.3 Ticket amendments to file (superseded or refined by this spec)
 
@@ -682,7 +695,8 @@ DNS (`mattstack.dev/join`), Railway, and Apple steps carry `matt-gated`.
 - Multi-team machines: `rt setup plan` needs a "current team" selector; the
   first implementation assumes one team per machine and surfaces a picker only
   when more exist.
-- The settings-lane key names (§13.2) are proposals until that lane rules; L1
-  keeps them behind its plan contract.
+- Team-scope secrets (N-recipient `.sops.yaml` in the team repo) extend the
+  settings lane's single-recipient model; coordinate the file layout with that
+  lane before L2 lands.
 - `local-db-mcp` has no distributable source; capture-evidence/query flows in
   the acme pack depend on it.
