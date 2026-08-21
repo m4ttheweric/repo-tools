@@ -78,4 +78,11 @@ enum AXID {
     static let settingsUninstallCancel = "settings.uninstall.cancel"
     static let settingsUninstallConfirm = "settings.uninstall.confirm"
     static let settingsUninstallKeepData = "settings.uninstall.keepData"
+
+    // Menu (app menu + tray gear menu)
+    static let menuAppSettings = "menu.app.settings"
+    static let menuGearSetupStatus = "menu.gear.setupStatus"
+    static let menuGearSettings = "menu.gear.settings"
+    static let menuGearUninstall = "menu.gear.uninstall"
+    static let menuGearCheckForUpdates = "menu.gear.checkForUpdates"
 }

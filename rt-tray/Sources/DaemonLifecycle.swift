@@ -5,7 +5,7 @@ import ServiceManagement
 
 /// Manages the rt daemon as a LaunchAgent registered via SMAppService.
 ///
-/// The daemon lives at <app>.app/Contents/MacOS/rt-daemon and the agent plist
+/// The daemon lives at <app>.app/Contents/MacOS/rt and the agent plist
 /// at Contents/Library/LaunchAgents/<label>.plist. SMAppService hands off to
 /// launchd, which supervises the process (KeepAlive + ThrottleInterval).
 /// Because the plist declares AssociatedBundleIdentifiers = the app's own

@@ -3,10 +3,15 @@ import UserNotifications
 import ServiceManagement
 import Network
 import SwiftUI
+import MattstackCore
 
 // MARK: - AppDelegate
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+// AppKit invokes every delegate method on the main thread; `@unchecked`
+// because that guarantee lives in AppKit's contract, not in anything the
+// compiler can see. Needed once `VersionProviding` (a `Sendable` protocol)
+// is adopted below.
+class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
     // ── Menu bar ────────────────────────────────────────────────────────────
     private var statusItem: NSStatusItem!
@@ -27,11 +32,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // ── State ───────────────────────────────────────────────────────────────
     private var currentHealth: DaemonHealth = .unknown
-    let updater = UpdaterController(isDevBuild: BundleFlavor.isDevBuild, isBusy: { false })
+    let updater = UpdaterController(isDevBuild: BundleFlavor.isDevBuild, isBusy: { SetupSession.isRunning })
+    private var updaterObservation: NSKeyValueObservation?
+
+    // ── Setup / Settings / rt ────────────────────────────────────────────────
+    private var permissionsService: PermissionsService!
+    private var servicesRegistrar: ServicesRegistrar!
+    private var needBroker: NeedBroker!
+    private var coordinator: SetupCoordinator?
+    private var rtClient: RtClient?
 
     // MARK: - Lifecycle
 
+    /// Registered ahead of the first event so a `mattstack://join/<code>` link
+    /// used to launch the app (not just to activate an already-running one)
+    /// still reaches `handleGetURL`.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleGetURL(_:with:)),
+                                                     forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if LaunchGuard.isTranslocatedOrOnRemovableVolume(bundlePath: Bundle.main.bundlePath) {
+            showMoveToApplicationsAlert()
+            return
+        }
+        buildServices()
+        installMainMenu()
         setupMenuBar()
         setupNotifications()
         setupTrayServer()
@@ -62,15 +89,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(checkForUpdates), name: .rtCheckUpdates, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(showKeyboardConflictWindow), name: .showKeyboardConflict, object: nil)
+
+        // Setup / Settings surfaces, posted by the gear menu and the Done screen
+        NotificationCenter.default.addObserver(self, selector: #selector(showSetupStatus), name: .rtShowSetupStatus, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(showSettings), name: .rtShowSettings, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(showUninstall), name: .rtShowUninstall, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(showSettingsTeam), name: .rtShowSettingsTeam, object: nil)
+
         checkMissionControlConflict()
         autoRegisterLoginItem()
 
-        // Register the daemon as a LaunchAgent. Idempotent — if already
-        // registered, this is a no-op. If the user hasn't approved it yet,
-        // status flips to .requiresApproval and the menu surfaces a prompt.
         Task { @MainActor in
             setHealth(.starting)
-            daemonLifecycle.startDaemon()
+            servicesRegistrar.registerAll()
+            let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+            let change = await servicesRegistrar.handleVersionChange(current: version, store: UserDefaults.standard)
+            TrayLog.info("version change evaluated", ["change": String(describing: change)])
+            await recordAppPath()
 
             // Wait for launchd to bring the daemon up
             for _ in 0..<8 {
@@ -79,8 +114,80 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             await refreshStatus()
             await drainPendingNotifications()
+            if let coordinator, !coordinator.setupIsComplete { coordinator.showSetup() }
         }
     }
+
+    @MainActor
+    private func buildServices() {
+        permissionsService = PermissionsService(bundleId: Bundle.main.bundleIdentifier ?? "com.mattstack.app",
+                                                agentStatuses: { [weak self] in self?.servicesRegistrar.smStatuses() ?? [] },
+                                                runner: SystemCommandRunner())
+        servicesRegistrar = ServicesRegistrar(bundlePath: Bundle.main.bundlePath, runner: SystemCommandRunner())
+        let privileged = PrivilegedInstaller(bundlePath: Bundle.main.bundlePath, escalator: AuthorizationServicesEscalator())
+        needBroker = NeedBroker(services: servicesRegistrar, privileged: privileged)
+        TrayServer.shared.routes = TrayRoutes(permissions: permissionsService, services: servicesRegistrar, privileged: privileged,
+                                              needs: needBroker, updater: updater, version: self)
+        rtClient = RtClientFactory.make()
+        if let rt = rtClient {
+            coordinator = SetupCoordinator(rt: rt, permissions: permissionsService, needs: needBroker, updater: updater)
+        }
+        updaterObservation = updater.observe(\.canCheckForUpdates, options: [.initial, .new]) { u, _ in
+            DispatchQueue.main.async { TrayState.shared.canCheckForUpdates = u.canCheckForUpdates }
+        }
+    }
+
+    /// The machine store learns where this bundle lives, every launch — rt
+    /// owns the store, so the app only ever writes through `rt settings set`.
+    private func recordAppPath() async {
+        guard let rt = rtClient else { return }
+        let r = try? await rt.run(AppPathSetting.arguments(bundlePath: Bundle.main.bundlePath), stdin: nil)
+        if let r, r.exitCode != 0 { TrayLog.warn("mattstack.appPath write failed", ["exit": Int(r.exitCode), "err": r.userError?.message ?? ""]) }
+    }
+
+    /// The App menu carries the only global keyboard shortcut an LSUIElement
+    /// app can offer (there is no Window menu): ⌘, opens Settings whenever
+    /// any window is key, matching every other Mac app.
+    private func installMainMenu() {
+        let main = NSMenu()
+        let appItem = NSMenuItem(); main.addItem(appItem)
+        let appMenu = NSMenu()
+        let settingsItem = appMenu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+        settingsItem.setAccessibilityIdentifier(AXID.menuAppSettings)
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Quit mattstack", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        let editItem = NSMenuItem(); main.addItem(editItem)
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit
+        NSApp.mainMenu = main
+    }
+
+    /// Gatekeeper's translocation and a DMG mount both make SMAppService and
+    /// Sparkle unusable — the only recovery is a real, on-disk copy.
+    private func showMoveToApplicationsAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Move mattstack to Applications"
+        alert.informativeText = "mattstack is running from a disk image or a temporary location, so it can't register its background services. Drag mattstack.app to /Applications (or ~/Applications) and open it from there."
+        alert.addButton(withTitle: "Quit")
+        alert.runModal()
+        NSApp.terminate(nil)
+    }
+
+    @objc private func handleGetURL(_ event: NSAppleEventDescriptor, with reply: NSAppleEventDescriptor) {
+        guard let s = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue, let url = URL(string: s) else { return }
+        guard let code = JoinLink.code(from: url) else { TrayLog.warn("ignored URL", ["url": s]); return }
+        Task { @MainActor in coordinator?.handleJoin(code: code) }
+    }
+
+    @objc private func showSetupStatus() { Task { @MainActor in coordinator?.openSetupStatus() } }
+    @objc private func showSettings() { Task { @MainActor in coordinator?.showSettings() } }
+    @objc private func showUninstall() { Task { @MainActor in coordinator?.showSettings(pane: .uninstall) } }
+    @objc private func showSettingsTeam() { Task { @MainActor in coordinator?.showSettings(pane: .team) } }
 
     func applicationWillTerminate(_ notification: Notification) {
         statusTimer?.invalidate()
@@ -327,7 +434,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let home = NSHomeDirectory()
         let candidates = [
             "\(home)/.local/bin/rt",
-            Bundle.main.bundlePath + "/Contents/MacOS/rt-daemon",
+            Bundle.main.bundlePath + "/Contents/MacOS/rt",
         ]
         let rtBin = candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
 
@@ -554,6 +661,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hours = minutes / 60
         let remainingMinutes = minutes % 60
         return "\(hours)h \(remainingMinutes)m"
+    }
+}
+
+extension AppDelegate: VersionProviding {
+    /// `build` is the numeric CFBundleVersion L4 writes — major*1e6 +
+    /// minor*1e3 + patch (e.g. 2.8.0 → 2008000) — never a string; a
+    /// non-numeric or missing value reads as 0.
+    func versionInfo() -> VersionInfo {
+        VersionInfo(version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev",
+                    build: (Bundle.main.infoDictionary?["CFBundleVersion"] as? String).flatMap(Int.init) ?? 0,
+                    flavor: BundleFlavor.isDevBuild ? "dev" : "prod",
+                    path: Bundle.main.bundlePath)
     }
 }
 

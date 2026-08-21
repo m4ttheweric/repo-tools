@@ -149,17 +149,16 @@ exit 1
         let a: A = try await client.run(["version"], stdin: nil).decode(A.self)
         c.expectEqual(a.args, "/stub.ts version")
     },
-    Check("locator: prod bundle → Contents/MacOS/rt, falling back to rt-daemon until L4 renames") { c in
-        let exists: (String) -> Bool = { $0 == "/Applications/mattstack.app/Contents/MacOS/rt-daemon" }
-        let loc = RtBinaryLocator.resolve(bundlePath: "/Applications/mattstack.app", isDevBuild: false, isDebugBuild: false,
-                                          environment: [:], home: "/Users/u", fileExists: exists)
-        c.expectEqual(loc?.source, .legacyBundled)
-        c.expectEqual(loc?.executable.path, "/Applications/mattstack.app/Contents/MacOS/rt-daemon")
+    Check("locator: prod bundle resolves only Contents/MacOS/rt — no rt-daemon fallback") { c in
+        let onlyLegacy: (String) -> Bool = { $0 == "/Applications/mattstack.app/Contents/MacOS/rt-daemon" }
+        let none = RtBinaryLocator.resolve(bundlePath: "/Applications/mattstack.app", isDevBuild: false, isDebugBuild: false,
+                                           environment: [:], home: "/Users/u", fileExists: onlyLegacy)
+        c.expect(none == nil, "a bundle with only Contents/MacOS/rt-daemon must not resolve — that path is the daemon, not the CLI")
         let both: (String) -> Bool = { $0.hasSuffix("/rt") || $0.hasSuffix("/rt-daemon") }
-        let loc2 = RtBinaryLocator.resolve(bundlePath: "/Applications/mattstack.app", isDevBuild: false, isDebugBuild: false,
-                                           environment: [:], home: "/Users/u", fileExists: both)
-        c.expectEqual(loc2?.source, .bundled)
-        c.expectEqual(loc2?.executable.path, "/Applications/mattstack.app/Contents/MacOS/rt")
+        let loc = RtBinaryLocator.resolve(bundlePath: "/Applications/mattstack.app", isDevBuild: false, isDebugBuild: false,
+                                          environment: [:], home: "/Users/u", fileExists: both)
+        c.expectEqual(loc?.source, .bundled)
+        c.expectEqual(loc?.executable.path, "/Applications/mattstack.app/Contents/MacOS/rt")
     },
     Check("locator: dev flavor prefers the ~/.local/bin/rt wrapper; stub only in DEBUG with both env vars") { c in
         let all: (String) -> Bool = { _ in true }

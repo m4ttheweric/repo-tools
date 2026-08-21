@@ -78,12 +78,25 @@ struct ProcessPanelView: View {
             NotificationCenter.default.post(name: .rtViewDaemonLogs, object: nil)
         })
         menu.addItem(.separator())
+        menu.addItem(ActionMenuItem("Setup status…", axid: AXID.menuGearSetupStatus) {
+            NotificationCenter.default.post(name: .rtShowSetupStatus, object: nil)
+        })
+        menu.addItem(ActionMenuItem("Settings…", axid: AXID.menuGearSettings) {
+            NotificationCenter.default.post(name: .rtShowSettings, object: nil)
+        })
+        menu.addItem(.separator())
         menu.addItem(ActionMenuItem("Start at Login", state: startAtLogin ? .on : .off) {
             toggleStartAtLogin()
         })
         menu.addItem(.separator())
-        menu.addItem(ActionMenuItem(updateMenuTitle) {
+        let updateItem = ActionMenuItem(updateMenuTitle, axid: AXID.menuGearCheckForUpdates) {
             NotificationCenter.default.post(name: .rtCheckUpdates, object: nil)
+        }
+        updateItem.isEnabled = trayState.canCheckForUpdates || trayState.updateAvailable != nil
+        menu.addItem(updateItem)
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem("Uninstall mattstack…", axid: AXID.menuGearUninstall) {
+            NotificationCenter.default.post(name: .rtShowUninstall, object: nil)
         })
         menu.addItem(.separator())
         menu.addItem(ActionMenuItem("Quit mattstack") {
@@ -392,11 +405,12 @@ private struct MenuAnchor: NSViewRepresentable {
 final class ActionMenuItem: NSMenuItem {
     private let handler: () -> Void
 
-    init(_ title: String, state: NSControl.StateValue = .off, handler: @escaping () -> Void) {
+    init(_ title: String, state: NSControl.StateValue = .off, axid: String? = nil, handler: @escaping () -> Void) {
         self.handler = handler
         super.init(title: title, action: #selector(invoke), keyEquivalent: "")
         self.target = self
         self.state = state
+        if let axid { setAccessibilityIdentifier(axid) }
     }
 
     required init(coder: NSCoder) {
