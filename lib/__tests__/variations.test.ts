@@ -70,11 +70,12 @@ describe("variations", () => {
     });
 
     describe("saveVariation + loadVariations roundtrip", () => {
-      test("saves and loads a single variation", () => {
-        saveVariation(IDENTITY, "/repo", "/repo/pkg/a", "dev", {
+      test("saves and loads a single variation, reporting ok:true", () => {
+        const result = saveVariation(IDENTITY, "/repo", "/repo/pkg/a", "dev", {
           name: "debug",
           command: "DEBUG=1 pnpm run dev",
         });
+        expect(result).toEqual({ ok: true });
 
         const all = loadVariations(IDENTITY);
         expect(all["pkg/a:dev"]).toEqual([
@@ -111,11 +112,12 @@ describe("variations", () => {
         expect(Object.keys(all)).toHaveLength(2);
       });
 
-      test("saveVariation is a no-op when no repo identity is available", () => {
-        saveVariation(null, "/repo", "/repo/pkg/a", "dev", {
+      test("saveVariation reports no-identity and is a no-op when no repo identity is available", () => {
+        const result = saveVariation(null, "/repo", "/repo/pkg/a", "dev", {
           name: "debug",
           command: "DEBUG=1 pnpm run dev",
         });
+        expect(result).toEqual({ ok: false, reason: "no-identity" });
         expect(loadVariations(null)).toEqual({});
       });
 
@@ -131,6 +133,36 @@ describe("variations", () => {
         ).value["pkg/a:dev"]!;
         expect(explicit).toEqual([{ name: "debug", command: "DEBUG=1 pnpm run dev" }]);
       });
+    });
+  });
+
+  describe("saveVariation write-failed reporting", () => {
+    const origHome = process.env.HOME;
+    let home: string;
+
+    beforeEach(() => {
+      home = realpathSync(mkdtempSync(join(tmpdir(), "rt-variations-nofail-")));
+      process.env.HOME = home;
+      // deliberately no seedTeam() here — zero local team stores exist.
+    });
+
+    afterEach(() => {
+      process.env.HOME = origHome;
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    test("surfaces the team-store refusal instead of silently dropping the save", () => {
+      const result = saveVariation(IDENTITY, "/repo", "/repo/pkg/a", "dev", {
+        name: "debug",
+        command: "DEBUG=1 pnpm run dev",
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok && result.reason === "write-failed") {
+        expect(result.message).toContain("no local team store");
+      } else {
+        throw new Error(`expected a write-failed refusal, got ${JSON.stringify(result)}`);
+      }
+      expect(loadVariations(IDENTITY)).toEqual({});
     });
   });
 });

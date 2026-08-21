@@ -663,7 +663,7 @@ async function freshenCandidate(deps: FreshenDeps, rec: TreeRecord): Promise<boo
   const defaultBranchName = defaultRef.replace(/^origin\//, "");
   if (rec.branch !== defaultBranchName) return false;
 
-  const { blockers } = await classifyDirtyAsync(rec.path, deps.repoName);
+  const { blockers } = await classifyDirtyAsync(rec.path);
   return blockers.length === 0;
 }
 
@@ -703,7 +703,7 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
     return false;
   }
 
-  const classify = await classifyDirtyAsync(rec.path, repoName);
+  const classify = await classifyDirtyAsync(rec.path);
   if (classify.discard.length > 0) {
     await runGit(rec.path, ["checkout", "--", ...classify.discard]);
   }
