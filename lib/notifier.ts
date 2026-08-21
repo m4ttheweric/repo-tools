@@ -15,10 +15,12 @@
  * Called at the end of each daemon cache refresh cycle.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync } from "fs";
 import { join } from "path";
 import { isTransitionalMergeStatus } from "@mattstack/glance";
 import { RT_DIR } from "./daemon-config.ts";
+import { getSetting } from "./settings/resolve.ts";
+import { setSetting } from "./settings/write.ts";
 import { parseEtimeMs, type PortEntry } from "./port-scanner.ts";
 import type { SystemProcess } from "./daemon/system-process-scanner.ts";
 import { agentSessionPids } from "./daemon/worktree-process-kill.ts";
@@ -80,7 +82,6 @@ export type { NotificationEvent };
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-const PREFS_PATH = join(RT_DIR, "notifications.json");
 const TRAY_SOCK_PATH = join(RT_DIR, "tray.sock");
 
 // ─── Broadcast hook (set by daemon.ts to push to WebSocket clients) ──────────
@@ -115,21 +116,23 @@ export const NOTIFICATION_TYPES = [
 export type NotificationPrefs = Record<string, boolean>;
 
 export function loadNotificationPrefs(): NotificationPrefs {
+  const defaults: NotificationPrefs = {};
+  for (const t of NOTIFICATION_TYPES) defaults[t.key] = true;
+
+  // A resolver throw (e.g. an unexpandable ${...} variable authored into the
+  // store by hand) must degrade to the same all-enabled default a missing or
+  // corrupt file gave today — this fires on every notify() call, so it can
+  // never be allowed to crash the daemon's transition loop.
   try {
-    return JSON.parse(readFileSync(PREFS_PATH, "utf8"));
+    const stored = getSetting<NotificationPrefs | undefined>("rt.notifications").value;
+    return stored ? { ...defaults, ...stored } : defaults;
   } catch {
-    // Default: everything enabled
-    const defaults: NotificationPrefs = {};
-    for (const t of NOTIFICATION_TYPES) defaults[t.key] = true;
     return defaults;
   }
 }
 
 export function saveNotificationPrefs(prefs: NotificationPrefs): void {
-  try {
-    mkdirSync(RT_DIR, { recursive: true });
-    writeFileSync(PREFS_PATH, JSON.stringify(prefs, null, 2));
-  } catch { /* best-effort */ }
+  setSetting("rt.notifications", prefs, "user");
 }
 
 /**

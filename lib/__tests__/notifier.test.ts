@@ -1,5 +1,56 @@
-import { describe, expect, test } from "bun:test";
-import { __test__ } from "../notifier.ts";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { userSettingsPath } from "../rt-paths.ts";
+import { getSetting } from "../settings/resolve.ts";
+import { setSetting } from "../settings/write.ts";
+import { __test__, loadNotificationPrefs, saveNotificationPrefs, NOTIFICATION_TYPES } from "../notifier.ts";
+
+describe("notification prefs through the settings resolver", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-notifier-")));
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("empty store: every notification type defaults to enabled", () => {
+    const prefs = loadNotificationPrefs();
+    for (const t of NOTIFICATION_TYPES) expect(prefs[t.key]).toBe(true);
+  });
+
+  test("a store-seeded value resolves through the loader", () => {
+    setSetting("rt.notifications", { pipeline_failed: false }, "user");
+
+    const prefs = loadNotificationPrefs();
+    expect(prefs.pipeline_failed).toBe(false);
+    expect(prefs.mr_merged).toBe(true); // untouched types still default true
+  });
+
+  test("saveNotificationPrefs lands in the user store", () => {
+    saveNotificationPrefs({ pipeline_failed: false, mr_merged: true });
+
+    const stored = getSetting<Record<string, boolean>>("rt.notifications").value;
+    expect(stored.pipeline_failed).toBe(false);
+    const raw = JSON.parse(readFileSync(userSettingsPath(), "utf8").replace(/^\/\/.*\n/, ""));
+    expect(raw["rt.notifications"]).toEqual({ pipeline_failed: false, mr_merged: true });
+  });
+
+  test("an unexpandable ${repoRoot} in a stored value degrades to all-enabled defaults instead of throwing", () => {
+    setSetting("rt.notifications", { pipeline_failed: "${repoRoot}" }, "user");
+
+    expect(() => loadNotificationPrefs()).not.toThrow();
+    const prefs = loadNotificationPrefs();
+    for (const t of NOTIFICATION_TYPES) expect(prefs[t.key]).toBe(true);
+  });
+});
 
 const baseSnapshot = {
   pipelineStatus: null,

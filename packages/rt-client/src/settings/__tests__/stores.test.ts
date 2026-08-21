@@ -34,7 +34,7 @@ describe("settings/stores", () => {
         file,
         `{
           // a global key with a trailing comment
-          "rt.llm": { "provider": "ollama", "model": "qwen3" },
+          "rt.hooks": { "provider": "ollama", "model": "qwen3" },
           "repos": {
             "gitlab.com/assured/assured-dev": {
               "rt.roles": { "backend": { "pool": [] } },
@@ -47,7 +47,7 @@ describe("settings/stores", () => {
 
       expect(store.file).toBe(file);
       expect(store.exists).toBe(true);
-      expect(store.global).toEqual({ "rt.llm": { provider: "ollama", model: "qwen3" } });
+      expect(store.global).toEqual({ "rt.hooks": { provider: "ollama", model: "qwen3" } });
       expect(store.repos).toEqual({
         "gitlab.com/assured/assured-dev": { "rt.roles": { backend: { pool: [] } } },
       });

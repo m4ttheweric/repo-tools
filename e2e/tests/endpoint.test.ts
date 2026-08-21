@@ -228,29 +228,41 @@ describe("rt endpoint / intercept (just-works e2e)", () => {
     // Only repo-main is indexed. repo-b is matched purely by remote URL —
     // that's the "any worktree of a registered repo" contract.
     writeFileSync(join(rtDir, "repos.json"), JSON.stringify({ [REPO_NAME]: repoMain }, null, 2));
+
+    // rt.roles/rt.intercepts live in the machine store now, keyed by the
+    // IDENTITY the remote normalizes to (repo-main and repo-b share one
+    // remote, so they share one identity — the same "matched by remote, not
+    // by index membership" contract as before, just resolved through the
+    // settings resolver instead of the (now-gone) per-repo config.json).
+    const identity = "github.com/rt-test/endpoint-repo";
+    mkdirSync(join(home, ".mattstack"), { recursive: true });
     writeFileSync(
-      join(rtDir, "repos", REPO_NAME, "config.json"),
+      join(home, ".mattstack", "settings.local.jsonc"),
       JSON.stringify(
         {
-          roles: {
-            web: {
-              pool: [{ from: poolBase, to: poolBase + 5 }],
-              env: { PORT: "${port}" },
-              preserveEnv: ["KEEP_*"],
-            },
-          },
-          intercepts: [
-            {
-              command: "fakestart",
-              matches: [
+          repos: {
+            [identity]: {
+              "rt.roles": {
+                web: {
+                  pool: [{ from: poolBase, to: poolBase + 5 }],
+                  env: { PORT: "${port}" },
+                  preserveEnv: ["KEEP_*"],
+                },
+              },
+              "rt.intercepts": [
                 {
-                  cwdGlob: ".",
-                  role: "web",
-                  argInject: { afterArg: "go", template: "--keep=${envKeys}", skipIfArgPresent: "--keep" },
+                  command: "fakestart",
+                  matches: [
+                    {
+                      cwdGlob: ".",
+                      role: "web",
+                      argInject: { afterArg: "go", template: "--keep=${envKeys}", skipIfArgPresent: "--keep" },
+                    },
+                  ],
                 },
               ],
             },
-          ],
+          },
         },
         null,
         2,

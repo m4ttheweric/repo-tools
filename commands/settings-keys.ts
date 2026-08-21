@@ -10,11 +10,10 @@
  *
  * `--repo <name>` resolves a repo NAME to a path via ~/.mattstack/rt/repos.json,
  * derives its identity (async — never a sync spawn), and feeds the resolver
- * both `legacy.repoName` (the wave-1 legacy rung) and `expandCtx.repoRoot`
- * (so a `${repoRoot}` value in a `get` never throws when --repo was given).
- * Without --repo, an unexpandable `${repoRoot}` is the honest outcome of
- * `get` — its thrown message is rendered cleanly and the process exits 1,
- * no stack trace.
+ * `expandCtx.repoRoot` (so a `${repoRoot}` value in a `get` never throws when
+ * --repo was given). Without --repo, an unexpandable `${repoRoot}` is the
+ * honest outcome of `get` — its thrown message is rendered cleanly and the
+ * process exits 1, no stack trace.
  *
  * These verbs run entirely in-process against lib/settings/resolve.ts and
  * write.ts (both daemon-free, sync-spawn-free) — they do not go through the
@@ -81,7 +80,6 @@ interface RepoContext {
   repoIdentity: string | null;
   /** Always set when --repo was given, regardless of whether identity derivation succeeded — this is what lets `${repoRoot}` expand even for a repo whose remote doesn't normalize to an identity. */
   expandCtx?: { repoRoot: string };
-  legacy?: { repoName: string };
 }
 
 function repoIndex(): Record<string, string> {
@@ -93,13 +91,13 @@ function repoIndex(): Record<string, string> {
  *
  * When the name resolves to a path but no identity derives (a local-path
  * remote, no remote at all, an unrecognized host), the repo rungs of every
- * store are simply unreachable — `${repoRoot}` and the legacy rung still
- * answer, so the command succeeds with a strictly smaller ladder. That is an
- * honest degrade, but a SILENT one is a trap: the user asked about a repo and
- * got an answer that quietly ignored every repo-scoped value. So say it once,
- * dim, on stderr — the resolved value still lands on stdout unpolluted, and
- * `--json` output is untouched. `set` does not come through here; it refuses
- * outright rather than writing into a section nothing will read back.
+ * store are simply unreachable — `${repoRoot}` still answers, so the command
+ * succeeds with a strictly smaller ladder. That is an honest degrade, but a
+ * SILENT one is a trap: the user asked about a repo and got an answer that
+ * quietly ignored every repo-scoped value. So say it once, dim, on stderr —
+ * the resolved value still lands on stdout unpolluted, and `--json` output is
+ * untouched. `set` does not come through here; it refuses outright rather
+ * than writing into a section nothing will read back.
  */
 async function resolveRepoContext(repoName: string | undefined): Promise<RepoContext> {
   if (!repoName) return { repoIdentity: null };
@@ -114,7 +112,6 @@ async function resolveRepoContext(repoName: string | undefined): Promise<RepoCon
   return {
     repoIdentity: identity,
     expandCtx: { repoRoot: repoPath },
-    legacy: { repoName },
   };
 }
 
@@ -140,16 +137,13 @@ export function formatProvenance(provenance: Provenance[]): string {
 }
 
 /**
- * The `migrated:false` loud-degrade label: "reads legacy: <file>" plus the
- * sibling live command when the registry names one — spec: "list LABELS
- * them (`reads legacy: <file>`)". Returns null for a migrated key (nothing
- * to render).
+ * The `migrated:false` loud-degrade label: "reads legacy: <file>" — spec:
+ * "list LABELS them (`reads legacy: <file>`)". Returns null for a migrated
+ * key (nothing to render).
  */
 export function migratedNote(def: SettingDef): string | null {
   if (isMigrated(def)) return null;
-  const legacyPart = def.legacyFile ? `reads legacy: ${def.legacyFile}` : "not writable through the settings resolver yet";
-  const siblingPart = def.siblingCommand ? ` — use \`${def.siblingCommand}\`` : "";
-  return `${legacyPart}${siblingPart}`;
+  return def.legacyFile ? `reads legacy: ${def.legacyFile}` : "not writable through the settings resolver yet";
 }
 
 // ─── get ────────────────────────────────────────────────────────────────────
@@ -165,7 +159,6 @@ export async function settingsGet(args: string[]): Promise<void> {
     resolved = getSetting(key, {
       repoIdentity: repoCtx.repoIdentity,
       expandCtx: repoCtx.expandCtx,
-      legacy: repoCtx.legacy,
     });
   } catch (err) {
     failWithError(err);
@@ -180,7 +173,7 @@ export async function settingsGet(args: string[]): Promise<void> {
       value: resolved.value,
       provenance: resolved.provenance,
       migrated: isMigrated(def),
-      ...(isMigrated(def) ? {} : { legacyFile: def.legacyFile ?? null, siblingCommand: def.siblingCommand ?? null }),
+      ...(isMigrated(def) ? {} : { legacyFile: def.legacyFile ?? null }),
     }));
     return;
   }
@@ -315,7 +308,6 @@ export async function settingsList(args: string[]): Promise<void> {
   const settings = listSettings({
     repoIdentity: repoCtx.repoIdentity,
     expandCtx: repoCtx.expandCtx,
-    legacy: repoCtx.legacy,
   });
 
   if (json) {
@@ -359,7 +351,6 @@ export async function settingsExplain(args: string[]): Promise<void> {
   try {
     rows = explainSetting(key, {
       repoIdentity: repoCtx.repoIdentity,
-      legacy: repoCtx.legacy,
     });
   } catch (err) {
     failWithError(err);

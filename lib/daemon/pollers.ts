@@ -9,6 +9,7 @@ import { existsSync } from "fs";
 import type { Logger } from "pino";
 import { scanListeningPorts } from "../port-scanner.ts";
 import { checkRunawayProcesses } from "../notifier.ts";
+import { primeTeamTrackingIdentityMap } from "../repo-tracking.ts";
 import type { SystemProcessScanner } from "./system-process-scanner.ts";
 import type { PortCacheRef, RepoIndex } from "./handlers/types.ts";
 
@@ -90,8 +91,17 @@ export function startPollers(deps: PollerDeps): void {
   // Periodic hooks scan — belt-and-suspenders fallback in case a directory
   // watcher ever misses a write (e.g. watcher limit hit, FS edge-case).
   // Runs every 60s; each call is cheap (one git-config read per watched repo).
+  //
+  // Rides the same interval to re-prime the team-tracking identity map: this
+  // is the RELIABLE re-prime mechanism, not the repos.json fs.watch in
+  // daemon.ts — an atomic-rename write (the common way repos.json gets
+  // replaced) changes the file's inode, and fs.watch on most platforms stops
+  // delivering events after that, so the watch is best-effort only.
   setInterval(async () => {
     const repos = deps.repoIndex();
+    await primeTeamTrackingIdentityMap(repos).catch((err) => {
+      log.warn({ err }, "repo-tracking: failed to re-prime team-intent identity map");
+    });
     for (const [repoName, repoPath] of Object.entries(repos)) {
       if (existsSync(repoPath)) await deps.checkAndRepairHooksPath(repoName, repoPath);
     }

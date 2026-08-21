@@ -23,6 +23,7 @@ import { syncProjectMRs } from "./project-sync.ts";
 import { getProjectMRs } from "./project-mrs-store.ts";
 import { pruneDiscussionsStore } from "./discussions-file-store.ts";
 import { reconcileForRepo } from "./doppler-sync.ts";
+import { deriveRepoIdentity } from "../settings/identity.ts";
 import { listWorktreeRoots, listWorktrees } from "../git-worktrees.ts";
 
 export interface CacheRefresherDeps {
@@ -197,13 +198,14 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
       checkAndNotify(cache.entries, portCacheRef.ports, getCurrentUserId());
 
       // Doppler-template reconciliation: keeps ~/.doppler/.doppler.yaml in sync
-      // with each repo's ~/.mattstack/rt/repos/<repo>/doppler-template.yaml. Cheap (file I/O
-      // only) and additive — never overwrites existing entries.
+      // with each repo's rt.dopplerTemplate setting. Cheap and additive —
+      // never overwrites existing entries.
       for (const [repoName, repoPath] of Object.entries(repoIndex())) {
         if (!existsSync(repoPath)) continue;
         try {
           const worktreeRoots = listWorktreeRoots(repoPath);
-          const summary = await reconcileForRepo({ repoName, worktreeRoots });
+          const repoIdentity = await deriveRepoIdentity(repoPath);
+          const summary = await reconcileForRepo({ repoIdentity, worktreeRoots });
           if (summary.skipped) {
             if (summary.skipped === "malformed-template") {
               log.debug({ repo: repoName, skipped: summary.skipped }, "doppler sync skipped");

@@ -3,8 +3,8 @@ import { execSync } from "child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
-import { repoDataDir } from "../../rt-paths.ts";
-import { saveSyncConfig } from "../../sync-config.ts";
+import { teamSettingsPath } from "../../rt-paths.ts";
+import { setSetting } from "../../settings/write.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../registry.ts";
 import { branchExistsLocalAsync, listWorktreesAsync, remoteRefExists } from "../git-async.ts";
 import { hasFreshAttendantLease } from "../lease.ts";
@@ -38,6 +38,23 @@ function addBareOrigin(repo: string): string {
     { shell: "/bin/zsh", stdio: "pipe" },
   );
   return bare;
+}
+
+const IDENTITY = "test/acme";
+
+/**
+ * A bare-origin remote is a local filesystem path, which `deriveRepoIdentity`
+ * can't normalize into an identity on its own (identity.ts: "bare local
+ * paths are the main case" that returns null). Pin one via the machine
+ * store's fork override so `rt.sync` reads for these test repos land
+ * somewhere, and seed one team store so `setSetting(..., "team", ...)` can
+ * auto-select it instead of refusing (write.ts's team-selection rule).
+ */
+function seedIdentity(originUrl: string): void {
+  setSetting("rt.repoIdentityOverrides", { [originUrl]: IDENTITY }, "machine");
+  const teamPath = teamSettingsPath("acme");
+  mkdirSync(dirname(teamPath), { recursive: true });
+  writeFileSync(teamPath, "// team store\n{}\n");
 }
 
 /** Add a worktree on a fresh branch cut from `base`, and return its (canonical) path. */
@@ -174,65 +191,64 @@ describe("hasFreshAttendantLease", () => {
 describe("classifyDirtyAsync", () => {
   let repo: string;
   let tree: string;
-  const repoName = "acme";
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtdispose-home-")));
     repo = makeRepo();
-    addBareOrigin(repo);
+    seedIdentity(addBareOrigin(repo));
     tree = addTree(repo, "tree-a", "feature-a");
   });
 
   test("clean tree classifies as nothing at all", async () => {
-    const result = await classifyDirtyAsync(tree, repoName);
+    const result = await classifyDirtyAsync(tree);
     expect(result.discard).toEqual([]);
     expect(result.blockers).toEqual([]);
   });
 
   test("untracked file is a blocker", async () => {
     writeFileSync(join(tree, "scratch.txt"), "hi\n");
-    const result = await classifyDirtyAsync(tree, repoName);
+    const result = await classifyDirtyAsync(tree);
     expect(result.blockers).toEqual(["scratch.txt"]);
     expect(result.discard).toEqual([]);
   });
 
   test("declared generated file with whitespace-only drift is discardable", async () => {
-    saveSyncConfig(repoDataDir(repoName), {
-      autoResolve: [{ glob: "gen.txt", strategy: "theirs" }],
+    setSetting("rt.sync", { autoResolve: [{ glob: "gen.txt", strategy: "theirs" }] }, "team", {
+      repoIdentity: IDENTITY,
     });
     writeFileSync(join(tree, "gen.txt"), "alpha  \nbeta\n");
 
-    const result = await classifyDirtyAsync(tree, repoName);
+    const result = await classifyDirtyAsync(tree);
     expect(result.discard).toEqual(["gen.txt"]);
     expect(result.blockers).toEqual([]);
   });
 
   test("declared generated file with a substantive edit is a blocker", async () => {
-    saveSyncConfig(repoDataDir(repoName), {
-      autoResolve: [{ glob: "gen.txt", strategy: "theirs" }],
+    setSetting("rt.sync", { autoResolve: [{ glob: "gen.txt", strategy: "theirs" }] }, "team", {
+      repoIdentity: IDENTITY,
     });
     writeFileSync(join(tree, "gen.txt"), "alpha\nbeta\ngamma\n");
 
-    const result = await classifyDirtyAsync(tree, repoName);
+    const result = await classifyDirtyAsync(tree);
     expect(result.discard).toEqual([]);
     expect(result.blockers).toEqual(["gen.txt"]);
   });
 
   test("undeclared modified file is a blocker even when whitespace-only", async () => {
     writeFileSync(join(tree, "gen.txt"), "alpha  \nbeta\n");
-    const result = await classifyDirtyAsync(tree, repoName);
+    const result = await classifyDirtyAsync(tree);
     expect(result.blockers).toEqual(["gen.txt"]);
   });
 
   test("a failing git status fails CLOSED, never clean", async () => {
     const gone = join(tree, "nope", "not-a-worktree");
-    const result = await classifyDirtyAsync(gone, repoName);
+    const result = await classifyDirtyAsync(gone);
     expect(result.blockers).toEqual([STATUS_FAILED_BLOCKER]);
     expect(result.discard).toEqual([]);
 
     // Same for a directory git refuses to read as a repo.
     const notARepo = realpathSync(mkdtempSync(join(tmpdir(), "rtdispose-bare-dir-")));
-    const outside = await classifyDirtyAsync(notARepo, repoName);
+    const outside = await classifyDirtyAsync(notARepo);
     expect(outside.blockers).toEqual([STATUS_FAILED_BLOCKER]);
   });
 });
@@ -245,7 +261,7 @@ describe("disposeTree", () => {
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtdispose-home-")));
     repo = makeRepo();
-    addBareOrigin(repo);
+    seedIdentity(addBareOrigin(repo));
     events = [];
   });
 
@@ -312,8 +328,8 @@ describe("disposeTree", () => {
   });
 
   test("whitespace-only drift in a declared generated file does not refuse", async () => {
-    saveSyncConfig(repoDataDir(repoName), {
-      autoResolve: [{ glob: "gen.txt", strategy: "theirs" }],
+    setSetting("rt.sync", { autoResolve: [{ glob: "gen.txt", strategy: "theirs" }] }, "team", {
+      repoIdentity: IDENTITY,
     });
     const path = addTree(repo, "tree-a", "feature-a");
     writeFileSync(join(path, "gen.txt"), "alpha  \nbeta\n");
