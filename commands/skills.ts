@@ -31,6 +31,26 @@ import {
 } from "../lib/skills/sources.ts";
 import type { AttachmentSource, CompileResult, VerbDef } from "../lib/skills/types.ts";
 
+/**
+ * Marks an error as an expected, user-facing condition (bad flags, absent
+ * binding, unknown verb) rather than a bug in this command -- withCleanErrors
+ * prints these as a one-line "rt skills: <message>" and exits 1 with no
+ * stack trace; anything else propagates to the top-level crash handler.
+ */
+class SkillsUsageError extends Error {}
+
+async function withCleanErrors(fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    if (err instanceof SkillsUsageError) {
+      console.error(`rt skills: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+}
+
 type Flags = {
   team: string;
   verbs: string[] | null;
@@ -58,7 +78,7 @@ function parseFlags(args: string[]): Flags {
       case "--pack-dir": packDir = args[++i] ?? null; break;
       case "--mattstack-dir": mattstackDir = args[++i] ?? null; break;
       default:
-        throw new Error(`rt skills: unrecognized argument "${a}"`);
+        throw new SkillsUsageError(`unrecognized argument "${a}"`);
     }
   }
 
@@ -102,8 +122,8 @@ function findDefaultManifest(mattstackRoot: string, team: string): string {
   }
 
   if (candidates.length === 0) {
-    throw new Error(
-      `rt skills: no skills.jsonc under ${reposRoot}/*/ names team "${team}" in its provenance header; pass --manifest explicitly`,
+    throw new SkillsUsageError(
+      `no skills.jsonc under ${reposRoot}/*/ names team "${team}" in its provenance header; pass --manifest explicitly`,
     );
   }
 
@@ -111,8 +131,8 @@ function findDefaultManifest(mattstackRoot: string, team: string): string {
   const newest = candidates[0]!;
   const tied = candidates.filter((c) => c.mtimeMs === newest.mtimeMs);
   if (tied.length > 1) {
-    throw new Error(
-      `rt skills: ambiguous manifest for team "${team}" -- candidates tie for newest:\n${tied.map((c) => c.path).join("\n")}\npass --manifest explicitly`,
+    throw new SkillsUsageError(
+      `ambiguous manifest for team "${team}" -- candidates tie for newest:\n${tied.map((c) => c.path).join("\n")}\npass --manifest explicitly`,
     );
   }
 
@@ -144,7 +164,7 @@ function selectVerbs(roster: VerbDef[], names: string[] | null): VerbDef[] {
   const byName = new Map(roster.map((v) => [v.name, v]));
   return names.map((name) => {
     const verb = byName.get(name);
-    if (!verb) throw new Error(`rt skills: verb "${name}" not found in roster`);
+    if (!verb) throw new SkillsUsageError(`verb "${name}" not found in roster`);
     return verb;
   });
 }
@@ -175,7 +195,7 @@ function compileVerb(verb: VerbDef, resolved: Resolved): CompileResult {
   try {
     step = loadStepSource(verb.engine, resolved.pluginRoots);
   } catch (err) {
-    throw new Error(`verb "${verb.name}": ${(err as Error).message}`);
+    throw new SkillsUsageError(`verb "${verb.name}": ${(err as Error).message}`);
   }
 
   const slotBindings = resolved.bindings[`${step.plugin}:${verb.engine}`] ?? {};
@@ -189,11 +209,16 @@ function compileVerb(verb: VerbDef, resolved: Resolved): CompileResult {
     try {
       fills[slotName] = loadAttachment(bindingName, slotName, resolved.pluginRoots);
     } catch (err) {
-      throw new Error(`verb "${verb.name}": ${(err as Error).message}`);
+      throw new SkillsUsageError(`verb "${verb.name}": ${(err as Error).message}`);
     }
   }
 
-  return compileSkill(verb, step, fills, resolved.invocable);
+  try {
+    return compileSkill(verb, step, fills, resolved.invocable);
+  } catch (err) {
+    // compileSkill's own message already names verb + slot -- pass it through unchanged.
+    throw new SkillsUsageError((err as Error).message);
+  }
 }
 
 function writeCompiledVerb(outDir: string, result: CompileResult): void {
@@ -213,53 +238,57 @@ function writeCompiledVerb(outDir: string, result: CompileResult): void {
 }
 
 export async function skillsCompile(args: string[]): Promise<void> {
-  const flags = parseFlags(args);
-  const resolved = resolve(flags);
+  await withCleanErrors(async () => {
+    const flags = parseFlags(args);
+    const resolved = resolve(flags);
 
-  for (const verb of resolved.roster) {
-    const result = compileVerb(verb, resolved);
-    const outDir = join(resolved.packDir, "skills", verb.name);
+    for (const verb of resolved.roster) {
+      const result = compileVerb(verb, resolved);
+      const outDir = join(resolved.packDir, "skills", verb.name);
 
-    if (flags.dryRun) {
-      console.log(`would write ${result.files.length} files for ${verb.name}`);
+      if (flags.dryRun) {
+        console.log(`would write ${result.files.length} files for ${verb.name}`);
+        for (const warning of result.warnings) console.log(`  ${warning}`);
+        continue;
+      }
+
+      writeCompiledVerb(outDir, result);
+      console.log(`compiled ${verb.name} (${result.files.length} files, ${result.warnings.length} warnings)`);
       for (const warning of result.warnings) console.log(`  ${warning}`);
-      continue;
     }
-
-    writeCompiledVerb(outDir, result);
-    console.log(`compiled ${verb.name} (${result.files.length} files, ${result.warnings.length} warnings)`);
-    for (const warning of result.warnings) console.log(`  ${warning}`);
-  }
+  });
 }
 
 export async function skillsCheck(args: string[]): Promise<void> {
-  const flags = parseFlags(args);
-  const resolved = resolve(flags);
+  await withCleanErrors(async () => {
+    const flags = parseFlags(args);
+    const resolved = resolve(flags);
 
-  let anyStale = false;
+    let anyStale = false;
 
-  for (const verb of resolved.roster) {
-    const outDir = join(resolved.packDir, "skills", verb.name);
-    if (!existsSync(outDir)) continue;
+    for (const verb of resolved.roster) {
+      const outDir = join(resolved.packDir, "skills", verb.name);
+      if (!existsSync(outDir)) continue;
 
-    const result = compileVerb(verb, resolved);
-    const staleFiles: string[] = [];
+      const result = compileVerb(verb, resolved);
+      const staleFiles: string[] = [];
 
-    for (const file of result.files) {
-      const dest = join(outDir, file.path);
-      const expected = "content" in file ? Buffer.from(file.content) : readFileSync(file.copyFrom);
-      if (!existsSync(dest) || !readFileSync(dest).equals(expected)) {
-        staleFiles.push(file.path);
+      for (const file of result.files) {
+        const dest = join(outDir, file.path);
+        const expected = "content" in file ? Buffer.from(file.content) : readFileSync(file.copyFrom);
+        if (!existsSync(dest) || !readFileSync(dest).equals(expected)) {
+          staleFiles.push(file.path);
+        }
+      }
+
+      if (staleFiles.length > 0) {
+        anyStale = true;
+        console.log(`${verb.name}: stale (recompile or investigate drift with git diff) -- ${staleFiles.join(", ")}`);
+      } else {
+        console.log(`${verb.name}: current`);
       }
     }
 
-    if (staleFiles.length > 0) {
-      anyStale = true;
-      console.log(`${verb.name}: stale (recompile or investigate drift with git diff) -- ${staleFiles.join(", ")}`);
-    } else {
-      console.log(`${verb.name}: current`);
-    }
-  }
-
-  if (anyStale) process.exitCode = 1;
+    if (anyStale) process.exitCode = 1;
+  });
 }

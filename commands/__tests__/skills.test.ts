@@ -153,6 +153,33 @@ afterEach(() => {
   process.exitCode = undefined;
 });
 
+/**
+ * Expected/domain errors print a clean one-liner and process.exit(1) instead
+ * of throwing a bare stack trace (matches commands/secrets.ts,
+ * commands/settings-keys.ts). Mock process.exit to throw a sentinel so the
+ * real test process never dies, and read the spies' recorded calls BEFORE
+ * mockRestore() -- bun's mockRestore() clears .mock.calls, unlike jest's.
+ */
+async function runExpectingCleanExit(fn: () => Promise<void>): Promise<{ exitCode: number | undefined; errors: string[] }> {
+  const errors: string[] = [];
+  const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+    throw new Error("process.exit sentinel");
+  });
+  const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    errors.push(args.map(String).join(" "));
+  });
+  try {
+    await fn();
+    return { exitCode: undefined, errors };
+  } catch {
+    const exitCode = exitSpy.mock.calls.at(-1)?.[0] as number | undefined;
+    return { exitCode, errors };
+  } finally {
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+  }
+}
+
 describe("skillsCompile", () => {
   test("dry-run prints a would-write summary and writes nothing", async () => {
     const mattstackDir = makeMattstackDir();
@@ -203,29 +230,79 @@ describe("skillsCompile", () => {
     expect(statSync(scriptPath).mode & 0o111).not.toBe(0);
   });
 
-  test("missing required binding: nonzero exit, error names verb and slot", async () => {
+  test("missing required binding: clean one-line error naming verb and slot, exit 1, no partial write", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
     const manifestPath = makeManifest("t", false);
 
-    let thrown: unknown;
-    try {
-      await skillsCompile([
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile([
         "--team", "t",
         "--pack-dir", packDir,
         "--mattstack-dir", mattstackDir,
         "--manifest", manifestPath,
         "--verb", "watch-ci",
-      ]);
-    } catch (err) {
-      thrown = err;
-    }
+      ]),
+    );
 
-    expect(thrown).toBeInstanceOf(Error);
-    const message = (thrown as Error).message;
-    expect(message).toContain("watch-ci");
-    expect(message).toContain("forge");
+    expect(exitCode).toBe(1);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toStartWith("rt skills: ");
+    expect(errors[0]).not.toContain("\n    at "); // no stack trace
+    expect(errors[0]).toContain("watch-ci");
+    expect(errors[0]).toContain("forge");
     expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
+  });
+
+  test("unrecognized argument: clean one-line error, exit 1", async () => {
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile(["--bogus-flag"]),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toStartWith("rt skills: ");
+    expect(errors[0]).toContain("--bogus-flag");
+  });
+
+  test("unknown verb: clean one-line error, exit 1", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile([
+        "--team", "t",
+        "--pack-dir", packDir,
+        "--mattstack-dir", mattstackDir,
+        "--manifest", manifestPath,
+        "--verb", "no-such-verb",
+      ]),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toStartWith("rt skills: ");
+    expect(errors[0]).toContain("no-such-verb");
+  });
+
+  test("absent manifest (no skills.jsonc names the team): clean one-line error, exit 1", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile([
+        "--team", "t",
+        "--pack-dir", packDir,
+        "--mattstack-dir", mattstackDir,
+        "--verb", "watch-ci",
+      ]),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toStartWith("rt skills: ");
+    expect(errors[0]).toContain("skills.jsonc");
   });
 
   test("default pack dir formula (--team + --mattstack-dir, no --pack-dir)", async () => {
