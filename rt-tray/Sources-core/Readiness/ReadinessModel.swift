@@ -2,7 +2,10 @@ import Foundation
 import Combine
 
 public protocol PlanSource: Sendable { func fetchPlan() async throws -> Plan }
-public protocol PermissionProbing: Sendable { func snapshot() async -> PermissionSnapshot }
+public protocol PermissionProbing: Sendable {
+    func snapshot() async -> PermissionSnapshot
+    var fdaNeedsRelaunch: Bool { get }
+}
 
 public final class TickerHandle: Sendable {
     public let cancel: @Sendable () -> Void
@@ -24,6 +27,7 @@ public final class ReadinessModel: ObservableObject {
     @Published public private(set) var isLoading = false
     @Published public private(set) var lastError: String?
     @Published public private(set) var checkingRowIds: Set<String> = []
+    @Published public private(set) var fdaNeedsRelaunch = false
 
     public static let permissionTickSeconds: TimeInterval = 1
 
@@ -61,6 +65,12 @@ public final class ReadinessModel: ObservableObject {
         await fetch()
         checkingRowIds.remove(rowId)
     }
+
+    /// The screen marks a row checking before it starts a verb — `afterAction`
+    /// only inserts once the verb has already returned, which is too late to
+    /// block a second click during a long-running one.
+    public func beginChecking(_ rowId: String) { checkingRowIds.insert(rowId) }
+    public func endChecking(_ rowId: String) { checkingRowIds.remove(rowId) }
 
     public func becameVisible() {
         tick?.cancel()
@@ -102,6 +112,7 @@ public final class ReadinessModel: ObservableObject {
         let snap = await permissions.snapshot()
         lastSnapshot = snap
         hasProbedPermissions = true
+        fdaNeedsRelaunch = permissions.fdaNeedsRelaunch
         applyOverlay(snap)
         recomputeEnablement()
     }

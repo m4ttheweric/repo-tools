@@ -27,6 +27,7 @@ struct RowView: View {
             if let action = row.action, action.type != .unknown {
                 Button(action.label, action: onAction)
                     .controlSize(.regular)
+                    .disabled(isChecking)
                     .accessibilityIdentifier(actionID ?? AXID.checklistRowAction(row.id))
             }
         }

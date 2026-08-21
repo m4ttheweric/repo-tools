@@ -27,4 +27,19 @@ let rowActionChecks: [Check] = [
         c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .unknown, label: "?"), fieldValues: nil, alternative: nil), .none)
         c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .openURL, label: "x", url: "not a url at all ::"), fieldValues: nil, alternative: nil), .none)
     },
+    Check("failureCopy redacts stderr for secret-bearing actions; RtClientError.copy never echoes the raw error") { c in
+        let leaky = RtResult(exitCode: 1, stdout: Data(), stderr: Data("token=glpat-xyz-should-not-leak".utf8))
+        let redacted = leaky.failureCopy(verb: "setup gitlab connect", redactStderr: true)
+        c.expect(!redacted.contains("glpat-xyz"), "redacted copy must not echo stdin-derived stderr")
+        c.expect(redacted.contains("details withheld"))
+        let open = leaky.failureCopy(verb: "setup gitlab connect", redactStderr: false)
+        c.expect(open.contains("glpat-xyz"), "non-secret actions keep the stderr excerpt")
+        c.expectEqual(leaky.failureCopy(verb: "x", redactStderr: false), leaky.failureCopy(verb: "x"), "redactStderr:false matches the unlabeled overload")
+
+        let zero = RtResult(exitCode: 0, stdout: Data(), stderr: Data())
+        c.expectEqual(zero.failureCopy(verb: "x", redactStderr: true), "rt x returned an unexpected reply.")
+
+        c.expect(!RtClientError.spawnFailed("posix_spawn failed: /Users/matt/secret-path").copy.contains("secret-path"))
+        c.expectEqual(RtClientError.exited(7, stderr: "leaked stderr").copy, "rt exited unexpectedly (exit 7).")
+    },
 ]
