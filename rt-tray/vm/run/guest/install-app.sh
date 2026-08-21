@@ -1,10 +1,15 @@
 #!/bin/bash
-# Guest side of the install phase. See header of each subcommand.
+# Guest side of the install phase: copy the DMG into /Applications (admin), then launch (tester).
 set -euo pipefail
 GUEST_RUN="${GUEST_RUN:-/Volumes/My Shared Files/run}"
 [ -d "$GUEST_RUN" ] || { echo "install-app.sh runs in the guest; $GUEST_RUN is not mounted" >&2; exit 1; }
 LOG="$GUEST_RUN/logs/install-app.log"; mkdir -p "$(dirname "$LOG")"
-say() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$LOG" >&2; }
+# Log-write is best-effort: an unwritable share must never abort the copy under set -e/pipefail.
+say() {
+  local line; line="$(date -u +%H:%M:%S) $*"
+  printf '%s\n' "$line" >&2
+  printf '%s\n' "$line" >>"$LOG" 2>/dev/null || true
+}
 APP=/Applications/mattstack.app
 
 cmd="${1:-}"; shift || true

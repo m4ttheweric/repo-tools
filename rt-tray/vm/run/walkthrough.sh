@@ -3,7 +3,7 @@
 set -uo pipefail
 source "$(cd "$(dirname "$0")/.." && pwd)/lib/common.sh"
 
-usage() { sed -n '2,3p' "$0"; cat <<'EOF'
+usage() { sed -n '2p' "$0"; cat <<'EOF'
 usage: walkthrough.sh --ver <14|15|26> (--dmg <path> | --app <mattstack.app>)
          [--scenario create|join|headless] [--team-slug vmtest] [--pat-env MATTSTACK_VMTEST_PAT]
          [--invite-code-file <p>] [--update-dir <dir>] [--update-version <v>]
@@ -116,8 +116,8 @@ else vm_phase_end boot fail "ssh as tester never came up"; exit 1; fi
 
 # ── stage ────────────────────────────────────────────────────────────────────
 vm_phase_begin stage
-vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "mkdir -p $GUEST_BIN && cp -R '$GUEST_RUN/in/guest/.' $GUEST_BIN/ && chmod +x $GUEST_BIN/*.sh && test -f '$GUEST_RUN/in/mattstack.dmg'" \
-  && vm_phase_end stage pass || { vm_phase_end stage fail "virtiofs share not visible in guest"; exit 1; }
+vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "mkdir -p $GUEST_BIN && cp -R '$GUEST_RUN/in/guest/.' $GUEST_BIN/ && chmod +x $GUEST_BIN/*.sh && test -f '$GUEST_RUN/in/mattstack.dmg' && touch '$GUEST_RUN/logs/.write-probe' && rm -f '$GUEST_RUN/logs/.write-probe'" \
+  && vm_phase_end stage pass || { vm_phase_end stage fail "virtiofs share not readable/writable by tester in guest"; exit 1; }
 
 # ── install (admin copies) + launch (tester) ─────────────────────────────────
 vm_phase_begin install
@@ -126,9 +126,9 @@ vm_ssh_try "$VM_ADMIN_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash '$GUEST_RUN/i
   && vm_phase_end install pass || { vm_phase_end install fail "copy failed (logs/install.log)"; exit 1; }
 
 vm_phase_begin launch
-# Prod builds honour MATTSTACK_APPCAST_URL only with --allow-appcast-override (L3 T10); the same env/arg is
+# Prod builds honour MATTSTACK_APPCAST_URL only with --allow-appcast-override; the same env/arg is
 # replayed by drive-setup.sh on any driver-initiated relaunch (DRIVER_LAUNCH_ARGS).
-LAUNCH_ARGS=""; [ -n "$UPD" ] && LAUNCH_ARGS="--env MATTSTACK_APPCAST_URL=http://127.0.0.1:8765/appcast.xml --arg --allow-appcast-override"
+LAUNCH_ARGS=""; [ -n "$UPD" ] && LAUNCH_ARGS="--env MATTSTACK_APPCAST_URL=http://127.0.0.1:$VM_APPCAST_PORT/appcast.xml --arg --allow-appcast-override"
 vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash $GUEST_BIN/install-app.sh launch $LAUNCH_ARGS" >>"$VM_RUN_DIR/logs/install.log" 2>&1
 rc=$?
 SHOT00=""
@@ -161,18 +161,32 @@ fi
 # ── assert ───────────────────────────────────────────────────────────────────
 vm_phase_begin assert
 HFLAG=""; [ "$SCENARIO" = headless ] && HFLAG=--headless
-if vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash $GUEST_BIN/assert-installed.sh --expect-version '$APP_VERSION' $HFLAG" >"$VM_RUN_DIR/logs/assert.log" 2>&1; then
+EXPECT_ARG=""; [ -n "$APP_VERSION" ] && EXPECT_ARG="--expect-version '$APP_VERSION'"
+vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash $GUEST_BIN/assert-installed.sh $EXPECT_ARG $HFLAG" >"$VM_RUN_DIR/logs/assert.log" 2>&1
+rc=$?
+if [ "$rc" -eq 0 ]; then
   vm_phase_end assert pass
-else vm_phase_end assert fail "$(grep -c 'ASSERT FAIL' "$VM_RUN_DIR/logs/assert.log") assertion(s) failed (logs/assert.log)"; fi
+else
+  n=$(grep -c 'ASSERT FAIL' "$VM_RUN_DIR/logs/assert.log")
+  if [ "$n" -gt 0 ]; then vm_phase_end assert fail "$n assertion(s) failed (logs/assert.log)"
+  else vm_phase_end assert fail "script exited $rc (logs/assert.log)"; fi
+fi
 
 # ── update ───────────────────────────────────────────────────────────────────
 vm_phase_begin update
 if [ -z "$UPD" ]; then vm_phase_end update skip "no --update-dir (L4 artifacts + L3 MATTSTACK_APPCAST_URL hook required)"
 elif [ "$(vm_phases_failed)" -gt 0 ]; then vm_phase_end update skip "earlier phase failed"
 else
-  if vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash $GUEST_BIN/trigger-update.sh '$GUEST_RUN/in/update' '$UPDV'" >"$VM_RUN_DIR/logs/update.log" 2>&1; then
+  vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash $GUEST_BIN/trigger-update.sh '$GUEST_RUN/in/update' '$UPDV'" >"$VM_RUN_DIR/logs/update.log" 2>&1
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
     vm_phase_end update pass "" $(cd "$VM_RUN_DIR" && ls screenshots/06-*.png 2>/dev/null)
-  else vm_phase_end update fail "$(grep -c 'ASSERT FAIL' "$VM_RUN_DIR/logs/update.log") assertion(s) failed (logs/update.log)" $(cd "$VM_RUN_DIR" && ls screenshots/06-*.png 2>/dev/null); fi
+  else
+    n=$(grep -c 'ASSERT FAIL' "$VM_RUN_DIR/logs/update.log")
+    if [ "$n" -gt 0 ]; then reason="$n assertion(s) failed (logs/update.log)"
+    else reason="script exited $rc (logs/update.log)"; fi
+    vm_phase_end update fail "$reason" $(cd "$VM_RUN_DIR" && ls screenshots/06-*.png 2>/dev/null)
+  fi
 fi
 
 vm_phase_begin teardown

@@ -34,5 +34,5 @@ if [ -x "$REL/make-zip.sh" ]; then
 else
   (cd "$STAGE" && ditto -c -k --sequesterRsrc --keepParent mattstack.app "$OUT/mattstack-$NEWV.zip")
 fi
-"$GEN" --ed-key-file "$KEY" --download-url-prefix "http://127.0.0.1:8765/" -o "$OUT/appcast.xml" "$OUT"
+"$GEN" --ed-key-file "$KEY" --download-url-prefix "http://127.0.0.1:$VM_APPCAST_PORT/" -o "$OUT/appcast.xml" "$OUT"
 vm_log "appcast → $OUT/appcast.xml (enclosure mattstack-$NEWV.zip, build $NEWB)"
