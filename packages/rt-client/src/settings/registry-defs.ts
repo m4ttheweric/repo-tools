@@ -1,15 +1,19 @@
 /**
- * The settings key TABLE (RT-47/RT-50): rt's rows, verbatim. A later task
- * grows this table with the rest of the suite (deck/board/gitq/mattstack/
- * claude keys) — the machinery in registry-machinery.ts that reads and
- * validates against this table does not change when rows are added.
+ * The settings key TABLE (RT-47/RT-50): rt's rows, plus the suite rows
+ * (deck/board/gitq/mattstack/claude) added in RT-50 task 9 — the machinery in
+ * registry-machinery.ts that reads and validates against this table does not
+ * change when rows are added.
+ *
+ * Suite rows omit `migrated` (see registry-machinery.ts's docblock): they
+ * carry no rt-legacy file to migrate from, so `isMigrated()` treats the
+ * absent flag as resolver-backed from day one.
  */
 
 import type { SettingDef, SettingScope } from "./registry-machinery.ts";
 
 const ALL_SCOPES: SettingScope[] = ["user", "team", "machine"];
 
-export const REGISTRY: SettingDef[] = [
+export const REGISTRY: readonly SettingDef[] = [
   // --- migrated:true (wave 1) ---------------------------------------------
   {
     key: "rt.roles",
@@ -175,5 +179,222 @@ export const REGISTRY: SettingDef[] = [
     migrated: false,
     legacyFile: "repos/<repo>/hooks.json",
     description: "User-defined lifecycle hooks rt runs around commands (pre/post command scripts).",
+  },
+
+  // --- mattstack (installer-lane) -----------------------------------------
+  {
+    key: "mattstack.integrations",
+    type: "object",
+    scopes: ["team"],
+    merge: "deep",
+    description: "Team-wide external integration config (forge/slack/linear/switchboard) the installer provisions; client secrets never live here.",
+  },
+  {
+    key: "mattstack.tracking",
+    type: "object",
+    scopes: ["team"],
+    merge: "deep",
+    description: "Team-declared repo tracking intent, identity-keyed; the daemon layers it under machine-scoped rt.repoTracking, machine winning per repo.",
+  },
+  {
+    key: "mattstack.appPath",
+    type: "string",
+    scopes: ["machine"],
+    merge: "replace",
+    description: "Absolute path to the installed mattstack.app bundle, written by the app at launch so rt stops hardcoding ~/Applications.",
+  },
+
+  // --- claude (installer-lane) --------------------------------------------
+  {
+    key: "claude.marketplaces",
+    type: "array",
+    scopes: ["user", "team"],
+    merge: "replace",
+    description: "Claude Code plugin marketplaces to replay on restore, in add order.",
+  },
+  {
+    key: "claude.plugins",
+    type: "array",
+    scopes: ["user", "team"],
+    merge: "replace",
+    description: "Claude Code plugins to replay on restore, in install order.",
+  },
+
+  // --- deck (MAT-384 settings half) ---------------------------------------
+  {
+    key: "deck.apps",
+    type: "object",
+    scopes: ["user"],
+    merge: "deep",
+    description: "Per-app deck publish state (published flag, publicFollowsOverride); password hashes and session secrets stay out of this store.",
+  },
+  {
+    key: "deck.access",
+    type: "object",
+    scopes: ["user"],
+    merge: "deep",
+    description: "deck's access-control roster, migrated from access.json.",
+  },
+  {
+    key: "deck.platform",
+    type: "object",
+    scopes: ["machine"],
+    merge: "deep",
+    description: "deck's platform-level machine config: public domain and legacy URL prefixes; Cloudflare secrets stay out of this store.",
+  },
+
+  // --- board (team) --------------------------------------------------------
+  {
+    key: "board.gitlabHost",
+    type: "string",
+    scopes: ["team"],
+    merge: "replace",
+    description: "GitLab host the board polls for MRs, shared by the whole team.",
+  },
+  {
+    key: "board.projects",
+    type: "array",
+    scopes: ["team"],
+    merge: "replace",
+    description: "GitLab projects the board tracks, shared by the whole team.",
+  },
+  {
+    key: "board.members",
+    type: "array",
+    scopes: ["team"],
+    merge: "replace",
+    description: "The board's full member roster, including hidden-by-default entries.",
+  },
+  {
+    key: "board.title",
+    type: "string",
+    scopes: ["team"],
+    merge: "replace",
+    description: "Display title shown in the board's UI.",
+  },
+  {
+    key: "board.botUsernames",
+    type: "array",
+    scopes: ["team"],
+    merge: "replace",
+    description: "GitLab usernames the board treats as bots, excluded from human MR attribution.",
+  },
+  {
+    key: "board.ticketPrefixes",
+    type: "array",
+    scopes: ["team"],
+    merge: "replace",
+    description: "Ticket key prefixes (e.g. RT, MAT) the board links out to Linear from an MR title.",
+  },
+  {
+    key: "board.slack",
+    type: "object",
+    scopes: ["team"],
+    merge: "deep",
+    description: "The board's Slack posting config (app id, client id, channel, callback port); client secrets stay out of this store.",
+  },
+  {
+    key: "board.doctorSkill",
+    type: "string",
+    scopes: ["team"],
+    merge: "replace",
+    description: "Default doctor skill for repairing a teammate's stuck MR; a repo's skills.jsonc doctor slot overrides it when present (BOARD-14).",
+  },
+  {
+    key: "board.triage.doctorSkill",
+    type: "string",
+    scopes: ["team"],
+    merge: "replace",
+    description: "Doctor skill the board's own API-tier triage sweep runs on your MRs; deliberately never resolved through a repo's skills.jsonc manifest (BOARD-14).",
+  },
+
+  // --- board (user) ----------------------------------------------------------
+  {
+    key: "board.staleAfterDays",
+    type: "number",
+    scopes: ["user"],
+    merge: "replace",
+    description: "Days of MR inactivity before the board flags it stale, for this developer.",
+  },
+  {
+    key: "board.workspaces",
+    type: "object",
+    scopes: ["user"],
+    merge: "deep",
+    description: "Herdr workspace names the board's review/respond/doctor panes launch into, per developer.",
+  },
+  {
+    key: "board.defaultMember",
+    type: "string",
+    scopes: ["user"],
+    merge: "replace",
+    description: "Which board member identity this developer's local board runs as by default.",
+  },
+  {
+    key: "board.triage",
+    type: "object",
+    scopes: ["user"],
+    merge: "deep",
+    description: "This developer's triage user-intent flags (which triage sweeps run automatically).",
+  },
+
+  // --- board (machine) ---------------------------------------------------
+  {
+    key: "board.claudeCommand",
+    type: "string",
+    scopes: ["machine"],
+    merge: "replace",
+    description: "Local command used to launch Claude Code for the board's review/respond/doctor panes.",
+  },
+  {
+    key: "board.cwds",
+    type: "object",
+    scopes: ["machine"],
+    merge: "deep",
+    description: "Local working directories the board's review/respond/doctor panes launch from.",
+  },
+  {
+    key: "board.rtRepos",
+    type: "array",
+    scopes: ["machine"],
+    merge: "replace",
+    description: "rt-registered repo names the board resolves MRs against on this machine.",
+  },
+  {
+    key: "board.triageMaxConcurrent",
+    type: "number",
+    scopes: ["machine"],
+    merge: "replace",
+    description: "Max concurrent triage panes the board launches on this machine.",
+  },
+  {
+    key: "board.switchboardUrl",
+    type: "string",
+    scopes: ["machine"],
+    merge: "replace",
+    description: "Local switchboard URL the board's POST /peer/join writer targets.",
+  },
+
+  // --- gitq ------------------------------------------------------------------
+  {
+    key: "gitq.workSlots",
+    type: "object",
+    scopes: ["machine"],
+    merge: "deep",
+    description: "gitq's local work-slot config: on-disk location and the max slot count.",
+  },
+  {
+    key: "gitq.forges",
+    type: "object",
+    scopes: ["user"],
+    merge: "deep",
+    description: "gitq's host-keyed forge config, tokenEnv names only — never a live token.",
+  },
+  {
+    key: "gitq.board",
+    type: "object",
+    scopes: ["machine"],
+    merge: "deep",
+    description: "gitq checkout-board config: tracked repos, local port, and the herdr workspace it launches into.",
   },
 ];
