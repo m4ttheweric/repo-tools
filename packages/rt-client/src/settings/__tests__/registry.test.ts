@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { allDefs, getDef, validateValue, type SettingDef } from "../registry.ts";
+import { allDefs, getDef, validateValue, type SettingDef } from "../registry-machinery.ts";
 
 describe("settings/registry", () => {
   describe("getDef", () => {

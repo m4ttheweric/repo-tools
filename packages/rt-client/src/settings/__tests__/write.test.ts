@@ -11,8 +11,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { machineSettingsPath, teamSettingsPath, teamsDir, userSettingsPath } from "../../rt-paths.ts";
-import { getDef, type SettingDef } from "../registry.ts";
+import { machineSettingsPath, teamSettingsPath, teamsDir, userSettingsPath } from "../paths.ts";
+import { getDef, type SettingDef } from "../registry-machinery.ts";
 import { setSetting } from "../write.ts";
 
 const IDENTITY = "gitlab.com/acme/acme-dev";
