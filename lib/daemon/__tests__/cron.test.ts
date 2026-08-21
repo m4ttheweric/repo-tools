@@ -66,6 +66,19 @@ describe("loadCronConfig through the settings resolver", () => {
     expect(cfg.triggers).toEqual([]);
     expect(warnings.length).toBeGreaterThan(0);
   });
+
+  test("an unexpandable ${repoRoot} in a trigger's run string degrades to no triggers instead of throwing", () => {
+    setSetting(
+      "rt.cron",
+      { triggers: [{ name: "t", event: "e", run: ["${repoRoot}/script.sh"] }] },
+      "machine",
+    );
+
+    const warnings: string[] = [];
+    expect(() => loadCronConfig({ info: () => {}, warn: (m) => warnings.push(m) })).not.toThrow();
+    expect(loadCronConfig()).toEqual({ triggers: [] });
+    expect(warnings.length).toBeGreaterThan(0);
+  });
 });
 
 describe("startCron", () => {

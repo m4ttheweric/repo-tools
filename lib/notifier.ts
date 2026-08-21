@@ -119,8 +119,16 @@ export function loadNotificationPrefs(): NotificationPrefs {
   const defaults: NotificationPrefs = {};
   for (const t of NOTIFICATION_TYPES) defaults[t.key] = true;
 
-  const stored = getSetting<NotificationPrefs | undefined>("rt.notifications").value;
-  return stored ? { ...defaults, ...stored } : defaults;
+  // A resolver throw (e.g. an unexpandable ${...} variable authored into the
+  // store by hand) must degrade to the same all-enabled default a missing or
+  // corrupt file gave today — this fires on every notify() call, so it can
+  // never be allowed to crash the daemon's transition loop.
+  try {
+    const stored = getSetting<NotificationPrefs | undefined>("rt.notifications").value;
+    return stored ? { ...defaults, ...stored } : defaults;
+  } catch {
+    return defaults;
+  }
 }
 
 export function saveNotificationPrefs(prefs: NotificationPrefs): void {

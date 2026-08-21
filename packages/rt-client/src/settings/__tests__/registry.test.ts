@@ -44,6 +44,14 @@ describe("settings/registry", () => {
       }
     });
 
+    test("every migrated:true (or suite, migrated-absent) def carries no legacyFile or siblingCommand", () => {
+      for (const def of allDefs()) {
+        if (!isMigrated(def)) continue;
+        expect(def.legacyFile, `${def.key} is migrated but still carries a legacyFile`).toBeUndefined();
+        expect(def.siblingCommand, `${def.key} is migrated but still carries a siblingCommand`).toBeUndefined();
+      }
+    });
+
     test("exactly 10 keys are migrated:true", () => {
       const migrated = allDefs().filter((d) => d.migrated);
 

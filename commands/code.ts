@@ -24,12 +24,18 @@ interface Prefs {
   workspaces: Record<string, string>;
 }
 
+/** A resolver throw (unexpandable ${...} variable) degrades to the same
+    empty prefs a missing/corrupt file gave today. */
 function loadPrefs(): Prefs {
-  const raw = getSetting<Record<string, unknown> | undefined>("rt.workspacePrefs").value;
-  return {
-    editors: (raw?.editors as Record<string, string>) || {},
-    workspaces: (raw?.workspaces as Record<string, string>) || (raw?.entries as Record<string, string>) || {},
-  };
+  try {
+    const raw = getSetting<Record<string, unknown> | undefined>("rt.workspacePrefs").value;
+    return {
+      editors: (raw?.editors as Record<string, string>) || {},
+      workspaces: (raw?.workspaces as Record<string, string>) || (raw?.entries as Record<string, string>) || {},
+    };
+  } catch {
+    return { editors: {}, workspaces: {} };
+  }
 }
 
 function savePrefs(prefs: Prefs): void {

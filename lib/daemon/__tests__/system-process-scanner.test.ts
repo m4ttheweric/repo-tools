@@ -28,6 +28,13 @@ describe("loadRunawayConfig through the settings resolver", () => {
 
     expect(loadRunawayConfig()).toEqual({ cpuThreshold: 90, sustainMs: 60_000 });
   });
+
+  test("an unexpandable ${repoRoot} in a stored value degrades to {} instead of throwing", () => {
+    setSetting("rt.runaway", { note: "${repoRoot}" }, "machine");
+
+    expect(() => loadRunawayConfig()).not.toThrow();
+    expect(loadRunawayConfig()).toEqual({});
+  });
 });
 
 describe("SystemProcessScanner", () => {
