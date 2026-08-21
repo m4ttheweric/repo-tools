@@ -1,0 +1,285 @@
+import { describe, test, expect, beforeEach } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import {
+  invocableRoster,
+  loadAttachment,
+  loadStepSource,
+  readManifestBindings,
+  readVerbRoster,
+  stripFrontmatter,
+  stripJsonc,
+  type PluginRoots,
+} from "../sources.ts";
+
+function writeFile(path: string, content: string): void {
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, content);
+}
+
+const WATCH_CI_SKILL_MD = `---
+name: watch-ci
+description: "Watch CI until it goes green"
+type: pipeline-step
+allowed-tools:
+  - "Bash(gh:*)"
+  - "Read"
+slots:
+  domain: { contract: "watch-ci-domain@1" }
+  forge: { contract: "ci-forge@1", required: true }
+---
+
+Poll the pipeline every 30s and report status.
+`;
+
+const WATCH_CI_SCRIPT = "#!/bin/sh\necho polling\n";
+
+const WATCH_CI_DOMAIN_SKILL_MD = `---
+name: watch-ci-domain
+description: "Domain rules for watch-ci"
+metadata:
+  provides: "watch-ci-domain@1"
+allowed-tools:
+  - "Read(\${CLAUDE_SKILL_DIR}/ci-config.json)"
+---
+
+Domain rules live at \${CLAUDE_SKILL_DIR}/ci-config.json for details.
+`;
+
+const CI_CONFIG_JSON = `{ "noisy": ["flaky-job"] }\n`;
+
+/**
+ * mattstack root: skills/pipeline/watch-ci/SKILL.md (+ scripts/ci-watch.sh),
+ * matching the real plugin's group/engine nesting.
+ * claimview root: attachments/watch-ci-domain/SKILL.md (+ ci-config.json), the
+ * unregistered fill; a registered copy also lives under skills/watch-ci-domain
+ * so loadAttachment can be exercised against both search roots.
+ */
+function makeFixtureRoots(): { rootDir: string; roots: PluginRoots } {
+  const rootDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-src-")));
+
+  const mattstackDir = join(rootDir, "mattstack");
+  writeFile(join(mattstackDir, "skills", "pipeline", "watch-ci", "SKILL.md"), WATCH_CI_SKILL_MD);
+  writeFile(join(mattstackDir, "skills", "pipeline", "watch-ci", "scripts", "ci-watch.sh"), WATCH_CI_SCRIPT);
+  writeFile(join(mattstackDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.2.0" }));
+
+  const untypedSkillMd = WATCH_CI_SKILL_MD.replace("type: pipeline-step\n", "");
+  writeFile(join(mattstackDir, "skills", "pipeline", "untyped-step", "SKILL.md"), untypedSkillMd);
+
+  const claimviewDir = join(rootDir, "claimview");
+  writeFile(join(claimviewDir, "attachments", "watch-ci-domain", "SKILL.md"), WATCH_CI_DOMAIN_SKILL_MD);
+  writeFile(join(claimviewDir, "attachments", "watch-ci-domain", "ci-config.json"), CI_CONFIG_JSON);
+  writeFile(join(claimviewDir, "skills", "cvi-gates", "SKILL.md"), WATCH_CI_DOMAIN_SKILL_MD.replace("watch-ci-domain", "cvi-gates"));
+  writeFile(join(claimviewDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "0.3.0" }));
+
+  const roots: PluginRoots = {
+    byName: {
+      mattstack: { dir: mattstackDir, version: "1.2.0" },
+      claimview: { dir: claimviewDir, version: "0.3.0" },
+    },
+  };
+
+  return { rootDir, roots };
+}
+
+describe("stripJsonc", () => {
+  test("removes full-line // comments but leaves inline content alone", () => {
+    const raw = [
+      "// header comment",
+      "{",
+      '  "url": "http://example.com",',
+      "  // trailing comment",
+      '  "n": 1',
+      "}",
+    ].join("\n");
+
+    const stripped = stripJsonc(raw);
+
+    expect(stripped).toBe(["{", '  "url": "http://example.com",', '  "n": 1', "}"].join("\n"));
+    expect(JSON.parse(stripped)).toEqual({ url: "http://example.com", n: 1 });
+  });
+
+  test("tolerates indented // comment lines", () => {
+    const raw = ['{', '  "a": 1,', '    // indented comment', '  "b": 2', "}"].join("\n");
+    const stripped = stripJsonc(raw);
+    expect(stripped).toBe(['{', '  "a": 1,', '  "b": 2', "}"].join("\n"));
+  });
+});
+
+describe("stripFrontmatter", () => {
+  test("round-trips body exactly and parses frontmatter", () => {
+    const body = "Line one.\nLine two.\n\nLine four after a blank.";
+    const md = `---\nname: foo\nnested:\n  x: 1\n---\n\n${body}\n`;
+
+    const result = stripFrontmatter(md);
+
+    expect(result.body).toBe(body);
+    expect(result.frontmatter).toEqual({ name: "foo", nested: { x: 1 } });
+  });
+
+  test("no frontmatter block returns the trimmed body and empty frontmatter", () => {
+    const result = stripFrontmatter("Just prose, no frontmatter.\n");
+    expect(result.body).toBe("Just prose, no frontmatter.");
+    expect(result.frontmatter).toEqual({});
+  });
+});
+
+describe("loadStepSource", () => {
+  test("finds the engine under skills/pipeline/, parses slots, lists scriptFiles", () => {
+    const { roots } = makeFixtureRoots();
+
+    const step = loadStepSource("watch-ci", roots);
+
+    expect(step.name).toBe("watch-ci");
+    expect(step.plugin).toBe("mattstack");
+    expect(step.version).toBe("1.2.0");
+    expect(step.dir.endsWith(join("skills", "pipeline", "watch-ci"))).toBe(true);
+    expect(step.body).toBe("Poll the pipeline every 30s and report status.");
+    expect(step.slots).toEqual({
+      domain: { contract: "watch-ci-domain@1" },
+      forge: { contract: "ci-forge@1", required: true },
+    });
+    expect(step.allowedTools).toEqual(["Bash(gh:*)", "Read"]);
+    expect(step.scriptFiles).toEqual(["scripts/ci-watch.sh"]);
+  });
+
+  test("throws naming the file when the engine has no type: pipeline-step", () => {
+    const { roots } = makeFixtureRoots();
+
+    expect(() => loadStepSource("untyped-step", roots)).toThrow(/untyped-step.*SKILL\.md/s);
+  });
+
+  test("throws listing searched paths when the engine is absent entirely", () => {
+    const { roots } = makeFixtureRoots();
+
+    expect(() => loadStepSource("no-such-engine", roots)).toThrow(/no-such-engine/);
+  });
+});
+
+describe("loadAttachment", () => {
+  test("finds a registered skill under skills/", () => {
+    const { roots } = makeFixtureRoots();
+
+    const fill = loadAttachment("claimview:cvi-gates", "domain", roots);
+
+    expect(fill.registered).toBe(true);
+    expect(fill.binding).toBe("claimview:cvi-gates");
+    expect(fill.plugin).toBe("claimview");
+    expect(fill.version).toBe("0.3.0");
+    expect(fill.provides).toBe("watch-ci-domain@1");
+    expect(fill.dir.endsWith(join("skills", "cvi-gates"))).toBe(true);
+  });
+
+  test("finds an unregistered skill under attachments/", () => {
+    const { roots } = makeFixtureRoots();
+
+    const fill = loadAttachment("claimview:watch-ci-domain", "domain", roots);
+
+    expect(fill.registered).toBe(false);
+    expect(fill.binding).toBe("claimview:watch-ci-domain");
+    expect(fill.provides).toBe("watch-ci-domain@1");
+    expect(fill.body).toBe("Domain rules live at ${CLAUDE_SKILL_DIR}/ci-config.json for details.");
+    expect(fill.allowedTools).toEqual(["Read(${CLAUDE_SKILL_DIR}/ci-config.json)"]);
+    expect(fill.dir.endsWith(join("attachments", "watch-ci-domain"))).toBe(true);
+  });
+
+  test("extraFiles excludes SKILL.md and includes nested files", () => {
+    const { rootDir, roots } = makeFixtureRoots();
+    writeFile(
+      join(rootDir, "claimview", "attachments", "watch-ci-domain", "nested", "extra.txt"),
+      "extra\n",
+    );
+
+    const fill = loadAttachment("claimview:watch-ci-domain", "domain", roots);
+
+    expect(fill.extraFiles.sort()).toEqual(["ci-config.json", "nested/extra.txt"]);
+  });
+
+  test("throws naming the slot and binding when neither search root has the skill", () => {
+    const { roots } = makeFixtureRoots();
+
+    expect(() => loadAttachment("claimview:no-such-skill", "domain", roots)).toThrow(
+      /domain.*claimview:no-such-skill/s,
+    );
+  });
+});
+
+describe("readVerbRoster", () => {
+  test("parses the real stubs.jsonc shape (comment-bearing JSONC)", () => {
+    const rootDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-pack-")));
+    const stubsJsonc = `// Verb stubs for this pack. generate-stubs.sh renders skills/<verb>/SKILL.md
+// from these; regenerate after edits, never hand-edit generated files.
+{
+  "verbs": {
+    "watch-ci": {
+      "engine": "watch-ci",
+      "description": "Use when watching or triaging CI."
+    },
+    "ship": {
+      "engine": "ship",
+      // inline verb comment
+      "description": "Use when ready to ship."
+    }
+  }
+}
+`;
+    writeFile(join(rootDir, "pack", "stubs.jsonc"), stubsJsonc);
+
+    const roster = readVerbRoster(rootDir);
+
+    expect(roster).toEqual([
+      { name: "watch-ci", engine: "watch-ci", description: "Use when watching or triaging CI." },
+      { name: "ship", engine: "ship", description: "Use when ready to ship." },
+    ]);
+  });
+});
+
+describe("readManifestBindings", () => {
+  test("parses a fixture copied from the real manifest's bindings shape", () => {
+    const rootDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-manifest-")));
+    const manifestJsonc = `// GENERATED by merge-manifests.sh -- do not hand-edit for keeps;
+// the next pack install or merge run rewrites this file.
+{
+  "version": 1,
+  "skills": { "enabled": ["mattstack:watch-ci"] },
+  "bindings": {
+    "mattstack:watch-ci": {
+      "domain": "claimview:watch-ci-domain",
+      "forge": "mattstack:ci-forge-gitlab"
+    },
+    "mattstack:work": {
+      "tiering": "mattstack:model-tiering"
+    }
+  }
+}
+`;
+    const manifestPath = join(rootDir, "skills.jsonc");
+    writeFile(manifestPath, manifestJsonc);
+
+    const bindings = readManifestBindings(manifestPath);
+
+    expect(bindings).toEqual({
+      "mattstack:watch-ci": {
+        domain: "claimview:watch-ci-domain",
+        forge: "mattstack:ci-forge-gitlab",
+      },
+      "mattstack:work": {
+        tiering: "mattstack:model-tiering",
+      },
+    });
+  });
+});
+
+describe("invocableRoster", () => {
+  test("lists plugin:skillDirName for one- and two-level skills/ entries", () => {
+    const { roots } = makeFixtureRoots();
+
+    const roster = invocableRoster(roots);
+
+    expect(roster.has("mattstack:watch-ci")).toBe(true);
+    expect(roster.has("mattstack:untyped-step")).toBe(true);
+    expect(roster.has("claimview:cvi-gates")).toBe(true);
+    expect(roster.has("claimview:watch-ci-domain")).toBe(false);
+  });
+});
