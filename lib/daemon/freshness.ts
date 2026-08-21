@@ -268,7 +268,7 @@ export async function getRepoContext(
     }
     const secrets = await loadSecrets();
     if (!secrets.gitlabToken) {
-      throw new Error("missing gitlabToken in ~/.mattstack/rt/secrets.json (run rt secret set gitlabToken <pat>)");
+      throw new Error("missing gitlabToken (run: rt secrets set rt gitlabToken)");
     }
     const remoteUrl = getRemoteUrl(repoPath);
     if (!remoteUrl) {

@@ -1,12 +1,11 @@
-import { describe, test, expect, afterEach, beforeEach, spyOn } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { describe, test, expect, afterEach, beforeEach } from "bun:test";
+import { mkdtempSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
   pickStartedState, fetchMyTodoTickets, searchTickets,
   loadSecrets, saveSecret, saveTeamConfig, getTeamConfig,
 } from "../linear.ts";
-import { rtDir } from "../rt-paths.ts";
 import { secretsFilePath, resetSecretsMemo, type SecretsExecResult, type SecretsExecSeam, type SecretsSeams } from "../secrets/store.ts";
 import type { AgeExecResult, AgeKeySeam } from "../home/age-key.ts";
 
@@ -101,7 +100,7 @@ function fakeSecretsSeams(seedDomains: Record<string, Record<string, string>> = 
   return { ageKeySeam: fakeAgeKeySeam(), execSeam };
 }
 
-describe("loadSecrets / saveSecret / saveTeamConfig / getTeamConfig — encrypted store + plaintext fallback", () => {
+describe("loadSecrets / saveSecret / saveTeamConfig / getTeamConfig — encrypted store", () => {
   const origHome = process.env.HOME;
   let home: string;
 
@@ -116,39 +115,16 @@ describe("loadSecrets / saveSecret / saveTeamConfig / getTeamConfig — encrypte
     rmSync(home, { recursive: true, force: true });
   });
 
-  function writePlaintext(secrets: Record<string, string>): void {
-    mkdirSync(rtDir(), { recursive: true });
-    writeFileSync(join(rtDir(), "secrets.json"), JSON.stringify(secrets, null, 2));
-  }
-
-  test("encrypted store value wins over plaintext when both are present", async () => {
-    writePlaintext({ linearApiKey: "plaintext-key", gitlabToken: "plaintext-gitlab" });
-    const seams = fakeSecretsSeams({ rt: { linearApiKey: "encrypted-key" } });
-
-    const secrets = await loadSecrets(seams);
-
-    expect(secrets.linearApiKey).toBe("encrypted-key");
-    expect(secrets.gitlabToken).toBe("plaintext-gitlab"); // not yet in the encrypted store
-  });
-
-  test("falls back to plaintext entirely when the encrypted domain doesn't exist yet (transition state)", async () => {
-    writePlaintext({ linearApiKey: "plaintext-key" });
-    const seams = fakeSecretsSeams(); // no "rt" domain seeded -> file doesn't exist
-
-    expect((await loadSecrets(seams)).linearApiKey).toBe("plaintext-key");
-  });
-
-  test("returns {} when neither store has anything", async () => {
+  test("returns {} when the store has nothing", async () => {
     expect(await loadSecrets(fakeSecretsSeams())).toEqual({});
   });
 
-  test("saveSecret writes to the encrypted store and never touches the plaintext file", async () => {
+  test("saveSecret writes to the encrypted store", async () => {
     const seams = fakeSecretsSeams();
 
     await saveSecret("linearApiKey", "new-key", seams);
 
     expect((await loadSecrets(seams)).linearApiKey).toBe("new-key");
-    expect(existsSync(join(rtDir(), "secrets.json"))).toBe(false);
   });
 
   test("saveTeamConfig writes both linearTeamId and linearTeamKey to the encrypted store", async () => {
@@ -186,25 +162,7 @@ describe("loadSecrets / saveSecret / saveTeamConfig / getTeamConfig — encrypte
     };
   }
 
-  test("an encrypted-store read failure logs what happened and falls back to plaintext WHEN the plaintext file still exists", async () => {
-    writePlaintext({ gitlabToken: "plaintext-gitlab" });
-    const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeam(), execSeam: brokenExecSeam() };
-    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
-
-    try {
-      const secrets = await loadSecrets(seams);
-      expect(secrets.gitlabToken).toBe("plaintext-gitlab");
-      expect(errorSpy).toHaveBeenCalledTimes(1);
-      const logged = errorSpy.mock.calls[0]!.join(" ");
-      expect(logged).toContain("encrypted store unreadable");
-      expect(logged).toContain("using plaintext secrets.json");
-    } finally {
-      errorSpy.mockRestore();
-    }
-  });
-
-  test("an encrypted-store read failure THROWS when the plaintext file is absent — never silently returns {}", async () => {
-    // No writePlaintext() call: the transition-only fallback file doesn't exist.
+  test("an encrypted-store read failure propagates — never silently returns {}", async () => {
     const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeam(), execSeam: brokenExecSeam() };
 
     await expect(loadSecrets(seams)).rejects.toThrow(/decryption failed/);

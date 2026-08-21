@@ -8,14 +8,11 @@
  *  4. Cache results in memory (5-minute TTL)
  *
  * Secrets: the sops-backed store (lib/secrets/store.ts, domain "rt") is the
- * source of truth; ~/.mattstack/rt/secrets.json is a transition-only fallback
- * (RT-32) read through readPlaintextSecretsFallback — the one function to
- * delete once the live import (a later lane) retires the plaintext file.
+ * only source. loadSecrets propagates a decrypt failure rather than
+ * degrading to any other source — callers must not treat a thrown error
+ * from it as "no secrets configured."
  */
 
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
-import { rtDir } from "./rt-paths.ts";
 import { readSecret, writeSecret, createRealSecretsExecSeam, type SecretsSeams } from "./secrets/store.ts";
 import { createRealAgeKeySeam } from "./home/age-key.ts";
 
@@ -45,25 +42,6 @@ function defaultSecretsSeams(): SecretsSeams {
     ageKeySeam: createRealAgeKeySeam(),
     execSeam: createRealSecretsExecSeam(),
   };
-}
-
-function plaintextSecretsPath(): string {
-  return join(rtDir(), "secrets.json");
-}
-
-/**
- * RT-32 transition fallback: the plaintext file still holds the real values
- * until the live import runs, and stays readable afterward only because
- * nothing has deleted it yet. Delete this function (and its two call sites
- * in loadSecrets) when that import retires ~/.mattstack/rt/secrets.json — no
- * other code path should ever read this file directly.
- */
-function readPlaintextSecretsFallback(): Secrets {
-  try {
-    return JSON.parse(readFileSync(plaintextSecretsPath(), "utf8"));
-  } catch {
-    return {};
-  }
 }
 
 interface EncryptedRtSecretsResult {
@@ -96,30 +74,18 @@ async function readEncryptedRtSecrets(seams: SecretsSeams): Promise<EncryptedRtS
 }
 
 /**
- * Encrypted store wins per-key when present. On a clean read, the plaintext
- * file (transition only — see readPlaintextSecretsFallback) fills whatever
- * the encrypted store doesn't have yet.
- *
- * On a FAILED encrypted read (the store's own fail-closed contract —
- * NoAgeKeyError, keychain-unreachable, corrupt ciphertext), this only
- * degrades to the plaintext file when that file actually still exists: an
- * absent file means there is nothing to fail open TO, so returning `{}`
- * here would silently hide a real error behind "no secrets configured."
- * Propagate the store's error instead — that's the fail-closed behavior the
- * store itself refused to give up.
+ * A FAILED encrypted read (the store's own fail-closed contract —
+ * NoAgeKeyError, keychain-unreachable, corrupt ciphertext) propagates
+ * rather than resolving to `{}`: every direct caller either wraps this in
+ * its own try/catch or runs under a seam that already logs a thrown
+ * rejection (CLI dispatch, daemon handleCommand), so swallowing it here
+ * would only turn a broken store into indistinguishable-from-unconfigured
+ * secrets.
  */
 export async function loadSecrets(seams: SecretsSeams = defaultSecretsSeams()): Promise<Secrets> {
-  const { values: encrypted, failure } = await readEncryptedRtSecrets(seams);
-  if (!failure) {
-    return { ...readPlaintextSecretsFallback(), ...encrypted };
-  }
-
-  if (!existsSync(plaintextSecretsPath())) {
-    throw failure;
-  }
-
-  console.error(`[secrets] encrypted store unreadable (${failure.message}); using plaintext secrets.json`);
-  return { ...readPlaintextSecretsFallback(), ...encrypted };
+  const { values, failure } = await readEncryptedRtSecrets(seams);
+  if (failure) throw failure;
+  return values;
 }
 
 export async function saveSecret(
