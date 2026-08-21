@@ -478,3 +478,32 @@ describe("grouped packs and pack selection", () => {
     expect(errors.join("\n")).toContain("--pack");
   });
 });
+
+describe("registered roots and name uniqueness", () => {
+  test("plugin.json skills roots are honored: a skill under a second root counts as registered", async () => {
+    const packDir = makePackDir();
+    writeFile(join(packDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.0.0", skills: ["./skills/review", "./plugin/skills"] }));
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": ["editing-skills", "subagent-review-loop"] }\n`);
+    writeFile(join(packDir, "skills", "review", "subagent-review-loop", "SKILL.md"), "---\nname: subagent-review-loop\n---\nbody\n");
+    writeFile(join(packDir, "plugin", "skills", "editing-skills", "SKILL.md"), "---\nname: editing-skills\n---\nbody\n");
+
+    await skillsSurface(["list", "--pack", "mattstack", "--pack-dir", packDir]);
+
+    const joined = logs.join("\n");
+    expect(joined).toMatch(/public {3}hand-authored {2}editing-skills/);
+    expect(joined).not.toContain("(no files on disk)editing-skills");
+  });
+
+  test("duplicate leaf names across groups are rejected with a clean error naming both dirs", async () => {
+    const packDir = makePackDir();
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": [] }\n`);
+    writeFile(join(packDir, "attachments", "forge", "sync", "SKILL.md"), "---\nname: sync\n---\nbody\n");
+    writeFile(join(packDir, "attachments", "pipeline", "sync", "SKILL.md"), "---\nname: sync\n---\nbody\n");
+
+    const { exitCode, errors } = await runExpectingCleanExit(() => skillsSurface(["list", "--pack", "mattstack", "--pack-dir", packDir]));
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain('skill name "sync" appears twice');
+    expect(errors.join("\n")).toContain("forge/sync");
+    expect(errors.join("\n")).toContain("pipeline/sync");
+  });
+});
