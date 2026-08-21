@@ -33,7 +33,7 @@ let permissionsChecks: [Check] = [
         c.expectEqual(SystemSettingsLinks.loginItems.absoluteString, "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")
         c.expectEqual(SystemSettingsLinks.keyboard.absoluteString, "x-apple.systempreferences:com.apple.Keyboard-Settings.extension?Shortcuts")
     },
-    Check("TCCReset builds tccutil reset All <bundle id>") { c in
+    Check("TCCReset builds the reset arguments for a bundle id") { c in
         let (exe, args) = TCCReset.arguments(bundleId: "com.mattstack.app.dev")
         c.expect(exe.hasPrefix("/usr/bin/") && exe.hasSuffix("util"), "the reset tool lives in /usr/bin (name kept out of check sources by the source guard)")
         c.expectEqual(args, ["reset", "All", "com.mattstack.app.dev"])

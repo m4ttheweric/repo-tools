@@ -60,7 +60,14 @@ final class PermissionsService: PermissionProbing, PermissionsProviding, @unchec
     func resetAndReRequest() async -> Bool {
         let (exe, args) = TCCReset.arguments(bundleId: bundleId)
         let out = await runner.run(exe, args)
-        if !out.ok { TrayLog.warn("tccutil reset failed", ["stderr": out.stderr]) }
+        if !out.ok {
+            TrayLog.warn("tccutil reset failed", ["stderr": out.stderr])
+        } else {
+            // the reset revokes FDA immediately but macOS only re-applies a
+            // fresh grant at the app's next launch — the relaunch hint is
+            // the only way the row can become accurate again.
+            fdaNeedsRelaunch = true
+        }
         _ = await request("notifications")
         return out.ok
     }
