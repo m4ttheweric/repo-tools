@@ -32,7 +32,7 @@
     <string>@@DAEMON_LABEL@@</string>
     <!-- MSDevBuild is added by build.sh via PlistBuddy (a real bool, not a
          sed token) so it can't be stringified by accident. Gates
-         UpdateChecker and the dev menu-bar mark. -->
+         UpdaterController and the dev menu-bar mark. -->
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

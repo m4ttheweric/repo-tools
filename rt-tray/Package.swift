@@ -30,7 +30,8 @@ let package = Package(
                 .linkedFramework("ServiceManagement"),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker",
-                              "@executable_path/../../artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64"]),
+                              "@executable_path/../../artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64"],
+                              .when(configuration: .debug)),
             ]
         ),
         .executableTarget(

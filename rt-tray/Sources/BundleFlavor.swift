@@ -13,7 +13,7 @@ import Foundation
 ///                   both the agent plist name and every launchctl label
 ///                   from it.
 ///   MSDevBuild    — true only in the dev bundle. Gates the menu-bar `dev`
-///                   mark and silences UpdateChecker.
+///                   mark and silences UpdaterController.
 enum BundleFlavor {
 
     /// Fallback when MSDaemonLabel is absent (an unbundled `swift run` build,
