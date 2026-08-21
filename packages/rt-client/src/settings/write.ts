@@ -1,7 +1,7 @@
 /**
  * The settings write path (RT-47): `setSetting` — a single, comment-preserving
- * write into one of the three AUTHORED stores (user/team/machine; `legacy` and
- * `default` are read-only rungs and never appear here).
+ * write into one of the three AUTHORED stores (user/team/machine; `default`
+ * is a read-only rung and never appears here).
  *
  * Writes go through jsonc-parser's `modify`/`applyEdits` rather than
  * parse-mutate-stringify, so existing comments and formatting in the store

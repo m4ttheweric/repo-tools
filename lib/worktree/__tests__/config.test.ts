@@ -180,6 +180,25 @@ describe("worktree config", () => {
       const cfg = await loadWorktreeRepoConfig("assured-dev", repoPath);
       expect(cfg.namePool).toEqual(["luna"]);
     });
+
+    test("a repo with no derivable identity honestly degrades to pure defaults", async () => {
+      // Not a git repo at all: deriveRepoIdentity resolves null, so the
+      // store's repo section — declared for a DIFFERENT identity here to
+      // prove it can never leak in — is simply unreachable. No legacy
+      // fallback exists anymore; defaults are the honest answer.
+      const repoPath = tmpRepoPath("rtcfg-noident-");
+      writeStore(teamSettingsPath("claimview"), {
+        repos: { [IDENTITY]: { "rt.worktrees": { onDeck: 9 } } },
+      });
+
+      const cfg = await loadWorktreeRepoConfig("assured-dev", repoPath);
+      expect(cfg).toEqual({
+        onDeck: 0,
+        root: join(repoPath, ".worktrees"),
+        branchFormat: "<ticket>-<slug>",
+        ready: [],
+      });
+    });
   });
 
   describe("worktreeSettingsDeclared", () => {
@@ -205,6 +224,14 @@ describe("worktree config", () => {
         repos: { [IDENTITY]: { "rt.worktrees": {} } },
       });
       expect(await worktreeSettingsDeclared("store-only", repoPath)).toBe(true);
+    });
+
+    test("a repo section with other keys but no worktrees block -> false", async () => {
+      const repoPath = tmpRepoWithRemote("rtcfg-act-other-", REMOTE);
+      writeStore(teamSettingsPath("claimview"), {
+        repos: { [IDENTITY]: { "rt.roles": { web: { pool: [3000] } } } },
+      });
+      expect(await worktreeSettingsDeclared("store-only", repoPath)).toBe(false);
     });
   });
 

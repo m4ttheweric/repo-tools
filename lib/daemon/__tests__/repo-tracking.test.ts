@@ -8,8 +8,9 @@ import { setSetting } from "../../settings/write.ts";
 import { runCapture } from "../../subprocess.ts";
 import { clearIdentityMemo } from "../../settings/identity.ts";
 import {
-  loadRepoTracking, loadMachineRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS,
-  primeTeamTrackingIdentityMap, teamNamesIdentity,
+  loadRepoTracking, loadMachineRepoTracking, loadMachineRepoTrackingRaw, grants, saveRepoTracking,
+  saveRepoTrackingRaw, parseCachesArg, CACHE_KINDS, primeTeamTrackingIdentityMap, teamNamesIdentity,
+  type CacheKind,
 } from "../../repo-tracking.ts";
 
 function writeStore(file: string, obj: unknown): void {
@@ -346,6 +347,71 @@ describe("loadMachineRepoTracking — the machine-only read (no team merge)", ()
 
     const saved = getSetting<Record<string, unknown>>("rt.repoTracking").value;
     expect(saved).toEqual({});
+  });
+});
+
+describe("loadMachineRepoTrackingRaw / saveRepoTrackingRaw — off-marker durability", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-tracking-rawoff-")));
+    process.env.HOME = home;
+    seedTeam();
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  /** manageTracking's actual read-modify-write algorithm, minus the CLI/daemonQuery plumbing. */
+  function trackOff(repo: string, identity: string | null): void {
+    const raw = loadMachineRepoTrackingRaw();
+    delete raw[repo];
+    if (identity && teamNamesIdentity(identity)) raw[repo] = { mode: "off" };
+    saveRepoTrackingRaw(raw);
+  }
+
+  function trackLive(repo: string, caches: CacheKind[] = ["branches"]): void {
+    const raw = loadMachineRepoTrackingRaw();
+    raw[repo] = { mode: "live", caches };
+    saveRepoTrackingRaw(raw);
+  }
+
+  test("A's off-marker survives an unrelated B write, is replaced when A is turned live again, and a non-team A still deletes plainly", () => {
+    setSetting("rt.repoTracking", { a: { mode: "live", caches: ["branches"] } }, "machine");
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/a": { caches: ["branches"] } },
+    }, "team", { team: "acme" });
+
+    // track A off — team-named, so A gets an explicit marker.
+    trackOff("a", "gitlab.com/acme/a");
+    expect(getSetting<Record<string, unknown>>("rt.repoTracking").value.a).toEqual({ mode: "off" });
+
+    // track B live — an UNRELATED write. Before the fix this read-modify-write
+    // started from the normalized view, which drops A's marker entirely.
+    trackLive("b");
+    const afterB = getSetting<Record<string, unknown>>("rt.repoTracking").value;
+    expect(afterB.a).toEqual({ mode: "off" }); // A's marker must still be there
+    expect(afterB.b).toEqual({ mode: "live", caches: ["branches"] });
+
+    // The merge must still show A as off, not resurrected by team intent.
+    const merged = loadRepoTracking({ identityMap: { "gitlab.com/acme/a": "a" } });
+    expect(grants(merged, "a").mode).toBe("off");
+
+    // track A live again — the marker is replaced by a real grant.
+    trackLive("a", ["project-mrs"]);
+    const afterALive = getSetting<Record<string, unknown>>("rt.repoTracking").value;
+    expect(afterALive.a).toEqual({ mode: "live", caches: ["project-mrs"] });
+    expect(afterALive.b).toEqual({ mode: "live", caches: ["branches"] }); // B untouched
+
+    // track A off once more, but the team no longer names it — plain delete.
+    setSetting("mattstack.tracking", { repos: {} }, "team", { team: "acme" });
+    trackOff("a", "gitlab.com/acme/a");
+    const afterFinal = getSetting<Record<string, unknown>>("rt.repoTracking").value;
+    expect(afterFinal.a).toBeUndefined();
+    expect(afterFinal.b).toEqual({ mode: "live", caches: ["branches"] }); // B still untouched
   });
 });
 

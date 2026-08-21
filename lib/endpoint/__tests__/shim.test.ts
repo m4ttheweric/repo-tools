@@ -145,6 +145,19 @@ test("loadInterceptRules degrades to [] on a missing or malformed file", () => {
 // ─── buildInterceptRules ─────────────────────────────────────────────────────
 
 describe("buildInterceptRules", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-shim-build-")));
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
   test("flattens repo index x per-repo intercepts, skips repos with none or no derivable identity, captures repoRemote", async () => {
     const repoWithRemote = makeGitRepo("git@x:assured/assured-dev.git");
     const repoEmptyRemote = makeGitRepo("git@x:assured/empty-repo.git");
@@ -165,33 +178,17 @@ describe("buildInterceptRules", () => {
   });
 
   test("a repo whose intercepts live in a settings store still gets a rule (remote captured before the resolver is consulted)", async () => {
-    const home = realpathSync(mkdtempSync(join(tmpdir(), "rt-shim-store-")));
-    const origHome = process.env.HOME;
-    process.env.HOME = home;
-    try {
-      const repoPath = makeGitRepo("git@gitlab.com:fake/store-repo.git");
-      writeRepoIndex({ "r-store": repoPath });
-      const store = teamSettingsPath("claimview");
-      mkdirSync(dirname(store), { recursive: true });
-      writeFileSync(store, JSON.stringify({
-        repos: {
-          "gitlab.com/fake/store-repo": {
-            "rt.intercepts": [{ command: "storecmd", matches: [{ cwdGlob: ".", role: "web" }] }],
-          },
-        },
-      }));
+    const repoPath = makeGitRepo("git@gitlab.com:fake/store-repo.git");
+    writeRepoIndex({ "r-store": repoPath });
+    writeRepoIntercepts("gitlab.com/fake/store-repo", [{ command: "storecmd", matches: [{ cwdGlob: ".", role: "web" }] }]);
 
-      const built = await buildInterceptRules();
-      expect(built).toEqual([{
-        command: "storecmd",
-        repo: "r-store",
-        repoRemote: "git@gitlab.com:fake/store-repo.git",
-        matches: [{ cwdGlob: ".", role: "web" }],
-      }]);
-    } finally {
-      process.env.HOME = origHome;
-      rmSync(home, { recursive: true, force: true });
-    }
+    const built = await buildInterceptRules();
+    expect(built).toEqual([{
+      command: "storecmd",
+      repo: "r-store",
+      repoRemote: "git@gitlab.com:fake/store-repo.git",
+      matches: [{ cwdGlob: ".", role: "web" }],
+    }]);
   });
 
   test("multiple intercept entries in one repo produce one rule each", async () => {
@@ -209,6 +206,19 @@ describe("buildInterceptRules", () => {
 // ─── installShims / uninstallShims / shimReport ──────────────────────────────
 
 describe("installShims / uninstallShims / shimReport", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-shim-install-")));
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
   test("installs a shim per distinct command, classifies installed vs current, uninstall removes only marker files", async () => {
     const repoPath = makeGitRepo("git@x:assured/r-install.git");
     writeRepoIntercepts("x/assured/r-install", [{ command: "fakecmd-a", matches: [{ cwdGlob: ".", role: "x" }] }]);

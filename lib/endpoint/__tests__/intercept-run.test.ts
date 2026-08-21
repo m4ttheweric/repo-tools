@@ -1,11 +1,11 @@
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { teamSettingsPath } from "../../rt-paths.ts";
 import { runInterception } from "../run.ts";
 
-/** Merges `identity`'s roles into the shared team store rather than clobbering earlier entries — every test in this file shares one preload HOME. */
+/** Merges `identity`'s roles into the shared team store rather than clobbering earlier entries — every test in this describe shares one per-test HOME. */
 function writeRepoRoles(identity: string, roles: unknown): void {
   const path = teamSettingsPath("claimview");
   mkdirSync(join(path, ".."), { recursive: true });
@@ -19,15 +19,6 @@ function writeRepoRoles(identity: string, roles: unknown): void {
 
 const R1_IDENTITY = "x/test/r1";
 const R1_REMOTE = "git@x:test/r1.git";
-
-// Role "web" for repo "r1" — reached via `loadEndpointConfig`
-// (lib/endpoint/config.ts) inside runInterception's env step, keyed by the
-// identity `identityFromRemote` derives from the rule's own `repoRemote`.
-// env renders ${port}; preserveEnv protects the caller's KEEP_* vars (both
-// feed argInject's ${envKeys}).
-writeRepoRoles(R1_IDENTITY, {
-  web: { env: { PORT: "${port}" }, preserveEnv: ["KEEP_*"] },
-});
 
 function harness(over: Partial<Parameters<typeof runInterception>[0]> = {}) {
   const calls: { exec?: { bin: string; args: string[]; env: Record<string, string> }; warned: string[] } = { warned: [] };
@@ -49,6 +40,27 @@ const run = (deps: any, args: string[], env: Record<string, string | undefined> 
   runInterception(deps, "fakecmd", args, "/wt/a", { PATH: "/usr/bin", ...env }, 42).catch((e) => { if (e.message !== "EXEC") throw e; });
 
 describe("runInterception", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-intercept-run-")));
+    process.env.HOME = home;
+    // Role "web" for repo "r1" — reached via `loadEndpointConfig`
+    // (lib/endpoint/config.ts) inside runInterception's env step, keyed by
+    // the identity `identityFromRemote` derives from the rule's own
+    // `repoRemote`. env renders ${port}; preserveEnv protects the caller's
+    // KEEP_* vars (both feed argInject's ${envKeys}).
+    writeRepoRoles(R1_IDENTITY, {
+      web: { env: { PORT: "${port}" }, preserveEnv: ["KEEP_*"] },
+    });
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
   test("match → claim → env rendered, preserveEnv expanded into argInject, exec real", async () => {
     const { deps, calls } = harness();
     await run(deps, ["run", "serve"], { KEEP_ME: "1" });
