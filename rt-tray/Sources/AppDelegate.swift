@@ -145,23 +145,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
                                                 runner: SystemCommandRunner())
         servicesRegistrar = ServicesRegistrar(bundlePath: Bundle.main.bundlePath, runner: SystemCommandRunner())
         let privileged = PrivilegedInstaller(bundlePath: Bundle.main.bundlePath, escalator: AuthorizationServicesEscalator())
-        // Stub mode routes every mutating "register services" / "install
-        // proxy" need to no-op providers -- servicesRegistrar/privileged
-        // above stay real only for read-only status display (smStatuses(),
-        // TrayRoutes' GET /services), never for a register/restart/escalate.
+        // Stub mode never lets a real provider reach a mutating/probing call.
         #if DEBUG
         let servicesForNeeds: ServicesProviding = BundleFlavor.isStubActive ? StubServicesProvider() : servicesRegistrar
         let privilegedForNeeds: PrivilegedInstalling = BundleFlavor.isStubActive ? StubPrivilegedInstaller() : privileged
+        let permissionProbe: PermissionProbing? = BundleFlavor.isStubActive ? StubPermissionProbe() : nil
         #else
         let servicesForNeeds: ServicesProviding = servicesRegistrar
         let privilegedForNeeds: PrivilegedInstalling = privileged
+        let permissionProbe: PermissionProbing? = nil
         #endif
         needBroker = NeedBroker(services: servicesForNeeds, privileged: privilegedForNeeds)
         TrayServer.shared.routes = TrayRoutes(permissions: permissionsService, services: servicesForNeeds, privileged: privilegedForNeeds,
                                               needs: needBroker, updater: updater, version: self)
         rtClient = RtClientFactory.make()
         if let rt = rtClient {
-            coordinator = SetupCoordinator(rt: rt, permissions: permissionsService, needs: needBroker, updater: updater)
+            coordinator = SetupCoordinator(rt: rt, permissions: permissionsService, permissionProbe: permissionProbe, needs: needBroker, updater: updater)
             if let code = pendingJoinCode {
                 pendingJoinCode = nil
                 coordinator?.handleJoin(code: code)

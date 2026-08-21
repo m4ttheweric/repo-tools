@@ -32,13 +32,17 @@ enum BundleFlavor {
         Bundle.main.object(forInfoDictionaryKey: "MSDevBuild") as? Bool ?? false
     }
 
-    /// True only in a DEBUG build launched with `RT_STUB_SCENARIO` set (the
-    /// XCUITest / manual-QA harness). Same detection `RtBinaryLocator` uses
-    /// to pick the stub `rt` — kept here too so callers that never touch rt
-    /// resolution (login-item and service registration) can gate on it.
+    /// True only in a DEBUG build launched with both `RT_STUB_SCENARIO` and
+    /// `RT_STUB_PATH` set (the XCUITest / manual-QA harness) — the same pair
+    /// `RtBinaryLocator` requires before it'll pick the stub `rt`. Requiring
+    /// both here too, kept here so callers that never touch rt resolution
+    /// (login-item and service registration) can gate on it, means a DEBUG
+    /// run with only the scenario set can't end up talking to the real `rt`
+    /// while still getting no-op providers.
     static var isStubActive: Bool {
         #if DEBUG
-        return !(ProcessInfo.processInfo.environment["RT_STUB_SCENARIO"] ?? "").isEmpty
+        let env = ProcessInfo.processInfo.environment
+        return !(env["RT_STUB_SCENARIO"] ?? "").isEmpty && !(env["RT_STUB_PATH"] ?? "").isEmpty
         #else
         return false
         #endif

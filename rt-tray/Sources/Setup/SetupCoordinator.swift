@@ -34,12 +34,19 @@ final class SetupCoordinator {
     /// time the user actually asks to join a team from Settings.
     private var pendingTeamJoinCode: String?
 
-    init(rt: RtRunning, permissions: PermissionsService, needs: NeedBroker, updater: UpdaterController) {
+    /// `permissionProbe` feeds only the two `ReadinessModel`s; every other use
+    /// of `permissions` (row actions, Settings, TrayRoutes) keeps the real
+    /// `PermissionsService` even under stub mode. Defaults to `permissions`
+    /// itself (it already conforms to `PermissionProbing`) so a normal launch
+    /// is unaffected.
+    init(rt: RtRunning, permissions: PermissionsService, permissionProbe: PermissionProbing? = nil,
+        needs: NeedBroker, updater: UpdaterController) {
         self.rt = rt; self.permissions = permissions; self.needs = needs; self.updater = updater
+        let probe = permissionProbe ?? permissions
         readiness = ReadinessModel(plans: RtPlanSource(rt: rt, verb: ["setup", "plan", "--json"]),
-                                   permissions: permissions, ticker: MainTicker())
+                                   permissions: probe, ticker: MainTicker())
         statusReadiness = ReadinessModel(plans: RtPlanSource(rt: rt, verb: ["setup", "status", "--json"]),
-                                         permissions: permissions, ticker: MainTicker())
+                                         permissions: probe, ticker: MainTicker())
         install = InstallRunModel(stream: { from in
             var args = ["setup", "apply"]
             if let from { args += ["--from", from] }

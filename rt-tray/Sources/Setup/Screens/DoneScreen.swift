@@ -24,7 +24,7 @@ struct DoneScreen: View {
             }
             .formStyle(.grouped).scrollDisabled(true)
             HStack {
-                Button("Open the board") { NSWorkspace.shared.open(URL(string: "https://board.mattstack")!) }.accessibilityIdentifier(AXID.doneOpenBoard)
+                Button("Open the board", action: openBoard).accessibilityIdentifier(AXID.doneOpenBoard)
                 if isOwner { Button("Invite teammates…", action: onInvite).accessibilityIdentifier(AXID.doneInvite) }
                 Spacer()
             }
@@ -38,5 +38,15 @@ struct DoneScreen: View {
         let verify = install.steps.first { $0.id == "verify" }
         let n = install.steps.filter { $0.state == .done }.count
         return verify?.detail.map { "\($0) · \(n) steps done" } ?? "\(n) steps done"
+    }
+
+    /// Stub mode never opens a real browser tab -- there's no real board to
+    /// show, and a UI test driving this button shouldn't launch one.
+    private func openBoard() {
+        guard !BundleFlavor.isStubActive else {
+            TrayLog.info("open board skipped (stub mode)")
+            return
+        }
+        NSWorkspace.shared.open(URL(string: "https://board.mattstack")!)
     }
 }

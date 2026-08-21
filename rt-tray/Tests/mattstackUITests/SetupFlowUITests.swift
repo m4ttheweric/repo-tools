@@ -5,10 +5,25 @@ final class SetupFlowUITests: XCTestCase {
     private var stateDir: URL!
     private var home: URL!
 
+    /// A short random hex string, not a UUID: `home`'s tray.sock path
+    /// (`<home>/.mattstack/rt/tray.sock`) has to fit in `sockaddr_un.sun_path`
+    /// (104 bytes on Darwin), and `$TMPDIR/home-<uuid>/.mattstack/rt/tray.sock`
+    /// alone runs well past that — TrayServer.start() fails to bind, silently,
+    /// under the full temporaryDirectory() path. /tmp/ms-<8 hex> stays short
+    /// regardless of how deep $TMPDIR is on the machine running the suite.
+    private func shortHex() -> String { String(format: "%08x", UInt32.random(in: .min ... .max)) }
+
+    override func tearDown() {
+        app?.terminate()
+        if let home { try? FileManager.default.removeItem(at: home) }
+        if let stateDir { try? FileManager.default.removeItem(at: stateDir) }
+        super.tearDown()
+    }
+
     private func launch(_ scenario: String) {
         app = XCUIApplication()
-        stateDir = FileManager.default.temporaryDirectory.appendingPathComponent("stub-\(UUID().uuidString)")
-        home = FileManager.default.temporaryDirectory.appendingPathComponent("home-\(UUID().uuidString)")
+        stateDir = URL(fileURLWithPath: "/tmp/ms-state-\(shortHex())")
+        home = URL(fileURLWithPath: "/tmp/ms-\(shortHex())")
         try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         let stub = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("stub-rt/stub.ts").path
@@ -41,7 +56,11 @@ final class SetupFlowUITests: XCTestCase {
         waitFor("setup.install.screen")
         waitFor("setup.install.step.verify", 30)
         waitFor("setup.done.screen", 60)
-        el("setup.done.openBoard").click()
+        // Not clicked: DoneScreen.openBoard() logs instead of opening a real
+        // browser tab under stub mode, but there's nothing to assert on from
+        // here besides existence/enablement, so leave the real click unfired.
+        XCTAssertTrue(el("setup.done.openBoard").exists)
+        XCTAssertTrue(el("setup.done.openBoard").isEnabled)
         el("setup.done.continue").click()
     }
 
@@ -84,8 +103,6 @@ final class SetupFlowUITests: XCTestCase {
         el("setup.team.continue").click()
         waitFor("setup.checklist.screen")
         XCTAssertFalse(el("setup.checklist.continue").isEnabled)
-        // The real FDA probe runs against a temp HOME, so the overlay reports
-        // "unknown" → checking; the plan's second fetch (Re-check) flips the stub's row.
         el("setup.checklist.recheck").click()
         let enabled = NSPredicate(format: "isEnabled == true")
         expectation(for: enabled, evaluatedWith: el("setup.checklist.continue"))

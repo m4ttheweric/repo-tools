@@ -8,7 +8,7 @@ import Foundation
 /// Never throws, never blocks the caller beyond a serial-queue append.
 enum TrayLog {
     private static let queue = DispatchQueue(label: "rt.tray-log", qos: .utility)
-    private static let logDir = NSString(string: "~/.mattstack/rt/logs").expandingTildeInPath
+    private static let logDir = AppHome.current + "/.mattstack/rt/logs"
     private static let retentionDays = 14
     private static var hasPruned = false
 
@@ -146,7 +146,7 @@ func installTrayCrashHandlers() {
                           ["stack": exception.callStackSymbols.joined(separator: "\n")])
     }
 
-    let logDir = NSString(string: "~/.mattstack/rt/logs").expandingTildeInPath
+    let logDir = AppHome.current + "/.mattstack/rt/logs"
     try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
     let crashPath = logDir + "/tray-crash.log"
     crashFd = open(crashPath, O_WRONLY | O_APPEND | O_CREAT, 0o644)
