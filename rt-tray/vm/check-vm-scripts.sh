@@ -14,6 +14,8 @@ t "walkthrough --dry-run"        env VM_ARTIFACTS=/tmp/vmcheck-art bash run/walk
 t "walkthrough usage"            bash -c '! bash run/walkthrough.sh >/dev/null 2>&1'
 t "team-setup status (no pat)"   env MATTSTACK_VMTEST_PAT= bash run/team-setup.sh status
 t "team-setup invite stub (no gh, no pat)" env PATH="/usr/bin:/bin" MATTSTACK_VMTEST_PAT= bash run/team-setup.sh invite --handle vmcheck --out /tmp/vmcheck-invite.txt
+t "team-setup reset refuses non-vmtest org"  bash -c '! env MATTSTACK_VMTEST_PAT=x MATTSTACK_VMTEST_ORG=someorg MATTSTACK_VMTEST_ORG_CONFIRM= bash run/team-setup.sh reset >/dev/null 2>&1'
+t "team-setup reset guard message names CONFIRM" bash -c 'env MATTSTACK_VMTEST_PAT=x MATTSTACK_VMTEST_ORG=someorg bash run/team-setup.sh reset 2>&1 | grep -q MATTSTACK_VMTEST_ORG_CONFIRM'
 t "second-user create"           bash run/second-user.sh create
 t "e2e-cleanroom usage"          bash -c '! bash ../../scripts/e2e-cleanroom.sh >/dev/null 2>&1'
 t "winid compiles"               swiftc -O -o /tmp/vmcheck-winid run/host/winid.swift
