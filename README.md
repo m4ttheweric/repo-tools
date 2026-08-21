@@ -204,6 +204,45 @@ rt daemon status          # Show daemon status (pid, uptime, repos, ports)
 rt daemon logs            # Tail daemon log
 ```
 
+### Home repo
+
+`~/.mattstack/user` is a personal git repo, provisioned by `rt home init`.
+While the daemon is running, it watches that repo and auto-commits (and
+pushes) everything in it except paths inside a claimed zone — you never run
+`git add`/`git commit` there yourself for ordinary changes.
+
+```bash
+rt home init                        # Provision this machine's ~/.mattstack tree
+rt home snapshot                    # Run the auto-commit cycle right now (reason: manual)
+rt home snapshot --status           # Show daemon state: enabled, last run/commit, push state, claimed zones
+rt home claim <zone> [--owner] [--note]   # Tell the daemon to stop auto-committing a path
+rt home release <zone>              # Let the daemon resume auto-committing a path
+rt home key export                  # Print the age private key once, for your password manager
+```
+
+A **zone** is a path relative to `~/.mattstack/user` (e.g. `prefs/`,
+`scripts/deploy.sh`). Claim one when you're mid-edit on something and don't
+want the daemon committing a half-finished state out from under you —
+`--owner` defaults to `<you>@<machine-key>`, and `--note` is a free-text
+reason anyone reading the owners file can see. Claiming and releasing write
+`user/snapshot-owners.jsonc` directly (no daemon round trip); the daemon then
+snapshots that file itself, like any other change.
+
+A claimed zone left dirty past a threshold is still committed — the
+**janitor rule** — under its own `snapshot (janitor): …` message, so an
+abandoned claim can't block the zone from ever being backed up. The daemon's
+behavior is configured by the `rt.homeSnapshot` settings key (machine-scoped):
+
+```jsonc
+{
+  "enabled": true,             // false disables watching and auto-commits entirely
+  "debounceSec": 20,           // quiet period after a change before committing
+  "pushDelaySec": 60,          // coalescing delay before pushing a commit
+  "janitorThresholdHours": 6,  // a claimed zone dirty this long gets janitor-committed
+  "janitorIntervalMin": 30     // how often the janitor sweep runs
+}
+```
+
 ### Settings
 
 ```bash
