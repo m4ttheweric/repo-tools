@@ -122,11 +122,11 @@ function makeProvider(host: string, token: string): GitLabProvider {
   return new GitLabProvider(host, token, providerRequestHook());
 }
 
-function ensureProvider(repoName: string, repoPath: string): GitLabProvider | null {
+async function ensureProvider(repoName: string, repoPath: string): Promise<GitLabProvider | null> {
   const cached = providers.get(repoName);
   if (cached) return cached;
 
-  const secrets = loadSecrets();
+  const secrets = await loadSecrets();
   if (!secrets.gitlabToken) {
     log.info(`no gitlabToken; skipping ${repoName}`);
     return null;
@@ -266,7 +266,7 @@ export async function getRepoContext(
     if (!repoPath) {
       throw new Error(`repo "${repoName}" not in ~/.mattstack/rt/repos.json (run rt repo add)`);
     }
-    const secrets = loadSecrets();
+    const secrets = await loadSecrets();
     if (!secrets.gitlabToken) {
       throw new Error("missing gitlabToken in ~/.mattstack/rt/secrets.json (run rt secret set gitlabToken <pat>)");
     }
@@ -656,7 +656,7 @@ async function reconcileFreshnessImpl(env: FreshnessEnv): Promise<void> {
     if (grants(tracking, repoName).mode !== "live") continue;
     if (watches.has(repoName)) continue;
 
-    const provider = ensureProvider(repoName, repoPath);
+    const provider = await ensureProvider(repoName, repoPath);
     if (!provider?.watchEvents) continue;
     if (!userIdResolved) await ensureUserId();
 

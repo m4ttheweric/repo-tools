@@ -10,9 +10,11 @@ import * as commit from "../commands/commit.ts";
 import * as daemon from "../commands/daemon.ts";
 import * as events from "../commands/events.ts";
 import * as extension from "../commands/extension.ts";
+import * as home from "../commands/home.ts";
 import * as hooks from "../commands/hooks.ts";
 import * as port from "../commands/port.ts";
 import * as run from "../commands/run.ts";
+import * as secrets from "../commands/secrets.ts";
 import * as settings from "../commands/settings.ts";
 import * as settingsKeys from "../commands/settings-keys.ts";
 import * as sync from "../commands/sync.ts";
@@ -38,9 +40,11 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/daemon.ts": daemon,
   "./commands/events.ts": events,
   "./commands/extension.ts": extension,
+  "./commands/home.ts": home,
   "./commands/hooks.ts": hooks,
   "./commands/port.ts": port,
   "./commands/run.ts": run,
+  "./commands/secrets.ts": secrets,
   "./commands/settings.ts": settings,
   "./commands/settings-keys.ts": settingsKeys,
   "./commands/sync.ts": sync,

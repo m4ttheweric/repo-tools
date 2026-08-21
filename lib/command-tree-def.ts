@@ -698,6 +698,65 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  home: {
+    description: "The git-backed ~/.mattstack home repo",
+    subcommands: {
+      init: {
+        description: "Provision the home repo: print, then run, the adoption plan",
+        module: "./commands/home.ts",
+        fn: "homeInit",
+        args: [
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print the plan without running it" },
+        ],
+      },
+      key: {
+        description: "The mattstack age key (keychain-custodied)",
+        subcommands: {
+          export: {
+            description: "Print the age private key once, for your password manager",
+            module: "./commands/home.ts",
+            fn: "homeKeyExport",
+            args: [],
+          },
+        },
+      },
+    },
+  },
+
+  secrets: {
+    description: "sops-encrypted secrets under ~/.mattstack/user/secrets/",
+    subcommands: {
+      set: {
+        description: "Write a secret (creates the domain file, or one key within it) — value prompted, never a CLI arg",
+        module: "./commands/secrets.ts",
+        fn: "secretsSet",
+        args: [
+          { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
+          { name: "Key", type: "text", placeholder: "linearApiKey", hint: "Key name within the domain" },
+          { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the value from stdin instead of a no-echo prompt (scripting)" },
+        ],
+      },
+      list: {
+        description: "List a domain's secret names (never prints values)",
+        module: "./commands/secrets.ts",
+        fn: "secretsList",
+        args: [
+          { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
+        ],
+      },
+      rotate: {
+        description: "Replace a secret's value; prints the rotation commit message — value prompted, never a CLI arg",
+        module: "./commands/secrets.ts",
+        fn: "secretsRotate",
+        args: [
+          { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
+          { name: "Key", type: "text", placeholder: "gitlabToken", hint: "Key name within the domain" },
+          { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the new value from stdin instead of a no-echo prompt (scripting)" },
+        ],
+      },
+    },
+  },
+
   plugin: {
     description: "Manage user plugins",
     subcommands: {

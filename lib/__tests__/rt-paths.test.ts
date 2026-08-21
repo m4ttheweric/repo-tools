@@ -23,7 +23,7 @@ import {
   rtDir, reposDir, repoDataDir, logsDir,
   migrateLegacyRtDir, legacyDirsPresent,
   TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE, DEV_TRAY_APP_BUNDLE,
-  trayAppPath, devTrayAppPath, legacyTrayAppPaths,
+  trayAppPath, devTrayAppPath, legacyTrayAppPaths, installedTrayAppPath, machineSettingsPath,
 } from "../rt-paths.ts";
 
 describe("rt-paths", () => {
@@ -201,6 +201,87 @@ describe("rt-paths", () => {
     const rtExec = process.execPath;
     expect(candidates).toContain(join(rtExec, "../rt-tray.app"));
     expect(candidates).toContain(join(rtExec, "../../rt-tray.app"));
+  });
+
+  test("legacyTrayAppPaths sweeps both /Applications and ~/Applications", () => {
+    process.env.HOME = "/tmp/fake-home-legacy-4";
+    const candidates = legacyTrayAppPaths();
+    expect(candidates).toContain("/Applications/rt-tray.app");
+    expect(candidates).toContain("/tmp/fake-home-legacy-4/Applications/rt-tray.app");
+  });
+
+  // ── installedTrayAppPath (Item 5: rt hardcodes ~/Applications in four places) ──
+
+  describe("installedTrayAppPath", () => {
+    const makeHome = () => mkdtempSync(join(tmpdir(), "rt-paths-installed-tray-"));
+    const bundle = "mattstack.app";
+
+    test("the mattstack.appPath machine setting wins over both fixed locations", () => {
+      const home = makeHome();
+      process.env.HOME = home;
+      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      writeFileSync(machineSettingsPath(), JSON.stringify({ "mattstack.appPath": "/custom/place/mattstack.app" }));
+
+      const exists = (p: string) => p === "/custom/place/mattstack.app" || p === "/Applications/mattstack.app";
+      expect(installedTrayAppPath(bundle, exists)).toBe("/custom/place/mattstack.app");
+
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    test("a machine setting naming a different bundle is never trusted for this lookup, even if it exists on disk", () => {
+      const home = makeHome();
+      process.env.HOME = home;
+      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      // The setting names the PROD bundle; this call asks for the dev bundle.
+      writeFileSync(machineSettingsPath(), JSON.stringify({ "mattstack.appPath": "/Applications/mattstack.app" }));
+
+      const exists = (p: string) => p === "/Applications/mattstack.app" || p === join(home, "Applications", "mattstack-dev.app");
+      expect(installedTrayAppPath("mattstack-dev.app", exists)).toBe(join(home, "Applications", "mattstack-dev.app"));
+
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    test("a machine setting pointing at a bundle that no longer exists is not trusted — falls through to the fixed locations", () => {
+      const home = makeHome();
+      process.env.HOME = home;
+      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      writeFileSync(machineSettingsPath(), JSON.stringify({ "mattstack.appPath": "/gone/mattstack.app" }));
+
+      const exists = (p: string) => p === "/Applications/mattstack.app";
+      expect(installedTrayAppPath(bundle, exists)).toBe("/Applications/mattstack.app");
+
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    test("/Applications/<bundle> beats ~/Applications/<bundle> when no machine setting is present", () => {
+      const home = makeHome();
+      process.env.HOME = home;
+
+      const exists = (p: string) => p === "/Applications/mattstack.app" || p === join(home, "Applications", "mattstack.app");
+      expect(installedTrayAppPath(bundle, exists)).toBe("/Applications/mattstack.app");
+
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    test("falls back to ~/Applications/<bundle> when only that one exists", () => {
+      const home = makeHome();
+      process.env.HOME = home;
+
+      const userPath = join(home, "Applications", "mattstack.app");
+      const exists = (p: string) => p === userPath;
+      expect(installedTrayAppPath(bundle, exists)).toBe(userPath);
+
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    test("null when the bundle is nowhere: no machine setting, not in /Applications, not in ~/Applications", () => {
+      const home = makeHome();
+      process.env.HOME = home;
+
+      expect(installedTrayAppPath(bundle, () => false)).toBeNull();
+
+      rmSync(home, { recursive: true, force: true });
+    });
   });
 
   // ── Source-guards ────────────────────────────────────────────────────────────

@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { userSettingsPath, teamSettingsPath, teamsDir, machineSettingsPath } from "../../rt-paths.ts";
+import { userSettingsPath, teamSettingsPath, teamsDir, machineSettingsPath } from "../paths.ts";
 import { readStore, listTeams } from "../stores.ts";
 
 describe("settings/stores", () => {

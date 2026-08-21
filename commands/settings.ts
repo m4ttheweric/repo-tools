@@ -12,7 +12,8 @@ import { dirname, join } from "path";
 import { homedir } from "os";
 import {
   rtDir,
-  TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE, trayAppPath, devTrayAppPath,
+  TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE, DEV_TRAY_APP_BUNDLE,
+  trayAppPath, devTrayAppPath, installedTrayAppPath,
 } from "../lib/rt-paths.ts";
 import { currentMode, installRtBinary } from "../lib/dev-mode.ts";
 import { spawnSync } from "child_process";
@@ -34,7 +35,7 @@ import { installShellIntegration } from "../lib/shell-integration.ts";
 
 export async function setLinearToken(): Promise<void> {
   const { textInput } = await import("../lib/rt-render.tsx");
-  const secrets = loadSecrets();
+  const secrets = await loadSecrets();
 
   // try scopes the prompt only — a failed *save* must surface as an error,
   // not masquerade as "keeping existing key".
@@ -63,7 +64,7 @@ export async function setLinearToken(): Promise<void> {
   }
 
   try {
-    saveSecret("linearApiKey", linearKey.trim());
+    await saveSecret("linearApiKey", linearKey.trim());
   } catch (err) {
     console.log(`\n  ${red}✗ failed to save Linear API key: ${err instanceof Error ? err.message : String(err)}${reset}\n`);
     process.exit(1);
@@ -75,7 +76,7 @@ export async function setLinearToken(): Promise<void> {
 
 export async function setGitlabToken(): Promise<void> {
   const { textInput } = await import("../lib/rt-render.tsx");
-  const secrets = loadSecrets();
+  const secrets = await loadSecrets();
 
   // try scopes the prompt only — a failed *save* must surface as an error,
   // not masquerade as "keeping existing token".
@@ -104,7 +105,7 @@ export async function setGitlabToken(): Promise<void> {
   }
 
   try {
-    saveSecret("gitlabToken", gitlabToken.trim());
+    await saveSecret("gitlabToken", gitlabToken.trim());
   } catch (err) {
     console.log(`\n  ${red}✗ failed to save GitLab token: ${err instanceof Error ? err.message : String(err)}${reset}\n`);
     process.exit(1);
@@ -115,7 +116,7 @@ export async function setGitlabToken(): Promise<void> {
 // ─── StrongDM email ──────────────────────────────────────────────────────────
 
 export async function setSdmEmail(args: string[]): Promise<void> {
-  const secrets = loadSecrets();
+  const secrets = await loadSecrets();
   const fromArgs = args.find(a => !a.startsWith("--"))?.trim();
 
   let email: string;
@@ -153,7 +154,7 @@ export async function setSdmEmail(args: string[]): Promise<void> {
   }
 
   try {
-    saveSecret("sdmEmail", email.trim());
+    await saveSecret("sdmEmail", email.trim());
   } catch (err) {
     console.log(`\n  ${red}✗ failed to save StrongDM email: ${err instanceof Error ? err.message : String(err)}${reset}\n`);
     process.exit(1);
@@ -164,7 +165,7 @@ export async function setSdmEmail(args: string[]): Promise<void> {
 // ─── Linear team ─────────────────────────────────────────────────────────────
 
 export async function setLinearTeam(): Promise<void> {
-  const secrets = loadSecrets();
+  const secrets = await loadSecrets();
   if (!secrets.linearApiKey) {
     console.log(`\n  ${yellow}Linear API key not configured${reset}`);
     console.log(`  ${dim}run: rt settings linear token${reset}\n`);
@@ -202,7 +203,7 @@ async function pickAndSaveTeam(apiKey: string): Promise<{ teamId: string; teamKe
   const team = teams.find((t) => t.id === selectedId);
   if (!team) return null;
 
-  saveTeamConfig(team.id, team.key);
+  await saveTeamConfig(team.id, team.key);
   return { teamId: team.id, teamKey: team.key };
 }
 
@@ -465,8 +466,9 @@ export function renderDevModePreload(): string {
  * Throws when the prod app is absent: stranding the CLI with no rt on PATH is
  * worse than refusing the switch.
  */
-function disableDevMode(): void {
-  const prodBinary = join(trayAppPath(), "Contents", "MacOS", "rt-daemon");
+function disableDevMode(exists: (path: string) => boolean = existsSync): void {
+  const prodAppPath = installedTrayAppPath(TRAY_APP_BUNDLE, exists) ?? trayAppPath();
+  const prodBinary = join(prodAppPath, "Contents", "MacOS", "rt-daemon");
   if (!existsSync(prodBinary)) {
     throw new Error(
       `cannot switch to prod: ${TRAY_APP_BUNDLE} is not installed, so there is no compiled rt to install at ${DEV_MODE_WRAPPER}. Install the app first (rt --post-install), then retry.`,
@@ -500,10 +502,18 @@ interface FlavorInfo {
   appPath: string;
 }
 
-function flavorFor(mode: "dev" | "prod"): FlavorInfo {
-  return mode === "dev"
-    ? { mode, name: DEV_TRAY_APP_NAME, appPath: devTrayAppPath() }
-    : { mode, name: TRAY_APP_NAME, appPath: trayAppPath() };
+function flavorFor(mode: "dev" | "prod", exists: (path: string) => boolean = existsSync): FlavorInfo {
+  const bundle = mode === "dev" ? DEV_TRAY_APP_BUNDLE : TRAY_APP_BUNDLE;
+  const fixedFallback = mode === "dev" ? devTrayAppPath() : trayAppPath();
+  return {
+    mode,
+    name: mode === "dev" ? DEV_TRAY_APP_NAME : TRAY_APP_NAME,
+    // Wherever it's ACTUALLY installed (/Applications, ~/Applications, or the
+    // machine setting); falls back to the conventional ~/Applications
+    // location so a genuinely-missing bundle still fails existsSync with a
+    // sensible path in the error message, rather than null.
+    appPath: installedTrayAppPath(bundle, exists) ?? fixedFallback,
+  };
 }
 
 function launchdLabelFor(mode: "dev" | "prod"): string {
@@ -581,7 +591,7 @@ async function handoffToFlavor(outgoing: FlavorInfo, incoming: FlavorInfo): Prom
   console.log(`  ${green}✓${reset} launched ${incoming.appPath}`);
 }
 
-export async function toggleDevMode(args: string[]): Promise<void> {
+export async function toggleDevMode(args: string[], exists: (path: string) => boolean = existsSync): Promise<void> {
   const { select } = await import("../lib/rt-render.tsx");
 
   const mode = currentMode();
@@ -616,7 +626,7 @@ export async function toggleDevMode(args: string[]): Promise<void> {
     return;
   }
 
-  const incoming = flavorFor(target);
+  const incoming = flavorFor(target, exists);
 
   // 0. Precondition — the incoming flavor's bundle must exist on disk BEFORE
   // we touch the running flavor at all, so the toggle can never leave the
@@ -662,15 +672,15 @@ export async function toggleDevMode(args: string[]): Promise<void> {
     console.log(`  ${dim}wrapper → ${DEV_MODE_WRAPPER}${reset}`);
     console.log(`  ${dim}source  → ${resolvedPath}${reset}`);
 
-    await handoffToFlavor(flavorFor(mode), incoming);
+    await handoffToFlavor(flavorFor(mode, exists), incoming);
 
     console.log(`  ${dim}restart your terminal (or: source ${shellResult.rcPath ?? "~/.zshrc"}) to activate${reset}`);
 
   } else {
-    disableDevMode();
+    disableDevMode(exists);
     console.log(`  ${green}✓${reset} CLI restored to prod mode  ${dim}(mattstack.app binary installed at ~/.local/bin/rt)${reset}`);
 
-    await handoffToFlavor(flavorFor(mode), incoming);
+    await handoffToFlavor(flavorFor(mode, exists), incoming);
   }
 
   console.log("");

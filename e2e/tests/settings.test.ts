@@ -455,6 +455,20 @@ describe("rt settings (four stores, one resolver — e2e)", () => {
     ]);
   }, 40_000);
 
+  test("a non-rt suite key (deck.access) round-trips end to end with provenance", async () => {
+    const res = await finished(
+      runRt(["settings", "set", "deck.access", '{"members":["alice"]}', "--scope", "user"]),
+    );
+    expect(res.exitCode).toBe(0);
+    expect(stripAnsi(res.stdout)).toContain("deck.access set (user)");
+
+    const out = await rtJson(["settings", "get", "deck.access", "--json"]);
+    expect(out.ok).toBe(true);
+    expect(out.migrated).toBe(true);
+    expect(out.value).toEqual({ members: ["alice"] });
+    expect(out.provenance).toEqual([{ scope: "user", file: userStore }]);
+  }, 30_000);
+
   // ── 3. stores → shim → child ───────────────────────────────────────────────
 
   test("intercept install builds the rules and the shim from the stores alone", async () => {

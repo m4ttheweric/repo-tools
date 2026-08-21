@@ -36,7 +36,7 @@ export interface DaemonEvent {
  */
 export async function daemonQuery(
   path: string,
-  options?: { method?: string; body?: any },
+  options?: { method?: string; body?: any; headers?: Record<string, string> },
 ): Promise<DaemonResponse | null> {
   const url = `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
   const method = options?.method ?? 'GET';
@@ -48,7 +48,10 @@ export async function daemonQuery(
     const fetchOptions: RequestInit = {
       method,
       signal: controller.signal,
-      headers: options?.body ? { 'Content-Type': 'application/json' } : undefined,
+      headers: {
+        ...(options?.body ? { 'Content-Type': 'application/json' } : undefined),
+        ...options?.headers,
+      },
       body: options?.body ? JSON.stringify(options.body) : undefined,
     };
 

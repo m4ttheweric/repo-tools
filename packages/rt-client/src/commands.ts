@@ -70,6 +70,20 @@ export interface Commands {
    * the caller's env vars keep precedence on the caller's side.
    */
   "secrets:forge-token": { payload: { repoName: string; forge: ForgeSlug }; data: ForgeTokenData };
+  /**
+   * The whitelisted subset of `Secrets` the VS Code extension reads directly
+   * (RT-32): only linearApiKey and gitlabToken, both optional (present only
+   * when set). Not a general secrets export — extend the whitelist here, in
+   * lockstep with lib/daemon/handlers/secrets.ts and
+   * extensions/vscode/rt-context/src/secrets.ts, if a consumer needs another key.
+   *
+   * `token` is required and checked in the HANDLER (not a transport-layer
+   * gate alone), since this verb is reachable over the unauthenticated unix
+   * socket too — see lib/daemon/handlers/secrets.ts's doc comment. HTTP
+   * callers get it forwarded automatically from their X-RT-Token header;
+   * socket callers must read ~/.mattstack/rt/api-token themselves.
+   */
+  "secrets:read": { payload: { token?: string }; data: { linearApiKey?: string; gitlabToken?: string } };
   "events:emit": { payload: { topic: string; payload?: unknown }; data: { id: number } };
   "events:wait": { payload: { pattern: string; after?: number; waitMs?: number }; data: { events: EventsBusEvent[]; cursor: number } };
   "events:list": { payload: { pattern: string; after?: number; limit?: number }; data: { events: EventsBusEvent[]; cursor: number } };
@@ -82,6 +96,7 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "discussions:read",
   "mr:by-branch",
   "secrets:forge-token",
+  "secrets:read",
   "events:emit",
   "events:wait",
   "events:list",

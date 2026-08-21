@@ -39,7 +39,7 @@ import {
   type Resolved,
 } from "../lib/settings/resolve.ts";
 import { setSetting } from "../lib/settings/write.ts";
-import { getDef, type SettingDef, type SettingScope } from "../lib/settings/registry.ts";
+import { getDef, isMigrated, type SettingDef, type SettingScope } from "../lib/settings/registry.ts";
 import { buildInterceptRules, writeInterceptRules } from "../lib/endpoint/shim.ts";
 
 // ─── arg parsing (commands/events.ts conventions) ────────────────────────────
@@ -146,7 +146,7 @@ export function formatProvenance(provenance: Provenance[]): string {
  * to render).
  */
 export function migratedNote(def: SettingDef): string | null {
-  if (def.migrated) return null;
+  if (isMigrated(def)) return null;
   const legacyPart = def.legacyFile ? `reads legacy: ${def.legacyFile}` : "not writable through the settings resolver yet";
   const siblingPart = def.siblingCommand ? ` — use \`${def.siblingCommand}\`` : "";
   return `${legacyPart}${siblingPart}`;
@@ -179,8 +179,8 @@ export async function settingsGet(args: string[]): Promise<void> {
       key,
       value: resolved.value,
       provenance: resolved.provenance,
-      migrated: def.migrated,
-      ...(def.migrated ? {} : { legacyFile: def.legacyFile ?? null, siblingCommand: def.siblingCommand ?? null }),
+      migrated: isMigrated(def),
+      ...(isMigrated(def) ? {} : { legacyFile: def.legacyFile ?? null, siblingCommand: def.siblingCommand ?? null }),
     }));
     return;
   }

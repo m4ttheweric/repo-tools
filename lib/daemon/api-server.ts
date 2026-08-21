@@ -33,6 +33,7 @@ const API_INDEX = {
     { method: "POST", path: "/api/sdm/reconnect",   description: "Reconnect a StrongDM recent (promptless; fails if an access request is needed)" },
     { method: "POST", path: "/api/events/emit",     description: "Emit an event onto the pane-communication bus" },
     { method: "GET",  path: "/api/events",          description: "List events matching a topic pattern" },
+    { method: "GET",  path: "/api/secrets",          description: "Whitelisted secret values (linearApiKey, gitlabToken) — token-gated" },
   ],
   websocket_events: [
     { type: "status",         description: "Full daemon status — after each cache refresh (~5 min)" },
@@ -42,7 +43,7 @@ const API_INDEX = {
   ],
   auth: {
     header: "X-RT-Token",
-    description: "Required on mutating routes (shutdown, sdm reconnect, events emit). Token at ~/.mattstack/rt/api-token.",
+    description: "Required on mutating routes (shutdown, sdm reconnect, events emit) and /api/secrets. Token at ~/.mattstack/rt/api-token.",
   },
 };
 
@@ -59,6 +60,10 @@ const REST_ROUTES: Record<string, { cmd: string; method: string }> = {
   "/api/sdm/reconnect": { cmd: "sdm:reconnect", method: "POST" },
   "/api/events/emit":   { cmd: "events:emit", method: "POST" },
   "/api/events":        { cmd: "events:list", method: "GET" },
+  // "/api/secrets" is NOT here — see the dedicated block in fetch() below:
+  // it needs its header token forwarded into the command payload (the
+  // secrets:read handler checks payload.token itself, not just this layer),
+  // which the generic query-params-as-payload path below doesn't do.
 };
 
 /** Per-connection data on the :9401 WebSocket broadcast channel. */
@@ -142,6 +147,15 @@ export function startApiServer(deps: ApiServerDeps): Server<any> {
         if (url.pathname.startsWith("/api/hooks/") && url.pathname.endsWith("/repair") && req.method === "POST") {
           const repo = decodeURIComponent(url.pathname.slice("/api/hooks/".length, -"/repair".length));
           const result = await handleCommand("hooks:repair", { repo }, req.signal);
+          return Response.json(result, { headers: corsHeaders });
+        }
+
+        // Secrets: forward the X-RT-Token header (already verified above by
+        // needsToken/tokenOk) into the command payload — secrets:read's own
+        // handler-level check (the enforcement point that also covers the
+        // unix socket transport) needs it there, not just on this request.
+        if (url.pathname === "/api/secrets" && req.method === "GET") {
+          const result = await handleCommand("secrets:read", { token: req.headers.get("x-rt-token") ?? undefined }, req.signal);
           return Response.json(result, { headers: corsHeaders });
         }
 

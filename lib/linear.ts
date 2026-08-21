@@ -7,17 +7,21 @@
  *  3. Fetch ticket title + status from Linear GraphQL API
  *  4. Cache results in memory (5-minute TTL)
  *
- * API keys stored in ~/.mattstack/rt/secrets.json
+ * Secrets: the sops-backed store (lib/secrets/store.ts, domain "rt") is the
+ * source of truth; ~/.mattstack/rt/secrets.json is a transition-only fallback
+ * (RT-32) read through readPlaintextSecretsFallback — the one function to
+ * delete once the live import (a later lane) retires the plaintext file.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join, dirname } from "path";
-import { homedir } from "os";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 import { rtDir } from "./rt-paths.ts";
+import { readSecret, writeSecret, createRealSecretsExecSeam, type SecretsSeams } from "./secrets/store.ts";
+import { createRealAgeKeySeam } from "./home/age-key.ts";
 
 // ─── Secrets ─────────────────────────────────────────────────────────────────
 
-const SECRETS_PATH = join(rtDir(), "secrets.json");
+const RT_SECRET_DOMAIN = "rt";
 
 interface Secrets {
   linearApiKey?: string;
@@ -29,19 +33,101 @@ interface Secrets {
   sdmEmail?: string;
 }
 
-export function loadSecrets(): Secrets {
+const RT_SECRET_KEYS: (keyof Secrets)[] = [
+  "linearApiKey", "gitlabToken", "githubToken", "linearTeamId", "linearTeamKey", "sdmEmail",
+];
+
+let realSecretsSeamsSingleton: SecretsSeams | null = null;
+
+/** Lazily-built real seams, shared across calls in one process (readSecret memoizes per domain on top of this). */
+function defaultSecretsSeams(): SecretsSeams {
+  return realSecretsSeamsSingleton ??= {
+    ageKeySeam: createRealAgeKeySeam(),
+    execSeam: createRealSecretsExecSeam(),
+  };
+}
+
+function plaintextSecretsPath(): string {
+  return join(rtDir(), "secrets.json");
+}
+
+/**
+ * RT-32 transition fallback: the plaintext file still holds the real values
+ * until the live import runs, and stays readable afterward only because
+ * nothing has deleted it yet. Delete this function (and its two call sites
+ * in loadSecrets) when that import retires ~/.mattstack/rt/secrets.json — no
+ * other code path should ever read this file directly.
+ */
+function readPlaintextSecretsFallback(): Secrets {
   try {
-    return JSON.parse(readFileSync(SECRETS_PATH, "utf8"));
+    return JSON.parse(readFileSync(plaintextSecretsPath(), "utf8"));
   } catch {
     return {};
   }
 }
 
-export function saveSecret(key: keyof Secrets, value: string): void {
-  const secrets = loadSecrets();
-  secrets[key] = value;
-  mkdirSync(dirname(SECRETS_PATH), { recursive: true });
-  writeFileSync(SECRETS_PATH, JSON.stringify(secrets, null, 2));
+interface EncryptedRtSecretsResult {
+  values: Partial<Secrets>;
+  /** Set when a decrypt attempt threw (keychain unreachable, corrupt ciphertext, …) — loadSecrets decides whether that's fatal. */
+  failure?: Error;
+}
+
+/**
+ * Loops per key rather than one bulk call because `Secrets` has no "read the
+ * whole domain" shape — but the decrypt itself is all-or-nothing per FILE,
+ * not per key: `readSecret`'s per-domain memo means every key after the
+ * first is a cheap object-property lookup, so a decrypt failure always
+ * surfaces on the very first key attempted. Returning immediately on that
+ * first failure (instead of looping through the rest) just skips five
+ * guaranteed-identical failures against the same broken read — it is not
+ * "returning partial data," since a real decrypt failure never leaves any.
+ */
+async function readEncryptedRtSecrets(seams: SecretsSeams): Promise<EncryptedRtSecretsResult> {
+  const values: Partial<Secrets> = {};
+  for (const key of RT_SECRET_KEYS) {
+    try {
+      const value = await readSecret(RT_SECRET_DOMAIN, key, seams);
+      if (value !== null) values[key] = value;
+    } catch (err) {
+      return { values, failure: err instanceof Error ? err : new Error(String(err)) };
+    }
+  }
+  return { values };
+}
+
+/**
+ * Encrypted store wins per-key when present. On a clean read, the plaintext
+ * file (transition only — see readPlaintextSecretsFallback) fills whatever
+ * the encrypted store doesn't have yet.
+ *
+ * On a FAILED encrypted read (the store's own fail-closed contract —
+ * NoAgeKeyError, keychain-unreachable, corrupt ciphertext), this only
+ * degrades to the plaintext file when that file actually still exists: an
+ * absent file means there is nothing to fail open TO, so returning `{}`
+ * here would silently hide a real error behind "no secrets configured."
+ * Propagate the store's error instead — that's the fail-closed behavior the
+ * store itself refused to give up.
+ */
+export async function loadSecrets(seams: SecretsSeams = defaultSecretsSeams()): Promise<Secrets> {
+  const { values: encrypted, failure } = await readEncryptedRtSecrets(seams);
+  if (!failure) {
+    return { ...readPlaintextSecretsFallback(), ...encrypted };
+  }
+
+  if (!existsSync(plaintextSecretsPath())) {
+    throw failure;
+  }
+
+  console.error(`[secrets] encrypted store unreadable (${failure.message}); using plaintext secrets.json`);
+  return { ...readPlaintextSecretsFallback(), ...encrypted };
+}
+
+export async function saveSecret(
+  key: keyof Secrets,
+  value: string,
+  seams: SecretsSeams = defaultSecretsSeams(),
+): Promise<void> {
+  await writeSecret(RT_SECRET_DOMAIN, key, value, seams);
 }
 
 // ─── Branch parser ───────────────────────────────────────────────────────────
@@ -185,19 +271,23 @@ export async function fetchTeams(apiKey: string): Promise<LinearTeam[]> {
   }
 }
 
-export function getTeamConfig(): { teamId: string; teamKey: string } | null {
-  const secrets = loadSecrets();
+export async function getTeamConfig(
+  seams: SecretsSeams = defaultSecretsSeams(),
+): Promise<{ teamId: string; teamKey: string } | null> {
+  const secrets = await loadSecrets(seams);
   if (secrets.linearTeamId && secrets.linearTeamKey) {
     return { teamId: secrets.linearTeamId, teamKey: secrets.linearTeamKey };
   }
   return null;
 }
 
-export function saveTeamConfig(teamId: string, teamKey: string): void {
-  const secrets = loadSecrets();
-  secrets.linearTeamId = teamId;
-  secrets.linearTeamKey = teamKey;
-  writeFileSync(SECRETS_PATH, JSON.stringify(secrets, null, 2));
+export async function saveTeamConfig(
+  teamId: string,
+  teamKey: string,
+  seams: SecretsSeams = defaultSecretsSeams(),
+): Promise<void> {
+  await writeSecret(RT_SECRET_DOMAIN, "linearTeamId", teamId, seams);
+  await writeSecret(RT_SECRET_DOMAIN, "linearTeamKey", teamKey, seams);
 }
 
 // ─── Fetch team tickets ──────────────────────────────────────────────────────
