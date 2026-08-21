@@ -46,7 +46,7 @@ sudo dseditgroup -o edit -a "$TESTER" -t user com.apple.access_ssh 2>/dev/null |
 /usr/bin/python3 -c 'pass' >/dev/null 2>&1 && { echo "python3 resolved — CLT?" >&2; exit 1; }
 sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser "$TESTER"
 sudo /bin/sh -c "$(cat <<'EOS'
-kc() { # kcpassword encoder, pure sh: XOR with Apple's 11-byte key, pad to 12.
+kc() { # kcpassword encoder, pure sh: XOR with the Apple 11-byte key, pad to 12.
   key="7d 89 52 23 d2 bc dd ea a3 b9 1f"; pw="$1"; out=""; i=0
   pwlen=${#pw}; padded=$(( (pwlen/12+1)*12 ))
   while [ $i -lt $padded ]; do
