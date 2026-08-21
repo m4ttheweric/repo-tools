@@ -63,15 +63,43 @@ public final class RtClient: RtRunning, @unchecked Sendable {
         let out = Pipe(), err = Pipe(), inPipe = Pipe()
         p.standardOutput = out; p.standardError = err; p.standardInput = inPipe
         do { try p.run() } catch { throw RtClientError.spawnFailed(String(describing: error)) }
+
+        // waitUntilExit() runs its own nested run loop and can starve the
+        // Swift Concurrency cooperative pool if called from an async context;
+        // drain both pipes via readabilityHandler and finish on terminationHandler
+        // instead, same shape as SystemCommandRunner.
+        let state = RunDrainState()
+        let group = DispatchGroup()
+        func drain(_ pipe: Pipe, into append: @escaping (Data) -> Void) {
+            group.enter()
+            pipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                if data.isEmpty {
+                    handle.readabilityHandler = nil
+                    group.leave()
+                } else {
+                    append(data)
+                }
+            }
+        }
+        drain(out, into: state.appendOut)
+        drain(err, into: state.appendErr)
+
+        group.enter()
+        p.terminationHandler = { proc in
+            state.setExitCode(proc.terminationStatus)
+            group.leave()
+        }
+
         if let stdin { inPipe.fileHandleForWriting.write(stdin) }
         try? inPipe.fileHandleForWriting.close()
-        // Drain both pipes off the calling thread before waiting, or a chatty
-        // child fills a pipe and we deadlock on waitUntilExit.
-        async let stdoutData = Task.detached { out.fileHandleForReading.readDataToEndOfFile() }.value
-        async let stderrData = Task.detached { err.fileHandleForReading.readDataToEndOfFile() }.value
-        let (o, e) = await (stdoutData, stderrData)
-        p.waitUntilExit()
-        return RtResult(exitCode: p.terminationStatus, stdout: o, stderr: e)
+
+        return await withCheckedContinuation { cont in
+            group.notify(queue: .global()) {
+                let (code, o, e) = state.result()
+                cont.resume(returning: RtResult(exitCode: code, stdout: o, stderr: e))
+            }
+        }
     }
 
     public func stream(_ args: [String], stdin: Data?) -> AsyncThrowingStream<String, Error> {
@@ -116,5 +144,22 @@ public final class RtClient: RtRunning, @unchecked Sendable {
             try? inPipe.fileHandleForWriting.close()
             continuation.onTermination = { _ in if p.isRunning { p.terminate() } }
         }
+    }
+}
+
+/// Guards `run`'s two Data buffers and exit code across the readabilityHandler
+/// and terminationHandler callbacks, which land on different queues.
+private final class RunDrainState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var outData = Data()
+    private var errData = Data()
+    private var code: Int32 = 0
+
+    func appendOut(_ d: Data) { lock.lock(); outData.append(d); lock.unlock() }
+    func appendErr(_ d: Data) { lock.lock(); errData.append(d); lock.unlock() }
+    func setExitCode(_ c: Int32) { lock.lock(); code = c; lock.unlock() }
+    func result() -> (Int32, Data, Data) {
+        lock.lock(); defer { lock.unlock() }
+        return (code, outData, errData)
     }
 }
