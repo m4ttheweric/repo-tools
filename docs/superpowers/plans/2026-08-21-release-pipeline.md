@@ -1853,3 +1853,714 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
+
+### Task 9: rt side — `installRtBinary` symlink, `trayAppPath` via `mattstack.appPath`, post-install layout bits, legacy sweep
+
+**Files:**
+- Modify: `lib/dev-mode.ts:37-50` (`installRtBinary` → atomic symlink)
+- Modify: `lib/rt-paths.ts:116-131` (`trayAppPath`/`devTrayAppPath` read the machine key, default `/Applications`)
+- Modify: `commands/post-install.ts` (steps 1–2 + `findVsix` + legacy sweep; everything else untouched — L1 owns the rest)
+- Modify: `lib/__tests__/dev-mode.test.ts`, `lib/__tests__/rt-paths.test.ts:160-180`, `lib/__tests__/dev-mode-handoff.test.ts` (fake bundle path), `lib/__tests__/post-install-sweep.test.ts`
+
+**Interfaces:**
+- Consumes: `bundleRootFromExec`, `DEPS_LOCK_BUNDLE_PATH` (Task 1); `setSetting` from `lib/settings/write.ts`; `installedTrayAppPath` (existing).
+- Produces: `installRtBinary(src): string` now creates `~/.local/bin/rt -> src` (symlink); `trayAppPath(exists?)`, `devTrayAppPath(exists?)`; `LEGACY_USER_APP_PATH()`; post-install exit code 2 when run from a DMG/translocated path.
+
+- [ ] **Step 1: Failing tests**
+
+Add to `lib/__tests__/dev-mode.test.ts`:
+```ts
+import { lstatSync, readlinkSync, realpathSync } from "fs";
+import { installRtBinary } from "../dev-mode.ts";
+
+describe("installRtBinary", () => {
+  const BIN = join(process.env.HOME!, ".local", "bin");
+  afterEach(() => { try { rmSync(join(BIN, "rt")); } catch { /* absent */ } });
+
+  test("creates ~/.local/bin/rt as a symlink to the given binary", () => {
+    const src = join(process.env.HOME!, "mattstack.app", "Contents", "MacOS", "rt");
+    mkdirSync(dirname(src), { recursive: true });
+    writeFileSync(src, Buffer.from([0xcf, 0xfa, 0xed, 0xfe]), { mode: 0o755 });
+    const dest = installRtBinary(src);
+    expect(lstatSync(dest).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(dest)).toBe(src);
+    expect(currentMode()).toBe("prod");
+  });
+
+  test("replaces an existing regular file (the dev wrapper) and an existing link atomically", () => {
+    mkdirSync(BIN, { recursive: true });
+    writeFileSync(join(BIN, "rt"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const src = join(process.env.HOME!, "app-a", "Contents", "MacOS", "rt");
+    mkdirSync(dirname(src), { recursive: true }); writeFileSync(src, "", { mode: 0o755 });
+    installRtBinary(src);
+    expect(realpathSync(join(BIN, "rt"))).toBe(realpathSync(src));
+    const src2 = join(process.env.HOME!, "app-b", "Contents", "MacOS", "rt");
+    mkdirSync(dirname(src2), { recursive: true }); writeFileSync(src2, "", { mode: 0o755 });
+    installRtBinary(src2);
+    expect(readlinkSync(join(BIN, "rt"))).toBe(src2);
+  });
+
+  test("currentMode reads through the link: a link to a script is dev, to a Mach-O is prod", () => {
+    const script = join(process.env.HOME!, "wrapper.sh");
+    writeFileSync(script, "#!/bin/zsh\nexit 0\n", { mode: 0o755 });
+    installRtBinary(script);
+    expect(currentMode()).toBe("dev");
+  });
+});
+```
+(add `dirname` to the `path` import and `lstatSync, readlinkSync, realpathSync` to the `fs` import.)
+
+Replace `lib/__tests__/rt-paths.test.ts` tests at lines 167-180 with:
+```ts
+  test("trayAppPath prefers the installed bundle (machine key, /Applications, ~/Applications) and defaults to /Applications", () => {
+    const none = () => false;
+    expect(trayAppPath(none)).toBe("/Applications/mattstack.app");
+    expect(devTrayAppPath(none)).toBe("/Applications/mattstack-dev.app");
+    const userOnly = (p: string) => p === join(process.env.HOME!, "Applications", "mattstack.app");
+    expect(trayAppPath(userOnly)).toBe(join(process.env.HOME!, "Applications", "mattstack.app"));
+  });
+```
+
+In `lib/__tests__/dev-mode-handoff.test.ts`: define `const FAKE_PROD_APP = join(HOME, "Applications", TRAY_APP_BUNDLE)` and `const FAKE_DEV_APP = join(HOME, "Applications", DEV_TRAY_APP_BUNDLE)` (import the two constants from `../rt-paths.ts` instead of `trayAppPath`/`devTrayAppPath`), and use them wherever the test previously called `trayAppPath()`/`devTrayAppPath()` (the `mkdirSync`/`writeFileSync` of the fake bundles and the `expect(openLine).toContain(...)` assertions). `isolatedExists` already denies `/Applications/`, so `installedTrayAppPath(..., isolatedExists)` finds the fake under `~/Applications`.
+
+Add to `lib/__tests__/post-install-sweep.test.ts` (same fake-bin harness; one new case):
+```ts
+  test("stale ~/Applications/mattstack.app is swept when rt runs from /Applications, and the ghost com.rt.daemon is booted out unconditionally", async () => {
+    setUpFakes();
+    const stale = join(HOME, "Applications", "mattstack.app");
+    mkdirSync(join(stale, "Contents", "MacOS"), { recursive: true });
+    await runPostInstall({ bundleRoot: "/Applications/mattstack.app" });
+    const log = readLog();
+    expect(log.some((l) => l.startsWith("launchctl bootout") && l.includes("com.rt.daemon"))).toBe(true);
+    expect(log.some((l) => l.startsWith("rm -rf") && l.includes(stale))).toBe(true);
+    expect(log.some((l) => l.startsWith("launchctl bootout") && l.includes("com.mattstack.daemon"))).toBe(true);
+  }, 15_000);
+```
+(`runPostInstall` gains an optional `{ bundleRoot }` override so tests never depend on the test runner's real execPath; production passes nothing.)
+
+Run: `bun test lib/__tests__/dev-mode.test.ts lib/__tests__/rt-paths.test.ts lib/__tests__/post-install-sweep.test.ts` → FAIL (symlink, signature, override missing).
+
+- [ ] **Step 2: Implement `lib/dev-mode.ts`**
+
+```ts
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, rmSync, symlinkSync } from "fs";
+…
+/**
+ * Link ~/.local/bin/rt at `src` (the rt inside the app bundle). Link-then-
+ * rename so a process executing the old target keeps its mapped pages and
+ * the switch is atomic whether the old entry was a file or a link.
+ */
+export function installRtBinary(src: string): string {
+  const dest = rtBinaryPath();
+  mkdirSync(dirname(dest), { recursive: true });
+  const tmp = `${dest}.new`;
+  rmSync(tmp, { force: true });
+  symlinkSync(src, tmp);
+  renameSync(tmp, dest);
+  return dest;
+}
+```
+(`copyFileSync`/`chmodSync` imports drop out if now unused.) `currentMode()` is unchanged — `existsSync`/`openSync` follow symlinks, which is the "reads through links" requirement.
+
+- [ ] **Step 3: Implement `lib/rt-paths.ts`**
+
+```ts
+/** Where the prod bundle is: the machine key / /Applications / ~/Applications, defaulting to /Applications (V3). */
+export function trayAppPath(exists: (path: string) => boolean = existsSync): string {
+  return installedTrayAppPath(TRAY_APP_BUNDLE, exists) ?? join("/Applications", TRAY_APP_BUNDLE);
+}
+
+/** Same for the dev bundle. */
+export function devTrayAppPath(exists: (path: string) => boolean = existsSync): string {
+  return installedTrayAppPath(DEV_TRAY_APP_BUNDLE, exists) ?? join("/Applications", DEV_TRAY_APP_BUNDLE);
+}
+
+/** The phase-1 install location, swept when the app now lives elsewhere (V3). */
+export function legacyUserAppPath(): string {
+  return join(home(), "Applications", TRAY_APP_BUNDLE);
+}
+```
+`installedTrayAppPath` must be declared before use — move the two functions below it or leave hoisting to do its job (function declarations hoist; fine). Update the docblock above them: "Where a bundle is ACTUALLY installed…" now applies to both.
+
+- [ ] **Step 4: Implement `commands/post-install.ts` changes**
+
+Imports: add `import { bundleRootFromExec } from "../lib/bundle-layout.ts";`, `import { setSetting } from "../lib/settings/write.ts";`, `legacyUserAppPath` from rt-paths; drop `cpSync`.
+
+Replace `installRtBinaryStep` + `installTrayApp` with:
+```ts
+// ─── 1. Where is the app, and is it somewhere it can stay? ───────────────────
+
+function appPathIsTransient(root: string): boolean {
+  return root.startsWith("/Volumes/") || root.includes("/AppTranslocation/");
+}
+
+/** Records the bundle rt is running from as mattstack.appPath; refuses a DMG/translocated path. */
+function recordAppPath(root: string | null): boolean {
+  if (!root) {
+    info(TRAY_APP_BUNDLE, "rt is not running from inside the app — nothing to record");
+    return true;
+  }
+  if (appPathIsTransient(root)) {
+    fail(TRAY_APP_BUNDLE, `running from ${root} — drag mattstack.app to /Applications and run this again`);
+    return false;
+  }
+  try {
+    setSetting("mattstack.appPath", root, "machine");
+    ok(TRAY_APP_BUNDLE, `at ${root}`);
+  } catch (err: any) {
+    fail("mattstack.appPath", err?.message ?? String(err));
+  }
+  return true;
+}
+
+// ─── 2. rt on PATH: a symlink into the bundle ───────────────────────────────
+
+function installRtBinaryStep(root: string | null): void {
+  const dest = rtBinaryPath();
+  if (currentMode() === "dev") {
+    info("rt", `dev mode owns ${dest} — leaving the wrapper in place`);
+    return;
+  }
+  if (!root) {
+    info("rt", "not running from inside the app — skipping the ~/.local/bin/rt link");
+    return;
+  }
+  const target = join(root, "Contents", "MacOS", "rt");
+  let alreadyLinked = false;
+  try { alreadyLinked = existsSync(dest) && realpathSync(dest) === realpathSync(target); } catch { /* relink */ }
+  if (alreadyLinked) {
+    info("rt", `${dest} → ${target}`);
+    return;
+  }
+  try {
+    installRtBinary(target);
+    ok("rt", `${dest} → ${target}`);
+  } catch (err: any) {
+    fail("rt", err?.message ?? String(err));
+  }
+}
+```
+
+`findVsix`:
+```ts
+function findVsix(root: string | null): string | null {
+  if (!root) return null;
+  const candidate = join(root, "Contents", "Resources", "rt-context.vsix");
+  return existsSync(candidate) ? candidate : null;
+}
+```
+and `installExtensions(root: string | null)` passes it through.
+
+Legacy sweep — replace `legacySweepNeeded`/`runLegacySweep` with:
+```ts
+// ─── 0. Legacy sweep ─────────────────────────────────────────────────────────
+// Runs on every post-install. Each part is idempotent: booting out a job that
+// is not loaded is a no-op, removing a bundle that is not there is a no-op.
+// It must run BEFORE the app is launched and the daemon installed, or it
+// would boot out the registration it just created.
+
+function uid(): number { return process.getuid?.() ?? 0; }
+
+function runLegacySweep(root: string | null): boolean {
+  let swept = false;
+  // The pre-rebrand daemon label: nothing registers it any more; a stale BTM record can.
+  spawnSync("launchctl", ["bootout", `gui/${uid()}/com.rt.daemon`], { stdio: "pipe", env: process.env });
+
+  const rtTray = legacyTrayAppPaths().filter(existsSync);
+  if (rtTray.length > 0) {
+    info("legacy migration", "rt-tray.app found — removing");
+    spawnSync("osascript", ["-e", 'tell application "rt-tray" to quit'], { stdio: "pipe", timeout: 3_000, env: process.env });
+    spawnSync("pkill", ["-x", "rt-tray"], { stdio: "pipe", env: process.env });
+    for (const p of rtTray) spawnSync("rm", ["-rf", p], { stdio: "pipe", env: process.env });
+    ok("legacy migration", "rt-tray.app removed");
+    swept = true;
+  }
+
+  // Phase-1 location: a copy under ~/Applications while the real app runs from elsewhere.
+  const stale = legacyUserAppPath();
+  if (root && root !== stale && existsSync(stale)) {
+    info("legacy migration", `${stale} is a stale copy — removing`);
+    spawnSync("osascript", ["-e", `tell application "${TRAY_APP_NAME}" to quit`], { stdio: "pipe", timeout: 3_000, env: process.env });
+    spawnSync("pkill", ["-x", TRAY_APP_NAME], { stdio: "pipe", env: process.env });
+    // Its agent's BundleProgram points into the bundle being deleted; the new app re-registers it.
+    spawnSync("launchctl", ["bootout", `gui/${uid()}/com.mattstack.daemon`], { stdio: "pipe", env: process.env });
+    spawnSync("rm", ["-rf", stale], { stdio: "pipe", env: process.env });
+    ok("legacy migration", `${stale} removed`);
+    swept = true;
+  }
+  return swept;
+}
+```
+`reportMigrationOutcome` stays; it is called when `swept` is true (rename `migrating` → `swept`).
+
+`runPostInstall`:
+```ts
+export interface PostInstallOptions { bundleRoot?: string | null }
+
+export async function runPostInstall(opts: PostInstallOptions = {}): Promise<void> {
+  console.log("");
+  console.log("  rt post-install");
+  console.log("");
+
+  const root = opts.bundleRoot !== undefined ? opts.bundleRoot : bundleRootFromExec();
+  const swept = runLegacySweep(root);
+  if (!recordAppPath(root)) process.exit(2);
+  installRtBinaryStep(root);
+  installExtensions(root);
+
+  const trayDest = root ?? trayAppPath();
+  if (existsSync(trayDest)) {
+    spawnSync("open", [trayDest], { stdio: "pipe", env: process.env });
+    ok(TRAY_APP_BUNDLE, "launched — waiting for tray to start…");
+    await Bun.sleep(2_000);
+  }
+
+  await installDaemon();
+  installShellIntegrationStep();
+  repairShellWrapper();
+  await checkTccAccess();
+  if (swept) await reportMigrationOutcome();
+
+  console.log("");
+  console.log("  Done. Restart your terminal, then run: rt verify");
+  console.log("");
+}
+```
+Update the file's header docblock to describe the new shape (run from inside the bundle: record appPath, link rt, install the extension from Resources, daemon, shell integration). The `open` call is the one L1's `--no-launch` will gate; leave it as-is here.
+
+The existing sweep test's first case ("guarded: no bootout on a routine run") flips meaning: `com.rt.daemon` is now booted out on every run by design, while `com.mattstack.daemon` is booted out only when a stale `~/Applications` copy exists. Rewrite that test's assertions accordingly: `expect(log.filter((l) => l.startsWith("launchctl bootout") && l.includes("com.mattstack.daemon")).length).toBe(0)` on a clean HOME, and the `rt-tray` case keeps asserting the `osascript → pkill → rm -rf` order.
+
+- [ ] **Step 5: Run + typecheck + commit**
+
+Run: `bun test && bunx tsc --noEmit` → green (including `e2e` is not required here; `bun run test:e2e` still passes because first-run on a non-bundle `dist/rt` takes the "not running from inside the app" branches).
+
+```bash
+git add lib/dev-mode.ts lib/rt-paths.ts commands/post-install.ts lib/__tests__/dev-mode.test.ts lib/__tests__/rt-paths.test.ts lib/__tests__/dev-mode-handoff.test.ts lib/__tests__/post-install-sweep.test.ts
+git commit -m "MAT-383: rt links into the bundle — ~/.local/bin/rt symlink, mattstack.appPath recorded, stale ~/Applications copy swept
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 10: `rt update` is thin — ask the app (`POST /update/check`)
+
+**Files:**
+- Rewrite: `commands/update.ts`
+- Create: `commands/__tests__/update.test.ts`
+- Modify: `cli.ts:118-122` (comment only: "update asks the app; no first-run setup")
+
+**Interfaces:**
+- Consumes: `trayQuery(endpoint, method)` from `lib/daemon-client.ts`; `currentMode`.
+- Produces: `runUpdate(args, deps?)` where `deps = { trayQuery, currentMode, log, exit }` are injectable; exit codes: 0 asked, 1 dev mode / app absent / app too old.
+
+- [ ] **Step 1: Failing test**
+
+```ts
+// commands/__tests__/update.test.ts
+import { describe, expect, test } from "bun:test";
+import { runUpdate } from "../update.ts";
+
+function harness(res: any, mode: "dev" | "prod" = "prod") {
+  const lines: string[] = [];
+  let code: number | null = null;
+  const calls: string[] = [];
+  const deps = {
+    trayQuery: async (endpoint: string, method: string) => { calls.push(`${method} ${endpoint}`); return res; },
+    currentMode: () => mode,
+    log: (s: string) => { lines.push(s); },
+    exit: (c: number) => { code = c; throw new Error(`exit ${c}`); },
+  };
+  return { deps, lines, calls, code: () => code };
+}
+
+describe("rt update", () => {
+  test("asks mattstack.app to check for updates", async () => {
+    const h = harness({ ok: true });
+    await runUpdate([], h.deps);
+    expect(h.calls).toEqual(["POST /update/check"]);
+    expect(h.lines.join("\n")).toContain("asked mattstack.app");
+  });
+  test("app not running → tells the user to open it or download, exit 1", async () => {
+    const h = harness(null);
+    await expect(runUpdate([], h.deps)).rejects.toThrow("exit 1");
+    expect(h.lines.join("\n")).toContain("github.com/m4ttstack/rt/releases/latest");
+  });
+  test("app answers not-found → explains the app predates CLI-triggered updates, exit 1", async () => {
+    const h = harness({ ok: false, error: "not found" });
+    await expect(runUpdate([], h.deps)).rejects.toThrow("exit 1");
+    expect(h.lines.join("\n")).toContain("Check for Updates");
+  });
+  test("dev mode → refuses, exit 1, never calls the tray", async () => {
+    const h = harness({ ok: true }, "dev");
+    await expect(runUpdate([], h.deps)).rejects.toThrow("exit 1");
+    expect(h.calls).toEqual([]);
+  });
+});
+```
+
+Run: `bun test commands/__tests__/update.test.ts` → FAIL (second arg unsupported).
+
+- [ ] **Step 2: Rewrite `commands/update.ts`**
+
+```ts
+/**
+ * rt update — the app owns updates (Sparkle). This verb only asks it to
+ * check now, and says what to do when the app is not there to ask.
+ */
+import { currentMode as realCurrentMode } from "../lib/dev-mode.ts";
+import { trayQuery as realTrayQuery } from "../lib/daemon-client.ts";
+import { bold, dim, green, red, reset, yellow } from "../lib/tui.ts";
+
+export const RELEASES_URL = "https://github.com/m4ttstack/rt/releases/latest";
+
+export interface UpdateDeps {
+  trayQuery: (endpoint: string, method: "GET" | "POST") => Promise<{ ok: boolean; error?: string } | null>;
+  currentMode: () => "dev" | "prod";
+  log: (line: string) => void;
+  exit: (code: number) => never;
+}
+
+const realDeps: UpdateDeps = {
+  trayQuery: realTrayQuery,
+  currentMode: realCurrentMode,
+  log: (s) => console.log(s),
+  exit: (c) => process.exit(c),
+};
+
+export async function runUpdate(_args: string[], deps: UpdateDeps = realDeps): Promise<void> {
+  if (deps.currentMode() === "dev") {
+    deps.log(`\n  ${yellow}⚠${reset}  dev mode is active — you're running from local source.`);
+    deps.log(`  ${dim}Switch to prod first: rt settings dev-mode prod${reset}\n`);
+    deps.exit(1);
+  }
+  const res = await deps.trayQuery("/update/check", "POST");
+  if (!res) {
+    deps.log(`\n  ${red}✗${reset}  mattstack.app is not running, so there is nothing to ask.`);
+    deps.log(`  ${dim}Open mattstack.app (it checks for updates itself), or download the latest from${reset}`);
+    deps.log(`  ${bold}${RELEASES_URL}${reset}\n`);
+    deps.exit(1);
+  }
+  if (!res.ok) {
+    deps.log(`\n  ${red}✗${reset}  this mattstack.app can't be asked from the CLI (${res.error ?? "unknown"}).`);
+    deps.log(`  ${dim}Use the menu bar: mattstack → Check for Updates…${reset}\n`);
+    deps.exit(1);
+  }
+  deps.log(`\n  ${green}✓${reset}  asked mattstack.app to check for updates — watch the menu bar.\n`);
+}
+```
+(`RELEASES_API`, `releaseAssetName`, the tarball download and the `--post-install` re-exec are deleted; nothing else imports them.)
+
+- [ ] **Step 3: Run + commit**
+
+Run: `bun test commands/__tests__/update.test.ts lib/__tests__/module-registry.test.ts && bunx tsc --noEmit` → PASS.
+
+```bash
+git add commands/update.ts commands/__tests__/update.test.ts cli.ts
+git commit -m "MAT-383: rt update asks the app (POST /update/check); tarball updater removed
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 11: Bundled fzf first, `rt verify` app/link/vsix checks, terminal-notifier dropped
+
+**Files:**
+- Modify: `lib/fzf.ts`
+- Modify: `lib/__tests__/fzf.test.ts`
+- Modify: `commands/verify.ts:174-181` (fzf) and `:183-213` (tray app + new "rt link" + "bundled extension" checks)
+- Modify: `lib/notifier.ts:225-296` (osascript only), `lib/__tests__/notifier-fallback.test.ts`
+- Modify: `e2e/tests/verify.test.ts` only if a check name changed (none do; the new checks are additive)
+
+**Interfaces:**
+- Consumes: `bundledHelperPath("fzf")`, `appBundleRoot()`, `RT_BUNDLE_PATH` (Task 1); `rtBinaryPath` (dev-mode).
+- Produces: `resolveFzf(which?, bundled?)` — bundled path first, then PATH; `FZF_MISSING_MESSAGE` names the bundle; `__test__.setFallbackNotifier(argv0 | null)` replaces `setTerminalNotifierPath`.
+
+- [ ] **Step 1: fzf tests (replace the file)**
+
+```ts
+import { describe, test, expect } from "bun:test";
+import { resolveFzf, ensureFzf, FZF_MISSING_MESSAGE } from "../fzf.ts";
+
+describe("resolveFzf", () => {
+  test("prefers the fzf bundled inside mattstack.app", () => {
+    expect(resolveFzf(() => "/opt/homebrew/bin/fzf", () => "/Applications/mattstack.app/Contents/Helpers/fzf"))
+      .toBe("/Applications/mattstack.app/Contents/Helpers/fzf");
+  });
+  test("falls back to PATH when nothing is bundled (source runs, dev mode)", () => {
+    expect(resolveFzf(() => "/opt/homebrew/bin/fzf", () => null)).toBe("/opt/homebrew/bin/fzf");
+  });
+  test("null when neither exists", () => {
+    expect(resolveFzf(() => null, () => null)).toBeNull();
+  });
+});
+
+describe("ensureFzf", () => {
+  test("returns the resolved path when present", () => {
+    expect(ensureFzf(() => null, (msg) => { throw new Error(msg); }, () => "/x/fzf")).toBe("/x/fzf");
+  });
+  test("fails with an actionable message naming the bundle when missing", () => {
+    let captured = "";
+    expect(() => ensureFzf(() => null, (msg) => { captured = msg; throw new Error("would-exit"); }, () => null)).toThrow("would-exit");
+    expect(captured).toContain("fzf not found");
+    expect(captured).toContain("mattstack.app");
+  });
+});
+
+describe("FZF_MISSING_MESSAGE", () => {
+  test("says where rt looks and what to do", () => {
+    expect(FZF_MISSING_MESSAGE).toContain("Contents/Helpers/fzf");
+    expect(FZF_MISSING_MESSAGE).toContain("brew install fzf");
+  });
+});
+```
+
+- [ ] **Step 2: `lib/fzf.ts`**
+
+```ts
+/**
+ * fzf is a hard dependency of rt: every interactive picker shells out to it.
+ * rt uses the copy bundled inside mattstack.app by absolute path (ruling 8)
+ * and only falls back to PATH when it is not running from an install
+ * (source checkout, dev mode). Every fzf spawn site calls ensureFzf() first.
+ */
+import { bundledHelperPath } from "./bundle-layout.ts";
+import { bold, dim, yellow, reset } from "./tui.ts";
+
+type Which = (bin: string) => string | null;
+type Bundled = () => string | null;
+const defaultWhich: Which = (b) => Bun.which(b);
+const defaultBundled: Bundled = () => bundledHelperPath("fzf");
+
+/** Bundled fzf first, then PATH; null when neither. Injectable for tests. */
+export function resolveFzf(which: Which = defaultWhich, bundled: Bundled = defaultBundled): string | null {
+  return bundled() ?? which("fzf");
+}
+
+export const FZF_MISSING_MESSAGE =
+  `\n  ${yellow}fzf not found${reset}\n` +
+  `  ${dim}rt uses the fzf inside mattstack.app (Contents/Helpers/fzf) and found neither it nor an fzf on PATH.${reset}\n` +
+  `  ${dim}Reinstall mattstack.app, or${reset} ${bold}brew install fzf${reset}${dim} to use your own copy, then re-run.${reset}\n`;
+
+export function ensureFzf(
+  which: Which = defaultWhich,
+  fail: (msg: string) => never = (msg) => { console.error(msg); process.exit(1); },
+  bundled: Bundled = defaultBundled,
+): string {
+  const path = resolveFzf(which, bundled);
+  if (path) return path;
+  return fail(FZF_MISSING_MESSAGE);
+}
+```
+Check every `ensureFzf(` caller compiles unchanged (`grep -rn "ensureFzf(" lib commands`) — the new parameter is last and optional.
+
+- [ ] **Step 3: `commands/verify.ts`**
+
+Replace the fzf block:
+```ts
+  // ── fzf (bundled first, PATH fallback) ────────────────────────────────────
+  const { resolveFzf } = await import("../lib/fzf.ts");
+  const fzfPath = resolveFzf();
+  const fzfVersion = fzfPath ? cmd(`"${fzfPath}" --version`) : null;
+  if (fzfVersion) {
+    const where = fzfPath!.includes("/Contents/Helpers/") ? "bundled" : "PATH";
+    results.push(pass("fzf", `${fzfVersion} (${where}: ${fzfPath})`));
+  } else {
+    results.push(fail("fzf", "not found — reinstall mattstack.app (bundled) or brew install fzf"));
+  }
+```
+After the tray-app block (line ~213), add:
+```ts
+  // ── ~/.local/bin/rt links into the active bundle (prod only) ─────────────
+  if (mode === "prod") {
+    const { rtBinaryPath } = await import("../lib/dev-mode.ts");
+    const { RT_BUNDLE_PATH } = await import("../lib/bundle-layout.ts");
+    const link = rtBinaryPath();
+    let target: string | null = null;
+    try { target = readlinkSync(link); } catch { /* not a link or absent */ }
+    if (activeTrayPath && target === join(activeTrayPath, RT_BUNDLE_PATH)) {
+      results.push(pass("rt link", `${link} → ${target}`));
+    } else if (target) {
+      results.push(warn("rt link", `${link} → ${target} (expected ${activeTrayPath ? join(activeTrayPath, RT_BUNDLE_PATH) : "the installed app"}) — run: rt --post-install`));
+    } else {
+      results.push(warn("rt link", `${link} is not a symlink into ${activeTrayBundle} — run: rt --post-install`));
+    }
+  }
+
+  // ── The extension ships inside the app ───────────────────────────────────
+  if (activeTrayPath) {
+    const vsix = join(activeTrayPath, "Contents", "Resources", "rt-context.vsix");
+    results.push(existsSync(vsix)
+      ? pass("bundled extension", `rt-context.vsix in ${activeTrayBundle}`, "warning")
+      : warn("bundled extension", `rt-context.vsix missing from ${activeTrayBundle} — a pre-bundle build?`));
+  }
+```
+(add `readlinkSync` to the `fs` import.)
+
+- [ ] **Step 4: `lib/notifier.ts` — osascript only**
+
+Delete `_terminalNotifierPath`, `resolveTerminalNotifier`, and the Homebrew candidate list. `notifyFallback` becomes:
+```ts
+/** Fallback notifier executable; replaceable in tests with a fake that hangs. */
+let fallbackNotifier = "osascript";
+
+/** Direct notification via osascript (no queue); fire-and-forget with a kill escalation (MAT-222). */
+function notifyFallback(title: string, message: string, _url?: string): void {
+  const body = `${title}: ${message}`;
+  const argv = [fallbackNotifier, "-e", `display notification "${escapeAppleScript(body)}" with title "rt"`];
+  try {
+    const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const term = setTimeout(() => { try { proc.kill("SIGTERM"); } catch { /* exited */ } }, FALLBACK_TERM_MS);
+    const kill = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* exited */ } }, FALLBACK_KILL_MS);
+    void proc.exited.finally(() => { clearTimeout(term); clearTimeout(kill); });
+  } catch { /* notification is best-effort */ }
+}
+```
+and in `__test__`: replace `setTerminalNotifierPath` with
+```ts
+  setFallbackNotifier(path: string | null): void { fallbackNotifier = path ?? "osascript"; },
+```
+Update the module docblock line 12 (`terminal-notifier/osascript` → `osascript`) and line 301. In `lib/__tests__/notifier-fallback.test.ts`: `__test__.setFallbackNotifier(fakeHangingNotifier(15))` / `afterEach(() => __test__.setFallbackNotifier(null))`; rename the fake file to `osascript` inside `fakeHangingNotifier` (the name is cosmetic — the path is passed explicitly).
+
+- [ ] **Step 5: Run + commit**
+
+Run: `bun test lib/__tests__/fzf.test.ts lib/__tests__/notifier-fallback.test.ts lib/__tests__/notifier.test.ts commands/__tests__/verify.test.ts && bunx tsc --noEmit && grep -rn "terminal-notifier" lib commands README.md | wc -l` → tests PASS; grep count `0`.
+
+```bash
+git add lib/fzf.ts lib/__tests__/fzf.test.ts commands/verify.ts lib/notifier.ts lib/__tests__/notifier-fallback.test.ts
+git commit -m "MAT-383: bundled fzf by absolute path, rt verify checks the app link + bundled vsix, terminal-notifier dropped
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 12: Docs — README install/upgrade/requirements, CLAUDE.md, website install page, rt-release skill
+
+**Files:**
+- Modify: `README.md` (`## Install`, `### What Gets Installed`, `### Upgrade`, `## Requirements`, `### Testing the installer`, `### rt-tray`, `### Release process`)
+- Modify: `CLAUDE.md:3` (distribution sentence)
+- Modify: `website/docs/getting-started/install.mdx`
+- Modify: `skills/rt-release/SKILL.md`
+- Regenerate: `website/docs/reference/update.mdx` via `bun run docs:gen`
+
+**Interfaces:** none (prose). Every statement must match Tasks 1–11 (no tarballs, no tap, no tmux/terminal-notifier, DMG + `rt update` asks the app).
+
+- [ ] **Step 1: README**
+
+`## Install` becomes:
+```markdown
+## Install
+
+Download `mattstack-<version>.dmg` from the latest
+[GitHub Release](https://github.com/m4ttstack/rt/releases/latest), open it, and
+drag **mattstack.app** to `/Applications`. Launch it once: the menu-bar "m"
+appears and the setup window walks you through the rest (rt on your PATH, the
+daemon, the editor extension, permissions, your team).
+
+Headless (CI, a fresh machine over SSH):
+
+```bash
+ditto -x -k mattstack-<version>.zip /Applications
+/Applications/mattstack.app/Contents/MacOS/rt --post-install
+rt verify
+```
+
+`~/.local/bin/rt` is a symlink into the app bundle; `rt verify` reports the
+health of each piece.
+```
+`### What Gets Installed` table: `rt` binary → "Symlink `~/.local/bin/rt` → `mattstack.app/Contents/MacOS/rt`"; `rt-tray.app` row → `mattstack.app` "Menu bar app: setup, daemon health, notifications, Sparkle updates"; `fzf` + `tmux` row → "Bundled tools | `fzf`, `jq`, `gh`, `glab`, `bun`, a private `node`, `fast-browser` inside `Contents/Helpers` — used by rt by absolute path; none are put on your PATH unless you ask"; drop `tmux`.
+`### Upgrade`: "mattstack.app updates itself (Sparkle) and restarts its services when its version changes. `rt update` just asks the app to check now."
+`## Requirements`: macOS 14 or newer, Apple Silicon; Xcode Command Line Tools (git); `fzf` row → "bundled; a `brew install fzf` copy is used only when rt runs from source"; delete the `tmux` row; keep `chafa`/`kitten` optional rows.
+`### Testing the installer`: the numbered list becomes: records `mattstack.appPath`, links `~/.local/bin/rt`, installs `rt-context.vsix` from `Contents/Resources`, installs the daemon, writes shell integration.
+`### rt-tray`: add `scripts/fetch-deps.sh arm64` before `./build.sh release`, mention `RT_DAEMON_BIN=../dist/rt ./check-bundle.sh`, `./build.sh install` → `/Applications`.
+`### Release process`: "Push a version tag (`skills/rt-release`); CI compiles rt (arm64), fetches the pinned helpers, builds + signs + notarizes mattstack.app, produces `mattstack-<ver>.dmg` / `.zip`, signs the Sparkle appcast, publishes the Release, then installs from the zip on a fresh runner and runs `rt verify --ci`."
+
+- [ ] **Step 2: CLAUDE.md line 3**
+
+`Personal developer CLI built with Bun. Compiled to a standalone binary via \`bun build --compile\` and shipped inside mattstack.app (DMG first install, Sparkle updates); \`~/.local/bin/rt\` is a symlink into the bundle.`
+
+- [ ] **Step 3: website install.mdx** — mirror the README `## Install` + `## Upgrade` text (DMG, headless zip, `rt update` asks the app); table rows as in Step 1. Then `bun run docs:gen && bun run docs:check` (regenerates `reference/update.mdx` from the command tree; if `docs:check` flags drift elsewhere, fix only what this plan changed).
+
+- [ ] **Step 4: skills/rt-release/SKILL.md**
+
+- Intro paragraph: "…builds mattstack.app (arm64), notarizes it, attaches `mattstack-<ver>.dmg`, `mattstack-<ver>.zip`, the deltas, `appcast.xml` and `SHA256SUMS`, then installs from the zip on a fresh runner."
+- Step 1 gains two preconditions: `rt-tray/SUPublicEDKey` is committed and `gh secret list -R m4ttstack/rt` shows `APPLE_*` + `SPARKLE_ED_KEY`; if either is missing, stop and say so.
+- Step 8: assets to confirm are the five above; also "the `clean-room` job is green (the headless install proved `rt verify --ci`)" and "`curl -fsSL https://github.com/m4ttstack/rt/releases/latest/download/appcast.xml | grep sparkle:version` shows the new build number".
+- Guardrails: add "Never re-run `generate_appcast` by hand against a published release — CI is the only appcast writer; if a release is broken, cut the next tag."
+- Delete every `rt-darwin-*.tar.gz` mention.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add README.md CLAUDE.md website/docs skills/rt-release/SKILL.md
+git commit -m "MAT-383: docs — DMG install, Sparkle upgrade, bundled tools, new release train
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 13 (ORCHESTRATOR-ONLY / MATT): Entitlement measurement on a Developer-ID-signed build
+
+**Why:** §14 risk 1 and ruling-8 "start allow-jit only, test". Ad-hoc signatures do not enforce the hardened runtime, so only a Developer-ID build answers this.
+
+- [ ] **Step 1 (live machine, Developer ID in the login keychain):**
+```bash
+cd /Users/matt/Documents/GitHub/repo-tools-l4-wt
+bun build --compile ./cli.ts --outfile dist/rt && scripts/fetch-deps.sh arm64
+RT_DAEMON_BIN=$PWD/dist/rt rt-tray/build.sh release        # signs with Developer ID
+A=rt-tray/mattstack.app/Contents
+"$A/MacOS/rt" --version && "$A/MacOS/rt" verify --json >/dev/null; echo "rt exit $?"
+"$A/Helpers/bun" --version; "$A/Helpers/bun" -e 'console.log(1+1)'
+"$A/Helpers/node/bin/node" -e 'console.log(process.versions.node)'
+"$A/Helpers/node/bin/node" "$A/Helpers/fast-browser/bin/fast-browser.mjs" --help >/dev/null; echo "fb exit $?"
+for t in fzf jq gh glab; do "$A/Helpers/$t" --version >/dev/null && echo "$t ok"; done
+HOME=$(mktemp -d) "$A/MacOS/rt" nav --help >/dev/null 2>&1; echo "picker path exit $?"
+```
+- [ ] **Step 2:** If any Bun/Node binary dies with `SIGKILL`/`Code Signature Invalid`/`mmap` errors in Console, add `com.apple.security.cs.allow-unsigned-executable-memory` **for that tool only**: introduce `scripts/entitlements-jit-unsigned.plist` (jit + unsigned-exec-mem), a new `entitlements: "jit-unsigned"` value in `deps.lock` + `lib/bundle-layout.ts` (`DepsLockEntitlements`), build.sh's `sign_helper_tree` mapping it, and check-bundle's `check_signed` accepting it for that tool. If `rt` itself needs it, swap `ENTITLEMENTS_JIT` for rt only. Record the measured outcome per tool in the commit body.
+- [ ] **Step 3:** `RT_DAEMON_BIN=$PWD/dist/rt rt-tray/check-bundle.sh` → 0 failed with Developer ID (the runtime-flag assertions now execute). Commit `MAT-383: entitlements measured on a Developer ID build — <outcome>`.
+
+### Task 14 (ORCHESTRATOR-ONLY / MATT): Xcode 26 path + Matt's machine cutover
+
+- [ ] After Matt installs Xcode 26 and L3's `rt-tray/project.yml` exists: `sudo xcode-select -s /Applications/Xcode.app && cd rt-tray && RT_DAEMON_BIN=../dist/rt ./check-bundle.sh` — build.sh must pick `xcode` automatically (log line "with xcode"), and both flavors must pass the same assertions as the swift path. Then `RT_BUILD_TOOL=swift ./check-bundle.sh` must still pass (the CLT path stays the CI default until the Xcode path has produced one green release).
+- [ ] Cutover of the live machine (identifier `rt-daemon` → `rt` invalidates launchd's cached launch constraints for the old job): `rt-tray/build.sh install` (prod) then `rt daemon install`; if the agent fails with `EX_CONFIG`/"launch constraint", `launchctl bootout gui/$UID/com.mattstack.daemon; sfltool resetbtm` then re-open the app and approve it in Login Items once. Re-grant Full Disk Access to `/Applications/mattstack.app` (V3). Run `rt verify`.
+
+### Task 15 (ORCHESTRATOR-ONLY): Dry run, then the first tagged release
+
+- [ ] `gh workflow run release.yml -R m4ttstack/rt --ref goodwinmattheweric/mat-383-release-pipeline` (dry run) — the `release` job must reach "Upload dry-run artifacts"; `clean-room` depends on L7's `scripts/e2e-cleanroom.sh` (fails with "No such file" until L7 merges; that failure is expected and reported, not patched around).
+- [ ] Merge order: L3's `project.yml` is not required for the swift path; L7's script is required for a green clean-room job; Task 7's key is required for a tag.
+- [ ] First tag via `skills/rt-release`; confirm assets, `appcast.xml` reachable at the `latest/download` URL, `clean-room` green, and one manual Sparkle update on Matt's machine from the previous build (VM layer b is L7's).
+
+---
+
+## Self-review
+
+**Spec coverage (L4 scope items 1–8 from the brief, against §2/§7/§8/§11/§12.2/§14):**
+1. Identity freeze — Task 3 (rt name + identifier, LaunchAgent, LSMin 14, URL types, numeric CFBundleVersion, labels unchanged, dev shim named rt). ✔
+2. deps.lock + fetch-deps.sh + Helpers bundling + per-helper signing/entitlements, pending placeholders — Tasks 2, 4, 13. ✔
+3. build.sh wraps xcodebuild with CLT fallback; Sparkle embed + rpath + inside-out signing; SUFeedURL/SUPublicEDKey injection (file or `SPARKLE_PUBLIC_ED_KEY`) — Tasks 4, 5, 14. ✔
+4. DMG + notarize + staple; zip enclosure via ditto — Task 6 (+ Task 8 wiring). ✔
+5. generate_appcast in CI with `SPARKLE_ED_KEY`, last 3 zips for deltas, host decided (Release asset via `latest/download`), DMG+zip uploaded — Tasks 6, 7, 8. ✔
+6. release.yml rewrite incl. clean-room job (calls L7's script with `--post-install --non-interactive --team-of-one --no-launch`; `rt verify --ci`) — Task 8. ✔ Tarball dropped (Decision 2). ✔
+7. `rt update` thin; `installRtBinary` → symlink; `trayAppPath` via `mattstack.appPath`; legacy sweep covers `~/Applications/mattstack.app` + ghost `com.rt.daemon`; check-bundle asserts the new layout — Tasks 3, 9, 10. ✔ fzf by absolute path, verify app/link/vsix, terminal-notifier drop — Task 11. ✔
+8. README/CLAUDE.md/website/rt-release skill; tap references gone — Task 12. ✔
+Coordinator additions (a)–(e) — Global Constraints + Tasks 4, 5, 8. ✔
+§8 agent `EnvironmentVariables.PATH` = Helpers dir — Task 4. ✔ `com.mattstack.deck.plist` is L3/L5's (not shipped by L4; build.sh adds no second plist). §14 risk 1 — Task 13. ✔
+
+**Placeholder scan:** the only deferred values are the outcomes of ORCHESTRATOR tasks (entitlement measurement, first notarized run) and L7's script, each named explicitly. `deps.lock` carries real hashes computed from the real URLs.
+
+**Type/name consistency:** `bundleRootFromExec`/`appBundleRoot`/`bundledHelperPath`/`readDepsLock`/`RT_BUNDLE_PATH`/`DEPS_LOCK_BUNDLE_PATH` (Task 1) are the names used in Tasks 9, 11; `installRtBinary(src)` keeps its signature (Task 9 ↔ settings.ts:478); `trayAppPath(exists?)`/`devTrayAppPath(exists?)` (Task 9) match the handoff test rewrite; `runUpdate(args, deps)` (Task 10); `__test__.setFallbackNotifier` (Task 11); build.sh env names `RT_DAEMON_BIN RT_VSIX RT_VERSION RT_REQUIRE_DEPS SPARKLE_PUBLIC_ED_KEY RT_BUILD_TOOL` (Task 4 ↔ Task 8); artifact names `mattstack-<ver>.{dmg,zip}` (Tasks 6, 8, 12); `check-bundle.sh --app <path>` (Task 3 ↔ Task 8).
+
+## Open questions
+
+1. **Appcast host fallback.** If the `latest/download` redirect ever misbehaves for Sparkle (or Matt wants pre-release channels), switch to GitHub Pages: enable Pages with `build_type=workflow` once (`gh api -X POST repos/m4ttstack/rt/pages -f build_type=workflow`), add an `actions/deploy-pages` step uploading `out/appcast.xml`, and change `SU_FEED_URL` in build.sh + the check-bundle assertion. One constant, one step.
+2. **CFBundleVersion scheme vs. the contract's example.** The setup contract shows `"build": 2080` for 2.8.0; this plan uses `2008000` (major·1e6 + minor·1e3 + patch) so patch ≥ 10 stays monotonic. L3's `GET /version` should return `CFBundleVersion` verbatim; the contract example is illustrative — confirm with L1/L3.
+3. **xcodebuild archive/export vs. build.** Ruling 6 says "build.sh wraps xcodebuild"; this plan wraps `xcodebuild build` and keeps our own inside-out signing (Decision 3). If Matt wants an `.xcarchive` for symbolication, add `-archivePath` to the same command later; signing still stays in build.sh.
+4. **fast-browser artifact.** Bundled from npm `0.1.0-alpha.11` today; L5 may publish a different artifact (e.g. a tarball with the Playwright runtime). When it does, only the `deps.lock` row changes. Its runtime setup (`~/.fast-browser/runtime`, extension side-load) remains L1's `fastbrowser.setup` step.
+5. **Dev flavor Helpers.** The plan bundles Helpers into `mattstack-dev.app` too (same code path, realistic dev testing, ~300 MB extra on disk). If that is unwanted, gate `bundle_helpers` on `IS_DEV=false` and relax the dev assertions in check-bundle.
+6. **`--no-launch` / `--non-interactive` / `--team-of-one`** are L1's flags; the workflow passes them through L7's script. Until L1 lands, `--post-install` on a runner still `open`s the app (as today's `test-install` does); harmless, but the clean-room job's daemon checks stay at "warn".
+7. **`rt-tray/*.xcodeproj/` in .gitignore** assumes L3 regenerates the project from `project.yml` (ruling 6). If L3 commits the project, drop that line.
+8. **Deck's LaunchAgent plist** (`com.mattstack.deck.plist`, §8) is not added by L4; when L5/L3 ship it, build.sh's LaunchAgent block needs a second templated plist and check-bundle a second assertion — a 10-line follow-up in the L5 cutover.
+9. **Local `appcast.sh` dry run** needs a throwaway EdDSA key (`generate_keys` writes to the login Keychain and prompts). Task 6 leaves the first real appcast run to Task 15 rather than prompting implementers' keychains.
