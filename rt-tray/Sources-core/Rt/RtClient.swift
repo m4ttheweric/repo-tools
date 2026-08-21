@@ -13,11 +13,7 @@ public struct RtResult: Sendable {
         try JSONDecoder().decode(T.self, from: stdout)
     }
     /// Exit 2 carries `{ "error": {...} }` on stdout.
-    public var userError: RtUserError? {
-        guard exitCode == 2 else { return nil }
-        return (try? JSONDecoder().decode(ErrorEnvelope.self, from: stdout))?.error
-            ?? RtUserError(code: nil, message: String(decoding: stderr.prefix(2000), as: UTF8.self))
-    }
+    public var userError: RtUserError? { userError(redactStderr: false) }
 
     /// Copy for a non-`userError` failure: a nonzero exit gets a trimmed
     /// stderr excerpt (real signal about what broke); exit 0 with no usable
@@ -123,7 +119,11 @@ public final class RtClient: RtRunning, @unchecked Sendable {
             let p = makeProcess(args)
             let out = Pipe(), err = Pipe(), inPipe = Pipe()
             p.standardOutput = out; p.standardError = err; p.standardInput = inPipe
-            let state = StreamDrainState(continuation)
+            let outHandle = out.fileHandleForReading, errHandle = err.fileHandleForReading
+            let state = StreamDrainState(continuation) {
+                outHandle.readabilityHandler = nil
+                errHandle.readabilityHandler = nil
+            }
 
             // The readability handler is the ONE reader of each fd. Process exit
             // and pipe EOF are independent events in either order, so nothing
@@ -152,8 +152,6 @@ public final class RtClient: RtRunning, @unchecked Sendable {
             p.terminationHandler = { proc in state.exited(proc.terminationStatus) }
 
             do { try p.run() } catch {
-                out.fileHandleForReading.readabilityHandler = nil
-                err.fileHandleForReading.readabilityHandler = nil
                 state.failedToLaunch(RtClientError.spawnFailed(String(describing: error)))
                 return
             }
@@ -169,14 +167,26 @@ public final class RtClient: RtRunning, @unchecked Sendable {
 /// single owner, every line is yielded before the stream finishes, and the
 /// continuation finishes exactly once. Finishing waits for both pipes to reach
 /// EOF *and* the process to exit, in whatever order those land; finishing on
-/// exit alone would strand bytes the reader had not been handed yet.
+/// exit alone would strand bytes the reader had not been handed yet. A grace
+/// timer bounds that wait, since a pipe an outliving grandchild holds may never
+/// reach EOF at all.
 private final class StreamDrainState: @unchecked Sendable {
+    private enum Outcome { case clean, failed(Int32, String) }
+
     /// Only this much stderr can reach the error copy; the rest is read and
     /// dropped so a chatty child never blocks on a full pipe.
     private static let stderrCap = 4000
+    /// A grandchild that inherited rt's pipes holds them open past rt's exit,
+    /// so EOF may never arrive. After this long the exit status becomes the
+    /// answer on its own — a bounded tail rather than a stream that never ends
+    /// and a Process/Pipe/continuation cycle that never releases.
+    private static let exitGrace = DispatchTimeInterval.seconds(2)
 
     private let lock = NSLock()
     private let continuation: AsyncThrowingStream<String, Error>.Continuation
+    /// Nils both readabilityHandlers, breaking the handler→state→handle cycle.
+    /// Invoked only outside the lock: a reader callback may be waiting on it.
+    private let releaseReaders: @Sendable () -> Void
     private var splitter = NDJSONSplitter()
     private var stderrBytes = Data()
     private var stdoutAtEOF = false
@@ -184,8 +194,10 @@ private final class StreamDrainState: @unchecked Sendable {
     private var exitStatus: Int32?
     private var finished = false
 
-    init(_ continuation: AsyncThrowingStream<String, Error>.Continuation) {
+    init(_ continuation: AsyncThrowingStream<String, Error>.Continuation,
+         releaseReaders: @escaping @Sendable () -> Void) {
         self.continuation = continuation
+        self.releaseReaders = releaseReaders
     }
 
     func appendStdout(_ data: Data) {
@@ -194,10 +206,12 @@ private final class StreamDrainState: @unchecked Sendable {
     }
 
     func stdoutClosed() {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         if let tail = splitter.flush() { continuation.yield(tail) }
         stdoutAtEOF = true
-        finishIfSettled()
+        let outcome = settle()
+        lock.unlock()
+        deliver(outcome)
     }
 
     func appendStderr(_ data: Data) {
@@ -207,34 +221,74 @@ private final class StreamDrainState: @unchecked Sendable {
     }
 
     func stderrClosed() {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         stderrAtEOF = true
-        finishIfSettled()
+        let outcome = settle()
+        lock.unlock()
+        deliver(outcome)
     }
 
     func exited(_ status: Int32) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         exitStatus = status
-        finishIfSettled()
+        let outcome = settle()
+        lock.unlock()
+        if let outcome { deliver(outcome); return }
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.exitGrace) { [weak self] in
+            self?.finishOnExitStatusAlone()
+        }
     }
 
     /// The process never started, so neither EOF nor termination will ever fire.
     func failedToLaunch(_ error: Error) {
-        lock.lock(); defer { lock.unlock() }
-        guard !finished else { return }
+        lock.lock()
+        let first = !finished
         finished = true
+        lock.unlock()
+        guard first else { return }
         continuation.finish(throwing: error)
+        releaseReaders()
     }
 
-    private func finishIfSettled() {
-        guard !finished, stdoutAtEOF, stderrAtEOF, let status = exitStatus else { return }
+    /// The grace period expired with a pipe still open. Whatever is holding it
+    /// is not rt, so the exit status is all the answer there will ever be.
+    private func finishOnExitStatusAlone() {
+        lock.lock()
+        guard !finished, let status = exitStatus else { lock.unlock(); return }
+        if let tail = splitter.flush() { continuation.yield(tail) }
+        stdoutAtEOF = true
+        stderrAtEOF = true
         finished = true
+        let outcome = outcome(for: status)
+        lock.unlock()
+        deliver(outcome)
+    }
+
+    /// Caller holds the lock. Returns the outcome only for the one call that
+    /// closes the last of {stdout EOF, stderr EOF, exit}.
+    private func settle() -> Outcome? {
+        guard !finished, stdoutAtEOF, stderrAtEOF, let status = exitStatus else { return nil }
+        finished = true
+        return outcome(for: status)
+    }
+
+    private func outcome(for status: Int32) -> Outcome {
         switch status {
-        case 0, 2: continuation.finish()
-        default:
-            continuation.finish(throwing: RtClientError.exited(
-                status, stderr: String(decoding: stderrBytes.prefix(Self.stderrCap), as: UTF8.self)))
+        case 0, 2: return .clean
+        default: return .failed(status, String(decoding: stderrBytes.prefix(Self.stderrCap), as: UTF8.self))
         }
+    }
+
+    /// Runs outside the lock. Safe because `finished` implies both EOFs, so no
+    /// reader can still be yielding by the time this finishes the stream.
+    private func deliver(_ outcome: Outcome?) {
+        guard let outcome else { return }
+        switch outcome {
+        case .clean: continuation.finish()
+        case .failed(let status, let stderr):
+            continuation.finish(throwing: RtClientError.exited(status, stderr: stderr))
+        }
+        releaseReaders()
     }
 }
 

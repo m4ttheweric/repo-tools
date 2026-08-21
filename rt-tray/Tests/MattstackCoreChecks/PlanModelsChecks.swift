@@ -31,29 +31,29 @@ let planModelsChecks: [Check] = [
         let plan = try JSONDecoder().decode(Plan.self, from: Data(samplePlanJSON.utf8))
         c.expectEqual(plan.contract, 1)
         c.expectEqual(plan.team.mode, .join)
-        c.expectEqual(plan.groups.count, 2)
-        c.expectEqual(plan.groups[0].rows[0].status, .needsYou)
-        c.expectEqual(plan.groups[0].rows[0].action?.type, .openSettings)
-        c.expectEqual(plan.groups[0].rows[0].action?.target, "fda")
-        c.expectEqual(plan.groups[0].rows[0].recheck, .onActivate)
-        c.expectEqual(plan.groups[1].rows[0].action?.fields?.first?.secret, true)
-        c.expectEqual(plan.groups[1].rows[0].action?.alternatives?.first?.id, "use-gh")
+        try c.requireEqual(plan.groups.map { $0.rows.count }, [2, 2])
+        let fda = plan.groups[0].rows[0], gitlab = plan.groups[1].rows[0]
+        c.expectEqual(fda.status, .needsYou)
+        c.expectEqual(fda.action?.type, .openSettings)
+        c.expectEqual(fda.action?.target, "fda")
+        c.expectEqual(fda.recheck, .onActivate)
+        c.expectEqual(gitlab.action?.fields?.first?.secret, true)
+        c.expectEqual(gitlab.action?.alternatives?.first?.id, "use-gh")
         c.expectEqual(plan.requiredMissing, ["perm.fda", "account.gitlab"])
         c.expectEqual(plan.canInstall, false)
     },
     Check("unknown action type, status, and kind degrade instead of failing the whole plan") { c in
-        let plan = try JSONDecoder().decode(Plan.self, from: Data(samplePlanJSON.utf8))
-        let chrome = plan.groups[1].rows[1]
-        c.expectEqual(chrome.action?.type, .unknown)
-        var lenient = samplePlanJSON
-        lenient = lenient.replacingOccurrences(of: "\"status\": \"skipped\"", with: "\"status\": \"brand-new\"")
-        let plan2 = try JSONDecoder().decode(Plan.self, from: Data(lenient.utf8))
-        c.expectEqual(plan2.groups[1].rows[1].status, .error)
-        var lenientKind = samplePlanJSON
-        lenientKind = lenientKind.replacingOccurrences(of: "\"id\": \"tool.chrome\", \"kind\": \"tool\"",
-                                                        with: "\"id\": \"tool.chrome\", \"kind\": \"brand-new-kind\"")
-        let plan3 = try JSONDecoder().decode(Plan.self, from: Data(lenientKind.utf8))
-        c.expectEqual(plan3.groups[1].rows[1].kind, .info)
+        func chromeRow(_ json: String) throws -> PlanRow {
+            let plan = try JSONDecoder().decode(Plan.self, from: Data(json.utf8))
+            return try c.requireSome(plan.groups.flatMap(\.rows).first { $0.id == "tool.chrome" },
+                                     "the degraded row must survive decoding")
+        }
+        c.expectEqual(try chromeRow(samplePlanJSON).action?.type, .unknown)
+        let lenient = samplePlanJSON.replacingOccurrences(of: "\"status\": \"skipped\"", with: "\"status\": \"brand-new\"")
+        c.expectEqual(try chromeRow(lenient).status, .error)
+        let lenientKind = samplePlanJSON.replacingOccurrences(of: "\"id\": \"tool.chrome\", \"kind\": \"tool\"",
+                                                              with: "\"id\": \"tool.chrome\", \"kind\": \"brand-new-kind\"")
+        c.expectEqual(try chromeRow(lenientKind).kind, .info)
     },
     Check("Plan round-trips through the encoder") { c in
         let plan = try JSONDecoder().decode(Plan.self, from: Data(samplePlanJSON.utf8))

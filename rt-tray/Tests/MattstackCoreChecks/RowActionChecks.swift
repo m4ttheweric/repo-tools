@@ -42,4 +42,22 @@ let rowActionChecks: [Check] = [
         c.expect(!RtClientError.spawnFailed("posix_spawn failed: /Users/matt/secret-path").copy.contains("secret-path"))
         c.expectEqual(RtClientError.exited(7, stderr: "leaked stderr").copy, "rt exited unexpectedly (exit 7).")
     },
+    Check("userError's envelope-less exit 2 withholds stderr when the verb carried a secret") { c in
+        let malformed = RtResult(exitCode: 2, stdout: Data("not json".utf8),
+                                 stderr: Data("bad token: glpat-xyz-should-not-leak".utf8))
+        let redacted = try c.requireSome(malformed.userError(redactStderr: true))
+        c.expect(!redacted.message.contains("glpat-xyz"), "the stderr fallback must not echo a stdin secret")
+        c.expect(redacted.message.contains("details withheld"))
+        c.expect(malformed.userError(redactStderr: false)?.message.contains("glpat-xyz") == true,
+                 "non-secret verbs keep the stderr fallback")
+        c.expectEqual(malformed.userError?.message, malformed.userError(redactStderr: false)?.message,
+                      "the unlabeled accessor matches redactStderr:false")
+
+        // A real envelope is rt's own user-facing copy: redaction must not eat it.
+        let enveloped = RtResult(exitCode: 2, stdout: Data(#"{"contract":1,"error":{"code":"no-access","message":"ask the owner"}}"#.utf8),
+                                 stderr: Data("glpat-xyz-should-not-leak".utf8))
+        c.expectEqual(enveloped.userError(redactStderr: true), RtUserError(code: "no-access", message: "ask the owner"))
+        c.expect(RtResult(exitCode: 0, stdout: Data(), stderr: Data()).userError(redactStderr: true) == nil,
+                 "exit 0 is never a user error")
+    },
 ]

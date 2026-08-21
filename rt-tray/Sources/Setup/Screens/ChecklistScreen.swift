@@ -81,7 +81,7 @@ struct ChecklistScreen: View {
                 let verb = args.joined(separator: " ")
                 do {
                     let result = try await rt.run(args, stdin: stdin)
-                    if let e = result.userError {
+                    if let e = result.userError(redactStderr: redactStderr) {
                         TrayLog.warn("row action failed", ["row": row.id, "err": e.message])
                         actionError = (row.id, e.message)
                     } else if result.exitCode != 0 {
