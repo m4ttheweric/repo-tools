@@ -13,10 +13,8 @@ import { getDaemonLogger } from "./../daemon-logger.ts";
 import { runCapture } from "../subprocess.ts";
 
 const log = (await getDaemonLogger()).childLogger("process-scan");
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
 import { homedir } from "os";
-import { rtDir } from "../rt-paths.ts";
+import { getSetting } from "../settings/resolve.ts";
 import {
   loadRepoIndex,
   buildWorktreeMap,
@@ -88,12 +86,12 @@ export interface ScannerConfig {
   graceMs?: number;
 }
 
-const RUNAWAY_CONFIG_PATH = join(rtDir(), "runaway-config.json");
-
+/** A resolver throw (unexpandable ${...} variable) degrades to {} — the same
+    "use the DEFAULT_* constants" fallback a missing/corrupt file gave today. */
 export function loadRunawayConfig(): ScannerConfig {
   try {
-    if (!existsSync(RUNAWAY_CONFIG_PATH)) return {};
-    return JSON.parse(readFileSync(RUNAWAY_CONFIG_PATH, "utf8"));
+    const raw = getSetting<ScannerConfig | undefined>("rt.runaway").value;
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   } catch {
     return {};
   }
@@ -247,8 +245,8 @@ export class SystemProcessScanner {
   private lastScanAt: number | null = null;
 
   constructor(config: ScannerConfig = {}) {
-    const diskConfig = loadRunawayConfig();
-    const merged = { ...diskConfig, ...config };
+    const storeConfig = loadRunawayConfig();
+    const merged = { ...storeConfig, ...config };
     this.config = {
       cpuThreshold: merged.cpuThreshold ?? DEFAULT_CPU_THRESHOLD,
       sustainMs: merged.sustainMs ?? DEFAULT_SUSTAIN_MS,

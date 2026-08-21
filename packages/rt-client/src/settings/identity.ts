@@ -8,7 +8,7 @@
  * the same identity. A remote that doesn't match a recognized host form
  * (bare local paths are the main case — repos.json has two) normalizes to
  * null, meaning repo-scoped sections are unreachable for it and only global
- * scopes + legacy apply. That's an honest degrade, not a crash.
+ * scopes apply. That's an honest degrade, not a crash.
  *
  * Three entry points:
  *  - `normalizeRemote` is the pure string transform, no I/O.

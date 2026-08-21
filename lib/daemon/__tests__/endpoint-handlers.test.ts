@@ -1,6 +1,6 @@
-import { describe, expect, test, beforeEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { execSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import pino from "pino";
@@ -11,29 +11,59 @@ import { createEndpointHandlers, releaseEndpointsForWorktree } from "../handlers
 import type { HandlerContext } from "../handlers/types.ts";
 
 /**
- * The daemon's repo index, as the handlers see it. Mutable so a test can
- * register a repo path before claiming: the name→path→identity hop is what
- * makes the settings stores' `repos.<identity>` sections reachable (RT-47).
- * A repo absent from here derives a null identity, which is the legacy-only
- * path every other test in this file rides.
+ * The daemon's repo index, as the handlers see it. Reset per test alongside
+ * HOME (beforeEach): the name→path→identity hop is what makes the settings
+ * stores' `repos.<identity>` sections reachable (RT-47).
  */
-const repoIndex: RepoIndex = {};
-const ctx = { log: pino({ level: "silent" }), repoIndex: () => repoIndex } as unknown as HandlerContext;
+let repoIndex: RepoIndex = {};
+let ctx: HandlerContext;
 const fakeProbes = async () => ({ listeners: new Set<number>(), pidAlive: () => true, canBind: () => true });
 
-function declareRoles(repo: string): void {
-  mkdirSync(repoDataDir(repo), { recursive: true });
-  writeFileSync(join(repoDataDir(repo), "config.json"), JSON.stringify({
-    roles: {
-      backend: { pool: [{ from: 10400, to: 10402 }], env: { PORT: "${port}" } },
-      portal: { pool: [4001, 5001], needs: ["backend"] },
-    },
-  }));
+const DEFAULT_ROLES = {
+  backend: { pool: [{ from: 10400, to: 10402 }], env: { PORT: "${port}" } },
+  portal: { pool: [4001, 5001], needs: ["backend"] },
+};
+
+/**
+ * Registers a real git repo (with a fake-but-derivable remote) for `repoName`
+ * and declares `roles` for it in the team store, keyed by the identity that
+ * remote normalizes to — the only path a claim can reach a repo's roles
+ * through now that the legacy per-repo config.json rung is gone.
+ */
+function declareRoles(repoName: string, roles: unknown = DEFAULT_ROLES): void {
+  const repoPath = mkdtempSync(join(tmpdir(), `rt-endpoint-${repoName}-`));
+  execSync("git init -q", { cwd: repoPath });
+  execSync(`git remote add origin git@rttest:${repoName}.git`, { cwd: repoPath });
+  repoIndex[repoName] = repoPath;
+
+  const identity = `rttest/${repoName}`;
+  const store = teamSettingsPath("acme");
+  mkdirSync(dirname(store), { recursive: true });
+  let existing: Record<string, unknown> = {};
+  try {
+    existing = JSON.parse(readFileSync(store, "utf8"));
+  } catch { /* absent or malformed — start fresh */ }
+  const repos = { ...(existing.repos as Record<string, unknown> ?? {}), [identity]: { "rt.roles": roles } };
+  writeFileSync(store, JSON.stringify({ ...existing, repos }));
 }
 
 describe("endpoint handlers", () => {
+  const origHome = process.env.HOME;
+  let home: string;
   let handlers: ReturnType<typeof createEndpointHandlers>;
-  beforeEach(() => { handlers = createEndpointHandlers(ctx, { probes: fakeProbes }); });
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-endpoint-handlers-")));
+    process.env.HOME = home;
+    repoIndex = {};
+    ctx = { log: pino({ level: "silent" }), repoIndex: () => repoIndex } as unknown as HandlerContext;
+    handlers = createEndpointHandlers(ctx, { probes: fakeProbes });
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
 
   test("claim allocates, lookup sees it, refs pull the needed role into existence", async () => {
     declareRoles("repoA");
@@ -47,60 +77,21 @@ describe("endpoint handlers", () => {
   });
 
   /**
-   * The path that breaks `pnpm start` if it regresses: roles declared ONLY in
-   * a settings store, reached through the repo index → `deriveRepoIdentity` →
-   * `repos.<identity>` chain. Every other claim test here rides the legacy
-   * per-repo config.json, so without this one the whole store side of the
-   * daemon claim handler is untested.
-   *
-   * A real `git init` + remote, not a stubbed derivation: the identity hop is
-   * an actual `git config --get remote.origin.url` capture, and faking it
-   * would skip exactly the normalization this test is here to prove.
-   *
-   * This is the ONE test in the file that writes a settings STORE, so it runs
-   * under its own HOME (and drops its repo-index entry afterwards). The
-   * bunfig preload gives the whole run a single shared temp HOME; a team store
-   * written into that shared tree would make `listTeams()` non-empty for every
-   * later suite in the process, which is exactly the cross-suite leak the
-   * per-test-HOME rule exists to prevent.
+   * A repo with no index entry derives a null identity, so its store section
+   * (if any) is unreachable — the honest degrade for an unregistered repo.
    */
   test("claim resolves roles from a settings store section (repoIndex → identity → repos.<identity>)", async () => {
-    const priorHome = process.env.HOME;
-    process.env.HOME = mkdtempSync(join(tmpdir(), "rt-endpoint-store-home-"));
-    try {
-      const repoPath = mkdtempSync(join(tmpdir(), "rt-endpoint-store-repo-"));
-      execSync("git init -q", { cwd: repoPath });
-      execSync("git remote add origin git@gitlab.com:fake/store-claim-repo.git", { cwd: repoPath });
-      repoIndex["repoStore"] = repoPath;
+    declareRoles("repoStore", { web: { pool: [{ from: 10600, to: 10602 }], env: { PORT: "${port}" } } });
 
-      // No repos/repoStore/config.json anywhere — the legacy rung is empty, so
-      // a port can only come from the store.
-      const store = teamSettingsPath("acme");
-      mkdirSync(dirname(store), { recursive: true });
-      writeFileSync(store, JSON.stringify({
-        repos: {
-          "gitlab.com/fake/store-claim-repo": {
-            "rt.roles": { web: { pool: [{ from: 10600, to: 10602 }], env: { PORT: "${port}" } } },
-          },
-        },
-      }));
+    const r = await handlers["endpoint:claim"]({ repo: "repoStore", worktree: "/wt/store", role: "web", pid: 11 });
+    expect(r.ok).toBe(true);
+    expect(r.data.port).toBe(10600);
 
-      const r = await handlers["endpoint:claim"]({ repo: "repoStore", worktree: "/wt/store", role: "web", pid: 11 });
-      expect(r.ok).toBe(true);
-      expect(r.data.port).toBe(10600);
+    const lk = await handlers["endpoint:lookup"]({ repo: "repoStore", worktree: "/wt/store", role: "web" });
+    expect(lk.data).toMatchObject({ claimed: true, port: 10600 });
 
-      const lk = await handlers["endpoint:lookup"]({ repo: "repoStore", worktree: "/wt/store", role: "web" });
-      expect(lk.data).toMatchObject({ claimed: true, port: 10600 });
-
-      // …and a repo with no index entry still derives a null identity, so this
-      // store's repo section cannot leak into the legacy-rung tests around it.
-      const other = await handlers["endpoint:claim"]({ repo: "repoUnindexed", worktree: "/wt/store", role: "web" });
-      expect(other).toMatchObject({ ok: false, error: 'role "web" is not declared for repo "repoUnindexed"' });
-    } finally {
-      delete repoIndex["repoStore"];
-      if (priorHome === undefined) delete process.env.HOME;
-      else process.env.HOME = priorHome;
-    }
+    const other = await handlers["endpoint:claim"]({ repo: "repoUnindexed", worktree: "/wt/store", role: "web" });
+    expect(other).toMatchObject({ ok: false, error: 'role "web" is not declared for repo "repoUnindexed"' });
   });
 
   test("unknown role and unknown repo fail with named errors", async () => {

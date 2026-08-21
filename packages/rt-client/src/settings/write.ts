@@ -1,7 +1,7 @@
 /**
  * The settings write path (RT-47): `setSetting` — a single, comment-preserving
- * write into one of the three AUTHORED stores (user/team/machine; `legacy` and
- * `default` are read-only rungs and never appear here).
+ * write into one of the three AUTHORED stores (user/team/machine; `default`
+ * is a read-only rung and never appears here).
  *
  * Writes go through jsonc-parser's `modify`/`applyEdits` rather than
  * parse-mutate-stringify, so existing comments and formatting in the store
@@ -10,7 +10,7 @@
  * document — including comments — is untouched text).
  *
  * JSONPath segments are literal object keys, not `.`-namespaced walks: a
- * global write targets `[key]` (e.g. `["rt.llm"]`) and a repoScoped write
+ * global write targets `[key]` (e.g. `["rt.hooks"]`) and a repoScoped write
  * targets `["repos", identity, key]`. A dotted key like `"rt.roles"` is one
  * path segment, not two — jsonc-parser never splits on `.` (verified with a
  * throwaway script against the installed 3.3.1). Missing parents (`"repos"`,
@@ -28,8 +28,8 @@
  * exactly where it was written, above the object.
  *
  * ── Refusals ────────────────────────────────────────────────────────────
- * In order: unregistered key, migrated:false (naming `def.legacyFile` and,
- * when present, `def.siblingCommand`), a scope the def does not list, a
+ * In order: unregistered key, migrated:false (naming `def.legacyFile`), a
+ * scope the def does not list, a
  * repoIdentity supplied for a key that is not `repoScoped`, a value that
  * fails `registry.validateValue` (type check + the path-literal guard), and
  * finally — only for `scope: "team"` — a team store that cannot be resolved
@@ -160,8 +160,7 @@ export function setSetting(key: string, value: unknown, scope: SettingScope, opt
 
 function migratedFalseMessage(key: string, def: SettingDef): string {
   const legacyPart = def.legacyFile ? ` — it is still read from ${def.legacyFile}` : "";
-  const siblingPart = def.siblingCommand ? `; use \`${def.siblingCommand}\` instead` : "";
-  return `"${key}" is not writable through the settings resolver yet${legacyPart}${siblingPart}`;
+  return `"${key}" is not writable through the settings resolver yet${legacyPart}`;
 }
 
 /** Resolves which store file a write targets, applying the team-selection rule for `scope: "team"`. */
@@ -203,7 +202,7 @@ function seedHeader(): string {
  *    occurrence of a duplicate key by offset, while every reader (`parse`,
  *    `JSON.parse`) takes the LAST — so a naive edit-in-place would report
  *    success while the effective value never changes (verified with a
- *    throwaway script: `modify` touched offset 14 in `{"rt.llm":1,"rt.llm":2}`,
+ *    throwaway script: `modify` touched offset 14 in `{"rt.hooks":1,"rt.hooks":2}`,
  *    but re-parsing the "fixed" text still returned `2`). Both classes refuse
  *    rather than silently editing around the damage — the alternative is a
  *    write that reports success but does nothing, or one that writes a still-

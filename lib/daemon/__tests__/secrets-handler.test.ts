@@ -4,8 +4,14 @@
  * ~/.mattstack/rt/secrets.json itself, where every caller got every token with no
  * grant check anywhere.
  */
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { dirname, join } from "path";
 import { createSecretsHandlers } from "../handlers/secrets.ts";
+import { teamSettingsPath } from "../../rt-paths.ts";
+import { setSetting } from "../../settings/write.ts";
+import { loadRepoTracking } from "../../repo-tracking.ts";
 
 const fakeCtx = { log: { info: () => {}, debug: () => {} } } as any;
 
@@ -52,6 +58,55 @@ describe("secrets:forge-token", () => {
     const h = handler({ secrets: { gitlabToken: "glpat-abc" } });
     expect((await h({ repoName: "", forge: "gitlab" })).ok).toBe(false);
     expect((await h({ repoName: "gitq", forge: "bitbucket" as any })).ok).toBe(false);
+  });
+});
+
+/**
+ * The default tracking reader (no `overrides.tracking`) is
+ * `loadMachineRepoTracking` — machine-only, no team merge. A team file
+ * (mattstack.tracking) is shared and must never be enough on its own to
+ * unlock a forge token; only a local machine grant counts.
+ */
+describe("secrets:forge-token default tracking reader is machine-only", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-secrets-tracking-")));
+    process.env.HOME = home;
+    const teamPath = teamSettingsPath("acme");
+    mkdirSync(dirname(teamPath), { recursive: true });
+    writeFileSync(teamPath, "// team store\n{}\n");
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("a repo declared ONLY via team intent is refused, even though the merged view would allow it", async () => {
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
+    }, "team", { team: "acme" });
+    const identityMap = { "gitlab.com/acme/foo": "foo" };
+
+    // Positive control: the merged view really would consider "foo" tracked.
+    expect(loadRepoTracking({ identityMap }).foo).toBeDefined();
+
+    const h = createSecretsHandlers(fakeCtx, { secrets: () => ({ gitlabToken: "glpat-abc" }) });
+    const res = await h["secrets:forge-token"]({ repoName: "foo", forge: "gitlab" });
+
+    if (res.ok) throw new Error("expected a refusal");
+    expect(res.error).toContain("not tracked by rt");
+  });
+
+  test("a repo granted via the machine store is allowed", async () => {
+    setSetting("rt.repoTracking", { foo: { mode: "live", caches: ["branches"] } }, "machine");
+
+    const h = createSecretsHandlers(fakeCtx, { secrets: () => ({ gitlabToken: "glpat-abc" }) });
+    const res = await h["secrets:forge-token"]({ repoName: "foo", forge: "gitlab" });
+
+    expect(res).toEqual({ ok: true, data: { token: "glpat-abc" } });
   });
 });
 

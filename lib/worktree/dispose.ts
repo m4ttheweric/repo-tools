@@ -16,7 +16,7 @@ import { gitOk, isAncestorAsync, remoteDefaultRef, remoteRefExists, runGit } fro
 import { loadRegistry, saveRegistry, type TreeRecord } from "./registry.ts";
 import { hasFreshAttendantLease } from "./lease.ts";
 import { loadSyncConfig, matchRule } from "../sync-config.ts";
-import { repoDataDir } from "../rt-paths.ts";
+import { deriveRepoIdentity } from "../settings/identity.ts";
 import { killWorktreeProcesses } from "../daemon/worktree-process-kill.ts";
 import { RETENTION_MS, reapTrashDir, retireTree, stripTrashDir } from "./trash.ts";
 
@@ -60,8 +60,8 @@ async function isWhitespaceOnlyChange(cwd: string, path: string): Promise<boolea
 /**
  * Split a worktree's dirt into what may be thrown away and what must not be.
  *
- * `discard` covers tracked modifications to files the repo's sync.json declares
- * auto-resolvable with `strategy: "theirs"`, whose local diff is pure
+ * `discard` covers tracked modifications to files the repo's `rt.sync` setting
+ * declares auto-resolvable with `strategy: "theirs"`, whose local diff is pure
  * whitespace. These are generated artifacts that drift by a trailing newline
  * and are rebuilt by the next build; the declaration says upstream wins.
  *
@@ -81,9 +81,9 @@ export const STATUS_FAILED_BLOCKER = "<status-failed>";
 
 export async function classifyDirtyAsync(
   worktreePath: string,
-  repoName: string,
 ): Promise<{ discard: string[]; blockers: string[] }> {
-  const rules = loadSyncConfig(repoDataDir(repoName)).autoResolve;
+  const repoIdentity = await deriveRepoIdentity(worktreePath);
+  const rules = loadSyncConfig(repoIdentity).autoResolve;
   const status = await runGit(worktreePath, ["status", "--porcelain"]);
   if (status.exitCode !== 0) {
     return { discard: [], blockers: [STATUS_FAILED_BLOCKER] };
@@ -212,7 +212,7 @@ export async function disposeTree(
 
   if (!force) {
     // 2. Clean modulo declared generated drift.
-    const { discard, blockers } = await classifyDirtyAsync(rec.path, repoName);
+    const { discard, blockers } = await classifyDirtyAsync(rec.path);
     if (blockers.length > 0) return refuse("dirty");
     discarded = discard;
 

@@ -3,7 +3,7 @@ import { execSync } from "child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { machineSettingsPath, repoDataDir, rtDir, teamSettingsPath, userSettingsPath } from "../../rt-paths.ts";
+import { machineSettingsPath, rtDir, teamSettingsPath, userSettingsPath } from "../../rt-paths.ts";
 import {
   buildInterceptRules,
   installShims,
@@ -19,10 +19,14 @@ import {
   type InterceptRule,
 } from "../shim.ts";
 
-function writeRepoConfig(repo: string, obj: unknown): void {
-  const dir = repoDataDir(repo);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "config.json"), JSON.stringify(obj));
+function writeStore(file: string, obj: unknown): void {
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(obj));
+}
+
+/** Seeds `rt.intercepts` for `identity` in the team store — the store-only path every rule now goes through. */
+function writeRepoIntercepts(identity: string, intercepts: unknown): void {
+  writeStore(teamSettingsPath("acme"), { repos: { [identity]: { "rt.intercepts": intercepts } } });
 }
 
 function writeRepoIndex(index: Record<string, string>): void {
@@ -141,67 +145,58 @@ test("loadInterceptRules degrades to [] on a missing or malformed file", () => {
 // ─── buildInterceptRules ─────────────────────────────────────────────────────
 
 describe("buildInterceptRules", () => {
-  test("flattens repo index x per-repo intercepts, skips repos with none, captures repoRemote", async () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-shim-build-")));
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("flattens repo index x per-repo intercepts, skips repos with none or no derivable identity, captures repoRemote", async () => {
     const repoWithRemote = makeGitRepo("git@x:acme/acme-dev.git");
+    const repoEmptyRemote = makeGitRepo("git@x:acme/empty-repo.git");
     const repoNoRemote = makeGitRepo(null);
-    writeRepoConfig("r-with", {
-      intercepts: [{ command: "doppler", matches: [{ cwdGlob: "apps/backend{,/**}", role: "backend" }] }],
-    });
-    writeRepoConfig("r-without", {});
-    writeRepoConfig("r-no-remote", {
-      intercepts: [{ command: "pnpm", matches: [{ cwdGlob: ".", role: "root" }] }],
-    });
-    writeRepoIndex({ "r-with": repoWithRemote, "r-without": mkdtempSync(join(tmpdir(), "shim-test-repo-")), "r-no-remote": repoNoRemote });
+    writeRepoIntercepts("x/acme/acme-dev", [
+      { command: "doppler", matches: [{ cwdGlob: "apps/backend{,/**}", role: "backend" }] },
+    ]);
+    writeRepoIndex({ "r-with": repoWithRemote, "r-without": repoEmptyRemote, "r-no-remote": repoNoRemote });
 
     const built = await buildInterceptRules();
-    expect(built).toHaveLength(2);
+    expect(built).toHaveLength(1);
     const byRepo = Object.fromEntries(built.map((r) => [r.repo, r]));
     expect(byRepo["r-with"]!.command).toBe("doppler");
     expect(byRepo["r-with"]!.repoRemote).toBe("git@x:acme/acme-dev.git");
-    expect(byRepo["r-no-remote"]!.repoRemote).toBeNull();
     expect(byRepo["r-without"]).toBeUndefined();
+    // No remote → no derivable identity → repo-scoped intercepts unreachable.
+    expect(byRepo["r-no-remote"]).toBeUndefined();
   });
 
-  test("a repo whose intercepts live ONLY in a settings store still gets a rule (remote captured before the resolver is consulted)", async () => {
-    const home = realpathSync(mkdtempSync(join(tmpdir(), "rt-shim-store-")));
-    const origHome = process.env.HOME;
-    process.env.HOME = home;
-    try {
-      const repoPath = makeGitRepo("git@gitlab.com:fake/store-repo.git");
-      writeRepoIndex({ "r-store": repoPath });
-      // No repos/r-store/config.json at all — the legacy rung is empty, so the
-      // rule can only come from the store, keyed by the repo's IDENTITY.
-      const store = teamSettingsPath("acme");
-      mkdirSync(dirname(store), { recursive: true });
-      writeFileSync(store, JSON.stringify({
-        repos: {
-          "gitlab.com/fake/store-repo": {
-            "rt.intercepts": [{ command: "storecmd", matches: [{ cwdGlob: ".", role: "web" }] }],
-          },
-        },
-      }));
+  test("a repo whose intercepts live in a settings store still gets a rule (remote captured before the resolver is consulted)", async () => {
+    const repoPath = makeGitRepo("git@gitlab.com:fake/store-repo.git");
+    writeRepoIndex({ "r-store": repoPath });
+    writeRepoIntercepts("gitlab.com/fake/store-repo", [{ command: "storecmd", matches: [{ cwdGlob: ".", role: "web" }] }]);
 
-      const built = await buildInterceptRules();
-      expect(built).toEqual([{
-        command: "storecmd",
-        repo: "r-store",
-        repoRemote: "git@gitlab.com:fake/store-repo.git",
-        matches: [{ cwdGlob: ".", role: "web" }],
-      }]);
-    } finally {
-      process.env.HOME = origHome;
-      rmSync(home, { recursive: true, force: true });
-    }
+    const built = await buildInterceptRules();
+    expect(built).toEqual([{
+      command: "storecmd",
+      repo: "r-store",
+      repoRemote: "git@gitlab.com:fake/store-repo.git",
+      matches: [{ cwdGlob: ".", role: "web" }],
+    }]);
   });
 
   test("multiple intercept entries in one repo produce one rule each", async () => {
-    const repoPath = makeGitRepo(null);
-    writeRepoConfig("r-multi", {
-      intercepts: [
-        { command: "doppler", matches: [{ cwdGlob: ".", role: "a" }] },
-        { command: "pnpm", matches: [{ cwdGlob: ".", role: "b" }] },
-      ],
-    });
+    const repoPath = makeGitRepo("git@x:acme/multi-repo.git");
+    writeRepoIntercepts("x/acme/multi-repo", [
+      { command: "doppler", matches: [{ cwdGlob: ".", role: "a" }] },
+      { command: "pnpm", matches: [{ cwdGlob: ".", role: "b" }] },
+    ]);
     writeRepoIndex({ "r-multi": repoPath });
     const built = await buildInterceptRules();
     expect(built.map((r) => r.command).sort()).toEqual(["doppler", "pnpm"]);
@@ -211,11 +206,22 @@ describe("buildInterceptRules", () => {
 // ─── installShims / uninstallShims / shimReport ──────────────────────────────
 
 describe("installShims / uninstallShims / shimReport", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-shim-install-")));
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
   test("installs a shim per distinct command, classifies installed vs current, uninstall removes only marker files", async () => {
-    const repoPath = makeGitRepo(null);
-    writeRepoConfig("r-install", {
-      intercepts: [{ command: "fakecmd-a", matches: [{ cwdGlob: ".", role: "x" }] }],
-    });
+    const repoPath = makeGitRepo("git@x:acme/r-install.git");
+    writeRepoIntercepts("x/acme/r-install", [{ command: "fakecmd-a", matches: [{ cwdGlob: ".", role: "x" }] }]);
     writeRepoIndex({ "r-install": repoPath });
 
     const first = await installShims();
@@ -242,10 +248,8 @@ describe("installShims / uninstallShims / shimReport", () => {
   });
 
   test("re-install repairs a stripped exec bit even when the content is already current", async () => {
-    const repoPath = makeGitRepo(null);
-    writeRepoConfig("r-chmod", {
-      intercepts: [{ command: "fakecmd-chmod", matches: [{ cwdGlob: ".", role: "x" }] }],
-    });
+    const repoPath = makeGitRepo("git@x:acme/r-chmod.git");
+    writeRepoIntercepts("x/acme/r-chmod", [{ command: "fakecmd-chmod", matches: [{ cwdGlob: ".", role: "x" }] }]);
     writeRepoIndex({ "r-chmod": repoPath });
 
     await installShims();
@@ -266,10 +270,8 @@ describe("installShims / uninstallShims / shimReport", () => {
   });
 
   test("shimReport tracks the full installed/current transition (RT-28 verify check)", async () => {
-    const repoPath = makeGitRepo(null);
-    writeRepoConfig("r-transition", {
-      intercepts: [{ command: "fakecmd-transition", matches: [{ cwdGlob: ".", role: "x" }] }],
-    });
+    const repoPath = makeGitRepo("git@x:acme/r-transition.git");
+    writeRepoIntercepts("x/acme/r-transition", [{ command: "fakecmd-transition", matches: [{ cwdGlob: ".", role: "x" }] }]);
     writeRepoIndex({ "r-transition": repoPath });
 
     const built = await buildInterceptRules();
@@ -336,7 +338,6 @@ describe("staleIntercepts", () => {
     writeAt(userSettingsPath(), "{}", OLDER);
     writeAt(machineSettingsPath(), "{}", OLDER);
     writeAt(teamSettingsPath("acme"), "{}", OLDER);
-    writeAt(join(repoDataDir("r"), "config.json"), "{}", OLDER);
     expect(staleIntercepts()).toEqual({ stale: false });
   });
 
@@ -352,20 +353,5 @@ describe("staleIntercepts", () => {
     writeCache("r");
     writeAt(teamSettingsPath("acme"), "{}", NEWER);
     expect(staleIntercepts().stale).toBe(true);
-  });
-
-  test("a per-repo legacy config.json named in the rules, newer than the cache, is stale", () => {
-    writeCache("r-legacy");
-    writeAt(join(repoDataDir("r-legacy"), "config.json"), "{}", NEWER);
-    const probe = staleIntercepts();
-    expect(probe.stale).toBe(true);
-    expect(probe.reason).toContain("r-legacy");
-  });
-
-  test("a legacy config.json for a repo NOT in the rules does not make the cache stale", () => {
-    writeCache("r-in-rules");
-    writeAt(join(repoDataDir("r-in-rules"), "config.json"), "{}", OLDER);
-    writeAt(join(repoDataDir("r-elsewhere"), "config.json"), "{}", NEWER);
-    expect(staleIntercepts()).toEqual({ stale: false });
   });
 });

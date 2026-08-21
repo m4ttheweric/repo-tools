@@ -688,13 +688,6 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Target", type: "select", hint: "Omit to be prompted interactively", options: [{ value: "dev", label: "dev", hint: "Run from local source" }, { value: "prod", label: "prod", hint: "Run the installed binary (from mattstack.app)" }] },
         ],
       },
-      llm: {
-        description: "Configure local LLM for branch naming and other features",
-        module: "./commands/settings.ts",
-        fn: "configureLlm",
-        requiresTTY: true,
-        args: [],
-      },
     },
   },
 

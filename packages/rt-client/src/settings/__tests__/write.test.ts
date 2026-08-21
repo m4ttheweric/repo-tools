@@ -147,17 +147,9 @@ describe("settings/write", () => {
     });
 
     test("refuses a migrated:false key, naming the legacyFile", () => {
-      const def = getDef("rt.cron") as SettingDef;
-      expect(() => setSetting("rt.cron", { enabled: true }, "user")).toThrow(
+      const def = getDef("rt.hooks") as SettingDef;
+      expect(() => setSetting("rt.hooks", { enabled: true }, "user")).toThrow(
         new RegExp(def.legacyFile!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-      );
-    });
-
-    test("refuses a migrated:false key, naming the siblingCommand when present", () => {
-      const def = getDef("rt.notifications") as SettingDef;
-      expect(def.siblingCommand).toBeTruthy();
-      expect(() => setSetting("rt.notifications", {}, "user")).toThrow(
-        new RegExp(def.siblingCommand!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
       );
     });
 

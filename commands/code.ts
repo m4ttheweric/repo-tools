@@ -4,46 +4,52 @@
  * Editor-preference and launch machinery shared with `rt nav`.
  *
  * Tracks a per-repo editor choice and per-directory workspace-file choice
- * (~/.mattstack/rt/workspace-prefs.json), detects installed editors, and
+ * (rt.workspacePrefs, machine-scoped), detects installed editors, and
  * launches one via its CLI command (code, cursor, zed, etc.), falling back
  * to the app bundle when the CLI shim is missing or broken.
  */
 
 import { execSync } from "child_process";
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readdirSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
-import { rtDir } from "../lib/rt-paths.ts";
+import { getSetting } from "../lib/settings/resolve.ts";
+import { setSetting } from "../lib/settings/write.ts";
 import { dim, green, red, reset } from "../lib/tui.ts";
 
-// ─── Preference storage (~/.mattstack/rt/workspace-prefs.json) ─────────────────────────
-
-const PREFS_PATH = join(rtDir(), "workspace-prefs.json");
+// ─── Preference storage (rt.workspacePrefs, machine-scoped) ────────────────
 
 interface Prefs {
   editors: Record<string, string>;
   workspaces: Record<string, string>;
 }
 
+/** A resolver throw (unexpandable ${...} variable) degrades to the same
+    empty prefs a missing/corrupt file gave today. */
 function loadPrefs(): Prefs {
   try {
-    const raw = JSON.parse(readFileSync(PREFS_PATH, "utf8"));
+    const raw = getSetting<Record<string, unknown> | undefined>("rt.workspacePrefs").value;
     return {
-      editors: raw.editors || {},
-      workspaces: raw.workspaces || raw.entries || {},
+      editors: (raw?.editors as Record<string, string>) || {},
+      workspaces: (raw?.workspaces as Record<string, string>) || (raw?.entries as Record<string, string>) || {},
     };
   } catch {
     return { editors: {}, workspaces: {} };
   }
 }
 
+/** A store typo (e.g. a duplicate key anywhere in the machine document) must
+    never brick editor launch — degrade to a warning, same as loadPrefs. */
 function savePrefs(prefs: Prefs): void {
   try {
-    const dir = rtDir();
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(PREFS_PATH, JSON.stringify(prefs, null, 2));
-  } catch { /* best-effort */ }
+    setSetting("rt.workspacePrefs", prefs, "machine");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("rt: could not save workspace prefs — " + message);
+  }
 }
+
+export const __test__ = { loadPrefs, savePrefs };
 
 // ─── Editor detection ────────────────────────────────────────────────────────
 

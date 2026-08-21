@@ -27,7 +27,7 @@ describe("settings/registry", () => {
 
       expect(defs.length).toBeGreaterThan(0);
       expect(defs.map((d) => d.key)).toContain("rt.roles");
-      expect(defs.map((d) => d.key)).toContain("rt.llm");
+      expect(defs.map((d) => d.key)).toContain("rt.hooks");
     });
 
     test("every def has a non-empty one-line description", () => {
@@ -44,11 +44,22 @@ describe("settings/registry", () => {
       }
     });
 
-    test("exactly 5 keys are migrated:true", () => {
+    test("every migrated:true (or suite, migrated-absent) def carries no legacyFile", () => {
+      for (const def of allDefs()) {
+        if (!isMigrated(def)) continue;
+        expect(def.legacyFile, `${def.key} is migrated but still carries a legacyFile`).toBeUndefined();
+      }
+    });
+
+    test("exactly 15 keys are migrated:true", () => {
       const migrated = allDefs().filter((d) => d.migrated);
 
       expect(migrated.map((d) => d.key).sort()).toEqual(
-        ["rt.intercepts", "rt.repoIdentityOverrides", "rt.repoRoots", "rt.roles", "rt.worktrees"].sort(),
+        [
+          "rt.intercepts", "rt.repoIdentityOverrides", "rt.repoRoots", "rt.roles", "rt.worktrees",
+          "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runaway", "rt.workspacePrefs",
+          "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
+        ].sort(),
       );
     });
 
@@ -84,16 +95,11 @@ describe("settings/registry", () => {
       expect(def?.default).toEqual({ onDeck: 0 });
     });
 
-    test("rt.notifications and rt.runaway carry their sibling commands", () => {
-      expect(getDef("rt.notifications")?.siblingCommand).toBe("rt settings notifications");
-      expect(getDef("rt.runaway")?.siblingCommand).toBe("rt settings runaway");
-    });
-
-    test("legacyFile values match the trace for wave-1 migrated:false keys", () => {
-      expect(getDef("rt.llm")?.legacyFile).toBe("llm.json");
-      expect(getDef("rt.cron")?.legacyFile).toBe("cron.jsonc");
-      expect(getDef("rt.repoTracking")?.legacyFile).toBe("repo-tracking.json");
-      expect(getDef("rt.notifications")?.legacyFile).toBe("notifications.json");
+    test("the five migrated global singletons carry no legacyFile", () => {
+      for (const key of ["rt.notifications", "rt.cron", "rt.repoTracking", "rt.runaway", "rt.workspacePrefs"]) {
+        const def = getDef(key);
+        expect(def?.legacyFile, `${key} should carry no legacyFile`).toBeUndefined();
+      }
     });
 
     test("repoScoped is consistent with a repos/<repo>/... legacyFile prefix, in both directions", () => {
@@ -117,47 +123,35 @@ describe("settings/registry", () => {
       }
     });
 
-    test("the six traced repo-scoped legacy keys carry repoScoped:true and the repos/<repo>/ prefix", () => {
-      const repoScopedLegacyKeys: Record<string, string> = {
-        "rt.sync": "repos/<repo>/sync.json",
-        "rt.branchNaming": "repos/<repo>/branch-naming.json",
-        "rt.variations": "repos/<repo>/variations.json",
-        "rt.presets": "repos/<repo>/presets/<name>.json",
-        "rt.dopplerTemplate": "repos/<repo>/doppler-template.yaml",
-        "rt.hooks": "repos/<repo>/hooks.json",
-      };
+    test("the one remaining repo-scoped legacy key carries repoScoped:true and the repos/<repo>/ prefix", () => {
+      const def = getDef("rt.hooks");
+      expect(def?.repoScoped, "rt.hooks should be repoScoped:true").toBe(true);
+      expect(def?.legacyFile, "rt.hooks legacyFile").toBe("repos/<repo>/hooks.json");
+    });
 
-      for (const [key, legacyFile] of Object.entries(repoScopedLegacyKeys)) {
+    test("the five newly migrated repo-scoped keys carry repoScoped:true and no legacyFile", () => {
+      for (const key of ["rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate"]) {
         const def = getDef(key);
         expect(def?.repoScoped, `${key} should be repoScoped:true`).toBe(true);
-        expect(def?.legacyFile, `${key} legacyFile`).toBe(legacyFile);
+        expect(def?.legacyFile, `${key} should carry no legacyFile`).toBeUndefined();
       }
     });
 
-    test("the six genuinely global legacy keys stay repoScoped:undefined with a bare (non-repos/) legacyFile", () => {
-      for (const key of ["rt.llm", "rt.cron", "rt.repoTracking", "rt.notifications", "rt.workspacePrefs", "rt.runaway"]) {
-        const def = getDef(key);
-        expect(def?.repoScoped, `${key} should not be repoScoped`).toBeFalsy();
-        expect(def?.legacyFile?.startsWith("repos/"), `${key} legacyFile should not be repo-prefixed`).toBe(false);
-      }
+    test("rt.dopplerTemplate is an array key with replace merge (YAML list -> JSON array)", () => {
+      const def = getDef("rt.dopplerTemplate");
+      expect(def?.type).toBe("array");
+      expect(def?.merge).toBe("replace");
     });
 
-    test("has exactly the 12 wave-1 migrated:false keys, the 5 migrated:true keys, and the 30 suite keys", () => {
+    test("has exactly the 1 remaining migrated:false key, the 15 migrated:true keys, and the 30 suite keys", () => {
       const migratedFalseKeys = [
-        "rt.llm",
-        "rt.cron",
-        "rt.repoTracking",
-        "rt.notifications",
-        "rt.sync",
-        "rt.branchNaming",
-        "rt.variations",
-        "rt.presets",
-        "rt.dopplerTemplate",
-        "rt.workspacePrefs",
-        "rt.runaway",
         "rt.hooks",
       ];
-      const migratedTrueKeys = ["rt.roles", "rt.intercepts", "rt.worktrees", "rt.repoIdentityOverrides", "rt.repoRoots"];
+      const migratedTrueKeys = [
+        "rt.roles", "rt.intercepts", "rt.worktrees", "rt.repoIdentityOverrides", "rt.repoRoots",
+        "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runaway", "rt.workspacePrefs",
+        "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
+      ];
       const suiteKeys = [
         "mattstack.integrations",
         "mattstack.tracking",

@@ -1,34 +1,33 @@
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { repoDataDir } from "../../rt-paths.ts";
+import { teamSettingsPath } from "../../rt-paths.ts";
 import { runInterception } from "../run.ts";
 
-function writeRepoConfig(repo: string, obj: unknown): void {
-  const dir = repoDataDir(repo);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "config.json"), JSON.stringify(obj));
+/** Merges `identity`'s roles into the shared team store rather than clobbering earlier entries — every test in this describe shares one per-test HOME. */
+function writeRepoRoles(identity: string, roles: unknown): void {
+  const path = teamSettingsPath("acme");
+  mkdirSync(join(path, ".."), { recursive: true });
+  let existing: { repos?: Record<string, unknown> } = {};
+  try {
+    existing = JSON.parse(readFileSync(path, "utf8"));
+  } catch { /* file absent or malformed — start fresh */ }
+  const repos = { ...(existing.repos ?? {}), [identity]: { "rt.roles": roles } };
+  writeFileSync(path, JSON.stringify({ ...existing, repos }));
 }
 
-// Role "web" for repo "r1" — reached via `loadEndpointConfig`
-// (lib/endpoint/config.ts) inside runInterception's env step; this per-repo
-// config.json is the resolver's legacy rung, which is all these rules need
-// (their repoRemote is null, so the store's repo rungs are out of reach).
-// env renders ${port}; preserveEnv protects the caller's KEEP_* vars (both
-// feed argInject's ${envKeys}).
-writeRepoConfig("r1", {
-  roles: { web: { env: { PORT: "${port}" }, preserveEnv: ["KEEP_*"] } },
-});
+const R1_IDENTITY = "x/test/r1";
+const R1_REMOTE = "git@x:test/r1.git";
 
 function harness(over: Partial<Parameters<typeof runInterception>[0]> = {}) {
   const calls: { exec?: { bin: string; args: string[]; env: Record<string, string> }; warned: string[] } = { warned: [] };
   const deps = {
-    rules: [{ command: "fakecmd", repo: "r1", repoRemote: null,
+    rules: [{ command: "fakecmd", repo: "r1", repoRemote: R1_REMOTE,
       matches: [{ cwdGlob: ".", argPattern: "serve", role: "web",
         argInject: { afterArg: "run", template: "--keep=${envKeys}", skipIfArgPresent: "--keep" } }] }],
     gitToplevel: async () => "/wt/a",
-    gitRemote: async () => null,
+    gitRemote: async () => R1_REMOTE,
     claim: async () => ({ ok: true, data: { role: "web", port: 3000, url: "http://localhost:3000", refs: {} } }),
     execReal: async (bin: string, args: string[], env: Record<string, string>) => { calls.exec = { bin, args, env }; throw new Error("EXEC"); },
     resolveRealBinary: () => "/usr/bin/fakecmd",
@@ -41,6 +40,27 @@ const run = (deps: any, args: string[], env: Record<string, string | undefined> 
   runInterception(deps, "fakecmd", args, "/wt/a", { PATH: "/usr/bin", ...env }, 42).catch((e) => { if (e.message !== "EXEC") throw e; });
 
 describe("runInterception", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-intercept-run-")));
+    process.env.HOME = home;
+    // Role "web" for repo "r1" — reached via `loadEndpointConfig`
+    // (lib/endpoint/config.ts) inside runInterception's env step, keyed by
+    // the identity `identityFromRemote` derives from the rule's own
+    // `repoRemote`. env renders ${port}; preserveEnv protects the caller's
+    // KEEP_* vars (both feed argInject's ${envKeys}).
+    writeRepoRoles(R1_IDENTITY, {
+      web: { env: { PORT: "${port}" }, preserveEnv: ["KEEP_*"] },
+    });
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
   test("match → claim → env rendered, preserveEnv expanded into argInject, exec real", async () => {
     const { deps, calls } = harness();
     await run(deps, ["run", "serve"], { KEEP_ME: "1" });
@@ -50,11 +70,13 @@ describe("runInterception", () => {
     expect(calls.exec!.env.KEEP_ME).toBe("1");
   });
   test("hook-contributed env keys ride argInject so wrappers cannot clobber them", async () => {
-    writeRepoConfig("r2", {
-      roles: { web: { env: { PORT: "${port}" }, hook: `echo '{"env":{"NODE_OPTIONS":"--require /x.cjs"}}'` } },
+    const R2_IDENTITY = "x/test/r2";
+    const R2_REMOTE = "git@x:test/r2.git";
+    writeRepoRoles(R2_IDENTITY, {
+      web: { env: { PORT: "${port}" }, hook: `echo '{"env":{"NODE_OPTIONS":"--require /x.cjs"}}'` },
     });
-    const { deps, calls } = harness();
-    deps.rules = [{ ...deps.rules[0]!, repo: "r2" }];
+    const { deps, calls } = harness({ gitRemote: async () => R2_REMOTE });
+    deps.rules = [{ ...deps.rules[0]!, repo: "r2", repoRemote: R2_REMOTE }];
     await run(deps, ["run", "serve"]);
     expect(calls.exec!.args).toEqual(["run", "--keep=PORT,NODE_OPTIONS", "serve"]);
     expect(calls.exec!.env.NODE_OPTIONS).toBe("--require /x.cjs");

@@ -1,19 +1,25 @@
 /**
  * Per-repo script variations for rt run.
  *
- * Storage: <dataDir>/variations.json — a single JSON object keyed by
- * `repoRelativePath:scriptName`, each value an array of {name, command}.
+ * Resolved through the settings resolver (`rt.variations`, team.repo scope):
+ * a single object keyed by `repoRelativePath:scriptName`, each value an array
+ * of {name, command}.
  *
  * Keys use repo-relative paths so variations are shared across worktrees
  * (worktree roots differ, but the relative package path within the repo
  * is stable).
  *
- * Best-effort I/O — silently swallows errors so a broken/missing file
- * never blocks the user's actual command invocation.
+ * Reads are best-effort — a broken/missing store value degrades to empty
+ * rather than blocking the user's actual command invocation. Writes are NOT
+ * silently swallowed: `saveVariation` reports success/failure (including a
+ * team-store refusal, e.g. zero or multiple local team stores — see
+ * settings/write.ts's team-selection rule) so a caller can tell the user the
+ * truth instead of pretending the save landed.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join, dirname, relative } from "path";
+import { relative } from "path";
+import { getSetting } from "./settings/resolve.ts";
+import { setSetting } from "./settings/write.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -22,12 +28,6 @@ export interface Variation {
   name: string;
   /** Full shell command string to execute. */
   command: string;
-}
-
-// ─── Paths ──────────────────────────────────────────────────────────────────
-
-function variationsPath(dataDir: string): string {
-  return join(dataDir, "variations.json");
 }
 
 // ─── Keys ───────────────────────────────────────────────────────────────────
@@ -44,46 +44,58 @@ export function variationKey(repoRoot: string, packagePath: string, script: stri
 
 // ─── Read ───────────────────────────────────────────────────────────────────
 
+/**
+ * A resolver throw (e.g. an unexpandable ${...} variable authored by hand)
+ * degrades to "no variations" the same way a missing/corrupt file did before —
+ * this runs on every rt run invocation and must never block it.
+ */
 export function loadVariations(
-  dataDir: string,
+  repoIdentity: string | null,
 ): Record<string, Variation[]> {
-  const path = variationsPath(dataDir);
-  if (!existsSync(path)) return {};
-
-  let raw: string;
+  let raw: unknown;
   try {
-    raw = readFileSync(path, "utf8");
+    raw = getSetting<unknown>("rt.variations", { repoIdentity }).value;
   } catch {
     return {};
   }
-
-  try {
-    return JSON.parse(raw) as Record<string, Variation[]>;
-  } catch {
-    return {};
-  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return raw as Record<string, Variation[]>;
 }
 
 // ─── Write ──────────────────────────────────────────────────────────────────
 
+export type SaveResult =
+  | { ok: true }
+  | { ok: false; reason: "no-identity" }
+  | { ok: false; reason: "write-failed"; message: string };
+
+/**
+ * Appends `variation` under its key and writes the whole map to team scope
+ * (ruling: team.repo) — but the base it merges onto is the RESOLVED value
+ * across every scope the key allows, not just what's already in the team
+ * store. Variations are meant to live in team scope only, so this only
+ * matters if one was ever hand-authored into user or machine: the next save
+ * here copies the whole merged map — that foreign variation included — into
+ * the team store too. Accepted, not guarded.
+ */
 export function saveVariation(
-  dataDir: string,
+  repoIdentity: string | null,
   repoRoot: string,
   packagePath: string,
   script: string,
   variation: Variation,
-): void {
-  const path = variationsPath(dataDir);
-  const key = variationKey(repoRoot, packagePath, script);
+): SaveResult {
+  if (repoIdentity === null) return { ok: false, reason: "no-identity" };
 
-  const all = loadVariations(dataDir);
+  const key = variationKey(repoRoot, packagePath, script);
+  const all = loadVariations(repoIdentity);
   const list = all[key] ?? [];
   all[key] = [...list, variation];
 
   try {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify(all, null, 2) + "\n");
-  } catch {
-    // best effort — don't break the user's command over a write error
+    setSetting("rt.variations", all, "team", { repoIdentity });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: "write-failed", message: err instanceof Error ? err.message : String(err) };
   }
 }

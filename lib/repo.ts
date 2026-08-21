@@ -14,10 +14,6 @@ import { repoDataDir } from "./rt-paths.ts";
 
 export { getRepoRoot, getCurrentBranch, getRemoteUrl } from "./git.ts";
 export { updateRepoIndex, getKnownRepos, repoOption, type KnownRepo } from "./repo-index.ts";
-export {
-  loadRepoConfig, loadOrCreateRepoConfig, saveRepoConfig,
-  type RepoConfig, type SetupStep,
-} from "./repo-config.ts";
 
 // ─── Internal imports ────────────────────────────────────────────────────────
 

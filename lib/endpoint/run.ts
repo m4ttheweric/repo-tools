@@ -92,8 +92,8 @@ export async function runInterception(
   // already carries — no spawn, and `identityFromRemote` (never bare
   // `normalizeRemote`) so a fork pinned in the machine store's
   // `rt.repoIdentityOverrides` resolves to its upstream identity here too. A
-  // rule with no recorded remote resolves with a null identity: global +
-  // legacy scopes only, which is exactly what that repo had before RT-47.
+  // rule with no recorded remote resolves with a null identity: repo-scoped
+  // sections are unreachable, only global scopes answer.
   const repoIdentity = rule.repoRemote === null ? null : identityFromRemote(rule.repoRemote);
   const repoCfg = loadEndpointConfig({ repoIdentity, repoName: rule.repo });
   const roleCfg = repoCfg.roles[match.role];

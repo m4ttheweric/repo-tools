@@ -18,14 +18,13 @@ describe("settings paths parity (lib/rt-paths.ts vs rt-client/settings/paths.ts)
     process.env.HOME = origHome;
   });
 
-  test("userSettingsPath/teamSettingsPath/machineSettingsPath/teamsDir/repoDataDir agree under a faked HOME", () => {
+  test("userSettingsPath/teamSettingsPath/machineSettingsPath/teamsDir agree under a faked HOME", () => {
     process.env.HOME = "/tmp/parity-fake-home";
 
     expect(clientPaths.userSettingsPath()).toBe(rtPaths.userSettingsPath());
     expect(clientPaths.teamSettingsPath("someteam")).toBe(rtPaths.teamSettingsPath("someteam"));
     expect(clientPaths.machineSettingsPath()).toBe(rtPaths.machineSettingsPath());
     expect(clientPaths.teamsDir()).toBe(rtPaths.teamsDir());
-    expect(clientPaths.repoDataDir("some-repo")).toBe(rtPaths.repoDataDir("some-repo"));
   });
 
   test("both resolve HOME at call time, not module load", () => {

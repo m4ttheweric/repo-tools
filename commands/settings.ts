@@ -30,6 +30,8 @@ import {
   NOTIFICATION_TYPES,
 } from "../lib/notifier.ts";
 import { installShellIntegration } from "../lib/shell-integration.ts";
+import { getSetting } from "../lib/settings/resolve.ts";
+import { setSetting } from "../lib/settings/write.ts";
 
 // ─── Linear token ────────────────────────────────────────────────────────────
 
@@ -252,18 +254,17 @@ export async function configureNotifications(): Promise<void> {
 
 // ─── Runaway process detection thresholds ────────────────────────────────────
 
-const RUNAWAY_CONFIG_PATH = join(rtDir(), "runaway-config.json");
-
 export async function configureRunaway(args: string[]): Promise<void> {
   const field = args[0];
   const value = args[1];
 
-  let config: Record<string, number> = {};
+  // A resolver throw (unexpandable ${...} variable) must not block editing
+  // the setting that would fix it — degrade to {} same as loadRunawayConfig.
+  let stored: Record<string, number> | undefined;
   try {
-    if (existsSync(RUNAWAY_CONFIG_PATH)) {
-      config = JSON.parse(readFileSync(RUNAWAY_CONFIG_PATH, "utf8"));
-    }
-  } catch { /* fresh */ }
+    stored = getSetting<Record<string, number> | undefined>("rt.runaway").value;
+  } catch { /* degrade below */ }
+  const config: Record<string, number> = stored ? { ...stored } : {};
 
   if (!field) {
     console.log(`\n  ${bold}Runaway process detection${reset}\n`);
@@ -301,9 +302,8 @@ export async function configureRunaway(args: string[]): Promise<void> {
       return;
   }
 
-  mkdirSync(dirname(RUNAWAY_CONFIG_PATH), { recursive: true });
-  writeFileSync(RUNAWAY_CONFIG_PATH, JSON.stringify(config, null, 2));
-  console.log(`  ${green}✓${reset} saved to ${dim}${RUNAWAY_CONFIG_PATH}${reset}`);
+  setSetting("rt.runaway", config, "machine");
+  console.log(`  ${green}✓${reset} saved`);
   console.log(`  ${dim}restart daemon to apply: rt daemon restart${reset}`);
 }
 
@@ -686,74 +686,3 @@ export async function toggleDevMode(args: string[], exists: (path: string) => bo
   console.log("");
 }
 
-// ─── LLM setup ───────────────────────────────────────────────────────────────
-
-export async function configureLlm(): Promise<void> {
-  const { select } = await import("../lib/rt-render.tsx");
-  const {
-    listOllamaModels,
-    loadLlmConfig,
-    saveLlmConfig,
-    llmPrompt,
-  } = await import("../lib/llm.ts");
-
-  const config = loadLlmConfig();
-
-  // Step 1: Verify Ollama is reachable and list models
-  console.log(`\n  ${dim}checking Ollama at ${config.url}…${reset}`);
-
-  let models: Array<{ name: string; size: string }>;
-  try {
-    models = await listOllamaModels(config.url);
-  } catch (err) {
-    console.log(`\n  ${red}✗${reset} cannot reach Ollama at ${config.url}`);
-    console.log(`  ${dim}make sure Ollama is running (ollama serve)${reset}\n`);
-    return;
-  }
-
-  if (models.length === 0) {
-    console.log(`\n  ${yellow}!${reset} no models found`);
-    console.log(`  ${dim}pull one first: ollama pull qwen3:4b${reset}\n`);
-    return;
-  }
-
-  // Step 2: Pick a model
-  const currentModel = config.model;
-  const options = models.map(m => ({
-    value: m.name,
-    label: `${m.name}  ${dim}(${m.size})${reset}`,
-    hint: m.name === currentModel ? "current" : "",
-  }));
-
-  const selected = await select({
-    message: "Select LLM model",
-    options,
-  });
-
-  if (!selected) return;
-
-  saveLlmConfig({ model: selected });
-
-  // Step 3: Offer test prompt
-  console.log(`  ${green}✓${reset} model set to ${bold}${selected}${reset}`);
-
-  try {
-    const test = await select({
-      message: "Send a test prompt?",
-      options: [
-        { value: "yes", label: "Yes, test the model", hint: "sends a quick hello" },
-        { value: "no",  label: "Skip", hint: "" },
-      ],
-    });
-    if (test === "yes") {
-      console.log(`\n  ${dim}testing…${reset}`);
-      const response = await llmPrompt(
-        "You are a helpful assistant. Reply concisely.",
-        "Say hello and confirm you are working.",
-      );
-      console.log(`  ${green}✓${reset} response: ${dim}${response.slice(0, 120)}${reset}\n`);
-    }
-  } catch (err) {
-    console.log(`  ${yellow}!${reset} test failed: ${err instanceof Error ? err.message : String(err)}\n`);
-  }
-}

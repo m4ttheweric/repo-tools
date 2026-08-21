@@ -38,6 +38,7 @@ import { getBranchCacheStore, getStateDb, type BranchCacheStore } from "./state/
 import { createCacheRefresher } from "./daemon/cache-refresh.ts";
 import { createWorktreeReconciler } from "./daemon/worktree-reconciler.ts";
 import { loadRepoIndex, REPOS_JSON_PATH } from "./daemon/repo-index.ts";
+import { primeTeamTrackingIdentityMap } from "./repo-tracking.ts";
 import { createHooksGuard } from "./daemon/hooks-guard.ts";
 import { buildRoutedHandlers } from "./daemon/command-router.ts";
 import { startSocketServer } from "./daemon/socket-server.ts";
@@ -132,7 +133,7 @@ setInterval(() => eventsBus.sweep(), 60 * 60 * 1000);
 setTimeout(() => eventsBus.sweep(), 30_000);
 
 // Cron trigger layer (mechanism-only, MAT-161): sees every broadcast frame.
-const cron = startCron(loadCronConfig(undefined, log), { log });
+const cron = startCron(loadCronConfig(log), { log });
 const emit: typeof broadcast = (type, data) => {
   broadcast(type, data);
   cron.onBroadcast(type, data);
@@ -281,11 +282,27 @@ export function startDaemon(): void {
   // Discover and watch repos
   hooksGuard.refreshWatchedRepos();
 
-  // Watch repos.json for changes (new repos added)
+  // Team tracking intent (mattstack.tracking) resolves through a primed
+  // identity→name map, not live derivation — loadRepoTracking is sync and
+  // runs on every freshness tick. Team intent is inert until this completes.
+  // The RELIABLE re-prime is the 60s hooks-scan poller (pollers.ts); the
+  // repos.json watch below is best-effort only — see its own comment.
+  primeTeamTrackingIdentityMap(loadRepoIndex()).catch((err) => {
+    log.warn({ err }, "repo-tracking: failed to prime team-intent identity map");
+  });
+
+  // Watch repos.json for changes (new repos added). Best-effort: repos.json
+  // is typically rewritten via an atomic rename, which changes the file's
+  // inode, and fs.watch on most platforms stops delivering events after
+  // that — this fires once, maybe, and the 60s poller is what actually
+  // keeps the team-tracking identity map current.
   if (existsSync(REPOS_JSON_PATH)) {
     watch(REPOS_JSON_PATH, () => {
       log.info("repos.json changed; refreshing watched repos");
       hooksGuard.refreshWatchedRepos();
+      primeTeamTrackingIdentityMap(loadRepoIndex()).catch((err) => {
+        log.warn({ err }, "repo-tracking: failed to re-prime team-intent identity map");
+      });
     });
   }
 

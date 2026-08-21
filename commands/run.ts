@@ -47,6 +47,7 @@ import {
   type LaunchItem,
 } from "../lib/herdr-launch.ts";
 import { findPreset, loadPresets, savePreset, type Preset } from "../lib/run-presets.ts";
+import { deriveRepoIdentity } from "../lib/settings/identity.ts";
 import { navSeparator, type NavOption } from "../lib/navigate.ts";
 
 const LAST_RUN_SENTINEL = "__rt:last-run__";
@@ -114,6 +115,31 @@ interface QueuedItem {
 /** Sentinel returned when the picker loop built and launched a queue. */
 const QUEUE_LAUNCHED = Symbol("queue-launched");
 
+/** The shape savePreset/saveVariation both return — structurally, not by import, so either fits. */
+type SaveOutcome =
+  | { ok: true }
+  | { ok: false; reason: "no-identity" }
+  | { ok: false; reason: "write-failed"; message: string };
+
+/**
+ * Prints the truth about a save: a checkmark only when it actually landed,
+ * one honest line otherwise. `savePreset`/`saveVariation` no-op or refuse
+ * rather than throw (best-effort I/O), so this is the only place that ever
+ * tells the user whether their save happened.
+ */
+function reportSave(kind: string, label: string, result: SaveOutcome, repoLabel: string): void {
+  if (result.ok) {
+    process.stderr.write(`  ${green}✓${reset} ${dim}saved ${kind} "${label}"${reset}\n`);
+    return;
+  }
+  const detail = result.reason === "no-identity"
+    ? `no repo identity for ${repoLabel}; pin one with \`rt settings set rt.repoIdentityOverrides\``
+    : result.message;
+  process.stderr.write(`  ${yellow}⚠${reset} ${dim}not saved — ${detail}${reset}\n`);
+}
+
+export const __test__ = { reportSave };
+
 /**
  * Package → script → variations picker loop.
  *
@@ -130,6 +156,7 @@ async function selectPackageAndScript(
   const { runNavPicker } = await import("../lib/navigate.ts");
   const packages = getWorkspacePackages(worktreePath);
   const label = contextLabel ? `${contextLabel}` : "";
+  const repoIdentity = await deriveRepoIdentity(worktreePath);
   let cameFromScript = false;
   const q: QueuedItem[] = queue ?? [];
 
@@ -198,7 +225,7 @@ async function selectPackageAndScript(
         }
 
         // ── Saved presets (shown above packages, only outside an active queue) ──
-        const presets = dataDir && q.length === 0 ? loadPresets(dataDir) : [];
+        const presets = q.length === 0 ? loadPresets(repoIdentity) : [];
         const savedPresetOptions = presets.length > 0
           ? [
               ...presets.map((p) => ({
@@ -284,9 +311,9 @@ async function selectPackageAndScript(
         }
 
         // Saved preset selected — resolve against this worktree and launch
-        if (val.startsWith(PRESET_PREFIX) && dataDir) {
+        if (val.startsWith(PRESET_PREFIX)) {
           const presetName = val.slice(PRESET_PREFIX.length, -2); // strip prefix + trailing "__"
-          const preset = findPreset(dataDir, presetName);
+          const preset = findPreset(repoIdentity, presetName);
           if (preset) {
             await launchPreset(preset, worktreePath);
             return QUEUE_LAUNCHED; // signal "already launched" — q is empty, launchQueue() is a no-op
@@ -296,7 +323,7 @@ async function selectPackageAndScript(
         }
 
         // Save as preset, then ask whether to run it now
-        if (val === SAVE_PRESET_SENTINEL && dataDir) {
+        if (val === SAVE_PRESET_SENTINEL) {
           const { confirm } = await import("../lib/rt-render.tsx");
           const name = await textInput({
             message: "Preset name",
@@ -304,7 +331,7 @@ async function selectPackageAndScript(
             stderr: true,
           });
           if (name) {
-            savePreset(dataDir, {
+            const result = savePreset(repoIdentity, {
               name,
               entries: q.map((qi) => ({
                 packageRelPath: qi.packageRelPath,
@@ -314,7 +341,8 @@ async function selectPackageAndScript(
                 command: qi.variationName ? qi.command : undefined,
               })),
             });
-            process.stderr.write(`  ${green}✓${reset} ${dim}saved preset "${name}"${reset}\n\n`);
+            reportSave("preset", name, result, label || worktreePath);
+            process.stderr.write("\n");
             const runNow = await confirm({
               message: `Run "${name}" now?`,
               initialValue: true,
@@ -475,9 +503,7 @@ async function selectPackageAndScript(
 
     if (scriptResult.key === "alt-enter") {
       // ── Variations sub-picker ────────────────────────────────────────────
-      const existing = dataDir
-        ? (loadVariations(dataDir)[variationKey(worktreePath, packagePath, scriptName)] ?? [])
-        : [];
+      const existing = loadVariations(repoIdentity)[variationKey(worktreePath, packagePath, scriptName)] ?? [];
 
       const ADD_SENTINEL = "__rt:add-variation__";
 
@@ -519,9 +545,12 @@ async function selectPackageAndScript(
           });
           if (!command) process.exit(1);
 
-          if (dataDir) {
-            saveVariation(dataDir, worktreePath, packagePath, scriptName, { name, command });
-          }
+          reportSave(
+            "variation",
+            name,
+            saveVariation(repoIdentity, worktreePath, packagePath, scriptName, { name, command }),
+            label || worktreePath,
+          );
 
           // Tab or Enter-with-queue: queue the new variation
           if (varResult.key === "tab" || q.length > 0) {
@@ -650,7 +679,7 @@ export async function runCommand(
     // ── Preset direct invoke: `rt run <preset-name>` ──────────────────────
     const presetArg = args.find((a) => !a.startsWith("-") && a !== "again");
     if (presetArg) {
-      const preset = findPreset(dataDir, presetArg);
+      const preset = findPreset(await deriveRepoIdentity(worktreePath), presetArg);
       if (preset) {
         await launchPreset(preset, worktreePath);
         return;
