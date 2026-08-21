@@ -81,6 +81,17 @@ Same shape; `team.mode` reflects the installed state; used post-install and by
 
 → `{ "contract":1, "integration":"gitlab", "status":"ready"|"invalid", "detail":"...", "scopesSeen":["read_api"] }`
 
+## `rt setup <integration> status --json`
+
+Same envelope as `connect`. For `github`, when gh is authenticated the
+envelope also carries `"handle": "<gh login>"` and `"owners": ["<handle>",
+"<org>", ...]` (the handle plus `gh api user/orgs[].login`) — the app's
+team-create card offers them as `--create-repo` owners.
+
+## `rt setup <integration> create-app --json` (owner-once; stdin: `{"configToken": "..."}`)
+
+The app sends the token as JSON on stdin (no `--config-token-stdin` flag).
+
 ## `rt setup apply [--from <stepId>] --json` → NDJSON stream
 
 ```jsonc
@@ -97,14 +108,32 @@ Same shape; `team.mode` reflects the installed state; used post-install and by
 `kind: "app"` and `"privileged"` steps are executed by the app when the `need`
 event arrives (ServicesRegistrar / PrivilegedInstaller). The app records the
 outcome and serves it at `GET /setup/need/<id>` on tray.sock as
-`{ "state": "pending" | "done" | "failed", "detail": "..." }`; rt polls that
-route (1 s) until `done`/`failed`, with a 10-minute timeout. Steps are
-idempotent; `--from` resumes.
+`{ "state": "pending" | "done" | "failed", "detail": "..." }`. That route
+always answers 200 with that body — an unknown or not-yet-started id is
+`pending`, never 404 (rt tolerates a 404 as `pending` anyway); `POST` → 405,
+empty id → 400. rt polls (1 s) until `done`/`failed`, with a 10-minute
+timeout; `done` → the step succeeds with `detail`, `failed` → the step fails
+with `detail`. Steps are idempotent; `--from` resumes.
+
+`need.request.type` (v1): `app-register-services { plists }` ·
+`app-unregister-services { plists }` · `app-privileged { op: "proxy-install" |
+"proxy-remove" }`. The app's NeedBroker must handle all three; anything else
+is recorded `failed: unknown need type`.
+
+`services.register` plists: `com.mattstack.daemon[.dev].plist` always;
+`com.mattstack.deck[.dev].plist` only when `deck` is bundled (rt checks
+`Contents/Helpers/deck` and logs "deck not bundled yet — only the daemon is
+registered" otherwise). The app reports a plist whose `BundleProgram` is
+missing as `ok:false, status:"notFound"`; rt decides.
 
 Invite codes are copy-paste/deep-link only (16-byte id ‖ 32-byte key,
 Crockford base32, ~77 chars, chunked for display). Relay base URL defaults to
 `https://switchboard.mattstack.dev` (matt-gated DNS; `RT_INVITE_RELAY_URL`
 overrides).
+
+Team-scope secrets layout (in the home repo): `teams/<slug>/.sops.yaml` and
+`teams/<slug>/mattstack/secrets/<domain>.json`, domains `board` and `rt`
+(`secrets.write` writes them; `rt team join` materializes them).
 
 ## Step ids (v1, in rt's order)
 
@@ -122,25 +151,57 @@ overrides).
 `GET /services` → `{ "agents": [ { "label": "com.mattstack.daemon", "status": "enabled"|"requiresApproval"|"notRegistered"|"notFound" } ] }`
 `POST /services/register` `{ "plists": [...] }` → `{ ok, results }` · `POST /services/restart` `{ "label" }`
 `POST /privileged/proxy-install` → `{ ok, detail }` (raises the admin prompt)
-`GET /setup/need/<id>` → `{ state, detail }` (app-recorded outcome of a `need` event; rt polls)
-`POST /update/check` → `{ ok }` · `GET /version` → `{ "version": "2.8.0", "build": 2080, "flavor": "prod"|"dev", "path": "/Applications/mattstack.app" }`
+`GET /setup/need/<id>` → 200 `{ state, detail }` always (`pending` for unknown ids; app-recorded outcome of a `need` event; rt polls until `done`|`failed`) · `POST` → 405
+`POST /update/check` → `{ ok }` · `GET /version` → `{ "version": "2.8.0", "build": 2008000, "flavor": "prod"|"dev", "path": "/Applications/mattstack.app" }` — `build` is the numeric `CFBundleVersion` = `major*1e6 + minor*1e3 + patch` (2.8.0 → 2008000)
+
+## `rt team create <name> (--remote <url> | --create-repo <owner>) [--others] --json`
+
+→ `{ "contract":1, "slug", "name", "remote", "created": true|false }`
+(`created:false` when the team zone already exists for that remote).
+`--create-repo <owner>` creates `<owner>/mattstack-team-<slug>` with gh and
+uses its URL as the remote; `--remote <url>` uses an existing empty repo.
+`--others` marks the team as having members beyond the creator. Missing both
+→ exit 2 `remote-required`.
+
+## `rt team status [--team <slug>] --json`
+
+→ `{ "contract":1, "slug", "name", "remote", "lastPush": "<ISO-8601>"|null, "members": [ { "username" } ] }`
+
+## `rt setup intent restore <org>/<repo> --json`
+
+Records the restore intent after the app has run the real `rt restore
+<org>/<repo> --json` (age key on stdin as `{"ageKey": "..."}`; the settings
+lane owns that verb). `rt setup apply`'s `home.restore` step then only
+verifies the clone and the Keychain key.
 
 ## `rt team join --json` (stdin: `{"code": "..."}`) / `--dry-run`
 
 → `{ "contract":1, "team": {"slug","name","owner"}, "access": "ok"|"denied"|"unreachable", "peering": "applied"|"idle"|"unavailable", "message": "..." }`
+(exit 0 even when `access` is `denied`/`unreachable`; exit 2 only for
+`invite-unknown`/`invite-malformed`).
 
 ## `rt team invite --handle <h> --json`
 
 → `{ "contract":1, "code": "...", "expiresAt": "...", "pasteBlock": "Install mattstack from … then open mattstack://join/… or paste …", "forgeAccess": "granted"|"manual"|"skipped", "manualSteps": [...] }`
 
-## `rt uninstall --json [--keep-data|--delete-data] [--dry-run]`
+## `rt uninstall --json [--keep-data|--delete-data] [--yes] [--dry-run]`
 
 → dry-run: `{ "contract":1, "actions": [ { "id":"services.unregister", "title":"Stop and remove the rt daemon and deck services" }, ... ] }`; real run: NDJSON like `apply`.
+
+Action ids (v1, in order): `services.unregister` · `deck.managed-remove` ·
+`proxy.remove` · `path.unlink` · `shell.remove` · `extension.uninstall` ·
+`plugins.uninstall` · `data` (only with `--delete-data`) · `app.trash`.
+`--delete-data` requires `--yes` (non-TTY without it → exit 2
+`confirm-required`; the app's confirmation sheet is the consent, so the app
+always passes `--yes`). `--keep-data` needs no `--yes`.
 
 ## Stub
 
 `RT_STUB_SCENARIO=<name>` (DEBUG builds only) makes the app spawn
-`rt-tray/Tests/stub-rt/stub.ts` instead of the bundled rt. Scenarios ship
+`rt-tray/Tests/stub-rt/stub.ts` instead of the bundled rt. Companion env:
+`RT_STUB_PATH` (required; absolute path to `stub.ts`), `RT_STUB_BUN`
+(optional; default `~/.bun/bin/bun`), `RT_STUB_STATE_DIR` (optional; where
+scenario state such as "granted after first check" persists). Scenarios ship
 canned responses for every verb above: `create-happy`, `join-happy`,
 `join-no-access`, `perm-denied-then-granted`, `apply-fail-retry`, `restore`,
 `uninstall`.

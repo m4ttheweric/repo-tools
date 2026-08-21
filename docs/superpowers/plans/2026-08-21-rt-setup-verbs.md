@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-20-mattstack-app-installer-design.md` (§4.3/4.4/5.2/5.3/5.3b/6/7/9/10/12.3/13) and the binding contract `docs/superpowers/specs/2026-08-21-rt-setup-contract.md`. Settings substrate: `docs/superpowers/specs/2026-08-20-suite-settings-migration.md`, `docs/superpowers/plans/2026-08-20-home-repo-foundation.md`, the in-flight keys wave (`repo-tools-rt50b-wt/docs/superpowers/plans/2026-08-20-rt-keys-wave.md`), and `~/.mattstack/user/local/reply-2026-08-20-settings-lane-to-installer.md`.
 
+**Execution order (cross-plan):** this plan is one of four lanes (L1 this, L3 app shell, L4 release pipeline, L7 clean-room VM); the binding phase/merge order is `docs/superpowers/plans/2026-08-21-cross-plan-review.md` §3. For L1: **Phase A** (no cross-lane dependency) = Tasks 1–4, 6, 9, 13–19. **Phase B** = Task 5 AFTER L4 T1 + T9 merge (consumes `lib/bundle-layout.ts`, `installRtBinary`, `installedTrayAppPath`); Tasks 7, 8, 10, 11, 21 AFTER L1 T5 and L4 T11 (`resolveFzf`) merge; Task 22 implements the `/setup/need` reply protocol exactly as L3 T9 / the contract state it; Tasks 24 and 27 AFTER L4 T9 merge (`bundleRootFromExec`, `installRtBinary`, `legacyUserAppPath`); Task 30 is independent (L4's competing `rt update` edit is dropped); Task 31 AFTER L4 T12 merge (README/docs are L4's). Merge order to main: L4 phase A → L3 T1–T11 → L1 T1–T4, T6, T9, T13–T19 → L4 T4/T5/T8 → L1 T5, T7–T12, T20–T30 → L3 T12–T19 → L7 → L4 T12 → L1 T31–T32 → MATT gates.
+
 ## Global Constraints
 
 Copied from the spec's invariants (§2 "Invariants") and the lane rules — every task's requirements include these:
@@ -26,7 +28,8 @@ Copied from the spec's invariants (§2 "Invariants") and the lane rules — ever
 - Every new `module:` in `lib/command-tree-def.ts` gets its `lib/module-registry.ts` import + entry **in the same commit** (`lib/__tests__/module-registry.test.ts` enforces it).
 - Tests: bunfig preload repoints HOME (never remove); tests never touch the real HOME, keychain, network, tray.sock, or daemon — every seam is injectable; any spawn passes `env: process.env` (Bun PATH-snapshot gotcha).
 - **NO monitor exists. Implementers run the tests themselves** (`bun test lib commands packages`, `bun x tsc --noEmit`), never wait for results to arrive.
-- Worktree `/Users/matt/Documents/GitHub/repo-tools-l1-wt`, branch `goodwinmattheweric/mat-383-rt-setup-verbs` off `origin/main`. The settings lane lands more on main overnight (keys wave, H2 snapshot daemon, R restore, deck/board/gitq lanes): **rebase onto `origin/main` before every merge checkpoint** (Task 0 and Task 33 say how). Never touch the main checkout.
+- Worktree `/Users/matt/Documents/GitHub/repo-tools-l1-wt`, branch `goodwinmattheweric/mat-383-rt-setup-verbs` off `origin/main`. The settings lane lands more on main overnight (keys wave, H2 snapshot daemon, R restore, deck/board/gitq lanes): **rebase onto `origin/main` before every merge** (Task 0 and Task 33 say how), and **rebase onto `origin/main` after L4 T1/T9/T11 merge before starting Tasks 5/7/24/27**. Never touch the main checkout.
+- **File ownership (cross-plan review §1):** `commands/verify.ts`, `commands/update.ts`, `cli.ts`, `commands/post-install.ts` are L1's — no other lane edits them. `README.md` is L4's (L1 does not edit it). `lib/rt-paths.ts`, `lib/dev-mode.ts`, `lib/fzf.ts`, `lib/notifier.ts`, `lib/bundle-layout.ts` are L4's — L1 consumes their exports (`appBundleRoot`, `bundleRootFromExec`, `bundledHelperPath`, `bundledExec`, `RT_BUNDLE_PATH`, `installRtBinary`, `installedTrayAppPath`, `legacyUserAppPath`, `resolveFzf`) and never edits them. `rt-tray/**` is L3's/L4's. Spec and contract files (`docs/superpowers/specs/*`) are edited only in the appspec branch, never committed from this worktree.
 - Commit messages prefixed `MAT-383:`; every commit ends with the trailer `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 - ORCHESTRATOR-ONLY tasks (marked) need the live machine (real tray.sock, keychain, gh auth); implementer subagents never run them.
 
@@ -62,8 +65,8 @@ lib/setup/
   tools-install.ts     brew|vendor|apple-clt installs; tool-owned setup wrappers
   __tests__/fakes.ts   fakeProbes(), FakeTray, recorded exec scripts
 lib/deps/
-  resolve.ts           bundledToolPath(), userCopyOnPath(), resolveTool()
-  links.ts             tagged links: isOurLink(), link(), unlink(), reconcile(), DEFAULT_EXPOSED
+  resolve.ts           appBundlePath() (= L4 appBundleRoot), bundledToolPath(), bundledToolExec(), userCopyOnPath(), resolveTool()
+  links.ts             tagged links (symlink or "# mattstack-link:" wrapper): isOurLink(), link(), unlink(), reconcile(), DEFAULT_EXPOSED
 lib/team/
   slug.ts              slugify()
   invite-crypto.ts     AES-256-GCM seal/open, code encode/decode (base32 crockford)
@@ -164,6 +167,7 @@ export function finalizePlan(team: TeamRef, groups: Group[], now: Date = new Dat
   return envelope({ team, groups, canInstall: requiredMissing.length === 0, requiredMissing }, now);
 }
 ```
+`NeedRequest` keeps both uninstall types: L3's NeedBroker must handle `app-unregister-services` and `app-privileged` with `op:"proxy-remove"` (tracked in the cross-plan review §5 #12-13 / #24; the contract lists both).
 
 ```ts
 // lib/setup/errors.ts
@@ -376,40 +380,45 @@ Table (pin in code; all network through `p.fetch` or `p.exec`):
 
 ### Task 5: deps — bundled tool resolution + tagged links + `rt deps`
 
+**AFTER L4 T1 + L4 T9 merge** (rebase onto `origin/main` first): this task consumes `lib/bundle-layout.ts` (`appBundleRoot`, `bundleRootFromExec`, `bundledHelperPath`, `bundledExec`, `RT_BUNDLE_PATH`) and `installRtBinary` (`lib/dev-mode.ts`) / `installedTrayAppPath` (`lib/rt-paths.ts`) — L4 owns those files; L1 never edits them.
+
 **Files:**
 - Create: `lib/deps/resolve.ts`, `lib/deps/links.ts`, `commands/deps.ts`
 - Test: `lib/deps/__tests__/resolve.test.ts`, `lib/deps/__tests__/links.test.ts`, `commands/__tests__/deps.test.ts`
-- Modify: `lib/command-tree-def.ts` (new `deps` node), `lib/module-registry.ts` (`./commands/deps.ts`), `lib/daemon.ts` (boot: `await reconcileLinks(createRealProbes())` inside a try/catch that logs at warn — one call next to the existing boot reconcile)
+- Modify: `lib/command-tree-def.ts` (new `deps` node), `lib/module-registry.ts` (`./commands/deps.ts`), `lib/daemon.ts` (boot: `await reconcileLinks(createRealProbes())` inside a try/catch that logs at warn — one call next to the existing boot reconcile; and, per the plist-PATH ruling, prepend `<appBundleRoot()>/Contents/Helpers` and `$HOME/.local/bin` to `process.env.PATH` at daemon boot — the agent plist's `EnvironmentVariables.PATH` is the static `/usr/bin:/bin:/usr/sbin:/sbin`, so rt derives the bundle dir from its own execPath; children spawned with `env: process.env` inherit it)
 
 **Interfaces:**
+- Consumes (L4 T1 `lib/bundle-layout.ts`): `appBundleRoot(exists?)`, `bundleRootFromExec(execPath?)`, `bundledHelperPath(name, root?, exists?)`, `bundledExec(name, root?, exists?)` (argv prefix from deps.lock — e.g. fast-browser = `[<root>/Contents/Helpers/node/bin/node, <root>/Contents/Helpers/fast-browser/bin/fast-browser.mjs]`), `RT_BUNDLE_PATH` (`Contents/MacOS/rt`); (L4 T9) `installRtBinary(src)` (atomic link-then-rename of `~/.local/bin/rt`).
 - Produces:
 
 ```ts
-// lib/deps/resolve.ts
-export const HELPER_TOOLS = ["fzf","jq","bun","gh","glab","node","fast-browser","deck","board","gitq"] as const;   // Contents/Helpers/<tool>
-export type BundledTool = (typeof HELPER_TOOLS)[number] | "rt";                                                   // rt = Contents/MacOS/rt
-export function appBundlePath(p: Pick<Probes, "exists" | "home">): string | null   // getSetting("mattstack.appPath") when basename is mattstack.app|mattstack-dev.app and exists; else installedTrayAppPath(TRAY_APP_BUNDLE, p.exists); else the dev bundle; else null
-export function bundledToolPath(p: Pick<Probes, "exists" | "home">, tool: string): string | null   // null when no app or the helper file is absent
+// lib/deps/resolve.ts  — no HELPER_TOOLS list: which helpers exist comes from the bundle's deps.lock via bundle-layout
+export function appBundlePath(p: Pick<Probes, "exists" | "home">): string | null      // = appBundleRoot(p.exists) (bundle rt runs from, else installed active flavor — which already reads mattstack.appPath)
+export function bundledToolPath(p: Pick<Probes, "exists" | "home">, tool: string): string | null   // tool === "rt" ? join(root, RT_BUNDLE_PATH) : bundledHelperPath(tool, root, p.exists); null when no app or absent
+export function bundledToolExec(p: Pick<Probes, "exists" | "home">, tool: string): string[] | null // tool === "rt" ? [join(root, RT_BUNDLE_PATH)] : bundledExec(tool, root, p.exists)
 export function userCopyOnPath(p: Pick<Probes, "exists" | "readlink" | "env" | "home">, tool: string): string | null  // first PATH entry holding an executable `tool` that is NOT our tagged link
-export interface ToolResolution { tool: string; bundled: string | null; userCopy: string | null; linked: boolean; chosen: string | null /* bundled ?? userCopy */ }
+export interface ToolResolution { tool: string; bundled: string | null /* first exec entry / path, for display */; exec: string[] | null /* bundled exec argv prefix, else [userCopy], else null */; userCopy: string | null; linked: boolean; chosen: string | null /* bundled ?? userCopy */ }
 export function resolveTool(p: Probes, tool: string): ToolResolution
 ```
 
 ```ts
 // lib/deps/links.ts
 export const DEFAULT_EXPOSED = ["rt","fast-browser","gitq","deck"] as const;
+export const LINK_TAG = "# mattstack-link:";
 export function linkPath(home: string, tool: string): string                         // ~/.local/bin/<tool>
-/** A link is ours iff it is a symlink whose target lies inside the app bundle (Contents/Helpers or Contents/MacOS). */
-export function isOurLink(p: Pick<Probes, "readlink" | "exists" | "home">, tool: string): boolean
+/** A link is ours iff it is a symlink whose target lies inside the app bundle (Contents/Helpers or Contents/MacOS), OR a regular file whose second line starts with `# mattstack-link:` (the tagged wrapper for multi-argv tools). */
+export function isOurLink(p: Pick<Probes, "readlink" | "readFile" | "exists" | "home">, tool: string): boolean
 export type LinkOutcome = { ok: true; path: string; state: "linked" | "already" } | { ok: false; reason: "no-bundle" | "user-copy" | "dev-mode-owns-rt" | "occupied"; detail: string }
-export function link(p: Probes, tool: string, opts?: { force?: boolean }): LinkOutcome    // refuses "user-copy" unless force; rt in dev mode → dev-mode-owns-rt; a non-ours regular file at the path → occupied
-export function unlink(p: Probes, tool: string): { removed: boolean }                       // only removes our links
-export function reconcile(p: Probes): { removed: string[]; kept: string[] }                 // every our-link whose tool now has a user copy elsewhere on PATH is removed (auto-unlink)
+export function link(p: Probes, tool: string, opts?: { force?: boolean }): LinkOutcome
+//  exec = bundledToolExec(p, tool) (null → no-bundle); exec.length === 1 → symlink (for "rt": installRtBinary(target) — atomic link-then-rename — never a bare p.symlink); exec.length > 1 → write the tagged wrapper
+//  `#!/bin/sh\n# mattstack-link: <tool>\nexec "<exec0>" "<exec1…>" "$@"\n` (mode 0755); refuses "user-copy" unless force; rt in dev mode → dev-mode-owns-rt; a non-ours regular file at the path → occupied
+export function unlink(p: Probes, tool: string): { removed: boolean }                       // only removes our links (symlink or tagged wrapper)
+export function reconcile(p: Probes): { removed: string[]; kept: string[] }                 // every our-link (either form) whose tool now has a user copy elsewhere on PATH is removed (auto-unlink)
 ```
 
 `commands/deps.ts`: `depsResolve(args)` → `rt deps resolve <tool> --json` prints `envelope(resolveTool(...))`; `depsLink(args)` → `rt deps link <tool> [--force] [--json]`; `depsUnlink(args)`; `depsReconcile(args)` → `rt deps reconcile [--json]`. Tree: `deps: { description: "Bundled tools: resolve by absolute path, expose on PATH with tagged links", subcommands: { resolve, link, unlink, reconcile } }` each with `module: "./commands/deps.ts"`, fn names as above, `args` with Tool text + `--json` boolean (+ `--force` on link).
 
-- [ ] **Step 1: Failing tests.** `resolve.test.ts`: with HOME store seeded `mattstack.appPath` → `/Applications/mattstack.app` (use `setSetting("mattstack.appPath","/Applications/mattstack.app","machine")` against the test HOME) and fake `exists` true for that dir + `Contents/Helpers/gh` → `bundledToolPath(p,"gh")` equals `/Applications/mattstack.app/Contents/Helpers/gh`; `"rt"` → `.../Contents/MacOS/rt`; `userCopyOnPath` with `env.PATH="/opt/homebrew/bin:/Users/x/.local/bin"`, `exists("/opt/homebrew/bin/gh")` → returns that; when the only hit is `~/.local/bin/gh` and `readlink` says it points into the bundle → null. `links.test.ts`: `link` creates symlink target=bundled path (assert `calls.symlinks`); second call → `already`; `link("gh")` when a user copy exists → `{ok:false, reason:"user-copy"}`; with `{force:true}` → links; `link("rt")` when `~/.local/bin/rt` starts with `#!` → `dev-mode-owns-rt` (fake `readFile`); `reconcile` removes the gh link once `/opt/homebrew/bin/gh` appears, keeps `rt`. `deps.test.ts`: `depsResolve(["gh","--json"])` prints an envelope with `contract:1`.
+- [ ] **Step 1: Failing tests.** `resolve.test.ts`: with HOME store seeded `mattstack.appPath` → `/Applications/mattstack.app` (use `setSetting("mattstack.appPath","/Applications/mattstack.app","machine")` against the test HOME), a fake `Contents/Resources/deps.lock` listing `gh` (`bundlePath: Contents/Helpers/gh`, `exec: [Contents/Helpers/gh]`, `status: bundled`) and `fast-browser` (`exec: [Contents/Helpers/node/bin/node, Contents/Helpers/fast-browser/bin/fast-browser.mjs]`), and fake `exists` true for those paths → `bundledToolPath(p,"gh")` equals `/Applications/mattstack.app/Contents/Helpers/gh`; `"rt"` → `.../Contents/MacOS/rt`; `bundledToolExec(p,"fast-browser")` is the two-entry argv; `resolveTool(p,"fast-browser").exec` equals it and `.bundled` is its first entry; `userCopyOnPath` with `env.PATH="/opt/homebrew/bin:/Users/x/.local/bin"`, `exists("/opt/homebrew/bin/gh")` → returns that; when the only hit is `~/.local/bin/gh` and `readlink` says it points into the bundle → null. `links.test.ts`: `link("gh")` creates a symlink target=bundled path (assert `calls.symlinks`); `link("rt")` goes through `installRtBinary` (assert the atomic `<dest>.new` → rename, via an injectable seam), never a bare symlink; `link("fast-browser")` writes the tagged wrapper file (second line `# mattstack-link: fast-browser`, exec line quoting both argv entries, mode 0755) and `isOurLink(p,"fast-browser")` is true for it; second call → `already`; `link("gh")` when a user copy exists → `{ok:false, reason:"user-copy"}`; with `{force:true}` → links; `link("rt")` when `~/.local/bin/rt` starts with `#!` and has no `# mattstack-link:` second line → `dev-mode-owns-rt` (fake `readFile`); `unlink` removes both forms; `reconcile` removes the gh link once `/opt/homebrew/bin/gh` appears, keeps `rt`. `deps.test.ts`: `depsResolve(["gh","--json"])` prints an envelope with `contract:1` and an `exec` array.
 - [ ] **Step 2:** fail. **Step 3:** implement; tree + registry in the same change. **Step 4:** green (incl. `lib/__tests__/module-registry.test.ts`); tsc 0.
 - [ ] **Step 5: Commit** `MAT-383: rt deps — bundled resolution, tagged links, reconcile`
 
@@ -450,32 +459,39 @@ export async function macRows(p: Probes): Promise<Row[]>   // tool.macos, tool.c
 
 ### Task 7: Validators — rt health (the existing `rt verify` checks as rows)
 
+**AFTER L1 T5 and L4 T11 merge** (`resolveFzf()` in `lib/fzf.ts` is L4's; rebase onto `origin/main` first). L4's competing `commands/verify.ts` edit ("rt link" + "bundled extension" checks) is dropped — the two rows below carry it.
+
 **Files:**
 - Create: `lib/setup/validators/rt-health.ts`
 - Test: `lib/setup/__tests__/validators-rt-health.test.ts`
 
 **Interfaces:**
+- Consumes: `resolveFzf()` (`lib/fzf.ts`, L4 T11 — bundled path first, then PATH); `appBundlePath` (Task 5), `RT_BUNDLE_PATH` (`lib/bundle-layout.ts`).
 - Produces: `export async function rtHealthRows(p: Probes, opts: { ci: boolean }): Promise<Row[]>` with rows in this order and these ids (all `kind:"tool"`, group `tools`):
 
 | id | required | ready when | otherwise |
 |---|---|---|---|
 | tool.rt | true | `p.exec(["rt","--version"])` code 0 (detail = stdout) | missing "rt not found on PATH" (action `{type:"link-bundled", label:"Use mattstack's", tool:"rt"}`) |
+| tool.rt-link | false | prod mode only (`currentMode()==="prod"`; dev → skipped "dev mode owns ~/.local/bin/rt"): `p.readlink(~/.local/bin/rt) === join(appBundlePath(p), "Contents/MacOS/rt")` → ready "linked into the bundle" | needs-you "not a link into mattstack.app — run: rt setup apply --from path.link"; no app → skipped |
 | tool.legacy-dirs | true | `legacyDirsPresent()` real=[] (symlinks → ready with detail "compat symlink still present: …") | invalid "real legacy dir present: … — rt reads only ~/.mattstack/rt" |
 | tool.intercepts | false | `shimReport()` all installed+current and `~/.local/bin` on PATH and `staleIntercepts().stale===false` (no rules → skipped "no intercepts declared") | needs-you with the same messages verify prints today, action `{type:"run", label:"Re-install shims", verb:["intercept","install"]}` |
-| tool.fzf | true | `resolveTool(p,"fzf").chosen` non-null → detail `fzf <version> (bundled|user)` | missing "fzf not found" action link-bundled fzf |
+| tool.fzf | true | `resolveFzf()` non-null → detail `fzf <version> (bundled|PATH)` (bundled when the resolved path is inside the bundle) | missing "fzf not found" action link-bundled fzf |
 | tool.app | true | `appBundlePath(p)` non-null (detail path + CFBundleShortVersionString via `p.exec(["/usr/libexec/PlistBuddy","-c","Print CFBundleShortVersionString",<plist>])`) ; legacy `rt-tray.app` present → detail appends "legacy rt-tray.app still present" | missing "mattstack.app not found in /Applications or ~/Applications" |
+| tool.vsix | false | `p.exists(<app>/Contents/Resources/rt-context.vsix)` → ready "bundled extension present" | missing → skipped "extension not bundled (pre-bundle build)"; no app → skipped |
 | tool.extension | false | `checkRtContextExtension(home)` (moved from verify.ts to this module) pass | warn→needs-you with action `{type:"run", label:"Install extension", verb:["tools","setup","extension"]}`; no editors → skipped |
 | tool.shell | false | rc file contains `rtcd` | needs-you "shell integration missing — Install writes it" |
 | tool.daemon | true | `isDaemonInstalled()` and `p.daemon("ping")` ok; detail from `status` (pid/uptime/watched) | not installed → missing "run Install (registers the daemon)"; installed but down → ci ? needs-you "not booted (expected in CI)" : needs-you "installed but not responding — approve in Login Items", action open-settings login-items |
 
 Both `tool.daemon` sub-facts (launchd label via `p.exec(["launchctl","list",activeLaunchdLabel()])`, `worktrees` endpoint) fold into `detail`, not separate rows. `tcc:check` is consumed by Task 6's `perm.fda` fallback (plan.ts passes it in), not here.
 
-- [ ] **Step 1: Failing tests** (fake probes; HOME is the test temp dir): rt --version ok → `tool.rt` ready with detail; `legacyDirsPresent` via a real `.rt` dir created under the test HOME → invalid; daemon not installed (no daemon.json in test HOME) → `tool.daemon` missing; `ci:true` + installed + ping null → needs-you containing "CI"; app missing → missing. Also an order test: ids equal the table order.
+- [ ] **Step 1: Failing tests** (fake probes; HOME is the test temp dir): rt --version ok → `tool.rt` ready with detail; `tool.rt-link` ready when `readlink` returns the bundle's `Contents/MacOS/rt`, needs-you when it points elsewhere, skipped in dev mode; `tool.vsix` ready/skipped by `exists`; `tool.fzf` detail says "bundled" when `resolveFzf` (injected) returns a path under the bundle; `legacyDirsPresent` via a real `.rt` dir created under the test HOME → invalid; daemon not installed (no daemon.json in test HOME) → `tool.daemon` missing; `ci:true` + installed + ping null → needs-you containing "CI"; app missing → missing. Also an order test: ids equal the table order.
 - [ ] **Step 2:** fail. **Step 3:** implement (move `checkRtContextExtension` here; re-export it from `commands/verify.ts` so `commands/__tests__/verify.test.ts` keeps passing unchanged). **Step 4:** green; tsc 0. **Step 5: Commit** `MAT-383: rt health validators (verify checks become rows)`
 
 ---
 
 ### Task 8: Validators — tools group (provisioned, bundled, team-declared, packs)
+
+**AFTER L1 T5 and L4 T11 merge** (uses `resolveTool(...).exec` from Task 5; rebase onto `origin/main` first). `commands/post-install.ts` is L1-owned (L4 T9 dropped its edit of that file); the `detectEditors` import change here is the only Task-8 touch of it.
 
 **Files:**
 - Create: `lib/setup/validators/tools.ts`, `lib/setup/semver.ts`, `lib/editors.ts`
@@ -489,14 +505,14 @@ Both `tool.daemon` sub-facts (launchd label via `p.exec(["launchctl","list",acti
 |---|---|---|---|---|
 | tool.herdr | true | `herdr --version` (floor `0.7.5`) + `herdr integration status` | version ≥ floor and integration stdout contains "claude" → detail "herdr <v>, Claude integration installed"; integration missing → needs-you action `{type:"run", label:"Install integration", verb:["tools","setup","herdr"]}` | 127 → missing, action `{type:"install", label:"Install", tool:"herdr", via: hasBrew ? "brew" : "vendor"}`; below floor → invalid "herdr <v> < 0.7.5" |
 | tool.claude | true | `claude --version`; sign-in: `claude auth status` code 0 → signed in; unknown subcommand (stderr contains "unknown") → detail "installed (sign-in not checked)" ready | ready | 127 → missing, action install via brew/vendor; auth status code ≠0 (and known) → needs-you "sign in: run claude once", action `{type:"steps", label:"Show steps…", steps:["Open a terminal","Run: claude","Follow the sign-in prompt"]}` |
-| tool.fast-browser | true | `<resolveTool(p,"fast-browser").chosen> doctor --json` → parse `{runtime:{ok}, extension:{loaded}, pairing:{ok}}` (tolerate missing keys) | runtime ok AND extension loaded | extension not loaded → needs-you action `{type:"steps", label:"Show steps…", steps:["Open chrome://extensions","Turn on Developer mode","Load unpacked → ~/.fast-browser/extension/current/unpacked"]}`; no binary → missing (bundled-link action); doctor parse failure → error with stderr head |
+| tool.fast-browser | true | `p.exec([...resolveTool(p,"fast-browser").exec, "doctor", "--json"])` (the bundled exec is `[node, fast-browser.mjs]`, never `chosen` as argv0) → parse `{runtime:{ok}, extension:{loaded}, pairing:{ok}}` (tolerate missing keys) | runtime ok AND extension loaded | extension not loaded → needs-you action `{type:"steps", label:"Show steps…", steps:["Open chrome://extensions","Turn on Developer mode","Load unpacked → ~/.fast-browser/extension/current/unpacked"]}`; `exec` null → missing (bundled-link action); doctor parse failure → error with stderr head |
 | tool.editor | false | `detectEditors()` — moved with `EDITOR_PATTERNS` into a new `lib/editors.ts` (this task; `commands/extension.ts` and `commands/post-install.ts` import it from there, behavior unchanged) | ≥1 editor → detail names | skipped "no editor found (works without this)" |
 | tool.chrome | required iff any `reqs[].chrome?.required` | `p.exists("/Applications/Google Chrome.app")` or `~/Applications/...` | ready | missing, action `{type:"open-url", label:"Download", url:"https://www.google.com/chrome/"}`; optional otherwise; a pack `signedIntoApp` adds a needs-you row `tool.chrome-signin` with steps |
 | tool.mission-control | false | `defaults read com.apple.symbolichotkeys AppleSymbolicHotKeys` → key "32" → `enabled` 0 | unbound → ready | bound → needs-you "Control+Up is bound to Mission Control (rt nav uses it)", action `{type:"open-settings", label:"Open Keyboard Settings…", target:"keyboard"}`; exec fails → skipped |
 | tool.<name> (per `reqs[].tools`) | !optional | `<name> --version` | present (and ≥ floor when given) → detail version; `connect` present and row "connect" unresolved → stays ready (connect is an account row) | missing → action install via brew when `install.brew` and hasBrew, else `open-url install.url` when given, else `steps`; why = requirement.why |
 | pack.<pack> | true | `claude plugin list` stdout contains `<pack>@` | ready "installed" | missing "installed by Install (plugins.install)"; claude missing → skipped |
 
-- [ ] **Step 1: Failing tests.** semver: `atLeast("0.8.0","0.7.5")` true, `atLeast("v0.7.4","0.7.5")` false, `atLeast("24.19.0","24")` true. tools: fake exec script keyed on argv[0]; herdr 127 + hasBrew → install via brew; herdr "0.8.0" + integration "claude: installed" → ready; fast-browser doctor `{"runtime":{"ok":true},"extension":{"loaded":false}}` → needs-you with 3 steps; team tool `doppler` missing with brew formula → install action `tool:"doppler", via:"brew"`; pack row from `reqs=[{pack:"claimview",...}]` with plugin list containing `claimview@assured` → ready.
+- [ ] **Step 1: Failing tests.** semver: `atLeast("0.8.0","0.7.5")` true, `atLeast("v0.7.4","0.7.5")` false, `atLeast("24.19.0","24")` true. tools: fake exec script keyed on argv[0]; herdr 127 + hasBrew → install via brew; herdr "0.8.0" + integration "claude: installed" → ready; fast-browser with `exec=[node, mjs]` → recorded argv is `[node, mjs, "doctor", "--json"]` and doctor `{"runtime":{"ok":true},"extension":{"loaded":false}}` → needs-you with 3 steps; team tool `doppler` missing with brew formula → install action `tool:"doppler", via:"brew"`; pack row from `reqs=[{pack:"claimview",...}]` with plugin list containing `claimview@assured` → ready.
 - [ ] **Step 2:** fail. **Step 3:** implement. **Step 4:** green; tsc 0. **Step 5: Commit** `MAT-383: tools validators (provisioned, bundled, team-declared, packs)`
 
 ---
@@ -541,6 +557,8 @@ export async function accessRows(p: Probes, team: TeamSnapshot, intent: SetupInt
 
 ### Task 10: Plan composition + `rt setup plan|status` + `setup` node
 
+**AFTER L1 T5 and L4 T11 merge** (composes Tasks 7–9). `cli.ts` is L1-owned (L4 T10's comment-only edit is dropped).
+
 **Files:**
 - Create: `lib/setup/plan.ts`, `commands/setup.ts`
 - Test: `lib/setup/__tests__/plan.test.ts`, `commands/__tests__/setup-plan.test.ts`
@@ -584,13 +602,15 @@ setup: {
 ```
 
 - [ ] **Step 1: Failing tests.** `plan.test.ts`: with fake probes (tray `GET /permissions` → all granted; exec script answering every probe the validators make with "ready" shapes; no intent; no teams) → plan has 4 groups in order `mac, accounts, access, tools`, `team.mode==="none"`, `perm.fda` ready; with tray status 0 and daemon tcc `{blocked:0,total:2}` → `perm.fda` ready with "via the daemon" detail; with an intent `{mode:"create", team:{slug:"acme",...remote:"https://github.com/o/r.git"}}` → `team` is `{slug:"acme", name:"Acme", mode:"create"}` and `account.github` exists. `setup-plan.test.ts`: `setupPlan(["--json"], {}, deps)` prints exactly one line that parses to a Plan with `contract:1`; human mode prints "Your Mac".
-- [ ] **Step 2:** fail. **Step 3:** implement; `setupInteractive` this task = `setupStatus` (replaced in Task 28). **cli.ts first-run hook**: the `daemon.json`-absent branch no longer auto-runs post-install; it prints `  rt is not set up yet — open mattstack.app, or run: rt setup` (once, to stderr) and continues, and it is skipped entirely when `args[0]` ∈ `setup, team, deps, services, tools, repos, skills, cron, uninstall, home, secrets, restore, verify` or `RT_APP_SOCKET` is set. Keep `RT_SKIP_SETUP`/`CI` respected. `verify` keeps its direct-dispatch branch.
+- [ ] **Step 2:** fail. **Step 3:** implement; `setupInteractive` this task = `setupStatus` (replaced in Task 28). **cli.ts first-run hook**: the `daemon.json`-absent branch no longer auto-runs post-install; it prints `  rt is not set up yet — open mattstack.app, or run: rt setup` (once, to stderr) and continues, and it is skipped entirely when `args[0]` ∈ `setup, team, deps, services, tools, repos, skills, cron, uninstall, home, secrets, restore, verify` or `RT_APP_SOCKET` is set. `args[0] === "--post-install"` never reaches the hint: the earlier `--post-install` branch in `cli.ts` dispatches before the first-run hook runs (no change needed; stated so nobody adds it to the skip list twice). Keep `RT_SKIP_SETUP`/`CI` respected. `verify` keeps its direct-dispatch branch.
 - [ ] **Step 4:** green (module-registry test included); tsc 0.
 - [ ] **Step 5: Commit** `MAT-383: rt setup plan|status — plan composition over the validators`
 
 ---
 
 ### Task 11: `rt verify` runs the validators
+
+**AFTER L1 T5 and L4 T11 merge.** `commands/verify.ts` is L1-owned: L4 T11's edit of it (fzf block, "rt link", "bundled extension" checks) is dropped; Task 7's `tool.fzf`/`tool.rt-link`/`tool.vsix` rows carry that content, so no rebase conflict arises here.
 
 **Files:**
 - Modify: `commands/verify.ts` (replace `runChecks` with a mapping over `composePlan`), keep `printHuman`/`printJSON` shapes
@@ -616,6 +636,7 @@ setup: {
 ```ts
 // commands/setup.ts
 export async function integrationStatus(id: Integration, args: string[], deps: SetupDeps): Promise<void>   // prints envelope({integration, status, detail, scopesSeen}) from accountRows-equivalent single-row evaluation
+//  github only: when gh is authenticated (`gh auth status` code 0) the envelope also carries `handle` (`gh api user` → .login) and `owners: [handle, ...(gh api user/orgs → [].login)]` — the app's Create-team card reads them (contract: `rt setup github status --json`)
 export async function integrationConnect(id: Integration, args: string[], deps: SetupDeps & { stdin: () => Promise<unknown> }): Promise<void>
 //  stdin JSON {"token": "..."} | {"useGh": true} | {"email": "..."} (field names = def.fields[].name); --token-stdin reads a raw token line; TTY without stdin → promptSecretValue per secret field
 //  1. validate via def.validate → invalid → print envelope + exit 2 (code "invalid-credential")
@@ -626,7 +647,7 @@ export async function integrationConnect(id: Integration, args: string[], deps: 
 //  slack: connect = OAuth: build https://slack.com/oauth/v2/authorize?client_id=<team.integrations.slack.clientId>&user_scope=<scopes>&redirect_uri=http://localhost:<callbackPort>/callback ; open it (p.exec(["open", url])); listen on callbackPort (Bun.serve, injectable `deps.listen`) for one request; exchange code at https://slack.com/api/oauth.v2.access with clientId + client secret (team secret board.slackClientSecret via readTeamSecret — Task 13; absent → exit 2 "slack-app-missing"); store authed_user.access_token as board.slackUserToken (user scope)
 export const setupGithubStatus = (a: string[], c?: CommandContext, d = realConnectDeps()) => integrationStatus("github", a, d);   // … ×8 ids × {Status, Connect}
 export async function setupSlackCreateApp(args: string[], _ctx?: CommandContext, deps = realConnectDeps()): Promise<void>
-//  --config-token-stdin (or stdin JSON {"configToken"}); builds manifest via buildSlackManifest(); POST https://slack.com/api/apps.manifest.create (Bearer config token) → {app_id, credentials:{client_id, client_secret, signing_secret}}
+//  --config-token-stdin ⇒ a raw token line on stdin; no flag ⇒ stdin JSON {"configToken"} (the app sends JSON without the flag); hardening: under the flag, a line that parses as a JSON object is read as {"configToken"} too. Builds manifest via buildSlackManifest(); POST https://slack.com/api/apps.manifest.create (Bearer config token) → {app_id, credentials:{client_id, client_secret, signing_secret}}
 //  writes mattstack.integrations.slack {appId, clientId, callbackPort} via setSetting(..., "team", {team: slug}) (deep-merge preserves forge/linear); writes team secrets board.slackClientSecret + board.slackSigningSecret via writeTeamSecret (Task 13 — executed before this task, see the execution-order note at the end)
 ```
 
@@ -639,7 +660,7 @@ export const DEFAULT_CALLBACK_PORT = 11234
 ```
 Tree: for each id in `github gitlab linear slack switchboard sdm doppler ldcli`: `setup.subcommands[id] = { description: "<Title>: check or connect this account", subcommands: { status: { module, fn: "setup<Id>Status", args:[json] }, connect: { module, fn: "setup<Id>Connect", args:[json, {name:"Token on stdin", flag:"--token-stdin", type:"boolean"}, {name:"Use gh", flag:"--use-gh", type:"boolean"}] } } }`; `slack` adds `"create-app": { fn:"setupSlackCreateApp", args:[{flag:"--config-token-stdin"...}, json] }`. Generate these nodes with a local helper in command-tree-def.ts (`integrationNode(id, title)`), keeping the module side-effect free.
 
-- [ ] **Step 1: Failing tests.** `setup-connect.test.ts`: gitlab connect with stdin `{"token":"glpat-x"}` and a fake fetch making validate ready, no age key (fake `SecretPresence`/writer seam reports `hasKey:false`) → prints `{...,"status":"ready"}` and the staging file `rt/setup-staging/rt.json` contains `gitlabToken` (assert via fake `writes`); validate invalid → exit code 2 captured (stub `process.exit` via a `deps.exit` seam — add `exit: (code:number)=>never` to SetupDeps) and payload `error.code==="invalid-credential"`; `--use-gh` → exec `["gh","auth","token"]` called and token stored. `slack-app.test.ts`: manifest has redirect url with the port and both scope lists; `setupSlackCreateApp` with fake fetch returning credentials → `setSetting` called (spy on a `writeSetting` seam in deps) with `mattstack.integrations` containing `{slack:{appId,clientId,callbackPort}}` and team secrets written for clientSecret+signingSecret (fake team-secret writer records).
+- [ ] **Step 1: Failing tests.** `setup-connect.test.ts`: gitlab connect with stdin `{"token":"glpat-x"}` and a fake fetch making validate ready, no age key (fake `SecretPresence`/writer seam reports `hasKey:false`) → prints `{...,"status":"ready"}` and the staging file `rt/setup-staging/rt.json` contains `gitlabToken` (assert via fake `writes`); validate invalid → exit code 2 captured (stub `process.exit` via a `deps.exit` seam — add `exit: (code:number)=>never` to SetupDeps) and payload `error.code==="invalid-credential"`; `--use-gh` → exec `["gh","auth","token"]` called and token stored; `setupGithubStatus(["--json"])` with gh authenticated (fake `gh api user` → `{"login":"matt"}`, `gh api user/orgs` → `[{"login":"m4ttstack"}]`) → envelope has `handle:"matt"`, `owners:["matt","m4ttstack"]`; gh unauthenticated → no `handle`/`owners` keys. `slack-app.test.ts`: manifest has redirect url with the port and both scope lists; `setupSlackCreateApp` with fake fetch returning credentials → `setSetting` called (spy on a `writeSetting` seam in deps) with `mattstack.integrations` containing `{slack:{appId,clientId,callbackPort}}` and team secrets written for clientSecret+signingSecret (fake team-secret writer records).
 - [ ] **Step 2:** fail. **Step 3:** implement. **Step 4:** green; tsc 0; module-registry test green. **Step 5: Commit** `MAT-383: rt setup <integration> status|connect, slack create-app`
 
 ---
@@ -666,7 +687,7 @@ export async function addTeamRecipient(slug: string, publicKey: string, seams: S
 export async function removeTeamRecipient(slug: string, publicKey: string, seams: SecretsSeams): Promise<{ removed: boolean; reencrypted: string[] }>
 export async function reencryptTeamSecrets(slug: string, seams: SecretsSeams): Promise<string[]>   // `sops updatekeys -y` per file — the `rt secrets rotate --team` mechanic; note in the command's output that removed members keep their old copies (documented residue)
 ```
-Layout note for the settings lane (commit this sentence into `docs/superpowers/specs/2026-08-21-rt-setup-contract.md` under a new "Team-scope secrets layout" heading — the only spec edit this plan makes): `teams/<slug>/.sops.yaml` (N `age:` recipients, `path_regex: mattstack/secrets/.*`), files at `teams/<slug>/mattstack/secrets/<domain>.json`, domains `board` (slackClientSecret, slackSigningSecret) and `rt` (switchboardAdminToken, shared service tokens a pack declares).
+Layout note for the settings lane — already applied to `docs/superpowers/specs/2026-08-21-rt-setup-contract.md` under the "Team-scope secrets layout" heading in the appspec branch (merged to main before this lane executes); this task only references it and commits **no** spec/contract file from the L1 worktree: `teams/<slug>/.sops.yaml` (N `age:` recipients, `path_regex: mattstack/secrets/.*`), files at `teams/<slug>/mattstack/secrets/<domain>.json`, domains `board` (slackClientSecret, slackSigningSecret) and `rt` (switchboardAdminToken, shared service tokens a pack declares).
 
 - [ ] **Step 1: Failing tests** (fake exec seam as in store.test.ts): `writeTeamRecipients` renders a `.sops.yaml` with both keys and the team path_regex; `writeTeamSecret` argv pins `--filename-override mattstack/secrets/board.json` and spawn cwd = team clone (assert via `buildSecretsSpawnOptions`-style builder exported as `buildTeamSpawnOptions(slug)`); zero recipients → throws; `addTeamRecipient` runs `["sops","updatekeys","-y",<file>]` once per existing domain file; `removeTeamRecipient` rewrites without the key and re-encrypts; existing store tests unchanged and green after the locations refactor.
 - [ ] **Step 2:** fail. **Step 3:** implement. `rt secrets set <domain> <key> --team <slug>` / `list --team` / `rotate --team <slug> [<domain> <key>]`: with domain+key = rotate that value; with none = `reencryptTeamSecrets`. **Step 4:** green; tsc 0. **Step 5: Commit** `MAT-383: team-scope secrets — N-recipient sops, rotate --team`
@@ -837,12 +858,12 @@ export async function joinRedeem(p: Probes, relay: RelayClient, secrets: Secrets
 
 ---
 
-### Task 19: `rt team members sync|remove`
+### Task 19: `rt team members sync|remove` + `rt team status`
 
 **Files:**
 - Create: `lib/team/members.ts`
-- Modify: `commands/team.ts` (`teamMembersSync`, `teamMembersRemove`), `lib/command-tree-def.ts` (`team members sync|remove`)
-- Test: `lib/team/__tests__/members.test.ts`
+- Modify: `commands/team.ts` (`teamMembersSync`, `teamMembersRemove`, `teamStatus`), `lib/command-tree-def.ts` (`team members sync|remove`, `team status`)
+- Test: `lib/team/__tests__/members.test.ts`, `commands/__tests__/team-status.test.ts`
 
 **Interfaces:**
 - Produces:
@@ -856,8 +877,10 @@ export async function membersRemove(p: Probes, secrets: SecretsSeams, slug: stri
 ```
 Tree: `members: { description: "Roster: collect invitee keys / remove a member", subcommands: { sync: {fn:"teamMembersSync", args:[team, json]}, remove: {fn:"teamMembersRemove", args:[{name:"Handle", type:"text"}, team, json]} } }`.
 
-- [ ] **Step 1: Failing tests.** sync with one record whose reply exists → `added:["<key>"]`, `sops updatekeys` called, record removed; no reply → pending; owner key always present afterwards. remove → revoke argv, roster write without the handle, updatekeys run, residueNote non-empty.
-- [ ] **Step 2:** fail. **Step 3:** implement. **Step 4:** green; tsc 0. **Step 5: Commit** `MAT-383: rt team members sync|remove — recipients follow the roster`
+`teamStatus(args)` → `rt team status [--team <slug>] --json` (the app's Settings → Team pane reads it; contract verb) prints `envelope({ slug, name, remote, lastPush, members: [{username}] })`: `slug`/`name` from `readTeamSnapshot` (`name` = `board.title` ?? slug), `remote` = the raw origin URL (masking is the app's job), `lastPush` = `p.exec(["git","-C",teams/<slug>,"log","-1","--format=%cI","origin/main"])` stdout trimmed or `null` when it fails, `members` = `getSetting("board.members").value ?? []` mapped to `{username}`; no team cloned → UserActionableError("no-team"). Tree node `team.status: { description: "Team summary (name, remote, last push, members)", fn: "teamStatus", args: [team, json] }`.
+
+- [ ] **Step 1: Failing tests.** sync with one record whose reply exists → `added:["<key>"]`, `sops updatekeys` called, record removed; no reply → pending; owner key always present afterwards. remove → revoke argv, roster write without the handle, updatekeys run, residueNote non-empty. `team-status.test.ts`: `teamStatus(["--json"])` with a fake snapshot + `git log` stdout `2026-08-21T10:00:00+00:00` → envelope `{slug, name, remote, lastPush, members:[{username:"matt"}]}`; `git log` failing → `lastPush:null`; no team → exit 2 `no-team`.
+- [ ] **Step 2:** fail. **Step 3:** implement. **Step 4:** green; tsc 0; registry. **Step 5: Commit** `MAT-383: rt team members sync|remove + team status — recipients follow the roster`
 
 ---
 
@@ -898,6 +921,8 @@ Tree nodes: `repos: { description: "Register repos with rt (index + tracking)", 
 
 ### Task 21: `rt tools install|setup`
 
+**AFTER L1 T5 and L4 T11 merge** (uses `resolveTool(...).exec` / `link` from Task 5).
+
 **Files:**
 - Create: `lib/setup/tools-install.ts`, `commands/tools.ts`
 - Modify: `lib/command-tree-def.ts` (`tools` node), `lib/module-registry.ts`
@@ -914,12 +939,12 @@ export const VENDOR_INSTALLERS: Record<string, string[]> = {
 export const BREW_FORMULAE: Record<string, string> = { herdr: "herdr", claude: "claude-code" };
 export async function installTool(p: Probes, tool: string, reqs: PackRequirements[]): Promise<{ via: "brew" | "vendor" | "apple-clt" | "bundled-link"; ok: boolean; detail: string }>
 //  apple-clt → p.exec(["xcode-select","--install"]) (code 1 "already installed" → ok)
-//  tool in HELPER_TOOLS → link(p, tool) (via bundled-link)
+//  bundledToolExec(p, tool) non-null (the bundle's deps.lock lists it) → link(p, tool) (via bundled-link)
 //  brew present (p.exec(["brew","--version"]) code 0) and formula known (BREW_FORMULAE or reqs tool.install.brew) → ["brew","install",formula]
 //  else VENDOR_INSTALLERS[tool] or reqs tool.install.url → ["sh","-c",`curl -fsSL ${url} | sh`]
 //  else UserActionableError("no-installer", "no install method known for <tool>")
 export async function setupTool(p: Probes, tool: string, opts: { configDirs: string[] }): Promise<{ ok: boolean; detail: string }>
-//  "fast-browser": p.exec([resolveTool(p,"fast-browser").chosen!, "setup"]) (UserActionableError("tool-missing") when null)
+//  "fast-browser": p.exec([...resolveTool(p,"fast-browser").exec!, "setup"]) — the exec argv prefix ([node, fast-browser.mjs] when bundled), never `chosen` as argv0 (UserActionableError("tool-missing") when exec is null)
 //  "herdr": for each dir: p.exec(["herdr","integration","install","claude"], {env:{CLAUDE_CONFIG_DIR: dir}})
 //  "extension": installExtensionsHeadless(p) — moved from commands/post-install.ts's installExtensions (vsix found at `<appPath>/Contents/Resources/rt-context.vsix` first, then next to the binary) — returns installed editor names and records them in setup-state
 //  else UserActionableError("unknown-tool-setup")
@@ -927,7 +952,7 @@ export function claudeConfigDirs(p: Pick<Probes,"env"|"home">, extra: string[]):
 ```
 `commands/tools.ts`: `toolsInstall(args)` → `rt tools install <tool> [--json]`; `toolsSetup(args)` → `rt tools setup <tool> [--config-dir <dir>]… [--json]`.
 
-- [ ] **Step 1: Failing tests.** herdr with brew present → `brew install herdr`; without brew → the vendor sh -c line; team tool with `install.brew` → that formula; `gh` → link via bundled-link; apple-clt → xcode-select argv; `setupTool("herdr",{configDirs:[a,b]})` runs twice with the env var; extension setup records editors in setup-state.
+- [ ] **Step 1: Failing tests.** herdr with brew present → `brew install herdr`; without brew → the vendor sh -c line; team tool with `install.brew` → that formula; `gh` → link via bundled-link; apple-clt → xcode-select argv; `setupTool("fast-browser")` with `exec=[node, mjs]` records argv `[node, mjs, "setup"]`; `setupTool("herdr",{configDirs:[a,b]})` runs twice with the env var; extension setup records editors in setup-state.
 - [ ] **Step 2:** fail. **Step 3:** implement (`detectEditors` imported from commands/extension.ts; the headless vsix install uses `p.exec([cli,"--install-extension",vsix,"--force"],{timeoutMs:30000})`). **Step 4:** green; tsc 0; registry test. **Step 5: Commit** `MAT-383: rt tools install|setup — brew/vendor/CLT installs, tool-owned setup`
 
 ---
@@ -945,22 +970,25 @@ export function claudeConfigDirs(p: Pick<Probes,"env"|"home">, extra: string[]):
 ```ts
 // commands/services.ts — every verb: tray status 0 → UserActionableError("app-not-running", "mattstack.app is not running — open it, then retry")
 export async function servicesList(args, _ctx?, deps = realServicesDeps()): Promise<void>       // GET /services → envelope({agents})
-export async function servicesRegister(args, _ctx?, deps?): Promise<void>                          // --plist <name> (repeatable; default both com.mattstack.daemon.plist, com.mattstack.deck.plist) → POST /services/register {plists}
+export async function servicesRegister(args, _ctx?, deps?): Promise<void>                          // --plist <name> (repeatable; default servicePlists(currentMode(), p)) → POST /services/register {plists}
 export async function servicesRestart(args, _ctx?, deps?): Promise<void>                           // <label> → POST /services/restart {label}
 // lib/setup/need.ts
 export const SERVICE_PLISTS = ["com.mattstack.daemon.plist", "com.mattstack.deck.plist"] as const;   // dev flavor: ".dev" inserted before ".plist" when currentMode()==="dev"
-export function servicePlists(mode: "dev" | "prod"): string[]                                        // lives here (lib), consumed by commands/services.ts and steps/services.ts
+export function servicePlists(mode: "dev" | "prod", p: Pick<Probes, "exists" | "home">): string[]  // lives here (lib), consumed by commands/services.ts and steps/services.ts
+//  daemon plist always; the deck plist ONLY when `resolveTool(p,"deck").chosen` is non-null (deck bundled) — otherwise it is omitted and the caller logs "deck not bundled yet — only the daemon is registered" (the app reports ok only when every requested plist registers, so a missing helper must not be requested)
 export interface NeedReply { ok: boolean; detail?: string }
 /**
- * rt emits the need event on stdout, then polls GET /setup/need/<id> on tray.sock until the app has stored
- * its reply there (404 = not yet). Works identically whether the app answers instantly or holds the GET open.
+ * rt emits the need event on stdout, then polls GET /setup/need/<id> on tray.sock. The app always answers 200
+ * {state: "pending" | "done" | "failed", detail?} (unknown/unstarted ids are "pending"); rt keeps polling while
+ * state is "pending" (a 404 is tolerated as pending too), maps "done" → {ok:true, detail} and "failed" →
+ * {ok:false, detail}. Works identically whether the app answers instantly or holds the GET open.
  */
 export async function awaitNeed(tray: TrayClient, id: StepId, opts: { timeoutMs?: number; pollMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {}): Promise<NeedReply | "timeout" | "app-gone">
 //  timeoutMs default 600_000; pollMs 1_000; each GET timeoutMs 30_000; status 0 three times in a row → "app-gone"
 ```
 Tree: `services: { description: "App-registered services (daemon, deck) via mattstack.app", subcommands: { list, register, restart } }`.
 
-- [ ] **Step 1: Failing tests.** list with fake tray → envelope with agents; tray 0 → exit 2 `app-not-running`; register default plists body; `servicePlists("dev")` → `com.mattstack.daemon.dev.plist`, `com.mattstack.deck.dev.plist`. need: fake tray returns 404 twice then 200 `{ok:true,detail:"registered"}` with a fake sleep → reply; always 404 with fake clock past 10 min → "timeout"; status 0 ×3 → "app-gone".
+- [ ] **Step 1: Failing tests.** list with fake tray → envelope with agents; tray 0 → exit 2 `app-not-running`; register default plists body; `servicePlists("dev", p)` with deck resolvable → `com.mattstack.daemon.dev.plist`, `com.mattstack.deck.dev.plist`; with deck not bundled → only `com.mattstack.daemon.dev.plist`. need: fake tray returns 200 `{state:"pending"}` twice then 200 `{state:"done", detail:"registered"}` with a fake sleep → `{ok:true, detail:"registered"}`; 200 `{state:"failed", detail:"denied"}` → `{ok:false, detail:"denied"}`; a 404 followed by `done` → reply (404 tolerated as pending); always `pending` with fake clock past 10 min → "timeout"; status 0 ×3 → "app-gone".
 - [ ] **Step 2:** fail. **Step 3:** implement. **Step 4:** green; tsc 0; registry. **Step 5: Commit** `MAT-383: rt services facade + need-event wait over tray.sock`
 
 ---
@@ -998,6 +1026,8 @@ export function createApplyContext(deps: { probes: Probes; emit: Emit; secrets: 
 
 ### Task 24: Apply steps A — home, team, secrets, path, intercepts, settings, repos
 
+**AFTER L4 T9 merges** (`bundleRootFromExec` from `lib/bundle-layout.ts` (L4 T1), `installRtBinary` from `lib/dev-mode.ts`, `legacyUserAppPath` from `lib/rt-paths.ts`; rebase onto `origin/main` first).
+
 **Files:**
 - Create: `lib/setup/steps/home.ts`, `steps/team.ts`, `steps/secrets.ts`, `steps/path.ts`, `steps/settings.ts`, `steps/repos.ts`
 - Modify: `lib/setup/steps/index.ts` (replace stubs), `lib/shell-integration.ts` (add `ZSHENV_MARKER`, `installZshenvPrecedence()`, `removeShellIntegration()`, `removeZshenvPrecedence()`; an END marker `# rt — end` is now appended to new blocks)
@@ -1006,16 +1036,16 @@ export function createApplyContext(deps: { probes: Probes; emit: Emit; secrets: 
 Step bodies (exact):
 
 - `home.init` (kind rt; applies: `intent?.mode !== "restore"`): `p.exists(~/.mattstack/.git)` and `readAgeKey` has key → done "already initialized"; else `p.runRt(["home","init"])` (gh path) → code 0 → done (detail last stdout line); else failed, detail stderr head, remedy "Run `gh auth login`, then Retry".
-- `home.restore` (applies: mode restore): clone exists (`~/.mattstack/.git` with origin containing `intent.restore.homeRepo`) and key present → done "restored"; else failed, remedy "Run `rt restore <org>/<repo>` (pastes your age key), then Retry" — never runs restore itself (the key paste is the card's job).
-- `team.create` (applies: mode create OR (teamOfOne && no intent && teams=[])): teamOfOne without intent → `createTeam(p, { name: p.env.RT_TEAM_NAME ?? "personal", remote: p.env.RT_TEAM_REMOTE ?? null, createRepoOwner: p.env.RT_TEAM_REMOTE ? undefined : (await forgeLogin(p,"github","github.com")) ?? undefined, others:false })`; then `publishTeam(p, slug, null)`; failed with remedy on `push-denied`/`remote-required`.
+- `home.restore` (applies: mode restore): **verifier only** — the app (L3 T13) runs the real `rt restore <org>/<repo>` (age key on stdin `{"ageKey"}`) when the user presses Continue on the restore card and then `rt setup intent restore <org>/<repo>`; this step checks that the clone exists (`~/.mattstack/.git` with origin containing `intent.restore.homeRepo`) and the key is present → done "restored"; else failed, remedy "Run `rt restore <org>/<repo>` (pastes your age key), then Retry" — never runs restore itself.
+- `team.create` (applies: mode create OR (teamOfOne && no intent && teams=[])): teamOfOne without intent → `createTeam(p, { name: p.env.RT_TEAM_NAME ?? "personal", remote: p.env.RT_TEAM_REMOTE ?? null, createRepoOwner: p.env.RT_TEAM_REMOTE ? undefined : (await forgeLogin(p,"github","github.com")) ?? undefined, others:false })`; then `publishTeam(p, slug, null)`; failed with remedy on `push-denied`. **Team-of-one with no remote source** (no `RT_TEAM_REMOTE` and `forgeLogin` null because gh is not authenticated — the headless clean-room job) → **skipped** "no git remote available (set RT_TEAM_REMOTE or run gh auth login)" instead of failed, so the run reaches `verify`; `remote-required` is a failure only when an intent explicitly asked for create.
 - `team.join` (applies: mode join): `joinRedeem(p, ctx.relay, ctx.secrets, {fromApply:true})`; access denied → failed "you don't have access yet: ask <owner>…", remedy "Ask the owner to grant access, then Retry".
 - `secrets.write`: `drainStaged(p, (d,k,v) => writeSecret(d,k,v,ctx.secrets))` → done "N staged secrets written" (0 → done "nothing staged"); `NoAgeKeyError` → failed remedy "home.init did not mint a key — Retry from home.init".
-- `path.link`: for tool of DEFAULT_EXPOSED: `link(p, tool)` (dev-mode-owns-rt → log line, not failure; user-copy → skipped per tool with log line); `installShellIntegration()`; `installZshenvPrecedence()` (writes to `~/.zshenv`: `# mattstack — PATH precedence` + `export PATH="$HOME/.local/bin:$PATH"` + end marker, idempotent); done detail "linked: a,b · skipped: c".
+- `path.link`: for tool of DEFAULT_EXPOSED: `link(p, tool)` (rt → `installRtBinary`'s atomic symlink; multi-argv tools → tagged wrapper; dev-mode-owns-rt → log line, not failure; user-copy → skipped per tool with log line); `installShellIntegration()`; `installZshenvPrecedence()` (writes to `~/.zshenv`: `# mattstack — PATH precedence` + `export PATH="$HOME/.local/bin:$PATH"` + end marker, idempotent); done detail "linked: a,b · skipped: c".
 - `intercepts.install`: `installShims()` → done "N shims" ("no commands to shim" when 0).
-- `settings.seed`: `mattstack.appPath` ← `ctx.appPath` (derived: `getSetting` value if present, else the bundle containing `process.execPath` when it matches `/Contents/MacOS/rt$/`, else `installedTrayAppPath`) via `setSetting("mattstack.appPath", path, "machine")` when non-null; `rt.repoRoots` ← existing ?? detected roots (`~/Documents/GitHub`, `~/GitHub`, `~/code`, `~/src` that exist) via setSetting machine (only when currently unset); done lists what was written.
+- `settings.seed`: `mattstack.appPath` ← `ctx.appPath` (derived: `bundleRootFromExec()` from `lib/bundle-layout.ts` (L4 T1) — no regex of our own — else `getSetting` value if present, else `installedTrayAppPath`) via `setSetting("mattstack.appPath", path, "machine")` when non-null; a transient root (`root.startsWith("/Volumes/") || root.includes("/AppTranslocation/")` — the DMG or a translocated copy, ported from L4's `appPathIsTransient`) is **refused**: in apply → failed "running from <root> — drag mattstack.app to /Applications, then Retry" (remedy "Move mattstack.app to /Applications and relaunch it"), never written; `rt --post-install` exits 2 on it (Task 27); `rt.repoRoots` ← existing ?? detected roots (`~/Documents/GitHub`, `~/GitHub`, `~/code`, `~/src` that exist) via setSetting machine (only when currently unset); done lists what was written.
 - `repos.clone`: root = `getSetting("rt.repoRoots").value?.[0]` (failed "no repo root" otherwise); for each identity in `snapshot.trackingIdentities` (minus `p.env.RT_SKIP_REPOS` comma list — the deselect channel): dest = `<root>/<basename>`; exists → log "present"; else `git clone https://<identity>.git <dest>` (auth failure → log + continue; counted); then `updateRepoIndex(basename, dest)`; done "cloned N, present M, failed K" (failed>0 → still done; detail says so — tracking activates only for resolvable clones).
 
-- [ ] **Step 1: Failing tests** (fake probes + seams; setSetting against the test HOME): `home.init` runs `runRt(["home","init"])` only when `.git` missing; `path.link` records symlinks for fast-browser/gitq/deck and skips `rt` in dev mode; `.zshenv` gets the precedence block once (second call no duplicate); `removeShellIntegration()` strips the block written by `installShellIntegration()` exactly (before/after equality on a fixture with unrelated lines) and returns `{removed:false, manual:true}` for a legacy block without end marker; `settings.seed` writes `mattstack.appPath` (read back via getSetting) from an execPath inside a bundle; `repos.clone` argv `git clone https://gitlab.com/assured/assured-dev.git <root>/assured-dev` and skips an existing dir; `secrets.write` drains staged values through a fake writer.
+- [ ] **Step 1: Failing tests** (fake probes + seams; setSetting against the test HOME): `home.init` runs `runRt(["home","init"])` only when `.git` missing; `path.link` records symlinks for fast-browser/gitq/deck and skips `rt` in dev mode; `.zshenv` gets the precedence block once (second call no duplicate); `removeShellIntegration()` strips the block written by `installShellIntegration()` exactly (before/after equality on a fixture with unrelated lines) and returns `{removed:false, manual:true}` for a legacy block without end marker; `settings.seed` writes `mattstack.appPath` (read back via getSetting) from an execPath inside a bundle (inject `bundleRootFromExec` via a seam), and with root `/Volumes/mattstack/mattstack.app` → failed with the drag-to-Applications remedy and nothing written; `team.create` under `teamOfOne` with no `RT_TEAM_REMOTE` and gh unauthenticated → skipped with the "no git remote available" detail; `repos.clone` argv `git clone https://gitlab.com/assured/assured-dev.git <root>/assured-dev` and skips an existing dir; `secrets.write` drains staged values through a fake writer.
 - [ ] **Step 2:** fail. **Step 3:** implement. **Step 4:** green; tsc 0. **Step 5: Commit** `MAT-383: apply steps — home, team, secrets, path, intercepts, settings, repos`
 
 ---
@@ -1027,14 +1057,14 @@ Step bodies (exact):
 - Test: `lib/setup/__tests__/steps-b.test.ts`
 
 Step bodies:
-- `services.register` (kind app): `ctx.need("services.register", {type:"app-register-services", plists: servicePlists(currentMode())})` → reply ok → done (detail); `"no-app"` → skipped "mattstack.app not running — open it to register services" (nonInteractive) or failed with remedy "Open mattstack.app, then Retry" (interactive); "timeout"/"app-gone" → failed remedy "Retry with mattstack.app running"; then `markDaemonInstalled()` (lib/daemon-config.ts) on done.
+- `services.register` (kind app): `ctx.need("services.register", {type:"app-register-services", plists: servicePlists(currentMode(), p)})` — the daemon plist always, the deck plist only when `resolveTool(p,"deck").chosen` is non-null (else `ctx.log` "deck not bundled yet — only the daemon is registered"; the app answers `ok:false` for a plist whose `BundleProgram` is missing, so it must not be requested) → reply ok → done (detail); `"no-app"` → skipped "mattstack.app not running — open it to register services" (nonInteractive) or failed with remedy "Open mattstack.app, then Retry" (interactive); "timeout"/"app-gone" → failed remedy "Retry with mattstack.app running"; then `markDaemonInstalled()` (lib/daemon-config.ts) on done.
 - `proxy.install` (kind privileged): `need(…, {type:"app-privileged", op:"proxy-install"})` same handling; the app runs the bundled installer helper (L3/L5) — rt only waits.
 - `deck.managed`: deck = `resolveTool(p,"deck").chosen` (null → skipped "deck not bundled yet"); for app of `[{name:"board", hostname:"board.mattstack", bin: resolveTool(p,"board").chosen}, {name:"gitq", hostname:"gitq.mattstack", bin: resolveTool(p,"gitq").chosen}]`: bin null → log skip; else `p.exec([deck,"add",name,"--cmd",bin,"--managed-by","mattstack","--host",hostname])` — exit code 0 or stderr /already/ → ok; done "registered: board, gitq". (MAT-384 argv is stubbed behind this one call site; a test pins the argv so the change is one line.)
 - `skills.materialize`: `materializeSkills(p,{})` → done with per-repo summary; `merge-manifests-missing` → skipped "mattstack plugin not installed yet" (plugins.install runs later; `rt skills materialize` is re-run by the verify step? No — honest: skipped with detail; `rt setup pack` re-materializes).
 - `board.keys`: machine-scope keys: `board.rtRepos` ← names of registered repos whose identity ∈ tracking; `board.cwds` ← `{ review: <root>/<first repo>, respond: same, doctor: same }` only when unset; `gitq.board` ← `{ repos: [...same names], port: 11008 }` when unset; `gitq.workSlots` ← `{ workSlotLocation: <root>/.gitq-slots, maxWorkSlots: 3 }` when unset — every write via `setSetting(key, value, "machine")`, each guarded by `getDef(key)` existing and `isMigrated` (missing def → log "key not in registry yet" and continue); done lists written keys.
 - `cron.triage`: applies when `getSetting("board.triage").value?.enabled === true` (key from the board lane; `getDef` missing → skipped "board.triage not registered"); `installCronTrigger(triageTrigger(resolveTool(p,"board").chosen!))` → done / skipped with its reason.
 
-- [ ] **Step 1: Failing tests.** services.register: fake `need` returning `{ok:true}` → done and daemon.json written in test HOME; "no-app" + nonInteractive → skipped; interactive → failed with remedy. deck.managed: argv pinned for both apps; board missing → detail names only gitq. board.keys: writes `board.rtRepos` via setSetting (read back) and skips `board.cwds` when already set. cron.triage: `board.triage` unset → skipped.
+- [ ] **Step 1: Failing tests.** services.register: fake `need` returning `{ok:true}` → done and daemon.json written in test HOME; with deck not bundled the need request's `plists` holds only the daemon plist and a log line mentions "deck not bundled"; "no-app" + nonInteractive → skipped; interactive → failed with remedy. deck.managed: argv pinned for both apps; board missing → detail names only gitq. board.keys: writes `board.rtRepos` via setSetting (read back) and skips `board.cwds` when already set. cron.triage: `board.triage` unset → skipped.
 - [ ] **Step 2:** fail. **Step 3:** implement. **Step 4:** green; tsc 0. **Step 5: Commit** `MAT-383: apply steps — services, proxy, deck managed apps, skills, board/gitq keys, triage cron`
 
 ---
@@ -1047,7 +1077,7 @@ Step bodies:
 
 Step bodies:
 - `plugins.install`: claude present (`resolveTool`/PATH) else failed remedy "Install Claude Code (Tools row), then Retry". marketplaces = `getSetting("claude.marketplaces").value ?? []` ∪ `[MATTSTACK_MARKETPLACE_SOURCE]` (constant `"https://github.com/m4ttstack/mattstack-marketplace"`, overridable by `RT_MATTSTACK_MARKETPLACE` — see open question 13) ∪ (team slug ? [`~/.mattstack/teams/<slug>`] : []); plugins = `getSetting("claude.plugins").value ?? []` ∪ `["mattstack@mattstack","fast-browser@mattstack"]` ∪ team marketplace plugins (parse `teams/<slug>/.claude-plugin/marketplace.json` → `<plugin.name>@<marketplace.name>`). For each config dir (`claudeConfigDirs(p, [])`): `claude plugin marketplace add <src>` (stderr /already/ → ok), `claude plugin install <p>` (already → ok), `claude plugin enable <p>` (unknown subcommand → ignore). Record in setup-state. Any non-already failure → failed, detail "claude plugin install exited N", remedy "Open Claude Code once so it finishes first-run, then Retry." (the contract's example).
-- `fastbrowser.setup`: `setupTool(p,"fast-browser",…)` → done/failed (remedy: "Run `fast-browser setup` in a terminal for details"); tool missing → skipped "fast-browser not bundled".
+- `fastbrowser.setup`: `setupTool(p,"fast-browser",…)` (spawns `[...resolveTool(p,"fast-browser").exec, "setup"]`) → done/failed (remedy: "Run `fast-browser setup` in a terminal for details"); `exec` null → skipped "fast-browser not bundled".
 - `herdr.integration`: herdr on PATH → `setupTool(p,"herdr",{configDirs})` → done; missing → skipped "herdr not installed (Tools row)".
 - `extension.install`: `setupTool(p,"extension",…)` → done "installed in …" / skipped "no editor found" / vsix missing → skipped "extension not bundled".
 - `services.start`: `p.tray("/daemon/start",{method:"POST"})` status 200 → poll `isDaemonRunning()` up to 12×250 ms → done "daemon running" / failed remedy "Approve the background item in Login Items, then Retry"; tray 0 → nonInteractive ? skipped : failed remedy "Open mattstack.app".
@@ -1061,9 +1091,11 @@ Step bodies:
 
 ### Task 27: `rt setup apply`, `rt setup` (TTY walk), `rt setup intent`, `--post-install` entry
 
+**AFTER L4 T9 merges** (`bundleRootFromExec`, `legacyUserAppPath`; rebase onto `origin/main` first). `commands/post-install.ts` and `lib/__tests__/post-install-sweep.test.ts` are **L1-owned**: L4 T9 dropped them from its Files; their L4 bodies (`appPathIsTransient` refusal, `runLegacySweep(root)`, the new sweep test case, the `bundleRoot` override) are absorbed here verbatim, while `recordAppPath`/`installRtBinaryStep` are **not** re-implemented (they are the `settings.seed` / `path.link` steps).
+
 **Files:**
-- Modify: `commands/setup.ts` (`setupApply`, `setupInteractive` real, `setupIntent`), `commands/post-install.ts` (entry only: legacy sweep + `setupApply(["--non-interactive","--team-of-one",...args])`), `cli.ts` (`--post-install` passes remaining args), `lib/command-tree-def.ts` (`setup apply`, `setup intent` hidden)
-- Test: `commands/__tests__/setup-apply.test.ts`, `lib/__tests__/post-install-sweep.test.ts` (existing; keep green — sweep functions are retained)
+- Modify: `commands/setup.ts` (`setupApply`, `setupInteractive` real, `setupIntent`), `commands/post-install.ts` (entry only: legacy sweep + transient-path refusal + `setupApply(["--non-interactive","--team-of-one",...args])`), `cli.ts` (`--post-install` passes remaining args), `lib/command-tree-def.ts` (`setup apply`, `setup intent` hidden)
+- Test: `commands/__tests__/setup-apply.test.ts`, `lib/__tests__/post-install-sweep.test.ts` (existing; keep green — sweep functions are retained — plus the new stale-`~/Applications` case below)
 
 **Interfaces:**
 - Produces:
@@ -1077,9 +1109,25 @@ export async function setupInteractive(args: string[], _ctx?: CommandContext, de
 //  TTY: print the plan (renderPlanHuman); if !canInstall → list requiredMissing with their action labels and exit 2 (code "not-ready") unless --force; else confirm (lib/rt-render confirm) "Install now?" → setupApply([]) ; non-TTY → behaves as `setup status`
 export async function setupIntent(args: string[], _ctx?, deps?): Promise<void>   // hidden: rt setup intent restore <org>/<repo> | rt setup intent clear  → writes/clears intent; --json envelope
 ```
-`commands/post-install.ts` keeps `legacySweepNeeded/runLegacySweep` and adds the unconditional `launchctl bootout gui/$UID/com.rt.daemon` (ignore failures) + removal of a stale `~/Applications/mattstack.app` ONLY when a `/Applications/mattstack.app` exists too; `runPostInstall(args)` = sweep → `setupApply(["--non-interactive","--team-of-one", ...args])`. `installRtBinaryStep/installTrayApp/installExtensions/installDaemon` bodies are deleted (replaced by steps); `repairShellWrapper` stays (moved into `path.link` as a log-only repair — call it there).
+`commands/post-install.ts` (entry only; signature and bodies ported from L4 T9):
 
-- [ ] **Step 1: Failing tests.** `setupApply(["--json"], {}, deps)` with a fake STEPS override emitting one stub step → stdout lines parse as `plan, step, step, done`; failed step → process exit seam called with 2; `--from bogus` → exit 2 `bad-step`; `setupInteractive` non-TTY prints the status table; `setupIntent(["restore","o/r"])` writes intent mode restore.
+```ts
+export interface PostInstallOptions { bundleRoot?: string | null }   // test override; production passes nothing
+export async function runPostInstall(args: string[], opts: PostInstallOptions = {}): Promise<void>
+//  root = opts.bundleRoot !== undefined ? opts.bundleRoot : bundleRootFromExec()   (lib/bundle-layout.ts)
+//  1. runLegacySweep(root)  2. appPathIsTransient(root) → print "running from <root> — drag mattstack.app to /Applications and run this again" and process.exit(2)
+//  3. setupApply(["--non-interactive","--team-of-one", ...args])   (no recordAppPath / installRtBinaryStep here — settings.seed and path.link are the steps)
+function appPathIsTransient(root: string | null): boolean { return !!root && (root.startsWith("/Volumes/") || root.includes("/AppTranslocation/")); }
+function runLegacySweep(root: string | null): boolean
+//  runs on every post-install, idempotent, BEFORE anything launches or registers:
+//  - unconditional `launchctl bootout gui/<uid>/com.rt.daemon` (ignore failures)
+//  - legacyTrayAppPaths() that exist → osascript quit "rt-tray" (3 s timeout), `pkill -x rt-tray`, `rm -rf` each → swept
+//  - stale = legacyUserAppPath() (~/Applications/mattstack.app): when root && root !== stale && exists(stale) → osascript quit <TRAY_APP_NAME>, `pkill -x <TRAY_APP_NAME>`, `launchctl bootout gui/<uid>/com.mattstack.daemon` (its BundleProgram points into the bundle being deleted; apply re-registers), `rm -rf stale` → swept
+//  every spawnSync passes env: process.env; reportMigrationOutcome() runs when swept
+```
+`root === null` (e.g. `dist/rt` outside a bundle) takes the "not running from inside the app" branches: no sweep of `~/Applications`, no transient refusal, and `settings.seed`/`path.link` report honestly ("not running from inside the app"). `installRtBinaryStep/installTrayApp/installExtensions/installDaemon` bodies are deleted (replaced by steps); `repairShellWrapper` stays (moved into `path.link` as a log-only repair — call it there).
+
+- [ ] **Step 1: Failing tests.** `setupApply(["--json"], {}, deps)` with a fake STEPS override emitting one stub step → stdout lines parse as `plan, step, step, done`; failed step → process exit seam called with 2; `--from bogus` → exit 2 `bad-step`; `setupInteractive` non-TTY prints the status table; `setupIntent(["restore","o/r"])` writes intent mode restore. `post-install-sweep.test.ts` gains L4's case (same fake-bin harness): stale `~/Applications/mattstack.app` under the test HOME + `runPostInstall([], { bundleRoot: "/Applications/mattstack.app" })` → the fake log shows `launchctl bootout … com.rt.daemon`, `rm -rf <stale>`, and `launchctl bootout … com.mattstack.daemon`; and `runPostInstall([], { bundleRoot: "/Volumes/mattstack/mattstack.app" })` → exit seam 2 with the drag-to-Applications message and no apply.
 - [ ] **Step 2:** fail. **Step 3:** implement; `cli.ts`: `--post-install` → `runPostInstall(args.slice(1))`. **Step 4:** green; tsc 0. **Step 5: Commit** `MAT-383: rt setup apply + interactive walk; --post-install is headless apply`
 
 ---
@@ -1123,7 +1171,7 @@ export function computeUninstallActions(p: Probes, opts: { keepData: boolean }):
 export async function runUninstall(ctx: ApplyContext, actions: UninstallAction[]): Promise<{ ok: boolean; failed?: UninstallActionId; stayed: string[] }>
 //  NDJSON via ctx.emit with the action ids as event ids (ApplyEvent.id is EventId = StepId | UninstallActionId); services.unregister → need {type:"app-unregister-services", plists}; deck: `deck remove --managed board`, `… gitq`; proxy.remove → need {type:"app-privileged", op:"proxy-remove"}; path.unlink → unlink each DEFAULT_EXPOSED + every our-link; shell.remove → removeShellIntegration()+removeZshenvPrecedence() (manual → stayed entry); extension.uninstall → `<cli> --uninstall-extension local.rt-context` per editor; plugins.uninstall → `claude plugin uninstall <p>` then `claude plugin marketplace remove <m>` per config dir (only what setup-state recorded); data → p.removeDir(~/.mattstack); app.trash → `osascript -e 'tell application "Finder" to delete POSIX file "<app>"'`; stayed: data when kept, anything manual
 ```
-`commands/uninstall.ts`: `runUninstallCommand(args)` → `rt uninstall [--keep-data|--delete-data] [--dry-run] [--json] [--yes]`; dry-run prints `envelope({actions})`; real run on a TTY without `--yes` → confirm prompt listing actions; default keep-data; `--delete-data` without `--yes` on non-TTY → exit 2 "confirm-required".
+`commands/uninstall.ts`: `runUninstallCommand(args)` → `rt uninstall [--keep-data|--delete-data] [--dry-run] [--json] [--yes]`; dry-run prints `envelope({actions})`; real run on a TTY without `--yes` → confirm prompt listing actions; default keep-data. Confirmation rule: non-TTY + `--keep-data` (or no data flag) needs **no** `--yes`; `--delete-data` needs `--yes` — on non-TTY without it → exit 2 "confirm-required" (the app's Settings sheet is the confirmation, so the app always passes `--yes` with `--delete-data`).
 
 - [ ] **Step 1: Failing tests.** actions list for a fully-installed fake state has all ids except `data` (keepData true); `--delete-data` adds `data`; `runUninstall` argv pins: `deck remove --managed board`, `claude plugin uninstall mattstack@mattstack`, `--uninstall-extension local.rt-context`, Finder osascript; need requests emitted for services/proxy; stayed includes "~/.mattstack (kept)".
 - [ ] **Step 2:** fail. **Step 3:** implement. **Step 4:** green; tsc 0; registry. **Step 5: Commit** `MAT-383: rt uninstall — reverses what the installer did, asks about ~/.mattstack`
@@ -1132,21 +1180,38 @@ export async function runUninstall(ctx: ApplyContext, actions: UninstallAction[]
 
 ### Task 30: `rt update` thin
 
+Independent of other lanes: `commands/update.ts` is **L1-owned** (L4's competing rewrite, L4 T10, is dropped; exit codes follow the contract — `2` user-actionable with `--json`, not L4's `1`). L4 T12 regenerates `website/docs/reference/update.mdx` after this task lands.
+
 **Files:**
-- Modify: `commands/update.ts` (rewrite), `lib/command-tree-def.ts` (description "Check for updates via mattstack.app")
+- Modify: `commands/update.ts` (rewrite), `lib/command-tree-def.ts` (description "Check for updates via mattstack.app"; `--json` arg)
 - Test: `commands/__tests__/update.test.ts`
 
 **Interfaces:**
-- Produces: `export async function runUpdate(args: string[], _ctx?: CommandContext, deps = { tray: trayRequest, print: console.log, mode: currentMode }): Promise<void>` — dev mode → exit 1 message unchanged; `POST /update/check` status 200 → "mattstack.app is checking for updates (Sparkle); it will offer the update in the menu bar"; tray 0 → prints "Updates come from mattstack.app (Sparkle). Open the app to check, or download the latest DMG: https://github.com/m4ttstack/rt/releases/latest" and exits 2 with `--json` envelope `{error:{code:"app-not-running"}}`. Delete `RELEASES_API`, `releaseAssetName`, the tarball path.
-- [ ] **Step 1: Failing tests** for the three branches via fake tray/print seams. **Step 2:** fail. **Step 3:** implement. **Step 4:** green; tsc 0. **Step 5: Commit** `MAT-383: rt update asks the app`
+- Produces (deps shape adopted from L4 T10 so its test harness ports unchanged):
+
+```ts
+export const RELEASES_URL = "https://github.com/m4ttstack/rt/releases/latest";
+export interface UpdateDeps {
+  tray: (endpoint: string, method: "GET" | "POST") => Promise<{ ok: boolean; error?: string } | null>;   // trayRequest over tray.sock; null when the app is not running
+  currentMode: () => "dev" | "prod";
+  log: (line: string) => void;
+  exit: (code: number) => never;
+}
+export async function runUpdate(args: string[], _ctx?: CommandContext, deps: UpdateDeps = realDeps): Promise<void>
+```
+Branches: dev mode → message unchanged ("dev mode is active — switch to prod first: rt settings dev-mode prod"), exit 2 (`--json` → `envelope({error:{code:"dev-mode"}})`), never calls the tray; `POST /update/check` → `{ok:true}` → "asked mattstack.app to check for updates (Sparkle) — watch the menu bar" exit 0 (`--json` → `envelope({asked:true})`); tray `null` (app not running) → "Updates come from mattstack.app (Sparkle). Open the app to check, or download the latest DMG: <RELEASES_URL>" and exit 2 with `--json` envelope `{error:{code:"app-not-running"}}`; `res.ok === false` (an older app that predates the route) → "this mattstack.app can't be asked from the CLI (<error>) — use the menu bar: mattstack → Check for Updates…" exit 2 (`--json` `{error:{code:"app-too-old"}}`). Delete `RELEASES_API`, `releaseAssetName`, the tarball download and the `--post-install` re-exec.
+- [ ] **Step 1: Failing tests** for the four branches via the injectable `deps` (harness records `${method} ${endpoint}` calls, log lines, exit code; asserts `POST /update/check`, the releases URL in the not-running branch, "Check for Updates" in the `ok:false` branch, no tray call in dev mode, and exit 2 + `app-not-running` JSON with `--json`). **Step 2:** fail. **Step 3:** implement. **Step 4:** green; tsc 0. **Step 5: Commit** `MAT-383: rt update asks the app`
 
 ---
 
-### Task 31: Human TTY polish + docs + reference regeneration
+### Task 31: Human TTY polish + `dev-mode` TTY relaxation + reference regeneration
+
+**AFTER L4 T12 merges** (`README.md` and `website/docs/getting-started/install.mdx` are L4's; L1 does **not** edit README). Rebase onto `origin/main` first; whoever merges second re-runs `docs:gen`/`docs:check`.
 
 **Files:**
-- Modify: `commands/setup.ts` (`renderPlanHuman` uses tui colors; `rt setup status` footer names `rt setup <integration> connect` for missing accounts), `README.md` (replace the brew/tmux/zellij/terminal-notifier lines with "Install mattstack.app from the DMG; rt is inside"), regenerate docs: `bun scripts/gen-docs.ts`, `bun scripts/check-docs.ts`
-- [ ] Run `bun run docs:gen` → reference pages for every new verb exist; `bun run docs:check` clean; grep README/website docs for `tmux|zellij|terminal-notifier|brew install fzf` and remove/replace.
+- Modify: `commands/setup.ts` (`renderPlanHuman` uses tui colors; `rt setup status` footer names `rt setup <integration> connect` for missing accounts), `lib/command-tree-def.ts` (`settings dev-mode`: drop `requiresTTY` when the `<dev|prod>` Target arg is given — the app's Settings pane runs `rt settings dev-mode dev|prod` non-interactively; prompt only when Target is omitted), regenerate docs: `bun scripts/gen-docs.ts`, `bun scripts/check-docs.ts`
+- Test: `commands/__tests__/settings-dev-mode.test.ts` (non-TTY + explicit Target → no prompt, switches; non-TTY + no Target → exit 2 "target-required")
+- [ ] Run `bun run docs:gen` → reference pages for every new verb exist (incl. `team status`, `update`); `bun run docs:check` clean; **assert** (do not edit) that L4 T12 already removed `tmux|zellij|terminal-notifier|brew install fzf` from README/website docs: `grep -rn 'tmux\|zellij\|terminal-notifier\|brew install fzf' README.md website/docs` → no hits (a hit means L4 T12 has not merged — stop and rebase, don't patch README here).
 - [ ] Commit `MAT-383: docs + reference pages for the setup verbs`
 
 ---
@@ -1174,11 +1239,13 @@ Not a subagent task. From the worktree with the real HOME:
 
 ## Execution order note
 
-Tasks are numbered for reading; execute in this order to honor dependencies: 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → **13 (team secrets) before 12** → 12 → 14 → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28 → 29 → 30 → 31 → 32 → 33.
+Tasks are numbered for reading; execute in this order to honor in-lane dependencies: 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10 → 11 → **13 (team secrets) before 12** → 12 → 14 → 15 → 16 → 17 → 18 → 19 → 20 → 21 → 22 → 23 → 24 → 25 → 26 → 27 → 28 → 29 → 30 → 31 → 32 → 33.
+
+Cross-lane gates (binding; see the "Execution order (cross-plan)" paragraph at the top and `2026-08-21-cross-plan-review.md` §3): Phase A = 1–4, 6, 9, 13–19 can start immediately off `origin/main`; **Task 5 waits for L4 T1 + T9**; **Tasks 7, 8, 10, 11, 21 wait for Task 5 and L4 T11**; **Tasks 24, 27 wait for L4 T9**; **Task 31 waits for L4 T12**; Tasks 22, 23, 25, 26, 28–30, 32 have no external gate. Rebase onto `origin/main` before every merge. In practice this means Phase A first (T1–T4, T6, T9, T13–T19 — T13 before T12 still holds, so T12 joins the second wave), then the rest in numeric order once the L4 gates have merged.
 
 ## Self-review
 
-**Spec coverage (§ → task):** §4.3 rows: mac (6, 8), accounts incl. owner-once Slack + switchboard + team-declared connects (9, 12), access (9), tools incl. herdr/claude/fast-browser/editor/Chrome/Control+Up/team tools/MCP-inside-pack (8); permission merge via GET /permissions (6); §4.4 every listed install step (24–26) in the contract's order (23); failed-step remedy + `--from` resume (23, 27); §4.2 create/join/restore inputs (16, 18, 27 intent), join failure strings (18), `--dry-run` with code on stdin (18); §5.2 verb table: setup plan/status/connect/slack create-app/pack/apply/TTY (10, 12, 27, 28), team create/join/invite/members/publish (16–19), repos register (20), skills materialize (20), cron install (20), tools setup (21), deps resolve/link/unlink (5), services (22), update (30), uninstall (29), verify (11); §5.3 routes consumed: /permissions (6), /services* (22), /setup/need (22), /update/check (30); §6 invite model (14, 15, 17, 18), replace-on-mint, 7-day expiry, roster, reply key exchange (17–19); §7 four-way policy: bundled by absolute path + default-exposed links + auto-unlink reconcile on verify/daemon start (5, 7), provision via brew/vendor (21), CLT (6, 21), team-declared (4, 8, 21); §9 rows + honest fallback (6); §10 team-scope secrets N recipients + rotate --team + residue note (13, 19); §11 `--post-install` → headless apply (27), `rt update` thin (30); §12.3 uninstall list (29); §13 L1 contents all present; contract envelope/exit codes/step ids/NDJSON/stdin-only secrets (1, 2, 27). **Gaps:** `rt restore` itself, `rt home snapshot push`, board/gitq/deck binaries, the relay endpoints, the app's routes — all other lanes; L1 consumes them behind honest guards (24, 26).
+**Spec coverage (§ → task):** §4.3 rows: mac (6, 8), accounts incl. owner-once Slack + switchboard + team-declared connects (9, 12), access (9), tools incl. herdr/claude/fast-browser/editor/Chrome/Control+Up/team tools/MCP-inside-pack (8); permission merge via GET /permissions (6); §4.4 every listed install step (24–26) in the contract's order (23); failed-step remedy + `--from` resume (23, 27); §4.2 create/join/restore inputs (16, 18, 27 intent), join failure strings (18), `--dry-run` with code on stdin (18); §5.2 verb table: setup plan/status/connect/slack create-app/pack/apply/TTY (10, 12, 27, 28), team create/join/invite/members/publish/status (16–19), repos register (20), skills materialize (20), cron install (20), tools setup (21), deps resolve/link/unlink (5), services (22), update (30), uninstall (29), verify (11); §5.3 routes consumed: /permissions (6), /services* (22), /setup/need (22), /update/check (30); §6 invite model (14, 15, 17, 18), replace-on-mint, 7-day expiry, roster, reply key exchange (17–19); §7 four-way policy: bundled by absolute path + default-exposed links + auto-unlink reconcile on verify/daemon start (5, 7), provision via brew/vendor (21), CLT (6, 21), team-declared (4, 8, 21); §9 rows + honest fallback (6); §10 team-scope secrets N recipients + rotate --team + residue note (13, 19); §11 `--post-install` → headless apply (27), `rt update` thin (30); §12.3 uninstall list (29); §13 L1 contents all present; contract envelope/exit codes/step ids/NDJSON/stdin-only secrets (1, 2, 27). **Gaps:** `rt restore` itself, `rt home snapshot push`, board/gitq/deck binaries, the relay endpoints, the app's routes — all other lanes; L1 consumes them behind honest guards (24, 26).
 
 **Placeholder scan:** no TBD/TODO; every step has code or exact argv/assertions; the Task 23 stubs are explicitly replaced by 24–26 (the `STEPS` id test enforces completeness); "similar to" is not used — each step body is spelled out.
 
@@ -1186,17 +1253,17 @@ Tasks are numbered for reading; execute in this order to honor dependencies: 0 �
 
 ## Open questions (spec gaps found while planning)
 
-1. **`need` reply direction.** The contract says the app "POSTs `/setup/need/<id>` on tray.sock", but tray.sock is the app's own server. L1 implements rt-side polling `GET /setup/need/<id>` (404 until the app stores its `{ok, detail}`; a held-open GET also works). L3 must implement that route shape — or the contract line should be corrected to say so.
-2. **Invite code length.** With a 32-byte key (spec §6.3) the code cannot be "~40 chars": 16-byte id + 32-byte key = 77 base32 chars (chunked). Pinned here; L6 must return 16-byte ids (32 hex). If ~40 chars is a hard UX need, the key must shrink to 16 bytes (AES-128-GCM) — Matt's call.
+1. **`need` reply direction — RESOLVED** (cross-plan review, L3 T9 + contract): rt polls `GET /setup/need/<id>` on tray.sock; the app always answers 200 `{state: pending|done|failed, detail}` (unknown ids are `pending`, `POST` → 405); rt keeps polling until `done|failed` and tolerates a 404 as pending. Task 22 implements exactly this.
+2. **Invite code length — RULED (R5): stays 77 chars.** 16-byte id + 32-byte key = 77 base32 chars (chunked); L6 returns 16-byte ids (32 hex). The spec's "~40 chars" wording is amended to 77 in the appspec branch.
 3. **Relay base URL.** Not in the spec; pinned `https://switchboard.mattstack.dev` with `RT_INVITE_RELAY_URL` override. L6 to confirm (and whether `GET /v1/invites/:id/reply` + a creator-secret Bearer is the agreed owner read path — the spec only names the reply POST).
 4. **Join-intent persistence.** The decrypted pointer + invite key live in `~/.mattstack/rt/setup-intent.json` (0600, runtime) between screen 2 and Install. Alternative: the app re-supplies `{"code"}` on apply's stdin. The plan uses the file; confirm.
-5. **Restore card protocol.** `rt restore <org>/<repo>` (settings lane) owns the key paste; L1's `home.restore` step only verifies. Needs the exact `rt restore` stdin/flags once R lands, and whether it materializes plugins itself (then `plugins.install` is idempotent anyway).
+5. **Restore card protocol — RULED (R3):** the app (L3 T13) runs the real `rt restore <org>/<repo>` (age key on stdin `{"ageKey"}`) when the user presses Continue on the restore card, then `rt setup intent restore <org>/<repo>`; L1's `home.restore` step only verifies (Task 24). Still open with the settings lane: the exact `rt restore --json` / stdin-key flags once R lands, and whether it materializes plugins itself (then `plugins.install` is idempotent anyway).
 6. **Home remote without gh.** `rt home init` is gh-only today; the wizard's "paste a URL" path for the home repo needs a `--remote <url>` on `rt home init` (settings lane) — L1 passes it through when it exists.
 7. **`board.members` entry shape** (`{username}` + `agePublicKey` added by members sync) and `board.triage.enabled` as the triage-cron gate — board lane to confirm key shapes; guarded by `getDef` so nothing breaks if they differ.
 8. **`deck add` argv for managed apps** (`--managed-by mattstack --host board.mattstack`) is MAT-384's; pinned in one call site + one test.
-9. **First-run auto-setup** in `cli.ts` no longer auto-runs a full install (it would create GitHub repos silently); it now prints a one-line hint. Confirm this is wanted for the `rt verify` recommended-after-install flow (verify now reports honestly instead of installing first).
+9. **First-run auto-setup** in `cli.ts` no longer auto-runs a full install (it would create GitHub repos silently); it now prints a one-line hint. Accepted by the cross-plan review (§4 #7): L4 T12's README "Testing the installer" describes `rt --post-install` as the headless `rt setup apply --non-interactive --team-of-one` and does not promise auto-setup on first `rt` run.
 10. **Multi-team machines:** `rt setup plan` takes the first cloned team alphabetically unless `--team`; the picker is deferred (spec §14).
-11. **Headless `--team-of-one` defaults:** team name `personal`, gh-created `<login>/mattstack-team-personal` unless `RT_TEAM_NAME`/`RT_TEAM_REMOTE` are set — confirm for the clean-room job.
+11. **Headless `--team-of-one` defaults:** team name `personal`, gh-created `<login>/mattstack-team-personal` unless `RT_TEAM_NAME`/`RT_TEAM_REMOTE` are set. The clean-room runner has no gh auth and sets neither env var, so `team.create` is **skipped** with detail (Task 24) rather than failed — the headless job reaches `verify`.
 12. **Team-scope secrets file layout** (`teams/<slug>/.sops.yaml` + `teams/<slug>/mattstack/secrets/<domain>.json`) must be acknowledged by the settings lane before Task 13 merges (spec §14 coordination note).
 13. **Mattstack marketplace source.** The MAT-360 meta repo URL is not final; pinned as `https://github.com/m4ttstack/mattstack-marketplace` behind `RT_MATTSTACK_MARKETPLACE`. L5 to confirm, and to confirm `claude plugin marketplace add <git-url>` is the supported form (today's marketplace is a local directory).
 14. **`claude plugin list` / `claude auth status` output shapes** are probed defensively (unknown subcommand → "not checked", honest detail); if Claude Code exposes `--json` for these, tighten the parsers in Task 8.

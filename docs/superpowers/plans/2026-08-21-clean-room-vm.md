@@ -12,6 +12,8 @@
 
 **Execution worktree:** `/Users/matt/Documents/GitHub/repo-tools-l7-wt`, branch `goodwinmattheweric/mat-383-clean-room` off `origin/main`. Commit prefix `MAT-383:`; trailer `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`. No monitor agent — every implementer runs `bash -n` and the task's dry-run themselves before committing.
 
+**Execution order** (binding; from `docs/superpowers/plans/2026-08-21-cross-plan-review.md` §3): Phase A — Tasks 1, 2, 4, 5, 7, 9, 10, 11, 14 (all under `rt-tray/vm/`) and Task 3 with its own recipes (re-pointed at `scripts/release/*` after L4 T6 merges). Phase B — Task 6 AFTER L3 T12–T16 merge (the AXIDs exist; ids are already written to L3's `AccessibilityIDs.swift` below and fail fast when missing); Task 8 AFTER L3 T10 merges (`--allow-appcast-override`); Task 12 after the CLI is agreed with L4 T8 (positional artifact — fixed in the review); Task 13 AFTER L3 T19 merges and Xcode exists. Merge order to main: L4 phase A → L3 T1–T11 → L1 → L4 T4/T5/T8 → L1 (rest) → L3 T12–T19 → **L7 (all)** → L4 T12 → L1 T31–T32 → MATT gates. L7 owns `rt-tray/vm/**` and `scripts/e2e-cleanroom.sh` (interface fixed by the review, §5 #46); `.github/workflows/release.yml` is L4's and only calls the script.
+
 ## Global Constraints
 
 Copied from the spec; every task's requirements include these.
@@ -28,6 +30,8 @@ Copied from the spec; every task's requirements include these.
 - **Release gate:** layers (a) GitHub Actions headless install + `rt verify --ci` and (b) VM walkthrough green on the candidate.
 - **Clean-code comments rule** (`~/.claude/rules/clean-code-comments.md`): comments only for constraints the code cannot show; no task numbers/process narration in source. Decision records go in this plan / README, not scripts.
 - **Logging:** scripts log to the run's artifacts dir; no new logging inside rt.
+- **Rebase onto `origin/main` before every merge** (cross-plan review §3); L7 merges after L3 T12–T19. L7 edits only `rt-tray/vm/**`, `scripts/e2e-cleanroom.sh` and an appended section of `scripts/README.md` (L4 T6 appends its own section; whoever merges second rebases).
+- **Artifacts are L4's names:** `mattstack-<ver>.dmg`, `mattstack-<ver>.zip`, `appcast.xml` (a GitHub Release asset at `https://github.com/m4ttstack/rt/releases/latest/download/appcast.xml` in prod; served on loopback in the VM), `*.delta`, `SHA256SUMS`. There is no `rt-darwin-arm64-*.tar.gz` any more — the zip is the headless artifact. `CFBundleVersion` is numeric `major*1000000+minor*1000+patch` (2.8.0 → `2008000`).
 - **Tart licence constraint:** Tart's `LICENSE` on `main` is **Functional Source License 1.1 (ALv2 future licence), "Copyright 2022-2026 OpenAI"** — permitted purposes include "internal use and access"; tart.run/licensing: "Usage on personal computers including personal workstations is royalty-free"; organisations are free up to **100 CPU cores** for Tart, paid tiers above (Gold $12k/yr 500 cores…). Matt's single workstation is inside the free tier. Record in README; if L7 ever moves to a shared self-hosted fleet, recount cores.
 
 ## Research record (what the scripts rely on — cited)
@@ -43,7 +47,7 @@ Copied from the spec; every task's requirements include these.
 - `screencapture` over ssh on macOS 15+ prompts/returns blank even with Screen Recording granted to sshd-keygen-wrapper (Apple forum thread 764789) → **capture on the host** from the Tart window (`screencapture -x -l <windowID>`; host Terminal needs Screen Recording once — MATT step).
 - `launchctl bootstrap gui/<uid>` needs a logged-in GUI session ("Bootstrap failed: 5" otherwise) → second-user smoke requires the second user to be logged in (Fast User Switching) before `rt daemon install` can register; `su -l` alone can install files but the daemon row reports not-booted.
 - Sparkle: feed override via `SPUUpdaterDelegate feedURLString(for:)`; http feeds need `NSAppTransportSecurity` → `NSAllowsLocalNetworking` (loopback/.local) — serving from the HOST at 192.168.64.x would additionally trigger Sequoia's Local Network Privacy prompt (Sparkle discussion #2732), so the appcast is served **inside the guest on 127.0.0.1**. Enclosures must be EdDSA-signed with the key matching the build's `SUPublicEDKey`; Sparkle compares numeric `CFBundleVersion`.
-- `rt --post-install` (current `commands/post-install.ts`) installs `~/.local/bin/rt`, copies `mattstack.app` → `~/Applications`, **launches the app with `open`**, then `rt daemon install` (→ tray socket `/daemon/start`, SMAppService). Running it on a host whose console user already has mattstack registered would launch a second tray under the same bundle id → `scripts/e2e-cleanroom.sh` refuses that by default.
+- `rt --post-install` (current `commands/post-install.ts`) installs `~/.local/bin/rt`, copies `mattstack.app` → `~/Applications`, **launches the app with `open`**, then `rt daemon install` (→ tray socket `/daemon/start`, SMAppService). Running it on a host whose console user already has mattstack registered would launch a second tray under the same bundle id → `scripts/e2e-cleanroom.sh` refuses that by default. (L1 T27 replaces the body with legacy sweep + headless `rt setup apply`; `--no-launch` is explicit and implied by `--ci`/`CI=true` — Task 12 passes it.)
 - `rt verify --ci` (commands/verify.ts) = human output, no colour, exit 1 on any critical fail; daemon-not-booted is a *warn* under `CI=true`.
 - VirtualBuddy (insidegui): GUI only, no CLI; APFS duplicate via Finder ⌘D; guest app for clipboard/sharing. Documented as the manual alternative, not scripted.
 
@@ -52,8 +56,8 @@ Copied from the spec; every task's requirements include these.
 | Need | Lane | Walkthrough phase that skips without it |
 |---|---|---|
 | DMG + zip + appcast artifacts (`mattstack-<ver>.dmg`, `mattstack-<ver>.zip`), Sparkle in the app, `SUPublicEDKey`; build accepts `SPARKLE_PUBLIC_ED_KEY` override for test keys | L4 | update (P7); install uses `vm/run/make-dmg.sh` from a locally built `.app` meanwhile |
-| Five screens + AXIdentifiers — **not yet in the L3 plan (`2026-08-21-mattstack-app-shell.md`), which does define the XCUITest target `mattstackUITests` and the stub envs `RT_STUB_SCENARIO`/`RT_STUB_PATH`/`RT_STUB_BUN`** — (`setup.window`, `setup.continue`, `setup.back`, `setup.install`, `setup.finish`, `setup.card.create`, `setup.card.join`, `setup.field.teamName`, `setup.field.inviteCode`, `row.<rowId>`, `row.<rowId>.action`, `row.<rowId>.status`); `MATTSTACK_APPCAST_URL` env honoured by the updater delegate; ATS `NSAllowsLocalNetworking`; `GET /version` on tray.sock | L3 | screens (P5), update (P7) |
-| `rt setup plan/status/apply --json`, `rt --post-install --non-interactive --team-of-one`, `rt team invite/join` | L1 | assert (P6 uses `rt verify --json` today), invite scenario |
+| Five screens + AXIdentifiers from the L3 plan's `rt-tray/Sources/Setup/AccessibilityIDs.swift` (`2026-08-21-mattstack-app-shell.md` T12; the same plan defines the XCUITest target `mattstackUITests` and the stub envs `RT_STUB_SCENARIO`/`RT_STUB_PATH` (required)/`RT_STUB_BUN`/`RT_STUB_STATE_DIR`): screens `setup.<welcome\|team\|checklist\|install\|done>.screen`; `setup.<screen>.continue`, `setup.<screen>.back`, `setup.checklist.continueLimited`; team `setup.team.card.create\|join\|restore`, `setup.team.create.name\|others\|useGh\|owner\|remote`, `setup.team.join.code`, `setup.team.restore.repo\|key`; checklist `setup.checklist.row.<rowId>`, `.row.<rowId>.action`, `.row.<rowId>.status`, `setup.checklist.recheck`, `setup.checklist.relaunch`, `setup.checklist.connect.field.<name>`, `setup.checklist.connect.submit\|cancel`; install `setup.install.step.<id>`, `setup.install.retry`; done `setup.done.continue`, `setup.done.openBoard`, `setup.done.invite`. Row ids are L1's (`perm.fda`, `perm.login-items`, `perm.notifications`, `account.github`, `tool.clt`, …). Also from L3: `MATTSTACK_APPCAST_URL` honoured only for dev builds or when launched with `--allow-appcast-override` (T10), ATS `NSAllowsLocalNetworking`, `GET /version` (`build` numeric) on tray.sock | L3 | screens (P5), update (P7) |
+| `rt setup plan/status/apply --json`, `rt --post-install --non-interactive --team-of-one --no-launch` (`--no-launch` also implied by `--ci`/`CI=true`), `rt team invite/join` | L1 | assert (P6 uses `rt verify --json` today), invite scenario |
 | `/v1/invites*` on the shared relay | L6 | join scenario (stub until then) |
 
 ---
@@ -583,7 +587,8 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 **Interfaces:**
 - `make-dmg.sh <path/to/mattstack.app> <out.dmg>` → read-only UDZO DMG named `mattstack` containing the app + `/Applications` symlink (what L4 will ship; lets L7 run before L4).
 - `appcast-server` (compiled with `bun build --compile`): `appcast-server <dir> <port>` serves files from `<dir>` on `127.0.0.1:<port>`, logs one line per request to stderr, exits on SIGTERM. Used by `trigger-update.sh` inside the guest.
-- `make-appcast.sh <path/to/mattstack.app> <new-version> <new-build> <ed-key-file> <out-dir>` → `<out-dir>/mattstack-<new-version>.zip` + `<out-dir>/appcast.xml` (download URL prefix `http://127.0.0.1:8765/`). Requires `generate_appcast` (Sparkle tools) on `PATH` or at `$SPARKLE_BIN`; dies with the download hint otherwise.
+- `make-appcast.sh <path/to/mattstack.app> <new-version> <ed-key-file> <out-dir>` → `<out-dir>/mattstack-<new-version>.zip` + `<out-dir>/appcast.xml` (download URL prefix `http://127.0.0.1:8765/`). `CFBundleVersion` is computed from `<new-version>` with L4's scheme `major*1000000+minor*1000+patch` (no separate build arg — Sparkle compares this number, so it must stay monotonic with real releases). Requires `generate_appcast` (Sparkle tools) on `PATH` or at `$SPARKLE_BIN`; dies with the download hint otherwise.
+- Re-point (AFTER L4 T6 merges): when `scripts/release/make-zip.sh` / `scripts/release/make-dmg.sh` exist, `make-dmg.sh` and `make-appcast.sh` call them for the DMG/zip so the artifact under test is L4's recipe; only the loopback `generate_appcast` call stays local. Until then the inline `hdiutil`/`ditto` fallbacks below stand.
 
 - [ ] **Step 1: Write `rt-tray/vm/run/make-dmg.sh`**
 
@@ -596,11 +601,17 @@ source "$(cd "$(dirname "$0")/.." && pwd)/lib/common.sh"
 APP="${1:-}"; OUT="${2:-}"
 [ -d "$APP" ] && [ -n "$OUT" ] || vm_die "usage: make-dmg.sh <mattstack.app> <out.dmg>"
 [ "$(basename "$APP")" = "mattstack.app" ] || vm_die "bundle must be named mattstack.app (got $(basename "$APP"))"
-STAGE=$(mktemp -d); trap 'rm -rf "$STAGE"' EXIT
-ditto "$APP" "$STAGE/mattstack.app"
-ln -s /Applications "$STAGE/Applications"
-rm -f "$OUT"
-hdiutil create -quiet -volname mattstack -srcfolder "$STAGE" -ov -format UDZO "$OUT"
+REL="$VM_ROOT/../../scripts/release"
+if [ -x "$REL/make-dmg.sh" ]; then
+  # L4's recipe is the artifact under test once it exists.
+  "$REL/make-dmg.sh" "$APP" "$OUT"
+else
+  STAGE=$(mktemp -d); trap 'rm -rf "$STAGE"' EXIT
+  ditto "$APP" "$STAGE/mattstack.app"
+  ln -s /Applications "$STAGE/Applications"
+  rm -f "$OUT"
+  hdiutil create -quiet -volname mattstack -srcfolder "$STAGE" -ov -format UDZO "$OUT"
+fi
 vm_log "dmg → $OUT ($(du -h "$OUT" | cut -f1))"
 ```
 
@@ -714,15 +725,19 @@ Expected: 2 pass; `compiled-ok`.
 ```bash
 #!/bin/bash
 # Build the vN+1 Sparkle enclosure + appcast from a built app, for the update phase.
-# Usage: make-appcast.sh <mattstack.app> <new-version> <new-build> <ed-private-key-file> <out-dir> [--sign <identity>]
+# Usage: make-appcast.sh <mattstack.app> <new-version> <ed-private-key-file> <out-dir> [--sign <identity>]
 # The app's SUPublicEDKey must match the private key (L4 build: SPARKLE_PUBLIC_ED_KEY override).
+# CFBundleVersion = major*1000000 + minor*1000 + patch — the same scheme as the release build, so
+# Sparkle's numeric comparison stays monotonic against real releases.
 set -euo pipefail
 source "$(cd "$(dirname "$0")/.." && pwd)/lib/common.sh"
-APP="${1:-}"; NEWV="${2:-}"; NEWB="${3:-}"; KEY="${4:-}"; OUT="${5:-}"; shift 5 2>/dev/null || true
+APP="${1:-}"; NEWV="${2:-}"; KEY="${3:-}"; OUT="${4:-}"; shift 4 2>/dev/null || true
 SIGN="-"
 while [ $# -gt 0 ]; do case "$1" in --sign) SIGN="$2"; shift 2;; *) vm_die "unknown arg $1";; esac; done
-[ -d "$APP" ] && [ -n "$NEWV" ] && [ -n "$NEWB" ] && [ -f "$KEY" ] && [ -n "$OUT" ] \
-  || vm_die "usage: make-appcast.sh <mattstack.app> <new-version> <new-build> <ed-key-file> <out-dir> [--sign <identity>]"
+[ -d "$APP" ] && [ -n "$NEWV" ] && [ -f "$KEY" ] && [ -n "$OUT" ] \
+  || vm_die "usage: make-appcast.sh <mattstack.app> <new-version> <ed-key-file> <out-dir> [--sign <identity>]"
+echo "$NEWV" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || vm_die "new-version must be X.Y.Z (got $NEWV)"
+NEWB=$(echo "$NEWV" | awk -F. '{ printf "%d", $1*1000000 + $2*1000 + $3 }')
 
 GEN="${SPARKLE_BIN:+$SPARKLE_BIN/}generate_appcast"
 command -v "$GEN" >/dev/null 2>&1 || vm_die "generate_appcast not found — download Sparkle-<ver>.tar.xz from https://github.com/sparkle-project/Sparkle/releases, extract, and set SPARKLE_BIN=<extracted>/bin"
@@ -738,7 +753,12 @@ find "$STAGE/mattstack.app/Contents" -type f -perm -u+x -not -path '*/Info.plist
 done
 codesign --force --options runtime --timestamp=none --sign "$SIGN" "$STAGE/mattstack.app"
 rm -f "$OUT"/mattstack-*.zip "$OUT"/appcast.xml
-(cd "$STAGE" && ditto -c -k --sequesterRsrc --keepParent mattstack.app "$OUT/mattstack-$NEWV.zip")
+REL="$VM_ROOT/../../scripts/release"
+if [ -x "$REL/make-zip.sh" ]; then
+  "$REL/make-zip.sh" "$STAGE/mattstack.app" "$OUT/mattstack-$NEWV.zip"
+else
+  (cd "$STAGE" && ditto -c -k --sequesterRsrc --keepParent mattstack.app "$OUT/mattstack-$NEWV.zip")
+fi
 "$GEN" --ed-key-file "$KEY" --download-url-prefix "http://127.0.0.1:8765/" -o "$OUT/appcast.xml" "$OUT"
 vm_log "appcast → $OUT/appcast.xml (enclosure mattstack-$NEWV.zip, build $NEWB)"
 ```
@@ -750,9 +770,10 @@ Run:
 bash -n rt-tray/vm/run/make-dmg.sh rt-tray/vm/run/make-appcast.sh
 ls -d rt-tray/mattstack.app >/dev/null 2>&1 || (cd rt-tray && ./build.sh release)
 bash rt-tray/vm/run/make-dmg.sh rt-tray/mattstack.app rt-tray/vm/.cache/mattstack-local.dmg && hdiutil imageinfo rt-tray/vm/.cache/mattstack-local.dmg | grep -q "Format: UDZO" && echo dmg-ok
-bash rt-tray/vm/run/make-appcast.sh rt-tray/mattstack.app 0.0.1 1 /dev/null /tmp/x; echo "exit=$?"
+bash rt-tray/vm/run/make-appcast.sh rt-tray/mattstack.app 0.0.1 /dev/null /tmp/x; echo "exit=$?"
+bash rt-tray/vm/run/make-appcast.sh rt-tray/mattstack.app 2.8 /dev/null /tmp/x; echo "exit=$?"
 ```
-Expected: `dmg-ok`; make-appcast exits 1 with the `generate_appcast not found` hint (or the usage line if `/dev/null` fails `-f` — `-f /dev/null` is true, so the hint is the expected message).
+Expected: `dmg-ok`; the first make-appcast exits 1 with the `generate_appcast not found` hint (or the usage line if `/dev/null` fails `-f` — `-f /dev/null` is true, so the hint is the expected message); the second exits 1 with `new-version must be X.Y.Z`. (Sanity: `echo 2.8.0 | awk -F. '{ printf "%d", $1*1000000 + $2*1000 + $3 }'` prints `2008000`.)
 
 - [ ] **Step 8: Commit**
 
@@ -855,7 +876,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `rt-tray/vm/run/guest/install-app.sh`
 
 **Interfaces:**
-- Runs in the guest. Invoked twice by `walkthrough.sh`: `install-app.sh copy <dmg> [--quarantine|--no-quarantine]` as **admin** (mount, copy to `/Applications` like Finder-with-admin-auth does, detach), then `install-app.sh launch [--env KEY=VAL …]` as **tester** (`open` with env, wait for the process + menu bar item, report). Exit codes: 0 ok, 2 Gatekeeper blocked (dialog detected), 1 other.
+- Runs in the guest. Invoked twice by `walkthrough.sh`: `install-app.sh copy <dmg> [--quarantine|--no-quarantine]` as **admin** (mount, copy to `/Applications` like Finder-with-admin-auth does, detach), then `install-app.sh launch [--env KEY=VAL …] [--arg <launch-arg> …]` as **tester** (`open --env K=V "$APP" --args <launch-args>`, wait for the process + menu bar item, report). Exit codes: 0 ok, 2 Gatekeeper blocked (dialog detected), 1 other. The update phase launches the **prod** app with `--env MATTSTACK_APPCAST_URL=http://127.0.0.1:8765/appcast.xml --arg --allow-appcast-override` — L3 T10 honours the env only for dev builds or with that argument; every driver-initiated relaunch repeats the same env + arg.
 - Writes `$GUEST_RUN/logs/install-app.log` where `GUEST_RUN=/Volumes/My Shared Files/run` (the host run dir).
 
 - [ ] **Step 1: Write `rt-tray/vm/run/guest/install-app.sh`**
@@ -895,10 +916,12 @@ case "$cmd" in
     spctl --assess --type execute "$APP" 2>>"$LOG" && say "spctl: accepted" || say "spctl: rejected (expect a Gatekeeper dialog if quarantined)"
     ;;
   launch)
-    ENVS=()
-    while [ $# -gt 0 ]; do case "$1" in --env) ENVS+=("--env" "$2"); shift 2;; *) shift;; esac; done
+    ENVS=(); ARGS=()
+    while [ $# -gt 0 ]; do case "$1" in --env) ENVS+=("--env" "$2"); shift 2;; --arg) ARGS+=("$2"); shift 2;; *) shift;; esac; done
     [ -d "$APP" ] || { say "no app at $APP"; exit 1; }
-    open "${ENVS[@]}" "$APP"
+    # `open`: env flags before the app path, the app's own argv after --args.
+    if [ "${#ARGS[@]}" -gt 0 ]; then open ${ENVS[@]+"${ENVS[@]}"} "$APP" --args "${ARGS[@]}"
+    else open ${ENVS[@]+"${ENVS[@]}"} "$APP"; fi
     for i in $(seq 1 30); do
       sleep 1
       if pgrep -x mattstack >/dev/null; then say "process up after ${i}s"; break; fi
@@ -916,14 +939,14 @@ case "$cmd" in
     done
     say "no menu bar item after 20s (app running)"; exit 0
     ;;
-  *) echo "usage: install-app.sh copy <dmg> [--quarantine|--no-quarantine] | launch [--env K=V]..." >&2; exit 1;;
+  *) echo "usage: install-app.sh copy <dmg> [--quarantine|--no-quarantine] | launch [--env K=V]... [--arg <launch-arg>]..." >&2; exit 1;;
 esac
 ```
 
 - [ ] **Step 2: Syntax-check + host-only dry run of the parser**
 
 Run: `bash -n rt-tray/vm/run/guest/install-app.sh && GUEST_RUN=/tmp/gr bash rt-tray/vm/run/guest/install-app.sh copy /nonexistent.dmg; echo "exit=$?"; bash rt-tray/vm/run/guest/install-app.sh; echo "exit=$?"`
-Expected: `no dmg at /nonexistent.dmg` exit 1; usage exit 1.
+Expected: `no dmg at /nonexistent.dmg` exit 1; usage exit 1. (Never run `launch` on the host — it would `open` the real `/Applications/mattstack.app`.)
 
 - [ ] **Step 3: Commit**
 
@@ -938,14 +961,16 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ### Task 6: UI-scripting library + the five screens — `run/guest/ax.sh`, `run/guest/drive-setup.sh`
 
+**AFTER L3 T12–T16 merge** (the AXIDs below come from L3's `AccessibilityIDs.swift`; the scripts can be written now and fail fast on any missing id until the app ships them).
+
 **Files:**
 - Create: `rt-tray/vm/run/guest/ax.sh`
 - Create: `rt-tray/vm/run/guest/drive-setup.sh`
 
 **Interfaces:**
-- `ax.sh` (sourced in the guest): `ax_app` = `mattstack`; `ax_wait_window <title-substr> <timeout>`; `ax_find <axid>` → prints AppleScript reference or fails; `ax_click <axid>`; `ax_click_button_named <name> [<process>]`; `ax_type <text>` (keystroke into focused field); `ax_set_field <axid> <text>`; `ax_status <rowId>` → the row's status text (`ready|missing|needs-you|…` via `row.<id>.status` AXIdentifier `value`/`description`); `ax_wait_status <rowId> <status> <timeout>`; `ax_admin_auth` (fills the SecurityAgent dialog with `admin`/`$VM_ADMIN_PASS`); `ax_allow_notifications` (clicks Allow in the UNC prompt if present); `ax_shot <name>` → asks the HOST to capture by touching `$GUEST_RUN/in/shot-<name>.req` and waiting for `.done` (host loop in `walkthrough.sh`); `ax_fail <msg>` → shot + exit 1.
-- `drive-setup.sh <scenario> [--team-slug vmtest] [--pat-env MATTSTACK_VMTEST_PAT] [--invite-code-file <path>]` runs the five screens; per-screen functions `screen_welcome`, `screen_team`, `screen_readiness`, `screen_install`, `screen_done`; exit 0 when "Done" is reached and Finish clicked; exit 1 with the failing screen in the last log line. Scenarios: `create` (default), `join` (needs invite code file), `restore` (reserved; exits 3 "not implemented").
-- AXIdentifiers are the L3 contract asks listed in "Dependencies on other lanes"; until L3 ships them, every `ax_find` fails fast with `axid not found: <id>` and the phase is a clean `fail`, never a hang.
+- `ax.sh` (sourced in the guest): `ax_app` = `mattstack`; `ax_wait_window <title-substr> <timeout>`; `ax_wait_screen <screen> <timeout>` (waits for `setup.<screen>.screen`); `ax_find <axid>` → prints AppleScript reference or fails; `ax_click <axid>`; `ax_click_button_named <name> [<process>]`; `ax_type <text>` (keystroke into focused field); `ax_set_field <axid> <text>`; `ax_status <rowId>` → the row's status text (`ready|missing|needs-you|…` via the `setup.checklist.row.<id>.status` AXIdentifier `value`/`description`); `ax_wait_status <rowId> <status> <timeout>`; `ax_admin_auth` (fills the SecurityAgent dialog with `admin`/`$VM_ADMIN_PASS`); `ax_allow_notifications` (clicks Allow in the UNC prompt if present); `ax_shot <name>` → asks the HOST to capture by touching `$GUEST_RUN/in/shot-<name>.req` and waiting for `.done` (host loop in `walkthrough.sh`); `ax_fail <msg>` → shot + exit 1.
+- `drive-setup.sh <scenario> [--team-slug vmtest] [--pat-env MATTSTACK_VMTEST_PAT] [--invite-code-file <path>]` runs the five screens; per-screen functions `screen_welcome`, `screen_team`, `screen_readiness`, `screen_install`, `screen_done`; exit 0 when "Done" is reached and Finish clicked; exit 1 with the failing screen in the last log line. Scenarios: `create` (default), `join` (needs invite code file), `restore` (reserved; exits 3 "not implemented"). Env `DRIVER_LAUNCH_ARGS` (set by `walkthrough.sh`; the `install-app.sh launch` flags) is replayed on any driver-initiated relaunch so `MATTSTACK_APPCAST_URL` + `--allow-appcast-override` survive.
+- AXIdentifiers are L3's `AccessibilityIDs.swift` names (cross-plan review §5 #43): screens `setup.<welcome|team|checklist|install|done>.screen`; `setup.<screen>.continue`; team `setup.team.card.create|join`, `setup.team.create.name`, `setup.team.join.code`; checklist `setup.checklist.row.<rowId>[.action|.status]`, `setup.checklist.connect.field.token`, `setup.checklist.connect.submit`, `setup.checklist.relaunch`; install `setup.install.retry`, `setup.install.step.<id>`; done `setup.done.continue`. Row ids are L1's (`perm.login-items`, not `perm.loginItems`). Until the app ships them, every `ax_find` fails fast with `axid not found: <id>` and the phase is a clean `fail`, never a hang.
 
 - [ ] **Step 1: Write `rt-tray/vm/run/guest/ax.sh`**
 
@@ -974,6 +999,15 @@ ax_wait_window() {  # <title-substring> <timeout-s>
   local t="$1" n="${2:-30}"
   while [ "$n" -gt 0 ]; do
     ax_osa "tell application \"System Events\" to tell process \"$AX_APP\" to get name of every window" 2>/dev/null | grep -q "$t" && return 0
+    sleep 1; n=$((n-1))
+  done
+  return 1
+}
+
+ax_wait_screen() {  # <welcome|team|checklist|install|done> <timeout-s> — waits for setup.<screen>.screen
+  local n="${2:-30}"
+  while [ "$n" -gt 0 ]; do
+    ax_find "setup.$1.screen" >/dev/null 2>&1 && return 0
     sleep 1; n=$((n-1))
   done
   return 1
@@ -1070,8 +1104,8 @@ ax_status() {  # <rowId> → status string (the app exposes it as the row status
       return missing value
     end walk
     tell application \"System Events\" to tell process \"$AX_APP\"
-      set r to my walk(window 1, \"row.$1.status\")
-      if r is missing value then error \"axid not found: row.$1.status\"
+      set r to my walk(window 1, \"setup.checklist.row.$1.status\")
+      if r is missing value then error \"axid not found: setup.checklist.row.$1.status\"
       try
         return value of r as text
       on error
@@ -1158,98 +1192,119 @@ while [ $# -gt 0 ]; do case "$1" in
   *) ax_fail "unknown arg $1";; esac; done
 PAT="${!PAT_ENV:-}"
 RT="$HOME/.local/bin/rt"
+DRIVER_LAUNCH_ARGS="${DRIVER_LAUNCH_ARGS:-}"
+
+# If the app has to be relaunched by the driver, replay the exact launch env/args (appcast override).
+relaunch_app() {
+  # shellcheck disable=SC2086
+  bash "$HERE/install-app.sh" launch $DRIVER_LAUNCH_ARGS >>"$AX_LOG" 2>&1 || return 1
+}
 
 screen_welcome() {
   ax_wait_window "mattstack" 60 || ax_fail "setup window never appeared"
-  ax_find setup.window >/dev/null || ax_fail "setup.window axid missing (L3 contract)"
+  ax_wait_screen welcome 10 || ax_fail "setup.welcome.screen axid missing (L3 AccessibilityIDs)"
   ax_shot 01-welcome
-  ax_click setup.continue
+  ax_click setup.welcome.continue
 }
 
 screen_team() {
+  ax_wait_screen team 10 || ax_fail "setup.team.screen did not appear"
   case "$SCENARIO" in
     create)
-      ax_click setup.card.create
-      ax_set_field setup.field.teamName "$SLUG"
+      ax_click setup.team.card.create
+      ax_set_field setup.team.create.name "$SLUG"
       ax_shot 02-team-create
       ;;
     join)
       [ -n "$CODE_FILE" ] && [ -f "$CODE_FILE" ] || ax_fail "join needs --invite-code-file"
-      ax_click setup.card.join
-      ax_set_field setup.field.inviteCode "$(tr -d '\n' < "$CODE_FILE")"
+      ax_click setup.team.card.join
+      ax_set_field setup.team.join.code "$(tr -d '\n' < "$CODE_FILE")"
       ax_shot 02-team-join
       ;;
     restore) ax_log "restore scenario not implemented"; exit 3;;
   esac
-  ax_click setup.continue
+  ax_click setup.team.continue
   # Continue validates the remote(s) with git ls-remote; allow time, then the checklist must appear.
-  ax_wait_window "mattstack" 10
+  ax_wait_screen checklist 60 || ax_fail "setup.checklist.screen did not appear after team Continue"
 }
 
 screen_readiness() {
   ax_shot 03-readiness-initial
   # Accounts → GitHub token (the guest has no gh; the PAT is typed, never logged, masked on screen).
-  if ax_find row.account.github >/dev/null 2>&1; then
-    [ -n "$PAT" ] || ax_fail "row.account.github present but \$$PAT_ENV is empty on the host"
-    ax_click row.account.github.action
-    ax_set_field connect.field.token "$PAT"
-    ax_click connect.submit
+  if ax_find setup.checklist.row.account.github >/dev/null 2>&1; then
+    [ -n "$PAT" ] || ax_fail "account.github row present but \$$PAT_ENV is empty on the host"
+    ax_click setup.checklist.row.account.github.action
+    ax_set_field setup.checklist.connect.field.token "$PAT"
+    ax_click setup.checklist.connect.submit
     ax_wait_status account.github ready 60 || ax_fail "github row not ready"
   fi
   # Full Disk Access: button → System Settings → toggle (admin auth for a standard user) → Relaunch.
   if [ "$(ax_status perm.fda || true)" != ready ]; then
-    ax_click row.perm.fda.action
+    ax_click setup.checklist.row.perm.fda.action
     ax_toggle_in_system_settings mattstack || ax_fail "could not toggle FDA in System Settings"
     ax_shot 03-fda-toggled
-    # The row now offers "Relaunch mattstack"; the app restarts itself.
+    # The checklist now offers "Relaunch mattstack" (setup.checklist.relaunch); the app re-execs itself
+    # with its current arguments + environment (L3 T10/T18), so the appcast override survives.
     ax_wait_status perm.fda needs-you 20 || true
-    ax_click row.perm.fda.action
-    sleep 3; ax_wait_window "mattstack" 60 || ax_fail "app did not come back after FDA relaunch"
+    ax_click setup.checklist.relaunch
+    sleep 3
+    if ! ax_wait_window "mattstack" 60; then
+      ax_log "app did not come back by itself after FDA relaunch — relaunching with the driver's env/args"
+      relaunch_app || ax_fail "app did not come back after FDA relaunch"
+      ax_wait_window "mattstack" 60 || ax_fail "app did not come back after FDA relaunch"
+    fi
+    ax_wait_screen checklist 30 || ax_fail "checklist did not return after FDA relaunch"
     ax_wait_status perm.fda ready 30 || ax_fail "FDA not applied after relaunch"
   fi
   # Background services (Login Items): register → if requiresApproval, open pane and toggle.
-  if [ "$(ax_status perm.loginItems || true)" != ready ]; then
-    ax_click row.perm.loginItems.action
+  if [ "$(ax_status perm.login-items || true)" != ready ]; then
+    ax_click setup.checklist.row.perm.login-items.action
     sleep 2
-    if [ "$(ax_status perm.loginItems || true)" != ready ]; then
+    if [ "$(ax_status perm.login-items || true)" != ready ]; then
       ax_toggle_in_system_settings mattstack || ax_log "login items toggle not found (may already be enabled)"
     fi
-    ax_wait_status perm.loginItems ready 60 || ax_fail "login items row not ready"
+    ax_wait_status perm.login-items ready 60 || ax_fail "login items row not ready"
   fi
   ax_log "note: the 'Background Items Added' banner is not asserted; row status comes from SMAppService"
   # Notifications (optional): Allow the system prompt if the row asks.
-  if ax_find row.perm.notifications >/dev/null 2>&1 && [ "$(ax_status perm.notifications || true)" != ready ]; then
-    ax_click row.perm.notifications.action; sleep 2; ax_allow_notifications
+  if ax_find setup.checklist.row.perm.notifications >/dev/null 2>&1 && [ "$(ax_status perm.notifications || true)" != ready ]; then
+    ax_click setup.checklist.row.perm.notifications.action; sleep 2; ax_allow_notifications
   fi
   # Apple CLT row: the clean room has none; the app's Install… triggers Apple's dialog — a real network install (~minutes).
   if [ "$(ax_status tool.clt || true)" != ready ]; then
-    ax_click row.tool.clt.action
+    ax_click setup.checklist.row.tool.clt.action
     ax_osa 'tell application "System Events" to tell process "Install Command Line Developer Tools" to click (first button of window 1 whose name is "Install")' >/dev/null 2>&1 || true
     ax_osa 'tell application "System Events" to tell process "Install Command Line Developer Tools" to click (first button of window 1 whose name is "Agree")' >/dev/null 2>&1 || true
     ax_wait_status tool.clt ready 1200 || ax_fail "CLT install did not finish in 20 min"
     ax_shot 03-clt-installed
   fi
   ax_shot 03-readiness-final
-  ax_find setup.install >/dev/null || ax_fail "setup.install axid missing"
-  ax_click setup.install
+  ax_find setup.checklist.continue >/dev/null || ax_fail "setup.checklist.continue axid missing"
+  ax_click setup.checklist.continue
 }
 
 screen_install() {
+  ax_wait_screen install 10 || ax_fail "setup.install.screen did not appear"
   ax_shot 04-install-start
   # Steps stream; a privileged step raises the admin prompt (standard user → admin creds).
-  local n=900 st
+  local n=900 failed
   while [ "$n" -gt 0 ]; do
     ax_admin_auth 2>/dev/null && ax_shot 04-admin-auth || true
-    if ax_wait_window "mattstack" 1 && ax_find setup.finish >/dev/null 2>&1; then ax_shot 04-install-done; return 0; fi
-    if st=$(ax_status install.failedStep 2>/dev/null) && [ -n "$st" ]; then ax_fail "install step failed: $st"; fi
+    if ax_wait_window "mattstack" 1 && ax_find setup.done.continue >/dev/null 2>&1; then ax_shot 04-install-done; return 0; fi
+    # Failure = the Retry button is present; name the failing step from the per-step status elements.
+    if ax_find setup.install.retry >/dev/null 2>&1; then
+      failed=$(ax_osa "tell application \"System Events\" to tell process \"$AX_APP\" to get value of attribute \"AXIdentifier\" of every UI element of entire contents of window 1" 2>/dev/null | tr ',' '\n' | grep -o 'setup\.install\.step\.[A-Za-z0-9._-]*' | head -1)
+      ax_fail "install step failed (${failed:-see setup.install.retry}); log: setup.install.log.copy"
+    fi
     sleep 2; n=$((n-2))
   done
   ax_fail "install did not reach Done in 15 min"
 }
 
 screen_done() {
+  ax_wait_screen done 10 || ax_fail "setup.done.screen did not appear"
   ax_shot 05-done
-  ax_click setup.finish
+  ax_click setup.done.continue
 }
 
 ax_log "scenario=$SCENARIO slug=$SLUG"
@@ -1262,9 +1317,9 @@ ax_log "five screens complete"
 Run:
 ```bash
 bash -n rt-tray/vm/run/guest/ax.sh rt-tray/vm/run/guest/drive-setup.sh
-GUEST_RUN=/tmp/gr AX_APP=definitely-not-running bash -c 'source rt-tray/vm/run/guest/ax.sh; ax_wait_window x 2; echo "wait exit=$?"; ax_find setup.window; echo "find exit=$?"'
+GUEST_RUN=/tmp/gr AX_APP=definitely-not-running bash -c 'source rt-tray/vm/run/guest/ax.sh; ax_wait_window x 2; echo "wait exit=$?"; ax_find setup.welcome.screen; echo "find exit=$?"; ax_wait_screen welcome 2; echo "screen exit=$?"'
 ```
-Expected: `wait exit=1`, `find exit=1` (osascript errors go to the log), within ~5 s. (On the host this may ALSO prompt for Automation permission for your terminal — decline; it is not needed on the host.)
+Expected: `wait exit=1`, `find exit=1`, `screen exit=1` (osascript errors go to the log), within ~8 s. (On the host this may ALSO prompt for Automation permission for your terminal — decline; it is not needed on the host.)
 
 - [ ] **Step 4: Commit**
 
@@ -1283,7 +1338,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `rt-tray/vm/run/guest/assert-installed.sh`
 
 **Interfaces:**
-- Runs in the guest as tester after the five screens (or after the headless install). `assert-installed.sh [--expect-version <v>] [--headless]` → writes `$GUEST_RUN/logs/verify.json`, `$GUEST_RUN/logs/tray-version.json`, `$GUEST_RUN/logs/launchctl.txt`; prints one `ASSERT ok|FAIL <name>` line per check; exit 1 on any FAIL. Checks: `~/.local/bin/rt` is a symlink into `/Applications/mattstack.app` (or `~/Applications`); `rt --version`; `rt verify --json` `passed:true`; tray.sock `GET /version` matches `--expect-version`; `launchctl print gui/$UID/com.mattstack.daemon` shows a pid; `~/.mattstack` exists and is a git repo (V5) unless `--headless`; no `~/.rt`, no `rt-tray.app`, no `com.rt.daemon` job (pure canonical).
+- Runs in the guest as tester after the five screens (or after the headless install). `assert-installed.sh [--expect-version <v>] [--headless]` → writes `$GUEST_RUN/logs/verify.json`, `$GUEST_RUN/logs/tray-version.json`, `$GUEST_RUN/logs/tray-services.json`, `$GUEST_RUN/logs/tray-permissions.json`, `$GUEST_RUN/logs/launchctl.txt`; prints one `ASSERT ok|FAIL <name>` line per check; exit 1 on any FAIL. Checks: `~/.local/bin/rt` is a symlink into `/Applications/mattstack.app` (or `~/Applications`); `rt --version`; `rt verify --json` `passed:true`; tray.sock `GET /version` matches `--expect-version`; tray.sock `GET /services` reports the daemon (and deck when bundled) and `GET /permissions` answers (the Global Constraints promise: assert through rt + tray.sock routes); `rt settings get mattstack.appPath --scope machine` equals `/Applications/mattstack.app` (V3; or `~/Applications/mattstack.app` on the fallback path); `launchctl print gui/$UID/com.mattstack.daemon` shows a pid; `~/.mattstack` exists and is a git repo (V5) unless `--headless`; no `~/.rt`, no `rt-tray.app`, no `com.rt.daemon` job (pure canonical).
 
 - [ ] **Step 1: Write it**
 
@@ -1331,9 +1386,27 @@ if [ -S "$SOCK" ]; then
   else
     bad "tray.sock /version empty (route not implemented yet?)"
   fi
+  # /services: daemon always; deck only when the bundle ships Contents/Helpers/deck (L1 registers it conditionally).
+  curl -s --max-time 5 --unix-socket "$SOCK" http://localhost/services > "$LOGS/tray-services.json" 2>/dev/null
+  if grep -q '"com.mattstack.daemon' "$LOGS/tray-services.json" 2>/dev/null; then
+    ok "tray.sock /services lists the daemon ($(tr -d '\n ' < "$LOGS/tray-services.json" | cut -c1-160))"
+    if [ -x /Applications/mattstack.app/Contents/Helpers/deck ]; then
+      grep -q '"com.mattstack.deck' "$LOGS/tray-services.json" && ok "tray.sock /services lists deck" || bad "deck is bundled but /services does not list com.mattstack.deck"
+    else
+      ok "deck not bundled — not expected in /services"
+    fi
+  else
+    bad "tray.sock /services does not list com.mattstack.daemon"
+  fi
+  curl -s --max-time 5 --unix-socket "$SOCK" http://localhost/permissions > "$LOGS/tray-permissions.json" 2>/dev/null
+  grep -q '"fda"' "$LOGS/tray-permissions.json" 2>/dev/null && ok "tray.sock /permissions → $(tr -d '\n ' < "$LOGS/tray-permissions.json" | cut -c1-160)" || bad "tray.sock /permissions empty or missing fda"
 else
   bad "no tray socket at $SOCK"
 fi
+
+# mattstack.appPath (V3): the app records where it runs from.
+AP=$(rt settings get mattstack.appPath --scope machine 2>/dev/null | tr -d '\n"')
+case "$AP" in /Applications/mattstack.app|"$HOME"/Applications/mattstack.app) ok "mattstack.appPath = $AP";; *) bad "mattstack.appPath is '${AP:-unset}' (wanted /Applications/mattstack.app)";; esac
 
 # daemon registered + running under the canonical label
 launchctl print "gui/$(id -u)/com.mattstack.daemon" > "$LOGS/launchctl.txt" 2>&1
@@ -1367,12 +1440,14 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ### Task 8: Update phase — `run/guest/trigger-update.sh`
 
+**AFTER L3 T10 merges** (`--allow-appcast-override` + the `MATTSTACK_APPCAST_URL` hook; the post-FDA self-relaunch re-execs with the current arguments + environment).
+
 **Files:**
 - Create: `rt-tray/vm/run/guest/trigger-update.sh`
 
 **Interfaces:**
-- Runs in the guest as tester: `trigger-update.sh <update-dir> <expect-new-version>` where `<update-dir>` holds `appcast.xml` + `mattstack-<v>.zip` + the compiled `appcast-server`. Starts the server on `127.0.0.1:8765` (background, pid file, killed at exit), records pre-update daemon pid + `/version`, `POST /update/check` on tray.sock, drives Sparkle's "Install and Relaunch" via UI scripting (gentle reminder → menu item "Update available…" → Sparkle window), waits for `/version` to equal `<expect-new-version>`, asserts the daemon pid changed and `rt --version` equals the new version. Output/exit like `assert-installed.sh`.
-- Preconditions asserted first (and reported as the skip reason by the host when false): app honours `MATTSTACK_APPCAST_URL` (launch env) — the host launches with `--env MATTSTACK_APPCAST_URL=http://127.0.0.1:8765/appcast.xml` whenever an update dir is supplied.
+- Runs in the guest as tester: `trigger-update.sh <update-dir> <expect-new-version>` where `<update-dir>` holds `appcast.xml` + `mattstack-<v>.zip` + the compiled `appcast-server`. Starts the server on `127.0.0.1:8765` (background, pid file, killed at exit), records pre-update daemon pid + `/version`, `POST /update/check` on tray.sock, drives Sparkle's "Install and Relaunch" via UI scripting (gentle reminder → menu item "Update available…" → Sparkle window), waits for `/version` to equal `<expect-new-version>`, asserts `/version.build` equals L4's numeric `major*1000000+minor*1000+patch` of that version, asserts the daemon pid changed and `rt --version` equals the new version. Output/exit like `assert-installed.sh`.
+- Preconditions asserted first (and reported as the skip reason by the host when false): the app honours `MATTSTACK_APPCAST_URL` — for a **prod** build only when launched with `--allow-appcast-override` (L3 T10), so the host launches with `open --env MATTSTACK_APPCAST_URL=http://127.0.0.1:8765/appcast.xml "$APP" --args --allow-appcast-override` (via `install-app.sh launch --env … --arg --allow-appcast-override`) whenever an update dir is supplied, and every driver-initiated relaunch repeats the same env + arg (`DRIVER_LAUNCH_ARGS`, Task 6).
 
 - [ ] **Step 1: Write it**
 
@@ -1429,6 +1504,10 @@ for _ in $(seq 1 120); do
   sleep 2
 done
 [ "$new_ver" = "$NEWV" ] && ok "tray /version == $NEWV" || bad "tray /version is '${new_ver:-?}', wanted $NEWV"
+# CFBundleVersion is numeric major*1000000+minor*1000+patch (L4 scheme); /version.build is a number.
+want_build=$(echo "$NEWV" | awk -F. '{ printf "%d", $1*1000000 + $2*1000 + $3 }')
+got_build=$(curl -s --max-time 2 --unix-socket "$SOCK" http://localhost/version 2>/dev/null | grep -oE '"build": *[0-9]+' | grep -oE '[0-9]+$')
+[ "${got_build:-}" = "$want_build" ] && ok "tray /version.build == $want_build" || bad "tray /version.build is '${got_build:-?}', wanted $want_build"
 ax_shot 06-update-done
 
 after_pid=$(launchctl print "gui/$(id -u)/com.mattstack.daemon" 2>/dev/null | grep -oE 'pid = [0-9]+' | awk '{print $3}')
@@ -1603,8 +1682,10 @@ vm_ssh "$VM_ADMIN_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash '$GUEST_RUN/in/gu
   && vm_phase_end install pass || { vm_phase_end install fail "copy failed (logs/install.log)"; exit 1; }
 
 vm_phase_begin launch
-LAUNCH_ENV=(); [ -n "$UPD" ] && LAUNCH_ENV=(--env MATTSTACK_APPCAST_URL=http://127.0.0.1:8765/appcast.xml)
-vm_ssh "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash $GUEST_BIN/install-app.sh launch ${LAUNCH_ENV[*]}" >>"$VM_RUN_DIR/logs/install.log" 2>&1
+# Prod builds honour MATTSTACK_APPCAST_URL only with --allow-appcast-override (L3 T10); the same env/arg is
+# replayed by drive-setup.sh on any driver-initiated relaunch (DRIVER_LAUNCH_ARGS).
+LAUNCH_ARGS=""; [ -n "$UPD" ] && LAUNCH_ARGS="--env MATTSTACK_APPCAST_URL=http://127.0.0.1:8765/appcast.xml --arg --allow-appcast-override"
+vm_ssh "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash $GUEST_BIN/install-app.sh launch $LAUNCH_ARGS" >>"$VM_RUN_DIR/logs/install.log" 2>&1
 rc=$?
 : > "$VM_RUN_DIR/in/shot-00-first-launch.req"; sleep 3
 case $rc in
@@ -1621,7 +1702,7 @@ if [ "$SCENARIO" = headless ]; then
   else vm_phase_end screens fail "headless recipe failed (logs/screens.log)"; fi
 else
   CODE_ARG=""; [ -n "$CODE_FILE" ] && { cp "$CODE_FILE" "$VM_RUN_DIR/in/invite-code.txt"; CODE_ARG="--invite-code-file '$GUEST_RUN/in/invite-code.txt'"; }
-  if vm_ssh "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' VM_ADMIN_PASS='$VM_ADMIN_PASS' $PAT_ENV='${!PAT_ENV:-}' bash $GUEST_BIN/drive-setup.sh $SCENARIO --team-slug $SLUG --pat-env $PAT_ENV $CODE_ARG" >>"$VM_RUN_DIR/logs/screens.log" 2>&1; then
+  if vm_ssh "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' VM_ADMIN_PASS='$VM_ADMIN_PASS' DRIVER_LAUNCH_ARGS='$LAUNCH_ARGS' $PAT_ENV='${!PAT_ENV:-}' bash $GUEST_BIN/drive-setup.sh $SCENARIO --team-slug $SLUG --pat-env $PAT_ENV $CODE_ARG" >>"$VM_RUN_DIR/logs/screens.log" 2>&1; then
     vm_phase_end screens pass "" $(cd "$VM_RUN_DIR" && ls screenshots/0[1-5]-*.png 2>/dev/null)
   else
     vm_phase_end screens fail "$(tail -1 "$VM_RUN_DIR/logs/drive.log" 2>/dev/null || echo 'see logs/screens.log')" $(cd "$VM_RUN_DIR" && ls screenshots/*.png 2>/dev/null)
@@ -1663,7 +1744,7 @@ Expected: run 1 → a run dir under `rt-tray/vm/artifacts/`, `preflight pass`, n
 - [ ] **Step 3 (MATT / ORCHESTRATOR, after Task 2's goldens exist): first real run with today's app**
 
 Run: `cd rt-tray && ./build.sh release && cd .. && bash rt-tray/vm/run/walkthrough.sh --ver 26 --app rt-tray/mattstack.app --no-quarantine --keep`
-Expected today (pre-L3): `clone/boot/stage/install/launch` pass (menu bar `m` appears), `screens` fails with `setup.window axid missing (L3 contract)`, `assert` fails on the socket/daemon rows (no setup ran), `update` skipped. Screenshot `00-first-launch.png` exists. Attach the run dir path to the MAT-383 ticket as the L7 baseline; then `tart stop`/`delete` the kept VM.
+Expected today (pre-L3): `clone/boot/stage/install/launch` pass (menu bar `m` appears), `screens` fails with `setup.welcome.screen axid missing (L3 AccessibilityIDs)`, `assert` fails on the socket/daemon rows (no setup ran), `update` skipped. Screenshot `00-first-launch.png` exists. Attach the run dir path to the MAT-383 ticket as the L7 baseline; then `tart stop`/`delete` the kept VM.
 
 - [ ] **Step 4: Commit**
 
@@ -1768,7 +1849,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `rt-tray/vm/run/second-user.sh`
 
 **Interfaces:**
-- `second-user.sh create` (prints the exact `sysadminctl` command for MATT to run with sudo — the script never creates users itself), `second-user.sh check` (user exists? logged in with a GUI session? — `launchctl print gui/<uid>` succeeds), `second-user.sh run --artifact <tar.gz|zip> [--tag vX.Y.Z]` (runs `scripts/e2e-cleanroom.sh` as that user via `sudo -iu`, copying the artifact into the user's home first; the artifacts dir is `rt-tray/vm/artifacts/<run>/` on Matt's side, readable by both), `second-user.sh switch` (prints the `CGSession -switchToUserID` command).
+- `second-user.sh create` (prints the exact `sysadminctl` command for MATT to run with sudo — the script never creates users itself), `second-user.sh check` (user exists? logged in with a GUI session? — `launchctl print gui/<uid>` succeeds), `second-user.sh run --artifact <mattstack-*.zip|.dmg>` (runs `scripts/e2e-cleanroom.sh` as that user via `sudo -iu`, copying the artifact into the user's home first; the artifacts dir is `rt-tray/vm/artifacts/<run>/` on Matt's side, readable by both), `second-user.sh switch` (prints the `CGSession -switchToUserID` command).
 - Env: `MATTSTACK_SMOKE_USER` (default `mstest`).
 
 - [ ] **Step 1: Write it**
@@ -1776,7 +1857,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```bash
 #!/bin/bash
 # Layer (c): daily smoke as a second macOS user on this Mac.
-# Usage: second-user.sh create | check | switch | run --artifact <rt-darwin-arm64-*.tar.gz|mattstack-*.zip>
+# Usage: second-user.sh create | check | switch | run --artifact <mattstack-*.zip|mattstack-*.dmg>
 set -euo pipefail
 source "$(cd "$(dirname "$0")/.." && pwd)/lib/common.sh"
 U="${MATTSTACK_SMOKE_USER:-mstest}"
@@ -1837,7 +1918,7 @@ Expected: create prints the sysadminctl line; check dies `user mstest does not e
 
 - [ ] **Step 3 (MATT): create + log in the smoke user, then run once**
 
-Run (MATT): the printed `sysadminctl` line, then `switch`, log in, switch back; then `bash rt-tray/vm/run/second-user.sh check && bash rt-tray/vm/run/second-user.sh run --artifact <path to rt-darwin-arm64-*.tar.gz>` (download one with `gh release download <tag> -R m4ttstack/rt -p 'rt-darwin-arm64-*.tar.gz' -D rt-tray/vm/.cache`). Expected: `second-user pass`, and `logs/second-user.log` ends with `rt verify --ci` output (daemon running, since the user has a GUI session).
+Run (MATT): the printed `sysadminctl` line, then `switch`, log in, switch back; then `bash rt-tray/vm/run/second-user.sh check && bash rt-tray/vm/run/second-user.sh run --artifact <path to mattstack-*.zip>` (download one with `gh release download <tag> -R m4ttstack/rt -p 'mattstack-*.zip' -D rt-tray/vm/.cache`). Expected: `second-user pass`, and `logs/second-user.log` ends with `rt verify --ci` output (daemon running, since the user has a GUI session).
 
 - [ ] **Step 4: Commit**
 
@@ -1852,13 +1933,15 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ### Task 12: Layer (a) locally — `scripts/e2e-cleanroom.sh`
 
+**CLI agreed with L4 T8** (cross-plan review §5 #36/#46): `release.yml` calls `scripts/e2e-cleanroom.sh "<zip>"` positionally — the positional form is accepted and means `--artifact`. Merge after L4 T8 is on main only matters for the CI job going green; the script itself is L7's.
+
 **Files:**
 - Create: `scripts/e2e-cleanroom.sh`
-- Modify: `scripts/README.md` (append a section)
+- Modify: `scripts/README.md` (append a section; L4 T6 appends its own `scripts/release/*` section — whoever merges second rebases)
 
 **Interfaces:**
-- `e2e-cleanroom.sh (--artifact <rt-darwin-arm64-*.tar.gz|mattstack-*.zip> | --tag vX.Y.Z | --app </Applications/mattstack.app>) [--home <dir>] [--artifacts-dir <dir>] [--allow-existing-install] [--post-install-args "<extra args>"]`. Mirrors `.github/workflows/release.yml` `test-install` step for step: extract (`tar -xzf` or `ditto -x -k`) → `rt --version` → `rt --post-install` (+ `--post-install-args`, e.g. `--non-interactive --team-of-one` once L1 ships it) → `~/.local/bin/rt --version` → `rt daemon install` → `sleep 3` → `rt verify --ci`. `--app` skips extraction and uses `<app>/Contents/MacOS/rt` (the in-guest headless path; today the binary is `Contents/MacOS/rt-daemon`, so the script tries `rt` then `rt-daemon`). `CI=true` is exported (matches the runner: daemon-not-booted = warn).
-- Guard: refuses to run when the invoking user already has mattstack registered (`launchctl print gui/$UID/com.mattstack.daemon` succeeds or `~/.mattstack/rt/daemon.json` exists in the REAL home) unless `--allow-existing-install` — because `rt --post-install` launches the app, which would register a second `com.mattstack.app` login item for the same user. Intended callers: the VM guest, the second user, CI.
+- `e2e-cleanroom.sh [<mattstack-*.zip|.dmg|mattstack.app>] (--artifact <mattstack-*.zip|.dmg> | --tag vX.Y.Z | --app </Applications/mattstack.app>) [--home <dir>] [--artifacts-dir <dir>] [--allow-existing-install] [--post-install-args "<args>"]`. A single positional path is `--artifact` (or `--app` when it ends in `.app`) — L4 T8 calls it that way with the release zip. `--tag` downloads `mattstack-*.zip` (`gh release download <tag> -R m4ttstack/rt -p 'mattstack-*.zip'`); there is no tarball artifact any more (L4 Decision 2). Mirrors `.github/workflows/release.yml` `test-install` step for step: extract (`ditto -x -k` for the zip, `hdiutil attach` + `ditto` for a DMG) → `<work>/release/mattstack.app/Contents/MacOS/rt --version` → `rt --post-install $PIA` (default `--post-install-args "--non-interactive --team-of-one --no-launch"` — L1 T27: `rt --post-install` = legacy sweep + headless `rt setup apply`; `--no-launch` is also implied by `--ci`/`CI=true`) → `~/.local/bin/rt --version` → `rt daemon install` (writes `daemon.json`; under L1 `services.register` is skipped honestly when no app is reachable) → `sleep 3` → `rt verify --ci` → `rt-tray/check-bundle.sh --app <app>` if that script is present in the checkout (L4's sparse checkout may be `scripts` only). `--app` skips extraction and uses `<app>/Contents/MacOS/rt`. `CI=true` is exported (matches the runner: daemon-not-booted = warn — never assert the daemon is running in CI).
+- Guard: refuses to run when the invoking user already has mattstack registered (`launchctl print gui/$UID/com.mattstack.daemon` succeeds or `~/.mattstack/rt/daemon.json` exists in the REAL home) unless `--allow-existing-install` — because `rt --post-install` without `--no-launch`/`CI` launches the app, which would register a second `com.mattstack.app` login item for the same user. Intended callers: the VM guest, the second user, CI.
 - Output: `<artifacts-dir>/cleanroom-<ts>/{steps.log,verify-ci.txt,versions.txt}`; exit code = `rt verify --ci`'s.
 
 - [ ] **Step 1: Write it**
@@ -1869,15 +1952,19 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 # See .github/workflows/release.yml (job test-install) — keep the two in step.
 set -uo pipefail
 usage() { cat <<'EOF'
-usage: e2e-cleanroom.sh (--artifact <tar.gz|zip> | --tag <vX.Y.Z> | --app <mattstack.app>)
+usage: e2e-cleanroom.sh [<mattstack-*.zip|.dmg|mattstack.app>]
+         (--artifact <mattstack-*.zip|.dmg> | --tag <vX.Y.Z> | --app <mattstack.app>)
          [--home <dir>] [--artifacts-dir <dir>] [--allow-existing-install] [--post-install-args "<args>"]
 EOF
 exit 2; }
-ART=""; TAG=""; APP=""; HOME_DIR=""; OUTDIR=""; ALLOW=0; PIA=""
+ART=""; TAG=""; APP=""; HOME_DIR=""; OUTDIR=""; ALLOW=0; PIA="--non-interactive --team-of-one --no-launch"
 while [ $# -gt 0 ]; do case "$1" in
   --artifact) ART="$2"; shift 2;; --tag) TAG="$2"; shift 2;; --app) APP="$2"; shift 2;;
   --home) HOME_DIR="$2"; shift 2;; --artifacts-dir) OUTDIR="$2"; shift 2;; --allow-existing-install) ALLOW=1; shift;;
-  --post-install-args) PIA="$2"; shift 2;; -h|--help) usage;; *) echo "unknown arg $1" >&2; usage;; esac; done
+  --post-install-args) PIA="$2"; shift 2;; -h|--help) usage;;
+  -*) echo "unknown arg $1" >&2; usage;;
+  *) case "$1" in *.app) APP="$1";; *) ART="$1";; esac; shift;;   # positional: release.yml passes the zip
+  esac; done
 [ -n "$ART$TAG$APP" ] || usage
 
 REAL_HOME="$HOME"
@@ -1899,24 +1986,23 @@ run()  { "$@" 2>&1 | tee -a "$LOG"; return "${PIPESTATUS[0]}"; }
 WORK=$(mktemp -d)
 if [ -n "$TAG" ]; then
   step "gh release download $TAG"
-  run gh release download "$TAG" -R m4ttstack/rt -p 'rt-darwin-arm64-*.tar.gz' -D "$WORK" || exit 1
-  ART=$(ls "$WORK"/rt-darwin-arm64-*.tar.gz | head -1)
+  run gh release download "$TAG" -R m4ttstack/rt -p 'mattstack-*.zip' -D "$WORK" || exit 1
+  ART=$(ls "$WORK"/mattstack-*.zip | head -1)
 fi
 if [ -n "$ART" ]; then
   step "extract $(basename "$ART")"
   mkdir -p "$WORK/release"
   case "$ART" in
-    *.tar.gz|*.tgz) run tar -xzf "$ART" -C "$WORK/release" || exit 1 ;;
-    *.zip)          run ditto -x -k "$ART" "$WORK/release" || exit 1 ;;
-    *) echo "unknown artifact type: $ART" >&2; exit 1 ;;
+    *.zip) run ditto -x -k "$ART" "$WORK/release" || exit 1 ;;
+    *.dmg) MNT=$(mktemp -d); run hdiutil attach "$ART" -nobrowse -quiet -mountpoint "$MNT" || exit 1
+           run ditto "$MNT/mattstack.app" "$WORK/release/mattstack.app"; hdiutil detach "$MNT" -quiet ;;
+    *) echo "unknown artifact type: $ART (expected mattstack-<ver>.zip or .dmg)" >&2; exit 1 ;;
   esac
   run ls -la "$WORK/release"
-  RT="$WORK/release/rt"
-  [ -x "$RT" ] || RT=$(ls "$WORK"/release/mattstack.app/Contents/MacOS/rt 2>/dev/null || ls "$WORK"/release/mattstack.app/Contents/MacOS/rt-daemon 2>/dev/null | head -1)
-else
-  RT="$APP/Contents/MacOS/rt"; [ -x "$RT" ] || RT="$APP/Contents/MacOS/rt-daemon"
+  APP="$WORK/release/mattstack.app"
 fi
-[ -x "${RT:-}" ] || { echo "no rt binary found" >&2; exit 1; }
+RT="$APP/Contents/MacOS/rt"
+[ -x "${RT:-}" ] || { echo "no rt binary at $APP/Contents/MacOS/rt" >&2; exit 1; }
 
 export CI=true
 if [ -n "$HOME_DIR" ]; then export HOME="$HOME_DIR"; mkdir -p "$HOME"; fi
@@ -1927,6 +2013,12 @@ step "installed rt on PATH";            run test -x "$HOME/.local/bin/rt" && run
 step "rt daemon install";               run rt daemon install; sleep 3
 step "rt verify --ci";                  rt verify --ci 2>&1 | tee "$OUTDIR/verify-ci.txt" | tee -a "$LOG"
 RC=${PIPESTATUS[0]}
+CHECK="$(cd "$(dirname "$0")/.." && pwd)/rt-tray/check-bundle.sh"
+if [ -x "$CHECK" ]; then
+  step "check-bundle.sh --app";         run "$CHECK" --app "$APP" || RC=1
+else
+  step "check-bundle.sh";               echo "skipped: rt-tray/check-bundle.sh not in this checkout" | tee -a "$LOG"
+fi
 printf '\nexit=%s\nartifacts=%s\n' "$RC" "$OUTDIR" | tee -a "$LOG"
 exit "$RC"
 ```
@@ -1936,11 +2028,12 @@ exit "$RC"
 ```markdown
 ## e2e-cleanroom.sh
 
-The release workflow's `test-install` recipe (extract → `rt --post-install` → `rt daemon install` → `rt verify --ci`), runnable locally against a release tag, a tarball/zip, or an installed `mattstack.app`. Refuses to run as a user who already has mattstack registered (it would launch a second app) — use it inside the VM walkthrough (`rt-tray/vm/run/walkthrough.sh --scenario headless`), as the smoke user (`rt-tray/vm/run/second-user.sh run`), or on CI. Output lands in `rt-tray/vm/artifacts/cleanroom-<ts>/`.
+The release workflow's `test-install` recipe (extract the zip → `rt --post-install --non-interactive --team-of-one --no-launch` → `rt daemon install` → `rt verify --ci` → `rt-tray/check-bundle.sh --app` when present), runnable locally against a release tag, a `mattstack-<ver>.zip`/`.dmg`, or an installed `mattstack.app`. `release.yml` calls it with the zip as a single positional argument. Refuses to run as a user who already has mattstack registered (without `--no-launch` the post-install would launch a second app) — use it inside the VM walkthrough (`rt-tray/vm/run/walkthrough.sh --scenario headless`), as the smoke user (`rt-tray/vm/run/second-user.sh run`), or on CI. Output lands in `rt-tray/vm/artifacts/cleanroom-<ts>/`. Under `CI=true` a daemon that is not booted is a warning, not a failure.
 
 ```sh
 scripts/e2e-cleanroom.sh --tag v2.8.0
-scripts/e2e-cleanroom.sh --artifact ~/Downloads/rt-darwin-arm64-v2.8.0.tar.gz --home "$(mktemp -d)"
+scripts/e2e-cleanroom.sh ~/Downloads/mattstack-2.8.0.zip --home "$(mktemp -d)"
+scripts/e2e-cleanroom.sh --artifact ~/Downloads/mattstack-2.8.0.dmg --home "$(mktemp -d)"
 ```
 ```
 
@@ -1950,9 +2043,10 @@ Run:
 ```bash
 bash -n scripts/e2e-cleanroom.sh
 bash scripts/e2e-cleanroom.sh; echo "exit=$?"
-bash scripts/e2e-cleanroom.sh --artifact /nonexistent.tar.gz; echo "exit=$?"
+bash scripts/e2e-cleanroom.sh /nonexistent.zip; echo "exit=$?"
+bash scripts/e2e-cleanroom.sh --artifact /nonexistent.zip; echo "exit=$?"
 ```
-Expected: usage `exit=2`; on Matt's machine the second prints the "already has mattstack installed" guard and `exit=3` (on a clean machine it would fail at extract with exit 1).
+Expected: usage `exit=2`; on Matt's machine the second and third print the "already has mattstack installed" guard and `exit=3` (on a clean machine they would fail at extract with exit 1). The positional and `--artifact` forms behave identically.
 
 - [ ] **Step 4: Commit**
 
@@ -1967,8 +2061,13 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ### Task 13: XCUITest mode (gated on Xcode) — `run/xcuitest.sh`
 
+**AFTER L3 T19 merges** (the `mattstackUITests` target + `project.yml`) and only once Xcode exists on the host; the gate below keeps it an honest `skip` until then.
+
 **Files:**
 - Create: `rt-tray/vm/run/xcuitest.sh`
+- Modify: `rt-tray/vm/golden/build-golden.sh` (`--xcode` flag)
+- Modify: `rt-tray/vm/golden/provision-guest.sh` (`SKIP_CLEANROOM`)
+- Modify: `rt-tray/vm/golden/verify-golden.sh` (`"xcode"` marker-conditional checks)
 
 **Interfaces:**
 - `xcuitest.sh --ver <26> --dmg <path> [--keep]`: same clone/boot/stage/install as the walkthrough but on a golden named `mattstack-golden-<ver>-xcode` (built by `build-golden.sh <ver> --xcode`, which pulls `ghcr.io/cirruslabs/macos-<name>-xcode:latest` and skips the no-CLT/no-brew steps — that golden is NOT a clean room for the Tools rows and the README says so), copies the repo's `rt-tray/` sources + `project.yml` into the guest, runs `xcodebuild test -project mattstack.xcodeproj -scheme mattstack -only-testing:mattstackUITests -destination 'platform=macOS' -resultBundlePath "$GUEST_RUN/logs/xcuitest.xcresult"` (target/scheme names from the L3 plan `2026-08-21-mattstack-app-shell.md`: targets `mattstack`, `mattstack-dev`, `MattstackCoreTests`, `mattstackUITests`) and exports screenshots with `xcrun xcresulttool`. Gated: exits `skip` immediately when the host has no Xcode (`xcode-select -p` not under `/Applications/Xcode*.app`) or the `-xcode` golden does not exist, and when `rt-tray/project.yml` (L3 deliverable) is absent.
@@ -2084,18 +2183,19 @@ run/walkthrough.sh --ver 26 --dmg dist/mattstack-2.9.0.dmg \
    --update-dir dist/update --update-version 2.9.1 \
    --scenario create --team-slug vmtest --pat-env MATTSTACK_VMTEST_PAT
 run/walkthrough.sh --ver 14 --app rt-tray/mattstack.app --no-quarantine --scenario headless
-run/second-user.sh run --artifact ~/Downloads/rt-darwin-arm64-v2.9.0.tar.gz
+run/second-user.sh run --artifact ~/Downloads/mattstack-2.9.0.zip
 ../../scripts/e2e-cleanroom.sh --tag v2.9.0   # refuses on a user that already runs mattstack
+../../scripts/e2e-cleanroom.sh ~/Downloads/mattstack-2.9.0.zip --home "$(mktemp -d)"   # what release.yml runs
 ```
 Phases: preflight · clone · boot · stage · install · launch · screens · assert · update · teardown. Each is `pass|fail|skip` with a reason in `artifacts/<run>/phases.jsonl`; `report.md` is the human summary; `screenshots/` are numbered per screen (`00-first-launch`, `01-welcome`, `02-team-*`, `03-readiness-*`, `04-install-*`, `05-done`, `06-update-*`); `logs/` holds guest logs (`~/.mattstack/rt/logs`, unified log slice for mattstack/smd/backgroundtaskmanagementd, `launchctl print` grep, `rt verify --json`, tray `/version`). Exit 1 iff any phase failed; skips are reported, never counted green.
 
 ## What is not automated (and how the scripts treat it)
 
 - **"Background Items Added"** banner: not clicked, not asserted (it is a notification). The Login Items row is asserted through `GET /services` / `rt setup status`; if SMAppService returns `.requiresApproval`, the driver opens Login Items and toggles the app (admin auth as a standard user).
-- **FDA relaunch**: the driver clicks the row's "Relaunch mattstack" and waits for the window to return; FDA taking effect is asserted only through the app's probe row (`perm.fda` = ready). No `tccutil` is used in the guest.
+- **FDA relaunch**: the driver clicks "Relaunch mattstack" (`setup.checklist.relaunch`) and waits for the window to return (the app re-execs with its own args + env, so the appcast override survives; if it does not come back the driver relaunches it with the same `--env`/`--arg`); FDA taking effect is asserted only through the app's probe row (`perm.fda` = ready). No `tccutil` is used in the guest.
 - **Gatekeeper with unnotarised builds**: a locally built DMG is quarantined by default to exercise the real path; it will be blocked (`launch fail`, screenshot of the dialog). Use `--no-quarantine` for local builds and say so in the ticket.
 - **Apple CLT install** in the clean room is real (Apple's dialog, network, minutes); the driver clicks Install/Agree and waits up to 20 min.
-- **Sparkle update** needs L4's signed zip + appcast and L3's `MATTSTACK_APPCAST_URL` hook; until then the phase is `skip` with that reason. The appcast is served on **loopback inside the guest** to stay clear of macOS 15's Local Network Privacy prompt.
+- **Sparkle update** needs L4's signed zip + appcast and L3's `MATTSTACK_APPCAST_URL` hook (prod builds honour it only when launched with `--allow-appcast-override`); until then the phase is `skip` with that reason. The appcast is served on **loopback inside the guest** to stay clear of macOS 15's Local Network Privacy prompt; the real feed is the GitHub Release asset `https://github.com/m4ttstack/rt/releases/latest/download/appcast.xml`. `CFBundleVersion` follows L4's `major*1000000+minor*1000+patch`.
 - **Invite/join** needs L1 + L6; `run/team-setup.sh invite` mints a stub code until then (only a DEBUG app with `RT_STUB_SCENARIO=join-happy` accepts it).
 - **Second user**: Matt creates the user and logs it in once (launchd `gui/<uid>` needs a GUI session); the script never creates users.
 
@@ -2159,7 +2259,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 - [ ] **Step 5 (MATT / ORCHESTRATOR): the real gate, once L3/L4 land**
 
-Run: `bash rt-tray/vm/run/walkthrough.sh --ver 26 --dmg <L4 dmg> --update-dir <L4 update dir> --update-version <vN+1> --scenario create` and the same with `--ver 14`; then `bash rt-tray/vm/run/second-user.sh run --artifact <tarball>`. Expected: all phases `pass`, screenshots 00–06 present, both report.md attached to the release candidate. Fill in the README "Costs" table from the run durations.
+Run: `bash rt-tray/vm/run/walkthrough.sh --ver 26 --dmg <L4 dmg> --update-dir <L4 update dir> --update-version <vN+1> --scenario create` and the same with `--ver 14`; then `bash rt-tray/vm/run/second-user.sh run --artifact <L4 mattstack-<ver>.zip>`. Expected: all phases `pass`, screenshots 00–06 present, both report.md attached to the release candidate. Fill in the README "Costs" table from the run durations.
 
 ---
 
@@ -2176,15 +2276,15 @@ Run: `bash rt-tray/vm/run/walkthrough.sh --ver 26 --dmg <L4 dmg> --update-dir <L
 
 **2. Placeholder scan:** no TBD/TODO; every script is written in full; the only "fill in later" is the README Costs table, which by design records measurements from Matt's real runs. Tasks marked MATT/ORCHESTRATOR state exactly what to run.
 
-**3. Consistency:** names used across tasks — `vm_golden_name`, `vm_image_for`, `vm_run_init`, `vm_phase_begin/end`, `vm_phases_failed`, `vm_render_report`, `vm_ssh`, `vm_scp`, `vm_ssh_pw`, `vm_wait_ssh`, `VM_RUN_DIR`, `VM_CACHE`, `VM_SSH_KEY`, `VM_TESTER_USER/PASS`, `VM_ADMIN_USER/PASS` (Task 1) ↔ Tasks 2, 3, 4, 9, 10, 11, 13; `GUEST_RUN=/Volumes/My Shared Files/run` and `in/`, `logs/`, `screenshots/` (Tasks 1, 5, 6, 7, 8, 9, 13); `ax_shot` handshake `in/shot-<name>.req/.done` (Task 6) ↔ `shot_watcher` (Task 9); `install-app.sh copy|launch` exit 2 = Gatekeeper (Task 5) ↔ launch phase (Task 9); `assert-installed.sh --expect-version/--headless` (Task 7) ↔ Task 9/13; `trigger-update.sh <dir> <v>` with `appcast-server` inside `<dir>` (Task 8) ↔ preflight compiles it into `in/update/` (Task 9); `e2e-cleanroom.sh --app … --allow-existing-install --artifacts-dir` (Task 12) ↔ headless scenario (Task 9) and `second-user.sh run` (Task 11); AXIdentifier names (Task 6) ↔ the "Dependencies on other lanes" table (L3 asks).
+**3. Consistency:** names used across tasks — `vm_golden_name`, `vm_image_for`, `vm_run_init`, `vm_phase_begin/end`, `vm_phases_failed`, `vm_render_report`, `vm_ssh`, `vm_scp`, `vm_ssh_pw`, `vm_wait_ssh`, `VM_RUN_DIR`, `VM_CACHE`, `VM_SSH_KEY`, `VM_TESTER_USER/PASS`, `VM_ADMIN_USER/PASS` (Task 1) ↔ Tasks 2, 3, 4, 9, 10, 11, 13; `GUEST_RUN=/Volumes/My Shared Files/run` and `in/`, `logs/`, `screenshots/` (Tasks 1, 5, 6, 7, 8, 9, 13); `ax_shot` handshake `in/shot-<name>.req/.done` (Task 6) ↔ `shot_watcher` (Task 9); `install-app.sh copy|launch` exit 2 = Gatekeeper (Task 5) ↔ launch phase (Task 9); `assert-installed.sh --expect-version/--headless` (Task 7) ↔ Task 9/13; `trigger-update.sh <dir> <v>` with `appcast-server` inside `<dir>` (Task 8) ↔ preflight compiles it into `in/update/` (Task 9); `e2e-cleanroom.sh --app … --allow-existing-install --artifacts-dir` (Task 12) ↔ headless scenario (Task 9) and `second-user.sh run` (Task 11), positional `<zip>` ↔ L4 T8's `release.yml` call; `install-app.sh launch --env … --arg --allow-appcast-override` (Task 5) ↔ `LAUNCH_ARGS`/`DRIVER_LAUNCH_ARGS` (Tasks 6, 8, 9); AXIdentifier names (Task 6) ↔ L3's `AccessibilityIDs.swift` as listed in the "Dependencies on other lanes" table; `make-appcast.sh` build number ↔ L4's `major*1000000+minor*1000+patch` (Tasks 3, 8).
 
 ## Open questions
 
-1. **AXIdentifiers + `MATTSTACK_APPCAST_URL` + ATS exception are L3 asks (checked 2026-08-21: the L3 plan `2026-08-21-mattstack-app-shell.md` has neither; it does have `mattstackUITests`, `RT_STUB_*`, `GET /version`, `POST /update/check`); `SPARKLE_PUBLIC_ED_KEY` build override and `mattstack-<ver>.dmg/.zip` names are L4 asks.** Until accepted, `screens` and `update` phases fail/skip by design. Who files the contract amendment — L7 or the orchestrator?
+1. ~~AXIdentifiers + `MATTSTACK_APPCAST_URL` + ATS exception are L3 asks~~ **Closed by the cross-plan review (§5 #43/#44/#49):** L3's `AccessibilityIDs.swift` (T12) is the contract and this plan now uses those names (Dependencies table, Task 6); `MATTSTACK_APPCAST_URL` is honoured by L3 T10 with `--allow-appcast-override` for prod builds (Tasks 5, 8, 9); ATS `NSAllowsLocalNetworking` is in L3 T2's Info.plist; `SPARKLE_PUBLIC_ED_KEY` and `mattstack-<ver>.dmg/.zip` are L4's (Task 3 re-points at `scripts/release/*` after L4 T6). No separate contract amendment to file. Until those lanes merge, `screens` and `update` still fail/skip honestly.
 2. **Ad-hoc-signed local builds and Sparkle:** Sparkle compares the incoming bundle's code signature with the installed one; whether two ad-hoc builds pass its check (no Team ID) is unverified. The update phase is specified for Developer-ID builds; if local ad-hoc runs are wanted, this needs an empirical check on the first run.
 3. **Standard-user choice:** the walkthrough drives a *standard* user (`tester`) with `admin` credentials typed at privileged prompts (FDA/Login Items toggles, proxy step). Most teammates are admins on their Macs; should a second scenario (`--console-user admin`) be added so both paths are exercised? (Cheap: a golden-build flag that sets `autoLoginUser admin`.)
-4. **`rt --post-install` launches the app unconditionally**, so layer (a) can never run as Matt's primary user without touching his real registration. Should L1 add `--no-launch`/honour `CI` there? (Out of L7 scope; guard implemented instead.)
-5. **`release.yml` `test-install` job → call `scripts/e2e-cleanroom.sh`?** Keeps the recipe in one place; L4 owns the workflow.
+4. ~~`rt --post-install` launches the app unconditionally~~ **Closed:** L1 T27 makes `rt --post-install` = legacy sweep + `rt setup apply --non-interactive --team-of-one …`, with `--no-launch` explicit and implied by `--ci`/`CI=true`; Task 12 passes `--no-launch` by default. The "already registered" guard stays as defence in depth.
+5. ~~`release.yml` `test-install` job → call `scripts/e2e-cleanroom.sh`?~~ **Closed:** L4 T8 calls `scripts/e2e-cleanroom.sh "<zip>"` positionally (cross-plan review §5 #36); Task 12 accepts the positional form.
 6. **Tart licence ownership change:** the repo and brew tap moved to `openai/*`, licence FSL-1.1 © OpenAI, tart.run still states the Cirrus Labs free tier. Fine for one workstation; re-check before any fleet use.
 7. **macOS 14 golden:** the `macos-sonoma-vanilla` image is 14.8.7 (3 months old, still published). If the pull fails or the image disappears, the fallback is `15` per the brief — confirm with Matt that a 14+26 matrix remains the target rather than 15+26.
 8. **In-guest CLT install** during the clean-room run is network-bound and slow (~5–15 min). Acceptable for the release gate, or should the `create` scenario be split into "clean room until the Tools group" and "pre-CLT golden" for daily runs?

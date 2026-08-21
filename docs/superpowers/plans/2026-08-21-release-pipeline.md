@@ -4,25 +4,32 @@
 
 **Goal:** Make mattstack.app *the* release: one tag on m4ttstack/rt builds rt (arm64), bundles the pinned helpers per `deps.lock`, freezes the app's identity (`Contents/MacOS/rt`, macOS 14 floor, `mattstack://`), signs inside-out, notarizes, ships a DMG + Sparkle zip + signed appcast, and proves the result in a headless clean-room job; rt stops copying binaries around and simply links into the bundle.
 
-**Architecture:** Three layers. (1) A data contract — `rt-tray/deps.lock` + the bundle layout (`Contents/MacOS/rt`, `Contents/Helpers/<tool>`, `Contents/Resources/deps.lock`) — shared by the build, the checks, and rt at runtime (`lib/bundle-layout.ts`, which L1's `rt deps` consumes). (2) Build scripts — `rt-tray/build.sh` (swift-build today, xcodebuild when Xcode 26 lands; both converge on one assemble-and-sign path), `scripts/fetch-deps.sh`, `scripts/release/{notarize,make-zip,make-dmg,appcast}.sh`, and a rewritten `check-bundle.sh` that asserts the contract. (3) The train — `.github/workflows/release.yml` (release job + clean-room job) and the thin rt side (`rt update` → `POST /update/check`, `~/.local/bin/rt` symlink, `mattstack.appPath`, legacy sweep, bundled fzf, verify, docs).
+**Architecture:** Three layers. (1) A data contract — `rt-tray/deps.lock` + the bundle layout (`Contents/MacOS/rt`, `Contents/Helpers/<tool>`, `Contents/Resources/deps.lock`) — shared by the build, the checks, and rt at runtime (`lib/bundle-layout.ts`, which L1's `rt deps` consumes). (2) Build scripts — `rt-tray/build.sh` (swift-build today, xcodebuild when Xcode 26 lands; both converge on one assemble-and-sign path), `scripts/fetch-deps.sh`, `scripts/release/{notarize,make-zip,make-dmg,appcast}.sh`, and a rewritten `check-bundle.sh` that asserts the contract. (3) The train — `.github/workflows/release.yml` (release job + clean-room job) and the rt-side library pieces L1 consumes (`installRtBinary` symlink, `trayAppPath` via `mattstack.appPath`, `legacyUserAppPath`, `resolveFzf`), plus docs. After the cross-plan review, `rt update`, `commands/post-install.ts` (sweep + `setupApply`) and the `rt verify` rows are L1's (T30, T27/T24, T7/T11).
 
-**Tech Stack:** bash (build/release scripts), Bun/TypeScript (rt), Swift (two string edits in rt-tray), GitHub Actions (`macos-latest`), Sparkle 2.9.6 (`generate_appcast`, EdDSA), `codesign`/`notarytool`/`stapler`/`hdiutil`/`ditto`.
+**Tech Stack:** bash (build/release scripts), Bun/TypeScript (rt), GitHub Actions (`macos-latest`), Sparkle 2.9.6 (`generate_appcast`, EdDSA), `codesign`/`notarytool`/`stapler`/`hdiutil`/`ditto`.
 
 **Spec:** `docs/superpowers/specs/2026-08-20-mattstack-app-installer-design.md` (§2 rulings 6/7/8/13 + V2/V3, §7, §8, §11, §12.2 layer (a), §14) and `docs/superpowers/specs/2026-08-21-rt-setup-contract.md` (`GET /version`, `POST /update/check`). Research: `docs/superpowers/specs/research/2026-08-20-mattstack-app/research-{sparkle-install-launchd,dependency-inventory,local-inventory}.md`. On conflict, the spec wins.
 
 **Worktree / branch:** execute in `/Users/matt/Documents/GitHub/repo-tools-l4-wt`, branch `goodwinmattheweric/mat-383-release-pipeline` off `origin/main`. Commit prefix `MAT-383:`; every commit body ends with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 
+**Execution order (binding; see `docs/superpowers/plans/2026-08-21-cross-plan-review.md` §3):** Phase A (parallel with L1/L3/L7, no cross-file overlap): T1, T2, T6, T7, T9-trimmed (`lib/dev-mode.ts`, `lib/rt-paths.ts` + tests only), T11-trimmed (`lib/fzf.ts`, `lib/notifier.ts` + tests), T3-trimmed (`commands/settings.ts`, `dev-mode-handoff.test.ts`, `scripts/entitlements.plist`, `build.sh` minimal, `check-bundle.sh` rewrite). Phase B: T4 and T5 AFTER L3 T1 + T2 + T10 merge (Package.swift, Sparkle, plist templates, `render-launchagents.sh` are L3's); T8 any time (green only after L7 T12 lands); T12 AFTER L1 T30 + T31 merge (`update.mdx`/docs), then L1 T31 regenerates docs on top. Phase C: T13 (entitlements), T14 (Xcode cutover, after L3 T2 `project.yml`), T15 (dry run → tag; clean-room green requires L7 T12 + L1 T27). T10 is dropped. Merge order to main: L4 Phase A → L3 T1–T11 → L1 Phase A → L4 T4/T5/T8 → L1 Phase B → L3 T12–T19 → L7 → L4 T12 → L1 T31–T32 → MATT gates.
+
 ## Global Constraints
+
+- **Rebase onto `origin/main` before every merge.** T4/T5 start only after L3 T1/T2/T10 have merged; T12 after L1 T30/T31.
+- **File ownership (cross-plan review §1):** L4 owns `rt-tray/build.sh`, `rt-tray/check-bundle.sh`, `lib/bundle-layout.ts`, `lib/rt-paths.ts`, `lib/dev-mode.ts`, `lib/fzf.ts`, `lib/notifier.ts`, `README.md`, `.github/workflows/release.yml`, `scripts/release/*`, `scripts/fetch-deps.sh`, `rt-tray/deps.lock`. L4 does **not** edit `commands/post-install.ts`, `commands/update.ts`, `commands/verify.ts`, `cli.ts` (L1), nor `rt-tray/Package.swift`, `rt-tray/Info.plist`, `rt-tray/LaunchAgent.plist`, `rt-tray/LaunchAgent-deck.plist`, `rt-tray/project.yml`, `rt-tray/scripts/render-launchagents.sh`, `rt-tray/Sources/**`, `rt-tray/Sources-daemon-shim/**` (L3). `build.sh` consumes L3's templates and render script; `check-bundle.sh` asserts what they produce.
 
 - **Identity frozen (ruling 13):** bundle ids `com.mattstack.app` / `com.mattstack.app.dev`; daemon labels `com.mattstack.daemon` / `com.mattstack.daemon.dev` (unchanged); embedded binary is `Contents/MacOS/rt` with codesign identifier `rt` (both flavors — the dev shim is also named `rt`); product name `mattstack`; `LSMinimumSystemVersion 14.0`; `CFBundleURLTypes` for `mattstack://`; `NSUserNotificationAlertStyle` kept; no `LSFileQuarantineEnabled`.
 - **arm64-only** (ruling 7). No x64 artifacts anywhere.
 - **The app IS the release (ruling 7):** `mattstack-<ver>.dmg` (first install, notarized + stapled), `mattstack-<ver>.zip` (Sparkle enclosure, `ditto -c -k --sequesterRsrc --keepParent`), `appcast.xml` (EdDSA-signed in CI), deltas. The `rt-darwin-*.tar.gz` tarball is **dropped** — the zip is the headless artifact (`ditto -x -k` + `<app>/Contents/MacOS/rt --post-install`).
-- **Appcast host:** GitHub Release asset, fed through the stable URL `https://github.com/m4ttstack/rt/releases/latest/download/appcast.xml` (justification in "Decisions" below).
+- **Appcast host:** GitHub Release asset, fed through the stable URL `https://github.com/m4ttstack/rt/releases/latest/download/appcast.xml` (justification in "Decisions" below; ruled R1 in the cross-plan review — L3's Info.plist template and spec §11 carry the same URL).
 - **Dependency policy (ruling 8 / §7):** BUNDLE into `Contents/Helpers/` pinned by `rt-tray/deps.lock` (name, version, url, sha256, license, bundlePath, exposeByDefault); suite uses them by absolute path; default-exposed set is `rt`, `fast-browser`, `gitq`, `deck` (V2; linking is L1's `rt deps link`). `deck`/`board`/`gitq` are `status: "pending"` until L5 publishes. tmux/zellij/terminal-notifier dropped.
 - **Signing:** hardened runtime + timestamp on every Mach-O, inside-out, never `--deep`. Bun-based executables get `scripts/entitlements.plist` = `com.apple.security.cs.allow-jit` **only**; `allow-unsigned-executable-memory` is added per tool only after the measurement task shows a crash. Team ID, labels, and each helper's signing identifier stay stable across releases.
 - **CFBundleVersion** is numeric and monotonic: `major*1_000_000 + minor*1_000 + patch` (2.8.0 → `2008000`); `CFBundleShortVersionString` is the semver without `v`.
 - **Sparkle plist:** `SUFeedURL`, `SUPublicEDKey` (from the committed `rt-tray/SUPublicEDKey` file), `SUEnableAutomaticChecks` (prod true / dev false), `SUScheduledCheckInterval 21600`, `SUAutomaticallyUpdate true`, `SUVerifyUpdateBeforeExtraction true`; no `SUEnable*Service` keys.
-- **Install on the user's machine (§11, V3):** app lives in `/Applications` (fallback `~/Applications`); `~/.local/bin/rt` is a **symlink** to `<appPath>/Contents/MacOS/rt`; dev mode overwrites it with the wrapper script; `currentMode()` reads through links; rt reads `mattstack.appPath` (machine store) first, then `/Applications`, then `~/Applications`; legacy sweep also removes a stale `~/Applications/mattstack.app` and boots out the ghost `com.rt.daemon` unconditionally.
+- **Install on the user's machine (§11, V3):** app lives in `/Applications` (fallback `~/Applications`); `~/.local/bin/rt` is a **symlink** to `<appPath>/Contents/MacOS/rt`; dev mode overwrites it with the wrapper script; `currentMode()` reads through links; rt reads `mattstack.appPath` (machine store) first, then `/Applications`, then `~/Applications`; legacy sweep also removes a stale `~/Applications/mattstack.app` and boots out the ghost `com.rt.daemon` unconditionally. (The sweep body and the `/Volumes/`/AppTranslocation exit-2 refusal live in L1 T27/T24's `commands/post-install.ts`; L4 supplies `installRtBinary`, `legacyUserAppPath`, `bundleRootFromExec` only.)
+- **Agent plist PATH (ruling R2):** `EnvironmentVariables.PATH` in both LaunchAgent plists is the **static** `/usr/bin:/bin:/usr/sbin:/sbin`; rt and deck prepend `<bundleRoot>/Contents/Helpers` (derived at runtime from their own execPath) and `$HOME/.local/bin` at process start. No `/Applications/...` path is ever written into a plist; `build.sh` does not touch `EnvironmentVariables` (the plists are rendered by L3's `rt-tray/scripts/render-launchagents.sh`); `check-bundle.sh` asserts the static value. `KeepAlive` is `{SuccessfulExit: false}` in **both** flavors (spec §8).
+- **Both agent plists ship:** `Contents/Library/LaunchAgents/com.mattstack.daemon[.dev].plist` and `com.mattstack.deck[.dev].plist` (L3 T2 owns the templates + render script; `build.sh` calls the script; `check-bundle.sh` asserts both). `Contents/Helpers/deck` itself stays absent until L5 publishes — the deck plist registers as `notFound` until then, which L1's `services.register` handles by requesting the deck plist only when the helper is bundled.
 - **build.sh never notarizes** (CI-only, in `scripts/release/notarize.sh`); `check-bundle.sh` keeps asserting that.
 - **rt repo stealth / honesty:** rt never writes into target repos; nothing is marked ready on a guess; every tool resolution says where it found the binary.
 - **Clean-code comments:** comments state constraints only; no process artifacts, task numbers, or decision history in source. Put rationale in commit bodies.
@@ -33,8 +40,8 @@
 
 ## Decisions recorded by this plan
 
-1. **Appcast on the Release, not gh-pages.** m4ttstack/rt has no Pages site and no `gh-pages` branch today (verified: both API calls 404). Putting `appcast.xml` on each Release and pointing `SUFeedURL` at `…/releases/latest/download/appcast.xml` needs no extra branch, no extra commit, no Pages enablement, and keeps feed + enclosures + deltas on one host with one set of permissions (`contents: write` already present). GitHub serves it over HTTPS with a 302 that `NSURLSession` follows. Cost: a few-second window during release creation where `latest` resolves before `appcast.xml` is attached (Sparkle just retries next interval); and a pre-release never becomes `latest` (correct). gh-pages stays the documented fallback (Open question 1).
-2. **No tarball.** The clean-room job and any future headless install use the zip. `rt update`'s tarball path is deleted.
+1. **Appcast on the Release, not gh-pages.** m4ttstack/rt has no Pages site and no `gh-pages` branch today (verified: both API calls 404). Putting `appcast.xml` on each Release and pointing `SUFeedURL` at `…/releases/latest/download/appcast.xml` needs no extra branch, no extra commit, no Pages enablement, and keeps feed + enclosures + deltas on one host with one set of permissions (`contents: write` already present). GitHub serves it over HTTPS with a 302 that `NSURLSession` follows. Cost: a few-second window during release creation where `latest` resolves before `appcast.xml` is attached (Sparkle just retries next interval); and a pre-release never becomes `latest` (correct). **Ruled R1 (cross-plan review):** Release asset is the host; spec §11 and L3 T2 are amended to match. gh-pages is a documented escape hatch only (Open question 1, closed).
+2. **No tarball.** The clean-room job and any future headless install use the zip. `rt update`'s tarball path is deleted (by L1 T30, which owns `commands/update.ts`).
 3. **xcodebuild as a *builder*, not a signer.** Nested code (rt, Helpers, LaunchAgents, vsix, deps.lock) is added after the Swift build, which would invalidate any archive/export signature, so the xcodebuild path runs `xcodebuild build … CODE_SIGNING_ALLOWED=NO` and then the same assemble-and-sign function as the swift-build path. One signing path, one bundle contract, whichever compiler produced the tray binary.
 4. **Sparkle tools come from `deps.lock` too** (`kind: "buildtool"`, `Sparkle-2.9.6.tar.xz`, pinned sha256) — no third-party GitHub Action.
 5. **`bun` pinned to 1.3.13** in both `deps.lock` and the CI `setup-bun` step (1.3.12 is unsignable; 1.3.13 is what Matt runs).
@@ -52,7 +59,9 @@ mattstack.app/Contents/
   Helpers/node/                           node dist (bin/node, lib/node_modules/npm, …)
   Helpers/fast-browser/                   npm package contents (bin/fast-browser.mjs, …)
   Helpers/deck  Helpers/board  Helpers/gitq                           ABSENT until L5 publishes (deps.lock status "pending")
-  Library/LaunchAgents/com.mattstack.daemon[.dev].plist                BundleProgram Contents/MacOS/rt
+  Library/LaunchAgents/com.mattstack.daemon[.dev].plist                BundleProgram Contents/MacOS/rt   (rendered by L3's render-launchagents.sh)
+  Library/LaunchAgents/com.mattstack.deck[.dev].plist                  BundleProgram Contents/Helpers/deck (same script; deck helper absent until L5)
+  Helpers/mattstack-proxy-install                                       ABSENT until L5 (deps.lock status "pending"; L3 T8's privileged helper)
   Resources/deps.lock                     byte-identical copy of rt-tray/deps.lock
   Resources/rt-context.vsix               the editor extension
   Resources/AppIcon.icns, *.caf, mission-control-screenshot.png
@@ -341,7 +350,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `rt-tray/deps.lock`
 - Create: `scripts/lib/deps-lock.ts` (TSV emitter for bash consumers)
 - Create: `scripts/fetch-deps.sh`
-- Modify: `.gitignore` (add `rt-tray/deps/`, `rt-tray/out/`, `rt-tray/.build-xcode/`)
+- Modify: `.gitignore` (add `rt-tray/deps/`, `rt-tray/out/`, `rt-tray/.build-xcode/` — `rt-tray/*.xcodeproj/` is L3 T1's line; do not add it here)
 - Create: `lib/__tests__/deps-lock-file.test.ts`
 
 **Interfaces:**
@@ -400,6 +409,9 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
     { "name": "gitq", "version": "", "license": "MIT", "url": "", "sha256": "",
       "archive": "raw", "extract": "", "bundlePath": "Contents/Helpers/gitq", "exec": ["Contents/Helpers/gitq"],
       "exposeByDefault": true, "entitlements": "jit", "status": "pending", "kind": "helper" },
+    { "name": "mattstack-proxy-install", "version": "", "license": "MIT", "url": "", "sha256": "",
+      "archive": "raw", "extract": "", "bundlePath": "Contents/Helpers/mattstack-proxy-install", "exec": ["Contents/Helpers/mattstack-proxy-install"],
+      "exposeByDefault": false, "entitlements": "none", "status": "pending", "kind": "helper" },
     { "name": "sparkle", "version": "2.9.6", "license": "MIT",
       "url": "https://github.com/sparkle-project/Sparkle/releases/download/2.9.6/Sparkle-2.9.6.tar.xz",
       "sha256": "52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2609e192",
@@ -410,6 +422,8 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 (The sha256 values above were computed on 2026-08-21 from the exact URLs; `fetch-deps.sh` re-verifies every download.)
+
+`mattstack-proxy-install` is the privileged proxy helper L3 T8 execs from `Contents/Helpers/` (cross-plan review §2 #28). Nobody builds it in this program — it ships with L5. The `pending` row makes `check-bundle.sh` tolerate its absence and lets L3 report "helper not bundled" honestly; record it in L5's handoff.
 
 - [ ] **Step 2: Write the failing lock-file test**
 
@@ -432,7 +446,7 @@ describe("rt-tray/deps.lock", () => {
   test("carries the ruling-8 bundle set, with deck/board/gitq pending until L5", () => {
     const by = Object.fromEntries(lock.tools.map((t) => [t.name, t]));
     for (const n of ["fzf", "jq", "gh", "glab", "bun", "node", "fast-browser"]) expect(by[n]?.status).toBe("bundled");
-    for (const n of ["deck", "board", "gitq"]) expect(by[n]?.status).toBe("pending");
+    for (const n of ["deck", "board", "gitq", "mattstack-proxy-install"]) expect(by[n]?.status).toBe("pending");
     expect(by["sparkle"]?.kind).toBe("buildtool");
   });
   test("default-exposed set is exactly fast-browser, gitq, deck (rt is exposed by the binary link, not a helper)", () => {
@@ -587,9 +601,8 @@ Append to `.gitignore`:
 rt-tray/deps/
 rt-tray/out/
 rt-tray/.build-xcode/
-rt-tray/*.xcodeproj/
 ```
-(`rt-tray/*.xcodeproj/` is ignored because L3's `project.yml` regenerates it; harmless if L3 decides otherwise — remove the line then.)
+(`rt-tray/*.xcodeproj/` is added by L3 T1 — L3's `project.yml` regenerates the project; cross-plan review §1 row 8. Rebase-after if L3 merged first; the three lines above are disjoint.)
 
 - [ ] **Step 6: Commit**
 
@@ -604,59 +617,31 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ### Task 3: Identity freeze — `rt-daemon` → `rt`, plist keys, numeric build, jit-only entitlements
 
+**Trimmed by the cross-plan review (§1 rows 12, 15, 16, 18, 19):** the plist templates, `Package.swift`, and every Swift file are L3's. This task keeps only the rt-side edits, the minimal `build.sh` edits, and the `check-bundle.sh` rewrite.
+
 **Files:**
-- Modify: `rt-tray/LaunchAgent.plist` (BundleProgram/ProgramArguments → `Contents/MacOS/rt`; comment text)
-- Modify: `rt-tray/Info.plist` (LSMinimumSystemVersion 14.0, CFBundleURLTypes, comment text)
-- Modify: `rt-tray/Package.swift` (`.macOS(.v14)`)
+- ~~Modify: `rt-tray/LaunchAgent.plist`~~ — Dropped — owned by L3 T2 (cross-plan review); L3 T2 applies the `BundleProgram Contents/MacOS/rt` / `ProgramArguments` / Label-comment edit in its template.
+- ~~Modify: `rt-tray/Info.plist`~~ — Dropped — owned by L3 T2 (cross-plan review); `CFBundleURLName` is `@@BUNDLE_ID@@.join` (L3's value; L4's `.url` is withdrawn).
+- ~~Modify: `rt-tray/Package.swift`~~ — Dropped — owned by L3 T1 (cross-plan review); L3 T1 sets `.macOS(.v14)`.
 - Modify: `rt-tray/build.sh` (embed as `Contents/MacOS/rt`, sign `-i rt`, numeric CFBundleVersion; full rewrite lands in Task 4 — this task makes the minimal edits listed here)
-- Modify: `rt-tray/Sources/AppDelegate.swift:331`, `rt-tray/Sources/UpdateChecker.swift:164`, `rt-tray/Sources/DaemonLifecycle.swift:8`, `rt-tray/Sources-daemon-shim/main.swift:4,26`
+- ~~Modify: `rt-tray/Sources/AppDelegate.swift:331`, `rt-tray/Sources/UpdateChecker.swift:164`, `rt-tray/Sources/DaemonLifecycle.swift:8`, `rt-tray/Sources-daemon-shim/main.swift:4,26`~~ — Dropped — owned by L3 T18 (`AppDelegate.swift`, `DaemonLifecycle.swift`, `Sources-daemon-shim/main.swift` string/comment edits) and L3 T10 (`UpdateChecker.swift` is deleted) (cross-plan review).
 - Modify: `commands/settings.ts:462-471` (`disableDevMode` reads `Contents/MacOS/rt`)
 - Modify: `lib/__tests__/dev-mode-handoff.test.ts:185-188`
 - Modify: `scripts/entitlements.plist` (allow-jit only)
 - Modify: `rt-tray/check-bundle.sh` (full rewrite, below)
 
 **Interfaces:**
-- Produces: bundle paths `Contents/MacOS/rt` (both flavors), identifier `rt`; `numeric_build()` bash function in build.sh (`2.8.0 → 2008000`); `scripts/entitlements.plist` = jit only; `check-bundle.sh` exit 0 = contract holds.
-- Consumes: nothing from earlier tasks (Helpers/Sparkle assertions are added by Tasks 4–5).
+- Produces: identifier `rt` on the embedded binary; `numeric_build()` bash function in build.sh (`2.8.0 → 2008000`); `scripts/entitlements.plist` = jit only; `check-bundle.sh` exit 0 = contract holds. The bundle path `Contents/MacOS/rt` itself is produced by L3 T2's templates + L3 T18's Swift edits; this task's check-bundle asserts it.
+- Consumes: nothing from earlier tasks (Helpers/Sparkle assertions are added by Tasks 4–5). The check-bundle Swift-source gates (Step 5, last section) are explicit requirements on L3 T9 (`TrayServer` keeps the literal `path == "/flavor/retire"`) and L3 T18 (`forInfoDictionaryKey: "MSDaemonLabel"`, `defaultDaemonLabel = "com.mattstack.daemon"`, socket guard before `AppDelegate()` in `main.swift`, `UpdatePolicy.shouldStartUpdater(isDevBuild: isDevBuild` in `Sources/Updates/UpdaterController.swift`, the string `update check skipped (dev build)`).
 
 - [ ] **Step 1: Plists + Package.swift**
 
-`rt-tray/LaunchAgent.plist` lines 11-18 become:
-```xml
-    <key>BundleProgram</key>
-    <string>Contents/MacOS/rt</string>
-
-    <key>ProgramArguments</key>
-    <array>
-        <string>Contents/MacOS/rt</string>
-        <string>--daemon</string>
-    </array>
-```
-and the Label comment (lines 5-7) reads `Label: com.mattstack.daemon (prod) / com.mattstack.daemon.dev (dev)`.
-
-`rt-tray/Info.plist`: change `LSMinimumSystemVersion` to `14.0`; fix the MSDaemonLabel comment to name `com.mattstack.daemon` / `com.mattstack.daemon.dev`; insert after `NSUserNotificationAlertStyle`:
-```xml
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleURLName</key>
-            <string>@@BUNDLE_ID@@.url</string>
-            <key>CFBundleURLSchemes</key>
-            <array>
-                <string>mattstack</string>
-            </array>
-        </dict>
-    </array>
-```
-
-`rt-tray/Package.swift`: `.macOS(.v13)` → `.macOS(.v14)` (comment: `// macOS 14 floor (ruling 13); SMAppService needs 13+`).
+Dropped — owned by L3 T2 (templates: `BundleProgram Contents/MacOS/rt`, `ProgramArguments [Contents/MacOS/rt, --daemon]`, Label comment, `LSMinimumSystemVersion 14.0`, `CFBundleURLTypes` with `CFBundleURLName @@BUNDLE_ID@@.join`) and L3 T1 (`Package.swift` `.macOS(.v14)`) (cross-plan review §1 rows 12, 15, 16).
 
 - [ ] **Step 2: Swift + TS references**
 
-- `AppDelegate.swift:331`: `Bundle.main.bundlePath + "/Contents/MacOS/rt",`
-- `UpdateChecker.swift:164`: `let paths = [cliPath, Bundle.main.bundlePath + "/Contents/MacOS/rt"]`
-- `DaemonLifecycle.swift:8`: `/// The daemon lives at <app>.app/Contents/MacOS/rt and the agent plist` and line 17-18 labels → `com.mattstack.daemon` / `com.mattstack.daemon.dev`.
-- `Sources-daemon-shim/main.swift:4`: `// supervision. This binary IS the dev bundle's Contents/MacOS/rt` and line 26: `` `-i rt` identifier override ``.
+Swift edits dropped — owned by L3 T18 (`AppDelegate.swift:331` → `Bundle.main.bundlePath + "/Contents/MacOS/rt"`; `DaemonLifecycle.swift:8,17-18`; `Sources-daemon-shim/main.swift:4,26`) and L3 T10 (`UpdateChecker.swift` deleted) (cross-plan review §1 rows 18, 19). TS edits stay:
+
 - `commands/settings.ts` docblock line 462: `…carries at Contents/MacOS/rt`; line 471: `const prodBinary = join(prodAppPath, "Contents", "MacOS", "rt");`
 - `lib/__tests__/dev-mode-handoff.test.ts:185-188`: replace `"rt-daemon"` with `"rt"` in both the comment and the `writeFileSync` path.
 
@@ -781,14 +766,29 @@ check_identity() { # app bundle-id exe label devbuild
     else
         fail "$exe agent plist missing at $agent"
     fi
+    # Deck agent plist (rendered by the same script; Contents/Helpers/deck is absent until L5 — the plist ships regardless).
+    local decklabel="${label/daemon/deck}" deck="$app/Contents/Library/LaunchAgents/${label/daemon/deck}.plist"
+    if [ -f "$deck" ]; then
+        pass "$exe deck plist named $decklabel.plist"
+        assert_eq "$exe deck Label" "$decklabel" "$(plist "$deck" Label)"
+        assert_eq "$exe deck BundleProgram" "Contents/Helpers/deck" "$(plist "$deck" BundleProgram)"
+        assert_eq "$exe deck AssociatedBundleIdentifiers[0]" "$bid" "$(plist "$deck" 'AssociatedBundleIdentifiers:0')"
+    else
+        fail "$exe deck plist missing at $deck"
+    fi
+    # Both agents: KeepAlive { SuccessfulExit = false } (spec §8) and the static PATH (ruling R2 —
+    # rt/deck prepend their own Helpers dir and ~/.local/bin at process start; no /Applications in plists).
+    for a in "$agent" "$deck"; do
+        [ -f "$a" ] || continue
+        assert_eq "$exe $(basename "$a") KeepAlive:SuccessfulExit" "false" "$(plist "$a" 'KeepAlive:SuccessfulExit')"
+        assert_eq "$exe $(basename "$a") EnvironmentVariables.PATH" "/usr/bin:/bin:/usr/sbin:/sbin" "$(plist "$a" 'EnvironmentVariables:PATH')"
+        if plist "$a" EnvironmentVariables:PATH 2>/dev/null | grep -q '/Applications/'; then fail "$exe $(basename "$a") hardcodes /Applications in PATH"; fi
+    done
 }
 check_identity "$PROD" "com.mattstack.app" "mattstack" "com.mattstack.daemon" "false"
 [ -n "$DEV" ] && check_identity "$DEV" "com.mattstack.app.dev" "mattstack-dev" "com.mattstack.daemon.dev" "true"
 
-# KeepAlive shape: prod bool true, dev { SuccessfulExit = false }.
-assert_eq "prod agent KeepAlive" "true" "$(plist "$PROD/Contents/Library/LaunchAgents/com.mattstack.daemon.plist" KeepAlive)"
 if [ -n "$DEV" ]; then
-    assert_eq "dev agent KeepAlive:SuccessfulExit" "false" "$(plist "$DEV/Contents/Library/LaunchAgents/com.mattstack.daemon.dev.plist" 'KeepAlive:SuccessfulExit')"
     # Dev rt IS the shim: small Swift binary; prod rt is the compiled daemon (MB).
     DEV_RT_SIZE=$(stat -f%z "$DEV/Contents/MacOS/rt" 2>/dev/null || echo 0)
     [ "$DEV_RT_SIZE" -lt 1000000 ] && pass "dev rt is the shim ($DEV_RT_SIZE bytes)" || fail "dev rt is not the shim ($DEV_RT_SIZE bytes)"
@@ -863,6 +863,19 @@ if ! $INSTALLED_ONLY; then
     GUARD_LINE=$(grep -n 'TrayServer.exitIfAnotherTrayOwnsSocket()' Sources/main.swift | head -1 | cut -d: -f1)
     DELEGATE_LINE=$(grep -n 'AppDelegate()' Sources/main.swift | head -1 | cut -d: -f1)
     [ -n "$GUARD_LINE" ] && [ -n "$DELEGATE_LINE" ] && [ "$GUARD_LINE" -lt "$DELEGATE_LINE" ] && pass "socket guard precedes AppDelegate" || fail "socket guard does not precede AppDelegate"
+    # Sparkle gating (L3 T10 replaces UpdateChecker with UpdaterController + UpdatePolicy).
+    if grep -q 'UpdatePolicy.shouldStartUpdater(isDevBuild: isDevBuild' Sources/Updates/UpdaterController.swift 2>/dev/null; then
+        pass "UpdaterController gates Sparkle on the dev flavor"
+    else
+        fail "UpdaterController does not gate Sparkle on BundleFlavor.isDevBuild"
+    fi
+    TRAY_STRINGS=$(mktemp /tmp/mat383-strings.XXXXXX)
+    strings "$PROD/Contents/MacOS/$(plist "$PROD/Contents/Info.plist" CFBundleExecutable)" > "$TRAY_STRINGS" 2>/dev/null
+    assert_bin_has() { # desc needle
+        if grep -qF "$2" "$TRAY_STRINGS"; then pass "built tray binary contains: $2"; else fail "built tray binary is missing: $2 ($1)"; fi
+    }
+    assert_bin_has "silent dev updater" "update check skipped (dev build)"
+    rm -f "$TRAY_STRINGS"
 fi
 
 echo ""
@@ -873,13 +886,13 @@ echo "  $PASS passed, $FAIL failed"
 - [ ] **Step 6: Run everything**
 
 Run: `bun test && bunx tsc --noEmit && bash -n rt-tray/build.sh rt-tray/check-bundle.sh && (bun build --compile ./cli.ts --outfile dist/rt && cd rt-tray && RT_DAEMON_BIN=../dist/rt ./check-bundle.sh)`
-Expected: bun tests green (handoff test now fakes `Contents/MacOS/rt`); check-bundle `0 failed` (ad-hoc signatures: the Developer-ID-only assertions are skipped by `is_devid`).
+Expected: bun tests green (handoff test now fakes `Contents/MacOS/rt`); check-bundle `0 failed` once L3 T1/T2/T10/T18 have merged (ad-hoc signatures: the Developer-ID-only assertions are skipped by `is_devid`). Before L3 merges, the template/Swift assertions fail by design — that is the dependency signal; do not patch them out.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add rt-tray/LaunchAgent.plist rt-tray/Info.plist rt-tray/Package.swift rt-tray/build.sh rt-tray/check-bundle.sh rt-tray/Sources rt-tray/Sources-daemon-shim commands/settings.ts lib/__tests__/dev-mode-handoff.test.ts scripts/entitlements.plist
-git commit -m "MAT-383: identity freeze — embedded rt-daemon becomes Contents/MacOS/rt, macOS 14 floor, mattstack:// scheme, numeric build, jit-only entitlements
+git add rt-tray/build.sh rt-tray/check-bundle.sh commands/settings.ts lib/__tests__/dev-mode-handoff.test.ts scripts/entitlements.plist
+git commit -m "MAT-383: identity freeze — rt side reads Contents/MacOS/rt, numeric build, jit-only entitlements, check-bundle asserts the contract
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -888,12 +901,14 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ### Task 4: `rt-tray/build.sh` rewrite — Helpers, Resources, Sparkle keys, inside-out signing, xcodebuild-or-swift-build
 
+**AFTER L3 T1 + T2 + T10 merge.** This rewrite deletes L3 T10's fenced build.sh stopgap and depends on L3's `Package.swift` (Sparkle), `Info.plist`/`LaunchAgent.plist`/`LaunchAgent-deck.plist` templates, `project.yml`, and `rt-tray/scripts/render-launchagents.sh` (cross-plan review §1 rows 12–17).
+
 **Files:**
 - Rewrite: `rt-tray/build.sh`
 - Modify: `rt-tray/check-bundle.sh` (append the Helpers section at the `Task 4` marker)
 
 **Interfaces:**
-- Consumes: `rt-tray/deps.lock` via `bun scripts/lib/deps-lock.ts` (Task 2); `rt-tray/deps/arm64/<name>` (Task 2); `numeric_build` + identity vars (Task 3); `scripts/entitlements.plist` (jit-only).
+- Consumes: `rt-tray/deps.lock` via `bun scripts/lib/deps-lock.ts` (Task 2); `rt-tray/deps/arm64/<name>` (Task 2); `numeric_build` + identity vars (Task 3); `scripts/entitlements.plist` (jit-only); L3 T2's `rt-tray/scripts/render-launchagents.sh <prod|dev> <outdir>` (renders **both** agent plists — daemon + deck — with `KeepAlive {SuccessfulExit:false}` and the static `EnvironmentVariables.PATH`); L3 T2's `Info.plist` template (already declares `LSMinimumSystemVersion`, `CFBundleURLTypes` with `CFBundleURLName @@BUNDLE_ID@@.join`, and the `SU*` keys with placeholder values — build.sh overwrites them with `Set`, never `Add`).
 - Environment contract (used by Task 8's workflow): `RT_DAEMON_BIN` (compiled rt; required in release mode unless `dist/rt` exists), `RT_VSIX` (path to the `.vsix`; optional), `RT_VERSION` (e.g. `v2.8.0`; default `git describe`), `RT_REQUIRE_DEPS=1` (missing `rt-tray/deps/arm64` is fatal; CI sets it), `SPARKLE_PUBLIC_ED_KEY` (overrides `rt-tray/SUPublicEDKey`), `RT_BUILD_TOOL=swift|xcode` (default: `xcode` when `xcodebuild -version` succeeds AND `rt-tray/project.yml` exists, else `swift`).
 - Produces: `rt-tray/mattstack.app` / `rt-tray/mattstack-dev.app` matching the layout contract; functions `assemble_common`, `sign_bundle`, `embed_sparkle`, `bundle_helpers` (all internal to build.sh).
 
@@ -912,10 +927,11 @@ set -euo pipefail
 #
 # Env: RT_DAEMON_BIN RT_VSIX RT_VERSION RT_REQUIRE_DEPS SPARKLE_PUBLIC_ED_KEY RT_BUILD_TOOL
 #
-# The bundle id, daemon label, and display name live ONLY here; Info.plist and
-# LaunchAgent.plist are sed templates. The tray binary comes from xcodebuild
-# (when Xcode + project.yml exist) or swift build; both feed the SAME
-# assemble + sign path, so the bundle contract (check-bundle.sh) is identical.
+# The bundle id, daemon label, and display name live ONLY here; Info.plist is a
+# sed template and the LaunchAgent plists come from scripts/render-launchagents.sh.
+# The tray binary comes from xcodebuild (when Xcode + project.yml exist) or
+# swift build; both feed the SAME assemble + sign path, so the bundle contract
+# (check-bundle.sh) is identical.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -1090,25 +1106,28 @@ embed_sparkle() {
 }
 embed_sparkle
 
-# ─── LaunchAgent plist ───────────────────────────────────────────────────────
-AGENT_PLIST="$CONTENTS/Library/LaunchAgents/$DAEMON_LABEL.plist"
-sed -e "s/@@DAEMON_LABEL@@/$DAEMON_LABEL/g" -e "s/@@BUNDLE_ID@@/$BUNDLE_ID/g" "$SCRIPT_DIR/LaunchAgent.plist" > "$AGENT_PLIST"
-if [ "$IS_DEV" = true ]; then
-    /usr/libexec/PlistBuddy -c "Add :KeepAlive dict" "$AGENT_PLIST"
-    /usr/libexec/PlistBuddy -c "Add :KeepAlive:SuccessfulExit bool false" "$AGENT_PLIST"
-else
-    /usr/libexec/PlistBuddy -c "Add :KeepAlive bool true" "$AGENT_PLIST"
-fi
-/usr/libexec/PlistBuddy -c "Add :EnvironmentVariables dict" "$AGENT_PLIST"
-/usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:PATH string /Applications/$APP_NAME.app/Contents/Helpers:/usr/bin:/bin:/usr/sbin:/sbin" "$AGENT_PLIST"
-echo "  ✓ LaunchAgent plist ($DAEMON_LABEL.plist)"
+# ─── LaunchAgent plists (daemon + deck; rendered by the template script) ─────
+# Both plists carry KeepAlive {SuccessfulExit:false} and the static PATH
+# /usr/bin:/bin:/usr/sbin:/sbin — rt and deck prepend their own bundle's
+# Contents/Helpers and $HOME/.local/bin at process start, so no install
+# location is ever baked into a plist.
+mkdir -p "$CONTENTS/Library/LaunchAgents"
+"$SCRIPT_DIR/scripts/render-launchagents.sh" "$([ "$IS_DEV" = true ] && echo dev || echo prod)" "$CONTENTS/Library/LaunchAgents"
+echo "  ✓ LaunchAgent plists ($DAEMON_LABEL.plist, ${DAEMON_LABEL/daemon/deck}.plist)"
 
 # ─── Info.plist: identity (template) + version + Sparkle keys ─────────────────
 INFO="$CONTENTS/Info.plist"
 sed -e "s/@@APP_NAME@@/$APP_NAME/g" -e "s/@@BUNDLE_ID@@/$BUNDLE_ID/g" \
     -e "s/@@DISPLAY_NAME@@/$DISPLAY_NAME/g" -e "s/@@DAEMON_LABEL@@/$DAEMON_LABEL/g" \
     "$SCRIPT_DIR/Info.plist" > "$INFO"
-/usr/libexec/PlistBuddy -c "Add :MSDevBuild bool $IS_DEV" "$INFO"
+# The template already declares LSMinimumSystemVersion, CFBundleURLTypes and the
+# SU* keys; PlistBuddy "Add" fails on an existing key, so every write below goes
+# through plist_set (Set, creating the key only when the template lacks it).
+plist_set() { # key type value
+    /usr/libexec/PlistBuddy -c "Set :$1 $3" "$INFO" 2>/dev/null || /usr/libexec/PlistBuddy -c "Add :$1 $2 $3" "$INFO"
+}
+plist_set MSDevBuild bool "$IS_DEV"
+plist_set LSMinimumSystemVersion string 14.0
 
 RT_VERSION="${RT_VERSION:-$(cd "$REPO_DIR" && git describe --tags --abbrev=0 2>/dev/null || echo dev)}"
 RT_VERSION="${RT_VERSION#v}"
@@ -1121,16 +1140,16 @@ fi
 PUBLIC_KEY="${SPARKLE_PUBLIC_ED_KEY:-}"
 [ -z "$PUBLIC_KEY" ] && [ -f "$SCRIPT_DIR/SUPublicEDKey" ] && PUBLIC_KEY="$(tr -d '[:space:]' < "$SCRIPT_DIR/SUPublicEDKey")"
 if [ "$IS_DEV" = true ]; then
-    /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool false" "$INFO"
+    plist_set SUEnableAutomaticChecks bool false
 else
-    /usr/libexec/PlistBuddy -c "Add :SUFeedURL string $SU_FEED_URL" "$INFO"
-    /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool true" "$INFO"
-    /usr/libexec/PlistBuddy -c "Add :SUScheduledCheckInterval integer 21600" "$INFO"
-    /usr/libexec/PlistBuddy -c "Add :SUAutomaticallyUpdate bool true" "$INFO"
-    /usr/libexec/PlistBuddy -c "Add :SUVerifyUpdateBeforeExtraction bool true" "$INFO"
+    plist_set SUFeedURL string "$SU_FEED_URL"
+    plist_set SUEnableAutomaticChecks bool true
+    plist_set SUScheduledCheckInterval integer 21600
+    plist_set SUAutomaticallyUpdate bool true
+    plist_set SUVerifyUpdateBeforeExtraction bool true
 fi
 if [ -n "$PUBLIC_KEY" ]; then
-    /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $PUBLIC_KEY" "$INFO"
+    plist_set SUPublicEDKey string "$PUBLIC_KEY"
     echo "  ✓ SUPublicEDKey set"
 else
     echo "  ⚠ no Sparkle public key (rt-tray/SUPublicEDKey or SPARKLE_PUBLIC_ED_KEY) — updates cannot be verified by this build"
@@ -1212,7 +1231,7 @@ echo ""
 echo "  Done."
 ```
 
-Notes for the implementer: `sign` wraps `codesign` so the Developer-ID flags are never duplicated; `HELPER_ENTITLEMENTS` uses a literal TAB as separator; the `${arr[@]+"${arr[@]}"}` form keeps `set -u` happy on bash 3.2 when no helpers were bundled; `EnvironmentVariables.PATH` names `/Applications/<app>/Contents/Helpers` because the bundle's final location is what launchd sees (ruling 9 / §7 — `~/.local/bin` for herdr/claude is appended by L1's service plists, not here).
+Notes for the implementer: `sign` wraps `codesign` so the Developer-ID flags are never duplicated; `HELPER_ENTITLEMENTS` uses a literal TAB as separator; the `${arr[@]+"${arr[@]}"}` form keeps `set -u` happy on bash 3.2 when no helpers were bundled; the agent plists are L3's (`render-launchagents.sh` renders daemon + deck from `LaunchAgent.plist`/`LaunchAgent-deck.plist`, KeepAlive `{SuccessfulExit:false}` in both flavors) and their `EnvironmentVariables.PATH` is the static `/usr/bin:/bin:/usr/sbin:/sbin` (ruling R2 — rt's daemon boot and deck prepend `<bundleRoot>/Contents/Helpers` and `$HOME/.local/bin` themselves; build.sh never writes a PATH); `plist_set` exists because L3's Info.plist template already declares the `LSMinimumSystemVersion`/`CFBundleURLTypes`/`SU*` keys and PlistBuddy `Add` fails on an existing key. `CFBundleURLName` stays the template's `@@BUNDLE_ID@@.join` (L4's earlier `.url` is withdrawn).
 
 - [ ] **Step 2: Append the Helpers section to check-bundle.sh** (replace the `# ═══ Helpers (deps.lock) — section appended by Task 4 ═══` line)
 
@@ -1247,31 +1266,33 @@ check_helpers() { # app
 }
 check_helpers "$PROD"
 [ -n "$DEV" ] && check_helpers "$DEV"
-# Agent PATH names the Helpers dir so services never capture a shell PATH.
-assert_eq "prod agent EnvironmentVariables.PATH" "/Applications/mattstack.app/Contents/Helpers:/usr/bin:/bin:/usr/sbin:/sbin" "$(plist "$PROD/Contents/Library/LaunchAgents/com.mattstack.daemon.plist" 'EnvironmentVariables:PATH')"
+# Agent PATH is the static system set (asserted per plist in check_identity); services never
+# capture a shell PATH and never bake in an install location — rt/deck prepend their own Helpers dir.
 ```
 
 - [ ] **Step 3: Run**
 
 Run: `bash -n rt-tray/build.sh rt-tray/check-bundle.sh && scripts/fetch-deps.sh arm64 && bun build --compile ./cli.ts --outfile dist/rt && cd rt-tray && RT_DAEMON_BIN=../dist/rt ./check-bundle.sh`
-Expected: `0 failed`; `ls rt-tray/mattstack.app/Contents/Helpers` shows `bun fast-browser fzf gh glab jq node`; `du -sh rt-tray/mattstack.app` (expect roughly 300–400 MB — record the number in the commit body).
+Expected: `0 failed`; `ls rt-tray/mattstack.app/Contents/Helpers` shows `bun fast-browser fzf gh glab jq node`; `ls rt-tray/mattstack.app/Contents/Library/LaunchAgents` shows `com.mattstack.daemon.plist com.mattstack.deck.plist`; `du -sh rt-tray/mattstack.app` (expect roughly 300–400 MB — record the number in the commit body).
 Also: `RT_REQUIRE_DEPS=1 rt-tray/build.sh release` with `rt-tray/deps` moved aside exits 1 with the fetch hint (then move it back).
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add rt-tray/build.sh rt-tray/check-bundle.sh
-git commit -m "MAT-383: build.sh — Helpers from deps.lock, Resources, Sparkle keys, inside-out signing, xcodebuild-or-swift-build
+git commit -m "MAT-383: build.sh — Helpers from deps.lock, Resources, rendered agent plists, Sparkle keys, inside-out signing, xcodebuild-or-swift-build
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 5: Sparkle framework — SPM dependency, rpath, embed, signing assertions
+### Task 5: Sparkle framework — embed, rpath check, signing assertions
+
+**AFTER L3 T10 merges** (L3 T10 adds the Sparkle SPM dependency, rpath, and `Package.resolved`; cross-plan review §1 row 12). "Skip if L3 has already added" is now "requires".
 
 **Files:**
-- Modify: `rt-tray/Package.swift` (Sparkle dependency + rpath linker setting) — skip the edit if L3 has already added `sparkle-project/Sparkle`; verify `from: "2.9.6"` or newer
+- ~~Modify: `rt-tray/Package.swift` + `rt-tray/Package.resolved`~~ — Dropped — owned by L3 T10 (cross-plan review).
 - Modify: `rt-tray/check-bundle.sh` (replace the `# ═══ Sparkle — section appended by Task 5 ═══` marker)
 
 **Interfaces:**
@@ -1280,45 +1301,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Package.swift**
 
-```swift
-// swift-tools-version:5.9
-import PackageDescription
-
-let package = Package(
-    name: "rt-tray",
-    platforms: [
-        .macOS(.v14)  // macOS 14 floor (ruling 13); SMAppService needs 13+
-    ],
-    dependencies: [
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.6"),
-    ],
-    targets: [
-        .executableTarget(
-            name: "rt-tray",
-            dependencies: [
-                .product(name: "Sparkle", package: "Sparkle"),
-            ],
-            path: "Sources",
-            swiftSettings: [
-                .define("DEBUG", .when(configuration: .debug)),
-            ],
-            linkerSettings: [
-                .linkedFramework("AppKit"),
-                .linkedFramework("UserNotifications"),
-                .linkedFramework("ServiceManagement"),
-                // Sparkle is embedded at Contents/Frameworks; without this rpath dyld
-                // cannot find it and the app dies at launch with "Library not loaded".
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
-            ]
-        ),
-        .executableTarget(
-            name: "rt-daemon-shim",
-            path: "Sources-daemon-shim"
-        ),
-    ]
-)
-```
-(If L3's `project.yml` exists, the xcodebuild path gets the same dependency from `project.yml`'s `packages:` block — check that it names `2.9.6` or newer and `Sparkle` is in the target's `dependencies:`; do not edit `project.yml` here, report a mismatch instead.)
+Dropped — owned by L3 T10 (cross-plan review): L3's `Package.swift` declares `.package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.6")`, the `Sparkle` product dependency, and the `@executable_path/../Frameworks` rpath; `project.yml` carries the same package for the xcodebuild path. Verify before Step 2 that `rt-tray/Package.swift` names `2.9.6` or newer and `rt-tray/Package.resolved` is committed; do not edit either here — report a mismatch to L3 instead.
 
 - [ ] **Step 2: Build + inspect**
 
@@ -1371,8 +1354,8 @@ check_sparkle "$PROD"
 Run: `cd rt-tray && RT_DAEMON_BIN=../dist/rt SPARKLE_PUBLIC_ED_KEY=$(openssl rand -base64 32) ./check-bundle.sh` → `0 failed` (the throwaway key proves the env override path end to end).
 
 ```bash
-git add rt-tray/Package.swift rt-tray/Package.resolved rt-tray/check-bundle.sh
-git commit -m "MAT-383: Sparkle 2.9.6 via SPM — rpath, embedded framework, inside-out signature assertions
+git add rt-tray/check-bundle.sh
+git commit -m "MAT-383: Sparkle — embedded framework + rpath + inside-out signature assertions in check-bundle
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -1760,7 +1743,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: scripts
+          sparse-checkout: |
+            scripts
+            rt-tray
 
       - name: Download the app zip (release)
         if: needs.release.outputs.publish == 'true'
@@ -1781,7 +1766,7 @@ jobs:
         run: scripts/e2e-cleanroom.sh "$(ls "$RUNNER_TEMP"/dl/mattstack-*.zip | head -1)"
 ```
 
-The clean-room job's contract with L7's `scripts/e2e-cleanroom.sh <zip>`: `ditto -x -k` into `/Applications`, run `/Applications/mattstack.app/Contents/MacOS/rt --post-install --non-interactive --team-of-one --no-launch`, put `~/.local/bin` on PATH, `rt --version`, `rt verify --ci`, and `rt-tray/check-bundle.sh --app /Applications/mattstack.app` is a reasonable extra L7 may add (the sparse checkout makes `rt-tray/check-bundle.sh` unavailable — widen `sparse-checkout` to `scripts rt-tray` if L7 wants it). Until L7's script lands, the job fails with "No such file" — that is the intended dependency signal, not something to paper over with an inline copy.
+The clean-room job's contract with L7's `scripts/e2e-cleanroom.sh` (cross-plan review §5 #36/#46): the job passes the zip **positionally** (`scripts/e2e-cleanroom.sh "<zip>"`) and L7's script accepts a positional `<zip|dmg|app>` as `--artifact`; the script does `ditto -x -k` into `/Applications`, runs `/Applications/mattstack.app/Contents/MacOS/rt --post-install --non-interactive --team-of-one --no-launch` (its defaults; `CI=true` also implies `--no-launch`), puts `~/.local/bin` on PATH, `rt --version`, `rt daemon install`, `rt verify --ci`, and runs `rt-tray/check-bundle.sh --app /Applications/mattstack.app` when present — the sparse checkout above includes `rt-tray` for that reason. Until L7's script lands, the job fails with "No such file" — that is the intended dependency signal, not something to paper over with an inline copy.
 
 - [ ] **Step 2: Shape test (keeps the job names/steps honest without running CI)**
 
@@ -1854,17 +1839,20 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 9: rt side — `installRtBinary` symlink, `trayAppPath` via `mattstack.appPath`, post-install layout bits, legacy sweep
+### Task 9: rt side — `installRtBinary` symlink, `trayAppPath` via `mattstack.appPath`, `legacyUserAppPath`
+
+**Trimmed by the cross-plan review (§1 row 1):** `commands/post-install.ts` and `lib/__tests__/post-install-sweep.test.ts` are L1 T27/T24's. L1 T27 absorbs verbatim the `appPathIsTransient`/exit-2 refusal, the `runLegacySweep(root)` body and its new sweep test case that this task previously carried (they live in this file at commit `4d36c2d`, L4:1928-1937 and L4:1985-2127); L1 T24 `settings.seed` records `mattstack.appPath` via `bundleRootFromExec()`; L1 T5 `path.link` calls `installRtBinary`. This task now ships only the two library modules L1 consumes.
 
 **Files:**
 - Modify: `lib/dev-mode.ts:37-50` (`installRtBinary` → atomic symlink)
-- Modify: `lib/rt-paths.ts:116-131` (`trayAppPath`/`devTrayAppPath` read the machine key, default `/Applications`)
-- Modify: `commands/post-install.ts` (steps 1–2 + `findVsix` + legacy sweep; everything else untouched — L1 owns the rest)
-- Modify: `lib/__tests__/dev-mode.test.ts`, `lib/__tests__/rt-paths.test.ts:160-180`, `lib/__tests__/dev-mode-handoff.test.ts` (fake bundle path), `lib/__tests__/post-install-sweep.test.ts`
+- Modify: `lib/rt-paths.ts:116-131` (`trayAppPath`/`devTrayAppPath` read the machine key, default `/Applications`; `legacyUserAppPath()`)
+- ~~Modify: `commands/post-install.ts`~~ — Dropped — owned by L1 T27/T24 (cross-plan review).
+- Modify: `lib/__tests__/dev-mode.test.ts`, `lib/__tests__/rt-paths.test.ts:160-180`, `lib/__tests__/dev-mode-handoff.test.ts` (fake bundle path)
+- ~~Modify: `lib/__tests__/post-install-sweep.test.ts`~~ — Dropped — owned by L1 T27 (cross-plan review).
 
 **Interfaces:**
-- Consumes: `bundleRootFromExec`, `DEPS_LOCK_BUNDLE_PATH` (Task 1); `setSetting` from `lib/settings/write.ts`; `installedTrayAppPath` (existing).
-- Produces: `installRtBinary(src): string` now creates `~/.local/bin/rt -> src` (symlink); `trayAppPath(exists?)`, `devTrayAppPath(exists?)`; `LEGACY_USER_APP_PATH()`; post-install exit code 2 when run from a DMG/translocated path.
+- Consumes: `installedTrayAppPath` (existing; already reads `mattstack.appPath`).
+- Produces: `installRtBinary(src): string` now creates `~/.local/bin/rt -> src` (symlink, link-then-rename); `trayAppPath(exists?)`, `devTrayAppPath(exists?)`; `legacyUserAppPath()`. (Post-install exit code 2 on a DMG/translocated path is produced by L1 T27/T24.)
 
 - [ ] **Step 1: Failing tests**
 
@@ -1923,22 +1911,9 @@ Replace `lib/__tests__/rt-paths.test.ts` tests at lines 167-180 with:
 
 In `lib/__tests__/dev-mode-handoff.test.ts`: define `const FAKE_PROD_APP = join(HOME, "Applications", TRAY_APP_BUNDLE)` and `const FAKE_DEV_APP = join(HOME, "Applications", DEV_TRAY_APP_BUNDLE)` (import the two constants from `../rt-paths.ts` instead of `trayAppPath`/`devTrayAppPath`), and use them wherever the test previously called `trayAppPath()`/`devTrayAppPath()` (the `mkdirSync`/`writeFileSync` of the fake bundles and the `expect(openLine).toContain(...)` assertions). `isolatedExists` already denies `/Applications/`, so `installedTrayAppPath(..., isolatedExists)` finds the fake under `~/Applications`.
 
-Add to `lib/__tests__/post-install-sweep.test.ts` (same fake-bin harness; one new case):
-```ts
-  test("stale ~/Applications/mattstack.app is swept when rt runs from /Applications, and the ghost com.rt.daemon is booted out unconditionally", async () => {
-    setUpFakes();
-    const stale = join(HOME, "Applications", "mattstack.app");
-    mkdirSync(join(stale, "Contents", "MacOS"), { recursive: true });
-    await runPostInstall({ bundleRoot: "/Applications/mattstack.app" });
-    const log = readLog();
-    expect(log.some((l) => l.startsWith("launchctl bootout") && l.includes("com.rt.daemon"))).toBe(true);
-    expect(log.some((l) => l.startsWith("rm -rf") && l.includes(stale))).toBe(true);
-    expect(log.some((l) => l.startsWith("launchctl bootout") && l.includes("com.mattstack.daemon"))).toBe(true);
-  }, 15_000);
-```
-(`runPostInstall` gains an optional `{ bundleRoot }` override so tests never depend on the test runner's real execPath; production passes nothing.)
+(The `post-install-sweep.test.ts` case for the stale `~/Applications/mattstack.app` copy + unconditional `com.rt.daemon` bootout is L1 T27's — Dropped here, cross-plan review §1 row 1.)
 
-Run: `bun test lib/__tests__/dev-mode.test.ts lib/__tests__/rt-paths.test.ts lib/__tests__/post-install-sweep.test.ts` → FAIL (symlink, signature, override missing).
+Run: `bun test lib/__tests__/dev-mode.test.ts lib/__tests__/rt-paths.test.ts` → FAIL (symlink, signature).
 
 - [ ] **Step 2: Implement `lib/dev-mode.ts`**
 
@@ -1984,159 +1959,15 @@ export function legacyUserAppPath(): string {
 
 - [ ] **Step 4: Implement `commands/post-install.ts` changes**
 
-Imports: add `import { bundleRootFromExec } from "../lib/bundle-layout.ts";`, `import { setSetting } from "../lib/settings/write.ts";`, `legacyUserAppPath` from rt-paths; drop `cpSync`.
-
-Replace `installRtBinaryStep` + `installTrayApp` with:
-```ts
-// ─── 1. Where is the app, and is it somewhere it can stay? ───────────────────
-
-function appPathIsTransient(root: string): boolean {
-  return root.startsWith("/Volumes/") || root.includes("/AppTranslocation/");
-}
-
-/** Records the bundle rt is running from as mattstack.appPath; refuses a DMG/translocated path. */
-function recordAppPath(root: string | null): boolean {
-  if (!root) {
-    info(TRAY_APP_BUNDLE, "rt is not running from inside the app — nothing to record");
-    return true;
-  }
-  if (appPathIsTransient(root)) {
-    fail(TRAY_APP_BUNDLE, `running from ${root} — drag mattstack.app to /Applications and run this again`);
-    return false;
-  }
-  try {
-    setSetting("mattstack.appPath", root, "machine");
-    ok(TRAY_APP_BUNDLE, `at ${root}`);
-  } catch (err: any) {
-    fail("mattstack.appPath", err?.message ?? String(err));
-  }
-  return true;
-}
-
-// ─── 2. rt on PATH: a symlink into the bundle ───────────────────────────────
-
-function installRtBinaryStep(root: string | null): void {
-  const dest = rtBinaryPath();
-  if (currentMode() === "dev") {
-    info("rt", `dev mode owns ${dest} — leaving the wrapper in place`);
-    return;
-  }
-  if (!root) {
-    info("rt", "not running from inside the app — skipping the ~/.local/bin/rt link");
-    return;
-  }
-  const target = join(root, "Contents", "MacOS", "rt");
-  let alreadyLinked = false;
-  try { alreadyLinked = existsSync(dest) && realpathSync(dest) === realpathSync(target); } catch { /* relink */ }
-  if (alreadyLinked) {
-    info("rt", `${dest} → ${target}`);
-    return;
-  }
-  try {
-    installRtBinary(target);
-    ok("rt", `${dest} → ${target}`);
-  } catch (err: any) {
-    fail("rt", err?.message ?? String(err));
-  }
-}
-```
-
-`findVsix`:
-```ts
-function findVsix(root: string | null): string | null {
-  if (!root) return null;
-  const candidate = join(root, "Contents", "Resources", "rt-context.vsix");
-  return existsSync(candidate) ? candidate : null;
-}
-```
-and `installExtensions(root: string | null)` passes it through.
-
-Legacy sweep — replace `legacySweepNeeded`/`runLegacySweep` with:
-```ts
-// ─── 0. Legacy sweep ─────────────────────────────────────────────────────────
-// Runs on every post-install. Each part is idempotent: booting out a job that
-// is not loaded is a no-op, removing a bundle that is not there is a no-op.
-// It must run BEFORE the app is launched and the daemon installed, or it
-// would boot out the registration it just created.
-
-function uid(): number { return process.getuid?.() ?? 0; }
-
-function runLegacySweep(root: string | null): boolean {
-  let swept = false;
-  // The pre-rebrand daemon label: nothing registers it any more; a stale BTM record can.
-  spawnSync("launchctl", ["bootout", `gui/${uid()}/com.rt.daemon`], { stdio: "pipe", env: process.env });
-
-  const rtTray = legacyTrayAppPaths().filter(existsSync);
-  if (rtTray.length > 0) {
-    info("legacy migration", "rt-tray.app found — removing");
-    spawnSync("osascript", ["-e", 'tell application "rt-tray" to quit'], { stdio: "pipe", timeout: 3_000, env: process.env });
-    spawnSync("pkill", ["-x", "rt-tray"], { stdio: "pipe", env: process.env });
-    for (const p of rtTray) spawnSync("rm", ["-rf", p], { stdio: "pipe", env: process.env });
-    ok("legacy migration", "rt-tray.app removed");
-    swept = true;
-  }
-
-  // Phase-1 location: a copy under ~/Applications while the real app runs from elsewhere.
-  const stale = legacyUserAppPath();
-  if (root && root !== stale && existsSync(stale)) {
-    info("legacy migration", `${stale} is a stale copy — removing`);
-    spawnSync("osascript", ["-e", `tell application "${TRAY_APP_NAME}" to quit`], { stdio: "pipe", timeout: 3_000, env: process.env });
-    spawnSync("pkill", ["-x", TRAY_APP_NAME], { stdio: "pipe", env: process.env });
-    // Its agent's BundleProgram points into the bundle being deleted; the new app re-registers it.
-    spawnSync("launchctl", ["bootout", `gui/${uid()}/com.mattstack.daemon`], { stdio: "pipe", env: process.env });
-    spawnSync("rm", ["-rf", stale], { stdio: "pipe", env: process.env });
-    ok("legacy migration", `${stale} removed`);
-    swept = true;
-  }
-  return swept;
-}
-```
-`reportMigrationOutcome` stays; it is called when `swept` is true (rename `migrating` → `swept`).
-
-`runPostInstall`:
-```ts
-export interface PostInstallOptions { bundleRoot?: string | null }
-
-export async function runPostInstall(opts: PostInstallOptions = {}): Promise<void> {
-  console.log("");
-  console.log("  rt post-install");
-  console.log("");
-
-  const root = opts.bundleRoot !== undefined ? opts.bundleRoot : bundleRootFromExec();
-  const swept = runLegacySweep(root);
-  if (!recordAppPath(root)) process.exit(2);
-  installRtBinaryStep(root);
-  installExtensions(root);
-
-  const trayDest = root ?? trayAppPath();
-  if (existsSync(trayDest)) {
-    spawnSync("open", [trayDest], { stdio: "pipe", env: process.env });
-    ok(TRAY_APP_BUNDLE, "launched — waiting for tray to start…");
-    await Bun.sleep(2_000);
-  }
-
-  await installDaemon();
-  installShellIntegrationStep();
-  repairShellWrapper();
-  await checkTccAccess();
-  if (swept) await reportMigrationOutcome();
-
-  console.log("");
-  console.log("  Done. Restart your terminal, then run: rt verify");
-  console.log("");
-}
-```
-Update the file's header docblock to describe the new shape (run from inside the bundle: record appPath, link rt, install the extension from Resources, daemon, shell integration). The `open` call is the one L1's `--no-launch` will gate; leave it as-is here.
-
-The existing sweep test's first case ("guarded: no bootout on a routine run") flips meaning: `com.rt.daemon` is now booted out on every run by design, while `com.mattstack.daemon` is booted out only when a stale `~/Applications` copy exists. Rewrite that test's assertions accordingly: `expect(log.filter((l) => l.startsWith("launchctl bootout") && l.includes("com.mattstack.daemon")).length).toBe(0)` on a clean HOME, and the `rt-tray` case keeps asserting the `osascript → pkill → rm -rf` order.
+Dropped — owned by L1 T27/T24 (cross-plan review): L1 T27 rewrites `commands/post-install.ts` as sweep → `setupApply([...])` with `runPostInstall(args: string[], opts: { bundleRoot?: string | null } = {})`, absorbing this task's former `appPathIsTransient` exit-2 refusal and `runLegacySweep(root)` body; `recordAppPath`/`installRtBinaryStep`/`findVsix` become L1's `settings.seed`/`path.link`/`extension.install` apply steps. L1 T27 runs AFTER this task merges (it imports `installRtBinary`, `legacyUserAppPath`, `bundleRootFromExec`).
 
 - [ ] **Step 5: Run + typecheck + commit**
 
-Run: `bun test && bunx tsc --noEmit` → green (including `e2e` is not required here; `bun run test:e2e` still passes because first-run on a non-bundle `dist/rt` takes the "not running from inside the app" branches).
+Run: `bun test && bunx tsc --noEmit` → green (`commands/post-install.ts` still calls `installRtBinary(src)` with the same signature, so the existing `post-install-sweep.test.ts` stays green untouched until L1 T27 rewrites both).
 
 ```bash
-git add lib/dev-mode.ts lib/rt-paths.ts commands/post-install.ts lib/__tests__/dev-mode.test.ts lib/__tests__/rt-paths.test.ts lib/__tests__/dev-mode-handoff.test.ts lib/__tests__/post-install-sweep.test.ts
-git commit -m "MAT-383: rt links into the bundle — ~/.local/bin/rt symlink, mattstack.appPath recorded, stale ~/Applications copy swept
+git add lib/dev-mode.ts lib/rt-paths.ts lib/__tests__/dev-mode.test.ts lib/__tests__/rt-paths.test.ts lib/__tests__/dev-mode-handoff.test.ts
+git commit -m "MAT-383: installRtBinary links into the bundle; trayAppPath honours mattstack.appPath; legacyUserAppPath
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -2145,137 +1976,22 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ### Task 10: `rt update` is thin — ask the app (`POST /update/check`)
 
-**Files:**
-- Rewrite: `commands/update.ts`
-- Create: `commands/__tests__/update.test.ts`
-- Modify: `cli.ts:118-122` (comment only: "update asks the app; no first-run setup")
-
-**Interfaces:**
-- Consumes: `trayQuery(endpoint, method)` from `lib/daemon-client.ts`; `currentMode`.
-- Produces: `runUpdate(args, deps?)` where `deps = { trayQuery, currentMode, log, exit }` are injectable; exit codes: 0 asked, 1 dev mode / app absent / app too old.
-
-- [ ] **Step 1: Failing test**
-
-```ts
-// commands/__tests__/update.test.ts
-import { describe, expect, test } from "bun:test";
-import { runUpdate } from "../update.ts";
-
-function harness(res: any, mode: "dev" | "prod" = "prod") {
-  const lines: string[] = [];
-  let code: number | null = null;
-  const calls: string[] = [];
-  const deps = {
-    trayQuery: async (endpoint: string, method: string) => { calls.push(`${method} ${endpoint}`); return res; },
-    currentMode: () => mode,
-    log: (s: string) => { lines.push(s); },
-    exit: (c: number) => { code = c; throw new Error(`exit ${c}`); },
-  };
-  return { deps, lines, calls, code: () => code };
-}
-
-describe("rt update", () => {
-  test("asks mattstack.app to check for updates", async () => {
-    const h = harness({ ok: true });
-    await runUpdate([], h.deps);
-    expect(h.calls).toEqual(["POST /update/check"]);
-    expect(h.lines.join("\n")).toContain("asked mattstack.app");
-  });
-  test("app not running → tells the user to open it or download, exit 1", async () => {
-    const h = harness(null);
-    await expect(runUpdate([], h.deps)).rejects.toThrow("exit 1");
-    expect(h.lines.join("\n")).toContain("github.com/m4ttstack/rt/releases/latest");
-  });
-  test("app answers not-found → explains the app predates CLI-triggered updates, exit 1", async () => {
-    const h = harness({ ok: false, error: "not found" });
-    await expect(runUpdate([], h.deps)).rejects.toThrow("exit 1");
-    expect(h.lines.join("\n")).toContain("Check for Updates");
-  });
-  test("dev mode → refuses, exit 1, never calls the tray", async () => {
-    const h = harness({ ok: true }, "dev");
-    await expect(runUpdate([], h.deps)).rejects.toThrow("exit 1");
-    expect(h.calls).toEqual([]);
-  });
-});
-```
-
-Run: `bun test commands/__tests__/update.test.ts` → FAIL (second arg unsupported).
-
-- [ ] **Step 2: Rewrite `commands/update.ts`**
-
-```ts
-/**
- * rt update — the app owns updates (Sparkle). This verb only asks it to
- * check now, and says what to do when the app is not there to ask.
- */
-import { currentMode as realCurrentMode } from "../lib/dev-mode.ts";
-import { trayQuery as realTrayQuery } from "../lib/daemon-client.ts";
-import { bold, dim, green, red, reset, yellow } from "../lib/tui.ts";
-
-export const RELEASES_URL = "https://github.com/m4ttstack/rt/releases/latest";
-
-export interface UpdateDeps {
-  trayQuery: (endpoint: string, method: "GET" | "POST") => Promise<{ ok: boolean; error?: string } | null>;
-  currentMode: () => "dev" | "prod";
-  log: (line: string) => void;
-  exit: (code: number) => never;
-}
-
-const realDeps: UpdateDeps = {
-  trayQuery: realTrayQuery,
-  currentMode: realCurrentMode,
-  log: (s) => console.log(s),
-  exit: (c) => process.exit(c),
-};
-
-export async function runUpdate(_args: string[], deps: UpdateDeps = realDeps): Promise<void> {
-  if (deps.currentMode() === "dev") {
-    deps.log(`\n  ${yellow}⚠${reset}  dev mode is active — you're running from local source.`);
-    deps.log(`  ${dim}Switch to prod first: rt settings dev-mode prod${reset}\n`);
-    deps.exit(1);
-  }
-  const res = await deps.trayQuery("/update/check", "POST");
-  if (!res) {
-    deps.log(`\n  ${red}✗${reset}  mattstack.app is not running, so there is nothing to ask.`);
-    deps.log(`  ${dim}Open mattstack.app (it checks for updates itself), or download the latest from${reset}`);
-    deps.log(`  ${bold}${RELEASES_URL}${reset}\n`);
-    deps.exit(1);
-  }
-  if (!res.ok) {
-    deps.log(`\n  ${red}✗${reset}  this mattstack.app can't be asked from the CLI (${res.error ?? "unknown"}).`);
-    deps.log(`  ${dim}Use the menu bar: mattstack → Check for Updates…${reset}\n`);
-    deps.exit(1);
-  }
-  deps.log(`\n  ${green}✓${reset}  asked mattstack.app to check for updates — watch the menu bar.\n`);
-}
-```
-(`RELEASES_API`, `releaseAssetName`, the tarball download and the `--post-install` re-exec are deleted; nothing else imports them.)
-
-- [ ] **Step 3: Run + commit**
-
-Run: `bun test commands/__tests__/update.test.ts lib/__tests__/module-registry.test.ts && bunx tsc --noEmit` → PASS.
-
-```bash
-git add commands/update.ts commands/__tests__/update.test.ts cli.ts
-git commit -m "MAT-383: rt update asks the app (POST /update/check); tarball updater removed
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
-```
+Dropped — owned by L1 T30 (`commands/update.ts`: `POST /update/check` via `trayRequest`, exit **2** + `--json` envelope per the contract — ruling R4) and L1 T10 (`cli.ts` first-run hook) (cross-plan review §1 rows 2, 4). L1 T30 adopts this task's injectable `deps` shape (`tray`, `currentMode`, `log`, `exit`), the `res.ok === false` "this mattstack.app predates CLI-triggered updates — use the menu bar" branch, and `RELEASES_URL = https://github.com/m4ttstack/rt/releases/latest`; the former body is in this file at commit `4d36c2d` (L4:2146-2266). Task 12 regenerates `website/docs/reference/update.mdx` after L1 T30 merges.
 
 ---
 
-### Task 11: Bundled fzf first, `rt verify` app/link/vsix checks, terminal-notifier dropped
+### Task 11: Bundled fzf first, terminal-notifier dropped (`rt verify` rows are L1's)
 
 **Files:**
 - Modify: `lib/fzf.ts`
 - Modify: `lib/__tests__/fzf.test.ts`
-- Modify: `commands/verify.ts:174-181` (fzf) and `:183-213` (tray app + new "rt link" + "bundled extension" checks)
+- ~~Modify: `commands/verify.ts`~~ — Dropped — owned by L1 T7/T11 (cross-plan review §1 row 3): L1 T7 adds the `tool.rt-link` and `tool.vsix` rows to the rt-health table and makes `tool.fzf` report `resolveFzf()`'s "bundled | PATH"; L1 T11 turns the table into `rt verify`'s rows. Nothing from this task's former verify.ts edit is lost.
 - Modify: `lib/notifier.ts:225-296` (osascript only), `lib/__tests__/notifier-fallback.test.ts`
-- Modify: `e2e/tests/verify.test.ts` only if a check name changed (none do; the new checks are additive)
+- `e2e/tests/verify.test.ts` unaffected (no check name changes here).
 
 **Interfaces:**
-- Consumes: `bundledHelperPath("fzf")`, `appBundleRoot()`, `RT_BUNDLE_PATH` (Task 1); `rtBinaryPath` (dev-mode).
-- Produces: `resolveFzf(which?, bundled?)` — bundled path first, then PATH; `FZF_MISSING_MESSAGE` names the bundle; `__test__.setFallbackNotifier(argv0 | null)` replaces `setTerminalNotifierPath`.
+- Consumes: `bundledHelperPath("fzf")`, `appBundleRoot()` (Task 1).
+- Produces: `resolveFzf(which?, bundled?)` — bundled path first, then PATH (L1 T7 consumes it for the `tool.fzf` row); `FZF_MISSING_MESSAGE` names the bundle; `__test__.setFallbackNotifier(argv0 | null)` replaces `setTerminalNotifierPath`.
 
 - [ ] **Step 1: fzf tests (replace the file)**
 
@@ -2357,46 +2073,7 @@ Check every `ensureFzf(` caller compiles unchanged (`grep -rn "ensureFzf(" lib c
 
 - [ ] **Step 3: `commands/verify.ts`**
 
-Replace the fzf block:
-```ts
-  // ── fzf (bundled first, PATH fallback) ────────────────────────────────────
-  const { resolveFzf } = await import("../lib/fzf.ts");
-  const fzfPath = resolveFzf();
-  const fzfVersion = fzfPath ? cmd(`"${fzfPath}" --version`) : null;
-  if (fzfVersion) {
-    const where = fzfPath!.includes("/Contents/Helpers/") ? "bundled" : "PATH";
-    results.push(pass("fzf", `${fzfVersion} (${where}: ${fzfPath})`));
-  } else {
-    results.push(fail("fzf", "not found — reinstall mattstack.app (bundled) or brew install fzf"));
-  }
-```
-After the tray-app block (line ~213), add:
-```ts
-  // ── ~/.local/bin/rt links into the active bundle (prod only) ─────────────
-  if (mode === "prod") {
-    const { rtBinaryPath } = await import("../lib/dev-mode.ts");
-    const { RT_BUNDLE_PATH } = await import("../lib/bundle-layout.ts");
-    const link = rtBinaryPath();
-    let target: string | null = null;
-    try { target = readlinkSync(link); } catch { /* not a link or absent */ }
-    if (activeTrayPath && target === join(activeTrayPath, RT_BUNDLE_PATH)) {
-      results.push(pass("rt link", `${link} → ${target}`));
-    } else if (target) {
-      results.push(warn("rt link", `${link} → ${target} (expected ${activeTrayPath ? join(activeTrayPath, RT_BUNDLE_PATH) : "the installed app"}) — run: rt --post-install`));
-    } else {
-      results.push(warn("rt link", `${link} is not a symlink into ${activeTrayBundle} — run: rt --post-install`));
-    }
-  }
-
-  // ── The extension ships inside the app ───────────────────────────────────
-  if (activeTrayPath) {
-    const vsix = join(activeTrayPath, "Contents", "Resources", "rt-context.vsix");
-    results.push(existsSync(vsix)
-      ? pass("bundled extension", `rt-context.vsix in ${activeTrayBundle}`, "warning")
-      : warn("bundled extension", `rt-context.vsix missing from ${activeTrayBundle} — a pre-bundle build?`));
-  }
-```
-(add `readlinkSync` to the `fs` import.)
+Dropped — owned by L1 T7 (`tool.rt-link`, `tool.vsix`, `tool.fzf` rows in the rt-health table; remedy text "run: rt setup apply --from path.link") and L1 T11 (verify = validator rows) (cross-plan review). L1 T7 runs after this task merges so `resolveFzf()` exists.
 
 - [ ] **Step 4: `lib/notifier.ts` — osascript only**
 
@@ -2425,11 +2102,11 @@ Update the module docblock line 12 (`terminal-notifier/osascript` → `osascript
 
 - [ ] **Step 5: Run + commit**
 
-Run: `bun test lib/__tests__/fzf.test.ts lib/__tests__/notifier-fallback.test.ts lib/__tests__/notifier.test.ts commands/__tests__/verify.test.ts && bunx tsc --noEmit && grep -rn "terminal-notifier" lib commands README.md | wc -l` → tests PASS; grep count `0`.
+Run: `bun test lib/__tests__/fzf.test.ts lib/__tests__/notifier-fallback.test.ts lib/__tests__/notifier.test.ts && bunx tsc --noEmit && grep -rn "terminal-notifier" lib commands | wc -l` → tests PASS; grep count `0` (the README mention goes in Task 12).
 
 ```bash
-git add lib/fzf.ts lib/__tests__/fzf.test.ts commands/verify.ts lib/notifier.ts lib/__tests__/notifier-fallback.test.ts
-git commit -m "MAT-383: bundled fzf by absolute path, rt verify checks the app link + bundled vsix, terminal-notifier dropped
+git add lib/fzf.ts lib/__tests__/fzf.test.ts lib/notifier.ts lib/__tests__/notifier-fallback.test.ts
+git commit -m "MAT-383: bundled fzf by absolute path (resolveFzf), terminal-notifier dropped
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -2437,6 +2114,8 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ---
 
 ### Task 12: Docs — README install/upgrade/requirements, CLAUDE.md, website install page, rt-release skill
+
+**AFTER L1 T30 + T31 merge** (`update.mdx` is regenerated from L1's new `rt update` tree description; L1 T31 then rebases onto this task for the final `bun run docs:gen && bun run docs:check` — cross-plan review §1 rows 5–6, §3). L4 owns `README.md`; L1 T31 only asserts that the brew/tmux/zellij/terminal-notifier lines are gone.
 
 **Files:**
 - Modify: `README.md` (`## Install`, `### What Gets Installed`, `### Upgrade`, `## Requirements`, `### Testing the installer`, `### rt-tray`, `### Release process`)
@@ -2473,7 +2152,7 @@ health of each piece.
 `### What Gets Installed` table: `rt` binary → "Symlink `~/.local/bin/rt` → `mattstack.app/Contents/MacOS/rt`"; `rt-tray.app` row → `mattstack.app` "Menu bar app: setup, daemon health, notifications, Sparkle updates"; `fzf` + `tmux` row → "Bundled tools | `fzf`, `jq`, `gh`, `glab`, `bun`, a private `node`, `fast-browser` inside `Contents/Helpers` — used by rt by absolute path; none are put on your PATH unless you ask"; drop `tmux`.
 `### Upgrade`: "mattstack.app updates itself (Sparkle) and restarts its services when its version changes. `rt update` just asks the app to check now."
 `## Requirements`: macOS 14 or newer, Apple Silicon; Xcode Command Line Tools (git); `fzf` row → "bundled; a `brew install fzf` copy is used only when rt runs from source"; delete the `tmux` row; keep `chafa`/`kitten` optional rows.
-`### Testing the installer`: the numbered list becomes: records `mattstack.appPath`, links `~/.local/bin/rt`, installs `rt-context.vsix` from `Contents/Resources`, installs the daemon, writes shell integration.
+`### Testing the installer`: `rt --post-install` is the headless entry — it runs the legacy sweep and then `rt setup apply --non-interactive --team-of-one` (L1 T27), which records `mattstack.appPath`, links `~/.local/bin/rt`, installs `rt-context.vsix` from `Contents/Resources`, registers the services when the app is reachable, writes shell integration. State explicitly that a first `rt` invocation no longer auto-runs setup (L1 T10 prints a one-line hint instead — `rt verify` after a bare install reports what is missing); do not promise auto-setup anywhere in the README.
 `### rt-tray`: add `scripts/fetch-deps.sh arm64` before `./build.sh release`, mention `RT_DAEMON_BIN=../dist/rt ./check-bundle.sh`, `./build.sh install` → `/Applications`.
 `### Release process`: "Push a version tag (`skills/rt-release`); CI compiles rt (arm64), fetches the pinned helpers, builds + signs + notarizes mattstack.app, produces `mattstack-<ver>.dmg` / `.zip`, signs the Sparkle appcast, publishes the Release, then installs from the zip on a fresh runner and runs `rt verify --ci`."
 
@@ -2481,7 +2160,7 @@ health of each piece.
 
 `Personal developer CLI built with Bun. Compiled to a standalone binary via \`bun build --compile\` and shipped inside mattstack.app (DMG first install, Sparkle updates); \`~/.local/bin/rt\` is a symlink into the bundle.`
 
-- [ ] **Step 3: website install.mdx** — mirror the README `## Install` + `## Upgrade` text (DMG, headless zip, `rt update` asks the app); table rows as in Step 1. Then `bun run docs:gen && bun run docs:check` (regenerates `reference/update.mdx` from the command tree; if `docs:check` flags drift elsewhere, fix only what this plan changed).
+- [ ] **Step 3: website install.mdx** — mirror the README `## Install` + `## Upgrade` text (DMG, headless zip, `rt update` asks the app); table rows as in Step 1. Then `bun run docs:gen && bun run docs:check` (regenerates `reference/update.mdx` from the command tree as L1 T30 left it — exit 2 + `--json`; if `docs:check` flags drift elsewhere, fix only what this plan changed). L1 T31 re-runs both after merging on top of this task.
 
 - [ ] **Step 4: skills/rt-release/SKILL.md**
 
@@ -2491,10 +2170,12 @@ health of each piece.
 - Guardrails: add "Never re-run `generate_appcast` by hand against a published release — CI is the only appcast writer; if a release is broken, cut the next tag."
 - Delete every `rt-darwin-*.tar.gz` mention.
 
+Also (for Task 8's `lib/__tests__/release-workflow.test.ts`, which does `import { parse } from "yaml"`): add `yaml` to `devDependencies` in `package.json` (`bun add -d yaml`) — or switch the test to Bun's built-in YAML parser if one is available in the pinned Bun — and say which in the commit body.
+
 - [ ] **Step 5: Commit**
 
 ```bash
-git add README.md CLAUDE.md website/docs skills/rt-release/SKILL.md
+git add README.md CLAUDE.md website/docs skills/rt-release/SKILL.md package.json bun.lock
 git commit -m "MAT-383: docs — DMG install, Sparkle upgrade, bundled tools, new release train
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -2524,6 +2205,8 @@ HOME=$(mktemp -d) "$A/MacOS/rt" nav --help >/dev/null 2>&1; echo "picker path ex
 
 ### Task 14 (ORCHESTRATOR-ONLY / MATT): Xcode 26 path + Matt's machine cutover
 
+**AFTER L3 T2 merges** (`rt-tray/project.yml` is L3's; `xcodegen generate --spec` consumes it).
+
 - [ ] After Matt installs Xcode 26 and L3's `rt-tray/project.yml` exists: `sudo xcode-select -s /Applications/Xcode.app && cd rt-tray && RT_DAEMON_BIN=../dist/rt ./check-bundle.sh` — build.sh must pick `xcode` automatically (log line "with xcode"), and both flavors must pass the same assertions as the swift path. Then `RT_BUILD_TOOL=swift ./check-bundle.sh` must still pass (the CLT path stays the CI default until the Xcode path has produced one green release).
 - [ ] Cutover of the live machine (identifier `rt-daemon` → `rt` invalidates launchd's cached launch constraints for the old job): `rt-tray/build.sh install` (prod) then `rt daemon install`; if the agent fails with `EX_CONFIG`/"launch constraint", `launchctl bootout gui/$UID/com.mattstack.daemon; sfltool resetbtm` then re-open the app and approve it in Login Items once. Re-grant Full Disk Access to `/Applications/mattstack.app` (V3). Run `rt verify`.
 
@@ -2538,29 +2221,29 @@ HOME=$(mktemp -d) "$A/MacOS/rt" nav --help >/dev/null 2>&1; echo "picker path ex
 ## Self-review
 
 **Spec coverage (L4 scope items 1–8 from the brief, against §2/§7/§8/§11/§12.2/§14):**
-1. Identity freeze — Task 3 (rt name + identifier, LaunchAgent, LSMin 14, URL types, numeric CFBundleVersion, labels unchanged, dev shim named rt). ✔
+1. Identity freeze — Task 3 (rt identifier, numeric CFBundleVersion, jit-only entitlements, check-bundle asserts the whole contract); the plist templates, `Package.swift` floor and Swift string edits are L3 T1/T2/T18's (cross-plan review). ✔
 2. deps.lock + fetch-deps.sh + Helpers bundling + per-helper signing/entitlements, pending placeholders — Tasks 2, 4, 13. ✔
 3. build.sh wraps xcodebuild with CLT fallback; Sparkle embed + rpath + inside-out signing; SUFeedURL/SUPublicEDKey injection (file or `SPARKLE_PUBLIC_ED_KEY`) — Tasks 4, 5, 14. ✔
 4. DMG + notarize + staple; zip enclosure via ditto — Task 6 (+ Task 8 wiring). ✔
 5. generate_appcast in CI with `SPARKLE_ED_KEY`, last 3 zips for deltas, host decided (Release asset via `latest/download`), DMG+zip uploaded — Tasks 6, 7, 8. ✔
 6. release.yml rewrite incl. clean-room job (calls L7's script with `--post-install --non-interactive --team-of-one --no-launch`; `rt verify --ci`) — Task 8. ✔ Tarball dropped (Decision 2). ✔
-7. `rt update` thin; `installRtBinary` → symlink; `trayAppPath` via `mattstack.appPath`; legacy sweep covers `~/Applications/mattstack.app` + ghost `com.rt.daemon`; check-bundle asserts the new layout — Tasks 3, 9, 10. ✔ fzf by absolute path, verify app/link/vsix, terminal-notifier drop — Task 11. ✔
+7. `installRtBinary` → symlink; `trayAppPath` via `mattstack.appPath`; `legacyUserAppPath` — Task 9 (trimmed). `rt update` thin (exit 2 + `--json`), `commands/post-install.ts` (sweep + `setupApply`, exit 2 on a DMG path), `rt verify` rows — L1 T30 / T27+T24 / T7+T11 (cross-plan review; L4 T10 dropped). check-bundle asserts the new layout — Task 3. ✔ fzf by absolute path, terminal-notifier drop — Task 11. ✔
 8. README/CLAUDE.md/website/rt-release skill; tap references gone — Task 12. ✔
 Coordinator additions (a)–(e) — Global Constraints + Tasks 4, 5, 8. ✔
-§8 agent `EnvironmentVariables.PATH` = Helpers dir — Task 4. ✔ `com.mattstack.deck.plist` is L3/L5's (not shipped by L4; build.sh adds no second plist). §14 risk 1 — Task 13. ✔
+§8 agent plists: rendered by L3's `render-launchagents.sh` (daemon + deck, `KeepAlive {SuccessfulExit:false}`, static `EnvironmentVariables.PATH` per ruling R2 — rt/deck prepend their Helpers dir and `~/.local/bin` themselves) — Task 4 calls it, Task 3's check-bundle asserts both plists. §14 risk 1 — Task 13. ✔
 
 **Placeholder scan:** the only deferred values are the outcomes of ORCHESTRATOR tasks (entitlement measurement, first notarized run) and L7's script, each named explicitly. `deps.lock` carries real hashes computed from the real URLs.
 
-**Type/name consistency:** `bundleRootFromExec`/`appBundleRoot`/`bundledHelperPath`/`readDepsLock`/`RT_BUNDLE_PATH`/`DEPS_LOCK_BUNDLE_PATH` (Task 1) are the names used in Tasks 9, 11; `installRtBinary(src)` keeps its signature (Task 9 ↔ settings.ts:478); `trayAppPath(exists?)`/`devTrayAppPath(exists?)` (Task 9) match the handoff test rewrite; `runUpdate(args, deps)` (Task 10); `__test__.setFallbackNotifier` (Task 11); build.sh env names `RT_DAEMON_BIN RT_VSIX RT_VERSION RT_REQUIRE_DEPS SPARKLE_PUBLIC_ED_KEY RT_BUILD_TOOL` (Task 4 ↔ Task 8); artifact names `mattstack-<ver>.{dmg,zip}` (Tasks 6, 8, 12); `check-bundle.sh --app <path>` (Task 3 ↔ Task 8).
+**Type/name consistency:** `bundleRootFromExec`/`appBundleRoot`/`bundledHelperPath`/`bundledExec`/`readDepsLock`/`RT_BUNDLE_PATH`/`DEPS_LOCK_BUNDLE_PATH` (Task 1) are the names L1 T5/T24/T27 consume; `installRtBinary(src)` keeps its signature (Task 9 ↔ settings.ts:478; L1 T5 `link("rt")` calls it); `trayAppPath(exists?)`/`devTrayAppPath(exists?)` (Task 9) match the handoff test rewrite; `resolveFzf` (Task 11 ↔ L1 T7); `__test__.setFallbackNotifier` (Task 11); build.sh env names `RT_DAEMON_BIN RT_VSIX RT_VERSION RT_REQUIRE_DEPS SPARKLE_PUBLIC_ED_KEY RT_BUILD_TOOL` (Task 4 ↔ Task 8); artifact names `mattstack-<ver>.{dmg,zip}` (Tasks 6, 8, 12); `check-bundle.sh --app <path>` (Task 3 ↔ Task 8 ↔ L7 T12); `render-launchagents.sh <prod|dev> <outdir>` (L3 T2 ↔ Task 4); CFBundleVersion `major*1e6+minor*1e3+patch` (Tasks 3/4 ↔ contract `GET /version` example `2008000` ↔ L3 `build: Int(CFBundleVersion) ?? 0` ↔ L7 `make-appcast.sh`).
 
 ## Open questions
 
-1. **Appcast host fallback.** If the `latest/download` redirect ever misbehaves for Sparkle (or Matt wants pre-release channels), switch to GitHub Pages: enable Pages with `build_type=workflow` once (`gh api -X POST repos/m4ttstack/rt/pages -f build_type=workflow`), add an `actions/deploy-pages` step uploading `out/appcast.xml`, and change `SU_FEED_URL` in build.sh + the check-bundle assertion. One constant, one step.
-2. **CFBundleVersion scheme vs. the contract's example.** The setup contract shows `"build": 2080` for 2.8.0; this plan uses `2008000` (major·1e6 + minor·1e3 + patch) so patch ≥ 10 stays monotonic. L3's `GET /version` should return `CFBundleVersion` verbatim; the contract example is illustrative — confirm with L1/L3.
+1. **Appcast host.** CLOSED (ruling R1, cross-plan review): GitHub Release asset via `latest/download` is the host; spec §11 and L3's Info.plist template carry the same URL. Escape hatch only: if the redirect ever misbehaves for Sparkle (or pre-release channels are wanted), GitHub Pages is one constant (`SU_FEED_URL`) + one `actions/deploy-pages` step + the check-bundle assertion.
+2. **CFBundleVersion scheme vs. the contract's example.** CLOSED (cross-plan review §5 #53): the contract example is `"build": 2008000` (`major*1e6+minor*1e3+patch`); L3's `GET /version` returns `Int(CFBundleVersion) ?? 0` (a number); L7's `make-appcast.sh` computes the build with the same formula.
 3. **xcodebuild archive/export vs. build.** Ruling 6 says "build.sh wraps xcodebuild"; this plan wraps `xcodebuild build` and keeps our own inside-out signing (Decision 3). If Matt wants an `.xcarchive` for symbolication, add `-archivePath` to the same command later; signing still stays in build.sh.
 4. **fast-browser artifact.** Bundled from npm `0.1.0-alpha.11` today; L5 may publish a different artifact (e.g. a tarball with the Playwright runtime). When it does, only the `deps.lock` row changes. Its runtime setup (`~/.fast-browser/runtime`, extension side-load) remains L1's `fastbrowser.setup` step.
 5. **Dev flavor Helpers.** The plan bundles Helpers into `mattstack-dev.app` too (same code path, realistic dev testing, ~300 MB extra on disk). If that is unwanted, gate `bundle_helpers` on `IS_DEV=false` and relax the dev assertions in check-bundle.
-6. **`--no-launch` / `--non-interactive` / `--team-of-one`** are L1's flags; the workflow passes them through L7's script. Until L1 lands, `--post-install` on a runner still `open`s the app (as today's `test-install` does); harmless, but the clean-room job's daemon checks stay at "warn".
-7. **`rt-tray/*.xcodeproj/` in .gitignore** assumes L3 regenerates the project from `project.yml` (ruling 6). If L3 commits the project, drop that line.
-8. **Deck's LaunchAgent plist** (`com.mattstack.deck.plist`, §8) is not added by L4; when L5/L3 ship it, build.sh's LaunchAgent block needs a second templated plist and check-bundle a second assertion — a 10-line follow-up in the L5 cutover.
+6. **`--no-launch` / `--non-interactive` / `--team-of-one`** are L1's flags (L1 T27: `--no-launch` is also implied by `--ci`/`CI=true`); L7's script passes them by default and the workflow passes the zip positionally. Until L1 lands, `--post-install` on a runner still `open`s the app (as today's `test-install` does); harmless, but the clean-room job's daemon checks stay at "warn".
+7. **`rt-tray/*.xcodeproj/` in .gitignore.** CLOSED (cross-plan review §1 row 8): L3 T1 adds the line (L3 regenerates the project from `project.yml`); Task 2 does not.
+8. **Deck's LaunchAgent plist.** CLOSED (cross-plan review §1 row 17): L3 T2 ships `LaunchAgent-deck.plist` and `render-launchagents.sh` renders both plists; Task 4's build.sh copies both, Task 3's check-bundle asserts both. `Contents/Helpers/deck` stays absent until L5; L1's `services.register` requests the deck plist only when the helper is bundled.
 9. **Local `appcast.sh` dry run** needs a throwaway EdDSA key (`generate_keys` writes to the login Keychain and prompts). Task 6 leaves the first real appcast run to Task 15 rather than prompting implementers' keychains.
