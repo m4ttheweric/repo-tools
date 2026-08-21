@@ -19,16 +19,23 @@ public enum FDAProbe {
         path.hasPrefix("~/") ? home + String(path.dropFirst(1)) : path
     }
 
+    /// Always terminal: exhausting every path without a readable/denied
+    /// verdict still resolves to denied, never unknown — a required row
+    /// can't be left spinning forever with Install disabled.
     public static func evaluate(home: String, open: (String) -> FDAProbeOutcome) -> PermissionSnapshot.FDAState {
+        var lastDetail = "no probe path was accessible"
         for raw in probePaths {
             let path = expanded(raw, home: home)
             switch open(path) {
             case .readable:         return .init(status: "granted", detail: "probe read \(raw)")
             case .permissionDenied: return .init(status: "denied", detail: "probe read \(raw) refused")
-            case .missing, .otherError: continue
+            case .missing:
+                lastDetail = "probe read \(raw) missing (ENOENT)"
+            case .otherError(let code):
+                lastDetail = "probe read \(raw) failed (errno \(code))"
             }
         }
-        return .init(status: "unknown", detail: "no probe path exists on this Mac")
+        return .init(status: "denied", detail: lastDetail)
     }
 
     /// The real open(2) attempt; lives here so the app target stays free of errno handling.

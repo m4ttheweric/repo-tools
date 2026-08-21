@@ -7,11 +7,15 @@ let permissionsChecks: [Check] = [
         c.expectEqual(s.status, "granted")
         c.expect(s.detail.contains("com.apple.stocks"))
     },
-    Check("FDAProbe: EPERM/EACCES on any probe path → denied; all missing → unknown") { c in
+    Check("FDAProbe: EPERM/EACCES on any probe path → denied; exhausting all paths still terminates denied, never unknown") { c in
         let denied = FDAProbe.evaluate(home: "/Users/u") { _ in .permissionDenied }
         c.expectEqual(denied.status, "denied")
-        let unknown = FDAProbe.evaluate(home: "/Users/u") { _ in .missing }
-        c.expectEqual(unknown.status, "unknown")
+        let allMissing = FDAProbe.evaluate(home: "/Users/u") { _ in .missing }
+        c.expectEqual(allMissing.status, "denied")
+        c.expect(allMissing.detail.contains("ENOENT"), "ENOENT-ish exhaustion must still carry the error text in detail")
+        let allOtherError = FDAProbe.evaluate(home: "/Users/u") { _ in .otherError(5) }
+        c.expectEqual(allOtherError.status, "denied")
+        c.expect(allOtherError.detail.contains("5"), "unexpected errno must land in detail")
         // a missing first path must fall through to the MacPaw list
         let second = FDAProbe.evaluate(home: "/Users/u") { path in path.hasSuffix("CloudTabs.db") ? .permissionDenied : .missing }
         c.expectEqual(second.status, "denied")
