@@ -19,6 +19,11 @@ import {
 } from "fs";
 import * as osReal from "os";
 import { tmpdir } from "os";
+// `mock.module` mutates the live "os" namespace object in place, so
+// `osReal.hostname` itself becomes the mock the moment it's installed —
+// restoring with `() => osReal` would restore the mock to itself. Capture
+// the real function BEFORE any test can call mock.module("os", ...).
+const realHostname = osReal.hostname;
 import { dirname, join } from "path";
 import {
   rtDir, reposDir, repoDataDir, logsDir,
@@ -97,7 +102,7 @@ describe("rt-paths", () => {
     const makeKeyHome = () => mkdtempSync(join(tmpdir(), "rt-paths-machine-key-"));
 
     afterEach(() => {
-      mock.module("os", () => osReal);
+      mock.module("os", () => ({ ...osReal, hostname: realHostname }));
     });
 
     test("an override file wins, trimmed", () => {
@@ -116,6 +121,25 @@ describe("rt-paths", () => {
       writeFileSync(join(home, ".mattstack", "machine-key"), "   \n");
       mock.module("os", () => ({ ...osReal, hostname: () => "Real-Host" }));
       expect(machineKey()).toBe("real-host");
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    // An override becomes a directory name directly under user/local/, so a
+    // value that isn't a safe single path segment must not be honored — it
+    // would escape that directory (a separator) or resolve to a no-op/parent
+    // segment (".", "..") instead of a distinct machine's namespace.
+    test.each([
+      ["a forward slash", "evil/key"],
+      ["a backslash", "evil\\key"],
+      ["exactly \".\"", "."],
+      ["exactly \"..\"", ".."],
+    ])("an override value containing %s is rejected — falls through to the hostname slug", (_label, unsafe) => {
+      const home = makeKeyHome();
+      process.env.HOME = home;
+      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      writeFileSync(join(home, ".mattstack", "machine-key"), unsafe);
+      mock.module("os", () => ({ ...osReal, hostname: () => "Safe-Host" }));
+      expect(machineKey()).toBe("safe-host");
       rmSync(home, { recursive: true, force: true });
     });
 

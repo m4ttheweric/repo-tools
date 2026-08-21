@@ -45,9 +45,13 @@ export function teamsDir(): string {
  * `user/local/<key>/` never collides across machines sharing one synced
  * `user/` tree.
  *
- *  1. `~/.mattstack/machine-key`, trimmed, if present and non-empty — an
- *     explicit override for machines whose hostname isn't stable or unique
- *     (fresh installs, cloned VMs).
+ *  1. `~/.mattstack/machine-key`, trimmed, if present, non-empty, and a SAFE
+ *     PATH SEGMENT (no `/` or `\`, not `.` or `..`) — an explicit override
+ *     for machines whose hostname isn't stable or unique (fresh installs,
+ *     cloned VMs). The value becomes a directory name directly under
+ *     `user/local/`, so anything else (a separator, or a segment that would
+ *     walk up/stay put) is treated exactly as if the file were absent,
+ *     rather than let the override escape that directory.
  *  2. Otherwise the hostname, slugified: lowercased, a trailing `.local`
  *     dropped (mDNS suffix, not part of the identity), every run of
  *     characters outside `[a-z0-9-]` collapsed to one `-`, leading/trailing
@@ -58,7 +62,7 @@ export function machineKey(): string {
   const override = join(home(), ".mattstack", "machine-key");
   try {
     const v = readFileSync(override, "utf8").trim();
-    if (v) return v;
+    if (v && v !== "." && v !== ".." && !v.includes("/") && !v.includes("\\")) return v;
   } catch {
     // no override file — fall through to the hostname slug
   }
