@@ -25,12 +25,13 @@ final class FakeTicker: TickerScheduling, @unchecked Sendable {
     func fire() { ticks.forEach { $0() } }
 }
 
-func makePlan(fda: RowStatus = .needsYou, gitlab: RowStatus = .missing, chrome: RowStatus = .skipped) -> Plan {
+func makePlan(fda: RowStatus = .needsYou, gitlab: RowStatus = .missing, chrome: RowStatus = .skipped,
+              notifications: RowStatus = .skipped, canInstallOverride: Bool? = nil) -> Plan {
     let rows1 = [
         PlanRow(id: "perm.fda", kind: .permission, title: "Full Disk Access", why: "w", required: true, status: fda,
                 action: RowAction(type: .openSettings, label: "Open Full Disk Access Settings…", target: "fda"), recheck: .onActivate),
         PlanRow(id: "perm.notifications", kind: .permission, title: "Notifications", why: "w", required: false,
-                optionalNote: "Works without this.", status: .skipped, recheck: .onActivate),
+                optionalNote: "Works without this.", status: notifications, recheck: .onActivate),
     ]
     let rows2 = [
         PlanRow(id: "account.gitlab", kind: .account, title: "GitLab", why: "w", required: true, status: gitlab,
@@ -41,7 +42,7 @@ func makePlan(fda: RowStatus = .needsYou, gitlab: RowStatus = .missing, chrome: 
     let missing = (rows1 + rows2).filter { $0.required && $0.status != .ready }.map(\.id)
     return Plan(at: "t", team: TeamInfo(slug: "assured", name: "Assured", mode: .join),
                 groups: [PlanGroup(id: "mac", title: "Your Mac", rows: rows1), PlanGroup(id: "accounts", title: "Accounts", rows: rows2)],
-                canInstall: missing.isEmpty, requiredMissing: missing)
+                canInstall: canInstallOverride ?? missing.isEmpty, requiredMissing: missing)
 }
 
 let readinessModelChecks: [Check] = [
@@ -57,18 +58,18 @@ let readinessModelChecks: [Check] = [
             c.expectEqual(m.limitedModeAvailable, false)
         }
     },
-    Check("limited mode only when every required row is ready and some optional row is not") { c in
-        let plans = FakePlans([makePlan(fda: .ready, gitlab: .ready, chrome: .skipped)])
+    Check("limited mode only when every required row is ready and some optional row is not, including a non-ready optional permission") { c in
+        let plans = FakePlans([makePlan(fda: .ready, gitlab: .ready, chrome: .ready, notifications: .skipped)])
         let m = await MainActor.run { ReadinessModel(plans: plans, permissions: FakePermissions(), ticker: FakeTicker()) }
         await m.load()
         await MainActor.run {
             c.expectEqual(m.canInstall, true)
-            c.expectEqual(m.limitedModeAvailable, true)
+            c.expectEqual(m.limitedModeAvailable, true, "notifications is optional, permission-kind, and not ready → still limited")
         }
-        let plans2 = FakePlans([makePlan(fda: .ready, gitlab: .ready, chrome: .ready)])
+        let plans2 = FakePlans([makePlan(fda: .ready, gitlab: .ready, chrome: .ready, notifications: .ready)])
         let m2 = await MainActor.run { ReadinessModel(plans: plans2, permissions: FakePermissions(), ticker: FakeTicker()) }
         await m2.load()
-        await MainActor.run { c.expectEqual(m2.limitedModeAvailable, false, "notifications optional row is 'skipped' → still limited") }
+        await MainActor.run { c.expectEqual(m2.limitedModeAvailable, false, "every row ready → not limited") }
     },
     Check("visible → 1s ticker probes permissions and overlays permission rows; hidden cancels") { c in
         let plans = FakePlans([makePlan()])
@@ -118,6 +119,32 @@ let readinessModelChecks: [Check] = [
         await MainActor.run {
             c.expectEqual(m.groups.count, 2)
             c.expect(m.lastError?.contains("boom") == true)
+        }
+    },
+    Check("recheckAll and afterAction probe permissions locally before refetching the plan") { c in
+        let plans = FakePlans([makePlan(gitlab: .missing), makePlan(gitlab: .ready)])
+        let perms = FakePermissions()
+        let m = await MainActor.run { ReadinessModel(plans: plans, permissions: perms, ticker: FakeTicker()) }
+        await m.load()
+        c.expectEqual(perms.probes, 0, "load doesn't probe")
+        await m.recheckAll()
+        c.expectEqual(perms.probes, 1, "recheckAll probes permissions before fetching, mirroring didBecomeActive")
+        c.expectEqual(plans.fetches, 2)
+
+        let plans2 = FakePlans([makePlan(), makePlan(gitlab: .ready)])
+        let perms2 = FakePermissions()
+        let m2 = await MainActor.run { ReadinessModel(plans: plans2, permissions: perms2, ticker: FakeTicker()) }
+        await m2.load()
+        await m2.afterAction(rowId: "account.gitlab")
+        c.expectEqual(perms2.probes, 1, "afterAction probes permissions before fetching")
+    },
+    Check("canInstall respects rt's own plan.canInstall gate even when every row looks ready") { c in
+        let plans = FakePlans([makePlan(fda: .ready, gitlab: .ready, chrome: .ready, notifications: .ready, canInstallOverride: false)])
+        let m = await MainActor.run { ReadinessModel(plans: plans, permissions: FakePermissions(), ticker: FakeTicker()) }
+        await m.load()
+        await MainActor.run {
+            c.expectEqual(m.requiredMissing, [], "no row is actually missing")
+            c.expectEqual(m.canInstall, false, "rt gated canInstall on something not expressed as a row")
         }
     },
     Check("PermissionRowOverlay maps contract statuses to row statuses") { c in
