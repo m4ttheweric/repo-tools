@@ -96,7 +96,7 @@ public final class TeamChoiceModel: ObservableObject {
             case .join:
                 let stdin = try JSONEncoder().encode(["code": normalizedInviteCode])
                 let r = try await rt.run(["team", "join", "--dry-run", "--json"], stdin: stdin)
-                if let e = r.userError { return Self.joinFailureCopy(e, owner: nil, team: nil) }
+                if let e = r.userError(redactStderr: true) { return Self.joinFailureCopy(e, owner: nil, team: nil) }
                 guard r.exitCode == 0, let j = try? r.decode(TeamJoinResult.self) else { return r.failureCopy(verb: "team join", redactStderr: true) }
                 guard j.access == "ok" else { return Self.joinFailureCopy(RtUserError(code: j.access == "denied" ? "no-access" : "unreachable", message: j.message ?? ""), owner: j.team?.owner, team: j.team?.name) }
                 joinSummary = j.message ?? "Joining \(j.team?.name ?? "") (owner \(j.team?.owner ?? ""))"
@@ -108,7 +108,7 @@ public final class TeamChoiceModel: ObservableObject {
                 let repo = restoreRepo.trimmingCharacters(in: .whitespaces)
                 let stdin = try JSONEncoder().encode(["ageKey": restoreAgeKey.trimmingCharacters(in: .whitespacesAndNewlines)])
                 let r = try await rt.run(["restore", repo, "--json"], stdin: stdin)
-                if let e = r.userError { return e.message }
+                if let e = r.userError(redactStderr: true) { return e.message }
                 guard r.exitCode == 0 else { return r.failureCopy(verb: "restore", redactStderr: true) }
                 let intent = try await rt.run(["setup", "intent", "restore", repo, "--json"], stdin: nil)
                 if let e = intent.userError { return e.message }

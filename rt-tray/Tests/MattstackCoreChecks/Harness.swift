@@ -10,9 +10,7 @@ public struct CheckFailure: Sendable {
 /// Thrown by `require`, which has already recorded the failure — the throw only
 /// unwinds the body so a soft assertion is never followed by the hard access
 /// (a subscript, a force-unwrap) it was guarding.
-public struct CheckAbort: Error, Sendable {
-    public let message: String
-}
+public struct CheckAbort: Error, Sendable {}
 
 public struct Check: Sendable {
     public let name: String
@@ -47,16 +45,24 @@ public final class CheckContext: @unchecked Sendable {
     public func require(_ condition: Bool, _ message: @autoclosure () -> String = "requirement failed",
                         file: String = #filePath, line: Int = #line) throws {
         guard !condition else { return }
-        let text = message()
-        record(text, file, line)
-        throw CheckAbort(message: text)
+        record(message(), file, line)
+        throw CheckAbort()
     }
     public func requireEqual<T: Equatable>(_ actual: T, _ expected: T, _ message: @autoclosure () -> String = "",
                                            file: String = #filePath, line: Int = #line) throws {
         guard actual != expected else { return }
-        let text = "\(message()) expected \(expected) got \(actual)"
-        record(text, file, line)
-        throw CheckAbort(message: text)
+        record("\(message()) expected \(expected) got \(actual)", file, line)
+        throw CheckAbort()
+    }
+    /// Unwraps or aborts, so `try c.requireSome(...)` replaces a force-unwrap
+    /// without losing the assertion.
+    public func requireSome<T>(_ value: T?, _ message: @autoclosure () -> String = "expected a value",
+                               file: String = #filePath, line: Int = #line) throws -> T {
+        guard let value else {
+            record(message(), file, line)
+            throw CheckAbort()
+        }
+        return value
     }
     private func record(_ message: String, _ file: String, _ line: Int) {
         lock.lock(); defer { lock.unlock() }

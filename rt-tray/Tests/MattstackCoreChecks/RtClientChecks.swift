@@ -12,6 +12,49 @@ private func fakeExecutable(_ body: String) throws -> URL {
     return url
 }
 
+private enum StreamEnd: Sendable {
+    case lines([String])
+    case exited(Int32, String)
+    case otherError(String)
+}
+
+private final class EndBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: StreamEnd?
+    func set(_ v: StreamEnd) { lock.lock(); value = v; lock.unlock() }
+    func get() -> StreamEnd? { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+/// Consumes a stream against a deadline, returning nil if the deadline won.
+/// The failure these checks guard against is a stream that never ends, so the
+/// wait polls a detached consumer rather than awaiting it — a task group would
+/// still block on the stuck child on its way out, turning a failing check into
+/// a hung suite.
+private func consume(_ stream: AsyncThrowingStream<String, Error>, within seconds: Double) async -> StreamEnd? {
+    let box = EndBox()
+    let consumer = Task {
+        var lines: [String] = []
+        do {
+            for try await line in stream { lines.append(line) }
+            box.set(.lines(lines))
+        } catch let e as RtClientError {
+            if case .exited(let status, let stderr) = e {
+                box.set(.exited(status, stderr))
+            } else {
+                box.set(.otherError(String(describing: e)))
+            }
+        } catch {
+            box.set(.otherError(String(describing: error)))
+        }
+    }
+    for _ in 0..<Int(seconds * 50) {
+        if let value = box.get() { return value }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+    }
+    consumer.cancel()
+    return nil
+}
+
 let rtClientChecks: [Check] = [
     Check("NDJSONSplitter yields complete lines and keeps partial tails") { c in
         var s = NDJSONSplitter()
@@ -48,11 +91,9 @@ let rtClientChecks: [Check] = [
         c.expect(lines[1].contains("\"done\""))
     },
     Check("stream delivers every line of a chatty child that exits immediately — the terminal event is never lost to the exit race") { c in
-        // The child buffers 2000 lines, emits them in a single write that fits
-        // the pipe, then exits — so termination lands while the reader is still
-        // draining. That is the window in which a second reader at termination
-        // stole parsed-but-unyielded lines, costing InstallRunModel rt's final
-        // `done`. Hitting it is timing-dependent, hence the repeats.
+        // One buffered write that fits the pipe, then an immediate exit, so
+        // termination lands while the reader is still draining. Landing inside
+        // that window is timing-dependent, hence the repeats.
         let exe = try fakeExecutable(#"out=$(i=1; while [ $i -le 2000 ]; do echo "{\"n\":$i}"; i=$((i+1)); done); printf '%s\n' "$out""#)
         let client = RtClient(location: RtLocation(executable: exe, argumentPrefix: [], source: .bundled), environment: [:])
         for attempt in 0..<40 {
@@ -62,6 +103,37 @@ let rtClientChecks: [Check] = [
             try c.requireEqual(lines.last, #"{"n":2000}"#, "attempt \(attempt) lost the terminal line")
             try c.requireEqual(lines.first, #"{"n":1}"#, "attempt \(attempt) lost the opening line")
         }
+    },
+    Check("stream still ends when a grandchild holds the pipes open past rt's exit") { c in
+        // The backgrounded sleep inherits both pipes, so neither reaches EOF
+        // when the shell exits. Nothing but the exit status will ever arrive,
+        // and the install screen must not sit at .running waiting for it.
+        // The grandchild outlives the grace period and then reaps itself; a
+        // check may not spawn a process-killing tool.
+        let exe = try fakeExecutable(#"sleep 6 & printf '{"n":1}\n'; exit 1"#)
+        let client = RtClient(location: RtLocation(executable: exe, argumentPrefix: [], source: .bundled), environment: [:])
+        let end = await consume(client.stream(["setup", "apply", "--json"], stdin: nil), within: 5)
+        guard case .exited(let status, _)? = end else {
+            c.fail("expected .exited within the grace period, got \(String(describing: end))"); return
+        }
+        c.expectEqual(status, 1)
+    },
+    Check("stream drains a stderr flood instead of deadlocking, and caps the error text") { c in
+        // 256 KB of stderr is four times the pipe buffer: a child that writes
+        // it before exiting blocks unless stderr is drained as it arrives.
+        let exe = try fakeExecutable(#"""
+s=x; i=0; while [ $i -lt 16 ]; do s="$s$s"; i=$((i+1)); done
+i=0; while [ $i -lt 4 ]; do printf '%s' "$s" >&2; i=$((i+1)); done
+printf '{"n":1}\n'
+exit 1
+"""#)
+        let client = RtClient(location: RtLocation(executable: exe, argumentPrefix: [], source: .bundled), environment: [:])
+        let end = await consume(client.stream(["setup", "apply", "--json"], stdin: nil), within: 5)
+        guard case .exited(let status, let stderr)? = end else {
+            c.fail("expected .exited, got \(String(describing: end))"); return
+        }
+        c.expectEqual(status, 1)
+        c.expectEqual(stderr.count, 4000, "the error text is capped, however much the child wrote")
     },
     Check("stream throws when the process exits non-zero and non-2") { c in
         let exe = try fakeExecutable("exit 1")
