@@ -547,6 +547,25 @@ describe("registered roots are canonicalized", () => {
   });
 });
 
+describe("registered roots may start with dots without escaping", () => {
+  test("a directory literally named ..skills inside the pack is accepted as a root", async () => {
+    const packDir = makePackDir();
+    writeFile(
+      join(packDir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ version: "1.0.0", skills: ["./skills", "./..skills"] }),
+    );
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": ["inside", "dotty"] }\n`);
+    writeFile(join(packDir, "skills", "inside", "SKILL.md"), "---\nname: inside\n---\nbody\n");
+    writeFile(join(packDir, "..skills", "dotty", "SKILL.md"), "---\nname: dotty\n---\nbody\n");
+
+    await skillsSurface(["list", "--pack", "p", "--pack-dir", packDir]);
+
+    const joined = logs.join("\n");
+    expect(joined).toMatch(/public {3}hand-authored {2}inside/);
+    expect(joined).toContain("dotty");
+  });
+});
+
 describe("registered roots must be directories", () => {
   test("a plugin.json skills entry pointing at a regular file is ignored", async () => {
     const packDir = makePackDir();
