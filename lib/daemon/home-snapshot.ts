@@ -13,8 +13,9 @@
  * without touching a real filesystem or clock.
  */
 
-import { existsSync, mkdirSync, readFileSync, watch as fsWatch, writeFileSync } from "fs";
-import { dirname, join } from "path";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, watch as fsWatch, writeFileSync } from "fs";
+import { randomBytes } from "crypto";
+import { dirname, isAbsolute, join } from "path";
 import type { Logger } from "pino";
 
 import { mattstackHome, rtDir } from "../rt-paths.ts";
@@ -28,6 +29,7 @@ export type SnapshotReason = "manual" | "watch" | "janitor";
 export type SkipReason =
   | "disabled"
   | "not-a-repo"
+  | "init-failed"
   | "detached"
   | "merge-in-progress"
   | "owners-read-error"
@@ -97,23 +99,29 @@ function ownersPathFor(repoDir: string): string {
   return join(repoDir, "snapshot-owners.jsonc");
 }
 
-function loadState(path: string): Record<string, number> {
+/** A missing file is the normal first-run case (no warn); a present-but-unparseable file is a real loss of the janitor-threshold clock and must be loud, not silently swallowed. */
+function loadState(path: string, log: Logger): Record<string, number> {
+  if (!existsSync(path)) return {};
   try {
-    if (!existsSync(path)) return {};
     const raw = JSON.parse(readFileSync(path, "utf8")) as { firstSeenDirty?: unknown };
     return raw && typeof raw.firstSeenDirty === "object" && raw.firstSeenDirty !== null
       ? (raw.firstSeenDirty as Record<string, number>)
       : {};
-  } catch {
+  } catch (err) {
+    log.warn({ err, path }, "home-snapshot: state file unreadable; starting from empty first-seen-dirty state");
     return {};
   }
 }
 
+/** Write-temp-then-rename (mirrors lib/home/snapshot-owners.ts's writeIntoOwnersFile) — a crash mid-write must never leave a truncated/corrupt state.json for the next boot's loadState to choke on. */
 function persistState(path: string, firstSeenDirty: Record<string, number>, log: Logger): void {
+  const tmp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
   try {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify({ firstSeenDirty }, null, 2));
+    writeFileSync(tmp, JSON.stringify({ firstSeenDirty }, null, 2));
+    renameSync(tmp, path);
   } catch (err) {
+    try { unlinkSync(tmp); } catch { /* tmp was never created, or already gone */ }
     log.warn({ err }, "home-snapshot: failed to persist state");
   }
 }
@@ -136,7 +144,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
 
   const ownersPath = ownersPathFor(deps.repoDir);
 
-  let disabledReason: "disabled" | "not-a-repo" | null = null;
+  let disabledReason: "not-a-repo" | "init-failed" | null = null;
   let stopped = false;
   let watcher: { close(): void } | null = null;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -148,57 +156,81 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   let lastRunAt = 0;
   let lastCommit: { sha: string; message: string; at: number } | null = null;
   let pushPending = false;
+  let pushInFlight: Promise<void> | null = null;
   let lastPushAt = 0;
   let lastPushError: string | null = null;
-  let firstSeenDirty: Record<string, number> = loadState(deps.statePath);
+  let firstSeenDirty: Record<string, number> = loadState(deps.statePath, deps.log);
   let lastLoggedOwnersError: string | null = null;
 
-  const initialSettings = deps.readSettings();
-  const enabledAtStart = initialSettings.enabled !== false;
+  const startupSettings = deps.readSettings();
+  if (startupSettings.enabled === false) {
+    // Logged once, informationally, but NOT sticky: `disabledReason` stays
+    // null so a live `rt.homeSnapshot.enabled` flip is picked up by doRun's
+    // own top-of-run check without a daemon restart (only "not-a-repo" and
+    // "init-failed" below are permanent — a directory's git-repo-ness and a
+    // watcher's arming outcome don't change mid-process the way a setting
+    // can).
+    deps.log.info("home-snapshot: disabled (rt.homeSnapshot.enabled=false) at startup — the watcher and janitor timer stay unarmed; re-enabling still needs a daemon restart to pick those up, though a manual run (IPC) already honors a live setting flip");
+  }
 
   let resolveReady!: () => void;
   const readyPromise = new Promise<void>((resolve) => {
     resolveReady = resolve;
   });
 
-  if (!enabledAtStart) {
-    disabledReason = "disabled";
-    deps.log.info("home-snapshot: disabled (rt.homeSnapshot.enabled=false); not watching");
-    resolveReady();
-  } else {
-    void init();
-  }
+  void init();
 
   async function init(): Promise<void> {
-    const check = await deps.exec(["git", "rev-parse", "--is-inside-work-tree"], {
-      cwd: deps.repoDir,
-      timeoutMs: GIT_TIMEOUT_MS,
-      stderr: "pipe",
-    });
-    if (stopped) {
+    try {
+      const check = await deps.exec(["git", "rev-parse", "--is-inside-work-tree"], {
+        cwd: deps.repoDir,
+        timeoutMs: GIT_TIMEOUT_MS,
+        stderr: "pipe",
+      });
+      if (stopped) return;
+      if (check.exitCode !== 0 || check.stdout.trim() !== "true") {
+        disabledReason = "not-a-repo";
+        deps.log.warn({ repoDir: deps.repoDir }, "home-snapshot: repoDir is not a git repository; inert");
+        return;
+      }
+      if (deps.readSettings().enabled !== false) {
+        armWatcher();
+        scheduleJanitor();
+      }
+    } catch (err) {
+      // fs.watch itself can throw synchronously (EMFILE/ENOSPC/ENOENT) —
+      // without this catch that escapes as an unhandled rejection and
+      // resolveReady() below never runs, so every runNow() (including the
+      // home:snapshot IPC handler) awaits readyPromise forever.
+      disabledReason = "init-failed";
+      deps.log.warn({ err }, "home-snapshot: startup arming failed; inert");
+      if (watcher) { try { watcher.close(); } catch { /* already closed */ } watcher = null; }
+    } finally {
       resolveReady();
-      return;
     }
-    if (check.exitCode !== 0 || check.stdout.trim() !== "true") {
-      disabledReason = "not-a-repo";
-      deps.log.warn({ repoDir: deps.repoDir }, "home-snapshot: repoDir is not a git repository; inert");
-      resolveReady();
-      return;
-    }
-    armWatcher();
-    scheduleJanitor();
-    resolveReady();
   }
 
   function armWatcher(): void {
+    let currentDebounceMs: number | null = null;
     watcher = deps.watch(deps.repoDir, { recursive: true }, (_eventType, filename) => {
       if (filename !== null && (filename === ".git" || filename.startsWith(".git/"))) return;
-      if (debounceTimer) deps.clearTimeout(debounceTimer);
-      const debounceMs = deps.readSettings().debounceSec * 1000;
+      if (debounceTimer === null) {
+        // Only resolved when a NEW debounce window opens, not on every
+        // event in it — this fs.watch callback fires on the daemon's main
+        // thread, and rt.homeSnapshot.debounceSec's read is a settings-store
+        // round trip (sync file reads + jsonc parse); doing that per event
+        // during a bulk write (hundreds of fs events) is an event-loop
+        // stall waiting to happen. The eventual runNow("watch") still reads
+        // fresh settings on its own.
+        currentDebounceMs = deps.readSettings().debounceSec * 1000;
+      } else {
+        deps.clearTimeout(debounceTimer);
+      }
       debounceTimer = deps.setTimeout(() => {
         debounceTimer = null;
+        currentDebounceMs = null;
         void runNow("watch");
-      }, debounceMs);
+      }, currentDebounceMs!);
     });
   }
 
@@ -212,6 +244,12 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   }
 
   function schedulePush(): void {
+    if (stopped) return;
+    // A fresh commit supersedes any standing failed-push retry — without
+    // canceling it here, the retry timer and this new trailing-push timer
+    // both eventually fire `doPush()` independently (the in-flight guard
+    // below stops them overlapping, but not the redundant second attempt).
+    if (pushRetryTimer) { deps.clearTimeout(pushRetryTimer); pushRetryTimer = null; }
     if (pushTimer) deps.clearTimeout(pushTimer);
     const delayMs = deps.readSettings().pushDelaySec * 1000;
     pushTimer = deps.setTimeout(() => {
@@ -221,6 +259,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   }
 
   function schedulePushRetry(): void {
+    if (stopped) return;
     if (pushRetryTimer) deps.clearTimeout(pushRetryTimer);
     const retryMs = deps.readSettings().pushDelaySec * 5 * 1000;
     pushRetryTimer = deps.setTimeout(() => {
@@ -229,7 +268,19 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     }, retryMs);
   }
 
+  /** In-flight guard mirrors runNow's: the push timer and the retry timer can both fire close together (schedulePush cancels a *standing* retry, but not one already mid-flight), so doPush itself must not let two `git push` processes overlap. */
   async function doPush(): Promise<void> {
+    if (pushInFlight) return pushInFlight;
+    const p = doPushInner();
+    pushInFlight = p;
+    try {
+      await p;
+    } finally {
+      pushInFlight = null;
+    }
+  }
+
+  async function doPushInner(): Promise<void> {
     const result = await deps.exec(["git", "push", "-q", "origin", "HEAD"], {
       cwd: deps.repoDir,
       timeoutMs: PUSH_TIMEOUT_MS,
@@ -256,8 +307,22 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     return result.stdout.trim();
   }
 
+  /** `git rev-parse --git-dir`, resolved against repoDir when relative — a linked worktree's `.git` is a FILE ("gitdir: <path>"), not a directory, so `join(repoDir, ".git", "MERGE_HEAD")` silently checks the wrong tree. Falls back to the conventional `<repoDir>/.git` on any exec failure rather than throwing the preflight off course. */
+  async function resolveGitDir(): Promise<string> {
+    const result = await deps.exec(["git", "rev-parse", "--git-dir"], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+    const raw = result.stdout.trim();
+    if (result.exitCode !== 0 || raw === "") return join(deps.repoDir, ".git");
+    return isAbsolute(raw) ? raw : join(deps.repoDir, raw);
+  }
+
   async function doRun(reason: SnapshotReason): Promise<SnapshotResult> {
     lastRunAt = deps.now();
+
+    const settings = deps.readSettings();
+    if (settings.enabled === false) {
+      deps.log.info("home-snapshot: disabled via rt.homeSnapshot.enabled=false; skipping cycle");
+      return { committed: false, sha: null, paths: [], reason, skipped: "disabled" };
+    }
 
     const branch = await deps.exec(["git", "rev-parse", "--abbrev-ref", "HEAD"], {
       cwd: deps.repoDir,
@@ -268,7 +333,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       deps.log.warn("home-snapshot: HEAD is detached; skipping cycle");
       return { committed: false, sha: null, paths: [], reason, skipped: "detached" };
     }
-    const gitDir = join(deps.repoDir, ".git");
+    const gitDir = await resolveGitDir();
     if (existsSync(join(gitDir, "MERGE_HEAD")) || existsSync(join(gitDir, "rebase-merge")) || existsSync(join(gitDir, "rebase-apply"))) {
       deps.log.warn("home-snapshot: a merge or rebase is in progress; skipping cycle");
       return { committed: false, sha: null, paths: [], reason, skipped: "merge-in-progress" };
@@ -294,7 +359,6 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     });
     const entries = parsePorcelainZ(statusResult.stdout);
 
-    const settings = deps.readSettings();
     const plan = planSnapshot({
       entries,
       owners,
@@ -311,8 +375,17 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
 
     if (plan.autoPaths.length > 0 && plan.message !== null) {
       const excludeArgs = plan.excludedZones.map((zone) => `:(exclude)${zone}`);
+      // The same exclude pathspec rides the commit too, not just the add:
+      // `git add -A -- . :(exclude)Z` only governs what THIS add stages —
+      // a plain `git commit` afterward commits the WHOLE index regardless,
+      // so content the user (or a stray earlier `git add`) staged inside a
+      // claimed zone would ship under the daemon's message. Restricting the
+      // commit to the same pathspec makes it self-contained: only matched
+      // paths are committed, whatever sits staged for the zone is left
+      // exactly as it was.
       await deps.exec(["git", "add", "-A", "--", ".", ...excludeArgs], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
-      const commitResult = await deps.exec(["git", "commit", "-q", "-m", plan.message], {
+      const message = reason === "manual" ? plan.message.replace(/^snapshot:/, "snapshot (manual):") : plan.message;
+      const commitResult = await deps.exec(["git", "commit", "-q", "-m", message, "--", ".", ...excludeArgs], {
         cwd: deps.repoDir,
         timeoutMs: GIT_TIMEOUT_MS,
         stderr: "pipe",
@@ -320,7 +393,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       if (commitResult.exitCode === 0) {
         sha = await getHeadSha();
         committed = true;
-        lastCommit = { sha, message: plan.message, at: deps.now() };
+        lastCommit = { sha, message, at: deps.now() };
         deps.broadcast("home:snapshot", { sha, paths: plan.autoPaths, reason });
       } else {
         deps.log.warn({ stderr: commitResult.stderr }, "home-snapshot: commit failed");
@@ -329,9 +402,11 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
 
     if ((reason === "janitor" || reason === "manual") && plan.janitorZones.length > 0) {
       for (const jz of plan.janitorZones) {
+        const dirtyHours = Math.floor((deps.now() - jz.dirtySinceMs) / (60 * 60 * 1000));
+        const message = `snapshot (janitor): ${jz.zone} dirty >${dirtyHours}h, owner ${jz.owner}`;
         await deps.exec(["git", "add", "-A", "--", jz.zone], { cwd: deps.repoDir, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
-        const message = `snapshot: janitor ${jz.zone} (owner ${jz.owner})`;
-        const commitResult = await deps.exec(["git", "commit", "-q", "-m", message], {
+        // Same self-contained-commit reasoning as the auto commit above.
+        const commitResult = await deps.exec(["git", "commit", "-q", "-m", message, "--", jz.zone], {
           cwd: deps.repoDir,
           timeoutMs: GIT_TIMEOUT_MS,
           stderr: "pipe",
@@ -376,7 +451,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       ownersError = err instanceof Error ? err.message : String(err);
     }
     return {
-      enabled: enabledAtStart,
+      enabled: deps.readSettings().enabled !== false,
       repoDir: deps.repoDir,
       lastRunAt,
       lastCommit,
