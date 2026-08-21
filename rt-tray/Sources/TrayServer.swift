@@ -25,7 +25,7 @@ class TrayServer {
 
     /// The one socket both flavors bind. Static so the startup guard can
     /// probe it before any TrayServer instance exists.
-    static let socketPath = NSHomeDirectory() + "/.mattstack/rt/tray.sock"
+    static let socketPath = AppHome.current + "/.mattstack/rt/tray.sock"
 
     // MARK: - Startup mutual exclusion
 

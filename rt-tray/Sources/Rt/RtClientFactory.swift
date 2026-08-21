@@ -10,7 +10,7 @@ enum RtClientFactory {
         #endif
         guard let loc = RtBinaryLocator.resolve(bundlePath: Bundle.main.bundlePath, isDevBuild: BundleFlavor.isDevBuild,
                                                 isDebugBuild: debug, environment: ProcessInfo.processInfo.environment,
-                                                home: NSHomeDirectory(), fileExists: { FileManager.default.isExecutableFile(atPath: $0) })
+                                                home: AppHome.current, fileExists: { FileManager.default.isExecutableFile(atPath: $0) })
         else {
             TrayLog.error("no rt binary found for this bundle", ["bundle": Bundle.main.bundlePath])
             return nil

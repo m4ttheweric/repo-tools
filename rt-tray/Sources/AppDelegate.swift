@@ -36,8 +36,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     // `lazy`: constructing it starts Sparkle (when enabled). A translocated
     // or DMG-mounted launch returns before `buildServices()` (the first
     // touch) ever runs, so Sparkle never spins up on a copy that's about to
-    // be told to quit.
-    lazy var updater = UpdaterController(isDevBuild: BundleFlavor.isDevBuild, isBusy: { SetupSession.isRunning })
+    // be told to quit. Stub mode counts as a dev build here too -- the
+    // placeholder SUPublicEDKey already blocks Sparkle in every build this
+    // repo produces, but a future real key must not revive it under the
+    // stub-driven UI-test/QA harness.
+    lazy var updater = UpdaterController(isDevBuild: BundleFlavor.isDevBuild || BundleFlavor.isStubActive, isBusy: { SetupSession.isRunning })
     private var updaterObservation: NSKeyValueObservation?
 
     // ── Setup / Settings / rt ────────────────────────────────────────────────
@@ -110,10 +113,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
         Task { @MainActor in
             setHealth(.starting)
-            servicesRegistrar.registerAll()
-            let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
-            let change = await servicesRegistrar.handleVersionChange(current: version, store: UserDefaults.standard)
-            TrayLog.info("version change evaluated", ["change": String(describing: change)])
+            if BundleFlavor.isStubActive {
+                TrayLog.info("stub mode: skipping real service registration and version-change restart")
+            } else {
+                servicesRegistrar.registerAll()
+                let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+                let change = await servicesRegistrar.handleVersionChange(current: version, store: UserDefaults.standard)
+                TrayLog.info("version change evaluated", ["change": String(describing: change)])
+            }
             await recordAppPath()
 
             // First-run Setup has no daemon dependency — show it now rather
@@ -138,8 +145,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
                                                 runner: SystemCommandRunner())
         servicesRegistrar = ServicesRegistrar(bundlePath: Bundle.main.bundlePath, runner: SystemCommandRunner())
         let privileged = PrivilegedInstaller(bundlePath: Bundle.main.bundlePath, escalator: AuthorizationServicesEscalator())
-        needBroker = NeedBroker(services: servicesRegistrar, privileged: privileged)
-        TrayServer.shared.routes = TrayRoutes(permissions: permissionsService, services: servicesRegistrar, privileged: privileged,
+        // Stub mode routes every mutating "register services" / "install
+        // proxy" need to no-op providers -- servicesRegistrar/privileged
+        // above stay real only for read-only status display (smStatuses(),
+        // TrayRoutes' GET /services), never for a register/restart/escalate.
+        #if DEBUG
+        let servicesForNeeds: ServicesProviding = BundleFlavor.isStubActive ? StubServicesProvider() : servicesRegistrar
+        let privilegedForNeeds: PrivilegedInstalling = BundleFlavor.isStubActive ? StubPrivilegedInstaller() : privileged
+        #else
+        let servicesForNeeds: ServicesProviding = servicesRegistrar
+        let privilegedForNeeds: PrivilegedInstalling = privileged
+        #endif
+        needBroker = NeedBroker(services: servicesForNeeds, privileged: privilegedForNeeds)
+        TrayServer.shared.routes = TrayRoutes(permissions: permissionsService, services: servicesForNeeds, privileged: privilegedForNeeds,
                                               needs: needBroker, updater: updater, version: self)
         rtClient = RtClientFactory.make()
         if let rt = rtClient {
@@ -250,6 +268,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     /// `.requiresApproval` is the user's pending decision in System Settings
     /// and re-registering would not change it.
     private func autoRegisterLoginItem() {
+        guard !BundleFlavor.isStubActive else {
+            TrayLog.info("login item auto-register skipped (stub mode)")
+            return
+        }
         guard !LoginItemPreference.isOptedOut else {
             TrayLog.info("login item auto-register skipped (user opted out)")
             return
@@ -478,7 +500,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
     /// it's killed only if the user Ctrl-Cs the spawned rt OR the rt-tray
     /// app group is terminated.
     private func spawnRtDaemonLogs() {
-        let home = NSHomeDirectory()
+        let home = AppHome.current
         let candidates = [
             "\(home)/.local/bin/rt",
             Bundle.main.bundlePath + "/Contents/MacOS/rt",
