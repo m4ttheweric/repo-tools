@@ -245,7 +245,13 @@ async function encryptDomain(
     // sops creates outputTmpPath itself, at umask-derived (not 0600) perms.
     execSeam.chmod(outputTmpPath, 0o600);
 
-    const decryptResult = await execSeam.run(["sops", "-d", outputTmpPath], { env, sensitive: true });
+    // sops picks the data store from the file extension; the `.tmp` suffix would
+    // select the binary store and fail on a JSON tree, so the read-back names
+    // the store explicitly (the real `.json` targets need no override).
+    const decryptResult = await execSeam.run(
+      ["sops", "-d", "--input-type", "json", "--output-type", "json", outputTmpPath],
+      { env, sensitive: true },
+    );
     let roundTripped: Record<string, string> | undefined;
     if (decryptResult.code === 0) {
       try {
