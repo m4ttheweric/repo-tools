@@ -50,19 +50,24 @@ struct AuthorizationServicesEscalator: PrivilegeEscalator {
         }
         defer { AuthorizationFree(auth, [.destroyRights]) }
 
-        // Both C-string pointers must stay alive for the AuthorizationCopyRights
-        // call itself, not just the withCString scope that produced them — hence
-        // the nesting, rather than letting either pointer escape its closure.
+        // Every pointer here (both C-strings and both AuthorizationItems) must
+        // stay alive through AuthorizationCopyRights itself, not just through
+        // the withCString/withUnsafeMutablePointer scope that produced it —
+        // hence nesting AuthorizationCopyRights as the innermost consuming call.
         var promptCopy = Array(prompt.utf8CString)
         let status: OSStatus = kAuthorizationRightExecute.withCString { rightName in
             kAuthorizationEnvironmentPrompt.withCString { envName in
                 promptCopy.withUnsafeMutableBufferPointer { buf -> OSStatus in
                     var item = AuthorizationItem(name: rightName, valueLength: 0, value: nil, flags: 0)
-                    var rights = AuthorizationItem_withRights(&item)
                     var envItem = AuthorizationItem(name: envName, valueLength: buf.count - 1, value: buf.baseAddress, flags: 0)
-                    var env = AuthorizationItem_withRights(&envItem)
                     let flags: AuthorizationFlags = [.interactionAllowed, .extendRights, .preAuthorize]
-                    return AuthorizationCopyRights(auth, &rights, &env, flags, nil)
+                    return withUnsafeMutablePointer(to: &item) { ip in
+                        withUnsafeMutablePointer(to: &envItem) { ep in
+                            var rights = AuthorizationRights(count: 1, items: ip)
+                            var env = AuthorizationEnvironment(count: 1, items: ep)
+                            return AuthorizationCopyRights(auth, &rights, &env, flags, nil)
+                        }
+                    }
                 }
             }
         }
@@ -85,13 +90,19 @@ struct AuthorizationServicesEscalator: PrivilegeEscalator {
         var buf = [CChar](repeating: 0, count: 4096)
         while fgets(&buf, Int32(buf.count), fp) != nil { output += String(cString: buf) }
         fclose(fp)
-        // The helper prints "MATTSTACK_EXIT=<n>" as its last line so the
-        // caller learns the real status (the API does not report it).
-        let exit = output.split(separator: "\n").last.flatMap { $0.hasPrefix("MATTSTACK_EXIT=") ? Int32($0.dropFirst("MATTSTACK_EXIT=".count)) : nil } ?? 0
-        return CommandOutcome(exitCode: exit, stdout: output, stderr: exit == 0 ? "" : output)
-    }
-
-    private static func AuthorizationItem_withRights(_ item: inout AuthorizationItem) -> AuthorizationRights {
-        withUnsafeMutablePointer(to: &item) { AuthorizationRights(count: 1, items: $0) }
+        // AuthorizationExecuteWithPrivileges pipes only the child's stdout —
+        // there is no separate stderr channel here — so the helper must print
+        // both its diagnostics and the "MATTSTACK_EXIT=<n>" status trailer
+        // (the API itself never reports the child's real exit code) on
+        // stdout. The trailer line is parsed for the exit code, then
+        // stripped so it never leaks into NeedResult.detail or the log.
+        var lines = output.components(separatedBy: "\n")
+        var exit: Int32 = 0
+        if let idx = lines.lastIndex(where: { !$0.isEmpty }), lines[idx].hasPrefix("MATTSTACK_EXIT=") {
+            exit = Int32(lines[idx].dropFirst("MATTSTACK_EXIT=".count)) ?? 0
+            lines.remove(at: idx)
+        }
+        let cleaned = lines.joined(separator: "\n")
+        return CommandOutcome(exitCode: exit, stdout: cleaned, stderr: exit == 0 ? "" : cleaned)
     }
 }
