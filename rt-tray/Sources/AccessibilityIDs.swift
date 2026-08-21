@@ -1,8 +1,8 @@
 import Foundation
 
-/// Stable accessibility identifiers. L7's clean-room walkthrough drives the
-/// UI by these names through System Events, so they are a contract: rename
-/// only with L7.
+/// Stable accessibility identifiers. An out-of-process UI walkthrough drives
+/// the app by these names through System Events, so they are a contract:
+/// renaming one breaks that walkthrough.
 enum AXID {
     // Setup window chrome
     static let stepIndicator = "setup.window.stepIndicator"

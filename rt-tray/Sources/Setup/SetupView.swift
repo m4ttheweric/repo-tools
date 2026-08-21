@@ -8,6 +8,7 @@ struct SetupView: View {
     @ObservedObject var install: InstallRunModel
     let permissions: PermissionsService
     let env: SetupEnvironment
+    let onFinish: () -> Void
     @State private var busy = false
     @State private var errorText: String?
 
@@ -32,13 +33,16 @@ struct SetupView: View {
         .frame(width: SetupWindowController.width)
         .frame(minHeight: 560)
         .controlSize(.large)
-        .onChange(of: flow.step) { _, step in
-            if step == .checklist { readiness.becameVisible(); Task { await readiness.load() } } else { readiness.becameHidden() }
-            if step == .install { flow.isInstalling = true; install.start() }
+        // .task(id:) reruns on the *initial* value too (unlike onChange), so a
+        // deep link that opens straight into .checklist or .install still
+        // loads/starts — onChange alone would silently no-op on first appear.
+        .task(id: flow.step) {
+            if flow.step == .checklist { readiness.becameVisible(); await readiness.load() } else { readiness.becameHidden() }
+            if flow.step == .install { flow.isInstalling = true; install.start() }
         }
         .onChange(of: install.phase) { _, phase in
             flow.isInstalling = (phase == .running)
-            if phase == .succeeded { flow.next() }
+            if flow.step == .install, phase == .succeeded { flow.next() }
         }
     }
 
@@ -60,9 +64,11 @@ struct SetupView: View {
         HStack {
             if let errorText { Text(errorText).font(.caption).foregroundStyle(.red).lineLimit(2) }
             Spacer()
-            if flow.canGoBack {
-                Button("Back") { flow.back() }.accessibilityIdentifier(AXID.back(screenName))
-            }
+            // Always present (never removed) so the AX walkthrough finds a
+            // stable setup.<screen>.back element and reads its enabled state.
+            Button("Back") { flow.back() }
+                .disabled(!flow.canGoBack)
+                .accessibilityIdentifier(AXID.back(screenName))
             if flow.step == .checklist, readiness.limitedModeAvailable {
                 Button("Continue in limited mode") { flow.next() }.accessibilityIdentifier(AXID.continueLimited)
             }
@@ -94,7 +100,7 @@ struct SetupView: View {
             if let err = await team.validateAndPrepare() { errorText = err; return }
             flow.next()
         case .done:
-            NSApp.keyWindow?.close()
+            onFinish()
         default:
             flow.next()
         }
