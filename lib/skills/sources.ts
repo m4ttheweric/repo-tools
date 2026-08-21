@@ -149,6 +149,7 @@ export function loadStepSource(engineName: string, roots: PluginRoots): StepSour
   }
 
   const skillsDir = join(mattstack.dir, "skills");
+  const attachmentsDir = join(mattstack.dir, "attachments");
   const searched: string[] = [];
   let foundDir: string | null = null;
 
@@ -161,9 +162,32 @@ export function loadStepSource(engineName: string, roots: PluginRoots): StepSour
     }
   }
 
+  // Non-public engines live unregistered under attachments/ once moved out of
+  // skills/ (registration under skills/ is what puts an engine in the user's
+  // slash autocomplete); fall back there in the same shape loadAttachment
+  // searches -- flat, then one group level deep.
+  if (!foundDir) {
+    const flatCandidate = join(attachmentsDir, engineName, "SKILL.md");
+    searched.push(flatCandidate);
+    if (existsSync(flatCandidate)) {
+      foundDir = join(attachmentsDir, engineName);
+    }
+  }
+
+  if (!foundDir) {
+    for (const group of listDirs(attachmentsDir)) {
+      const candidate = join(attachmentsDir, group, engineName, "SKILL.md");
+      searched.push(candidate);
+      if (existsSync(candidate)) {
+        foundDir = join(attachmentsDir, group, engineName);
+        break;
+      }
+    }
+  }
+
   if (!foundDir) {
     throw new Error(
-      `loadStepSource: engine "${engineName}" not found under ${skillsDir}/*; searched:\n${searched.join("\n")}`,
+      `loadStepSource: engine "${engineName}" not found under ${skillsDir}/* or ${attachmentsDir}/*; searched:\n${searched.join("\n")}`,
     );
   }
 
