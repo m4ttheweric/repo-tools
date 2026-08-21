@@ -302,6 +302,9 @@ function assertSafeVerbName(name: string, stubsPath: string): void {
 
 export function readVerbRoster(packDir: string): VerbDef[] {
   const stubsPath = join(packDir, "pack", "stubs.jsonc");
+  // A pack with no verb roster (the mattstack plugin) has no compile targets;
+  // its surface is still manageable, so absence is an empty roster, not an error.
+  if (!existsSync(stubsPath)) return [];
   const parsed = JSON.parse(stripJsonc(readFileSync(stubsPath, "utf8"))) as {
     verbs?: Record<string, { engine: string; description: string }>;
   };
