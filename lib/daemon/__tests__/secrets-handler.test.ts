@@ -117,10 +117,12 @@ describe("secrets:forge-token default tracking reader is machine-only", () => {
 // has no auth of its own — the handler is the only gate there).
 function readHandler(opts: {
   extensionSecrets?: () => Promise<{ linearApiKey?: string; gitlabToken?: string }>;
+  deckSecrets?: () => Promise<{ cfApiToken?: string; cfZoneId?: string }>;
   apiToken?: string;
 }) {
   const h = createSecretsHandlers(fakeCtx, {
     extensionSecrets: opts.extensionSecrets ?? (async () => ({})),
+    deckSecrets: opts.deckSecrets ?? (async () => ({})),
     apiToken: () => opts.apiToken ?? "test-token",
   });
   return h["secrets:read"];
@@ -178,5 +180,112 @@ describe("secrets:read", () => {
     const h = readHandler({ extensionSecrets: async () => ({ linearApiKey: "lin_api_x" }), apiToken: "shared-secret" });
 
     expect((await h({ token: "shared-secret" })).ok).toBe(true);
+  });
+
+  test("omitted scope defaults to extension and never touches the deck reader", async () => {
+    let deckCalled = false;
+    const h = readHandler({
+      extensionSecrets: async () => ({ linearApiKey: "lin_api_x" }),
+      deckSecrets: async () => { deckCalled = true; return { cfApiToken: "cf-tok" }; },
+    });
+
+    const res = await h({ token: "test-token" });
+
+    expect(res).toEqual({ ok: true, data: { linearApiKey: "lin_api_x" } });
+    expect(deckCalled).toBe(false);
+  });
+});
+
+// scope: "deck" reads a wholly different encrypted domain (lib/secrets/
+// store.ts readSecret("deck", ...)) — the whitelist and the domain are both
+// per-scope, so an rt-domain value seeded for the extension scope must
+// never leak into a deck-scope read, and vice versa.
+describe("secrets:read scope", () => {
+  test("deck scope returns only cfApiToken/cfZoneId, never an rt-domain key seeded for extension scope", async () => {
+    const h = readHandler({
+      extensionSecrets: async () => ({ linearApiKey: "lin_api_x", gitlabToken: "glpat-x" }),
+      deckSecrets: async () => ({ cfApiToken: "cf-tok", cfZoneId: "zone-1" }),
+    });
+
+    const res = await h({ token: "test-token", scope: "deck" });
+
+    expect(res).toEqual({ ok: true, data: { cfApiToken: "cf-tok", cfZoneId: "zone-1" } });
+    expect("linearApiKey" in (res as any).data).toBe(false);
+  });
+
+  test("deck scope omits a key entirely when it isn't set", async () => {
+    const h = readHandler({ deckSecrets: async () => ({ cfApiToken: "cf-tok" }) });
+
+    const res = await h({ token: "test-token", scope: "deck" });
+
+    expect(res).toEqual({ ok: true, data: { cfApiToken: "cf-tok" } });
+    expect("cfZoneId" in (res as any).data).toBe(false);
+  });
+
+  test("extension scope is unchanged when named explicitly", async () => {
+    const h = readHandler({ extensionSecrets: async () => ({ linearApiKey: "lin_api_x", gitlabToken: "glpat-x" }) });
+
+    const res = await h({ token: "test-token", scope: "extension" });
+
+    expect(res).toEqual({ ok: true, data: { linearApiKey: "lin_api_x", gitlabToken: "glpat-x" } });
+  });
+
+  test("bad scope is refused before either reader runs", async () => {
+    let extensionCalled = false;
+    let deckCalled = false;
+    const h = readHandler({
+      extensionSecrets: async () => { extensionCalled = true; return {}; },
+      deckSecrets: async () => { deckCalled = true; return {}; },
+    });
+
+    const res = await h({ token: "test-token", scope: "bitbucket" as any });
+
+    expect(res).toEqual({ ok: false, error: "bad-scope" });
+    expect(extensionCalled).toBe(false);
+    expect(deckCalled).toBe(false);
+  });
+
+  test("the token gate applies to the deck scope exactly as it does to extension", async () => {
+    let deckCalled = false;
+    const h = readHandler({ deckSecrets: async () => { deckCalled = true; return {}; } });
+
+    const missing = await h({ scope: "deck" });
+    expect(missing).toEqual({ ok: false, error: "missing-token" });
+
+    const wrong = await h({ token: "wrong", scope: "deck" });
+    expect(wrong).toEqual({ ok: false, error: "bad-token" });
+
+    expect(deckCalled).toBe(false);
+  });
+
+  test("a case-variant scope (\"Deck\") is refused, not treated as \"deck\"", async () => {
+    let deckCalled = false;
+    const h = readHandler({ deckSecrets: async () => { deckCalled = true; return {}; } });
+
+    const res = await h({ token: "test-token", scope: "Deck" as any });
+
+    expect(res).toEqual({ ok: false, error: "bad-scope" });
+    expect(deckCalled).toBe(false);
+  });
+
+  test("a non-string scope (array) is refused, not coerced into a match", async () => {
+    let extensionCalled = false;
+    let deckCalled = false;
+    const h = readHandler({
+      extensionSecrets: async () => { extensionCalled = true; return {}; },
+      deckSecrets: async () => { deckCalled = true; return {}; },
+    });
+
+    const res = await h({ token: "test-token", scope: ["deck"] as any });
+
+    expect(res).toEqual({ ok: false, error: "bad-scope" });
+    expect(extensionCalled).toBe(false);
+    expect(deckCalled).toBe(false);
+  });
+
+  test("a deck-reader throw surfaces as a rejected promise (transport error), never a partial ok", async () => {
+    const h = readHandler({ deckSecrets: async () => { throw new Error("sops -d exploded"); } });
+
+    await expect(h({ token: "test-token", scope: "deck" })).rejects.toThrow("sops -d exploded");
   });
 });
