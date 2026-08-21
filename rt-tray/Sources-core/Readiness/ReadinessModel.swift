@@ -33,6 +33,7 @@ public final class ReadinessModel: ObservableObject {
     private var tick: TickerHandle?
     private var lastSnapshot = PermissionSnapshot.unknown
     private var hasProbedPermissions = false
+    private var planCanInstall = false
 
     public init(plans: PlanSource, permissions: PermissionProbing, ticker: TickerScheduling) {
         self.plans = plans; self.permissions = permissions; self.ticker = ticker
@@ -41,18 +42,22 @@ public final class ReadinessModel: ObservableObject {
     public var allRows: [PlanRow] { groups.flatMap(\.rows) }
     public func row(_ id: String) -> PlanRow? { allRows.first { $0.id == id } }
 
-    /// Every required row ready, at least one optional non-permission row
-    /// not ready. Permission rows resolve via the local overlay, not the
-    /// plan's stale snapshot, so they never gate limited mode on their own.
+    /// Every required row ready, at least one optional row (permission or
+    /// otherwise) not ready — a denied optional permission counts.
     public var limitedModeAvailable: Bool {
-        canInstall && allRows.contains { !$0.required && $0.kind != .permission && $0.status != .ready }
+        canInstall && allRows.contains { !$0.required && $0.status != .ready }
     }
 
     public func load() async { await fetch() }
-    public func recheckAll() async { await fetch() }
+
+    public func recheckAll() async {
+        await probePermissions()
+        await fetch()
+    }
 
     public func afterAction(rowId: String) async {
         checkingRowIds.insert(rowId)
+        await probePermissions()
         await fetch()
         checkingRowIds.remove(rowId)
     }
@@ -81,6 +86,7 @@ public final class ReadinessModel: ObservableObject {
             let plan = try await plans.fetchPlan()
             team = plan.team
             groups = plan.groups
+            planCanInstall = plan.canInstall
             lastError = nil
             // Only re-overlay once a local probe has actually run; before
             // that, rt's own permission status in the plan is the freshest
@@ -111,8 +117,11 @@ public final class ReadinessModel: ObservableObject {
         }
     }
 
+    /// rt can gate installability on something not expressed as a row, so
+    /// its own plan.canInstall is a hard veto — never enable Install just
+    /// because every visible row happens to look ready.
     private func recomputeEnablement() {
         requiredMissing = allRows.filter { $0.required && $0.status != .ready }.map(\.id)
-        canInstall = requiredMissing.isEmpty
+        canInstall = planCanInstall && requiredMissing.isEmpty
     }
 }
