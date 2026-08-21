@@ -471,6 +471,7 @@ export function createWorktreeHandlers(
 
       const disposed: string[] = [];
       const refused: Array<{ tree: string; reason: string }> = [];
+      const recoverable: Array<{ tree: string; path: string; until: string }> = [];
 
       for (const { repoName, repoPath, rec } of targets) {
         const deps = disposeDeps(ctx, opts, repoName, repoPath);
@@ -478,14 +479,18 @@ export function createWorktreeHandlers(
           disposeTree(deps, rec, { force, auto: false }),
         );
         if (outcome === "busy") refused.push({ tree: rec.name, reason: "busy" });
-        else if (outcome.disposed) disposed.push(rec.name);
-        else refused.push({ tree: rec.name, reason: outcome.refusal });
+        else if (outcome.disposed) {
+          disposed.push(rec.name);
+          if (outcome.trash) {
+            recoverable.push({ tree: rec.name, path: outcome.trash.path, until: outcome.trash.keptUntil });
+          }
+        } else refused.push({ tree: rec.name, reason: outcome.refusal });
       }
 
       if (targets.length === 0 && treeName) refused.push({ tree: treeName, reason: "unknown" });
       if (disposed.length > 0) opts.kick();
 
-      return { ok: true, data: { disposed, refused } };
+      return { ok: true, data: { disposed, refused, recoverable } };
     },
 
     "worktree:list": async (payload: any) => {

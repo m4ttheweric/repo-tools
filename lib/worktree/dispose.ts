@@ -18,7 +18,7 @@ import { hasFreshAttendantLease } from "./lease.ts";
 import { loadSyncConfig, matchRule } from "../sync-config.ts";
 import { repoDataDir } from "../rt-paths.ts";
 import { killWorktreeProcesses } from "../daemon/worktree-process-kill.ts";
-import { reapTrashDir, trashTree } from "./trash.ts";
+import { RETENTION_MS, reapTrashDir, retireTree, stripTrashDir } from "./trash.ts";
 
 /** Merge-reactor disposals ignore claims younger than this (stale-event protection). */
 const GRACE_MS = 10 * 60_000;
@@ -127,7 +127,9 @@ export interface DisposeDeps {
   killProcesses: boolean;
 }
 
-export type DisposeOutcome = { disposed: true } | { disposed: false; refusal: string };
+export type DisposeOutcome =
+  | { disposed: true; trash?: { path: string; keptUntil: string } }
+  | { disposed: false; refusal: string };
 
 /** The MR joined to this tree, if the branch cache knows one for this repo. */
 function joinedMr(
@@ -251,7 +253,7 @@ export async function disposeTree(
 
   // One atomic rename, not a recursive unlink: see trash.ts. Everything below
   // is fast, so the verb returns in seconds however large the tree was.
-  const trashed = await trashTree(rec.path, rec.name);
+  const trashed = await retireTree(rec.path, rec.name, repoPath);
   if (!trashed.ok) {
     log.warn(
       { repo: repoName, tree: rec.name, path: rec.path, err: trashed.err },
@@ -294,9 +296,23 @@ export async function disposeTree(
     "worktree disposed",
   );
 
-  // Fire-and-forget: the bytes go away on their own time, and a trash dir this
-  // process never gets to finish is swept by the reconciler's reap duty.
-  if (trashed.ok) void reapTrashDir(trashed.trashPath, log);
+  // Fire-and-forget either way: a retained tree gets its reinstallables
+  // stripped and waits out the retention window (RT-51); a fallback sibling is
+  // the old immediate reap. Whatever this process never finishes, the
+  // reconciler's sweep duties collect.
+  if (trashed.ok) {
+    if (trashed.retained) {
+      void stripTrashDir(trashed.trashPath, log);
+      return {
+        disposed: true,
+        trash: {
+          path: trashed.trashPath,
+          keptUntil: new Date(Date.now() + RETENTION_MS).toISOString(),
+        },
+      };
+    }
+    void reapTrashDir(trashed.trashPath, log);
+  }
 
   return { disposed: true };
 }

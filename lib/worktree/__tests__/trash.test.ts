@@ -3,9 +3,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFi
 import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
 import {
+  RETENTION_MS,
   TRASH_PREFIX,
+  reapExpiredTrash,
   reapTrashDir,
   reapTrashInRoots,
+  retainedTrashRoot,
+  retireTree,
+  stripTrashDir,
   trashPathFor,
   trashTree,
 } from "../trash.ts";
@@ -108,7 +113,160 @@ describe("worktree trash", () => {
     });
   });
 
+  describe("retireTree", () => {
+    let repo: string;
+
+    beforeEach(() => {
+      repo = realpathSync(mkdtempSync(join(tmpdir(), "rttrash-repo-")));
+    });
+
+    test("moves the tree into <repo>/.worktrees/.trash/<name>-<epoch>, contents intact", async () => {
+      const tree = makeTree(root, "hotel");
+      mkdirSync(join(tree, ".local-dev"), { recursive: true });
+      writeFileSync(join(tree, ".local-dev", "spec.md"), "the plan\n");
+
+      const result = await retireTree(tree, "hotel", repo);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected ok");
+
+      expect(result.retained).toBe(true);
+      expect(existsSync(tree)).toBe(false);
+      expect(dirname(result.trashPath)).toBe(retainedTrashRoot(repo));
+      expect(basename(result.trashPath)).toMatch(/^hotel-\d+$/);
+      expect(readFileSync(join(result.trashPath, ".local-dev", "spec.md"), "utf8")).toBe(
+        "the plan\n",
+      );
+    });
+
+    test("falls back to a sibling trash rename when the retention root is unusable", async () => {
+      const tree = makeTree(root, "hotel");
+      // A file where the .worktrees dir should be makes mkdir fail.
+      writeFileSync(join(repo, ".worktrees"), "");
+
+      const result = await retireTree(tree, "hotel", repo);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected ok");
+
+      expect(result.retained).toBe(false);
+      expect(dirname(result.trashPath)).toBe(root);
+      expect(basename(result.trashPath).startsWith(TRASH_PREFIX)).toBe(true);
+      expect(existsSync(tree)).toBe(false);
+    });
+
+    test("a tree that cannot be renamed at all reports the failure", async () => {
+      const result = await retireTree(join(root, "never-existed"), "never-existed", repo);
+      expect(result.ok).toBe(false);
+    });
+
+    test("rejects a name containing a path separator", async () => {
+      const tree = makeTree(root, "sierra");
+      const result = await retireTree(tree, "sierra/../escape", repo);
+      expect(result.ok).toBe(false);
+      expect(existsSync(tree)).toBe(true);
+    });
+  });
+
+  describe("stripTrashDir", () => {
+    let repo: string;
+
+    beforeEach(() => {
+      repo = realpathSync(mkdtempSync(join(tmpdir(), "rttrash-repo-")));
+    });
+
+    test("deletes reinstallable dirs inside a retained tree, keeps everything else", async () => {
+      const tree = makeTree(root, "hotel");
+      for (const dir of ["node_modules/dep", "dist", "dist-esm", ".turbo", ".local-dev", "src"]) {
+        mkdirSync(join(tree, dir), { recursive: true });
+        writeFileSync(join(tree, dir.split("/")[0]!, "f.txt"), "x\n");
+      }
+      const result = await retireTree(tree, "hotel", repo);
+      if (!result.ok) throw new Error("expected ok");
+
+      const { log, warns } = capturingLog();
+      await stripTrashDir(result.trashPath, log);
+
+      expect(existsSync(join(result.trashPath, "node_modules"))).toBe(false);
+      expect(existsSync(join(result.trashPath, "dist"))).toBe(false);
+      expect(existsSync(join(result.trashPath, "dist-esm"))).toBe(false);
+      expect(existsSync(join(result.trashPath, ".turbo"))).toBe(false);
+      expect(existsSync(join(result.trashPath, ".local-dev"))).toBe(true);
+      expect(existsSync(join(result.trashPath, "src"))).toBe(true);
+      expect(existsSync(join(result.trashPath, "file.txt"))).toBe(true);
+      expect(warns.length).toBe(0);
+    });
+
+    test("refuses a path that is not inside a .trash directory", async () => {
+      const tree = makeTree(root, "hotel");
+      mkdirSync(join(tree, "node_modules"), { recursive: true });
+
+      const { log, warns } = capturingLog();
+      await stripTrashDir(tree, log);
+
+      expect(existsSync(join(tree, "node_modules"))).toBe(true);
+      expect(warns.length).toBe(1);
+    });
+  });
+
+  describe("reapExpiredTrash", () => {
+    let repo: string;
+
+    beforeEach(() => {
+      repo = realpathSync(mkdtempSync(join(tmpdir(), "rttrash-repo-")));
+    });
+
+    test("deletes entries past retention, keeps younger ones", async () => {
+      const now = 1_700_000_000_000;
+      const trashRoot = retainedTrashRoot(repo);
+      const old = makeTree(trashRoot, `hotel-${now - RETENTION_MS - 1}`);
+      const fresh = makeTree(trashRoot, `india-${now - 1000}`);
+
+      const { log, warns } = capturingLog();
+      const reaped = await reapExpiredTrash(repo, log, now);
+
+      expect(reaped).toBe(1);
+      expect(existsSync(old)).toBe(false);
+      expect(existsSync(fresh)).toBe(true);
+      expect(warns.length).toBe(0);
+    });
+
+    test("a repo with no retention dir yet reaps nothing quietly", async () => {
+      const { log, warns } = capturingLog();
+      expect(await reapExpiredTrash(repo, log)).toBe(0);
+      expect(warns.length).toBe(0);
+    });
+
+    test("an entry without a parseable epoch is kept and warned about", async () => {
+      const stray = makeTree(retainedTrashRoot(repo), "not-rt-made");
+      const { log, warns } = capturingLog();
+      expect(await reapExpiredTrash(repo, log, Date.now())).toBe(0);
+      expect(existsSync(stray)).toBe(true);
+      expect(warns.length).toBe(1);
+    });
+  });
+
+  describe("reapTrashDir on retained entries", () => {
+    test("deletes an entry inside a .trash retention dir", async () => {
+      const repo = realpathSync(mkdtempSync(join(tmpdir(), "rttrash-repo-")));
+      const entry = makeTree(retainedTrashRoot(repo), "hotel-123");
+
+      const { log, warns } = capturingLog();
+      await reapTrashDir(entry, log);
+
+      expect(existsSync(entry)).toBe(false);
+      expect(warns.length).toBe(0);
+    });
+  });
+
   describe("reapTrashInRoots", () => {
+    test("leaves the .trash retention dir alone", async () => {
+      const trashRoot = join(root, ".trash");
+      const kept = makeTree(trashRoot, "hotel-123");
+
+      const { log } = capturingLog();
+      expect(await reapTrashInRoots([root], log)).toBe(0);
+      expect(existsSync(kept)).toBe(true);
+    });
+
     test("reaps every trash dir across roots and leaves real trees alone", async () => {
       const other = realpathSync(mkdtempSync(join(tmpdir(), "rttrash-other-")));
       const live = makeTree(root, "hotel");

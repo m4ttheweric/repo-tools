@@ -8,7 +8,7 @@ set -euo pipefail
 #   ./build.sh              Build debug (rt-tray SwiftPM product, unbundled)
 #   ./build.sh release      Build release + assemble mattstack.app (prod)
 #   ./build.sh dev          Build release + assemble mattstack-dev.app (dev)
-#   ./build.sh install      Build release + install mattstack.app to ~/Applications
+#   ./build.sh install      Build release + install mattstack.app to /Applications
 #
 # PRODUCT_NAME is the SwiftPM executable target name (Package.swift never
 # renames it — see spec MAT-383 §1) and is where the compiled binary comes
@@ -320,7 +320,7 @@ codesign --verify "$APP_BUNDLE" 2>/dev/null && echo "  ✓ Signature verified" |
 # the dev bundle is built and run in place until a later task wires it up.
 
 if [ "$MODE" = "install" ]; then
-    INSTALL_DIR="$HOME/Applications"
+    INSTALL_DIR="/Applications"
     mkdir -p "$INSTALL_DIR"
 
     # Kill existing instance and wait for it to fully exit

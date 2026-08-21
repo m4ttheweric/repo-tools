@@ -407,6 +407,24 @@ describe("worktree:dispose", () => {
     expect(loadRegistry("beta-repo").find((t) => t.name === "bravo")).toBeDefined();
   });
 
+  test("a successful dispose reports where the tree stays recoverable", async () => {
+    const repo = makeRepo();
+    const rec = seedClaimed(repo, repoName, "alpha", "rt-51-recover");
+
+    const { h } = makeHandlers({ [repoName]: repo });
+    const res: any = await h["worktree:dispose"]!({ repoName, tree: "alpha" });
+
+    expect(res.ok).toBe(true);
+    expect(res.data.disposed).toEqual(["alpha"]);
+    expect(res.data.recoverable).toHaveLength(1);
+    const entry = res.data.recoverable[0];
+    expect(entry.tree).toBe("alpha");
+    expect(entry.path).toContain(join(".worktrees", ".trash"));
+    expect(existsSync(entry.path)).toBe(true);
+    expect(Date.parse(entry.until)).toBeGreaterThan(Date.now());
+    expect(existsSync(rec.path)).toBe(false);
+  });
+
   test("a bare tree name matching two repos refuses rather than guessing", async () => {
     const repoA = makeRepo();
     const repoB = makeRepo();
