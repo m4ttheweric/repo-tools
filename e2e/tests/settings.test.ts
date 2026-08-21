@@ -30,6 +30,7 @@ import { execFileSync } from "child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { createTestHome, RT_BINARY } from "../harness.ts";
+import { machineSettingsPath, teamSettingsPath, userSettingsPath } from "../../lib/rt-paths.ts";
 
 // ─── Shared helpers (mirroring e2e/tests/endpoint.test.ts) ───────────────────
 
@@ -99,8 +100,10 @@ const REPO_NAME = "settings-repo";
 const REMOTE_URL = "git@github.com:rt-test/settings-repo.git";
 const IDENTITY = "github.com/rt-test/settings-repo";
 const TEAM = "e2eteam";
+/** Pinned via the `~/.mattstack/machine-key` override so machineSettingsPath() is deterministic across CI hosts. */
+const MACHINE_KEY = "e2e-settings-machine";
 
-/** Store paths inside the test HOME (mirroring lib/rt-paths.ts). */
+/** Store paths inside the test HOME, built with lib/rt-paths.ts's own constructors. */
 let userStore = "";
 let teamStore = "";
 let machineStore = "";
@@ -293,9 +296,22 @@ describe("rt settings (four stores, one resolver — e2e)", () => {
     mkdirSync(join(rtDir, "repos", REPO_NAME), { recursive: true });
     writeFileSync(join(rtDir, "repos.json"), JSON.stringify({ [REPO_NAME]: repoPath }, null, 2));
 
-    userStore = join(home, ".mattstack", "user", "settings.jsonc");
-    teamStore = join(home, ".mattstack", "teams", TEAM, "mattstack", "settings.jsonc");
-    machineStore = join(home, ".mattstack", "settings.local.jsonc");
+    // Pin machineKey() before computing machineSettingsPath() — hostname
+    // slugs vary per CI host, and this test's paths must be deterministic.
+    mkdirSync(join(home, ".mattstack"), { recursive: true });
+    writeFileSync(join(home, ".mattstack", "machine-key"), MACHINE_KEY);
+
+    // rt-paths.ts resolves HOME at call time, so swap this (outer) process's
+    // HOME briefly to compute the fixture's paths through the same
+    // constructors the daemon subprocess uses, rather than re-deriving the
+    // layout as literals here.
+    const outerHome = process.env.HOME;
+    process.env.HOME = home;
+    userStore = userSettingsPath();
+    teamStore = teamSettingsPath(TEAM);
+    machineStore = machineSettingsPath();
+    process.env.HOME = outerHome;
+
     // The ZONE ROOT, not the mattstack/ dir the settings file lives in.
     hookStub = join(home, ".mattstack", "teams", TEAM, "hook.sh");
 

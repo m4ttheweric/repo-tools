@@ -27,6 +27,7 @@ import { execFileSync } from "child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { createTestHome, RT_BINARY } from "../harness.ts";
+import { machineSettingsPath } from "../../lib/rt-paths.ts";
 
 // ─── Shared helpers (mirroring e2e/tests/events.test.ts) ─────────────────────
 
@@ -236,8 +237,16 @@ describe("rt endpoint / intercept (just-works e2e)", () => {
     // settings resolver instead of the (now-gone) per-repo config.json).
     const identity = "github.com/rt-test/endpoint-repo";
     mkdirSync(join(home, ".mattstack"), { recursive: true });
+    // Pin machineKey() before computing machineSettingsPath() — hostname
+    // slugs vary per CI host, and this test's path must be deterministic.
+    writeFileSync(join(home, ".mattstack", "machine-key"), "e2e-endpoint-machine");
+    const outerHome = process.env.HOME;
+    process.env.HOME = home;
+    const machineStorePath = machineSettingsPath();
+    process.env.HOME = outerHome;
+    mkdirSync(join(machineStorePath, ".."), { recursive: true });
     writeFileSync(
-      join(home, ".mattstack", "settings.local.jsonc"),
+      machineStorePath,
       JSON.stringify(
         {
           repos: {
