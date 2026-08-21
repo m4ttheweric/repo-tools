@@ -5,6 +5,10 @@ public struct RtResult: Sendable {
     public let stdout: Data
     public let stderr: Data
 
+    public init(exitCode: Int32, stdout: Data, stderr: Data) {
+        self.exitCode = exitCode; self.stdout = stdout; self.stderr = stderr
+    }
+
     public func decode<T: Decodable>(_ type: T.Type) throws -> T {
         try JSONDecoder().decode(T.self, from: stdout)
     }
