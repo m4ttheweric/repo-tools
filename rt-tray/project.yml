@@ -41,6 +41,10 @@ targetTemplates:
       - name: Render LaunchAgents
         script: |
           "${SRCROOT}/scripts/render-launchagents.sh" "${MS_FLAVOR}" "${SRCROOT}/Generated/LaunchAgents-${MS_FLAVOR}"
+        inputFiles:
+          - "${SRCROOT}/scripts/render-launchagents.sh"
+          - "${SRCROOT}/LaunchAgent.plist"
+          - "${SRCROOT}/LaunchAgent-deck.plist"
         outputFiles:
           - "${SRCROOT}/Generated/LaunchAgents-${MS_FLAVOR}/${MS_DAEMON_LABEL}.plist"
           - "${SRCROOT}/Generated/LaunchAgents-${MS_FLAVOR}/${MS_DECK_LABEL}.plist"
@@ -118,6 +122,7 @@ targets:
         CFBundleExecutable: mattstack-dev
         MSDaemonLabel: com.mattstack.daemon.dev
         MSDevBuild: true
+        SUEnableAutomaticChecks: false
 
   MattstackCoreChecks:
     type: framework
