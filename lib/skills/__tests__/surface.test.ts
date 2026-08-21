@@ -77,6 +77,31 @@ describe("compileSkill with internalRoster", () => {
     ]);
   });
 
+  test("a description token naming an internal skill produces a description-labeled errors entry", () => {
+    const dirtyVerb: VerbDef = {
+      name: "watch-ci",
+      engine: "watch-ci-engine",
+      description: "Watch CI; for a gut check use acme:qa-gates first.",
+    };
+    const step: StepSource = {
+      name: "watch-ci",
+      plugin: "mattstack",
+      version: "1.0.0",
+      dir: "/plugins/mattstack/skills/pipeline/watch-ci",
+      body: "Clean body.",
+      slots: {},
+      allowedTools: [],
+      stepFiles: [],
+    };
+    const internalRoster = new Set(["acme:qa-gates"]);
+
+    const result = compileSkill(dirtyVerb, step, {}, roster, { internalRoster });
+
+    expect(result.errors).toEqual([
+      "description references acme:qa-gates which is surface-internal; inline it, reference it by path, or list it in surface.jsonc's public array",
+    ]);
+  });
+
   test("no internalRoster entries: errors is empty", () => {
     const step: StepSource = {
       name: "watch-ci",
@@ -184,6 +209,15 @@ type: pipeline-step
 This verb is retired.
 `;
 
+const DANGLING_STEP_SKILL_MD = `---
+name: dangling-step
+description: "References a retired door"
+type: pipeline-step
+---
+
+Defers to acme:old-verb for cleanup.
+`;
+
 const STRAY_SKILL_MD = `---
 name: stray-skill
 description: "Hand-authored skill not yet declared public"
@@ -198,6 +232,7 @@ function makeMattstackDir(): string {
   writeFile(join(mattstackPluginDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.2.0" }));
   writeFile(join(mattstackPluginDir, "skills", "pipeline", "watch-ci", "SKILL.md"), WATCH_CI_SKILL_MD);
   writeFile(join(mattstackPluginDir, "skills", "pipeline", "old-verb", "SKILL.md"), OLD_VERB_SKILL_MD);
+  writeFile(join(mattstackPluginDir, "skills", "pipeline", "dangling-step", "SKILL.md"), DANGLING_STEP_SKILL_MD);
   return dir;
 }
 
@@ -283,6 +318,45 @@ describe("skillsCompile with a surface config", () => {
     expect(process.exitCode).toBe(1);
     // it never moves anything
     expect(existsSync(join(packDir, "skills", "stray-skill", "SKILL.md"))).toBe(true);
+  });
+
+  test("a retired stub verb with no dir on disk still seeds the internal roster: dangling references error", async () => {
+    const mattstackDir = makeMattstackDir();
+    const stubs = `{
+  "verbs": {
+    "dangling": { "engine": "dangling-step", "description": "Dangling." },
+    "old-verb": { "engine": "old-verb", "description": "Retired." }
+  }
+}
+`;
+    const surfaceJsonc = `{ "public": ["dangling"] }\n`;
+    const packDir = makePackDir(stubs, surfaceJsonc);
+    const manifestPath = makeManifest("acme");
+
+    const errors: string[] = [];
+    const errSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    });
+    const exitSpy = spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit called");
+    }) as never);
+
+    try {
+      await expect(
+        skillsCompile([
+          "--team", "acme",
+          "--pack-dir", packDir,
+          "--mattstack-dir", mattstackDir,
+          "--manifest", manifestPath,
+        ]),
+      ).rejects.toThrow("process.exit called");
+
+      expect(errors.join("\n")).toContain("acme:old-verb");
+      expect(errors.join("\n")).toContain("surface-internal");
+    } finally {
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
   });
 
   test("no surface.jsonc present: all verbs compile, no internal/misplaced lines, no exit code", async () => {

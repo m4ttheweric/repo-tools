@@ -184,18 +184,18 @@ function lintReferences(body: string, roster: Set<string>, files: CompiledFile[]
   return warnings;
 }
 
-function lintInternalRoster(body: string, internalRoster: Set<string>): string[] {
+function lintInternalRoster(text: string, internalRoster: Set<string>, where: string): string[] {
   const errors: string[] = [];
-  const lintableBody = stripCompilerComments(body);
+  const lintableText = stripCompilerComments(text);
 
   const seenNames = new Set<string>();
-  for (const match of lintableBody.matchAll(REGISTERED_NAME_RE)) {
+  for (const match of lintableText.matchAll(REGISTERED_NAME_RE)) {
     const token = match[0];
     if (seenNames.has(token)) continue;
     seenNames.add(token);
     if (internalRoster.has(token)) {
       errors.push(
-        `body references ${token} which is surface-internal; inline it, reference it by path, or list it in surface.jsonc's public array`,
+        `${where} references ${token} which is surface-internal; inline it, reference it by path, or list it in surface.jsonc's public array`,
       );
     }
   }
@@ -226,7 +226,10 @@ export function compileSkill(
   const files: CompiledFile[] = [{ path: "SKILL.md", content }, ...buildVendoredFiles(step, boundSlots)];
 
   const warnings = [...lintReferences(body, roster, files), ...notes];
-  const errors = lintInternalRoster(body, internalRoster);
+  const errors = [
+    ...lintInternalRoster(body, internalRoster, "body"),
+    ...lintInternalRoster(verb.description, internalRoster, "description"),
+  ];
 
   return { files, warnings, errors };
 }

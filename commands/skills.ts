@@ -190,14 +190,24 @@ type Resolved = {
  * they line up with body-prose tokens and fill bindings. A dir under
  * <packDir>/skills/ not (yet) named in surface.jsonc's public list is
  * internal by default -- this is what lets a fill inline through the
- * transition window before it physically moves.
+ * transition window before it physically moves. Non-public stub verbs seed
+ * the roster too: a retired verb's dir is deleted, so the dir scan alone
+ * would let dangling references to it slip through.
  */
-function computeInternalRoster(team: string, packDir: string, surface: SurfaceConfig | null): Set<string> {
+function computeInternalRoster(
+  team: string,
+  packDir: string,
+  surface: SurfaceConfig | null,
+  fullRoster: VerbDef[],
+): Set<string> {
   const internal = new Set<string>();
   if (!surface) return internal;
   const publicSet = new Set(surface.public);
   for (const name of listSubdirs(join(packDir, "skills"))) {
     if (!publicSet.has(name)) internal.add(`${team}:${name}`);
+  }
+  for (const verb of fullRoster) {
+    if (!publicSet.has(verb.name)) internal.add(`${team}:${verb.name}`);
   }
   return internal;
 }
@@ -207,12 +217,13 @@ function resolve(flags: Flags): Resolved {
   const packDir = flags.packDir ?? packRootDir(mattstackRoot, flags.team);
   const manifestPath = flags.manifest ?? findDefaultManifest(mattstackRoot, flags.team);
 
-  const roster = selectVerbs(readVerbRoster(packDir), flags.verbs);
+  const fullRoster = readVerbRoster(packDir);
+  const roster = selectVerbs(fullRoster, flags.verbs);
   const bindings = readManifestBindings(manifestPath);
   const pluginRoots = flags.mattstackDir ? resolvePluginRootsFromDir(mattstackRoot) : resolvePluginRoots();
   const invocable = invocableRoster(pluginRoots);
   const surface = readSurface(packDir);
-  const internalRoster = computeInternalRoster(flags.team, packDir, surface);
+  const internalRoster = computeInternalRoster(flags.team, packDir, surface, fullRoster);
 
   return { packDir, roster, bindings, pluginRoots, invocable, surface, internalRoster };
 }
