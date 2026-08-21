@@ -76,7 +76,7 @@ launchctl print "gui/$(id -u)/com.rt.daemon" >/dev/null 2>&1 && bad "legacy com.
 if [ -e /Applications/rt-tray.app ] || [ -e "$HOME/Applications/rt-tray.app" ]; then bad "rt-tray.app present (legacy)"; else ok "no rt-tray.app"; fi
 
 if [ "$HEADLESS" = 0 ]; then
-  [ -d "$HOME/.mattstack/.git" ] && ok "~/.mattstack is the home repo" || bad "~/.mattstack is not a git repo (V5)"
+  [ -d "$HOME/.mattstack/user/.git" ] && ok "~/.mattstack/user is the home repo" || bad "~/.mattstack/user is not a git repo (home-repo re-root ruling)"
 fi
 echo "$fails" > "$LOGS/assert-fails.txt"
 [ "$fails" -eq 0 ]
