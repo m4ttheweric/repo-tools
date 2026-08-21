@@ -41,7 +41,7 @@ export type {
 export { setSetting } from "./settings/write.ts";
 export type { SetSettingOpts } from "./settings/write.ts";
 
-export { getDef, allDefs, validateValue } from "./settings/registry-machinery.ts";
+export { getDef, allDefs, validateValue, isMigrated } from "./settings/registry-machinery.ts";
 export type { SettingDef, SettingScope } from "./settings/registry-machinery.ts";
 export { REGISTRY } from "./settings/registry-defs.ts";
 

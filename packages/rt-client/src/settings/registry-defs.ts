@@ -1,8 +1,8 @@
 /**
  * The settings key TABLE (RT-47/RT-50): rt's rows, plus the suite rows
- * (deck/board/gitq/mattstack/claude) added in RT-50 task 9 — the machinery in
- * registry-machinery.ts that reads and validates against this table does not
- * change when rows are added.
+ * (deck/board/gitq/mattstack/claude) — the machinery in registry-machinery.ts
+ * that reads and validates against this table does not change when rows are
+ * added.
  *
  * Suite rows omit `migrated` (see registry-machinery.ts's docblock): they
  * carry no rt-legacy file to migrate from, so `isMigrated()` treats the
@@ -298,14 +298,14 @@ export const REGISTRY: readonly SettingDef[] = [
     type: "string",
     scopes: ["team"],
     merge: "replace",
-    description: "Default doctor skill for repairing a teammate's stuck MR; a repo's skills.jsonc doctor slot overrides it when present (BOARD-14).",
+    description: "Default doctor skill for repairing a stuck MR; a repo's skills.jsonc doctor slot overrides it when present.",
   },
   {
     key: "board.triage.doctorSkill",
     type: "string",
     scopes: ["team"],
     merge: "replace",
-    description: "Doctor skill the board's own API-tier triage sweep runs on your MRs; deliberately never resolved through a repo's skills.jsonc manifest (BOARD-14).",
+    description: "Doctor skill the board's own API-tier triage sweep runs on your MRs; deliberately never resolved through a repo's skills.jsonc manifest. A sibling flat key of board.triage, not a field inside it — the board reader assembles the two independently.",
   },
 
   // --- board (user) ----------------------------------------------------------
@@ -331,11 +331,18 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Which board member identity this developer's local board runs as by default.",
   },
   {
+    key: "board.hiddenMembers",
+    type: "array",
+    scopes: ["user"],
+    merge: "replace",
+    description: "Usernames this developer hides from the team roster's board.members list; overlays the team truth without editing it.",
+  },
+  {
     key: "board.triage",
     type: "object",
     scopes: ["user"],
     merge: "deep",
-    description: "This developer's triage user-intent flags (which triage sweeps run automatically).",
+    description: "This developer's triage user-intent flags (which triage sweeps run automatically); a sibling flat key of board.triage.doctorSkill, not its container — the board reader assembles the two independently.",
   },
 
   // --- board (machine) ---------------------------------------------------

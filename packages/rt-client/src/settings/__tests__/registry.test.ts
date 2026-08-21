@@ -142,7 +142,7 @@ describe("settings/registry", () => {
       }
     });
 
-    test("has exactly the 12 wave-1 migrated:false keys, the 5 migrated:true keys, and the 29 suite keys", () => {
+    test("has exactly the 12 wave-1 migrated:false keys, the 5 migrated:true keys, and the 30 suite keys", () => {
       const migratedFalseKeys = [
         "rt.llm",
         "rt.cron",
@@ -179,6 +179,7 @@ describe("settings/registry", () => {
         "board.staleAfterDays",
         "board.workspaces",
         "board.defaultMember",
+        "board.hiddenMembers",
         "board.triage",
         "board.claudeCommand",
         "board.cwds",
@@ -189,7 +190,7 @@ describe("settings/registry", () => {
         "gitq.forges",
         "gitq.board",
       ];
-      expect(suiteKeys).toHaveLength(29);
+      expect(suiteKeys).toHaveLength(30);
 
       expect(allDefs().map((d) => d.key).sort()).toEqual(
         [...migratedFalseKeys, ...migratedTrueKeys, ...suiteKeys].sort(),
@@ -214,6 +215,31 @@ describe("settings/registry", () => {
       expect(doctorSkill?.key).not.toBe(triageDoctorSkill?.key);
       expect(doctorSkill?.description).toContain("skills.jsonc");
       expect(triageDoctorSkill?.description).toContain("never resolved");
+    });
+
+    test("board.triage and board.triage.doctorSkill document that they are siblings, not container/field", () => {
+      // Non-obvious invariant: both are independent flat keys at different
+      // scopes (user vs team) — a board reader assembles triage config from
+      // them separately, board.triage does not nest doctorSkill inside it.
+      const triage = getDef("board.triage");
+      const triageDoctorSkill = getDef("board.triage.doctorSkill");
+
+      expect(triage?.description).toContain("sibling");
+      expect(triageDoctorSkill?.description).toContain("sibling");
+    });
+
+    test("board.hiddenMembers is a user-scope overlay, distinct from the team-scope board.members roster", () => {
+      const hiddenMembers = getDef("board.hiddenMembers");
+      const members = getDef("board.members");
+
+      expect(hiddenMembers?.scopes).toEqual(["user"]);
+      expect(hiddenMembers?.type).toBe("array");
+      expect(hiddenMembers?.merge).toBe("replace");
+      expect(hiddenMembers?.description).toContain("board.members");
+      // The ruling this pins: board.members stays team-only array/replace —
+      // widening it to user scope would let a personal store shadow the
+      // whole team roster instead of just hiding entries from it.
+      expect(members?.scopes).toEqual(["team"]);
     });
 
     test("scope spot-checks: deck.access is user-only, board.gitlabHost is team-only, gitq.forges is user-only, mattstack.appPath is machine-only", () => {
