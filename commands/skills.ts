@@ -25,9 +25,11 @@ import {
   loadAttachment,
   loadStepSource,
   readManifestBindings,
+  readSurface,
   readVerbRoster,
   resolvePluginRoots,
   type PluginRoots,
+  type SurfaceConfig,
 } from "../lib/skills/sources.ts";
 import type { AttachmentSource, CompileResult, VerbDef } from "../lib/skills/types.ts";
 
@@ -175,7 +177,26 @@ type Resolved = {
   bindings: Record<string, Record<string, string>>;
   pluginRoots: PluginRoots;
   invocable: Set<string>;
+  surface: SurfaceConfig | null;
+  internalRoster: Set<string>;
 };
+
+/**
+ * Internal roster tokens mirror invocableRoster's "<team>:<name>" shape so
+ * they line up with body-prose tokens and fill bindings. A dir under
+ * <packDir>/skills/ not (yet) named in surface.jsonc's public list is
+ * internal by default -- this is what lets a fill inline through the
+ * transition window before it physically moves.
+ */
+function computeInternalRoster(team: string, packDir: string, surface: SurfaceConfig | null): Set<string> {
+  const internal = new Set<string>();
+  if (!surface) return internal;
+  const publicSet = new Set(surface.public);
+  for (const name of listSubdirs(join(packDir, "skills"))) {
+    if (!publicSet.has(name)) internal.add(`${team}:${name}`);
+  }
+  return internal;
+}
 
 function resolve(flags: Flags): Resolved {
   const mattstackRoot = flags.mattstackDir ?? mattstackHome();
@@ -186,8 +207,10 @@ function resolve(flags: Flags): Resolved {
   const bindings = readManifestBindings(manifestPath);
   const pluginRoots = flags.mattstackDir ? resolvePluginRootsFromDir(mattstackRoot) : resolvePluginRoots();
   const invocable = invocableRoster(pluginRoots);
+  const surface = readSurface(packDir);
+  const internalRoster = computeInternalRoster(flags.team, packDir, surface);
 
-  return { packDir, roster, bindings, pluginRoots, invocable };
+  return { packDir, roster, bindings, pluginRoots, invocable, surface, internalRoster };
 }
 
 function compileVerb(verb: VerbDef, resolved: Resolved): CompileResult {
@@ -214,7 +237,7 @@ function compileVerb(verb: VerbDef, resolved: Resolved): CompileResult {
   }
 
   try {
-    return compileSkill(verb, step, fills, resolved.invocable);
+    return compileSkill(verb, step, fills, resolved.invocable, { internalRoster: resolved.internalRoster });
   } catch (err) {
     // compileSkill's own message already names verb + slot -- pass it through unchanged.
     throw new SkillsUsageError((err as Error).message);
@@ -241,10 +264,23 @@ export async function skillsCompile(args: string[]): Promise<void> {
   await withCleanErrors(async () => {
     const flags = parseFlags(args);
     const resolved = resolve(flags);
+    const publicSet = resolved.surface ? new Set(resolved.surface.public) : null;
 
     for (const verb of resolved.roster) {
-      const result = compileVerb(verb, resolved);
       const outDir = join(resolved.packDir, "skills", verb.name);
+
+      if (publicSet && !publicSet.has(verb.name)) {
+        console.log(`internal: ${verb.name} (not compiled; roster entry retired)`);
+        if (!flags.dryRun && existsSync(outDir)) {
+          rmSync(outDir, { recursive: true, force: true });
+        }
+        continue;
+      }
+
+      const result = compileVerb(verb, resolved);
+      if (result.errors.length > 0) {
+        throw new SkillsUsageError(`verb "${verb.name}": ${result.errors.join("; ")}`);
+      }
 
       if (flags.dryRun) {
         console.log(`would write ${result.files.length} files for ${verb.name}`);
@@ -255,6 +291,15 @@ export async function skillsCompile(args: string[]): Promise<void> {
       writeCompiledVerb(outDir, result);
       console.log(`compiled ${verb.name} (${result.files.length} files, ${result.warnings.length} warnings)`);
       for (const warning of result.warnings) console.log(`  ${warning}`);
+    }
+
+    if (publicSet) {
+      for (const name of listSubdirs(join(resolved.packDir, "skills"))) {
+        if (!publicSet.has(name)) {
+          console.log(`misplaced: ${name} (run rt skills surface apply, or move it)`);
+          process.exitCode = 1;
+        }
+      }
     }
   });
 }

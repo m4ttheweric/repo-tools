@@ -266,6 +266,18 @@ export function readManifestBindings(manifestPath: string): Record<string, Recor
   return parsed.bindings ?? {};
 }
 
+export type SurfaceConfig = { public: string[] };
+
+export function readSurface(packDir: string): SurfaceConfig | null {
+  const surfacePath = join(packDir, "pack", "surface.jsonc");
+  if (!existsSync(surfacePath)) return null;
+  const parsed = JSON.parse(stripJsonc(readFileSync(surfacePath, "utf8"))) as { public?: unknown };
+  const publicList = Array.isArray(parsed.public)
+    ? parsed.public.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  return { public: publicList };
+}
+
 export function invocableRoster(roots: PluginRoots): Set<string> {
   const roster = new Set<string>();
 
