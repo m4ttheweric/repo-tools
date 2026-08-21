@@ -88,4 +88,10 @@ describe("installRtBinary", () => {
     installRtBinary(script);
     expect(currentMode()).toBe("dev");
   });
+
+  test("throws instead of creating a dangling link when src doesn't exist", () => {
+    const missing = join(process.env.HOME!, "no-such-app", "Contents", "MacOS", "rt");
+    expect(() => installRtBinary(missing)).toThrow(/not found/);
+    expect(existsSync(join(BIN, "rt"))).toBe(false);
+  });
 });

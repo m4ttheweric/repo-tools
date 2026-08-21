@@ -30,13 +30,14 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import {
-  appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync,
-  readFileSync, rmSync, writeFileSync,
+  appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
+  readFileSync, rmSync, symlinkSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { toggleDevMode } from "../../commands/settings.ts";
 import { TRAY_SOCK_PATH } from "../daemon-config.ts";
+import { currentMode } from "../dev-mode.ts";
 import { DEV_TRAY_APP_BUNDLE, TRAY_APP_BUNDLE } from "../rt-paths.ts";
 
 function isolatedExists(path: string): boolean {
@@ -47,13 +48,18 @@ const HOME = process.env.HOME!;
 const WRAPPER_PATH = join(HOME, ".local", "bin", "rt");
 const DEV_MODE_CONFIG = join(HOME, ".mattstack", "rt", "dev-mode.json");
 const DEV_MODE_PRELOAD = join(HOME, ".mattstack", "rt", "dev-restore-cwd.ts");
-// `trayAppPath()`/`devTrayAppPath()` now default to /Applications when
-// nothing is found; this suite's isolated HOME can never redirect that, so
-// the fake bundles live under the isolated ~/Applications directly —
+// `trayAppPath()`/`devTrayAppPath()` default to /Applications when nothing
+// is found; this suite's isolated HOME can never redirect that, so the fake
+// bundles live under the isolated ~/Applications directly —
 // `installedTrayAppPath(..., isolatedExists)` finds them there since
 // isolatedExists denies only the real /Applications.
 const FAKE_PROD_APP = join(HOME, "Applications", TRAY_APP_BUNDLE);
 const FAKE_DEV_APP = join(HOME, "Applications", DEV_TRAY_APP_BUNDLE);
+// A standalone fake "installed bundle" binary, separate from FAKE_PROD_APP —
+// used only to prove enableDevMode() never writes through a symlink at
+// WRAPPER_PATH into whatever it points at.
+const FAKE_INSTALLED_BUNDLE_DIR = join(HOME, "fake-installed-app");
+const FAKE_INSTALLED_BUNDLE_BINARY = join(FAKE_INSTALLED_BUNDLE_DIR, "Contents", "MacOS", "rt");
 
 let fakeBinDir = "";
 let logPath = "";
@@ -159,7 +165,7 @@ afterEach(() => {
   for (const p of [WRAPPER_PATH, DEV_MODE_PRELOAD, DEV_MODE_CONFIG]) {
     try { rmSync(p); } catch { /* absent */ }
   }
-  for (const p of [FAKE_PROD_APP, FAKE_DEV_APP]) {
+  for (const p of [FAKE_PROD_APP, FAKE_DEV_APP, FAKE_INSTALLED_BUNDLE_DIR]) {
     try { rmSync(p, { recursive: true, force: true }); } catch { /* absent */ }
   }
 });
@@ -182,6 +188,26 @@ describe("toggleDevMode — flavor handoff", () => {
     expect(openLine).toContain(FAKE_DEV_APP);
     // CLI half still does its own thing (unchanged behavior).
     expect(existsSync(WRAPPER_PATH)).toBe(true);
+  }, 15_000);
+
+  test("prod → dev when WRAPPER_PATH is a symlink into an installed bundle: the bundle binary is never overwritten", async () => {
+    mkdirSync(dirname(FAKE_INSTALLED_BUNDLE_BINARY), { recursive: true });
+    const bundleBytes = Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x00]); // Mach-O magic
+    writeFileSync(FAKE_INSTALLED_BUNDLE_BINARY, bundleBytes, { mode: 0o755 });
+    mkdirSync(join(HOME, ".local", "bin"), { recursive: true });
+    symlinkSync(FAKE_INSTALLED_BUNDLE_BINARY, WRAPPER_PATH);
+    expect(currentMode()).toBe("prod"); // reads through the symlink to Mach-O bytes
+    mkdirSync(FAKE_DEV_APP, { recursive: true }); // incoming bundle present
+    setUpFakes();
+
+    await toggleDevMode(["dev"], isolatedExists);
+
+    // enableDevMode() must never open-and-truncate through the old symlink —
+    // the bundle binary it pointed at has to come out byte-for-byte intact.
+    expect(readFileSync(FAKE_INSTALLED_BUNDLE_BINARY)).toEqual(bundleBytes);
+    // WRAPPER_PATH itself is now a regular wrapper script, not the old link.
+    expect(lstatSync(WRAPPER_PATH).isSymbolicLink()).toBe(false);
+    expect(readFileSync(WRAPPER_PATH, "utf8")).toContain("#!/bin/zsh");
   }, 15_000);
 
   test("dev → prod: same order, quits by the DEV flavor's own names", async () => {

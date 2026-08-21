@@ -14,7 +14,7 @@
  */
 
 import { closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, rmSync, symlinkSync } from "fs";
-import { dirname } from "path";
+import { dirname, resolve } from "path";
 import { homedir } from "os";
 
 // Call-time HOME (mirrors lib/rt-paths.ts's home()): resolved on every call,
@@ -35,17 +35,31 @@ function devModeWrapperPath(): string {
 }
 
 /**
- * Link ~/.local/bin/rt at `src` (the rt inside the app bundle). Link-then-
- * rename so a process executing the old target keeps its mapped pages and
- * the switch is atomic whether the old entry was a file or a link.
+ * Link ~/.local/bin/rt at `src` (the rt inside the app bundle). Resolves
+ * `src` to an absolute path first — symlinkSync stores the target exactly
+ * as given, and a relative one would resolve against the LINK's directory
+ * at read time, not the caller's cwd. Throws if `src` doesn't exist:
+ * symlinkSync happily creates a dangling link otherwise, unlike the old
+ * copyFileSync it replaced (which threw ENOENT). Link-then-rename so a
+ * process executing the old target keeps its mapped pages and the switch is
+ * atomic whether the old entry was a file or a link.
  */
 export function installRtBinary(src: string): string {
+  const resolvedSrc = resolve(src);
+  if (!existsSync(resolvedSrc)) {
+    throw new Error(`rt binary not found at ${resolvedSrc}`);
+  }
   const dest = rtBinaryPath();
   mkdirSync(dirname(dest), { recursive: true });
   const tmp = `${dest}.new`;
   rmSync(tmp, { force: true });
-  symlinkSync(src, tmp);
-  renameSync(tmp, dest);
+  symlinkSync(resolvedSrc, tmp);
+  try {
+    renameSync(tmp, dest);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
   return dest;
 }
 
