@@ -34,13 +34,19 @@ final class ServicesRegistrar: ServicesProviding, @unchecked Sendable {
             let svc = service(plist)
             do {
                 try svc.register()
-                TrayLog.info("agent registered", ["label": plist.label, "status": TrayServer.statusName(svc.status)])
-                return ServiceRegisterResult(plist: name, ok: true, status: TrayServer.statusName(svc.status))
+                let s = svc.status
+                TrayLog.info("agent registered", ["label": plist.label, "status": TrayServer.statusName(s)])
+                return ServiceRegisterResult(plist: name, ok: s != .notFound, status: TrayServer.statusName(s))
             } catch {
-                let already = (error as NSError).code == kSMErrorAlreadyRegistered
-                if !already { TrayLog.error("agent register failed", ["label": plist.label, "err": String(describing: error)]) }
-                return ServiceRegisterResult(plist: name, ok: already, status: TrayServer.statusName(svc.status),
-                                             error: already ? nil : String(describing: error))
+                let ns = error as NSError
+                // Literal, not the SMAppServiceErrorDomain symbol: that constant
+                // needs macOS 15, this package targets macOS 14.
+                let already = ns.domain == "SMAppServiceErrorDomain" && ns.code == kSMErrorAlreadyRegistered
+                let s = svc.status
+                let ok = already && s != .notFound
+                if !ok { TrayLog.error("agent register failed", ["label": plist.label, "err": String(describing: error)]) }
+                return ServiceRegisterResult(plist: name, ok: ok, status: TrayServer.statusName(s),
+                                             error: ok ? nil : String(describing: error))
             }
         }
     }
@@ -62,8 +68,9 @@ final class ServicesRegistrar: ServicesProviding, @unchecked Sendable {
                 let svc = service(plist)
                 do {
                     try svc.unregister()
-                    TrayLog.info("agent unregistered", ["label": plist.label])
-                    return ServiceRegisterResult(plist: name, ok: true, status: TrayServer.statusName(svc.status))
+                    let s = svc.status
+                    TrayLog.info("agent unregistered", ["label": plist.label, "status": TrayServer.statusName(s)])
+                    return ServiceRegisterResult(plist: name, ok: s == .notRegistered, status: TrayServer.statusName(s))
                 } catch {
                     let gone = svc.status == .notRegistered
                     if !gone { TrayLog.error("agent unregister failed", ["label": plist.label, "err": String(describing: error)]) }
@@ -81,26 +88,47 @@ final class ServicesRegistrar: ServicesProviding, @unchecked Sendable {
         return out.ok
     }
 
-    func restartAll() async {
-        for agent in agents { _ = await restart(label: agent.label) }
+    func restartAll() async { _ = await restartAllChecked() }
+
+    /// Kickstarts every agent and asks deck to restart its managed apps,
+    /// reporting whether every spawn in the sequence succeeded — the signal
+    /// `handleVersionChange` gates recording the new version on.
+    private func restartAllChecked() async -> Bool {
+        var ok = true
+        for agent in agents { ok = await restart(label: agent.label) && ok }
         let deck = bundlePath + "/Contents/Helpers/deck"
         guard FileManager.default.isExecutableFile(atPath: deck) else {
             TrayLog.info("deck helper not bundled; skipping managed-app restart")
-            return
+            return ok
         }
         let (exe, args) = DeckRestart.arguments(deckPath: deck)
         let out = await runner.run(exe, args)
-        if !out.ok { TrayLog.warn("deck restart --managed failed", ["stderr": out.stderr]) }
+        if !out.ok {
+            TrayLog.warn("deck restart --managed failed", ["stderr": out.stderr])
+            ok = false
+        }
+        return ok
     }
 
     /// Called once per launch. On a version change: re-register (idempotent),
-    /// kickstart every agent, ask deck to restart its managed apps.
+    /// kickstart every agent, ask deck to restart its managed apps. The new
+    /// version is recorded only once every register + restart step succeeds —
+    /// a partial upgrade must stay unrecorded so the next launch retries it,
+    /// never gets silently stuck.
     func handleVersionChange(current: String, store: KeyValueStore) async -> VersionChange {
         let change = VersionChangeDetector.evaluate(current: current, store: store)
-        if case .changed(let from, let to) = change {
-            TrayLog.info("app version changed; restarting agents", ["from": from, "to": to])
-            _ = await MainActor.run { registerAll() }
-            await restartAll()
+        guard case .changed(let from, let to) = change else {
+            VersionChangeDetector.record(current: current, store: store)
+            return change
+        }
+        TrayLog.info("app version changed; restarting agents", ["from": from, "to": to])
+        let registerResults = await MainActor.run { registerAll() }
+        let restarted = await restartAllChecked()
+        let failedRegisters = registerResults.filter { !$0.ok }.map(\.plist)
+        guard failedRegisters.isEmpty, restarted else {
+            TrayLog.warn("version-change restart incomplete; leaving version unrecorded for retry",
+                         ["from": from, "to": to, "failedRegisters": failedRegisters, "restarted": restarted])
+            return change
         }
         VersionChangeDetector.record(current: current, store: store)
         return change
