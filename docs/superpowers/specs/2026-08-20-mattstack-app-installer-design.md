@@ -60,7 +60,7 @@ beyond giving them releasable artifacts, and the peering relay's encryption
 | V2 | PATH defaults | Default-exposed: `rt`, `fast-browser`, `gitq`, `deck` (tagged links, still yielding to a user copy). Everything else internal + opt-in. |
 | V3 | App location | DMG target `/Applications`, fallback `~/Applications` when not writable; the app records its bundle path in the machine store (`mattstack.appPath`) at launch and rt reads that; legacy sweep covers `~/Applications/mattstack.app`; Matt's machine re-grants FDA once. |
 | V4 | Schema home | Ruled by the settings lane (reply 2026-08-20 16:45, spec `2026-08-20-suite-settings-migration.md`): `mattstack.integrations` (team), `mattstack.tracking` (team, identity-keyed; merged under machine `rt.repoTracking`), pack-side `requirements.jsonc` (not a key), `claude.marketplaces`/`claude.plugins` (user+team), `mattstack.appPath` (machine), `rt.cron` (machine), full `deck.*`/`board.*`/`gitq.*` tables — all in ONE suite registry in `@mattstack/rt-client`; **apps read in-process via the shared module** (not through the daemon). Registry merged to main 2026-08-20 (PR #5). |
-| V5 | Home repo (settings lane, ratified by Matt) | `~/.mattstack` **is** the git-backed home repo (`rt home init`, private `mattstack-home` via gh); mattstack-prefs folded in as `user/`; team clones nested and ignored; secrets at `user/secrets/<domain>.json` sops/age-encrypted to the Keychain-held age key; `rt home key export` → the user's password manager is the key-migration channel; `rt restore <org>/<repo>` = clone + key paste + materialize (RT-31); H2 snapshot daemon = RT-30. All live on Matt's machine as of 2026-08-20 evening. This supersedes this spec's earlier "container" wording. |
+| V5 | Home repo (settings lane, ratified by Matt) — **layout superseded 2026-08-21, see Amendment A1** | `~/.mattstack` **is** the git-backed home repo (`rt home init`, private `mattstack-home` via gh); mattstack-prefs folded in as `user/`; team clones nested and ignored; secrets at `user/secrets/<domain>.json` sops/age-encrypted to the Keychain-held age key; `rt home key export` → the user's password manager is the key-migration channel; `rt restore <org>/<repo>` = clone + key paste + materialize (RT-31); H2 snapshot daemon = RT-30. All live on Matt's machine as of 2026-08-20 evening. This supersedes this spec's earlier "container" wording. |
 
 ### Invariants (binding on every lane)
 
@@ -740,3 +740,27 @@ DNS (`mattstack.dev/join`), Railway, and Apple steps carry `matt-gated`.
   lane before L2 lands.
 - `local-db-mcp` has no distributable source; capture-evidence/query flows in
   the claimview pack depend on it.
+
+## Amendment A1 (2026-08-21) — home repo re-root supersedes V5's layout
+
+Matt ruled (settings lane, spec `docs/superpowers/specs/2026-08-21-home-repo-reroot.md`):
+`~/.mattstack/` is a plain directory and **`~/.mattstack/user/` IS the personal
+repo** (mattstack-home re-rooted). Consequences for this spec, binding on every
+lane not yet dispatched and on any already-built code that names the layout:
+
+- Paths: user scope `~/.mattstack/user/settings.user.jsonc`; machine scope
+  `user/local/<machine-key>/settings.local.jsonc` (machine key = hostname slug,
+  untracked override file `~/.mattstack/machine-key`); team scope
+  `teams/<name>/mattstack/settings.team.jsonc`; secrets `user/secrets/*.json`
+  (sops rule `secrets/.*` relative to the repo root). State zones
+  (`~/.mattstack/rt/`, `work/`, `logs/`) are re-derivable and never travel.
+- `rt home init` becomes: ensure the `~/.mattstack/` skeleton, clone the user
+  repo to `user/`, write the machine-key file, create `local/<key>/` if new.
+  Restore = clone + pick machine profile. The installer still calls these verbs
+  and never writes the layout itself (§5.2/§6 unchanged in spirit).
+- Everything else in V5 stands: remotes required from creation, secrets stay
+  encrypted in the repo, key export to the password manager, suite registry.
+- Lane impact: L1 (rt setup verbs) must target the re-rooted paths — ledger
+  that before Task 1; L3 has no layout hardcodes; L7's `assert-installed.sh`
+  now asserts `~/.mattstack/user/.git`.
+
