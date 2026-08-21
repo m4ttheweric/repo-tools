@@ -30,13 +30,17 @@
  * need to change; a socket caller must read ~/.mattstack/rt/api-token
  * itself and pass it the same way.
  *
- * `payload.scope` adds a second whitelist alongside the
- * extension's, each reading its own encrypted domain — "extension" (default,
- * so existing callers need no change) reads the `rt` domain's linearApiKey/
- * gitlabToken; "deck" reads the `deck` domain's cfApiToken/cfZoneId. The
- * token gate above applies identically to both; scope is checked only after
- * it passes, and an unknown scope is refused before either domain reader
- * runs — the two whitelists must never blend into one combined read.
+ * `payload.scope` adds further whitelists alongside the extension's, each
+ * reading its own encrypted domain(s) — "extension" (default, so existing
+ * callers need no change) reads the `rt` domain's linearApiKey/gitlabToken;
+ * "deck" reads the `deck` domain's cfApiToken/cfZoneId; "board" is
+ * CROSS-DOMAIN, reading slackToken/slackClientSecret/slackSigningSecret
+ * from the `board` domain and gitlabToken/switchboardToken/
+ * switchboardAdminToken from the `rt` domain. The token gate above applies
+ * identically to every scope; scope is checked only after it passes, and an
+ * unknown scope is refused before any domain reader runs — the whitelists
+ * must never blend into one combined read, even where board's rt-domain
+ * entries overlap a key name (gitlabToken) extension's whitelist also uses.
  */
 
 import { loadSecrets } from "../../linear.ts";
@@ -50,21 +54,57 @@ import type { HandlerContext, HandlerMap, TypedHandlers } from "./types.ts";
 const DECK_SECRET_DOMAIN = "deck";
 const DECK_SECRET_KEYS = ["cfApiToken", "cfZoneId"] as const;
 
-let realDeckSecretsSeamsSingleton: SecretsSeams | null = null;
+/** Cross-domain whitelist for the "board" scope — explicit (domain, key) pairs rather than one domain's key list, since board draws from both `board` and `rt`. */
+const BOARD_SECRET_ENTRIES = [
+  ["board", "slackToken"],
+  ["board", "slackClientSecret"],
+  ["board", "slackSigningSecret"],
+  ["rt", "gitlabToken"],
+  ["rt", "switchboardToken"],
+  ["rt", "switchboardAdminToken"],
+] as const;
 
-/** Lazily-built real seams, private to this module — a separate instance from lib/linear.ts's own singleton only because module scope doesn't let this file reuse that one, not because the seams themselves are domain-bound (`readSecret` takes `domain` as a parameter). */
-function defaultDeckSecretsSeams(): SecretsSeams {
-  return realDeckSecretsSeamsSingleton ??= {
+let realSecretsSeamsSingleton: SecretsSeams | null = null;
+
+/** Lazily-built real seams, private to this module — a separate instance from lib/linear.ts's own singleton only because module scope doesn't let this file reuse that one, not because the seams themselves are domain-bound (`readSecret` takes `domain` as a parameter). Shared by every scope's loader below. */
+function defaultSecretsSeams(): SecretsSeams {
+  return realSecretsSeamsSingleton ??= {
     ageKeySeam: createRealAgeKeySeam(),
     execSeam: createRealSecretsExecSeam(),
   };
 }
 
 async function loadDeckSecrets(): Promise<{ cfApiToken?: string; cfZoneId?: string }> {
-  const seams = defaultDeckSecretsSeams();
+  const seams = defaultSecretsSeams();
   const out: { cfApiToken?: string; cfZoneId?: string } = {};
   for (const key of DECK_SECRET_KEYS) {
     const value = await readSecret(DECK_SECRET_DOMAIN, key, seams);
+    if (value !== null) out[key] = value;
+  }
+  return out;
+}
+
+export interface BoardSecretsData {
+  slackToken?: string;
+  slackClientSecret?: string;
+  slackSigningSecret?: string;
+  gitlabToken?: string;
+  switchboardToken?: string;
+  switchboardAdminToken?: string;
+}
+
+/** `readSecret` injected as a plain (domain, key) -> value|null function, not the full `SecretsSeams` — lets a test exercise the real per-entry read sequence and partial-failure ordering without faking sops/age-key exec plumbing. */
+export type ReadSecretFn = (domain: string, key: string) => Promise<string | null>;
+
+function defaultReadSecret(domain: string, key: string): Promise<string | null> {
+  return readSecret(domain, key, defaultSecretsSeams());
+}
+
+/** Reads BOARD_SECRET_ENTRIES in order; a throw on any entry (e.g. the first `rt`-domain read after `board`'s three succeed) rejects the whole call with nothing partial returned — callers see either every readable key or an error, never a half-populated object. */
+export async function loadBoardSecrets(readSecretFn: ReadSecretFn = defaultReadSecret): Promise<BoardSecretsData> {
+  const out: BoardSecretsData = {};
+  for (const [domain, key] of BOARD_SECRET_ENTRIES) {
+    const value = await readSecretFn(domain, key);
     if (value !== null) out[key] = value;
   }
   return out;
@@ -82,6 +122,8 @@ export interface SecretsHandlerOverrides {
   extensionSecrets?: () => Promise<{ linearApiKey?: string; gitlabToken?: string }>;
   /** Defaults to `loadDeckSecrets` (the `deck` encrypted domain) for secrets:read's "deck" scope. */
   deckSecrets?: () => Promise<{ cfApiToken?: string; cfZoneId?: string }>;
+  /** Defaults to `loadBoardSecrets` (cross-domain: `board` + `rt`) for secrets:read's "board" scope. */
+  boardSecrets?: () => Promise<BoardSecretsData>;
   /** Defaults to `loadOrCreateApiToken` (the real ~/.mattstack/rt/api-token, shared with api-auth.ts). */
   apiToken?: () => string;
 }
@@ -98,6 +140,7 @@ export function createSecretsHandlers(
   const secrets = overrides.secrets ?? loadSecrets;
   const extensionSecrets = overrides.extensionSecrets ?? loadSecrets;
   const deckSecrets = overrides.deckSecrets ?? loadDeckSecrets;
+  const boardSecrets = overrides.boardSecrets ?? loadBoardSecrets;
   const apiToken = overrides.apiToken ?? (() => loadOrCreateApiToken());
 
   return {
@@ -151,6 +194,18 @@ export function createSecretsHandlers(
         const data: { cfApiToken?: string; cfZoneId?: string } = {};
         if (all.cfApiToken) data.cfApiToken = all.cfApiToken;
         if (all.cfZoneId) data.cfZoneId = all.cfZoneId;
+        ctx.log.debug({ scope, keys: Object.keys(data) }, "secrets:read");
+        return { ok: true as const, data };
+      }
+      if (scope === "board") {
+        const all = await boardSecrets();
+        const data: BoardSecretsData = {};
+        if (all.slackToken) data.slackToken = all.slackToken;
+        if (all.slackClientSecret) data.slackClientSecret = all.slackClientSecret;
+        if (all.slackSigningSecret) data.slackSigningSecret = all.slackSigningSecret;
+        if (all.gitlabToken) data.gitlabToken = all.gitlabToken;
+        if (all.switchboardToken) data.switchboardToken = all.switchboardToken;
+        if (all.switchboardAdminToken) data.switchboardAdminToken = all.switchboardAdminToken;
         ctx.log.debug({ scope, keys: Object.keys(data) }, "secrets:read");
         return { ok: true as const, data };
       }
