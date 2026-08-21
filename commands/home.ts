@@ -35,6 +35,7 @@ import {
   AgeKeyAbsentError,
   createRealAgeKeySeam,
   ensureAgeKey,
+  importAgeKey,
   keyExport,
   renderSopsYaml,
   sopsYamlRecipient,
@@ -312,6 +313,137 @@ export async function homeKeyExport(
     }
     throw err;
   }
+}
+
+export interface AgeKeyInputSeam {
+  fromStdin(): Promise<string>;
+  fromPrompt(): Promise<string>;
+}
+
+/** `stream` is injectable so tests exercise the trimming behavior without touching the real process.stdin. */
+export async function readStdinTrimmed(stream: NodeJS.ReadableStream = process.stdin): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks).toString("utf8").trim();
+}
+
+const CTRL_C = "";
+const DEL = "";
+
+/**
+ * No-echo prompt (mirrors commands/secrets.ts's promptSecretValue): raw mode
+ * so keystrokes never reach the terminal and nothing is echoed back — the
+ * key crosses into this process only here, never via argv.
+ */
+function promptAgeKey(): Promise<string> {
+  if (!process.stdin.isTTY) {
+    return Promise.reject(new Error("not a TTY — pass --stdin to read the key from stdin instead"));
+  }
+  process.stdout.write("Paste the age private key: ");
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    let value = "";
+    const cleanup = () => {
+      stdin.setRawMode(false);
+      stdin.pause();
+      stdin.removeListener("data", onData);
+    };
+    const onData = (chunk: Buffer) => {
+      for (const ch of chunk.toString("utf8")) {
+        if (ch === "\n" || ch === "\r") {
+          cleanup();
+          process.stdout.write("\n");
+          resolve(value);
+          return;
+        }
+        if (ch === CTRL_C) {
+          cleanup();
+          process.stdout.write("\n");
+          reject(new Error("cancelled"));
+          return;
+        }
+        if (ch === DEL || ch === "\b") {
+          value = value.slice(0, -1);
+          continue;
+        }
+        value += ch;
+      }
+    };
+    stdin.resume();
+    stdin.setRawMode(true);
+    stdin.on("data", onData);
+  });
+}
+
+function defaultAgeKeyInputSeam(): AgeKeyInputSeam {
+  return { fromStdin: () => readStdinTrimmed(), fromPrompt: promptAgeKey };
+}
+
+/** First 12 chars + an ellipsis — enough to eyeball-match two recipients in a warning without printing the full key. */
+function truncateKey(key: string): string {
+  return `${key.slice(0, 12)}…`;
+}
+
+/**
+ * The counterpart to `rt home init`'s mint-refusal: when a cloned repo's
+ * secrets are encrypted to a key this machine doesn't hold, this is what
+ * gets it in. Only THIS command's success writes the keychain item from
+ * outside key material — `ensureAgeKey` mints, this imports; the two never
+ * run against the same "no key yet" state for different reasons.
+ *
+ * The recipient check runs AFTER a successful import (not before) so the
+ * refusal message can name the ACTUAL derived recipient of what was just
+ * pasted, not a guess — a wrong paste that happens to parse still gets
+ * caught here before the operator believes their secrets are decryptable.
+ */
+export async function homeKeyImport(
+  args: string[],
+  _ctx: CommandContext = {},
+  seams: AgeKeySeam = createRealAgeKeySeam(),
+  sopsYamlSeam: SopsYamlSeam = defaultSopsYamlSeam(),
+  input: AgeKeyInputSeam = defaultAgeKeyInputSeam(),
+): Promise<void> {
+  const force = args.includes("--force");
+
+  let privateKey: string;
+  try {
+    privateKey = args.includes("--stdin") ? await input.fromStdin() : await input.fromPrompt();
+  } catch (err) {
+    console.error(`rt home key import: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
+  const result = await importAgeKey(seams, privateKey, { force });
+
+  if (!result.ok) {
+    if (result.reason === "malformed") {
+      console.error("rt home key import: not a valid age private key (expected an AGE-SECRET-KEY-1… value)");
+    } else {
+      console.error(
+        `rt home key import: a key already exists in the keychain (recipient ${truncateKey(result.existingPublicKey)}) — ` +
+          "pass --force to overwrite it.",
+      );
+    }
+    process.exit(1);
+  }
+
+  const { publicKey } = result;
+
+  const userDir = join(mattstackHome(), "user");
+  const sopsYamlPath = join(userDir, ".sops.yaml");
+  const existing = sopsYamlSeam.read(sopsYamlPath);
+  const existingRecipient = existing === null ? null : sopsYamlRecipient(existing);
+
+  if (existingRecipient !== null && existingRecipient !== publicKey) {
+    console.error(
+      `rt home key import: imported key's recipient (${truncateKey(publicKey)}) does not match this repo's ` +
+        `.sops.yaml recipient (${truncateKey(existingRecipient)}) — this key can't decrypt the secrets already here.`,
+    );
+    process.exit(2);
+  }
+
+  console.log(`  ${green}✓${reset} imported — recipient ${bold}${truncateKey(publicKey)}${reset}`);
+  console.log(`    ${dim}secrets encrypted to this recipient are now decryptable on this machine${reset}`);
 }
 
 // ─── snapshot / claim / release ─────────────────────────────────────────────

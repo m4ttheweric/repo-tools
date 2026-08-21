@@ -717,6 +717,15 @@ export const TREE: Record<string, CommandNode> = {
             fn: "homeKeyExport",
             args: [],
           },
+          import: {
+            description: "Import an age private key into the keychain (from your password manager)",
+            module: "./commands/home.ts",
+            fn: "homeKeyImport",
+            args: [
+              { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the private key from stdin instead of a no-echo prompt (scripting)" },
+              { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Overwrite a key already in the keychain" },
+            ],
+          },
         },
       },
       snapshot: {

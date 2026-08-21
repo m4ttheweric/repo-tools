@@ -4,13 +4,17 @@ import {
   gatherHomeState,
   homeClaim,
   homeInit,
+  homeKeyImport,
   homeRelease,
   homeSnapshot,
   InvalidUrlArgError,
+  readStdinTrimmed,
+  type AgeKeyInputSeam,
   type HomeDaemonSeam,
   type HomeProbes,
   type SopsYamlSeam,
 } from "../home.ts";
+import { Readable } from "stream";
 import { STATE_DIR_NAMES } from "../../lib/home/init-plan.ts";
 import type { ExecResult, ExecSeam } from "../../lib/home/init-exec.ts";
 import { renderSopsYaml, type AgeExecResult, type AgeKeySeam } from "../../lib/home/age-key.ts";
@@ -613,6 +617,154 @@ describe("homeSnapshot", () => {
 
     expect(exitCode).toBe(1);
     expect(errors.some((e) => e.includes("git commit failed"))).toBe(true);
+  });
+});
+
+describe("readStdinTrimmed", () => {
+  test("reads the whole stream and trims surrounding whitespace/newline", async () => {
+    const stream = Readable.from([Buffer.from("AGE-SECRET-KEY-1FOO"), Buffer.from("BAR\n")]);
+    const value = await readStdinTrimmed(stream);
+    expect(value).toBe("AGE-SECRET-KEY-1FOOBAR");
+  });
+});
+
+describe("homeKeyImport", () => {
+  const OTHER_PUBLIC_KEY = "age1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+  const OTHER_PRIVATE_KEY = "AGE-SECRET-KEY-1ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ";
+
+  /**
+   * Models the keychain well enough for import: find/derive-existing,
+   * derive-new, and store — never the real keychain. importAgeKey always
+   * derives the freshly-pasted key BEFORE it looks up (and, if present,
+   * derives) any existing one, so the first `age-keygen -y` call is always
+   * the new key and a second one (only reachable when a key already
+   * exists) is always the existing key — this fake keys off that order
+   * rather than inspecting which private key was piped in.
+   */
+  class FakeImportSeam implements AgeKeySeam {
+    calls: string[][] = [];
+    private deriveCalls = 0;
+    constructor(private opts: { existingPrivateKey?: string; existingPublicKey?: string } = {}) {}
+
+    async run(cmd: string[]): Promise<AgeExecResult> {
+      this.calls.push(cmd);
+      if (cmd[1] === "find-generic-password") {
+        if (this.opts.existingPrivateKey) return { code: 0, stdout: `${this.opts.existingPrivateKey}\n`, stderr: "" };
+        return { code: 44, stdout: "", stderr: "The specified item could not be found in the keychain." };
+      }
+      if (cmd[0] === "age-keygen" && cmd[1] === "-y") {
+        this.deriveCalls++;
+        if (this.deriveCalls === 1) return { code: 0, stdout: `${FAKE_PUBLIC_KEY}\n`, stderr: "" };
+        return { code: 0, stdout: `${this.opts.existingPublicKey}\n`, stderr: "" };
+      }
+      if (cmd[1] === "add-generic-password") {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`FakeImportSeam: unexpected call ${cmd.join(" ")}`);
+    }
+  }
+
+  function fakeInput(privateKey: string): AgeKeyInputSeam {
+    return {
+      fromStdin: async () => {
+        throw new Error("fromStdin should not be called without --stdin");
+      },
+      fromPrompt: async () => privateKey,
+    };
+  }
+
+  async function runImport(
+    args: string[],
+    seam: AgeKeySeam,
+    sopsYamlSeam: SopsYamlSeam = new FakeSopsYamlSeam(),
+    input: AgeKeyInputSeam = fakeInput(FAKE_PRIVATE_KEY),
+  ) {
+    return runCatchingExit(() => homeKeyImport(args, {}, seam, sopsYamlSeam, input));
+  }
+
+  test("valid import, no existing key: succeeds, prints the truncated recipient", async () => {
+    const seam = new FakeImportSeam({});
+
+    const { exitCode, logs } = await runImport([], seam);
+
+    expect(exitCode).toBeUndefined();
+    expect(logs.some((l) => l.includes(FAKE_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    expect(logs.some((l) => l.includes("decryptable on this machine"))).toBe(true);
+    expect(seam.calls.some((c) => c.includes("add-generic-password") && !c.includes("-U"))).toBe(true);
+  });
+
+  test("malformed key (wrong prefix): refused, exits 1, never calls the seam", async () => {
+    const seam = new FakeImportSeam({});
+
+    const { exitCode, errors } = await runImport([], seam, new FakeSopsYamlSeam(), fakeInput("not-an-age-key"));
+
+    expect(exitCode).toBe(1);
+    expect(errors.some((e) => e.includes("not a valid age private key"))).toBe(true);
+    expect(seam.calls).toEqual([]);
+  });
+
+  test("existing key, no --force: refused, exits 1, names the existing recipient, never overwrites", async () => {
+    const seam = new FakeImportSeam({ existingPrivateKey: OTHER_PRIVATE_KEY, existingPublicKey: OTHER_PUBLIC_KEY });
+
+    const { exitCode, errors } = await runImport([], seam);
+
+    expect(exitCode).toBe(1);
+    expect(errors.some((e) => e.includes(OTHER_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    expect(errors.some((e) => e.includes("--force"))).toBe(true);
+    expect(seam.calls.some((c) => c.includes("add-generic-password"))).toBe(false);
+  });
+
+  test("existing key, --force: overwrites (-U) and succeeds", async () => {
+    const seam = new FakeImportSeam({ existingPrivateKey: OTHER_PRIVATE_KEY, existingPublicKey: OTHER_PUBLIC_KEY });
+
+    const { exitCode, logs } = await runImport(["--force"], seam);
+
+    expect(exitCode).toBeUndefined();
+    expect(logs.some((l) => l.includes(FAKE_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    const addCall = seam.calls.find((c) => c.includes("add-generic-password"));
+    expect(addCall).toContain("-U");
+  });
+
+  test("imported key's derived recipient does not match this repo's .sops.yaml recipient: exits 2, names both truncated", async () => {
+    const seam = new FakeImportSeam({});
+    const sopsYamlSeam = new FakeSopsYamlSeam({ path: SOPS_YAML_PATH, content: renderSopsYaml(OTHER_PUBLIC_KEY) });
+
+    const { exitCode, errors } = await runImport([], seam, sopsYamlSeam);
+
+    expect(exitCode).toBe(2);
+    expect(errors.some((e) => e.includes(FAKE_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    expect(errors.some((e) => e.includes(OTHER_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+  });
+
+  test("imported key's recipient matches an existing .sops.yaml: succeeds, no mismatch warning", async () => {
+    const seam = new FakeImportSeam({});
+    const sopsYamlSeam = new FakeSopsYamlSeam({ path: SOPS_YAML_PATH, content: renderSopsYaml(FAKE_PUBLIC_KEY) });
+
+    const { exitCode } = await runImport([], seam, sopsYamlSeam);
+
+    expect(exitCode).toBeUndefined();
+  });
+
+  test("--stdin: reads the key via input.fromStdin, never input.fromPrompt", async () => {
+    const seam = new FakeImportSeam({});
+    let stdinCalled = false;
+    let promptCalled = false;
+    const input: AgeKeyInputSeam = {
+      fromStdin: async () => {
+        stdinCalled = true;
+        return FAKE_PRIVATE_KEY;
+      },
+      fromPrompt: async () => {
+        promptCalled = true;
+        return FAKE_PRIVATE_KEY;
+      },
+    };
+
+    const { exitCode } = await runImport(["--stdin"], seam, new FakeSopsYamlSeam(), input);
+
+    expect(exitCode).toBeUndefined();
+    expect(stdinCalled).toBe(true);
+    expect(promptCalled).toBe(false);
   });
 });
 
