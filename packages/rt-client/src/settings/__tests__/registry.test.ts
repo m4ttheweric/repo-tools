@@ -51,7 +51,7 @@ describe("settings/registry", () => {
       }
     });
 
-    test("exactly 15 keys are migrated:true", () => {
+    test("exactly 16 keys are migrated:true", () => {
       const migrated = allDefs().filter((d) => d.migrated);
 
       expect(migrated.map((d) => d.key).sort()).toEqual(
@@ -59,6 +59,7 @@ describe("settings/registry", () => {
           "rt.intercepts", "rt.repoIdentityOverrides", "rt.repoRoots", "rt.roles", "rt.worktrees",
           "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runaway", "rt.workspacePrefs",
           "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
+          "rt.homeSnapshot",
         ].sort(),
       );
     });
@@ -93,6 +94,21 @@ describe("settings/registry", () => {
       const def = getDef("rt.worktrees");
 
       expect(def?.default).toEqual({ onDeck: 0 });
+    });
+
+    test("rt.homeSnapshot is a machine-only object with its documented default", () => {
+      const def = getDef("rt.homeSnapshot");
+
+      expect(def?.scopes).toEqual(["machine"]);
+      expect(def?.type).toBe("object");
+      expect(def?.merge).toBe("deep");
+      expect(def?.default).toEqual({
+        enabled: true,
+        debounceSec: 20,
+        pushDelaySec: 60,
+        janitorThresholdHours: 6,
+        janitorIntervalMin: 30,
+      });
     });
 
     test("the five migrated global singletons carry no legacyFile", () => {
@@ -143,7 +159,7 @@ describe("settings/registry", () => {
       expect(def?.merge).toBe("replace");
     });
 
-    test("has exactly the 1 remaining migrated:false key, the 15 migrated:true keys, and the 30 suite keys", () => {
+    test("has exactly the 1 remaining migrated:false key, the 16 migrated:true keys, and the 30 suite keys", () => {
       const migratedFalseKeys = [
         "rt.hooks",
       ];
@@ -151,6 +167,7 @@ describe("settings/registry", () => {
         "rt.roles", "rt.intercepts", "rt.worktrees", "rt.repoIdentityOverrides", "rt.repoRoots",
         "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runaway", "rt.workspacePrefs",
         "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
+        "rt.homeSnapshot",
       ];
       const suiteKeys = [
         "mattstack.integrations",
