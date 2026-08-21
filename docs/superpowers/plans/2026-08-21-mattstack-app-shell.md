@@ -231,13 +231,12 @@ final class CoreChecksXCTest: XCTestCase {
     func testAllCoreChecksPass() async {
         let report = await runAllChecks()
         for f in report.failures {
-            XCTFail("\(f.check): \(f.message)", file: StaticString(stringLiteral: f.file), line: UInt(f.line))
+            XCTFail("\(f.check) [\(f.file):\(f.line)]: \(f.message)")
         }
         XCTAssertGreaterThan(report.passed, 0)
     }
 }
 ```
-(`StaticString(stringLiteral:)` on a runtime string is not allowed; use the simpler `XCTFail("\(f.check) [\(f.file):\(f.line)]: \(f.message)")` instead — the location travels in the message.)
 
 - [ ] **Step 2: Write the first failing check — contract plan decoding**
 
@@ -534,7 +533,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `rt-tray/entitlements/mattstack.entitlements`
 
 **Interfaces:**
-- Produces: two app targets `mattstack` / `mattstack-dev` with Info.plist keys `MSDaemonLabel`, `MSDevBuild`, `CFBundleURLTypes` (`mattstack`), `LSMinimumSystemVersion 14.0`, `SUFeedURL`, `SUPublicEDKey`, `SUEnableAutomaticChecks`, `SUAutomaticallyUpdate`, `SUVerifyUpdateBeforeExtraction`, `SUScheduledCheckInterval`; LaunchAgent files `com.mattstack.daemon[.dev].plist` + `com.mattstack.deck[.dev].plist` under `Contents/Library/LaunchAgents` (ServicesRegistrar enumerates that directory, Task 7).
+- Produces: two app targets `mattstack` / `mattstack-dev` with Info.plist keys `MSDaemonLabel`, `MSDevBuild`, `CFBundleURLTypes` (`mattstack`), `LSMinimumSystemVersion 14.0`, `SUFeedURL`, `SUPublicEDKey`, `SUEnableAutomaticChecks`, `SUAutomaticallyUpdate`, `SUVerifyUpdateBeforeExtraction`, `SUScheduledCheckInterval`, `NSAppTransportSecurity.NSAllowsLocalNetworking`; LaunchAgent files `com.mattstack.daemon[.dev].plist` + `com.mattstack.deck[.dev].plist` under `Contents/Library/LaunchAgents` (ServicesRegistrar enumerates that directory, Task 7).
 
 - [ ] **Step 1: Write the render script (the one place that knows a flavor's labels for the agents)**
 
@@ -643,8 +642,13 @@ In `rt-tray/Info.plist` change `LSMinimumSystemVersion` to `14.0` and add before
     <true/>
     <key>SUScheduledCheckInterval</key>
     <integer>86400</integer>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
 ```
-(`SUPublicEDKey` is a placeholder by design — L4's release job owns the real key; `UpdatePolicy` in Task 10 refuses to start Sparkle while the placeholder is present, so a local build never phones a feed it cannot verify.)
+(`NSAllowsLocalNetworking` lets the clean-room VM (L7) serve a loopback appcast via `MATTSTACK_APPCAST_URL` — Task 10. `SUPublicEDKey` is a placeholder by design — L4's release job owns the real key; `UpdatePolicy` in Task 10 refuses to start Sparkle while the placeholder is present, so a local build never phones a feed it cannot verify.)
 
 - [ ] **Step 4: Entitlements file** `rt-tray/entitlements/mattstack.entitlements`:
 ```xml
@@ -734,6 +738,8 @@ targetTemplates:
         SUAutomaticallyUpdate: true
         SUVerifyUpdateBeforeExtraction: true
         SUScheduledCheckInterval: 86400
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
 
 targets:
   MattstackCore:
@@ -1504,7 +1510,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Produces:
   - `public protocol PlanSource: Sendable { func fetchPlan() async throws -> Plan }`
   - `public protocol PermissionProbing: Sendable { func snapshot() async -> PermissionSnapshot }`
-  - `public protocol TickerScheduling: Sendable { func schedule(every seconds: TimeInterval, _ tick: @escaping @Sendable () -> Void) -> TickerHandle }`, `public final class TickerHandle { public let cancel: () -> Void }`
+  - `public protocol TickerScheduling: Sendable { func schedule(every seconds: TimeInterval, _ tick: @escaping @Sendable () -> Void) -> TickerHandle }`, `public final class TickerHandle { init(_ cancel: @escaping @Sendable () -> Void); let cancel: @Sendable () -> Void }`
   - `public struct PermissionSnapshot: Codable, Equatable, Sendable { fda: FDAState; notifications: NotificationsState; loginItems: LoginItemsState }` with nested `status` strings per contract, `PermissionSnapshot.unknown`
   - `public enum PermissionRowOverlay { static func status(for rowId: String, in snapshot: PermissionSnapshot) -> (RowStatus, String)? }` — rows `perm.fda`, `perm.loginItems`, `perm.notifications`
   - `@MainActor public final class ReadinessModel: ObservableObject` — `init(plans: PlanSource, permissions: PermissionProbing, ticker: TickerScheduling)`; `@Published groups: [PlanGroup]`, `team: TeamInfo?`, `canInstall: Bool`, `requiredMissing: [String]`, `isLoading: Bool`, `lastError: String?`, `checkingRowIds: Set<String>`; `var limitedModeAvailable: Bool`; `func load() async`; `func becameVisible()`, `becameHidden()`, `didBecomeActive()`; `func afterAction(rowId: String) async`; `func recheckAll() async`; `func row(_ id: String) -> PlanRow?`
@@ -1902,7 +1908,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   - `public enum SystemSettingsLinks { static let fullDiskAccess: URL; static let notifications(bundleId:) -> URL; static let keyboard: URL; static let loginItems: URL }`
   - `public protocol CommandRunner: Sendable { func run(_ executable: String, _ args: [String]) async -> CommandOutcome }`, `public struct CommandOutcome: Equatable { exitCode: Int32; stdout: String; stderr: String; var ok: Bool }`, `public final class RecordingCommandRunner: CommandRunner` (`calls: [(String,[String])]`, `responses: [String: CommandOutcome]` keyed by executable basename), `public struct SystemCommandRunner: CommandRunner` (the only place that spawns arbitrary binaries; **never constructed in checks**).
   - `public enum TCCReset { static func arguments(bundleId: String) -> (String, [String]) }` → `("/usr/bin/tccutil", ["reset", "All", bundleId])`
-- Produces (app): `final class PermissionsService: PermissionProbing, PermissionsProviding` — `init(bundleId: String, agentStatuses: @escaping () -> [String], runner: CommandRunner)`; `func snapshot() async -> PermissionSnapshot`; `func request(_ which: String) async -> Bool` (`"notifications"` → `requestAuthorization`; anything else → false); `func openSettings(_ target: String)` (`fda`/`login-items`/`notifications`/`keyboard`); `func resetAndReRequest() async -> Bool` (tccutil via runner, then `request("notifications")` and a relaunch hint); `var fdaNeedsRelaunch: Bool` (true once a probe flipped denied→granted in this process — macOS applies FDA at next launch).
+- Produces (app): `final class PermissionsService: PermissionProbing, PermissionsProviding` — `init(bundleId: String, agentStatuses: @escaping @Sendable () -> [SMAppService.Status], runner: CommandRunner)`; `static func combinedLoginItems(_ statuses: [SMAppService.Status]) -> String` (worst status wins: notFound > requiresApproval > notRegistered > enabled; empty → notRegistered); `func snapshot() async -> PermissionSnapshot`; `func request(_ which: String) async -> Bool` (`"notifications"` → `requestAuthorization`; anything else → false); `func openSettings(_ target: String)` (`fda`/`login-items`/`notifications`/`keyboard`); `func resetAndReRequest() async -> Bool` (tccutil via runner, then `request("notifications")` and a relaunch hint); `var fdaNeedsRelaunch: Bool` (true once a probe flipped denied→granted in this process — macOS applies FDA at next launch).
 
 - [ ] **Step 1: Failing checks**
 
@@ -3019,7 +3025,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `rt-tray/Tests/MattstackCoreChecks/UpdatePolicyChecks.swift`; modify `AllChecks.swift`
 
 **Interfaces:**
-- Produces (Core): `public enum UpdatePolicy { static let placeholderKey = "REPLACE_WITH_RELEASE_PUBLIC_ED_KEY"; static func shouldStartUpdater(isDevBuild: Bool, publicEDKey: String?, feedURL: String?) -> Bool; static func allowsImmediateInstall(setupRunning: Bool, windowsOpen: Int) -> Bool }`
+- Produces (Core): `public enum UpdatePolicy { static let placeholderKey = "REPLACE_WITH_RELEASE_PUBLIC_ED_KEY"; static let overrideEnv = "MATTSTACK_APPCAST_URL"; static let overrideFlag = "--allow-appcast-override"; static func feedOverride(environment: [String: String], arguments: [String], isDevBuild: Bool) -> String?; static func shouldStartUpdater(isDevBuild: Bool, publicEDKey: String?, feedURL: String?, feedOverride: String?) -> Bool; static func allowsImmediateInstall(setupRunning: Bool, windowsOpen: Int) -> Bool }`. **Decision (L7 request):** the env override is honoured when `MSDevBuild` is true OR the process was launched with `--allow-appcast-override`; with an override present the updater starts even in the dev flavor (that is the VM's Sparkle vN→vN+1 rehearsal), but the EdDSA key must still be real — the app never talks to a feed it cannot verify.
 - Produces (app): `final class UpdaterController: NSObject, UpdateChecking, SPUUpdaterDelegate, SPUStandardUserDriverDelegate` — `init(isDevBuild: Bool, isBusy: @escaping () -> Bool)`; `var canCheckForUpdates: Bool` (KVO-published via `@objc dynamic`); `func checkForUpdates() async -> Bool`; `@objc func checkForUpdatesFromMenu()`; `var onUpdateAvailable: ((String) -> Void)?` (feeds `TrayState.updateAvailable`); `var automaticallyChecks: Bool { get set }`.
 
 - [ ] **Step 1: Failing checks**
@@ -3031,11 +3037,20 @@ import MattstackCore
 
 let updatePolicyChecks: [Check] = [
     Check("Sparkle starts only for prod builds with a real key and feed") { c in
-        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: true, publicEDKey: "abc", feedURL: "https://x/appcast.xml"), false)
-        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: false, publicEDKey: UpdatePolicy.placeholderKey, feedURL: "https://x/appcast.xml"), false)
-        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: false, publicEDKey: "", feedURL: "https://x/appcast.xml"), false)
-        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: false, publicEDKey: "abc", feedURL: nil), false)
-        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: false, publicEDKey: "abc", feedURL: "https://x/appcast.xml"), true)
+        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: true, publicEDKey: "abc", feedURL: "https://x/appcast.xml", feedOverride: nil), false)
+        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: false, publicEDKey: UpdatePolicy.placeholderKey, feedURL: "https://x/appcast.xml", feedOverride: nil), false)
+        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: false, publicEDKey: "", feedURL: "https://x/appcast.xml", feedOverride: nil), false)
+        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: false, publicEDKey: "abc", feedURL: nil, feedOverride: nil), false)
+        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: false, publicEDKey: "abc", feedURL: "https://x/appcast.xml", feedOverride: nil), true)
+    },
+    Check("appcast override: env honoured only in dev flavor or with --allow-appcast-override; starts the updater but never without a real key") { c in
+        let env = [UpdatePolicy.overrideEnv: "http://127.0.0.1:8000/appcast.xml"]
+        c.expectEqual(UpdatePolicy.feedOverride(environment: env, arguments: ["mattstack"], isDevBuild: false), nil)
+        c.expectEqual(UpdatePolicy.feedOverride(environment: env, arguments: ["mattstack"], isDevBuild: true), "http://127.0.0.1:8000/appcast.xml")
+        c.expectEqual(UpdatePolicy.feedOverride(environment: env, arguments: ["mattstack", UpdatePolicy.overrideFlag], isDevBuild: false), "http://127.0.0.1:8000/appcast.xml")
+        c.expectEqual(UpdatePolicy.feedOverride(environment: [:], arguments: [UpdatePolicy.overrideFlag], isDevBuild: true), nil)
+        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: true, publicEDKey: "abc", feedURL: nil, feedOverride: "http://127.0.0.1:8000/appcast.xml"), true)
+        c.expectEqual(UpdatePolicy.shouldStartUpdater(isDevBuild: true, publicEDKey: UpdatePolicy.placeholderKey, feedURL: nil, feedOverride: "http://127.0.0.1:8000/appcast.xml"), false)
     },
     Check("immediate install only when idle: no setup running, no windows") { c in
         c.expectEqual(UpdatePolicy.allowsImmediateInstall(setupRunning: false, windowsOpen: 0), true)
@@ -3051,12 +3066,22 @@ import Foundation
 
 public enum UpdatePolicy {
     public static let placeholderKey = "REPLACE_WITH_RELEASE_PUBLIC_ED_KEY"
+    public static let overrideEnv = "MATTSTACK_APPCAST_URL"
+    public static let overrideFlag = "--allow-appcast-override"
 
-    /// Dev flavor never checks; a build without a real EdDSA key must not
-    /// talk to a feed it cannot verify.
-    public static func shouldStartUpdater(isDevBuild: Bool, publicEDKey: String?, feedURL: String?) -> Bool {
-        guard !isDevBuild, let key = publicEDKey, !key.isEmpty, key != placeholderKey,
-              let feed = feedURL, !feed.isEmpty else { return false }
+    /// The clean-room VM points the app at a loopback appcast. Only the dev
+    /// flavor, or a launch that opted in on the command line, may be redirected.
+    public static func feedOverride(environment: [String: String], arguments: [String], isDevBuild: Bool) -> String? {
+        guard let url = environment[overrideEnv], !url.isEmpty else { return nil }
+        return (isDevBuild || arguments.contains(overrideFlag)) ? url : nil
+    }
+
+    /// Dev flavor never checks unless a feed override is in force; a build
+    /// without a real EdDSA key must not talk to any feed it cannot verify.
+    public static func shouldStartUpdater(isDevBuild: Bool, publicEDKey: String?, feedURL: String?, feedOverride: String?) -> Bool {
+        guard let key = publicEDKey, !key.isEmpty, key != placeholderKey else { return false }
+        if let o = feedOverride, !o.isEmpty { return true }
+        guard !isDevBuild, let feed = feedURL, !feed.isEmpty else { return false }
         return true
     }
 
@@ -3114,12 +3139,18 @@ final class UpdaterController: NSObject, UpdateChecking, SPUUpdaterDelegate, SPU
     private var controller: SPUStandardUpdaterController?
     private var observation: NSKeyValueObservation?
 
+    private let feedOverride: String?
+
     init(isDevBuild: Bool, isBusy: @escaping () -> Bool) {
         self.isBusy = isBusy
         let info = Bundle.main.infoDictionary
+        feedOverride = UpdatePolicy.feedOverride(environment: ProcessInfo.processInfo.environment,
+                                                 arguments: CommandLine.arguments, isDevBuild: isDevBuild)
         enabled = UpdatePolicy.shouldStartUpdater(isDevBuild: isDevBuild,
                                                   publicEDKey: info?["SUPublicEDKey"] as? String,
-                                                  feedURL: info?["SUFeedURL"] as? String)
+                                                  feedURL: info?["SUFeedURL"] as? String,
+                                                  feedOverride: feedOverride)
+        if let feedOverride { TrayLog.info("appcast override in force", ["url": feedOverride]) }
         super.init()
         guard enabled else {
             TrayLog.info("update check skipped (dev build)", ["dev": isDevBuild])
@@ -3164,7 +3195,9 @@ final class UpdaterController: NSObject, UpdateChecking, SPUUpdaterDelegate, SPU
         DispatchQueue.main.async { self.onUpdateAvailable?("") }
     }
 
-    // MARK: SPUUpdaterDelegate — install when idle
+    // MARK: SPUUpdaterDelegate — feed override, install when idle
+
+    func feedURLString(for updater: SPUUpdater) -> String? { feedOverride }
 
     func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
                  immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
@@ -3574,12 +3607,12 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `rt-tray/Sources-core/Setup/SetupFlowModel.swift`
-- Create: `rt-tray/Sources/Setup/SetupSession.swift`, `rt-tray/Sources/Setup/SetupWindowController.swift`, `rt-tray/Sources/Setup/SetupView.swift`, `rt-tray/Sources/Setup/Screens/WelcomeScreen.swift`, `rt-tray/Sources/Setup/Components/StatusBadge.swift`
+- Create: `rt-tray/Sources/AccessibilityIDs.swift`, `rt-tray/Sources/Setup/SetupSession.swift`, `rt-tray/Sources/Setup/SetupWindowController.swift`, `rt-tray/Sources/Setup/SetupView.swift`, `rt-tray/Sources/Setup/Screens/WelcomeScreen.swift`, `rt-tray/Sources/Setup/Components/StatusBadge.swift`
 - Create: `rt-tray/Tests/MattstackCoreChecks/SetupFlowChecks.swift`; modify `AllChecks.swift`
 
 **Interfaces:**
 - Produces (Core): `public enum SetupStep: Int, CaseIterable, Sendable { welcome, team, checklist, install, done }` with `title: String`, `indicator: String` ("Step n of 5"); `@MainActor public final class SetupFlowModel: ObservableObject` — `@Published step: SetupStep`, `@Published isInstalling: Bool`; `var canGoBack: Bool` (false on welcome, install-while-running, done), `var continueTitle: String` ("Continue" / "Install" on checklist / "Finish" on done), `func next()`, `func back()`, `func jump(to:)`, `var windowMayClose: Bool` (only on done).
-- Produces (app): `enum SetupSession { static var isRunning: Bool }` (true while the Setup window exists and step != done — the updater's idle gate); `final class SetupWindowController: NSWindowController` — `init(environment: SetupEnvironment)`; `func show(step: SetupStep? = nil, joinCode: String? = nil)`; `struct SetupEnvironment { rt: RtRunning; readiness: ReadinessModel; install: InstallRunModel; permissions: PermissionsService; flavor: (isDev: Bool, bundleId: String, bundlePath: String) }`; `struct SetupView: View`; `struct StatusBadge: View` (RowStatus → glyph per spec); `struct SetupFooter: View` (Back / Continue `.keyboardShortcut(.defaultAction)` `.controlSize(.large)`).
+- Produces (app): `enum AXID` — **the single list of accessibility identifiers** every interactive control and row in the Setup and Settings windows carries (L7 drives the UI through System Events until Xcode exists and reads the same names from this file). Convention `setup.<screen>.<element>` / `settings.<pane>.<element>`; dynamic rows use functions (`AXID.checklistRow("perm.fda")` → `setup.checklist.row.perm.fda`, `.checklistRowAction(...)` → `…action`, `.checklistRowStatus(...)` → `…status`, `.installStep(id)`, `.installStepLog(id)`, `.connectField(name)`, `.connectAlternative(id)`, `.settingsPermissionAction(id)`). Screen-level continue/back are per screen: `setup.<screen>.continue`, `setup.<screen>.back`, `setup.checklist.continueLimited`. `enum SetupSession { static var isRunning: Bool }` (true while the Setup window exists and step != done — the updater's idle gate); `final class SetupWindowController: NSWindowController` — `init(environment: SetupEnvironment)`; `func show(step: SetupStep? = nil, joinCode: String? = nil)`; `let flow: SetupFlowModel`, `let team: TeamChoiceModel`; `struct SetupEnvironment { rt: RtRunning; readiness: ReadinessModel; install: InstallRunModel; permissions: PermissionsService; isDevBuild: Bool; bundleId: String; bundlePath: String }`; `struct SetupView: View`; `struct StatusBadge: View` (RowStatus → glyph per spec); `struct SetupFooter: View` (Back / Continue `.keyboardShortcut(.defaultAction)` `.controlSize(.large)`).
 
 - [ ] **Step 1: Failing checks**
 
@@ -3669,7 +3702,82 @@ public final class SetupFlowModel: ObservableObject {
 ```
 Run checks → pass.
 
-- [ ] **Step 3: App shell — session flag, window controller, view, footer, welcome**
+- [ ] **Step 3: App shell — accessibility ids, session flag, window controller, view, footer, welcome**
+
+`rt-tray/Sources/AccessibilityIDs.swift` (every id in the app lives here; add, never inline a literal):
+```swift
+import Foundation
+
+/// Stable accessibility identifiers. L7's clean-room walkthrough drives the
+/// UI by these names through System Events, so they are a contract: rename
+/// only with L7.
+enum AXID {
+    // Setup window chrome
+    static let stepIndicator = "setup.window.stepIndicator"
+    static func `continue`(_ screen: String) -> String { "setup.\(screen).continue" }
+    static func back(_ screen: String) -> String { "setup.\(screen).back" }
+    static let continueLimited = "setup.checklist.continueLimited"
+
+    // Screens (the root view of each)
+    static let welcomeScreen = "setup.welcome.screen"
+    static let teamScreen = "setup.team.screen"
+    static let checklistScreen = "setup.checklist.screen"
+    static let installScreen = "setup.install.screen"
+    static let doneScreen = "setup.done.screen"
+
+    // Your team
+    static let teamCardCreate = "setup.team.card.create"
+    static let teamCardJoin = "setup.team.card.join"
+    static let teamCardRestore = "setup.team.card.restore"
+    static let teamCreateName = "setup.team.create.name"
+    static let teamCreateOthers = "setup.team.create.others"
+    static let teamCreateUseGh = "setup.team.create.useGh"
+    static let teamCreateOwner = "setup.team.create.owner"
+    static let teamCreateRemote = "setup.team.create.remote"
+    static let teamJoinCode = "setup.team.join.code"
+    static let teamRestoreRepo = "setup.team.restore.repo"
+    static let teamRestoreKey = "setup.team.restore.key"
+
+    // Checklist
+    static func checklistRow(_ id: String) -> String { "setup.checklist.row.\(id)" }
+    static func checklistRowAction(_ id: String) -> String { "setup.checklist.row.\(id).action" }
+    static func checklistRowStatus(_ id: String) -> String { "setup.checklist.row.\(id).status" }
+    static let checklistRecheck = "setup.checklist.recheck"
+    static let checklistRelaunch = "setup.checklist.relaunch"
+    static func connectField(_ name: String) -> String { "setup.checklist.connect.field.\(name)" }
+    static func connectAlternative(_ id: String) -> String { "setup.checklist.connect.alt.\(id)" }
+    static let connectSubmit = "setup.checklist.connect.submit"
+    static let connectCancel = "setup.checklist.connect.cancel"
+    static let stepsDone = "setup.checklist.steps.done"
+
+    // Install
+    static func installStep(_ id: String) -> String { "setup.install.step.\(id)" }
+    static func installStepLog(_ id: String) -> String { "setup.install.step.\(id).log" }
+    static let installRetry = "setup.install.retry"
+    static let installRetryStream = "setup.install.retryStream"
+    static let logCopy = "setup.install.log.copy"
+    static let logDone = "setup.install.log.done"
+
+    // Done
+    static let doneOpenBoard = "setup.done.openBoard"
+    static let doneInvite = "setup.done.invite"
+
+    // Settings
+    static let settingsGeneralStartAtLogin = "settings.general.startAtLogin"
+    static let settingsGeneralAutoUpdates = "settings.general.autoUpdates"
+    static let settingsGeneralCheckNow = "settings.general.checkNow"
+    static let settingsGeneralDevMode = "settings.general.devMode"
+    static func settingsPermissionAction(_ id: String) -> String { "settings.permissions.row.\(id).action" }
+    static let settingsPermissionsReset = "settings.permissions.reset"
+    static let settingsTeamInviteHandle = "settings.team.inviteHandle"
+    static let settingsTeamInvite = "settings.team.invite"
+    static let settingsTeamCopyPaste = "settings.team.copyPasteBlock"
+    static let settingsTeamJoinAnother = "settings.team.joinAnother"
+    static let settingsUninstall = "settings.uninstall.button"
+    static let settingsUninstallConfirm = "settings.uninstall.confirm"
+    static let settingsUninstallKeepData = "settings.uninstall.keepData"
+}
+```
 
 `rt-tray/Sources/Setup/SetupSession.swift`:
 ```swift
@@ -3689,6 +3797,7 @@ import MattstackCore
 
 struct StatusBadge: View {
     let status: RowStatus
+    var id: String? = nil
     var body: some View {
         let symbol = StatusGlyph.symbol(for: status)
         Group {
@@ -3700,7 +3809,8 @@ struct StatusBadge: View {
         }
         .frame(width: 20, height: 20)
         .accessibilityLabel(Text(status.rawValue))
-        .accessibilityIdentifier("status-\(status.rawValue)")
+        .accessibilityValue(Text(status.rawValue))
+        .accessibilityIdentifier(id ?? "")
     }
     private var color: Color {
         switch StatusGlyph.tint(for: status) {
@@ -3718,6 +3828,7 @@ struct StatusBadge: View {
 ```swift
 import AppKit
 import SwiftUI
+import Combine
 import MattstackCore
 
 struct SetupEnvironment {
@@ -3738,6 +3849,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     let team: TeamChoiceModel
     private let environment: SetupEnvironment
     private var activeObserver: Any?
+    private var cancellables = Set<AnyCancellable>()
 
     init(environment: SetupEnvironment) {
         self.environment = environment
@@ -3757,7 +3869,6 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             .store(in: &cancellables)
     }
     required init?(coder: NSCoder) { fatalError("not supported") }
-    private var cancellables = Set<AnyCancellable>()
 
     func show(step: SetupStep? = nil, joinCode: String? = nil) {
         if let step { flow.jump(to: step) }
@@ -3786,9 +3897,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         if let o = activeObserver { NotificationCenter.default.removeObserver(o) }
     }
 }
-import Combine
 ```
-(Move `import Combine` to the top with the other imports — shown last only to keep the snippet readable.)
 
 `rt-tray/Sources/Setup/SetupView.swift`:
 ```swift
@@ -3845,7 +3954,7 @@ struct SetupView: View {
             Text(flow.step.title).font(.title2.weight(.semibold))
             Spacer()
             Text(flow.step.indicator).font(.caption).foregroundStyle(.secondary)
-                .accessibilityIdentifier("step-indicator")
+                .accessibilityIdentifier(AXID.stepIndicator)
         }
         .padding(.horizontal, 20).padding(.vertical, 14)
     }
@@ -3855,18 +3964,20 @@ struct SetupView: View {
             if let errorText { Text(errorText).font(.caption).foregroundStyle(.red).lineLimit(2) }
             Spacer()
             if flow.canGoBack {
-                Button("Back") { flow.back() }.accessibilityIdentifier("back")
+                Button("Back") { flow.back() }.accessibilityIdentifier(AXID.back(screenName))
             }
             if flow.step == .checklist, readiness.limitedModeAvailable {
-                Button("Continue in limited mode") { flow.next() }.accessibilityIdentifier("continue-limited")
+                Button("Continue in limited mode") { flow.next() }.accessibilityIdentifier(AXID.continueLimited)
             }
             Button(flow.continueTitle) { Task { await advance() } }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!continueEnabled || busy)
-                .accessibilityIdentifier("continue")
+                .accessibilityIdentifier(AXID.continue(screenName))
         }
         .padding(.horizontal, 20).padding(.vertical, 12)
     }
+
+    private var screenName: String { String(describing: flow.step) }
 
     private var continueEnabled: Bool {
         switch flow.step {
@@ -3926,7 +4037,7 @@ struct WelcomeScreen: View {
             Text("Everything here is reversible from Settings → Uninstall.").font(.callout).foregroundStyle(.secondary)
         }
         .padding(24)
-        .accessibilityIdentifier("screen-welcome")
+        .accessibilityIdentifier(AXID.welcomeScreen)
     }
 }
 ```
@@ -4223,7 +4334,7 @@ struct TeamScreen: View {
             .padding(20)
         }
         .task { await model.loadGitHubStatus() }
-        .accessibilityIdentifier("screen-team")
+        .accessibilityIdentifier(AXID.teamScreen)
     }
 
     @ViewBuilder
@@ -4239,7 +4350,7 @@ struct TeamScreen: View {
                 }
             }
             .buttonStyle(.plain)
-            .accessibilityIdentifier("card-\(choice)")
+            .accessibilityIdentifier(cardID(choice))
             if selected { content().padding(.leading, 24) }
         }
         .padding(14)
@@ -4247,22 +4358,27 @@ struct TeamScreen: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(selected ? Color.accentColor : Color.clear, lineWidth: 1))
     }
 
+    private func cardID(_ c: TeamChoice) -> String {
+        switch c { case .create: return AXID.teamCardCreate; case .join: return AXID.teamCardJoin; case .restore: return AXID.teamCardRestore }
+    }
+
     private var createFields: some View {
         Form {
-            TextField("Team name", text: $model.teamName, prompt: Text("Acme")).accessibilityIdentifier("team-name")
+            TextField("Team name", text: $model.teamName, prompt: Text("Acme")).accessibilityIdentifier(AXID.teamCreateName)
             LabeledContent("Slug") { Text(model.slugPreview.isEmpty ? "—" : model.slugPreview).foregroundStyle(.secondary) }
-            Toggle("Others will join later", isOn: $model.othersWillJoin)
+            Toggle("Others will join later", isOn: $model.othersWillJoin).accessibilityIdentifier(AXID.teamCreateOthers)
             if model.ghHandle != nil {
-                Toggle("Create a private GitHub repo \(model.ghRepoPreview)", isOn: $model.useGhRepo)
+                Toggle("Create a private GitHub repo \(model.ghRepoPreview)", isOn: $model.useGhRepo).accessibilityIdentifier(AXID.teamCreateUseGh)
                 if model.useGhRepo {
                     Picker("Owner", selection: Binding(get: { model.ghOwner ?? "" }, set: { model.ghOwner = $0 })) {
                         ForEach(model.ghOwners, id: \.self) { Text($0).tag($0) }
                     }
+                    .accessibilityIdentifier(AXID.teamCreateOwner)
                 }
             }
             if !model.useGhRepo {
                 TextField("Repository URL", text: $model.remoteURL, prompt: Text("paste an empty repo's URL; GitHub, GitLab, anything git can push to"))
-                    .accessibilityIdentifier("remote-url")
+                    .accessibilityIdentifier(AXID.teamCreateRemote)
             }
             Text(TeamChoiceModel.explainer).font(.callout).foregroundStyle(.secondary)
         }
@@ -4278,7 +4394,7 @@ struct TeamScreen: View {
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 54)
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
-                    .accessibilityIdentifier("invite-code")
+                    .accessibilityIdentifier(AXID.teamJoinCode)
                 Text("Paste the whole code (about \(TeamChoiceModel.inviteCodeLength) characters) or open the mattstack://join link you were sent.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -4291,8 +4407,8 @@ struct TeamScreen: View {
 
     private var restoreFields: some View {
         Form {
-            TextField("Home repo", text: $model.restoreRepo, prompt: Text("<org>/<repo>")).accessibilityIdentifier("restore-repo")
-            SecureField("Age key (from your password manager)", text: $model.restoreAgeKey).accessibilityIdentifier("restore-key")
+            TextField("Home repo", text: $model.restoreRepo, prompt: Text("<org>/<repo>")).accessibilityIdentifier(AXID.teamRestoreRepo)
+            SecureField("Age key (from your password manager)", text: $model.restoreAgeKey).accessibilityIdentifier(AXID.teamRestoreKey)
             Text("Clones your settings to ~/.mattstack, installs the key in the Keychain, and replays your teams and packs during Install.")
                 .font(.caption).foregroundStyle(.secondary)
         }
@@ -4309,3 +4425,1539 @@ git commit -m "MAT-383: Your team screen — create/join/restore cards, rt-valid
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
+
+---
+
+### Task 14: Readiness checklist screen — grouped rows, one action each, Install gating, action dispatch
+
+**Files:**
+- Create: `rt-tray/Sources-core/Readiness/RowActionDispatcher.swift`
+- Create/replace: `rt-tray/Sources/Setup/Screens/ChecklistScreen.swift`, `rt-tray/Sources/Setup/Components/RowView.swift`, `rt-tray/Sources/Setup/Components/ConnectSheet.swift`, `rt-tray/Sources/Setup/Components/StepsSheet.swift`
+- Create: `rt-tray/Tests/MattstackCoreChecks/RowActionChecks.swift`; modify `AllChecks.swift`
+
+**Interfaces:**
+- Produces (Core): `public enum DispatchedAction: Equatable { openSettings(target: String); requestPermission(which: String); rtVerb(args: [String], stdin: Data?); openURL(URL); showSteps([String]); collectFields([ActionField], integration: String, alternatives: [ActionAlternative]); none }`; `public enum RowActionDispatcher { static func dispatch(_ action: RowAction, fieldValues: [String: String]?, alternative: String?) -> DispatchedAction }` — `connect` without values → `collectFields`; with values → `rtVerb(["setup", integration, "connect", "--json"], stdin: JSON of values)`; alternative `use-gh` → stdin `{"useGh":true}`; `oauth` → `rtVerb(verb + ["--json"])`; `owner-once` → collect then `rtVerb(["setup","slack","create-app","--config-token-stdin","--json"], stdin: {"configToken":…})`; `install` → `["tools","install",tool,"--json"]`; `link-bundled` → `["deps","link",tool,"--json"]`; `run` → verb + `--json`; `steps` → showSteps; `open-url` → openURL; `open-settings`/`request-permission` native; `unknown` → none.
+- Produces (app): `ChecklistScreen(model:permissions:rt:bundleId:)`, `RowView`, `ConnectSheet` (SecureField per secret field, hint text, "Use gh login" alternative button), `StepsSheet`.
+
+- [ ] **Step 1: Failing checks**
+
+`rt-tray/Tests/MattstackCoreChecks/RowActionChecks.swift`:
+```swift
+import Foundation
+import MattstackCore
+
+let rowActionChecks: [Check] = [
+    Check("native actions") { c in
+        c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .openSettings, label: "Open…", target: "fda"), fieldValues: nil, alternative: nil), .openSettings(target: "fda"))
+        c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .requestPermission, label: "Allow", which: "notifications"), fieldValues: nil, alternative: nil), .requestPermission(which: "notifications"))
+    },
+    Check("connect: collect first, then rt setup <integration> connect with JSON on stdin; use-gh alternative") { c in
+        let fields = [ActionField(name: "token", label: "Token", secret: true, hint: "read_api")]
+        let a = RowAction(type: .connect, label: "Connect", integration: "gitlab", fields: fields, alternatives: [ActionAlternative(id: "use-gh", label: "Use gh login")])
+        c.expectEqual(RowActionDispatcher.dispatch(a, fieldValues: nil, alternative: nil), .collectFields(fields, integration: "gitlab", alternatives: a.alternatives!))
+        let d = RowActionDispatcher.dispatch(a, fieldValues: ["token": "glpat-xyz"], alternative: nil)
+        c.expectEqual(d, .rtVerb(args: ["setup", "gitlab", "connect", "--json"], stdin: Data("{\"token\":\"glpat-xyz\"}".utf8)))
+        c.expectEqual(RowActionDispatcher.dispatch(a, fieldValues: nil, alternative: "use-gh"), .rtVerb(args: ["setup", "gitlab", "connect", "--json"], stdin: Data("{\"useGh\":true}".utf8)))
+    },
+    Check("oauth / owner-once / install / link-bundled / run / steps / open-url / unknown") { c in
+        c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .oauth, label: "Connect", integration: "slack", verb: ["setup", "slack", "connect"]), fieldValues: nil, alternative: nil), .rtVerb(args: ["setup", "slack", "connect", "--json"], stdin: nil))
+        let owner = RowAction(type: .ownerOnce, label: "Create…", integration: "slack", fields: [ActionField(name: "configToken", label: "App configuration token", secret: true)])
+        c.expectEqual(RowActionDispatcher.dispatch(owner, fieldValues: ["configToken": "xoxe-1"], alternative: nil),
+                      .rtVerb(args: ["setup", "slack", "create-app", "--config-token-stdin", "--json"], stdin: Data("{\"configToken\":\"xoxe-1\"}".utf8)))
+        c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .install, label: "Install", tool: "herdr", via: "brew"), fieldValues: nil, alternative: nil), .rtVerb(args: ["tools", "install", "herdr", "--json"], stdin: nil))
+        c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .linkBundled, label: "Use mattstack's", tool: "gh"), fieldValues: nil, alternative: nil), .rtVerb(args: ["deps", "link", "gh", "--json"], stdin: nil))
+        c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .run, label: "Re-check", verb: ["setup", "status"]), fieldValues: nil, alternative: nil), .rtVerb(args: ["setup", "status", "--json"], stdin: nil))
+        c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .steps, label: "Show steps…", steps: ["a", "b"]), fieldValues: nil, alternative: nil), .showSteps(["a", "b"]))
+        c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .openURL, label: "Download", url: "https://claude.ai/download"), fieldValues: nil, alternative: nil), .openURL(URL(string: "https://claude.ai/download")!))
+        c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .unknown, label: "?"), fieldValues: nil, alternative: nil), .none)
+        c.expectEqual(RowActionDispatcher.dispatch(RowAction(type: .openURL, label: "x", url: "not a url at all ::"), fieldValues: nil, alternative: nil), .none)
+    },
+]
+```
+
+- [ ] **Step 2: Run → compile failure. Implement**
+
+`rt-tray/Sources-core/Readiness/RowActionDispatcher.swift`:
+```swift
+import Foundation
+
+public enum DispatchedAction: Equatable, Sendable {
+    case openSettings(target: String)
+    case requestPermission(which: String)
+    case rtVerb(args: [String], stdin: Data?)
+    case openURL(URL)
+    case showSteps([String])
+    case collectFields([ActionField], integration: String, alternatives: [ActionAlternative])
+    case none
+}
+
+/// Maps a contract action to what the app does. Native for the two
+/// permission kinds; everything else is an rt verb, with any collected
+/// values on stdin as JSON (sorted keys so the payload is deterministic).
+public enum RowActionDispatcher {
+    public static func dispatch(_ action: RowAction, fieldValues: [String: String]?, alternative: String?) -> DispatchedAction {
+        switch action.type {
+        case .openSettings: return .openSettings(target: action.target ?? "")
+        case .requestPermission: return .requestPermission(which: action.which ?? "")
+        case .connect:
+            guard let integration = action.integration else { return .none }
+            if alternative == "use-gh" { return .rtVerb(args: ["setup", integration, "connect", "--json"], stdin: json(["useGh": true])) }
+            if let values = fieldValues { return .rtVerb(args: ["setup", integration, "connect", "--json"], stdin: json(values)) }
+            return .collectFields(action.fields ?? [], integration: integration, alternatives: action.alternatives ?? [])
+        case .ownerOnce:
+            guard let integration = action.integration else { return .none }
+            if let values = fieldValues { return .rtVerb(args: ["setup", integration, "create-app", "--config-token-stdin", "--json"], stdin: json(values)) }
+            return .collectFields(action.fields ?? [], integration: integration, alternatives: [])
+        case .oauth, .run:
+            guard let verb = action.verb, !verb.isEmpty else { return .none }
+            return .rtVerb(args: verb + ["--json"], stdin: nil)
+        case .install:
+            guard let tool = action.tool else { return .none }
+            return .rtVerb(args: ["tools", "install", tool, "--json"], stdin: nil)
+        case .linkBundled:
+            guard let tool = action.tool else { return .none }
+            return .rtVerb(args: ["deps", "link", tool, "--json"], stdin: nil)
+        case .steps: return .showSteps(action.steps ?? [])
+        case .openURL:
+            guard let s = action.url, let u = URL(string: s), u.scheme?.hasPrefix("http") == true else { return .none }
+            return .openURL(u)
+        case .unknown: return .none
+        }
+    }
+
+    private static func json<T: Encodable>(_ value: T) -> Data? {
+        let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
+        return try? enc.encode(value)
+    }
+}
+```
+Run checks → pass.
+
+- [ ] **Step 3: The screen and components**
+
+`rt-tray/Sources/Setup/Components/RowView.swift`:
+```swift
+import SwiftUI
+import MattstackCore
+
+struct RowView: View {
+    let row: PlanRow
+    let isChecking: Bool
+    var rowID: String? = nil       // Settings → Permissions passes its own ids
+    var actionID: String? = nil
+    var statusID: String? = nil
+    let onAction: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol(for: row.kind)).frame(width: 22).foregroundStyle(.secondary).padding(.top, 2)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(row.title).fontWeight(.medium)
+                    if !row.required { Text("optional").font(.caption2).padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Capsule().fill(Color.secondary.opacity(0.15))) }
+                }
+                Text(row.why).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if let d = row.detail, !d.isEmpty { Text(d).font(.caption).foregroundStyle(.secondary) }
+                if let n = row.optionalNote { Text(n).font(.caption).foregroundStyle(.secondary) }
+            }
+            Spacer(minLength: 8)
+            StatusBadge(status: isChecking ? .checking : row.status, id: statusID ?? AXID.checklistRowStatus(row.id))
+            if let action = row.action, action.type != .unknown {
+                Button(action.label, action: onAction)
+                    .controlSize(.regular)
+                    .accessibilityIdentifier(actionID ?? AXID.checklistRowAction(row.id))
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(rowID ?? AXID.checklistRow(row.id))
+    }
+
+    private func symbol(for kind: RowKind) -> String {
+        switch kind {
+        case .permission: return "lock.shield"
+        case .tool: return "wrench.and.screwdriver"
+        case .account: return "person.crop.circle"
+        case .access: return "network"
+        case .info: return "info.circle"
+        }
+    }
+}
+```
+
+`rt-tray/Sources/Setup/Components/ConnectSheet.swift`:
+```swift
+import SwiftUI
+import MattstackCore
+
+struct ConnectSheet: View {
+    let integration: String
+    let fields: [ActionField]
+    let alternatives: [ActionAlternative]
+    let onSubmit: ([String: String]?, String?) -> Void   // (values, alternativeId)
+    @State private var values: [String: String] = [:]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Connect \(integration.capitalized)").font(.headline)
+            Form {
+                ForEach(fields, id: \.name) { f in
+                    VStack(alignment: .leading, spacing: 2) {
+                        if f.secret {
+                            SecureField(f.label, text: binding(f.name)).accessibilityIdentifier(AXID.connectField(f.name))
+                        } else {
+                            TextField(f.label, text: binding(f.name)).accessibilityIdentifier(AXID.connectField(f.name))
+                        }
+                        if let h = f.hint { Text(h).font(.caption).foregroundStyle(.secondary) }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            HStack {
+                ForEach(alternatives, id: \.id) { alt in
+                    Button(alt.label) { onSubmit(nil, alt.id); dismiss() }.accessibilityIdentifier(AXID.connectAlternative(alt.id))
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).accessibilityIdentifier(AXID.connectCancel)
+                Button("Connect") { onSubmit(values, nil); dismiss() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(fields.contains { (values[$0.name] ?? "").isEmpty })
+                    .accessibilityIdentifier(AXID.connectSubmit)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+
+    private func binding(_ name: String) -> Binding<String> {
+        Binding(get: { values[name] ?? "" }, set: { values[name] = $0 })
+    }
+}
+```
+
+`rt-tray/Sources/Setup/Components/StepsSheet.swift`:
+```swift
+import SwiftUI
+
+struct StepsSheet: View {
+    let title: String
+    let steps: [String]
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.headline)
+            ForEach(Array(steps.enumerated()), id: \.offset) { i, s in
+                HStack(alignment: .top) { Text("\(i + 1).").monospacedDigit(); Text(s).textSelection(.enabled) }
+            }
+            HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).accessibilityIdentifier(AXID.stepsDone) }
+        }
+        .padding(20).frame(width: 440)
+    }
+}
+```
+
+`rt-tray/Sources/Setup/Screens/ChecklistScreen.swift`:
+```swift
+import SwiftUI
+import MattstackCore
+
+struct ChecklistScreen: View {
+    @ObservedObject var model: ReadinessModel
+    let permissions: PermissionsService
+    let rt: RtRunning
+    let bundleId: String
+    @State private var connect: (row: PlanRow, fields: [ActionField], integration: String, alternatives: [ActionAlternative])?
+    @State private var steps: (title: String, steps: [String])?
+    @State private var relaunchHint = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let e = model.lastError {
+                Label("Couldn't compute the checklist: \(e)", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.red).padding(8)
+            }
+            Form {
+                ForEach(model.groups) { group in
+                    Section(group.title) {
+                        ForEach(group.rows) { row in
+                            RowView(row: row, isChecking: model.checkingRowIds.contains(row.id)) { perform(row) }
+                        }
+                        if group.id == "mac", relaunchHint || permissions.fdaNeedsRelaunch {
+                            HStack {
+                                Text("Full Disk Access was granted. Relaunch mattstack to apply it.").font(.caption)
+                                Spacer()
+                                Button("Relaunch mattstack") { relaunch() }.accessibilityIdentifier(AXID.checklistRelaunch)
+                            }
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            HStack {
+                Text(model.canInstall ? "Everything required is ready." : "\(model.requiredMissing.count) required item(s) left.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Re-check") { Task { await model.recheckAll() } }.controlSize(.small).accessibilityIdentifier(AXID.checklistRecheck)
+            }
+            .padding(.horizontal, 20).padding(.vertical, 6)
+        }
+        .sheet(isPresented: Binding(get: { connect != nil }, set: { if !$0 { connect = nil } })) {
+            if let c = connect {
+                ConnectSheet(integration: c.integration, fields: c.fields, alternatives: c.alternatives) { values, alt in
+                    run(RowActionDispatcher.dispatch(c.row.action!, fieldValues: values, alternative: alt), for: c.row)
+                }
+            }
+        }
+        .sheet(isPresented: Binding(get: { steps != nil }, set: { if !$0 { steps = nil } })) {
+            if let s = steps { StepsSheet(title: s.title, steps: s.steps) }
+        }
+        .accessibilityIdentifier(AXID.checklistScreen)
+    }
+
+    private func perform(_ row: PlanRow) {
+        guard let action = row.action else { return }
+        run(RowActionDispatcher.dispatch(action, fieldValues: nil, alternative: nil), for: row)
+    }
+
+    private func run(_ dispatched: DispatchedAction, for row: PlanRow) {
+        switch dispatched {
+        case .openSettings(let target):
+            permissions.openSettings(target)
+            if target == "fda" { relaunchHint = false }
+        case .requestPermission(let which):
+            Task { _ = await permissions.request(which); await model.afterAction(rowId: row.id) }
+        case .rtVerb(let args, let stdin):
+            Task {
+                let result = try? await rt.run(args, stdin: stdin)
+                if let e = result?.userError { TrayLog.warn("row action failed", ["row": row.id, "err": e.message]) }
+                await model.afterAction(rowId: row.id)
+            }
+        case .openURL(let url):
+            NSWorkspace.shared.open(url)
+        case .showSteps(let list):
+            steps = (row.title, list)
+        case .collectFields(let fields, let integration, let alternatives):
+            connect = (row, fields, integration, alternatives)
+        case .none:
+            break
+        }
+    }
+
+    private func relaunch() {
+        let path = Bundle.main.bundlePath
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        task.arguments = ["-n", path]
+        try? task.run()
+        NSApp.terminate(nil)
+    }
+}
+```
+(`relaunch()` is the one `open` spawn outside the seam; it is UI-only and unreachable from checks. Row `why`/`detail` text is rt's; the app never writes its own status copy for non-permission rows.)
+
+- [ ] **Step 4: `swift build`; checks pass. Commit**
+```bash
+git add rt-tray/Sources-core rt-tray/Sources/Setup rt-tray/Tests
+git commit -m "MAT-383: Readiness checklist screen — grouped rows, one action each, connect sheet, Install gating
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 15: Install screen — live step list, need rows, failure + Show log + Retry
+
+**Files:**
+- Create/replace: `rt-tray/Sources/Setup/Screens/InstallScreen.swift`, `rt-tray/Sources/Setup/Components/LogSheet.swift`
+
+**Interfaces:**
+- Consumes: `InstallRunModel` (Task 11), `StatusBadge`.
+- Produces: `InstallScreen(model:)`; `LogSheet(title:lines:)`.
+
+- [ ] **Step 1: Write the views**
+
+`rt-tray/Sources/Setup/Components/LogSheet.swift`:
+```swift
+import SwiftUI
+
+struct LogSheet: View {
+    let title: String
+    let lines: [String]
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.headline)
+            ScrollView {
+                Text(lines.isEmpty ? "(no log lines)" : lines.joined(separator: "\n"))
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 260)
+            .background(Color(nsColor: .textBackgroundColor))
+            HStack {
+                Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string) }
+                    .accessibilityIdentifier(AXID.logCopy)
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).accessibilityIdentifier(AXID.logDone)
+            }
+        }
+        .padding(20).frame(width: 520)
+    }
+}
+```
+
+`rt-tray/Sources/Setup/Screens/InstallScreen.swift`:
+```swift
+import SwiftUI
+import MattstackCore
+
+struct InstallScreen: View {
+    @ObservedObject var model: InstallRunModel
+    @State private var logFor: InstallStep?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                Section {
+                    ForEach(model.steps) { step in stepRow(step) }
+                } header: {
+                    Text(headerText)
+                }
+            }
+            .formStyle(.grouped)
+            if case .streamError(let e) = model.phase {
+                HStack {
+                    Label("Install stopped: \(e)", systemImage: "xmark.circle").foregroundStyle(.red).font(.callout)
+                    Spacer()
+                    Button("Retry") { model.start() }.accessibilityIdentifier(AXID.installRetryStream)
+                }
+                .padding(.horizontal, 20).padding(.vertical, 8)
+            }
+        }
+        .sheet(item: $logFor) { s in LogSheet(title: s.info.title, lines: model.logLines(for: s.id)) }
+        .accessibilityIdentifier(AXID.installScreen)
+    }
+
+    private var headerText: String {
+        switch model.phase {
+        case .idle: return "Ready to install."
+        case .running: return "Installing… nothing runs that isn't listed here."
+        case .succeeded: return "Installed."
+        case .failed(let id, _): return "Stopped at \(model.steps.first { $0.id == id }?.info.title ?? id)."
+        case .streamError: return "Install stopped."
+        }
+    }
+
+    @ViewBuilder
+    private func stepRow(_ step: InstallStep) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                StatusBadge(status: badge(step), id: AXID.installStep(step.id) + ".status")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(step.info.title)
+                    if step.waitingOnYou {
+                        Text(step.info.kind == .privileged ? "Waiting for you — an administrator prompt is open." : "Waiting for you — approve mattstack in Login Items if asked.")
+                            .font(.caption).foregroundStyle(.orange)
+                    } else if let d = step.detail, !d.isEmpty {
+                        Text(d).font(.caption).foregroundStyle(step.state == .failed ? .red : .secondary)
+                    }
+                }
+                Spacer()
+                if !model.logLines(for: step.id).isEmpty {
+                    Button("Show log") { logFor = step }.controlSize(.small).accessibilityIdentifier(AXID.installStepLog(step.id))
+                }
+            }
+            if step.state == .failed, model.failedStepId == step.id {
+                HStack(alignment: .top) {
+                    if let r = step.remedy { Text(r).font(.callout) }
+                    Spacer()
+                    Button("Retry from here") { model.retryFromFailure() }
+                        .keyboardShortcut(.defaultAction)
+                        .accessibilityIdentifier(AXID.installRetry)
+                }
+                .padding(.top, 2)
+            }
+        }
+        .accessibilityIdentifier(AXID.installStep(step.id))
+    }
+
+    private func badge(_ step: InstallStep) -> RowStatus {
+        switch step.state {
+        case .pending: return .skipped
+        case .running: return step.waitingOnYou ? .needsYou : .checking
+        case .done: return .ready
+        case .failed: return .error
+        case .skipped: return .skipped
+        }
+    }
+}
+```
+(`InstallStep` must be `Identifiable` for `.sheet(item:)` — it is, via `id`.)
+
+- [ ] **Step 2: `swift build` → Build complete. Commit**
+```bash
+git add rt-tray/Sources/Setup
+git commit -m "MAT-383: Install screen — live step list, need rows, failure remedy, Show log, Retry from here
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 16: Done screen
+
+**Files:**
+- Create/replace: `rt-tray/Sources/Setup/Screens/DoneScreen.swift`
+
+- [ ] **Step 1: Write the view**
+
+```swift
+import SwiftUI
+import MattstackCore
+
+struct DoneScreen: View {
+    @ObservedObject var install: InstallRunModel
+    let isOwner: Bool
+    let onInvite: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                Image(systemName: "checkmark.seal.fill").font(.system(size: 40)).foregroundStyle(.green)
+                VStack(alignment: .leading) {
+                    Text("Everything's working").font(.title3.weight(.semibold))
+                    Text(verifySummary).foregroundStyle(.secondary)
+                }
+            }
+            Form {
+                Section("Where things live") {
+                    LabeledContent("Menu bar") { Text("the m at the top right") }
+                    LabeledContent("Terminal") { Text("rt — open a new terminal window").font(.system(.body, design: .monospaced)) }
+                    LabeledContent("Board") { Link("https://board.mattstack", destination: URL(string: "https://board.mattstack")!) }
+                }
+            }
+            .formStyle(.grouped).scrollDisabled(true)
+            HStack {
+                Button("Open the board") { NSWorkspace.shared.open(URL(string: "https://board.mattstack")!) }.accessibilityIdentifier(AXID.doneOpenBoard)
+                if isOwner { Button("Invite teammates…", action: onInvite).accessibilityIdentifier(AXID.doneInvite) }
+                Spacer()
+            }
+            Spacer()
+        }
+        .padding(24)
+        .accessibilityIdentifier(AXID.doneScreen)
+    }
+
+    private var verifySummary: String {
+        let verify = install.steps.first { $0.id == "verify" }
+        let n = install.steps.filter { $0.state == .done }.count
+        return verify?.detail.map { "\($0) · \(n) steps done" } ?? "\(n) steps done"
+    }
+}
+```
+(Finish is the footer's Continue on this step — it closes the window, Task 12. Close/minimize buttons appear because `flow.windowMayClose` is true on `.done`.)
+
+- [ ] **Step 2: `swift build`; commit**
+```bash
+git add rt-tray/Sources/Setup/Screens/DoneScreen.swift
+git commit -m "MAT-383: Done screen — verify summary, where things live, Open the board / Invite teammates
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 17: Settings window (⌘,) — General / Permissions / Team / Uninstall
+
+**Files:**
+- Create: `rt-tray/Sources-core/Settings/RemoteMasker.swift`, `rt-tray/Sources-core/Settings/TeamSettingsModel.swift`
+- Create: `rt-tray/Sources/Settings/SettingsWindowController.swift`, `SettingsView.swift`, `GeneralPane.swift`, `PermissionsPane.swift`, `TeamPane.swift`, `UninstallPane.swift`
+- Create: `rt-tray/Tests/MattstackCoreChecks/SettingsChecks.swift`; modify `AllChecks.swift`
+
+**Interfaces:**
+- Produces (Core): `public enum RemoteMasker { static func mask(_ remote: String) -> String }` (`git@gitlab.example.com:tools/team.git` → `gitlab.example.com/tools/team`; `https://github.com/o/r.git` → `github.com/o/r`; garbage → as-is); `public struct TeamSettingsInfo: Codable { name: String?; slug: String?; remote: String?; lastPush: String?; members: [String]? }` (from `rt team status --json` — see Open questions); `@MainActor public final class TeamSettingsModel: ObservableObject` — `init(rt: RtRunning)`; `@Published info: TeamSettingsInfo?`, `invite: InviteResult?`, `error: String?`, `uninstallPlan: UninstallPlan?`; `func load() async`; `func mintInvite(handle: String) async`; `func loadUninstallPlan() async`; `func uninstall(keepData: Bool) -> AsyncThrowingStream<String, Error>`.
+- Produces (app): `SettingsWindowController` (`show(pane:)`, remembers last pane in UserDefaults `MSSettingsPane`), `SettingsView` with `TabView` of the four panes, `enum SettingsPane: String { general, permissions, team, uninstall }`.
+
+- [ ] **Step 1: Failing checks**
+
+`rt-tray/Tests/MattstackCoreChecks/SettingsChecks.swift`:
+```swift
+import Foundation
+import MattstackCore
+
+let settingsChecks: [Check] = [
+    Check("RemoteMasker shows host + repo only") { c in
+        c.expectEqual(RemoteMasker.mask("git@gitlab.example.com:tools/mattstack-team.git"), "gitlab.example.com/tools/mattstack-team")
+        c.expectEqual(RemoteMasker.mask("https://user:token@github.com/m4ttheweric/mattstack-home.git"), "github.com/m4ttheweric/mattstack-home")
+        c.expectEqual(RemoteMasker.mask("ssh://git@github.com:22/o/r"), "github.com/o/r")
+        c.expectEqual(RemoteMasker.mask("weird"), "weird")
+    },
+    Check("TeamSettingsModel loads status, mints invites through rt, loads the uninstall dry-run") { c in
+        let rt = ScriptedRt()
+        rt.answers["team status"] = (0, #"{"contract":1,"name":"Acme","slug":"acme","remote":"git@github.com:acme/mattstack-team-acme.git","lastPush":"2026-08-21T03:00:00Z","members":["matt","bob"]}"#)
+        rt.answers["team invite --handle bob"] = (0, #"{"contract":1,"code":"ABCD","expiresAt":"2026-08-28T00:00:00Z","pasteBlock":"Install mattstack…","forgeAccess":"granted","manualSteps":[]}"#)
+        rt.answers["uninstall --dry-run"] = (0, #"{"contract":1,"actions":[{"id":"services.unregister","title":"Stop services"}]}"#)
+        let m = await MainActor.run { TeamSettingsModel(rt: rt) }
+        await m.load()
+        await MainActor.run {
+            c.expectEqual(m.info?.name, "Acme")
+            c.expectEqual(m.maskedRemote, "github.com/acme/mattstack-team-acme")
+        }
+        await m.mintInvite(handle: "bob")
+        await MainActor.run { c.expectEqual(m.invite?.code, "ABCD") }
+        c.expectEqual(rt.calls[1].args, ["team", "invite", "--handle", "bob", "--json"])
+        await m.loadUninstallPlan()
+        await MainActor.run { c.expectEqual(m.uninstallPlan?.actions.first?.id, "services.unregister") }
+    },
+]
+```
+
+- [ ] **Step 2: Run → compile failure. Implement Core**
+
+`rt-tray/Sources-core/Settings/RemoteMasker.swift`:
+```swift
+import Foundation
+
+/// Team pane shows where the repo is, never credentials or the full URL.
+public enum RemoteMasker {
+    public static func mask(_ remote: String) -> String {
+        var s = remote.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let r = s.range(of: "://") { s = String(s[r.upperBound...]) }          // strip scheme
+        if let at = s.lastIndex(of: "@") { s = String(s[s.index(after: at)...]) }    // strip user[:token]@
+        // scp-like host:path → host/path ; host:port/path → host/path
+        if let colon = s.firstIndex(of: ":") {
+            let after = s[s.index(after: colon)...]
+            let port = after.prefix { $0.isNumber }
+            let rest = after.dropFirst(port.count)
+            s = String(s[..<colon]) + (rest.hasPrefix("/") ? String(rest) : "/" + rest)
+        }
+        if s.hasSuffix(".git") { s.removeLast(4) }
+        while s.hasSuffix("/") { s.removeLast() }
+        return s.contains("/") ? s : remote
+    }
+}
+```
+
+`rt-tray/Sources-core/Settings/TeamSettingsModel.swift`:
+```swift
+import Foundation
+import Combine
+
+public struct TeamSettingsInfo: Codable, Equatable, Sendable {
+    public var name: String?
+    public var slug: String?
+    public var remote: String?
+    public var lastPush: String?
+    public var members: [String]?
+}
+
+@MainActor
+public final class TeamSettingsModel: ObservableObject {
+    @Published public private(set) var info: TeamSettingsInfo?
+    @Published public private(set) var invite: InviteResult?
+    @Published public private(set) var uninstallPlan: UninstallPlan?
+    @Published public private(set) var error: String?
+    private let rt: RtRunning
+    public init(rt: RtRunning) { self.rt = rt }
+
+    public var maskedRemote: String { info?.remote.map(RemoteMasker.mask) ?? "—" }
+
+    public func load() async {
+        do {
+            let r = try await rt.run(["team", "status", "--json"], stdin: nil)
+            if let e = r.userError { error = e.message; return }
+            info = try r.decode(TeamSettingsInfo.self)
+        } catch { self.error = String(describing: error) }
+    }
+
+    public func mintInvite(handle: String) async {
+        do {
+            let r = try await rt.run(["team", "invite", "--handle", handle, "--json"], stdin: nil)
+            if let e = r.userError { error = e.message; return }
+            invite = try r.decode(InviteResult.self)
+        } catch { self.error = String(describing: error) }
+    }
+
+    public func loadUninstallPlan() async {
+        do {
+            let r = try await rt.run(["uninstall", "--dry-run", "--json"], stdin: nil)
+            uninstallPlan = try r.decode(UninstallPlan.self)
+        } catch { self.error = String(describing: error) }
+    }
+
+    public func uninstall(keepData: Bool) -> AsyncThrowingStream<String, Error> {
+        rt.stream(["uninstall", keepData ? "--keep-data" : "--delete-data", "--json"], stdin: nil)
+    }
+}
+```
+Run checks → pass.
+
+- [ ] **Step 3: Window + panes**
+
+`rt-tray/Sources/Settings/SettingsWindowController.swift`:
+```swift
+import AppKit
+import SwiftUI
+import MattstackCore
+
+enum SettingsPane: String, CaseIterable { case general, permissions, team, uninstall }
+
+final class SettingsWindowController: NSWindowController {
+    private static let paneKey = "MSSettingsPane"
+    let pane = PaneSelection()
+    final class PaneSelection: ObservableObject { @Published var current: SettingsPane = .general }
+
+    init(env: SettingsEnvironment) {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 440),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "mattstack Settings"
+        window.isReleasedWhenClosed = false
+        window.center()
+        super.init(window: window)
+        pane.current = SettingsPane(rawValue: UserDefaults.standard.string(forKey: Self.paneKey) ?? "") ?? .general
+        window.contentViewController = NSHostingController(rootView: SettingsView(pane: pane, env: env))
+    }
+    required init?(coder: NSCoder) { fatalError("not supported") }
+
+    func show(pane p: SettingsPane? = nil) {
+        if let p { pane.current = p }
+        UserDefaults.standard.set(pane.current.rawValue, forKey: Self.paneKey)
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+struct SettingsEnvironment {
+    let rt: RtRunning
+    let permissions: PermissionsService
+    let readiness: ReadinessModel
+    let updater: UpdaterController
+    let team: TeamSettingsModel
+    let isDevBuild: Bool
+    let version: String
+    let onJoinAnotherTeam: () -> Void
+    let onQuitForUninstall: () -> Void
+}
+```
+
+`rt-tray/Sources/Settings/SettingsView.swift`:
+```swift
+import SwiftUI
+import MattstackCore
+
+struct SettingsView: View {
+    @ObservedObject var pane: SettingsWindowController.PaneSelection
+    let env: SettingsEnvironment
+    var body: some View {
+        TabView(selection: $pane.current) {
+            GeneralPane(env: env).tabItem { Label("General", systemImage: "gearshape") }.tag(SettingsPane.general)
+            PermissionsPane(env: env).tabItem { Label("Permissions", systemImage: "lock.shield") }.tag(SettingsPane.permissions)
+            TeamPane(env: env).tabItem { Label("Team", systemImage: "person.3") }.tag(SettingsPane.team)
+            UninstallPane(env: env).tabItem { Label("Uninstall", systemImage: "trash") }.tag(SettingsPane.uninstall)
+        }
+        .frame(width: 560, height: 440)
+        .onChange(of: pane.current) { _, p in UserDefaults.standard.set(p.rawValue, forKey: "MSSettingsPane") }
+    }
+}
+```
+
+`rt-tray/Sources/Settings/GeneralPane.swift`:
+```swift
+import SwiftUI
+import ServiceManagement
+import MattstackCore
+
+struct GeneralPane: View {
+    let env: SettingsEnvironment
+    @State private var startAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var autoUpdates = false
+    @State private var devModeBusy = false
+
+    var body: some View {
+        Form {
+            Section("Startup") {
+                Toggle("Start mattstack at login", isOn: $startAtLogin)
+                    .onChange(of: startAtLogin) { _, on in toggleLogin(on) }
+                    .accessibilityIdentifier(AXID.settingsGeneralStartAtLogin)
+            }
+            Section("Updates") {
+                Toggle("Check for updates automatically", isOn: $autoUpdates)
+                    .disabled(!env.updater.isEnabled)
+                    .onChange(of: autoUpdates) { _, on in env.updater.automaticallyChecks = on }
+                    .accessibilityIdentifier(AXID.settingsGeneralAutoUpdates)
+                HStack {
+                    Button("Check Now") { env.updater.checkForUpdatesFromMenu() }.disabled(!env.updater.canCheckForUpdates)
+                        .accessibilityIdentifier(AXID.settingsGeneralCheckNow)
+                    if !env.updater.isEnabled { Text(env.isDevBuild ? "Updates are off in the dev flavor." : "Updates are off in this build.").font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+            Section("Developer") {
+                LabeledContent("Flavor") { Text(env.isDevBuild ? "dev (mattstack-dev.app)" : "prod (mattstack.app)") }
+                Button(env.isDevBuild ? "Switch to the installed app (dev mode off)…" : "Switch to the dev app (dev mode on)…") {
+                    devModeBusy = true
+                    Task { _ = try? await env.rt.run(["settings", "dev-mode", env.isDevBuild ? "off" : "on"], stdin: nil); devModeBusy = false }
+                }
+                .disabled(devModeBusy)
+                .accessibilityIdentifier(AXID.settingsGeneralDevMode)
+                Text("The handoff quits this app and launches the other flavor.").font(.caption).foregroundStyle(.secondary)
+            }
+            Section { LabeledContent("Version") { Text(env.version) } }
+        }
+        .formStyle(.grouped)
+        .onAppear { autoUpdates = env.updater.automaticallyChecks }
+    }
+
+    private func toggleLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register(); LoginItemPreference.isOptedOut = false }
+            else { try SMAppService.mainApp.unregister(); LoginItemPreference.isOptedOut = true }
+        } catch { TrayLog.error("login item toggle failed", ["err": String(describing: error)]) }
+        startAtLogin = SMAppService.mainApp.status == .enabled
+    }
+}
+```
+
+`rt-tray/Sources/Settings/PermissionsPane.swift`:
+```swift
+import SwiftUI
+import MattstackCore
+
+struct PermissionsPane: View {
+    let env: SettingsEnvironment
+    @State private var snapshot = PermissionSnapshot.unknown
+    @State private var timer: Timer?
+    @State private var resetting = false
+
+    private var rows: [(String, String, String, Bool, String)] {  // id, title, why, required, settings target
+        [(PermissionRowOverlay.fdaRow, "Full Disk Access", "Reads your repositories' git state so the daemon can show branch and MR status.", true, "fda"),
+         (PermissionRowOverlay.loginItemsRow, "Background services", "rt daemon and deck run in the background as login items.", true, "login-items"),
+         (PermissionRowOverlay.notificationsRow, "Notifications", "Pipeline and review alerts; works without this.", false, "notifications")]
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(rows, id: \.0) { r in
+                    let (status, detail) = PermissionRowOverlay.status(for: r.0, in: snapshot) ?? (.checking, "")
+                    RowView(row: PlanRow(id: r.0, kind: .permission, title: r.1, why: r.2, required: r.3, status: status, detail: detail,
+                                         action: RowAction(type: .openSettings, label: buttonLabel(r.0, status), target: r.4), recheck: .onActivate),
+                            isChecking: false,
+                            rowID: "settings.permissions.row.\(r.0)",
+                            actionID: AXID.settingsPermissionAction(r.0),
+                            statusID: "settings.permissions.row.\(r.0).status") { act(r.0, status, r.4) }
+                }
+            }
+            Section {
+                HStack {
+                    Button(resetting ? "Resetting…" : "Reset & re-request…") { resetting = true; Task { _ = await env.permissions.resetAndReRequest(); resetting = false } }
+                        .disabled(resetting)
+                        .accessibilityIdentifier(AXID.settingsPermissionsReset)
+                    Text("Clears this app's permission records (for a moved app or stale signature) and asks again.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { probe(); timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in probe() } }
+        .onDisappear { timer?.invalidate(); timer = nil }
+    }
+
+    private func buttonLabel(_ id: String, _ status: RowStatus) -> String {
+        switch (id, status) {
+        case (PermissionRowOverlay.fdaRow, _): return "Open Full Disk Access Settings…"
+        case (PermissionRowOverlay.loginItemsRow, _): return "Open Login Items…"
+        case (PermissionRowOverlay.notificationsRow, .skipped): return "Allow"
+        default: return "Open Notification Settings…"
+        }
+    }
+    private func act(_ id: String, _ status: RowStatus, _ target: String) {
+        if id == PermissionRowOverlay.notificationsRow, status == .skipped { Task { _ = await env.permissions.request("notifications"); probe() }; return }
+        env.permissions.openSettings(target)
+    }
+    private func probe() { Task { snapshot = await env.permissions.snapshot() } }
+}
+```
+
+`rt-tray/Sources/Settings/TeamPane.swift`:
+```swift
+import SwiftUI
+import MattstackCore
+
+struct TeamPane: View {
+    let env: SettingsEnvironment
+    @ObservedObject private var model: TeamSettingsModel
+    @State private var handle = ""
+    init(env: SettingsEnvironment) { self.env = env; self.model = env.team }
+
+    var body: some View {
+        Form {
+            Section("Team") {
+                LabeledContent("Name") { Text(model.info?.name ?? "—") }
+                LabeledContent("Remote") {
+                    HStack { Text(model.maskedRemote).textSelection(.enabled)
+                        Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(model.info?.remote ?? "", forType: .string) } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless) }
+                }
+                LabeledContent("Backup") { Text(model.info?.lastPush.map { "last push \($0)" } ?? "no push recorded") }
+            }
+            Section("Members with access") {
+                if let m = model.info?.members, !m.isEmpty { ForEach(m, id: \.self) { Text($0) } }
+                else { Text("Not visible with the current token.").foregroundStyle(.secondary) }
+            }
+            Section("Invite") {
+                HStack {
+                    TextField("Forge handle", text: $handle, prompt: Text("teammate's GitHub/GitLab handle")).accessibilityIdentifier(AXID.settingsTeamInviteHandle)
+                    Button("Invite…") { Task { await model.mintInvite(handle: handle) } }.disabled(handle.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .accessibilityIdentifier(AXID.settingsTeamInvite)
+                }
+                if let inv = model.invite {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(inv.pasteBlock).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        HStack {
+                            Button("Copy paste block") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(inv.pasteBlock, forType: .string) }
+                                .accessibilityIdentifier(AXID.settingsTeamCopyPaste)
+                            Text("expires \(inv.expiresAt) · forge access: \(inv.forgeAccess)").font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let steps = inv.manualSteps, !steps.isEmpty { ForEach(steps, id: \.self) { Text("• \($0)").font(.caption) } }
+                    }
+                }
+            }
+            Section { Button("Join another team…", action: env.onJoinAnotherTeam).accessibilityIdentifier(AXID.settingsTeamJoinAnother) }
+            if let e = model.error { Text(e).font(.caption).foregroundStyle(.red) }
+        }
+        .formStyle(.grouped)
+        .task { await model.load() }
+    }
+}
+```
+
+`rt-tray/Sources/Settings/UninstallPane.swift`:
+```swift
+import SwiftUI
+import MattstackCore
+
+struct UninstallPane: View {
+    let env: SettingsEnvironment
+    @ObservedObject private var model: TeamSettingsModel
+    @State private var confirming = false
+    @State private var keepData = true
+    @State private var progress: [String] = []
+    @State private var running = false
+    init(env: SettingsEnvironment) { self.env = env; self.model = env.team }
+
+    var body: some View {
+        Form {
+            Section("Uninstall mattstack") {
+                Text("Reverses everything the installer did: services, the proxy, ~/.local/bin links and the shell rc block, the editor extension, the Claude Code plugins we added; then moves the app to the Trash.")
+                    .font(.callout)
+                Button("Uninstall mattstack…") { Task { await model.loadUninstallPlan(); confirming = true } }
+                    .accessibilityIdentifier(AXID.settingsUninstall)
+            }
+            if !progress.isEmpty {
+                Section("Progress") { ForEach(progress, id: \.self) { Text($0).font(.system(.caption, design: .monospaced)) } }
+            }
+        }
+        .formStyle(.grouped)
+        .sheet(isPresented: $confirming) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("This will:").font(.headline)
+                ForEach(model.uninstallPlan?.actions ?? []) { a in Label(a.title, systemImage: "minus.circle") }
+                Toggle("Keep ~/.mattstack (your settings home repo and data)", isOn: $keepData).accessibilityIdentifier(AXID.settingsUninstallKeepData)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { confirming = false }.keyboardShortcut(.cancelAction)
+                    Button("Uninstall", role: .destructive) { confirming = false; run() }.keyboardShortcut(.defaultAction).disabled(running)
+                        .accessibilityIdentifier(AXID.settingsUninstallConfirm)
+                }
+            }
+            .padding(20).frame(width: 460)
+        }
+    }
+
+    private func run() {
+        running = true
+        progress = []
+        Task {
+            do {
+                for try await line in model.uninstall(keepData: keepData) {
+                    if let ev = try? ApplyEvent.decode(line) {
+                        switch ev {
+                        case .step(let id, let state, let detail, _): progress.append("\(id): \(state.rawValue)\(detail.map { " — \($0)" } ?? "")")
+                        case .done(let ok, _): progress.append(ok ? "done — mattstack will quit now" : "stopped"); if ok { env.onQuitForUninstall() }
+                        default: break
+                        }
+                    }
+                }
+            } catch { progress.append("error: \(error)") }
+            running = false
+        }
+    }
+}
+```
+
+- [ ] **Step 4: `swift build`; checks pass. Commit**
+```bash
+git add rt-tray/Sources-core rt-tray/Sources/Settings rt-tray/Tests
+git commit -m "MAT-383: Settings window — General, Permissions (Reset & re-request), Team (Invite…), Uninstall
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 18: AppDelegate integration — launch guard, appPath, first-run, deep link, menu, routes, version-change
+
+**Files:**
+- Create: `rt-tray/Sources-core/Launch/LaunchGuard.swift`, `rt-tray/Sources/Rt/RtClientFactory.swift`, `rt-tray/Sources/Setup/SetupCoordinator.swift`
+- Modify: `rt-tray/Sources/AppDelegate.swift`, `rt-tray/Sources/main.swift`, `rt-tray/Sources/TrayState.swift`, `rt-tray/Sources/ProcessPanelView.swift` (gear-menu additions only)
+- Create: `rt-tray/Tests/MattstackCoreChecks/LaunchChecks.swift`; modify `AllChecks.swift`
+
+**Interfaces:**
+- Produces (Core):
+  - `public enum LaunchGuard { static func isTranslocatedOrOnRemovableVolume(bundlePath: String) -> Bool }` — true for paths containing `/AppTranslocation/` or starting with `/Volumes/`
+  - `public enum FirstRunDetector { static func needsSetup(home: String, fileExists: (String) -> Bool) -> Bool }` — `!fileExists("\(home)/.mattstack/rt/daemon.json")`
+  - `public enum JoinLink { static func code(from url: URL) -> String? }` — `mattstack://join/<code>` (host `join`, one path component, trims whitespace, rejects others/empty)
+  - `public enum AppPathSetting { static func arguments(bundlePath: String) -> [String] }` → `["settings", "set", "mattstack.appPath", "\"<path>\"", "--scope", "machine"]` (the value is a JSON string literal because `rt settings set` takes `<json-value>`)
+- Produces (app):
+  - `enum RtClientFactory { static func make() -> RtClient? }` (BundleFlavor + `#if DEBUG` + `RT_APP_SOCKET=TrayServer.socketPath`)
+  - `final class SetupCoordinator` — owns `SetupWindowController`, `SettingsWindowController`, `ReadinessModel`, `InstallRunModel`, `TeamSettingsModel`; `func showSetup(step:joinCode:)`, `func showSettings(pane:)`, `func handleJoin(code:)` (setup incomplete → Setup screen 2 prefilled; complete → Settings → Team), `func openSetupStatus()` (screen 3 as health view: `ReadinessModel` over `rt setup status --json`).
+  - AppDelegate: `applicationDidFinishLaunching` order = launch guard → build services (`PermissionsService`, `ServicesRegistrar`, `PrivilegedInstaller`, `NeedBroker`, `TrayRoutes` → `TrayServer.shared.routes`) → existing setup (menu bar, notifications, tray server, polling, updater) → `servicesRegistrar.registerAll()` (replaces `daemonLifecycle.startDaemon()` — the daemon plist is one of the N) → version-change handling → `mattstack.appPath` write → first-run detection → open Setup. URL handling via `NSAppleEventManager` `kAEGetURL` registered in `applicationWillFinishLaunching`. Main menu with App menu: "Settings…" ⌘, "Quit mattstack" ⌘Q (so ⌘, works whenever a window is key). Gear-menu additions in `ProcessPanelView.makeGearMenu()`: "Setup status…", "Settings…", "Uninstall mattstack…" posting `.rtShowSetupStatus`, `.rtShowSettings`, `.rtShowUninstall`; "Check for Updates…" title stays bound to `trayState.updateAvailable` and its enabled state to `updater.canCheckForUpdates` via `TrayState.canCheckForUpdates`.
+
+- [ ] **Step 1: Failing checks**
+
+`rt-tray/Tests/MattstackCoreChecks/LaunchChecks.swift`:
+```swift
+import Foundation
+import MattstackCore
+
+let launchChecks: [Check] = [
+    Check("LaunchGuard flags translocated and volume paths") { c in
+        c.expect(LaunchGuard.isTranslocatedOrOnRemovableVolume(bundlePath: "/private/var/folders/zz/T/AppTranslocation/ABC/d/mattstack.app"))
+        c.expect(LaunchGuard.isTranslocatedOrOnRemovableVolume(bundlePath: "/Volumes/mattstack-2.8.0/mattstack.app"))
+        c.expect(!LaunchGuard.isTranslocatedOrOnRemovableVolume(bundlePath: "/Applications/mattstack.app"))
+        c.expect(!LaunchGuard.isTranslocatedOrOnRemovableVolume(bundlePath: "/Users/u/Applications/mattstack-dev.app"))
+    },
+    Check("FirstRunDetector keys off ~/.mattstack/rt/daemon.json") { c in
+        c.expect(FirstRunDetector.needsSetup(home: "/Users/u") { _ in false })
+        c.expect(!FirstRunDetector.needsSetup(home: "/Users/u") { $0 == "/Users/u/.mattstack/rt/daemon.json" })
+    },
+    Check("JoinLink parses mattstack://join/<code> only") { c in
+        c.expectEqual(JoinLink.code(from: URL(string: "mattstack://join/ABCD-EFGH-IJKL")!), "ABCD-EFGH-IJKL")
+        c.expectEqual(JoinLink.code(from: URL(string: "mattstack://join/ABCD-EFGH-IJKL/")!), "ABCD-EFGH-IJKL")
+        c.expectEqual(JoinLink.code(from: URL(string: "mattstack://join/")!), nil)
+        c.expectEqual(JoinLink.code(from: URL(string: "mattstack://settings/team")!), nil)
+        c.expectEqual(JoinLink.code(from: URL(string: "https://mattstack.dev/join#ABCD")!), nil)
+    },
+    Check("AppPathSetting writes a JSON string through rt settings set --scope machine") { c in
+        c.expectEqual(AppPathSetting.arguments(bundlePath: "/Applications/mattstack.app"),
+                      ["settings", "set", "mattstack.appPath", "\"/Applications/mattstack.app\"", "--scope", "machine"])
+        c.expectEqual(AppPathSetting.arguments(bundlePath: "/Users/u/My \"Apps\"/mattstack.app")[3], "\"/Users/u/My \\\"Apps\\\"/mattstack.app\"")
+    },
+]
+```
+
+- [ ] **Step 2: Run → compile failure. Implement Core**
+
+`rt-tray/Sources-core/Launch/LaunchGuard.swift`:
+```swift
+import Foundation
+
+public enum LaunchGuard {
+    /// Gatekeeper runs a quarantined app from a random read-only mount; a
+    /// DMG is a volume. Either way SMAppService and Sparkle cannot work.
+    public static func isTranslocatedOrOnRemovableVolume(bundlePath: String) -> Bool {
+        bundlePath.contains("/AppTranslocation/") || bundlePath.hasPrefix("/Volumes/")
+    }
+}
+
+public enum FirstRunDetector {
+    public static func needsSetup(home: String, fileExists: (String) -> Bool) -> Bool {
+        !fileExists("\(home)/.mattstack/rt/daemon.json")
+    }
+}
+
+public enum JoinLink {
+    public static func code(from url: URL) -> String? {
+        guard url.scheme?.lowercased() == "mattstack", url.host?.lowercased() == "join" else { return nil }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        guard parts.count == 1 else { return nil }
+        let code = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        return code.isEmpty ? nil : code
+    }
+}
+
+public enum AppPathSetting {
+    public static func arguments(bundlePath: String) -> [String] {
+        let json = String(decoding: (try? JSONEncoder().encode(bundlePath)) ?? Data("\"\"".utf8), as: UTF8.self)
+        return ["settings", "set", "mattstack.appPath", json, "--scope", "machine"]
+    }
+}
+```
+Run checks → pass.
+
+- [ ] **Step 3: App wiring**
+
+`rt-tray/Sources/Rt/RtClientFactory.swift`:
+```swift
+import Foundation
+import MattstackCore
+
+enum RtClientFactory {
+    static func make() -> RtClient? {
+        #if DEBUG
+        let debug = true
+        #else
+        let debug = false
+        #endif
+        guard let loc = RtBinaryLocator.resolve(bundlePath: Bundle.main.bundlePath, isDevBuild: BundleFlavor.isDevBuild,
+                                                isDebugBuild: debug, environment: ProcessInfo.processInfo.environment,
+                                                home: NSHomeDirectory(), fileExists: { FileManager.default.isExecutableFile(atPath: $0) })
+        else {
+            TrayLog.error("no rt binary found for this bundle", ["bundle": Bundle.main.bundlePath])
+            return nil
+        }
+        TrayLog.info("rt resolved", ["path": loc.executable.path, "source": String(describing: loc.source)])
+        return RtClient(location: loc, environment: ["RT_APP_SOCKET": TrayServer.socketPath])
+    }
+}
+```
+
+`rt-tray/Sources/Setup/SetupCoordinator.swift`:
+```swift
+import AppKit
+import MattstackCore
+
+/// Owns the Setup and Settings windows and the models behind them. One
+/// instance per process, created by AppDelegate after the services exist.
+@MainActor
+final class SetupCoordinator {
+    private let rt: RtRunning
+    private let permissions: PermissionsService
+    private let needs: NeedBroker
+    private let updater: UpdaterController
+    private let readiness: ReadinessModel
+    private let install: InstallRunModel
+    private let teamSettings: TeamSettingsModel
+    private var setupWindow: SetupWindowController?
+    private var settingsWindow: SettingsWindowController?
+
+    init(rt: RtRunning, permissions: PermissionsService, needs: NeedBroker, updater: UpdaterController) {
+        self.rt = rt; self.permissions = permissions; self.needs = needs; self.updater = updater
+        readiness = ReadinessModel(plans: RtPlanSource(rt: rt, verb: ["setup", "plan", "--json"]),
+                                   permissions: permissions, ticker: MainTicker())
+        install = InstallRunModel(stream: { from in
+            var args = ["setup", "apply"]
+            if let from { args += ["--from", from] }
+            return rt.stream(args + ["--json"], stdin: nil)
+        }, needs: needs)
+        teamSettings = TeamSettingsModel(rt: rt)
+    }
+
+    var setupIsComplete: Bool {
+        !FirstRunDetector.needsSetup(home: NSHomeDirectory()) { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    func showSetup(step: SetupStep? = nil, joinCode: String? = nil) {
+        if setupWindow == nil {
+            let env = SetupEnvironment(rt: rt, readiness: readiness, install: install, permissions: permissions,
+                                       isDevBuild: BundleFlavor.isDevBuild, bundleId: Bundle.main.bundleIdentifier ?? "com.mattstack.app",
+                                       bundlePath: Bundle.main.bundlePath)
+            setupWindow = SetupWindowController(environment: env)
+        }
+        setupWindow?.show(step: step, joinCode: joinCode)
+    }
+
+    /// "Setup status…": screen 3 as a health view over `rt setup status`.
+    func openSetupStatus() {
+        let status = ReadinessModel(plans: RtPlanSource(rt: rt, verb: ["setup", "status", "--json"]), permissions: permissions, ticker: MainTicker())
+        let env = SetupEnvironment(rt: rt, readiness: status, install: install, permissions: permissions,
+                                   isDevBuild: BundleFlavor.isDevBuild, bundleId: Bundle.main.bundleIdentifier ?? "com.mattstack.app",
+                                   bundlePath: Bundle.main.bundlePath)
+        let wc = SetupWindowController(environment: env)
+        wc.flow.jump(to: .checklist)
+        wc.flow.isInstalling = false
+        wc.show(step: .checklist)
+        wc.window?.styleMask.insert(.closable)
+        wc.window?.title = "mattstack Setup status"
+        setupWindow = wc
+    }
+
+    func showSettings(pane: SettingsPane? = nil) {
+        if settingsWindow == nil {
+            let env = SettingsEnvironment(rt: rt, permissions: permissions, readiness: readiness, updater: updater, team: teamSettings,
+                                          isDevBuild: BundleFlavor.isDevBuild,
+                                          version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev",
+                                          onJoinAnotherTeam: { [weak self] in self?.showSetup(step: .team) },
+                                          onQuitForUninstall: { NSApp.terminate(nil) })
+            settingsWindow = SettingsWindowController(env: env)
+        }
+        settingsWindow?.show(pane: pane)
+    }
+
+    func handleJoin(code: String) {
+        if setupIsComplete { showSettings(pane: .team); showSetup(step: .team, joinCode: code) }
+        else { showSetup(step: .team, joinCode: code) }
+    }
+}
+
+struct RtPlanSource: PlanSource {
+    let rt: RtRunning
+    let verb: [String]
+    func fetchPlan() async throws -> Plan {
+        let r = try await rt.run(verb, stdin: nil)
+        if let e = r.userError { throw e }
+        return try r.decode(Plan.self)
+    }
+}
+
+/// Timer-backed ticker on the main run loop.
+struct MainTicker: TickerScheduling {
+    func schedule(every seconds: TimeInterval, _ tick: @escaping @Sendable () -> Void) -> TickerHandle {
+        let timer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: true) { _ in tick() }
+        return TickerHandle { timer.invalidate() }
+    }
+}
+```
+
+`rt-tray/Sources/TrayState.swift` — add `@Published var canCheckForUpdates: Bool = false` and notification names:
+```swift
+    static let rtShowSetupStatus = Notification.Name("rtShowSetupStatus")
+    static let rtShowSettings    = Notification.Name("rtShowSettings")
+    static let rtShowUninstall   = Notification.Name("rtShowUninstall")
+```
+
+`rt-tray/Sources/ProcessPanelView.swift` `makeGearMenu()` — insert after the `View Logs…` separator:
+```swift
+        menu.addItem(ActionMenuItem("Setup status…") { NotificationCenter.default.post(name: .rtShowSetupStatus, object: nil) })
+        menu.addItem(ActionMenuItem("Settings…") { NotificationCenter.default.post(name: .rtShowSettings, object: nil) })
+        menu.addItem(.separator())
+```
+and before `Quit mattstack`:
+```swift
+        menu.addItem(ActionMenuItem("Uninstall mattstack…") { NotificationCenter.default.post(name: .rtShowUninstall, object: nil) })
+        menu.addItem(.separator())
+```
+and make the update item reflect Sparkle: `let updateItem = ActionMenuItem(updateMenuTitle) { … }; updateItem.isEnabled = trayState.canCheckForUpdates || trayState.updateAvailable != nil; menu.addItem(updateItem)`. Nothing else in the panel changes.
+
+`rt-tray/Sources/main.swift` — unchanged except the activation policy stays `.accessory`; the URL handler must be registered before the first event, so AppDelegate implements `applicationWillFinishLaunching`.
+
+`rt-tray/Sources/AppDelegate.swift` changes:
+```swift
+    // properties
+    private var permissionsService: PermissionsService!
+    private var servicesRegistrar: ServicesRegistrar!
+    private var needBroker: NeedBroker!
+    private var coordinator: SetupCoordinator?
+    private var rtClient: RtClient?
+    let updater = UpdaterController(isDevBuild: BundleFlavor.isDevBuild, isBusy: { SetupSession.isRunning })
+    private var updaterObservation: NSKeyValueObservation?
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleGetURL(_:with:)),
+                                                     forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if LaunchGuard.isTranslocatedOrOnRemovableVolume(bundlePath: Bundle.main.bundlePath) {
+            showMoveToApplicationsAlert()
+            return
+        }
+        buildServices()
+        installMainMenu()
+        setupMenuBar()
+        setupNotifications()
+        setupTrayServer()
+        startPolling()
+        setupAutoUpdate()
+        // …existing observers unchanged…
+        NotificationCenter.default.addObserver(self, selector: #selector(showSetupStatus), name: .rtShowSetupStatus, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(showSettings), name: .rtShowSettings, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(showUninstall), name: .rtShowUninstall, object: nil)
+        checkMissionControlConflict()
+        autoRegisterLoginItem()
+
+        Task { @MainActor in
+            setHealth(.starting)
+            servicesRegistrar.registerAll()
+            let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+            let change = await servicesRegistrar.handleVersionChange(current: version, store: UserDefaults.standard)
+            TrayLog.info("version change evaluated", ["change": String(describing: change)])
+            await recordAppPath()
+            for _ in 0..<8 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                if await daemonClient.isReachable() { break }
+            }
+            await refreshStatus()
+            await drainPendingNotifications()
+            if let coordinator, !coordinator.setupIsComplete { coordinator.showSetup() }
+        }
+    }
+
+    private func buildServices() {
+        permissionsService = PermissionsService(bundleId: Bundle.main.bundleIdentifier ?? "com.mattstack.app",
+                                                agentStatuses: { [weak self] in self?.servicesRegistrar.smStatuses() ?? [] },
+                                                runner: SystemCommandRunner())
+        servicesRegistrar = ServicesRegistrar(bundlePath: Bundle.main.bundlePath, runner: SystemCommandRunner())
+        let privileged = PrivilegedInstaller(bundlePath: Bundle.main.bundlePath, escalator: AuthorizationServicesEscalator())
+        needBroker = NeedBroker(services: servicesRegistrar, privileged: privileged)
+        TrayServer.shared.routes = TrayRoutes(permissions: permissionsService, services: servicesRegistrar, privileged: privileged,
+                                              needs: needBroker, updater: updater, version: self)
+        rtClient = RtClientFactory.make()
+        if let rt = rtClient {
+            coordinator = SetupCoordinator(rt: rt, permissions: permissionsService, needs: needBroker, updater: updater)
+        }
+        updaterObservation = updater.observe(\.canCheckForUpdates, options: [.initial, .new]) { u, _ in
+            DispatchQueue.main.async { TrayState.shared.canCheckForUpdates = u.canCheckForUpdates }
+        }
+    }
+
+    /// V3: the machine store learns where this bundle lives, every launch.
+    private func recordAppPath() async {
+        guard let rt = rtClient else { return }
+        let r = try? await rt.run(AppPathSetting.arguments(bundlePath: Bundle.main.bundlePath), stdin: nil)
+        if let r, r.exitCode != 0 { TrayLog.warn("mattstack.appPath write failed", ["exit": Int(r.exitCode), "err": r.userError?.message ?? ""]) }
+    }
+
+    private func installMainMenu() {
+        let main = NSMenu()
+        let appItem = NSMenuItem(); main.addItem(appItem)
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Quit mattstack", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        let editItem = NSMenuItem(); main.addItem(editItem)
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit
+        NSApp.mainMenu = main
+    }
+
+    private func showMoveToApplicationsAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Move mattstack to Applications"
+        alert.informativeText = "mattstack is running from a disk image or a temporary location, so it can't register its background services. Drag mattstack.app to /Applications (or ~/Applications) and open it from there."
+        alert.addButton(withTitle: "Quit")
+        alert.runModal()
+        NSApp.terminate(nil)
+    }
+
+    @objc private func handleGetURL(_ event: NSAppleEventDescriptor, with reply: NSAppleEventDescriptor) {
+        guard let s = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue, let url = URL(string: s) else { return }
+        guard let code = JoinLink.code(from: url) else { TrayLog.warn("ignored URL", ["url": s]); return }
+        Task { @MainActor in coordinator?.handleJoin(code: code) }
+    }
+
+    @objc private func showSetupStatus() { Task { @MainActor in coordinator?.openSetupStatus() } }
+    @objc private func showSettings() { Task { @MainActor in coordinator?.showSettings() } }
+    @objc private func showUninstall() { Task { @MainActor in coordinator?.showSettings(pane: .uninstall) } }
+```
+and `extension AppDelegate: VersionProviding { func versionInfo() -> VersionInfo { VersionInfo(version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev", build: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0", flavor: BundleFlavor.isDevBuild ? "dev" : "prod", path: Bundle.main.bundlePath) } }`.
+Keep `daemonLifecycle` for the existing stop/restart/retire routes; `registerAll()` now covers its plist (idempotent). Remove the old `daemonLifecycle.startDaemon()` call in the launch task. Replace the Task 10 placeholder `isBusy: { false }` with `{ SetupSession.isRunning }` (shown above). Also handle `.rtShowSettingsTeam` (posted by the Done screen): `NotificationCenter.default.addObserver(forName: .rtShowSettingsTeam, …) { coordinator?.showSettings(pane: .team) }`.
+
+- [ ] **Step 4: `swift build` → Build complete; `swift run mattstack-checks` → pass; `./build.sh dev` assembles. Commit**
+```bash
+git add rt-tray/Sources-core rt-tray/Sources rt-tray/Tests
+git commit -m "MAT-383: AppDelegate integration — launch guard, appPath write, first-run setup, mattstack://join, menu, routes, version-change restart
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 19: XCUITest flows against the stub rt — **needs Xcode — blocked until installed** (code written now)
+
+**Files:**
+- Create: `rt-tray/Tests/mattstackUITests/SetupFlowUITests.swift`
+
+**Interfaces:**
+- Consumes: `AXID` names (Task 12), stub scenarios (Task 4). The test runner sets `RT_STUB_SCENARIO`, `RT_STUB_PATH` (absolute path to `Tests/stub-rt/stub.ts` derived from `#filePath`), `RT_STUB_STATE_DIR` (fresh temp dir per test), `HOME` (a temp dir, so `daemon.json` is absent → Setup opens and `~/.mattstack/rt/logs` is throwaway). The app under test is the Debug `mattstack` target, so the stub override is honoured.
+- Scenarios (spec §12.2): `create-happy`, `join-happy`, `join-no-access`, `perm-denied-then-granted`, `apply-fail-retry`, `uninstall`.
+
+- [ ] **Step 1: Write the tests** (AXID literals are repeated here as strings because the UI test bundle cannot import the app target's types; keep them in sync with `AccessibilityIDs.swift`)
+
+```swift
+import XCTest
+
+final class SetupFlowUITests: XCTestCase {
+    private var app: XCUIApplication!
+    private var stateDir: URL!
+    private var home: URL!
+
+    private func launch(_ scenario: String) {
+        app = XCUIApplication()
+        stateDir = FileManager.default.temporaryDirectory.appendingPathComponent("stub-\(UUID().uuidString)")
+        home = FileManager.default.temporaryDirectory.appendingPathComponent("home-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let stub = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("stub-rt/stub.ts").path
+        app.launchEnvironment["RT_STUB_SCENARIO"] = scenario
+        app.launchEnvironment["RT_STUB_PATH"] = stub
+        app.launchEnvironment["RT_STUB_STATE_DIR"] = stateDir.path
+        app.launchEnvironment["HOME"] = home.path
+        app.launch()
+    }
+
+    private func el(_ id: String) -> XCUIElement { app.descendants(matching: .any)[id] }
+    private func waitFor(_ id: String, _ timeout: TimeInterval = 10) {
+        XCTAssertTrue(el(id).waitForExistence(timeout: timeout), "missing \(id)")
+    }
+
+    func testJoinHappyWalksAllFiveScreens() {
+        launch("join-happy")
+        waitFor("setup.welcome.screen")
+        el("setup.welcome.continue").click()
+        waitFor("setup.team.screen")
+        el("setup.team.card.join").click()
+        el("setup.team.join.code").click()
+        el("setup.team.join.code").typeText("ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567-89AB-CDEF-GHJK-MNPQ-RSTV-WXYZ-2345-6789-ABCD-EFGH")
+        el("setup.team.continue").click()
+        waitFor("setup.checklist.screen")
+        waitFor("setup.checklist.row.perm.fda")
+        XCTAssertTrue(el("setup.checklist.continue").waitForExistence(timeout: 10))
+        XCTAssertTrue(el("setup.checklist.continue").isEnabled, "join-happy plan is installable")
+        el("setup.checklist.continue").click()
+        waitFor("setup.install.screen")
+        waitFor("setup.install.step.verify", 30)
+        waitFor("setup.done.screen", 60)
+        el("setup.done.openBoard").click()
+        el("setup.done.continue").click()
+    }
+
+    func testCreateHappyShowsSlugAndReachesChecklist() {
+        launch("create-happy")
+        el("setup.welcome.continue").click()
+        waitFor("setup.team.screen")
+        el("setup.team.card.create").click()
+        el("setup.team.create.name").click()
+        el("setup.team.create.name").typeText("Acme Claims")
+        XCTAssertTrue(app.staticTexts["acme-svc"].waitForExistence(timeout: 3))
+        el("setup.team.create.remote").click()
+        el("setup.team.create.remote").typeText("https://example.com/empty.git")
+        el("setup.team.continue").click()
+        waitFor("setup.checklist.screen")
+    }
+
+    func testJoinNoAccessShowsSpecificFailure() {
+        launch("join-no-access")
+        el("setup.welcome.continue").click()
+        el("setup.team.card.join").click()
+        el("setup.team.join.code").click()
+        el("setup.team.join.code").typeText("ABCD")
+        el("setup.team.continue").click()
+        XCTAssertTrue(app.staticTexts["You don't have access yet: ask matt to grant you access to Acme."].waitForExistence(timeout: 10))
+        XCTAssertFalse(el("setup.checklist.screen").exists)
+    }
+
+    func testPermissionDeniedThenGrantedEnablesInstall() {
+        launch("perm-denied-then-granted")
+        el("setup.welcome.continue").click()
+        el("setup.team.card.join").click()
+        el("setup.team.join.code").click(); el("setup.team.join.code").typeText("ABCD")
+        el("setup.team.continue").click()
+        waitFor("setup.checklist.screen")
+        XCTAssertFalse(el("setup.checklist.continue").isEnabled)
+        // The real FDA probe runs against a temp HOME, so the overlay reports
+        // "unknown" → checking; the plan's second fetch (Re-check) flips the stub's row.
+        el("setup.checklist.recheck").click()
+        let enabled = NSPredicate(format: "isEnabled == true")
+        expectation(for: enabled, evaluatedWith: el("setup.checklist.continue"))
+        waitForExpectations(timeout: 15)
+    }
+
+    func testApplyFailureShowsRemedyAndRetryCompletes() {
+        launch("apply-fail-retry")
+        el("setup.welcome.continue").click()
+        el("setup.team.card.join").click()
+        el("setup.team.join.code").click(); el("setup.team.join.code").typeText("ABCD")
+        el("setup.team.continue").click()
+        waitFor("setup.checklist.screen")
+        el("setup.checklist.continue").click()
+        waitFor("setup.install.retry", 30)
+        XCTAssertTrue(app.staticTexts["Open Claude Code once so it finishes first-run, then Retry."].exists)
+        el("setup.install.retry").click()
+        waitFor("setup.done.screen", 60)
+    }
+
+    func testUninstallFromSettingsShowsDryRunList() {
+        launch("uninstall")
+        // Settings is reachable with ⌘, once a window is key; the setup window is.
+        waitFor("setup.welcome.screen")
+        app.typeKey(",", modifierFlags: .command)
+        waitFor("settings.uninstall.button", 10)
+        el("settings.uninstall.button").click()
+        waitFor("settings.uninstall.confirm")
+        XCTAssertTrue(app.staticTexts["Stop and remove the rt daemon and deck services"].exists)
+    }
+}
+```
+(The permission-row overlay in a UI test reads the real Mac's FDA state for the test host — the `perm-denied-then-granted` flow therefore asserts on the *Install button*, which the stub controls via its other required rows, not on the FDA glyph. The real FDA/Login Items dance is L7's VM walkthrough.)
+
+- [ ] **Step 2: Commit the test source (cannot run here)**
+```bash
+git add rt-tray/Tests/mattstackUITests
+git commit -m "MAT-383: XCUITest flows against the stub rt (create/join/no-access/perm/retry/uninstall) — runs once Xcode is installed
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+Record in the task report: "NOT RUN — needs Xcode (`xcodebuild test -scheme mattstack -only-testing:mattstackUITests`)". When Xcode lands: `xcodegen generate && xcodebuild test -scheme mattstack -destination 'platform=macOS'`.
+
+---
+
+### Task 20: Live-machine smoke — **ORCHESTRATOR-ONLY**
+
+Not for implementer subagents. Matt's machine, dev flavor only, after Task 18 is merged into the worktree branch.
+
+- [ ] `cd rt-tray && swift build && swift run mattstack-checks && bun test Tests/stub-rt && ./build.sh dev` — all green.
+- [ ] Stub-driven run without touching real machine state. `RT_STUB_SCENARIO` is honoured only by DEBUG builds, and `build.sh dev` is a Release build, so run the debug binary directly (env passes through because it is not launched via `open`):
+  `cd rt-tray && swift build && RT_STUB_SCENARIO=join-happy RT_STUB_PATH=$PWD/Tests/stub-rt/stub.ts RT_STUB_STATE_DIR=$(mktemp -d) HOME=$(mktemp -d) .build/debug/rt-tray` (foreground; ⌃C to stop; the second rpath makes Sparkle resolvable; unbundled SMAppService calls fail and log — expected). Walk the five screens; confirm the stub's plan renders, Install streams, `need` rows show "Waiting for you", the run finishes on Done.
+- [ ] Real dev run (`~/.local/bin/rt` wrapper): `rt settings dev-mode on` handoff as today, then confirm in the dev app: menu shows the new items; ⌘, opens Settings; Settings → Permissions rows match `rt setup status` (once L1 ships `setup status`; before that the pane still renders from the app's own probe); `GET /version` via `curl --unix-socket ~/.mattstack/rt/tray.sock http://x/version` shows `"flavor":"dev"` and the bundle path; `GET /permissions` shows the three statuses; `rt settings get mattstack.appPath --scope machine` (or `rt settings show`) reflects `~/Applications/mattstack-dev.app` (note: the dev bundle writes its own path — V3 says one key; confirm with the settings lane that dev writing it is acceptable or gate the write on `!isDevBuild` — Open questions).
+- [ ] Real permissions: Settings → Permissions → Open Full Disk Access Settings… (the probe has already listed the dev app); toggle; row says relaunch; Reset & re-request runs `tccutil` for `com.mattstack.app.dev` only.
+- [ ] `mattstack://join/TESTCODE` via `open "mattstack://join/TESTCODE"` → Setup opens on screen 2 with the code filled (setup incomplete on a temp HOME) or Settings → Team (complete).
+- [ ] Version-change: bump `CFBundleShortVersionString` with PlistBuddy on the dev bundle, relaunch, tray log shows "app version changed; restarting agents" and `launchctl print gui/$UID/com.mattstack.daemon.dev` shows a fresh pid.
+
+---
+
+## Self-review checklist (run before handing the plan over)
+
+**Spec coverage**
+- §3 flow: first launch → Setup (Task 18 FirstRunDetector); re-entry "Setup status…" (Task 18 `openSetupStatus`), Settings ⌘, (Task 17/18), `mattstack://join` (Task 18 JoinLink + coordinator). ✔
+- §4 window: 560 pt fixed, no close/minimize until done, Back/Continue bottom-right, Return = Continue, `.controlSize(.large)`, enum Step + push transitions, "Step n of 5", `Form(.grouped)`, status glyphs, ellipsis on System Settings buttons (Tasks 12, 14, 6 labels). ✔
+- §4.1 Welcome copy (Task 12). ✔ §4.2 three cards incl. restore, slug preview, gh owner picker vs URL, explainer, join failure copy, code on stdin, ~77-char paste field (Task 13). ✔ §4.3 groups from rt, row anatomy, optional note, permission 1 s timer + didBecomeActive, Install gating, limited mode, Re-check (Tasks 5, 14). ✔ §4.4 live list, need handling, failure row + Show log + Retry-from (Tasks 11, 15). ✔ §4.5 Done (Task 16). ✔ §4.6 Settings four panes incl. Reset & re-request, Invite…, Join another team…, Uninstall sheet (Task 17). ✔
+- §5.1 components all present; §5.3 routes all present incl. the 2026-08-21 contract update (GET /setup/need polling, `/version.path`) (Task 9). ✔
+- §8 services: N plists, register every launch, `.requiresApproval` surfaced, version-change kickstart + `deck restart --managed`, plist PATH explicit (Tasks 2, 7). ✔
+- §9 permissions table: probe paths, deep links, relaunch hint, tccutil reset, combined Login Items status (Tasks 5, 6). ✔
+- §11 Sparkle keys, gentle reminders, idle install, dev off, feed override for L7, ATS local networking, translocation guard, appPath write (Tasks 2, 10, 18). ✔
+- §12 stub rt + scenarios (Task 4), XCTest (harness + bridge, Task 1 onward), XCUITest (Task 19), dev flavor unchanged (Tasks 2, 3, 10). ✔
+- Ruling 13: identities are read from Info.plist (BundleFlavor) and the LaunchAgents directory, never compiled in; macOS 14 floor in Package.swift + project.yml + Info.plist. ✔
+- L7 requests: AXID file + convention (Task 12 and every view), appcast override + ATS (Tasks 2, 10), `/version.path` (Task 9). ✔
+
+**Placeholder scan** — no "TBD/TODO"; the only "placeholder" words are `SUPublicEDKey`'s release-owned value (by design, gated by `UpdatePolicy`) and the Task 12 scaffolding stubs for Tasks 13–16, each replaced wholesale in its own task.
+
+**Type consistency** — `RtRunning.run(_:stdin:)` / `.stream(_:stdin:)` used identically in Tasks 3, 13, 17, 18; `NeedBroker.perform(id:request:)`/`outcome(id:)` in Tasks 9, 11; `PermissionSnapshot` field names match the contract in Tasks 5, 6, 9; `ServicesProviding` signatures match between Task 7 and the Task 9 fakes; `UpdatePolicy.shouldStartUpdater` has the 4-argument form everywhere after the L7 amendment; `AXID` names in Task 19 strings equal the Task 12 definitions (`setup.<screen>.continue`, `setup.team.card.join`, `setup.checklist.row.perm.fda`, `setup.install.retry`, `setup.done.openBoard`, `settings.uninstall.button/confirm`).
+
+**Known deliberate deviations from the brief**
+- Unit tests are a CLT-runnable check harness + an XCTest bridge rather than XCTest-only (XCTest is not importable under CLT on this machine — verified). Same assertions, one source.
+- `build.sh` gets the minimum Sparkle copy/sign + rendered-agents stopgap (Task 10) so a locally built bundle can launch; L4 still owns the xcodebuild rewrite.
+- `UpdateChecker.swift` is deleted (superseded by Sparkle per ruling 7); `check-bundle.sh` gets a one-assertion update so it keeps passing.
+
+## Open questions (for the orchestrator / L1 / L4 / settings lane)
+
+1. **Need-event stdout race:** rt emits the `need` line then polls `GET /setup/need/<id>`; the app performs the step when it reads the line. If rt ever polls before flushing stdout, the app answers `pending` until the line arrives — fine, but L1 should flush the `need` line before the first poll so there's no 1 s wobble.
+2. **Restore card inputs:** the plan calls `rt restore <org>/<repo> --dry-run --json` with `{"ageKey"}` on stdin at Continue and assumes rt persists the intent so `setup apply`'s `home.restore` step needs no arguments. Likewise `rt team create`/`rt team join --dry-run` at Continue must leave the pending choice where `apply` finds it. Confirm with L1; if apply needs inputs, the contract should say how (stdin JSON to `setup apply`).
+3. **`rt setup github status --json` shape:** the Team screen's gh owner picker expects `{status, handle, owners}`; `owners` is not in the contract yet. Also the gh-created-repo form passes `--remote gh:<owner>/<repo>` to `rt team create` — agree the spelling with L1.
+4. **`rt team status --json`:** Settings → Team reads `{name, slug, remote, lastPush, members}`; not in the contract today.
+5. **Proxy helper exit trailer:** `AuthorizationExecuteWithPrivileges` does not return the child's exit status; the plan has the helper print `MATTSTACK_EXIT=<n>` as its last stdout line. L4/L5 must honour that (or the app falls back to the `osascript … with administrator privileges` path noted in Task 8).
+6. **Agent plist PATH:** `EnvironmentVariables.PATH` cannot name the bundle's absolute `Contents/Helpers` at build time; the templates ship `/usr/bin:/bin:/usr/sbin:/sbin` and the plan assumes rt/deck prepend their own bundle helper dir at startup. L4/L5 decision.
+7. **Dev flavor writing `mattstack.appPath`:** V3 says the app records its path at launch; with two flavors on one Mac the key holds whichever launched last. rt's `installedTrayAppPath(bundle:)` already guards on basename, so this is safe, but confirm the settings lane is fine with the dev bundle writing it (else gate on `!isDevBuild`).
+8. **Sparkle under CLT:** `swift build` fetching the Sparkle xcframework via SPM without Xcode is expected to work (binaryTarget + ld64 from CLT) but was not exercised before the plan was written; Task 10 says stop and report if it does not.
+9. **rpath for the unbundled debug binary:** the second rpath in Package.swift targets `.build/<triple>/debug/../../artifacts/...`; if `swift run` of the app still can't load Sparkle, set `DYLD_FRAMEWORK_PATH` for that run — cosmetic, the bundle is the real target.
+10. **`KeepAlive` in prod:** spec §8 says `{SuccessfulExit:false}` for both flavors; today's build.sh prod branch writes `true` and `check-bundle.sh` asserts it. Task 10 switches both to the render script; L4 should keep it that way.
+11. **`rt settings dev-mode` from Settings → General:** the button spawns the verb through the bundled/dev rt; the handoff quits this app (expected). Confirm that's acceptable UX or hide the button behind the dev flavor only.
+12. **Uninstall on the dev flavor / self-trash:** `rt uninstall` trashes the app; from the dev bundle that would trash `mattstack-dev.app` — the plan shows the same pane in both flavors; consider disabling in dev.
+13. **XCUITest needs Xcode; `swift test` needs Xcode:** both gates stay red on this machine until Xcode 26 is installed; `swift run mattstack-checks` is the only automated gate today and is green by construction of Tasks 1–18.
+14. **`PermissionsService.combinedLoginItems` with zero agents:** reports `notRegistered`; in a bundle missing its LaunchAgents dir the row will honestly say "Not registered" — but `ServicesRegistrar.registerAll()` will have registered nothing. L4 must ship the plists (Task 2's render script is the source).
