@@ -65,9 +65,9 @@ test("setup apply streams plan/step/need/done; apply-fail-retry fails once then 
 
 test("uninstall --dry-run lists L1's action ids; --delete-data needs --yes; version build is numeric", async () => {
   const dry = await run("uninstall", ["uninstall", "--dry-run", "--json"]);
-  expect(dry.lines[0].actions.map((a) => a.id)).toEqual(["services.unregister", "deck.managed-remove", "proxy.remove", "path.unlink", "shell.remove", "extension.uninstall", "plugins.uninstall", "app.trash"]);
+  expect(dry.lines[0].actions.map((a: { id: string }) => a.id)).toEqual(["services.unregister", "deck.managed-remove", "proxy.remove", "path.unlink", "shell.remove", "extension.uninstall", "plugins.uninstall", "app.trash"]);
   const dryDelete = await run("uninstall", ["uninstall", "--dry-run", "--delete-data", "--json"]);
-  expect(dryDelete.lines[0].actions.map((a) => a.id)).toContain("data");
+  expect(dryDelete.lines[0].actions.map((a: { id: string }) => a.id)).toContain("data");
   const noYes = await run("uninstall", ["uninstall", "--delete-data", "--json"]);
   expect(noYes.code).toBe(2);
   expect(noYes.lines[0].error.code).toBe("confirm-required");
