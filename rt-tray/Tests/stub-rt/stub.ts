@@ -85,8 +85,10 @@ function plan(): unknown {
   };
 }
 
+// scenario "restore" uses the contract's home.restore step id in place of home.init.
 const STEPS = [
-  ["home.init", "Create your settings home repo", "rt"], ["team.join", "Join the team", "rt"],
+  scenario === "restore" ? ["home.restore", "Restore your settings home repo", "rt"] : ["home.init", "Create your settings home repo", "rt"],
+  ["team.join", "Join the team", "rt"],
   ["secrets.write", "Store the tokens you entered", "rt"], ["path.link", "Link rt, fast-browser, gitq, deck into ~/.local/bin", "rt"],
   ["settings.seed", "Write machine settings", "rt"], ["repos.clone", "Clone the team's repositories", "rt"],
   ["services.register", "Register the rt daemon and deck", "app"], ["proxy.install", "Install the local HTTPS proxy", "privileged"],
@@ -135,7 +137,7 @@ else if (a0 === "setup" && a2 === "connect") {
   stateBump(`${a1}-connected`);
   emit({ integration: a1, status: "ready", detail: "token can see group assured", scopesSeen: ["read_api"] });
 }
-else if (a0 === "team" && a1 === "create") emit({ team: { slug: "my-team", name: args[2] ?? "My team" }, remote: "ok" });
+else if (a0 === "team" && a1 === "create") emit({ slug: "my-team", name: args[2] ?? "My team", remote: "https://github.com/matt/mattstack-team-my-team.git", created: true });
 else if (a0 === "team" && a1 === "join") {
   const body = await readStdinJSON();
   if (!body.code) fail("invite-malformed", "Paste an invite code.");
@@ -161,7 +163,7 @@ else if (a0 === "uninstall") {
   for (const id of ["services.unregister", "path.unlink", "app.trash"]) {
   process.stdout.write(JSON.stringify({ event: "step", id, state: "running" }) + "\n");
   process.stdout.write(JSON.stringify({ event: "step", id, state: "done" }) + "\n"); }
-  process.stdout.write(JSON.stringify({ event: "done", ok: true }) + "\n"); }
+  process.stdout.write(JSON.stringify({ event: "done", ok: true, failedStep: null }) + "\n"); }
 else if (a0 === "settings" && a1 === "set") emit({ ok: true, key: a2 });
 else if (a0 === "restore") emit({ ok: true, repo: a1 });
 else if (a0 === "home" && a1 === "init") emit({ ok: true });

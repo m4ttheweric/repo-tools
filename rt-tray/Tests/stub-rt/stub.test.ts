@@ -84,3 +84,28 @@ test("team status and setup github status answer the contract shapes", async () 
   expect(gh.lines[0].handle).toBe("matt");
   expect(gh.lines[0].owners).toContain("assured");
 });
+
+test("team create answers the contract's flat shape, not nested under team", async () => {
+  const created = await run("join-happy", ["team", "create", "My Team", "--json"]);
+  expect(created.code).toBe(0);
+  expect(created.lines[0]).toMatchObject({ contract: 1, slug: "my-team", name: "My Team", created: true });
+  expect(typeof created.lines[0].remote).toBe("string");
+  expect((created.lines[0] as Record<string, unknown>).team).toBeUndefined();
+});
+
+test("uninstall real run's done event matches apply's shape with failedStep: null", async () => {
+  const real = await run("uninstall", ["uninstall", "--json"]);
+  expect(real.code).toBe(0);
+  const done = real.lines.at(-1);
+  expect(done.event).toBe("done");
+  expect(done.ok).toBe(true);
+  expect(done.failedStep).toBeNull();
+});
+
+test("restore scenario's apply stream starts at home.restore", async () => {
+  const first = await run("restore", ["setup", "apply", "--json"]);
+  expect(first.lines[0].event).toBe("plan");
+  expect(first.lines[0].steps[0].id).toBe("home.restore");
+  expect(first.lines[1].event).toBe("step");
+  expect(first.lines[1].id).toBe("home.restore");
+});
