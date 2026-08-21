@@ -52,7 +52,9 @@ const CI_CONFIG_JSON = `{ "noisy": ["flaky-job"] }\n`;
 
 /**
  * mattstack root: skills/pipeline/watch-ci/SKILL.md (+ scripts/ci-watch.sh),
- * matching the real plugin's group/engine nesting.
+ * matching the real plugin's group/engine nesting, plus
+ * attachments/pipeline/ship/SKILL.md -- an engine already moved out of
+ * skills/ (unregistered) that loadStepSource must still resolve.
  * claimview root: attachments/watch-ci-domain/SKILL.md (+ ci-config.json), the
  * unregistered fill; a registered copy also lives under skills/watch-ci-domain
  * so loadAttachment can be exercised against both search roots.
@@ -75,6 +77,12 @@ function makeFixtureRoots(): { rootDir: string; roots: PluginRoots } {
 
   const untypedSkillMd = WATCH_CI_SKILL_MD.replace("type: pipeline-step\n", "");
   writeFile(join(mattstackDir, "skills", "pipeline", "untyped-step", "SKILL.md"), untypedSkillMd);
+
+  const shipSkillMd = WATCH_CI_SKILL_MD.replace(/name: watch-ci/, "name: ship").replace(
+    "Poll the pipeline every 30s and report status.",
+    "Ship it.",
+  );
+  writeFile(join(mattstackDir, "attachments", "pipeline", "ship", "SKILL.md"), shipSkillMd);
 
   const claimviewDir = join(rootDir, "claimview");
   writeFile(join(claimviewDir, "attachments", "watch-ci-domain", "SKILL.md"), WATCH_CI_DOMAIN_SKILL_MD);
@@ -161,9 +169,22 @@ describe("loadStepSource", () => {
 
   test("throws listing searched paths when the engine is absent entirely", () => {
     const { roots } = makeFixtureRoots();
-    const expectedSearchedPath = join(
+    const expectedSkillsPath = join(
       roots.byName.mattstack!.dir,
       "skills",
+      "pipeline",
+      "no-such-engine",
+      "SKILL.md",
+    );
+    const expectedAttachmentsFlatPath = join(
+      roots.byName.mattstack!.dir,
+      "attachments",
+      "no-such-engine",
+      "SKILL.md",
+    );
+    const expectedAttachmentsGroupPath = join(
+      roots.byName.mattstack!.dir,
+      "attachments",
       "pipeline",
       "no-such-engine",
       "SKILL.md",
@@ -177,7 +198,19 @@ describe("loadStepSource", () => {
     }
 
     expect(thrown).toBeInstanceOf(Error);
-    expect((thrown as Error).message).toContain(expectedSearchedPath);
+    expect((thrown as Error).message).toContain(expectedSkillsPath);
+    expect((thrown as Error).message).toContain(expectedAttachmentsFlatPath);
+    expect((thrown as Error).message).toContain(expectedAttachmentsGroupPath);
+  });
+
+  test("falls back to attachments/<group>/<engine>/SKILL.md for an engine moved out of skills/", () => {
+    const { roots } = makeFixtureRoots();
+
+    const step = loadStepSource("ship", roots);
+
+    expect(step.name).toBe("ship");
+    expect(step.dir.endsWith(join("attachments", "pipeline", "ship"))).toBe(true);
+    expect(step.body).toBe("Ship it.");
   });
 });
 
@@ -334,6 +367,7 @@ describe("invocableRoster", () => {
     expect(roster.has("mattstack:untyped-step")).toBe(true);
     expect(roster.has("claimview:cvi-gates")).toBe(true);
     expect(roster.has("claimview:watch-ci-domain")).toBe(false);
+    expect(roster.has("mattstack:ship")).toBe(false);
   });
 });
 
