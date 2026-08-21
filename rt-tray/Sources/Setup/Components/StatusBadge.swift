@@ -6,7 +6,7 @@ struct StatusBadge: View {
     var id: String? = nil
     var body: some View {
         let symbol = StatusGlyph.symbol(for: status)
-        Group {
+        let badge = Group {
             if symbol == "progress" {
                 ProgressView().controlSize(.small)
             } else {
@@ -16,7 +16,11 @@ struct StatusBadge: View {
         .frame(width: 20, height: 20)
         .accessibilityLabel(Text(status.rawValue))
         .accessibilityValue(Text(status.rawValue))
-        .accessibilityIdentifier(id ?? "")
+        if let id {
+            badge.accessibilityIdentifier(id)
+        } else {
+            badge
+        }
     }
     private var color: Color {
         switch StatusGlyph.tint(for: status) {
