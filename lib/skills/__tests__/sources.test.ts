@@ -152,8 +152,23 @@ describe("loadStepSource", () => {
 
   test("throws listing searched paths when the engine is absent entirely", () => {
     const { roots } = makeFixtureRoots();
+    const expectedSearchedPath = join(
+      roots.byName.mattstack!.dir,
+      "skills",
+      "pipeline",
+      "no-such-engine",
+      "SKILL.md",
+    );
 
-    expect(() => loadStepSource("no-such-engine", roots)).toThrow(/no-such-engine/);
+    let thrown: unknown;
+    try {
+      loadStepSource("no-such-engine", roots);
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain(expectedSearchedPath);
   });
 });
 
@@ -198,10 +213,23 @@ describe("loadAttachment", () => {
 
   test("throws naming the slot and binding when neither search root has the skill", () => {
     const { roots } = makeFixtureRoots();
+    const claimviewDir = roots.byName.claimview!.dir;
+    const expectedSkillsPath = join(claimviewDir, "skills", "no-such-skill", "SKILL.md");
+    const expectedAttachmentsPath = join(claimviewDir, "attachments", "no-such-skill", "SKILL.md");
 
-    expect(() => loadAttachment("claimview:no-such-skill", "domain", roots)).toThrow(
-      /domain.*claimview:no-such-skill/s,
-    );
+    let thrown: unknown;
+    try {
+      loadAttachment("claimview:no-such-skill", "domain", roots);
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toContain("domain");
+    expect(message).toContain("claimview:no-such-skill");
+    expect(message).toContain(expectedSkillsPath);
+    expect(message).toContain(expectedAttachmentsPath);
   });
 });
 
