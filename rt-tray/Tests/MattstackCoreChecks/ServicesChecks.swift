@@ -12,9 +12,24 @@ let servicesChecks: [Check] = [
                 case "com.mattstack.deck.plist": return "com.mattstack.deck"
                 default: return nil
                 }
+            },
+            readBundleProgram: { path in
+                switch (path as NSString).lastPathComponent {
+                case "com.mattstack.daemon.plist": return "Contents/MacOS/rt"
+                case "com.mattstack.deck.plist": return "Contents/Helpers/deck"
+                default: return nil
+                }
             })
-        c.expectEqual(agents, [AgentPlist(label: "com.mattstack.daemon", fileName: "com.mattstack.daemon.plist"),
-                               AgentPlist(label: "com.mattstack.deck", fileName: "com.mattstack.deck.plist")])
+        c.expectEqual(agents, [AgentPlist(label: "com.mattstack.daemon", fileName: "com.mattstack.daemon.plist", bundleProgram: "Contents/MacOS/rt"),
+                               AgentPlist(label: "com.mattstack.deck", fileName: "com.mattstack.deck.plist", bundleProgram: "Contents/Helpers/deck")])
+    },
+    Check("ServiceProgramGuard skips registering a plist whose BundleProgram isn't in the bundle") { c in
+        c.expectEqual(ServiceProgramGuard.missingProgramPath(bundleProgram: "Contents/Helpers/deck", bundlePath: "/App.app",
+                                                              exists: { _ in false }), "/App.app/Contents/Helpers/deck")
+        c.expectEqual(ServiceProgramGuard.missingProgramPath(bundleProgram: "Contents/Helpers/deck", bundlePath: "/App.app",
+                                                              exists: { $0 == "/App.app/Contents/Helpers/deck" }), nil)
+        c.expectEqual(ServiceProgramGuard.missingProgramPath(bundleProgram: nil, bundlePath: "/App.app", exists: { _ in false }), nil)
+        c.expectEqual(ServiceProgramGuard.missingProgramPath(bundleProgram: "", bundlePath: "/App.app", exists: { _ in false }), nil)
     },
     Check("Kickstart and DeckRestart build the exact argv") { c in
         let (exe, args) = Kickstart.arguments(label: "com.mattstack.daemon.dev", uid: 501)

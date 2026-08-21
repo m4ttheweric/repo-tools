@@ -16,7 +16,8 @@ final class ServicesRegistrar: ServicesProviding, @unchecked Sendable {
         self.uid = uid
         let dir = bundlePath + "/Contents/Library/LaunchAgents"
         agents = ServicePlistScanner.scan(directory: dir, list: ServicePlistScanner.systemList,
-                                          readLabel: ServicePlistScanner.systemReadLabel)
+                                          readLabel: ServicePlistScanner.systemReadLabel,
+                                          readBundleProgram: ServicePlistScanner.systemReadBundleProgram)
     }
 
     private func service(_ plist: AgentPlist) -> SMAppService { SMAppService.agent(plistName: plist.fileName) }
@@ -30,6 +31,11 @@ final class ServicesRegistrar: ServicesProviding, @unchecked Sendable {
         plists.map { name in
             guard let plist = agents.first(where: { $0.fileName == name }) else {
                 return ServiceRegisterResult(plist: name, ok: false, status: "notFound", error: "not shipped in this bundle")
+            }
+            if let missing = ServiceProgramGuard.missingProgramPath(bundleProgram: plist.bundleProgram, bundlePath: bundlePath,
+                                                                     exists: { FileManager.default.isExecutableFile(atPath: $0) }) {
+                TrayLog.warn("skipping agent register; BundleProgram not in bundle", ["label": plist.label, "program": missing])
+                return ServiceRegisterResult(plist: name, ok: false, status: "notFound", error: "BundleProgram missing: \(missing)")
             }
             let svc = service(plist)
             do {

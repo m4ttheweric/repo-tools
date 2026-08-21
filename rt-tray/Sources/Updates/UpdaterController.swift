@@ -43,10 +43,19 @@ final class UpdaterController: NSObject, UpdateChecking, SPUUpdaterDelegate, SPU
     }
     var isEnabled: Bool { enabled }
 
-    @objc func checkForUpdatesFromMenu() { controller?.checkForUpdates(nil) }
+    @objc func checkForUpdatesFromMenu() {
+        guard let c = controller else {
+            TrayLog.info("update check skipped (dev build)", ["source": "menu"])
+            return
+        }
+        c.checkForUpdates(nil)
+    }
 
     func checkForUpdates() async -> Bool {
-        guard let c = controller else { return false }
+        guard let c = controller else {
+            TrayLog.info("update check skipped (dev build)", ["source": "seam"])
+            return false
+        }
         await MainActor.run { c.updater.checkForUpdates() }
         return true
     }
@@ -75,8 +84,11 @@ final class UpdaterController: NSObject, UpdateChecking, SPUUpdaterDelegate, SPU
 
     func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
                  immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
+        // NSStatusBarWindow is always present and always isVisible for this
+        // LSUIElement app -- canBecomeKey excludes it while still counting
+        // real content windows (process panel, settings, setup).
         let idle = UpdatePolicy.allowsImmediateInstall(setupRunning: isBusy(),
-                                                       windowsOpen: NSApp.windows.filter { $0.isVisible }.count)
+                                                       windowsOpen: NSApp.windows.filter { $0.isVisible && $0.canBecomeKey }.count)
         if idle { DispatchQueue.main.async { immediateInstallHandler() } }
         return idle
     }
