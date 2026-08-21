@@ -5,10 +5,8 @@ struct ChecklistScreen: View {
     @ObservedObject var model: ReadinessModel
     let permissions: PermissionsService
     let rt: RtRunning
-    let bundleId: String
-    @State private var connect: (row: PlanRow, fields: [ActionField], integration: String, alternatives: [ActionAlternative])?
+    @State private var connect: (row: PlanRow, fields: [ActionField], alternatives: [ActionAlternative])?
     @State private var steps: (title: String, steps: [String])?
-    @State private var relaunchHint = false
     @State private var actionError: (rowId: String, message: String)?
 
     var body: some View {
@@ -26,7 +24,7 @@ struct ChecklistScreen: View {
                                     .accessibilityIdentifier(AXID.checklistRowError(row.id))
                             }
                         }
-                        if group.id == "mac", relaunchHint || permissions.fdaNeedsRelaunch {
+                        if group.id == "mac", model.fdaNeedsRelaunch {
                             HStack {
                                 Text("Full Disk Access was granted. Relaunch mattstack to apply it.").font(.caption)
                                 Spacer()
@@ -41,14 +39,16 @@ struct ChecklistScreen: View {
                 Text(model.canInstall ? "Everything required is ready." : "\(model.requiredMissing.count) required item(s) left.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Re-check") { Task { await model.recheckAll() } }.controlSize(.small).accessibilityIdentifier(AXID.checklistRecheck)
+                Button("Re-check") { actionError = nil; Task { await model.recheckAll() } }.controlSize(.small).accessibilityIdentifier(AXID.checklistRecheck)
             }
             .padding(.horizontal, 20).padding(.vertical, 6)
         }
         .sheet(isPresented: Binding(get: { connect != nil }, set: { if !$0 { connect = nil } })) {
             if let c = connect {
-                ConnectSheet(integration: c.integration, fields: c.fields, alternatives: c.alternatives) { values, alt in
-                    run(RowActionDispatcher.dispatch(c.row.action!, fieldValues: values, alternative: alt), for: c.row)
+                ConnectSheet(title: c.row.title, fields: c.fields, alternatives: c.alternatives) { values, alt in
+                    guard let action = c.row.action else { return }
+                    actionError = nil
+                    run(RowActionDispatcher.dispatch(action, fieldValues: values, alternative: alt), for: c.row)
                 }
             }
         }
@@ -68,11 +68,16 @@ struct ChecklistScreen: View {
         switch dispatched {
         case .openSettings(let target):
             permissions.openSettings(target)
-            if target == "fda" { relaunchHint = false }
         case .requestPermission(let which):
             Task { _ = await permissions.request(which); await model.afterAction(rowId: row.id) }
         case .rtVerb(let args, let stdin):
+            // The dispatcher only fills stdin for `connect`/`owner-once` — the
+            // two action types that carry a user-entered secret — so a
+            // non-nil stdin is exactly the redact-stderr signal.
+            let redactStderr = stdin != nil
+            model.beginChecking(row.id)
             Task {
+                defer { model.endChecking(row.id) }
                 let verb = args.joined(separator: " ")
                 do {
                     let result = try await rt.run(args, stdin: stdin)
@@ -80,12 +85,12 @@ struct ChecklistScreen: View {
                         TrayLog.warn("row action failed", ["row": row.id, "err": e.message])
                         actionError = (row.id, e.message)
                     } else if result.exitCode != 0 {
-                        let copy = result.failureCopy(verb: verb)
+                        let copy = result.failureCopy(verb: verb, redactStderr: redactStderr)
                         TrayLog.warn("row action failed", ["row": row.id, "err": copy])
                         actionError = (row.id, copy)
                     }
                 } catch {
-                    let copy = "rt \(verb) failed to start: \(error)"
+                    let copy = (error as? RtClientError)?.copy ?? "rt \(verb) failed to start."
                     TrayLog.warn("row action failed", ["row": row.id, "err": copy])
                     actionError = (row.id, copy)
                 }
@@ -95,8 +100,8 @@ struct ChecklistScreen: View {
             NSWorkspace.shared.open(url)
         case .showSteps(let list):
             steps = (row.title, list)
-        case .collectFields(let fields, let integration, let alternatives):
-            connect = (row, fields, integration, alternatives)
+        case .collectFields(let fields, _, let alternatives):
+            connect = (row, fields, alternatives)
         case .none:
             break
         }

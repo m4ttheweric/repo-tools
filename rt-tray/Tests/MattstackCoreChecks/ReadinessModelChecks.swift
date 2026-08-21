@@ -12,6 +12,7 @@ final class FakePlans: PlanSource, @unchecked Sendable {
 }
 final class FakePermissions: PermissionProbing, @unchecked Sendable {
     var snapshot = PermissionSnapshot.unknown
+    var fdaNeedsRelaunch = false
     private(set) var probes = 0
     func snapshot() async -> PermissionSnapshot { probes += 1; return snapshot }
 }
@@ -164,6 +165,25 @@ let readinessModelChecks: [Check] = [
                                           loginItems: .init(status: "requiresApproval"))
         c.expectEqual(PermissionRowOverlay.status(for: "perm.login-items", in: approval)?.0, .needsYou)
         c.expectEqual(PermissionRowOverlay.status(for: "perm.notifications", in: approval)?.0, .skipped)
+    },
+    Check("beginChecking/endChecking mark a row busy independent of afterAction's own insert/remove") { c in
+        let plans = FakePlans([makePlan()])
+        let m = await MainActor.run { ReadinessModel(plans: plans, permissions: FakePermissions(), ticker: FakeTicker()) }
+        await m.load()
+        await MainActor.run {
+            m.beginChecking("account.gitlab")
+            c.expect(m.checkingRowIds.contains("account.gitlab"), "checking starts before the verb runs, not after it returns")
+            m.endChecking("account.gitlab")
+            c.expect(!m.checkingRowIds.contains("account.gitlab"))
+        }
+    },
+    Check("probePermissions mirrors the probe's fdaNeedsRelaunch into published state") { c in
+        let perms = FakePermissions()
+        let m = await MainActor.run { ReadinessModel(plans: FakePlans([makePlan()]), permissions: perms, ticker: FakeTicker()) }
+        await MainActor.run { c.expectEqual(m.fdaNeedsRelaunch, false) }
+        perms.fdaNeedsRelaunch = true
+        await m.recheckAll()
+        await MainActor.run { c.expectEqual(m.fdaNeedsRelaunch, true, "the model republishes the probe's own signal so the view can observe it") }
     },
     Check("StatusGlyph follows the spec's symbols") { c in
         c.expectEqual(StatusGlyph.symbol(for: .ready), "checkmark.circle.fill")

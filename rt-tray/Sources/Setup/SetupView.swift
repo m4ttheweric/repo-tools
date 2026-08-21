@@ -20,7 +20,7 @@ struct SetupView: View {
                 switch flow.step {
                 case .welcome: WelcomeScreen().transition(pushTransition)
                 case .team: TeamScreen(model: team).transition(pushTransition)
-                case .checklist: ChecklistScreen(model: readiness, permissions: permissions, rt: env.rt, bundleId: env.bundleId).transition(pushTransition)
+                case .checklist: ChecklistScreen(model: readiness, permissions: permissions, rt: env.rt).transition(pushTransition)
                 case .install: InstallScreen(model: install).transition(pushTransition)
                 case .done: DoneScreen(install: install, isOwner: team.choice == .create, onInvite: { NotificationCenter.default.post(name: .rtShowSettingsTeam, object: nil) }).transition(pushTransition)
                 }

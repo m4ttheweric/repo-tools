@@ -2,7 +2,7 @@ import SwiftUI
 import MattstackCore
 
 struct ConnectSheet: View {
-    let integration: String
+    let title: String
     let fields: [ActionField]
     let alternatives: [ActionAlternative]
     let onSubmit: ([String: String]?, String?) -> Void   // (values, alternativeId)
@@ -11,7 +11,7 @@ struct ConnectSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Connect \(integration.capitalized)").font(.headline)
+            Text(title).font(.headline)
             Form {
                 ForEach(fields, id: \.name) { f in
                     VStack(alignment: .leading, spacing: 2) {

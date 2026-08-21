@@ -97,7 +97,7 @@ public final class TeamChoiceModel: ObservableObject {
                 let stdin = try JSONEncoder().encode(["code": normalizedInviteCode])
                 let r = try await rt.run(["team", "join", "--dry-run", "--json"], stdin: stdin)
                 if let e = r.userError { return Self.joinFailureCopy(e, owner: nil, team: nil) }
-                guard r.exitCode == 0, let j = try? r.decode(TeamJoinResult.self) else { return r.failureCopy(verb: "team join") }
+                guard r.exitCode == 0, let j = try? r.decode(TeamJoinResult.self) else { return r.failureCopy(verb: "team join", redactStderr: true) }
                 guard j.access == "ok" else { return Self.joinFailureCopy(RtUserError(code: j.access == "denied" ? "no-access" : "unreachable", message: j.message ?? ""), owner: j.team?.owner, team: j.team?.name) }
                 joinSummary = j.message ?? "Joining \(j.team?.name ?? "") (owner \(j.team?.owner ?? ""))"
                 return await homeInitCheck()
