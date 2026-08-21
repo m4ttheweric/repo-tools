@@ -114,7 +114,7 @@ export function createDiscussionHandlers(
       const repoPath = ctx.repoIndex()[repoName];
       try {
         const repoCtx = await getRepoContext(repoName, repoPath);
-        const secrets = loadSecrets();
+        const secrets = await loadSecrets();
         if (!secrets.gitlabToken) return { ok: false, error: "no gitlabToken in secrets" };
 
         const encoded = encodeURIComponent(repoCtx.projectPath);
@@ -143,7 +143,7 @@ export function createDiscussionHandlers(
       const repoPath = ctx.repoIndex()[repoName];
       try {
         const repoCtx = await getRepoContext(repoName, repoPath);
-        const secrets = loadSecrets();
+        const secrets = await loadSecrets();
         if (!secrets.gitlabToken) return { ok: false, error: "no gitlabToken in secrets" };
         const mutator = new NoteMutator(repoCtx.provider.baseURL, secrets.gitlabToken, providerRequestHook());
         await mutator.createNote(repoCtx.projectId, iid, body, discussionId);

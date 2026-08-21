@@ -54,3 +54,36 @@ describe("secrets:forge-token", () => {
     expect((await h({ repoName: "gitq", forge: "bitbucket" as any })).ok).toBe(false);
   });
 });
+
+describe("secrets:read", () => {
+  test("returns exactly the whitelisted keys the extension reads — linearApiKey and gitlabToken", async () => {
+    const h = createSecretsHandlers(fakeCtx, {
+      extensionSecrets: async () => ({ linearApiKey: "lin_api_x", gitlabToken: "glpat-x" }),
+    })["secrets:read"];
+
+    const res = await h({});
+
+    expect(res).toEqual({ ok: true, data: { linearApiKey: "lin_api_x", gitlabToken: "glpat-x" } });
+  });
+
+  test("omits a key entirely (never a blank string) when it isn't set", async () => {
+    const h = createSecretsHandlers(fakeCtx, {
+      extensionSecrets: async () => ({ linearApiKey: "lin_api_x" }),
+    })["secrets:read"];
+
+    const res = await h({});
+
+    expect(res).toEqual({ ok: true, data: { linearApiKey: "lin_api_x" } });
+    expect("gitlabToken" in (res as any).data).toBe(false);
+  });
+
+  test("carries no other Secrets field even if the loader returns one — e.g. sdmEmail never leaks", async () => {
+    const h = createSecretsHandlers(fakeCtx, {
+      extensionSecrets: async () => ({ linearApiKey: "lin_api_x", gitlabToken: "glpat-x", sdmEmail: "me@example.test" } as any),
+    })["secrets:read"];
+
+    const res = await h({});
+
+    expect(Object.keys((res as any).data).sort()).toEqual(["gitlabToken", "linearApiKey"]);
+  });
+});

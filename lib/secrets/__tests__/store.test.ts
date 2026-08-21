@@ -7,13 +7,14 @@ import {
   secretsFilePath,
   resetSecretsMemo,
   formatDebugLine,
+  buildSecretsSpawnOptions,
   NoAgeKeyError,
   InvalidSecretsSegmentError,
   type SecretsExecResult,
   type SecretsExecSeam,
   type SecretsSeams,
 } from "../store.ts";
-import { rtDir } from "../../rt-paths.ts";
+import { rtDir, mattstackHome } from "../../rt-paths.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../home/age-key.ts";
 import { dirname, join } from "path";
 import { secretsList } from "../../../commands/secrets.ts";
@@ -459,6 +460,19 @@ describe("rotateSecret", () => {
       ),
     ).rejects.toThrow(InvalidSecretsSegmentError);
     expect(minted).toBe(false);
+  });
+});
+
+describe("real seam spawn options — cwd pin (Task 5 carried review item)", () => {
+  test("pins cwd to mattstackHome() so sops resolves THIS home's .sops.yaml, never a foreign cwd's", () => {
+    const opts = buildSecretsSpawnOptions();
+    expect(opts.cwd).toBe(mattstackHome());
+  });
+
+  test("still layers opts.env (e.g. SOPS_AGE_KEY) over process.env alongside the cwd pin", () => {
+    const opts = buildSecretsSpawnOptions({ env: { SOPS_AGE_KEY: "age-secret-key-test" } });
+    expect(opts.cwd).toBe(mattstackHome());
+    expect(opts.env.SOPS_AGE_KEY).toBe("age-secret-key-test");
   });
 });
 

@@ -277,21 +277,40 @@ function debugLog(cmd: string[], sensitive: boolean | undefined): void {
   console.error(formatDebugLine(cmd, { sensitive }));
 }
 
+/**
+ * Pure builder for the real seam's Bun.spawn opts, split out from `run` so
+ * the cwd pin is unit-testable without spawning a subprocess: sops discovers
+ * `.sops.yaml` cwd-relative, so a spawn from a foreign cwd (e.g. a CLI
+ * command invoked from inside some other repo) can silently match that
+ * repo's own `.sops.yaml` rules and encrypt to the wrong recipients instead
+ * of erroring. Pinning `cwd` to `mattstackHome()` makes every sops call
+ * resolve the home repo's rules regardless of the caller's cwd.
+ */
+export function buildSecretsSpawnOptions(opts?: { env?: Record<string, string> }): {
+  cwd: string;
+  env: Record<string, string | undefined>;
+  stdout: "pipe";
+  stderr: "pipe";
+} {
+  return {
+    cwd: mattstackHome(),
+    // A fresh object every call (not a live reference/pass-through like
+    // init-exec.ts's raw `env: process.env`) — but since it's built from
+    // process.env at call time rather than cached once at module load, a
+    // runtime PATH mutation is still visible; opts.env only layers
+    // SOPS_AGE_KEY on top.
+    env: { ...process.env, ...opts?.env },
+    stdout: "pipe",
+    stderr: "pipe",
+  };
+}
+
 /** Real seam: Bun.spawn-based capture, real fs reads/writes. */
 export function createRealSecretsExecSeam(): SecretsExecSeam {
   return {
     async run(cmd, opts) {
       debugLog(cmd, opts?.sensitive);
-      const proc = Bun.spawn(cmd, {
-        // A fresh object every call (not a live reference/pass-through like
-        // init-exec.ts's raw `env: process.env`) — but since it's built from
-        // process.env at call time rather than cached once at module load, a
-        // runtime PATH mutation is still visible; opts.env only layers
-        // SOPS_AGE_KEY on top.
-        env: { ...process.env, ...opts?.env },
-        stdout: "pipe",
-        stderr: "pipe",
-      });
+      const proc = Bun.spawn(cmd, buildSecretsSpawnOptions(opts));
       const [stdout, stderr, code] = await Promise.all([
         new Response(proc.stdout).text(),
         new Response(proc.stderr).text(),

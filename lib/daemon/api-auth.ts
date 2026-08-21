@@ -36,12 +36,16 @@ export function loadOrCreateApiToken(tokenPath: string = API_TOKEN_PATH): string
   return token;
 }
 
-/** True when a request mutates state and must present the local token. */
+/** True when a request mutates state, or (secrets) returns raw credential values, and must present the local token. */
 export function needsToken(method: string, pathname: string): boolean {
   if (method === "OPTIONS") return false;
   if (pathname === "/api/shutdown") return true;
   if (pathname === "/api/sdm/reconnect") return true;
   if (pathname === "/api/events/emit") return true;
+  // Gated despite being a GET: every other read-only route returns metadata
+  // (branch names, MR titles, ports) safe under the open-CORS "reads are
+  // free" policy above; this one's response body IS the credential.
+  if (pathname === "/api/secrets") return true;
   return false;
 }
 

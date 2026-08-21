@@ -79,7 +79,8 @@ export interface BrowserLoginDeps {
   waitForCdp: (port: number, timeoutMs: number) => Promise<CdpSocket>;
   startLogin: (email: string | null, onLine: (l: string) => void) => LoginUrlCapture;
   showWindow: (cdp: CdpSocket) => Promise<void>;
-  email: () => string | null;
+  /** Sync or async: the real seam awaits loadSecrets(); test fakes stay sync. */
+  email: () => string | null | Promise<string | null>;
   onLine: (line: string) => void;
   silentBudgetMs?: number;
   userBudgetMs?: number;
@@ -114,7 +115,7 @@ export async function runBrowserLoginWith(
   // prompts for one on stdin, which is closed in this flow, so it exits with
   // a cryptic "before printing an auth URL" error. Route to the terminal
   // flow instead, where sdm can prompt for the email naturally.
-  const email = deps.email();
+  const email = await deps.email();
   if (!email || !email.trim()) {
     return {
       outcome: "needs-manual",
@@ -315,7 +316,7 @@ export function runBrowserLogin(opts: { visible?: boolean; onLine?: (line: strin
     waitForCdp: realWaitForCdp,
     startLogin: startLoginCapture,
     showWindow: realShowWindow,
-    email: () => loadSecrets().sdmEmail ?? null,
+    email: async () => (await loadSecrets()).sdmEmail ?? null,
     onLine,
   });
 }
