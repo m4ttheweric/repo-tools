@@ -182,10 +182,10 @@ describe("toggleDevMode — flavor handoff", () => {
     mkdirSync(join(HOME, ".local", "bin"), { recursive: true });
     writeFileSync(WRAPPER_PATH, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     // The prod bundle must carry its binary: leaving dev mode installs
-    // Contents/MacOS/rt-daemon over the wrapper path so a working `rt`
+    // Contents/MacOS/rt over the wrapper path so a working `rt`
     // survives the switch (brew is retired; the app is the only source).
     mkdirSync(join(trayAppPath(), "Contents", "MacOS"), { recursive: true });
-    writeFileSync(join(trayAppPath(), "Contents", "MacOS", "rt-daemon"), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x00]), { mode: 0o755 }); // Mach-O magic, not a script
+    writeFileSync(join(trayAppPath(), "Contents", "MacOS", "rt"), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x00]), { mode: 0o755 }); // Mach-O magic, not a script
     setUpFakes();
 
     await toggleDevMode(["prod"], isolatedExists);
