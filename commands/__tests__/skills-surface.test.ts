@@ -546,3 +546,21 @@ describe("registered roots are canonicalized", () => {
     expect(joined).not.toContain("stray");
   });
 });
+
+describe("registered roots must be directories", () => {
+  test("a plugin.json skills entry pointing at a regular file is ignored", async () => {
+    const packDir = makePackDir();
+    writeFile(join(packDir, "notes.md"), "not a skills root\n");
+    writeFile(
+      join(packDir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ version: "1.0.0", skills: ["./skills", "./notes.md", "./missing"] }),
+    );
+    writeFile(join(packDir, "surface.jsonc"), `{ "public": ["inside"] }\n`);
+    writeFile(join(packDir, "skills", "inside", "SKILL.md"), "---\nname: inside\n---\nbody\n");
+
+    await skillsSurface(["list", "--pack", "p", "--pack-dir", packDir]);
+
+    const joined = logs.join("\n");
+    expect(joined).toMatch(/public {3}hand-authored {2}inside/);
+  });
+});
