@@ -94,6 +94,13 @@ function buildBody(step: StepSource, boundSlots: BoundSlot[]): string {
   sections.push(step.body);
 
   for (const { slotName, fill } of boundSlots) {
+    if (fill.registered) {
+      // Registered skills stay singly-canonical: reference, never inline.
+      sections.push(
+        `Slot ${slotName} is bound to \`${fill.binding}\` (${fill.binding}@${fill.version}) -- invoke that skill when this flow needs it.`,
+      );
+      continue;
+    }
     sections.push(`<!-- part: slot:${slotName} binding=${fill.binding} version=${fill.version} -->`);
     sections.push(rewriteSkillDirRefs(fill.body, slotName));
   }
