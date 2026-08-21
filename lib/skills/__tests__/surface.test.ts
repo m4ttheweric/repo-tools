@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { skillsCompile } from "../../../commands/skills.ts";
@@ -287,5 +287,152 @@ describe("skillsCompile with a surface config", () => {
     expect(existsSync(join(packDir, "skills", "watch-ci", "SKILL.md"))).toBe(true);
     expect(existsSync(join(packDir, "skills", "old-verb", "SKILL.md"))).toBe(true);
     expect(process.exitCode).not.toBe(1);
+  });
+});
+
+/**
+ * computeInternalRoster reads <packDir>/skills/ while loadAttachment resolves
+ * "<team>:X" bindings against the plugin root claude resolves for that team --
+ * in production those are the same physical tree (the pack IS the installed
+ * plugin). The tests above never exercise that: makeMattstackDir/makePackDir
+ * keep the pack dir and the team's plugin dir separate. These fixtures make
+ * plugins/claimview/ BOTH --pack-dir and the resolved "claimview" plugin
+ * root, so a real end-to-end skillsCompile run is exercised.
+ */
+const CVI_GATES_SKILL_MD = `---
+name: cvi-gates
+description: "Domain gating rules"
+metadata:
+  provides: "watch-ci-domain@1"
+---
+
+Domain rules inlined from cvi-gates for the transition window.
+`;
+
+const WATCH_CI_WITH_SLOT_SKILL_MD = `---
+name: watch-ci
+description: "Watch CI until it goes green"
+type: pipeline-step
+slots:
+  domain: { contract: "watch-ci-domain@1", required: true }
+---
+
+Poll CI.
+`;
+
+const GATE_CHECK_SKILL_MD = `---
+name: gate-check
+description: "Gate check"
+type: pipeline-step
+---
+
+This step defers to claimview:cvi-gates for domain judgment.
+`;
+
+function makeManifestAt(bindingsJson: string): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-surface-int-manifest-")));
+  const path = join(dir, "skills.jsonc");
+  writeFile(path, `// GENERATED -- provenance: claimview@claimview\n{ "bindings": ${bindingsJson} }\n`);
+  return path;
+}
+
+async function runExpectingCleanExit(
+  fn: () => Promise<void>,
+): Promise<{ exitCode: number | undefined; errors: string[] }> {
+  const errors: string[] = [];
+  const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+    throw new Error("process.exit sentinel");
+  });
+  const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    errors.push(args.map(String).join(" "));
+  });
+  try {
+    await fn();
+    return { exitCode: undefined, errors };
+  } catch {
+    const exitCode = exitSpy.mock.calls.at(-1)?.[0] as number | undefined;
+    return { exitCode, errors };
+  } finally {
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+  }
+}
+
+describe("computeInternalRoster integration (pack dir doubles as plugin root)", () => {
+  test("a registered-but-not-yet-public fill inlines end to end, notes, and is flagged misplaced", async () => {
+    const mattstackDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-surface-int-")));
+
+    const claimviewDir = join(mattstackDir, "plugins", "claimview");
+    writeFile(join(claimviewDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "0.3.0" }));
+    writeFile(
+      join(claimviewDir, "pack", "stubs.jsonc"),
+      `{ "verbs": { "watch-ci": { "engine": "watch-ci", "description": "Watch CI." } } }\n`,
+    );
+    writeFile(join(claimviewDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
+    writeFile(join(claimviewDir, "skills", "cvi-gates", "SKILL.md"), CVI_GATES_SKILL_MD);
+
+    const mattstackPluginDir = join(mattstackDir, "plugins", "mattstack");
+    writeFile(join(mattstackPluginDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.2.0" }));
+    writeFile(
+      join(mattstackPluginDir, "skills", "pipeline", "watch-ci", "SKILL.md"),
+      WATCH_CI_WITH_SLOT_SKILL_MD,
+    );
+
+    const manifestPath = makeManifestAt('{ "mattstack:watch-ci": { "domain": "claimview:cvi-gates" } }');
+
+    await skillsCompile([
+      "--team", "claimview",
+      "--pack-dir", claimviewDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+    ]);
+
+    const content = readFileSync(join(claimviewDir, "skills", "watch-ci", "SKILL.md"), "utf8");
+    expect(content).toContain("Domain rules inlined from cvi-gates for the transition window.");
+    expect(content).not.toContain("invoke that skill when this flow needs it");
+
+    expect(logs).toContain("  note: claimview:cvi-gates is surface-internal; inlined");
+    // cvi-gates is still physically under skills/ and isn't in surface.public --
+    // it compiles (inlined) AND is flagged for the move surface apply would do.
+    expect(logs).toContain("misplaced: cvi-gates (run rt skills surface apply, or move it)");
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("a body reference to an internal skill aborts that verb via the errors channel, cleanly, with no partial write", async () => {
+    const mattstackDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-surface-int-")));
+
+    const claimviewDir = join(mattstackDir, "plugins", "claimview");
+    writeFile(join(claimviewDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "0.3.0" }));
+    writeFile(
+      join(claimviewDir, "pack", "stubs.jsonc"),
+      `{ "verbs": { "gate-check": { "engine": "gate-check", "description": "Gate check." } } }\n`,
+    );
+    writeFile(join(claimviewDir, "pack", "surface.jsonc"), `{ "public": ["gate-check"] }\n`);
+    writeFile(join(claimviewDir, "skills", "cvi-gates", "SKILL.md"), CVI_GATES_SKILL_MD);
+
+    const mattstackPluginDir = join(mattstackDir, "plugins", "mattstack");
+    writeFile(join(mattstackPluginDir, ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.2.0" }));
+    writeFile(join(mattstackPluginDir, "skills", "pipeline", "gate-check", "SKILL.md"), GATE_CHECK_SKILL_MD);
+
+    const manifestPath = makeManifestAt("{}");
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile([
+        "--team", "claimview",
+        "--pack-dir", claimviewDir,
+        "--mattstack-dir", mattstackDir,
+        "--manifest", manifestPath,
+        "--verb", "gate-check",
+      ]),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toStartWith("rt skills: ");
+    expect(errors[0]).toContain("gate-check");
+    expect(errors[0]).toContain("claimview:cvi-gates");
+    expect(errors[0]).toContain("surface-internal");
+    expect(existsSync(join(claimviewDir, "skills", "gate-check"))).toBe(false);
   });
 });

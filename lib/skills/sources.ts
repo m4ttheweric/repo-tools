@@ -246,17 +246,30 @@ export function loadAttachment(binding: string, slot: string, roots: PluginRoots
   };
 }
 
+/**
+ * Verb names flow unsanitized into join(packDir, "skills", name) at two
+ * destructive call sites (writeCompiledVerb's rmSync + the internal-verb
+ * skip's rmSync in commands/skills.ts) -- reject path-breakout characters
+ * here, at the one place every verb name is read from disk.
+ */
+function assertSafeVerbName(name: string, stubsPath: string): void {
+  if (name.includes("/") || name.includes("\\") || name.includes("..")) {
+    throw new Error(
+      `readVerbRoster: verb key "${name}" in ${stubsPath} is not a safe directory name (must not contain "/", "\\", or "..")`,
+    );
+  }
+}
+
 export function readVerbRoster(packDir: string): VerbDef[] {
   const stubsPath = join(packDir, "pack", "stubs.jsonc");
   const parsed = JSON.parse(stripJsonc(readFileSync(stubsPath, "utf8"))) as {
     verbs?: Record<string, { engine: string; description: string }>;
   };
   const verbs = parsed.verbs ?? {};
-  return Object.entries(verbs).map(([name, def]) => ({
-    name,
-    engine: def.engine,
-    description: def.description,
-  }));
+  return Object.entries(verbs).map(([name, def]) => {
+    assertSafeVerbName(name, stubsPath);
+    return { name, engine: def.engine, description: def.description };
+  });
 }
 
 export function readManifestBindings(manifestPath: string): Record<string, Record<string, string>> {
