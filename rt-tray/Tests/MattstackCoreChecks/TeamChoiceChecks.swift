@@ -1,21 +1,6 @@
 import Foundation
 import MattstackCore
 
-private final class ScriptedRt: RtRunning, @unchecked Sendable {
-    var answers: [String: (Int32, String)] = [:]   // key: args joined by space
-    var calls: [(args: [String], stdin: String?)] = []
-    func run(_ args: [String], stdin: Data?) async throws -> RtResult {
-        calls.append((args, stdin.map { String(decoding: $0, as: UTF8.self) }))
-        let key = args.joined(separator: " ")
-        // Longest matching prefix wins — deterministic even when two answer
-        // keys are both prefixes of the same call (e.g. "restore" and a
-        // hypothetical "restore --dry-run").
-        let (code, out) = answers.filter { key.hasPrefix($0.key) }.max { $0.key.count < $1.key.count }?.value ?? (1, "")
-        return RtResult(exitCode: code, stdout: Data(out.utf8), stderr: Data())
-    }
-    func stream(_ args: [String], stdin: Data?) -> AsyncThrowingStream<String, Error> { AsyncThrowingStream { $0.finish() } }
-}
-
 let teamChoiceChecks: [Check] = [
     Check("Slug.make") { c in
         c.expectEqual(Slug.make("Assured Claims!"), "assured-claims")

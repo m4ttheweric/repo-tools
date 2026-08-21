@@ -28,6 +28,9 @@ public final class ReadinessModel: ObservableObject {
     @Published public private(set) var lastError: String?
     @Published public private(set) var checkingRowIds: Set<String> = []
     @Published public private(set) var fdaNeedsRelaunch = false
+    /// The last local probe — Settings > Permissions reads this instead of
+    /// running its own second poll of the same three rows.
+    @Published public private(set) var permissionSnapshot = PermissionSnapshot.unknown
 
     public static let permissionTickSeconds: TimeInterval = 1
 
@@ -35,9 +38,12 @@ public final class ReadinessModel: ObservableObject {
     private let permissions: PermissionProbing
     private let ticker: TickerScheduling
     private var tick: TickerHandle?
-    private var lastSnapshot = PermissionSnapshot.unknown
     private var hasProbedPermissions = false
     private var planCanInstall = false
+    /// Setup and Settings can both be visible at once and both call
+    /// became{Visible,Hidden} on this shared model; a depth count means
+    /// either one hiding while the other is still up leaves the tick running.
+    private var visibilityDepth = 0
 
     public init(plans: PlanSource, permissions: PermissionProbing, ticker: TickerScheduling) {
         self.plans = plans; self.permissions = permissions; self.ticker = ticker
@@ -73,6 +79,8 @@ public final class ReadinessModel: ObservableObject {
     public func endChecking(_ rowId: String) { checkingRowIds.remove(rowId) }
 
     public func becameVisible() {
+        visibilityDepth += 1
+        guard visibilityDepth == 1 else { return }
         tick?.cancel()
         tick = ticker.schedule(every: Self.permissionTickSeconds) { [weak self] in
             Task { @MainActor [weak self] in await self?.probePermissions() }
@@ -81,6 +89,8 @@ public final class ReadinessModel: ObservableObject {
     }
 
     public func becameHidden() {
+        visibilityDepth = max(0, visibilityDepth - 1)
+        guard visibilityDepth == 0 else { return }
         tick?.cancel()
         tick = nil
     }
@@ -101,7 +111,7 @@ public final class ReadinessModel: ObservableObject {
             // Only re-overlay once a local probe has actually run; before
             // that, rt's own permission status in the plan is the freshest
             // thing we have, and .unknown must not clobber it.
-            if hasProbedPermissions { applyOverlay(lastSnapshot) }
+            if hasProbedPermissions { applyOverlay(permissionSnapshot) }
             recomputeEnablement()
         } catch {
             lastError = String(describing: error)
@@ -110,7 +120,7 @@ public final class ReadinessModel: ObservableObject {
 
     private func probePermissions() async {
         let snap = await permissions.snapshot()
-        lastSnapshot = snap
+        permissionSnapshot = snap
         hasProbedPermissions = true
         fdaNeedsRelaunch = permissions.fdaNeedsRelaunch
         applyOverlay(snap)

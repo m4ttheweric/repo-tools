@@ -13,7 +13,11 @@ struct TeamPane: View {
                 LabeledContent("Name") { Text(model.info?.name ?? "—") }
                 LabeledContent("Remote") {
                     HStack { Text(model.maskedRemote).textSelection(.enabled)
-                        Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(model.info?.remote ?? "", forType: .string) } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless) }
+                        // Copies the masked form, never `model.info?.remote` —
+                        // an HTTPS remote can carry a token in its userinfo.
+                        Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(model.maskedRemote, forType: .string) } label: { Image(systemName: "doc.on.doc") }
+                            .buttonStyle(.borderless)
+                            .accessibilityIdentifier(AXID.settingsTeamCopyRemote) }
                 }
                 LabeledContent("Backup") { Text(model.info?.lastPush.map { "last push \($0)" } ?? "no push recorded") }
             }
@@ -24,7 +28,7 @@ struct TeamPane: View {
             Section("Invite") {
                 HStack {
                     TextField("Forge handle", text: $handle, prompt: Text("teammate's GitHub/GitLab handle")).accessibilityIdentifier(AXID.settingsTeamInviteHandle)
-                    Button("Invite…") { Task { await model.mintInvite(handle: handle) } }.disabled(handle.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button("Invite…") { Task { await model.mintInvite(handle: handle.trimmingCharacters(in: .whitespaces)) } }.disabled(handle.trimmingCharacters(in: .whitespaces).isEmpty)
                         .accessibilityIdentifier(AXID.settingsTeamInvite)
                 }
                 if let inv = model.invite {

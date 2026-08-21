@@ -22,27 +22,15 @@ public final class TeamSettingsModel: ObservableObject {
     public var maskedRemote: String { info?.remote.map(RemoteMasker.mask) ?? "—" }
 
     public func load() async {
-        do {
-            let r = try await rt.run(["team", "status", "--json"], stdin: nil)
-            if let e = r.userError { error = e.message; return }
-            info = try r.decode(TeamSettingsInfo.self)
-        } catch { self.error = Self.describe(error) }
+        if let decoded = await runJSON(["team", "status", "--json"], verb: "team status", as: TeamSettingsInfo.self) { info = decoded }
     }
 
     public func mintInvite(handle: String) async {
-        do {
-            let r = try await rt.run(["team", "invite", "--handle", handle, "--json"], stdin: nil)
-            if let e = r.userError { error = e.message; return }
-            invite = try r.decode(InviteResult.self)
-        } catch { self.error = Self.describe(error) }
+        if let decoded = await runJSON(["team", "invite", "--handle", handle, "--json"], verb: "team invite", as: InviteResult.self) { invite = decoded }
     }
 
     public func loadUninstallPlan() async {
-        do {
-            let r = try await rt.run(["uninstall", "--dry-run", "--json"], stdin: nil)
-            if let e = r.userError { error = e.message; return }
-            uninstallPlan = try r.decode(UninstallPlan.self)
-        } catch { self.error = Self.describe(error) }
+        if let decoded = await runJSON(["uninstall", "--dry-run", "--json"], verb: "uninstall --dry-run", as: UninstallPlan.self) { uninstallPlan = decoded }
     }
 
     /// `--yes`: the Uninstall pane's sheet is the confirmation; without it
@@ -51,11 +39,27 @@ public final class TeamSettingsModel: ObservableObject {
         rt.stream(["uninstall", keepData ? "--keep-data" : "--delete-data", "--yes", "--json"], stdin: nil)
     }
 
-    /// `rt.run` throws only `RtClientError`; `decode` can throw a
-    /// `DecodingError` when a reply doesn't match the contract. Neither raw
-    /// case is fit for UI text, so both collapse to a fixed sentence instead
-    /// of interpolating the error.
-    private static func describe(_ error: Error) -> String {
-        (error as? RtClientError)?.copy ?? "rt returned an unexpected reply."
+    /// Same failure shape everywhere a JSON verb is called: `userError`
+    /// (exit 2) wins outright; any other non-zero exit, or a 0-exit reply
+    /// that doesn't decode, falls to `failureCopy(verb:)` (rt's own
+    /// stderr-derived copy — never a bare "unexpected reply" for an actual
+    /// failure, since that sentence is `failureCopy`'s own 0-exit case);
+    /// a thrown `RtClientError` (spawn failure) uses its `.copy`. Clears
+    /// `error` up front so a retry after a fix doesn't leave stale text
+    /// under a result that already succeeded.
+    private func runJSON<T: Decodable>(_ args: [String], verb: String, as type: T.Type) async -> T? {
+        error = nil
+        do {
+            let r = try await rt.run(args, stdin: nil)
+            if let e = r.userError { error = e.message; return nil }
+            guard r.exitCode == 0, let decoded = try? r.decode(T.self) else {
+                error = r.failureCopy(verb: verb)
+                return nil
+            }
+            return decoded
+        } catch {
+            self.error = (error as? RtClientError)?.copy ?? "rt \(verb) failed to start."
+            return nil
+        }
     }
 }

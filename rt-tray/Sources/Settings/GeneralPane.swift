@@ -7,6 +7,7 @@ struct GeneralPane: View {
     @State private var startAtLogin = SMAppService.mainApp.status == .enabled
     @State private var autoUpdates = false
     @State private var devModeBusy = false
+    @State private var devModeError: String?
 
     var body: some View {
         Form {
@@ -30,17 +31,33 @@ struct GeneralPane: View {
                 LabeledContent("Flavor") { Text(env.isDevBuild ? "dev (mattstack-dev.app)" : "prod (mattstack.app)") }
                 Button(env.isDevBuild ? "Switch to the installed app (dev mode off)…" : "Switch to the dev app (dev mode on)…") {
                     devModeBusy = true
-                    Task { _ = try? await env.rt.run(["settings", "dev-mode", env.isDevBuild ? "prod" : "dev"], stdin: nil); devModeBusy = false }
+                    devModeError = nil
+                    Task {
+                        let verb = "settings dev-mode"
+                        do {
+                            let r = try await env.rt.run(["settings", "dev-mode", env.isDevBuild ? "prod" : "dev"], stdin: nil)
+                            if let e = r.userError { devModeError = e.message }
+                            else if r.exitCode != 0 { devModeError = r.failureCopy(verb: verb) }
+                        } catch {
+                            devModeError = (error as? RtClientError)?.copy ?? "rt \(verb) failed to start."
+                        }
+                        if let devModeError { TrayLog.warn("dev-mode handoff failed", ["err": devModeError]) }
+                        devModeBusy = false
+                    }
                 }
                 .disabled(devModeBusy)
                 .accessibilityIdentifier(AXID.settingsGeneralDevMode)
                 Text("The handoff quits this app and launches the other flavor.").font(.caption).foregroundStyle(.secondary)
-                // `rt settings dev-mode <dev|prod>`: L1 T31 drops `requiresTTY` when the target is given, so the app can spawn it.
+                if let devModeError { Text(devModeError).font(.caption).foregroundStyle(.red) }
+                // `rt settings dev-mode <dev|prod>` drops its TTY requirement when the target is given, so the app can spawn it.
             }
             Section { LabeledContent("Version") { Text(env.version) } }
         }
         .formStyle(.grouped)
-        .onAppear { autoUpdates = env.updater.automaticallyChecks }
+        .onAppear {
+            autoUpdates = env.updater.automaticallyChecks
+            startAtLogin = SMAppService.mainApp.status == .enabled
+        }
     }
 
     private func toggleLogin(_ on: Bool) {

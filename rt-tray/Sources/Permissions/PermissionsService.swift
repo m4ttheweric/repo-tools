@@ -10,8 +10,28 @@ final class PermissionsService: PermissionProbing, PermissionsProviding, @unchec
     private let agentStatuses: @Sendable () -> [SMAppService.Status]
     private let runner: CommandRunner
     private let home = NSHomeDirectory()
+    // snapshot() is async and called from whichever caller currently has
+    // this instance (today: ReadinessModel's ticker) — the lock keeps
+    // lastFDA/fdaNeedsRelaunch consistent if a second caller is ever added.
+    private let stateLock = NSLock()
     private var lastFDA = "unknown"
-    private(set) var fdaNeedsRelaunch = false
+    private var storedFdaNeedsRelaunch = false
+    var fdaNeedsRelaunch: Bool { stateLock.lock(); defer { stateLock.unlock() }; return storedFdaNeedsRelaunch }
+
+    // Locking lives in these two synchronous helpers, never inline in an
+    // `async` function — `NSLock.lock()/unlock()` called directly from an
+    // `async` body is a Swift 6 diagnostic (the same one already accepted
+    // pre-existing in CommandRunner.swift), so the hold is always scoped to
+    // a plain function the async call sites invoke instead.
+    private func recordFDA(_ status: String) {
+        stateLock.lock()
+        if lastFDA == "denied", status == "granted" { storedFdaNeedsRelaunch = true }
+        lastFDA = status
+        stateLock.unlock()
+    }
+    private func markFdaNeedsRelaunch() {
+        stateLock.lock(); storedFdaNeedsRelaunch = true; stateLock.unlock()
+    }
 
     init(bundleId: String, agentStatuses: @escaping @Sendable () -> [SMAppService.Status], runner: CommandRunner) {
         self.bundleId = bundleId
@@ -21,8 +41,7 @@ final class PermissionsService: PermissionProbing, PermissionsProviding, @unchec
 
     func snapshot() async -> PermissionSnapshot {
         let fda = FDAProbe.evaluate(home: home, open: FDAProbe.systemOpen)
-        if lastFDA == "denied", fda.status == "granted" { fdaNeedsRelaunch = true }
-        lastFDA = fda.status
+        recordFDA(fda.status)
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         let notif: String
         switch settings.authorizationStatus {
@@ -66,7 +85,7 @@ final class PermissionsService: PermissionProbing, PermissionsProviding, @unchec
             // the reset revokes FDA immediately but macOS only re-applies a
             // fresh grant at the app's next launch — the relaunch hint is
             // the only way the row can become accurate again.
-            fdaNeedsRelaunch = true
+            markFdaNeedsRelaunch()
         }
         _ = await request("notifications")
         return out.ok
