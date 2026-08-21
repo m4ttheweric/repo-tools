@@ -1,24 +1,31 @@
 /**
- * Guards against a stale dist/ silently breaking rt-client's node/type
- * consumers. package.json's "exports" map routes bun (`"bun": "./src/index.ts"`)
- * straight to source, so bun consumers never see a stale dist/ at all — this
- * only protects the "types" and "import"/"default" conditions (node
- * consumers, and any type-checker that resolves through those conditions
- * instead of the bun one), and `file:` consumers (mr-board, gitq), which
- * install by copying whatever dist/ currently holds on disk.
+ * Guards against a stale on-disk dist/ silently breaking rt-client's
+ * node/type consumers. package.json's "exports" map routes bun
+ * (`"bun": "./src/index.ts"`) straight to source, so bun consumers never see
+ * dist/ at all — this only protects the "types" and "import"/"default"
+ * conditions (node consumers, and any type-checker that resolves through
+ * those conditions instead of the bun one).
+ *
+ * dist/ is a GITIGNORED build artifact, not something committed to git —
+ * `file:` consumers (mr-board, gitq) install by copying whatever dist/
+ * happens to be sitting on disk at install time. `prepack` (package.json)
+ * only rebuilds dist/ for `npm pack`/publish; it does nothing for that
+ * local dev-linking path, so an on-disk dist/ that's drifted from src/ is
+ * invisible to every other guard in this repo.
  *
  * This must DETECT staleness, not repair it: it builds into a throwaway
- * temp dir and diffs that fresh output against the dist/ actually sitting
- * on disk, failing on any mismatch. It never writes into the real dist/ —
- * a passing run proves dist/ is current; a failing one means someone needs
- * to run `bun run build` (or prepack needs to, at publish time) before the
- * checked-in copy is trustworthy again.
+ * temp dir and diffs that fresh output — file listing AND byte content of
+ * every emitted file (the JS bundle, every .d.ts) — against dist/ actually
+ * sitting on disk, failing on any mismatch. It never writes into the real
+ * dist/. A passing run proves the on-disk dist/ is current; a failing one
+ * (including a missing dist/ — the state a fresh clone starts in) names
+ * `bun run build` as the fix.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, relative } from "path";
 
 const pkgDir = join(import.meta.dir, "..");
 const onDiskDist = join(pkgDir, "dist");
@@ -50,19 +57,45 @@ function buildIntoTempDir(): string {
   return outDir;
 }
 
-describe("dist/ freshness", () => {
-  test("the committed dist/ matches a from-scratch build byte for byte", () => {
-    const freshDir = buildIntoTempDir();
+/** Every file under `root`, as paths relative to `root`, sorted — recurses into subdirs (dist/settings/*.d.ts included). */
+function listFilesRecursive(root: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else out.push(relative(root, full));
+    }
+  };
+  walk(root);
+  return out.sort();
+}
 
+describe("dist/ freshness", () => {
+  test("the on-disk dist/ matches a fresh build — every emitted file, not just index.d.ts", () => {
     if (!existsSync(onDiskDist)) {
-      throw new Error("dist/ is missing on disk — run `bun run build` in packages/rt-client");
+      throw new Error(
+        "dist/ does not exist on disk. It's gitignored (a build artifact, not checked into git), and " +
+          "file: consumers (mr-board, gitq) install by copying whatever's there — run `bun run build` " +
+          "in packages/rt-client, then rerun this test.",
+      );
     }
 
-    for (const file of ["index.d.ts", "commands.d.ts"]) {
-      const fresh = readFileSync(join(freshDir, file), "utf8");
-      const onDisk = readFileSync(join(onDiskDist, file), "utf8");
-      if (fresh !== onDisk) {
-        throw new Error(`dist/${file} is stale — it no longer matches a fresh build. Run \`bun run build\` in packages/rt-client.`);
+    const freshDir = buildIntoTempDir();
+    const freshFiles = listFilesRecursive(freshDir);
+    const onDiskFiles = listFilesRecursive(onDiskDist);
+
+    expect(onDiskFiles).toEqual(freshFiles);
+
+    for (const file of freshFiles) {
+      const fresh = readFileSync(join(freshDir, file));
+      const onDisk = readFileSync(join(onDiskDist, file));
+      if (!fresh.equals(onDisk)) {
+        throw new Error(
+          `dist/${file} is stale — it no longer matches a fresh build. dist/ is a gitignored artifact ` +
+            "that file: consumers copy as-is; prepack only regenerates it for npm publish, not for local " +
+            "dev-linking. Run `bun run build` in packages/rt-client.",
+        );
       }
     }
   });
