@@ -118,11 +118,26 @@ function buildVendoredFiles(step: StepSource, boundSlots: BoundSlot[]): Compiled
   return files;
 }
 
+function isCompilerCommentLine(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed === HEADER_COMMENT || trimmed.startsWith("<!-- part: ");
+}
+
+// Seam/header comments carry deliberately non-invocable names (e.g. an internal
+// attachment's binding); only author prose is lint material.
+function stripCompilerComments(body: string): string {
+  return body
+    .split("\n")
+    .filter((line) => !isCompilerCommentLine(line))
+    .join("\n");
+}
+
 function lintReferences(body: string, roster: Set<string>, files: CompiledFile[]): string[] {
   const warnings: string[] = [];
+  const lintableBody = stripCompilerComments(body);
 
   const seenNames = new Set<string>();
-  for (const match of body.matchAll(REGISTERED_NAME_RE)) {
+  for (const match of lintableBody.matchAll(REGISTERED_NAME_RE)) {
     const token = match[0];
     if (seenNames.has(token)) continue;
     seenNames.add(token);
@@ -133,7 +148,7 @@ function lintReferences(body: string, roster: Set<string>, files: CompiledFile[]
 
   const emittedPaths = new Set(files.map((f) => f.path));
   const seenPaths = new Set<string>();
-  for (const match of body.matchAll(SKILL_DIR_PATH_RE)) {
+  for (const match of lintableBody.matchAll(SKILL_DIR_PATH_RE)) {
     const full = match[0];
     if (seenPaths.has(full)) continue;
     seenPaths.add(full);

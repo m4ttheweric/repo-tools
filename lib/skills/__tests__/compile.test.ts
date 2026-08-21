@@ -85,6 +85,9 @@ describe("compileSkill", () => {
       '- "Bash(glab:*)"',
     ]);
 
+    expect(content).toContain(
+      "<!-- compiled by rt skills compile from the sources below; slots pre-resolved; edits here are working-tree drift (rt skills promote) -->",
+    );
     expect(content).toContain("<!-- part: step source=mattstack:watch-ci version=1.2.0 -->");
     expect(content).toContain(
       "<!-- part: slot:domain binding=acme:watch-ci-domain version=0.3.0 -->",
@@ -184,6 +187,33 @@ describe("compileSkill", () => {
 
     expect(result.warnings).toEqual([
       "body references acme:nonexistent which is not invocable",
+    ]);
+  });
+
+  test("name lint: a bound fill's own seam comment does not warn even when its binding is unregistered", () => {
+    const rosterWithoutDomain = new Set(["mattstack:watch-ci", "mattstack:gitlab-forge"]);
+
+    const result = compileSkill(verb, step, { domain: domainFill, forge: forgeFill }, rosterWithoutDomain);
+
+    expect(result.warnings).toEqual([]);
+  });
+
+  test("name lint: the same binding name in author body prose still warns", () => {
+    const rosterWithoutDomain = new Set(["mattstack:watch-ci", "mattstack:gitlab-forge"]);
+    const stepMentioningBinding: StepSource = {
+      ...step,
+      body: `${step.body} This step composes with acme:watch-ci-domain for domain rules.`,
+    };
+
+    const result = compileSkill(
+      verb,
+      stepMentioningBinding,
+      { domain: domainFill, forge: forgeFill },
+      rosterWithoutDomain,
+    );
+
+    expect(result.warnings).toEqual([
+      "body references acme:watch-ci-domain which is not invocable",
     ]);
   });
 
