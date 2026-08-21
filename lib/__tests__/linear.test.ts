@@ -79,7 +79,7 @@ function fakeSecretsSeams(seedDomains: Record<string, Record<string, string>> = 
     removeFile: (p) => { files.delete(p); stats.delete(p); },
     async run(cmd): Promise<SecretsExecResult> {
       if (cmd[0] === "sops" && cmd[1] === "-d") {
-        const domain = domainFromPath(cmd[2]!);
+        const domain = domainFromPath(cmd[cmd.length - 1]!);
         return { code: 0, stdout: JSON.stringify(domains.get(domain) ?? {}), stderr: "" };
       }
       if (cmd[0] === "sops" && cmd[1] === "-e") {
