@@ -139,13 +139,16 @@ function describeStep(step: InitStep): string {
 async function ensureHomeAgeKey(seams: AgeKeySeam, sopsYamlSeam: SopsYamlSeam = defaultSopsYamlSeam()): Promise<void> {
   const { publicKey } = await ensureAgeKey(seams);
 
-  const sopsYamlPath = join(mattstackHome(), ".sops.yaml");
+  // Lives under user/ (not the repo root): sops matches path_regex cwd-relative
+  // and every sops spawn pins cwd to <mattstackHome>/user (store.ts), so
+  // .sops.yaml must sit there too for that discovery to find it.
+  const sopsYamlPath = join(mattstackHome(), "user", ".sops.yaml");
   const existing = sopsYamlSeam.read(sopsYamlPath);
   if (existing === null || sopsYamlRecipient(existing) !== publicKey) {
     sopsYamlSeam.write(sopsYamlPath, renderSopsYaml(publicKey));
     console.log(
       `rt home init: wrote ${sopsYamlPath} (recipient ${publicKey}) — it's tracked, so commit it:\n` +
-        `  git -C ${mattstackHome()} add .sops.yaml && git -C ${mattstackHome()} commit -m "home: sops recipient"`,
+        `  git -C ${mattstackHome()} add user/.sops.yaml && git -C ${mattstackHome()} commit -m "home: sops recipient"`,
     );
   }
 

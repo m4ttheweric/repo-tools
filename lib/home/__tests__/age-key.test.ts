@@ -203,9 +203,9 @@ describe("withArgvRedaction", () => {
 });
 
 describe("renderSopsYaml", () => {
-  test("emits a creation rule encrypting user/secrets/** to the given recipient", () => {
+  test("emits a creation rule encrypting secrets/** (cwd-relative, cwd pinned to <mattstackHome>/user) to the given recipient", () => {
     const yaml = renderSopsYaml("age1xyz");
-    expect(yaml).toContain("path_regex: user/secrets/.*");
+    expect(yaml).toContain("path_regex: secrets/.*");
     expect(yaml).toContain("age1xyz");
   });
 });
