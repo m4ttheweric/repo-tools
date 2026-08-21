@@ -1,5 +1,6 @@
 #!/bin/bash
-# Throwaway GitHub org for the VM walkthrough. ORCHESTRATOR/MATT: needs MATTSTACK_VMTEST_PAT in env.
+# Throwaway GitHub org for the VM walkthrough. Needs MATTSTACK_VMTEST_PAT in env (a token with the repo scope is enough;
+# `gh auth token` works). MATTSTACK_VMTEST_ORG overrides the org; a name without "vmtest" also needs MATTSTACK_VMTEST_ORG_CONFIRM=<org>.
 # Usage: team-setup.sh reset [--slug vmtest] | invite --handle <h> --out <file> [--slug vmtest] | status
 set -euo pipefail
 source "$(cd "$(dirname "$0")/.." && pwd)/lib/common.sh"
@@ -22,9 +23,19 @@ case "$cmd" in
   reset)
     vm_require_cmd gh "brew install gh"
     need_pat
-    case "$ORG" in *vmtest*) ;; *) vm_die "refusing to reset non-vmtest org $ORG" ;; esac
+    case "$ORG" in
+      *vmtest*) ;;
+      *) [ "${MATTSTACK_VMTEST_ORG_CONFIRM:-}" = "$ORG" ] || vm_die "refusing to reset org $ORG: its name lacks 'vmtest' and MATTSTACK_VMTEST_ORG_CONFIRM does not name it" ;;
+    esac
+    # Retire by rename+archive, never delete: the token only needs the repo scope, and a
+    # mistaken target stays recoverable.
+    stamp=$(date +%Y%m%d%H%M%S)
     for r in "$HOME_REPO" "$TEAM_REPO" mattstack-home "mattstack-team-$SLUG"; do
-      if ghp repo view "$ORG/$r" >/dev/null 2>&1; then ghp repo delete "$ORG/$r" --yes && vm_log "deleted $ORG/$r"; fi
+      if ghp repo view "$ORG/$r" >/dev/null 2>&1; then
+        ghp repo rename "trash-$r-$stamp" --repo "$ORG/$r" --yes >/dev/null
+        ghp repo archive "$ORG/trash-$r-$stamp" --yes >/dev/null
+        vm_log "retired $ORG/$r -> trash-$r-$stamp (archived)"
+      fi
     done
     ghp repo create "$ORG/$HOME_REPO" --private --description "mattstack VM test home repo (throwaway)" >/dev/null && vm_log "created $ORG/$HOME_REPO"
     ghp repo create "$ORG/$TEAM_REPO" --private --description "mattstack VM test team repo (throwaway)" >/dev/null && vm_log "created $ORG/$TEAM_REPO"
