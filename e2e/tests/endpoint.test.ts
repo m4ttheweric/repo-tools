@@ -25,7 +25,7 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { execFileSync } from "child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { createTestHome, RT_BINARY } from "../harness.ts";
 import { machineSettingsPath } from "../../lib/rt-paths.ts";
 
@@ -261,7 +261,7 @@ describe("rt endpoint / intercept (just-works e2e)", () => {
     // slugs vary per CI host, and this test's path must be deterministic.
     writeFileSync(join(home, ".mattstack", "machine-key"), "e2e-endpoint-machine");
     const machineStorePath = withHome(home, () => machineSettingsPath());
-    mkdirSync(join(machineStorePath, ".."), { recursive: true });
+    mkdirSync(dirname(machineStorePath), { recursive: true });
     writeFileSync(
       machineStorePath,
       JSON.stringify(

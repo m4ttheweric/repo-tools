@@ -23,9 +23,14 @@ export interface ExecSeam {
   mkdirp(path: string): Promise<void>;
   /** Any entry at all (file, dir, or symlink) — used to seed tracked files only into a genuinely empty clone. */
   exists(path: string): Promise<boolean>;
-  /** True only for a REAL (non-symlink) entry — absent or a symlink both read false. */
-  isRealFile(path: string): Promise<boolean>;
-  /** Idempotent: replaces whatever (if anything) already sits at `path`. Callers must confirm via isRealFile first — this never itself refuses a real file. */
+  /**
+   * True for any entry that a symlink write must not clobber: a real file
+   * OR a directory — both would be silently destroyed by unlink+symlink.
+   * False for absent or an existing symlink (writeSymlink safely replaces
+   * either of those).
+   */
+  blocksSymlink(path: string): Promise<boolean>;
+  /** Idempotent: replaces whatever (if anything) already sits at `path`. Callers must confirm via blocksSymlink first — this never itself refuses a real file or directory. */
   writeSymlink(path: string, target: string): Promise<void>;
 }
 
@@ -92,7 +97,7 @@ async function runStep(step: InitStep, exec: ExecSeam, log: StepLog): Promise<vo
       // plan can be stale by the time this runs (a real file could appear
       // in between), and clobbering real content is worse than a stale
       // "skip" ever is.
-      if (await exec.isRealFile("skills.jsonc")) {
+      if (await exec.blocksSymlink("skills.jsonc")) {
         throw new StepFailed("a real file already exists at skills.jsonc — refusing to overwrite it");
       }
       log("linking skills.jsonc -> user/skills.jsonc");
@@ -143,7 +148,7 @@ export function createRealExecSeam(home: string): ExecSeam {
     async exists(path) {
       return existsSync(join(home, path));
     },
-    async isRealFile(path) {
+    async blocksSymlink(path) {
       try {
         return !lstatSync(join(home, path)).isSymbolicLink();
       } catch {

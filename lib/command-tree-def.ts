@@ -695,7 +695,7 @@ export const TREE: Record<string, CommandNode> = {
     description: "The git-backed ~/.mattstack/user personal repo",
     subcommands: {
       init: {
-        description: "Provision this machine: clone the user repo, then print and run the provisioning plan",
+        description: "Provision this machine: print, then run, the plan (which clones the user repo as one of its steps)",
         module: "./commands/home.ts",
         fn: "homeInit",
         args: [
