@@ -128,7 +128,7 @@ class FakeSecretsExecSeam implements SecretsExecSeam {
     this.calls.push({ cmd, opts: runOpts });
 
     if (cmd[0] === "sops" && cmd[1] === "-d") {
-      const target = cmd[2]!;
+      const target = cmd[cmd.length - 1]!;
       const staged = this.roundTrippablePlaintext.get(target);
       if (staged !== undefined) return { code: 0, stdout: staged, stderr: "" };
       return this.opts.decrypt ? this.opts.decrypt() : { code: 0, stdout: "{}", stderr: "" };
@@ -303,7 +303,7 @@ describe("writeSecret", () => {
     expect(execSeam.calls.map((c) => c.cmd)).toEqual([
       ["sops", "-d", path],
       ["sops", "-e", "--filename-override", join("secrets", `${domain}.json`), "--output", outputTmp, staging],
-      ["sops", "-d", outputTmp],
+      ["sops", "-d", "--input-type", "json", "--output-type", "json", outputTmp],
     ]);
     // The round-trip readback carries the same SOPS_AGE_KEY env as any other sops call — never argv.
     expect(execSeam.calls[2]?.opts).toEqual({ env: { SOPS_AGE_KEY: "AGE-X" }, sensitive: true });
@@ -332,7 +332,7 @@ describe("writeSecret", () => {
     const outputTmp = `${path}.${process.pid}.tmp`;
     expect(execSeam.calls.map((c) => c.cmd)).toEqual([
       ["sops", "-e", "--filename-override", join("secrets", `${domain}.json`), "--output", outputTmp, stagingPath(domain)],
-      ["sops", "-d", outputTmp],
+      ["sops", "-d", "--input-type", "json", "--output-type", "json", outputTmp],
     ]);
     expect(execSeam.files.get(path)).toBe(DEFAULT_CIPHERTEXT);
   });
