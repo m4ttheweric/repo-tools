@@ -4,7 +4,10 @@
  * — never installed, or reaped by `brew autoremove`/`brew cleanup` — we want a
  * single, actionable error rather than silently degrading to a non-fuzzy
  * picker or crashing with an opaque spawn ENOENT. Every fzf spawn site calls
- * ensureFzf() before spawning.
+ * ensureFzf() before spawning, except `rt skills surface`'s bare palette:
+ * that one deliberately soft-falls-back to printing the static list instead
+ * of erroring, since the same config-write path is also reachable via
+ * `rt skills surface set`.
  */
 import { bold, dim, yellow, reset } from "./tui.ts";
 
