@@ -4,9 +4,9 @@
  *
  *   rt home init [--dry-run] [--url <remote>]   print, then run, the provisioning plan
  *   rt home key export                          print the age private key once, for a password manager
- *   rt home snapshot [--status]                 run (or report on) the auto-commit daemon
- *   rt home claim <zone> [--owner] [--note]      tell the daemon to leave a path alone
- *   rt home release <zone>                       let the daemon resume auto-committing a path
+ *   rt home snapshot [--status]                       run (or report on) the auto-commit daemon
+ *   rt home claim <zone> [--owner] [--note] [--force]  tell the daemon to leave a path alone
+ *   rt home release <zone>                             let the daemon resume auto-committing a path
  *
  * `init` gathers state, prints the plan from lib/home/init-plan.ts, and
  * (unless --dry-run) runs it through lib/home/init-exec.ts's injected seam.
@@ -15,10 +15,16 @@
  * `home:snapshot`/`home:snapshot-status` handlers (lib/daemon/handlers/home.ts).
  * `claim`/`release` write user/snapshot-owners.jsonc directly via
  * lib/home/snapshot-owners.ts — no daemon round trip — the daemon picks up
- * the change on its next cycle like any other tracked file.
+ * the change on its next cycle like any other tracked file. A zone is
+ * either a directory ("prefs/", or just "prefs" — claims everything under
+ * it) or a single file ("scripts/deploy.sh" — claims exactly that path,
+ * nothing else): `claim` decides which by checking whether the path is
+ * currently a real file on disk. `claim` on a zone already claimed by a
+ * DIFFERENT owner refuses unless `--force`; `release` prints who it
+ * released, or says so plainly when there was nothing to release.
  */
 
-import { existsSync, readFileSync, readlinkSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, readlinkSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { bold, dim, green, red, reset, yellow } from "../lib/ansi.ts";
@@ -34,7 +40,7 @@ import {
   sopsYamlRecipient,
   type AgeKeySeam,
 } from "../lib/home/age-key.ts";
-import { claimZone, InvalidZoneError, normalizeZone, releaseZone } from "../lib/home/snapshot-owners.ts";
+import { claimZone, InvalidZoneError, normalizeZone, releaseZone, ZoneOwnedByOthersError, type ZoneKind } from "../lib/home/snapshot-owners.ts";
 import { daemonQuery, type DaemonResponse } from "../lib/daemon-client.ts";
 import type { SnapshotResult, SnapshotStatus } from "../lib/daemon/home-snapshot.ts";
 
@@ -45,6 +51,8 @@ export interface HomeProbes {
   exists(path: string): boolean;
   /** The symlink's target, or null when `path` is absent or not a symlink. */
   readSymlinkTarget(path: string): string | null;
+  /** True when `path` exists and is a regular file (not a directory, not a symlink-to-dir) — decides whether `rt home claim` writes a file zone or a dir zone. */
+  isFile(path: string): boolean;
 }
 
 export interface SopsYamlSeam {
@@ -74,6 +82,13 @@ function defaultProbes(): HomeProbes {
         return readlinkSync(path);
       } catch {
         return null;
+      }
+    },
+    isFile: (path) => {
+      try {
+        return statSync(path).isFile();
+      } catch {
+        return false;
       }
     },
   };
@@ -341,6 +356,9 @@ function printSnapshotStatus(status: SnapshotStatus): void {
   console.log(
     `    ${dim}last commit: ${status.lastCommit ? `${status.lastCommit.sha.slice(0, 8)} ${status.lastCommit.message}` : "none"}${reset}`,
   );
+  if (status.lastCommitError) {
+    console.log(`    ${yellow}commit error: ${status.lastCommitError}${reset}`);
+  }
   const pushLine = status.pushPending
     ? "pending"
     : status.lastPushAt !== 0
@@ -391,10 +409,11 @@ function defaultOwner(): string {
   return `${process.env.USER ?? "unknown"}@${machineKey()}`;
 }
 
-/** Splits `args` into `{ zone, owner?, note? }`, tolerating `--flag value` and `--flag=value`. */
-function parseClaimArgs(args: string[]): { zone: string | undefined; owner: string | undefined; note: string | undefined } {
+/** Splits `args` into `{ zone, owner?, note?, force }`, tolerating `--flag value` and `--flag=value`. */
+function parseClaimArgs(args: string[]): { zone: string | undefined; owner: string | undefined; note: string | undefined; force: boolean } {
   let owner: string | undefined;
   let note: string | undefined;
+  let force = false;
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -402,35 +421,60 @@ function parseClaimArgs(args: string[]): { zone: string | undefined; owner: stri
     else if (arg.startsWith("--owner=")) owner = arg.slice("--owner=".length);
     else if (arg === "--note") note = args[++i];
     else if (arg.startsWith("--note=")) note = arg.slice("--note=".length);
+    else if (arg === "--force") force = true;
     else positional.push(arg);
   }
-  return { zone: positional[0], owner, note };
+  return { zone: positional[0], owner, note, force };
+}
+
+function homeRepoRoot(): string {
+  return join(mattstackHome(), "user");
+}
+
+/** Shared by claim/release: writing (or even mkdir-ing the dir for) snapshot-owners.jsonc into a tree `rt home init` never provisioned would create a bare, non-git ~/.mattstack/user — refuse instead. */
+function refuseUnlessProvisioned(command: string, probes: HomeProbes): void {
+  const repoRoot = homeRepoRoot();
+  if (!probes.isGitRepo(repoRoot)) {
+    console.error(`rt home ${command}: ${repoRoot} isn't provisioned yet — run \`rt home init\` first.`);
+    process.exit(1);
+  }
 }
 
 export async function homeClaim(
   args: string[],
   _ctx: CommandContext = {},
   ownersPath: string = defaultOwnersPath(),
+  probes: HomeProbes = defaultProbes(),
 ): Promise<void> {
-  const { zone, owner: ownerArg, note } = parseClaimArgs(args);
+  const { zone, owner: ownerArg, note, force } = parseClaimArgs(args);
   if (!zone) {
-    console.error("rt home claim: a zone is required, e.g. `rt home claim prefs/`");
+    console.error("rt home claim: a zone is required, e.g. `rt home claim prefs/` or `rt home claim scripts/deploy.sh`");
     process.exit(1);
   }
 
+  refuseUnlessProvisioned("claim", probes);
+
   const owner = ownerArg ?? defaultOwner();
+  // A REGULAR FILE claims exactly that path; anything else (a directory, or
+  // a path that doesn't exist yet — the common case for "claim this
+  // directory before I create anything in it") claims the whole subtree.
+  const kind: ZoneKind = probes.isFile(join(homeRepoRoot(), zone)) ? "file" : "dir";
 
   try {
-    claimZone(ownersPath, zone, owner, note);
+    claimZone(ownersPath, zone, owner, { note, kind, force });
   } catch (err) {
     if (err instanceof InvalidZoneError) {
+      console.error(`rt home claim: ${err.message}`);
+      process.exit(1);
+    }
+    if (err instanceof ZoneOwnedByOthersError) {
       console.error(`rt home claim: ${err.message}`);
       process.exit(1);
     }
     throw err;
   }
 
-  console.log(`  ${green}✓${reset} claimed ${bold}${normalizeZone(zone)}${reset} for ${owner}`);
+  console.log(`  ${green}✓${reset} claimed ${bold}${normalizeZone(zone, kind)}${reset} for ${owner}`);
   console.log(`    ${dim}the daemon snapshots ${ownersPath} like any other path — it'll pick this up on its next cycle${reset}`);
 }
 
@@ -438,6 +482,7 @@ export async function homeRelease(
   args: string[],
   _ctx: CommandContext = {},
   ownersPath: string = defaultOwnersPath(),
+  probes: HomeProbes = defaultProbes(),
 ): Promise<void> {
   const zone = args.find((arg) => !arg.startsWith("--"));
   if (!zone) {
@@ -445,8 +490,11 @@ export async function homeRelease(
     process.exit(1);
   }
 
+  refuseUnlessProvisioned("release", probes);
+
+  let result: ReturnType<typeof releaseZone>;
   try {
-    releaseZone(ownersPath, zone);
+    result = releaseZone(ownersPath, zone);
   } catch (err) {
     if (err instanceof InvalidZoneError) {
       console.error(`rt home release: ${err.message}`);
@@ -455,6 +503,11 @@ export async function homeRelease(
     throw err;
   }
 
-  console.log(`  ${green}✓${reset} released ${bold}${normalizeZone(zone)}${reset}`);
+  if (!result.released) {
+    console.log(`  ${dim}nothing to release — "${zone}" isn't claimed${reset}`);
+    return;
+  }
+
+  console.log(`  ${green}✓${reset} released ${bold}${result.zone}${reset} ${dim}(was claimed by ${result.owner})${reset}`);
   console.log(`    ${dim}the daemon snapshots ${ownersPath} like any other path — it'll pick this up on its next cycle${reset}`);
 }

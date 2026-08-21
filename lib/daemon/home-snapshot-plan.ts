@@ -80,8 +80,19 @@ export function parsePorcelainZ(buffer: string): StatusEntry[] {
   return entries;
 }
 
+/**
+ * A dir zone (stored WITH a trailing "/", e.g. "prefs/") claims itself and
+ * everything under it — `startsWith` is correct there because the "/" is
+ * part of the compared string, so "prefs/" never falsely matches a sibling
+ * like "prefs-old/foo.txt". A file zone (stored WITHOUT a trailing slash,
+ * e.g. "scripts/deploy.sh") claims exactly that one path — `startsWith`
+ * would be wrong there too, just silently: "scripts/deploy.sh" as a raw
+ * prefix would ALSO match "scripts/deploy.sh.bak", which is not the
+ * claimed file. The trailing slash on the stored key is what tells this
+ * function which rule to apply.
+ */
 function isUnderZone(path: string, zone: string): boolean {
-  return path.startsWith(zone);
+  return zone.endsWith("/") ? path.startsWith(zone) : path === zone;
 }
 
 /** True if `zone` claims either where the entry now lives or (for a rename/copy) where it moved from — a rename out of a claimed zone still dirties that zone. */

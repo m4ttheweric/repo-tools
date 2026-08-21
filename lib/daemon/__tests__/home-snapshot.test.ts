@@ -926,13 +926,15 @@ describe("startHomeSnapshot — real git integration", () => {
 
       const log = fakeLog();
       const owners: Owners = { zones: { "prefs/": { owner: "matt", claimedAt: "2026-01-01T00:00:00.000Z" } } };
-      // Real setTimeout, but 0ms — no real waiting, this only speeds up the trailing push.
+      // Real setTimeout, at the clamped floor of 1s (clampSettings enforces
+      // pushDelaySec >= 1) — no long waiting, this only speeds up the
+      // trailing push.
       const handle = startHomeSnapshot({
         log,
         broadcast: () => {},
         repoDir,
         statePath,
-        readSettings: () => ({ ...DEFAULT_SETTINGS, pushDelaySec: 0 }),
+        readSettings: () => ({ ...DEFAULT_SETTINGS, pushDelaySec: 1 }),
         readOwners: () => owners,
       });
       await handle.ready;
@@ -941,8 +943,8 @@ describe("startHomeSnapshot — real git integration", () => {
       expect(result.committed).toBe(true);
       expect(result.sha).not.toBeNull();
 
-      // Let the real (0ms) trailing push timer fire.
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // Let the real (1s) trailing push timer fire.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
 
       const log_ = execFileSync("git", ["log", "--oneline", "-1"], { cwd: repoDir }).toString();
       expect(log_).toContain("snapshot (manual):");
@@ -1006,4 +1008,310 @@ describe("startHomeSnapshot — real git integration", () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 15_000);
+});
+
+// ─── commit observability: one info log, persistent-failure visibility ─────
+
+describe("startHomeSnapshot — commit observability", () => {
+  test("a successful commit logs one info line with sha, path count, and reason", async () => {
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0?? b.txt\0" }));
+    const { deps, log } = baseDeps({ exec: execFn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("manual");
+
+    const committedLogs = log.calls.filter((c) => c.level === "info" && c.args[1] === "home-snapshot: committed");
+    expect(committedLogs.length).toBe(1);
+    expect(committedLogs[0]!.args[0]).toMatchObject({ sha: "abc123", paths: 2, reason: "manual" });
+  });
+
+  test("a failed commit sets status().lastCommitError; a later success clears it", async () => {
+    const switchable = makeSwitchableExec(defaultResponders({ statusZ: "?? a.txt\0", commitExit: 1 }));
+    const { deps } = baseDeps({ exec: switchable.fn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("manual");
+    expect(handle.status().lastCommitError).not.toBeNull();
+
+    switchable.setResponders(defaultResponders({ statusZ: "?? b.txt\0", commitExit: 0 }));
+    await handle.runNow("manual");
+    expect(handle.status().lastCommitError).toBeNull();
+  });
+
+  test("a repeated identical commit failure warns once; a different failure message warns again", async () => {
+    let stderr = "fatal: unable to write new index file";
+    const execWithStderr: NonNullable<HomeSnapshotDeps["exec"]> = async (argv) => {
+      if (argv[1] === "commit") return { stdout: "", stderr, exitCode: 1 };
+      for (const r of defaultResponders({ statusZ: "?? a.txt\0" })) {
+        const res = r(argv);
+        if (res) return res;
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+    const { deps, log } = baseDeps({ exec: execWithStderr });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("manual");
+    await handle.runNow("manual");
+    expect(log.calls.filter((c) => c.level === "warn" && c.args[1] === "home-snapshot: commit failed").length).toBe(1);
+
+    stderr = "fatal: a different failure";
+    await handle.runNow("manual");
+    expect(log.calls.filter((c) => c.level === "warn" && c.args[1] === "home-snapshot: commit failed").length).toBe(2);
+  });
+});
+
+// ─── git add failure handling ────────────────────────────────────────────────
+
+describe("startHomeSnapshot — git add failure", () => {
+  test("a git add failure mentioning index.lock skips with 'index-locked', never attempts commit", async () => {
+    const { fn: execFn, calls: execCalls } = makeFakeExec([
+      (argv) => (argv[1] === "add") ? { stdout: "", stderr: "fatal: Unable to create '.git/index.lock': File exists.", exitCode: 128 } : undefined,
+      ...defaultResponders({ statusZ: "?? a.txt\0" }),
+    ]);
+    const { deps } = baseDeps({ exec: execFn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    const result = await handle.runNow("manual");
+
+    expect(result.skipped).toBe("index-locked");
+    expect(execCalls.some((c) => c[1] === "commit")).toBe(false);
+  });
+
+  test("a git add failure NOT mentioning index.lock skips with 'add-failed'", async () => {
+    const { fn: execFn, calls: execCalls } = makeFakeExec([
+      (argv) => (argv[1] === "add") ? { stdout: "", stderr: "fatal: disk full", exitCode: 1 } : undefined,
+      ...defaultResponders({ statusZ: "?? a.txt\0" }),
+    ]);
+    const { deps } = baseDeps({ exec: execFn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    const result = await handle.runNow("manual");
+
+    expect(result.skipped).toBe("add-failed");
+    expect(execCalls.some((c) => c[1] === "commit")).toBe(false);
+  });
+
+  test("a repeated identical git add failure warns once", async () => {
+    const { fn: execFn, calls: execCalls } = makeFakeExec([
+      (argv) => (argv[1] === "add") ? { stdout: "", stderr: "fatal: disk full", exitCode: 1 } : undefined,
+      ...defaultResponders({ statusZ: "?? a.txt\0" }),
+    ]);
+    const { deps, log } = baseDeps({ exec: execFn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("manual");
+    await handle.runNow("manual");
+
+    expect(log.calls.filter((c) => c.level === "warn" && c.args[1] === "home-snapshot: git add failed; skipping cycle").length).toBe(1);
+    expect(execCalls.filter((c) => c[1] === "add").length).toBe(2); // still attempted every run, just not re-warned
+  });
+});
+
+// ─── kill switch cancels a scheduled push ───────────────────────────────────
+
+describe("startHomeSnapshot — kill switch cancels pending push", () => {
+  test("a live disable cancels a scheduled push timer and its retry timer", async () => {
+    let enabled = true;
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0", pushExit: 1 }));
+    const { deps, timers } = baseDeps({ exec: execFn, readSettings: () => ({ ...DEFAULT_SETTINGS, enabled }) });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000); // push fails -> schedules a retry
+    await flushAsync();
+    expect([...timers.pending.values()].some((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 5 * 1000)).toBe(true);
+
+    enabled = false;
+    await handle.runNow("manual");
+
+    const pending = [...timers.pending.values()];
+    expect(pending.some((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000)).toBe(false);
+    expect(pending.some((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 5 * 1000)).toBe(false);
+    // pushPending itself is untouched — there's still a real unpushed commit, just nothing scheduled to push it while disabled.
+    expect(handle.status().pushPending).toBe(true);
+  });
+
+  test("re-enabling later re-arms the push via the normal committed||pushPending check", async () => {
+    let enabled = true;
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0", pushExit: 1 }));
+    const { deps, timers } = baseDeps({ exec: execFn, readSettings: () => ({ ...DEFAULT_SETTINGS, enabled }) });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+
+    enabled = false;
+    await handle.runNow("manual");
+    expect(timers.pending.size === 0 || [...timers.pending.values()].every((t) => t.ms !== DEFAULT_SETTINGS.pushDelaySec * 1000)).toBe(true);
+
+    enabled = true;
+    await handle.runNow("manual");
+    expect([...timers.pending.values()].some((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000)).toBe(true);
+  });
+});
+
+// ─── home:push-failed broadcasts once per failure streak ────────────────────
+
+describe("startHomeSnapshot — home:push-failed broadcast", () => {
+  test("only the FIRST push failure of a streak broadcasts home:push-failed", async () => {
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0", pushExit: 1, pushStderr: "connection refused" }));
+    const { deps, timers, broadcasts } = baseDeps({ exec: execFn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 5 * 1000); // first retry, still failing
+    await flushAsync();
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 5 * 1000); // second retry, still failing
+    await flushAsync();
+
+    const pushFailedEvents = broadcasts.filter((b) => b.type === "home:push-failed");
+    expect(pushFailedEvents.length).toBe(1);
+    expect(pushFailedEvents[0]!.data).toMatchObject({ pushPending: true });
+  });
+
+  test("a success resets the streak so the NEXT failure broadcasts again", async () => {
+    const switchable = makeSwitchableExec(defaultResponders({ statusZ: "?? a.txt\0", pushExit: 1 }));
+    const { deps, timers, broadcasts } = baseDeps({ exec: switchable.fn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+    expect(broadcasts.filter((b) => b.type === "home:push-failed").length).toBe(1);
+
+    switchable.setResponders(defaultResponders({ statusZ: "?? b.txt\0", pushExit: 0 }));
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+    expect(handle.status().pushPending).toBe(false);
+
+    switchable.setResponders(defaultResponders({ statusZ: "?? c.txt\0", pushExit: 1 }));
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+
+    expect(broadcasts.filter((b) => b.type === "home:push-failed").length).toBe(2);
+  });
+});
+
+// ─── settings clamping ────────────────────────────────────────────────────
+
+describe("startHomeSnapshot — settings clamping", () => {
+  test("debounceSec below 1 (or NaN) is clamped, never used to arm a sub-second or nonsensical timer", async () => {
+    const { deps, watch, timers } = baseDeps({ readSettings: () => ({ ...DEFAULT_SETTINGS, debounceSec: 0 }) });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    watch.emit("change", "a.txt");
+
+    const armed = [...timers.pending.values()].find((t) => t.ms >= 1000 && t.ms !== DEFAULT_SETTINGS.janitorIntervalMin * 60_000);
+    expect(armed?.ms).toBe(1000); // clamped to the 1s floor, not 0
+  });
+
+  test("janitorIntervalMin of NaN falls back to the registry default (30 minutes)", async () => {
+    const { deps, timers } = baseDeps({ readSettings: () => ({ ...DEFAULT_SETTINGS, janitorIntervalMin: Number.NaN }) });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    const janitorEntry = [...timers.pending.values()].find((t) => t.ms === 30 * 60_000);
+    expect(janitorEntry).toBeDefined();
+  });
+
+  test("janitorThresholdHours is clamped to a 0.1h floor, not allowed to hit 0 or go negative", async () => {
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? prefs/x.md\0" }));
+    const owners: Owners = { zones: { "prefs/": { owner: "matt", claimedAt: "2026-01-01T00:00:00.000Z" } } };
+    const { deps } = baseDeps({
+      exec: execFn,
+      readOwners: () => owners,
+      readSettings: () => ({ ...DEFAULT_SETTINGS, janitorThresholdHours: -5 }),
+      now: () => 1_000_000,
+    });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    // firstSeenDirty starts empty, so this run only OPENS the dirty window (now)
+    // rather than crossing an already-negative (i.e. instantly-tripped) threshold.
+    const result = await handle.runNow("manual");
+    expect(result.committed).toBe(false); // no janitor zone yet — first time seen dirty, threshold not yet elapsed
+  });
+
+  test("pushDelaySec of 0 is clamped to a 1s floor", async () => {
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps, timers } = baseDeps({ exec: execFn, readSettings: () => ({ ...DEFAULT_SETTINGS, pushDelaySec: 0 }) });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("manual");
+
+    const pushEntry = [...timers.pending.values()].find((t) => t.ms === 1000);
+    expect(pushEntry).toBeDefined();
+  });
+});
+
+// ─── startup safety ──────────────────────────────────────────────────────────
+
+describe("startHomeSnapshot — startup safety", () => {
+  test("readSettings throwing at construction time does not crash startHomeSnapshot itself", () => {
+    let calls = 0;
+    const readSettings = () => {
+      calls++;
+      if (calls === 1) throw new Error("settings store corrupt");
+      return DEFAULT_SETTINGS;
+    };
+    const { deps, log } = baseDeps({ readSettings });
+
+    expect(() => startHomeSnapshot(deps)).not.toThrow();
+    expect(log.calls.some((c) => c.level === "warn" && c.args[1] === "home-snapshot: failed to read rt.homeSnapshot settings at startup")).toBe(true);
+  });
+
+  test("after a startup-only readSettings throw, the module still becomes ready and functions normally", async () => {
+    let calls = 0;
+    const readSettings = () => {
+      calls++;
+      if (calls === 1) throw new Error("settings store corrupt");
+      return DEFAULT_SETTINGS;
+    };
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps } = baseDeps({ exec: execFn, readSettings });
+    const handle = startHomeSnapshot(deps);
+
+    await handle.ready;
+    const result = await handle.runNow("manual");
+    expect(result.committed).toBe(true);
+  });
+});
+
+// ─── spawn failure vs. "not a repo" ──────────────────────────────────────────
+
+describe("startHomeSnapshot — git spawn failure", () => {
+  test("exitCode -1 (git not on PATH / spawn failure) logs its own message, distinct from 'not a git repository'", async () => {
+    const { fn: execFn } = makeFakeExec([
+      (argv) => (argv[1] === "rev-parse" && argv[2] === "--is-inside-work-tree") ? { stdout: "", stderr: "", exitCode: -1 } : undefined,
+      ...defaultResponders(),
+    ]);
+    const { deps, log } = baseDeps({ exec: execFn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    const warnCall = log.calls.find((c) => c.level === "warn");
+    expect(warnCall?.args[1]).toContain("could not run git");
+    expect(warnCall?.args[1]).not.toContain("is not a git repository");
+
+    const result = await handle.runNow("manual");
+    expect(result.skipped).toBe("init-failed");
+  });
 });

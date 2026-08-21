@@ -738,9 +738,15 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/home.ts",
         fn: "homeClaim",
         args: [
-          { name: "Zone", type: "text", placeholder: "prefs/", hint: "Path (relative to the home repo) the daemon should stop auto-committing" },
+          {
+            name: "Zone",
+            type: "text",
+            placeholder: "prefs/",
+            hint: "Path (relative to the home repo) the daemon should stop auto-committing — a directory (prefs/) or a single file (scripts/deploy.sh)",
+          },
           { name: "Owner", flag: "--owner", type: "text", hint: "Defaults to <you>@<machine-key>" },
           { name: "Note", flag: "--note", type: "text", hint: "Optional free-text reason, visible to anyone reading the owners file" },
+          { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Reassign a zone already claimed by someone else" },
         ],
       },
       release: {
