@@ -17,6 +17,7 @@ import * as run from "../commands/run.ts";
 import * as secrets from "../commands/secrets.ts";
 import * as settings from "../commands/settings.ts";
 import * as settingsKeys from "../commands/settings-keys.ts";
+import * as skills from "../commands/skills.ts";
 import * as sync from "../commands/sync.ts";
 import * as rebase from "../commands/git/rebase.ts";
 import * as reset from "../commands/git/reset.ts";
@@ -47,6 +48,7 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/secrets.ts": secrets,
   "./commands/settings.ts": settings,
   "./commands/settings-keys.ts": settingsKeys,
+  "./commands/skills.ts": skills,
   "./commands/sync.ts": sync,
   "./commands/git/rebase.ts": rebase,
   "./commands/git/reset.ts": reset,
