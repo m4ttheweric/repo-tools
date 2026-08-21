@@ -262,6 +262,22 @@ describe("readVerbRoster", () => {
       { name: "ship", engine: "ship", description: "Use when ready to ship." },
     ]);
   });
+
+  test("throws naming the offending key when a verb name is a path breakout", () => {
+    const rootDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-pack-")));
+    const stubsJsonc = `{
+  "verbs": {
+    "../evil": {
+      "engine": "watch-ci",
+      "description": "Use when watching or triaging CI."
+    }
+  }
+}
+`;
+    writeFile(join(rootDir, "pack", "stubs.jsonc"), stubsJsonc);
+
+    expect(() => readVerbRoster(rootDir)).toThrow(/"\.\.\/evil"/);
+  });
 });
 
 describe("readManifestBindings", () => {
