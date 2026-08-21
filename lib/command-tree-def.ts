@@ -719,6 +719,44 @@ export const TREE: Record<string, CommandNode> = {
           },
         },
       },
+      snapshot: {
+        description: "Run the snapshot daemon now (or show its status with --status)",
+        module: "./commands/home.ts",
+        fn: "homeSnapshot",
+        args: [
+          {
+            name: "Status",
+            flag: "--status",
+            type: "boolean",
+            default: false,
+            hint: "Show status instead of snapshotting: enabled, last run/commit, push state, claimed zones",
+          },
+        ],
+      },
+      claim: {
+        description: "Claim a zone so the daemon leaves it for you to commit by hand",
+        module: "./commands/home.ts",
+        fn: "homeClaim",
+        args: [
+          {
+            name: "Zone",
+            type: "text",
+            placeholder: "prefs/",
+            hint: "Path (relative to the home repo) the daemon should stop auto-committing — a directory (prefs/) or a single file (scripts/deploy.sh)",
+          },
+          { name: "Owner", flag: "--owner", type: "text", hint: "Defaults to <you>@<machine-key>" },
+          { name: "Note", flag: "--note", type: "text", hint: "Optional free-text reason, visible to anyone reading the owners file" },
+          { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Reassign a zone already claimed by someone else" },
+        ],
+      },
+      release: {
+        description: "Release a claimed zone so the daemon resumes auto-committing it",
+        module: "./commands/home.ts",
+        fn: "homeRelease",
+        args: [
+          { name: "Zone", type: "text", placeholder: "prefs/", hint: "Zone to release" },
+        ],
+      },
     },
   },
 

@@ -45,6 +45,7 @@ import { startSocketServer } from "./daemon/socket-server.ts";
 import { startApiServer, broadcast } from "./daemon/api-server.ts";
 import { loadCronConfig, startCron } from "./daemon/cron.ts";
 import { startPollers } from "./daemon/pollers.ts";
+import { startHomeSnapshot } from "./daemon/home-snapshot.ts";
 import {
   initFreshness,
   reconcileFreshness,
@@ -166,6 +167,16 @@ const refreshCache = createCacheRefresher({
   worktreeKick: worktreeReconciler.kick,
 });
 
+// Home-repo snapshot daemon (H2): watches ~/.mattstack/user, auto-commits
+// everything outside a claimed zone, janitor-commits a zone left dirty past
+// its threshold. Construction both builds and arms it (real defaults for
+// everything but log/broadcast) — inert on its own if rt.homeSnapshot is
+// disabled or ~/.mattstack/user isn't a git repo yet.
+const homeSnapshot = startHomeSnapshot({
+  log: loggerHandle.childLogger("home-snapshot"),
+  broadcast: emit,
+});
+
 // ─── Handler context + command routing ───────────────────────────────────────
 
 const handlerCtx: HandlerContext = {
@@ -193,6 +204,7 @@ const routedHandlers = buildRoutedHandlers({
     creationInFlight: worktreeReconciler.creationInFlight,
   },
   eventsBus,
+  homeSnapshot,
 });
 
 async function handleCommand(cmd: string, payload: any, signal?: AbortSignal): Promise<any> {
@@ -244,6 +256,7 @@ const cleanupCore = createCleanup({ servers, hooksGuard, log });
 const cleanup = (): void => {
   cron.dispose();
   eventsBus.close();
+  homeSnapshot.stop();
   cleanupCore();
 };
 
