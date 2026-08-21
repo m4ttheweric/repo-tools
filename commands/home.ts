@@ -4,15 +4,24 @@
  *
  *   rt home init [--dry-run] [--url <remote>]   print, then run, the provisioning plan
  *   rt home key export                          print the age private key once, for a password manager
+ *   rt home snapshot [--status]                 run (or report on) the auto-commit daemon
+ *   rt home claim <zone> [--owner] [--note]      tell the daemon to leave a path alone
+ *   rt home release <zone>                       let the daemon resume auto-committing a path
  *
  * `init` gathers state, prints the plan from lib/home/init-plan.ts, and
  * (unless --dry-run) runs it through lib/home/init-exec.ts's injected seam.
  * `key export` delegates entirely to lib/home/age-key.ts.
+ * `snapshot`/`snapshot --status` are a thin round-trip to the daemon's
+ * `home:snapshot`/`home:snapshot-status` handlers (lib/daemon/handlers/home.ts).
+ * `claim`/`release` write user/snapshot-owners.jsonc directly via
+ * lib/home/snapshot-owners.ts — no daemon round trip — the daemon picks up
+ * the change on its next cycle like any other tracked file.
  */
 
 import { existsSync, readFileSync, readlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
+import { bold, dim, green, red, reset, yellow } from "../lib/ansi.ts";
 import { machineKey, mattstackHome } from "../lib/rt-paths.ts";
 import { buildInitPlan, InvalidMachineKeyError, STATE_DIR_NAMES, type HomeState, type InitStep } from "../lib/home/init-plan.ts";
 import { createRealExecSeam, executeInitPlan, type ExecSeam } from "../lib/home/init-exec.ts";
@@ -25,6 +34,9 @@ import {
   sopsYamlRecipient,
   type AgeKeySeam,
 } from "../lib/home/age-key.ts";
+import { claimZone, InvalidZoneError, normalizeZone, releaseZone } from "../lib/home/snapshot-owners.ts";
+import { daemonQuery, type DaemonResponse } from "../lib/daemon-client.ts";
+import type { SnapshotResult, SnapshotStatus } from "../lib/daemon/home-snapshot.ts";
 
 export const DEFAULT_USER_REPO_URL = "https://github.com/m4ttheweric/mattstack-home";
 
@@ -285,4 +297,164 @@ export async function homeKeyExport(
     }
     throw err;
   }
+}
+
+// ─── snapshot / claim / release ─────────────────────────────────────────────
+
+/** Reaches the daemon's `home:snapshot`/`home:snapshot-status` handlers — daemon-internal, no typed rt-client wrapper, same posture as settings.ts. */
+export interface HomeDaemonSeam {
+  query(cmd: string, payload?: Record<string, any>): Promise<DaemonResponse | null>;
+}
+
+function defaultHomeDaemonSeam(): HomeDaemonSeam {
+  return { query: daemonQuery };
+}
+
+function daemonDownAndExit(command: string): never {
+  console.error(`\n  ${yellow}rt daemon is not running${reset} — start it: ${bold}rt daemon start${reset}\n`);
+  process.exit(1);
+  throw new Error(`unreachable: process.exit did not stop ${command}`);
+}
+
+function formatTimestamp(ms: number): string {
+  return ms === 0 ? "never" : new Date(ms).toLocaleString();
+}
+
+function printSnapshotResult(result: SnapshotResult): void {
+  if (result.skipped) {
+    console.log(`  ${dim}snapshot skipped: ${result.skipped}${reset}`);
+    return;
+  }
+  if (!result.committed) {
+    console.log(`  ${dim}snapshot: no changes${reset}`);
+    return;
+  }
+  console.log(`  ${green}✓${reset} snapshot committed ${dim}${result.sha ? result.sha.slice(0, 8) : "(no sha)"}${reset}`);
+  console.log(`    ${dim}paths: ${result.paths.length > 0 ? result.paths.join(", ") : "(none)"}${reset}`);
+}
+
+function printSnapshotStatus(status: SnapshotStatus): void {
+  const stateIcon = status.enabled ? `${green}●${reset}` : `${dim}○${reset}`;
+  console.log(`  ${stateIcon} home snapshot ${status.enabled ? "enabled" : "disabled"} ${dim}(${status.repoDir})${reset}`);
+  console.log(`    ${dim}watching: ${status.watching ? "yes" : "no"}${reset}`);
+  console.log(`    ${dim}last run: ${formatTimestamp(status.lastRunAt)}${reset}`);
+  console.log(
+    `    ${dim}last commit: ${status.lastCommit ? `${status.lastCommit.sha.slice(0, 8)} ${status.lastCommit.message}` : "none"}${reset}`,
+  );
+  const pushLine = status.pushPending
+    ? "pending"
+    : status.lastPushAt !== 0
+      ? `last pushed ${formatTimestamp(status.lastPushAt)}`
+      : "never pushed";
+  console.log(`    ${dim}push: ${pushLine}${reset}`);
+  if (status.lastPushError) {
+    console.log(`    ${yellow}push error: ${status.lastPushError}${reset}`);
+  }
+  console.log(
+    `    ${dim}claimed zones: ${status.claimedZones.length > 0 ? status.claimedZones.join(", ") : "(none)"}${reset}`,
+  );
+  if (status.ownersError) {
+    console.log(`    ${red}owners file unreadable: ${status.ownersError}${reset}`);
+  }
+}
+
+export async function homeSnapshot(
+  args: string[],
+  _ctx: CommandContext = {},
+  daemon: HomeDaemonSeam = defaultHomeDaemonSeam(),
+): Promise<void> {
+  if (args.includes("--status")) {
+    const res = await daemon.query("home:snapshot-status");
+    if (!res) daemonDownAndExit("rt home snapshot --status");
+    if (!res.ok) {
+      console.error(`rt home snapshot --status: ${res.error ?? "unknown daemon error"}`);
+      process.exit(1);
+    }
+    printSnapshotStatus(res.data as SnapshotStatus);
+    return;
+  }
+
+  const res = await daemon.query("home:snapshot", { reason: "manual" });
+  if (!res) daemonDownAndExit("rt home snapshot");
+  if (!res.ok) {
+    console.error(`rt home snapshot: ${res.error ?? "unknown daemon error"}`);
+    process.exit(1);
+  }
+  printSnapshotResult(res.data as SnapshotResult);
+}
+
+function defaultOwnersPath(): string {
+  return join(mattstackHome(), "user", "snapshot-owners.jsonc");
+}
+
+function defaultOwner(): string {
+  return `${process.env.USER ?? "unknown"}@${machineKey()}`;
+}
+
+/** Splits `args` into `{ zone, owner?, note? }`, tolerating `--flag value` and `--flag=value`. */
+function parseClaimArgs(args: string[]): { zone: string | undefined; owner: string | undefined; note: string | undefined } {
+  let owner: string | undefined;
+  let note: string | undefined;
+  const positional: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--owner") owner = args[++i];
+    else if (arg.startsWith("--owner=")) owner = arg.slice("--owner=".length);
+    else if (arg === "--note") note = args[++i];
+    else if (arg.startsWith("--note=")) note = arg.slice("--note=".length);
+    else positional.push(arg);
+  }
+  return { zone: positional[0], owner, note };
+}
+
+export async function homeClaim(
+  args: string[],
+  _ctx: CommandContext = {},
+  ownersPath: string = defaultOwnersPath(),
+): Promise<void> {
+  const { zone, owner: ownerArg, note } = parseClaimArgs(args);
+  if (!zone) {
+    console.error("rt home claim: a zone is required, e.g. `rt home claim prefs/`");
+    process.exit(1);
+  }
+
+  const owner = ownerArg ?? defaultOwner();
+
+  try {
+    claimZone(ownersPath, zone, owner, note);
+  } catch (err) {
+    if (err instanceof InvalidZoneError) {
+      console.error(`rt home claim: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+
+  console.log(`  ${green}✓${reset} claimed ${bold}${normalizeZone(zone)}${reset} for ${owner}`);
+  console.log(`    ${dim}the daemon snapshots ${ownersPath} like any other path — it'll pick this up on its next cycle${reset}`);
+}
+
+export async function homeRelease(
+  args: string[],
+  _ctx: CommandContext = {},
+  ownersPath: string = defaultOwnersPath(),
+): Promise<void> {
+  const zone = args.find((arg) => !arg.startsWith("--"));
+  if (!zone) {
+    console.error("rt home release: a zone is required, e.g. `rt home release prefs/`");
+    process.exit(1);
+  }
+
+  try {
+    releaseZone(ownersPath, zone);
+  } catch (err) {
+    if (err instanceof InvalidZoneError) {
+      console.error(`rt home release: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+
+  console.log(`  ${green}✓${reset} released ${bold}${normalizeZone(zone)}${reset}`);
+  console.log(`    ${dim}the daemon snapshots ${ownersPath} like any other path — it'll pick this up on its next cycle${reset}`);
 }
