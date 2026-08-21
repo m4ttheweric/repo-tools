@@ -29,9 +29,12 @@ gated on other lanes:
   ("no --update-dir…") until this and L3's `MATTSTACK_APPCAST_URL` hook land.
 - **`run/xcuitest.sh`** (layer (b) via XCUITest instead of AppleScript) —
   gated on Xcode being present and a `--xcode`-flavour golden; `--xcode` is
-  not yet a `build-golden.sh` flag.
+  not yet a `build-golden.sh` flag. When T13 lands, re-add the
+  `build-golden --xcode --dry-run` and `run/xcuitest.sh` usage lines to
+  `check-vm-scripts.sh` (the `bash -n` glob picks the file up automatically,
+  the behavioural gates do not return by themselves).
 
-Two other things worth knowing before running this layer:
+A few other things worth knowing before running this layer:
 - **fzf**: nothing in this layer provisions it into a golden or a clean-room
   guest. The intended closer is L4 bundling it under `Contents/Helpers/` with
   a `deps.lock` (pending confirmation); if that doesn't land, `rt verify`'s
