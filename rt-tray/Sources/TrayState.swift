@@ -11,7 +11,7 @@ class TrayState: ObservableObject {
     @Published var statusText: String = "Daemon: checking…"
     /// SMAppService wants the user to approve the daemon in Login Items.
     @Published var needsApproval: Bool = false
-    /// Set when UpdateChecker finds a newer release (its tag name).
+    /// Set when UpdaterController finds a newer release (its version string).
     @Published var updateAvailable: String? = nil
 
     var healthColor: Color {

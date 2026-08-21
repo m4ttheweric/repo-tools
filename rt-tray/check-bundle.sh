@@ -103,8 +103,15 @@ if [ -f "$PROD_AGENT" ]; then
         "$(/usr/libexec/PlistBuddy -c 'Print :Label' "$PROD_AGENT" 2>/dev/null)"
     assert_eq "prod agent AssociatedBundleIdentifiers[0]" "com.mattstack.app" \
         "$(/usr/libexec/PlistBuddy -c 'Print :AssociatedBundleIdentifiers:0' "$PROD_AGENT" 2>/dev/null)"
-    assert_eq "prod agent KeepAlive" "true" \
-        "$(/usr/libexec/PlistBuddy -c 'Print :KeepAlive' "$PROD_AGENT" 2>/dev/null)"
+    # KeepAlive must be a DICT shaped { SuccessfulExit = false }, not a bool.
+    KA_PRINT=$(/usr/libexec/PlistBuddy -c 'Print :KeepAlive' "$PROD_AGENT" 2>&1)
+    if echo "$KA_PRINT" | grep -q "SuccessfulExit"; then
+        pass "prod agent KeepAlive is a dict containing SuccessfulExit"
+        assert_eq "prod agent KeepAlive:SuccessfulExit" "false" \
+            "$(/usr/libexec/PlistBuddy -c 'Print :KeepAlive:SuccessfulExit' "$PROD_AGENT" 2>/dev/null)"
+    else
+        fail "prod agent KeepAlive is not a dict (got: $KA_PRINT)"
+    fi
 else
     fail "prod agent plist com.rt.daemon.plist missing at $PROD_AGENT"
 fi
@@ -319,10 +326,10 @@ assert_src_has "menu-bar title carries a dev mark when MSDevBuild is true" \
     'if BundleFlavor.isDevBuild {'
 assert_src_has "BundleFlavor reads Info.plist MSDevBuild" \
     'forInfoDictionaryKey: "MSDevBuild"'
-if awk '/func checkForUpdates/,/let urlString/' Sources/UpdateChecker.swift | grep -q 'BundleFlavor.isDevBuild'; then
-    pass "checkForUpdates returns early on a dev build (silent even when user-initiated)"
+if grep -q 'UpdatePolicy.shouldStartUpdater(isDevBuild: isDevBuild' Sources/Updates/UpdaterController.swift; then
+    pass "UpdaterController gates Sparkle on the dev flavor"
 else
-    fail "checkForUpdates does not short-circuit on BundleFlavor.isDevBuild"
+    fail "UpdaterController does not gate Sparkle on BundleFlavor.isDevBuild"
 fi
 
 # ─── The shipped binary really carries this code ───────────────────────────

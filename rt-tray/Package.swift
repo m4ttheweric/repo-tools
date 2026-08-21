@@ -6,6 +6,9 @@ let package = Package(
     platforms: [
         .macOS(.v14)
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.6"),
+    ],
     targets: [
         .target(
             name: "MattstackCore",
@@ -13,7 +16,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "rt-tray",
-            dependencies: ["MattstackCore"],
+            dependencies: [
+                "MattstackCore",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
             path: "Sources",
             swiftSettings: [
                 .define("DEBUG", .when(configuration: .debug)),
@@ -22,6 +28,9 @@ let package = Package(
                 .linkedFramework("AppKit"),
                 .linkedFramework("UserNotifications"),
                 .linkedFramework("ServiceManagement"),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker",
+                              "@executable_path/../../artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64"]),
             ]
         ),
         .executableTarget(

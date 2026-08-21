@@ -27,7 +27,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // ── State ───────────────────────────────────────────────────────────────
     private var currentHealth: DaemonHealth = .unknown
-    private let updateChecker = UpdateChecker.shared
+    let updater = UpdaterController(isDevBuild: BundleFlavor.isDevBuild, isBusy: { false })
 
     // MARK: - Lifecycle
 
@@ -85,7 +85,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         statusTimer?.invalidate()
         notificationTimer?.invalidate()
-        updateChecker.stopChecking()
         TrayServer.shared.stop()
     }
 
@@ -346,7 +345,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func checkForUpdates() {
-        updateChecker.checkForUpdates(userInitiated: true)
+        updater.checkForUpdatesFromMenu()
     }
 
     @objc private func showProcessPanel() {
@@ -402,33 +401,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Auto-Update
 
     private func setupAutoUpdate() {
-        updateChecker.onUpdateAvailable = { [weak self] release in
-            self?.handleUpdateAvailable(release)
+        updater.onUpdateAvailable = { version in
+            TrayState.shared.updateAvailable = version.isEmpty ? nil : version
         }
-        updateChecker.startPeriodicChecks()
-    }
-
-    private func handleUpdateAvailable(_ release: GitHubRelease) {
-        // Surface in the panel's gear menu
-        TrayState.shared.updateAvailable = release.tagName
-
-        if updateChecker.isDevBuild { return }
-
-        // Fire native notification — sound is played manually so the
-        // category→sound mapping stays in one place (NotificationManager).
-        let content = UNMutableNotificationContent()
-        content.title = "mattstack Update Available"
-        content.body = "\(release.tagName) is available — run: rt update"
-        content.sound = nil
-        content.categoryIdentifier = "UPDATE"
-        NotificationManager.playSound(for: "UPDATE")
-
-        let request = UNNotificationRequest(
-            identifier: "rt-update-\(release.tagName)",
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(request)
     }
 
     // MARK: - Polling
