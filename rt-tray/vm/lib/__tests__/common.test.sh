@@ -29,5 +29,18 @@ vm_render_report
 check "report lists skip"      'grep -q "beta.*skip.*no dmg given" "$VM_RUN_DIR/report.md"'
 check "report says 1 failed"   'grep -q "1 failed" "$VM_RUN_DIR/report.md"'
 
+# reason with an embedded quote must round-trip through the JSON-escaping
+# writer and the report's unescaping reader without truncating the row.
+vm_phase_begin delta; vm_phase_end delta fail 'said "no" once'
+check "ledger escapes embedded quote" 'grep -qF "\"phase\":\"delta\",\"status\":\"fail\",\"reason\":\"said \\\"no\\\" once\"" "$VM_RUN_DIR/phases.jsonl"'
+vm_render_report
+check "report unescapes quoted reason" 'grep -q "delta.*fail.*said \"no\" once" "$VM_RUN_DIR/report.md"'
+check "report has no raw json passthrough" '! grep -q "{\"phase\":\"delta\"" "$VM_RUN_DIR/report.md"'
+
+# vm_ssh_try must fail non-fatally (return, not vm_die's exit) so vm_wait_ssh
+# can retry through the boot window instead of killing the caller.
+check "vm_ssh_try fails without killing script"  '! vm_ssh_try tester no-such-vm-xyz true 2>/dev/null'
+check "vm_wait_ssh times out without dying"      '! vm_wait_ssh tester no-such-vm-xyz 2'
+
 rm -rf "$VM_ARTIFACTS"
 [ "$fails" -eq 0 ] && echo "common.test.sh: all ok" || { echo "common.test.sh: $fails failed"; exit 1; }
