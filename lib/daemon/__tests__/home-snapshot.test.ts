@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -24,6 +24,7 @@ type Responder = (argv: string[]) => RunResult | undefined;
 function defaultResponders(opts: {
   isRepo?: boolean;
   branch?: string;
+  branchExit?: number;
   statusZ?: string;
   commitExit?: number;
   addExit?: number;
@@ -32,14 +33,14 @@ function defaultResponders(opts: {
   sha?: string;
 } = {}): Responder[] {
   const {
-    isRepo = true, branch = "main", statusZ = "", commitExit = 0, addExit = 0, pushExit = 0, pushStderr = "", sha = "abc123",
+    isRepo = true, branch = "main", branchExit = 0, statusZ = "", commitExit = 0, addExit = 0, pushExit = 0, pushStderr = "", sha = "abc123",
   } = opts;
   return [
     (argv) => (argv[1] === "rev-parse" && argv[2] === "--is-inside-work-tree")
       ? { stdout: isRepo ? "true\n" : "", stderr: isRepo ? "" : "fatal: not a git repository", exitCode: isRepo ? 0 : 128 }
       : undefined,
     (argv) => (argv[1] === "rev-parse" && argv[2] === "--abbrev-ref" && argv[3] === "HEAD")
-      ? { stdout: `${branch}\n`, stderr: "", exitCode: 0 }
+      ? { stdout: `${branch}\n`, stderr: "", exitCode: branchExit }
       : undefined,
     (argv) => (argv[1] === "rev-parse" && argv[2] === "HEAD")
       ? { stdout: `${sha}\n`, stderr: "", exitCode: 0 }
@@ -51,7 +52,7 @@ function defaultResponders(opts: {
   ];
 }
 
-/** Records both argv and opts (finding 8: assert cwd/timeoutMs actually reach exec, not just the command shape). */
+/** Records both argv and opts, so a test can assert cwd/timeoutMs actually reach exec, not just the command shape. */
 function makeFakeExec(responders: Responder[]) {
   const calls: string[][] = [];
   const optsLog: ExecOpts[] = [];
@@ -67,7 +68,13 @@ function makeFakeExec(responders: Responder[]) {
   return { fn, calls, optsLog };
 }
 
-/** Same as makeFakeExec, but the responder set can be swapped mid-test (finding 7: a test double the module actually calls through the SAME function reference, unlike mutating the deps object after construction — startHomeSnapshot copies its deps at construction time, so that mutation is a no-op). */
+/**
+ * Same as makeFakeExec, but the responder set can be swapped mid-test. The
+ * module captures `exec` once at construction and never re-reads the deps
+ * object afterward, so a test that wants to change exec's BEHAVIOR partway
+ * through needs a double whose function reference stays fixed while what it
+ * does underneath changes.
+ */
 function makeSwitchableExec(initial: Responder[]) {
   let responders = initial;
   const calls: string[][] = [];
@@ -80,6 +87,24 @@ function makeSwitchableExec(initial: Responder[]) {
     return { stdout: "", stderr: "", exitCode: 0 };
   };
   return { fn, calls, setResponders: (r: Responder[]) => { responders = r; } };
+}
+
+/** A gated exec double: every call answers immediately except `git push`, which blocks on `gate` until the test releases it — lets a test hold one push "in flight" while driving a second push attempt. */
+function makeGatedPushExec(gate: Promise<void>, opts: { statusZ?: string } = {}) {
+  const calls: string[][] = [];
+  const fn = async (argv: [string, ...string[]]): Promise<RunResult> => {
+    calls.push([...argv]);
+    if (argv[1] === "push") {
+      await gate;
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+    for (const r of defaultResponders({ statusZ: opts.statusZ ?? "?? a.txt\0" })) {
+      const res = r(argv);
+      if (res) return res;
+    }
+    return { stdout: "", stderr: "", exitCode: 0 };
+  };
+  return { fn, calls };
 }
 
 interface PendingTimer { cb: () => void; ms: number }
@@ -95,12 +120,7 @@ function makeFakeTimers() {
   const clearTimeoutFn = (id: ReturnType<typeof setTimeout>) => {
     pending.delete(id as unknown as number);
   };
-  function fireAll(): void {
-    const cbs = [...pending.values()];
-    pending.clear();
-    for (const t of cbs) t.cb();
-  }
-  /** Fires only timers matching `predicate`, leaving everything else (e.g. the janitor interval) pending — needed once schedulePush's cancel-the-standing-retry behavior makes an incidental extra timer firing alongside the one under test order-sensitive. */
+  /** Fires only timers matching `predicate`, leaving everything else (e.g. the janitor interval) pending — a test driving one specific timer must not incidentally trigger an unrelated one. */
   function fire(predicate: (t: PendingTimer) => boolean): void {
     const matched: PendingTimer[] = [];
     for (const [id, t] of pending.entries()) {
@@ -108,7 +128,7 @@ function makeFakeTimers() {
     }
     for (const t of matched) t.cb();
   }
-  return { setTimeoutFn, clearTimeoutFn, pending, fireAll, fire };
+  return { setTimeoutFn, clearTimeoutFn, pending, fire };
 }
 
 function makeFakeWatch() {
@@ -140,6 +160,18 @@ async function flushAsync(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+// baseDeps' default statePath points at a real (but throwaway) temp
+// directory, not a bogus literal like "/fake/state.json" — persistState
+// does a real mkdirSync+writeFileSync+rename, and a fake, unwritable path
+// would silently fail (caught and warned, per its own design) rather than
+// exercising the real write path these tests want to cover.
+const createdStateDirs: string[] = [];
+afterAll(() => {
+  for (const dir of createdStateDirs) {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+  }
+});
+
 function baseDeps(overrides: Partial<HomeSnapshotDeps> = {}): {
   deps: HomeSnapshotDeps;
   log: ReturnType<typeof fakeLog>;
@@ -153,6 +185,8 @@ function baseDeps(overrides: Partial<HomeSnapshotDeps> = {}): {
   const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders());
   const watch = makeFakeWatch();
   const timers = makeFakeTimers();
+  const stateDir = mkdtempSync(join(tmpdir(), "rt-home-snapshot-fakestate-"));
+  createdStateDirs.push(stateDir);
 
   const deps: HomeSnapshotDeps = {
     log,
@@ -165,7 +199,7 @@ function baseDeps(overrides: Partial<HomeSnapshotDeps> = {}): {
     now: () => 1_000_000,
     readSettings: () => DEFAULT_SETTINGS,
     readOwners: () => NO_OWNERS,
-    statePath: "/fake/state.json",
+    statePath: join(stateDir, "state.json"),
     ...overrides,
   };
 
@@ -181,9 +215,10 @@ describe("startHomeSnapshot — inert paths", () => {
     await handle.ready;
 
     expect(handle.status().enabled).toBe(false);
+    expect(handle.status().watching).toBe(false);
     expect(watch.calls.length).toBe(0);
     expect(timers.pending.size).toBe(0);
-    // The is-a-repo probe still runs (so a later live re-enable's manual/janitor-triggered runs have already confirmed the directory) — nothing beyond it.
+    // The is-a-repo probe still runs (so a later live re-enable's manual run has already confirmed the directory) — nothing beyond it.
     expect(execCalls.length).toBe(1);
     expect(log.calls.filter((c) => c.level === "info").length).toBe(1);
 
@@ -219,7 +254,7 @@ describe("startHomeSnapshot — inert paths", () => {
   });
 });
 
-// ─── live enable/disable (finding 1) ────────────────────────────────────────
+// ─── live enable/disable ─────────────────────────────────────────────────────
 
 describe("startHomeSnapshot — live enabled toggle", () => {
   test("a live rt.homeSnapshot.enabled=false stops auto-commits on the very next run, no daemon restart", async () => {
@@ -248,6 +283,38 @@ describe("startHomeSnapshot — live enabled toggle", () => {
     enabled = true;
     expect(handle.status().enabled).toBe(true);
   });
+
+  test("a daemon that started disabled lazily arms the watcher and janitor timer on its first run after a live re-enable", async () => {
+    let enabled = false;
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps, watch, timers } = baseDeps({ exec: execFn, readSettings: () => ({ ...DEFAULT_SETTINGS, enabled }) });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    expect(handle.status().watching).toBe(false);
+    expect(watch.calls.length).toBe(0);
+
+    enabled = true;
+    const result = await handle.runNow("manual");
+
+    expect(result.committed).toBe(true);
+    expect(handle.status().watching).toBe(true);
+    expect(watch.calls).toEqual([{ path: "/fake/repo", options: { recursive: true } }]);
+    const janitorEntry = [...timers.pending.values()].find((t) => t.ms === DEFAULT_SETTINGS.janitorIntervalMin * 60_000);
+    expect(janitorEntry).toBeDefined();
+  });
+
+  test("an already-armed daemon does not re-arm a second watcher on later runs", async () => {
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
+    const { deps, watch } = baseDeps({ exec: execFn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+    expect(watch.calls.length).toBe(1);
+
+    await handle.runNow("manual");
+
+    expect(watch.calls.length).toBe(1);
+  });
 });
 
 // ─── watcher arming + debounce ───────────────────────────────────────────────
@@ -259,6 +326,7 @@ describe("startHomeSnapshot — watcher", () => {
     await handle.ready;
 
     expect(watch.calls).toEqual([{ path: "/fake/repo", options: { recursive: true } }]);
+    expect(handle.status().watching).toBe(true);
     // One pending timer: the janitor interval (debounceSec*1000 == distinguishable via ms below).
     const janitorEntry = [...timers.pending.values()].find((t) => t.ms === DEFAULT_SETTINGS.janitorIntervalMin * 60_000);
     expect(janitorEntry).toBeDefined();
@@ -303,7 +371,7 @@ describe("startHomeSnapshot — watcher", () => {
     expect(timers.pending.size).toBe(before + 1);
   });
 
-  test("finding 4 — readSettings is resolved once per debounce window, not once per fs event", async () => {
+  test("readSettings is resolved once per debounce window, not once per fs event", async () => {
     let readSettingsCalls = 0;
     const readSettings = () => { readSettingsCalls++; return DEFAULT_SETTINGS; };
     const { deps, watch, timers } = baseDeps({ readSettings });
@@ -349,8 +417,8 @@ describe("startHomeSnapshot — watcher", () => {
 // ─── preflight ────────────────────────────────────────────────────────────
 
 describe("startHomeSnapshot — preflight", () => {
-  test("detached HEAD skips the cycle with one warn, no add/commit", async () => {
-    const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders({ branch: "HEAD" }));
+  test("detached HEAD (rc 0, prints HEAD) skips the cycle with one warn, no add/commit", async () => {
+    const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders({ branch: "HEAD", branchExit: 0 }));
     const { deps, log } = baseDeps({ exec: execFn });
     const handle = startHomeSnapshot(deps);
     await handle.ready;
@@ -360,6 +428,19 @@ describe("startHomeSnapshot — preflight", () => {
     expect(result.skipped).toBe("detached");
     expect(execCalls.some((c) => c[1] === "add" || c[1] === "commit")).toBe(false);
     expect(log.calls.some((c) => c.level === "warn")).toBe(true);
+  });
+
+  test("an unborn branch (rc!=0, also prints HEAD) is NOT treated as detached — it still takes a first snapshot", async () => {
+    const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders({ branch: "HEAD", branchExit: 128, statusZ: "?? a.txt\0" }));
+    const { deps } = baseDeps({ exec: execFn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    const result = await handle.runNow("manual");
+
+    expect(result.skipped).toBeUndefined();
+    expect(result.committed).toBe(true);
+    expect(execCalls.some((c) => c[1] === "commit")).toBe(true);
   });
 
   test("a MERGE_HEAD present skips the cycle", async () => {
@@ -393,7 +474,7 @@ describe("startHomeSnapshot — preflight", () => {
     }
   });
 
-  test("finding 10 — a .git FILE (linked worktree) resolves the real gitdir via rev-parse --git-dir before checking MERGE_HEAD", async () => {
+  test("a .git FILE (linked worktree) resolves the real gitdir via rev-parse --git-dir before checking MERGE_HEAD", async () => {
     const repoDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-gitdir-")));
     const realGitDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-realgitdir-")));
     writeFileSync(join(repoDir, ".git"), `gitdir: ${realGitDir}\n`);
@@ -473,21 +554,21 @@ describe("startHomeSnapshot — commit shapes", () => {
     const addIdx = execCalls.findIndex((c) => c[1] === "add");
     const commitIdx = execCalls.findIndex((c) => c[1] === "commit");
     expect(execCalls[addIdx]).toEqual(["git", "add", "-A", "--", ".", ":(exclude)prefs/", ":(exclude)secrets/"]);
-    // Finding 6: the commit is pathspec-restricted too — a plain `git commit`
-    // would sweep in anything staged outside this add (e.g. by the user, or
-    // inside a claimed zone), regardless of what THIS add excluded.
+    // The commit is pathspec-restricted too, not just the add — a plain
+    // `git commit` would otherwise sweep in anything staged outside this
+    // add (e.g. by the user, or inside a claimed zone), regardless of what
+    // THIS add excluded.
     expect(execCalls[commitIdx]).toEqual([
       "git", "commit", "-q", "-m", "snapshot (manual): notes",
       "--", ".", ":(exclude)prefs/", ":(exclude)secrets/",
     ]);
-    // Finding 8: opts actually reach exec, not just the argv shape.
     expect(optsLog[addIdx]?.cwd).toBe("/fake/repo");
     expect(optsLog[addIdx]?.timeoutMs).toBeGreaterThan(0);
     expect(optsLog[commitIdx]?.cwd).toBe("/fake/repo");
     expect(optsLog[commitIdx]?.timeoutMs).toBeGreaterThan(0);
   });
 
-  test("finding 5 — reason 'manual' prefixes the message; reason 'watch' leaves it bare", async () => {
+  test("reason 'manual' prefixes the commit message; reason 'watch' leaves it bare", async () => {
     const { fn: manualExec, calls: manualCalls } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0" }));
     const { deps: manualDeps } = baseDeps({ exec: manualExec });
     const manualHandle = startHomeSnapshot(manualDeps);
@@ -503,7 +584,7 @@ describe("startHomeSnapshot — commit shapes", () => {
     expect(watchCalls.find((c) => c[1] === "commit")).toContain("snapshot: a.txt");
   });
 
-  test("commit message and no-op when there is nothing to auto-commit", async () => {
+  test("nothing to auto-commit — no-op, no add/commit, skipped:'no-changes'", async () => {
     const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders({ statusZ: "" }));
     const { deps, broadcasts } = baseDeps({ exec: execFn });
     const handle = startHomeSnapshot(deps);
@@ -512,6 +593,7 @@ describe("startHomeSnapshot — commit shapes", () => {
     const result = await handle.runNow("manual");
 
     expect(result.committed).toBe(false);
+    expect(result.skipped).toBe("no-changes");
     expect(execCalls.some((c) => c[1] === "add" || c[1] === "commit")).toBe(false);
     expect(broadcasts.length).toBe(0);
   });
@@ -608,7 +690,25 @@ describe("startHomeSnapshot — push", () => {
     expect(retryEntry).toBeDefined();
   });
 
-  test("finding 7 — a pending push is retried on the next run even though that run commits nothing new", async () => {
+  test("a credentialed remote URL in a push failure's stderr is redacted before it reaches status() or a log line", async () => {
+    const credentialedStderr = "fatal: unable to access 'https://alice:s3cr3t-token@github.com/acme/user.git/': The requested URL returned error: 403";
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? a.txt\0", pushExit: 1, pushStderr: credentialedStderr }));
+    const { deps, timers, log } = baseDeps({ exec: execFn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+
+    expect(handle.status().lastPushError).not.toContain("s3cr3t-token");
+    expect(handle.status().lastPushError).toContain("https://<redacted>@github.com");
+
+    const warnCall = log.calls.find((c) => c.level === "warn" && c.args[1] === "home-snapshot: push failed");
+    expect(JSON.stringify(warnCall?.args)).not.toContain("s3cr3t-token");
+  });
+
+  test("a pending push is retried on the next run even though that run commits nothing new", async () => {
     const switchable = makeSwitchableExec(defaultResponders({ statusZ: "?? a.txt\0", pushExit: 1 }));
     const { deps, timers } = baseDeps({ exec: switchable.fn });
     const handle = startHomeSnapshot(deps);
@@ -628,7 +728,7 @@ describe("startHomeSnapshot — push", () => {
     expect(pushEntry).toBeDefined();
   });
 
-  test("finding 9 — a new commit after a failed push cancels the standing retry instead of stacking two pushes", async () => {
+  test("a new commit after a failed push cancels the standing retry instead of stacking two pushes", async () => {
     const switchable = makeSwitchableExec(defaultResponders({ statusZ: "?? a.txt\0", pushExit: 1 }));
     const { deps, timers } = baseDeps({ exec: switchable.fn });
     const handle = startHomeSnapshot(deps);
@@ -648,7 +748,40 @@ describe("startHomeSnapshot — push", () => {
     expect(pending.some((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 5 * 1000)).toBe(false);
   });
 
-  test("finding 9 — stop() during an in-flight run prevents it from arming a push timer afterward", async () => {
+  test("a second commit's push, arriving while the first push is still in flight, is not dropped — it runs once the first settles", async () => {
+    let releasePush!: () => void;
+    const gate = new Promise<void>((resolve) => { releasePush = resolve; });
+    const gated = makeGatedPushExec(gate);
+    const { deps, timers } = baseDeps({ exec: gated.fn });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    // Commit 1, then fire its push timer — the push call blocks on `gate`.
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+    expect(gated.calls.filter((c) => c[1] === "push").length).toBe(1);
+
+    // Commit 2 lands while push 1 is still gated, and its own push timer fires too.
+    await handle.runNow("manual");
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+
+    // Coalesced into the in-flight push, not a second overlapping `git push` process.
+    expect(gated.calls.filter((c) => c[1] === "push").length).toBe(1);
+
+    // Releasing push 1 must re-schedule a push for the commit that arrived meanwhile.
+    releasePush();
+    await flushAsync();
+    const rescheduled = [...timers.pending.values()].find((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    expect(rescheduled).toBeDefined();
+
+    timers.fire((t) => t.ms === DEFAULT_SETTINGS.pushDelaySec * 1000);
+    await flushAsync();
+    expect(gated.calls.filter((c) => c[1] === "push").length).toBe(2);
+  });
+
+  test("stop() during an in-flight run prevents it from arming a push timer afterward", async () => {
     let releaseCommit!: () => void;
     const gate = new Promise<void>((resolve) => { releaseCommit = resolve; });
     const exec: NonNullable<HomeSnapshotDeps["exec"]> = async (argv) => {
@@ -676,7 +809,7 @@ describe("startHomeSnapshot — push", () => {
   });
 });
 
-// ─── state file round-trip (finding 3) ──────────────────────────────────────
+// ─── state file round-trip ───────────────────────────────────────────────────
 
 describe("startHomeSnapshot — state persistence", () => {
   test("nextFirstSeenDirty is persisted atomically (temp file + rename, no stray .tmp) and reloaded by a fresh handle", async () => {
@@ -755,6 +888,7 @@ describe("startHomeSnapshot — stop", () => {
 
     expect(watch.isClosed()).toBe(true);
     expect(timers.pending.size).toBe(0);
+    expect(handle.status().watching).toBe(false);
   });
 });
 
@@ -826,7 +960,7 @@ describe("startHomeSnapshot — real git integration", () => {
     }
   }, 15_000);
 
-  test("finding 6 — content already staged inside a claimed zone stays staged, not committed", async () => {
+  test("a staged file inside a claimed zone survives a snapshot uncommitted", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-staged-zone-")));
     const { repoDir } = initRepoWithOrigin(root);
     const statePath = join(root, "state.json");

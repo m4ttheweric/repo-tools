@@ -45,6 +45,8 @@ export interface SnapshotResult {
 
 export interface SnapshotStatus {
   enabled: boolean;
+  /** True once the fs watcher is actually armed — false for a daemon that started with enabled:false and hasn't yet taken a manual run to lazily arm it (see doRun's `!watcher` check). */
+  watching: boolean;
   repoDir: string;
   lastRunAt: number;
   lastCommit: { sha: string; message: string; at: number } | null;
@@ -97,6 +99,11 @@ const PUSH_TIMEOUT_MS = 30_000;
 
 function ownersPathFor(repoDir: string): string {
   return join(repoDir, "snapshot-owners.jsonc");
+}
+
+/** A push failure's stderr can quote the remote URL verbatim (`https://user:token@host/...`) — this must never reach status() or a log line unredacted. */
+function redactCredentials(text: string): string {
+  return text.replace(/:\/\/[^/@\s]+@/g, "://<redacted>@");
 }
 
 /** A missing file is the normal first-run case (no warn); a present-but-unparseable file is a real loss of the janitor-threshold clock and must be loud, not silently swallowed. */
@@ -157,6 +164,8 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   let lastCommit: { sha: string; message: string; at: number } | null = null;
   let pushPending = false;
   let pushInFlight: Promise<void> | null = null;
+  /** A commit landed (or a retry is due) while a push was already running — the in-flight one has already captured its HEAD snapshot, so this must not be silently coalesced away or the new commit never gets pushed until some unrelated future commit happens to re-arm the timer. */
+  let pushAgainRequested = false;
   let lastPushAt = 0;
   let lastPushError: string | null = null;
   let firstSeenDirty: Record<string, number> = loadState(deps.statePath, deps.log);
@@ -167,10 +176,12 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     // Logged once, informationally, but NOT sticky: `disabledReason` stays
     // null so a live `rt.homeSnapshot.enabled` flip is picked up by doRun's
     // own top-of-run check without a daemon restart (only "not-a-repo" and
-    // "init-failed" below are permanent — a directory's git-repo-ness and a
-    // watcher's arming outcome don't change mid-process the way a setting
-    // can).
-    deps.log.info("home-snapshot: disabled (rt.homeSnapshot.enabled=false) at startup — the watcher and janitor timer stay unarmed; re-enabling still needs a daemon restart to pick those up, though a manual run (IPC) already honors a live setting flip");
+    // "init-failed" below are permanent — a directory's git-repo-ness
+    // doesn't change mid-process the way a setting can). The watcher/janitor
+    // timer stay unarmed for now; doRun lazily arms them on its own first
+    // call once it observes a live re-enable, so a manual run reaching that
+    // point also leaves the daemon watching from then on — no restart needed.
+    deps.log.info("home-snapshot: disabled (rt.homeSnapshot.enabled=false) at startup — watcher/janitor stay unarmed until a run observes a live re-enable");
   }
 
   let resolveReady!: () => void;
@@ -179,6 +190,20 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   });
 
   void init();
+
+  /** Arms the watcher + janitor timer; on a throw (fs.watch EMFILE/ENOSPC/ENOENT), marks the module permanently inert instead of leaving it half-armed. Shared by init() (the normal startup path) and doRun's lazy-arm (a daemon that started disabled and was later live re-enabled). */
+  function tryArm(): boolean {
+    try {
+      armWatcher();
+      scheduleJanitor();
+      return true;
+    } catch (err) {
+      disabledReason = "init-failed";
+      deps.log.warn({ err }, "home-snapshot: watcher arming failed; inert");
+      if (watcher) { try { watcher.close(); } catch { /* already closed */ } watcher = null; }
+      return false;
+    }
+  }
 
   async function init(): Promise<void> {
     try {
@@ -194,17 +219,15 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
         return;
       }
       if (deps.readSettings().enabled !== false) {
-        armWatcher();
-        scheduleJanitor();
+        tryArm();
       }
     } catch (err) {
-      // fs.watch itself can throw synchronously (EMFILE/ENOSPC/ENOENT) —
-      // without this catch that escapes as an unhandled rejection and
-      // resolveReady() below never runs, so every runNow() (including the
-      // home:snapshot IPC handler) awaits readyPromise forever.
+      // The is-inside-work-tree exec call itself never throws per its own
+      // contract, but this still guards resolveReady() unconditionally —
+      // without it, any surprise here would leave every runNow() (including
+      // the home:snapshot IPC handler) awaiting readyPromise forever.
       disabledReason = "init-failed";
       deps.log.warn({ err }, "home-snapshot: startup arming failed; inert");
-      if (watcher) { try { watcher.close(); } catch { /* already closed */ } watcher = null; }
     } finally {
       resolveReady();
     }
@@ -268,15 +291,35 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     }, retryMs);
   }
 
-  /** In-flight guard mirrors runNow's: the push timer and the retry timer can both fire close together (schedulePush cancels a *standing* retry, but not one already mid-flight), so doPush itself must not let two `git push` processes overlap. */
+  /**
+   * In-flight guard mirrors runNow's: the push timer and the retry timer can
+   * both fire close together (schedulePush cancels a *standing* retry, but
+   * not one already mid-flight), so doPush itself must not let two `git
+   * push` processes overlap.
+   *
+   * A call that arrives while one is already running does NOT just get
+   * coalesced away, though: the in-flight push already captured its HEAD
+   * before this call arrived, so a commit that landed in between would
+   * otherwise sit unpushed until some unrelated future commit re-arms the
+   * timer. `pushAgainRequested` remembers that a caller showed up mid-flight
+   * so the finally block below re-schedules a push once the current one
+   * settles.
+   */
   async function doPush(): Promise<void> {
-    if (pushInFlight) return pushInFlight;
+    if (pushInFlight) {
+      pushAgainRequested = true;
+      return pushInFlight;
+    }
     const p = doPushInner();
     pushInFlight = p;
     try {
       await p;
     } finally {
       pushInFlight = null;
+      if (pushAgainRequested) {
+        pushAgainRequested = false;
+        schedulePush();
+      }
     }
   }
 
@@ -295,9 +338,14 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
         pushRetryTimer = null;
       }
     } else {
+      // `origin`'s URL can carry embedded credentials, and git echoes it
+      // verbatim into a failure message ("fatal: unable to access
+      // 'https://user:token@host/...'") — redact before it ever reaches
+      // status() or a log line, not after.
+      const redactedStderr = redactCredentials(result.stderr);
       pushPending = true;
-      lastPushError = result.stderr;
-      deps.log.warn({ stderr: result.stderr }, "home-snapshot: push failed");
+      lastPushError = redactedStderr;
+      deps.log.warn({ stderr: redactedStderr }, "home-snapshot: push failed");
       schedulePushRetry();
     }
   }
@@ -320,8 +368,21 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
 
     const settings = deps.readSettings();
     if (settings.enabled === false) {
-      deps.log.info("home-snapshot: disabled via rt.homeSnapshot.enabled=false; skipping cycle");
+      // debug, not info/warn: this fires on every debounce/janitor tick
+      // while the watcher stays armed but the setting is off — an info line
+      // per tick would spam the log for as long as the user leaves it
+      // disabled.
+      deps.log.debug("home-snapshot: disabled via rt.homeSnapshot.enabled=false; skipping cycle");
       return { committed: false, sha: null, paths: [], reason, skipped: "disabled" };
+    }
+    // Lazily arms a daemon that started with enabled:false and has since
+    // been live re-enabled — init() only arms once, at startup, gated on
+    // the settings value AT THAT TIME. `!watcher` is false on every normal
+    // (started-enabled) run, so this is a no-op there.
+    if (!watcher && !stopped) {
+      if (!tryArm()) {
+        return { committed: false, sha: null, paths: [], reason, skipped: "init-failed" };
+      }
     }
 
     const branch = await deps.exec(["git", "rev-parse", "--abbrev-ref", "HEAD"], {
@@ -329,7 +390,12 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       timeoutMs: GIT_TIMEOUT_MS,
       stderr: "pipe",
     });
-    if (branch.stdout.trim() === "HEAD") {
+    // An unborn branch (freshly `git init`'d, no commits yet) ALSO prints
+    // "HEAD" here, but with a non-zero exit code (git can't resolve the
+    // symbolic ref to a commit yet) — unlike a genuinely detached HEAD
+    // (exit 0). `git commit` works fine on an unborn branch, so only the
+    // exit-0 case is actually a reason to skip.
+    if (branch.stdout.trim() === "HEAD" && branch.exitCode === 0) {
       deps.log.warn("home-snapshot: HEAD is detached; skipping cycle");
       return { committed: false, sha: null, paths: [], reason, skipped: "detached" };
     }
@@ -424,6 +490,9 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
 
     if (committed || pushPending) schedulePush();
 
+    if (!committed && plan.autoPaths.length === 0 && plan.janitorZones.length === 0) {
+      return { committed: false, sha: null, paths: [], reason, skipped: "no-changes" };
+    }
     return { committed, sha, paths: plan.autoPaths, reason };
   }
 
@@ -452,6 +521,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     }
     return {
       enabled: deps.readSettings().enabled !== false,
+      watching: watcher !== null,
       repoDir: deps.repoDir,
       lastRunAt,
       lastCommit,
@@ -467,6 +537,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   function stop(): void {
     stopped = true;
     if (watcher) { try { watcher.close(); } catch { /* already closed */ } }
+    watcher = null;
     if (debounceTimer) deps.clearTimeout(debounceTimer);
     if (pushTimer) deps.clearTimeout(pushTimer);
     if (pushRetryTimer) deps.clearTimeout(pushRetryTimer);

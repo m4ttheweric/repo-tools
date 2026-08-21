@@ -13,6 +13,7 @@ function fakeHandle(overrides: Partial<HomeSnapshotHandle> = {}): { handle: Home
   const result: SnapshotResult = { committed: true, sha: "deadbeef", paths: ["notes.md"], reason: "manual" };
   const status: SnapshotStatus = {
     enabled: true,
+    watching: true,
     repoDir: "/fake/repo",
     lastRunAt: 123,
     lastCommit: { sha: "deadbeef", message: "snapshot: notes.md", at: 123 },
@@ -67,7 +68,7 @@ describe("home handlers", () => {
   test("home:snapshot-status surfaces a fail-closed owners error", async () => {
     const { handle } = fakeHandle({
       status: () => ({
-        enabled: true, repoDir: "/fake/repo", lastRunAt: 0, lastCommit: null,
+        enabled: true, watching: true, repoDir: "/fake/repo", lastRunAt: 0, lastCommit: null,
         pushPending: false, lastPushAt: 0, lastPushError: null,
         claimedZones: [], firstSeenDirty: {}, ownersError: "malformed jsonc",
       }),
