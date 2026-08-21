@@ -97,7 +97,7 @@ vm_render_report() {
 vm_ip() {
   local vm="$1" tries="${2:-60}" ip=""
   while [ "$tries" -gt 0 ]; do
-    ip=$(tart ip "$vm" 2>/dev/null || true)
+    ip=$(tart ip "$vm" 2>/dev/null </dev/null || true)
     [ -n "$ip" ] && { printf '%s' "$ip"; return 0; }
     sleep 2; tries=$((tries-1))
   done
