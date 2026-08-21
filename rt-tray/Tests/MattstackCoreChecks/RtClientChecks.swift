@@ -2,7 +2,7 @@ import Foundation
 import MattstackCore
 
 /// Writes an executable shell script into a temp dir; checks spawn THAT and
-/// nothing else — never a real rt, never launchctl or any other process-management tool.
+/// nothing else — never a real rt, never launchd's control tool or any other process-management tool.
 private func fakeExecutable(_ body: String) throws -> URL {
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("rt-checks-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
