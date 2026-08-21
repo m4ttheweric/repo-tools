@@ -10,6 +10,7 @@ import { clearIdentityMemo } from "../../settings/identity.ts";
 import {
   loadRepoTracking, loadMachineRepoTracking, loadMachineRepoTrackingRaw, grants, saveRepoTracking,
   saveRepoTrackingRaw, parseCachesArg, CACHE_KINDS, primeTeamTrackingIdentityMap, teamNamesIdentity,
+  __test__ as repoTrackingTest,
   type CacheKind,
 } from "../../repo-tracking.ts";
 
@@ -438,7 +439,9 @@ describe("primeTeamTrackingIdentityMap", () => {
     clearIdentityMemo();
     // Reset the module-level primed map so later tests in this file that rely
     // on the default (unprimed) seam are not affected by this real prime.
-    await primeTeamTrackingIdentityMap({});
+    // primeTeamTrackingIdentityMap({}) won't do it — it now refuses to
+    // replace a non-empty map with an empty one — so bypass via __test__.
+    repoTrackingTest.resetPrimedIdentityMap();
   });
 
   test("primes the identity map from a repo index, and the default seam picks it up", async () => {
@@ -468,6 +471,18 @@ describe("primeTeamTrackingIdentityMap", () => {
     } finally {
       rmSync(noRemoteDir, { recursive: true, force: true });
     }
+  });
+
+  test("a transient empty repoIndex (e.g. a repos.json read failure) never blanks an already-primed map", async () => {
+    setSetting("mattstack.tracking", {
+      repos: { "gitlab.com/acme/foo": { caches: ["branches"] } },
+    }, "team", { team: "acme" });
+
+    await primeTeamTrackingIdentityMap({ foo: repoDir });
+    expect(loadRepoTracking().foo).toEqual({ mode: "live", caches: ["branches"] });
+
+    await primeTeamTrackingIdentityMap({});
+    expect(loadRepoTracking().foo).toEqual({ mode: "live", caches: ["branches"] });
   });
 });
 

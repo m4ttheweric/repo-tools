@@ -104,6 +104,9 @@ export async function primeTeamTrackingIdentityMap(repoIndex: Record<string, str
     const identity = await deriveRepoIdentity(path);
     if (identity) map[identity] = name;
   }
+  // A transient repos.json read failure yields an empty repoIndex; adopting
+  // that would blank a healthy map and flap every team-tracked watcher.
+  if (Object.keys(map).length === 0 && Object.keys(primedIdentityMap).length > 0) return;
   primedIdentityMap = map;
 }
 
@@ -304,3 +307,11 @@ export function parseCachesArg(raw: string): CacheKind[] | null {
   }
   return out;
 }
+
+// Bypasses the non-empty-map guard in primeTeamTrackingIdentityMap — for test
+// teardown only, where a hard reset back to the unprimed seam is required.
+export const __test__ = {
+  resetPrimedIdentityMap(): void {
+    primedIdentityMap = {};
+  },
+};

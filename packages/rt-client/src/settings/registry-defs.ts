@@ -118,7 +118,7 @@ export const REGISTRY: readonly SettingDef[] = [
     merge: "deep",
     repoScoped: true,
     migrated: true,
-    description: "Templates rt uses to derive branch names from ticket identifiers.",
+    description: "Branch-naming templates. rt itself has no readers of this key yet — the VS Code extension still reads repos/<repo>/branch-naming.json by repo name, which stays authoritative until the extension ports over. Setting this key stores a value nothing consumes.",
   },
   {
     key: "rt.variations",
