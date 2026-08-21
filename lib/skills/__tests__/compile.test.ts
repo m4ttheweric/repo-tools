@@ -285,6 +285,31 @@ describe("compileSkill", () => {
     ]);
   });
 
+  test("empty allowed-tools union omits the key entirely", () => {
+    const bareStep: StepSource = {
+      name: "self-review",
+      plugin: "mattstack",
+      version: "1.2.0",
+      dir: "/plugins/mattstack/skills/review/self-review",
+      body: "Review your own diff before shipping.",
+      slots: {},
+      allowedTools: [],
+      scriptFiles: [],
+    };
+    const bareVerb: VerbDef = {
+      name: "self-review",
+      engine: "self-review",
+      description: "Review your own change",
+    };
+
+    const result = compileSkill(bareVerb, bareStep, {}, roster);
+
+    expect(result.warnings).toEqual([]);
+    const content = skillFileContent(result.files);
+    expect(content).not.toContain("allowed-tools");
+    expect(content).toContain('description: "Review your own change"\nmetadata:');
+  });
+
   test("determinism: structurally equal inputs produce identical content", () => {
     const verbCopy: VerbDef = JSON.parse(JSON.stringify(verb));
     const stepCopy: StepSource = JSON.parse(JSON.stringify(step));
