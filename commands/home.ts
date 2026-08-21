@@ -9,14 +9,22 @@
  * `key export` delegates entirely to lib/home/age-key.ts.
  */
 
-import { existsSync, readFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { mattstackHome, teamsDir } from "../lib/rt-paths.ts";
 import { buildInitPlan, type HomeState, type InitStep } from "../lib/home/init-plan.ts";
 import { createRealExecSeam, executeInitPlan, type ExecResult, type ExecSeam } from "../lib/home/init-exec.ts";
 import { parseOriginUrl } from "../lib/home/git-config.ts";
-import { AgeKeyAbsentError, createRealAgeKeySeam, ensureAgeKey, keyExport, type AgeKeySeam } from "../lib/home/age-key.ts";
+import {
+  AgeKeyAbsentError,
+  createRealAgeKeySeam,
+  ensureAgeKey,
+  keyExport,
+  renderSopsYaml,
+  sopsYamlRecipient,
+  type AgeKeySeam,
+} from "../lib/home/age-key.ts";
 
 /** Stray root cruft deleted at init time, not adopted into the repo. */
 const CRUFT_CANDIDATES = ["skills.jsonc.pre-pack", "skills.jsonc.retired-backup"];
@@ -27,6 +35,24 @@ export interface HomeProbes {
   listTeamClones(): string[];
   /** Pure fs read; null when the file is missing or unreadable. */
   readFile(path: string): string | null;
+}
+
+export interface SopsYamlSeam {
+  read(path: string): string | null;
+  write(path: string, content: string): void;
+}
+
+function defaultSopsYamlSeam(): SopsYamlSeam {
+  return {
+    read: (path) => {
+      try {
+        return readFileSync(path, "utf8");
+      } catch {
+        return null;
+      }
+    },
+    write: (path, content) => writeFileSync(path, content),
+  };
 }
 
 function defaultProbes(): HomeProbes {
@@ -103,9 +129,26 @@ function describeStep(step: InitStep): string {
  * absence), so it's safe to run on every init — including the
  * already-initialized short-circuit, for a home repo that predates this
  * step.
+ *
+ * Also (re)writes `.sops.yaml` whenever it's missing or its recipient
+ * doesn't match the current key — the one place `rt secrets set` gets a
+ * creation rule to encrypt against. A hand-edited file already carrying the
+ * right recipient is left untouched. `.sops.yaml` is a TRACKED file, so a
+ * write here needs a human commit — the snapshot daemon doesn't exist yet.
  */
-async function ensureHomeAgeKey(seams: AgeKeySeam): Promise<void> {
+async function ensureHomeAgeKey(seams: AgeKeySeam, sopsYamlSeam: SopsYamlSeam = defaultSopsYamlSeam()): Promise<void> {
   const { publicKey } = await ensureAgeKey(seams);
+
+  const sopsYamlPath = join(mattstackHome(), ".sops.yaml");
+  const existing = sopsYamlSeam.read(sopsYamlPath);
+  if (existing === null || sopsYamlRecipient(existing) !== publicKey) {
+    sopsYamlSeam.write(sopsYamlPath, renderSopsYaml(publicKey));
+    console.log(
+      `rt home init: wrote ${sopsYamlPath} (recipient ${publicKey}) — it's tracked, so commit it:\n` +
+        `  git -C ${mattstackHome()} add .sops.yaml && git -C ${mattstackHome()} commit -m "home: sops recipient"`,
+    );
+  }
+
   console.log(
     `rt home init: age key ready — recipient ${publicKey}.\n` +
       "  Run `rt home key export` to save the private key to your password manager.",
@@ -147,6 +190,7 @@ export async function homeInit(
   probes: HomeProbes = defaultProbes(),
   exec: ExecSeam = createRealExecSeam(mattstackHome()),
   ageKeySeam: AgeKeySeam = createRealAgeKeySeam(),
+  sopsYamlSeam: SopsYamlSeam = defaultSopsYamlSeam(),
 ): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const home = mattstackHome();
@@ -155,7 +199,7 @@ export async function homeInit(
 
   if (plan.reason === "already-initialized") {
     console.log(`rt home init: ${home} is already a git repo — nothing to do.`);
-    if (!dryRun) await ensureHomeAgeKey(ageKeySeam);
+    if (!dryRun) await ensureHomeAgeKey(ageKeySeam, sopsYamlSeam);
     return;
   }
 
@@ -186,8 +230,11 @@ export async function homeInit(
     process.exit(1);
   }
 
+  // Mint (or backfill) BEFORE the success line: printing success ahead of a
+  // failed mint would tell the operator init worked while `rt secrets set`
+  // still has no key or creation rule to encrypt against.
+  await ensureHomeAgeKey(ageKeySeam, sopsYamlSeam);
   console.log(`\nrt home init: ${home} is now the git-backed home repo.`);
-  await ensureHomeAgeKey(ageKeySeam);
 }
 
 export async function homeKeyExport(

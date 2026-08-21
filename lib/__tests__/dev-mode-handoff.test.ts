@@ -21,6 +21,12 @@
  *
  * The tray socket itself is a real `Bun.serve({ unix })` fake bound at the
  * real TRAY_SOCK_PATH (inside the isolated test HOME from bunfig's preload).
+ *
+ * `toggleDevMode`'s bundle lookup (via `installedTrayAppPath`, Item 5) also
+ * checks the real, absolute `/Applications` — a path this test's isolated
+ * HOME can never redirect. `isolatedExists` denies it unconditionally, so
+ * this suite's pass/fail never depends on whether the real machine running
+ * it happens to have mattstack.app/mattstack-dev.app installed for real.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import {
@@ -32,6 +38,10 @@ import { join } from "node:path";
 import { toggleDevMode } from "../../commands/settings.ts";
 import { TRAY_SOCK_PATH } from "../daemon-config.ts";
 import { devTrayAppPath, trayAppPath } from "../rt-paths.ts";
+
+function isolatedExists(path: string): boolean {
+  return path.startsWith("/Applications/") ? false : existsSync(path);
+}
 
 const HOME = process.env.HOME!;
 const WRAPPER_PATH = join(HOME, ".local", "bin", "rt");
@@ -153,7 +163,7 @@ describe("toggleDevMode — flavor handoff", () => {
     mkdirSync(devTrayAppPath(), { recursive: true }); // incoming bundle present
     setUpFakes();
 
-    await toggleDevMode(["dev"]);
+    await toggleDevMode(["dev"], isolatedExists);
 
     const log = readLog();
     expect(oneShotSteps(log)).toEqual(["retire", "osascript", "pkill", "open"]);
@@ -178,7 +188,7 @@ describe("toggleDevMode — flavor handoff", () => {
     writeFileSync(join(trayAppPath(), "Contents", "MacOS", "rt-daemon"), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x00]), { mode: 0o755 }); // Mach-O magic, not a script
     setUpFakes();
 
-    await toggleDevMode(["prod"]);
+    await toggleDevMode(["prod"], isolatedExists);
 
     const log = readLog();
     expect(oneShotSteps(log)).toEqual(["retire", "osascript", "pkill", "open"]);
@@ -200,7 +210,7 @@ describe("toggleDevMode — flavor handoff", () => {
     // Deliberately do NOT create devTrayAppPath() — the incoming bundle.
     setUpFakes();
 
-    await toggleDevMode(["dev"]);
+    await toggleDevMode(["dev"], isolatedExists);
 
     expect(readLog()).toEqual([]); // no retire, no osascript, no pkill, no open
     expect(existsSync(WRAPPER_PATH)).toBe(false); // CLI half never toggled
@@ -212,7 +222,7 @@ describe("toggleDevMode — flavor handoff", () => {
     // Deliberately do NOT create trayAppPath() — the incoming (prod) bundle.
     setUpFakes();
 
-    await toggleDevMode(["prod"]);
+    await toggleDevMode(["prod"], isolatedExists);
 
     expect(readLog()).toEqual([]);
     expect(existsSync(WRAPPER_PATH)).toBe(true); // disableDevMode() never ran

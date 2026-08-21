@@ -20,7 +20,7 @@ import { bold, cyan, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import { detectShell, shellRcPath } from "../lib/shell-integration.ts";
 import {
   legacyDirsPresent, RT_DIR_LABEL,
-  trayAppPath, devTrayAppPath, legacyTrayAppPaths,
+  installedTrayAppPath, legacyTrayAppPaths,
   TRAY_APP_BUNDLE, DEV_TRAY_APP_BUNDLE,
 } from "../lib/rt-paths.ts";
 import { currentMode } from "../lib/dev-mode.ts";
@@ -188,22 +188,22 @@ async function runChecks(): Promise<CheckResult[]> {
   // failure.
 
   const mode = currentMode();
-  const activeTrayPath = mode === "dev" ? devTrayAppPath() : trayAppPath();
   const activeTrayBundle = mode === "dev" ? DEV_TRAY_APP_BUNDLE : TRAY_APP_BUNDLE;
-  const inactiveTrayPath = mode === "dev" ? trayAppPath() : devTrayAppPath();
   const inactiveTrayBundle = mode === "dev" ? TRAY_APP_BUNDLE : DEV_TRAY_APP_BUNDLE;
+  const activeTrayPath = installedTrayAppPath(activeTrayBundle);
+  const inactiveTrayPath = installedTrayAppPath(inactiveTrayBundle);
 
-  if (existsSync(activeTrayPath)) {
+  if (activeTrayPath) {
     const plistPath = join(activeTrayPath, "Contents/Info.plist");
     const trayVersion = existsSync(plistPath)
       ? cmd(`/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "${plistPath}" 2>/dev/null`)
       : null;
-    results.push(pass(activeTrayBundle, trayVersion ? `v${trayVersion} in ~/Applications` : "installed in ~/Applications"));
+    results.push(pass(activeTrayBundle, trayVersion ? `v${trayVersion} at ${activeTrayPath}` : `installed at ${activeTrayPath}`));
   } else {
-    results.push(fail(activeTrayBundle, `not found — expected ${activeTrayPath}`));
+    results.push(fail(activeTrayBundle, "not found — expected in /Applications or ~/Applications"));
   }
 
-  results.push(existsSync(inactiveTrayPath)
+  results.push(inactiveTrayPath
     ? skip(inactiveTrayBundle, `also installed at ${inactiveTrayPath} (inactive flavor)`)
     : skip(inactiveTrayBundle, "not installed (inactive flavor)"));
 

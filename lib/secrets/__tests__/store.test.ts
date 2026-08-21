@@ -63,6 +63,8 @@ class FakeSecretsExecSeam implements SecretsExecSeam {
   removeFileCalls: string[] = [];
   fsyncAndRenameCalls: { from: string; to: string }[] = [];
   private mtimeCounter = 0;
+  /** outputPath -> the plaintext JSON that was actually staged for it, so a post-encrypt `-d` on that path round-trips for real (unless a test overrides `encryptOutputContent` to simulate a wrong-recipient/garbled encrypt). */
+  private roundTrippablePlaintext = new Map<string, string>();
 
   constructor(
     private opts: {
@@ -126,15 +128,23 @@ class FakeSecretsExecSeam implements SecretsExecSeam {
     this.calls.push({ cmd, opts: runOpts });
 
     if (cmd[0] === "sops" && cmd[1] === "-d") {
+      const target = cmd[2]!;
+      const staged = this.roundTrippablePlaintext.get(target);
+      if (staged !== undefined) return { code: 0, stdout: staged, stderr: "" };
       return this.opts.decrypt ? this.opts.decrypt() : { code: 0, stdout: "{}", stderr: "" };
     }
     if (cmd[0] === "sops" && cmd[1] === "-e") {
       const outputIdx = cmd.indexOf("--output");
       const outputPath = cmd[outputIdx + 1]!;
+      const stagingInputPath = cmd[cmd.length - 1]!;
       const result = this.opts.encrypt ? this.opts.encrypt(outputPath) : { code: 0, stdout: "", stderr: "" };
       if (result.code === 0) {
         this.files.set(outputPath, this.opts.encryptOutputContent ?? DEFAULT_CIPHERTEXT);
         this.touch(outputPath);
+        if (this.opts.encryptOutputContent === undefined) {
+          const staged = this.files.get(stagingInputPath);
+          if (staged !== undefined) this.roundTrippablePlaintext.set(outputPath, staged);
+        }
       }
       return result;
     }
@@ -276,7 +286,7 @@ describe("writeSecret", () => {
     expect(execSeam.files.size).toBe(0);
   });
 
-  test("stages plaintext under rt/tmp (gitignored), encrypts with --filename-override to a .tmp output, fsync+renames over the target", async () => {
+  test("stages plaintext under rt/tmp (gitignored), encrypts with --filename-override to a pid-qualified .tmp output, decrypts it for a round-trip readback, then fsync+renames over the target", async () => {
     const domain = "rt";
     const path = secretsFilePath(domain);
     const execSeam = new FakeSecretsExecSeam({
@@ -288,12 +298,15 @@ describe("writeSecret", () => {
     await writeSecret(domain, "newKey", "newVal", seams);
 
     const staging = stagingPath(domain);
-    const outputTmp = `${path}.tmp`;
+    const outputTmp = `${path}.${process.pid}.tmp`;
 
     expect(execSeam.calls.map((c) => c.cmd)).toEqual([
       ["sops", "-d", path],
       ["sops", "-e", "--filename-override", join("user", "secrets", `${domain}.json`), "--output", outputTmp, staging],
+      ["sops", "-d", outputTmp],
     ]);
+    // The round-trip readback carries the same SOPS_AGE_KEY env as any other sops call — never argv.
+    expect(execSeam.calls[2]?.opts).toEqual({ env: { SOPS_AGE_KEY: "AGE-X" }, sensitive: true });
     expect(execSeam.fsyncAndRenameCalls).toEqual([{ from: outputTmp, to: path }]);
     expect(execSeam.chmodCalls).toEqual([
       { path: outputTmp, mode: 0o600 },
@@ -316,10 +329,25 @@ describe("writeSecret", () => {
 
     await writeSecret(domain, "onlyKey", "onlyVal", seams);
 
+    const outputTmp = `${path}.${process.pid}.tmp`;
     expect(execSeam.calls.map((c) => c.cmd)).toEqual([
-      ["sops", "-e", "--filename-override", join("user", "secrets", `${domain}.json`), "--output", `${path}.tmp`, stagingPath(domain)],
+      ["sops", "-e", "--filename-override", join("user", "secrets", `${domain}.json`), "--output", outputTmp, stagingPath(domain)],
+      ["sops", "-d", outputTmp],
     ]);
     expect(execSeam.files.get(path)).toBe(DEFAULT_CIPHERTEXT);
+  });
+
+  test("the output tmp path is pid-qualified so two concurrent writers can't cross-unlink each other's output", async () => {
+    const domain = "rt";
+    const path = secretsFilePath(domain);
+    const execSeam = new FakeSecretsExecSeam();
+    const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-X"), execSeam };
+
+    await writeSecret(domain, "k", "v", seams);
+
+    const encryptCall = execSeam.calls.find((c) => c.cmd[1] === "-e")!;
+    const outputPath = encryptCall.cmd[encryptCall.cmd.indexOf("--output") + 1];
+    expect(outputPath).toBe(`${path}.${process.pid}.tmp`);
   });
 
   test("the new value never appears in any subprocess argv", async () => {
@@ -354,18 +382,32 @@ describe("writeSecret", () => {
 
     await expect(writeSecret(domain, "k", "v", seams)).rejects.toThrow(/sops -e/);
 
+    const outputTmp = `${path}.${process.pid}.tmp`;
     expect(execSeam.files.has(stagingPath(domain))).toBe(false);
-    expect(execSeam.files.has(`${path}.tmp`)).toBe(false);
+    expect(execSeam.files.has(outputTmp)).toBe(false);
     expect(execSeam.files.has(path)).toBe(false); // the (nonexistent) target was never created
-    expect(execSeam.removeFileCalls.sort()).toEqual([`${path}.tmp`, stagingPath(domain)].sort());
+    expect(execSeam.removeFileCalls.sort()).toEqual([outputTmp, stagingPath(domain)].sort());
   });
 
-  test("a post-encrypt read-back that doesn't look like sops ciphertext refuses to declare success", async () => {
+  test("a post-encrypt read-back that doesn't round-trip the written value refuses to declare success", async () => {
     const domain = "rt";
     const execSeam = new FakeSecretsExecSeam({ encryptOutputContent: "not sops output at all" });
     const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-X"), execSeam };
 
     await expect(writeSecret(domain, "k", "v", seams)).rejects.toThrow(/read-back/i);
+  });
+
+  test("a wrong-recipient encrypt (round-trip decrypt doesn't yield the written value) never renames over the target — the original survives untouched", async () => {
+    const domain = "rt";
+    const path = secretsFilePath(domain);
+    const execSeam = new FakeSecretsExecSeam({ encryptOutputContent: "ciphertext-for-a-different-recipient" });
+    execSeam.writeFile(path, "ciphertext-original");
+    const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-X"), execSeam };
+
+    await expect(writeSecret(domain, "k", "v", seams)).rejects.toThrow(/round-trip/i);
+
+    expect(execSeam.files.get(path)).toBe("ciphertext-original");
+    expect(execSeam.fsyncAndRenameCalls).toEqual([]);
   });
 });
 

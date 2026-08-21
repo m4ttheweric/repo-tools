@@ -1,11 +1,33 @@
 import { describe, test, expect, spyOn } from "bun:test";
-import { gatherHomeState, homeInit, type HomeProbes } from "../home.ts";
+import { gatherHomeState, homeInit, type HomeProbes, type SopsYamlSeam } from "../home.ts";
 import { buildInitPlan } from "../../lib/home/init-plan.ts";
 import type { ExecResult, ExecSeam } from "../../lib/home/init-exec.ts";
-import type { AgeExecResult, AgeKeySeam } from "../../lib/home/age-key.ts";
+import { renderSopsYaml, type AgeExecResult, type AgeKeySeam } from "../../lib/home/age-key.ts";
+import { mattstackHome } from "../../lib/rt-paths.ts";
+import { join } from "path";
 
 const FAKE_PUBLIC_KEY = "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
 const FAKE_PRIVATE_KEY = "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ";
+const SOPS_YAML_PATH = join(mattstackHome(), ".sops.yaml");
+
+/** In-memory .sops.yaml — never touches the real filesystem. */
+class FakeSopsYamlSeam implements SopsYamlSeam {
+  files = new Map<string, string>();
+  writes: { path: string; content: string }[] = [];
+
+  constructor(initial?: { path: string; content: string }) {
+    if (initial) this.files.set(initial.path, initial.content);
+  }
+
+  read(path: string): string | null {
+    return this.files.get(path) ?? null;
+  }
+
+  write(path: string, content: string): void {
+    this.files.set(path, content);
+    this.writes.push({ path, content });
+  }
+}
 
 /** No key in the keychain yet; ensureAgeKey mints one — never touches the real keychain. */
 class FakeAgeKeySeam implements AgeKeySeam {
@@ -122,18 +144,22 @@ async function runHomeInit(
   exec: ExecSeam,
   ageKeySeam: AgeKeySeam = new FakeAgeKeySeam(),
   args: string[] = [],
-): Promise<{ exitCode: number | undefined }> {
+  sopsYamlSeam: SopsYamlSeam = new FakeSopsYamlSeam(),
+): Promise<{ exitCode: number | undefined; logs: string[] }> {
   const exitSpy = spyOn(process, "exit").mockImplementation(() => {
     throw new Error("process.exit");
   });
-  spyOn(console, "log").mockImplementation(() => {});
+  const logs: string[] = [];
+  spyOn(console, "log").mockImplementation((...parts: unknown[]) => {
+    logs.push(parts.map(String).join(" "));
+  });
   spyOn(console, "error").mockImplementation(() => {});
   try {
-    await homeInit(args, {}, probes, exec, ageKeySeam);
-    return { exitCode: undefined };
+    await homeInit(args, {}, probes, exec, ageKeySeam, sopsYamlSeam);
+    return { exitCode: undefined, logs };
   } catch {
     const code = exitSpy.mock.calls.at(-1)?.[0] as number | undefined;
-    return { exitCode: code };
+    return { exitCode: code, logs };
   } finally {
     exitSpy.mockRestore();
     (console.log as unknown as { mockRestore: () => void }).mockRestore();
@@ -152,13 +178,45 @@ describe("homeInit", () => {
     expect(ageKeySeam.calls.some((c) => c[1] === "find-generic-password")).toBe(true);
   });
 
+  test("already-initialized: backfills .sops.yaml when it's missing (a home repo that predates this step)", async () => {
+    const seam = new FakeSeam();
+    const ageKeySeam = new FakeAgeKeySeam();
+    const sopsYamlSeam = new FakeSopsYamlSeam();
+
+    await runHomeInit(fakeProbes({ isGitRepo: () => true }), seam, ageKeySeam, [], sopsYamlSeam);
+
+    expect(sopsYamlSeam.files.get(SOPS_YAML_PATH)).toBe(renderSopsYaml(FAKE_PUBLIC_KEY));
+  });
+
+  test("already-initialized: an existing .sops.yaml with the current key's recipient is left untouched", async () => {
+    const seam = new FakeSeam();
+    const ageKeySeam = new FakeAgeKeySeam();
+    const sopsYamlSeam = new FakeSopsYamlSeam({ path: SOPS_YAML_PATH, content: renderSopsYaml(FAKE_PUBLIC_KEY) });
+
+    await runHomeInit(fakeProbes({ isGitRepo: () => true }), seam, ageKeySeam, [], sopsYamlSeam);
+
+    expect(sopsYamlSeam.writes).toEqual([]);
+  });
+
+  test("already-initialized: an existing .sops.yaml with a stale recipient (key rotation) is rewritten", async () => {
+    const seam = new FakeSeam();
+    const ageKeySeam = new FakeAgeKeySeam();
+    const sopsYamlSeam = new FakeSopsYamlSeam({ path: SOPS_YAML_PATH, content: renderSopsYaml("age1stale") });
+
+    await runHomeInit(fakeProbes({ isGitRepo: () => true }), seam, ageKeySeam, [], sopsYamlSeam);
+
+    expect(sopsYamlSeam.files.get(SOPS_YAML_PATH)).toBe(renderSopsYaml(FAKE_PUBLIC_KEY));
+  });
+
   test("already-initialized --dry-run: never touches the age key either", async () => {
     const seam = new FakeSeam();
     const ageKeySeam = new FakeAgeKeySeam();
-    const { exitCode } = await runHomeInit(fakeProbes({ isGitRepo: () => true }), seam, ageKeySeam, ["--dry-run"]);
+    const sopsYamlSeam = new FakeSopsYamlSeam();
+    const { exitCode } = await runHomeInit(fakeProbes({ isGitRepo: () => true }), seam, ageKeySeam, ["--dry-run"], sopsYamlSeam);
 
     expect(exitCode).toBeUndefined();
     expect(ageKeySeam.calls).toEqual([]);
+    expect(sopsYamlSeam.writes).toEqual([]);
   });
 
   test("prefs-remote-unreadable: exits 1 and runs no preflight, init step, or age-key call", async () => {
@@ -200,16 +258,17 @@ describe("homeInit", () => {
     expect(ageKeySeam.calls).toEqual([]);
   });
 
-  test("a fresh, fully successful init mints the age key as a distinct step after adoption, before returning", async () => {
+  test("a fresh, fully successful init mints the age key and writes .sops.yaml as a distinct step after adoption, before returning", async () => {
     const seam = new FakeSeam({
       failRun: (cmd) => cmd[0] === "gh" && cmd[1] === "repo" && cmd[2] === "view", // not-found -> falls through to create
       stdout: (cmd) =>
         cmd[0] === "gh" && cmd[1] === "repo" && cmd[2] === "create" ? "https://github.com/testuser/mattstack-home\n" : "",
     });
     const ageKeySeam = new FakeAgeKeySeam();
+    const sopsYamlSeam = new FakeSopsYamlSeam();
     // Minimal state -> no cruft, no user clone: createRepo, gitInit,
     // writeGitignore, writeOwners, adoptCommit, push.
-    const { exitCode } = await runHomeInit(fakeProbes({}), seam, ageKeySeam);
+    const { exitCode, logs } = await runHomeInit(fakeProbes({}), seam, ageKeySeam, [], sopsYamlSeam);
 
     expect(exitCode).toBeUndefined();
     // The init steps ran to completion before the age key was touched.
@@ -217,6 +276,14 @@ describe("homeInit", () => {
     expect(ageKeySeam.calls.some((c) => c[1] === "find-generic-password")).toBe(true);
     expect(ageKeySeam.calls.some((c) => c[0] === "age-keygen")).toBe(true);
     expect(ageKeySeam.calls.some((c) => c[1] === "add-generic-password")).toBe(true);
+    expect(sopsYamlSeam.files.get(SOPS_YAML_PATH)).toBe(renderSopsYaml(FAKE_PUBLIC_KEY));
+
+    // The mint (and the age-key-ready line) happen BEFORE the success line —
+    // never print success ahead of a mint that could still fail.
+    const readyIdx = logs.findIndex((l) => l.includes("age key ready"));
+    const successIdx = logs.findIndex((l) => l.includes("is now the git-backed home repo"));
+    expect(readyIdx).toBeGreaterThanOrEqual(0);
+    expect(successIdx).toBeGreaterThan(readyIdx);
   });
 
   test("--dry-run never touches the age key, even on a fresh (not-yet-initialized) home", async () => {
