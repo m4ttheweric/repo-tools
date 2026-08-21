@@ -92,9 +92,15 @@ public final class RtClient: RtRunning, @unchecked Sendable {
                 for line in splitter.feed(data) { continuation.yield(line) }
             }
             p.terminationHandler = { proc in
+                // readabilityHandler delivery lags process exit; a fast child's
+                // trailing bytes (including the terminal event) can still be
+                // unread here, so drain the fd directly before finishing.
+                out.fileHandleForReading.readabilityHandler = nil
                 lock.lock()
+                let lines = splitter.feed(out.fileHandleForReading.readDataToEndOfFile())
                 let tail = splitter.flush()
                 lock.unlock()
+                for line in lines { continuation.yield(line) }
                 if let tail { continuation.yield(tail) }
                 let stderr = String(decoding: err.fileHandleForReading.readDataToEndOfFile().prefix(4000), as: UTF8.self)
                 switch proc.terminationStatus {
