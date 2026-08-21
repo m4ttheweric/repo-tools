@@ -8,6 +8,8 @@
  */
 
 import { describe, test, expect, afterEach } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import * as rtPaths from "../rt-paths.ts";
 import * as clientPaths from "../../packages/rt-client/src/settings/paths.ts";
@@ -29,10 +31,34 @@ describe("settings paths parity (lib/rt-paths.ts vs rt-client/settings/paths.ts)
 
   test("both resolve HOME at call time, not module load", () => {
     process.env.HOME = "/tmp/parity-home-1";
-    expect(clientPaths.userSettingsPath()).toBe(join("/tmp/parity-home-1", ".mattstack", "user", "settings.jsonc"));
+    expect(clientPaths.userSettingsPath()).toBe(join("/tmp/parity-home-1", ".mattstack", "user", "settings.user.jsonc"));
 
     process.env.HOME = "/tmp/parity-home-2";
-    expect(clientPaths.userSettingsPath()).toBe(join("/tmp/parity-home-2", ".mattstack", "user", "settings.jsonc"));
+    expect(clientPaths.userSettingsPath()).toBe(join("/tmp/parity-home-2", ".mattstack", "user", "settings.user.jsonc"));
     expect(clientPaths.userSettingsPath()).toBe(rtPaths.userSettingsPath());
+  });
+
+  test("machineKey agrees between both modules, override file and hostname-slug paths alike", () => {
+    const home = mkdtempSync(join(tmpdir(), "parity-machine-key-"));
+    process.env.HOME = home;
+
+    // No override file: both fall through to the same hostname() slug.
+    expect(clientPaths.machineKey()).toBe(rtPaths.machineKey());
+
+    // An override file: both read the same trimmed value.
+    mkdirSync(join(home, ".mattstack"), { recursive: true });
+    writeFileSync(join(home, ".mattstack", "machine-key"), "  shared-override  \n");
+    expect(clientPaths.machineKey()).toBe("shared-override");
+    expect(clientPaths.machineKey()).toBe(rtPaths.machineKey());
+
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("machineSettingsPath nests under user/local/<machineKey()> on both sides", () => {
+    process.env.HOME = "/tmp/parity-fake-home-2";
+    expect(clientPaths.machineSettingsPath()).toBe(
+      join("/tmp/parity-fake-home-2", ".mattstack", "user", "local", clientPaths.machineKey(), "settings.local.jsonc"),
+    );
+    expect(clientPaths.machineSettingsPath()).toBe(rtPaths.machineSettingsPath());
   });
 });
