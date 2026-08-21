@@ -18,7 +18,7 @@ import { spawnSync } from "child_process";
 import { existsSync, readFileSync, readdirSync, mkdirSync, rmSync, cpSync, writeFileSync, realpathSync } from "fs";
 import { join, resolve, dirname } from "path";
 import { homedir } from "os";
-import { TRAY_APP_NAME, TRAY_APP_BUNDLE, trayAppPath, legacyTrayAppPaths } from "../lib/rt-paths.ts";
+import { TRAY_APP_NAME, TRAY_APP_BUNDLE, trayAppInstallDest, legacyTrayAppPaths } from "../lib/rt-paths.ts";
 import { currentMode, installRtBinary, rtBinaryPath } from "../lib/dev-mode.ts";
 import { installShellIntegration, detectShell, shellRcPath } from "../lib/shell-integration.ts";
 
@@ -69,7 +69,7 @@ function installTrayApp(): void {
     return;
   }
 
-  const destTray = trayAppPath();
+  const destTray = trayAppInstallDest();
   const appsDir = dirname(destTray);
 
   try {
@@ -216,7 +216,7 @@ async function checkTccAccess(): Promise<void> {
     console.log(`  Grant FDA to ${TRAY_APP_NAME}, then restart the daemon:`);
     console.log("");
     console.log("    1. System Settings → Privacy & Security → Full Disk Access");
-    console.log(`    2. Click + and add: ${trayAppPath()}`);
+    console.log(`    2. Click + and add: ${trayAppInstallDest()}`);
     console.log("    3. rt daemon restart");
     console.log("");
     spawnSync("open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"], { stdio: "pipe" });
@@ -345,7 +345,7 @@ export async function runPostInstall(): Promise<void> {
 
   // Launch mattstack.app BEFORE installing the daemon so the tray's HTTP
   // server is up when `rt daemon install` calls trayQuery("/daemon/start").
-  const trayDest = trayAppPath();
+  const trayDest = trayAppInstallDest();
   if (existsSync(trayDest)) {
     spawnSync("open", [trayDest], { stdio: "pipe", env: process.env });
     ok(TRAY_APP_BUNDLE, "launched — waiting for tray to start…");

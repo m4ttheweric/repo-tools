@@ -468,7 +468,7 @@ export function renderDevModePreload(): string {
  * worse than refusing the switch.
  */
 function disableDevMode(exists: (path: string) => boolean = existsSync): void {
-  const prodAppPath = installedTrayAppPath(TRAY_APP_BUNDLE, exists) ?? trayAppPath();
+  const prodAppPath = installedTrayAppPath(TRAY_APP_BUNDLE, exists) ?? trayAppPath(exists);
   const prodBinary = join(prodAppPath, RT_BUNDLE_PATH);
   if (!existsSync(prodBinary)) {
     throw new Error(
@@ -505,15 +505,15 @@ interface FlavorInfo {
 
 function flavorFor(mode: "dev" | "prod", exists: (path: string) => boolean = existsSync): FlavorInfo {
   const bundle = mode === "dev" ? DEV_TRAY_APP_BUNDLE : TRAY_APP_BUNDLE;
-  const fixedFallback = mode === "dev" ? devTrayAppPath() : trayAppPath();
+  // trayAppPath/devTrayAppPath already run the same installedTrayAppPath
+  // resolution and default to /Applications, so a genuinely-missing bundle
+  // still fails existsSync with a sensible path in the error message rather
+  // than null; passing `exists` through keeps that resolution testable.
+  const appPath = mode === "dev" ? devTrayAppPath(exists) : trayAppPath(exists);
   return {
     mode,
     name: mode === "dev" ? DEV_TRAY_APP_NAME : TRAY_APP_NAME,
-    // Wherever it's ACTUALLY installed (/Applications, ~/Applications, or the
-    // machine setting); falls back to the conventional ~/Applications
-    // location so a genuinely-missing bundle still fails existsSync with a
-    // sensible path in the error message, rather than null.
-    appPath: installedTrayAppPath(bundle, exists) ?? fixedFallback,
+    appPath,
   };
 }
 
@@ -632,7 +632,7 @@ export async function toggleDevMode(args: string[], exists: (path: string) => bo
   // 0. Precondition — the incoming flavor's bundle must exist on disk BEFORE
   // we touch the running flavor at all, so the toggle can never leave the
   // machine tray-less.
-  if (!existsSync(incoming.appPath)) {
+  if (!exists(incoming.appPath)) {
     console.log(`  ${red}✗${reset} ${incoming.appPath} not found`);
     console.log(`  ${dim}run: build.sh ${target === "dev" ? "dev" : "install"} first${reset}\n`);
     return;
