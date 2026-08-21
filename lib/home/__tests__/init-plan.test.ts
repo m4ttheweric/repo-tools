@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { buildInitPlan, STATE_DIR_NAMES, type HomeState, type InitPlanConfig } from "../init-plan.ts";
+import { buildInitPlan, InvalidMachineKeyError, STATE_DIR_NAMES, type HomeState, type InitPlanConfig } from "../init-plan.ts";
 
 const CONFIG: InitPlanConfig = { url: "https://github.com/m4ttheweric/mattstack-home", machineKey: "mbp-14" };
 
@@ -133,5 +133,31 @@ describe("buildInitPlan", () => {
     const plan = buildInitPlan(state, CONFIG);
     expect(plan.steps).toEqual([]);
     expect(plan.blocked).toBe("skills-symlink-real-file");
+  });
+
+  test("STATE_DIR_NAMES includes ci-attendants (per the spec's state-zone tree)", () => {
+    expect(STATE_DIR_NAMES).toContain("ci-attendants");
+  });
+
+  describe("machine-key guard — refuses before ever emitting writeMachineKey/ensureProfileDir", () => {
+    test.each([
+      ["empty", ""],
+      ["exactly \".\"", "."],
+      ["exactly \"..\"", ".."],
+      ["a forward slash", "evil/key"],
+      ["a backslash", "evil\\key"],
+    ])("%s: throws InvalidMachineKeyError, never returns a plan", (_label, badKey) => {
+      expect(() => buildInitPlan(FRESH_STATE, { ...CONFIG, machineKey: badKey })).toThrow(InvalidMachineKeyError);
+    });
+
+    test("a safe key still builds the plan normally", () => {
+      expect(() => buildInitPlan(FRESH_STATE, { ...CONFIG, machineKey: "mbp-14" })).not.toThrow();
+    });
+
+    test("the guard applies even when nothing else in the plan needs the key (fully provisioned)", () => {
+      expect(() => buildInitPlan(FULLY_PROVISIONED_STATE, { ...CONFIG, machineKey: "../escape" })).toThrow(
+        InvalidMachineKeyError,
+      );
+    });
   });
 });

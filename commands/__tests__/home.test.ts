@@ -1,5 +1,5 @@
 import { describe, test, expect, spyOn } from "bun:test";
-import { DEFAULT_USER_REPO_URL, gatherHomeState, homeInit, type HomeProbes, type SopsYamlSeam } from "../home.ts";
+import { DEFAULT_USER_REPO_URL, gatherHomeState, homeInit, InvalidUrlArgError, type HomeProbes, type SopsYamlSeam } from "../home.ts";
 import { STATE_DIR_NAMES } from "../../lib/home/init-plan.ts";
 import type { ExecResult, ExecSeam } from "../../lib/home/init-exec.ts";
 import { renderSopsYaml, type AgeExecResult, type AgeKeySeam } from "../../lib/home/age-key.ts";
@@ -129,6 +129,14 @@ class FakeSeam implements ExecSeam {
   }
   async mkdirp(path: string): Promise<void> {
     this.calls.push({ kind: "mkdirp", arg: path });
+  }
+  async exists(path: string): Promise<boolean> {
+    this.calls.push({ kind: "exists", arg: path });
+    return false;
+  }
+  async isRealFile(path: string): Promise<boolean> {
+    this.calls.push({ kind: "isRealFile", arg: path });
+    return false;
   }
   async writeSymlink(path: string, target: string): Promise<void> {
     this.calls.push({ kind: "writeSymlink", arg: { path, target } });
@@ -299,5 +307,98 @@ describe("homeInit", () => {
     expect(errors.some((e) => e.includes("refusing to overwrite"))).toBe(true);
     expect(seam.calls).toEqual([]);
     expect(ageKeySeam.calls).toEqual([]);
+  });
+
+  test("fully provisioned but a real file blocks the symlink: never prints 'fully provisioned', still reports the block", async () => {
+    const seam = new FakeSeam();
+    const ageKeySeam = new FakeAgeKeySeam();
+    // Every state-dir/machine-key/profile-dir/user-repo probe reports
+    // present, so the plan is empty except for the block — exactly the
+    // "steps.length === 0 AND blocked" case the fully-provisioned message
+    // must not fire on.
+    const probes = fakeProbes({
+      isGitRepo: (dir) => dir.endsWith("/user"),
+      exists: () => true,
+      readSymlinkTarget: () => null,
+    });
+
+    const { exitCode, logs, errors } = await runHomeInit(probes, seam, ageKeySeam);
+
+    expect(exitCode).toBe(1);
+    expect(logs.some((l) => l.includes("already fully provisioned"))).toBe(false);
+    expect(errors.some((e) => e.includes("refusing to overwrite"))).toBe(true);
+  });
+
+  test("fully provisioned but blocked, --dry-run: still never prints 'fully provisioned'", async () => {
+    const seam = new FakeSeam();
+    const ageKeySeam = new FakeAgeKeySeam();
+    const probes = fakeProbes({
+      isGitRepo: (dir) => dir.endsWith("/user"),
+      exists: () => true,
+      readSymlinkTarget: () => null,
+    });
+
+    const { exitCode, logs, errors } = await runHomeInit(probes, seam, ageKeySeam, ["--dry-run"]);
+
+    expect(exitCode).toBeUndefined();
+    expect(logs.some((l) => l.includes("already fully provisioned"))).toBe(false);
+    expect(errors.some((e) => e.includes("refusing to overwrite"))).toBe(true);
+  });
+
+  describe("--url validation", () => {
+    test("--url as the last arg (no value): exits 1 with a clear error, runs nothing", async () => {
+      const seam = new FakeSeam();
+      const { exitCode, errors } = await runHomeInit(fakeProbes({}), seam, new FakeAgeKeySeam(), ["--url"]);
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes("--url requires a value"))).toBe(true);
+      expect(seam.calls).toEqual([]);
+    });
+
+    test("--url followed by another flag: refuses to take the flag as the URL", async () => {
+      const seam = new FakeSeam();
+      const { exitCode, errors } = await runHomeInit(fakeProbes({}), seam, new FakeAgeKeySeam(), ["--url", "--dry-run"]);
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes("--url requires a value"))).toBe(true);
+      expect(seam.calls).toEqual([]);
+    });
+
+    test("parseUrlArg's error type is exported and matches what homeInit catches", () => {
+      expect(new InvalidUrlArgError("x")).toBeInstanceOf(Error);
+    });
+  });
+
+  describe("machine-key safety guard", () => {
+    test("an injected key that fails the safety guard: exits 1 with a clear error, runs no step", async () => {
+      const seam = new FakeSeam();
+      const { exitCode, errors } = await runHomeInit(
+        fakeProbes({}),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        "../escape",
+      );
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes("not a safe machine-key segment"))).toBe(true);
+      expect(seam.calls).toEqual([]);
+    });
+
+    test("an injected key with a path separator: exits 1, never reaches ensureProfileDir/writeMachineKey", async () => {
+      const seam = new FakeSeam();
+      const { exitCode } = await runHomeInit(
+        fakeProbes({}),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        "evil/key",
+      );
+
+      expect(exitCode).toBe(1);
+      expect(seam.calls.some((c) => c.kind === "mkdirp" || c.kind === "writeFile")).toBe(false);
+    });
   });
 });

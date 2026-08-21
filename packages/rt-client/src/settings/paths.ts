@@ -29,7 +29,7 @@ export function teamSettingsPath(team: string): string {
 
 /**
  * ~/.mattstack/user/local/<machineKey()>/settings.local.jsonc — the machine
- * store (path literals legal here only).
+ * store, TRACKED and keyed per machine (path literals legal here only).
  */
 export function machineSettingsPath(): string {
   return join(home(), ".mattstack", "user", "local", machineKey(), "settings.local.jsonc");
@@ -62,7 +62,7 @@ export function machineKey(): string {
   const override = join(home(), ".mattstack", "machine-key");
   try {
     const v = readFileSync(override, "utf8").trim();
-    if (v && v !== "." && v !== ".." && !v.includes("/") && !v.includes("\\")) return v;
+    if (isSafeMachineKeySegment(v)) return v;
   } catch {
     // no override file — fall through to the hostname slug
   }
@@ -72,4 +72,9 @@ export function machineKey(): string {
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return slug || "default";
+}
+
+/** Mirrored verbatim from lib/rt-paths.ts's isSafeMachineKeySegment — the two must agree or a machine-key value could pass one side's check and fail the other's. */
+export function isSafeMachineKeySegment(v: string): boolean {
+  return v.length > 0 && v !== "." && v !== ".." && !v.includes("/") && !v.includes("\\");
 }

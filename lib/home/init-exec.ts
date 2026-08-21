@@ -7,7 +7,7 @@
  * home root, and every other method takes paths relative to it.
  */
 
-import { mkdirSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { InitStep } from "./init-plan.ts";
 
@@ -21,7 +21,11 @@ export interface ExecSeam {
   run(cmd: string[], opts?: { cwd?: string }): Promise<ExecResult>;
   writeFile(path: string, content: string): Promise<void>;
   mkdirp(path: string): Promise<void>;
-  /** Idempotent: replaces whatever (if anything) already sits at `path`. */
+  /** Any entry at all (file, dir, or symlink) — used to seed tracked files only into a genuinely empty clone. */
+  exists(path: string): Promise<boolean>;
+  /** True only for a REAL (non-symlink) entry — absent or a symlink both read false. */
+  isRealFile(path: string): Promise<boolean>;
+  /** Idempotent: replaces whatever (if anything) already sits at `path`. Callers must confirm via isRealFile first — this never itself refuses a real file. */
   writeSymlink(path: string, target: string): Promise<void>;
 }
 
@@ -41,6 +45,16 @@ async function run(exec: ExecSeam, cmd: string[], opts?: { cwd?: string }): Prom
   return result.stdout;
 }
 
+/** Seeds a tracked file only into a genuinely empty clone — a populated clone already carries it from its own history. */
+async function writeIfAbsent(exec: ExecSeam, path: string, content: string, log: StepLog, label: string): Promise<void> {
+  if (await exec.exists(path)) {
+    log(`${label} already present — leaving it`);
+    return;
+  }
+  log(`seeding ${label}`);
+  await exec.writeFile(path, content);
+}
+
 async function runStep(step: InitStep, exec: ExecSeam, log: StepLog): Promise<void> {
   switch (step.kind) {
     case "ensureStateDirs": {
@@ -56,13 +70,11 @@ async function runStep(step: InitStep, exec: ExecSeam, log: StepLog): Promise<vo
       return;
     }
     case "writeGitignore": {
-      log("writing the user repo's .gitignore");
-      await exec.writeFile("user/.gitignore", step.content);
+      await writeIfAbsent(exec, "user/.gitignore", step.content, log, "user/.gitignore");
       return;
     }
     case "writeOwners": {
-      log("writing user/snapshot-owners.jsonc");
-      await exec.writeFile("user/snapshot-owners.jsonc", step.content);
+      await writeIfAbsent(exec, "user/snapshot-owners.jsonc", step.content, log, "user/snapshot-owners.jsonc");
       return;
     }
     case "writeMachineKey": {
@@ -76,6 +88,13 @@ async function runStep(step: InitStep, exec: ExecSeam, log: StepLog): Promise<vo
       return;
     }
     case "writeSkillsSymlink": {
+      // Re-checked here, not trusted from the plan-build-time probe: the
+      // plan can be stale by the time this runs (a real file could appear
+      // in between), and clobbering real content is worse than a stale
+      // "skip" ever is.
+      if (await exec.isRealFile("skills.jsonc")) {
+        throw new StepFailed("a real file already exists at skills.jsonc — refusing to overwrite it");
+      }
       log("linking skills.jsonc -> user/skills.jsonc");
       await exec.writeSymlink("skills.jsonc", join("user", "skills.jsonc"));
       return;
@@ -120,6 +139,16 @@ export function createRealExecSeam(home: string): ExecSeam {
     },
     async mkdirp(path) {
       mkdirSync(join(home, path), { recursive: true });
+    },
+    async exists(path) {
+      return existsSync(join(home, path));
+    },
+    async isRealFile(path) {
+      try {
+        return !lstatSync(join(home, path)).isSymbolicLink();
+      } catch {
+        return false; // absent
+      }
     },
     async writeSymlink(path, target) {
       const full = join(home, path);

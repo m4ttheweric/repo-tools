@@ -95,8 +95,9 @@ export function teamSettingsPath(team: string): string {
 
 /**
  * ~/.mattstack/user/local/<machineKey()>/settings.local.jsonc — the machine
- * store: local overrides, never committed or synced (`user/local/` is
- * gitignored in the home repo). Nested per machine so multiple machines
+ * store: local overrides, TRACKED and keyed per machine (ruling 2 — machine
+ * scope travels, it just never collides, since each machine only ever
+ * writes its own `local/<key>/`). Nested per machine so multiple machines
  * sharing the synced `user/` tree don't collide on one local-overrides file.
  */
 export function machineSettingsPath(): string {
@@ -130,7 +131,7 @@ export function machineKey(): string {
   const override = join(home(), ".mattstack", "machine-key");
   try {
     const v = readFileSync(override, "utf8").trim();
-    if (v && v !== "." && v !== ".." && !v.includes("/") && !v.includes("\\")) return v;
+    if (isSafeMachineKeySegment(v)) return v;
   } catch {
     // no override file — fall through to the hostname slug
   }
@@ -140,6 +141,21 @@ export function machineKey(): string {
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return slug || "default";
+}
+
+/**
+ * The one guard for "is this string safe to use as a `user/local/<key>/`
+ * directory name" — shared by machineKey()'s override check and
+ * lib/home/init-plan.ts's buildInitPlan (which refuses to emit
+ * writeMachineKey/ensureProfileDir for a key that would fail this, rather
+ * than write a file the resolver's own override check would then reject,
+ * silently falling back to the hostname slug and leaving `writeMachineKey`'s
+ * chosen key unprovisioned). Mirrored verbatim in
+ * packages/rt-client/src/settings/paths.ts — the two must agree or a
+ * machine-key value could pass one side's check and fail the other's.
+ */
+export function isSafeMachineKeySegment(v: string): boolean {
+  return v.length > 0 && v !== "." && v !== ".." && !v.includes("/") && !v.includes("\\");
 }
 
 // ─── Tray app (MAT-383) ───────────────────────────────────────────────────────

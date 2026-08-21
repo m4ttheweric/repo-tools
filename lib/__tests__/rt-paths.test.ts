@@ -30,7 +30,7 @@ import {
   migrateLegacyRtDir, legacyDirsPresent,
   TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE, DEV_TRAY_APP_BUNDLE,
   trayAppPath, devTrayAppPath, legacyTrayAppPaths, installedTrayAppPath, machineSettingsPath,
-  machineKey, userSettingsPath, teamSettingsPath,
+  machineKey, userSettingsPath, teamSettingsPath, isSafeMachineKeySegment,
 } from "../rt-paths.ts";
 
 describe("rt-paths", () => {
@@ -173,6 +173,19 @@ describe("rt-paths", () => {
       mock.module("os", () => ({ ...osReal, hostname: () => "!!!" }));
       expect(machineKey()).toBe("default");
       rmSync(home, { recursive: true, force: true });
+    });
+  });
+
+  describe("isSafeMachineKeySegment", () => {
+    test.each([
+      ["a plain slug", "mbp-14", true],
+      ["empty", "", false],
+      ["exactly \".\"", ".", false],
+      ["exactly \"..\"", "..", false],
+      ["a forward slash", "evil/key", false],
+      ["a backslash", "evil\\key", false],
+    ])("%s -> %s", (_label, value, expected) => {
+      expect(isSafeMachineKeySegment(value)).toBe(expected);
     });
   });
 

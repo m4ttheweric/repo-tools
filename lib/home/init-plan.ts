@@ -6,10 +6,11 @@
  * against real git and the filesystem.
  */
 
+import { isSafeMachineKeySegment } from "../rt-paths.ts";
 import { renderHomeGitignore } from "./boundary.ts";
 
 /** ~/.mattstack state-zone directories: no repo, never travel. */
-export const STATE_DIR_NAMES = ["rt", "deck", "shepherdr", "repos", "work", "teams"];
+export const STATE_DIR_NAMES = ["rt", "deck", "shepherdr", "repos", "ci-attendants", "work", "teams"];
 
 export interface HomeState {
   userRepoPresent: boolean;
@@ -45,12 +46,28 @@ function renderOwnersFile(): string {
   return "{\n  // snapshot-owners.jsonc — claimed zones the snapshot daemon must never\n  // auto-commit. Empty until a zone is claimed.\n}\n";
 }
 
+/** A machine-key value that would fail machineKey()'s own override guard — refused before it can ever be written and then silently ignored. */
+export class InvalidMachineKeyError extends Error {
+  constructor(key: string) {
+    super(`"${key}" is not a safe machine-key segment (empty, ".", "..", or containing "/" or "\\")`);
+  }
+}
+
 /**
  * Idempotence lives here, not in the executor: each step is gated on its own
  * probe, so a fully-provisioned machine naturally converges to an empty
  * plan without a special-cased short-circuit.
  */
 export function buildInitPlan(state: HomeState, config: InitPlanConfig): InitPlan {
+  // Refused here, not left to machineKey()'s own guard: a bad key that
+  // slipped through would get written to disk by writeMachineKey and then
+  // silently rejected on the next read, stranding ensureProfileDir's
+  // user/local/<bad>/ as a dead directory while the resolver quietly falls
+  // back to the hostname slug.
+  if (!isSafeMachineKeySegment(config.machineKey)) {
+    throw new InvalidMachineKeyError(config.machineKey);
+  }
+
   const steps: InitStep[] = [];
 
   if (state.stateDirsMissing.length > 0) {
