@@ -1,38 +1,51 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
+import { machineSettingsPath } from "../../rt-paths.ts";
+import { getSetting } from "../../settings/resolve.ts";
+import { setSetting } from "../../settings/write.ts";
 import {
   loadRepoTracking, grants, saveRepoTracking, parseCachesArg, CACHE_KINDS,
 } from "../../repo-tracking.ts";
 
-function tmpFile(contents?: string): string {
-  const dir = mkdtempSync(join(tmpdir(), "rt-tracking-"));
-  const p = join(dir, "repo-tracking.json");
-  if (contents !== undefined) writeFileSync(p, contents);
-  return p;
+function writeStore(file: string, obj: unknown): void {
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(obj, null, 2));
 }
 
-describe("loadRepoTracking", () => {
-  test("missing file → empty", () => {
-    expect(loadRepoTracking(tmpFile())).toEqual({});
+describe("loadRepoTracking through the settings resolver", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-tracking-")));
+    process.env.HOME = home;
   });
 
-  test("corrupt file → empty", () => {
-    expect(loadRepoTracking(tmpFile("{nope"))).toEqual({});
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
   });
 
-  test("v2 envelope parses; unknown cache names dropped; empty caches drops entry", () => {
-    const p = tmpFile(JSON.stringify({
-      version: 2,
-      repos: {
-        a: { mode: "live", caches: ["branches", "project-mrs"] },
-        b: { mode: "poll", caches: ["branches", "bogus"] },
-        c: { mode: "live", caches: [] },
-        d: { mode: "sideways", caches: ["branches"] },
-      },
-    }));
-    const t = loadRepoTracking(p);
+  test("empty store → empty (nothing tracked)", () => {
+    expect(loadRepoTracking()).toEqual({});
+  });
+
+  test("a malformed stored value degrades to empty", () => {
+    writeStore(machineSettingsPath(), { "rt.repoTracking": ["not", "an", "object"] });
+    expect(loadRepoTracking()).toEqual({});
+  });
+
+  test("a store-seeded v2-shaped entry resolves; unknown cache names dropped; empty caches drops entry", () => {
+    setSetting("rt.repoTracking", {
+      a: { mode: "live", caches: ["branches", "project-mrs"] },
+      b: { mode: "poll", caches: ["branches", "bogus"] },
+      c: { mode: "live", caches: [] },
+      d: { mode: "sideways", caches: ["branches"] },
+    }, "machine");
+
+    const t = loadRepoTracking();
     expect(t.a).toEqual({ mode: "live", caches: ["branches", "project-mrs"] });
     expect(t.b).toEqual({ mode: "poll", caches: ["branches"] });
     expect(t.c).toBeUndefined();
@@ -40,32 +53,22 @@ describe("loadRepoTracking", () => {
   });
 
   test("legacy flat strings migrate to {mode, caches:[branches]}; off/unknown dropped", () => {
-    const p = tmpFile(JSON.stringify({ a: "live", b: "poll", c: "off", d: "bogus" }));
-    const t = loadRepoTracking(p);
+    writeStore(machineSettingsPath(), { "rt.repoTracking": { a: "live", b: "poll", c: "off", d: "bogus" } });
+
+    const t = loadRepoTracking();
     expect(t.a).toEqual({ mode: "live", caches: ["branches"] });
     expect(t.b).toEqual({ mode: "poll", caches: ["branches"] });
     expect(t.c).toBeUndefined();
     expect(t.d).toBeUndefined();
   });
 
-  test('a repo literally named "version" survives in both shapes', () => {
-    const legacy = tmpFile(JSON.stringify({ version: "live", other: "poll" }));
-    expect(loadRepoTracking(legacy).version).toEqual({ mode: "live", caches: ["branches"] });
-    const v2 = tmpFile(JSON.stringify({
-      version: 2,
-      repos: { version: { mode: "poll", caches: ["branches"] }!, other: { mode: "live", caches: ["branches"] }! },
-    }));
-    expect(loadRepoTracking(v2).version).toEqual({ mode: "poll", caches: ["branches"] });
-    expect(loadRepoTracking(v2).other).toBeDefined();
-  });
-
   test("invalid projectMrsWindowDays values are dropped, entry survives", () => {
-    const file = join(mkdtempSync(join(tmpdir(), "rt-track-")), "t.json");
-    writeFileSync(file, JSON.stringify({ version: 2, repos: {
+    setSetting("rt.repoTracking", {
       a: { mode: "live", caches: ["branches"], projectMrsWindowDays: -5 },
       b: { mode: "live", caches: ["branches"], projectMrsWindowDays: "soon" },
-    }}));
-    const t = loadRepoTracking(file);
+    }, "machine");
+
+    const t = loadRepoTracking();
     expect(t.a).toBeDefined(); expect(t.a?.projectMrsWindowDays).toBeUndefined();
     expect(t.b).toBeDefined(); expect(t.b?.projectMrsWindowDays).toBeUndefined();
   });
@@ -93,23 +96,37 @@ describe("grants", () => {
   });
 });
 
-describe("saveRepoTracking", () => {
-  test("writes v2 envelope, sorted repos; round-trips through loadRepoTracking", () => {
-    const p = tmpFile();
+describe("saveRepoTracking through the settings resolver", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-tracking-save-")));
+    process.env.HOME = home;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("writes to the machine store, repos sorted; round-trips through loadRepoTracking", () => {
     saveRepoTracking({
       zed: { mode: "poll", caches: ["branches"] },
       abc: { mode: "live", caches: ["branches", "project-mrs"] },
-    }, p);
-    const raw = JSON.parse(require("fs").readFileSync(p, "utf8"));
-    expect(raw.version).toBe(2);
-    expect(Object.keys(raw.repos)).toEqual(["abc", "zed"]);
-    expect(loadRepoTracking(p).abc!.caches).toEqual(["branches", "project-mrs"]);
+    });
+
+    const stored = getSetting<Record<string, unknown>>("rt.repoTracking").value;
+    expect(Object.keys(stored)).toEqual(["abc", "zed"]);
+    expect(loadRepoTracking().abc!.caches).toEqual(["branches", "project-mrs"]);
+
+    const raw = JSON.parse(readFileSync(machineSettingsPath(), "utf8").replace(/^\/\/.*\n/, ""));
+    expect(Object.keys(raw["rt.repoTracking"])).toEqual(["abc", "zed"]);
   });
 
   test("projectMrsWindowDays round-trips through save/load", () => {
-    const file = join(mkdtempSync(join(tmpdir(), "rt-track-")), "t.json");
-    saveRepoTracking({ repo: { mode: "live", caches: ["project-mrs"], projectMrsWindowDays: 60 } }, file);
-    expect(loadRepoTracking(file).repo?.projectMrsWindowDays).toBe(60);
+    saveRepoTracking({ repo: { mode: "live", caches: ["project-mrs"], projectMrsWindowDays: 60 } });
+    expect(loadRepoTracking().repo?.projectMrsWindowDays).toBe(60);
   });
 });
 

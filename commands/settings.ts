@@ -30,6 +30,8 @@ import {
   NOTIFICATION_TYPES,
 } from "../lib/notifier.ts";
 import { installShellIntegration } from "../lib/shell-integration.ts";
+import { getSetting } from "../lib/settings/resolve.ts";
+import { setSetting } from "../lib/settings/write.ts";
 
 // ─── Linear token ────────────────────────────────────────────────────────────
 
@@ -252,18 +254,12 @@ export async function configureNotifications(): Promise<void> {
 
 // ─── Runaway process detection thresholds ────────────────────────────────────
 
-const RUNAWAY_CONFIG_PATH = join(rtDir(), "runaway-config.json");
-
 export async function configureRunaway(args: string[]): Promise<void> {
   const field = args[0];
   const value = args[1];
 
-  let config: Record<string, number> = {};
-  try {
-    if (existsSync(RUNAWAY_CONFIG_PATH)) {
-      config = JSON.parse(readFileSync(RUNAWAY_CONFIG_PATH, "utf8"));
-    }
-  } catch { /* fresh */ }
+  const stored = getSetting<Record<string, number> | undefined>("rt.runaway").value;
+  const config: Record<string, number> = stored ? { ...stored } : {};
 
   if (!field) {
     console.log(`\n  ${bold}Runaway process detection${reset}\n`);
@@ -301,9 +297,8 @@ export async function configureRunaway(args: string[]): Promise<void> {
       return;
   }
 
-  mkdirSync(dirname(RUNAWAY_CONFIG_PATH), { recursive: true });
-  writeFileSync(RUNAWAY_CONFIG_PATH, JSON.stringify(config, null, 2));
-  console.log(`  ${green}✓${reset} saved to ${dim}${RUNAWAY_CONFIG_PATH}${reset}`);
+  setSetting("rt.runaway", config, "machine");
+  console.log(`  ${green}✓${reset} saved`);
   console.log(`  ${dim}restart daemon to apply: rt daemon restart${reset}`);
 }
 

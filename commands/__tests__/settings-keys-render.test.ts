@@ -29,8 +29,8 @@ describe("renderListRow", () => {
   });
 
   test("a registered migrated:false key still carries its legacy note", () => {
-    // rt.llm is a real wave-1 registered migrated:false key.
-    const out = plain(renderListRow(row({ key: "rt.llm", migrated: false })));
+    // rt.hooks is the deliberately-deferred registered migrated:false key.
+    const out = plain(renderListRow(row({ key: "rt.hooks", migrated: false })));
 
     expect(out).toMatch(/legacy|not writable/);
     expect(out).not.toContain("unregistered");
