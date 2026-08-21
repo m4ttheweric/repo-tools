@@ -149,8 +149,9 @@ beforeEach(() => {
 
 afterEach(() => {
   logSpy.mockRestore();
-  // skillsCheck sets this on staleness; never let it leak into the suite's own exit status.
-  process.exitCode = undefined;
+  // skillsCheck sets this on staleness; Bun ignores process.exitCode = undefined once
+  // truthy, so 0 is the only value that clears it before the suite's own exit status.
+  process.exitCode = 0;
 });
 
 /**
@@ -394,6 +395,56 @@ describe("skillsCheck", () => {
     expect(staleLine).toBeDefined();
     expect(staleLine).toContain("watch-ci");
     expect(staleLine).toContain("SKILL.md");
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("orphan file left over from a previous compile reports stale and exits 1", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+
+    await skillsCompile([
+      "--team", "t",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+    ]);
+
+    writeFileSync(join(packDir, "skills", "watch-ci", "leftover.txt"), "stale content\n");
+    logs = [];
+
+    await skillsCheck([
+      "--team", "t",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+    ]);
+
+    const staleLine = logs.find((l) => l.includes("stale"));
+    expect(staleLine).toBeDefined();
+    expect(staleLine).toContain("watch-ci");
+    expect(staleLine).toContain("leftover.txt");
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("never-compiled public verb (missing outDir) reports stale and exits 1", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+
+    await skillsCheck([
+      "--team", "t",
+      "--pack-dir", packDir,
+      "--mattstack-dir", mattstackDir,
+      "--manifest", manifestPath,
+      "--verb", "watch-ci",
+    ]);
+
+    const staleLine = logs.find((l) => l.includes("stale"));
+    expect(staleLine).toBeDefined();
+    expect(staleLine).toContain("watch-ci");
     expect(process.exitCode).toBe(1);
   });
 });

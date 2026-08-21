@@ -3,7 +3,7 @@ import { execFileSync } from "child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { decidePaletteAction, skillsSurface } from "../skills.ts";
+import { computeRows, decidePaletteAction, skillsSurface } from "../skills.ts";
 
 function writeFile(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -49,7 +49,8 @@ beforeEach(() => {
 
 afterEach(() => {
   logSpy.mockRestore();
-  process.exitCode = undefined;
+  // Bun ignores process.exitCode = undefined once truthy; 0 is the only value that clears it.
+  process.exitCode = 0;
 });
 
 async function runExpectingCleanExit(fn: () => Promise<void>): Promise<{ exitCode: number | undefined; errors: string[] }> {
@@ -295,7 +296,15 @@ describe("skillsSurface bare invocation (fzf palette)", () => {
     writeStubs(packDir, {});
     writeFile(join(packDir, "skills", "my-skill", "SKILL.md"), "---\nname: s\n---\nbody\n");
 
-    await skillsSurface(["--team", "t", "--pack-dir", packDir]);
+    // bun test inherits stdin from the shell; force the non-tty fallback so this
+    // never spawns real fzf on an interactive run.
+    const previousIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", { value: false, configurable: true });
+    try {
+      await skillsSurface(["--team", "t", "--pack-dir", packDir]);
+    } finally {
+      Object.defineProperty(process.stdin, "isTTY", { value: previousIsTTY, configurable: true });
+    }
 
     expect(existsSync(join(packDir, "pack", "surface.jsonc"))).toBe(false);
     const out = logs.join("\n");
@@ -370,5 +379,60 @@ describe("decidePaletteAction", () => {
 
     expect(decidePaletteAction(previousPublic, resultRows, false).kind).toBe("no-changes");
     expect(decidePaletteAction(previousPublic, resultRows, true).kind).toBe("no-changes");
+  });
+});
+
+describe("computeRows -- previously-public names absent from skills/, attachments/, stubs.jsonc", () => {
+  test("surfaces the orphan as a 'missing' row instead of dropping it", () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, {});
+    writeFile(join(packDir, "skills", "real-skill", "SKILL.md"), "---\nname: real-skill\n---\nbody\n");
+
+    const surface = { public: ["ghost", "real-skill"] };
+    const { rows } = computeRows(packDir, new Set(), surface);
+
+    const ghostRow = rows.find((r) => r.name === "ghost");
+    expect(ghostRow).toEqual({ name: "ghost", kind: "missing", status: "public" });
+    const realRow = rows.find((r) => r.name === "real-skill");
+    expect(realRow?.status).toBe("public");
+  });
+
+  test("combined with decidePaletteAction: leaving the missing row untouched yields no delta", () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, {});
+
+    const surface = { public: ["ghost"] };
+    const { rows } = computeRows(packDir, new Set(), surface);
+    const previousPublic = new Set(surface.public);
+
+    // Simulates the palette round trip: the fzf row for "ghost" exists and stays
+    // preselected because the user never touched it.
+    const resultRows = rows.map((r) => ({ name: r.name, status: r.status }));
+
+    const action = decidePaletteAction(previousPublic, resultRows, false);
+    expect(action.kind).toBe("no-changes");
+  });
+
+  test("combined with decidePaletteAction: explicitly demoting the missing row surfaces the removal", () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, {});
+
+    const surface = { public: ["ghost"] };
+    const { rows } = computeRows(packDir, new Set(), surface);
+    const previousPublic = new Set(surface.public);
+
+    const resultRows = rows.map((r) => ({ name: r.name, status: "internal" as const }));
+
+    const preview = decidePaletteAction(previousPublic, resultRows, false);
+    expect(preview.kind).toBe("declined");
+    if (preview.kind !== "no-changes") {
+      expect(preview.delta.toInternal).toEqual(["ghost"]);
+    }
+
+    const decision = decidePaletteAction(previousPublic, resultRows, true);
+    expect(decision.kind).toBe("write");
+    if (decision.kind === "write") {
+      expect(decision.delta.toInternal).toEqual(["ghost"]);
+    }
   });
 });
