@@ -31,6 +31,7 @@ struct TeamScreen: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier(cardID(choice))
+            .accessibilityAddTraits(selected ? [.isSelected] : [])
             if selected { content().padding(.leading, 24) }
         }
         .padding(14)
@@ -60,6 +61,7 @@ struct TeamScreen: View {
                 TextField("Repository URL", text: $model.remoteURL, prompt: Text("paste an empty repo's URL; GitHub, GitLab, anything git can push to"))
                     .accessibilityIdentifier(AXID.teamCreateRemote)
             }
+            if model.isChecking { checkingRow }
             Text(TeamChoiceModel.explainer).font(.callout).foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
@@ -91,8 +93,16 @@ struct TeamScreen: View {
             SecureField("Age key (from your password manager)", text: $model.restoreAgeKey).accessibilityIdentifier(AXID.teamRestoreKey)
             Text("Clones your settings to ~/.mattstack, installs the key in the Keychain, and replays your teams and packs during Install.")
                 .font(.caption).foregroundStyle(.secondary)
+            if model.isChecking { checkingRow }
         }
         .formStyle(.grouped)
         .scrollDisabled(true)
+    }
+
+    private var checkingRow: some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.small)
+            Text("Checking with rt…").font(.caption).foregroundStyle(.secondary)
+        }
     }
 }

@@ -8,6 +8,7 @@ enum AXID {
     static let stepIndicator = "setup.window.stepIndicator"
     static func `continue`(_ screen: String) -> String { "setup.\(screen).continue" }
     static func back(_ screen: String) -> String { "setup.\(screen).back" }
+    static func error(_ screen: String) -> String { "setup.\(screen).error" }
     static let continueLimited = "setup.checklist.continueLimited"
 
     // Screens (the root view of each)

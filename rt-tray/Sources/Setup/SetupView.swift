@@ -27,6 +27,14 @@ struct SetupView: View {
             }
             .animation(.easeInOut(duration: 0.22), value: flow.step)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if let errorText {
+                Text(errorText)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20).padding(.vertical, 8)
+                    .accessibilityIdentifier(AXID.error(screenName))
+            }
             Divider()
             footer
         }
@@ -62,7 +70,6 @@ struct SetupView: View {
 
     private var footer: some View {
         HStack {
-            if let errorText { Text(errorText).font(.caption).foregroundStyle(.red).lineLimit(2) }
             Spacer()
             // Always present (never removed) so the AX walkthrough finds a
             // stable setup.<screen>.back element and reads its enabled state.
