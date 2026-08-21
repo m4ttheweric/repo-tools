@@ -68,7 +68,9 @@ function plan(): unknown {
   // flows can reach Install without connecting anything; perm-denied-then-granted
   // gates only on perm.fda so the second plan() call can flip canInstall to true.
   const installableScenario = ["join-happy", "create-happy", "apply-fail-retry", "restore", "uninstall", "perm-denied-then-granted"].includes(scenario);
-  if (installableScenario) { accounts[0].status = "ready"; accounts[0].detail = "token can see group assured"; tools[1].status = "ready"; tools[1].detail = "extension loaded"; }
+  // accounts[0] and tools[1] are the fixed literal elements built above — non-null
+  // is safe, not a runtime guess.
+  if (installableScenario) { accounts[0]!.status = "ready"; accounts[0]!.detail = "token can see group assured"; tools[1]!.status = "ready"; tools[1]!.detail = "extension loaded"; }
   const requiredMissing = [...mac, ...accounts, ...access, ...tools].filter((r) => r.required && r.status !== "ready").map((r) => r.id);
   return {
     team: { slug: "assured", name: "Assured", mode },
