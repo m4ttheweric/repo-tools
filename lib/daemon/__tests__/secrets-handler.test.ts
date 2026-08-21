@@ -1,8 +1,6 @@
 /**
- * secrets:forge-token (MAT-33): the grant gate is the point of the verb, so
- * every test here is about who gets refused. The old world was gitq opening
- * ~/.mattstack/rt/secrets.json itself, where every caller got every token with no
- * grant check anywhere.
+ * secrets:forge-token: the grant gate is the point of the verb, so every
+ * test here is about who gets refused.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
@@ -58,6 +56,15 @@ describe("secrets:forge-token", () => {
     const h = handler({ secrets: { gitlabToken: "glpat-abc" } });
     expect((await h({ repoName: "", forge: "gitlab" })).ok).toBe(false);
     expect((await h({ repoName: "gitq", forge: "bitbucket" as any })).ok).toBe(false);
+  });
+
+  test("a secrets-reader throw (e.g. an unreadable encrypted store) surfaces as a rejected promise, never a fallback token", async () => {
+    const h = createSecretsHandlers(fakeCtx, {
+      tracking: () => ({ gitq: { mode: "live", caches: ["branches"] } }) as any,
+      secrets: () => { throw new Error("decryption failed"); },
+    })["secrets:forge-token"];
+
+    await expect(h({ repoName: "gitq", forge: "gitlab" })).rejects.toThrow("decryption failed");
   });
 });
 
@@ -195,6 +202,12 @@ describe("secrets:read", () => {
 
     expect(res).toEqual({ ok: true, data: { linearApiKey: "lin_api_x" } });
     expect(deckCalled).toBe(false);
+  });
+
+  test("an extensionSecrets throw (e.g. an unreadable encrypted store) surfaces as a rejected promise, never a partial ok", async () => {
+    const h = readHandler({ extensionSecrets: async () => { throw new Error("decryption failed"); } });
+
+    await expect(h({ token: "test-token" })).rejects.toThrow("decryption failed");
   });
 });
 
