@@ -132,6 +132,21 @@ let readinessModelChecks: [Check] = [
         c.expectEqual(ticker.cancelled, 1)
         c.expectEqual(plans.fetches, 1, "the 1s ticker never spawns rt; it probes locally")
     },
+    Check("becameVisible/becameHidden are depth-counted: two visible callers, one hiding leaves the tick running; both hiding cancels it") { c in
+        let ticker = FakeTicker()
+        let m = await MainActor.run { ReadinessModel(plans: FakePlans([makePlan()]), permissions: FakePermissions(), ticker: ticker) }
+        await MainActor.run {
+            m.becameVisible()   // Setup checklist
+            m.becameVisible()   // Settings > Permissions
+        }
+        c.expectEqual(ticker.ticks.count, 1, "one caller's visibility must not spawn a second ticker")
+        await MainActor.run { m.becameHidden() }   // Settings closes
+        c.expectEqual(ticker.cancelled, 0, "the checklist is still visible; its tick must survive")
+        await MainActor.run { m.becameHidden() }   // Setup closes
+        c.expectEqual(ticker.cancelled, 1, "the last visible caller hiding cancels the tick")
+        await MainActor.run { m.becameHidden() }   // stray extra call
+        c.expectEqual(ticker.cancelled, 1, "depth clamps at 0 — an extra becameHidden() must not cancel again")
+    },
     Check("didBecomeActive refetches the plan; afterAction marks the row checking then refetches") { c in
         let plans = FakePlans([makePlan(), makePlan(gitlab: .ready), makePlan(gitlab: .ready)])
         let m = await MainActor.run { ReadinessModel(plans: plans, permissions: FakePermissions(), ticker: FakeTicker()) }

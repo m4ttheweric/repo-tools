@@ -15,8 +15,10 @@ struct UninstallPane: View {
             Section("Uninstall mattstack") {
                 Text("Reverses everything the installer did: services, the proxy, ~/.local/bin links and the shell rc block, the editor extension, the Claude Code plugins we added; then moves the app to the Trash.")
                     .font(.callout)
-                Button("Uninstall mattstack…") { Task { await model.loadUninstallPlan(); confirming = true } }
+                Button("Uninstall mattstack…") { Task { await armConfirmation() } }
+                    .disabled(running)
                     .accessibilityIdentifier(AXID.settingsUninstall)
+                if let e = model.error { Text(e).font(.caption).foregroundStyle(.red) }
             }
             if !progress.isEmpty {
                 Section("Progress") { ForEach(progress, id: \.self) { Text($0).font(.system(.caption, design: .monospaced)) } }
@@ -30,8 +32,11 @@ struct UninstallPane: View {
                 Toggle("Keep ~/.mattstack (your settings home repo, at ~/.mattstack/user, and other local data)", isOn: $keepData).accessibilityIdentifier(AXID.settingsUninstallKeepData)
                 HStack {
                     Spacer()
-                    Button("Cancel") { confirming = false }.keyboardShortcut(.cancelAction)
-                    Button("Uninstall", role: .destructive) { confirming = false; run() }.keyboardShortcut(.defaultAction).disabled(running)
+                    // The safe choice takes the Return key; the destructive
+                    // one is a plain click only — HIG, and it also keeps a
+                    // stray Return from ever firing the uninstall.
+                    Button("Cancel") { confirming = false }.keyboardShortcut(.defaultAction).accessibilityIdentifier(AXID.settingsUninstallCancel)
+                    Button("Uninstall", role: .destructive) { confirming = false; run() }
                         .accessibilityIdentifier(AXID.settingsUninstallConfirm)
                 }
             }
@@ -39,18 +44,40 @@ struct UninstallPane: View {
         }
     }
 
+    /// Only arms the destructive sheet once the dry-run plan actually
+    /// decoded — a failed/missing `rt uninstall --dry-run` must show its
+    /// failure copy (above) instead of an empty "This will:" list with a
+    /// live destructive button.
+    private func armConfirmation() async {
+        await model.loadUninstallPlan()
+        if model.uninstallPlan != nil { confirming = true }
+    }
+
     private func run() {
         running = true
         progress = []
+        let titles = Dictionary(uniqueKeysWithValues: (model.uninstallPlan?.actions ?? []).map { ($0.id, $0.title) })
+        var reasons: [String: (detail: String?, remedy: String?)] = [:]
         Task {
             do {
                 for try await line in model.uninstall(keepData: keepData) {
-                    if let ev = try? ApplyEvent.decode(line) {
-                        switch ev {
-                        case .step(let id, let state, let detail, _): progress.append("\(id): \(state.rawValue)\(detail.map { " — \($0)" } ?? "")")
-                        case .done(let ok, _): progress.append(ok ? "done — mattstack will quit now" : "stopped"); if ok { env.onQuitForUninstall() }
-                        default: break
+                    guard let ev = try? ApplyEvent.decode(line) else { continue }
+                    switch ev {
+                    case .step(let id, let state, let detail, let remedy):
+                        if detail != nil || remedy != nil { reasons[id] = (detail ?? reasons[id]?.detail, remedy ?? reasons[id]?.remedy) }
+                        let title = titles[id] ?? id
+                        progress.append("\(title): \(state.rawValue)\(detail.map { " — \($0)" } ?? "")")
+                    case .done(let ok, let failedStep):
+                        if ok {
+                            progress.append("done — mattstack will quit now")
+                            env.onQuitForUninstall()
+                        } else {
+                            let id = failedStep ?? ""
+                            let title = titles[id] ?? failedStep ?? "uninstall"
+                            let reason = reasons[id]?.remedy ?? reasons[id]?.detail
+                            progress.append(reason.map { "\(title) — \($0)" } ?? "\(title) stopped")
                         }
+                    default: break
                     }
                 }
             } catch { progress.append("error: \((error as? RtClientError)?.copy ?? "rt uninstall failed.")") }

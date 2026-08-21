@@ -4,8 +4,6 @@ import MattstackCore
 struct PermissionsPane: View {
     let env: SettingsEnvironment
     @ObservedObject private var readiness: ReadinessModel
-    @State private var snapshot = PermissionSnapshot.unknown
-    @State private var timer: Timer?
     @State private var resetting = false
 
     init(env: SettingsEnvironment) { self.env = env; self.readiness = env.readiness }
@@ -20,19 +18,19 @@ struct PermissionsPane: View {
         Form {
             Section {
                 ForEach(rows, id: \.0) { r in
-                    let (status, detail) = PermissionRowOverlay.status(for: r.0, in: snapshot) ?? (.checking, "")
+                    let (status, detail) = PermissionRowOverlay.status(for: r.0, in: readiness.permissionSnapshot) ?? (.checking, "")
                     RowView(row: PlanRow(id: r.0, kind: .permission, title: r.1, why: r.2, required: r.3, status: status, detail: detail,
                                          action: RowAction(type: .openSettings, label: buttonLabel(r.0, status), target: r.4), recheck: .onActivate),
                             isChecking: false,
-                            rowID: "settings.permissions.row.\(r.0)",
+                            rowID: AXID.settingsPermissionRow(r.0),
                             actionID: AXID.settingsPermissionAction(r.0),
-                            statusID: "settings.permissions.row.\(r.0).status") { act(r.0, status, r.4) }
+                            statusID: AXID.settingsPermissionRowStatus(r.0)) { act(r.0, status, r.4) }
                 }
                 if readiness.fdaNeedsRelaunch {
                     HStack {
                         Text("Full Disk Access was granted. Relaunch mattstack to apply it.").font(.caption)
                         Spacer()
-                        Button("Relaunch mattstack") { relaunch() }.accessibilityIdentifier(AXID.settingsPermissionsRelaunch)
+                        Button("Relaunch mattstack") { AppRelaunch.relaunchInPlace() }.accessibilityIdentifier(AXID.settingsPermissionsRelaunch)
                     }
                 }
             }
@@ -46,15 +44,11 @@ struct PermissionsPane: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear {
-            probe()
-            timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in probe() }
-            // readiness.fdaNeedsRelaunch is the one Setup and Settings share;
-            // this pane needs its own tick only to keep that flag current
-            // while Setup's checklist isn't the visible screen.
-            readiness.becameVisible()
-        }
-        .onDisappear { timer?.invalidate(); timer = nil; readiness.becameHidden() }
+        // One poller: readiness owns the 1s permission probe (also read by
+        // the Setup checklist), so this view only reads its @Published
+        // snapshot — SettingsWindowController drives becameVisible/Hidden
+        // off the selected tab, since window-close doesn't reliably fire
+        // onDisappear for a TabView page that isn't currently selected.
     }
 
     private func buttonLabel(_ id: String, _ status: RowStatus) -> String {
@@ -66,24 +60,7 @@ struct PermissionsPane: View {
         }
     }
     private func act(_ id: String, _ status: RowStatus, _ target: String) {
-        if id == PermissionRowOverlay.notificationsRow, status == .skipped { Task { _ = await env.permissions.request("notifications"); probe() }; return }
+        if id == PermissionRowOverlay.notificationsRow, status == .skipped { Task { _ = await env.permissions.request("notifications") }; return }
         env.permissions.openSettings(target)
-    }
-    private func probe() { Task { snapshot = await env.permissions.snapshot() } }
-
-    /// Same re-exec as the Setup checklist's relaunch button (ChecklistScreen):
-    /// launchd's LSUIElement flag means quitting alone would just end the app,
-    /// so a fresh instance has to be spawned before this one terminates.
-    private func relaunch() {
-        let path = Bundle.main.bundlePath
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        var args = ["-n", path]
-        if let feed = ProcessInfo.processInfo.environment[UpdatePolicy.overrideEnv] { args += ["--env", "\(UpdatePolicy.overrideEnv)=\(feed)"] }
-        let passthrough = Array(CommandLine.arguments.dropFirst())
-        if !passthrough.isEmpty { args += ["--args"] + passthrough }
-        task.arguments = args
-        try? task.run()
-        NSApp.terminate(nil)
     }
 }

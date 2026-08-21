@@ -59,18 +59,23 @@ enum AXID {
     static let doneInvite = "setup.done.invite"
 
     // Settings
+    static func settingsTab(_ pane: String) -> String { "settings.tab.\(pane)" }
     static let settingsGeneralStartAtLogin = "settings.general.startAtLogin"
     static let settingsGeneralAutoUpdates = "settings.general.autoUpdates"
     static let settingsGeneralCheckNow = "settings.general.checkNow"
     static let settingsGeneralDevMode = "settings.general.devMode"
+    static func settingsPermissionRow(_ id: String) -> String { "settings.permissions.row.\(id)" }
+    static func settingsPermissionRowStatus(_ id: String) -> String { "settings.permissions.row.\(id).status" }
     static func settingsPermissionAction(_ id: String) -> String { "settings.permissions.row.\(id).action" }
     static let settingsPermissionsReset = "settings.permissions.reset"
     static let settingsPermissionsRelaunch = "settings.permissions.relaunch"
     static let settingsTeamInviteHandle = "settings.team.inviteHandle"
     static let settingsTeamInvite = "settings.team.invite"
+    static let settingsTeamCopyRemote = "settings.team.copyRemote"
     static let settingsTeamCopyPaste = "settings.team.copyPasteBlock"
     static let settingsTeamJoinAnother = "settings.team.joinAnother"
     static let settingsUninstall = "settings.uninstall.button"
+    static let settingsUninstallCancel = "settings.uninstall.cancel"
     static let settingsUninstallConfirm = "settings.uninstall.confirm"
     static let settingsUninstallKeepData = "settings.uninstall.keepData"
 }

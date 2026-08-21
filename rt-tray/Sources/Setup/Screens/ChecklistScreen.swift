@@ -28,7 +28,7 @@ struct ChecklistScreen: View {
                             HStack {
                                 Text("Full Disk Access was granted. Relaunch mattstack to apply it.").font(.caption)
                                 Spacer()
-                                Button("Relaunch mattstack") { relaunch() }.accessibilityIdentifier(AXID.checklistRelaunch)
+                                Button("Relaunch mattstack") { AppRelaunch.relaunchInPlace() }.accessibilityIdentifier(AXID.checklistRelaunch)
                             }
                         }
                     }
@@ -107,19 +107,4 @@ struct ChecklistScreen: View {
         }
     }
 
-    private func relaunch() {
-        let path = Bundle.main.bundlePath
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        // Re-exec with the current arguments + environment so a clean-room
-        // launch (`MATTSTACK_APPCAST_URL` + `--allow-appcast-override`)
-        // survives the relaunch; `open` does not inherit either on its own.
-        var args = ["-n", path]
-        if let feed = ProcessInfo.processInfo.environment[UpdatePolicy.overrideEnv] { args += ["--env", "\(UpdatePolicy.overrideEnv)=\(feed)"] }
-        let passthrough = Array(CommandLine.arguments.dropFirst())
-        if !passthrough.isEmpty { args += ["--args"] + passthrough }
-        task.arguments = args
-        try? task.run()
-        NSApp.terminate(nil)
-    }
 }
