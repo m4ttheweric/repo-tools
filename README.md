@@ -221,10 +221,15 @@ rt home key export                                  # Print the age private key 
 ```
 
 A **zone** is a path relative to `~/.mattstack/user`, and is either a
-**directory** (`prefs/`, or just `prefs` — claims everything under it) or a
-**single file** (`scripts/deploy.sh` — claims exactly that path and nothing
-else). `claim` decides which by checking whether the path is currently a
-real file on disk; `release` works either way without needing to guess.
+**directory** (claims everything under it) or a **single file** (claims
+exactly that path and nothing else). Via `rt home claim`, either `prefs/`
+or just `prefs` works for a directory — it stats the real path and decides
+for you, no trailing slash required. Hand-editing `snapshot-owners.jsonc`
+directly is stricter: the trailing slash IS the marker there, so write
+`"prefs/"` for a directory and `"scripts/deploy.sh"` (no slash) for a file
+— a bare `"prefs"` with no slash is read back as a file zone named
+literally `prefs`, not a directory. `release` works either way without
+needing to guess.
 Claim a zone when you're mid-edit on something and don't want the daemon
 committing a half-finished state out from under you — `--owner` defaults to
 `<you>@<machine-key>`, and `--note` is a free-text reason anyone reading the

@@ -692,6 +692,18 @@ describe("homeClaim / homeRelease", () => {
     expect(logs.some((l) => l.includes("scripts/deploy.sh") && !l.includes("scripts/deploy.sh/"))).toBe(true);
   });
 
+  test("claim with a trailing slash on a real file still stores a FILE zone — the stat targets the normalized bare path, not the raw arg", async () => {
+    // isFile only matches the bare path (no trailing slash) — if claim ever
+    // stats the RAW "scripts/deploy.sh/" (statSync would ENOTDIR on a real
+    // file), this fixture reports false and the bug reproduces: a dir zone
+    // that excludes nothing.
+    const withFile = fakeProbes({ isGitRepo: () => true, isFile: (p) => p.endsWith("scripts/deploy.sh") });
+    const { logs } = await runCatchingExit(() => homeClaim(["scripts/deploy.sh/"], {}, ownersPath, withFile));
+
+    expect(Object.keys(readOwners(ownersPath).zones)).toEqual(["scripts/deploy.sh"]);
+    expect(logs.some((l) => l.includes("scripts/deploy.sh") && !l.includes("scripts/deploy.sh/"))).toBe(true);
+  });
+
   test("claim on a zone already claimed by a DIFFERENT owner refuses, naming the owner, unless --force", async () => {
     await runCatchingExit(() => homeClaim(["prefs/", "--owner", "matt@laptop"], {}, ownersPath, provisioned));
 

@@ -52,11 +52,7 @@ export class ZoneOwnedByOthersError extends Error {
  * "scripts/deploy.sh" is a file zone — so `normalizeZone`'s `kind` argument
  * controls whether one gets appended, and every reader downstream (the
  * planner's `isUnderZone`, the daemon's `:(exclude)` pathspec) trusts that
- * convention rather than re-deriving it. Claiming a FILE with a dir-zone
- * key was the original bug this fixes: `startsWith("scripts/deploy.sh/")`
- * never matches the file "scripts/deploy.sh" itself, so the zone claimed
- * nothing — verified against real git, `:(exclude)scripts/deploy.sh/` also
- * matches nothing.
+ * convention rather than re-deriving it.
  */
 export type ZoneKind = "dir" | "file";
 
@@ -81,16 +77,19 @@ export function normalizeZone(zone: string, kind: ZoneKind = "dir"): string {
 /**
  * Reads the owners file, tolerant of a missing file and a whitespace-only
  * one. Every zone key is re-run through `normalizeZone`, with `kind`
- * derived from whether the RAW stored key already ends with "/" (a
- * hand-edited "prefs" with no trailing slash still converges on the dir
- * form "prefs/"; a file zone key never carries one to begin with) — an
- * un-normalized dir key would either swallow an unrelated sibling ("prefs"
- * matching "prefs-old/…") or match nothing at all. Throws (fails closed —
- * see module doc) on malformed jsonc, a non-object `zones`, a non-object
- * zone entry, a zone key that fails normalization, or an entry whose
- * `owner` isn't a non-empty string — an unreadable owner is as dangerous
- * as an unreadable zone key, since the daemon's janitor message and the
- * CLI's "already claimed by X" refusal both trust it.
+ * derived from whether the RAW stored key already ends with "/" — a key
+ * ENDING in "/" ("prefs/", or a sloppy "work//project/") converges on the
+ * clean dir form ("work/project/"); a key with NO trailing slash ("prefs",
+ * "scripts/deploy.sh") is read back as a FILE zone, exactly as stored,
+ * since the trailing slash is the only signal this module has for which
+ * kind a hand-edited key means. A dir key that skipped normalization would
+ * either swallow an unrelated sibling ("prefs" matching "prefs-old/…") or
+ * match nothing at all. Throws (fails closed — see module doc) on
+ * malformed jsonc, a non-object `zones`, a non-object zone entry, a zone
+ * key that fails normalization, or an entry whose `owner` isn't a
+ * non-empty string — an unreadable owner is as dangerous as an unreadable
+ * zone key, since the daemon's janitor message and the CLI's "already
+ * claimed by X" refusal both trust it.
  */
 export function readOwners(path: string): Owners {
   if (!existsSync(path)) return { zones: {} };

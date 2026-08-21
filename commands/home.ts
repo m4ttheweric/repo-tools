@@ -455,12 +455,18 @@ export async function homeClaim(
   refuseUnlessProvisioned("claim", probes);
 
   const owner = ownerArg ?? defaultOwner();
-  // A REGULAR FILE claims exactly that path; anything else (a directory, or
-  // a path that doesn't exist yet — the common case for "claim this
-  // directory before I create anything in it") claims the whole subtree.
-  const kind: ZoneKind = probes.isFile(join(homeRepoRoot(), zone)) ? "file" : "dir";
 
+  let kind: ZoneKind;
   try {
+    // Stat the NORMALIZED bare path (kind:"file" never carries a trailing
+    // slash), not the raw user string — `rt home claim scripts/deploy.sh/`
+    // (a trailing slash on a real file) would otherwise make statSync see
+    // ENOTDIR and default to "dir", storing an exclude pathspec that
+    // (verified against real git) matches nothing. A REGULAR FILE claims
+    // exactly that path; anything else (a directory, or a path that
+    // doesn't exist yet — the common case for "claim this directory before
+    // I create anything in it") claims the whole subtree.
+    kind = probes.isFile(join(homeRepoRoot(), normalizeZone(zone, "file"))) ? "file" : "dir";
     claimZone(ownersPath, zone, owner, { note, kind, force });
   } catch (err) {
     if (err instanceof InvalidZoneError) {

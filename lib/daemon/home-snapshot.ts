@@ -217,6 +217,8 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   let pushFailureBroadcast = false;
   let firstSeenDirty: Record<string, number> = loadState(deps.statePath, deps.log);
   let lastLoggedOwnersError: string | null = null;
+  /** Shared dedup key for every "deps.readSettings() itself threw" warn (armWatcher's debounce read, status()) — a settings store that broke after boot and stays broken must warn once, not on every fs event or every `rt home snapshot --status` poll. */
+  let lastLoggedSettingsError: string | null = null;
 
   // Guarded: this runs at construction time, synchronously, in whatever
   // calls startHomeSnapshot() (module scope in lib/daemon.ts) — an
@@ -228,6 +230,11 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   } catch (err) {
     deps.log.warn({ err }, "home-snapshot: failed to read rt.homeSnapshot settings at startup");
   }
+  // status()'s fallback when a LATER readSettings() call throws — seeded
+  // from whatever the startup read actually saw (or the optimistic true a
+  // construction-time failure leaves it at, matching the same "assume
+  // enabled" default the startup guard above falls through to).
+  let lastKnownEnabled = startupSettings !== null ? startupSettings.enabled !== false : true;
   if (startupSettings !== null && startupSettings.enabled === false) {
     // Logged once, informationally, but NOT sticky: `disabledReason` stays
     // null so a live `rt.homeSnapshot.enabled` flip is picked up by doRun's
@@ -309,7 +316,23 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
         // during a bulk write (hundreds of fs events) is an event-loop
         // stall waiting to happen. The eventual runNow("watch") still reads
         // fresh settings on its own.
-        currentDebounceMs = deps.readSettings().debounceSec * 1000;
+        //
+        // Guarded: this runs SYNCHRONOUSLY inside an fs.watch listener — an
+        // uncaught throw here propagates straight out of the watcher's
+        // emit(), which is not a promise rejection the daemon's existing
+        // async error handling can absorb. A broken settings store must
+        // fall back to the registry default and warn (deduped), not repeat
+        // that throw on every subsequent fs event.
+        try {
+          currentDebounceMs = deps.readSettings().debounceSec * 1000;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (message !== lastLoggedSettingsError) {
+            deps.log.warn({ err }, "home-snapshot: failed to read settings while arming the debounce; using the default");
+            lastLoggedSettingsError = message;
+          }
+          currentDebounceMs = SETTINGS_FALLBACK.debounceSec * 1000;
+        }
       } else {
         deps.clearTimeout(debounceTimer);
       }
@@ -388,6 +411,17 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   }
 
   async function doPushInner(): Promise<void> {
+    // Kill switch, second door: doRun's own enabled check cancels a
+    // scheduled push timer, but only when doRun ITSELF runs — a push
+    // already armed with no upcoming debounce/janitor tick to catch it
+    // (the watcher never re-arms, or debounceSec > pushDelaySec) would
+    // otherwise still fire. pushPending is left untouched (there's still a
+    // real unpushed commit); once re-enabled, the next `committed ||
+    // pushPending` check re-arms it exactly the same way a cancelled timer would.
+    if (deps.readSettings().enabled === false) {
+      deps.log.debug("home-snapshot: disabled via rt.homeSnapshot.enabled=false; skipping a due push");
+      return;
+    }
     const result = await deps.exec(["git", "push", "-q", "origin", "HEAD"], {
       cwd: deps.repoDir,
       timeoutMs: PUSH_TIMEOUT_MS,
@@ -633,8 +667,20 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     } catch (err) {
       ownersError = err instanceof Error ? err.message : String(err);
     }
+    // `rt home snapshot --status` calls straight through to this — a
+    // settings-store read failure here must degrade to the last value this
+    // module actually observed, not throw a raw stack trace at the CLI.
+    try {
+      lastKnownEnabled = deps.readSettings().enabled !== false;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message !== lastLoggedSettingsError) {
+        deps.log.warn({ err }, "home-snapshot: failed to read settings in status(); using the last-known value");
+        lastLoggedSettingsError = message;
+      }
+    }
     return {
-      enabled: deps.readSettings().enabled !== false,
+      enabled: lastKnownEnabled,
       watching: watcher !== null,
       repoDir: deps.repoDir,
       lastRunAt,
