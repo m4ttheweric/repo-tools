@@ -12,12 +12,19 @@ import {
   reencryptTeamSecrets,
   buildTeamSpawnOptions,
   NoTeamRecipientsError,
+  NoTeamCloneError,
+  TeamSopsYamlHandEditedError,
+  TeamReencryptError,
 } from "../team-store.ts";
 import { InvalidSecretsSegmentError, type SecretsExecResult, type SecretsExecSeam, type SecretsSeams } from "../store.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../home/age-key.ts";
 import { teamsDir } from "../../rt-paths.ts";
 import { join } from "path";
 import { secretsList } from "../../../commands/secrets.ts";
+
+function teamCloneRootFor(slug: string): string {
+  return join(teamsDir(), slug);
+}
 
 function fakeAgeKeySeamWithKey(key: string): AgeKeySeam {
   return {
@@ -55,9 +62,12 @@ class FakeTeamExecSeam implements SecretsExecSeam {
   private mtimeCounter = 0;
   private roundTrippablePlaintext = new Map<string, string>();
   private updatekeysResult: SecretsExecResult;
+  private failUpdatekeysOnCall?: number;
+  private updatekeysCallCount = 0;
 
-  constructor(opts: { updatekeys?: SecretsExecResult } = {}) {
+  constructor(opts: { updatekeys?: SecretsExecResult; failUpdatekeysOnCall?: number } = {}) {
     this.updatekeysResult = opts.updatekeys ?? { code: 0, stdout: "", stderr: "" };
+    this.failUpdatekeysOnCall = opts.failUpdatekeysOnCall;
   }
 
   fileExists(path: string): boolean {
@@ -140,6 +150,10 @@ class FakeTeamExecSeam implements SecretsExecSeam {
       return { code: 0, stdout: "", stderr: "" };
     }
     if (cmd[0] === "sops" && cmd[1] === "updatekeys") {
+      this.updatekeysCallCount += 1;
+      if (this.failUpdatekeysOnCall === this.updatekeysCallCount) {
+        return { code: 1, stdout: "", stderr: "sops: boom" };
+      }
       return this.updatekeysResult;
     }
 
@@ -147,8 +161,10 @@ class FakeTeamExecSeam implements SecretsExecSeam {
   }
 }
 
-function seamsWithKey(key = "AGE-TEAM-KEY"): { execSeam: FakeTeamExecSeam; seams: SecretsSeams } {
+/** Registers `slug`'s clone root as present in the fake — every test below operates against an already-cloned team unless it's specifically testing the no-clone refusal. */
+function seamsWithKey(key = "AGE-TEAM-KEY", slug = "acme"): { execSeam: FakeTeamExecSeam; seams: SecretsSeams } {
   const execSeam = new FakeTeamExecSeam();
+  execSeam.files.set(teamCloneRootFor(slug), "");
   return { execSeam, seams: { ageKeySeam: fakeAgeKeySeamWithKey(key), execSeam } };
 }
 
@@ -201,6 +217,40 @@ describe("readTeamRecipients / writeTeamRecipients", () => {
     const { seams } = seamsWithKey();
     expect(readTeamRecipients("acme", seams)).toEqual([]);
   });
+
+  test("a slug with no local clone -> NoTeamCloneError, never a silently-created team directory", () => {
+    const execSeam = new FakeTeamExecSeam(); // no clone root registered
+    const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-X"), execSeam };
+
+    expect(() => writeTeamRecipients("nonexistent-team", ["age1aaa"], seams)).toThrow(NoTeamCloneError);
+    expect(execSeam.fileExists(teamCloneRootFor("nonexistent-team"))).toBe(false);
+    expect(execSeam.fileExists(teamSopsYamlPath("nonexistent-team"))).toBe(false);
+  });
+
+  test("an existing .sops.yaml with more than one creation rule -> TeamSopsYamlHandEditedError, never silently collapsed", () => {
+    const { execSeam, seams } = seamsWithKey();
+    const handEdited = [
+      "creation_rules:",
+      "  - path_regex: mattstack/secrets/.*",
+      "    age: age1aaa",
+      "  - path_regex: other/.*",
+      "    age: age1bbb",
+      "",
+    ].join("\n");
+    execSeam.writeFile(teamSopsYamlPath("acme"), handEdited);
+
+    expect(() => writeTeamRecipients("acme", ["age1ccc"], seams)).toThrow(TeamSopsYamlHandEditedError);
+    // The hand-edited file must survive untouched.
+    expect(execSeam.readFile(teamSopsYamlPath("acme"))).toBe(handEdited);
+  });
+
+  test("a single-rule .sops.yaml is still freely rewritten", () => {
+    const { seams } = seamsWithKey();
+    writeTeamRecipients("acme", ["age1aaa"], seams);
+
+    expect(() => writeTeamRecipients("acme", ["age1aaa", "age1bbb"], seams)).not.toThrow();
+    expect(readTeamRecipients("acme", seams)).toEqual(["age1aaa", "age1bbb"]);
+  });
 });
 
 describe("writeTeamSecret", () => {
@@ -234,6 +284,7 @@ describe("writeTeamSecret", () => {
 
   test("no age key on this machine -> NoAgeKeyError (the interim seam's staging-fallback trigger)", async () => {
     const execSeam = new FakeTeamExecSeam();
+    execSeam.files.set(teamCloneRootFor("acme"), "");
     const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamAbsent(), execSeam };
     writeTeamRecipients("acme", ["age1aaa"], seams);
 
@@ -298,6 +349,18 @@ describe("addTeamRecipient", () => {
     expect(result).toEqual({ added: false, reencrypted: [] });
     expect(execSeam.calls).toEqual([]);
   });
+
+  test("a re-encryption failure rolls .sops.yaml back to the previous recipient set", async () => {
+    const execSeam = new FakeTeamExecSeam({ failUpdatekeysOnCall: 1 });
+    execSeam.files.set(teamCloneRootFor("acme"), "");
+    const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-TEAM-KEY"), execSeam };
+    writeTeamRecipients("acme", ["age1aaa"], seams);
+    await writeTeamSecret("acme", "board", "k", "v", seams);
+
+    await expect(addTeamRecipient("acme", "age1bbb", seams)).rejects.toThrow(/re-encryption failed/);
+
+    expect(readTeamRecipients("acme", seams)).toEqual(["age1aaa"]);
+  });
 });
 
 describe("removeTeamRecipient", () => {
@@ -323,6 +386,28 @@ describe("removeTeamRecipient", () => {
 
     expect(result).toEqual({ removed: false, reencrypted: [] });
     expect(execSeam.calls).toEqual([]);
+  });
+
+  test("a re-encryption failure rolls .sops.yaml back — and the error says the removed member can still decrypt until rotation succeeds", async () => {
+    const execSeam = new FakeTeamExecSeam({ failUpdatekeysOnCall: 1 });
+    execSeam.files.set(teamCloneRootFor("acme"), "");
+    const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-TEAM-KEY"), execSeam };
+    writeTeamRecipients("acme", ["age1aaa", "age1bbb"], seams);
+    await writeTeamSecret("acme", "board", "k", "v", seams);
+
+    let thrown: unknown;
+    try {
+      await removeTeamRecipient("acme", "age1bbb", seams);
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toMatch(/age1bbb is STILL a recipient/);
+    expect((thrown as Error).message).toMatch(/can still decrypt/);
+    // .sops.yaml rolled back to the pre-removal recipient set — the file on
+    // disk matches what the error claims: age1bbb genuinely is still named.
+    expect(readTeamRecipients("acme", seams)).toEqual(["age1aaa", "age1bbb"]);
   });
 });
 
@@ -353,11 +438,68 @@ describe("reencryptTeamSecrets", () => {
 
   test("a failing updatekeys call propagates as a real error", async () => {
     const execSeam = new FakeTeamExecSeam({ updatekeys: { code: 1, stdout: "", stderr: "sops: no matching creation rule" } });
+    execSeam.files.set(teamCloneRootFor("acme"), "");
     const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-TEAM-KEY"), execSeam };
     writeTeamRecipients("acme", ["age1aaa"], seams);
     await writeTeamSecret("acme", "board", "k", "v", seams);
 
     await expect(reencryptTeamSecrets("acme", seams)).rejects.toThrow(/updatekeys/);
+  });
+
+  test("SOPS_AGE_KEY is injected into every updatekeys call — real sops exits 128 with no env at all", async () => {
+    const { execSeam, seams } = seamsWithKey("AGE-TEAM-KEY");
+    writeTeamRecipients("acme", ["age1aaa"], seams);
+    await writeTeamSecret("acme", "board", "k", "v", seams);
+    execSeam.calls.length = 0;
+
+    await reencryptTeamSecrets("acme", seams);
+
+    const updatekeysCalls = execSeam.calls.filter((c) => c.cmd[1] === "updatekeys");
+    expect(updatekeysCalls.length).toBeGreaterThan(0);
+    for (const call of updatekeysCalls) {
+      expect(call.opts?.env).toEqual({ SOPS_AGE_KEY: "AGE-TEAM-KEY" });
+      expect(call.opts?.sensitive).toBe(true);
+    }
+  });
+
+  test("no age key on this machine -> NoAgeKeyError before any sops call, not a bare sops failure (same identity resolution as every other sops call)", async () => {
+    const execSeam = new FakeTeamExecSeam();
+    execSeam.files.set(teamCloneRootFor("acme"), "");
+    const keyedSeams = seamsWithKey();
+    writeTeamRecipients("acme", ["age1aaa"], keyedSeams.seams);
+    await writeTeamSecret("acme", "board", "k", "v", keyedSeams.seams);
+    // Same on-disk state, but this seams pair has no age key — mirrors the
+    // scenario where a second machine has the domain file but never ran
+    // `rt home init`, only the personal identity is missing.
+    execSeam.files = keyedSeams.execSeam.files;
+    const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamAbsent(), execSeam };
+
+    await expect(reencryptTeamSecrets("acme", seams)).rejects.toThrow(/no age key/);
+    expect(execSeam.calls.filter((c) => c.cmd[1] === "updatekeys")).toEqual([]);
+  });
+
+  test("a partial failure reports completed vs. remaining files, not just the one that failed", async () => {
+    const execSeam = new FakeTeamExecSeam({ failUpdatekeysOnCall: 2 });
+    execSeam.files.set(teamCloneRootFor("acme"), "");
+    const seams: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey("AGE-TEAM-KEY"), execSeam };
+    writeTeamRecipients("acme", ["age1aaa"], seams);
+    await writeTeamSecret("acme", "board", "k", "v", seams);
+    await writeTeamSecret("acme", "deck", "k", "v", seams);
+    await writeTeamSecret("acme", "rt", "k", "v", seams);
+
+    let thrown: unknown;
+    try {
+      await reencryptTeamSecrets("acme", seams);
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(TeamReencryptError);
+    const err = thrown as TeamReencryptError;
+    expect(err.completed.length).toBe(1);
+    expect(err.remaining.length).toBe(2);
+    expect(err.message).toContain("re-encrypted (on the NEW recipients)");
+    expect(err.message).toContain("NOT re-encrypted (still on the OLD recipients)");
   });
 });
 

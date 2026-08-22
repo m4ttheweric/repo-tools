@@ -16,7 +16,7 @@ import type { CommandContext } from "../lib/command-tree.ts";
 import { readAgeKey, createRealAgeKeySeam } from "../lib/home/age-key.ts";
 import { promptSecret } from "../lib/prompt-secret.ts";
 import { NoAgeKeyError, createRealSecretsExecSeam, writeSecret, type SecretsSeams } from "../lib/secrets/store.ts";
-import { createRealTeamSecretsSeams, readTeamSecret, writeTeamSecret } from "../lib/secrets/team-store.ts";
+import { NoTeamRecipientsError, createRealTeamSecretsSeams, readTeamSecret, writeTeamSecret } from "../lib/secrets/team-store.ts";
 import { listTeams } from "../lib/settings/stores.ts";
 import { setSetting } from "../lib/settings/write.ts";
 import { envelope, type ConnectField, type Integration } from "../lib/setup/contract.ts";
@@ -146,15 +146,26 @@ export function realSecretWriter(): SecretWriter {
  * member's age key via `teams/<slug>/.sops.yaml`. `write` mirrors
  * `storeCredential`'s own age-key-gated fallback (stage when there's no key
  * yet) so a team secret written before `rt home init` still lands somewhere
- * real instead of throwing; every OTHER store failure (a missing recipient
- * list, sops itself failing) still propagates so the caller can turn it into
- * an honest exit-2 before any settings write happens. The staging domain
- * name is unchanged from the store's pre-team-store interim so staged values
- * from before this swap keep resolving.
+ * real instead of throwing — and stages on `NoTeamRecipientsError` too (a
+ * freshly-scaffolded team's `.sops.yaml` can name zero recipients before
+ * anyone syncs members), for the exact same reason: `setupSlackCreateApp`
+ * writes these secrets AFTER creating the Slack app remotely, so throwing
+ * here would exit-2 an already-created, now-orphaned app. `reason` tells
+ * the two staging causes apart so a caller can print the right explanation
+ * instead of a generic one. Every OTHER store failure (sops itself failing)
+ * still propagates so the caller can turn it into an honest exit-2 before
+ * any settings write happens. The staging domain name is unchanged from the
+ * store's pre-team-store interim so staged values from before this swap
+ * keep resolving.
  */
 export interface TeamSecrets {
   read(slug: string, domain: "rt" | "board", key: string): Promise<string | null>;
-  write(slug: string, domain: "rt" | "board", key: string, value: string): Promise<{ staged: boolean }>;
+  write(
+    slug: string,
+    domain: "rt" | "board",
+    key: string,
+    value: string,
+  ): Promise<{ staged: boolean; reason?: "no-age-key" | "no-recipients" }>;
 }
 
 function teamScopedDomain(slug: string, domain: string): string {
@@ -179,9 +190,15 @@ export function realTeamSecrets(p: Probes): TeamSecrets {
         await writeTeamSecret(slug, domain, key, value, seams);
         return { staged: false };
       } catch (err) {
-        if (!(err instanceof NoAgeKeyError)) throw err;
-        stageSecret(p, teamScopedDomain(slug, domain), key, value);
-        return { staged: true };
+        if (err instanceof NoAgeKeyError) {
+          stageSecret(p, teamScopedDomain(slug, domain), key, value);
+          return { staged: true, reason: "no-age-key" };
+        }
+        if (err instanceof NoTeamRecipientsError) {
+          stageSecret(p, teamScopedDomain(slug, domain), key, value);
+          return { staged: true, reason: "no-recipients" };
+        }
+        throw err;
       }
     },
   };
@@ -654,11 +671,16 @@ export async function setupSlackCreateApp(args: string[], _ctx: CommandContext =
 
     // Secrets land BEFORE the settings write: a settings write recording appId/clientId with no
     // client secret behind it is the exact state that later makes `connect` misdiagnose a missing app.
+    // `deps.teamSecrets.write` stages (never throws) on both NoAgeKeyError and NoTeamRecipientsError —
+    // by the time this call runs, the Slack app already exists remotely, so a throw here would exit-2
+    // an app whose secret is then unrecoverable. `reason` picks the right explanation for the user.
     let staged: boolean;
+    let stagedReason: "no-age-key" | "no-recipients" | undefined;
     try {
       const client = await deps.teamSecrets.write(snapshot.slug, "board", "slackClientSecret", data.credentials.client_secret);
       const signing = await deps.teamSecrets.write(snapshot.slug, "board", "slackSigningSecret", data.credentials.signing_secret);
       staged = client.staged || signing.staged;
+      stagedReason = client.reason ?? signing.reason;
     } catch (err) {
       throw new UserActionableError("team-secret-write-failed", err instanceof Error ? err.message : String(err));
     }
@@ -677,7 +699,11 @@ export async function setupSlackCreateApp(args: string[], _ctx: CommandContext =
     printIntegrationResult(deps, json, {
       integration: "slack",
       status: "ready",
-      detail: staged ? "Slack app created — team secrets staged until the age key exists" : "Slack app created",
+      detail: staged
+        ? stagedReason === "no-recipients"
+          ? "Slack app created — team secrets staged until the team has recipients"
+          : "Slack app created — team secrets staged until the age key exists"
+        : "Slack app created",
       scopesSeen: [],
     });
   } catch (err) {

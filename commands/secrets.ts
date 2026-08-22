@@ -5,7 +5,7 @@
  *   rt secrets set <domain> <key> [--team <slug>] [--stdin]      write one key
  *   rt secrets list <domain> [--team <slug>]                     list a domain's key names (never values)
  *   rt secrets rotate <domain> <key> [--team <slug>] [--stdin]   replace a value, print the rotation commit message
- *   rt secrets rotate --team <slug> [--stdin]                    re-encrypt every domain file to the team's current recipients
+ *   rt secrets rotate --team <slug>                               re-encrypt every domain file to the team's current recipients (no value to prompt/pipe, so no --stdin)
  *
  * The value is NEVER a CLI arg — that would put it in argv (shell history,
  * `ps`, and rt's own CLI command log). It comes from a no-echo TTY prompt, or
@@ -30,6 +30,7 @@ import {
 } from "../lib/secrets/store.ts";
 import {
   NoTeamRecipientsError,
+  TeamReencryptError,
   createRealTeamSecretsSeams,
   listTeamSecretNames,
   reencryptTeamSecrets,
@@ -61,7 +62,15 @@ function positional(args: string[]): string[] {
 }
 
 function reportSecretsError(err: unknown): never {
-  if (err instanceof NoAgeKeyError || err instanceof InvalidSecretsSegmentError || err instanceof NoTeamRecipientsError) {
+  if (
+    err instanceof NoAgeKeyError ||
+    err instanceof InvalidSecretsSegmentError ||
+    err instanceof NoTeamRecipientsError ||
+    err instanceof TeamReencryptError
+  ) {
+    // TeamReencryptError's own message already names the completed vs.
+    // remaining files — a half-rotated team must be loudly described here,
+    // not collapsed into a bare "it failed" line.
     console.error(`rt secrets: ${err.message}`);
     process.exit(1);
   }
@@ -159,7 +168,7 @@ export async function secretsRotate(args: string[], _ctx: CommandContext = {}, s
   if (!domain || !key) {
     console.error(
       "rt secrets rotate: usage: rt secrets rotate <domain> <key> [--team <slug>] [--stdin]\n" +
-        "                or: rt secrets rotate --team <slug> [--stdin]   (re-encrypts every domain file)",
+        "                or: rt secrets rotate --team <slug>   (re-encrypts every domain file — no value, so no --stdin)",
     );
     process.exit(1);
   }

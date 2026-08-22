@@ -151,9 +151,15 @@ function personalLocation(domain: string): SecretsLocation {
 /**
  * `{absent:true}` becomes this module's own error, never an empty secret —
  * collapsing "no key yet" into "no value" would be indistinguishable from a
- * real missing key at every call site downstream.
+ * real missing key at every process-decrypting call site downstream.
+ * Exported so team-store.ts's `sops updatekeys` calls (which decrypt an
+ * existing multi-recipient file just like `sopsDecrypt` does) resolve
+ * `SOPS_AGE_KEY` through this exact same path rather than inventing a
+ * second, divergent one — a real `sops updatekeys` with no `SOPS_AGE_KEY` at
+ * all exits 128 ("failed to load age identities"), since rt never writes an
+ * age `keys.txt` the env-less default location would otherwise find.
  */
-async function sopsAgeKeyEnv(ageKeySeam: AgeKeySeam): Promise<Record<string, string>> {
+export async function sopsAgeKeyEnv(ageKeySeam: AgeKeySeam): Promise<Record<string, string>> {
   const result = await readAgeKey(ageKeySeam);
   if (!("key" in result)) throw new NoAgeKeyError();
   return { SOPS_AGE_KEY: result.key };
