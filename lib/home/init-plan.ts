@@ -118,6 +118,23 @@ export class InvalidProfileKeyError extends Error {
 }
 
 /**
+ * Bare `--new-profile` (no explicit `--profile <name>`) defaults to the
+ * hostname slug — but if that slug already names an EXISTING profile, using
+ * it as "new" would silently adopt (and let this machine overwrite) another
+ * machine's settings.local.jsonc: two machines sharing one LocalHostName
+ * slug is exactly the cross-machine clobber the re-root ruling forbids.
+ */
+export class ProfileNameCollisionError extends Error {
+  constructor(hostnameSlug: string) {
+    super(
+      `--new-profile's default name ("${hostnameSlug}") is already an existing profile — ` +
+        `using it would silently share that profile with whichever other machine created it. ` +
+        `Pass --profile <name> --new-profile with a distinct name.`,
+    );
+  }
+}
+
+/**
  * Pure decision only — never touches fs, git, or a terminal. `profiles` and
  * `interactive` are probed by the caller (post-clone, since the profile list
  * only exists once `user/local/` has landed); this just resolves what those
@@ -138,7 +155,10 @@ export function chooseMachineProfile(input: ChooseMachineProfileInput): ChooseMa
     throw new UnknownProfileFlagError(flags.profile, profiles);
   }
 
-  if (flags.newProfile) return resolved(hostnameSlug, "flag");
+  if (flags.newProfile) {
+    if (profiles.includes(hostnameSlug)) throw new ProfileNameCollisionError(hostnameSlug);
+    return resolved(hostnameSlug, "flag");
+  }
 
   if (profiles.length === 0) return resolved(hostnameSlug, "hostname");
 

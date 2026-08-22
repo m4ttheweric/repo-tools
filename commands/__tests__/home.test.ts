@@ -8,7 +8,6 @@ import {
   homeKeyImport,
   homeRelease,
   homeSnapshot,
-  InvalidProfileArgError,
   InvalidUrlArgError,
   readStdinTrimmed,
   type AgeKeyInputSeam,
@@ -226,7 +225,7 @@ async function runHomeInit(
     errors.push(parts.map(String).join(" "));
   });
   try {
-    await homeInit(args, {}, probes, exec, ageKeySeam, sopsYamlSeam, key, pickerSeam, isInteractive);
+    await homeInit(args, {}, { probes, exec, ageKeySeam, sopsYamlSeam, key, pickerSeam, isInteractive });
     return { exitCode: undefined, logs, errors };
   } catch {
     const code = exitSpy.mock.calls.at(-1)?.[0] as number | undefined;
@@ -790,8 +789,53 @@ describe("homeInit", () => {
       expect(seam.calls).toEqual([]);
     });
 
-    test("InvalidProfileArgError is exported and matches what homeInit catches", () => {
-      expect(new InvalidProfileArgError("x")).toBeInstanceOf(Error);
+  });
+
+  describe("--profile/--new-profile on an already-keyed machine", () => {
+    test("--profile on a fully-provisioned machine: exits 1 with a directed message, never prints 'fully provisioned'", async () => {
+      const seam = new FakeSeam();
+      const picker = new FakePickerSeam("should-not-be-picked");
+
+      const { exitCode, logs, errors } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        ["--profile", "other-box"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        picker,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes(KEY) && e.includes("machine-key"))).toBe(true);
+      expect(logs.some((l) => l.includes("fully provisioned"))).toBe(false);
+      expect(picker.calls).toEqual([]);
+      expect(seam.calls).toEqual([]);
+    });
+
+    test("--new-profile on a fully-provisioned machine: exits 1 with the same directed message, touches nothing", async () => {
+      const seam = new FakeSeam();
+
+      const { exitCode, errors } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        ["--new-profile"],
+        new FakeSopsYamlSeam(),
+        KEY,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes(KEY) && e.includes("machine-key"))).toBe(true);
+      expect(seam.calls).toEqual([]);
+    });
+
+    test("neither flag, machine-key already present: unaffected — still runs (or no-ops) normally", async () => {
+      const seam = new FakeSeam();
+      const { exitCode, logs } = await runHomeInit(FULLY_PROVISIONED_PROBES(), seam, new FakeAgeKeySeam());
+
+      expect(exitCode).toBeUndefined();
+      expect(logs.some((l) => l.includes("machine-key"))).toBe(false);
     });
   });
 });
