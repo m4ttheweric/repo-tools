@@ -60,7 +60,8 @@ numeric_build() {
 # bash's `read` treats tab as "IFS whitespace" and collapses runs of it even
 # when IFS is set to only tab, dropping empty TSV fields (deps.lock's pending
 # rows carry several) and shifting every later field left. Split by hand so
-# an empty field stays a field.
+# an empty field stays a field. Kept in sync by hand with the identical copies
+# in scripts/fetch-deps.sh and rt-tray/check-bundle.sh.
 split_tsv() {
     local rest="$1" field
     FIELDS=()
@@ -134,7 +135,11 @@ if [ ! -f "$SCRIPT_DIR/AppIcon.icns" ] || [ ! -f "$SCRIPT_DIR/AppIcon-dev.icns" 
     echo "  Generating AppIcon.icns + AppIcon-dev.icns..."; swift "$SCRIPT_DIR/make-icon.swift"
 fi
 ICON_SRC="$SCRIPT_DIR/AppIcon.icns"; [ "$IS_DEV" = true ] && ICON_SRC="$SCRIPT_DIR/AppIcon-dev.icns"
-[ -f "$ICON_SRC" ] && cp "$ICON_SRC" "$CONTENTS/Resources/AppIcon.icns" && echo "  ✓ $(basename "$ICON_SRC") → AppIcon.icns"
+if [ -f "$ICON_SRC" ]; then
+    cp "$ICON_SRC" "$CONTENTS/Resources/AppIcon.icns"; echo "  ✓ $(basename "$ICON_SRC") → AppIcon.icns"
+else
+    echo "  ⚠ $(basename "$ICON_SRC") not found — notifications will show a default icon"
+fi
 
 # Notification sounds (UNNotificationSound needs caf inside Resources).
 if [ -d "$REPO_DIR/sounds" ]; then
@@ -178,30 +183,32 @@ bundle_helpers() {
         echo "  ⚠ $DEPS_DIR missing — Helpers skipped (scripts/fetch-deps.sh arm64 to bundle them)"
         return
     fi
-    local tsv row name version bundlePath ent status
-    tsv="$(mktemp /tmp/mattstack-deps-lock.XXXXXX)"
-    bun "$REPO_DIR/scripts/lib/deps-lock.ts" --kind helper > "$tsv"
+    local row name version bundlePath ent status src dest prune
     while IFS= read -r row; do
         [ -n "$row" ] || continue
         split_tsv "$row"
         name="${FIELDS[0]}"; version="${FIELDS[1]}"; bundlePath="${FIELDS[6]}"; ent="${FIELDS[7]}"; status="${FIELDS[8]}"
         if [ "$status" != bundled ]; then echo "  · $name: pending, not in this build"; continue; fi
         src="$DEPS_DIR/$name"
-        [ -e "$src" ] || { echo "  ✗ $name not fetched at $src — run scripts/fetch-deps.sh arm64"; rm -f "$tsv"; exit 1; }
+        [ -e "$src" ] || { echo "  ✗ $name not fetched at $src — run scripts/fetch-deps.sh arm64"; exit 1; }
         dest="$APP_BUNDLE/$bundlePath"
         rm -rf "$dest"; mkdir -p "$(dirname "$dest")"
         cp -R "$src" "$dest"
         xattr -cr "$dest" 2>/dev/null || true
         # codesign's bundle-resource seal treats any directory whose name contains
         # a "." as a nested bundle that must itself carry a valid signature — and a
-        # plain resource directory can never be signed as one (a vendored tool's
-        # dotfile-style config dirs, e.g. a plugin manifest folder, are the usual
-        # source). Prune them; none of that is needed once the tool is embedded.
-        find "$dest" -depth -type d -name '*.*' -print0 | xargs -0 rm -rf
+        # plain resource directory can never be signed as one. fast-browser vendors
+        # two Claude/Codex plugin-manifest directories that are irrelevant once the
+        # tool is invoked directly; prune exactly those, nothing else (a future
+        # nested *.framework/*.app/*.bundle from any helper must stay and be signed
+        # as its own nested code, not silently deleted).
+        while IFS= read -r -d '' prune; do
+            rm -rf "$prune"
+            echo "  · pruned $name/${prune#"$dest"/}"
+        done < <(find "$dest" -depth -type d \( -name '.claude-plugin' -o -name '.codex-plugin' \) -print0)
         HELPER_ENTITLEMENTS+=("$dest	$ent")
         echo "  ✓ Helpers/$name $version"
-    done < "$tsv"
-    rm -f "$tsv"
+    done < <(bun "$REPO_DIR/scripts/lib/deps-lock.ts" --kind helper)
     cp "$SCRIPT_DIR/deps.lock" "$CONTENTS/Resources/deps.lock"
 }
 bundle_helpers
@@ -279,8 +286,9 @@ echo "  ✓ App bundle assembled at $APP_BUNDLE"
 
 # ─── Sign, inside-out ────────────────────────────────────────────────────────
 # Order: Sparkle XPCs → Autoupdate → Updater.app → Sparkle.framework →
-# Helpers → Contents/MacOS/rt → outer app. Never --deep (it rewrites the
-# Sparkle XPC signatures and breaks updates while notarization still passes).
+# MattstackCore.framework → Helpers → Contents/MacOS/rt → outer app. Never
+# --deep (it rewrites the Sparkle XPC signatures and breaks updates while
+# notarization still passes).
 SIGNING_IDENTITY=""
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
     SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
@@ -293,20 +301,13 @@ else
 fi
 sign() { codesign "${SIGN_FLAGS[@]}" "$@"; }
 
-# A bundle this large (Helpers alone can carry thousands of resource files —
-# node ships its own npm CLI tree) hits an environment-dependent codesign
-# quirk: any file the writing process is marked as having provenance-tracked
-# gets treated as unsealed nested code, not an ordinary resource, and the
-# final outer-bundle seal refuses to complete until it already carries a
-# signature. A parallel, entitlement-free pass over every file up front
-# satisfies that for the whole tree; every precise signing step below
-# (Sparkle, Helpers, Contents/MacOS/rt, the outer bundle itself) then
-# overwrites the pieces that need a real identifier/entitlements/timestamp.
-# Best-effort: a handful of resource files (broken symlinks, sockets) can
-# make an individual codesign invocation fail, which would otherwise abort
-# the whole build here under `set -e` — the precise passes below and
-# check-bundle.sh's deep, strict verify are what actually gate success.
-find "$APP_BUNDLE" -type f -print0 | xargs -0 -P 8 -I{} sh -c 'codesign --force --sign "$1" "$2" >/dev/null 2>&1' _ "$SIGNING_IDENTITY" {} || true
+# Opt-in only: a sandboxed build environment can taint every written file such
+# that codesign refuses to seal the outer bundle over it. Never runs on a
+# normal machine, CI, or the release path (it would write signature xattrs
+# over every resource and defeat --preserve-metadata=entitlements below).
+if [ "${RT_SANDBOX_PRESIGN:-0}" = 1 ]; then
+    find "$APP_BUNDLE" -type f -print0 | xargs -0 -P 8 -I{} sh -c 'codesign --force --sign "$1" "$2" >/dev/null 2>&1' _ "$SIGNING_IDENTITY" {} || true
+fi
 
 SPARKLE_FW="$CONTENTS/Frameworks/Sparkle.framework"
 if [ -d "$SPARKLE_FW" ]; then
@@ -317,6 +318,15 @@ if [ -d "$SPARKLE_FW" ]; then
     sign "$V/Updater.app"
     sign "$SPARKLE_FW"
     echo "  ✓ Signed Sparkle.framework (inside-out)"
+fi
+
+# MattstackCore.framework: only present on the xcodebuild path (embedded by
+# the "embed: true" dependency); notarization rejects an embedded framework
+# without the hardened runtime, so it needs the same precise pass as Sparkle.
+CORE_FW="$CONTENTS/Frameworks/MattstackCore.framework"
+if [ -d "$CORE_FW" ]; then
+    sign "$CORE_FW"
+    echo "  ✓ Signed MattstackCore.framework"
 fi
 
 sign_helper_tree() { # root ent — signs every Mach-O under root (files or a dir like node/)
