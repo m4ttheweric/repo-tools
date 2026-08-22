@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync } from "fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { findRun, listRuns, readRun } from "../store.ts";
@@ -49,8 +49,10 @@ describe("runs store", () => {
     const d = readRun("alpha", "20260821-010101-aaaa")!;
     expect(d.run.status).toBe("running");
     expect(d.stages).toHaveLength(1);
-    expect(d.fields[0]).toMatchObject({ key: "ticket", value: "ACME-1" });
-    expect(d.decisions[0].contract).toBe("execution-strategy@1");
+    expect(d.fields.length).toBeGreaterThan(0);
+    expect(d.fields[0]!).toMatchObject({ key: "ticket", value: "ACME-1" });
+    expect(d.decisions.length).toBeGreaterThan(0);
+    expect(d.decisions[0]!.contract).toBe("execution-strategy@1");
     expect(d.schemaAhead).toBe(false);
     expect(readRun("alpha", "nope")).toBeNull();
   });
@@ -68,5 +70,15 @@ describe("runs store", () => {
     mkdirSync(join(dir, "alpha", "broken"), { recursive: true });
     seedRun(dir, "alpha", "20260821-010101-aaaa", 1000);
     expect(listRuns("alpha")).toHaveLength(1);
+  });
+
+  test("corrupt state.db (garbage bytes) is skipped, not thrown", () => {
+    const dir = root();
+    mkdirSync(join(dir, "alpha", "corrupt"), { recursive: true });
+    writeFileSync(join(dir, "alpha", "corrupt", "state.db"), "garbage data");
+    seedRun(dir, "alpha", "20260821-010101-aaaa", 1000);
+    expect(listRuns("alpha")).toHaveLength(1);
+    expect(readRun("alpha", "corrupt")).toBeNull();
+    expect(findRun("corrupt")).toBeNull();
   });
 });

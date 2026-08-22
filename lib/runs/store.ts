@@ -27,8 +27,13 @@ function openRun(repo: string, runId: string): { db: Database; schemaAhead: bool
   const path = join(runsRoot(), repo, runId, "state.db");
   if (!existsSync(path)) return null;
   const db = new Database(path, { readonly: true });
-  const ver = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
-  return { db, schemaAhead: ver > KNOWN_SCHEMA_VERSION };
+  try {
+    const ver = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
+    return { db, schemaAhead: ver > KNOWN_SCHEMA_VERSION };
+  } catch {
+    db.close();
+    return null;
+  }
 }
 
 function runRow(db: Database): RunSummary | null {
