@@ -13,7 +13,7 @@
  */
 
 import { execSync } from "child_process";
-import { existsSync, readFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { bold, cyan, dim, green, yellow, red, reset } from "../lib/tui.ts";
@@ -24,6 +24,7 @@ import {
   TRAY_APP_BUNDLE, DEV_TRAY_APP_BUNDLE,
 } from "../lib/rt-paths.ts";
 import { currentMode } from "../lib/dev-mode.ts";
+import { checkRtContextExtension } from "../lib/setup/validators/rt-health.ts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -64,49 +65,13 @@ function skip(name: string, detail: string): CheckResult {
 }
 
 /**
- * rt-context extension presence check (MAT-383 §5): pure directory reads,
- * no subprocess, no version comparison — the extension versions
- * independently of the CLI, so a version check is underivable here.
- *
- * - extension dir found under at least one editor's extensions dir → pass,
- *   naming which editor(s).
- * - an editor's extensions dir exists but no rt-context entry in it → warn.
- * - no editor extensions dirs at all → skip.
- *
- * `home` is a parameter (not homedir() internally) so this is unit-testable
- * against fixture dirs without touching the real filesystem HOME.
+ * rt-context extension presence check (MAT-383 §5) — moved to
+ * lib/setup/validators/rt-health.ts (MAT-383 T7, imported above) so
+ * `rt verify` and the setup plan share one implementation; re-exported here
+ * so this module's existing test (commands/__tests__/verify.test.ts) keeps
+ * importing it from this path unchanged.
  */
-export function checkRtContextExtension(home: string): CheckResult {
-  const editors = [
-    { name: "VS Code", dir: join(home, ".vscode", "extensions") },
-    { name: "Cursor", dir: join(home, ".cursor", "extensions") },
-  ];
-
-  const dirsFound: string[] = [];
-  const editorsWithExtension: string[] = [];
-
-  for (const editor of editors) {
-    if (!existsSync(editor.dir)) continue;
-    dirsFound.push(editor.name);
-    let entries: string[] = [];
-    try {
-      entries = readdirSync(editor.dir);
-    } catch {
-      continue;
-    }
-    if (entries.some((e) => e.toLowerCase().includes("rt-context"))) {
-      editorsWithExtension.push(editor.name);
-    }
-  }
-
-  if (editorsWithExtension.length > 0) {
-    return pass("rt-context extension", `installed in ${editorsWithExtension.join(", ")}`, "warning");
-  }
-  if (dirsFound.length > 0) {
-    return warn("rt-context extension", `not installed in ${dirsFound.join(", ")} — run: rt settings extension`);
-  }
-  return skip("rt-context extension", "no editor extensions directories found");
-}
+export { checkRtContextExtension };
 
 // ─── Checks ──────────────────────────────────────────────────────────────────
 
