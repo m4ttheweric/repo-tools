@@ -33,6 +33,27 @@ function fakeAgeKeySeam(privateKey = "AGE-SECRET-KEY-1OWNER", publicKey = OWNER_
   };
 }
 
+/**
+ * A keychain with provably no key yet (readAgeKey's `{absent: true}`
+ * outcome) — every command it sees is recorded, so a test can assert
+ * `membersRemove`'s own-key guard never mints (never calls
+ * `security add-generic-password`/`age-keygen` with no `-y`) just to check
+ * whether a removal target is this machine's own key.
+ */
+function fakeAgeKeySeamAbsent(): AgeKeySeam & { calls: string[][] } {
+  const calls: string[][] = [];
+  return {
+    calls,
+    async run(cmd): Promise<AgeExecResult> {
+      calls.push(cmd);
+      if (cmd[0] === "security" && cmd[1] === "find-generic-password") {
+        return { code: 44, stdout: "", stderr: "The specified item could not be found in the keychain." };
+      }
+      throw new Error(`fakeAgeKeySeamAbsent: unexpected call ${cmd.join(" ")} — a removal must never provision a keychain item`);
+    },
+  };
+}
+
 /** Mirrors lib/secrets/__tests__/team-store.test.ts's own fake — a minimal round-trippable-plaintext sops/age stand-in, local to this file since that one isn't exported. */
 class FakeTeamExecSeam implements SecretsExecSeam {
   calls: { cmd: string[]; opts?: { env?: Record<string, string>; sensitive?: boolean } }[] = [];
@@ -336,6 +357,42 @@ describe("membersSync", () => {
       expect(result.pending).toEqual(["alice"]);
       expect(readTeamRecipients(SLUG, secrets)).not.toContain(corrupted);
     });
+
+    test("a forged key with a VALID checksum but a dirty final padding group (BIP-173's non-zero-padding rule) is rejected", async () => {
+      // A real key (last payload group's low bits legitimately zero) with those bits set and the checksum recomputed to match — real `age -r` rejects this exact key with "non-zero padding".
+      const forged = "age1dxgc42vutd4a6q5zqkdg6q4jccysl8q9lqg7j5r78cd9y5m2usq0wmgpdc";
+      expect(forged.length).toBe(62);
+
+      const p = fakeProbes({ home: HOME });
+      upsertInviteRecord(p, SLUG, "alice", aliceRecord());
+      const { secrets } = seamsWithClone();
+      const { seams } = fakeMembersSeams();
+      const blob = await replyBlob(forged);
+      const relay = fakeRelay({ readReply: async () => ({ blob }) });
+
+      const result = await membersSync(p, relay, secrets, SLUG, seams);
+
+      expect(result.pending).toEqual(["alice"]);
+      expect(readTeamRecipients(SLUG, secrets)).not.toContain(forged);
+    });
+
+    test("the real key the forged one above was derived from is still accepted — the padding check must not over-reject a genuine age-keygen key", async () => {
+      const real = "age1dxgc42vutd4a6q5zqkdg6q4jccysl8q9lqg7j5r78cd9y5m2usqq3kmajq";
+      expect(real.length).toBe(62);
+
+      const p = fakeProbes({ home: HOME });
+      upsertInviteRecord(p, SLUG, "alice", aliceRecord());
+      const { secrets } = seamsWithClone();
+      const { seams } = fakeMembersSeams();
+      const blob = await replyBlob(real, "alice");
+      const relay = fakeRelay({ readReply: async () => ({ blob }) });
+
+      const result = await membersSync(p, relay, secrets, SLUG, seams);
+
+      expect(result.added).toContain(real);
+      expect(result.pending).toEqual([]);
+      expect(readTeamRecipients(SLUG, secrets)).toContain(real);
+    });
   });
 
   describe("first-claim-wins: a reply echoing an already-recorded key", () => {
@@ -531,6 +588,24 @@ describe("membersRemove", () => {
     expect(result.reencrypted).toEqual([]);
     expect(execSeam.calls.filter((c) => c.cmd[1] === "updatekeys")).toEqual([]);
     expect(result.residueNote).toContain("rotate the values themselves");
+  });
+
+  test("a machine with no local age key yet removes cleanly, without minting one — the own-key guard skips the comparison rather than provisioning a keychain item", async () => {
+    const p = fakeProbes({ home: HOME });
+    const { execSeam } = seamsWithClone();
+    const absentAgeKeySeam = fakeAgeKeySeamAbsent();
+    const secrets: SecretsSeams = { ageKeySeam: absentAgeKeySeam, execSeam };
+    writeTeamRecipients(SLUG, [OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY], secrets);
+    const { seams } = fakeMembersSeams({ readTeamStore: () => ({ "board.members": [{ username: "alice", agePublicKey: ALICE_PUBLIC_KEY }] }) });
+
+    const result = await membersRemove(p, secrets, SLUG, "alice", undefined, seams);
+
+    expect(result.rosterRemoved).toBe(true);
+    expect(readTeamRecipients(SLUG, secrets)).toEqual([OWNER_PUBLIC_KEY]);
+    // fakeAgeKeySeamAbsent throws on anything but find-generic-password, so
+    // reaching here at all already proves no mint was attempted — asserted
+    // explicitly too, and pinned to exactly one lookup (no retry-as-mint).
+    expect(absentAgeKeySeam.calls).toEqual([["security", "find-generic-password", "-a", "mattstack", "-s", "mattstack-age-key", "-w"]]);
   });
 
   describe("refusing to remove the operator's own key", () => {

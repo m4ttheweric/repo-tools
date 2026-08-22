@@ -7,7 +7,7 @@
  *   rt team invite --handle <h> [--team <slug>] [--json]
  *   rt team join [--dry-run] [--json]   (code on stdin as {"code":"..."}, or a prompt on a TTY)
  *   rt team members sync [--team <slug>] [--json]
- *   rt team members remove <handle> [--team <slug>] [--json]
+ *   rt team members remove <handle> [--key <age1...>] [--team <slug>] [--json]
  *   rt team status [--team <slug>] [--json]
  *
  * Every mutating path funnels through one `UserActionableError` → exit-2
@@ -68,6 +68,20 @@ export function realTeamDeps(): TeamDeps {
 function flagValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
+}
+
+/**
+ * `--key`-only: also accepts `--key=age1...`, unlike every other flag in
+ * this file (a repo-wide `flagValue` gap, out of scope to fix generally
+ * here). `--key` is the one flag whose wrong fallback has security
+ * consequences — an unrecognized `--key=...` token would otherwise vanish
+ * silently and `membersRemove` would fall back to whatever key the roster
+ * happens to record, which is exactly the substitution an operator typing
+ * `--key=` to be explicit is trying to rule out.
+ */
+function keyFlagValue(args: string[]): string | undefined {
+  const inline = args.find((a) => a.startsWith("--key="));
+  return inline ? inline.slice("--key=".length) : flagValue(args, "--key");
 }
 
 /** Strips every recognized flag (and its value) so what's left is positional — an unrecognized token stays visible instead of silently vanishing. */
@@ -256,7 +270,7 @@ export async function teamMembersSync(args: string[], _ctx: CommandContext = {},
 export async function teamMembersRemove(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
   const json = args.includes("--json");
   const handle = positional(args, ["--team", "--key"])[0];
-  const key = flagValue(args, "--key");
+  const key = keyFlagValue(args);
 
   if (!handle) {
     usageError(deps, json, "team members remove", "rt team members remove <handle> [--key <age1...>] [--team <slug>] [--json]");

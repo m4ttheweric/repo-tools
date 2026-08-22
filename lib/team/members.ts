@@ -14,13 +14,14 @@
  * is readable by any invitee before they ever reply — a reply that echoes an
  * existing recipient's key back is checked for and refused (first-claim-wins:
  * a key belongs to exactly one handle), and `membersRemove` separately
- * refuses outright to remove whatever key this machine's own `ensureAgeKey`
- * resolves to, regardless of which roster entry it was filed under. Either
- * guard alone closes the owner-lockout path; both are kept so one is never
- * load-bearing for the other.
+ * refuses outright to remove whatever key this machine's own age identity
+ * resolves to (read-only — never minted for this check; a machine with no
+ * key yet cannot be removing its own), regardless of which roster entry it
+ * was filed under. Either guard alone closes the owner-lockout path; both
+ * are kept so one is never load-bearing for the other.
  */
 
-import { ensureAgeKey } from "../home/age-key.ts";
+import { ensureAgeKey, readAgeKey } from "../home/age-key.ts";
 import { teamSettingsPath } from "../rt-paths.ts";
 import type { SecretsSeams } from "../secrets/store.ts";
 import { addTeamRecipient, readTeamRecipients, removeTeamRecipient } from "../secrets/team-store.ts";
@@ -61,9 +62,15 @@ function bech32HrpExpand(hrp: string): number[] {
 /**
  * Real bech32 (BIP-173) validation — not a charset/length sniff. Rejects
  * mixed case, decodes every data character against the bech32 charset, pins
- * the exact length a real age recipient always has, and verifies the
- * 6-character checksum against the "age" HRP. A charset-valid, length-valid
- * string that was never produced by `age-keygen` fails the checksum and is
+ * the exact length a real age recipient always has, verifies the
+ * 6-character checksum against the "age" HRP, AND checks BIP-173's
+ * non-zero-padding rule: the payload is a 32-byte (256-bit) key packed into
+ * 52 five-bit groups (260 bits), so the final payload group's low 4 bits
+ * carry no real data and `age-keygen` always zeros them — a forged key can
+ * carry a valid checksum over a DIRTY final group, which real `age` rejects
+ * ("non-zero padding") but a checksum-only check would happily accept. A
+ * charset-valid, length-valid, checksum-valid string that fails either of
+ * these two structural checks was never produced by `age-keygen` and is
  * rejected here, before it can ever reach `addTeamRecipient`/`.sops.yaml` —
  * the fresh-team path has no other gate, since `reencryptTeamSecrets` is a
  * no-op with zero domain files.
@@ -81,11 +88,35 @@ function isValidAgePublicKey(key: string): boolean {
     values.push(idx);
   }
 
+  // 58 data characters = 52 payload groups + 6 checksum groups; the last
+  // payload group is index length-7 (58-7 = 51, the 52nd and final payload
+  // group before the checksum begins).
+  if ((values[values.length - 7]! & 0b1111) !== 0) return false;
+
   return bech32Polymod([...bech32HrpExpand(AGE_HRP), ...values]) === 1;
 }
 
 function base64ToKey(b64: string): Uint8Array {
   return new Uint8Array(Buffer.from(b64, "base64"));
+}
+
+/**
+ * The read-only half of `ensureAgeKey`'s "key already exists" branch —
+ * derives this machine's own public key from whatever private key is
+ * already in the keychain, WITHOUT ever minting one. `membersRemove`'s
+ * own-key guard must never provision a keychain item as a side effect of a
+ * removal: a machine with no key yet cannot possibly be the one removing
+ * its own key, so `null` here means "skip the comparison," not "go mint one
+ * and compare against that."
+ */
+async function readOwnPublicKeyIfPresent(secrets: SecretsSeams): Promise<string | null> {
+  const existing = await readAgeKey(secrets.ageKeySeam);
+  if (!("key" in existing)) return null;
+  const derived = await secrets.ageKeySeam.run(["age-keygen", "-y"], { input: existing.key, sensitive: true });
+  if (derived.code !== 0) {
+    throw new Error(`age-keygen -y: could not derive the public key from the stored private key\n${derived.stderr}`);
+  }
+  return derived.stdout.trim();
 }
 
 interface RosterMember {
@@ -273,7 +304,10 @@ const RESIDUE_NOTE =
  * exact attack the duplicate-recipient check in `membersSync` also guards
  * against) would otherwise let a routine removal strip the owner's own
  * recipient entry, and `sops updatekeys` needs that exact key to decrypt
- * before it can re-encrypt to anyone else — an unrecoverable lockout.
+ * before it can re-encrypt to anyone else — an unrecoverable lockout. This
+ * check reads the keychain (`readOwnPublicKeyIfPresent`) but never mints:
+ * a removal is not a provisioning verb, and a machine with no key yet
+ * cannot be the one removing its own, so the comparison is simply skipped.
  */
 export async function membersRemove(
   p: Probes,
@@ -295,8 +329,8 @@ export async function membersRemove(
   const keyToRemove = agePublicKey ?? (typeof existingEntry?.agePublicKey === "string" ? existingEntry.agePublicKey : undefined);
 
   if (keyToRemove) {
-    const { publicKey: ownerPublicKey } = await ensureAgeKey(secrets.ageKeySeam);
-    if (keyToRemove === ownerPublicKey) {
+    const ownerPublicKey = await readOwnPublicKeyIfPresent(secrets);
+    if (ownerPublicKey !== null && keyToRemove === ownerPublicKey) {
       throw new UserActionableError(
         "own-key-removal-refused",
         `refusing to remove "${handle}" — the key on record for them is this machine's OWN age key, so removing it would lock this operator out of every team secret. ` +
