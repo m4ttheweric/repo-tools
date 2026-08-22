@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { assertPrunable, pruneRuns } from "../prune.ts";
@@ -75,5 +75,14 @@ describe("pruneRuns", () => {
     expect(() => assertPrunable(dir, dir)).toThrow();
     expect(() => assertPrunable(join(dir, "alpha"), dir)).toThrow();
     expect(() => assertPrunable(join(dir, "alpha", "run-1"), dir)).not.toThrow();
+  });
+
+  test("the guard refuses a symlinked intermediate component that escapes the root", () => {
+    const dir = root();
+    const outside = mkdtempSync(join(tmpdir(), "rt-runs-prune-outside-"));
+    mkdirSync(join(outside, "victim-run"), { recursive: true });
+    symlinkSync(outside, join(dir, "alpha"));
+    expect(() => assertPrunable(join(dir, "alpha", "victim-run"), dir)).toThrow();
+    expect(existsSync(join(outside, "victim-run"))).toBe(true);
   });
 });
