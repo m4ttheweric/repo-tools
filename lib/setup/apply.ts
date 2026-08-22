@@ -76,19 +76,12 @@ export interface StepDef {
   run(ctx: ApplyContext): Promise<StepOutcome>;
 }
 
-/**
- * The one place `ctx.need`'s four-way reply becomes a `StepOutcome`, so no
- * step body hand-rolls this mapping and risks turning a stalled or absent
- * app into a false success. `no-app` is the only non-fatal case — a
- * nonInteractive run legitimately has nobody to satisfy the need; a real
- * timeout or a vanished app is always a failure, never a skip.
- */
-export function outcomeFromNeed(reply: NeedReply | "timeout" | "app-gone" | "no-app"): StepOutcome {
-  if (reply === "no-app") return { state: "skipped", detail: "no mattstack.app running to complete this step" };
-  if (reply === "timeout") return { state: "failed", detail: "timed out waiting for mattstack.app" };
-  if (reply === "app-gone") return { state: "failed", detail: "mattstack.app stopped responding" };
-  return reply.ok ? { state: "done", detail: reply.detail } : { state: "failed", detail: reply.detail ?? "mattstack.app reported failure" };
-}
+// Re-exported for backward compatibility (and so callers that already import
+// it from here, like apply.test.ts, keep working) — the implementation lives
+// in need.ts so a step file can import it without a steps/index.ts -> apply.ts
+// -> steps/index.ts runtime cycle (apply.ts imports STEPS from steps/index.ts;
+// need.ts imports nothing from either).
+export { outcomeFromNeed } from "./need.ts";
 
 function stepEventFields(outcome: StepOutcome): { detail?: string; remedy?: string } {
   if (outcome.state === "failed") return { detail: outcome.detail, ...(outcome.remedy !== undefined ? { remedy: outcome.remedy } : {}) };

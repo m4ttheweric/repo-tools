@@ -440,14 +440,10 @@ describe("STEPS registry", () => {
 
   // Task 24 replaced the first block of stubs (home.init through repos.clone,
   // plus intercepts.install) with real bodies — lib/setup/__tests__/steps-a.test.ts
-  // covers those. Everything after repos.clone is still a stub for Tasks 25/26.
+  // covers those. Task 25 replaced services.register through cron.triage —
+  // lib/setup/__tests__/steps-b.test.ts covers those. Everything after
+  // cron.triage is still a stub for Task 26.
   const STILL_STUBBED: StepId[] = [
-    "services.register",
-    "proxy.install",
-    "deck.managed",
-    "skills.materialize",
-    "board.keys",
-    "cron.triage",
     "plugins.install",
     "fastbrowser.setup",
     "herdr.integration",
