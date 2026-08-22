@@ -7,7 +7,8 @@ import { Database } from "bun:sqlite";
 import { existsSync, readdirSync, type Dirent } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-import type { RunDetail, RunStageRow, RunSummary } from "../../packages/rt-client/src/commands.ts";
+import type { Attention, RunDetail, RunFieldRow, RunStageRow, RunSummary } from "../../packages/rt-client/src/commands.ts";
+import { computeAttention } from "./attention.ts";
 
 export const KNOWN_SCHEMA_VERSION = 2;
 
@@ -59,6 +60,7 @@ function runRow(db: Database): RunSummary | null {
       ended_at: (r.ended_at as number | null) ?? null,
       pack_commits: (r.pack_commits as string | undefined) ?? null,
       pack_dirty: Number(r.pack_dirty ?? 0),
+      attention: { needs: false, reason: null, evidence: "" },
     };
   } catch {
     return null;
@@ -76,6 +78,21 @@ function stageRows(db: Database): RunStageRow[] {
   }));
 }
 
+const NO_ATTENTION: Attention = { needs: false, reason: null, evidence: "" };
+
+// A run whose tables are missing (interrupted run-start) is still worth
+// listing — the store's contract is skip-the-broken-row, not throw, and
+// listRuns has no catch around this call.
+function withAttention(db: Database, row: RunSummary): RunSummary {
+  try {
+    const fields = db.query("SELECT key, value, produced_by, at FROM fields").all() as RunFieldRow[];
+    const decisions = db.query("SELECT contract, scope, selection, decided_by, decided_at FROM decisions").all() as RunDetail["decisions"];
+    return { ...row, attention: computeAttention(row, stageRows(db), fields, decisions, Date.now()) };
+  } catch {
+    return { ...row, attention: NO_ATTENTION };
+  }
+}
+
 export function listRuns(repo?: string): RunSummary[] {
   if (repo != null && !isPathComponent(repo)) return [];
   const repos = repo ? [repo] : dirs(runsRoot());
@@ -86,7 +103,7 @@ export function listRuns(repo?: string): RunSummary[] {
       if (!opened) continue;
       try {
         const row = runRow(opened.db);
-        if (row) out.push(row);
+        if (row) out.push(withAttention(opened.db, row));
       } finally {
         opened.db.close();
       }
@@ -102,11 +119,12 @@ export function readRun(repo: string, runId: string): RunDetail | null {
   try {
     const run = runRow(db);
     if (!run) return null;
+    const stages = stageRows(db);
+    const fields = db.query("SELECT key, value, produced_by, at FROM fields ORDER BY at").all() as RunDetail["fields"];
+    const decisions = db.query("SELECT contract, scope, selection, decided_by, decided_at FROM decisions ORDER BY decided_at").all() as RunDetail["decisions"];
     return {
-      run,
-      stages: stageRows(db),
-      fields: db.query("SELECT key, value, produced_by, at FROM fields ORDER BY at").all() as RunDetail["fields"],
-      decisions: db.query("SELECT contract, scope, selection, decided_by, decided_at FROM decisions ORDER BY decided_at").all() as RunDetail["decisions"],
+      run: { ...run, attention: computeAttention(run, stages, fields, decisions, Date.now()) },
+      stages, fields, decisions,
       schemaAhead,
     };
   } catch {

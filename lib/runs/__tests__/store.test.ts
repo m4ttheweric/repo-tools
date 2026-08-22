@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -84,5 +85,20 @@ describe("runs store", () => {
     expect(detail.stages[0]!.reason).toBeNull();
     expect(detail.run.pack_commits).toBeNull();
     expect(detail.run.pack_dirty).toBe(0);
+  });
+
+  test("a run dir with a half-created DB is skipped, not fatal to the whole list", () => {
+    const dir = root();
+    seedRun(dir, "acme", "20260822-140000-good", 1000, 2);
+    const broken = join(dir, "acme", "20260822-140001-bad");
+    mkdirSync(broken, { recursive: true });
+    const db = new Database(join(broken, "state.db"));
+    // exec, not run: multi-statement SQL, matching what the seeder uses.
+    db.exec("PRAGMA user_version=2; CREATE TABLE runs (id TEXT, repo TEXT, work_type TEXT, pipeline TEXT, status TEXT, current_stage TEXT, spawned_by TEXT, started_at INTEGER, ended_at INTEGER, pack_commits TEXT, pack_dirty INTEGER); INSERT INTO runs VALUES ('b','acme','t','p','running',NULL,NULL,900,NULL,NULL,0);");
+    db.close(); // no stages/fields tables at all
+
+    const runs = listRuns();
+    expect(runs.length).toBe(2);
+    expect(runs.find((r) => r.id === "b")!.attention.needs).toBe(false);
   });
 });
