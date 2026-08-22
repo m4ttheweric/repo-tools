@@ -52,7 +52,7 @@ struct SetupView: View {
                 flow.readinessIsVisible = false
                 readiness.becameHidden()
             }
-            if flow.step == .install { flow.isInstalling = true; install.start() }
+            if flow.step == .install, flow.mayStartInstall { flow.isInstalling = true; install.start() }
         }
         .onChange(of: install.phase) { _, phase in
             flow.isInstalling = (phase == .running)
@@ -77,18 +77,20 @@ struct SetupView: View {
     private var footer: some View {
         HStack {
             Spacer()
-            // Always present (never removed) so the AX walkthrough finds a
-            // stable setup.<screen>.back element and reads its enabled state.
-            Button("Back") { flow.back() }
-                .disabled(!flow.canGoBack)
-                .accessibilityIdentifier(AXID.back(screenName))
-            if flow.step == .checklist, readiness.limitedModeAvailable {
+            if flow.showsBack {
+                // Always present (never removed) so the AX walkthrough finds a
+                // stable setup.<screen>.back element and reads its enabled state.
+                Button("Back") { flow.back() }
+                    .disabled(!flow.canGoBack)
+                    .accessibilityIdentifier(AXID.back(screenName))
+            }
+            if flow.step == .checklist, flow.mayStartInstall, readiness.limitedModeAvailable {
                 Button("Continue in limited mode") { flow.next() }.accessibilityIdentifier(AXID.continueLimited)
             }
             Button(flow.continueTitle) { Task { await advance() } }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!continueEnabled || busy)
-                .accessibilityIdentifier(AXID.continue(screenName))
+                .accessibilityIdentifier(flow.primaryClosesWindow ? AXID.statusClose : AXID.continue(screenName))
         }
         .padding(.horizontal, 20).padding(.vertical, 12)
     }
@@ -96,6 +98,7 @@ struct SetupView: View {
     private var screenName: String { String(describing: flow.step) }
 
     private var continueEnabled: Bool {
+        guard !flow.primaryClosesWindow else { return true }
         switch flow.step {
         case .welcome: return true
         case .team: return team.canContinue
@@ -107,6 +110,7 @@ struct SetupView: View {
 
     private func advance() async {
         errorText = nil
+        guard !flow.primaryClosesWindow else { onFinish(); return }
         switch flow.step {
         case .team:
             busy = true; defer { busy = false }

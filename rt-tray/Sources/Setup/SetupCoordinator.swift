@@ -20,6 +20,7 @@ final class SetupCoordinator {
     /// it's a stateless probe with its own internal locking.
     private let statusReadiness: ReadinessModel
     private let install: InstallRunModel
+    private let statusInstall: InstallRunModel
     private let teamSettings: TeamSettingsModel
     private var setupWindow: SetupWindowController?
     /// "Setup status…" reuses this SAME controller across repeat opens —
@@ -52,6 +53,11 @@ final class SetupCoordinator {
             if let from { args += ["--from", from] }
             return rt.stream(args + ["--json"], stdin: nil)
         }, needs: needs)
+        // The status window is a health view, never an installer: its own
+        // model can only ever spawn a stream that finishes immediately, so no
+        // path through it can start — or, on the next start(), SIGTERM — a
+        // live `rt setup apply` the onboarding window owns.
+        statusInstall = InstallRunModel(stream: { _ in AsyncThrowingStream { $0.finish() } }, needs: needs)
         teamSettings = TeamSettingsModel(rt: rt, needs: needs)
     }
 
@@ -77,9 +83,9 @@ final class SetupCoordinator {
     /// closable since it's diagnostics, not a wizard.
     func openSetupStatus() {
         if statusWindow == nil {
-            let env = SetupEnvironment(rt: rt, readiness: statusReadiness, install: install, permissions: permissions,
+            let env = SetupEnvironment(rt: rt, readiness: statusReadiness, install: statusInstall, permissions: permissions,
                                        isDevBuild: BundleFlavor.isDevBuild, bundleId: Bundle.main.bundleIdentifier ?? "com.mattstack.app",
-                                       bundlePath: Bundle.main.bundlePath)
+                                       bundlePath: Bundle.main.bundlePath, readOnly: true)
             let wc = SetupWindowController(environment: env)
             wc.allowsCloseAlways = true
             wc.window?.title = "mattstack Setup status"

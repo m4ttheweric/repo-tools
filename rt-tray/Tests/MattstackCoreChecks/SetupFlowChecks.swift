@@ -26,4 +26,21 @@ let setupFlowChecks: [Check] = [
             f.jump(to: .team); c.expectEqual(f.step, .team)
         }
     },
+    Check("read-only flow (Setup status…): no Back, primary closes instead of installing, never starts a run") { c in
+        await MainActor.run {
+            let f = SetupFlowModel(readOnly: true)
+            f.jump(to: .checklist)
+            c.expectEqual(f.showsBack, false, "a health view has no wizard behind it to walk back into")
+            c.expectEqual(f.canGoBack, false)
+            c.expectEqual(f.continueTitle, "Close", "Install here would start a real rt setup apply")
+            c.expectEqual(f.primaryClosesWindow, true)
+            c.expectEqual(f.mayStartInstall, false)
+            let wizard = SetupFlowModel()
+            wizard.jump(to: .checklist)
+            c.expectEqual(wizard.showsBack, true)
+            c.expectEqual(wizard.continueTitle, "Install")
+            c.expectEqual(wizard.primaryClosesWindow, false)
+            c.expectEqual(wizard.mayStartInstall, true)
+        }
+    },
 ]
