@@ -79,6 +79,12 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
       files[path] = content;
       calls.writes[path] = content;
       if (mode !== undefined) calls.modes[path] = mode;
+      // Mirrors real writeFileSync: the new entry must show up in a
+      // subsequent readDir(parent), same as mkdirp does for child dirs.
+      const parent = dirname(path);
+      const parentList = dirs[parent] ?? (dirs[parent] = []);
+      const base = basename(path);
+      if (!parentList.includes(base)) parentList.push(base);
     },
 
     removeFile(path) {
