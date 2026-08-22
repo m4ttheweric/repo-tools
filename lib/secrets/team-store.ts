@@ -95,7 +95,8 @@ export class TeamReencryptError extends Error {
   }
 }
 
-const TEAM_PATH_REGEX = "mattstack/secrets/.*";
+/** Exported so `lib/team/create.ts`'s scaffold seeds `.sops.yaml` with the exact same rule this store reads — a divergence here would mean a scaffolded file silently stops matching this store's own creation rule. */
+export const TEAM_PATH_REGEX = "mattstack/secrets/.*";
 
 function teamCloneRoot(slug: string): string {
   validateSlug(slug);

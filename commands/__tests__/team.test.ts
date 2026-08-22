@@ -5,6 +5,7 @@ import type { AgeExecResult, AgeKeySeam } from "../../lib/home/age-key.ts";
 
 const FAKE_PUBLIC_KEY = "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
 const FAKE_PRIVATE_KEY = "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ";
+const ZONE_DIR = "/home/x/.mattstack/teams/acme";
 
 class FakeAgeKeySeam implements AgeKeySeam {
   async run(cmd: string[]): Promise<AgeExecResult> {
@@ -29,6 +30,11 @@ function baseDeps(overrides: Partial<TeamDeps> = {}): TeamDeps & { lines: string
     exitCodes,
     ...overrides,
   };
+}
+
+/** `publishTeam` prechecks the zone exists — every teamPublish test that means to reach the git steps needs it seeded. */
+function depsWithZone(overrides: Partial<TeamDeps> = {}) {
+  return baseDeps({ probes: fakeProbes({ home: "/home/x", dirs: { [ZONE_DIR]: [] } }), ...overrides });
 }
 
 /** For the `deps.exit`-injected exit-1 usage path (a bad-args refusal, no UserActionableError involved). */
@@ -57,20 +63,21 @@ async function runExpectingProcessExit(fn: () => Promise<void>): Promise<number 
 }
 
 describe("teamCreate", () => {
-  test("--json prints the contract envelope", async () => {
+  test("--json prints the exact contract envelope shape", async () => {
     const deps = baseDeps();
     await teamCreate(["Acme", "--remote", "https://github.com/acme/mattstack-team-acme.git", "--json"], {}, deps);
 
     expect(deps.lines).toHaveLength(1);
-    const body = JSON.parse(deps.lines[0]!);
-    expect(body).toMatchObject({
+    const { at, ...body } = JSON.parse(deps.lines[0]!);
+    expect(typeof at).toBe("string");
+    expect(body).toEqual({
       contract: 1,
       slug: "acme",
       name: "Acme",
       remote: "https://github.com/acme/mattstack-team-acme.git",
+      dir: ZONE_DIR,
       created: true,
     });
-    expect(typeof body.at).toBe("string");
   });
 
   test("--others is recorded on the intent, not the printed envelope", async () => {
@@ -108,19 +115,25 @@ describe("teamCreate", () => {
 
 describe("teamPublish", () => {
   test("--team explicit: pushes and prints a human summary", async () => {
-    const deps = baseDeps();
+    const deps = depsWithZone();
     await teamPublish(["--team", "acme", "--remote", "https://github.com/acme/repo.git"], {}, deps);
 
     expect(deps.lines[0]).toContain("acme");
     expect(deps.lines[0]).toContain("https://github.com/acme/repo.git");
   });
 
-  test("--team explicit, --json prints the contract envelope", async () => {
-    const deps = baseDeps();
+  test("--team explicit, --json prints the exact contract envelope shape", async () => {
+    const deps = depsWithZone();
     await teamPublish(["--team", "acme", "--remote", "https://github.com/acme/repo.git", "--json"], {}, deps);
 
-    const body = JSON.parse(deps.lines[0]!);
-    expect(body).toMatchObject({ contract: 1, remote: "https://github.com/acme/repo.git", pushed: true });
+    const { at, ...body } = JSON.parse(deps.lines[0]!);
+    expect(typeof at).toBe("string");
+    expect(body).toEqual({
+      contract: 1,
+      remote: "https://github.com/acme/repo.git",
+      pushed: true,
+      detail: "pushed to https://github.com/acme/repo.git",
+    });
   });
 
   test("no --team and no local team clone exits 2 with no-team", async () => {
@@ -130,5 +143,14 @@ describe("teamPublish", () => {
     expect(code).toBe(2);
     const body = JSON.parse(deps.lines[0]!);
     expect(body.error.code).toBe("no-team");
+  });
+
+  test("--team given but no zone on disk exits 2 with no-team-zone", async () => {
+    const deps = baseDeps(); // ZONE_DIR deliberately not seeded
+    const code = await runExpectingProcessExit(() => teamPublish(["--team", "acme", "--remote", "https://github.com/acme/repo.git", "--json"], {}, deps));
+
+    expect(code).toBe(2);
+    const body = JSON.parse(deps.lines[0]!);
+    expect(body.error.code).toBe("no-team-zone");
   });
 });
