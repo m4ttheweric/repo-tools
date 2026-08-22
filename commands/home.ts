@@ -42,6 +42,7 @@ import {
   type AgeKeySeam,
 } from "../lib/home/age-key.ts";
 import { claimZone, InvalidZoneError, normalizeZone, releaseZone, ZoneOwnedByOthersError, type ZoneKind } from "../lib/home/snapshot-owners.ts";
+import { promptSecret, type PromptIO } from "../lib/prompt-secret.ts";
 import { daemonQuery, type DaemonResponse } from "../lib/daemon-client.ts";
 import type { SnapshotResult, SnapshotStatus } from "../lib/daemon/home-snapshot.ts";
 
@@ -327,56 +328,18 @@ export async function readStdinTrimmed(stream: NodeJS.ReadableStream = process.s
   return Buffer.concat(chunks).toString("utf8").trim();
 }
 
-const CTRL_C = "";
-const DEL = "";
-
 /**
- * No-echo prompt (mirrors commands/secrets.ts's promptSecretValue): raw mode
- * so keystrokes never reach the terminal and nothing is echoed back — the
- * key crosses into this process only here, never via argv.
+ * Both input paths must yield the same shape of value — a `--stdin` paste
+ * and a typed-then-Enter prompt answer are otherwise indistinguishable to
+ * `importAgeKey`, so both are trimmed here rather than one trimmed
+ * (readStdinTrimmed) and the other not. `promptIO`, when passed, is forwarded
+ * to `promptSecret` so tests can drive the prompt path without a real TTY.
  */
-function promptAgeKey(): Promise<string> {
-  if (!process.stdin.isTTY) {
-    return Promise.reject(new Error("not a TTY — pass --stdin to read the key from stdin instead"));
-  }
-  process.stdout.write("Paste the age private key: ");
-  return new Promise((resolve, reject) => {
-    const stdin = process.stdin;
-    let value = "";
-    const cleanup = () => {
-      stdin.setRawMode(false);
-      stdin.pause();
-      stdin.removeListener("data", onData);
-    };
-    const onData = (chunk: Buffer) => {
-      for (const ch of chunk.toString("utf8")) {
-        if (ch === "\n" || ch === "\r") {
-          cleanup();
-          process.stdout.write("\n");
-          resolve(value);
-          return;
-        }
-        if (ch === CTRL_C) {
-          cleanup();
-          process.stdout.write("\n");
-          reject(new Error("cancelled"));
-          return;
-        }
-        if (ch === DEL || ch === "\b") {
-          value = value.slice(0, -1);
-          continue;
-        }
-        value += ch;
-      }
-    };
-    stdin.resume();
-    stdin.setRawMode(true);
-    stdin.on("data", onData);
-  });
-}
-
-function defaultAgeKeyInputSeam(): AgeKeyInputSeam {
-  return { fromStdin: () => readStdinTrimmed(), fromPrompt: promptAgeKey };
+export function defaultAgeKeyInputSeam(promptIO?: PromptIO): AgeKeyInputSeam {
+  return {
+    fromStdin: () => readStdinTrimmed(),
+    fromPrompt: () => promptSecret("Paste the age private key", promptIO).then((value) => value.trim()),
+  };
 }
 
 /** First 12 chars + an ellipsis — enough to eyeball-match two recipients in a warning without printing the full key. */
@@ -437,7 +400,9 @@ export async function homeKeyImport(
   if (existingRecipient !== null && existingRecipient !== publicKey) {
     console.error(
       `rt home key import: imported key's recipient (${truncateKey(publicKey)}) does not match this repo's ` +
-        `.sops.yaml recipient (${truncateKey(existingRecipient)}) — this key can't decrypt the secrets already here.`,
+        `.sops.yaml recipient (${truncateKey(existingRecipient)}) — this key can't decrypt the secrets already here. ` +
+        "The wrong key is already stored, so a plain retry will hit the exists-refusal — " +
+        "re-run `rt home key import --force` once you have the right key.",
     );
     process.exit(2);
   }

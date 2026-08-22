@@ -1,6 +1,7 @@
 import { describe, test, expect, spyOn, beforeEach, afterEach } from "bun:test";
 import {
   DEFAULT_USER_REPO_URL,
+  defaultAgeKeyInputSeam,
   gatherHomeState,
   homeClaim,
   homeInit,
@@ -15,6 +16,8 @@ import {
   type SopsYamlSeam,
 } from "../home.ts";
 import { Readable } from "stream";
+import { EventEmitter } from "events";
+import type { PromptIO, PromptStdin } from "../../lib/prompt-secret.ts";
 import { STATE_DIR_NAMES } from "../../lib/home/init-plan.ts";
 import type { ExecResult, ExecSeam } from "../../lib/home/init-exec.ts";
 import { renderSopsYaml, type AgeExecResult, type AgeKeySeam } from "../../lib/home/age-key.ts";
@@ -628,6 +631,27 @@ describe("readStdinTrimmed", () => {
   });
 });
 
+/** Drives promptSecret's `data` handler synthetically, via defaultAgeKeyInputSeam — never a real TTY. */
+class FakePromptStdin extends EventEmitter implements PromptStdin {
+  isTTY = true;
+  setRawMode(): void {}
+  resume(): void {}
+  pause(): void {}
+}
+
+describe("defaultAgeKeyInputSeam", () => {
+  test("fromPrompt trims the typed value the same way fromStdin trims a stdin paste", async () => {
+    const stdin = new FakePromptStdin();
+    const io: PromptIO = { stdin, write: () => {} };
+
+    const pending = defaultAgeKeyInputSeam(io).fromPrompt();
+    stdin.emit("data", Buffer.from(`  ${FAKE_PRIVATE_KEY}  `));
+    stdin.emit("data", Buffer.from("\n"));
+
+    await expect(pending).resolves.toBe(FAKE_PRIVATE_KEY);
+  });
+});
+
 describe("homeKeyImport", () => {
   const OTHER_PUBLIC_KEY = "age1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
   const OTHER_PRIVATE_KEY = "AGE-SECRET-KEY-1ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ";
@@ -734,15 +758,20 @@ describe("homeKeyImport", () => {
     expect(exitCode).toBe(2);
     expect(errors.some((e) => e.includes(FAKE_PUBLIC_KEY.slice(0, 12)))).toBe(true);
     expect(errors.some((e) => e.includes(OTHER_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    // The wrong key is already stored, so a plain retry hits the exists-refusal — the message must say so.
+    expect(errors.some((e) => e.includes("rt home key import --force"))).toBe(true);
   });
 
   test("imported key's recipient matches an existing .sops.yaml: succeeds, no mismatch warning", async () => {
     const seam = new FakeImportSeam({});
     const sopsYamlSeam = new FakeSopsYamlSeam({ path: SOPS_YAML_PATH, content: renderSopsYaml(FAKE_PUBLIC_KEY) });
 
-    const { exitCode } = await runImport([], seam, sopsYamlSeam);
+    const { exitCode, errors, logs } = await runImport([], seam, sopsYamlSeam);
 
     expect(exitCode).toBeUndefined();
+    expect(errors).toEqual([]);
+    expect(logs.some((l) => l.includes(FAKE_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    expect(logs.some((l) => l.includes("decryptable on this machine"))).toBe(true);
   });
 
   test("--stdin: reads the key via input.fromStdin, never input.fromPrompt", async () => {
@@ -760,9 +789,12 @@ describe("homeKeyImport", () => {
       },
     };
 
-    const { exitCode } = await runImport(["--stdin"], seam, new FakeSopsYamlSeam(), input);
+    const { exitCode, errors, logs } = await runImport(["--stdin"], seam, new FakeSopsYamlSeam(), input);
 
     expect(exitCode).toBeUndefined();
+    expect(errors).toEqual([]);
+    expect(logs.some((l) => l.includes(FAKE_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    expect(logs.some((l) => l.includes("decryptable on this machine"))).toBe(true);
     expect(stdinCalled).toBe(true);
     expect(promptCalled).toBe(false);
   });

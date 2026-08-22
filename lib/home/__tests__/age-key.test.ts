@@ -237,10 +237,26 @@ describe("importAgeKey", () => {
     expect(seam.calls.some((c) => c.cmd[1] === "find-generic-password")).toBe(false);
   });
 
-  test("never touches the real seam — only the injected fake ever runs", async () => {
+  test("no existing key: the exact call sequence is derive-new, find, store — nothing else", async () => {
     const seam = new FakeAgeKeySeam({ find: { code: 44, stdout: "" } });
+
     await importAgeKey(seam, FAKE_PRIVATE_KEY);
-    expect(seam.calls.every((c) => Array.isArray(c.cmd))).toBe(true);
+
+    expect(seam.calls.map((c) => c.cmd)).toEqual([
+      ["age-keygen", "-y"],
+      FIND_CMD,
+      [...ADD_CMD_PREFIX, FAKE_PRIVATE_KEY],
+    ]);
+  });
+
+  test("non-force path: readAgeKey throwing (locked keychain) propagates, and nothing is ever stored", async () => {
+    const seam = new FakeAgeKeySeam({
+      find: { code: 36, stdout: "", stderr: "SecKeychainItemCopyContent: the user name or passphrase is not correct" },
+    });
+
+    await expect(importAgeKey(seam, FAKE_PRIVATE_KEY)).rejects.toThrow(/keychain unreachable/i);
+
+    expect(seam.calls.some((c) => c.cmd.includes("add-generic-password"))).toBe(false);
   });
 });
 
