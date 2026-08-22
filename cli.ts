@@ -121,19 +121,25 @@ if (args[0] === "--version" || args[0] === "-V") {
   await runUpdate(args.slice(1));
   process.exit(0);
 } else {
-  // ── First-run auto-setup ──────────────────────────────────────────────────
-  // If daemon.json doesn't exist, post-install has never completed. Run it
-  // now transparently before the requested command. This also applies to
-  // `rt verify`, the command we recommend after installing — it should set
-  // up + then verify in one shot.
-  if (process.env.CI !== "true" && process.env.RT_SKIP_SETUP !== "1") {
+  // ── First-run hint ────────────────────────────────────────────────────────
+  // `rt setup` (not this hook) owns getting a machine set up — an auto-run
+  // here would defeat `rt setup plan`'s canInstall being reachable
+  // pre-install. A command that IS part of getting set up must reach its own
+  // handler untouched; RT_APP_SOCKET means mattstack.app is driving rt and
+  // already knows the setup state.
+  const FIRST_RUN_HINT_SKIP = new Set([
+    "setup", "team", "deps", "services", "tools", "repos", "skills", "cron", "uninstall", "home", "secrets", "restore", "verify",
+  ]);
+  if (
+    process.env.CI !== "true" &&
+    process.env.RT_SKIP_SETUP !== "1" &&
+    !process.env.RT_APP_SOCKET &&
+    !FIRST_RUN_HINT_SKIP.has(args[0] ?? "")
+  ) {
     const { existsSync } = await import("fs");
     const { join } = await import("path");
-    const { homedir } = await import("os");
     if (!existsSync(join(rtDir(), "daemon.json"))) {
-      console.log("\n  rt — first run detected, completing setup…\n");
-      const { runPostInstall } = await import("./commands/post-install.ts");
-      await runPostInstall();
+      console.error("  rt is not set up yet — open mattstack.app, or run: rt setup");
     }
   }
 

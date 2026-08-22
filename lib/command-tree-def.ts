@@ -951,4 +951,28 @@ export const TREE: Record<string, CommandNode> = {
       },
     },
   },
+
+  setup: {
+    description: "Set this Mac up for mattstack: readiness plan, install steps, account connections",
+    module: "./commands/setup.ts",
+    fn: "setupInteractive",
+    args: [{ name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable plan" }],
+    subcommands: {
+      plan: {
+        description: "Compute the readiness checklist",
+        module: "./commands/setup.ts",
+        fn: "setupPlan",
+        args: [
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to plan for" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable plan" },
+        ],
+      },
+      status: {
+        description: "The same checklist as a post-install health view",
+        module: "./commands/setup.ts",
+        fn: "setupStatus",
+        args: [{ name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable plan" }],
+      },
+    },
+  },
 };
