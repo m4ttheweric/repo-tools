@@ -7,9 +7,9 @@
  * activeLaunchdLabel() (which depends on it) rests on a verified foundation.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
-import { currentMode } from "../dev-mode.ts";
+import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
+import { currentMode, installRtBinary } from "../dev-mode.ts";
 
 // The dev-mode wrapper path is resolved at CALL time from process.env.HOME
 // (mirrors lib/rt-paths.ts's home()), so this constant only needs to match
@@ -52,5 +52,46 @@ describe("currentMode", () => {
     } finally {
       process.env.HOME = realHome;
     }
+  });
+});
+
+describe("installRtBinary", () => {
+  const BIN = join(process.env.HOME!, ".local", "bin");
+  afterEach(() => { try { rmSync(join(BIN, "rt")); } catch { /* absent */ } });
+
+  test("creates ~/.local/bin/rt as a symlink to the given binary", () => {
+    const src = join(process.env.HOME!, "mattstack.app", "Contents", "MacOS", "rt");
+    mkdirSync(dirname(src), { recursive: true });
+    writeFileSync(src, Buffer.from([0xcf, 0xfa, 0xed, 0xfe]), { mode: 0o755 });
+    const dest = installRtBinary(src);
+    expect(lstatSync(dest).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(dest)).toBe(src);
+    expect(currentMode()).toBe("prod");
+  });
+
+  test("replaces an existing regular file (the dev wrapper) and an existing link atomically", () => {
+    mkdirSync(BIN, { recursive: true });
+    writeFileSync(join(BIN, "rt"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const src = join(process.env.HOME!, "app-a", "Contents", "MacOS", "rt");
+    mkdirSync(dirname(src), { recursive: true }); writeFileSync(src, "", { mode: 0o755 });
+    installRtBinary(src);
+    expect(realpathSync(join(BIN, "rt"))).toBe(realpathSync(src));
+    const src2 = join(process.env.HOME!, "app-b", "Contents", "MacOS", "rt");
+    mkdirSync(dirname(src2), { recursive: true }); writeFileSync(src2, "", { mode: 0o755 });
+    installRtBinary(src2);
+    expect(readlinkSync(join(BIN, "rt"))).toBe(src2);
+  });
+
+  test("currentMode reads through the link: a link to a script is dev, to a Mach-O is prod", () => {
+    const script = join(process.env.HOME!, "wrapper.sh");
+    writeFileSync(script, "#!/bin/zsh\nexit 0\n", { mode: 0o755 });
+    installRtBinary(script);
+    expect(currentMode()).toBe("dev");
+  });
+
+  test("throws instead of creating a dangling link when src doesn't exist", () => {
+    const missing = join(process.env.HOME!, "no-such-app", "Contents", "MacOS", "rt");
+    expect(() => installRtBinary(missing)).toThrow(/not found/);
+    expect(existsSync(join(BIN, "rt"))).toBe(false);
   });
 });

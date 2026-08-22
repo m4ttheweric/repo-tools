@@ -171,25 +171,12 @@ export const DEV_TRAY_APP_NAME = "mattstack-dev";
 export const TRAY_APP_BUNDLE = "mattstack.app";
 export const DEV_TRAY_APP_BUNDLE = "mattstack-dev.app";
 
-/** ~/Applications/mattstack.app — the prod tray bundle's install location. */
-export function trayAppPath(): string {
-  return join(home(), "Applications", TRAY_APP_BUNDLE);
-}
-
-/** ~/Applications/mattstack-dev.app — the dev tray bundle's install location. */
-export function devTrayAppPath(): string {
-  return join(home(), "Applications", DEV_TRAY_APP_BUNDLE);
-}
-
 /**
- * Where a bundle is ACTUALLY installed, not just where it's meant to go
- * (that's `trayAppPath`/`devTrayAppPath` — install destinations, used by
- * post-install.ts). The app's bundles legitimately live in `/Applications`
- * now, not only `~/Applications`, so this checks every location rt could
- * plausibly have been pointed at or find it in, strongest signal first, and
- * verifies each candidate actually exists before trusting it — a stale
- * machine setting or a since-removed bundle must never be handed back as
- * fact. `exists` is injectable so tests never have to touch the real
+ * Where a bundle is ACTUALLY installed: the machine setting
+ * (`mattstack.appPath`), `/Applications`, then `~/Applications`, strongest
+ * signal first, verifying each candidate actually exists before trusting it
+ * — a stale machine setting or a since-removed bundle must never be handed
+ * back as fact. `exists` is injectable so tests never have to touch the real
  * `/Applications`.
  */
 export function installedTrayAppPath(bundle: string, exists: (path: string) => boolean = existsSync): string | null {
@@ -206,6 +193,41 @@ export function installedTrayAppPath(bundle: string, exists: (path: string) => b
   if (exists(userPath)) return userPath;
 
   return null;
+}
+
+/**
+ * Where the prod bundle is: `installedTrayAppPath` (machine key,
+ * /Applications, ~/Applications), defaulting to /Applications when none of
+ * those candidates exists.
+ */
+export function trayAppPath(exists: (path: string) => boolean = existsSync): string {
+  return installedTrayAppPath(TRAY_APP_BUNDLE, exists) ?? join("/Applications", TRAY_APP_BUNDLE);
+}
+
+/** Same resolution as `trayAppPath`, for the dev bundle. */
+export function devTrayAppPath(exists: (path: string) => boolean = existsSync): string {
+  return installedTrayAppPath(DEV_TRAY_APP_BUNDLE, exists) ?? join("/Applications", DEV_TRAY_APP_BUNDLE);
+}
+
+/**
+ * ~/Applications/mattstack.app — the phase-1 install location. Superseded by
+ * `trayAppPath()`'s /Applications-first resolution; kept so callers that
+ * still need to name the legacy location specifically (migration sweeps,
+ * `rt verify` warnings) don't hardcode it.
+ */
+export function legacyUserAppPath(): string {
+  return join(home(), "Applications", TRAY_APP_BUNDLE);
+}
+
+/**
+ * Install destination for the legacy `rt --post-install` copy step — NOT the
+ * general "where is the bundle" resolution (`trayAppPath`, which now
+ * defaults to /Applications, a privileged write this copy must never
+ * attempt). Exists only until the post-install rewrite (a separate task)
+ * deletes `installTrayApp()`; the DMG install path is the app's own.
+ */
+export function trayAppInstallDest(): string {
+  return legacyUserAppPath();
 }
 
 /**

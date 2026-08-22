@@ -19,12 +19,12 @@ import { join } from "node:path";
 import { __test__ } from "../notifier.ts";
 
 afterEach(() => {
-  __test__.setTerminalNotifierPath(null);
+  __test__.setFallbackNotifier(null);
 });
 
 function fakeHangingNotifier(sleepSecs: number): string {
   const dir = mkdtempSync(join(tmpdir(), "rt-fake-tn-"));
-  const path = join(dir, "terminal-notifier");
+  const path = join(dir, "osascript");
   writeFileSync(path, `#!/bin/sh\ntrap '' TERM\nsleep ${sleepSecs}\n`);
   chmodSync(path, 0o755);
   return path;
@@ -34,7 +34,7 @@ describe("notifyFallback event-loop safety (MAT-222)", () => {
   test(
     "returns immediately and never starves timers while the notifier child hangs",
     async () => {
-      __test__.setTerminalNotifierPath(fakeHangingNotifier(15));
+      __test__.setFallbackNotifier(fakeHangingNotifier(15));
 
       let heartbeats = 0;
       const heart = setInterval(() => { heartbeats++; }, 25);

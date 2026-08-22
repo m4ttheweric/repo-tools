@@ -69,7 +69,7 @@ if [ "$BUILD_CONFIG" = "debug" ]; then
     BINARY="$SCRIPT_DIR/.build/debug/$PRODUCT_NAME"
 else
     if [ "$IS_DEV" = true ]; then
-        # Dev flavor ships the shim as its rt-daemon (§3) — build both products.
+        # Dev flavor ships the shim as Contents/MacOS/rt — build both products.
         swift build -c release 2>&1 | sed 's/^/  /'
     else
         # Prod flavor never ships rt-daemon-shim — drop its compile step entirely.
@@ -160,8 +160,8 @@ fi
 cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 # ─── Embed daemon binary ──────────────────────────────────────────────────────
-# Prod: Contents/MacOS/rt-daemon is the real compiled `rt` binary.
-# Dev: Contents/MacOS/rt-daemon IS the shim (Sources-daemon-shim) — permanently
+# Prod: Contents/MacOS/rt is the real compiled `rt` binary.
+# Dev: Contents/MacOS/rt IS the shim (Sources-daemon-shim) — permanently
 # the source-runner, not a swap payload (spec §3). RT_DAEMON_BIN env var wins
 # for the prod path (CI passes the freshly-built rt binary); local dev falls
 # back to whatever `rt` resolves to on PATH.
@@ -171,9 +171,9 @@ if [ "$IS_DEV" = true ]; then
         echo "  ✗ rt-daemon-shim not built — dev bundle has no daemon without it"
         exit 1
     fi
-    cp "$SHIM_BINARY" "$APP_BUNDLE/Contents/MacOS/rt-daemon"
-    chmod +x "$APP_BUNDLE/Contents/MacOS/rt-daemon"
-    echo "  ✓ Embedded rt-daemon-shim as Contents/MacOS/rt-daemon (dev source-runner)"
+    cp "$SHIM_BINARY" "$APP_BUNDLE/Contents/MacOS/rt"
+    chmod +x "$APP_BUNDLE/Contents/MacOS/rt"
+    echo "  ✓ Embedded rt-daemon-shim as Contents/MacOS/rt (dev source-runner)"
 else
     # Resolution order: an explicit RT_DAEMON_BIN (what CI sets), then the
     # repo's own compiled binary, then whatever `rt` is on PATH. The PATH
@@ -198,9 +198,9 @@ else
     fi
 
     if [ -n "$DAEMON_SRC" ] && [ -f "$DAEMON_SRC" ]; then
-        cp "$DAEMON_SRC" "$APP_BUNDLE/Contents/MacOS/rt-daemon"
-        chmod +x "$APP_BUNDLE/Contents/MacOS/rt-daemon"
-        echo "  ✓ Embedded rt-daemon from $DAEMON_SRC"
+        cp "$DAEMON_SRC" "$APP_BUNDLE/Contents/MacOS/rt"
+        chmod +x "$APP_BUNDLE/Contents/MacOS/rt"
+        echo "  ✓ Embedded rt from $DAEMON_SRC"
     else
         echo "  ⚠ rt binary not found — daemon will not be embedded"
         echo "    Set RT_DAEMON_BIN or install rt on PATH"
@@ -241,12 +241,25 @@ else
     /usr/libexec/PlistBuddy -c "Add :MSDevBuild bool false" "$APP_BUNDLE/Contents/Info.plist"
 fi
 
-RT_VERSION=$(cd "$SCRIPT_DIR/.." && git describe --tags --abbrev=0 2>/dev/null || echo "dev")
+# Anchored at both ends: "2.8.0-rc1" must not silently pass as "2.8.0" and
+# collide with the real release's CFBundleVersion. A non-semver RT_VERSION
+# aborts the build instead of writing CFBundleVersion=0 (indistinguishable
+# from a real build-0 bug once it's in a shipped Info.plist).
+numeric_build() {
+    local v="${1#v}"
+    if [[ "$v" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+        echo $(( BASH_REMATCH[1] * 1000000 + BASH_REMATCH[2] * 1000 + BASH_REMATCH[3] ))
+    else
+        return 1
+    fi
+}
+RT_VERSION="${RT_VERSION:-$(cd "$SCRIPT_DIR/.." && git describe --tags --abbrev=0 2>/dev/null || echo dev)}"
 RT_VERSION="${RT_VERSION#v}"  # strip leading 'v'
 if [ "$RT_VERSION" != "dev" ]; then
+    RT_BUILD="$(numeric_build "$RT_VERSION")" || { echo "  ✗ RT_VERSION '$RT_VERSION' is not semver (expected X.Y.Z)" >&2; exit 1; }
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $RT_VERSION" "$APP_BUNDLE/Contents/Info.plist"
-    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $RT_VERSION" "$APP_BUNDLE/Contents/Info.plist"
-    echo "  ✓ Version set to $RT_VERSION"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $RT_BUILD" "$APP_BUNDLE/Contents/Info.plist"
+    echo "  ✓ Version set to $RT_VERSION (build $RT_BUILD)"
 fi
 
 # Create PkgInfo
@@ -276,23 +289,24 @@ else
 fi
 
 # 1. Embedded daemon — needs Bun JIT entitlements. In dev this file IS the
-# shim (see the embed step above), so it's signed here too, keeping the
-# `-i rt-daemon` identifier override: load-bearing, do not remove it — without
-# it codesign keeps SwiftPM's default (rt-daemon-shim) and launchd rejects the
-# binary with EX_CONFIG (cached LWCR was for identifier=rt-daemon).
-DAEMON_BIN="$APP_BUNDLE/Contents/MacOS/rt-daemon"
+# shim (see the embed step above), so it's signed here too. The `-i rt`
+# identifier override is load-bearing on both branches, do not remove it —
+# without it codesign keeps SwiftPM's default product name and launchd
+# rejects the binary with EX_CONFIG (cached LWCR was for a different identifier).
+DAEMON_BIN="$APP_BUNDLE/Contents/MacOS/rt"
 if [ -f "$DAEMON_BIN" ]; then
     if [ "$IS_DEV" = true ]; then
         codesign "${SIGN_FLAGS[@]}" \
-            -i rt-daemon \
+            -i rt \
             --entitlements "$SCRIPT_DIR/../scripts/entitlements.plist" \
             "$DAEMON_BIN"
-        echo "  ✓ Signed rt-daemon (dev source-runner / shim) as identifier=rt-daemon"
+        echo "  ✓ Signed rt (dev source-runner / shim) as identifier=rt"
     else
         codesign "${SIGN_FLAGS[@]}" \
+            -i rt \
             --entitlements "$SCRIPT_DIR/../scripts/entitlements.plist" \
             "$DAEMON_BIN"
-        echo "  ✓ Signed rt-daemon with JIT entitlements"
+        echo "  ✓ Signed rt with JIT entitlements as identifier=rt"
     fi
 fi
 

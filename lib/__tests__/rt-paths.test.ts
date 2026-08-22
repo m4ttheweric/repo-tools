@@ -30,6 +30,7 @@ import {
   migrateLegacyRtDir, legacyDirsPresent,
   TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE, DEV_TRAY_APP_BUNDLE,
   trayAppPath, devTrayAppPath, legacyTrayAppPaths, installedTrayAppPath, machineSettingsPath,
+  legacyUserAppPath, trayAppInstallDest,
   machineKey, userSettingsPath, teamSettingsPath, isSafeMachineKeySegment,
 } from "../rt-paths.ts";
 
@@ -283,18 +284,37 @@ describe("rt-paths", () => {
     expect(DEV_TRAY_APP_BUNDLE).toBe("mattstack-dev.app");
   });
 
-  test("trayAppPath resolves under ~/Applications at call-time HOME", () => {
+  test("trayAppPath resolves under ~/Applications at call-time HOME when that's the only candidate present", () => {
+    const onlyUnderHome = (p: string) => p === join(process.env.HOME!, "Applications", TRAY_APP_BUNDLE);
     process.env.HOME = "/tmp/fake-home-tray-1";
-    expect(trayAppPath()).toBe("/tmp/fake-home-tray-1/Applications/mattstack.app");
+    expect(trayAppPath(onlyUnderHome)).toBe("/tmp/fake-home-tray-1/Applications/mattstack.app");
     process.env.HOME = "/tmp/fake-home-tray-2";
-    expect(trayAppPath()).toBe("/tmp/fake-home-tray-2/Applications/mattstack.app");
+    expect(trayAppPath(onlyUnderHome)).toBe("/tmp/fake-home-tray-2/Applications/mattstack.app");
   });
 
-  test("devTrayAppPath resolves under ~/Applications at call-time HOME", () => {
+  test("devTrayAppPath resolves under ~/Applications at call-time HOME when that's the only candidate present", () => {
+    const onlyUnderHome = (p: string) => p === join(process.env.HOME!, "Applications", DEV_TRAY_APP_BUNDLE);
     process.env.HOME = "/tmp/fake-home-dev-tray-1";
-    expect(devTrayAppPath()).toBe("/tmp/fake-home-dev-tray-1/Applications/mattstack-dev.app");
+    expect(devTrayAppPath(onlyUnderHome)).toBe("/tmp/fake-home-dev-tray-1/Applications/mattstack-dev.app");
     process.env.HOME = "/tmp/fake-home-dev-tray-2";
-    expect(devTrayAppPath()).toBe("/tmp/fake-home-dev-tray-2/Applications/mattstack-dev.app");
+    expect(devTrayAppPath(onlyUnderHome)).toBe("/tmp/fake-home-dev-tray-2/Applications/mattstack-dev.app");
+  });
+
+  test("trayAppPath prefers the installed bundle (machine key, /Applications, ~/Applications) and defaults to /Applications", () => {
+    const none = () => false;
+    expect(trayAppPath(none)).toBe("/Applications/mattstack.app");
+    expect(devTrayAppPath(none)).toBe("/Applications/mattstack-dev.app");
+    const userOnly = (p: string) => p === join(process.env.HOME!, "Applications", "mattstack.app");
+    expect(trayAppPath(userOnly)).toBe(join(process.env.HOME!, "Applications", "mattstack.app"));
+  });
+
+  test("legacyUserAppPath and trayAppInstallDest resolve under ~/Applications at call-time HOME", () => {
+    process.env.HOME = "/tmp/fake-home-legacy-user-app-1";
+    expect(legacyUserAppPath()).toBe("/tmp/fake-home-legacy-user-app-1/Applications/mattstack.app");
+    expect(trayAppInstallDest()).toBe("/tmp/fake-home-legacy-user-app-1/Applications/mattstack.app");
+    process.env.HOME = "/tmp/fake-home-legacy-user-app-2";
+    expect(legacyUserAppPath()).toBe("/tmp/fake-home-legacy-user-app-2/Applications/mattstack.app");
+    expect(trayAppInstallDest()).toBe("/tmp/fake-home-legacy-user-app-2/Applications/mattstack.app");
   });
 
   test("legacyTrayAppPaths is a function (call-time HOME rule, not a const)", () => {
