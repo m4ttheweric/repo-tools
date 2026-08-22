@@ -12,9 +12,19 @@ a()    { if vm_ssh_try "$VM_ADMIN_USER" "$VM" "$2" >/dev/null 2>&1; then ok "$1"
 a "ssh as admin (key)"                 'true'
 t "ssh as tester (key)"                'true'
 t "tester is not admin"                '! dseditgroup -o checkmember -m tester admin | grep -q "is a member"'
-t "no CLT"                             '! xcode-select -p'
-t "no brew"                            '! command -v brew && [ ! -d /opt/homebrew ]'
-t "Gatekeeper enabled"                 'spctl --status | grep -q "assessments enabled"'
+
+# The -xcode golden legitimately carries CLT/brew/Gatekeeper-disabled state for xcodebuild,
+# so these checks only apply to the cleanroom flavour recorded in the guest's own marker.
+FLAVOUR=$(vm_ssh_try "$VM_TESTER_USER" "$VM" 'cat /Users/Shared/mattstack-golden.json 2>/dev/null' 2>/dev/null \
+  | sed -n 's/.*"flavour": *"\([^"]*\)".*/\1/p' || true)
+[ -n "$FLAVOUR" ] || FLAVOUR=cleanroom
+if [ "$FLAVOUR" = cleanroom ]; then
+  t "no CLT"                             '! xcode-select -p'
+  t "no brew"                            '! command -v brew && [ ! -d /opt/homebrew ]'
+  t "Gatekeeper enabled"                 'spctl --status | grep -q "assessments enabled"'
+else
+  vm_log "  – no CLT/no brew/Gatekeeper skipped (flavour=$FLAVOUR)"
+fi
 t "auto-login user is tester"          '[ "$(defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser)" = tester ]'
 t "console user is tester"             '[ "$(stat -f%Su /dev/console)" = tester ]'
 t "sleep off"                          'pmset -g | grep -E "^ *sleep" | grep -q " 0"'
