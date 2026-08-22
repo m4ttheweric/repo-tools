@@ -135,6 +135,8 @@ final class SetupFlowUITests: XCTestCase {
         waitFor("setup.checklist.screen")
         XCTAssertFalse(el("setup.checklist.continue").isEnabled)
         el("setup.checklist.recheck").click()
+        Thread.sleep(forTimeInterval: 1)
+        el("setup.checklist.recheck").click()
         let enabled = NSPredicate(format: "isEnabled == true")
         expectation(for: enabled, evaluatedWith: el("setup.checklist.continue"))
         waitForExpectations(timeout: 15)

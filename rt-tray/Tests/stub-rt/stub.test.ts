@@ -26,12 +26,14 @@ test("setup plan: join-happy is installable, perm-denied is not", async () => {
   expect(denied.lines[0].requiredMissing).toContain("perm.fda");
 });
 
-test("perm-denied-then-granted: plan flips to installable on the second call", async () => {
+test("perm-denied-then-granted: plan flips to installable on the third call", async () => {
   const state = mkdtempSync(join(tmpdir(), "stub-"));
   const first = await run("perm-denied-then-granted", ["setup", "plan", "--json"], "", state);
   const second = await run("perm-denied-then-granted", ["setup", "plan", "--json"], "", state);
+  const third = await run("perm-denied-then-granted", ["setup", "plan", "--json"], "", state);
   expect(first.lines[0].canInstall).toBe(false);
-  expect(second.lines[0].canInstall).toBe(true);
+  expect(second.lines[0].canInstall).toBe(false);
+  expect(third.lines[0].canInstall).toBe(true);
 });
 
 test("team join --dry-run reads the code from stdin; no-access is exit 0 {access:'denied'} with a specific message", async () => {

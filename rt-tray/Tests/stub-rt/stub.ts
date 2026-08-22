@@ -34,7 +34,7 @@ const row = (id: string, kind: string, title: string, why: string, required: boo
 
 function plan(): unknown {
   const fdaCalls = stateBump("plan-calls");
-  const fdaGranted = scenario !== "perm-denied-then-granted" || fdaCalls >= 2;
+  const fdaGranted = scenario !== "perm-denied-then-granted" || fdaCalls >= 3;
   const mode = scenario === "create-happy" ? "create" : scenario === "restore" ? "restore" : "join";
   const mac = [
     row("perm.fda", "permission", "Full Disk Access",

@@ -43,7 +43,7 @@ struct StubPermissionProbe: PermissionProbing {
     var fdaNeedsRelaunch: Bool { false }
 
     func snapshot() async -> PermissionSnapshot {
-        let granted = scenario != "perm-denied-then-granted" || planCalls() >= 2
+        let granted = scenario != "perm-denied-then-granted" || planCalls() >= 3
         return PermissionSnapshot(
             fda: .init(status: granted ? "granted" : "denied", detail: granted ? "stub: granted" : "stub: not granted"),
             notifications: .init(status: "notDetermined"),
