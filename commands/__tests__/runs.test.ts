@@ -50,6 +50,18 @@ describe("rt runs formatting", () => {
     expect(text).toContain("ticket");
     expect(text).toContain("execution-strategy@1");
   });
+
+  test("formatRunDetail shows a failed stage's reason and detail_path", () => {
+    const text = formatRunDetail({
+      run: run as any,
+      stages: [{ name: "gates", status: "failed", attempt: 1, started_at: 1, ended_at: 2, reason: "cvi-islands assertion failed", detail_path: "/tmp/gates.log" }],
+      fields: [],
+      decisions: [],
+      schemaAhead: false,
+    } as any);
+    expect(text).toContain("cvi-islands assertion failed");
+    expect(text).toContain("/tmp/gates.log");
+  });
 });
 
 describe("rt runs --repo flag validation", () => {

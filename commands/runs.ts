@@ -52,7 +52,11 @@ export function formatRunDetail(d: RunDetail): string {
   const lines: string[] = [formatRunLine(d.run)];
   if (d.schemaAhead) lines.push("(newer schema than this rt knows; some data may be missing)");
   lines.push("", "stages:");
-  for (const s of d.stages) lines.push(`  ${STATUS_ICON[s.status] ?? "?"} ${s.name} (attempt ${s.attempt})`);
+  for (const s of d.stages) {
+    lines.push(`  ${STATUS_ICON[s.status] ?? "?"} ${s.name} (attempt ${s.attempt})`);
+    if (s.reason) lines.push(`      reason: ${s.reason}`);
+    if (s.detail_path) lines.push(`      detail: ${s.detail_path}`);
+  }
   lines.push("", "fields:");
   for (const f of d.fields) lines.push(`  ${f.key} = ${f.value}  [${f.produced_by}]`);
   lines.push("", "decisions:");

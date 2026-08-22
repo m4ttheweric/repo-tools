@@ -1,6 +1,8 @@
 /**
- * runs:* — read-only pipeline run state (SKILLS-28). rt never writes run
- * state; these handlers open each DB readonly per request and hold nothing.
+ * runs:* — pipeline run state (SKILLS-28). These handlers read each DB
+ * readonly per request and hold nothing, with one exception: runs:abandon,
+ * which writes through reconcile.ts because only a person can decide a run
+ * is dead.
  */
 import { findRun, listRuns, readRun } from "../../runs/store.ts";
 import { abandonRun } from "../../runs/reconcile.ts";

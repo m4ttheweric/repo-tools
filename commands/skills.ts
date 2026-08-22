@@ -455,7 +455,10 @@ export async function skillsCompile(args: string[]): Promise<void> {
       const outDir = join(resolved.packDir, "skills", verb.name);
 
       if (publicSet && !publicSet.has(verb.name)) {
-        console.log(`internal: ${verb.name} (not compiled; roster entry retired)`);
+        // --preview's contract is stdout-is-the-body; this line is status,
+        // not body, so it goes to stderr when preview is set.
+        const log = flags.preview ? console.error : console.log;
+        log(`internal: ${verb.name} (not compiled; roster entry retired)`);
         if (!flags.dryRun && !flags.preview && existsSync(outDir)) {
           rmSync(outDir, { recursive: true, force: true });
         }
