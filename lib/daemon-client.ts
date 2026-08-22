@@ -87,6 +87,59 @@ export async function trayQuery(
   }
 }
 
+// ─── Tray request client (MAT-383 setup verbs) ───────────────────────────────
+
+/** RT_APP_SOCKET (set by the app when it spawns rt) wins over the default tray.sock path. */
+export function traySocketPath(): string {
+  return process.env.RT_APP_SOCKET || TRAY_SOCK_PATH;
+}
+
+export interface TrayReply<T = unknown> {
+  status: number;
+  json: T | null;
+}
+
+/**
+ * General-purpose tray.sock request client for setup probes — unlike
+ * `trayQuery`, callers choose the method and may send a JSON body.
+ * Never throws: socket absent, connection failure, and timeout all resolve
+ * `{status: 0, json: null}` so probe code can treat every tray outage
+ * uniformly instead of catching transport errors itself.
+ */
+export async function trayRequest<T = unknown>(
+  path: string,
+  init: { method: "GET" | "POST"; body?: unknown; timeoutMs?: number } = { method: "GET" },
+): Promise<TrayReply<T>> {
+  const sockPath = traySocketPath();
+  if (!existsSync(sockPath)) return { status: 0, json: null };
+
+  try {
+    const hasBody = init.body !== undefined;
+    const response = await fetch(`http://localhost${path}`, {
+      unix: sockPath,
+      method: init.method,
+      headers: hasBody ? { "Content-Type": "application/json" } : undefined,
+      body: hasBody ? JSON.stringify(init.body) : undefined,
+      signal: AbortSignal.timeout(init.timeoutMs ?? REQUEST_TIMEOUT_MS),
+    } as any);
+
+    const text = await response.text();
+    let json: T | null = null;
+    if (text.length > 0) {
+      try {
+        json = JSON.parse(text) as T;
+      } catch {
+        json = null; // tolerate a non-JSON body rather than surfacing a parse error
+      }
+    }
+    return { status: response.status, json };
+  } catch {
+    return { status: 0, json: null };
+  }
+}
+
+export type TrayClient = typeof trayRequest;
+
 // ─── Auto-recovery ───────────────────────────────────────────────────────────
 
 let hasWarnedThisSession = false;
