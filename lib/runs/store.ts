@@ -7,9 +7,9 @@ import { Database } from "bun:sqlite";
 import { existsSync, readdirSync, type Dirent } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-import type { RunDetail, RunSummary } from "../../packages/rt-client/src/commands.ts";
+import type { RunDetail, RunStageRow, RunSummary } from "../../packages/rt-client/src/commands.ts";
 
-export const KNOWN_SCHEMA_VERSION = 1;
+export const KNOWN_SCHEMA_VERSION = 2;
 
 export function runsRoot(): string {
   return process.env.RT_RUNS_ROOT ?? join(homedir(), ".mattstack", "runs");
@@ -44,12 +44,36 @@ function openRun(repo: string, runId: string): { db: Database; schemaAhead: bool
   }
 }
 
+// SELECT * plus an explicit map, not a named-column SELECT: a v1 db lacks
+// pack_commits/pack_dirty entirely, and naming an absent column throws.
 function runRow(db: Database): RunSummary | null {
   try {
-    return (db.query("SELECT * FROM runs LIMIT 1").get() as RunSummary | undefined) ?? null;
+    const r = db.query("SELECT * FROM runs LIMIT 1").get() as Record<string, unknown> | undefined;
+    if (!r) return null;
+    return {
+      id: String(r.id), repo: String(r.repo), work_type: String(r.work_type),
+      pipeline: String(r.pipeline), status: String(r.status),
+      current_stage: (r.current_stage as string | null) ?? null,
+      spawned_by: (r.spawned_by as string | null) ?? null,
+      started_at: Number(r.started_at),
+      ended_at: (r.ended_at as number | null) ?? null,
+      pack_commits: (r.pack_commits as string | undefined) ?? null,
+      pack_dirty: Number(r.pack_dirty ?? 0),
+    };
   } catch {
     return null;
   }
+}
+
+function stageRows(db: Database): RunStageRow[] {
+  const rows = db.query("SELECT * FROM stages ORDER BY started_at, attempt").all() as Record<string, unknown>[];
+  return rows.map((r) => ({
+    name: String(r.name), status: String(r.status), attempt: Number(r.attempt),
+    started_at: (r.started_at as number | null) ?? null,
+    ended_at: (r.ended_at as number | null) ?? null,
+    reason: (r.reason as string | undefined) ?? null,
+    detail_path: (r.detail_path as string | undefined) ?? null,
+  }));
 }
 
 export function listRuns(repo?: string): RunSummary[] {
@@ -80,7 +104,7 @@ export function readRun(repo: string, runId: string): RunDetail | null {
     if (!run) return null;
     return {
       run,
-      stages: db.query("SELECT name, status, attempt, started_at, ended_at FROM stages ORDER BY started_at, attempt").all() as RunDetail["stages"],
+      stages: stageRows(db),
       fields: db.query("SELECT key, value, produced_by, at FROM fields ORDER BY at").all() as RunDetail["fields"],
       decisions: db.query("SELECT contract, scope, selection, decided_by, decided_at FROM decisions ORDER BY decided_at").all() as RunDetail["decisions"],
       schemaAhead,
