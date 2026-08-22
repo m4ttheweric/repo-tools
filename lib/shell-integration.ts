@@ -26,25 +26,34 @@ const HISTORY_HOOK_MARKER = "# rt — shell history hook";
 
 // ─── Shell detection ──────────────────────────────────────────────────────────
 
-type ShellType = "zsh" | "bash" | "fish" | "unknown";
+export type ShellType = "zsh" | "bash" | "fish" | "unknown";
+
+/** Pure mapping from a raw $SHELL value to a ShellType — the one place this repo names the three supported shells, so a shell added here is honored everywhere that classifies one (this module, and lib/setup/validators/rt-health.ts's tool.shell row, which calls this directly over Probes' `p.env.SHELL` instead of reading real process.env). */
+export function detectShellFrom(shellEnv: string): ShellType {
+  if (shellEnv.endsWith("zsh"))  return "zsh";
+  if (shellEnv.endsWith("bash")) return "bash";
+  if (shellEnv.endsWith("fish")) return "fish";
+  return "unknown";
+}
 
 export function detectShell(): ShellType {
-  const shell = process.env.SHELL ?? "";
-  if (shell.endsWith("zsh"))  return "zsh";
-  if (shell.endsWith("bash")) return "bash";
-  if (shell.endsWith("fish")) return "fish";
-  return "unknown";
+  return detectShellFrom(process.env.SHELL ?? "");
 }
 
 // ─── RC file targets ──────────────────────────────────────────────────────────
 
-export function shellRcPath(shell: ShellType): string | null {
+/** Pure rc-file mapping against an explicit `homeDir` — the shape shellRcPath(shell) below composes with call-time home(). Also reused by rt-health.ts's tool.shell row against Probes' `p.home` instead of real HOME. */
+export function shellRcPathFor(shell: ShellType, homeDir: string): string | null {
   switch (shell) {
-    case "zsh":  return join(home(), ".zshrc");
-    case "bash": return join(home(), ".bash_profile");
-    case "fish": return join(home(), ".config/fish/conf.d/rt.fish");
+    case "zsh":  return join(homeDir, ".zshrc");
+    case "bash": return join(homeDir, ".bash_profile");
+    case "fish": return join(homeDir, ".config/fish/conf.d/rt.fish");
     default:     return null;
   }
+}
+
+export function shellRcPath(shell: ShellType): string | null {
+  return shellRcPathFor(shell, home());
 }
 
 // ─── Integration blocks ───────────────────────────────────────────────────────

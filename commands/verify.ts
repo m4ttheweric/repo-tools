@@ -64,13 +64,8 @@ function skip(name: string, detail: string): CheckResult {
   return { name, status: "skip", detail, severity: "info" };
 }
 
-/**
- * rt-context extension presence check (MAT-383 §5) — moved to
- * lib/setup/validators/rt-health.ts (MAT-383 T7, imported above) so
- * `rt verify` and the setup plan share one implementation; re-exported here
- * so this module's existing test (commands/__tests__/verify.test.ts) keeps
- * importing it from this path unchanged.
- */
+// The local binding (imported above) is what runChecks() calls below — do
+// not collapse this into `export { checkRtContextExtension } from "…"`.
 export { checkRtContextExtension };
 
 // ─── Checks ──────────────────────────────────────────────────────────────────

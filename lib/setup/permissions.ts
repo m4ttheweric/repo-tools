@@ -25,7 +25,8 @@ const RECHECK_ACTION: Action = { type: "run", label: "Re-check", verb: ["setup",
 const NOT_RUNNING_DETAIL = "mattstack.app not running — permission status unavailable";
 
 const FDA_SETTINGS_ACTION: Action = { type: "open-settings", label: "Open Full Disk Access Settings…", target: "fda" };
-const LOGIN_ITEMS_SETTINGS_ACTION: Action = { type: "open-settings", label: "Open Login Items…", target: "login-items" };
+/** Exported: rt-health.ts's tool.daemon row points at the same Login Items pane on the same not-responding path, and must not carry its own drifting copy of the label. */
+export const LOGIN_ITEMS_SETTINGS_ACTION: Action = { type: "open-settings", label: "Open Login Items…", target: "login-items" };
 const NOTIFICATIONS_REQUEST_ACTION: Action = { type: "request-permission", label: "Allow", which: "notifications" };
 const NOTIFICATIONS_SETTINGS_ACTION: Action = { type: "open-settings", label: "Open Notification Settings…", target: "notifications" };
 
