@@ -55,6 +55,10 @@ struct ChecklistScreen: View {
         .sheet(isPresented: Binding(get: { steps != nil }, set: { if !$0 { steps = nil } })) {
             if let s = steps { StepsSheet(title: s.title, steps: s.steps) }
         }
+        // .contain: without it, the footer HStack's only interactive child
+        // (Re-check) reports THIS screen-level identifier instead of its own
+        // -- same fix as InstallScreen's stepRow.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AXID.checklistScreen)
     }
 
