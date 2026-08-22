@@ -1,5 +1,31 @@
-import { describe, expect, test } from "bun:test";
-import { formatRunLine, formatRunDetail } from "../runs.ts";
+import { describe, expect, spyOn, test } from "bun:test";
+import { formatRunLine, formatRunDetail, runsList, runsShow } from "../runs.ts";
+
+/**
+ * Mock process.exit to throw a sentinel so the real test process never
+ * dies, and read the spies' recorded calls BEFORE mockRestore() -- bun's
+ * mockRestore() clears .mock.calls, unlike jest's (matches
+ * commands/__tests__/skills.test.ts's runExpectingCleanExit).
+ */
+async function runExpectingCleanExit(fn: () => Promise<void>): Promise<{ exitCode: number | undefined; errors: string[] }> {
+  const errors: string[] = [];
+  const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+    throw new Error("process.exit sentinel");
+  });
+  const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    errors.push(args.map(String).join(" "));
+  });
+  try {
+    await fn();
+    return { exitCode: undefined, errors };
+  } catch {
+    const exitCode = exitSpy.mock.calls.at(-1)?.[0] as number | undefined;
+    return { exitCode, errors };
+  } finally {
+    exitSpy.mockRestore();
+    errorSpy.mockRestore();
+  }
+}
 
 describe("rt runs formatting", () => {
   const run = { id: "20260821-010101-aaaa", repo: "alpha", work_type: "feature", pipeline: "default", status: "running", current_stage: "plan", spawned_by: null, started_at: 1755750000000, ended_at: null };
@@ -23,5 +49,25 @@ describe("rt runs formatting", () => {
     expect(text).toContain("plan");
     expect(text).toContain("ticket");
     expect(text).toContain("execution-strategy@1");
+  });
+});
+
+describe("rt runs --repo flag validation", () => {
+  test("a dangling --repo with no value fails loudly instead of silently listing unscoped", async () => {
+    const { exitCode, errors } = await runExpectingCleanExit(() => runsList(["--repo"]));
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("--repo requires a value");
+  });
+
+  test("--repo immediately followed by another flag is treated as dangling, not a value", async () => {
+    const { exitCode, errors } = await runExpectingCleanExit(() => runsList(["--repo", "--json"]));
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("--repo requires a value");
+  });
+
+  test("runsShow rejects a dangling --repo the same way", async () => {
+    const { exitCode, errors } = await runExpectingCleanExit(() => runsShow(["20260821-010101-aaaa", "--repo"]));
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("--repo requires a value");
   });
 });

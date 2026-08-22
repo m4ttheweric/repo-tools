@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, utimesSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { assertPrunable, pruneRuns } from "../prune.ts";
@@ -79,6 +79,19 @@ describe("pruneRuns", () => {
     const { removed } = pruneRuns(now);
     expect(removed).toEqual([join(dir, "alpha", "stale-running")]);
     expect(existsSync(join(dir, "alpha", "stale-running"))).toBe(false);
+  });
+
+  test("a stale regular file inside a repo dir is not mistaken for a run and survives pruning", () => {
+    const dir = root();
+    const now = Date.now();
+    seedRun(dir, "alpha", "kept-run", now);
+    const strayFile = join(dir, "alpha", "stray-file");
+    writeFileSync(strayFile, "not a run dir");
+    const oldTime = new Date(now - 40 * DAY);
+    utimesSync(strayFile, oldTime, oldTime);
+    const { removed } = pruneRuns(now);
+    expect(removed).toEqual([]);
+    expect(existsSync(strayFile)).toBe(true);
   });
 
   test("the guard refuses anything that is not <runsRoot>/<repo>/<runId>", () => {

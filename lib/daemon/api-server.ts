@@ -156,11 +156,18 @@ export function startApiServer(deps: ApiServerDeps): Server<any> {
 
         // Runs detail: /api/runs/:repo/:runId
         if (url.pathname.startsWith("/api/runs/") && req.method === "GET") {
-          const rest = decodeURIComponent(url.pathname.slice("/api/runs/".length));
-          const slash = rest.indexOf("/");
-          if (slash > 0 && slash < rest.length - 1) {
-            const result = await handleCommand("runs:get", { repo: rest.slice(0, slash), runId: rest.slice(slash + 1) }, req.signal);
-            return Response.json(result, { headers: corsHeaders });
+          let rest: string | undefined;
+          try {
+            rest = decodeURIComponent(url.pathname.slice("/api/runs/".length));
+          } catch {
+            rest = undefined; // malformed %-encoding -> fall through to the 404 path below
+          }
+          if (rest !== undefined) {
+            const slash = rest.indexOf("/");
+            if (slash > 0 && slash < rest.length - 1) {
+              const result = await handleCommand("runs:get", { repo: rest.slice(0, slash), runId: rest.slice(slash + 1) }, req.signal);
+              return Response.json(result, { headers: corsHeaders });
+            }
           }
         }
 
