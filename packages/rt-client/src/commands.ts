@@ -58,6 +58,14 @@ export interface ForgeTokenData {
  */
 export interface EventsBusEvent { id: number; topic: string; payload: unknown; emittedAt: number }
 
+// SKILLS-53: one judgment, computed once in rt, so the console and the tray
+// never derive two verdicts that can disagree.
+export type Attention = {
+  needs: boolean;
+  reason: "failed" | "stale" | "stranded" | null;
+  evidence: string;
+};
+
 export interface RunSummary {
   id: string; repo: string; work_type: string; pipeline: string;
   status: string; current_stage: string | null; spawned_by: string | null;
@@ -65,6 +73,7 @@ export interface RunSummary {
   // v2. Null on runs written before schema v2; pack_dirty means the pack tree
   // had uncommitted changes, so the as-run text may exist in no commit.
   pack_commits: string | null; pack_dirty: number;
+  attention: Attention;
 }
 export interface RunStageRow {
   name: string; status: string; attempt: number;
