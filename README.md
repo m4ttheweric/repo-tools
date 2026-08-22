@@ -211,13 +211,37 @@ While the daemon is running, it watches that repo and auto-commits (and
 pushes) everything in it except paths inside a claimed zone — you never run
 `git add`/`git commit` there yourself for ordinary changes.
 
+`rt home init` does three things in order, every time it runs (idempotent —
+safe on a fresh machine or an already-provisioned one): clone/provision the
+`user/` repo and this machine's `user/local/<key>/` profile (picking one
+interactively on a fresh, keyless machine, or via `--profile`/`--new-profile`);
+ensure the age key exists and `.sops.yaml` matches it; then **materialize** —
+regenerate everything re-derivable from settings, as its last phase. That's rt's
+own PATH shims (`rt intercept install`) and daemon registration
+(`rt daemon install`, only when not already installed), then each
+locally-installed tool's own setup verb (`deck setup` when `deck` is on
+`PATH` and NOT already healthy — `deck setup` re-bootstraps deck under
+launchd, restarting the live proxy and blipping every `*.localhost` app, so
+an already-healthy deck is reported as skipped instead of re-run). A tracked
+repo (`rt.repoTracking`) not present on disk is reported by
+name, never cloned. `mr-board`'s setup is interactive (GitLab token, Slack
+OAuth) — materialize only prints the command to run by hand, never runs it.
+A missing tool is silently skipped, not a failure; only an rt-owned step
+failing exits `rt home init` non-zero. Pass `--no-materialize` to skip this
+phase entirely. Separately, if `claude.marketplaces`/`claude.plugins` resolve
+to a value, `rt home init` prints a pointer to the mattstack installer, which
+owns replaying them — init never does that itself.
+
 ```bash
-rt home init                                       # Provision this machine's ~/.mattstack tree
-rt home snapshot                                   # Run the auto-commit cycle right now (reason: manual)
-rt home snapshot --status                          # Show daemon state: enabled, last run/commit, push state, claimed zones
-rt home claim <zone> [--owner] [--note] [--force]   # Tell the daemon to stop auto-committing a path
-rt home release <zone>                              # Let the daemon resume auto-committing a path
-rt home key export                                  # Print the age private key once, for your password manager
+rt home init                                        # Provision this machine's ~/.mattstack tree (+ materialize)
+rt home init --no-materialize                       # Provision only — skip the last (materialize) phase
+rt home init --profile <key> [--new-profile]        # Fresh/keyless machine: adopt (or start) a machine profile without the interactive picker
+rt home snapshot                                    # Run the auto-commit cycle right now (reason: manual)
+rt home snapshot --status                           # Show daemon state: enabled, last run/commit, push state, claimed zones
+rt home claim <zone> [--owner] [--note] [--force]    # Tell the daemon to stop auto-committing a path
+rt home release <zone>                               # Let the daemon resume auto-committing a path
+rt home key export                                   # Print the age private key once, for your password manager
+rt home key import [--stdin] [--force]               # Bring an external age key into the keychain
 ```
 
 A **zone** is a path relative to `~/.mattstack/user`, and is either a

@@ -728,6 +728,26 @@ export const TREE: Record<string, CommandNode> = {
             type: "text",
             hint: "The user repo to clone (default: https://github.com/m4ttheweric/mattstack-home)",
           },
+          {
+            name: "Profile",
+            flag: "--profile",
+            type: "text",
+            hint: "Adopt this machine profile (user/local/<key>/); combine with --new-profile to create a new one under this name — skips the interactive picker on a fresh machine",
+          },
+          {
+            name: "New profile",
+            flag: "--new-profile",
+            type: "boolean",
+            default: false,
+            hint: "Start a new machine profile (named by --profile, or this machine's hostname slug) instead of adopting an existing one",
+          },
+          {
+            name: "No materialize",
+            flag: "--no-materialize",
+            type: "boolean",
+            default: false,
+            hint: "Skip the last phase — regenerating rt's PATH shims/daemon registration and each installed tool's setup verb",
+          },
         ],
       },
       key: {
@@ -738,6 +758,15 @@ export const TREE: Record<string, CommandNode> = {
             module: "./commands/home.ts",
             fn: "homeKeyExport",
             args: [],
+          },
+          import: {
+            description: "Import an age private key into the keychain (from your password manager)",
+            module: "./commands/home.ts",
+            fn: "homeKeyImport",
+            args: [
+              { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the private key from stdin instead of a no-echo prompt (scripting)" },
+              { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Overwrite a key already in the keychain" },
+            ],
           },
         },
       },
