@@ -10,6 +10,7 @@
  */
 
 import type { CommandContext } from "../lib/command-tree.ts";
+import { flagValues } from "../lib/cli-args.ts";
 import { envelope } from "../lib/setup/contract.ts";
 import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
 import { readIntent, teamRefFromIntent } from "../lib/setup/intent.ts";
@@ -20,14 +21,6 @@ import { listTeams } from "../lib/settings/stores.ts";
 
 function tool(args: string[]): string | undefined {
   return args.find((a) => !a.startsWith("--"));
-}
-
-function flagValues(args: string[], flag: string): string[] {
-  const values: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === flag && args[i + 1] !== undefined) values.push(args[i + 1]!);
-  }
-  return values;
 }
 
 /** Mirrors composePlan's own team resolution (readIntent → teamRefFromIntent) so a team-declared brew formula/vendor URL is found the same way the plan row that offered this Install action found it. No joined team is not an error — plenty of tools (herdr, claude, apple-clt) need no reqs at all. */
