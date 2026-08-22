@@ -120,8 +120,6 @@ export interface Commands {
   "events:emit": { payload: { topic: string; payload?: unknown }; data: { id: number } };
   "events:wait": { payload: { pattern: string; after?: number; waitMs?: number }; data: { events: EventsBusEvent[]; cursor: number } };
   "events:list": { payload: { pattern: string; after?: number; limit?: number }; data: { events: EventsBusEvent[]; cursor: number } };
-  "runs:list": { payload: { repo?: string }; data: { runs: RunSummary[] } };
-  "runs:get":  { payload: { runId: string; repo?: string }; data: RunDetail };
 }
 
 export type CommandName = keyof Commands;
@@ -135,6 +133,4 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "events:emit",
   "events:wait",
   "events:list",
-  "runs:list",
-  "runs:get",
 ];
