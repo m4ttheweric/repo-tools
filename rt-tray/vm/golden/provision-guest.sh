@@ -7,24 +7,27 @@ TESTER=tester
 
 say() { printf '  [guest] %s\n' "$*"; }
 
-# 1. No Apple command line tools (the vanilla templates install them).
-if [ -d /Library/Developer/CommandLineTools ]; then
-  sudo rm -rf /Library/Developer/CommandLineTools
-  sudo pkgutil --forget com.apple.pkg.CLTools_Executables 2>/dev/null || true
-  say "removed CommandLineTools"
+# SKIP_CLEANROOM=1 is the xcuitest flavour (see lib/common.sh vm_golden_name/vm_image_for).
+if [ "${SKIP_CLEANROOM:-0}" != 1 ]; then
+  # 1. No Apple command line tools (the vanilla templates install them).
+  if [ -d /Library/Developer/CommandLineTools ]; then
+    sudo rm -rf /Library/Developer/CommandLineTools
+    sudo pkgutil --forget com.apple.pkg.CLTools_Executables 2>/dev/null || true
+    say "removed CommandLineTools"
+  fi
+  if xcode-select -p >/dev/null 2>&1; then echo "CLT still present" >&2; exit 1; fi
+
+  # 2. No Homebrew.
+  for d in /opt/homebrew /usr/local/Homebrew; do
+    [ -d "$d" ] && { sudo rm -rf "$d"; say "removed $d"; }
+  done
+  command -v brew >/dev/null 2>&1 && { echo "brew still on PATH" >&2; exit 1; }
+  sed -i '' '/brew shellenv/d' ~/.zprofile 2>/dev/null || true
+
+  # 3. Gatekeeper back ON (vanilla images disable it).
+  sudo spctl --global-enable 2>/dev/null || true
+  spctl --status | grep -q 'assessments enabled' || { echo "Gatekeeper still disabled" >&2; exit 1; }
 fi
-if xcode-select -p >/dev/null 2>&1; then echo "CLT still present" >&2; exit 1; fi
-
-# 2. No Homebrew.
-for d in /opt/homebrew /usr/local/Homebrew; do
-  [ -d "$d" ] && { sudo rm -rf "$d"; say "removed $d"; }
-done
-command -v brew >/dev/null 2>&1 && { echo "brew still on PATH" >&2; exit 1; }
-sed -i '' '/brew shellenv/d' ~/.zprofile 2>/dev/null || true
-
-# 3. Gatekeeper back ON (vanilla images disable it).
-sudo spctl --global-enable 2>/dev/null || true
-spctl --status | grep -q 'assessments enabled' || { echo "Gatekeeper still disabled" >&2; exit 1; }
 
 # 4. Standard user 'tester' = the console/auto-login user the walkthrough drives.
 if ! id "$TESTER" >/dev/null 2>&1; then
@@ -66,6 +69,7 @@ sudo -u "$TESTER" defaults write NSGlobalDomain AppleKeyboardUIMode -int 3
 # screenLock off must run in the user's session; done post-login by build-golden via ssh-as-tester.
 
 # 6. Marker.
-printf '{ "ver": "%s", "builtAt": "%s", "provisionRev": 1, "consoleUser": "%s" }\n' \
-  "$VER" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TESTER" | sudo tee /Users/Shared/mattstack-golden.json >/dev/null
+FLAVOUR=cleanroom; [ "${SKIP_CLEANROOM:-0}" = 1 ] && FLAVOUR=xcuitest
+printf '{ "ver": "%s", "builtAt": "%s", "provisionRev": 2, "consoleUser": "%s", "flavour": "%s" }\n' \
+  "$VER" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TESTER" "$FLAVOUR" | sudo tee /Users/Shared/mattstack-golden.json >/dev/null
 say "provisioned (ver $VER)"

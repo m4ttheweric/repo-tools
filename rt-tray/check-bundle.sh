@@ -1,9 +1,8 @@
 #!/bin/bash
 # rt-tray/check-bundle.sh — asserts the mattstack.app bundle contract for BOTH
 # flavors. Builds them via build.sh (no notarization; that is CI-only), then
-# checks identity, layout, signing, and the dev shim's exit codes (Helpers and
-# Sparkle assertions land in later tasks). Exit 0 only when every assertion
-# passes.
+# checks identity, layout, signing, Helpers (deps.lock), Sparkle, and the dev
+# shim's exit codes. Exit 0 only when every assertion passes.
 #
 # Usage:
 #   RT_DAEMON_BIN=../dist/rt ./check-bundle.sh     # embed a compiled rt (a
@@ -140,15 +139,32 @@ PROD_RT_SIZE=$(stat -f%z "$PROD/Contents/MacOS/rt" 2>/dev/null || echo 0)
 if [ "$PROD_RT_SIZE" -gt 1000000 ]; then pass "prod rt looks compiled ($PROD_RT_SIZE bytes)"; else echo "  ⚠ prod rt is $PROD_RT_SIZE bytes — pass RT_DAEMON_BIN=<compiled rt> for a meaningful check"; fi
 
 # ─── Signing: every Mach-O signed, hardened runtime when Developer ID, jit-only entitlements ───
-sign_flags() { codesign -dvv "$1" 2>&1 | grep -E '^(flags|Authority)=' | head -2 | tr '\n' ' '; }
-has_runtime() { codesign -dvv "$1" 2>&1 | grep -q 'flags=.*runtime'; }
-is_devid() { codesign -dvv "$1" 2>&1 | grep -q 'Authority=Developer ID Application'; }
-ent_has() { codesign -d --entitlements - --xml "$1" 2>/dev/null | grep -q "$2"; }
+# `flags=` sits mid-line inside the CodeDirectory record (not line-anchored
+# like `Authority=`), so it needs -o extraction rather than a `^` anchor.
+sign_flags() { codesign -dvv "$1" 2>&1 | grep -oE '(^Authority=.*|flags=[^ ]+)' | head -2 | tr '\n' ' '; }
+# Piping codesign straight into `grep -q` is a pipefail trap: grep exits on
+# its first match while codesign is still writing later lines, so codesign
+# dies of SIGPIPE and pipefail reports the whole pipeline as failed even
+# though the pattern WAS found. Capture full output first, then match on the
+# captured string (a here-string, not a pipe, so there is no producer left
+# for a second grep to SIGPIPE) so nothing is still writing when the match
+# happens.
+has_runtime() { local out; out="$(codesign -dvv "$1" 2>&1)"; grep -q 'flags=.*runtime' <<< "$out"; }
+is_devid() { local out; out="$(codesign -dvv "$1" 2>&1)"; [[ "$out" == *"Authority=Developer ID Application"* ]]; }
+ent_has() { local out; out="$(codesign -d --entitlements - --xml "$1" 2>/dev/null)"; grep -q "$2" <<< "$out"; }
+SKIPPED_RUNTIME=0
+assert_hardened_runtime() { # path label
+    if is_devid "$1"; then
+        has_runtime "$1" && pass "$2 has hardened runtime" || fail "$2 lacks hardened runtime ($(sign_flags "$1"))"
+    else
+        SKIPPED_RUNTIME=$((SKIPPED_RUNTIME + 1))
+    fi
+}
 check_signed() { # path label want-ent(none|jit)
     local p="$1" label="$2" want="$3"
     [ -f "$p" ] || { fail "$label missing at $p"; return; }
     codesign --verify --strict "$p" 2>/dev/null && pass "$label signature verifies" || fail "$label signature does not verify"
-    if is_devid "$p"; then has_runtime "$p" && pass "$label has hardened runtime" || fail "$label lacks hardened runtime ($(sign_flags "$p"))"; fi
+    assert_hardened_runtime "$p" "$label"
     if ent_has "$p" 'allow-jit'; then [ "$want" = jit ] && pass "$label has allow-jit" || fail "$label unexpectedly has allow-jit"; else [ "$want" = none ] && pass "$label has no jit entitlement" || fail "$label missing allow-jit"; fi
     ent_has "$p" 'allow-unsigned-executable-memory' && fail "$label carries allow-unsigned-executable-memory (JIT-only entitlements only)" || pass "$label has no allow-unsigned-executable-memory"
 }
@@ -159,7 +175,17 @@ for app in "${APPS[@]}"; do
     if [ ! -f "$app/Contents/Info.plist" ]; then fail "Info.plist missing, cannot determine executable name for signing checks ($app)"; continue; fi
     exe="$(plist "$app/Contents/Info.plist" CFBundleExecutable)"
     if [ -z "$exe" ]; then fail "CFBundleExecutable unreadable from $app/Contents/Info.plist, skipping signing checks"; continue; fi
-    codesign --verify --deep --strict "$app" 2>/dev/null && pass "$exe bundle verifies (--deep --strict)" || fail "$exe bundle fails codesign --verify --deep --strict"
+    # build.sh itself only ever runs --strict (never --deep, which would
+    # corrupt the nested Sparkle XPC signatures), so this is the only place
+    # the full inside-out signature chain is proven. Any stderr output
+    # counts as a failure even at rc 0 — codesign can print a warning and
+    # still exit clean.
+    DEEP_VERIFY_OUT="$(codesign --verify --deep --strict "$app" 2>&1)"; DEEP_VERIFY_RC=$?
+    if [ "$DEEP_VERIFY_RC" -eq 0 ] && [ -z "$DEEP_VERIFY_OUT" ]; then
+        pass "$exe bundle deep-verifies clean (--deep --strict, no output)"
+    else
+        fail "$exe bundle deep-verify failed (rc=$DEEP_VERIFY_RC): ${DEEP_VERIFY_OUT:-<no output>}"
+    fi
     check_signed "$app/Contents/MacOS/rt" "$exe rt" jit
     check_signed "$app/Contents/MacOS/$exe" "$exe tray" none
     # Inner/outer identity must match (no nested ad-hoc inside a Developer ID
@@ -174,6 +200,16 @@ for app in "${APPS[@]}"; do
     fi
 done
 
+# ─── MattstackCore.framework (xcodebuild path only — swift build never embeds it) ───
+check_core_framework() { # app
+    local app="$1" exe fw; exe="$(plist "$app/Contents/Info.plist" CFBundleExecutable)"; fw="$app/Contents/Frameworks/MattstackCore.framework"
+    [ -d "$fw" ] || { echo "  · $exe: MattstackCore.framework absent (swift-build path, not xcodebuild)"; return; }
+    codesign --verify --strict "$fw" 2>/dev/null && pass "$exe MattstackCore.framework signature verifies" || fail "$exe MattstackCore.framework signature does not verify"
+    assert_hardened_runtime "$fw" "$exe MattstackCore.framework"
+}
+check_core_framework "$PROD"
+[ -n "$DEV" ] && check_core_framework "$DEV"
+
 # ─── Icons ──────────────────────────────────────────────────────────────────
 [ -f "$PROD/Contents/Resources/AppIcon.icns" ] && pass "prod ships AppIcon.icns" || fail "prod missing AppIcon.icns"
 if [ -n "$DEV" ]; then
@@ -181,8 +217,122 @@ if [ -n "$DEV" ]; then
     cmp -s "$PROD/Contents/Resources/AppIcon.icns" "$DEV/Contents/Resources/AppIcon.icns" && fail "prod/dev icons identical (dev tint missing)" || pass "prod/dev icons differ"
 fi
 
-# ═══ Helpers (deps.lock) — not yet asserted ══════════════════════════════════
-# ═══ Sparkle — not yet asserted ══════════════════════════════════════════════
+# ═══ Helpers (deps.lock) ═══
+# bash `read` collapses runs of an IFS-whitespace delimiter (tab included)
+# even when IFS is set to only tab, which would drop deps.lock's empty
+# pending-row fields and shift later columns left. Split by hand instead.
+# Kept in sync by hand with the identical copies in scripts/fetch-deps.sh and
+# rt-tray/build.sh.
+split_tsv() {
+    local rest="$1" field
+    FIELDS=()
+    while [[ "$rest" == *$'\t'* ]]; do
+        field="${rest%%$'\t'*}"
+        FIELDS+=("$field")
+        rest="${rest#*$'\t'}"
+    done
+    FIELDS+=("$rest")
+}
+# Under `set -uo pipefail` (no -e), a failed assignment's exit status is
+# discarded — an emitter crash (bun off PATH, malformed lock) would leave
+# LOCK_TSV empty, check_helpers' `while … <<< "$LOCK_TSV"` would iterate zero
+# rows, and every per-helper assertion would vanish while the script still
+# reports 0 failed. Fail loudly instead of iterating nothing.
+LOCK_TSV="$(bun "$SCRIPT_DIR/../scripts/lib/deps-lock.ts" --kind helper)" \
+    || { fail "deps-lock emitter failed — Helpers assertions cannot run"; LOCK_TSV=""; }
+[ -n "$LOCK_TSV" ] || fail "deps-lock emitter produced no helper rows"
+check_helpers() { # app
+    local app="$1" exe; exe="$(plist "$app/Contents/Info.plist" CFBundleExecutable)"
+    if [ ! -d "$SCRIPT_DIR/deps/arm64" ] && ! $INSTALLED_ONLY; then echo "  ⚠ $exe: rt-tray/deps/arm64 absent — Helpers assertions skipped (scripts/fetch-deps.sh arm64)"; return; fi
+    cmp -s "$SCRIPT_DIR/deps.lock" "$app/Contents/Resources/deps.lock" && pass "$exe Resources/deps.lock matches rt-tray/deps.lock" || fail "$exe Resources/deps.lock missing or stale"
+    if find "$app" -name '*.sha256' -print -quit 2>/dev/null | grep -q .; then
+        fail "$exe bundle contains .sha256 stamp files (deps/arm64 fetch stamps must never be copied in)"
+    else
+        pass "$exe bundle carries no .sha256 stamp files"
+    fi
+    local row name bundlePath ent status p
+    while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        split_tsv "$row"
+        name="${FIELDS[0]}"; bundlePath="${FIELDS[6]}"; ent="${FIELDS[7]}"; status="${FIELDS[8]}"
+        p="$app/$bundlePath"
+        if [ "$status" = pending ]; then
+            [ -e "$p" ] && fail "$exe ships $name although deps.lock says pending" || pass "$exe: $name absent (pending per deps.lock)"
+            continue
+        fi
+        [ -e "$p" ] || { fail "$exe missing Helpers/$name at $bundlePath"; continue; }
+        pass "$exe ships Helpers/$name"
+        while IFS= read -r -d '' f; do
+            file -b "$f" | grep -q "Mach-O" || continue
+            check_signed "$f" "$exe Helpers/$name/$(basename "$f")" "$ent"
+            assert_eq "$exe $name identifier" "Identifier=com.mattstack.helper.$(basename "$f")" "$(codesign -dv "$f" 2>&1 | grep '^Identifier=' || true)"
+        done < <(find "$p" -type f -print0)
+    done <<< "$LOCK_TSV"
+    # Every bundled helper answers --version from inside the bundle (signed, entitled).
+    [ -x "$app/Contents/Helpers/fzf" ] && "$app/Contents/Helpers/fzf" --version >/dev/null 2>&1 && pass "$exe Helpers/fzf runs" || fail "$exe Helpers/fzf does not run"
+    [ -x "$app/Contents/Helpers/jq" ] && "$app/Contents/Helpers/jq" --version >/dev/null 2>&1 && pass "$exe Helpers/jq runs" || fail "$exe Helpers/jq does not run"
+    [ -x "$app/Contents/Helpers/bun" ] && "$app/Contents/Helpers/bun" --version >/dev/null 2>&1 && pass "$exe Helpers/bun runs (jit entitlement sufficient)" || fail "$exe Helpers/bun does not run under its entitlements"
+    [ -x "$app/Contents/Helpers/node/bin/node" ] && "$app/Contents/Helpers/node/bin/node" -e 'process.exit(0)' >/dev/null 2>&1 && pass "$exe Helpers/node runs" || fail "$exe Helpers/node does not run under its entitlements"
+    [ -f "$app/Contents/Helpers/fast-browser/bin/fast-browser.mjs" ] && pass "$exe Helpers/fast-browser package present" || fail "$exe Helpers/fast-browser package missing"
+}
+check_helpers "$PROD"
+[ -n "$DEV" ] && check_helpers "$DEV"
+# Agent PATH is the static system set (asserted per plist in check_identity); services never
+# capture a shell PATH and never bake in an install location — rt/deck prepend their own Helpers dir.
+
+# ═══ Sparkle ═══
+check_sparkle() { # app
+    local app="$1" exe fw otool_L otool_l_rpath; exe="$(plist "$app/Contents/Info.plist" CFBundleExecutable)"; fw="$app/Contents/Frameworks/Sparkle.framework"
+    [ -d "$fw" ] || { fail "$exe missing Contents/Frameworks/Sparkle.framework"; return; }
+    pass "$exe ships Sparkle.framework"
+    # Capture-then-here-string, same as has_runtime/ent_has: piping otool
+    # straight into `grep -q` is the SIGPIPE-under-pipefail trap — grep can
+    # exit on its first match while otool is still writing, and pipefail
+    # reports the whole pipeline as failed even though the pattern matched.
+    otool_L="$(otool -L "$app/Contents/MacOS/$exe" 2>&1)"
+    grep -q '@rpath/Sparkle.framework' <<< "$otool_L" && pass "$exe tray links Sparkle via @rpath" || fail "$exe tray does not link Sparkle"
+    otool_l_rpath="$(otool -l "$app/Contents/MacOS/$exe" 2>&1 | grep -A2 LC_RPATH)"
+    grep -q '@executable_path/../Frameworks' <<< "$otool_l_rpath" && pass "$exe tray has the Frameworks rpath" || fail "$exe tray lacks the @executable_path/../Frameworks rpath"
+    codesign --verify --deep --strict "$fw" 2>/dev/null && pass "$exe Sparkle.framework verifies (inside-out signed)" || fail "$exe Sparkle.framework signature broken"
+    for xpc in Installer Downloader; do
+        codesign --verify --strict "$fw/Versions/B/XPCServices/$xpc.xpc" 2>/dev/null && pass "$exe $xpc.xpc verifies" || fail "$exe $xpc.xpc signature broken"
+    done
+    assert_eq "$exe Sparkle signing authority matches app" "$(codesign -dvv "$app" 2>&1 | grep '^Authority=' | head -1)" "$(codesign -dvv "$fw" 2>&1 | grep '^Authority=' | head -1)"
+    # Plist keys.
+    local info="$app/Contents/Info.plist"
+    if [ "$(plist "$info" MSDevBuild)" = "true" ]; then
+        assert_eq "$exe SUEnableAutomaticChecks (dev)" "false" "$(plist "$info" SUEnableAutomaticChecks)"
+    else
+        assert_eq "$exe SUFeedURL" "https://github.com/m4ttstack/rt/releases/latest/download/appcast.xml" "$(plist "$info" SUFeedURL)"
+        assert_eq "$exe SUEnableAutomaticChecks" "true" "$(plist "$info" SUEnableAutomaticChecks)"
+        assert_eq "$exe SUScheduledCheckInterval" "21600" "$(plist "$info" SUScheduledCheckInterval)"
+        assert_eq "$exe SUAutomaticallyUpdate" "true" "$(plist "$info" SUAutomaticallyUpdate)"
+        assert_eq "$exe SUVerifyUpdateBeforeExtraction" "true" "$(plist "$info" SUVerifyUpdateBeforeExtraction)"
+    fi
+    for k in SUEnableInstallerLauncherService SUEnableDownloaderService SUEnableInstallerConnectionService SUEnableInstallerStatusService; do
+        plist "$info" "$k" >/dev/null && fail "$exe sets $k (sandbox-only, must be absent)"
+    done
+    local key; key="$(plist "$info" SUPublicEDKey)"
+    if [ -n "${SPARKLE_PUBLIC_ED_KEY:-}" ]; then
+        assert_eq "$exe SUPublicEDKey (env override)" "$SPARKLE_PUBLIC_ED_KEY" "$key"
+    elif [ -f "$SCRIPT_DIR/SUPublicEDKey" ]; then
+        assert_eq "$exe SUPublicEDKey (committed file)" "$(tr -d '[:space:]' < "$SCRIPT_DIR/SUPublicEDKey")" "$key"
+    elif $INSTALLED_ONLY && [ "$(plist "$info" MSDevBuild)" != "true" ]; then
+        # --app mode asserts a shipped bundle, not a local dev build: a prod
+        # bundle whose key is missing or still the template placeholder can
+        # never verify a real Sparkle update, so this is a shipping defect
+        # and must fail the gate, not warn past it.
+        if [ -z "$key" ] || [ "$key" = "REPLACE_WITH_RELEASE_PUBLIC_ED_KEY" ]; then
+            fail "$exe SUPublicEDKey is missing or the template placeholder — shipped bundle cannot verify updates"
+        else
+            pass "$exe SUPublicEDKey is set (not the template placeholder)"
+        fi
+    else
+        echo "  ⚠ $exe: no Sparkle public key available to assert (rt-tray/SUPublicEDKey or SPARKLE_PUBLIC_ED_KEY)"
+    fi
+}
+check_sparkle "$PROD"
+[ -n "$DEV" ] && check_sparkle "$DEV"
 
 # ─── Dev shim exit-code contract ────────────────────────────────────────────
 if [ -n "$DEV" ]; then
@@ -250,6 +400,8 @@ if ! $INSTALLED_ONLY; then
     assert_bin_has "silent dev updater" "update check skipped (dev build)"
     rm -f "$TRAY_STRINGS"
 fi
+
+[ "$SKIPPED_RUNTIME" -gt 0 ] && echo "  · skip: $SKIPPED_RUNTIME hardened-runtime checks (not Developer ID signed)"
 
 echo ""
 echo "  $PASS passed, $FAIL failed"
