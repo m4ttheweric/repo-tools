@@ -566,9 +566,7 @@ describe("real seam spawn options — cwd pin", () => {
     expect(opts.env.SOPS_AGE_KEY).toBe("age-secret-key-test");
   });
 
-  // The locations refactor (MAT-383 task 13) adds an explicit cwd override
-  // for team-store's real seam — the personal-store default above must stay
-  // exactly as it was.
+  // team-store's real seam needs a different cwd; the personal-store default above must stay exactly as it was.
   test("an explicit opts.cwd overrides the <mattstackHome>/user default — team-store's own pin", () => {
     const opts = buildSecretsSpawnOptions({ cwd: "/tmp/some/team/clone" });
     expect(opts.cwd).toBe("/tmp/some/team/clone");

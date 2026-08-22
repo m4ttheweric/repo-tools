@@ -927,7 +927,7 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board) — omit with --team to re-encrypt every domain file instead" },
           { name: "Key", type: "text", placeholder: "gitlabToken", hint: "Key name within the domain — omit with --team to re-encrypt every domain file instead" },
           { name: "Team", flag: "--team", type: "text", placeholder: "claimview", hint: "Rotate in this team's N-recipient store instead of your personal one" },
-          { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the new value from stdin instead of a no-echo prompt (scripting)" },
+          { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the new value from stdin instead of a no-echo prompt (scripting) — ignored by --team with no domain/key, which re-encrypts instead of taking a value" },
         ],
       },
     },

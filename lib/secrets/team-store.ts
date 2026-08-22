@@ -16,12 +16,21 @@
  * machine yet throws the same `NoAgeKeyError` a personal write would
  * (`sopsAgeKeyEnv`, inside `writeAtLocation`) — callers (commands/setup.ts's
  * `realTeamSecrets`) already know to catch that and fall back to staging.
+ * `reencryptTeamSecrets` (`sops updatekeys`) needs that same identity for
+ * the same reason and resolves it through the exact same `sopsAgeKeyEnv`
+ * helper — never a second, divergent env-resolution path.
  *
  * No per-process memo here (unlike the personal store's `domainMemo`): team
  * membership changes underfoot more than a single personal domain does (a
  * `rt team members sync` re-encrypting every file), and this store is read
  * far less often than it's written, so the simpler always-fresh read isn't
  * worth the staleness-tracking complexity.
+ *
+ * `writeTeamRecipients` owns `.sops.yaml` entirely: it always renders
+ * exactly one creation rule (`mattstack/secrets/.*`) and refuses outright
+ * (`TeamSopsYamlHandEditedError`) rather than collapsing a file that already
+ * has more than one rule — a hand-edited `.sops.yaml` is out of scope for
+ * this store, not something it silently overwrites.
  */
 
 import { join } from "path";
@@ -30,6 +39,7 @@ import { teamsDir } from "../rt-paths.ts";
 import {
   createRealSecretsExecSeam,
   decryptAtLocation,
+  sopsAgeKeyEnv,
   validateDomain,
   validateKey,
   validateSlug,
@@ -43,6 +53,45 @@ import {
 export class NoTeamRecipientsError extends Error {
   constructor(slug: string) {
     super(`team "${slug}" has no recipients yet — run \`rt team members sync\``);
+  }
+}
+
+/** Thrown by `writeTeamRecipients` (and so `addTeamRecipient`/`removeTeamRecipient`) when the team has no local clone yet — never silently `mkdir` a team directory out of a typo'd slug. */
+export class NoTeamCloneError extends Error {
+  constructor(slug: string) {
+    super(`team "${slug}" has no local clone at ${teamCloneRoot(slug)} — clone it first`);
+  }
+}
+
+/** Thrown by `writeTeamRecipients` when the existing `.sops.yaml` already has more than one creation rule — this store only ever renders/owns the single `mattstack/secrets/.*` rule; a hand-edited file with other rules would be silently collapsed to just that one if this store rewrote it wholesale. */
+export class TeamSopsYamlHandEditedError extends Error {
+  constructor(slug: string) {
+    super(
+      `team "${slug}"'s .sops.yaml has more than one creation rule — this store only manages its own single ` +
+        `"mattstack/secrets/.*" rule; edit recipients by hand instead of through rt.`,
+    );
+  }
+}
+
+/**
+ * Thrown by `reencryptTeamSecrets` when `sops updatekeys` fails partway
+ * through a team's domain files. `completed`/`remaining` carry which files
+ * are already on the new recipient set and which are still on the old one
+ * — the message renders both lists so a half-rotated team is loudly
+ * described, never just "it failed somewhere".
+ */
+export class TeamReencryptError extends Error {
+  constructor(
+    public readonly slug: string,
+    public readonly completed: string[],
+    public readonly remaining: string[],
+    causeMessage: string,
+  ) {
+    super(
+      `team "${slug}": sops updatekeys failed after re-encrypting ${completed.length} of ${completed.length + remaining.length} file(s) — ${causeMessage}\n` +
+        `  re-encrypted (on the NEW recipients): ${completed.length ? completed.join(", ") : "(none)"}\n` +
+        `  NOT re-encrypted (still on the OLD recipients): ${remaining.length ? remaining.join(", ") : "(none)"}`,
+    );
   }
 }
 
@@ -94,6 +143,11 @@ export function createRealTeamSecretsSeams(slug: string): SecretsSeams {
   return { ageKeySeam: createRealAgeKeySeam(), execSeam };
 }
 
+/** How many `path_regex:` creation rules a `.sops.yaml` body declares — this store only ever renders one. */
+function ruleCount(content: string): number {
+  return (content.match(/^\s*-\s*path_regex:/gm) ?? []).length;
+}
+
 /**
  * Parses a `.sops.yaml`'s `age:` recipient value — a single line
  * (`age: key1,key2`, what `writeTeamRecipients` always renders) or a
@@ -118,10 +172,27 @@ export function readTeamRecipients(slug: string, seams: SecretsSeams): string[] 
   return parseAgeRecipients(seams.execSeam.readFile(path));
 }
 
-/** Renders and writes `.sops.yaml` with exactly `recipients` (sorted, deduped) as the `mattstack/secrets/.*` rule's recipients. */
+/**
+ * Renders and writes `.sops.yaml` with exactly `recipients` (sorted,
+ * deduped) as the `mattstack/secrets/.*` rule's recipients. Refuses to run
+ * against a team with no local clone (`NoTeamCloneError`) — the real seam's
+ * `writeFile` would otherwise happily `mkdir -p` a fresh `teams/<slug>/`
+ * directory out of a typo'd slug — and refuses a `.sops.yaml` that already
+ * carries more than one creation rule (`TeamSopsYamlHandEditedError`)
+ * rather than silently collapsing it to just this store's own rule.
+ */
 export function writeTeamRecipients(slug: string, recipients: string[], seams: SecretsSeams): void {
+  const root = teamCloneRoot(slug);
+  if (!seams.execSeam.fileExists(root)) throw new NoTeamCloneError(slug);
+
+  const path = teamSopsYamlPath(slug);
+  if (seams.execSeam.fileExists(path)) {
+    const existing = seams.execSeam.readFile(path);
+    if (ruleCount(existing) > 1) throw new TeamSopsYamlHandEditedError(slug);
+  }
+
   const unique = [...new Set(recipients)].sort();
-  seams.execSeam.writeFile(teamSopsYamlPath(slug), renderSopsYamlFor(TEAM_PATH_REGEX, unique));
+  seams.execSeam.writeFile(path, renderSopsYamlFor(TEAM_PATH_REGEX, unique));
 }
 
 export async function readTeamSecret(slug: string, domain: string, key: string, seams: SecretsSeams): Promise<string | null> {
@@ -162,18 +233,27 @@ function listTeamDomainFiles(slug: string, seams: SecretsSeams): string[] {
  * plaintext they already decrypted before removal — this only stops them
  * from decrypting the file going forward, it can't retroactively revoke
  * what they already read. Callers should say so in their own output.
+ *
+ * `SOPS_AGE_KEY` is resolved via the same `sopsAgeKeyEnv` helper every
+ * decrypt in `store.ts` uses — `updatekeys` decrypts each file's existing
+ * data key exactly like a `sops -d` does, and rt never writes an age
+ * `keys.txt`, so a call with no env at all fails on a real machine (sops
+ * exits 128, "failed to load age identities").
  */
 export async function reencryptTeamSecrets(slug: string, seams: SecretsSeams): Promise<string[]> {
   const files = listTeamDomainFiles(slug, seams);
-  const reencrypted: string[] = [];
+  if (files.length === 0) return [];
+
+  const env = await sopsAgeKeyEnv(seams.ageKeySeam);
+  const completed: string[] = [];
   for (const file of files) {
-    const result = await seams.execSeam.run(["sops", "updatekeys", "-y", file], { sensitive: true });
+    const result = await seams.execSeam.run(["sops", "updatekeys", "-y", file], { env, sensitive: true });
     if (result.code !== 0) {
-      throw new Error(`sops updatekeys -y ${file}: ${result.stderr}`);
+      throw new TeamReencryptError(slug, completed, files.slice(completed.length), `sops updatekeys -y ${file}: ${result.stderr}`);
     }
-    reencrypted.push(file);
+    completed.push(file);
   }
-  return reencrypted;
+  return completed;
 }
 
 export async function addTeamRecipient(slug: string, publicKey: string, seams: SecretsSeams): Promise<{ added: boolean; reencrypted: string[] }> {
@@ -181,8 +261,20 @@ export async function addTeamRecipient(slug: string, publicKey: string, seams: S
   if (current.includes(publicKey)) return { added: false, reencrypted: [] };
 
   writeTeamRecipients(slug, [...current, publicKey], seams);
-  const reencrypted = await reencryptTeamSecrets(slug, seams);
-  return { added: true, reencrypted };
+  try {
+    const reencrypted = await reencryptTeamSecrets(slug, seams);
+    return { added: true, reencrypted };
+  } catch (err) {
+    // sops requires the recipients on disk to match what every file is
+    // actually encrypted to — a half-applied .sops.yaml (new recipient
+    // named, no file re-encrypted to them yet) is a worse state than the
+    // one before this call, so roll it back rather than leave it standing.
+    writeTeamRecipients(slug, current, seams);
+    throw new Error(
+      `rt secrets: added ${publicKey} to team "${slug}" but re-encryption failed, so .sops.yaml was rolled back to its ` +
+        `previous ${current.length} recipient(s) — ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 export async function removeTeamRecipient(slug: string, publicKey: string, seams: SecretsSeams): Promise<{ removed: boolean; reencrypted: string[] }> {
@@ -190,6 +282,19 @@ export async function removeTeamRecipient(slug: string, publicKey: string, seams
   if (!current.includes(publicKey)) return { removed: false, reencrypted: [] };
 
   writeTeamRecipients(slug, current.filter((k) => k !== publicKey), seams);
-  const reencrypted = await reencryptTeamSecrets(slug, seams);
-  return { removed: true, reencrypted };
+  try {
+    const reencrypted = await reencryptTeamSecrets(slug, seams);
+    return { removed: true, reencrypted };
+  } catch (err) {
+    // Security-relevant rollback: until re-encryption actually succeeds,
+    // `publicKey` can still decrypt every domain file (its wrapped data key
+    // is still IN each file) regardless of what .sops.yaml says — so a
+    // rolled-back .sops.yaml here is telling the truth, not hiding it.
+    writeTeamRecipients(slug, current, seams);
+    throw new Error(
+      `rt secrets: removed ${publicKey} from team "${slug}" but re-encryption failed, so .sops.yaml was rolled back — ` +
+        `${publicKey} is STILL a recipient and can still decrypt every domain file until rotation succeeds — ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }

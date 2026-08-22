@@ -150,7 +150,7 @@ describe("setupSlackCreateApp", () => {
     const writeSettingCalls: unknown[][] = [];
     const deps = createAppDeps({
       fetch: async (url) => (url === "https://slack.com/api/apps.manifest.create" ? MANIFEST_CREATE_OK : { status: 0, body: "", headers: {} }),
-      teamSecretsWrite: async () => ({ staged: true }),
+      teamSecretsWrite: async () => ({ staged: true, reason: "no-age-key" }),
       writeSetting: (key, value, scope, opts) => {
         writeSettingCalls.push([key, value, scope, opts]);
       },
@@ -161,7 +161,31 @@ describe("setupSlackCreateApp", () => {
     expect(writeSettingCalls).toHaveLength(1);
     const body = JSON.parse(deps.lines[0]!) as { status: string; detail: string };
     expect(body.status).toBe("ready");
-    expect(body.detail).toContain("staged");
+    expect(body.detail).toBe("Slack app created — team secrets staged until the age key exists");
+  });
+
+  // A zero-recipient team (exactly what a freshly-scaffolded team's
+  // .sops.yaml looks like before anyone syncs members) must route through
+  // the SAME staging fallback as no-age-key, never a hard exit-2 — the
+  // Slack app has already been created remotely by this point in the verb,
+  // so throwing here would orphan it with an unrecoverable client secret.
+  test("zero team recipients: team secrets stage instead of throwing (never exit-2 after the app already exists remotely), detail names the real reason", async () => {
+    const writeSettingCalls: unknown[][] = [];
+    const deps = createAppDeps({
+      fetch: async (url) => (url === "https://slack.com/api/apps.manifest.create" ? MANIFEST_CREATE_OK : { status: 0, body: "", headers: {} }),
+      teamSecretsWrite: async () => ({ staged: true, reason: "no-recipients" }),
+      writeSetting: (key, value, scope, opts) => {
+        writeSettingCalls.push([key, value, scope, opts]);
+      },
+    });
+
+    await setupSlackCreateApp(["--json"], {}, deps);
+
+    // The settings write (and so the whole verb) still completes — no exit(2).
+    expect(writeSettingCalls).toHaveLength(1);
+    const body = JSON.parse(deps.lines[0]!) as { status: string; detail: string };
+    expect(body.status).toBe("ready");
+    expect(body.detail).toBe("Slack app created — team secrets staged until the team has recipients");
   });
 
   test("a real team-secret store failure exits 2 BEFORE any settings write lands", async () => {
