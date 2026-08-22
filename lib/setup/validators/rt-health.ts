@@ -1,10 +1,6 @@
 /**
  * tools-group validators — the checks `rt verify` used to run, reframed as
- * setup Rows. Every sub-fact that today's `rt verify` prints as its own line
- * (launchd registration, the worktrees endpoint smoke test) folds into a
- * single row's `detail` here instead — the table this module implements
- * names exactly which row owns which fact, so nothing doubles up with
- * plan.ts's mac/permissions rows.
+ * setup Rows.
  *
  * `checkRtContextExtension` lives here now (moved from commands/verify.ts,
  * which re-exports it) so both `rt verify` and the setup plan share one
@@ -20,7 +16,9 @@ import { appBundlePath, linkPath } from "../../deps/resolve.ts";
 import { localBinDir, shimReport, staleIntercepts } from "../../endpoint/shim.ts";
 import { resolveFzf } from "../../fzf.ts";
 import { legacyDirsPresent, legacyTrayAppPaths, RT_DIR_LABEL } from "../../rt-paths.ts";
+import { detectShellFrom, shellRcPathFor } from "../../shell-integration.ts";
 import { row, type Action, type Row } from "../contract.ts";
+import { LOGIN_ITEMS_SETTINGS_ACTION } from "../permissions.ts";
 import type { Probes } from "../probes.ts";
 
 // ─── rt-context extension check (moved from commands/verify.ts) ──────────────
@@ -80,17 +78,34 @@ const LINK_BUNDLED_RT: Action = { type: "link-bundled", label: "Use mattstack's"
 const LINK_BUNDLED_FZF: Action = { type: "link-bundled", label: "Use mattstack's", tool: "fzf" };
 const REINSTALL_SHIMS_ACTION: Action = { type: "run", label: "Re-install shims", verb: ["intercept", "install"] };
 const INSTALL_EXTENSION_ACTION: Action = { type: "run", label: "Install extension", verb: ["tools", "setup", "extension"] };
-const LOGIN_ITEMS_ACTION: Action = { type: "open-settings", label: "Open Login Items…", target: "login-items" };
+const LINK_RT_PATH_ACTION: Action = { type: "run", label: "Link into the app", verb: ["setup", "apply", "--from", "path.link"] };
+const MERGE_LEGACY_STATE_ACTION: Action = {
+  type: "steps",
+  label: "Merge legacy state",
+  steps: [
+    "Compare each file under the legacy dir(s) named above with ~/.mattstack/rt",
+    "Copy over anything ~/.mattstack/rt is missing",
+    "Delete the legacy dir(s) once you've confirmed nothing is left to merge",
+  ],
+};
 
 async function rtRow(p: Probes): Promise<Row> {
   const base = { id: "tool.rt", kind: "tool" as const, title: "rt binary", why: "rt itself must be on PATH before anything else can run.", required: true };
   const res = await p.exec(["rt", "--version"]);
   if (res.code === 0) return row({ ...base, status: "ready", detail: res.stdout.trim() });
-  return row({ ...base, status: "missing", detail: "rt not found on PATH", action: LINK_BUNDLED_RT });
+  if (res.code === 127) return row({ ...base, status: "missing", detail: "rt not found on PATH", action: LINK_BUNDLED_RT });
+  return row({ ...base, status: "error", detail: `could not run rt (exit ${res.code})` });
 }
 
 function rtLinkRow(p: Probes): Row {
-  const base = { id: "tool.rt-link", kind: "tool" as const, title: "rt PATH link", why: "Prod mode's ~/.local/bin/rt must point at the rt inside mattstack.app.", required: false };
+  const base = {
+    id: "tool.rt-link",
+    kind: "tool" as const,
+    title: "rt PATH link",
+    why: "Prod mode's ~/.local/bin/rt must point at the rt inside mattstack.app.",
+    required: false,
+    optionalNote: "Cosmetic: without this, `rt` may resolve to a different copy on PATH than the one inside mattstack.app.",
+  };
 
   if (currentMode() === "dev") return row({ ...base, status: "skipped", detail: "dev mode owns ~/.local/bin/rt" });
 
@@ -100,14 +115,20 @@ function rtLinkRow(p: Probes): Row {
   const expected = join(root, RT_BUNDLE_PATH);
   const actual = p.readlink(linkPath(p.home, "rt"));
   if (actual === expected) return row({ ...base, status: "ready", detail: "linked into the bundle" });
-  return row({ ...base, status: "needs-you", detail: "not a link into mattstack.app — run: rt setup apply --from path.link" });
+  return row({ ...base, status: "needs-you", detail: "not a link into mattstack.app — run: rt setup apply --from path.link", action: LINK_RT_PATH_ACTION });
 }
 
 function legacyDirsRow(): Row {
   const base = { id: "tool.legacy-dirs", kind: "tool" as const, title: "Legacy state dirs", why: `rt reads only ${RT_DIR_LABEL} — a leftover legacy dir means state is split and silently ignored.`, required: true };
   const legacy = legacyDirsPresent();
   if (legacy.real.length > 0) {
-    return row({ ...base, status: "invalid", detail: `real legacy dir present: ${legacy.real.join(", ")} — rt reads only ${RT_DIR_LABEL}` });
+    const plural = legacy.real.length !== 1 ? "s" : "";
+    return row({
+      ...base,
+      status: "invalid",
+      detail: `real legacy dir${plural} present: ${legacy.real.join(", ")} — rt reads only ${RT_DIR_LABEL}`,
+      action: MERGE_LEGACY_STATE_ACTION,
+    });
   }
   if (legacy.symlinks.length > 0) {
     return row({ ...base, status: "ready", detail: `compat symlink still present: ${legacy.symlinks.join(", ")}` });
@@ -116,8 +137,24 @@ function legacyDirsRow(): Row {
 }
 
 function interceptsRow(p: Probes): Row {
-  const base = { id: "tool.intercepts", kind: "tool" as const, title: "Intercept shims", why: "Team command intercepts (git, gh, …) only fire once their PATH shims are installed and current.", required: false };
-  const report = shimReport();
+  const base = {
+    id: "tool.intercepts",
+    kind: "tool" as const,
+    title: "Intercept shims",
+    why: "Team command intercepts (git, gh, …) only fire once their PATH shims are installed and current.",
+    required: false,
+    optionalNote: "Works without this; team command intercepts (git, gh, …) just won't fire.",
+  };
+
+  let report: ReturnType<typeof shimReport>;
+  let staleRules: ReturnType<typeof staleIntercepts>;
+  try {
+    report = shimReport();
+    staleRules = staleIntercepts();
+  } catch (err) {
+    return row({ ...base, status: "error", detail: `check failed: ${(err as Error).message}` });
+  }
+
   if (report.length === 0) return row({ ...base, status: "skipped", detail: "no intercepts declared" });
 
   const missing = report.filter((r) => !r.installed);
@@ -126,7 +163,6 @@ function interceptsRow(p: Probes): Row {
   const onPath = (p.env.PATH ?? "").split(":").some((entry) => entry === binDir || entry.replace(/\/+$/, "") === binDir);
   const pathBroken = report.some((r) => r.installed) && !onPath;
   const pathNote = pathBroken ? ` — and ${binDir} is not on PATH, so intercepts will not fire` : "";
-  const staleRules = staleIntercepts();
 
   if (missing.length > 0) {
     return row({ ...base, status: "needs-you", detail: `declared but not installed: ${missing.map((r) => r.command).join(", ")} — run rt intercept install${pathNote}`, action: REINSTALL_SHIMS_ACTION });
@@ -149,6 +185,8 @@ async function fzfRow(p: Probes, seams: RtHealthSeams): Promise<Row> {
   if (!fzfPath) return row({ ...base, status: "missing", detail: "fzf not found", action: LINK_BUNDLED_FZF });
 
   const res = await p.exec([fzfPath, "--version"]);
+  if (res.code !== 0) return row({ ...base, status: "error", detail: `resolved to ${fzfPath} but could not run it (exit ${res.code})` });
+
   const version = res.stdout.trim().split(/\s+/)[0] || res.stdout.trim() || "unknown version";
   const root = appBundlePath(p);
   const bundled = root !== null && (fzfPath === root || fzfPath.startsWith(`${root}/`));
@@ -156,7 +194,14 @@ async function fzfRow(p: Probes, seams: RtHealthSeams): Promise<Row> {
 }
 
 async function appRow(p: Probes): Promise<Row> {
-  const base = { id: "tool.app", kind: "tool" as const, title: "mattstack.app", why: "The tray app hosts the daemon, permissions, and every bundled tool.", required: true };
+  const base = {
+    id: "tool.app",
+    kind: "tool" as const,
+    title: "mattstack.app",
+    why: "The tray app hosts the daemon, permissions, and every bundled tool.",
+    required: true,
+    recheck: "on-activate" as const,
+  };
   const root = appBundlePath(p);
   if (!root) return row({ ...base, status: "missing", detail: "mattstack.app not found in /Applications or ~/Applications" });
 
@@ -165,14 +210,21 @@ async function appRow(p: Probes): Promise<Row> {
   const version = res.code === 0 ? res.stdout.trim() : null;
   let detail = version ? `${root} (v${version})` : root;
 
-  const legacyPresent = legacyTrayAppPaths().some((path) => p.exists(path));
-  if (legacyPresent) detail += " — legacy rt-tray.app still present";
+  const legacyHits = legacyTrayAppPaths().filter((path) => p.exists(path));
+  if (legacyHits.length > 0) detail += ` — old bundle still present: ${legacyHits.join(", ")}`;
 
   return row({ ...base, status: "ready", detail });
 }
 
 function vsixRow(p: Probes): Row {
-  const base = { id: "tool.vsix", kind: "tool" as const, title: "Bundled extension", why: "mattstack.app can carry the rt-context editor extension pre-bundled.", required: false };
+  const base = {
+    id: "tool.vsix",
+    kind: "tool" as const,
+    title: "Bundled extension",
+    why: "mattstack.app can carry the rt-context editor extension pre-bundled.",
+    required: false,
+    optionalNote: "Works without this; the rt-context editor extension just won't be pre-installed for you.",
+  };
   const root = appBundlePath(p);
   if (!root) return row({ ...base, status: "skipped", detail: "mattstack.app not found" });
 
@@ -182,41 +234,55 @@ function vsixRow(p: Probes): Row {
 }
 
 function extensionRow(p: Probes): Row {
-  const base = { id: "tool.extension", kind: "tool" as const, title: "rt-context extension", why: "Gives your editor rt-aware context.", required: false };
+  const base = {
+    id: "tool.extension",
+    kind: "tool" as const,
+    title: "rt-context extension",
+    why: "Gives your editor rt-aware context.",
+    required: false,
+    optionalNote: "Works without this; your editor just won't have rt-aware context.",
+  };
   const result = checkRtContextExtension(p.home);
   if (result.status === "pass") return row({ ...base, status: "ready", detail: result.detail });
   if (result.status === "warn") return row({ ...base, status: "needs-you", detail: result.detail, action: INSTALL_EXTENSION_ACTION });
   return row({ ...base, status: "skipped", detail: result.detail });
 }
 
-/** Mirrors lib/shell-integration.ts's detectShell/shellRcPath, but over Probes (p.env.SHELL, p.home) so it's testable without touching real HOME/SHELL. */
-function shellRcCandidate(p: Pick<Probes, "env" | "home">): string | null {
-  const shell = p.env.SHELL ?? "";
-  if (shell.endsWith("zsh")) return join(p.home, ".zshrc");
-  if (shell.endsWith("bash")) return join(p.home, ".bash_profile");
-  if (shell.endsWith("fish")) return join(p.home, ".config", "fish", "conf.d", "rt.fish");
-  return null;
-}
-
 function shellRow(p: Probes): Row {
-  const base = { id: "tool.shell", kind: "tool" as const, title: "Shell integration", why: "The rtcd alias and PATH precedence come from your shell rc file.", required: false };
-  const rc = shellRcCandidate(p);
+  const base = {
+    id: "tool.shell",
+    kind: "tool" as const,
+    title: "Shell integration",
+    why: "The rtcd alias and PATH precedence come from your shell rc file.",
+    required: false,
+    optionalNote: "Works without this; you can still run `rt cd` directly, just not the `rtcd` shell alias.",
+  };
+  const shell = detectShellFrom(p.env.SHELL ?? "");
+  const rc = shellRcPathFor(shell, p.home);
   if (rc) {
     const content = p.readFile(rc) ?? "";
     if (content.includes("rtcd")) return row({ ...base, status: "ready", detail: `rtcd alias in ${rc}` });
+    return row({ ...base, status: "needs-you", detail: "shell integration missing — Install writes it" });
   }
-  return row({ ...base, status: "needs-you", detail: "shell integration missing — Install writes it" });
+  return row({ ...base, status: "needs-you", detail: "unrecognized shell — can't write shell integration automatically; add the rtcd alias yourself" });
 }
 
 async function daemonRow(p: Probes, opts: { ci: boolean }): Promise<Row> {
-  const base = { id: "tool.daemon", kind: "tool" as const, title: "Daemon", why: "The daemon watches your repos and backs rt status, MRs, and notifications.", required: true };
+  const base = {
+    id: "tool.daemon",
+    kind: "tool" as const,
+    title: "Daemon",
+    why: "The daemon watches your repos and backs rt status, MRs, and notifications.",
+    required: true,
+    recheck: "on-activate" as const,
+  };
 
   if (!isDaemonInstalled()) return row({ ...base, status: "missing", detail: "run Install (registers the daemon)" });
 
   const ping = await p.daemon("ping");
   if (!ping || !ping.ok) {
     if (opts.ci) return row({ ...base, status: "needs-you", detail: "not booted (expected in CI)" });
-    return row({ ...base, status: "needs-you", detail: "installed but not responding — approve in Login Items", action: LOGIN_ITEMS_ACTION });
+    return row({ ...base, status: "needs-you", detail: "installed but not responding — approve in Login Items", action: LOGIN_ITEMS_SETTINGS_ACTION });
   }
 
   const [statusRes, launchd, worktrees] = await Promise.all([
@@ -233,9 +299,22 @@ async function daemonRow(p: Probes, opts: { ci: boolean }): Promise<Row> {
   if (data.pid !== undefined) parts.push(`pid ${data.pid}`);
   if (typeof data.uptime === "number") parts.push(`uptime ${Math.floor(data.uptime / 1000)}s`);
   if (typeof data.watchedRepos === "number") parts.push(`watching ${data.watchedRepos} repos`);
-  parts.push(launchdOk ? "registered with launchd" : "not registered with launchd");
-  parts.push(worktreesOk ? "worktrees endpoint responding" : "worktrees endpoint not responding");
 
+  // A daemon that answers ping but fails a sub-fact is a real negative
+  // signal, not cosmetic: launchd registration is what makes it survive a
+  // login, and the worktrees endpoint is the daemon's own smoke test
+  // (`rt verify` today hard-fails on exactly this — verify.ts's "daemon api"
+  // check). Folding these into a "ready" detail would let a structurally
+  // broken daemon enable Install.
+  const failing: string[] = [];
+  if (!launchdOk) failing.push("not registered with launchd");
+  if (!worktreesOk) failing.push("worktrees endpoint not responding");
+
+  if (failing.length > 0) {
+    return row({ ...base, status: "invalid", detail: [...parts, ...failing].join(", ") });
+  }
+
+  parts.push("registered with launchd", "worktrees endpoint responding");
   return row({ ...base, status: "ready", detail: parts.join(", ") });
 }
 

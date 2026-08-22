@@ -182,7 +182,7 @@ describe("memoization", () => {
     expect(readDepsLock(root)?.tools.map((t) => t.name)).toEqual(["fzf"]);
   });
 
-  test("appBundleRoot() memoizes only a successful resolution — a miss is retried on the next call", () => {
+  test("appBundleRoot() with an INJECTED exists never memoizes — every call re-evaluates (R-T7-c)", () => {
     let installed = false;
     const exists = (_p: string) => installed;
 
@@ -192,7 +192,34 @@ describe("memoization", () => {
     const resolved = appBundleRoot(exists);
     expect(resolved).not.toBeNull();
 
+    // A non-default `exists` must bypass the memo on both read and write: a
+    // later miss with the SAME injected function has to come back null
+    // again, not keep serving the earlier hit.
     installed = false;
-    expect(appBundleRoot(exists)).toBe(resolved);
+    expect(appBundleRoot(exists)).toBeNull();
+  });
+
+  test("appBundleRoot() with the DEFAULT exists (zero-arg call) still memoizes a hit", () => {
+    // No injected `exists` here — this exercises the real fzf-picker hot
+    // path (resolveFzf()'s own default), which is the memo's reason to
+    // exist. Whatever the real machine resolves (often null in CI) must be
+    // returned unchanged on a second zero-arg call.
+    const first = appBundleRoot();
+    const second = appBundleRoot();
+    expect(second).toBe(first);
+  });
+
+  test("a default-exists memo never leaks into an injected-exists call", () => {
+    // Populate the default-path memo first (may resolve null on a machine
+    // with no real bundle installed — either way it must not leak into the
+    // injected-exists call below).
+    appBundleRoot();
+
+    let installed = false;
+    const exists = (_p: string) => installed;
+    expect(appBundleRoot(exists)).toBeNull();
+
+    installed = true;
+    expect(appBundleRoot(exists)).not.toBeNull();
   });
 });
