@@ -1,6 +1,7 @@
 import { describe, test, expect, spyOn, beforeEach, afterEach } from "bun:test";
 import {
   DEFAULT_USER_REPO_URL,
+  claudePluginsPointerMessage,
   defaultAgeKeyInputSeam,
   gatherHomeState,
   homeClaim,
@@ -16,6 +17,7 @@ import {
   type MachineProfilePickerSeam,
   type SopsYamlSeam,
 } from "../home.ts";
+import { setSetting } from "../../lib/settings/write.ts";
 import { Readable } from "stream";
 import { EventEmitter } from "events";
 import type { PromptIO, PromptStdin } from "../../lib/prompt-secret.ts";
@@ -26,6 +28,7 @@ import { mattstackHome } from "../../lib/rt-paths.ts";
 import { readOwners } from "../../lib/home/snapshot-owners.ts";
 import type { DaemonResponse } from "../../lib/daemon-client.ts";
 import type { SnapshotResult, SnapshotStatus } from "../../lib/daemon/home-snapshot.ts";
+import type { MaterializeEnv, MaterializeExecResult, MaterializeExecSeam } from "../../lib/home/materialize.ts";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -202,6 +205,29 @@ class FakePickerSeam implements MachineProfilePickerSeam {
   }
 }
 
+/**
+ * Nothing installed, nothing tracked — `planMaterialize` reduces this to a
+ * single `rtInterceptInstall` step, which `NoopMaterializeExecSeam` answers
+ * without ever touching a real binary. The default for every test below
+ * that doesn't exercise materialize itself: the alternative (leaving
+ * `homeInit`'s real default seams in place) would shell out to the real
+ * `rt`/`deck` on PATH from ordinary unit tests.
+ */
+const NOOP_MATERIALIZE_ENV: MaterializeEnv = { deckOnPath: false, boardRepoPath: null, daemonInstalled: true, trackedRepos: [] };
+
+/** Records every argv it's asked to run; scripts a result per exact argv, defaulting to a clean exit 0. */
+class FakeMaterializeExecSeam implements MaterializeExecSeam {
+  calls: string[][] = [];
+  constructor(private scripted: Map<string, MaterializeExecResult> = new Map()) {}
+  script(argv: string[], result: MaterializeExecResult): void {
+    this.scripted.set(argv.join(" "), result);
+  }
+  async run(argv: [string, ...string[]]): Promise<MaterializeExecResult> {
+    this.calls.push(argv);
+    return this.scripted.get(argv.join(" ")) ?? { stdout: "", stderr: "", exitCode: 0 };
+  }
+}
+
 /** Runs `homeInit`, catching the `process.exit` call the failure paths make. */
 async function runHomeInit(
   probes: HomeProbes,
@@ -212,6 +238,8 @@ async function runHomeInit(
   key: string = KEY,
   pickerSeam: MachineProfilePickerSeam = new UnreachablePickerSeam(),
   isInteractive: () => boolean = () => false,
+  materializeEnv: () => Promise<MaterializeEnv> = async () => NOOP_MATERIALIZE_ENV,
+  materializeExec: MaterializeExecSeam = new FakeMaterializeExecSeam(),
 ): Promise<{ exitCode: number | undefined; logs: string[]; errors: string[] }> {
   const exitSpy = spyOn(process, "exit").mockImplementation(() => {
     throw new Error("process.exit");
@@ -225,7 +253,7 @@ async function runHomeInit(
     errors.push(parts.map(String).join(" "));
   });
   try {
-    await homeInit(args, {}, { probes, exec, ageKeySeam, sopsYamlSeam, key, pickerSeam, isInteractive });
+    await homeInit(args, {}, { probes, exec, ageKeySeam, sopsYamlSeam, key, pickerSeam, isInteractive, materializeEnv, materializeExec });
     return { exitCode: undefined, logs, errors };
   } catch {
     const code = exitSpy.mock.calls.at(-1)?.[0] as number | undefined;
@@ -837,6 +865,239 @@ describe("homeInit", () => {
       expect(exitCode).toBeUndefined();
       expect(logs.some((l) => l.includes("machine-key"))).toBe(false);
     });
+  });
+
+  describe("materialize (last phase)", () => {
+    test("runs on a fully-provisioned machine too, even though no init step is due", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+
+      const { exitCode, logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => NOOP_MATERIALIZE_ENV,
+        exec,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(exec.calls).toEqual([["rt", "intercept", "install"]]);
+      expect(logs.some((l) => l.includes("materializing"))).toBe(true);
+      expect(logs.some((l) => l.includes("rt intercept install"))).toBe(true);
+    });
+
+    test("--no-materialize skips gathering the env and running any step", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      let envCalled = false;
+
+      const { exitCode, logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        ["--no-materialize"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => {
+          envCalled = true;
+          return NOOP_MATERIALIZE_ENV;
+        },
+        exec,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(envCalled).toBe(false);
+      expect(exec.calls).toEqual([]);
+      expect(logs.some((l) => l.includes("materialize skipped"))).toBe(true);
+    });
+
+    test("a missing rt daemon runs rtDaemonInstall too, in addition to rtInterceptInstall", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, daemonInstalled: false };
+
+      await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      expect(exec.calls).toEqual([
+        ["rt", "intercept", "install"],
+        ["rt", "daemon", "install"],
+      ]);
+    });
+
+    test("deck on PATH and mr-board cloned locally: both setup steps run", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, deckOnPath: true, boardRepoPath: "/repos/mr-board" };
+
+      const { logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      expect(exec.calls).toEqual([["rt", "intercept", "install"], ["deck", "setup"]]);
+      // boardSetup never spawns — mr-board's setup prompts interactively — it only prints the manual command.
+      expect(logs.some((l) => l.includes("mr-board setup") && l.includes("/repos/mr-board"))).toBe(true);
+    });
+
+    test("a tracked repo missing from disk is reported by name, never cloned", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      const env: MaterializeEnv = {
+        ...NOOP_MATERIALIZE_ENV,
+        trackedRepos: [{ name: "gitq", path: "/repos/gitq", present: false }],
+      };
+
+      const { logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      expect(exec.calls).toEqual([["rt", "intercept", "install"]]); // report-only: no clone spawned
+      expect(logs.some((l) => l.includes("gitq") && l.includes("not present locally"))).toBe(true);
+    });
+
+    test("an rt-own step failing exits 1, but a non-rt-own step failing does not", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      exec.script(["rt", "intercept", "install"], { stdout: "", stderr: "boom", exitCode: 1 });
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, deckOnPath: true };
+      exec.script(["deck", "setup"], { stdout: "", stderr: "deck exploded", exitCode: 1 });
+
+      const { exitCode, errors, logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes("rt-owned step"))).toBe(true);
+      // The failing non-rt-own step still ran and is reported, not swallowed.
+      expect(logs.some((l) => l.includes("deck setup"))).toBe(true);
+      expect(logs.some((l) => l.includes("deck exploded"))).toBe(true);
+    });
+
+    test("a deckSetup failure alone (rt-own steps all ok) still prints success and exits 0", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, deckOnPath: true };
+      exec.script(["deck", "setup"], { stdout: "", stderr: "deck exploded", exitCode: 1 });
+
+      const { exitCode, logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(logs.some((l) => l.includes("is provisioned"))).toBe(true);
+    });
+
+    test("a symlink-blocked run never reaches materialize at all", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      const probes = fakeProbes({
+        isGitRepo: (dir) => dir.endsWith("/user"),
+        exists: () => true,
+        readSymlinkTarget: () => null, // a real file blocks the skills.jsonc symlink
+      });
+
+      const { exitCode } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => {
+          throw new Error("materializeEnv should not have been called");
+        },
+        exec,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(exec.calls).toEqual([]);
+    });
+
+    test("a configured claude.marketplaces prints the installer pointer, never replays anything itself", async () => {
+      const seam = new FakeSeam();
+      setSetting("claude.marketplaces", [{ name: "example" }], "user");
+
+      const { logs } = await runHomeInit(FULLY_PROVISIONED_PROBES(), seam, new FakeAgeKeySeam());
+
+      expect(logs.some((l) => l.includes("claude.marketplaces") && l.includes("installer"))).toBe(true);
+    });
+  });
+});
+
+describe("claudePluginsPointerMessage", () => {
+  test("neither key resolved: no message", () => {
+    expect(claudePluginsPointerMessage(undefined, undefined)).toBeNull();
+  });
+
+  test("marketplaces resolved, plugins not: points at the installer", () => {
+    const message = claudePluginsPointerMessage([{ name: "x" }], undefined);
+    expect(message).toContain("claude.marketplaces");
+    expect(message).toContain("installer");
+  });
+
+  test("plugins resolved, marketplaces not: points at the installer", () => {
+    const message = claudePluginsPointerMessage(undefined, ["some-plugin"]);
+    expect(message).toContain("claude.plugins");
+  });
+
+  test("never suggests rt home init itself replays them", () => {
+    const message = claudePluginsPointerMessage([{ name: "x" }], ["y"]);
+    expect(message).toContain("not rt home init's");
   });
 });
 

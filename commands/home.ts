@@ -66,6 +66,20 @@ import { claimZone, InvalidZoneError, normalizeZone, releaseZone, ZoneOwnedByOth
 import { promptSecret, type PromptIO } from "../lib/prompt-secret.ts";
 import { daemonQuery, type DaemonResponse } from "../lib/daemon-client.ts";
 import type { SnapshotResult, SnapshotStatus } from "../lib/daemon/home-snapshot.ts";
+import {
+  planMaterialize,
+  runMaterialize,
+  RT_OWN_STEP_KINDS,
+  type MaterializeEnv,
+  type MaterializeExecSeam,
+  type MaterializeResult,
+  type MaterializeStep,
+} from "../lib/home/materialize.ts";
+import { runCapture } from "../lib/subprocess.ts";
+import { loadRepoIndex } from "../lib/daemon/repo-index.ts";
+import { loadMachineRepoTracking } from "../lib/repo-tracking.ts";
+import { isDaemonInstalled } from "../lib/daemon-config.ts";
+import { getSetting } from "../lib/settings/resolve.ts";
 
 export const DEFAULT_USER_REPO_URL = "https://github.com/m4ttheweric/mattstack-home";
 
@@ -313,6 +327,87 @@ function printSkillsSymlinkBlocked(home: string): void {
   );
 }
 
+// ─── materialize (init's last phase) ────────────────────────────────────────
+
+function defaultMaterializeExec(): MaterializeExecSeam {
+  return { run: (argv, opts) => runCapture(argv, { ...opts, stderr: "pipe" }) };
+}
+
+/**
+ * `which deck`, the repo index, `rt.repoTracking`, and the daemon-install
+ * marker — all read-only, no seam of their own beyond `exec` (for `which`).
+ * Kept as one function (rather than four separate probes on HomeInitSeams)
+ * because nothing here needs independent faking in a test that isn't
+ * exercising materialize itself: `homeInit`'s tests inject a whole
+ * `materializeEnv` instead.
+ */
+async function defaultMaterializeEnv(exec: MaterializeExecSeam): Promise<MaterializeEnv> {
+  const which = await exec.run(["which", "deck"]);
+  const deckOnPath = which.exitCode === 0 && which.stdout.trim().length > 0;
+
+  const index = loadRepoIndex();
+  const boardRepoPath = index["mr-board"] ?? null;
+
+  const tracking = loadMachineRepoTracking();
+  const trackedRepos = Object.keys(tracking)
+    .sort()
+    .map((name) => {
+      const path = index[name] ?? "";
+      return { name, path, present: path !== "" && existsSync(path) };
+    });
+
+  return { deckOnPath, boardRepoPath, daemonInstalled: isDaemonInstalled(), trackedRepos };
+}
+
+function describeMaterializeStep(step: MaterializeStep): string {
+  switch (step.kind) {
+    case "rtInterceptInstall":
+      return "rt intercept install";
+    case "rtDaemonInstall":
+      return "rt daemon install";
+    case "reportMissingRepos":
+      return `tracked repos not present locally (not cloned): ${step.names.join(", ")}`;
+    case "deckSetup":
+      return "deck setup";
+    case "boardSetup":
+      return `mr-board setup — run manually, it's interactive: cd ${step.repoPath} && bun run scripts/setup.ts`;
+  }
+}
+
+function printMaterializeResults(results: MaterializeResult[]): void {
+  console.log(`\nrt home init: materializing (regenerating everything re-derivable from settings)…`);
+  for (const result of results) {
+    const mark = result.ok ? `${green}✓${reset}` : `${red}✗${reset}`;
+    console.log(`  ${mark} ${describeMaterializeStep(result.step)}`);
+    if (!result.ok && result.stderr) console.log(`    ${dim}${result.stderr}${reset}`);
+    else if (result.ok && result.step.kind === "boardSetup") console.log(`    ${dim}${result.stderr}${reset}`);
+  }
+}
+
+/**
+ * `claude.marketplaces`/`claude.plugins` replay is the installer's job, not
+ * init's (rt orchestrates materialize; the installer owns the plugin/
+ * marketplace replay itself) — this only points at it when either resolves
+ * to a value, so a machine with nothing configured stays silent. Pure so the
+ * decision is unit-testable without writing through the real settings
+ * resolver.
+ */
+export function claudePluginsPointerMessage(marketplaces: unknown, plugins: unknown): string | null {
+  if (marketplaces === undefined && plugins === undefined) return null;
+  return (
+    "claude.marketplaces/claude.plugins are configured — replaying them is the mattstack installer's job, " +
+    "not rt home init's; re-run the installer if this machine needs them applied."
+  );
+}
+
+function printClaudePluginsPointer(): void {
+  const message = claudePluginsPointerMessage(
+    getSetting<unknown>("claude.marketplaces").value,
+    getSetting<unknown>("claude.plugins").value,
+  );
+  if (message) console.log(`\n  ${dim}${message}${reset}`);
+}
+
 export interface HomeInitSeams {
   probes?: HomeProbes;
   exec?: ExecSeam;
@@ -328,6 +423,10 @@ export interface HomeInitSeams {
   key?: string;
   pickerSeam?: MachineProfilePickerSeam;
   isInteractive?: () => boolean;
+  /** Gathers the materialize phase's inputs (which deck, repo index, rt.repoTracking, daemon-install marker). Defaults to real reads; tests inject a fixed env instead of faking each underlying probe. */
+  materializeEnv?: () => Promise<MaterializeEnv>;
+  /** Runs each materialize step's subprocess. Defaults to a real `runCapture` wrap; tests inject a fake that never touches a real binary. */
+  materializeExec?: MaterializeExecSeam;
 }
 
 export async function homeInit(args: string[], _ctx: CommandContext = {}, seams: HomeInitSeams = {}): Promise<void> {
@@ -338,8 +437,11 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
   const key = seams.key ?? machineKey();
   const pickerSeam = seams.pickerSeam ?? createRealMachineProfilePickerSeam();
   const isInteractive = seams.isInteractive ?? (() => Boolean(process.stdin.isTTY));
+  const materializeExec = seams.materializeExec ?? defaultMaterializeExec();
+  const materializeEnv = seams.materializeEnv ?? (() => defaultMaterializeEnv(materializeExec));
 
   const dryRun = args.includes("--dry-run");
+  const noMaterialize = args.includes("--no-materialize");
   const home = mattstackHome();
 
   let url: string;
@@ -495,7 +597,29 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
     process.exit(1);
   }
 
+  // Materialize is init's LAST phase, run on every non-dry-run invocation —
+  // including an already-fully-provisioned machine — so re-derivable state
+  // (PATH shims, daemon registration, each installed tool's own setup)
+  // stays current without a separate command to remember to run.
+  let materializeFailed = false;
+  if (noMaterialize) {
+    console.log(`\n  ${dim}materialize skipped (--no-materialize)${reset}`);
+  } else {
+    const env = await materializeEnv();
+    const steps = planMaterialize(env);
+    const results = await runMaterialize(steps, materializeExec);
+    printMaterializeResults(results);
+    materializeFailed = results.some((r) => !r.ok && RT_OWN_STEP_KINDS.has(r.step.kind));
+  }
+
+  printClaudePluginsPointer();
+
   console.log(`\nrt home init: ${home} is provisioned.`);
+
+  if (materializeFailed) {
+    console.error(`\nrt home init: materialize failed on an rt-owned step — see above.`);
+    process.exit(1);
+  }
 }
 
 export async function homeKeyExport(
