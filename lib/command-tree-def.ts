@@ -5,7 +5,7 @@
  * module so both cli.ts (runtime dispatch) and scripts/gen-docs.ts (docs
  * generation) can import it without triggering the CLI entry logic.
  */
-import type { CommandNode } from "./command-tree.ts";
+import type { CommandArg, CommandNode } from "./command-tree.ts";
 
 const eventsSubcommands: Record<string, CommandNode> = {
   emit: {
@@ -118,9 +118,22 @@ const commitNode: CommandNode = {
 
 const SETUP_JSON_ARG = { name: "JSON", flag: "--json", type: "boolean" as const, default: false, hint: "Machine-readable result" };
 
-/** One `status`/`connect` pair per integration id, generated so the tree, the module's `setup<Id>Status`/`setup<Id>Connect` exports, and the app's contract stay in lockstep. Slack alone also gets `create-app` (the owner-once Slack app bootstrap). Pure — no side effects, safe to call at module load. */
+/**
+ * One `status`/`connect` pair per integration id, generated so the tree, the
+ * module's `setup<Id>Status`/`setup<Id>Connect` exports, and the app's
+ * contract stay in lockstep. Slack alone also gets `create-app` (the
+ * owner-once Slack app bootstrap). Pure — no side effects, safe to call at
+ * module load. Stdin is self-describing (JSON parses as JSON, anything else
+ * is read as the raw value) so there is no `--token-stdin`/
+ * `--config-token-stdin` flag to declare; `--use-gh` only ever does anything
+ * on github's `connect`, so only github's node offers it.
+ */
 function integrationNode(id: string, title: string): CommandNode {
   const fnId = id[0]!.toUpperCase() + id.slice(1);
+  const connectArgs: CommandArg[] = [SETUP_JSON_ARG];
+  if (id === "github") {
+    connectArgs.push({ name: "Use gh", flag: "--use-gh", type: "boolean", default: false, hint: "Use the existing gh CLI session instead of a token" });
+  }
   const subcommands: Record<string, CommandNode> = {
     status: {
       description: `${title}: check this account`,
@@ -132,11 +145,7 @@ function integrationNode(id: string, title: string): CommandNode {
       description: `${title}: connect this account`,
       module: "./commands/setup.ts",
       fn: `setup${fnId}Connect`,
-      args: [
-        SETUP_JSON_ARG,
-        { name: "Token on stdin", flag: "--token-stdin", type: "boolean", default: false, hint: "Read a raw token line from stdin instead of JSON" },
-        { name: "Use gh", flag: "--use-gh", type: "boolean", default: false, hint: "Use the existing gh CLI session instead of a token" },
-      ],
+      args: connectArgs,
     },
   };
   if (id === "slack") {
@@ -144,10 +153,7 @@ function integrationNode(id: string, title: string): CommandNode {
       description: "Slack: create the team's Slack app (owner-once)",
       module: "./commands/setup.ts",
       fn: "setupSlackCreateApp",
-      args: [
-        { name: "Config token on stdin", flag: "--config-token-stdin", type: "boolean", default: false, hint: "Read a raw app configuration token line from stdin instead of JSON" },
-        SETUP_JSON_ARG,
-      ],
+      args: [SETUP_JSON_ARG],
     };
   }
   return { description: `${title}: check or connect this account`, subcommands };

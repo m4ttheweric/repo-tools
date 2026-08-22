@@ -11,6 +11,7 @@
  * envelope path (`exitWithUserError`); everything else is a bug and throws.
  */
 
+import { randomBytes } from "crypto";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { readAgeKey, createRealAgeKeySeam } from "../lib/home/age-key.ts";
 import { promptSecret } from "../lib/prompt-secret.ts";
@@ -24,7 +25,7 @@ import { readIntent, teamRefFromIntent } from "../lib/setup/intent.ts";
 import { composePlan, enrichSnapshotForge, realSecretPresence } from "../lib/setup/plan.ts";
 import { createRealProbes, type Probes } from "../lib/setup/probes.ts";
 import { DEFAULT_CALLBACK_PORT, DEFAULT_SCOPE_NEEDS, buildSlackManifest } from "../lib/setup/slack-app.ts";
-import { stageSecret } from "../lib/setup/staging.ts";
+import { readStagedSecret, stageSecret } from "../lib/setup/staging.ts";
 import { readTeamSnapshot, type TeamSnapshot } from "../lib/setup/team-settings.ts";
 import type { Plan, RowStatus } from "../lib/setup/contract.ts";
 import type { SecretPresence } from "../lib/setup/validators/accounts.ts";
@@ -35,6 +36,15 @@ export interface SetupDeps {
   print: (s: string) => void;
   /** Optional: only the integration verbs below use it. Falls back to `process.exit` at the one call site that needs it. */
   exit?: (code: number) => never;
+  /**
+   * Optional: injects a `TeamSnapshot` directly instead of resolving one
+   * through intent + the real settings resolver (`readTeamSnapshot` reads
+   * `mattstack.integrations` via `getSetting`, which has no `Probes` seam of
+   * its own — see `team-settings.ts`'s module doc). Tests that need a
+   * populated `integrations.slack`/`.linear`/etc. set this directly, the way
+   * `accountRows`'s tests pass a `TeamSnapshot` literal straight in.
+   */
+  teamSnapshot?: () => TeamSnapshot;
 }
 
 export function realSetupDeps(): SetupDeps {
@@ -104,9 +114,9 @@ export const setupInteractive = setupStatus;
 
 // ─── Per-integration verbs ─────────────────────────────────────────────────
 
-/** Prints the exit-2 envelope (JSON or a one-line human message) then exits 2, through `deps.exit` so tests never kill the process. */
+/** Prints the exit-2 envelope (JSON or a one-line human message) then exits 2, through `deps.exit` so tests never kill the process. Timestamps via `deps.probes.now()`, the same clock every success envelope uses. */
 function exitWithUserError(err: UserActionableError, json: boolean, verb: string, deps: SetupDeps): never {
-  deps.print(json ? JSON.stringify(userErrorPayload(err)) : `rt ${verb}: ${err.message}`);
+  deps.print(json ? JSON.stringify(userErrorPayload(err, deps.probes.now())) : `rt ${verb}: ${err.message}`);
   return (deps.exit ?? process.exit)(2);
 }
 
@@ -133,30 +143,45 @@ export function realSecretWriter(): SecretWriter {
  * token). Backed today by the same single-recipient sops store `SecretWriter`
  * uses, keyed under a team-qualified domain — correct for the current
  * single-operator machine and swappable behind this same interface once a
- * real multi-recipient team store exists.
+ * real multi-recipient team store exists. `write` mirrors `storeCredential`'s
+ * own age-key-gated fallback (stage when there's no key yet) so a team
+ * secret written before `rt home init` still lands somewhere real instead of
+ * throwing; every OTHER store failure (a malformed slug, sops itself failing)
+ * still propagates so the caller can turn it into an honest exit-2 before any
+ * settings write happens.
  */
 export interface TeamSecrets {
   read(slug: string, domain: "rt" | "board", key: string): Promise<string | null>;
-  write(slug: string, domain: "rt" | "board", key: string, value: string): Promise<void>;
+  write(slug: string, domain: "rt" | "board", key: string, value: string): Promise<{ staged: boolean }>;
 }
 
 function teamScopedDomain(slug: string, domain: string): string {
   return `team-${slug}-${domain}`;
 }
 
-export function realTeamSecrets(): TeamSecrets {
+export function realTeamSecrets(p: Probes): TeamSecrets {
   const seams: SecretsSeams = { ageKeySeam: createRealAgeKeySeam(), execSeam: createRealSecretsExecSeam() };
   return {
     async read(slug, domain, key) {
+      const scoped = teamScopedDomain(slug, domain);
       try {
-        return await readSecret(teamScopedDomain(slug, domain), key, seams);
+        const stored = await readSecret(scoped, key, seams);
+        if (stored !== null) return stored;
       } catch (err) {
-        if (err instanceof NoAgeKeyError) return null;
-        throw err;
+        if (!(err instanceof NoAgeKeyError)) throw err;
       }
+      return readStagedSecret(p, scoped, key);
     },
     async write(slug, domain, key, value) {
-      await writeSecret(teamScopedDomain(slug, domain), key, value, seams);
+      const scoped = teamScopedDomain(slug, domain);
+      try {
+        await writeSecret(scoped, key, value, seams);
+        return { staged: false };
+      } catch (err) {
+        if (!(err instanceof NoAgeKeyError)) throw err;
+        stageSecret(p, scoped, key, value);
+        return { staged: true };
+      }
     },
   };
 }
@@ -170,8 +195,10 @@ export interface ConnectDeps extends SetupDeps {
   writer: SecretWriter;
   teamSecrets: TeamSecrets;
   writeSetting: typeof setSetting;
-  /** Opens one OAuth callback listener on `port` and resolves with the `code` query param from the first request. */
-  listen: (port: number) => Promise<string>;
+  /** Opens one OAuth callback listener on `port`, checks the callback's `state` against `expectedState`, and resolves with the `code` query param. Rejects (never hangs past its own timeout) on a state mismatch, a missing code, or a listen failure. */
+  listen: (port: number, expectedState: string) => Promise<string>;
+  /** Unguessable per-request token (CSRF-style) — never `Math.random`; the OAuth `state` param is the one consumer today. */
+  randomState: () => string;
 }
 
 async function readSmartStdin(): Promise<unknown> {
@@ -184,43 +211,89 @@ async function readSmartStdin(): Promise<unknown> {
   }
 }
 
-async function realOAuthListen(port: number): Promise<string> {
+const OAUTH_LISTEN_TIMEOUT_MS = 5 * 60 * 1000;
+
+export function realOAuthListen(port: number, expectedState: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const server = Bun.serve({
-      port,
-      fetch(req) {
-        const code = new URL(req.url).searchParams.get("code");
-        setTimeout(() => server.stop(), 0);
-        if (code) resolve(code);
-        else reject(new Error("slack callback request carried no code"));
-        return new Response("You can close this tab and return to rt.");
-      },
-    });
+    let settled = false;
+    // Deferred to a macrotask, never called synchronously off the fetch handler (or the Bun.serve
+    // try/catch) — resolving/rejecting this promise WHILE still inside Bun's request-handling call
+    // stack sends the callback's HTTP response before it settles cleanly, and (observed empirically)
+    // confuses bun:test's own error attribution for the in-process request, turning what should be a
+    // normal rejection into a hard-failed test even when the caller awaits and catches it correctly.
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      setTimeout(fn, 0);
+    };
+    const timer = setTimeout(() => {
+      settle(() => reject(new Error("timed out waiting for the Slack OAuth callback")));
+      try {
+        server?.stop();
+      } catch {
+        // already stopped
+      }
+    }, OAUTH_LISTEN_TIMEOUT_MS);
+
+    let server: ReturnType<typeof Bun.serve>;
+    try {
+      server = Bun.serve({
+        port,
+        fetch(req) {
+          const url = new URL(req.url);
+          const code = url.searchParams.get("code");
+          const state = url.searchParams.get("state");
+          settle(() => {
+            server.stop();
+            if (state !== expectedState) {
+              reject(new Error("slack callback state did not match — rejecting a possibly forged authorization code"));
+            } else if (code) {
+              resolve(code);
+            } else {
+              reject(new Error("slack callback request carried no code"));
+            }
+          });
+          return new Response("You can close this tab and return to rt.");
+        },
+      });
+    } catch (err) {
+      settle(() => reject(err instanceof Error ? err : new Error(String(err))));
+    }
   });
 }
 
 export function realConnectDeps(): ConnectDeps {
+  const probes = createRealProbes();
   return {
-    ...realSetupDeps(),
+    probes,
+    secrets: realSecretPresence(),
+    print: (s) => console.log(s),
     exit: process.exit,
     stdin: readSmartStdin,
     isTTY: () => process.stdin.isTTY === true,
     promptField: (field) => promptSecret(field.label),
     writer: realSecretWriter(),
-    teamSecrets: realTeamSecrets(),
+    teamSecrets: realTeamSecrets(probes),
     writeSetting: setSetting,
     listen: realOAuthListen,
+    randomState: () => randomBytes(16).toString("hex"),
   };
 }
 
 const EMPTY_SNAPSHOT: TeamSnapshot = { slug: "", integrations: {}, trackingIdentities: [], marketplaces: [], plugins: [], remote: null };
 
 /** Mirrors composePlan's own team resolution (readIntent → teamRefFromIntent → readTeamSnapshot → forge enrichment) without the `--team` override these single-integration verbs don't take. */
-function resolveTeamSnapshot(p: Probes): TeamSnapshot {
+function realResolveTeamSnapshot(p: Probes): TeamSnapshot {
   const intent = readIntent(p);
   const ref = teamRefFromIntent(intent, listTeams());
   const snapshot = ref.slug ? readTeamSnapshot(p, ref.slug) : EMPTY_SNAPSHOT;
   return enrichSnapshotForge(snapshot, intent);
+}
+
+/** `deps.teamSnapshot` when a caller injected one (tests); the real resolver otherwise. */
+function snapshotFor(deps: SetupDeps): TeamSnapshot {
+  return deps.teamSnapshot ? deps.teamSnapshot() : realResolveTeamSnapshot(deps.probes);
 }
 
 function ctxFor(id: Integration, team: TeamSnapshot): ValidateCtx {
@@ -332,7 +405,7 @@ export async function integrationStatus(id: Integration, args: string[], deps: S
   const json = args.includes("--json");
   const verb = `setup ${id} status`;
   try {
-    const snapshot = resolveTeamSnapshot(deps.probes);
+    const snapshot = snapshotFor(deps);
     const ctx = ctxFor(id, snapshot);
     const r =
       id === "github" ? await evalGithub(deps.probes, deps.secrets, ctx)
@@ -366,23 +439,20 @@ async function storeCredential(deps: ConnectDeps, domain: "rt" | "board", key: s
   return { staged: true };
 }
 
-async function resolveFieldValue(def: { fields: ConnectField[] }, input: unknown, deps: ConnectDeps): Promise<string> {
-  const field = def.fields[0];
+/** Only called once the caller already knows stdin isn't the source (TTY, or a non-null non-matching body) — never re-checks `isTTY()` itself, so a closed/empty non-interactive stdin still fails honestly instead of trying to prompt a terminal that isn't there. */
+function extractFieldValue(field: ConnectField, input: unknown): string | null {
   if (typeof input === "string" && input.trim() !== "") return input.trim();
-  if (isPlainObject(input) && field) {
+  if (isPlainObject(input)) {
     const v = input[field.name];
-    if (typeof v === "string" && v.trim() !== "") return v;
+    if (typeof v === "string" && v.trim() !== "") return v.trim();
   }
-  if (input === null && field) {
-    if (deps.isTTY()) return deps.promptField(field);
-    throw new UserActionableError("bad-stdin", `no ${field.label} provided — pipe JSON on stdin, or run interactively`);
-  }
-  throw new UserActionableError("bad-stdin", "stdin did not contain a recognizable credential");
+  return null;
 }
 
 async function connectCredential(id: Integration, args: string[], deps: ConnectDeps): Promise<void> {
   const def = integrationDef(id);
-  const ctx = ctxFor(id, resolveTeamSnapshot(deps.probes));
+  const field = def.fields[0];
+  const ctx = ctxFor(id, snapshotFor(deps));
 
   let value: string;
   let sourceDetail: string | null = null;
@@ -390,18 +460,30 @@ async function connectCredential(id: Integration, args: string[], deps: ConnectD
   if (id === "github" && args.includes("--use-gh")) {
     value = await ghAuthToken(deps.probes);
     sourceDetail = "via gh";
+  } else if (deps.isTTY()) {
+    // Checked BEFORE any stdin read: reading stdin first would block on EOF
+    // at a real terminal instead of prompting.
+    if (!field) throw new UserActionableError("bad-stdin", `${id} takes no interactive credential — pipe JSON on stdin instead`);
+    value = (await deps.promptField(field)).trim();
   } else {
     const input = await deps.stdin();
     if (id === "github" && isPlainObject(input) && input.useGh === true) {
       value = await ghAuthToken(deps.probes);
       sourceDetail = "via gh";
+    } else if (field) {
+      const extracted = extractFieldValue(field, input);
+      if (extracted === null) throw new UserActionableError("bad-stdin", `no ${field.label} provided on stdin`);
+      value = extracted;
     } else {
-      value = await resolveFieldValue(def, input, deps);
+      throw new UserActionableError("bad-stdin", "stdin did not contain a recognizable credential");
     }
   }
 
   const result = await def.validate(deps.probes, value, ctx);
-  if (result.status === "invalid") throw new UserActionableError("invalid-credential", result.detail);
+  if (result.status === "invalid") {
+    printIntegrationResult(deps, args.includes("--json"), { integration: id, status: "invalid", detail: result.detail, scopesSeen: result.scopesSeen });
+    return;
+  }
   if (result.status === "error") throw new UserActionableError("unreachable", result.detail);
 
   let staged = false;
@@ -421,27 +503,40 @@ async function connectCredential(id: Integration, args: string[], deps: ConnectD
 async function connectCliSession(id: "doppler" | "ldcli", args: string[], deps: ConnectDeps): Promise<void> {
   await deps.probes.exec(id === "doppler" ? ["doppler", "login"] : ["ldcli", "login"], { inherit: true });
   const def = integrationDef(id);
-  const ctx = ctxFor(id, resolveTeamSnapshot(deps.probes));
+  const ctx = ctxFor(id, snapshotFor(deps));
   const result = await def.validate(deps.probes, "", ctx);
-  if (result.status === "invalid") throw new UserActionableError("invalid-credential", result.detail);
+  if (result.status === "invalid") {
+    printIntegrationResult(deps, args.includes("--json"), { integration: id, status: "invalid", detail: result.detail, scopesSeen: result.scopesSeen });
+    return;
+  }
   if (result.status === "error") throw new UserActionableError("unreachable", result.detail);
   printIntegrationResult(deps, args.includes("--json"), { integration: id, status: "ready", detail: result.detail, scopesSeen: result.scopesSeen });
 }
 
 async function connectSlack(args: string[], deps: ConnectDeps): Promise<void> {
-  const snapshot = resolveTeamSnapshot(deps.probes);
+  const json = args.includes("--json");
+  const snapshot = snapshotFor(deps);
   const clientId = snapshot.integrations.slack?.clientId;
   if (!clientId) throw new UserActionableError("slack-app-missing", "your team has no Slack app yet — its owner needs to create one first");
 
   const callbackPort = snapshot.integrations.slack?.callbackPort ?? DEFAULT_CALLBACK_PORT;
   const redirectUri = `http://localhost:${callbackPort}/callback`;
-  const authUrl = `https://slack.com/oauth/v2/authorize?client_id=${encodeURIComponent(clientId)}&user_scope=${encodeURIComponent(DEFAULT_SCOPE_NEEDS.user.join(","))}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+  const state = deps.randomState();
+  const authUrl = `https://slack.com/oauth/v2/authorize?client_id=${encodeURIComponent(clientId)}&user_scope=${encodeURIComponent(DEFAULT_SCOPE_NEEDS.user.join(","))}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`;
 
   await deps.probes.exec(["open", authUrl]);
-  const code = await deps.listen(callbackPort);
+
+  let code: string;
+  try {
+    code = await deps.listen(callbackPort, state);
+  } catch (err) {
+    throw new UserActionableError("slack-oauth-failed", err instanceof Error ? err.message : String(err));
+  }
 
   const clientSecret = await deps.teamSecrets.read(snapshot.slug, "board", "slackClientSecret");
-  if (!clientSecret) throw new UserActionableError("slack-app-missing", "the team's Slack app credentials are missing — recreate the app");
+  // Honest about the interim single-recipient store: a missing value here means "not readable on THIS machine",
+  // never "the app doesn't exist" — advising a re-create would spawn a duplicate Slack app.
+  if (!clientSecret) throw new UserActionableError("slack-app-missing", `no Slack client secret found for team "${snapshot.slug}" on this machine`);
 
   const tokenRes = await deps.probes.fetch("https://slack.com/api/oauth.v2.access", {
     method: "POST",
@@ -457,10 +552,18 @@ async function connectSlack(args: string[], deps: ConnectDeps): Promise<void> {
     throw new UserActionableError("unreachable", "slack oauth.v2.access returned unparsable JSON");
   }
   const accessToken = data.ok ? data.authed_user?.access_token : undefined;
-  if (!accessToken) throw new UserActionableError("invalid-credential", data.error ? `slack error: ${data.error}` : "slack oauth.v2.access returned no user token");
+  if (!accessToken) {
+    printIntegrationResult(deps, json, {
+      integration: "slack",
+      status: "invalid",
+      detail: data.error ? `slack error: ${data.error}` : "slack oauth.v2.access returned no user token",
+      scopesSeen: [],
+    });
+    return;
+  }
 
   const { staged } = await storeCredential(deps, "board", "slackUserToken", accessToken);
-  printIntegrationResult(deps, args.includes("--json"), {
+  printIntegrationResult(deps, json, {
     integration: "slack",
     status: "ready",
     detail: staged ? "staged until Install creates your key" : "slack connected",
@@ -515,15 +618,14 @@ function parseManifestResponse(body: string, status: number): SlackManifestRespo
   }
 }
 
+const CONFIG_TOKEN_FIELD: ConnectField = { name: "configToken", label: "App configuration token", secret: true };
+
 async function readConfigToken(deps: ConnectDeps): Promise<string> {
+  if (deps.isTTY()) return (await deps.promptField(CONFIG_TOKEN_FIELD)).trim();
   const input = await deps.stdin();
-  if (typeof input === "string" && input.trim() !== "") return input.trim();
-  if (isPlainObject(input) && typeof input.configToken === "string" && input.configToken.trim() !== "") return input.configToken;
-  if (input === null) {
-    if (deps.isTTY()) return deps.promptField({ name: "configToken", label: "App configuration token", secret: true });
-    throw new UserActionableError("bad-stdin", "no Slack app configuration token provided on stdin");
-  }
-  throw new UserActionableError("bad-stdin", "stdin did not contain a recognizable configuration token");
+  const extracted = extractFieldValue(CONFIG_TOKEN_FIELD, input);
+  if (extracted === null) throw new UserActionableError("bad-stdin", "no Slack app configuration token provided on stdin");
+  return extracted;
 }
 
 export async function setupSlackCreateApp(args: string[], _ctx: CommandContext = {}, deps: ConnectDeps = realConnectDeps()): Promise<void> {
@@ -531,7 +633,7 @@ export async function setupSlackCreateApp(args: string[], _ctx: CommandContext =
   const verb = "setup slack create-app";
   try {
     const configToken = await readConfigToken(deps);
-    const snapshot = resolveTeamSnapshot(deps.probes);
+    const snapshot = snapshotFor(deps);
     if (!snapshot.slug) throw new UserActionableError("unknown-team", "no team to create a Slack app for — set up your team first");
 
     const callbackPort = snapshot.integrations.slack?.callbackPort ?? DEFAULT_CALLBACK_PORT;
@@ -549,16 +651,34 @@ export async function setupSlackCreateApp(args: string[], _ctx: CommandContext =
       throw new UserActionableError("slack-manifest-failed", data.error ?? `slack apps.manifest.create returned ok:false (status ${res.status})`);
     }
 
+    // Secrets land BEFORE the settings write: a settings write recording appId/clientId with no
+    // client secret behind it is the exact state that later makes `connect` misdiagnose a missing app.
+    let staged: boolean;
+    try {
+      const client = await deps.teamSecrets.write(snapshot.slug, "board", "slackClientSecret", data.credentials.client_secret);
+      const signing = await deps.teamSecrets.write(snapshot.slug, "board", "slackSigningSecret", data.credentials.signing_secret);
+      staged = client.staged || signing.staged;
+    } catch (err) {
+      throw new UserActionableError("team-secret-write-failed", err instanceof Error ? err.message : String(err));
+    }
+
+    // Deep-merge by hand: setSetting REPLACES the key's whole value, it does not merge (the registry's
+    // `merge: "deep"` is a read-side overlay across scopes, not a write-side behavior) — writing `{slack:{...}}`
+    // bare would silently drop the team's forge/linear/switchboard config out from under every other verb
+    // that reads it (ctxFor, snapshotFor).
     deps.writeSetting(
       "mattstack.integrations",
-      { slack: { appId: data.app_id, clientId: data.credentials.client_id, callbackPort } },
+      { ...snapshot.integrations, slack: { ...snapshot.integrations.slack, appId: data.app_id, clientId: data.credentials.client_id, callbackPort } },
       "team",
       { team: snapshot.slug },
     );
-    await deps.teamSecrets.write(snapshot.slug, "board", "slackClientSecret", data.credentials.client_secret);
-    await deps.teamSecrets.write(snapshot.slug, "board", "slackSigningSecret", data.credentials.signing_secret);
 
-    printIntegrationResult(deps, json, { integration: "slack", status: "ready", detail: "Slack app created", scopesSeen: [] });
+    printIntegrationResult(deps, json, {
+      integration: "slack",
+      status: "ready",
+      detail: staged ? "Slack app created — team secrets staged until the age key exists" : "Slack app created",
+      scopesSeen: [],
+    });
   } catch (err) {
     if (err instanceof UserActionableError) return exitWithUserError(err, json, verb, deps);
     throw err;
