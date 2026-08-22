@@ -87,6 +87,15 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Which repos rt tracks for background sync and status polling.",
   },
   {
+    key: "rt.runsPruneDays",
+    type: "number",
+    scopes: ["machine"],
+    default: 30,
+    merge: "replace",
+    migrated: true,
+    description: "Age floor in days for pruning finished pipeline run directories under ~/.mattstack/runs (default 30).",
+  },
+  {
     key: "rt.runaway",
     type: "object",
     scopes: ["machine"],
