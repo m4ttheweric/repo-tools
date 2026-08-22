@@ -17,7 +17,8 @@ public final class TeamSettingsModel: ObservableObject {
     @Published public private(set) var uninstallPlan: UninstallPlan?
     @Published public private(set) var error: String?
     private let rt: RtRunning
-    public init(rt: RtRunning) { self.rt = rt }
+    private let needs: NeedBroker
+    public init(rt: RtRunning, needs: NeedBroker) { self.rt = rt; self.needs = needs }
 
     public var maskedRemote: String { info?.remote.map(RemoteMasker.mask) ?? "—" }
 
@@ -39,8 +40,14 @@ public final class TeamSettingsModel: ObservableObject {
 
     /// `--yes`: the Uninstall pane's sheet is the confirmation; without it
     /// rt exits 2 `confirm-required` for `--delete-data` on a non-TTY.
+    ///
+    /// The real run is NDJSON like `setup apply`, `need` events included
+    /// (`services.unregister` unregisters the agents, `proxy.remove` raises
+    /// the admin prompt), so it goes through the same NeedBroker the install
+    /// screen uses — rt waits on those outcomes before it can finish.
     public func uninstall(keepData: Bool) -> AsyncThrowingStream<String, Error> {
-        rt.stream(["uninstall", keepData ? "--keep-data" : "--delete-data", "--yes", "--json"], stdin: nil)
+        NeedPump.performing(rt.stream(["uninstall", keepData ? "--keep-data" : "--delete-data", "--yes", "--json"], stdin: nil),
+                            needs: needs)
     }
 
     /// Same failure shape everywhere a JSON verb is called: `userError`

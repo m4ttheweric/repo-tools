@@ -96,6 +96,23 @@ const STEPS = [
   ["verify", "Verify everything", "rt"],
 ] as const;
 
+// The contract's v1 uninstall action ids, in order; `data` only with
+// --delete-data. The dry-run lists them and the real run streams the same set,
+// so the app's confirmation sheet and its progress list can never disagree.
+function uninstallActions(): { id: string; title: string; kind: "rt" | "app" | "privileged" }[] {
+  return [
+    { id: "services.unregister", title: "Stop and remove the rt daemon and deck services", kind: "app" },
+    { id: "deck.managed-remove", title: "Remove board and gitq from deck", kind: "rt" },
+    { id: "proxy.remove", title: "Remove the local HTTPS proxy (admin prompt)", kind: "privileged" },
+    { id: "path.unlink", title: "Remove ~/.local/bin links", kind: "rt" },
+    { id: "shell.remove", title: "Remove the shell rc block", kind: "rt" },
+    { id: "extension.uninstall", title: "Uninstall the rt-context editor extension", kind: "rt" },
+    { id: "plugins.uninstall", title: "Uninstall the mattstack plugins from Claude Code", kind: "rt" },
+    ...(args.includes("--delete-data") ? [{ id: "data", title: "Delete ~/.mattstack (settings, state, logs)", kind: "rt" as const }] : []),
+    { id: "app.trash", title: "Move mattstack.app to the Trash", kind: "rt" },
+  ];
+}
+
 async function apply() {
   const fromIdx = Math.max(0, args.indexOf("--from"));
   const fromId = fromIdx > 0 ? args[fromIdx + 1] : null;
@@ -148,22 +165,22 @@ else if (a0 === "team" && a1 === "status") emit({ slug: "acme", name: "Acme", re
 else if (a0 === "team" && a1 === "invite") emit({ code: "ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567", expiresAt: "2026-08-28T00:00:00Z",
   pasteBlock: "Install mattstack from https://github.com/m4ttstack/rt/releases, then open mattstack://join/ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567 or paste the code into Setup → Join a team.",
   forgeAccess: "granted", manualSteps: [] });
-else if (a0 === "uninstall" && args.includes("--dry-run")) emit({ actions: [
-  { id: "services.unregister", title: "Stop and remove the rt daemon and deck services" },
-  { id: "deck.managed-remove", title: "Remove board and gitq from deck" },
-  { id: "proxy.remove", title: "Remove the local HTTPS proxy (admin prompt)" },
-  { id: "path.unlink", title: "Remove ~/.local/bin links" },
-  { id: "shell.remove", title: "Remove the shell rc block" },
-  { id: "extension.uninstall", title: "Uninstall the rt-context editor extension" },
-  { id: "plugins.uninstall", title: "Uninstall the mattstack plugins from Claude Code" },
-  ...(args.includes("--delete-data") ? [{ id: "data", title: "Delete ~/.mattstack (settings, state, logs)" }] : []),
-  { id: "app.trash", title: "Move mattstack.app to the Trash" } ] });
+else if (a0 === "uninstall" && args.includes("--dry-run")) emit({ actions: uninstallActions() });
 else if (a0 === "uninstall") {
   if (args.includes("--delete-data") && !args.includes("--yes")) fail("confirm-required", "--delete-data needs --yes when not on a TTY.");
-  for (const id of ["services.unregister", "path.unlink", "app.trash"]) {
-  process.stdout.write(JSON.stringify({ event: "step", id, state: "running" }) + "\n");
-  process.stdout.write(JSON.stringify({ event: "step", id, state: "done" }) + "\n"); }
-  process.stdout.write(JSON.stringify({ event: "done", ok: true, failedStep: null }) + "\n"); }
+  const line = (o: unknown) => process.stdout.write(JSON.stringify(o) + "\n");
+  const actions = uninstallActions();
+  line({ event: "plan", steps: actions.map((a) => ({ id: a.id, title: a.title, kind: a.kind })) });
+  for (const a of actions) {
+    line({ event: "step", id: a.id, state: "running" });
+    if (a.id === "services.unregister") {
+      line({ event: "need", id: a.id, request: { type: "app-unregister-services", plists: ["com.mattstack.daemon.plist", "com.mattstack.deck.plist"] } });
+    } else if (a.id === "proxy.remove") {
+      line({ event: "need", id: a.id, request: { type: "app-privileged", op: "proxy-remove" } });
+    }
+    line({ event: "step", id: a.id, state: "done", detail: a.kind === "rt" ? "ok" : "done by the app" });
+  }
+  line({ event: "done", ok: true, failedStep: null }); }
 else if (a0 === "settings" && a1 === "set") emit({ ok: true, key: a2 });
 else if (a0 === "restore") emit({ ok: true, repo: a1 });
 else if (a0 === "home" && a1 === "init") emit({ ok: true });

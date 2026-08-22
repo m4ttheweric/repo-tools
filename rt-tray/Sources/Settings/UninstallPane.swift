@@ -67,6 +67,11 @@ struct UninstallPane: View {
                         if detail != nil || remedy != nil { reasons[id] = (detail ?? reasons[id]?.detail, remedy ?? reasons[id]?.remedy) }
                         let title = titles[id] ?? id
                         progress.append("\(title): \(state.rawValue)\(detail.map { " — \($0)" } ?? "")")
+                    case .need(let id, _):
+                        // The model's NeedBroker performs it as the line goes
+                        // past; rt turns the recorded outcome into this id's
+                        // next step event, which is what reports the result.
+                        progress.append("\(titles[id] ?? id): mattstack is doing this part…")
                     case .done(let ok, let failedStep):
                         if ok {
                             progress.append("done — mattstack will quit now")

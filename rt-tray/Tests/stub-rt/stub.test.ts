@@ -109,3 +109,19 @@ test("restore scenario's apply stream starts at home.restore", async () => {
   expect(first.lines[1].event).toBe("step");
   expect(first.lines[1].id).toBe("home.restore");
 });
+
+test("uninstall real run streams every v1 action id, the two need events, and honours --delete-data", async () => {
+  const keep = await run("uninstall", ["uninstall", "--keep-data", "--yes", "--json"]);
+  expect(keep.lines[0].event).toBe("plan");
+  expect(keep.lines[0].steps.map((s: { id: string }) => s.id)).toEqual(["services.unregister", "deck.managed-remove", "proxy.remove", "path.unlink", "shell.remove", "extension.uninstall", "plugins.uninstall", "app.trash"]);
+  const needs = keep.lines.filter((l: { event: string }) => l.event === "need");
+  expect(needs.map((n: { id: string }) => n.id)).toEqual(["services.unregister", "proxy.remove"]);
+  expect(needs[0].request.type).toBe("app-unregister-services");
+  expect(needs[0].request.plists).toContain("com.mattstack.daemon.plist");
+  expect(needs[1].request).toEqual({ type: "app-privileged", op: "proxy-remove" });
+  expect(keep.lines.some((l: { id: string }) => l.id === "data")).toBe(false);
+
+  const del = await run("uninstall", ["uninstall", "--delete-data", "--yes", "--json"]);
+  expect(del.lines[0].steps.map((s: { id: string }) => s.id)).toContain("data");
+  expect(del.lines.at(-1)).toMatchObject({ event: "done", ok: true });
+});
