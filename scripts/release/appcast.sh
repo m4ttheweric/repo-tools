@@ -18,6 +18,8 @@ if [ -z "${SPARKLE_ED_KEY:-}" ]; then
     echo "✗ SPARKLE_ED_KEY is required (private EdDSA key)" >&2
     exit 1
 fi
+# generate_keys -x emits a trailing newline the offline fixture doesn't reproduce.
+SPARKLE_ED_KEY="$(printf '%s' "$SPARKLE_ED_KEY" | tr -d '\r\n')"
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 GEN="$ROOT/rt-tray/deps/tools/sparkle/bin/generate_appcast"

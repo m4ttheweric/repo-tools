@@ -87,6 +87,8 @@ check_identity() { # app bundle-id exe label devbuild
     if [[ "$build" =~ ^[0-9]+$ ]]; then pass "$exe CFBundleVersion is numeric ($build)"; else fail "$exe CFBundleVersion not numeric: $build"; fi
     if [[ "$short" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
         assert_eq "$exe CFBundleVersion = major*1e6+minor*1e3+patch" "$(( BASH_REMATCH[1]*1000000 + BASH_REMATCH[2]*1000 + BASH_REMATCH[3] ))" "$build"
+    else
+        fail "$exe CFBundleShortVersionString is not semver: $short"
     fi
     # Embedded rt: present, executable, identifier "rt", no rt-daemon anywhere.
     local rt="$app/Contents/MacOS/rt"
@@ -209,13 +211,26 @@ fi
 
 # ─── Swift source gates that survive the rename ─────────────────────────────
 if ! $INSTALLED_ONLY; then
-    grep_src() { grep -R --include='*.swift' -q "$1" Sources Sources-daemon-shim Sources-core 2>/dev/null; }
+    # BSD grep -R returns 2 (could-not-run) when ANY named dir is missing, even
+    # if another dir matched — so only pass the dirs that actually exist, and
+    # keep 2 distinct from "no match" (1) for callers that gate on absence.
+    grep_src() { # 0 match, 1 no match, 2 could-not-run
+        local dirs=() d
+        for d in Sources Sources-daemon-shim Sources-core; do [ -d "$d" ] && dirs+=("$d"); done
+        [ "${#dirs[@]}" -gt 0 ] || return 2
+        grep -R --include='*.swift' -q "$1" "${dirs[@]}" 2>/dev/null
+    }
     grep_src 'forInfoDictionaryKey: "MSDaemonLabel"' && pass "BundleFlavor reads MSDaemonLabel" || fail "BundleFlavor does not read MSDaemonLabel"
     grep_src 'defaultDaemonLabel = "com.mattstack.daemon"' && pass "BundleFlavor falls back to com.mattstack.daemon" || fail "BundleFlavor fallback label wrong"
     # Named so the widened source-gate directories are self-verifying instead
     # of silently degrading to "no match found" when one of them is absent.
     [ -d Sources-core ] && pass "Sources-core exists" || fail "Sources-core missing — the widened rt-daemon-artifact gate has nothing to check until it does"
-    grep_src 'Contents/MacOS/rt-daemon' && fail "Swift still references Contents/MacOS/rt-daemon" || pass "no Swift reference to Contents/MacOS/rt-daemon"
+    grep_src 'Contents/MacOS/rt-daemon'; rc=$?
+    case $rc in
+        0) fail "Swift still references Contents/MacOS/rt-daemon" ;;
+        1) pass "no Swift reference to Contents/MacOS/rt-daemon" ;;
+        *) fail "rt-daemon source gate could not run" ;;
+    esac
     grep_src 'path == "/flavor/retire"' && pass "/flavor/retire endpoint present" || fail "/flavor/retire endpoint missing"
     GUARD_LINE=$(grep -n 'TrayServer.exitIfAnotherTrayOwnsSocket()' Sources/main.swift | head -1 | cut -d: -f1)
     DELEGATE_LINE=$(grep -n 'AppDelegate()' Sources/main.swift | head -1 | cut -d: -f1)
