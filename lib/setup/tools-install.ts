@@ -20,16 +20,28 @@ import type { Probes } from "./probes.ts";
 import type { PackRequirements } from "./requirements.ts";
 import { updateSetupState } from "./state.ts";
 
-export const VENDOR_INSTALLERS: Record<string, string[]> = {
-  herdr: ["sh", "-c", "curl -fsSL https://herdr.dev/install.sh | sh"],
-  claude: ["sh", "-c", "curl -fsSL https://claude.ai/install.sh | bash"],
+/**
+ * URLs only — never a shell command. R-T21-a: nothing in this file ever
+ * splices a URL into an `sh -c` string; `runVendorInstaller` fetches the URL
+ * to a fixed local path via argv-only `curl`, then runs that local path as
+ * its own argv step. R-T21-b: this table is rt's OWN short, hardcoded list —
+ * a team-declared `install.url` from a pack's requirements.jsonc is never
+ * looked up here and never auto-executed (see the `manual-install-required`
+ * refusal in installTool).
+ */
+export const VENDOR_INSTALLERS: Record<string, string> = {
+  herdr: "https://herdr.dev/install.sh",
+  claude: "https://claude.ai/install.sh",
 };
+
+/** The only hosts a hardcoded VENDOR_INSTALLERS entry may point at — closes the door on a future entry (or a typo) silently widening what rt will fetch-and-run. */
+const VENDOR_ALLOWED_HOSTS = new Set(["herdr.dev", "claude.ai"]);
 
 export const BREW_FORMULAE: Record<string, string> = { herdr: "herdr", claude: "claude-code" };
 
 /** A team-declared `--version`/probe must never hang `rt tools install` forever. */
 const PROBE_TIMEOUT_MS = 5000;
-/** brew/vendor installs are slow and network-bound; bounded, never run in tests. */
+/** brew/vendor installs (and the vendor download step) are slow and network-bound; bounded, never run in tests. */
 const INSTALL_TIMEOUT_MS = 5 * 60_000;
 const EXTENSION_INSTALL_TIMEOUT_MS = 30_000;
 
@@ -103,10 +115,19 @@ export async function installTool(p: Probes, tool: string, reqs: PackRequirement
     return runInstallerAndVerify(p, tool, "brew", ["brew", "install", formula], `brew install ${formula}`, `installed via brew (${formula})`);
   }
 
-  const url = teamTool?.install?.url;
-  const vendorArgv = VENDOR_INSTALLERS[tool] ?? (url ? ["sh", "-c", `curl -fsSL ${url} | sh`] : null);
-  if (vendorArgv) {
-    return runInstallerAndVerify(p, tool, "vendor", vendorArgv, "install script", "installed via vendor script");
+  const hardcodedUrl = VENDOR_INSTALLERS[tool];
+  if (hardcodedUrl) return runVendorInstaller(p, tool, hardcodedUrl);
+
+  // R-T21-b: a team pack's install.url is free-form text authored by
+  // whoever wrote that team's requirements.jsonc — the same trust boundary
+  // as the invite-pointer RCE earlier in this lane. rt shows it (this is
+  // exactly what teamToolRemedyAction's open-url row already does); it never
+  // auto-executes it. installTool must match that row, not exceed it.
+  if (teamTool?.install?.url) {
+    throw new UserActionableError(
+      "manual-install-required",
+      `${tool} declares an install URL from a team pack — rt never auto-runs a team-authored install script; install it yourself: ${teamTool.install.url}`,
+    );
   }
 
   throw new UserActionableError("no-installer", `no install method known for ${tool}`);
@@ -127,6 +148,46 @@ async function runInstallerAndVerify(p: Probes, tool: string, via: "brew" | "ven
     return { via, ok: false, detail: `${label} exited 0 but "${tool} --version" still fails (exit ${verify.code}) — not claiming success` };
   }
   return { via, ok: true, detail: successDetail };
+}
+
+/** Rejects anything but https on one of the known vendor hosts — a hardcoded VENDOR_INSTALLERS entry only, never a team-declared URL (see installTool). */
+function validateVendorUrl(url: string): { ok: true } | { ok: false; detail: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { ok: false, detail: `install URL is not a valid URL: ${url}` };
+  }
+  if (parsed.protocol !== "https:") return { ok: false, detail: `install URL must be https, got "${parsed.protocol}" (${url})` };
+  if (!VENDOR_ALLOWED_HOSTS.has(parsed.hostname)) return { ok: false, detail: `install URL host "${parsed.hostname}" is not on the known vendor host list` };
+  return { ok: true };
+}
+
+/** A fixed, rt-owned local path per tool — never derived from anything the URL or its response controls. */
+function vendorDownloadPath(p: Pick<Probes, "env">, tool: string): string {
+  return join(p.env.TMPDIR ?? "/tmp", "rt-vendor-install", `${tool}.sh`);
+}
+
+/**
+ * R-T21-a: the URL is passed as its own argv element to `curl`, never
+ * spliced into a shell string. R-T21-b: only ever called with a
+ * VENDOR_INSTALLERS entry (rt's own short hardcoded list) — a team-declared
+ * URL never reaches here. Fetch, then run the fetched file as its own argv
+ * step (`["sh", path]` — a script FILE argument, not a `-c` command string)
+ * — no pipe-to-shell anywhere in the sequence.
+ */
+async function runVendorInstaller(p: Probes, tool: string, url: string): Promise<InstallResult> {
+  const validated = validateVendorUrl(url);
+  if (!validated.ok) return { via: "vendor", ok: false, detail: validated.detail };
+
+  const path = vendorDownloadPath(p, tool);
+  p.mkdirp(dirname(path));
+
+  const fetchRes = await p.exec(["curl", "-fsSL", url, "-o", path], { timeoutMs: INSTALL_TIMEOUT_MS });
+  if (fetchRes.code === 124) return { via: "vendor", ok: false, detail: "install script download timed out" };
+  if (fetchRes.code !== 0) return { via: "vendor", ok: false, detail: `install script download failed (exit ${fetchRes.code}): ${firstLine(fetchRes.stderr || fetchRes.stdout)}` };
+
+  return runInstallerAndVerify(p, tool, "vendor", ["sh", path], "install script", "installed via vendor script");
 }
 
 // ─── setupTool ───────────────────────────────────────────────────────────

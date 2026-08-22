@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterEach } from "bun:test";
 import { BREW_FORMULAE, VENDOR_INSTALLERS, claudeConfigDirs, installTool, setupTool, type ToolsInstallSeams } from "../tools-install.ts";
 import { fakeProbes, ok, missing } from "./fakes.ts";
 import type { ExecScript } from "./fakes.ts";
@@ -38,18 +38,37 @@ describe("installTool — tool.herdr / tool.claude (brew, vendor)", () => {
     expect(result).toEqual({ via: "brew", ok: true, detail: "installed via brew (herdr)" });
   });
 
-  test("herdr without brew -> the vendor sh -c line", async () => {
+  test("herdr without brew -> fetches the URL as its own argv element (curl -o), then runs the downloaded file as an argv step (never sh -c)", async () => {
     const exec: ExecScript = (argv) => {
       if (argv[0] === "brew" && argv[1] === "--version") return missing("brew");
+      if (argv[0] === "curl") return ok();
       if (argv[0] === "sh") return ok();
       if (argv[0] === "herdr" && argv[1] === "--version") return ok("0.8.0");
       return ok();
     };
     const p = fakeProbes({ exec });
     const result = await installTool(p, "herdr", [], NOOP_SEAMS);
-    expect(p.calls.exec).toContainEqual(VENDOR_INSTALLERS.herdr!);
+
+    const fetchCall = p.calls.exec.find((argv) => argv[0] === "curl");
+    expect(fetchCall).toBeDefined();
+    expect(fetchCall).toEqual(["curl", "-fsSL", VENDOR_INSTALLERS.herdr!, "-o", fetchCall![4]!]);
+
+    const runCall = p.calls.exec.find((argv) => argv[0] === "sh");
+    expect(runCall).toBeDefined();
+    expect(runCall).toEqual(["sh", fetchCall![4]!]);
+
     expect(result.via).toBe("vendor");
     expect(result.ok).toBe(true);
+  });
+
+  test("no exec call ever constructs a shell string (no 'sh -c', no pipe-to-shell) — argv only, every element", async () => {
+    const exec: ExecScript = (argv) => (argv[0] === "brew" && argv[1] === "--version" ? missing("brew") : ok());
+    const p = fakeProbes({ exec });
+    await installTool(p, "herdr", [], NOOP_SEAMS);
+    for (const argv of p.calls.exec) {
+      expect(argv).not.toContain("-c");
+      for (const arg of argv) expect(arg).not.toContain("|");
+    }
   });
 
   test("claude formula is claude-code", async () => {
@@ -116,26 +135,85 @@ describe("installTool — team-declared tool via reqs", () => {
     expect(result).toEqual({ via: "brew", ok: true, detail: "installed via brew (doppler-cli)" });
   });
 
-  test("team tool with install.url, no brew -> curl pipe sh", async () => {
-    const reqs: PackRequirements[] = [{ pack: "somepack", integrations: [], tools: [{ name: "widget", why: "does widget things", install: { url: "https://x/widget.sh" } }] }];
-    const exec: ExecScript = (argv) => {
-      if (argv[0] === "brew" && argv[1] === "--version") return missing("brew");
-      if (argv[0] === "sh") return ok();
-      if (argv[0] === "widget" && argv[1] === "--version") return ok("1.0.0");
-      return ok();
-    };
-    const p = fakeProbes({ exec });
-    const result = await installTool(p, "widget", reqs, NOOP_SEAMS);
-    expect(p.calls.exec).toContainEqual(["sh", "-c", "curl -fsSL https://x/widget.sh | sh"]);
-    expect(result.via).toBe("vendor");
-    expect(result.ok).toBe(true);
-  });
-
   test("no bundled tool, no brew formula, no vendor url -> UserActionableError no-installer", async () => {
     const reqs: PackRequirements[] = [{ pack: "somepack", integrations: [], tools: [{ name: "mystery", why: "unlisted" }] }];
     const exec: ExecScript = (argv) => (argv[0] === "brew" && argv[1] === "--version" ? missing("brew") : ok());
     const p = fakeProbes({ exec });
     await expect(installTool(p, "mystery", reqs, NOOP_SEAMS)).rejects.toThrow(UserActionableError);
+  });
+});
+
+describe("installTool — vendor security (R-T21): team-authored URLs are never auto-executed; only rt's own hardcoded, allowlisted, https URLs run, and only argv-only, fetch-then-run", () => {
+  const originalHerdrUrl = VENDOR_INSTALLERS.herdr!;
+  afterEach(() => {
+    VENDOR_INSTALLERS.herdr = originalHerdrUrl;
+  });
+
+  test("a team-declared install.url is refused, never executed, even if it contains shell metacharacters", async () => {
+    const reqs: PackRequirements[] = [
+      { pack: "somepack", integrations: [], tools: [{ name: "widget", why: "does widget things", install: { url: "https://evil.example.com/x.sh; rm -rf ~" } }] },
+    ];
+    const exec: ExecScript = (argv) => (argv[0] === "brew" && argv[1] === "--version" ? missing("brew") : ok());
+    const p = fakeProbes({ exec });
+    await expect(installTool(p, "widget", reqs, NOOP_SEAMS)).rejects.toThrow(UserActionableError);
+    await expect(installTool(p, "widget", reqs, NOOP_SEAMS)).rejects.toThrow(/manual-install-required|install it yourself/);
+    expect(p.calls.exec.some((argv) => argv[0] === "curl" || argv[0] === "sh")).toBe(false);
+  });
+
+  test("a hardcoded vendor URL that isn't https is refused, never fetched", async () => {
+    VENDOR_INSTALLERS.herdr = "http://herdr.dev/install.sh";
+    const exec: ExecScript = (argv) => (argv[0] === "brew" && argv[1] === "--version" ? missing("brew") : ok());
+    const p = fakeProbes({ exec });
+    const result = await installTool(p, "herdr", [], NOOP_SEAMS);
+    expect(result.via).toBe("vendor");
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("https");
+    expect(p.calls.exec.some((argv) => argv[0] === "curl")).toBe(false);
+  });
+
+  test("a hardcoded vendor URL on a host outside the known list is refused, never fetched", async () => {
+    VENDOR_INSTALLERS.herdr = "https://evil.example.com/install.sh";
+    const exec: ExecScript = (argv) => (argv[0] === "brew" && argv[1] === "--version" ? missing("brew") : ok());
+    const p = fakeProbes({ exec });
+    const result = await installTool(p, "herdr", [], NOOP_SEAMS);
+    expect(result.via).toBe("vendor");
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("evil.example.com");
+    expect(p.calls.exec.some((argv) => argv[0] === "curl")).toBe(false);
+  });
+
+  test("a malformed URL is refused, never fetched", async () => {
+    VENDOR_INSTALLERS.herdr = "not a url";
+    const exec: ExecScript = (argv) => (argv[0] === "brew" && argv[1] === "--version" ? missing("brew") : ok());
+    const p = fakeProbes({ exec });
+    const result = await installTool(p, "herdr", [], NOOP_SEAMS);
+    expect(result.ok).toBe(false);
+    expect(p.calls.exec.some((argv) => argv[0] === "curl")).toBe(false);
+  });
+
+  test("curl fetch failure is honest and never runs the (partial/missing) downloaded file", async () => {
+    const exec: ExecScript = (argv) => {
+      if (argv[0] === "brew" && argv[1] === "--version") return missing("brew");
+      if (argv[0] === "curl") return { code: 22, stdout: "", stderr: "404" };
+      return ok();
+    };
+    const p = fakeProbes({ exec });
+    const result = await installTool(p, "herdr", [], NOOP_SEAMS);
+    expect(result).toEqual({ via: "vendor", ok: false, detail: expect.stringContaining("download failed") });
+    expect(p.calls.exec.some((argv) => argv[0] === "sh")).toBe(false);
+  });
+
+  test("curl fetch timeout is honest, never claimed as a run", async () => {
+    const exec: ExecScript = (argv) => {
+      if (argv[0] === "brew" && argv[1] === "--version") return missing("brew");
+      if (argv[0] === "curl") return { code: 124, stdout: "", stderr: "" };
+      return ok();
+    };
+    const p = fakeProbes({ exec });
+    const result = await installTool(p, "herdr", [], NOOP_SEAMS);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain("timed out");
+    expect(p.calls.exec.some((argv) => argv[0] === "sh")).toBe(false);
   });
 });
 
