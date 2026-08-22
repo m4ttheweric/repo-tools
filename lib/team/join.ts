@@ -70,29 +70,52 @@ function unreachableResult(team: JoinResult["team"], message: string): JoinResul
   return { team, access: "unreachable", peering: "idle", message };
 }
 
-/** Every scp-like/URL remote form git accepts, restricted to the three transports rt ever needs — deliberately excludes `ext::`, `file://`, and anything else git's transport helpers understand, since the pointer this validates is attacker-controlled. */
+// A real hostname/IP[:port] — starts and ends alnum, `.`/`-` in between, an
+// optional port. Anchoring the CAPTURE (not just the overall pattern) to this
+// charset is what keeps a `\n`/`\r`/control-char host from ever reaching a
+// message built from `remote` (see gitFailureMessage's "network" case) — `.`
+// in a non-dotAll regex already excludes literal newlines from the PATH
+// portion, so the host class was the only gap.
+const HOST = "[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?";
+const USERINFO = "(?:[^@/\\s]+@)?";
+
+/**
+ * Every scp-like/URL remote form git accepts, restricted to the three
+ * transports rt ever needs — deliberately excludes `ext::`, `file://`, and
+ * anything else git's transport helpers understand, since the pointer this
+ * validates is attacker-controlled. Whitespace is rejected outright rather
+ * than special-casing flag-shaped substrings like `--upload-pack=`: `p.exec`
+ * is `Bun.spawn(argv)` (no shell, no word splitting), so `remote` is always
+ * ONE argv element regardless of what it contains — the only reason a
+ * flag-shaped tail was ever worth naming was symmetry, so reject the whole
+ * class in one rule instead of enumerating flag names.
+ */
 function isAllowedRemote(remote: string): boolean {
-  if (remote.length === 0 || remote.startsWith("-")) return false;
-  if (/--upload-pack=/i.test(remote)) return false;
+  if (remote.length === 0 || remote.startsWith("-") || /\s/.test(remote)) return false;
   if (/^ext::/i.test(remote)) return false;
   if (/^file:\/\//i.test(remote)) return false;
 
-  const https = remote.match(/^https:\/\/([^/]+)\/.+$/);
-  if (https) return !https[1]!.startsWith("-");
-
-  const ssh = remote.match(/^ssh:\/\/(?:[^@/]+@)?([^/]+)\/.+$/);
-  if (ssh) return !ssh[1]!.startsWith("-");
-
-  // scp-like: user@host:path — a hostname beginning with `-` would be read
-  // as an ssh option once this string reaches argv.
-  const scp = remote.match(/^[A-Za-z0-9_][A-Za-z0-9_.-]*@([^:/]+):.+$/);
-  if (scp) return !scp[1]!.startsWith("-");
+  if (new RegExp(`^https:\\/\\/${USERINFO}${HOST}\\/.+$`).test(remote)) return true;
+  if (new RegExp(`^ssh:\\/\\/${USERINFO}${HOST}\\/.+$`).test(remote)) return true;
+  // scp-like: user@host:path
+  if (new RegExp(`^[A-Za-z0-9_][A-Za-z0-9_.-]*@${HOST}:.+$`).test(remote)) return true;
 
   return false;
 }
 
-/** The one place `team`/`remote` are trusted enough to reach a path join or a git argv — every pointer, however obtained (a fresh decode or a saved intent), passes through here first. */
-function validatePointer(pointer: InvitePointer): void {
+/** Strips C0 controls and DEL — defangs an ANSI escape (which opens with ESC, 0x1b) and CR/LF line-injection from an attacker-controlled display string before it ever reaches a human-readable message. `--json` needed no such treatment (`JSON.stringify` already escapes C0), but the plain-text `rt team join: <message>` line does not. */
+function sanitizeDisplay(s: string): string {
+  return s.replace(/[\x00-\x1f\x7f]/g, "");
+}
+
+/**
+ * The one place `team`/`remote`/`name`/`owner` are trusted enough to reach a
+ * path join, a git argv, or a human-readable message — every pointer,
+ * however obtained (a fresh decode or a saved intent), passes through here
+ * first, and every caller uses the RETURNED pointer (name/owner sanitized),
+ * never the raw one `open()`/the intent handed back.
+ */
+function validatePointer(pointer: InvitePointer): InvitePointer {
   try {
     validateSlug(pointer.team);
   } catch {
@@ -101,6 +124,7 @@ function validatePointer(pointer: InvitePointer): void {
   if (!isAllowedRemote(pointer.remote)) {
     throw new UserActionableError("invite-malformed", "invite pointer's remote is not a recognized git URL");
   }
+  return { ...pointer, name: sanitizeDisplay(pointer.name), owner: sanitizeDisplay(pointer.owner) };
 }
 
 function isRelayConnectivityError(err: unknown): err is UserActionableError {
@@ -133,8 +157,7 @@ async function fetchPointer(relay: RelayClient, idHex: string, key: Uint8Array):
   } catch {
     throw inviteUnknownError();
   }
-  validatePointer(pointer);
-  return pointer;
+  return validatePointer(pointer);
 }
 
 type GitFailureKind = "denied" | "network" | "missing-binary" | "disk-full" | "exists" | "local";
@@ -260,8 +283,7 @@ async function resolveSource(p: Probes, relay: RelayClient, code: string | undef
       // code that is only "gone" because it already worked once.
       const resumed = err instanceof UserActionableError && err.code === "invite-unknown" ? matchingJoinIntent(p, idHex) : undefined;
       if (resumed) {
-        validatePointer(resumed.pointer);
-        return resumed;
+        return { ...resumed, pointer: validatePointer(resumed.pointer) };
       }
       throw err;
     }
@@ -273,8 +295,7 @@ async function resolveSource(p: Probes, relay: RelayClient, code: string | undef
   if (intent?.mode !== "join" || !intent.join) {
     throw new UserActionableError("no-join-intent", "no invite in progress — pass a code, or run `rt team join --dry-run` first to save one");
   }
-  const pointer = intent.join.pointer;
-  validatePointer(pointer);
+  const pointer = validatePointer(intent.join.pointer);
   return { idHex: intent.join.id, key: base64ToKey(intent.join.keyB64), pointer };
 }
 
@@ -319,6 +340,24 @@ export async function joinRedeem(
     if (clone.code !== 0) return gitAccessResult(pointer, clone);
   }
 
+  // Identity resolution runs BEFORE relay.redeem, deliberately: this is the
+  // one precondition that can only be checked once the team is cloned
+  // (it reads the just-cloned settings file), so it has to happen here rather
+  // than earlier — but it must still happen before the invite is consumed.
+  // An unresolvable forge login is refused while the code is still redeemable
+  // (a genuine pre-flight failure, exit 2 per R-T18-d), never after — that
+  // would be the exact half-state R-T18-b exists to prevent.
+  const snapshot = readTeamSnapshot(p, pointer.team, { read: seams.read, warn: seams.warn });
+  const forge = snapshot.integrations.forge ?? forgeFromRemote(pointer.remote) ?? undefined;
+  const handle = forge ? await seams.forgeLogin(p, forge.provider, forge.host) : null;
+  if (!handle) {
+    const cli = forge?.provider === "gitlab" ? "glab" : "gh";
+    throw new UserActionableError(
+      "forge-login-unknown",
+      `the team is cloned at ${dir}, but your forge username could not be determined to redeem the invite — authenticate the ${cli} CLI and run \`rt team join\` again (the invite has not been used yet)`,
+    );
+  }
+
   let redeemed: "redeemed" | "already";
   try {
     redeemed = await relay.redeem(idHex);
@@ -336,17 +375,6 @@ export async function joinRedeem(
   // real conflict, so only a FRESH clone treats it as one.
   if (redeemed === "already" && !alreadyCloned) {
     throw inviteUnknownError(`this invite was already used: ask ${pointer.owner} for a new one`);
-  }
-
-  const snapshot = readTeamSnapshot(p, pointer.team, { read: seams.read, warn: seams.warn });
-  const forge = snapshot.integrations.forge ?? forgeFromRemote(pointer.remote) ?? undefined;
-  const handle = forge ? await seams.forgeLogin(p, forge.provider, forge.host) : null;
-  if (!handle) {
-    const cli = forge?.provider === "gitlab" ? "glab" : "gh";
-    throw new UserActionableError(
-      "forge-login-unknown",
-      `joined ${pointer.name} and redeemed the invite, but could not determine your forge username to send back — authenticate the ${cli} CLI and run \`rt team join\` again to finish (no new code needed)`,
-    );
   }
 
   let peering: JoinResult["peering"] = "idle";

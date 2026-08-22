@@ -302,7 +302,7 @@ describe("joinDryRun", () => {
       expect(p.calls.exec).toHaveLength(0);
     });
 
-    test("a remote carrying --upload-pack= is rejected", async () => {
+    test("a remote carrying --upload-pack= (space-separated tail) is rejected", async () => {
       const p = fakeProbes({ home: HOME });
       const relay = fakeRelay({ fetch: relayServing({ ...POINTER, remote: "https://github.com/acme/widgets.git --upload-pack=touch /tmp/x" }) });
 
@@ -310,8 +310,51 @@ describe("joinDryRun", () => {
       expect(p.calls.exec).toHaveLength(0);
     });
 
-    test("a well-formed https and a well-formed scp-like remote both pass (regression guard)", async () => {
-      for (const remote of ["https://github.com/acme/widgets.git", "git@github.com:acme/widgets.git", "ssh://git@github.com/acme/widgets.git"]) {
+    test("N5: the whitespace rule rejects --config= and -c tails just as symmetrically as --upload-pack=", async () => {
+      for (const remote of [
+        "https://github.com/acme/widgets.git --config=core.sshCommand=id",
+        "https://github.com/acme/widgets.git -c core.pager=id",
+      ]) {
+        const p = fakeProbes({ home: HOME });
+        const relay = fakeRelay({ fetch: relayServing({ ...POINTER, remote }) });
+
+        await expect(joinDryRun(p, relay.client, CODE)).rejects.toMatchObject({ code: "invite-malformed" });
+        expect(p.calls.exec).toHaveLength(0);
+      }
+    });
+
+    test("N3: a 5000-char slug is rejected cleanly (not left to fail as ENAMETOOLONG deep in git)", async () => {
+      const p = fakeProbes({ home: HOME });
+      const relay = fakeRelay({ fetch: relayServing({ ...POINTER, team: "a".repeat(5000) }) });
+
+      await expect(joinDryRun(p, relay.client, CODE)).rejects.toMatchObject({ code: "invite-malformed" });
+      expect(p.calls.exec).toHaveLength(0);
+    });
+
+    test("N2: control characters and ANSI escapes in name/owner never reach the human message — sanitized, not merely tolerated", async () => {
+      const p = fakeProbes({ home: HOME, now: NOW, exec: () => ({ code: 0, stdout: "", stderr: "" }) });
+      const hostileName = "\x1b[2J\x1b[1;1HFAKE-SCREEN-CLEAR";
+      const hostileOwner = "matt\nrt team join: Joined Acme (owner matt)";
+      const relay = fakeRelay({ fetch: relayServing({ ...POINTER, name: hostileName, owner: hostileOwner }) });
+
+      const result = await joinDryRun(p, relay.client, CODE);
+
+      expect(result.access).toBe("ok");
+      expect(result.team.name).not.toContain("\x1b");
+      expect(result.team.owner).not.toContain("\n");
+      expect(result.message).not.toContain("\x1b");
+      expect(result.message).not.toContain("\n");
+      expect(result.message).not.toMatch(/[\x00-\x1f\x7f]/);
+    });
+
+    test("a well-formed https, scp-like, ssh-with-port, and credential-bearing https remote all pass (regression guard)", async () => {
+      for (const remote of [
+        "https://github.com/acme/widgets.git",
+        "git@github.com:acme/widgets.git",
+        "ssh://git@github.com/acme/widgets.git",
+        "ssh://git@github.com:2222/acme/widgets.git",
+        "https://user:pass@github.com/acme/widgets.git",
+      ]) {
         const p = fakeProbes({ home: HOME, now: NOW, exec: () => ({ code: 0, stdout: "", stderr: "" }) });
         const relay = fakeRelay({ fetch: relayServing({ ...POINTER, remote }) });
         const result = await joinDryRun(p, relay.client, CODE);
@@ -709,7 +752,7 @@ describe("joinRedeem", () => {
     expect(relay.redeemCalls).toEqual([ID_HEX]);
   });
 
-  test("an undeterminable forge login never gets sealed as a guess — no $USER, no 'unknown'", async () => {
+  test("an undeterminable forge login never gets sealed as a guess — no $USER, no 'unknown' — and is refused BEFORE the invite is consumed (N1/R-T18-e)", async () => {
     const p = redeemProbes({ env: { USER: "localdev" } });
     const relay = fakeRelay();
     const { seams } = baseJoinRedeemSeams({ forgeLogin: async () => null });
@@ -724,6 +767,11 @@ describe("joinRedeem", () => {
     expect(caught).toBeInstanceOf(UserActionableError);
     expect((caught as UserActionableError).code).toBe("forge-login-unknown");
     expect((caught as UserActionableError).message).not.toContain("localdev");
+    expect((caught as UserActionableError).message).toContain("has not been used yet");
+    // The team WAS cloned (identity resolution needs the just-cloned settings), but
+    // relay.redeem must never have run — the invite is still valid for a retry.
+    expect(p.calls.exec).toContainEqual(["git", "clone", REMOTE, TEAM_DIR]);
+    expect(relay.redeemCalls).toHaveLength(0);
     expect(relay.replyCalls).toHaveLength(0);
   });
 
@@ -776,5 +824,26 @@ describe("joinRedeem", () => {
       await expect(joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams)).rejects.toMatchObject({ code: "invite-malformed" });
       expect(p.calls.exec).toHaveLength(0);
     });
+
+    test("N3: a 5000-char slug via a fresh code is rejected before any exec", async () => {
+      const p = redeemProbes();
+      const relay = fakeRelay({ fetch: relayServing({ ...POINTER, team: "a".repeat(5000) }) });
+      const { seams } = baseJoinRedeemSeams();
+
+      await expect(joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams)).rejects.toMatchObject({ code: "invite-malformed" });
+      expect(p.calls.exec).toHaveLength(0);
+    });
+  });
+
+  test("N2: control characters in name/owner are sanitized in the redeem success message too", async () => {
+    const p = redeemProbes();
+    const relay = fakeRelay({ fetch: relayServing({ ...POINTER, name: "Acme\x1b[2J", owner: "matt\r\nFAKE LINE" }) });
+    const { seams } = baseJoinRedeemSeams();
+
+    const result = await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+
+    expect(result.access).toBe("ok");
+    expect(result.message).not.toMatch(/[\x00-\x1f\x7f]/);
+    expect(result.team.owner).not.toContain("\r");
   });
 });

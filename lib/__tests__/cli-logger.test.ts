@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { logCommand } from "../cli-logger.ts";
 import { logsDir } from "../rt-paths.ts";
+import { encodeCode } from "../team/invite-crypto.ts";
 
 /**
  * Exercises the REAL logCommand write path (fake HOME, from test-setup.ts's
@@ -53,5 +54,43 @@ describe("logCommand: rt secrets set|rotate never reaches disk with a value atta
     const line = lines.at(-1)!;
     expect(line).not.toContain(CANARY);
     expect(JSON.parse(line).args).toEqual(["board", "slackToken", "[redacted]"]);
+  });
+});
+
+describe("logCommand: an rt team join invite code never reaches disk, even though the command refuses the run", () => {
+  test("a live, real-shaped code — dispatch()'s actual call shape (command carries 'rt team join', args is just the trailing code) — is redacted in the on-disk line", () => {
+    const CANARY = encodeCode("0102030405060708090a0b0c0d0e0f10", new Uint8Array(32).fill(7));
+
+    logCommand({
+      command: "rt team join",
+      args: [CANARY],
+      cwd: "/tmp",
+      durationMs: 1,
+      outcome: "error",
+      error: "code-on-argv",
+    });
+
+    const lines = readTodaysCliLogLines();
+    const line = lines.at(-1)!;
+    expect(line).not.toContain(CANARY);
+    expect(JSON.parse(line).args).toEqual(["[redacted]"]);
+  });
+
+  test("the code survives even with a flag alongside it, and a real flag is left alone", () => {
+    const CANARY = encodeCode("1112131415161718191a1b1c1d1e1f10", new Uint8Array(32).fill(9));
+
+    logCommand({
+      command: "rt team join",
+      args: [CANARY, "--dry-run"],
+      cwd: "/tmp",
+      durationMs: 1,
+      outcome: "error",
+      error: "code-on-argv",
+    });
+
+    const lines = readTodaysCliLogLines();
+    const line = lines.at(-1)!;
+    expect(line).not.toContain(CANARY);
+    expect(JSON.parse(line).args).toEqual(["[redacted]", "--dry-run"]);
   });
 });

@@ -165,15 +165,18 @@ describe("teamJoin", () => {
   });
 
   test("--dry-run rejects a hostile ext:: remote before any exec call, exit 2 invite-malformed", async () => {
-    const deps = baseDeps({
-      probes: fakeProbes({ home: HOME, fetch: async () => ({ status: 200, body: JSON.stringify({ ciphertext: await seal({ ...POINTER, remote: "ext::sh -c id" }, KEY, ID_HEX) }), headers: {} }) }),
+    const probes = fakeProbes({
+      home: HOME,
+      fetch: async () => ({ status: 200, body: JSON.stringify({ ciphertext: await seal({ ...POINTER, remote: "ext::sh -c id" }, KEY, ID_HEX) }), headers: {} }),
     });
+    const deps = baseDeps({ probes });
 
     const code = await runExpectingProcessExit(() => teamJoin(["--dry-run", "--json"], {}, deps));
 
     expect(code).toBe(2);
     const body = JSON.parse(deps.lines[0]!);
     expect(body.error.code).toBe("invite-malformed");
+    expect(probes.calls.exec).toHaveLength(0);
   });
 
   test("redeem: clones, redeems, and prints the exact contract envelope on success", async () => {
@@ -284,8 +287,16 @@ describe("teamJoin", () => {
     expect(deps.lines[0]).not.toContain("at ");
   });
 
-  test("an undeterminable forge login exits 2, does not seal a guessed identity", async () => {
-    const probes = fakeProbes({ home: HOME, fetch: relayFetch(), exec: () => ({ code: 0, stdout: "", stderr: "" }) });
+  test("an undeterminable forge login exits 2, does not seal a guessed identity, and never redeems the invite (N1/R-T18-e)", async () => {
+    const urls: string[] = [];
+    const probes = fakeProbes({
+      home: HOME,
+      fetch: async (url, init) => {
+        urls.push(url);
+        return relayFetch()(url, init);
+      },
+      exec: () => ({ code: 0, stdout: "", stderr: "" }),
+    });
     const deps = baseDeps({ probes, joinRedeemSeams: fakeJoinRedeemSeams({ forgeLogin: async () => null }) });
 
     const code = await runExpectingProcessExit(() => teamJoin(["--json"], {}, deps));
@@ -293,5 +304,9 @@ describe("teamJoin", () => {
     expect(code).toBe(2);
     const body = JSON.parse(deps.lines[0]!);
     expect(body.error.code).toBe("forge-login-unknown");
+    expect(body.error.message).toContain("has not been used yet");
+    expect(urls.some((u) => u.endsWith("/redeem"))).toBe(false);
+    const dir = pathJoin(HOME, ".mattstack", "teams", "acme");
+    expect(probes.calls.exec).toContainEqual(["git", "clone", REMOTE, dir]);
   });
 });
