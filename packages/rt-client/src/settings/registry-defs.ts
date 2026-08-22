@@ -166,6 +166,20 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Template used to generate a repo's Doppler secrets config.",
   },
 
+  // --- wave 2 (ownership-latch ports, RT-53) ------------------------------
+  // These rows carry NO `default`: the ownership latch is `getSetting(key)
+  // .value === undefined`, and a registry default materializes as a present
+  // value — adding one flips the key store-authoritative on every install
+  // (same invariant as the board.* block above).
+  {
+    key: "rt.worktreeApp",
+    type: "object",
+    scopes: ["machine"],
+    merge: "deep",
+    migrated: true,
+    description: "Machine-local worktree feature toggle (enabled, killProcesses); ownership-latch port of ~/.mattstack/rt/worktrees.json, store wins per field. A distinct key from rt.worktrees (the per-repo pool config above) on purpose — same file family, unrelated shape and scope.",
+  },
+
   // --- migrated:false (deferred by ruling) --------------------------------
   {
     key: "rt.hooks",
