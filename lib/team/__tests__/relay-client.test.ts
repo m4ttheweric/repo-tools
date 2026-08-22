@@ -108,6 +108,25 @@ describe("fetch", () => {
     expect(calls[0]!.url).toBe(`${BASE_URL}/v1/invites/${ID_HEX}`);
     expect(calls[0]!.method).toBe("GET");
   });
+
+  test("a 2xx body missing ciphertext throws relay-error rather than returning undefined", async () => {
+    const { fetchFn } = singleRouteFetch({ status: 200, body: JSON.stringify({ ciphertext: 123 }) });
+    const client = createRelayClient(fetchFn, BASE_URL);
+    await expectUserActionableError(client.fetch(ID_HEX), "relay-error");
+  });
+
+  test("a 2xx body that isn't JSON throws relay-error", async () => {
+    const { fetchFn } = singleRouteFetch({ status: 200, body: "garbage" });
+    const client = createRelayClient(fetchFn, BASE_URL);
+    await expectUserActionableError(client.fetch(ID_HEX), "relay-error");
+  });
+
+  test("a non-opaque id (e.g. a handle passed by mistake) is rejected before any request is sent", async () => {
+    const { fetchFn, calls } = singleRouteFetch({ status: 200, body: JSON.stringify({ ciphertext: "ct" }) });
+    const client = createRelayClient(fetchFn, BASE_URL);
+    await expectUserActionableError(client.fetch("alice"), "relay-error");
+    expect(calls).toHaveLength(0);
+  });
 });
 
 describe("redeem", () => {
@@ -148,6 +167,18 @@ describe("readReply", () => {
     expect(calls[0]!.headers["Authorization"]).toBe("Bearer creator-secret-xyz");
   });
 
+  test("a 2xx body missing blob throws relay-error rather than returning undefined", async () => {
+    const { fetchFn } = singleRouteFetch({ status: 200, body: JSON.stringify({ blob: 123 }) });
+    const client = createRelayClient(fetchFn, BASE_URL);
+    await expectUserActionableError(client.readReply(ID_HEX, "creator-secret-xyz"), "relay-error");
+  });
+
+  test("a 2xx body that isn't JSON throws relay-error", async () => {
+    const { fetchFn } = singleRouteFetch({ status: 200, body: "garbage" });
+    const client = createRelayClient(fetchFn, BASE_URL);
+    await expectUserActionableError(client.readReply(ID_HEX, "creator-secret-xyz"), "relay-error");
+  });
+
   test("404 reads as none", async () => {
     const { fetchFn } = singleRouteFetch({ status: 404, body: "" });
     const client = createRelayClient(fetchFn, BASE_URL);
@@ -163,6 +194,34 @@ describe("delete", () => {
     expect(calls[0]!.url).toBe(`${BASE_URL}/v1/invites/${ID_HEX}`);
     expect(calls[0]!.method).toBe("DELETE");
     expect(calls[0]!.headers["Authorization"]).toBe("Bearer creator-secret-xyz");
+  });
+
+  test("404 (already gone) is treated as success — revocation is idempotent", async () => {
+    const { fetchFn } = singleRouteFetch({ status: 404, body: "" });
+    const client = createRelayClient(fetchFn, BASE_URL);
+    await expect(client.delete(ID_HEX, "creator-secret-xyz")).resolves.toBeUndefined();
+  });
+});
+
+describe("opaque id enforcement", () => {
+  const NOT_AN_OPAQUE_ID = "alice";
+
+  test("every id-taking verb rejects a non-opaque id before sending a request", async () => {
+    const { fetchFn, calls } = singleRouteFetch({ status: 200, body: JSON.stringify({ ciphertext: "ct", blob: "b" }) });
+    const client = createRelayClient(fetchFn, BASE_URL);
+
+    await expectUserActionableError(client.fetch(NOT_AN_OPAQUE_ID), "relay-error");
+    await expectUserActionableError(client.redeem(NOT_AN_OPAQUE_ID), "relay-error");
+    await expectUserActionableError(client.reply(NOT_AN_OPAQUE_ID, "blob"), "relay-error");
+    await expectUserActionableError(client.readReply(NOT_AN_OPAQUE_ID, "secret"), "relay-error");
+    await expectUserActionableError(client.delete(NOT_AN_OPAQUE_ID, "secret"), "relay-error");
+    expect(calls).toHaveLength(0);
+  });
+
+  test("an uppercase-hex id is rejected (the client normalizes nothing)", async () => {
+    const { fetchFn } = singleRouteFetch({ status: 200, body: JSON.stringify({ ciphertext: "ct" }) });
+    const client = createRelayClient(fetchFn, BASE_URL);
+    await expectUserActionableError(client.fetch(ID_HEX.toUpperCase()), "relay-error");
   });
 });
 

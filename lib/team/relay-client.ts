@@ -33,7 +33,7 @@ export interface RelayClient {
   reply(id: string, blob: string): Promise<void>;
   /** GET /v1/invites/:id/reply, Authorization: Bearer creatorSecret — 404 means no reply posted yet */
   readReply(id: string, creatorSecret: string): Promise<{ blob: string } | "none">;
-  /** DELETE /v1/invites/:id, Authorization: Bearer creatorSecret */
+  /** DELETE /v1/invites/:id, Authorization: Bearer creatorSecret — 404 (already gone) is treated as success, not failure: revocation is idempotent */
   delete(id: string, creatorSecret: string): Promise<void>;
 }
 
@@ -64,6 +64,15 @@ function isSuccess(status: number): boolean {
   return status >= 200 && status < 300;
 }
 
+const OPAQUE_ID_PATTERN = /^[0-9a-f]{32}$/;
+
+/** This module is the declared privacy boundary — an id that isn't a relay-minted opaque id must never reach the path, closing the gap a caller mistake (passing a handle or slug by accident) would otherwise open. */
+function assertOpaqueId(id: string): void {
+  if (!OPAQUE_ID_PATTERN.test(id)) {
+    throw new UserActionableError("relay-error", "invite id must be a 32-character hex id");
+  }
+}
+
 export function createRelayClient(fetchFn: Probes["fetch"], baseUrl: string): RelayClient {
   const base = stripTrailingSlash(baseUrl);
 
@@ -77,9 +86,9 @@ export function createRelayClient(fetchFn: Probes["fetch"], baseUrl: string): Re
       body: opts.json !== undefined ? JSON.stringify(opts.json) : undefined,
       timeoutMs: REQUEST_TIMEOUT_MS,
     });
-    // status 0 is Probes' own encoding of "network never happened" — the
-    // three-state case law (unreachable/invalid/expired) requires this stay
-    // distinct from a real 4xx/5xx below.
+    // status 0 is Probes' own encoding of "network never happened" — it must
+    // stay distinct from a real 4xx/5xx below (unreachable is not the same
+    // fact as invalid or expired).
     if (res.status === 0) throw relayUnreachable();
     return { status: res.status, body: res.body, path };
   }
@@ -96,6 +105,7 @@ export function createRelayClient(fetchFn: Probes["fetch"], baseUrl: string): Re
     },
 
     async fetch(id) {
+      assertOpaqueId(id);
       const res = await send(`/v1/invites/${encodeURIComponent(id)}`, { method: "GET" });
       if (res.status === 404 || res.status === 410) return "gone";
       if (!isSuccess(res.status)) throw relayError(res.status, res.path);
@@ -105,6 +115,7 @@ export function createRelayClient(fetchFn: Probes["fetch"], baseUrl: string): Re
     },
 
     async redeem(id) {
+      assertOpaqueId(id);
       const res = await send(`/v1/invites/${encodeURIComponent(id)}/redeem`, { method: "POST" });
       if (res.status === 409) return "already";
       if (!isSuccess(res.status)) throw relayError(res.status, res.path);
@@ -112,11 +123,13 @@ export function createRelayClient(fetchFn: Probes["fetch"], baseUrl: string): Re
     },
 
     async reply(id, blob) {
+      assertOpaqueId(id);
       const res = await send(`/v1/invites/${encodeURIComponent(id)}/reply`, { method: "POST", json: { blob } });
       if (!isSuccess(res.status)) throw relayError(res.status, res.path);
     },
 
     async readReply(id, creatorSecret) {
+      assertOpaqueId(id);
       const res = await send(`/v1/invites/${encodeURIComponent(id)}/reply`, {
         method: "GET",
         headers: { Authorization: `Bearer ${creatorSecret}` },
@@ -129,10 +142,14 @@ export function createRelayClient(fetchFn: Probes["fetch"], baseUrl: string): Re
     },
 
     async delete(id, creatorSecret) {
+      assertOpaqueId(id);
       const res = await send(`/v1/invites/${encodeURIComponent(id)}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${creatorSecret}` },
       });
+      // Revocation is idempotent: an invite the relay already expired or
+      // reaped reads as done, not as a failure to revoke.
+      if (res.status === 404) return;
       if (!isSuccess(res.status)) throw relayError(res.status, res.path);
     },
   };

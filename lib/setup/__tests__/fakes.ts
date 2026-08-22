@@ -111,6 +111,10 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
       if (!parentList.includes(base)) parentList.push(base);
     },
 
+    chmod(path, mode) {
+      calls.modes[path] = mode;
+    },
+
     removeFile(path) {
       // Real unlinkSync removes a symlink at `path` too — a fake that only
       // cleared `files` left `exists(path)` true after a

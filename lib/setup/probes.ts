@@ -5,7 +5,7 @@
  * the real machine.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { daemonSocketQuery, trayRequest, type DaemonResponse, type TrayClient } from "../daemon-client.ts";
 import { UserActionableError } from "./errors.ts";
@@ -26,6 +26,8 @@ export interface Probes {
   readDir(path: string): string[];
   readlink(path: string): string | null;
   writeFile(path: string, content: string, mode?: number): void;
+  /** Best-effort, like removeFile: a missing path is not an error. `writeFile`'s mode only takes effect on a freshly-created inode, so a secrets-bearing file that already exists looser needs an explicit chmod to tighten. */
+  chmod(path: string, mode: number): void;
   removeFile(path: string): void;
   removeDir(path: string): void;
   symlink(target: string, path: string): void;
@@ -189,6 +191,14 @@ export function createRealProbes(): Probes {
 
     writeFile(path, content, mode) {
       writeFileSync(path, content, mode !== undefined ? { mode } : undefined);
+    },
+
+    chmod(path, mode) {
+      try {
+        chmodSync(path, mode);
+      } catch {
+        // best-effort
+      }
     },
 
     removeFile(path) {
