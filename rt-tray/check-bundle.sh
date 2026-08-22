@@ -233,7 +233,14 @@ split_tsv() {
     done
     FIELDS+=("$rest")
 }
-LOCK_TSV="$(bun "$SCRIPT_DIR/../scripts/lib/deps-lock.ts" --kind helper)"
+# Under `set -uo pipefail` (no -e), a failed assignment's exit status is
+# discarded — an emitter crash (bun off PATH, malformed lock) would leave
+# LOCK_TSV empty, check_helpers' `while … <<< "$LOCK_TSV"` would iterate zero
+# rows, and every per-helper assertion would vanish while the script still
+# reports 0 failed. Fail loudly instead of iterating nothing.
+LOCK_TSV="$(bun "$SCRIPT_DIR/../scripts/lib/deps-lock.ts" --kind helper)" \
+    || { fail "deps-lock emitter failed — Helpers assertions cannot run"; LOCK_TSV=""; }
+[ -n "$LOCK_TSV" ] || fail "deps-lock emitter produced no helper rows"
 check_helpers() { # app
     local app="$1" exe; exe="$(plist "$app/Contents/Info.plist" CFBundleExecutable)"
     if [ ! -d "$SCRIPT_DIR/deps/arm64" ] && ! $INSTALLED_ONLY; then echo "  ⚠ $exe: rt-tray/deps/arm64 absent — Helpers assertions skipped (scripts/fetch-deps.sh arm64)"; return; fi
@@ -250,7 +257,7 @@ check_helpers() { # app
         name="${FIELDS[0]}"; bundlePath="${FIELDS[6]}"; ent="${FIELDS[7]}"; status="${FIELDS[8]}"
         p="$app/$bundlePath"
         if [ "$status" = pending ]; then
-            [ -e "$p" ] && fail "$exe ships $name although deps.lock says pending" || pass "$exe: $name absent (pending until L5)"
+            [ -e "$p" ] && fail "$exe ships $name although deps.lock says pending" || pass "$exe: $name absent (pending per deps.lock)"
             continue
         fi
         [ -e "$p" ] || { fail "$exe missing Helpers/$name at $bundlePath"; continue; }
@@ -275,11 +282,17 @@ check_helpers "$PROD"
 
 # ═══ Sparkle ═══
 check_sparkle() { # app
-    local app="$1" exe fw; exe="$(plist "$app/Contents/Info.plist" CFBundleExecutable)"; fw="$app/Contents/Frameworks/Sparkle.framework"
+    local app="$1" exe fw otool_L otool_l_rpath; exe="$(plist "$app/Contents/Info.plist" CFBundleExecutable)"; fw="$app/Contents/Frameworks/Sparkle.framework"
     [ -d "$fw" ] || { fail "$exe missing Contents/Frameworks/Sparkle.framework"; return; }
     pass "$exe ships Sparkle.framework"
-    otool -L "$app/Contents/MacOS/$exe" | grep -q '@rpath/Sparkle.framework' && pass "$exe tray links Sparkle via @rpath" || fail "$exe tray does not link Sparkle"
-    otool -l "$app/Contents/MacOS/$exe" | grep -A2 LC_RPATH | grep -q '@executable_path/../Frameworks' && pass "$exe tray has the Frameworks rpath" || fail "$exe tray lacks the @executable_path/../Frameworks rpath"
+    # Capture-then-here-string, same as has_runtime/ent_has: piping otool
+    # straight into `grep -q` is the SIGPIPE-under-pipefail trap — grep can
+    # exit on its first match while otool is still writing, and pipefail
+    # reports the whole pipeline as failed even though the pattern matched.
+    otool_L="$(otool -L "$app/Contents/MacOS/$exe" 2>&1)"
+    grep -q '@rpath/Sparkle.framework' <<< "$otool_L" && pass "$exe tray links Sparkle via @rpath" || fail "$exe tray does not link Sparkle"
+    otool_l_rpath="$(otool -l "$app/Contents/MacOS/$exe" 2>&1 | grep -A2 LC_RPATH)"
+    grep -q '@executable_path/../Frameworks' <<< "$otool_l_rpath" && pass "$exe tray has the Frameworks rpath" || fail "$exe tray lacks the @executable_path/../Frameworks rpath"
     codesign --verify --deep --strict "$fw" 2>/dev/null && pass "$exe Sparkle.framework verifies (inside-out signed)" || fail "$exe Sparkle.framework signature broken"
     for xpc in Installer Downloader; do
         codesign --verify --strict "$fw/Versions/B/XPCServices/$xpc.xpc" 2>/dev/null && pass "$exe $xpc.xpc verifies" || fail "$exe $xpc.xpc signature broken"
@@ -299,10 +312,21 @@ check_sparkle() { # app
     for k in SUEnableInstallerLauncherService SUEnableDownloaderService SUEnableInstallerConnectionService SUEnableInstallerStatusService; do
         plist "$info" "$k" >/dev/null && fail "$exe sets $k (sandbox-only, must be absent)"
     done
+    local key; key="$(plist "$info" SUPublicEDKey)"
     if [ -n "${SPARKLE_PUBLIC_ED_KEY:-}" ]; then
-        assert_eq "$exe SUPublicEDKey (env override)" "$SPARKLE_PUBLIC_ED_KEY" "$(plist "$info" SUPublicEDKey)"
+        assert_eq "$exe SUPublicEDKey (env override)" "$SPARKLE_PUBLIC_ED_KEY" "$key"
     elif [ -f "$SCRIPT_DIR/SUPublicEDKey" ]; then
-        assert_eq "$exe SUPublicEDKey (committed file)" "$(tr -d '[:space:]' < "$SCRIPT_DIR/SUPublicEDKey")" "$(plist "$info" SUPublicEDKey)"
+        assert_eq "$exe SUPublicEDKey (committed file)" "$(tr -d '[:space:]' < "$SCRIPT_DIR/SUPublicEDKey")" "$key"
+    elif $INSTALLED_ONLY && [ "$(plist "$info" MSDevBuild)" != "true" ]; then
+        # --app mode asserts a shipped bundle, not a local dev build: a prod
+        # bundle whose key is missing or still the template placeholder can
+        # never verify a real Sparkle update, so this is a shipping defect
+        # and must fail the gate, not warn past it.
+        if [ -z "$key" ] || [ "$key" = "REPLACE_WITH_RELEASE_PUBLIC_ED_KEY" ]; then
+            fail "$exe SUPublicEDKey is missing or the template placeholder — shipped bundle cannot verify updates"
+        else
+            pass "$exe SUPublicEDKey is set (not the template placeholder)"
+        fi
     else
         echo "  ⚠ $exe: no Sparkle public key available to assert (rt-tray/SUPublicEDKey or SPARKLE_PUBLIC_ED_KEY)"
     fi
