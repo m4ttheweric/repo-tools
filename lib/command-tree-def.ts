@@ -1029,4 +1029,32 @@ export const TREE: Record<string, CommandNode> = {
       ldcli: integrationNode("ldcli", "LaunchDarkly"),
     },
   },
+
+  team: {
+    description: "Team repo: create, join, invite, publish, members",
+    subcommands: {
+      create: {
+        description: "Scaffold a fresh team zone (~/.mattstack/teams/<slug>) and set its remote — Install pushes it",
+        module: "./commands/team.ts",
+        fn: "teamCreate",
+        args: [
+          { name: "Name", type: "text", placeholder: "Acme", hint: "Team display name — slugified for the on-disk directory" },
+          { name: "Remote", flag: "--remote", type: "text", placeholder: "https://github.com/acme/mattstack-team-acme.git", hint: "An existing empty repo's URL" },
+          { name: "Create repo", flag: "--create-repo", type: "text", placeholder: "acme", hint: "Owner (user or org) to create <owner>/mattstack-team-<slug> under via gh, instead of pasting --remote" },
+          { name: "Others", flag: "--others", type: "boolean", default: false, hint: "Mark the team as having members beyond you" },
+          SETUP_JSON_ARG,
+        ],
+      },
+      publish: {
+        description: "Push the local team zone to its remote (or a new one)",
+        module: "./commands/team.ts",
+        fn: "teamPublish",
+        args: [
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to publish; omit when only one is cloned" },
+          { name: "Remote", flag: "--remote", type: "text", placeholder: "https://github.com/acme/mattstack-team-acme.git", hint: "Set (or change) the remote before pushing" },
+          SETUP_JSON_ARG,
+        ],
+      },
+    },
+  },
 };

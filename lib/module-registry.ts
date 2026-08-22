@@ -38,6 +38,7 @@ import * as plugin from "../commands/plugin.ts";
 import * as worktree from "../commands/worktree.ts";
 import * as intercept from "../commands/intercept.ts";
 import * as endpoint from "../commands/endpoint.ts";
+import * as team from "../commands/team.ts";
 
 export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/commit.ts": commit,
@@ -72,4 +73,5 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/worktree.ts": worktree,
   "./commands/intercept.ts": intercept,
   "./commands/endpoint.ts": endpoint,
+  "./commands/team.ts": team,
 };
