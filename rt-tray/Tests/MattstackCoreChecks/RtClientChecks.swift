@@ -55,6 +55,15 @@ private func consume(_ stream: AsyncThrowingStream<String, Error>, within second
     return nil
 }
 
+/// Holds `run`'s result for the deadline poll below — same reason as EndBox:
+/// awaiting the task directly would block on the stuck child on the way out.
+private final class ResultBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: RtResult??
+    func set(_ v: RtResult?) { lock.lock(); value = v; lock.unlock() }
+    func get() -> RtResult? { lock.lock(); defer { lock.unlock() }; return value ?? nil }
+}
+
 let rtClientChecks: [Check] = [
     Check("NDJSONSplitter yields complete lines and keeps partial tails") { c in
         var s = NDJSONSplitter()
@@ -191,5 +200,25 @@ exit 1
         let slack = try JSONDecoder().decode(ConnectResult.self, from: slackJSON)
         c.expect(slack.handle == nil, "handle absent for non-github integrations")
         c.expect(slack.owners == nil, "owners absent for non-github integrations")
+    },
+    Check("run still returns when a grandchild holds the pipes open past rt's exit") { c in
+        // Same shape as the stream check: the backgrounded sleep inherits both
+        // pipes, so neither reaches EOF when the shell exits. Every
+        // non-streaming verb sits on this call — a checklist row action, the
+        // Team screen's create/join — so it must resolve on the exit status
+        // alone rather than wait for an EOF that will never come.
+        let exe = try fakeExecutable(#"sleep 6 & printf '{"contract":1,"n":1}\n'; exit 2"#)
+        let client = RtClient(location: RtLocation(executable: exe, argumentPrefix: [], source: .bundled), environment: [:])
+        let box = ResultBox()
+        let runner = Task { box.set(try? await client.run(["team", "status", "--json"], stdin: nil)) }
+        var settled: RtResult?
+        for _ in 0..<250 {
+            if let r = box.get() { settled = r; break }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        runner.cancel()
+        let result = try c.requireSome(settled, "run must resolve within the exit grace, not wait on a pipe the grandchild holds")
+        c.expectEqual(result.exitCode, 2)
+        c.expect(String(decoding: result.stdout, as: UTF8.self).contains("\"n\":1"), "what rt did write before exiting is still captured")
     },
 ]

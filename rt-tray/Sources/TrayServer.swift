@@ -206,7 +206,7 @@ class TrayServer {
 
             } else if method == "POST" && path == "/daemon/start" {
                 DispatchQueue.main.async {
-                    self.daemonLifecycle?.startDaemon()
+                    Task { await self.daemonLifecycle?.startDaemon() }
                 }
                 self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true}")
 
@@ -218,7 +218,7 @@ class TrayServer {
 
             } else if method == "POST" && path == "/daemon/restart" {
                 DispatchQueue.main.async {
-                    self.daemonLifecycle?.restartDaemon()
+                    Task { await self.daemonLifecycle?.restartDaemon() }
                 }
                 self.sendResponse(connection: connection, status: 200, body: "{\"ok\":true}")
 

@@ -144,6 +144,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
                                                 agentStatuses: { [weak self] in self?.servicesRegistrar.smStatuses() ?? [] },
                                                 runner: SystemCommandRunner())
         servicesRegistrar = ServicesRegistrar(bundlePath: Bundle.main.bundlePath, runner: SystemCommandRunner())
+        daemonLifecycle.services = servicesRegistrar
         let privileged = PrivilegedInstaller(bundlePath: Bundle.main.bundlePath, escalator: AuthorizationServicesEscalator())
         // Stub mode never lets a real provider reach a mutating/probing call.
         #if DEBUG
@@ -408,7 +409,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         Task { @MainActor in
             setHealth(.starting)
 
-            daemonLifecycle.restartDaemon()
+            await daemonLifecycle.restartDaemon()
 
             // Poll until it comes back (up to 8s)
             for _ in 0..<16 {
