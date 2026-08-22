@@ -1,0 +1,189 @@
+#!/bin/bash
+# osascript/System Events helpers for driving mattstack.app in the guest.
+# Source only. Requires Accessibility + Automation granted to sshd-keygen-wrapper (golden step).
+GUEST_RUN="${GUEST_RUN:-/Volumes/My Shared Files/run}"
+# Every ax_click/ax_set_field below drives whatever process is named $AX_APP, including a real
+# mattstack.app if one happens to be running — refuse by default so a stray invocation on an
+# operator's own Mac can't type a PAT or toggle permissions there. Host tests override GUEST_RUN
+# to a real directory they made themselves.
+[ -d "$GUEST_RUN" ] || { printf 'ax.sh: %s is not mounted -- this must run against a guest (pass an existing GUEST_RUN to override for host testing)\n' "$GUEST_RUN" >&2; return 1 2>/dev/null || exit 1; }
+AX_APP="${AX_APP:-mattstack}"
+: "${VM_ADMIN_USER:=admin}"; : "${VM_ADMIN_PASS:=admin}"
+AX_LOG="$GUEST_RUN/logs/drive.log"; mkdir -p "$(dirname "$AX_LOG")" 2>/dev/null || true
+
+ax_log()  { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*" | tee -a "$AX_LOG" >&2; }
+ax_osa()  { osascript -e "$1" 2>>"$AX_LOG"; }
+
+# Shared recursive descent used by every AXIdentifier lookup below; osascript runs each -e
+# argument as its own process, so the handler is re-sent on every call rather than defined once.
+AX_WALK_AS='
+on walk(el, wanted)
+  try
+    if (value of attribute "AXIdentifier" of el) is wanted then return el
+  end try
+  try
+    repeat with c in UI elements of el
+      set r to my walk(c, wanted)
+      if r is not missing value then return r
+    end repeat
+  end try
+  return missing value
+end walk
+'
+
+# Host-side capture handshake: the host watches in/ for *.req files, and only runs the watcher
+# loop when --graphics is on (walkthrough.sh) -- read that flag instead of always waiting it out.
+ax_graphics() {
+  local f="$GUEST_RUN/in/params.json"
+  [ -f "$f" ] || { printf 1; return; }
+  case "$(sed -n 's/.*"graphics":\([01]\).*/\1/p' "$f")" in
+    0) printf 0 ;;
+    *) printf 1 ;;
+  esac
+}
+
+ax_shot() {
+  local name="$1"
+  if [ "$(ax_graphics)" = 0 ]; then
+    ax_log "shot $name: skipped (--no-graphics)"
+    return 0
+  fi
+  local req="$GUEST_RUN/in/shot-$name.req" done="$GUEST_RUN/in/shot-$name.done"
+  rm -f "$done"; : > "$req"
+  for _ in $(seq 1 40); do [ -f "$done" ] && { ax_log "shot $name"; return 0; }; sleep 0.5; done
+  ax_log "shot $name: host did not respond within 20s"; return 0
+}
+ax_fail() { ax_log "FAIL: $*"; ax_shot "fail-$(date +%s)"; exit 1; }
+
+ax_wait_window() {  # <title-substring> <timeout-s>
+  local t="$1" n="${2:-30}"
+  while [ "$n" -gt 0 ]; do
+    ax_osa "tell application \"System Events\" to tell process \"$AX_APP\" to get name of every window" 2>/dev/null | grep -q "$t" && return 0
+    sleep 1; n=$((n-1))
+  done
+  return 1
+}
+
+ax_wait_screen() {  # <welcome|team|checklist|install|done> <timeout-s> — waits for setup.<screen>.screen
+  local n="${2:-30}"
+  while [ "$n" -gt 0 ]; do
+    ax_find "setup.$1.screen" >/dev/null 2>&1 && return 0
+    sleep 1; n=$((n-1))
+  done
+  return 1
+}
+
+# Find a UI element by AXIdentifier anywhere under window 1; prints a reference path usable in `tell`.
+ax_find() {  # <axid>
+  ax_osa "$AX_WALK_AS
+    tell application \"System Events\" to tell process \"$AX_APP\"
+      set r to my walk(window 1, \"$1\")
+      if r is missing value then error \"axid not found: $1\"
+      return (r as text)
+    end tell" 2>/dev/null
+}
+
+ax_click() {  # <axid>
+  ax_osa "$AX_WALK_AS
+    tell application \"System Events\" to tell process \"$AX_APP\"
+      set frontmost to true
+      set r to my walk(window 1, \"$1\")
+      if r is missing value then error \"axid not found: $1\"
+      click r
+    end tell" || ax_fail "click $1"
+  ax_log "clicked $1"
+}
+
+ax_click_button_named() {  # <name> [<process>]
+  local p="${2:-$AX_APP}"
+  ax_osa "tell application \"System Events\" to tell process \"$p\" to click (first button of window 1 whose name is \"$1\")" >/dev/null || return 1
+  ax_log "clicked button '$1' in $p"
+}
+
+ax_set_field() {  # <axid> <text>   (text never logged)
+  ax_osa "$AX_WALK_AS
+    tell application \"System Events\" to tell process \"$AX_APP\"
+      set frontmost to true
+      set r to my walk(window 1, \"$1\")
+      if r is missing value then error \"axid not found: $1\"
+      set focused of r to true
+      keystroke \"a\" using command down
+      keystroke \"$2\"
+    end tell" || ax_fail "set field $1"
+  ax_log "filled $1"
+}
+
+ax_status() {  # <rowId> → status string (the app exposes it as the row status element's value)
+  ax_osa "$AX_WALK_AS
+    tell application \"System Events\" to tell process \"$AX_APP\"
+      set r to my walk(window 1, \"setup.checklist.row.$1.status\")
+      if r is missing value then error \"axid not found: setup.checklist.row.$1.status\"
+      try
+        return value of r as text
+      on error
+        return description of r as text
+      end try
+    end tell" 2>/dev/null
+}
+
+ax_wait_status() {  # <rowId> <status> <timeout-s>
+  local n="${3:-60}" s
+  while [ "$n" -gt 0 ]; do
+    s=$(ax_status "$1" || true)
+    [ "$s" = "$2" ] && { ax_log "row $1 = $2"; return 0; }
+    sleep 1; n=$((n-1))
+  done
+  ax_log "row $1 stuck at '${s:-?}' (wanted $2)"; return 1
+}
+
+# SecurityAgent admin prompt (privileged step, FDA/Login Items toggles by a standard user).
+ax_admin_auth() {
+  local n=30
+  while [ "$n" -gt 0 ]; do
+    if ax_osa 'tell application "System Events" to exists window 1 of process "SecurityAgent"' 2>/dev/null | grep -q true; then
+      ax_osa "tell application \"System Events\" to tell process \"SecurityAgent\" to tell window 1
+        set value of text field 1 to \"$VM_ADMIN_USER\"
+        set value of text field 2 to \"$VM_ADMIN_PASS\"
+        click (first button whose name is \"OK\" or name is \"Unlock\" or name is \"Modify Settings\" or name is \"Install Helper\")
+      end tell" >/dev/null && { ax_log "admin auth filled"; return 0; }
+    fi
+    sleep 1; n=$((n-1))
+  done
+  return 1
+}
+
+ax_allow_notifications() {
+  ax_osa 'tell application "System Events" to tell process "UserNotificationCenter" to click (first button of window 1 whose name is "Allow")' >/dev/null 2>&1 \
+    && ax_log "notifications: Allow clicked" || ax_log "notifications: no prompt visible"
+}
+
+# System Settings: toggle the app's switch in a Privacy pane opened by the app's button.
+ax_toggle_in_system_settings() {  # <row label e.g. mattstack>
+  ax_osa "tell application \"System Events\" to tell process \"System Settings\"
+    repeat 20 times
+      if exists window 1 then exit repeat
+      delay 0.5
+    end repeat
+    tell window 1
+      set tgt to first checkbox of (first group whose name contains \"$1\" or description contains \"$1\") of (first scroll area of group 1 of splitter group 1 of group 1)
+      if value of tgt is 0 then click tgt
+    end tell
+  end tell" >/dev/null 2>&1 || {
+    # Layout differs across 14/15/26; fall back to a breadth-first search for a checkbox near a static text with the label.
+    ax_osa "tell application \"System Events\" to tell process \"System Settings\" to tell window 1
+      set cbs to every checkbox of entire contents
+      repeat with cb in cbs
+        try
+          if (name of cb contains \"$1\") or (description of cb contains \"$1\") then
+            if value of cb is 0 then click cb
+            return
+          end if
+        end try
+      end repeat
+      error \"no checkbox for $1\"
+    end tell" >/dev/null || return 1
+  }
+  ax_log "System Settings: toggled $1"
+  ax_admin_auth || true
+  ax_osa 'tell application "System Settings" to quit' >/dev/null 2>&1 || true
+}
