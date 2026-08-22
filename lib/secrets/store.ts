@@ -3,12 +3,17 @@
  * decrypted with the mattstack age key (lib/home/age-key.ts) via SOPS_AGE_KEY.
  * The key crosses into the sops subprocess ONLY through that env var — never
  * argv, never a file — mirroring readAgeKey's own custody rule and its
- * `.sops.yaml` creation rule for `user/secrets/**` (lib/home/age-key.ts).
+ * `.sops.yaml` creation rule for `secrets/**` (lib/home/age-key.ts). sops
+ * resolves `.sops.yaml` and matches `path_regex` cwd-relative, so every sops
+ * spawn pins cwd to `<mattstackHome>/user` (buildSecretsSpawnOptions) — the
+ * regex, the cwd pin, and the `--filename-override` below all move together
+ * or sops silently matches no rule and encrypts to the wrong recipient.
  *
  * Write idiom: stage plaintext at `~/.mattstack/rt/tmp/<domain>.<pid>.json`
  * (rt/ is gitignored — never a tracked path), fsync it, encrypt with
- * `--filename-override user/secrets/<domain>.json` (keeps the `.sops.yaml`
- * path_regex matching even though the real input lives in rt/tmp) into
+ * `--filename-override secrets/<domain>.json` (relative to the pinned cwd,
+ * keeping the `.sops.yaml` path_regex matching even though the real input
+ * lives in rt/tmp) into
  * `<target>.<pid>.tmp` (pid-qualified so two concurrent writers can't
  * unlink each other's tmp output), decrypt that tmp output and confirm the
  * newly written key round-trips — a real check that the encrypt used the
@@ -219,9 +224,9 @@ async function encryptDomain(
 
   const stagingPath = join(stagingDir, `${domain}.${process.pid}.json`);
   const outputTmpPath = `${targetPath}.${process.pid}.tmp`;
-  // Relative to the home root, matching .sops.yaml's `path_regex:
-  // user/secrets/.*` — the real input path (under rt/tmp) would never match.
-  const filenameOverride = join("user", "secrets", `${domain}.json`);
+  // Relative to the pinned cwd (<mattstackHome>/user), matching .sops.yaml's
+  // `path_regex: secrets/.*` — the real input path (under rt/tmp) would never match.
+  const filenameOverride = join("secrets", `${domain}.json`);
 
   try {
     execSeam.writeFile(stagingPath, JSON.stringify(payload, null, 2));
@@ -240,7 +245,13 @@ async function encryptDomain(
     // sops creates outputTmpPath itself, at umask-derived (not 0600) perms.
     execSeam.chmod(outputTmpPath, 0o600);
 
-    const decryptResult = await execSeam.run(["sops", "-d", outputTmpPath], { env, sensitive: true });
+    // sops picks the data store from the file extension; the `.tmp` suffix would
+    // select the binary store and fail on a JSON tree, so the read-back names
+    // the store explicitly (the real `.json` targets need no override).
+    const decryptResult = await execSeam.run(
+      ["sops", "-d", "--input-type", "json", "--output-type", "json", outputTmpPath],
+      { env, sensitive: true },
+    );
     let roundTripped: Record<string, string> | undefined;
     if (decryptResult.code === 0) {
       try {
@@ -334,8 +345,10 @@ function debugLog(cmd: string[], sensitive: boolean | undefined): void {
  * `.sops.yaml` cwd-relative, so a spawn from a foreign cwd (e.g. a CLI
  * command invoked from inside some other repo) can silently match that
  * repo's own `.sops.yaml` rules and encrypt to the wrong recipients instead
- * of erroring. Pinning `cwd` to `mattstackHome()` makes every sops call
- * resolve the home repo's rules regardless of the caller's cwd.
+ * of erroring. Pinning `cwd` to `<mattstackHome>/user` makes every sops call
+ * resolve the home repo's `.sops.yaml` (also under `user/`) and its
+ * `secrets/.*` path_regex regardless of the caller's cwd — the regex is
+ * cwd-relative, not root-relative, so this cwd and that regex move together.
  */
 export function buildSecretsSpawnOptions(opts?: { env?: Record<string, string> }): {
   cwd: string;
@@ -344,7 +357,7 @@ export function buildSecretsSpawnOptions(opts?: { env?: Record<string, string> }
   stderr: "pipe";
 } {
   return {
-    cwd: mattstackHome(),
+    cwd: join(mattstackHome(), "user"),
     // A fresh object every call (not a live reference/pass-through like
     // init-exec.ts's raw `env: process.env`) — but since it's built from
     // process.env at call time rather than cached once at module load, a

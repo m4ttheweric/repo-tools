@@ -26,3 +26,7 @@ e2e/artifacts/*
 # Docusaurus site build output
 website/build/
 website/.docusaurus/
+
+rt-tray/deps/
+rt-tray/out/
+rt-tray/.build-xcode/

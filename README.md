@@ -204,6 +204,67 @@ rt daemon status          # Show daemon status (pid, uptime, repos, ports)
 rt daemon logs            # Tail daemon log
 ```
 
+### Home repo
+
+`~/.mattstack/user` is a personal git repo, provisioned by `rt home init`.
+While the daemon is running, it watches that repo and auto-commits (and
+pushes) everything in it except paths inside a claimed zone — you never run
+`git add`/`git commit` there yourself for ordinary changes.
+
+```bash
+rt home init                                       # Provision this machine's ~/.mattstack tree
+rt home snapshot                                   # Run the auto-commit cycle right now (reason: manual)
+rt home snapshot --status                          # Show daemon state: enabled, last run/commit, push state, claimed zones
+rt home claim <zone> [--owner] [--note] [--force]   # Tell the daemon to stop auto-committing a path
+rt home release <zone>                              # Let the daemon resume auto-committing a path
+rt home key export                                  # Print the age private key once, for your password manager
+```
+
+A **zone** is a path relative to `~/.mattstack/user`, and is either a
+**directory** (claims everything under it) or a **single file** (claims
+exactly that path and nothing else). Via `rt home claim`, either `prefs/`
+or just `prefs` works for a directory — it stats the real path and decides
+for you, no trailing slash required. Hand-editing `snapshot-owners.jsonc`
+directly is stricter: the trailing slash IS the marker there, so write
+`"prefs/"` for a directory and `"scripts/deploy.sh"` (no slash) for a file
+— a bare `"prefs"` with no slash is read back as a file zone named
+literally `prefs`, not a directory. `release` works either way without
+needing to guess.
+Claim a zone when you're mid-edit on something and don't want the daemon
+committing a half-finished state out from under you — `--owner` defaults to
+`<you>@<machine-key>`, and `--note` is a free-text reason anyone reading the
+owners file can see. Claiming a zone someone else already owns refuses
+(naming them) unless you pass `--force`. Claiming and releasing write
+`user/snapshot-owners.jsonc` directly (no daemon round trip); the daemon then
+snapshots that file itself, like any other change.
+
+A claimed zone left dirty past a threshold is still committed — the
+**janitor rule** — under its own `snapshot (janitor): …` message, so an
+abandoned claim can't block the zone from ever being backed up. The daemon's
+behavior is configured by the `rt.homeSnapshot` settings key (machine-scoped):
+
+```jsonc
+{
+  "enabled": true,             // false disables watching and auto-commits entirely
+  "debounceSec": 20,           // quiet period after a change before committing
+  "pushDelaySec": 60,          // coalescing delay before pushing a commit
+  "janitorThresholdHours": 6,  // a claimed zone dirty this long gets janitor-committed
+  "janitorIntervalMin": 30     // how often the janitor sweep runs
+}
+```
+
+Flipping `enabled` to `false` is a kill switch: the daemon stops committing
+AND cancels any already-scheduled push (including a pending retry) on its
+very next cycle — nothing new reaches `origin` while it's off, though a
+commit already pushed stays pushed. Re-enabling picks a pending push back up
+on the next run.
+
+`rt home snapshot` (manual) reuses an already-in-flight run instead of
+queuing its own: if it lands while the watcher is mid-cycle, it returns THAT
+run's result — which can report `reason: "watch"` and skip janitor zones
+(gated to `"janitor"`/`"manual"`) even though you asked for a manual run.
+Run it again for a fresh manual cycle.
+
 ### Settings
 
 ```bash

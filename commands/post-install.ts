@@ -4,8 +4,10 @@
  *
  * Run from an extracted release tarball (rt + mattstack.app + rt-context.vsix
  * side by side) it is a complete install:
- *   1. Install this binary at ~/.local/bin/rt (unless dev mode owns that path)
- *   2. Copy mattstack.app → ~/Applications (remove quarantine)
+ *   1. Copy mattstack.app → ~/Applications (remove quarantine)
+ *   2. Install this binary at ~/.local/bin/rt — a symlink to the bundle's
+ *      OWN Contents/MacOS/rt (step 1 must run first, since the link target
+ *      lives inside what it just copied), unless dev mode owns that path
  *   3. Install rt-context.vsix into all detected editors (best-effort, non-interactive)
  *   4. Install daemon as a launchd agent (auto-starts on login)
  *   5. Write shell integration to the user's rc file (PATH + rtcd, idempotent)
@@ -18,8 +20,9 @@ import { spawnSync } from "child_process";
 import { existsSync, readFileSync, readdirSync, mkdirSync, rmSync, cpSync, writeFileSync, realpathSync } from "fs";
 import { join, resolve, dirname } from "path";
 import { homedir } from "os";
-import { TRAY_APP_NAME, TRAY_APP_BUNDLE, trayAppPath, legacyTrayAppPaths } from "../lib/rt-paths.ts";
+import { TRAY_APP_NAME, TRAY_APP_BUNDLE, trayAppInstallDest, legacyTrayAppPaths } from "../lib/rt-paths.ts";
 import { currentMode, installRtBinary, rtBinaryPath } from "../lib/dev-mode.ts";
+import { RT_BUNDLE_PATH } from "../lib/bundle-layout.ts";
 import { installShellIntegration, detectShell, shellRcPath } from "../lib/shell-integration.ts";
 
 const HOME = homedir();
@@ -32,26 +35,56 @@ function log(icon: string, label: string, detail = ""): void {
 function ok(label: string, detail = "")  { log("✓", label, detail); }
 function fail(label: string, detail = "") { log("✗", label, detail); }
 function info(label: string, detail = "") { log("·", label, detail); }
+function warn(label: string, detail = "") { log("⚠", label, detail); }
 
 // ─── 1. rt binary ─────────────────────────────────────────────────────────────
 
+/**
+ * Where installRtBinaryStep should link `~/.local/bin/rt` from. Prefers the
+ * rt inside the just-installed bundle (`bundleInstallDest`) over
+ * `execPath` (the binary running THIS install, sitting in the transient
+ * extracted-tarball dir) — the symlink must survive the tarball being
+ * deleted after install, so it can never target that dir. Falls back to
+ * `execPath` only when the bundle doesn't carry Contents/MacOS/rt (an older
+ * tarball layout) and we can tell we're running from an extracted release at
+ * all; returns null when neither is true (an already-installed binary with
+ * nothing beside it to install from).
+ */
+export function resolveRtBinarySrc(
+  bundleInstallDest: string,
+  execPath: string,
+  exists: (path: string) => boolean = existsSync,
+): { src: string; fallbackWarning: boolean } | null {
+  const bundleBinary = join(bundleInstallDest, RT_BUNDLE_PATH);
+  if (exists(bundleBinary)) return { src: bundleBinary, fallbackWarning: false };
+  if (exists(resolve(execPath, `../${TRAY_APP_BUNDLE}`))) return { src: execPath, fallbackWarning: true };
+  return null;
+}
+
 function installRtBinaryStep(): void {
   const dest = rtBinaryPath();
-  const src = process.execPath;
+  if (currentMode() === "dev") {
+    info("rt", `dev mode owns ${dest} — leaving the wrapper in place`);
+    return;
+  }
+
+  const resolved = resolveRtBinarySrc(trayAppInstallDest(), process.execPath);
+  if (!resolved) {
+    info("rt", "not running from an extracted release — skipping binary install");
+    return;
+  }
+  if (resolved.fallbackWarning) {
+    warn("rt", `${TRAY_APP_BUNDLE} has no ${RT_BUNDLE_PATH} — linking to the extracted binary instead`);
+  }
+  const src = resolved.src;
+
   let alreadyThere = false;
   try { alreadyThere = existsSync(dest) && realpathSync(dest) === realpathSync(src); } catch { /* unreadable dest: install over it */ }
   if (alreadyThere) {
     info("rt", `already installed at ${dest}`);
     return;
   }
-  if (currentMode() === "dev") {
-    info("rt", `dev mode owns ${dest} — leaving the wrapper in place`);
-    return;
-  }
-  if (!existsSync(resolve(src, `../${TRAY_APP_BUNDLE}`))) {
-    info("rt", "not running from an extracted release — skipping binary install");
-    return;
-  }
+
   try {
     installRtBinary(src);
     ok("rt", `→ ${dest}`);
@@ -69,7 +102,7 @@ function installTrayApp(): void {
     return;
   }
 
-  const destTray = trayAppPath();
+  const destTray = trayAppInstallDest();
   const appsDir = dirname(destTray);
 
   try {
@@ -216,7 +249,7 @@ async function checkTccAccess(): Promise<void> {
     console.log(`  Grant FDA to ${TRAY_APP_NAME}, then restart the daemon:`);
     console.log("");
     console.log("    1. System Settings → Privacy & Security → Full Disk Access");
-    console.log(`    2. Click + and add: ${trayAppPath()}`);
+    console.log(`    2. Click + and add: ${trayAppInstallDest()}`);
     console.log("    3. rt daemon restart");
     console.log("");
     spawnSync("open", ["x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"], { stdio: "pipe" });
@@ -339,13 +372,13 @@ export async function runPostInstall(): Promise<void> {
   const migrating = legacySweepNeeded();
   if (migrating) runLegacySweep();
 
-  installRtBinaryStep();
   installTrayApp();
+  installRtBinaryStep();
   installExtensions();
 
   // Launch mattstack.app BEFORE installing the daemon so the tray's HTTP
   // server is up when `rt daemon install` calls trayQuery("/daemon/start").
-  const trayDest = trayAppPath();
+  const trayDest = trayAppInstallDest();
   if (existsSync(trayDest)) {
     spawnSync("open", [trayDest], { stdio: "pipe", env: process.env });
     ok(TRAY_APP_BUNDLE, "launched — waiting for tray to start…");
