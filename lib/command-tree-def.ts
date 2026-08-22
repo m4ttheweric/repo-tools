@@ -58,6 +58,16 @@ const runsSubcommands: Record<string, CommandNode> = {
       { name: "Repo", flag: "--repo", type: "text", placeholder: "myrepo", hint: "Registry repo name" },
     ],
   },
+  abandon: {
+    description: "Mark a wedged run abandoned (the run died with its session and the DB still says running)",
+    module: "./commands/runs.ts",
+    fn: "runsAbandon",
+    args: [
+      { name: "Run id", type: "text", placeholder: "20260822-134012-x4x2", hint: "Run to reconcile" },
+      { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Repo the run belongs to; omit to scan" },
+      { name: "Reason", flag: "--reason", type: "text", placeholder: "no owning process", hint: "Recorded against the run" },
+    ],
+  },
 };
 
 const interceptSubcommands: Record<string, CommandNode> = {
