@@ -112,8 +112,10 @@ ax_click() {  # <axid>
 }
 
 ax_click_button_named() {  # <name> [<process>]
+  # $AX_APP is escaped once already (line 15); only an explicit $2 (raw) needs ax_esc here.
   local p="${2:-$AX_APP}" pe nm
-  pe=$(ax_esc "$p"); nm=$(ax_esc "$1")
+  pe="$p"; [ -n "${2:-}" ] && pe=$(ax_esc "$p")
+  nm=$(ax_esc "$1")
   ax_osa "tell application \"System Events\" to tell process \"$pe\" to click (first button of window 1 whose name is \"$nm\")" >/dev/null || return 1
   ax_log "clicked button '$1' in $p"
 }

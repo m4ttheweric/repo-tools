@@ -36,10 +36,10 @@ t "ax.sh refuses when GUEST_RUN unmounted"        bash -c '! (env -u GUEST_RUN A
 # The "no syntax error" half of this assertion is load-bearing, not decoration: osascript exits 1
 # on both a clean "not found" runtime error and a broken-script compile error alike, so an
 # exit-code-only check can green-light a walk() AppleScript that never even compiles.
-t "ax.sh sources + fails clean against no app"    env GUEST_RUN=/tmp/vmcheck-ax AX_APP=definitely-not-running bash -c 'source run/guest/ax.sh && ! ax_wait_window x 1 && ! ax_find setup.welcome.screen >/dev/null 2>&1 && ! ax_wait_screen welcome 1 && ! grep -qi "script error\|Expected " "$AX_LOG"'
+t "ax.sh sources + fails clean against no app"    env GUEST_RUN=/tmp/vmcheck-ax AX_APP=definitely-not-running bash -c 'source run/guest/ax.sh && ! ax_wait_window x 1 && ! ax_find setup.welcome.screen >/dev/null 2>&1 && ! ax_wait_screen welcome 1 && ! grep -qi "script error\|Expected \|syntax error" "$AX_LOG"'
 t "ax_shot skips instantly under --no-graphics"   env GUEST_RUN=/tmp/vmcheck-ax AX_APP=x bash -c 'source run/guest/ax.sh; s=$SECONDS; ax_shot probe >/dev/null; [ $((SECONDS-s)) -le 3 ] && grep -q "skipped (--no-graphics)" "$AX_LOG"'
 t "ax_admin_auth_once returns fast with no SecurityAgent" env GUEST_RUN=/tmp/vmcheck-ax AX_APP=x bash -c 'source run/guest/ax.sh; s=$SECONDS; ax_admin_auth_once; rc=$?; [ "$rc" -eq 1 ] && [ $((SECONDS-s)) -le 3 ]'
-t "ax_set_field escapes an embedded quote/backslash" env GUEST_RUN=/tmp/vmcheck-ax AX_APP=definitely-not-running bash -c 'source run/guest/ax.sh; ( ax_set_field setup.team.create.name "weird\"value\\here" ) 2>/dev/null; [ $? -eq 1 ] && ! grep -qi "script error\|Expected " "$AX_LOG"'
+t "ax_set_field escapes an embedded quote/backslash" env GUEST_RUN=/tmp/vmcheck-ax AX_APP=definitely-not-running bash -c 'source run/guest/ax.sh; ( ax_set_field setup.team.create.name "weird\"value\\here" ) 2>/dev/null; [ $? -eq 1 ] && ! grep -qi "script error\|Expected \|syntax error" "$AX_LOG"'
 t "drive-setup.sh refuses when GUEST_RUN unmounted" bash -c '! (env -u GUEST_RUN AX_APP=x bash run/guest/drive-setup.sh create >/dev/null 2>&1)'
 t "drive-setup.sh rejects unknown scenario"       bash -c '! (env GUEST_RUN=/tmp/vmcheck-ax AX_APP=x bash run/guest/drive-setup.sh bogus >/dev/null 2>&1)'
 t "drive-setup.sh rejects unknown flag"           bash -c '! (env GUEST_RUN=/tmp/vmcheck-ax AX_APP=x bash run/guest/drive-setup.sh create --nope >/dev/null 2>&1)'
