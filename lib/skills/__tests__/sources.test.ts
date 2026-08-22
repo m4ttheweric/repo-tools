@@ -140,6 +140,22 @@ describe("stripFrontmatter", () => {
     expect(result.body).toBe("Just prose, no frontmatter.");
     expect(result.frontmatter).toEqual({});
   });
+
+  test("reports the line the body starts on", () => {
+    const withFm = "---\nname: x\ndescription: y\n---\n\n# Body\n";
+    const r = stripFrontmatter(withFm);
+    expect(r.body.startsWith("# Body")).toBe(true);
+    expect(r.bodyStartLine).toBe(6); // 1-indexed line of "# Body"
+
+    const withoutFm = "# Body\n";
+    expect(stripFrontmatter(withoutFm).bodyStartLine).toBe(1);
+  });
+
+  test("trailing blank lines after the body do not shift bodyStartLine", () => {
+    // body is trimmed at both ends -- a length-difference formula would count
+    // these trailing newlines as if they were leading, landing on line 8 instead of 5.
+    expect(stripFrontmatter("---\nname: x\n---\n\n# Body\n\n\n\n").bodyStartLine).toBe(5);
+  });
 });
 
 describe("loadStepSource", () => {
@@ -159,6 +175,8 @@ describe("loadStepSource", () => {
     });
     expect(step.allowedTools).toEqual(["Bash(gh:*)", "Read"]);
     expect(step.stepFiles).toEqual(["references/polling-notes.md", "scripts/ci-watch.sh"]);
+    expect(step.srcPath).toBe(join("skills", "pipeline", "watch-ci", "SKILL.md"));
+    expect(step.bodyStartLine).toBe(13);
   });
 
   test("throws naming the file when the engine has no type: pipeline-step", () => {
@@ -226,6 +244,8 @@ describe("loadAttachment", () => {
     expect(fill.version).toBe("0.3.0");
     expect(fill.provides).toBe("watch-ci-domain@1");
     expect(fill.dir.endsWith(join("skills", "cvi-gates"))).toBe(true);
+    expect(fill.srcPath).toBe(join("skills", "cvi-gates", "SKILL.md"));
+    expect(fill.bodyStartLine).toBe(10);
   });
 
   test("finds an unregistered skill under attachments/", () => {
@@ -239,6 +259,8 @@ describe("loadAttachment", () => {
     expect(fill.body).toBe("Domain rules live at ${CLAUDE_SKILL_DIR}/ci-config.json for details.");
     expect(fill.allowedTools).toEqual(["Read(${CLAUDE_SKILL_DIR}/ci-config.json)"]);
     expect(fill.dir.endsWith(join("attachments", "watch-ci-domain"))).toBe(true);
+    expect(fill.srcPath).toBe(join("attachments", "watch-ci-domain", "SKILL.md"));
+    expect(fill.bodyStartLine).toBe(10);
   });
 
   test("extraFiles excludes SKILL.md and includes nested files", () => {
