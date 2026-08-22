@@ -179,6 +179,14 @@ export const REGISTRY: readonly SettingDef[] = [
     migrated: true,
     description: "Machine-local worktree feature toggle (enabled, killProcesses); ownership-latch port of ~/.mattstack/rt/worktrees.json, store wins per field. A distinct key from rt.worktrees (the per-repo pool config above) on purpose — same file family, unrelated shape and scope.",
   },
+  {
+    key: "rt.sdmEnrichment",
+    type: "object",
+    scopes: ["team"],
+    merge: "replace",
+    migrated: true,
+    description: "Team-declared StrongDM resource enrichment (resource name -> label/tier/db/reasonSuggestion); team-ONLY by design, enrichment names employer resources and must never be settable in a user or machine store. Ownership-latch port of ~/.mattstack/rt/sdm/enrichment.jsonc, store wins wholesale (a name-keyed map, not a field-bag).",
+  },
 
   // --- migrated:false (deferred by ruling) --------------------------------
   {
