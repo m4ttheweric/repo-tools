@@ -1,27 +1,37 @@
 /**
- * The need protocol: how `rt setup apply` asks the running mattstack.app to
- * do something rt itself cannot (register a LaunchAgent, run the privileged
- * proxy install) and waits for the answer over tray.sock.
+ * The need protocol: how `rt setup apply`/`rt uninstall` ask the running
+ * mattstack.app to do something rt itself cannot (register a LaunchAgent,
+ * run the privileged proxy install/remove) and wait for the answer over
+ * tray.sock.
  *
- * The apply engine emits `{event:"need", id, request}` on stdout, then calls
+ * The engine emits `{event:"need", id, request}` on stdout, then calls
  * `awaitNeed` to poll `GET /setup/need/<id>` until the app records a
  * terminal outcome. The route always answers 200 with `{state, detail?}` —
  * an unknown or not-yet-started id is "pending", never 404 — but rt
  * tolerates a 404 as pending too, since it costs nothing and covers a stale
- * app build. Works identically whether the app answers instantly or holds
- * the GET open.
+ * app build. Each poll's own GET times out at 30s and comes back status 0,
+ * indistinguishable from a genuinely gone app — a request the app held open
+ * past that would misread as "app-gone" after three polls. That never
+ * happens against the merged app: NeedBroker's outcome read is a
+ * non-blocking actor read that answers immediately either way.
  */
 
 import type { TrayClient } from "../daemon-client.ts";
 import { bundledToolPath } from "../deps/resolve.ts";
+import type { EventId } from "./contract.ts";
 import type { Probes } from "./probes.ts";
-import type { StepId } from "./contract.ts";
 
 /** The prod-flavor plist names; dev mode inserts ".dev" before ".plist" (see servicePlists). */
 export const SERVICE_PLISTS = ["com.mattstack.daemon.plist", "com.mattstack.deck.plist"] as const;
 
 function devFlavor(name: string, mode: "dev" | "prod"): string {
   return mode === "dev" ? name.replace(/\.plist$/, ".dev.plist") : name;
+}
+
+export interface ServicePlists {
+  plists: string[];
+  /** True when the deck plist was left out because deck isn't bundled — a caller decides whether that's worth telling the user about. */
+  deckOmitted: boolean;
 }
 
 /**
@@ -32,11 +42,14 @@ function devFlavor(name: string, mode: "dev" | "prod"): string {
  * an unbundled deck matters because the app reports `ok` only when every
  * *requested* plist registers — asking for one whose BundleProgram doesn't
  * exist would turn a normal daemon-only install into a reported failure.
+ * The bundle check runs once here — every caller reads `deckOmitted` off
+ * the result instead of re-running its own `bundledToolPath` check.
  */
-export function servicePlists(mode: "dev" | "prod", p: Pick<Probes, "exists" | "home">): string[] {
+export function servicePlists(mode: "dev" | "prod", p: Pick<Probes, "exists" | "home">): ServicePlists {
+  const deckBundled = bundledToolPath(p, "deck") !== null;
   const plists = [devFlavor(SERVICE_PLISTS[0], mode)];
-  if (bundledToolPath(p, "deck") !== null) plists.push(devFlavor(SERVICE_PLISTS[1], mode));
-  return plists;
+  if (deckBundled) plists.push(devFlavor(SERVICE_PLISTS[1], mode));
+  return { plists, deckOmitted: !deckBundled };
 }
 
 export interface NeedReply {
@@ -60,7 +73,7 @@ function realSleep(ms: number): Promise<void> {
 
 export async function awaitNeed(
   tray: TrayClient,
-  id: StepId,
+  id: EventId,
   opts: { timeoutMs?: number; pollMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
 ): Promise<NeedReply | "timeout" | "app-gone"> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;

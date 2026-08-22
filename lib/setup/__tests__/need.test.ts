@@ -56,14 +56,14 @@ describe("servicePlists", () => {
     const deckPath = join(appRoot, HELPERS_DIR, "deck");
     const p = fakeProbes({ home, files: { [deckPath]: "deck-binary" }, dirs: { [appRoot]: [] } });
 
-    expect(servicePlists("dev", p)).toEqual(["com.mattstack.daemon.dev.plist", "com.mattstack.deck.dev.plist"]);
-    expect(servicePlists("prod", p)).toEqual(["com.mattstack.daemon.plist", "com.mattstack.deck.plist"]);
+    expect(servicePlists("dev", p)).toEqual({ plists: ["com.mattstack.daemon.dev.plist", "com.mattstack.deck.dev.plist"], deckOmitted: false });
+    expect(servicePlists("prod", p)).toEqual({ plists: ["com.mattstack.daemon.plist", "com.mattstack.deck.plist"], deckOmitted: false });
   });
 
-  test("deck not bundled -> daemon only", () => {
+  test("deck not bundled -> daemon only, deckOmitted true", () => {
     const p = fakeProbes({ home });
-    expect(servicePlists("dev", p)).toEqual(["com.mattstack.daemon.dev.plist"]);
-    expect(servicePlists("prod", p)).toEqual(["com.mattstack.daemon.plist"]);
+    expect(servicePlists("dev", p)).toEqual({ plists: ["com.mattstack.daemon.dev.plist"], deckOmitted: true });
+    expect(servicePlists("prod", p)).toEqual({ plists: ["com.mattstack.daemon.plist"], deckOmitted: true });
   });
 
   test("SERVICE_PLISTS names the prod-flavor pair", () => {
@@ -159,5 +159,14 @@ describe("awaitNeed", () => {
     const result = await awaitNeed(tray, "services.register", { timeoutMs: 60_000, pollMs: 1_000, now, sleep });
     expect(result).toEqual({ ok: true, detail: "registered" });
     expect(attempts).toBe(5);
+  });
+
+  test("polls an UninstallActionId (EventId, not just StepId) — needed for services.unregister/proxy.remove", async () => {
+    const tray = fakeTray({
+      "GET /setup/need/services.unregister": () => ({ status: 200, json: { state: "done", detail: "unregistered" } }),
+    });
+    const { now, sleep } = fakeClock();
+    const result = await awaitNeed(tray, "services.unregister", { now, sleep });
+    expect(result).toEqual({ ok: true, detail: "unregistered" });
   });
 });
