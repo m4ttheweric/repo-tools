@@ -1,7 +1,13 @@
-import { describe, test, expect, spyOn } from "bun:test";
-import { teamCreate, teamPublish, type TeamDeps } from "../team.ts";
+import { afterEach, beforeEach, describe, test, expect, spyOn } from "bun:test";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { teamCreate, teamInvite, teamPublish, type TeamDeps } from "../team.ts";
 import { fakeProbes } from "../../lib/setup/__tests__/fakes.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../lib/home/age-key.ts";
+import type { ExecScript } from "../../lib/setup/__tests__/fakes.ts";
+import type { Probes } from "../../lib/setup/probes.ts";
+import { pasteBlock } from "../../lib/team/invite.ts";
 
 const FAKE_PUBLIC_KEY = "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
 const FAKE_PRIVATE_KEY = "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ";
@@ -37,17 +43,7 @@ function depsWithZone(overrides: Partial<TeamDeps> = {}) {
   return baseDeps({ probes: fakeProbes({ home: "/home/x", dirs: { [ZONE_DIR]: [] } }), ...overrides });
 }
 
-/** For the `deps.exit`-injected exit-1 usage path (a bad-args refusal, no UserActionableError involved). */
-async function expectDepsExit(fn: () => Promise<void>): Promise<void> {
-  try {
-    await fn();
-    throw new Error("expected exit sentinel, function returned normally");
-  } catch (err) {
-    if (!(err instanceof Error) || err.message !== "exit sentinel") throw err;
-  }
-}
-
-/** `exitUserError` (lib/setup/errors.ts) calls the real `process.exit(2)` directly, not `deps.exit` — every UserActionableError path needs the process.exit spy, not the deps.exit sentinel. */
+/** Every exit path (usage refusals included, now that they route through `exitUserError`) calls the real `process.exit(2)`, never `deps.exit` — `deps.exit` stays only as a defensive sentinel that would fail a test loudly if some future path called it unexpectedly. */
 async function runExpectingProcessExit(fn: () => Promise<void>): Promise<number | undefined> {
   const exitSpy = spyOn(process, "exit").mockImplementation(() => {
     throw new Error("process.exit sentinel");
@@ -96,11 +92,21 @@ describe("teamCreate", () => {
     expect(body.error.code).toBe("remote-required");
   });
 
-  test("missing name prints usage and exits 1", async () => {
+  test("missing name, --json: exits 2 with the usage envelope, not a plain-text line", async () => {
     const deps = baseDeps();
-    await expectDepsExit(() => teamCreate(["--remote", "https://github.com/acme/repo.git"], {}, deps));
+    const code = await runExpectingProcessExit(() => teamCreate(["--remote", "https://github.com/acme/repo.git", "--json"], {}, deps));
 
-    expect(deps.exitCodes).toEqual([1]);
+    expect(code).toBe(2);
+    const body = JSON.parse(deps.lines[0]!);
+    expect(body.error.code).toBe("usage");
+    expect(body.error.message).toContain("usage:");
+  });
+
+  test("missing name, human mode: prints usage and exits 2", async () => {
+    const deps = baseDeps();
+    const code = await runExpectingProcessExit(() => teamCreate(["--remote", "https://github.com/acme/repo.git"], {}, deps));
+
+    expect(code).toBe(2);
     expect(deps.lines[0]).toContain("usage:");
   });
 
@@ -152,5 +158,109 @@ describe("teamPublish", () => {
     expect(code).toBe(2);
     const body = JSON.parse(deps.lines[0]!);
     expect(body.error.code).toBe("no-team-zone");
+  });
+});
+
+/**
+ * `teamInvite` mints through `mintInvite`'s DEFAULT seams (not injectable at
+ * the command layer), which read/write real settings stores via
+ * process.env.HOME — so, unlike the fakeProbes-only tests above, this needs
+ * a real temp HOME seeded with a real team store, mirrored into fakeProbes
+ * at the same paths for the Probes-mediated reads (git config, exec, fetch).
+ */
+describe("teamInvite", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+  let teamDir: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-team-invite-cmd-home-")));
+    process.env.HOME = home;
+
+    teamDir = join(home, ".mattstack", "teams", "acme");
+    mkdirSync(join(teamDir, "mattstack"), { recursive: true });
+    writeFileSync(join(teamDir, "mattstack", "settings.team.jsonc"), `${JSON.stringify({ "board.title": "Acme Team" }, null, 2)}\n`);
+    mkdirSync(join(teamDir, ".git"), { recursive: true });
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const GIT_CONFIG = `[remote "origin"]\n\turl = git@github.com:acme/widgets.git\n`;
+
+  function ghExec(putResult: { code: number; stdout: string; stderr: string } = { code: 0, stdout: "", stderr: "" }): ExecScript {
+    return (argv) => {
+      if (argv[0] === "gh" && argv[1] === "api" && argv[2] === "user") return { code: 0, stdout: JSON.stringify({ login: "octocat" }), stderr: "" };
+      if (argv[0] === "gh" && argv[2] === "-X" && argv[3] === "PUT") return putResult;
+      return { code: 0, stdout: "", stderr: "" };
+    };
+  }
+
+  function relayFetch(): Probes["fetch"] {
+    return async (url, init) => {
+      if (init?.method === "POST" && url.endsWith("/v1/invites")) {
+        const body = JSON.parse(init.body ?? "{}") as { id?: string };
+        return { status: 200, body: JSON.stringify({ id: body.id ?? "0".repeat(32), creatorSecret: "creator-secret-1" }), headers: {} };
+      }
+      return { status: 404, body: "", headers: {} };
+    };
+  }
+
+  function inviteDeps(overrides: { exec?: ExecScript } = {}): TeamDeps & { lines: string[]; exitCodes: number[] } {
+    return baseDeps({
+      probes: fakeProbes({
+        home,
+        files: { [join(teamDir, ".git", "config")]: GIT_CONFIG },
+        exec: overrides.exec ?? ghExec(),
+        fetch: relayFetch(),
+      }),
+    });
+  }
+
+  test("--json prints the exact contract envelope shape", async () => {
+    const deps = inviteDeps();
+    await teamInvite(["--handle", "zaphod", "--json"], {}, deps);
+
+    expect(deps.lines).toHaveLength(1);
+    const parsed = JSON.parse(deps.lines[0]!);
+    expect(Object.keys(parsed).sort()).toEqual(["at", "code", "contract", "expiresAt", "forgeAccess", "manualSteps", "pasteBlock"]);
+    expect(typeof parsed.at).toBe("string");
+    // `code` is a fresh random secret every mint — every other field is exact, and pasteBlock is exact once code is known.
+    expect(typeof parsed.code).toBe("string");
+    expect(parsed.contract).toBe(1);
+    expect(parsed.expiresAt).toBe("2026-01-08T00:00:00.000Z");
+    expect(parsed.forgeAccess).toBe("granted");
+    expect(parsed.manualSteps).toEqual([]);
+    expect(parsed.pasteBlock).toBe(pasteBlock(parsed.code));
+  });
+
+  test("missing --handle, --json: exits 2 with the usage envelope", async () => {
+    const deps = baseDeps();
+    const code = await runExpectingProcessExit(() => teamInvite(["--json"], {}, deps));
+
+    expect(code).toBe(2);
+    const body = JSON.parse(deps.lines[0]!);
+    expect(body.error.code).toBe("usage");
+    expect(body.error.message).toContain("usage:");
+  });
+
+  test("missing --handle, human mode: prints usage and exits 2", async () => {
+    const deps = baseDeps();
+    const code = await runExpectingProcessExit(() => teamInvite([], {}, deps));
+
+    expect(code).toBe(2);
+    expect(deps.lines[0]).toContain("usage:");
+  });
+
+  test("human output prints the manual steps when forge access isn't granted", async () => {
+    const deps = inviteDeps({ exec: ghExec({ code: 127, stdout: "", stderr: "ENOENT: gh" }) });
+    await teamInvite(["--handle", "zaphod"], {}, deps);
+
+    expect(deps.lines[0]).toContain("mattstack://join/");
+    const rest = deps.lines.slice(1).join("\n");
+    expect(rest).toContain("forge access is manual");
+    expect(rest).toContain("Open https://github.com/acme/widgets/settings/access");
   });
 });

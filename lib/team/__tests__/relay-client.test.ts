@@ -86,6 +86,31 @@ describe("create", () => {
     const client = createRelayClient(fetchFn, BASE_URL);
     await expectUserActionableError(client.create("ct", "2026-09-01T00:00:00.000Z"), "relay-error");
   });
+
+  test("a client-supplied id is included in the POST body", async () => {
+    const { fetchFn, calls } = singleRouteFetch({
+      status: 200,
+      body: JSON.stringify({ id: ID_HEX, creatorSecret: "secret-xyz" }),
+    });
+    const client = createRelayClient(fetchFn, BASE_URL);
+
+    await client.create("ciphertext-blob", "2026-09-01T00:00:00.000Z", ID_HEX);
+
+    expect(JSON.parse(calls[0]!.body!)).toEqual({ ciphertext: "ciphertext-blob", expiresAt: "2026-09-01T00:00:00.000Z", id: ID_HEX });
+  });
+
+  test("a non-opaque supplied id (e.g. a handle passed by mistake) is rejected before any request is sent", async () => {
+    const { fetchFn, calls } = singleRouteFetch({ status: 200, body: JSON.stringify({ id: ID_HEX, creatorSecret: "x" }) });
+    const client = createRelayClient(fetchFn, BASE_URL);
+    await expectUserActionableError(client.create("ct", "2026-09-01T00:00:00.000Z", "alice"), "relay-error");
+    expect(calls).toHaveLength(0);
+  });
+
+  test("409 (id already exists) maps to a distinguishable relay-id-conflict, not the generic relay-error", async () => {
+    const { fetchFn } = singleRouteFetch({ status: 409, body: "" });
+    const client = createRelayClient(fetchFn, BASE_URL);
+    await expectUserActionableError(client.create("ct", "2026-09-01T00:00:00.000Z", ID_HEX), "relay-id-conflict");
+  });
 });
 
 describe("fetch", () => {
@@ -341,7 +366,8 @@ describe("invariant: relay traffic never carries plaintext", () => {
     });
 
     const client = createRelayClient(fetchFn, BASE_URL);
-    await client.create(ciphertext, "2026-09-01T00:00:00.000Z");
+    // id-carrying create — the form mintInvite actually uses (the id doubles as this seal's AAD, so it must be supplied, not relay-assigned).
+    await client.create(ciphertext, "2026-09-01T00:00:00.000Z", idHex);
     await client.fetch(idHex);
     await client.redeem(idHex);
     await client.reply(idHex, replyBlob);
@@ -349,10 +375,11 @@ describe("invariant: relay traffic never carries plaintext", () => {
     await client.delete(idHex, creatorSecret);
 
     expect(calls.length).toBeGreaterThanOrEqual(6);
+    const keyMaterial = [Buffer.from(key).toString("base64"), Buffer.from(key).toString("hex")];
     for (const call of calls) {
       const haystacks = [call.url, call.body ?? "", ...Object.values(call.headers)];
       for (const haystack of haystacks) {
-        for (const secret of plaintextSubstrings) {
+        for (const secret of [...plaintextSubstrings, ...keyMaterial]) {
           expect(haystack).not.toContain(secret);
         }
       }
