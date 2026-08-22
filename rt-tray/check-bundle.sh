@@ -141,8 +141,13 @@ if [ "$PROD_RT_SIZE" -gt 1000000 ]; then pass "prod rt looks compiled ($PROD_RT_
 
 # ─── Signing: every Mach-O signed, hardened runtime when Developer ID, jit-only entitlements ───
 sign_flags() { codesign -dvv "$1" 2>&1 | grep -E '^(flags|Authority)=' | head -2 | tr '\n' ' '; }
-has_runtime() { codesign -dvv "$1" 2>&1 | grep -q 'flags=.*runtime'; }
-is_devid() { codesign -dvv "$1" 2>&1 | grep -q 'Authority=Developer ID Application'; }
+# Piping codesign straight into `grep -q` is a pipefail trap: grep exits on
+# its first match while codesign is still writing later lines, so codesign
+# dies of SIGPIPE and pipefail reports the whole pipeline as failed even
+# though the pattern WAS found. Capture full output first, then match on the
+# captured string so nothing is still writing when the match happens.
+has_runtime() { local out; out="$(codesign -dvv "$1" 2>&1)"; [[ "$out" =~ flags=.*runtime ]]; }
+is_devid() { local out; out="$(codesign -dvv "$1" 2>&1)"; [[ "$out" == *"Authority=Developer ID Application"* ]]; }
 ent_has() { codesign -d --entitlements - --xml "$1" 2>/dev/null | grep -q "$2"; }
 check_signed() { # path label want-ent(none|jit)
     local p="$1" label="$2" want="$3"
@@ -159,7 +164,17 @@ for app in "${APPS[@]}"; do
     if [ ! -f "$app/Contents/Info.plist" ]; then fail "Info.plist missing, cannot determine executable name for signing checks ($app)"; continue; fi
     exe="$(plist "$app/Contents/Info.plist" CFBundleExecutable)"
     if [ -z "$exe" ]; then fail "CFBundleExecutable unreadable from $app/Contents/Info.plist, skipping signing checks"; continue; fi
-    codesign --verify --deep --strict "$app" 2>/dev/null && pass "$exe bundle verifies (--deep --strict)" || fail "$exe bundle fails codesign --verify --deep --strict"
+    # THE deep-verify gate (R-T4-5): build.sh itself only ever runs --strict
+    # (never --deep, which would corrupt the nested Sparkle XPC signatures),
+    # so this is the only place the full inside-out signature chain is
+    # proven. Any stderr output counts as a failure even at rc 0 — codesign
+    # can print a warning and still exit clean.
+    DEEP_VERIFY_OUT="$(codesign --verify --deep --strict "$app" 2>&1)"; DEEP_VERIFY_RC=$?
+    if [ "$DEEP_VERIFY_RC" -eq 0 ] && [ -z "$DEEP_VERIFY_OUT" ]; then
+        pass "$exe bundle deep-verifies clean (--deep --strict, no output)"
+    else
+        fail "$exe bundle deep-verify failed (rc=$DEEP_VERIFY_RC): ${DEEP_VERIFY_OUT:-<no output>}"
+    fi
     check_signed "$app/Contents/MacOS/rt" "$exe rt" jit
     check_signed "$app/Contents/MacOS/$exe" "$exe tray" none
     # Inner/outer identity must match (no nested ad-hoc inside a Developer ID
@@ -173,6 +188,16 @@ for app in "${APPS[@]}"; do
         assert_eq "$exe inner/outer signing authority" "$AUTH_OUTER" "$AUTH_INNER"
     fi
 done
+
+# ─── MattstackCore.framework (xcodebuild path only — swift build never embeds it) ───
+check_core_framework() { # app
+    local app="$1" exe fw; exe="$(plist "$app/Contents/Info.plist" CFBundleExecutable)"; fw="$app/Contents/Frameworks/MattstackCore.framework"
+    [ -d "$fw" ] || { echo "  · $exe: MattstackCore.framework absent (swift-build path, not xcodebuild)"; return; }
+    codesign --verify --strict "$fw" 2>/dev/null && pass "$exe MattstackCore.framework signature verifies" || fail "$exe MattstackCore.framework signature does not verify"
+    if is_devid "$fw"; then has_runtime "$fw" && pass "$exe MattstackCore.framework has hardened runtime" || fail "$exe MattstackCore.framework lacks hardened runtime ($(sign_flags "$fw"))"; fi
+}
+check_core_framework "$PROD"
+[ -n "$DEV" ] && check_core_framework "$DEV"
 
 # ─── Icons ──────────────────────────────────────────────────────────────────
 [ -f "$PROD/Contents/Resources/AppIcon.icns" ] && pass "prod ships AppIcon.icns" || fail "prod missing AppIcon.icns"
@@ -202,6 +227,11 @@ check_helpers() { # app
     local app="$1" exe; exe="$(plist "$app/Contents/Info.plist" CFBundleExecutable)"
     if [ ! -d "$SCRIPT_DIR/deps/arm64" ] && ! $INSTALLED_ONLY; then echo "  ⚠ $exe: rt-tray/deps/arm64 absent — Helpers assertions skipped (scripts/fetch-deps.sh arm64)"; return; fi
     cmp -s "$SCRIPT_DIR/deps.lock" "$app/Contents/Resources/deps.lock" && pass "$exe Resources/deps.lock matches rt-tray/deps.lock" || fail "$exe Resources/deps.lock missing or stale"
+    if find "$app" -name '*.sha256' -print -quit 2>/dev/null | grep -q .; then
+        fail "$exe bundle contains .sha256 stamp files (deps/arm64 fetch stamps must never be copied in)"
+    else
+        pass "$exe bundle carries no .sha256 stamp files"
+    fi
     local row name bundlePath ent status p
     while IFS= read -r row; do
         [ -n "$row" ] || continue
@@ -232,7 +262,42 @@ check_helpers "$PROD"
 # Agent PATH is the static system set (asserted per plist in check_identity); services never
 # capture a shell PATH and never bake in an install location — rt/deck prepend their own Helpers dir.
 
-# ═══ Sparkle — not yet asserted ══════════════════════════════════════════════
+# ═══ Sparkle ═══
+check_sparkle() { # app
+    local app="$1" exe fw; exe="$(plist "$app/Contents/Info.plist" CFBundleExecutable)"; fw="$app/Contents/Frameworks/Sparkle.framework"
+    [ -d "$fw" ] || { fail "$exe missing Contents/Frameworks/Sparkle.framework"; return; }
+    pass "$exe ships Sparkle.framework"
+    otool -L "$app/Contents/MacOS/$exe" | grep -q '@rpath/Sparkle.framework' && pass "$exe tray links Sparkle via @rpath" || fail "$exe tray does not link Sparkle"
+    otool -l "$app/Contents/MacOS/$exe" | grep -A2 LC_RPATH | grep -q '@executable_path/../Frameworks' && pass "$exe tray has the Frameworks rpath" || fail "$exe tray lacks the @executable_path/../Frameworks rpath"
+    codesign --verify --deep --strict "$fw" 2>/dev/null && pass "$exe Sparkle.framework verifies (inside-out signed)" || fail "$exe Sparkle.framework signature broken"
+    for xpc in Installer Downloader; do
+        codesign --verify --strict "$fw/Versions/B/XPCServices/$xpc.xpc" 2>/dev/null && pass "$exe $xpc.xpc verifies" || fail "$exe $xpc.xpc signature broken"
+    done
+    assert_eq "$exe Sparkle signing authority matches app" "$(codesign -dvv "$app" 2>&1 | grep '^Authority=' | head -1)" "$(codesign -dvv "$fw" 2>&1 | grep '^Authority=' | head -1)"
+    # Plist keys.
+    local info="$app/Contents/Info.plist"
+    if [ "$(plist "$info" MSDevBuild)" = "true" ]; then
+        assert_eq "$exe SUEnableAutomaticChecks (dev)" "false" "$(plist "$info" SUEnableAutomaticChecks)"
+    else
+        assert_eq "$exe SUFeedURL" "https://github.com/m4ttstack/rt/releases/latest/download/appcast.xml" "$(plist "$info" SUFeedURL)"
+        assert_eq "$exe SUEnableAutomaticChecks" "true" "$(plist "$info" SUEnableAutomaticChecks)"
+        assert_eq "$exe SUScheduledCheckInterval" "21600" "$(plist "$info" SUScheduledCheckInterval)"
+        assert_eq "$exe SUAutomaticallyUpdate" "true" "$(plist "$info" SUAutomaticallyUpdate)"
+        assert_eq "$exe SUVerifyUpdateBeforeExtraction" "true" "$(plist "$info" SUVerifyUpdateBeforeExtraction)"
+    fi
+    for k in SUEnableInstallerLauncherService SUEnableDownloaderService SUEnableInstallerConnectionService SUEnableInstallerStatusService; do
+        plist "$info" "$k" >/dev/null && fail "$exe sets $k (sandbox-only, must be absent)"
+    done
+    if [ -n "${SPARKLE_PUBLIC_ED_KEY:-}" ]; then
+        assert_eq "$exe SUPublicEDKey (env override)" "$SPARKLE_PUBLIC_ED_KEY" "$(plist "$info" SUPublicEDKey)"
+    elif [ -f "$SCRIPT_DIR/SUPublicEDKey" ]; then
+        assert_eq "$exe SUPublicEDKey (committed file)" "$(tr -d '[:space:]' < "$SCRIPT_DIR/SUPublicEDKey")" "$(plist "$info" SUPublicEDKey)"
+    else
+        echo "  ⚠ $exe: no Sparkle public key available to assert (rt-tray/SUPublicEDKey or SPARKLE_PUBLIC_ED_KEY)"
+    fi
+}
+check_sparkle "$PROD"
+[ -n "$DEV" ] && check_sparkle "$DEV"
 
 # ─── Dev shim exit-code contract ────────────────────────────────────────────
 if [ -n "$DEV" ]; then
