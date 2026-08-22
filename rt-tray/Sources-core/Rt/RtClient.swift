@@ -28,6 +28,13 @@ public struct RtResult: Sendable {
     }
 }
 
+/// A grandchild that inherited rt's pipes holds them open past rt's exit, so
+/// EOF may never arrive. After this long the exit status becomes the answer on
+/// its own — a bounded tail rather than a call that never returns and a
+/// Process/Pipe/continuation cycle that never releases. Shared by `run` and
+/// `stream`: both wait on the same three events.
+private let rtExitGrace = DispatchTimeInterval.seconds(2)
+
 public enum RtClientError: Error, Equatable {
     case spawnFailed(String)
     case exited(Int32, stderr: String)
@@ -71,46 +78,40 @@ public final class RtClient: RtRunning, @unchecked Sendable {
     }
 
     public func run(_ args: [String], stdin: Data?) async throws -> RtResult {
-        let p = makeProcess(args)
-        let out = Pipe(), err = Pipe(), inPipe = Pipe()
-        p.standardOutput = out; p.standardError = err; p.standardInput = inPipe
-        do { try p.run() } catch { throw RtClientError.spawnFailed(String(describing: error)) }
-
         // waitUntilExit() runs its own nested run loop and can starve the
         // Swift Concurrency cooperative pool if called from an async context;
         // drain both pipes via readabilityHandler and finish on terminationHandler
         // instead, same shape as SystemCommandRunner.
-        let state = RunDrainState()
-        let group = DispatchGroup()
-        func drain(_ pipe: Pipe, into append: @escaping (Data) -> Void) {
-            group.enter()
-            pipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                if data.isEmpty {
-                    handle.readabilityHandler = nil
-                    group.leave()
-                } else {
-                    append(data)
+        try await withCheckedThrowingContinuation { cont in
+            let p = makeProcess(args)
+            let out = Pipe(), err = Pipe(), inPipe = Pipe()
+            p.standardOutput = out; p.standardError = err; p.standardInput = inPipe
+            let outHandle = out.fileHandleForReading, errHandle = err.fileHandleForReading
+            let state = RunDrainState(cont) {
+                outHandle.readabilityHandler = nil
+                errHandle.readabilityHandler = nil
+            }
+            func drain(_ handle: FileHandle, append: @escaping (Data) -> Void, closed: @escaping () -> Void) {
+                handle.readabilityHandler = { h in
+                    let data = h.availableData
+                    if data.isEmpty {
+                        h.readabilityHandler = nil
+                        closed()
+                    } else {
+                        append(data)
+                    }
                 }
             }
-        }
-        drain(out, into: state.appendOut)
-        drain(err, into: state.appendErr)
+            drain(outHandle, append: state.appendOut, closed: state.stdoutClosed)
+            drain(errHandle, append: state.appendErr, closed: state.stderrClosed)
+            p.terminationHandler = { proc in state.exited(proc.terminationStatus) }
 
-        group.enter()
-        p.terminationHandler = { proc in
-            state.setExitCode(proc.terminationStatus)
-            group.leave()
-        }
-
-        if let stdin { inPipe.fileHandleForWriting.write(stdin) }
-        try? inPipe.fileHandleForWriting.close()
-
-        return await withCheckedContinuation { cont in
-            group.notify(queue: .global()) {
-                let (code, o, e) = state.result()
-                cont.resume(returning: RtResult(exitCode: code, stdout: o, stderr: e))
+            do { try p.run() } catch {
+                state.failedToLaunch(RtClientError.spawnFailed(String(describing: error)))
+                return
             }
+            if let stdin { inPipe.fileHandleForWriting.write(stdin) }
+            try? inPipe.fileHandleForWriting.close()
         }
     }
 
@@ -176,11 +177,6 @@ private final class StreamDrainState: @unchecked Sendable {
     /// Only this much stderr can reach the error copy; the rest is read and
     /// dropped so a chatty child never blocks on a full pipe.
     private static let stderrCap = 4000
-    /// A grandchild that inherited rt's pipes holds them open past rt's exit,
-    /// so EOF may never arrive. After this long the exit status becomes the
-    /// answer on its own — a bounded tail rather than a stream that never ends
-    /// and a Process/Pipe/continuation cycle that never releases.
-    private static let exitGrace = DispatchTimeInterval.seconds(2)
 
     private let lock = NSLock()
     private let continuation: AsyncThrowingStream<String, Error>.Continuation
@@ -234,7 +230,7 @@ private final class StreamDrainState: @unchecked Sendable {
         let outcome = settle()
         lock.unlock()
         if let outcome { deliver(outcome); return }
-        DispatchQueue.global().asyncAfter(deadline: .now() + Self.exitGrace) { [weak self] in
+        DispatchQueue.global().asyncAfter(deadline: .now() + rtExitGrace) { [weak self] in
             self?.finishOnExitStatusAlone()
         }
     }
@@ -295,18 +291,86 @@ private final class StreamDrainState: @unchecked Sendable {
 }
 
 /// Guards `run`'s two Data buffers and exit code across the readabilityHandler
-/// and terminationHandler callbacks, which land on different queues.
+/// and terminationHandler callbacks, which land on different queues, and
+/// resumes the continuation exactly once. Like `stream`, it waits for both
+/// pipes to reach EOF *and* the process to exit, bounded by the same grace
+/// timer: a grandchild that inherited rt's pipes holds them open past rt's
+/// exit, and without the bound one such call wedges every non-streaming verb
+/// (setup plan/status, team create/join, restore, settings set, row actions)
+/// on a promise no one will ever keep.
 private final class RunDrainState: @unchecked Sendable {
     private let lock = NSLock()
+    private let continuation: CheckedContinuation<RtResult, Error>
+    /// Nils both readabilityHandlers, breaking the handler→state→handle cycle.
+    /// Invoked only outside the lock: a reader callback may be waiting on it.
+    private let releaseReaders: @Sendable () -> Void
     private var outData = Data()
     private var errData = Data()
-    private var code: Int32 = 0
+    private var stdoutAtEOF = false
+    private var stderrAtEOF = false
+    private var exitStatus: Int32?
+    private var finished = false
+
+    init(_ continuation: CheckedContinuation<RtResult, Error>, releaseReaders: @escaping @Sendable () -> Void) {
+        self.continuation = continuation
+        self.releaseReaders = releaseReaders
+    }
 
     func appendOut(_ d: Data) { lock.lock(); outData.append(d); lock.unlock() }
     func appendErr(_ d: Data) { lock.lock(); errData.append(d); lock.unlock() }
-    func setExitCode(_ c: Int32) { lock.lock(); code = c; lock.unlock() }
-    func result() -> (Int32, Data, Data) {
-        lock.lock(); defer { lock.unlock() }
-        return (code, outData, errData)
+
+    func stdoutClosed() {
+        lock.lock(); stdoutAtEOF = true; let result = settle(); lock.unlock()
+        deliver(result)
+    }
+
+    func stderrClosed() {
+        lock.lock(); stderrAtEOF = true; let result = settle(); lock.unlock()
+        deliver(result)
+    }
+
+    func exited(_ status: Int32) {
+        lock.lock(); exitStatus = status; let result = settle(); lock.unlock()
+        if let result { deliver(result); return }
+        DispatchQueue.global().asyncAfter(deadline: .now() + rtExitGrace) { [weak self] in
+            self?.finishOnExitStatusAlone()
+        }
+    }
+
+    /// The process never started, so neither EOF nor termination will ever fire.
+    func failedToLaunch(_ error: Error) {
+        lock.lock()
+        let first = !finished
+        finished = true
+        lock.unlock()
+        guard first else { return }
+        continuation.resume(throwing: error)
+        releaseReaders()
+    }
+
+    /// The grace period expired with a pipe still open. Whatever holds it is
+    /// not rt, so what was captured plus the exit status is the whole answer.
+    private func finishOnExitStatusAlone() {
+        lock.lock()
+        guard !finished, exitStatus != nil else { lock.unlock(); return }
+        stdoutAtEOF = true
+        stderrAtEOF = true
+        let result = settle()
+        lock.unlock()
+        deliver(result)
+    }
+
+    /// Caller holds the lock. Returns a result only for the one call that
+    /// closes the last of {stdout EOF, stderr EOF, exit}.
+    private func settle() -> RtResult? {
+        guard !finished, stdoutAtEOF, stderrAtEOF, let status = exitStatus else { return nil }
+        finished = true
+        return RtResult(exitCode: status, stdout: outData, stderr: errData)
+    }
+
+    private func deliver(_ result: RtResult?) {
+        guard let result else { return }
+        continuation.resume(returning: result)
+        releaseReaders()
     }
 }
