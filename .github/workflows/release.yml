@@ -5,45 +5,56 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
-    runs-on: macos-latest
-    outputs:
-      version: ${{ steps.meta.outputs.version }}
-      tag: ${{ steps.meta.outputs.tag }}
-      publish: ${{ steps.meta.outputs.publish }}
+    runs-on: macos-15
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # version: fed to RT_VERSION for compile/build (must stay clean semver —
+      # numeric_build() in build.sh rejects anything else). tag/artifact_version
+      # carry the dispatch run number for display and filenames only.
       - name: Release metadata
         id: meta
+        shell: bash
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
-            TAG="${GITHUB_REF_NAME}"; PUBLISH=true
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+            ARTIFACT_VERSION="$VERSION"
+            PUBLISH=true
           else
-            TAG="v0.0.0-ci${GITHUB_RUN_NUMBER}"; PUBLISH=false
+            TAG="v0.0.0-ci${GITHUB_RUN_NUMBER}"
+            VERSION="0.0.0"
+            ARTIFACT_VERSION="0.0.0-ci${GITHUB_RUN_NUMBER}"
+            PUBLISH=false
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "artifact_version=$ARTIFACT_VERSION" >> "$GITHUB_OUTPUT"
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.13
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
 
       # ── Developer ID (required on a tag; ad-hoc on a dry run) ────────────────
       - name: Check signing secrets
         id: signing
+        shell: bash
         env:
           CERT_B64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
           PUBLISH: ${{ steps.meta.outputs.publish }}
@@ -59,6 +70,7 @@ jobs:
 
       - name: Import Developer ID certificate
         if: steps.signing.outputs.available == 'true'
+        shell: bash
         env:
           APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
           APPLE_CERT_P12_PASSWORD: ${{ secrets.APPLE_CERT_P12_PASSWORD }}
@@ -66,6 +78,7 @@ jobs:
           KEYCHAIN_PATH="$RUNNER_TEMP/rt-signing.keychain-db"
           KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
           CERT_PATH="$RUNNER_TEMP/cert.p12"
+          trap 'rm -f "$CERT_PATH"' EXIT
           echo "$APPLE_CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -77,9 +90,10 @@ jobs:
           [ -n "$SIGNING_IDENTITY" ] || { echo "::error::Developer ID Application certificate not found"; exit 1; }
           echo "SIGNING_IDENTITY=$SIGNING_IDENTITY" >> $GITHUB_ENV
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
-          rm -f "$CERT_PATH"
 
       # ── Inputs to the bundle ─────────────────────────────────────────────────
+      # RT_VERSION here keeps the tag's "v" prefix — cli.ts's own contract
+      # (see its RT_VERSION comment) expects that form for `rt --version`.
       - name: Compile rt (arm64)
         run: bun build --compile --target=bun-darwin-arm64 ./cli.ts --outfile dist/rt --define RT_VERSION='"${{ steps.meta.outputs.tag }}"'
 
@@ -87,23 +101,40 @@ jobs:
         run: scripts/fetch-deps.sh arm64
 
       - name: Build extension
+        shell: bash
         run: |
           cd extensions/vscode/rt-context
           bun install
           bun run package
-          echo "RT_VSIX=$(ls "$PWD"/*.vsix | head -1)" >> $GITHUB_ENV
+          RT_VSIX="$(ls "$PWD"/*.vsix 2>/dev/null | head -1)"
+          [ -n "$RT_VSIX" ] || { echo "::error::no .vsix produced by bun run package"; exit 1; }
+          echo "RT_VSIX=$RT_VSIX" >> "$GITHUB_ENV"
 
       # ── The app (build.sh signs inside-out with the imported identity) ───────
       - name: Build mattstack.app
         env:
           RT_DAEMON_BIN: ${{ github.workspace }}/dist/rt
-          RT_VERSION: ${{ steps.meta.outputs.tag }}
+          RT_VERSION: ${{ steps.meta.outputs.version }}
           RT_REQUIRE_DEPS: "1"
           RT_BUILD_TOOL: swift
         run: rt-tray/build.sh release
 
       - name: Assert the bundle contract
         run: rt-tray/check-bundle.sh --app rt-tray/mattstack.app
+
+      # Skipped on dispatch: the synthetic dry-run tag is not the stamped
+      # version by design (see Release metadata), so there is nothing to assert.
+      - name: Assert tag matches the stamped version
+        if: steps.meta.outputs.publish == 'true'
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' rt-tray/mattstack.app/Contents/Info.plist)"
+          RT_OUT="$(dist/rt --version)"
+          RT_TOKEN="${RT_OUT#rt }"; RT_TOKEN="${RT_TOKEN#v}"
+          [ "$PLIST_VERSION" = "$VERSION" ] || { echo "::error::CFBundleShortVersionString '$PLIST_VERSION' != tag version '$VERSION'"; exit 1; }
+          [ "$RT_TOKEN" = "$VERSION" ] || { echo "::error::rt --version '$RT_OUT' != tag version '$VERSION'"; exit 1; }
 
       - name: Notarize and staple the app
         if: steps.signing.outputs.available == 'true'
@@ -114,47 +145,96 @@ jobs:
         run: scripts/release/notarize.sh rt-tray/mattstack.app
 
       # ── Artifacts ────────────────────────────────────────────────────────────
-      - name: Zip enclosure + DMG
+      - name: Make zip
+        shell: bash
         env:
-          VERSION: ${{ steps.meta.outputs.version }}
+          ARTIFACT_VERSION: ${{ steps.meta.outputs.artifact_version }}
         run: |
           mkdir -p out
-          scripts/release/make-zip.sh rt-tray/mattstack.app "out/mattstack-${VERSION}.zip"
-          scripts/release/make-dmg.sh rt-tray/mattstack.app "out/mattstack-${VERSION}.dmg" "${SIGNING_IDENTITY:-}"
+          scripts/release/make-zip.sh rt-tray/mattstack.app "out/mattstack-${ARTIFACT_VERSION}.zip"
 
-      - name: Notarize and staple the DMG
+      # Gate: nothing below this step (dmg, notarize, appcast, publish) runs
+      # unless a fresh runner can install and verify from this exact zip.
+      - name: Clean-room install + verify
+        run: scripts/e2e-cleanroom.sh out/mattstack-*.zip
+
+      - name: Make dmg
+        env:
+          ARTIFACT_VERSION: ${{ steps.meta.outputs.artifact_version }}
+        run: scripts/release/make-dmg.sh rt-tray/mattstack.app "out/mattstack-${ARTIFACT_VERSION}.dmg" "${SIGNING_IDENTITY:-}"
+
+      - name: Notarize and staple the dmg
         if: steps.signing.outputs.available == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          VERSION: ${{ steps.meta.outputs.version }}
-        run: scripts/release/notarize.sh "out/mattstack-${VERSION}.dmg"
+          ARTIFACT_VERSION: ${{ steps.meta.outputs.artifact_version }}
+        run: scripts/release/notarize.sh "out/mattstack-${ARTIFACT_VERSION}.dmg"
 
+      # Runs on every trigger (not just publish): dry runs rehearse Sparkle
+      # signing/deltas too, so that machinery is proven before a real tag needs it.
       - name: Appcast (signed, with deltas)
-        if: steps.meta.outputs.publish == 'true'
+        shell: bash
         env:
           SPARKLE_ED_KEY: ${{ secrets.SPARKLE_ED_KEY }}
         run: |
           [ -n "$SPARKLE_ED_KEY" ] || { echo "::error::SPARKLE_ED_KEY secret missing"; exit 1; }
           scripts/release/appcast.sh out "${{ steps.meta.outputs.tag }}"
 
+      # appcast.xml has no glob metacharacters, so nullglob can't prune it the
+      # way it prunes the wildcard classes — it needs its own -e test or an
+      # absent appcast.xml ships as a literal missing filename to shasum.
       - name: Checksums
-        run: cd out && shasum -a 256 mattstack-*.dmg mattstack-*.zip *.delta appcast.xml 2>/dev/null > SHA256SUMS; cat out/SHA256SUMS
+        shell: bash
+        working-directory: out
+        run: |
+          shopt -s nullglob
+          files=()
+          for class in 'mattstack-*.dmg' 'mattstack-*.zip' '*.delta'; do
+            matches=($class)
+            if [ ${#matches[@]} -eq 0 ]; then
+              echo "note: no $class in out/ — skipping"
+            else
+              files+=("${matches[@]}")
+            fi
+          done
+          if [ -e appcast.xml ]; then
+            files+=(appcast.xml)
+          else
+            echo "note: no appcast.xml in out/ — skipping"
+          fi
+          [ ${#files[@]} -gt 0 ] || { echo "::error::out/ is empty — nothing to checksum"; exit 1; }
+          shasum -a 256 "${files[@]}" > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Cleanup keychain
         if: always() && env.KEYCHAIN_PATH != ''
         run: security delete-keychain "$KEYCHAIN_PATH" || true
 
       # ── Publish ──────────────────────────────────────────────────────────────
+      # RELEASE_NOTES.md is committed by the release skill at the tagged commit;
+      # this fallback keeps a hand-pushed tag (no skill run) publishing anyway.
       - name: Ensure release notes exist
         if: steps.meta.outputs.publish == 'true'
         run: '[ -f RELEASE_NOTES.md ] || echo "Release ${GITHUB_REF_NAME}." > RELEASE_NOTES.md'
+
+      - name: Assert release assets are complete
+        if: steps.meta.outputs.publish == 'true'
+        shell: bash
+        env:
+          ARTIFACT_VERSION: ${{ steps.meta.outputs.artifact_version }}
+        run: |
+          test -f "out/mattstack-${ARTIFACT_VERSION}.zip" || { echo "::error::missing zip"; exit 1; }
+          test -f "out/mattstack-${ARTIFACT_VERSION}.dmg" || { echo "::error::missing dmg"; exit 1; }
+          test -f out/appcast.xml || { echo "::error::missing appcast.xml"; exit 1; }
+          test -f out/SHA256SUMS || { echo "::error::missing SHA256SUMS"; exit 1; }
 
       - name: Create Release
         if: steps.meta.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
+          fail_on_unmatched_files: false
           body_path: RELEASE_NOTES.md
           files: |
             out/mattstack-*.dmg
@@ -170,32 +250,3 @@ jobs:
           name: release-dry-run
           path: out/
           retention-days: 7
-
-  # ── Clean room (spec §12.2 layer a): a fresh runner installs from the zip ───
-  clean-room:
-    needs: release
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          sparse-checkout: |
-            scripts
-            rt-tray
-
-      - name: Download the app zip (release)
-        if: needs.release.outputs.publish == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/dl"
-          gh release download "${{ needs.release.outputs.tag }}" -R "$GITHUB_REPOSITORY" -p "mattstack-*.zip" -D "$RUNNER_TEMP/dl"
-
-      - name: Download the app zip (dry run)
-        if: needs.release.outputs.publish != 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: release-dry-run
-          path: ${{ runner.temp }}/dl
-
-      - name: Headless install + verify
-        run: scripts/e2e-cleanroom.sh "$(ls "$RUNNER_TEMP"/dl/mattstack-*.zip | head -1)"
