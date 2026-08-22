@@ -31,6 +31,12 @@ function yamlQuote(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
+/** Shared by both seam kinds so the step and slot formats cannot drift apart. */
+function span(src: { srcPath: string; bodyStartLine: number; body: string }): string {
+  const lines = src.body.split("\n").length;
+  return `path=${src.srcPath} lines=${src.bodyStartLine}-${src.bodyStartLine + lines - 1}`;
+}
+
 function resolveBoundSlots(
   verb: VerbDef,
   step: StepSource,
@@ -98,7 +104,7 @@ function buildBody(
   const sections: string[] = [HEADER_COMMENT];
   const notes: string[] = [];
 
-  sections.push(`<!-- part: step source=${step.plugin}:${step.name} version=${step.version} -->`);
+  sections.push(`<!-- part: step source=${step.plugin}:${step.name} version=${step.version} ${span(step)} -->`);
   sections.push(step.body);
 
   for (const { slotName, fill } of boundSlots) {
@@ -118,7 +124,9 @@ function buildBody(
       notes.push(`note: ${fill.binding} is surface-internal; inlined`);
     }
 
-    sections.push(`<!-- part: slot:${slotName} binding=${fill.binding} version=${fill.version} -->`);
+    sections.push(
+      `<!-- part: slot:${slotName} binding=${fill.binding} version=${fill.version} ${span(fill)} -->`,
+    );
     sections.push(rewriteSkillDirRefs(fill.body, slotName));
   }
 

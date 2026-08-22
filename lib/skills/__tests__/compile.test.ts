@@ -13,6 +13,8 @@ const step: StepSource = {
   plugin: "mattstack",
   version: "1.2.0",
   dir: "/plugins/mattstack/skills/pipeline/watch-ci",
+  srcPath: "skills/pipeline/watch-ci/SKILL.md",
+  bodyStartLine: 8,
   body: "Poll the pipeline every 30s and report status. See ${CLAUDE_SKILL_DIR}/scripts/ci-watch.sh for the poller.",
   slots: {
     domain: { contract: "watch-ci-domain@1", required: true },
@@ -27,6 +29,8 @@ const domainFill: AttachmentSource = {
   plugin: "acme",
   version: "0.3.0",
   dir: "/plugins/acme/attachments/watch-ci-domain",
+  srcPath: "attachments/watch-ci-domain/SKILL.md",
+  bodyStartLine: 8,
   body: "Domain rules live at ${CLAUDE_SKILL_DIR}/ci-config.json for details.",
   provides: "watch-ci-domain@1",
   allowedTools: ["Read(${CLAUDE_SKILL_DIR}/ci-config.json)"],
@@ -39,6 +43,8 @@ const forgeFill: AttachmentSource = {
   plugin: "mattstack",
   version: "1.2.0",
   dir: "/plugins/mattstack/skills/gitlab-forge",
+  srcPath: "skills/gitlab-forge/SKILL.md",
+  bodyStartLine: 8,
   body: "Talk to GitLab via glab.",
   provides: "ci-forge@1",
   allowedTools: ["Bash(glab:*)", "Read"],
@@ -51,6 +57,8 @@ const registeredForgeFill: AttachmentSource = {
   plugin: "mattstack",
   version: "1.2.0",
   dir: "/plugins/mattstack/skills/gitlab-forge",
+  srcPath: "skills/gitlab-forge/SKILL.md",
+  bodyStartLine: 8,
   body: "Talk to GitLab via glab.",
   provides: "ci-forge@1",
   allowedTools: ["Bash(glab:*)", "Read(${CLAUDE_SKILL_DIR}/token.txt)"],
@@ -102,12 +110,14 @@ describe("compileSkill", () => {
     expect(content).toContain(
       "<!-- compiled by rt skills compile from the sources below; slots pre-resolved; edits here are working-tree drift (rt skills promote) -->",
     );
-    expect(content).toContain("<!-- part: step source=mattstack:watch-ci version=1.2.0 -->");
     expect(content).toContain(
-      "<!-- part: slot:domain binding=acme:watch-ci-domain version=0.3.0 -->",
+      "<!-- part: step source=mattstack:watch-ci version=1.2.0 path=skills/pipeline/watch-ci/SKILL.md lines=8-8 -->",
     );
     expect(content).toContain(
-      "<!-- part: slot:forge binding=mattstack:gitlab-forge version=1.2.0 -->",
+      "<!-- part: slot:domain binding=acme:watch-ci-domain version=0.3.0 path=attachments/watch-ci-domain/SKILL.md lines=8-8 -->",
+    );
+    expect(content).toContain(
+      "<!-- part: slot:forge binding=mattstack:gitlab-forge version=1.2.0 path=skills/gitlab-forge/SKILL.md lines=8-8 -->",
     );
 
     expect(content).toContain(
@@ -230,6 +240,8 @@ describe("compileSkill", () => {
       plugin: "mattstack",
       version: "1.0.0",
       dir: "/plugins/mattstack/skills/pipeline/watch-ci",
+      srcPath: "skills/pipeline/watch-ci/SKILL.md",
+      bodyStartLine: 8,
       body: "This step defers domain judgment to acme:watch-ci-domain and never invokes acme:nonexistent.",
       slots: {},
       allowedTools: [],
@@ -295,6 +307,8 @@ describe("compileSkill", () => {
       plugin: "mattstack",
       version: "1.2.0",
       dir: "/plugins/mattstack/skills/review/self-review",
+      srcPath: "skills/review/self-review/SKILL.md",
+      bodyStartLine: 8,
       body: "Review your own diff before shipping.",
       slots: {},
       allowedTools: [],
@@ -332,5 +346,23 @@ describe("compileSkill", () => {
     expect(skillFileContent(resultB.files)).toBe(skillFileContent(resultA.files));
     expect(resultB.files).toEqual(resultA.files);
     expect(resultB.warnings).toEqual(resultA.warnings);
+  });
+
+  test("seams carry the source path and line span", () => {
+    const result = compileSkill(verb, step, { domain: domainFill, forge: forgeFill }, new Set<string>());
+    const main = result.files.find((f) => f.path.endsWith("SKILL.md"))!;
+    const content = (main as { content: string }).content;
+    expect(content).toMatch(/<!-- part: step source=mattstack:watch-ci version=1\.2\.0 path=\S+ lines=\d+-\d+ -->/);
+    expect(content).toMatch(/<!-- part: slot:domain binding=acme:watch-ci-domain version=0\.3\.0 path=\S+ lines=\d+-\d+ -->/);
+    // Relative, never absolute: an absolute path would bake this machine's tmpdir
+    // into a committed artifact.
+    expect(content).not.toMatch(/path=\//);
+  });
+
+  test("compiled output stays byte-deterministic across two compiles", () => {
+    const fills = { domain: domainFill, forge: forgeFill };
+    const a = compileSkill(verb, step, fills, new Set<string>());
+    const b = compileSkill(verb, step, fills, new Set<string>());
+    expect(a.files).toEqual(b.files);
   });
 });
