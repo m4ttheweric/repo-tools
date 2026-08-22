@@ -119,6 +119,23 @@ describe("runMaterialize", () => {
     expect(seam.calls.every((c) => c.opts?.timeoutMs === 60_000)).toBe(true);
   });
 
+  test("a custom rtBin (e.g. the compiled binary's own process.execPath) is used as both the resolved binary and argv[0] for rt-own steps", async () => {
+    const seam = new FakeExecSeam();
+    await runMaterialize([{ kind: "rtInterceptInstall" }, { kind: "rtDaemonInstall" }], seam, "/fake/rt-binary");
+    expect(seam.calls.map((c) => c.argv)).toEqual([
+      ["/fake/rt-binary", "intercept", "install"],
+      ["/fake/rt-binary", "daemon", "install"],
+    ]);
+  });
+
+  test("a custom rtBin also names the resolved binary in a spawn-failure message", async () => {
+    const seam = new FakeExecSeam();
+    seam.script(["/fake/rt-binary", "intercept", "install"], { stdout: "", stderr: "", exitCode: -1 });
+
+    const [result] = await runMaterialize([{ kind: "rtInterceptInstall" }], seam, "/fake/rt-binary");
+    expect(result!.stderr).toBe("could not run `/fake/rt-binary` — not found");
+  });
+
   test("deckSetup shells out to deck setup, also with the generous timeout", async () => {
     const seam = new FakeExecSeam();
     await runMaterialize([{ kind: "deckSetup" }], seam);
