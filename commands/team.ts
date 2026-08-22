@@ -28,7 +28,7 @@ import { listTeams } from "../lib/settings/stores.ts";
 import { envelope } from "../lib/setup/contract.ts";
 import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
 import { createRealProbes, readStdinJson, type Probes } from "../lib/setup/probes.ts";
-import { readTeamSnapshot, type SettingsReader } from "../lib/setup/team-settings.ts";
+import { readTeamSnapshot, stripUserinfo, type SettingsReader } from "../lib/setup/team-settings.ts";
 import { createTeam } from "../lib/team/create.ts";
 import { mintInvite } from "../lib/team/invite.ts";
 import { JoinKeyExchangeError, joinDryRun, joinRedeem, realJoinRedeemSeams, type JoinRedeemSeams, type JoinResult } from "../lib/team/join.ts";
@@ -255,16 +255,17 @@ export async function teamMembersSync(args: string[], _ctx: CommandContext = {},
 
 export async function teamMembersRemove(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
   const json = args.includes("--json");
-  const handle = positional(args, ["--team"])[0];
+  const handle = positional(args, ["--team", "--key"])[0];
+  const key = flagValue(args, "--key");
 
   if (!handle) {
-    usageError(deps, json, "team members remove", "rt team members remove <handle> [--team <slug>] [--json]");
+    usageError(deps, json, "team members remove", "rt team members remove <handle> [--key <age1...>] [--team <slug>] [--json]");
   }
 
   try {
     const slug = resolveTeamSlug(args);
     const secrets = createRealTeamSecretsSeams(slug);
-    const result = await membersRemove(deps.probes, secrets, slug, handle);
+    const result = await membersRemove(deps.probes, secrets, slug, handle, key);
 
     if (json) {
       deps.print(JSON.stringify(envelope(result)));
@@ -291,8 +292,29 @@ function defaultStatusRead(): SettingsReader {
   };
 }
 
-interface RosterEntry {
-  username: string;
+/**
+ * `board.members` lives in the team's git-synced settings store, writable by
+ * any teammate (or a bad merge) — never trusted to already be an array of
+ * `{username: string}` objects. A non-conforming entry is dropped rather than
+ * crashing a contract verb with a raw `TypeError`, or letting a non-string
+ * `username` (or an empty `{}`) leak into the envelope unfiltered.
+ */
+function toRosterMembers(raw: unknown, warn: (message: string) => void): { username: string }[] {
+  if (!Array.isArray(raw)) return [];
+
+  const members: { username: string }[] = [];
+  let skipped = 0;
+  for (const entry of raw) {
+    if (entry !== null && typeof entry === "object" && !Array.isArray(entry) && typeof (entry as Record<string, unknown>).username === "string") {
+      members.push({ username: (entry as { username: string }).username });
+    } else {
+      skipped += 1;
+    }
+  }
+  if (skipped > 0) {
+    warn(`rt team status: skipped ${skipped} malformed board.members entr${skipped === 1 ? "y" : "ies"} (missing or non-string username)`);
+  }
+  return members;
 }
 
 export async function teamStatus(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
@@ -309,13 +331,13 @@ export async function teamStatus(args: string[], _ctx: CommandContext = {}, deps
     const snapshot = readTeamSnapshot(deps.probes, slug, { read, warn: () => {} });
     const title = read<string>("board.title");
     const name = title && title.length > 0 ? title : slug;
-    const membersRaw = read<RosterEntry[]>("board.members") ?? [];
-    const members = (Array.isArray(membersRaw) ? membersRaw : []).map((m) => ({ username: m.username }));
+    const members = toRosterMembers(read<unknown>("board.members"), (msg) => console.error(msg));
 
     const log = await deps.probes.exec(["git", "-C", dir, "log", "-1", "--format=%cI", "origin/main"]);
     const lastPush = log.code === 0 ? log.stdout.trim() || null : null;
 
-    const result = { slug, name, remote: snapshot.remote, lastPush, members };
+    const remote = snapshot.remote !== null ? stripUserinfo(snapshot.remote) : null;
+    const result = { slug, name, remote, lastPush, members };
     if (json) {
       deps.print(JSON.stringify(envelope(result)));
       return;

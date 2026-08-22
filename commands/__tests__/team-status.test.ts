@@ -23,12 +23,12 @@ function fakeRead(values: Record<string, unknown>): SettingsReader {
   return <T>(key: string): T | undefined => values[key] as T | undefined;
 }
 
-function clonedDeps(overrides: { exec?: TeamDeps["probes"]["exec"]; read?: Record<string, unknown> } = {}): TeamDeps & { lines: string[] } {
+function clonedDeps(overrides: { exec?: TeamDeps["probes"]["exec"]; read?: Record<string, unknown>; gitConfig?: string } = {}): TeamDeps & { lines: string[] } {
   return baseDeps({
     probes: fakeProbes({
       home: HOME,
       dirs: { [TEAM_DIR]: [] },
-      files: { [join(TEAM_DIR, ".git", "config")]: GIT_CONFIG },
+      files: { [join(TEAM_DIR, ".git", "config")]: overrides.gitConfig ?? GIT_CONFIG },
       exec: overrides.exec,
     }),
     statusRead: fakeRead(overrides.read ?? {}),
@@ -113,6 +113,31 @@ describe("teamStatus", () => {
     expect(code).toBe(2);
     const body = JSON.parse(deps.lines[0]!);
     expect(body.error.code).toBe("no-team");
+  });
+
+  test("a credential-bearing remote is stripped before it reaches the envelope", async () => {
+    const deps = clonedDeps({
+      exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+      gitConfig: `[remote "origin"]\n\turl = https://tok3n@github.com/acme/widgets.git\n`,
+    });
+
+    await teamStatus(["--team", SLUG, "--json"], {}, deps);
+
+    const body = JSON.parse(deps.lines[0]!);
+    expect(body.remote).toBe("https://github.com/acme/widgets.git");
+    expect(deps.lines[0]).not.toContain("tok3n");
+  });
+
+  test("malformed board.members entries (null, a bare string, a non-string username) are filtered, not crashed on or leaked raw", async () => {
+    const deps = clonedDeps({
+      exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+      read: { "board.members": [null, "matt", { username: { evil: 1 } }, { username: "alice" }, {}] },
+    });
+
+    await teamStatus(["--team", SLUG, "--json"], {}, deps);
+
+    const body = JSON.parse(deps.lines[0]!);
+    expect(body.members).toEqual([{ username: "alice" }]);
   });
 
   test("human mode names the team and remote", async () => {

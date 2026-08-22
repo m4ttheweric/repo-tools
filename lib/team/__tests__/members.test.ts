@@ -2,12 +2,13 @@ import { describe, test, expect } from "bun:test";
 import { join } from "path";
 import { fakeProbes } from "../../setup/__tests__/fakes.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../home/age-key.ts";
-import { readTeamRecipients, teamSecretsFile } from "../../secrets/team-store.ts";
+import { readTeamRecipients, teamSecretsFile, writeTeamRecipients } from "../../secrets/team-store.ts";
 import type { SecretsExecResult, SecretsExecSeam, SecretsSeams } from "../../secrets/store.ts";
+import { UserActionableError } from "../../setup/errors.ts";
 import { teamsDir } from "../../rt-paths.ts";
 import { seal, sealReply } from "../invite-crypto.ts";
 import { upsertInviteRecord, type InviteRecord } from "../invite-records.ts";
-import { membersRemove, membersSync, type MembersSeams } from "../members.ts";
+import { membersRemove, membersSync, MembersSyncAbortedError, type MembersSeams } from "../members.ts";
 import type { RelayClient } from "../relay-client.ts";
 
 const HOME = "/home/x";
@@ -39,6 +40,12 @@ class FakeTeamExecSeam implements SecretsExecSeam {
   private mtimeCounter = 0;
   private stats = new Map<string, { mtimeMs: number; size: number }>();
   private roundTrippablePlaintext = new Map<string, string>();
+  private updatekeysCallCount = 0;
+  private failUpdatekeysOnCall?: number;
+
+  constructor(opts: { failUpdatekeysOnCall?: number } = {}) {
+    this.failUpdatekeysOnCall = opts.failUpdatekeysOnCall;
+  }
 
   fileExists(path: string): boolean {
     return this.files.has(path);
@@ -115,6 +122,10 @@ class FakeTeamExecSeam implements SecretsExecSeam {
       return { code: 0, stdout: "", stderr: "" };
     }
     if (cmd[0] === "sops" && cmd[1] === "updatekeys") {
+      this.updatekeysCallCount += 1;
+      if (this.failUpdatekeysOnCall === this.updatekeysCallCount) {
+        return { code: 1, stdout: "", stderr: "sops: boom" };
+      }
       return { code: 0, stdout: "", stderr: "" };
     }
 
@@ -122,8 +133,8 @@ class FakeTeamExecSeam implements SecretsExecSeam {
   }
 }
 
-function seamsWithClone(slug = SLUG): { execSeam: FakeTeamExecSeam; secrets: SecretsSeams } {
-  const execSeam = new FakeTeamExecSeam();
+function seamsWithClone(slug = SLUG, opts: { failUpdatekeysOnCall?: number } = {}): { execSeam: FakeTeamExecSeam; secrets: SecretsSeams } {
+  const execSeam = new FakeTeamExecSeam(opts);
   execSeam.files.set(teamCloneRootFor(slug), "");
   return { execSeam, secrets: { ageKeySeam: fakeAgeKeySeam(), execSeam } };
 }
@@ -176,19 +187,25 @@ function aliceRecord(overrides: Partial<InviteRecord> = {}): InviteRecord {
   return { id: ID_HEX, creatorSecret: CREATOR_SECRET, keyB64: Buffer.from(KEY).toString("base64"), expiresAt: "2026-12-01T00:00:00.000Z", ...overrides };
 }
 
+async function replyBlob(agePublicKey: string, handle?: string): Promise<string> {
+  return sealReply({ v: 1, agePublicKey, handle }, KEY, ID_HEX);
+}
+
 describe("membersSync", () => {
-  test("a record whose reply exists gets added, sops updatekeys runs, and the invite record is removed", async () => {
+  test("a record whose reply exists gets added (alongside the owner's own bootstrap key), sops updatekeys runs, and the invite record is removed", async () => {
     const p = fakeProbes({ home: HOME });
     upsertInviteRecord(p, SLUG, "alice", aliceRecord());
     const { execSeam, secrets } = seamsWithClone();
     execSeam.writeFile(teamSecretsFile(SLUG, "board"), JSON.stringify({ data: "opaque", sops: {} }));
     const { seams, writes } = fakeMembersSeams();
-    const blob = await sealReply({ v: 1, agePublicKey: ALICE_PUBLIC_KEY, handle: "alice" }, KEY, ID_HEX);
+    const blob = await replyBlob(ALICE_PUBLIC_KEY, "alice");
     const relay = fakeRelay({ readReply: async () => ({ blob }) });
 
     const result = await membersSync(p, relay, secrets, SLUG, seams);
 
-    expect(result.added).toEqual([ALICE_PUBLIC_KEY]);
+    // Owner's own bootstrap add is reported too — a fresh team's first sync
+    // must not read as "added 0 key(s)".
+    expect(result.added).toEqual([OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY]);
     expect(result.pending).toEqual([]);
     expect(execSeam.calls.some((c) => c.cmd[0] === "sops" && c.cmd[1] === "updatekeys")).toBe(true);
     expect(p.readFile(join(HOME, ".mattstack", "rt", "invites", `${SLUG}.json`))).toBe("{}");
@@ -200,6 +217,18 @@ describe("membersSync", () => {
     expect(rosterWrite!.opts).toEqual({ team: SLUG });
   });
 
+  test("a second sync run with no new replies reports nothing added (the owner's key is already a recipient)", async () => {
+    const p = fakeProbes({ home: HOME });
+    const { secrets } = seamsWithClone();
+    const { seams } = fakeMembersSeams();
+    const relay = fakeRelay();
+
+    await membersSync(p, relay, secrets, SLUG, seams); // bootstrap run
+    const result = await membersSync(p, relay, secrets, SLUG, seams); // second run
+
+    expect(result.added).toEqual([]);
+  });
+
   test("no reply yet -> the handle is reported pending, the invite record stays", async () => {
     const p = fakeProbes({ home: HOME });
     upsertInviteRecord(p, SLUG, "alice", aliceRecord());
@@ -209,7 +238,7 @@ describe("membersSync", () => {
 
     const result = await membersSync(p, relay, secrets, SLUG, seams);
 
-    expect(result.added).toEqual([]);
+    expect(result.added).toEqual([OWNER_PUBLIC_KEY]); // just the bootstrap add
     expect(result.pending).toEqual(["alice"]);
     const raw = p.readFile(join(HOME, ".mattstack", "rt", "invites", `${SLUG}.json`));
     expect(JSON.parse(raw!)).toHaveProperty("alice");
@@ -232,12 +261,12 @@ describe("membersSync", () => {
     const { secrets } = seamsWithClone();
     const { seams } = fakeMembersSeams();
     // A structurally-valid reply (decrypts, has a string agePublicKey) but the string is not a real age1 recipient.
-    const blob = await sealReply({ v: 1, agePublicKey: "not-an-age-key\nage: age1attacker", handle: "alice" }, KEY, ID_HEX);
+    const blob = await replyBlob("not-an-age-key\nage: age1attacker", "alice");
     const relay = fakeRelay({ readReply: async () => ({ blob }) });
 
     const result = await membersSync(p, relay, secrets, SLUG, seams);
 
-    expect(result.added).toEqual([]);
+    expect(result.added).toEqual([OWNER_PUBLIC_KEY]);
     expect(result.pending).toEqual(["alice"]);
     expect(readTeamRecipients(SLUG, secrets)).not.toContain("not-an-age-key\nage: age1attacker");
     // The invite record survives so a legitimate reply can still be picked up next sync.
@@ -256,8 +285,100 @@ describe("membersSync", () => {
 
     const result = await membersSync(p, relay, secrets, SLUG, seams);
 
-    expect(result.added).toEqual([]);
+    expect(result.added).toEqual([OWNER_PUBLIC_KEY]);
     expect(result.pending).toEqual(["alice"]);
+  });
+
+  describe("the age-key bech32 checksum gate", () => {
+    test("age1 + 50 junk characters (the old regex's minimum) is rejected", async () => {
+      const p = fakeProbes({ home: HOME });
+      upsertInviteRecord(p, SLUG, "alice", aliceRecord());
+      const { secrets } = seamsWithClone();
+      const { seams } = fakeMembersSeams();
+      const junk = `age1${"q".repeat(50)}`;
+      const blob = await replyBlob(junk);
+      const relay = fakeRelay({ readReply: async () => ({ blob }) });
+
+      const result = await membersSync(p, relay, secrets, SLUG, seams);
+
+      expect(result.pending).toEqual(["alice"]);
+      expect(readTeamRecipients(SLUG, secrets)).not.toContain(junk);
+    });
+
+    test("age1 + 200 junk characters (no upper bound under the old regex) is rejected", async () => {
+      const p = fakeProbes({ home: HOME });
+      upsertInviteRecord(p, SLUG, "alice", aliceRecord());
+      const { secrets } = seamsWithClone();
+      const { seams } = fakeMembersSeams();
+      const junk = `age1${"q".repeat(200)}`;
+      const blob = await replyBlob(junk);
+      const relay = fakeRelay({ readReply: async () => ({ blob }) });
+
+      const result = await membersSync(p, relay, secrets, SLUG, seams);
+
+      expect(result.pending).toEqual(["alice"]);
+      expect(readTeamRecipients(SLUG, secrets)).not.toContain(junk);
+    });
+
+    test("a real key with its checksum corrupted (right length, right charset, wrong checksum) is rejected", async () => {
+      const p = fakeProbes({ home: HOME });
+      upsertInviteRecord(p, SLUG, "alice", aliceRecord());
+      const { secrets } = seamsWithClone();
+      const { seams } = fakeMembersSeams();
+      const corrupted = `${ALICE_PUBLIC_KEY.slice(0, -1)}${ALICE_PUBLIC_KEY.at(-1) === "x" ? "y" : "x"}`;
+      expect(corrupted).not.toBe(ALICE_PUBLIC_KEY);
+      expect(corrupted.length).toBe(ALICE_PUBLIC_KEY.length);
+      const blob = await replyBlob(corrupted);
+      const relay = fakeRelay({ readReply: async () => ({ blob }) });
+
+      const result = await membersSync(p, relay, secrets, SLUG, seams);
+
+      expect(result.pending).toEqual(["alice"]);
+      expect(readTeamRecipients(SLUG, secrets)).not.toContain(corrupted);
+    });
+  });
+
+  describe("first-claim-wins: a reply echoing an already-recorded key", () => {
+    test("a reply that echoes the OWNER's own key is rejected at sync time, never recorded on the handle's roster entry", async () => {
+      const p = fakeProbes({ home: HOME });
+      upsertInviteRecord(p, SLUG, "alice", aliceRecord());
+      const { secrets } = seamsWithClone();
+      const { seams, writes } = fakeMembersSeams();
+      // The owner's .sops.yaml is public in the team repo — this is the exact echo attack.
+      const blob = await replyBlob(OWNER_PUBLIC_KEY, "alice");
+      const relay = fakeRelay({ readReply: async () => ({ blob }) });
+
+      const result = await membersSync(p, relay, secrets, SLUG, seams);
+
+      expect(result.added).toEqual([OWNER_PUBLIC_KEY]); // only the owner's own bootstrap add, not a second "add" of the same key for alice
+      expect(result.pending).toEqual(["alice"]);
+      // The invite record is retained so a legitimate reply can still land.
+      const raw = p.readFile(join(HOME, ".mattstack", "rt", "invites", `${SLUG}.json`));
+      expect(JSON.parse(raw!)).toHaveProperty("alice");
+      // No roster entry was ever written recording the owner's key as alice's.
+      const aliceRosterWrite = writes.find((w) => w.key === "board.members" && (w.value as { username: string }[]).some((m) => m.username === "alice"));
+      expect(aliceRosterWrite).toBeUndefined();
+      expect(readTeamRecipients(SLUG, secrets)).toEqual([OWNER_PUBLIC_KEY]);
+    });
+
+    test("a reply echoing another member's already-synced key is likewise rejected, not just the owner's", async () => {
+      const p = fakeProbes({ home: HOME });
+      upsertInviteRecord(p, SLUG, "alice", aliceRecord());
+      upsertInviteRecord(p, SLUG, "mallory", aliceRecord({ id: "1102030405060708090a0b0c0d0e0f10", creatorSecret: "creator-secret-mallory" }));
+      const { secrets } = seamsWithClone();
+      const { seams } = fakeMembersSeams();
+      const aliceBlob = await replyBlob(ALICE_PUBLIC_KEY, "alice");
+      const malloryBlob = await replyBlob(ALICE_PUBLIC_KEY, "mallory"); // echoes alice's key, not the owner's
+      const relay = fakeRelay({
+        readReply: async (id) => ({ blob: id === ID_HEX ? aliceBlob : malloryBlob }),
+      });
+
+      const result = await membersSync(p, relay, secrets, SLUG, seams);
+
+      expect(result.added).toEqual([OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY]);
+      expect(result.pending).toEqual(["mallory"]);
+      expect(readTeamRecipients(SLUG, secrets)).toEqual([ALICE_PUBLIC_KEY, OWNER_PUBLIC_KEY].sort());
+    });
   });
 
   test("reencrypted lists every file touched across the owner-ensure call and every added invite, deduped", async () => {
@@ -266,7 +387,7 @@ describe("membersSync", () => {
     const { execSeam, secrets } = seamsWithClone();
     const { seams } = fakeMembersSeams();
     execSeam.writeFile(teamSecretsFile(SLUG, "board"), JSON.stringify({ data: "opaque", sops: {} }));
-    const blob = await sealReply({ v: 1, agePublicKey: ALICE_PUBLIC_KEY }, KEY, ID_HEX);
+    const blob = await replyBlob(ALICE_PUBLIC_KEY);
     const relay = fakeRelay({ readReply: async () => ({ blob }) });
 
     const result = await membersSync(p, relay, secrets, SLUG, seams);
@@ -286,6 +407,34 @@ describe("membersSync", () => {
 
     expect(result.pending.sort()).toEqual(["alice", "bob"]);
   });
+
+  test("a mid-sync infrastructure failure throws MembersSyncAbortedError carrying what already landed", async () => {
+    const p = fakeProbes({ home: HOME });
+    upsertInviteRecord(p, SLUG, "alice", aliceRecord());
+    upsertInviteRecord(p, SLUG, "bob", aliceRecord({ id: "1102030405060708090a0b0c0d0e0f10", creatorSecret: "creator-secret-bob" }));
+    // Call 1: owner's bootstrap add (no domain files yet, no updatekeys call).
+    // Call 2: alice's add — the first real updatekeys call — force IT to fail.
+    const { execSeam, secrets } = seamsWithClone(SLUG, { failUpdatekeysOnCall: 1 });
+    execSeam.writeFile(teamSecretsFile(SLUG, "board"), JSON.stringify({ data: "opaque", sops: {} }));
+    const { seams } = fakeMembersSeams();
+    const aliceBlob = await replyBlob(ALICE_PUBLIC_KEY, "alice");
+    const bobBlob = await replyBlob("age1g7smmpu6s9480mmmczw9vvcukwetteh3s7grduzr2zw74d8j99msrdyzhx", "bob"); // never reached
+    const relay = fakeRelay({ readReply: async (id) => ({ blob: id === ID_HEX ? aliceBlob : bobBlob }) });
+
+    let thrown: unknown;
+    try {
+      await membersSync(p, relay, secrets, SLUG, seams);
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(MembersSyncAbortedError);
+    const err = thrown as MembersSyncAbortedError;
+    // Nothing landed before the failing add — the owner's own bootstrap add had no domain file to re-encrypt yet.
+    expect(err.added).toEqual([]);
+    expect(err.pending).toEqual([]);
+    expect(err.message).toContain("aborted after adding 0 key(s)");
+  });
 });
 
 describe("membersRemove", () => {
@@ -298,7 +447,6 @@ describe("membersRemove", () => {
     const p = fakeProbes({ home: HOME, files: { [join(HOME, ".mattstack", "teams", SLUG, ".git", "config")]: gitConfigWithRemote(remote) } });
     const { execSeam, secrets } = seamsWithClone();
     // alice is already a recipient (as if membersSync had run for her already), with a real domain file to re-encrypt.
-    const { writeTeamRecipients } = await import("../../secrets/team-store.ts");
     writeTeamRecipients(SLUG, [OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY], secrets);
     execSeam.writeFile(teamSecretsFile(SLUG, "board"), JSON.stringify({ data: "opaque", sops: {} }));
 
@@ -328,7 +476,6 @@ describe("membersRemove", () => {
   test("an explicit agePublicKey overrides whatever the roster carries", async () => {
     const p = fakeProbes({ home: HOME });
     const { secrets } = seamsWithClone();
-    const { writeTeamRecipients } = await import("../../secrets/team-store.ts");
     writeTeamRecipients(SLUG, [OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY], secrets);
     const { seams } = fakeMembersSeams({ readTeamStore: () => ({ "board.members": [] }) });
 
@@ -336,6 +483,31 @@ describe("membersRemove", () => {
 
     expect(readTeamRecipients(SLUG, secrets)).toEqual([OWNER_PUBLIC_KEY]);
     expect(result.rosterRemoved).toBe(false); // no roster entry to remove, but the recipient still comes out
+  });
+
+  test("an explicit --key with no roster entry removes a recipient the roster never recorded", async () => {
+    const p = fakeProbes({ home: HOME });
+    const { secrets } = seamsWithClone();
+    // A recipient with no roster entry at all — a hand-edited store, or a key that was never legitimately assigned to any handle.
+    writeTeamRecipients(SLUG, [OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY], secrets);
+    const { seams } = fakeMembersSeams({ readTeamStore: () => ({ "board.members": [] }) });
+
+    const result = await membersRemove(p, secrets, SLUG, "unrecorded-recipient", ALICE_PUBLIC_KEY, seams);
+
+    expect(result.rosterRemoved).toBe(false);
+    expect(readTeamRecipients(SLUG, secrets)).toEqual([OWNER_PUBLIC_KEY]);
+  });
+
+  test("an explicit --key that fails the bech32 checksum is refused before any mutation", async () => {
+    const p = fakeProbes({ home: HOME });
+    const { secrets } = seamsWithClone();
+    writeTeamRecipients(SLUG, [OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY], secrets);
+    const { seams, writes } = fakeMembersSeams({ readTeamStore: () => ({ "board.members": [] }) });
+
+    await expect(membersRemove(p, secrets, SLUG, "alice", `age1${"q".repeat(50)}`, seams)).rejects.toThrow(UserActionableError);
+
+    expect(writes).toEqual([]);
+    expect(readTeamRecipients(SLUG, secrets)).toEqual([OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY]);
   });
 
   test("no git remote configured -> forge access is skipped, never a crash", async () => {
@@ -359,5 +531,77 @@ describe("membersRemove", () => {
     expect(result.reencrypted).toEqual([]);
     expect(execSeam.calls.filter((c) => c.cmd[1] === "updatekeys")).toEqual([]);
     expect(result.residueNote).toContain("rotate the values themselves");
+  });
+
+  describe("refusing to remove the operator's own key", () => {
+    test("a roster entry that carries the owner's OWN key (e.g. from a poisoned echo, or hand-edited data) refuses removal outright — no revoke, no roster write, no recipient change", async () => {
+      const remote = "git@github.com:acme/widgets.git";
+      const p = fakeProbes({ home: HOME, files: { [join(HOME, ".mattstack", "teams", SLUG, ".git", "config")]: gitConfigWithRemote(remote) } });
+      const { secrets } = seamsWithClone();
+      writeTeamRecipients(SLUG, [OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY], secrets);
+      const revokeCalls: unknown[] = [];
+      const { seams, writes } = fakeMembersSeams({
+        // Simulates the roster having already recorded the owner's key under "alice" — the exact end state the echo attack (defense i) exists to prevent, tested here in isolation so defense ii is proven to hold even if defense i were bypassed.
+        readTeamStore: () => ({ "board.members": [{ username: "alice", agePublicKey: OWNER_PUBLIC_KEY }] }),
+        revokeRead: async (...args) => {
+          revokeCalls.push(args);
+          return { access: "revoked", manualSteps: [] };
+        },
+      });
+
+      await expect(membersRemove(p, secrets, SLUG, "alice", undefined, seams)).rejects.toThrow(UserActionableError);
+
+      expect(revokeCalls).toEqual([]); // refused before forge revoke ever ran
+      expect(writes).toEqual([]); // refused before the roster was touched
+      expect(readTeamRecipients(SLUG, secrets)).toEqual([OWNER_PUBLIC_KEY, ALICE_PUBLIC_KEY]); // untouched
+    });
+
+    test("carries the own-key-removal-refused code", async () => {
+      const p = fakeProbes({ home: HOME });
+      const { secrets } = seamsWithClone();
+      writeTeamRecipients(SLUG, [OWNER_PUBLIC_KEY], secrets);
+      const { seams } = fakeMembersSeams({ readTeamStore: () => ({ "board.members": [{ username: "alice", agePublicKey: OWNER_PUBLIC_KEY }] }) });
+
+      let caught: unknown;
+      try {
+        await membersRemove(p, secrets, SLUG, "alice", undefined, seams);
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(UserActionableError);
+      expect((caught as UserActionableError).code).toBe("own-key-removal-refused");
+    });
+
+    test("also refuses an explicit --key matching the owner's own key, not just a roster-recorded one", async () => {
+      const p = fakeProbes({ home: HOME });
+      const { secrets } = seamsWithClone();
+      writeTeamRecipients(SLUG, [OWNER_PUBLIC_KEY], secrets);
+      const { seams } = fakeMembersSeams({ readTeamStore: () => ({ "board.members": [] }) });
+
+      await expect(membersRemove(p, secrets, SLUG, "whoever", OWNER_PUBLIC_KEY, seams)).rejects.toThrow(UserActionableError);
+      expect(readTeamRecipients(SLUG, secrets)).toEqual([OWNER_PUBLIC_KEY]);
+    });
+
+    test("full attack sequence: an echoed owner key is rejected at sync time, so the later routine remove is a safe no-op and the owner stays a recipient throughout", async () => {
+      const remote = "git@github.com:acme/widgets.git";
+      const p = fakeProbes({ home: HOME, files: { [join(HOME, ".mattstack", "teams", SLUG, ".git", "config")]: gitConfigWithRemote(remote) } });
+      const { secrets } = seamsWithClone();
+      upsertInviteRecord(p, SLUG, "alice", aliceRecord());
+      const { seams } = fakeMembersSeams();
+      const echoBlob = await replyBlob(OWNER_PUBLIC_KEY, "alice"); // alice's reply echoes the owner's public key
+
+      // 1. echo → sync: defense (i) catches it, alice stays pending, nothing poisoned.
+      const syncResult = await membersSync(p, fakeRelay({ readReply: async () => ({ blob: echoBlob }) }), secrets, SLUG, seams);
+      expect(syncResult.pending).toEqual(["alice"]);
+      expect(readTeamRecipients(SLUG, secrets)).toEqual([OWNER_PUBLIC_KEY]);
+
+      // 2. remove: alice was never actually assigned a key, so removal is a genuine no-op — never touches the owner's recipient entry.
+      const removeResult = await membersRemove(p, secrets, SLUG, "alice", undefined, seams);
+      expect(removeResult.reencrypted).toEqual([]);
+
+      // 3. owner still a recipient throughout.
+      expect(readTeamRecipients(SLUG, secrets)).toContain(OWNER_PUBLIC_KEY);
+    });
   });
 });
