@@ -220,7 +220,10 @@ regenerate everything re-derivable from settings, as its last phase. That's rt's
 own PATH shims (`rt intercept install`) and daemon registration
 (`rt daemon install`, only when not already installed), then each
 locally-installed tool's own setup verb (`deck setup` when `deck` is on
-`PATH`). A tracked repo (`rt.repoTracking`) not present on disk is reported by
+`PATH` and NOT already healthy — `deck setup` re-bootstraps deck under
+launchd, restarting the live proxy and blipping every `*.localhost` app, so
+an already-healthy deck is reported as skipped instead of re-run). A tracked
+repo (`rt.repoTracking`) not present on disk is reported by
 name, never cloned. `mr-board`'s setup is interactive (GitLab token, Slack
 OAuth) — materialize only prints the command to run by hand, never runs it.
 A missing tool is silently skipped, not a failure; only an rt-owned step
