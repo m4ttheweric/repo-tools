@@ -10,8 +10,18 @@ done
 t "common.test.sh"               bash lib/__tests__/common.test.sh
 t "appcast-server.test.ts"       bun test run/helpers/__tests__/appcast-server.test.ts
 t "build-golden --dry-run"       bash golden/build-golden.sh 26 --dry-run
+t "build-golden --xcode --dry-run selects the xcode image" bash -c \
+  'out=$(bash golden/build-golden.sh 26 --xcode --dry-run 2>&1) && printf "%s" "$out" | grep -q "clone ghcr.io/cirruslabs/macos-tahoe-xcode:latest mattstack-golden-26-xcode"'
 t "walkthrough --dry-run"        env VM_ARTIFACTS=/tmp/vmcheck-art bash run/walkthrough.sh --ver 26 --app ../mattstack.app --dry-run
 t "walkthrough usage"            bash -c '! bash run/walkthrough.sh >/dev/null 2>&1'
+t "xcuitest.sh usage (missing args)" bash -c \
+  'out=$(bash run/xcuitest.sh 2>&1); rc=$?; [ "$rc" -ne 0 ] && printf "%s" "$out" | grep -q "usage: xcuitest.sh"'
+t "xcuitest.sh gates clean without a built -xcode golden" bash -c '
+  rm -rf /tmp/vmcheck-xcui-art; touch /tmp/vmcheck-xcui.dmg
+  out=$(env VM_ARTIFACTS=/tmp/vmcheck-xcui-art bash run/xcuitest.sh --ver 26 --dmg /tmp/vmcheck-xcui.dmg 2>&1); rc=$?
+  rm -rf /tmp/vmcheck-xcui-art /tmp/vmcheck-xcui.dmg
+  [ "$rc" -eq 0 ] && printf "%s" "$out" | grep -q "gate skipped:"
+'
 t "team-setup status (no pat)"   env MATTSTACK_VMTEST_PAT= bash run/team-setup.sh status
 t "team-setup invite stub (no gh, no pat)" env PATH="/usr/bin:/bin" MATTSTACK_VMTEST_PAT= bash run/team-setup.sh invite --handle vmcheck --out /tmp/vmcheck-invite.txt
 t "team-setup reset refuses non-vmtest org"  bash -c '! env MATTSTACK_VMTEST_PAT=x MATTSTACK_VMTEST_ORG=someorg MATTSTACK_VMTEST_ORG_CONFIRM= bash run/team-setup.sh reset >/dev/null 2>&1'
