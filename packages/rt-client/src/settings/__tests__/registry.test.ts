@@ -51,7 +51,7 @@ describe("settings/registry", () => {
       }
     });
 
-    test("exactly 18 keys are migrated:true", () => {
+    test("exactly 19 keys are migrated:true", () => {
       const migrated = allDefs().filter((d) => d.migrated);
 
       expect(migrated.map((d) => d.key).sort()).toEqual(
@@ -59,7 +59,7 @@ describe("settings/registry", () => {
           "rt.intercepts", "rt.repoIdentityOverrides", "rt.repoRoots", "rt.roles", "rt.worktrees",
           "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runsPruneDays", "rt.runaway", "rt.workspacePrefs",
           "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
-          "rt.homeSnapshot", "rt.worktreeApp",
+          "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment",
         ].sort(),
       );
     });
@@ -70,6 +70,15 @@ describe("settings/registry", () => {
       expect(def?.scopes).toEqual(["machine"]);
       expect(def?.type).toBe("object");
       expect(def?.merge).toBe("deep");
+      expect(def?.default).toBeUndefined();
+    });
+
+    test("rt.sdmEnrichment is a TEAM-ONLY map with no default (ownership latch, employer-resource invariant)", () => {
+      const def = getDef("rt.sdmEnrichment");
+
+      expect(def?.scopes).toEqual(["team"]);
+      expect(def?.type).toBe("object");
+      expect(def?.merge).toBe("replace");
       expect(def?.default).toBeUndefined();
     });
 
@@ -175,7 +184,7 @@ describe("settings/registry", () => {
       expect(def?.merge).toBe("replace");
     });
 
-    test("has exactly the 1 remaining migrated:false key, the 18 migrated:true keys, and the 30 suite keys", () => {
+    test("has exactly the 1 remaining migrated:false key, the 19 migrated:true keys, and the 30 suite keys", () => {
       const migratedFalseKeys = [
         "rt.hooks",
       ];
@@ -183,7 +192,7 @@ describe("settings/registry", () => {
         "rt.roles", "rt.intercepts", "rt.worktrees", "rt.repoIdentityOverrides", "rt.repoRoots",
         "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runsPruneDays", "rt.runaway", "rt.workspacePrefs",
         "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
-        "rt.homeSnapshot", "rt.worktreeApp",
+        "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment",
       ];
       const suiteKeys = [
         "mattstack.integrations",
