@@ -54,4 +54,16 @@ let servicesChecks: [Check] = [
         let j = String(decoding: try JSONEncoder().encode(r), as: UTF8.self)
         c.expect(j.contains("\"ok\":false"))
     },
+    Check("agents whose BundleProgram isn't bundled are partitioned out — a deck plist with no helper must not veto login-items readiness") { c in
+        let daemon = AgentPlist(label: "com.mattstack.daemon", fileName: "com.mattstack.daemon.plist", bundleProgram: "Contents/MacOS/rt")
+        let deck = AgentPlist(label: "com.mattstack.deck", fileName: "com.mattstack.deck.plist", bundleProgram: "Contents/Helpers/deck")
+        let legacy = AgentPlist(label: "com.mattstack.legacy", fileName: "com.mattstack.legacy.plist", bundleProgram: nil)
+        let split = ServiceProgramGuard.partition([daemon, deck, legacy], bundlePath: "/App.app",
+                                                  exists: { $0 == "/App.app/Contents/MacOS/rt" })
+        c.expectEqual(split.runnable, [daemon, legacy], "no BundleProgram means nothing to miss; the deck plist has one and it isn't there")
+        c.expectEqual(split.skipped, [deck])
+        let whole = ServiceProgramGuard.partition([daemon, deck], bundlePath: "/App.app", exists: { _ in true })
+        c.expectEqual(whole.runnable, [daemon, deck], "once deck ships, it registers again with no code change")
+        c.expectEqual(whole.skipped, [])
+    },
 ]

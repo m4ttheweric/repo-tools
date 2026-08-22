@@ -6,7 +6,16 @@ import MattstackCore
 /// them when the app's version changes. Spawns only through CommandRunner.
 final class ServicesRegistrar: ServicesProviding, @unchecked Sendable {
     let bundlePath: String
+    /// The agents this bundle can actually run. A plist whose BundleProgram
+    /// isn't shipped is excluded here on purpose — it would sit at
+    /// `notRegistered` forever, and every consumer of these statuses takes the
+    /// worst one (login-items permission → requiredMissing → Install disabled,
+    /// limited mode unreachable, the version-change record never written).
     let agents: [AgentPlist]
+    /// Every plist scanned, filtered or not: `POST /services/register` answers
+    /// about whatever plists rt names, and its reply has to say why a skipped
+    /// one won't be registered rather than claim the bundle doesn't ship it.
+    private let scanned: [AgentPlist]
     private let runner: CommandRunner
     private let uid: uid_t
 
@@ -15,9 +24,16 @@ final class ServicesRegistrar: ServicesProviding, @unchecked Sendable {
         self.runner = runner
         self.uid = uid
         let dir = bundlePath + "/Contents/Library/LaunchAgents"
-        agents = ServicePlistScanner.scan(directory: dir, list: ServicePlistScanner.systemList,
-                                          readLabel: ServicePlistScanner.systemReadLabel,
-                                          readBundleProgram: ServicePlistScanner.systemReadBundleProgram)
+        scanned = ServicePlistScanner.scan(directory: dir, list: ServicePlistScanner.systemList,
+                                           readLabel: ServicePlistScanner.systemReadLabel,
+                                           readBundleProgram: ServicePlistScanner.systemReadBundleProgram)
+        let split = ServiceProgramGuard.partition(scanned, bundlePath: bundlePath,
+                                                  exists: { FileManager.default.isExecutableFile(atPath: $0) })
+        agents = split.runnable
+        if !split.skipped.isEmpty {
+            TrayLog.warn("agents skipped; BundleProgram not in bundle",
+                         ["labels": split.skipped.map(\.label).joined(separator: ",")])
+        }
     }
 
     private func service(_ plist: AgentPlist) -> SMAppService { SMAppService.agent(plistName: plist.fileName) }
@@ -29,7 +45,7 @@ final class ServicesRegistrar: ServicesProviding, @unchecked Sendable {
 
     private func registerSync(plists: [String]) -> [ServiceRegisterResult] {
         plists.map { name in
-            guard let plist = agents.first(where: { $0.fileName == name }) else {
+            guard let plist = scanned.first(where: { $0.fileName == name }) else {
                 return ServiceRegisterResult(plist: name, ok: false, status: "notFound", error: "not shipped in this bundle")
             }
             if let missing = ServiceProgramGuard.missingProgramPath(bundleProgram: plist.bundleProgram, bundlePath: bundlePath,
@@ -68,7 +84,7 @@ final class ServicesRegistrar: ServicesProviding, @unchecked Sendable {
     func unregister(plists: [String]) async -> [ServiceRegisterResult] {
         await MainActor.run {
             plists.map { name in
-                guard let plist = agents.first(where: { $0.fileName == name }) else {
+                guard let plist = scanned.first(where: { $0.fileName == name }) else {
                     return ServiceRegisterResult(plist: name, ok: false, status: "notFound", error: "not shipped in this bundle")
                 }
                 let svc = service(plist)
@@ -118,9 +134,11 @@ final class ServicesRegistrar: ServicesProviding, @unchecked Sendable {
 
     /// Called once per launch. On a version change: re-register (idempotent),
     /// kickstart every agent, ask deck to restart its managed apps. The new
-    /// version is recorded only once every register + restart step succeeds —
-    /// a partial upgrade must stay unrecorded so the next launch retries it,
-    /// never gets silently stuck.
+    /// version is recorded only once every register + restart step for the
+    /// bundle's *runnable* agents succeeds — a partial upgrade must stay
+    /// unrecorded so the next launch retries it, never gets silently stuck,
+    /// and an agent this bundle can't run at all must not veto the record
+    /// forever (that would re-register and kickstart on every launch).
     func handleVersionChange(current: String, store: KeyValueStore) async -> VersionChange {
         let change = VersionChangeDetector.evaluate(current: current, store: store)
         guard case .changed(let from, let to) = change else {

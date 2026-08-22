@@ -46,6 +46,25 @@ public enum ServiceProgramGuard {
         let full = bundlePath + "/" + program
         return exists(full) ? nil : full
     }
+
+    /// Splits the scanned plists into the ones this bundle can actually run
+    /// and the ones whose BundleProgram isn't shipped (a rendered
+    /// `com.mattstack.deck.plist` with no `Contents/Helpers/deck` behind it).
+    /// A skipped plist has to stay out of every status sweep, not just out of
+    /// register: its permanent `notRegistered` is worst-wins input to the
+    /// login-items permission, which is Install's own gate.
+    public static func partition(_ agents: [AgentPlist], bundlePath: String,
+                                 exists: (String) -> Bool) -> (runnable: [AgentPlist], skipped: [AgentPlist]) {
+        var runnable: [AgentPlist] = [], skipped: [AgentPlist] = []
+        for agent in agents {
+            if missingProgramPath(bundleProgram: agent.bundleProgram, bundlePath: bundlePath, exists: exists) == nil {
+                runnable.append(agent)
+            } else {
+                skipped.append(agent)
+            }
+        }
+        return (runnable, skipped)
+    }
 }
 
 public enum Kickstart {
