@@ -122,7 +122,7 @@ export class InvalidProfileKeyError extends Error {
  * hostname slug — but if that slug already names an EXISTING profile, using
  * it as "new" would silently adopt (and let this machine overwrite) another
  * machine's settings.local.jsonc: two machines sharing one LocalHostName
- * slug is exactly the cross-machine clobber the re-root ruling forbids.
+ * slug is exactly the cross-machine clobber.
  */
 export class ProfileNameCollisionError extends Error {
   constructor(hostnameSlug: string) {
