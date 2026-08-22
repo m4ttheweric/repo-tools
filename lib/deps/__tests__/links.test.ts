@@ -4,9 +4,10 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { HELPERS_DIR, RT_BUNDLE_PATH, __test__ as bundleLayoutTest } from "../../bundle-layout.ts";
 import { setSetting } from "../../settings/write.ts";
-import { fakeProbes } from "../../setup/__tests__/fakes.ts";
-import type { Probes } from "../../setup/probes.ts";
-import { LINK_TAG, isOurLink, link, linkPath, reconcile, unlink, type LinkSeams } from "../links.ts";
+import { fakeProbes, type FakeProbesOpts } from "../../setup/__tests__/fakes.ts";
+import { createRealProbes } from "../../setup/probes.ts";
+import { readSetupState } from "../../setup/state.ts";
+import { DEFAULT_EXPOSED, LINK_TAG, isOurLink, link, linkPath, reconcile, unlink, type LinkSeams } from "../links.ts";
 
 const LOCK = {
   schema: 1,
@@ -22,6 +23,14 @@ const LOCK = {
       archive: "npm", extract: "package", bundlePath: `${HELPERS_DIR}/fast-browser`,
       exec: [`${HELPERS_DIR}/node/bin/node`, `${HELPERS_DIR}/fast-browser/bin/fast-browser.mjs`],
       exposeByDefault: true, entitlements: "none", status: "bundled", kind: "helper",
+    },
+    {
+      // F8: exec entries containing shell metacharacters — proves the
+      // wrapper escapes them rather than splicing them raw into /bin/sh.
+      name: "dangerish", version: "1.0.0", license: "MIT", url: "https://x/d.tgz", sha256: "d".repeat(64),
+      archive: "tar.gz", extract: "d", bundlePath: `${HELPERS_DIR}/dangerish`,
+      exec: [`${HELPERS_DIR}/dangerish/it's $HOME \`whoami\`/bin`, `${HELPERS_DIR}/dangerish/arg two`],
+      exposeByDefault: false, entitlements: "none", status: "bundled", kind: "helper",
     },
   ],
 };
@@ -42,9 +51,15 @@ describe("tagged PATH links", () => {
 
     appRoot = join(realpathSync(mkdtempSync(join(tmpdir(), "rt-deps-links-app-"))), "mattstack.app");
     mkdirSync(join(appRoot, "Contents", "Resources"), { recursive: true });
+    mkdirSync(join(appRoot, "Contents", "MacOS"), { recursive: true });
+    mkdirSync(join(appRoot, HELPERS_DIR, "node", "bin"), { recursive: true });
+    mkdirSync(join(appRoot, HELPERS_DIR, "fast-browser", "bin"), { recursive: true });
     writeFileSync(join(appRoot, "Contents", "Info.plist"), "<plist/>");
     writeFileSync(join(appRoot, "Contents", "Resources", "deps.lock"), JSON.stringify(LOCK));
-
+    writeFileSync(join(appRoot, RT_BUNDLE_PATH), "rt-binary");
+    writeFileSync(join(appRoot, HELPERS_DIR, "gh"), "gh-binary");
+    writeFileSync(join(appRoot, HELPERS_DIR, "node", "bin", "node"), "node-binary");
+    writeFileSync(join(appRoot, HELPERS_DIR, "fast-browser", "bin", "fast-browser.mjs"), "fb-binary");
     setSetting("mattstack.appPath", appRoot, "machine");
 
     ghPath = join(appRoot, HELPERS_DIR, "gh");
@@ -59,25 +74,32 @@ describe("tagged PATH links", () => {
     bundleLayoutTest.resetBundleLayoutMemo();
   });
 
-  function probeWith(overrides: Partial<ReturnType<typeof fakeProbes>> = {}): Probes & ReturnType<typeof fakeProbes> {
-    const base = fakeProbes({ home });
-    const known = new Set([appRoot, ghPath, nodePath, fbPath, rtPath]);
-    return { ...base, exists: (p: string) => known.has(p) || base.exists(p), ...overrides };
+  /** A fakeProbes wired with the bundle's own helper files/dirs already tracked, merged with per-test extras. */
+  function bundleProbe(extra: Partial<FakeProbesOpts> = {}): ReturnType<typeof fakeProbes> {
+    return fakeProbes({
+      home,
+      ...extra,
+      files: { [ghPath]: "gh-binary", [nodePath]: "node-binary", [fbPath]: "fb-binary", [rtPath]: "rt-binary", ...(extra.files ?? {}) },
+      dirs: { [appRoot]: [], [join(appRoot, HELPERS_DIR, "fast-browser")]: ["bin"], ...(extra.dirs ?? {}) },
+    });
   }
 
+  test("DEFAULT_EXPOSED is exactly the four tools rt exposes by default (F12)", () => {
+    expect(DEFAULT_EXPOSED).toEqual(["rt", "fast-browser", "gitq", "deck"]);
+  });
+
   test("link(gh) creates a symlink targeting the bundled path", () => {
-    const p = probeWith();
+    const p = bundleProbe();
     const outcome = link(p, "gh");
     expect(outcome).toEqual({ ok: true, path: linkPath(home, "gh"), state: "linked" });
     expect(p.calls.symlinks[linkPath(home, "gh")]).toBe(ghPath);
   });
 
   test("link(rt) goes through the installRtBinary seam, atomically, never a bare symlink", () => {
-    const p = probeWith();
+    const p = bundleProbe();
     const calls: string[] = [];
     const seams: LinkSeams = {
-      installRtBinary(src) {
-        const dest = linkPath(home, "rt");
+      installRtBinary(src, dest) {
         calls.push(`symlink ${dest}.new -> ${src}`);
         calls.push(`rename ${dest}.new -> ${dest}`);
         return dest;
@@ -94,8 +116,23 @@ describe("tagged PATH links", () => {
     expect(p.calls.symlinks[linkPath(home, "rt")]).toBeUndefined();
   });
 
-  test("link(fast-browser) writes a tagged wrapper; isOurLink recognizes it; a second call reports already", () => {
-    const p = probeWith();
+  test("link(rt)'s seam receives dest computed from p.home, not real HOME (F10)", () => {
+    // p.home deliberately differs from process.env.HOME (which drives the
+    // bundle/settings resolution) — proves the seam is handed a dest that
+    // honors the injected home rather than silently naming a file that was
+    // never written.
+    const otherHome = "/other-fake-home";
+    const p = { ...bundleProbe(), home: otherHome };
+    let seenDest = "";
+    const seams: LinkSeams = { installRtBinary: (_src, dest) => { seenDest = dest; return dest; } };
+
+    const outcome = link(p, "rt", {}, seams);
+    expect(outcome.ok).toBe(true);
+    expect(seenDest).toBe(linkPath(otherHome, "rt"));
+  });
+
+  test("link(fast-browser) writes a tagged wrapper (single-quote escaped); isOurLink recognizes it; a second call reports already", () => {
+    const p = bundleProbe();
     const outcome = link(p, "fast-browser");
     expect(outcome.ok).toBe(true);
 
@@ -103,7 +140,7 @@ describe("tagged PATH links", () => {
     const content = p.calls.writes[path]!;
     const lines = content.split("\n");
     expect(lines[1]).toBe(`${LINK_TAG} fast-browser`);
-    expect(lines[2]).toBe(`exec "${nodePath}" "${fbPath}" "$@"`);
+    expect(lines[2]).toBe(`exec '${nodePath}' '${fbPath}' "$@"`);
     expect(p.calls.modes[path]).toBe(0o755);
     expect(isOurLink(p, "fast-browser")).toBe(true);
 
@@ -111,8 +148,32 @@ describe("tagged PATH links", () => {
     expect(second).toEqual({ ok: true, path, state: "already" });
   });
 
+  test("the wrapper's exec line single-quote-escapes argv entries containing $, backticks, and quotes (F8)", () => {
+    const argv0 = join(appRoot, HELPERS_DIR, "dangerish", "it's $HOME `whoami`/bin");
+    const argv1 = join(appRoot, HELPERS_DIR, "dangerish", "arg two");
+    const p = bundleProbe({ files: { [argv0]: "x", [argv1]: "x" } });
+
+    const outcome = link(p, "dangerish");
+    expect(outcome.ok).toBe(true);
+
+    const path = linkPath(home, "dangerish");
+    const content = p.calls.writes[path]!;
+    const execLine = content.split("\n")[2]!;
+
+    // Single-quoted, with the one embedded quote escaped via '\'' — never a
+    // bare double-quoted splice, which $, `, and " would all break out of.
+    expect(execLine).toBe(`exec '${argv0.replace(/'/g, `'\\''`)}' '${argv1}' "$@"`);
+    expect(execLine).not.toContain(`"${argv0}"`);
+
+    // The escaping is reversible under real /bin/sh single-quote rules: each
+    // '\'' splice reconstructs exactly the original embedded quote.
+    const quoted = execLine.match(/^exec '((?:[^']|'\\''.)*)'/)![1]!;
+    const reconstructed = quoted.split(`'\\''`).join("'");
+    expect(reconstructed).toBe(argv0);
+  });
+
   test("link(gh) refuses when a user copy is already on PATH, unless forced", () => {
-    const p = probeWith({ env: { PATH: "/opt/homebrew/bin" }, exists: (path: string) => path === "/opt/homebrew/bin/gh" || path === appRoot || path === ghPath });
+    const p = bundleProbe({ env: { PATH: "/opt/homebrew/bin" }, files: { "/opt/homebrew/bin/gh": "real-gh-binary" } });
 
     const refused = link(p, "gh");
     expect(refused).toEqual({ ok: false, reason: "user-copy", detail: expect.any(String) });
@@ -121,19 +182,34 @@ describe("tagged PATH links", () => {
     expect(forced).toEqual({ ok: true, path: linkPath(home, "gh"), state: "linked" });
   });
 
+  test("link(gh) refuses 'occupied' for an unrelated file at the link path, unless forced (F13)", () => {
+    const path = linkPath(home, "gh");
+    const p = bundleProbe({ files: { [path]: "#!/bin/sh\necho some other script\n" } });
+
+    const refused = link(p, "gh");
+    expect(refused).toEqual({ ok: false, reason: "occupied", detail: expect.any(String) });
+
+    const forced = link(p, "gh", { force: true });
+    expect(forced).toEqual({ ok: true, path, state: "linked" });
+    expect(p.calls.symlinks[path]).toBe(ghPath);
+  });
+
+  test("link('does-not-exist') refuses no-bundle (F13)", () => {
+    const p = bundleProbe();
+    const outcome = link(p, "does-not-exist");
+    expect(outcome).toEqual({ ok: false, reason: "no-bundle", detail: expect.any(String) });
+  });
+
   test("link(rt) refuses dev-mode-owns-rt when ~/.local/bin/rt is the dev-mode wrapper script", () => {
     const path = linkPath(home, "rt");
-    const p = probeWith({
-      exists: (candidate: string) => candidate === path || candidate === appRoot || candidate === rtPath,
-      readFile: (candidate: string) => (candidate === path ? "#!/bin/sh\nexec bun run cli.ts \"$@\"\n" : null),
-    });
+    const p = bundleProbe({ files: { [path]: "#!/bin/sh\nexec bun run cli.ts \"$@\"\n" } });
 
     const outcome = link(p, "rt");
     expect(outcome).toEqual({ ok: false, reason: "dev-mode-owns-rt", detail: expect.any(String) });
   });
 
   test("unlink removes a symlink form and a tagged-wrapper form, and leaves a user's own file alone", () => {
-    const p = probeWith();
+    const p = bundleProbe();
     link(p, "gh");
     expect(unlink(p, "gh")).toEqual({ removed: true });
     expect(p.exists(linkPath(home, "gh"))).toBe(false);
@@ -148,29 +224,90 @@ describe("tagged PATH links", () => {
     expect(p.exists(userPath)).toBe(true);
   });
 
+  test("a dangling our-link (target gone) is unlinkable, and link() repairs it in place instead of throwing (F5)", () => {
+    const p = bundleProbe();
+    const staleTarget = join(appRoot, HELPERS_DIR, "gh-old-location"); // never tracked as a file — simulates a moved/renamed helper
+    p.symlink(staleTarget, linkPath(home, "gh"));
+
+    expect(p.exists(linkPath(home, "gh"))).toBe(false); // dangling: readlink succeeds, the target doesn't
+    expect(isOurLink(p, "gh")).toBe(true); // still recognized as ours — it points inside the bundle root
+
+    const repaired = link(p, "gh");
+    expect(repaired).toEqual({ ok: true, path: linkPath(home, "gh"), state: "linked" });
+    expect(p.calls.symlinks[linkPath(home, "gh")]).toBe(ghPath); // repointed at the current, valid bundle path
+    expect(p.exists(linkPath(home, "gh"))).toBe(true);
+  });
+
+  test("unlink removes a dangling our-link outright", () => {
+    const p = bundleProbe();
+    const staleTarget = join(appRoot, HELPERS_DIR, "gh-old-location");
+    p.symlink(staleTarget, linkPath(home, "gh"));
+
+    expect(unlink(p, "gh")).toEqual({ removed: true });
+    expect(p.readlink(linkPath(home, "gh"))).toBeNull();
+  });
+
   test("reconcile removes the gh link once a user copy appears on PATH, and keeps rt", () => {
-    const p = probeWith();
+    const p = bundleProbe();
     link(p, "gh");
-    link(p, "rt", {}, {
-      installRtBinary: (src) => {
-        p.symlink(src, linkPath(home, "rt"));
-        return linkPath(home, "rt");
-      },
-    });
+    link(p, "rt", {}, { installRtBinary: (src, dest) => { p.symlink(src, dest); return dest; } });
 
     const before = reconcile(p);
     expect(before).toEqual({ removed: [], kept: ["gh", "rt"] });
 
-    const withUserGh = (candidate: string) =>
-      candidate === "/opt/homebrew/bin/gh" ||
-      candidate === linkPath(home, "gh") ||
-      candidate === linkPath(home, "rt") ||
-      candidate === appRoot ||
-      candidate === rtPath;
-    const p2 = { ...p, env: { PATH: "/opt/homebrew/bin" }, exists: withUserGh };
+    // Mutate the SAME probe (not a fresh one) — reconcile's readDir(~/.local/bin)
+    // must see the directory listing symlink() already registered above.
+    p.env.PATH = "/opt/homebrew/bin";
+    p.writeFile("/opt/homebrew/bin/gh", "real-gh-binary");
 
-    const after = reconcile(p2);
+    const after = reconcile(p);
     expect(after.removed).toEqual(["gh"]);
     expect(after.kept).toEqual(["rt"]);
+  });
+
+  test("a --force'd link survives a reconcile even after a user copy shows up (F7)", () => {
+    const p = bundleProbe({ env: { PATH: "/opt/homebrew/bin" }, files: { "/opt/homebrew/bin/gh": "real-gh-binary" } });
+
+    const forced = link(p, "gh", { force: true });
+    expect(forced.ok).toBe(true);
+    expect(readSetupState(p).forcedLinks).toEqual(["gh"]);
+
+    const result = reconcile(p);
+    expect(result).toEqual({ removed: [], kept: ["gh"] });
+  });
+
+  test("unlink clears the forced-link memory — a fresh (non-forced) link at the same path reconciles normally (F7)", () => {
+    const p = bundleProbe({ env: { PATH: "/opt/homebrew/bin" }, files: { "/opt/homebrew/bin/gh": "real-gh-binary" } });
+    link(p, "gh", { force: true });
+    expect(readSetupState(p).forcedLinks).toEqual(["gh"]);
+
+    unlink(p, "gh");
+    expect(readSetupState(p).forcedLinks).toEqual([]);
+
+    p.symlink(ghPath, linkPath(home, "gh")); // a fresh our-link, placed without going through force this time
+    const result = reconcile(p);
+    expect(result).toEqual({ removed: ["gh"], kept: [] });
+  });
+
+  test("real-fs repro (F1): after the daemon's boot-time PATH prepend, reconcile removes nothing", () => {
+    // Real fs (existsSync/statSync/symlinkSync/readdirSync via createRealProbes)
+    // is what actually matters for this proof — the file/directory distinction
+    // and the bundle-prefix check only mean something against real inodes.
+    // `env` is overridden to a hermetic PATH instead of the real process.env.PATH
+    // so this doesn't depend on what happens to be installed on the machine
+    // running the suite (e.g. a real /opt/homebrew/bin/gh).
+    const probes = { ...createRealProbes(), env: { PATH: "" } as Record<string, string | undefined> };
+    const ghLinked = link(probes, "gh");
+    const fbLinked = link(probes, "fast-browser");
+    expect(ghLinked.ok).toBe(true);
+    expect(fbLinked.ok).toBe(true);
+
+    // Mirrors lib/daemon.ts's boot-time PATH prepend exactly: the bundle's
+    // own Contents/Helpers dir as PATH entry #0.
+    probes.env.PATH = join(appRoot, "Contents", "Helpers");
+
+    const result = reconcile(probes);
+    expect(result.removed).toEqual([]);
+    expect(result.kept.sort()).toEqual(["fast-browser", "gh"]);
   });
 });

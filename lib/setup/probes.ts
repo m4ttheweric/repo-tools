@@ -5,7 +5,7 @@
  * the real machine.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { daemonSocketQuery, trayRequest, type DaemonResponse, type TrayClient } from "../daemon-client.ts";
 import { UserActionableError } from "./errors.ts";
@@ -20,6 +20,8 @@ export interface Probes {
   /** Never throws: a missing binary yields code 127 with stderr "ENOENT: <argv0>"; timeout yields 124. `inherit` hands the child the TTY (interactive logins) — stdout/stderr then come back empty. */
   exec(argv: string[], opts?: { cwd?: string; timeoutMs?: number; env?: Record<string, string>; input?: string; inherit?: boolean }): Promise<ExecResult>;
   exists(path: string): boolean;
+  /** Byte size, following symlinks, only for a REGULAR file (a directory, a symlink to one, or anything missing/unreadable is null) — the cheap "is this actually a file worth reading" check callers need before decoding one. */
+  fileSize(path: string): number | null;
   readFile(path: string): string | null;
   readDir(path: string): string[];
   readlink(path: string): string | null;
@@ -150,6 +152,15 @@ export function createRealProbes(): Probes {
 
     exists(path) {
       return existsSync(path);
+    },
+
+    fileSize(path) {
+      try {
+        const stat = statSync(path); // follows symlinks, unlike lstatSync — a symlink to a regular file sizes as that file
+        return stat.isFile() ? stat.size : null;
+      } catch {
+        return null;
+      }
     },
 
     readFile(path) {

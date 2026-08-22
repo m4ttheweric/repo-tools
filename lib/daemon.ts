@@ -107,8 +107,12 @@ const systemProcessScanner = new SystemProcessScanner();
 // `env: process.env` — mutating process.env.PATH does not affect Bun.spawn's
 // OWN executable resolution, which resolved at process start.
 {
+  // Call-time HOME (mirrors rt-paths.ts's own home()), not a module-load
+  // constant — this file's PATH resolution above already follows the same
+  // discipline every sibling module in this repo does.
+  const home = (): string => process.env.HOME ?? homedir();
   const root = appBundleRoot();
-  const prefix = [root ? join(root, "Contents", "Helpers") : null, join(process.env.HOME ?? homedir(), ".local", "bin")].filter(
+  const prefix = [root ? join(root, "Contents", "Helpers") : null, join(home(), ".local", "bin")].filter(
     (p): p is string => p !== null,
   );
   process.env.PATH = [...prefix, process.env.PATH].filter(Boolean).join(":");
@@ -316,15 +320,20 @@ export function startDaemon(): void {
 
   // Auto-unlink any tagged tool link whose tool now has a genuine user copy
   // elsewhere on PATH (e.g. the user ran `brew install gh` after rt linked
-  // the bundled one). Fire-and-forget: never blocks socket bind on it.
-  (async () => {
+  // the bundled one). reconcile() itself is synchronous (a ~/.local/bin
+  // readDir plus a handful of stats) — wrapping the call in `async` alone
+  // would NOT defer it, since nothing inside actually awaits. setTimeout(0)
+  // is what actually pushes it past the rest of this function: the PID
+  // write, openBranchCacheStore, and both server binds below all run first,
+  // on this same synchronous pass, before the timer callback ever fires.
+  setTimeout(() => {
     try {
-      const { removed } = await reconcileLinks(createRealProbes());
+      const { removed } = reconcileLinks(createRealProbes());
       if (removed.length > 0) log.info({ removed }, "deps: auto-unlinked tools now shadowed by a user copy");
     } catch (err) {
       log.warn({ err }, "deps: link reconcile failed");
     }
-  })();
+  }, 0);
 
   log.info("daemon starting");
   writeFileSync(DAEMON_PID_PATH, String(process.pid));

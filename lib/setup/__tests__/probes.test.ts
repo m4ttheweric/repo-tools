@@ -1,4 +1,7 @@
 import { describe, test, expect } from "bun:test";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { createRealProbes, readStdinJson } from "../probes.ts";
 import { UserActionableError } from "../errors.ts";
 import { fakeProbes } from "./fakes.ts";
@@ -6,6 +9,40 @@ import { fakeProbes } from "./fakes.ts";
 function streamFrom(text: string): ReadableStream<Uint8Array> {
   return new Response(text).body!;
 }
+
+describe("createRealProbes().fileSize", () => {
+  const dir = mkdtempSync(join(tmpdir(), "rt-probes-filesize-"));
+
+  test("a regular file sizes to its byte length", () => {
+    const path = join(dir, "a-file");
+    writeFileSync(path, "hello");
+    expect(createRealProbes().fileSize(path)).toBe(5);
+  });
+
+  test("a directory is null, not its own size", () => {
+    const path = join(dir, "a-dir");
+    mkdirSync(path);
+    expect(createRealProbes().fileSize(path)).toBeNull();
+  });
+
+  test("a symlink to a regular file sizes as the target", () => {
+    const target = join(dir, "target-file");
+    writeFileSync(target, "hi there");
+    const link = join(dir, "link-to-file");
+    symlinkSync(target, link);
+    expect(createRealProbes().fileSize(link)).toBe(8);
+  });
+
+  test("a dangling symlink is null", () => {
+    const link = join(dir, "dangling-link");
+    symlinkSync(join(dir, "does-not-exist"), link);
+    expect(createRealProbes().fileSize(link)).toBeNull();
+  });
+
+  test("a missing path is null", () => {
+    expect(createRealProbes().fileSize(join(dir, "nope"))).toBeNull();
+  });
+});
 
 describe("createRealProbes().exec", () => {
   test("a missing binary resolves code 127 instead of throwing", async () => {
@@ -126,7 +163,9 @@ describe("fakeProbes", () => {
   });
 
   test("removeFile also removes a symlink at that path", () => {
-    const probes = fakeProbes({ links: { "/link": "/target" } });
+    // The target must resolve to a tracked file — exists() follows links the
+    // way real existsSync does, so a link to nothing (dangling) is exists:false.
+    const probes = fakeProbes({ files: { "/target": "x" }, links: { "/link": "/target" } });
     expect(probes.exists("/link")).toBe(true);
     probes.removeFile("/link");
     expect(probes.exists("/link")).toBe(false);
