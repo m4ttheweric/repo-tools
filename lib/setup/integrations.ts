@@ -4,6 +4,14 @@
  * is a specific API shape. Every validate() reaches the network only through
  * `p.fetch`/`p.exec`, never a bare `fetch`/child_process call, so it stays
  * honest under test and never silently guesses a ready status.
+ *
+ * status is three-valued (RULING R-T4b): "invalid" is RESERVED for the
+ * service actually rejecting the credential (401/403, ok:false, a
+ * team-resource 404 the API distinguishes from a generic error) — anything
+ * that means "couldn't determine" (unreachable network, a timeout, a
+ * malformed response) is "error", never "invalid", so `detail` never implies
+ * a good token is bad. Downstream status mapping (connect exit codes, plan
+ * rows) is later tasks' work.
  */
 
 import type { ConnectField, Integration } from "./contract.ts";
@@ -11,12 +19,22 @@ import { UserActionableError } from "./errors.ts";
 import type { Probes } from "./probes.ts";
 
 export interface ValidateResult {
-  status: "ready" | "invalid";
+  status: "ready" | "invalid" | "error";
   detail: string;
   scopesSeen: string[];
 }
 
 export interface ValidateCtx {
+  /**
+   * Per-integration meaning, normalized here (trailing slash stripped)
+   * before use:
+   *  - gitlab: a bare hostname, e.g. "gitlab.example.com" (defaults to
+   *    "gitlab.com" when null) — validate() prefixes `https://`.
+   *  - switchboard: a full base URL, e.g. "https://switchboard.example.com"
+   *    — validate() appends `/health` directly, no scheme added.
+   *  - github/linear/slack/sdm/doppler/ldcli: ignored (fixed API host, or
+   *    no network call at all).
+   */
   host: string | null;
   team: { slug: string; remote: string | null };
   /** mattstack.integrations.linear.teamKey, when the pack declares one — undeclared means "any team the token can see" is fine. */
@@ -35,7 +53,7 @@ export interface IntegrationDef {
 }
 
 function githubHeaders(token: string): Record<string, string> {
-  return { Authorization: `Bearer ${token}` };
+  return { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "User-Agent": "rt-setup" };
 }
 
 function parseGithubRemote(remote: string): { owner: string; repo: string } | null {
@@ -73,6 +91,19 @@ function parseHeaderList(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
+function stripTrailingSlash(s: string): string {
+  return s.replace(/\/+$/, "");
+}
+
+/** p.fetch's documented status-0 stand-in for "the request never reached the service" — never a real HTTP response, so never a credential signal. */
+function unreachableDetail(host: string): string {
+  return `couldn't reach ${host} — check your network or proxy`;
+}
+
+function isCredentialRejection(status: number): boolean {
+  return status === 401 || status === 403;
+}
+
 export const INTEGRATIONS: Record<Integration, IntegrationDef> = {
   github: {
     id: "github",
@@ -83,14 +114,17 @@ export const INTEGRATIONS: Record<Integration, IntegrationDef> = {
     secret: { domain: "rt", key: "githubToken" },
     async validate(p, token, ctx) {
       const userRes = await p.fetch("https://api.github.com/user", { headers: githubHeaders(token) });
-      if (userRes.status !== 200) return { status: "invalid", detail: `github /user returned ${userRes.status}`, scopesSeen: [] };
+      if (userRes.status === 0) return { status: "error", detail: unreachableDetail("api.github.com"), scopesSeen: [] };
+      if (isCredentialRejection(userRes.status)) return { status: "invalid", detail: `github /user returned ${userRes.status}`, scopesSeen: [] };
+      if (userRes.status !== 200) return { status: "error", detail: `github /user returned ${userRes.status}`, scopesSeen: [] };
       const scopesSeen = parseHeaderList(userRes.headers["x-oauth-scopes"]);
 
       const project = ctx.team.remote ? parseGithubRemote(ctx.team.remote) : null;
       if (project) {
         const repoRes = await p.fetch(`https://api.github.com/repos/${project.owner}/${project.repo}`, { headers: githubHeaders(token) });
+        if (repoRes.status === 0) return { status: "error", detail: unreachableDetail("api.github.com"), scopesSeen };
         if (repoRes.status === 404) return { status: "invalid", detail: `token can't see ${project.owner}/${project.repo}`, scopesSeen };
-        if (repoRes.status !== 200) return { status: "invalid", detail: `github repo lookup returned ${repoRes.status}`, scopesSeen };
+        if (repoRes.status !== 200) return { status: "error", detail: `github repo lookup returned ${repoRes.status}`, scopesSeen };
       }
       return { status: "ready", detail: "github token valid", scopesSeen };
     },
@@ -103,11 +137,13 @@ export const INTEGRATIONS: Record<Integration, IntegrationDef> = {
     fields: [{ name: "token", label: "GitLab token", secret: true, hint: "read_api, read_user" }],
     secret: { domain: "rt", key: "gitlabToken" },
     async validate(p, token, ctx) {
-      const host = ctx.host ?? "gitlab.com";
+      const host = stripTrailingSlash(ctx.host ?? "gitlab.com");
       const headers = { "PRIVATE-TOKEN": token };
 
       const userRes = await p.fetch(`https://${host}/api/v4/user`, { headers });
-      if (userRes.status !== 200) return { status: "invalid", detail: `gitlab /user returned ${userRes.status}`, scopesSeen: [] };
+      if (userRes.status === 0) return { status: "error", detail: unreachableDetail(host), scopesSeen: [] };
+      if (isCredentialRejection(userRes.status)) return { status: "invalid", detail: `gitlab /user returned ${userRes.status}`, scopesSeen: [] };
+      if (userRes.status !== 200) return { status: "error", detail: `gitlab /user returned ${userRes.status}`, scopesSeen: [] };
 
       let scopesSeen: string[] = [];
       const selfRes = await p.fetch(`https://${host}/api/v4/personal_access_tokens/self`, { headers });
@@ -123,7 +159,9 @@ export const INTEGRATIONS: Record<Integration, IntegrationDef> = {
       const path = ctx.team.remote ? parseProjectPath(ctx.team.remote, host) : null;
       if (path) {
         const projRes = await p.fetch(`https://${host}/api/v4/projects/${encodeURIComponent(path)}`, { headers });
-        if (projRes.status !== 200) return { status: "invalid", detail: `token can't see ${path}`, scopesSeen };
+        if (projRes.status === 0) return { status: "error", detail: unreachableDetail(host), scopesSeen };
+        if (projRes.status === 404 || projRes.status === 403) return { status: "invalid", detail: `token can't see ${path}`, scopesSeen };
+        if (projRes.status !== 200) return { status: "error", detail: `gitlab project lookup returned ${projRes.status}`, scopesSeen };
       }
       return { status: "ready", detail: "gitlab token valid", scopesSeen };
     },
@@ -141,14 +179,16 @@ export const INTEGRATIONS: Record<Integration, IntegrationDef> = {
         headers: { Authorization: token, "Content-Type": "application/json" },
         body: JSON.stringify({ query: "{ viewer { id } teams { nodes { key } } }" }),
       });
-      if (res.status !== 200) return { status: "invalid", detail: `linear API returned ${res.status}`, scopesSeen: [] };
+      if (res.status === 0) return { status: "error", detail: unreachableDetail("api.linear.app"), scopesSeen: [] };
+      if (isCredentialRejection(res.status)) return { status: "invalid", detail: `linear API returned ${res.status}`, scopesSeen: [] };
+      if (res.status !== 200) return { status: "error", detail: `linear API returned ${res.status}`, scopesSeen: [] };
 
       let teamKeys: string[] = [];
       try {
         const parsed = JSON.parse(res.body) as { data?: { teams?: { nodes?: { key: string }[] } } };
         teamKeys = parsed.data?.teams?.nodes?.map((n) => n.key) ?? [];
       } catch {
-        return { status: "invalid", detail: "linear API returned malformed JSON", scopesSeen: [] };
+        return { status: "error", detail: "linear API returned unparsable JSON", scopesSeen: [] };
       }
 
       if (!ctx.linearTeamKey) return { status: "ready", detail: "viewer ok", scopesSeen: [] };
@@ -164,15 +204,22 @@ export const INTEGRATIONS: Record<Integration, IntegrationDef> = {
     fields: [],
     secret: { domain: "board", key: "slackUserToken" },
     async validate(p, token) {
-      const res = await p.fetch("https://slack.com/api/auth.test", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
-      let data: { ok?: boolean; team?: string; error?: string } = {};
+      const res = await p.fetch("https://slack.com/api/auth.test", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/x-www-form-urlencoded" },
+      });
+      if (res.status === 0) return { status: "error", detail: unreachableDetail("slack.com"), scopesSeen: [] };
+
+      let data: { ok?: boolean; team?: string; error?: string };
       try {
         data = JSON.parse(res.body);
       } catch {
-        // falls through to the generic failure below
+        return { status: "error", detail: "slack auth.test returned unparsable JSON", scopesSeen: [] };
       }
-      if (res.status === 200 && data.ok === true) return { status: "ready", detail: `connected as ${data.team ?? "unknown team"}`, scopesSeen: [] };
-      return { status: "invalid", detail: data.error ? `slack error: ${data.error}` : `slack auth.test failed (status ${res.status})`, scopesSeen: [] };
+
+      if (data.ok === true) return { status: "ready", detail: `connected as ${data.team ?? "unknown team"}`, scopesSeen: [] };
+      if (res.status !== 200) return { status: "error", detail: `slack auth.test failed (status ${res.status})`, scopesSeen: [] };
+      return { status: "invalid", detail: data.error ? `slack error: ${data.error}` : "slack auth.test returned ok:false", scopesSeen: [] };
     },
   },
 
@@ -184,9 +231,12 @@ export const INTEGRATIONS: Record<Integration, IntegrationDef> = {
     secret: { domain: "rt", key: "switchboardToken" },
     async validate(p, token, ctx) {
       if (!ctx.host) return { status: "invalid", detail: "switchboard host not configured", scopesSeen: [] };
-      const res = await p.fetch(`${ctx.host}/health`, { headers: { Authorization: `Bearer ${token}` } });
-      if (res.status === 200) return { status: "ready", detail: "switchboard reachable", scopesSeen: [] };
-      return { status: "invalid", detail: `switchboard /health returned ${res.status}`, scopesSeen: [] };
+      const base = stripTrailingSlash(ctx.host);
+      const res = await p.fetch(`${base}/health`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.status === 0) return { status: "error", detail: unreachableDetail(base), scopesSeen: [] };
+      if (isCredentialRejection(res.status)) return { status: "invalid", detail: `switchboard /health returned ${res.status}`, scopesSeen: [] };
+      if (res.status !== 200) return { status: "error", detail: `switchboard /health returned ${res.status}`, scopesSeen: [] };
+      return { status: "ready", detail: "switchboard reachable", scopesSeen: [] };
     },
   },
 
@@ -197,8 +247,10 @@ export const INTEGRATIONS: Record<Integration, IntegrationDef> = {
     fields: [{ name: "email", label: "StrongDM email", secret: false }],
     secret: { domain: "rt", key: "sdmEmail" },
     async validate(p, email) {
+      if (email.trim() === "") return { status: "invalid", detail: "no email configured", scopesSeen: [] };
       const res = await p.exec(["sdm", "status"]);
       if (res.code === 127) return { status: "invalid", detail: "sdm not installed", scopesSeen: [] };
+      if (res.code === 124) return { status: "error", detail: "sdm status timed out", scopesSeen: [] };
       if (res.code === 0 && res.stdout.includes(email)) return { status: "ready", detail: `sdm session active for ${email}`, scopesSeen: [] };
       return { status: "invalid", detail: "sdm status did not show an active session for this email", scopesSeen: [] };
     },
@@ -212,6 +264,7 @@ export const INTEGRATIONS: Record<Integration, IntegrationDef> = {
     async validate(p) {
       const res = await p.exec(["doppler", "me", "--json"]);
       if (res.code === 127) return { status: "invalid", detail: "doppler not installed", scopesSeen: [] };
+      if (res.code === 124) return { status: "error", detail: "doppler me timed out", scopesSeen: [] };
       if (res.code === 0) return { status: "ready", detail: "doppler session active", scopesSeen: [] };
       return { status: "invalid", detail: "doppler me failed", scopesSeen: [] };
     },
@@ -225,6 +278,7 @@ export const INTEGRATIONS: Record<Integration, IntegrationDef> = {
     async validate(p) {
       const res = await p.exec(["ldcli", "config", "--list"]);
       if (res.code === 127) return { status: "invalid", detail: "ldcli not installed", scopesSeen: [] };
+      if (res.code === 124) return { status: "error", detail: "ldcli config --list timed out", scopesSeen: [] };
       if (res.code === 0) return { status: "ready", detail: "ldcli session active", scopesSeen: [] };
       return { status: "invalid", detail: "ldcli config --list failed", scopesSeen: [] };
     },
