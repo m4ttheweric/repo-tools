@@ -6,7 +6,7 @@ import { intentPath, type InvitePointer, type SetupIntent } from "../../setup/in
 import type { Probes } from "../../setup/probes.ts";
 import type { SettingsReader } from "../../setup/team-settings.ts";
 import { decodeCode, encodeCode, openReply, seal } from "../invite-crypto.ts";
-import { joinDryRun, joinRedeem, type JoinRedeemSeams } from "../join.ts";
+import { JoinKeyExchangeError, joinDryRun, joinRedeem, type JoinRedeemSeams } from "../join.ts";
 import type { RelayClient } from "../relay-client.ts";
 import type { SecretsSeams } from "../../secrets/store.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../home/age-key.ts";
@@ -37,6 +37,7 @@ function gitConfigWithRemote(remote: string): string {
 interface FakeRelayOpts {
   fetch?: RelayClient["fetch"];
   redeem?: RelayClient["redeem"];
+  reply?: RelayClient["reply"];
 }
 
 interface FakeRelay {
@@ -71,8 +72,9 @@ function fakeRelay(opts: FakeRelayOpts = {}): FakeRelay {
       return "redeemed";
     },
     async reply(id, blob) {
-      replyCalls.push({ id, blob });
       callOrder.push("reply");
+      if (opts.reply) return opts.reply(id, blob);
+      replyCalls.push({ id, blob });
     },
     async readReply() {
       throw new Error("readReply not used by join");
@@ -83,6 +85,11 @@ function fakeRelay(opts: FakeRelayOpts = {}): FakeRelay {
   };
 
   return { client, fetchCalls, redeemCalls, replyCalls, callOrder };
+}
+
+/** A `fetch` implementation serving a pointer sealed for the same id/key as CODE, so tests can exercise a hostile/traversal pointer through the exact same decode path as every other test. */
+function relayServing(pointer: InvitePointer): RelayClient["fetch"] {
+  return async () => ({ ciphertext: await seal(pointer, KEY, ID_HEX) });
 }
 
 function fakeRead(values: Record<string, unknown> = {}): SettingsReader {
@@ -97,6 +104,15 @@ function fakeAgeKeySeam(): AgeKeySeam {
       if (cmd[1] === "find-generic-password") return { code: 0, stdout: "AGE-SECRET-KEY-1QQQ\n", stderr: "" };
       if (cmd[0] === "age-keygen" && cmd[1] === "-y") return { code: 0, stdout: `${FAKE_PUBLIC_KEY}\n`, stderr: "" };
       throw new Error(`fakeAgeKeySeam: unexpected call ${cmd.join(" ")}`);
+    },
+  };
+}
+
+/** A keychain that exists but can't be read right now — distinct from "absent" (which mints instead), this is the locked/denied case `ensureAgeKey` refuses to mint over. */
+function fakeAgeKeySeamLocked(): AgeKeySeam {
+  return {
+    async run(): Promise<AgeExecResult> {
+      return { code: 1, stdout: "", stderr: "keychain locked" };
     },
   };
 }
@@ -191,6 +207,17 @@ describe("joinDryRun", () => {
     expect(result.peering).toBe("idle");
   });
 
+  test("a programming error from relay.fetch is not swallowed into 'check your network'", async () => {
+    const p = fakeProbes({ home: HOME });
+    const relay = fakeRelay({
+      fetch: async () => {
+        throw new TypeError("boom: not a relay-client error at all");
+      },
+    });
+
+    await expect(joinDryRun(p, relay.client, CODE)).rejects.toThrow(TypeError);
+  });
+
   test("ls-remote auth failure: access denied, message has no URL and no raw git output", async () => {
     const p = fakeProbes({
       home: HOME,
@@ -214,15 +241,16 @@ describe("joinDryRun", () => {
     expect(result.access).toBe("ok");
   });
 
-  test("a non-auth git failure reports access:unreachable", async () => {
+  test("a non-auth git failure reports access:unreachable, message says the network, not a guess", async () => {
     const p = fakeProbes({ home: HOME, exec: () => ({ code: 128, stdout: "", stderr: "fatal: Could not resolve host: github.com" }) });
     const relay = fakeRelay();
 
     const result = await joinDryRun(p, relay.client, CODE);
     expect(result.access).toBe("unreachable");
+    expect(result.message).toContain("check your network");
   });
 
-  test("uses GIT_TERMINAL_PROMPT=0 and --exit-code against the pointer's remote", async () => {
+  test("uses GIT_TERMINAL_PROMPT=0 and GIT_PROTOCOL_FROM_USER=0, --exit-code against the pointer's remote", async () => {
     const calls: { argv: string[]; opts?: Parameters<Probes["exec"]>[1] }[] = [];
     const p = fakeProbes({
       home: HOME,
@@ -238,6 +266,58 @@ describe("joinDryRun", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]!.argv).toEqual(["git", "ls-remote", "--exit-code", REMOTE, "HEAD"]);
     expect(calls[0]!.opts?.env?.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(calls[0]!.opts?.env?.GIT_PROTOCOL_FROM_USER).toBe("0");
+  });
+
+  describe("a hostile pointer is rejected before it ever reaches a path join or a git argv", () => {
+    test("ext:: remote — never even attempts an exec call", async () => {
+      const p = fakeProbes({ home: HOME });
+      const relay = fakeRelay({ fetch: relayServing({ ...POINTER, remote: "ext::sh -c 'touch /tmp/pwned'" }) });
+
+      await expect(joinDryRun(p, relay.client, CODE)).rejects.toMatchObject({ code: "invite-malformed" });
+      expect(p.calls.exec).toHaveLength(0);
+    });
+
+    test("a traversal team slug — rejected before any local path is touched", async () => {
+      const p = fakeProbes({ home: HOME });
+      const relay = fakeRelay({ fetch: relayServing({ ...POINTER, team: "../../etc" }) });
+
+      await expect(joinDryRun(p, relay.client, CODE)).rejects.toMatchObject({ code: "invite-malformed" });
+      expect(p.calls.exec).toHaveLength(0);
+    });
+
+    test("file:// remote is rejected", async () => {
+      const p = fakeProbes({ home: HOME });
+      const relay = fakeRelay({ fetch: relayServing({ ...POINTER, remote: "file:///etc/passwd" }) });
+
+      await expect(joinDryRun(p, relay.client, CODE)).rejects.toMatchObject({ code: "invite-malformed" });
+      expect(p.calls.exec).toHaveLength(0);
+    });
+
+    test("a remote whose host starts with '-' (ssh option injection) is rejected", async () => {
+      const p = fakeProbes({ home: HOME });
+      const relay = fakeRelay({ fetch: relayServing({ ...POINTER, remote: "ssh://-oProxyCommand=x/acme/widgets.git" }) });
+
+      await expect(joinDryRun(p, relay.client, CODE)).rejects.toMatchObject({ code: "invite-malformed" });
+      expect(p.calls.exec).toHaveLength(0);
+    });
+
+    test("a remote carrying --upload-pack= is rejected", async () => {
+      const p = fakeProbes({ home: HOME });
+      const relay = fakeRelay({ fetch: relayServing({ ...POINTER, remote: "https://github.com/acme/widgets.git --upload-pack=touch /tmp/x" }) });
+
+      await expect(joinDryRun(p, relay.client, CODE)).rejects.toMatchObject({ code: "invite-malformed" });
+      expect(p.calls.exec).toHaveLength(0);
+    });
+
+    test("a well-formed https and a well-formed scp-like remote both pass (regression guard)", async () => {
+      for (const remote of ["https://github.com/acme/widgets.git", "git@github.com:acme/widgets.git", "ssh://git@github.com/acme/widgets.git"]) {
+        const p = fakeProbes({ home: HOME, now: NOW, exec: () => ({ code: 0, stdout: "", stderr: "" }) });
+        const relay = fakeRelay({ fetch: relayServing({ ...POINTER, remote }) });
+        const result = await joinDryRun(p, relay.client, CODE);
+        expect(result.access).toBe("ok");
+      }
+    });
   });
 });
 
@@ -262,6 +342,42 @@ describe("joinRedeem", () => {
     const reply = await openReply(relay.replyCalls[0]!.blob, KEY, ID_HEX);
     expect(reply.agePublicKey).toBe(FAKE_PUBLIC_KEY);
     expect(reply.handle).toBe("zaphod");
+
+    // The code itself never leaks into the result.
+    expect(JSON.stringify(result)).not.toContain(CODE);
+  });
+
+  test("clone uses GIT_TERMINAL_PROMPT=0 and GIT_PROTOCOL_FROM_USER=0", async () => {
+    const calls: { argv: string[]; opts?: Parameters<Probes["exec"]>[1] }[] = [];
+    const p = redeemProbes({
+      exec: (argv, opts) => {
+        calls.push({ argv, opts });
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+    const relay = fakeRelay();
+    const { seams } = baseJoinRedeemSeams();
+
+    await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+
+    const clone = calls.find((c) => c.argv[1] === "clone")!;
+    expect(clone.opts?.env?.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(clone.opts?.env?.GIT_PROTOCOL_FROM_USER).toBe("0");
+  });
+
+  test("checkpoints the resumable intent as soon as the pointer resolves, before cloning", async () => {
+    const p = redeemProbes({
+      exec: (argv) => {
+        // The intent write must have happened before the clone call runs.
+        if (argv[1] === "clone") expect(p.calls.writes[intentPath(HOME)]).toBeDefined();
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+    const relay = fakeRelay();
+    const { seams } = baseJoinRedeemSeams();
+
+    await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+    expect(p.calls.writes[intentPath(HOME)]).toBeDefined();
   });
 
   test("switchboard url + a readable admin token → peering applied, POSTs /peer/join with the joiner's forge login", async () => {
@@ -299,7 +415,7 @@ describe("joinRedeem", () => {
     expect(p.calls.fetch).toHaveLength(0);
   });
 
-  test("switchboard url present but no readable admin token → peering idle, no request attempted", async () => {
+  test("switchboard url present but no readable admin token → peering:unavailable (there IS something to peer, and it could not), no request attempted", async () => {
     const p = redeemProbes();
     const relay = fakeRelay();
     const { seams } = baseJoinRedeemSeams({
@@ -309,7 +425,7 @@ describe("joinRedeem", () => {
 
     const result = await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
 
-    expect(result.peering).toBe("idle");
+    expect(result.peering).toBe("unavailable");
     expect(p.calls.fetch).toHaveLength(0);
   });
 
@@ -339,13 +455,46 @@ describe("joinRedeem", () => {
     expect(relay.redeemCalls).toHaveLength(0);
   });
 
-  test("a non-auth clone failure returns access:unreachable", async () => {
-    const p = redeemProbes({ exec: () => ({ code: 128, stdout: "", stderr: "fatal: Could not resolve host" }) });
-    const relay = fakeRelay();
-    const { seams } = baseJoinRedeemSeams();
+  describe("clone failures are classified honestly — 'check your network' only when it IS the network", () => {
+    test("a non-auth, non-network clone failure does not blame the network", async () => {
+      const p = redeemProbes({ exec: () => ({ code: 128, stdout: "", stderr: "fatal: destination path already exists and is not an empty directory" }) });
+      const relay = fakeRelay();
+      const { seams } = baseJoinRedeemSeams();
 
-    const result = await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
-    expect(result.access).toBe("unreachable");
+      const result = await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+      expect(result.access).toBe("unreachable");
+      expect(result.message).not.toContain("network");
+      expect(result.message).toContain("already exists");
+    });
+
+    test("disk full reports a disk message, not a network one", async () => {
+      const p = redeemProbes({ exec: () => ({ code: 128, stdout: "", stderr: "fatal: write error: No space left on device" }) });
+      const relay = fakeRelay();
+      const { seams } = baseJoinRedeemSeams();
+
+      const result = await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+      expect(result.message).toContain("space");
+      expect(result.message).not.toContain("check your network");
+    });
+
+    test("a missing git binary (exit 127) reports that, not a network guess", async () => {
+      const p = redeemProbes({ exec: () => ({ code: 127, stdout: "", stderr: "ENOENT: git" }) });
+      const relay = fakeRelay();
+      const { seams } = baseJoinRedeemSeams();
+
+      const result = await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+      expect(result.message).toContain("git is not installed");
+      expect(result.message).not.toContain("check your network");
+    });
+
+    test("a genuine transport failure DOES say check your network", async () => {
+      const p = redeemProbes({ exec: () => ({ code: 128, stdout: "", stderr: "fatal: unable to access: Could not resolve host: github.com" }) });
+      const relay = fakeRelay();
+      const { seams } = baseJoinRedeemSeams();
+
+      const result = await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+      expect(result.message).toContain("check your network");
+    });
   });
 
   test("redeem race lost on a fresh clone throws invite-unknown with the used-invite message", async () => {
@@ -414,6 +563,21 @@ describe("joinRedeem", () => {
     expect(relay.fetchCalls).toHaveLength(0); // never re-fetched the relay — the pointer came from the saved intent
   });
 
+  test("a saved intent carrying a hostile pointer is still validated on resume", async () => {
+    const intent: SetupIntent = {
+      v: 1,
+      at: NOW.toISOString(),
+      mode: "join",
+      join: { id: ID_HEX, keyB64: Buffer.from(KEY).toString("base64"), pointer: { ...POINTER, team: "../../etc" } },
+    };
+    const p = redeemProbes({ files: { [intentPath(HOME)]: JSON.stringify(intent) } });
+    const relay = fakeRelay();
+    const { seams } = baseJoinRedeemSeams();
+
+    await expect(joinRedeem(p, relay.client, () => NO_SECRETS, {}, seams)).rejects.toMatchObject({ code: "invite-malformed" });
+    expect(p.calls.exec).toHaveLength(0);
+  });
+
   test("relay-unreachable while resolving a fresh code returns access:unreachable, no throw", async () => {
     const p = redeemProbes();
     const relay = fakeRelay({
@@ -428,22 +592,139 @@ describe("joinRedeem", () => {
     expect(result.team).toEqual({ slug: "", name: "", owner: "" });
   });
 
-  test("fromApply clears the saved intent; the plain CLI form (fromApply unset) leaves it for the caller to clear", async () => {
-    const p = redeemProbes({ files: { [intentPath(HOME)]: "{}" } });
-    const relay = fakeRelay();
+  test("a programming error while resolving the pointer is not swallowed into 'check your network'", async () => {
+    const p = redeemProbes();
+    const relay = fakeRelay({
+      fetch: async () => {
+        throw new TypeError("boom");
+      },
+    });
     const { seams } = baseJoinRedeemSeams();
 
-    await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE, fromApply: true }, seams);
-    expect(p.calls.removed).toContain(intentPath(HOME));
+    await expect(joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams)).rejects.toThrow(TypeError);
   });
 
-  test("without fromApply, joinRedeem itself does not clear the intent", async () => {
-    const p = redeemProbes({ files: { [intentPath(HOME)]: "{}" } });
-    const relay = fakeRelay();
-    const { seams } = baseJoinRedeemSeams();
+  describe("a relay failure never exits 2 once the code has been redeemed — it's real infrastructure, not a dead invite", () => {
+    test("relay.redeem itself unreachable: exit 0, access:unreachable, the clone is not lost", async () => {
+      const p = redeemProbes();
+      const relay = fakeRelay({
+        redeem: async () => {
+          throw new UserActionableError("relay-unreachable", "could not reach the invite relay");
+        },
+      });
+      const { seams } = baseJoinRedeemSeams();
 
-    await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
-    expect(p.calls.removed).not.toContain(intentPath(HOME));
+      const result = await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+
+      expect(result.access).toBe("unreachable");
+      expect(p.calls.exec).toContainEqual(["git", "clone", REMOTE, TEAM_DIR]);
+      expect(result.message).not.toMatch(/invite.*(dead|unknown|expired)/i);
+    });
+
+    test("relay.redeem 5xx: exit 0, access:unreachable, not a thrown UserActionableError", async () => {
+      const p = redeemProbes();
+      const relay = fakeRelay({
+        redeem: async () => {
+          throw new UserActionableError("relay-error", "500 /v1/invites/x/redeem");
+        },
+      });
+      const { seams } = baseJoinRedeemSeams();
+
+      const result = await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+      expect(result.access).toBe("unreachable");
+    });
+
+    test("relay.reply unreachable: still access:ok (the join itself succeeded), intent is NOT cleared so a retry can finish", async () => {
+      const p = redeemProbes();
+      const relay = fakeRelay({
+        reply: async () => {
+          throw new UserActionableError("relay-unreachable", "could not reach the invite relay");
+        },
+      });
+      const { seams } = baseJoinRedeemSeams();
+
+      const result = await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+
+      expect(result.access).toBe("ok");
+      expect(p.calls.removed).not.toContain(intentPath(HOME));
+      expect(result.message).toContain("could not send your key back");
+    });
+
+    test("relay.reply 5xx: same honest half-state report, not exit 2", async () => {
+      const p = redeemProbes();
+      const relay = fakeRelay({
+        reply: async () => {
+          throw new UserActionableError("relay-error", "500 /v1/invites/x/reply");
+        },
+      });
+      const { seams } = baseJoinRedeemSeams();
+
+      const result = await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+      expect(result.access).toBe("ok");
+      expect(p.calls.removed).not.toContain(intentPath(HOME));
+    });
+  });
+
+  test("finding-5 recovery: re-running with the SAME code after redeem-succeeded-but-reply-failed resumes from the matching saved intent instead of dead-ending on invite-unknown", async () => {
+    // First attempt: reply fails, leaving the relay-side invite already redeemed and a saved intent behind.
+    const p = redeemProbes();
+    const relay = fakeRelay({
+      reply: async () => {
+        throw new UserActionableError("relay-unreachable", "down");
+      },
+    });
+    const { seams } = baseJoinRedeemSeams();
+    const first = await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+    expect(first.access).toBe("ok");
+
+    // Second attempt: the SAME code is re-typed. The relay now reports the id "gone"
+    // (already redeemed) instead of serving the ciphertext again.
+    const relay2 = fakeRelay({ fetch: async () => "gone" });
+    const { seams: seams2 } = baseJoinRedeemSeams();
+    const second = await joinRedeem(p, relay2.client, () => NO_SECRETS, { code: CODE }, seams2);
+
+    expect(second.access).toBe("ok");
+    expect(relay2.redeemCalls).toHaveLength(1); // resumed via the intent, then proceeded normally (alreadyCloned, so "already"/"redeemed" both fine)
+  });
+
+  test("keychain failure after clone+redeem: JoinKeyExchangeError, not a raw crash — names what completed", async () => {
+    const p = redeemProbes();
+    const relay = fakeRelay();
+    const { seams } = baseJoinRedeemSeams({ ageKeySeam: fakeAgeKeySeamLocked() });
+
+    let caught: unknown;
+    try {
+      await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(JoinKeyExchangeError);
+    expect(caught).not.toBeInstanceOf(UserActionableError);
+    const message = (caught as Error).message;
+    expect(message).toContain("redeemed the invite");
+    expect(message).toContain("run `rt team join` again");
+    // The clone and the redeem really did happen — this is a reportable half-state, not a rollback.
+    expect(p.calls.exec).toContainEqual(["git", "clone", REMOTE, TEAM_DIR]);
+    expect(relay.redeemCalls).toEqual([ID_HEX]);
+  });
+
+  test("an undeterminable forge login never gets sealed as a guess — no $USER, no 'unknown'", async () => {
+    const p = redeemProbes({ env: { USER: "localdev" } });
+    const relay = fakeRelay();
+    const { seams } = baseJoinRedeemSeams({ forgeLogin: async () => null });
+
+    let caught: unknown;
+    try {
+      await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(UserActionableError);
+    expect((caught as UserActionableError).code).toBe("forge-login-unknown");
+    expect((caught as UserActionableError).message).not.toContain("localdev");
+    expect(relay.replyCalls).toHaveLength(0);
   });
 
   test("passes the pointer's own team slug into the secrets factory", async () => {
@@ -466,5 +747,34 @@ describe("joinRedeem", () => {
       seams,
     );
     expect(factorySlugs).toEqual(["acme"]);
+  });
+
+  test("full success clears the saved intent", async () => {
+    const p = redeemProbes({ files: { [intentPath(HOME)]: "{}" } });
+    const relay = fakeRelay();
+    const { seams } = baseJoinRedeemSeams();
+
+    await joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams);
+    expect(p.calls.removed).toContain(intentPath(HOME));
+  });
+
+  describe("a hostile pointer on the redeem path is rejected before any local mutation", () => {
+    test("ext:: remote via a fresh code — no exec, no mkdirp", async () => {
+      const p = redeemProbes();
+      const relay = fakeRelay({ fetch: relayServing({ ...POINTER, remote: "ext::sh -c 'touch /tmp/pwned'" }) });
+      const { seams } = baseJoinRedeemSeams();
+
+      await expect(joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams)).rejects.toMatchObject({ code: "invite-malformed" });
+      expect(p.calls.exec).toHaveLength(0);
+    });
+
+    test("a traversal team slug via a fresh code — never joins a path outside teams/", async () => {
+      const p = redeemProbes();
+      const relay = fakeRelay({ fetch: relayServing({ ...POINTER, team: "../../etc" }) });
+      const { seams } = baseJoinRedeemSeams();
+
+      await expect(joinRedeem(p, relay.client, () => NO_SECRETS, { code: CODE }, seams)).rejects.toMatchObject({ code: "invite-malformed" });
+      expect(p.calls.exec).toHaveLength(0);
+    });
   });
 });

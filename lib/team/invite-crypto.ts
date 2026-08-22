@@ -189,7 +189,9 @@ function assertInvitePointerShape(value: unknown): asserts value is InvitePointe
     typeof p.name === "string" &&
     typeof p.remote === "string" &&
     p.remote.length > 0 &&
-    typeof p.owner === "string";
+    typeof p.owner === "string" &&
+    typeof p.forge === "string" &&
+    typeof p.createdAt === "string";
   if (!ok) {
     throw new UserActionableError("invite-unreadable", "invite pointer payload is malformed");
   }

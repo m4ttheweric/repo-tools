@@ -17,11 +17,10 @@ import { createRealTeamSecretsSeams } from "../lib/secrets/team-store.ts";
 import { listTeams } from "../lib/settings/stores.ts";
 import { envelope } from "../lib/setup/contract.ts";
 import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
-import { clearIntent } from "../lib/setup/intent.ts";
 import { createRealProbes, readStdinJson, type Probes } from "../lib/setup/probes.ts";
 import { createTeam } from "../lib/team/create.ts";
 import { mintInvite } from "../lib/team/invite.ts";
-import { joinDryRun, joinRedeem, realJoinRedeemSeams, type JoinResult } from "../lib/team/join.ts";
+import { JoinKeyExchangeError, joinDryRun, joinRedeem, realJoinRedeemSeams, type JoinRedeemSeams, type JoinResult } from "../lib/team/join.ts";
 import { publishTeam } from "../lib/team/publish.ts";
 import { createRelayClient, inviteRelayUrl } from "../lib/team/relay-client.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
@@ -33,6 +32,8 @@ export interface TeamDeps {
   ageKeySeam?: AgeKeySeam;
   /** `json` gates the interactive TTY prompt — a machine caller must never block waiting on a terminal that isn't there. */
   readCode?: (json: boolean) => Promise<string>;
+  /** Overrides `joinRedeem`'s `read`/`readTeamSecret`/`forgeLogin`/`warn` seams — real by default, so a test never has to rely on the isolated test HOME happening to lack a switchboard config. */
+  joinRedeemSeams?: Partial<JoinRedeemSeams>;
 }
 
 async function defaultReadCode(json: boolean): Promise<string> {
@@ -183,10 +184,15 @@ export async function teamJoin(args: string[], _ctx: CommandContext = {}, deps: 
     if (dryRun) {
       result = await joinDryRun(deps.probes, relay, code);
     } else {
-      // ageKeySeam routes through TeamDeps (never realJoinRedeemSeams' own default) so a test-injected fake never lets a real redeem touch the actual keychain.
-      const seams = { ...realJoinRedeemSeams(), ageKeySeam: deps.ageKeySeam ?? createRealAgeKeySeam() };
+      // ageKeySeam is resolved LAST and always from TeamDeps.ageKeySeam first (the field teamCreate also uses) — never
+      // from realJoinRedeemSeams' own default, so a test-injected fake never lets a real redeem touch the actual keychain,
+      // and never silently loses to a joinRedeemSeams override that didn't set one.
+      const seams: JoinRedeemSeams = {
+        ...realJoinRedeemSeams(),
+        ...deps.joinRedeemSeams,
+        ageKeySeam: deps.ageKeySeam ?? deps.joinRedeemSeams?.ageKeySeam ?? createRealAgeKeySeam(),
+      };
       result = await joinRedeem(deps.probes, relay, createRealTeamSecretsSeams, { code }, seams);
-      if (result.access === "ok") clearIntent(deps.probes);
     }
 
     if (json) {
@@ -195,6 +201,10 @@ export async function teamJoin(args: string[], _ctx: CommandContext = {}, deps: 
     }
     deps.print(`rt team join: ${result.message}`);
   } catch (err) {
+    if (err instanceof JoinKeyExchangeError) {
+      deps.print(json ? JSON.stringify(envelope({ error: { code: "age-key-unavailable", message: err.message } })) : `rt team join: ${err.message}`);
+      process.exit(1);
+    }
     if (err instanceof UserActionableError) exitUserError(err, json, "team join", deps.print);
     throw err;
   }

@@ -10,10 +10,18 @@
  * unreachable outcome is a normal, successful call (exit 0) — only a code
  * that can never be redeemed (malformed, or the relay has no record of it)
  * throws, since that's the one case with nothing left to retry.
+ *
+ * The decoded pointer is ATTACKER-CONTROLLED: anyone can POST their own
+ * ciphertext to the public relay and hand a victim the resulting code, so a
+ * successful decrypt only proves the blob wasn't tampered with in transit —
+ * it proves nothing about the CONTENT. `validatePointer` runs immediately
+ * after every `open()`/intent-read, before `team`/`remote` reach a path join
+ * or a git invocation.
  */
 
 import { join } from "path";
 import { type AgeKeySeam, createRealAgeKeySeam, ensureAgeKey } from "../home/age-key.ts";
+import { validateSlug } from "../secrets/store.ts";
 import type { SecretsSeams } from "../secrets/store.ts";
 import { createRealTeamSecretsSeams, readTeamSecret } from "../secrets/team-store.ts";
 import { UserActionableError } from "../setup/errors.ts";
@@ -24,6 +32,7 @@ import { getSetting } from "../settings/resolve.ts";
 import { forgeLogin } from "./forge.ts";
 import { decodeCode, open, sealReply } from "./invite-crypto.ts";
 import { AUTH_FAILURE_PATTERN } from "./publish.ts";
+import { withoutUrls } from "./redact.ts";
 import type { RelayClient } from "./relay-client.ts";
 
 export interface JoinResult {
@@ -33,7 +42,12 @@ export interface JoinResult {
   message: string;
 }
 
+/** Raised only after the clone and the relay redeem have already succeeded — the join is real, but the local age key could not be read. Deliberately NOT a `UserActionableError`: the CLI reports it and exits 1 (a machine/environment problem), never 2 (a dead invite). */
+export class JoinKeyExchangeError extends Error {}
+
 const NO_TEAM: JoinResult["team"] = { slug: "", name: "", owner: "" };
+
+const GIT_ENV = { GIT_TERMINAL_PROMPT: "0", GIT_PROTOCOL_FROM_USER: "0" };
 
 function inviteUnknownError(message = "invite not recognized or expired: ask the team owner for a new one"): UserActionableError {
   return new UserActionableError("invite-unknown", message);
@@ -56,12 +70,51 @@ function unreachableResult(team: JoinResult["team"], message: string): JoinResul
   return { team, access: "unreachable", peering: "idle", message };
 }
 
+/** Every scp-like/URL remote form git accepts, restricted to the three transports rt ever needs — deliberately excludes `ext::`, `file://`, and anything else git's transport helpers understand, since the pointer this validates is attacker-controlled. */
+function isAllowedRemote(remote: string): boolean {
+  if (remote.length === 0 || remote.startsWith("-")) return false;
+  if (/--upload-pack=/i.test(remote)) return false;
+  if (/^ext::/i.test(remote)) return false;
+  if (/^file:\/\//i.test(remote)) return false;
+
+  const https = remote.match(/^https:\/\/([^/]+)\/.+$/);
+  if (https) return !https[1]!.startsWith("-");
+
+  const ssh = remote.match(/^ssh:\/\/(?:[^@/]+@)?([^/]+)\/.+$/);
+  if (ssh) return !ssh[1]!.startsWith("-");
+
+  // scp-like: user@host:path — a hostname beginning with `-` would be read
+  // as an ssh option once this string reaches argv.
+  const scp = remote.match(/^[A-Za-z0-9_][A-Za-z0-9_.-]*@([^:/]+):.+$/);
+  if (scp) return !scp[1]!.startsWith("-");
+
+  return false;
+}
+
+/** The one place `team`/`remote` are trusted enough to reach a path join or a git argv — every pointer, however obtained (a fresh decode or a saved intent), passes through here first. */
+function validatePointer(pointer: InvitePointer): void {
+  try {
+    validateSlug(pointer.team);
+  } catch {
+    throw new UserActionableError("invite-malformed", "invite pointer names an invalid team slug");
+  }
+  if (!isAllowedRemote(pointer.remote)) {
+    throw new UserActionableError("invite-malformed", "invite pointer's remote is not a recognized git URL");
+  }
+}
+
+function isRelayConnectivityError(err: unknown): err is UserActionableError {
+  return err instanceof UserActionableError && (err.code === "relay-unreachable" || err.code === "relay-error");
+}
+
 /**
  * A "gone" invite and an undecodable blob (wrong key, tampered ciphertext)
  * look identical from the joiner's side — both mean this code no longer
  * opens anything — so both collapse to the same invite-unknown error.
  * Returns null (not a throw) for a relay CONNECTIVITY failure, which is a
- * retryable, exit-0 outcome rather than a dead code.
+ * retryable, exit-0 outcome rather than a dead code. Anything else — a
+ * programming error, not a documented relay-client failure mode — propagates
+ * unchanged rather than being folded into "check your network".
  */
 async function fetchPointer(relay: RelayClient, idHex: string, key: Uint8Array): Promise<InvitePointer | null> {
   let ciphertext: string;
@@ -71,17 +124,53 @@ async function fetchPointer(relay: RelayClient, idHex: string, key: Uint8Array):
     ciphertext = fetched.ciphertext;
   } catch (err) {
     if (err instanceof UserActionableError && err.code === "invite-unknown") throw err;
-    return null;
+    if (isRelayConnectivityError(err)) return null;
+    throw err;
   }
+  let pointer: InvitePointer;
   try {
-    return await open(ciphertext, key, idHex);
+    pointer = await open(ciphertext, key, idHex);
   } catch {
     throw inviteUnknownError();
   }
+  validatePointer(pointer);
+  return pointer;
 }
 
-function classifyGitAccessFailure(result: ExecResult): "denied" | "unreachable" {
-  return AUTH_FAILURE_PATTERN.test(`${result.stdout}\n${result.stderr}`) ? "denied" : "unreachable";
+type GitFailureKind = "denied" | "network" | "missing-binary" | "disk-full" | "exists" | "local";
+
+function classifyGitFailure(result: ExecResult): GitFailureKind {
+  if (result.code === 127) return "missing-binary";
+  const text = `${result.stdout}\n${result.stderr}`;
+  if (AUTH_FAILURE_PATTERN.test(text)) return "denied";
+  if (/no space left on device/i.test(text)) return "disk-full";
+  if (/already exists and is not an empty directory/i.test(text)) return "exists";
+  if (/could not resolve host|connection refused|connection timed out|network is unreachable|couldn't connect to server|ssl connect error|operation timed out|temporary failure in name resolution/i.test(text)) {
+    return "network";
+  }
+  return "local";
+}
+
+/** "unreachable" is the only access value left once `denied` is ruled out, so every non-auth failure lands there — but the MESSAGE still says what actually happened; "check your network" is reserved for the one kind that is. */
+function gitFailureMessage(kind: Exclude<GitFailureKind, "denied">, remote: string, result: ExecResult): string {
+  switch (kind) {
+    case "missing-binary":
+      return "git is not installed (or not on PATH) — install git and try again";
+    case "disk-full":
+      return "no space left on this machine — free up disk space and try again";
+    case "exists":
+      return "the destination already exists and isn't empty — remove it and try again";
+    case "network":
+      return `could not reach ${stripUserinfo(remote)} — check your network and try again`;
+    case "local":
+      return `git failed (exit ${result.code}): ${withoutUrls(`${result.stdout}\n${result.stderr}`.trim())}`;
+  }
+}
+
+function gitAccessResult(pointer: InvitePointer, result: ExecResult): JoinResult {
+  const kind = classifyGitFailure(result);
+  if (kind === "denied") return deniedResult(pointer);
+  return unreachableResult(teamRefFrom(pointer), gitFailureMessage(kind, pointer.remote, result));
 }
 
 export async function joinDryRun(p: Probes, relay: RelayClient, code: string): Promise<JoinResult> {
@@ -95,12 +184,9 @@ export async function joinDryRun(p: Probes, relay: RelayClient, code: string): P
   // --exit-code turns "repo reachable but HEAD doesn't resolve" (a brand new,
   // still-empty team repo) into exit 2, not a failure — both 0 and 2 mean the
   // joiner can read the repo.
-  const lsRemote = await p.exec(["git", "ls-remote", "--exit-code", pointer.remote, "HEAD"], { env: { GIT_TERMINAL_PROMPT: "0" } });
+  const lsRemote = await p.exec(["git", "ls-remote", "--exit-code", pointer.remote, "HEAD"], { env: GIT_ENV });
   if (lsRemote.code !== 0 && lsRemote.code !== 2) {
-    const kind = classifyGitAccessFailure(lsRemote);
-    return kind === "denied"
-      ? deniedResult(pointer)
-      : unreachableResult(teamRefFrom(pointer), `could not reach ${stripUserinfo(pointer.remote)} — check your network and try again`);
+    return gitAccessResult(pointer, lsRemote);
   }
 
   writeIntent(p, { v: 1, at: p.now().toISOString(), mode: "join", join: { id: idHex, keyB64: Buffer.from(key).toString("base64"), pointer } });
@@ -109,8 +195,6 @@ export async function joinDryRun(p: Probes, relay: RelayClient, code: string): P
 
 export interface JoinRedeemOpts {
   code?: string;
-  /** Only the apply pipeline's own `team.join` step passes this — the interactive CLI form clears the intent itself once this call returns. */
-  fromApply?: boolean;
 }
 
 export type SecretsSeamsFactory = (slug: string) => SecretsSeams;
@@ -156,10 +240,31 @@ function isJoinSource(v: JoinSource | JoinResult): v is JoinSource {
   return "idHex" in v;
 }
 
+/** The saved intent as a resume anchor for THIS exact invite — matched on id, not merely on presence, so an unrelated stale intent can never be mistaken for the one currently being redeemed. */
+function matchingJoinIntent(p: Probes, idHex: string): JoinSource | undefined {
+  const intent = readIntent(p);
+  if (intent?.mode !== "join" || !intent.join || intent.join.id !== idHex) return undefined;
+  return { idHex, key: base64ToKey(intent.join.keyB64), pointer: intent.join.pointer };
+}
+
 async function resolveSource(p: Probes, relay: RelayClient, code: string | undefined): Promise<JoinSource | JoinResult> {
   if (code) {
     const { idHex, key } = decodeCode(code);
-    const pointer = await fetchPointer(relay, idHex, key);
+    let pointer: InvitePointer | null;
+    try {
+      pointer = await fetchPointer(relay, idHex, key);
+    } catch (err) {
+      // The relay already marked this exact invite redeemed on a PRIOR run of
+      // this same join (a reply-post or key-exchange failure after redeem
+      // succeeded) — re-typing the same code must resume, not dead-end on a
+      // code that is only "gone" because it already worked once.
+      const resumed = err instanceof UserActionableError && err.code === "invite-unknown" ? matchingJoinIntent(p, idHex) : undefined;
+      if (resumed) {
+        validatePointer(resumed.pointer);
+        return resumed;
+      }
+      throw err;
+    }
     if (pointer === null) return unreachableResult(NO_TEAM, "could not reach the invite relay — check your network and try again");
     return { idHex, key, pointer };
   }
@@ -168,7 +273,9 @@ async function resolveSource(p: Probes, relay: RelayClient, code: string | undef
   if (intent?.mode !== "join" || !intent.join) {
     throw new UserActionableError("no-join-intent", "no invite in progress — pass a code, or run `rt team join --dry-run` first to save one");
   }
-  return { idHex: intent.join.id, key: base64ToKey(intent.join.keyB64), pointer: intent.join.pointer };
+  const pointer = intent.join.pointer;
+  validatePointer(pointer);
+  return { idHex: intent.join.id, key: base64ToKey(intent.join.keyB64), pointer };
 }
 
 function readOrigin(p: Probes, dir: string): string | null {
@@ -187,6 +294,13 @@ export async function joinRedeem(
   if (!isJoinSource(resolved)) return resolved;
   const { idHex, key, pointer } = resolved;
 
+  // Checkpointed BEFORE any clone/redeem attempt (not just on the dry-run
+  // path) so a mid-flow failure below — relay unreachable, reply failed, the
+  // keychain locked — leaves something a bare `rt team join` (no code) can
+  // resume from, since the relay will no longer serve this code once
+  // `relay.redeem` succeeds.
+  writeIntent(p, { v: 1, at: p.now().toISOString(), mode: "join", join: { id: idHex, keyB64: Buffer.from(key).toString("base64"), pointer } });
+
   const dir = join(p.home, ".mattstack", "teams", pointer.team);
   const existingOrigin = p.exists(dir) ? readOrigin(p, dir) : null;
   let alreadyCloned = false;
@@ -201,16 +315,22 @@ export async function joinRedeem(
     alreadyCloned = true;
   } else {
     p.mkdirp(join(p.home, ".mattstack", "teams"));
-    const clone = await p.exec(["git", "clone", pointer.remote, dir], { env: { GIT_TERMINAL_PROMPT: "0" } });
-    if (clone.code !== 0) {
-      const kind = classifyGitAccessFailure(clone);
-      return kind === "denied"
-        ? deniedResult(pointer)
-        : unreachableResult(teamRefFrom(pointer), `could not reach ${stripUserinfo(pointer.remote)} — check your network and try again`);
-    }
+    const clone = await p.exec(["git", "clone", pointer.remote, dir], { env: GIT_ENV });
+    if (clone.code !== 0) return gitAccessResult(pointer, clone);
   }
 
-  const redeemed = await relay.redeem(idHex);
+  let redeemed: "redeemed" | "already";
+  try {
+    redeemed = await relay.redeem(idHex);
+  } catch (err) {
+    if (isRelayConnectivityError(err)) {
+      return unreachableResult(
+        teamRefFrom(pointer),
+        `could not reach the invite relay to finish redeeming — the team is already cloned at ${dir}; run \`rt team join\` again once the relay is reachable`,
+      );
+    }
+    throw err;
+  }
   // A resumed run whose clone already landed already won the redeem race on
   // a prior attempt — "already" here is the crash-recovery signal, not a
   // real conflict, so only a FRESH clone treats it as one.
@@ -220,7 +340,14 @@ export async function joinRedeem(
 
   const snapshot = readTeamSnapshot(p, pointer.team, { read: seams.read, warn: seams.warn });
   const forge = snapshot.integrations.forge ?? forgeFromRemote(pointer.remote) ?? undefined;
-  const handle = (forge ? await seams.forgeLogin(p, forge.provider, forge.host) : null) ?? p.env.USER ?? "unknown";
+  const handle = forge ? await seams.forgeLogin(p, forge.provider, forge.host) : null;
+  if (!handle) {
+    const cli = forge?.provider === "gitlab" ? "glab" : "gh";
+    throw new UserActionableError(
+      "forge-login-unknown",
+      `joined ${pointer.name} and redeemed the invite, but could not determine your forge username to send back — authenticate the ${cli} CLI and run \`rt team join\` again to finish (no new code needed)`,
+    );
+  }
 
   let peering: JoinResult["peering"] = "idle";
   const switchboardUrl = snapshot.integrations.switchboard?.url;
@@ -233,14 +360,35 @@ export async function joinRedeem(
         body: JSON.stringify({ member: handle }),
       });
       peering = res.status >= 200 && res.status < 300 ? "applied" : "unavailable";
+    } else {
+      peering = "unavailable";
     }
   }
 
-  const { publicKey } = await ensureAgeKey(seams.ageKeySeam);
+  let publicKey: string;
+  try {
+    ({ publicKey } = await ensureAgeKey(seams.ageKeySeam));
+  } catch (err) {
+    throw new JoinKeyExchangeError(
+      `joined ${pointer.name} and redeemed the invite, but could not read your local age key (${err instanceof Error ? err.message : String(err)}) — fix keychain access and run \`rt team join\` again to finish (no new code needed)`,
+    );
+  }
+
   const blob = await sealReply({ v: 1, agePublicKey: publicKey, handle }, key, idHex);
-  await relay.reply(idHex, blob);
+  try {
+    await relay.reply(idHex, blob);
+  } catch (err) {
+    if (isRelayConnectivityError(err)) {
+      return {
+        team: teamRefFrom(pointer),
+        access: "ok",
+        peering,
+        message: `joined ${pointer.name}, but could not send your key back to ${pointer.owner} — run \`rt team join\` again once the relay is reachable to finish (no new code needed)`,
+      };
+    }
+    throw err;
+  }
 
-  if (opts.fromApply) clearIntent(p);
-
+  clearIntent(p);
   return { team: teamRefFrom(pointer), access: "ok", peering, message: `Joined ${pointer.name} (owner ${pointer.owner})` };
 }
