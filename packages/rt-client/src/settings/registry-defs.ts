@@ -187,6 +187,15 @@ export const REGISTRY: readonly SettingDef[] = [
     migrated: true,
     description: "Team-declared StrongDM resource enrichment (resource name -> label/tier/db/reasonSuggestion); team-ONLY by design, enrichment names employer resources and must never be settable in a user or machine store. Ownership-latch port of ~/.mattstack/rt/sdm/enrichment.jsonc, store wins wholesale (a name-keyed map, not a field-bag).",
   },
+  {
+    key: "rt.logRetentionDays",
+    type: "number",
+    scopes: ["machine", "user"],
+    default: 14,
+    merge: "replace",
+    migrated: true,
+    description: "Age floor in days for the log janitor pruning every surface's rotated log files under ~/.mattstack/rt/logs (default 14). A fresh key, not an ownership-latch port, so a default is fine here.",
+  },
 
   // --- migrated:false (deferred by ruling) --------------------------------
   {
