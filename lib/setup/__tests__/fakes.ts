@@ -4,6 +4,7 @@
  * assert on what a step actually did without touching the real machine.
  */
 
+import { basename, dirname } from "path";
 import type { TrayClient } from "../../daemon-client.ts";
 import type { ExecResult, Probes } from "../probes.ts";
 
@@ -81,12 +82,23 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
     },
 
     removeFile(path) {
+      // Real unlinkSync removes a symlink at `path` too — a fake that only
+      // cleared `files` left `exists(path)` true after a
+      // removeFile(p); symlink(t, p) repair, passing an "it was cleared"
+      // assertion for the wrong reason.
       delete files[path];
+      delete links[path];
       calls.removed.push(path);
     },
 
     removeDir(path) {
+      // rm -rf semantics: every nested files/dirs/links entry under `path`
+      // goes too, not just the `dirs[path]` key itself.
+      const prefix = `${path}/`;
       delete dirs[path];
+      for (const key of Object.keys(dirs)) if (key.startsWith(prefix)) delete dirs[key];
+      for (const key of Object.keys(files)) if (key.startsWith(prefix)) delete files[key];
+      for (const key of Object.keys(links)) if (key.startsWith(prefix)) delete links[key];
       calls.removed.push(path);
     },
 
@@ -97,6 +109,13 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
 
     mkdirp(path, mode) {
       if (!(path in dirs)) dirs[path] = [];
+      // A subsequent readDir(parent) must see the new dir, same as real mkdirSync.
+      const parent = dirname(path);
+      if (parent !== path) {
+        const parentList = dirs[parent] ?? (dirs[parent] = []);
+        const base = basename(path);
+        if (!parentList.includes(base)) parentList.push(base);
+      }
       if (mode !== undefined) calls.modes[path] = mode;
     },
 
