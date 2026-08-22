@@ -601,6 +601,48 @@ export const TREE: Record<string, CommandNode> = {
     subcommands: endpointSubcommands,
   },
 
+  deps: {
+    description: "Bundled tools: resolve by absolute path, expose on PATH with tagged links",
+    subcommands: {
+      resolve: {
+        description: "Show where a tool actually runs from — bundled, a user copy on PATH, or unresolved",
+        module: "./commands/deps.ts",
+        fn: "depsResolve",
+        args: [
+          { name: "Tool", type: "text", placeholder: "gh", hint: "Tool name (rt, gh, fast-browser, gitq, deck, ...)" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the envelope as JSON" },
+        ],
+      },
+      link: {
+        description: "Expose a bundled tool at ~/.local/bin/<tool> (symlink, or a tagged wrapper for multi-argv tools)",
+        module: "./commands/deps.ts",
+        fn: "depsLink",
+        args: [
+          { name: "Tool", type: "text", placeholder: "gh", hint: "Tool name to link" },
+          { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Replace an existing user copy or unrelated file at the link path" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the outcome as JSON" },
+        ],
+      },
+      unlink: {
+        description: "Remove a tagged link (only ever removes rt's own links, never a user's file)",
+        module: "./commands/deps.ts",
+        fn: "depsUnlink",
+        args: [
+          { name: "Tool", type: "text", placeholder: "gh", hint: "Tool name to unlink" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the outcome as JSON" },
+        ],
+      },
+      reconcile: {
+        description: "Auto-unlink any tagged link whose tool now has a genuine user copy elsewhere on PATH",
+        module: "./commands/deps.ts",
+        fn: "depsReconcile",
+        args: [
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the outcome as JSON" },
+        ],
+      },
+    },
+  },
+
   settings: {
     description: "Configure tokens, team, and repo data",
     subcommands: {

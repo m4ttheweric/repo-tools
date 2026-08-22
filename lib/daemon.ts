@@ -19,12 +19,16 @@
  */
 
 import { existsSync, mkdirSync, watch, writeFileSync } from "fs";
+import { homedir } from "os";
 import { join } from "path";
 import type { Server } from "bun";
 
 import { RT_DIR, DAEMON_PID_PATH } from "./daemon-config.ts";
 import { getDaemonLogger, installCrashHandlers, redirectNativeStderr } from "./daemon-logger.ts";
 import { onNotification } from "./notifier.ts";
+import { appBundleRoot } from "./bundle-layout.ts";
+import { reconcile as reconcileLinks } from "./deps/links.ts";
+import { createRealProbes } from "./setup/probes.ts";
 
 import { SystemProcessScanner } from "./daemon/system-process-scanner.ts";
 
@@ -94,6 +98,20 @@ const systemProcessScanner = new SystemProcessScanner();
 {
   const resolvedPath = resolveUserPath(log);
   if (resolvedPath) process.env.PATH = resolvedPath;
+}
+
+// The launchd agent plist's EnvironmentVariables.PATH is the static
+// /usr/bin:/bin:/usr/sbin:/sbin — it never sees the bundle rt actually runs
+// from. Deriving the bundle dir from our own execPath and prepending it (and
+// ~/.local/bin, where tagged links live) fixes only children spawned with
+// `env: process.env` — mutating process.env.PATH does not affect Bun.spawn's
+// OWN executable resolution, which resolved at process start.
+{
+  const root = appBundleRoot();
+  const prefix = [root ? join(root, "Contents", "Helpers") : null, join(process.env.HOME ?? homedir(), ".local", "bin")].filter(
+    (p): p is string => p !== null,
+  );
+  process.env.PATH = [...prefix, process.env.PATH].filter(Boolean).join(":");
 }
 
 // ─── Shared state ────────────────────────────────────────────────────────────
@@ -295,6 +313,18 @@ export function startDaemon(): void {
   // If a previous daemon process is still alive (orphan from a failed
   // restart), evict it before we bind the socket.
   evictStaleDaemon(log);
+
+  // Auto-unlink any tagged tool link whose tool now has a genuine user copy
+  // elsewhere on PATH (e.g. the user ran `brew install gh` after rt linked
+  // the bundled one). Fire-and-forget: never blocks socket bind on it.
+  (async () => {
+    try {
+      const { removed } = await reconcileLinks(createRealProbes());
+      if (removed.length > 0) log.info({ removed }, "deps: auto-unlinked tools now shadowed by a user copy");
+    } catch (err) {
+      log.warn({ err }, "deps: link reconcile failed");
+    }
+  })();
 
   log.info("daemon starting");
   writeFileSync(DAEMON_PID_PATH, String(process.pid));

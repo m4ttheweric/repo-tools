@@ -8,6 +8,7 @@
 
 import * as commit from "../commands/commit.ts";
 import * as daemon from "../commands/daemon.ts";
+import * as deps from "../commands/deps.ts";
 import * as events from "../commands/events.ts";
 import * as extension from "../commands/extension.ts";
 import * as home from "../commands/home.ts";
@@ -40,6 +41,7 @@ import * as endpoint from "../commands/endpoint.ts";
 export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/commit.ts": commit,
   "./commands/daemon.ts": daemon,
+  "./commands/deps.ts": deps,
   "./commands/events.ts": events,
   "./commands/extension.ts": extension,
   "./commands/home.ts": home,

@@ -68,7 +68,10 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
     },
 
     readDir(path) {
-      return dirs[path] ?? [];
+      // A copy, not the live array: real readdirSync snapshots the directory
+      // at call time, so a caller iterating the result while also removing
+      // entries (e.g. reconcile()) must not see the list mutate under it.
+      return [...(dirs[path] ?? [])];
     },
 
     readlink(path) {
@@ -94,6 +97,13 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
       // assertion for the wrong reason.
       delete files[path];
       delete links[path];
+      const parent = dirname(path);
+      const parentList = dirs[parent];
+      if (parentList) {
+        const base = basename(path);
+        const i = parentList.indexOf(base);
+        if (i >= 0) parentList.splice(i, 1);
+      }
       calls.removed.push(path);
     },
 
@@ -111,6 +121,12 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
     symlink(target, path) {
       links[path] = target;
       calls.symlinks[path] = target;
+      // Mirrors real symlinkSync: the new entry must show up in a subsequent
+      // readDir(parent), same as writeFile and mkdirp do for their entries.
+      const parent = dirname(path);
+      const parentList = dirs[parent] ?? (dirs[parent] = []);
+      const base = basename(path);
+      if (!parentList.includes(base)) parentList.push(base);
     },
 
     mkdirp(path, mode) {
