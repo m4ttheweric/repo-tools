@@ -58,7 +58,7 @@ function endedAtOf(dbPath: string): number | null {
     try {
       const row = db.query("SELECT status, ended_at FROM runs LIMIT 1").get() as { status: string; ended_at: number | null } | undefined;
       if (!row) return null;
-      if (row.status === "running") return Number.POSITIVE_INFINITY; // never age-prune by start time
+      if (row.status === "running") return null; // never-finished: fall back to state.db mtime, not immortal
       return row.ended_at;
     } finally {
       db.close();
@@ -81,7 +81,6 @@ export function pruneRuns(now: number = Date.now()): { removed: string[] } {
       const runDir = join(repoDir, id);
       const dbPath = join(runDir, "state.db");
       let stamp = endedAtOf(dbPath);
-      if (stamp === Number.POSITIVE_INFINITY) continue;
       if (stamp == null) {
         try { stamp = statSync(existsSync(dbPath) ? dbPath : runDir).mtimeMs; } catch { continue; }
       }

@@ -23,7 +23,15 @@ function dirs(path: string): string[] {
   }
 }
 
+// repo/runId reach a path join straight from a network-reachable readonly
+// seam (runs:get via REST decodes %2F) — reject anything that could step
+// outside <runsRoot>/<repo>/<runId> before it ever hits the filesystem.
+function isPathComponent(s: string): boolean {
+  return s.length > 0 && s !== "." && s !== ".." && !s.includes("/") && !s.includes("\\");
+}
+
 function openRun(repo: string, runId: string): { db: Database; schemaAhead: boolean } | null {
+  if (!isPathComponent(repo) || !isPathComponent(runId)) return null;
   const path = join(runsRoot(), repo, runId, "state.db");
   if (!existsSync(path)) return null;
   const db = new Database(path, { readonly: true });
@@ -45,6 +53,7 @@ function runRow(db: Database): RunSummary | null {
 }
 
 export function listRuns(repo?: string): RunSummary[] {
+  if (repo != null && !isPathComponent(repo)) return [];
   const repos = repo ? [repo] : dirs(runsRoot());
   const out: RunSummary[] = [];
   for (const r of repos) {
@@ -84,6 +93,7 @@ export function readRun(repo: string, runId: string): RunDetail | null {
 }
 
 export function findRun(runId: string): RunDetail | null {
+  if (!isPathComponent(runId)) return null;
   for (const repo of dirs(runsRoot())) {
     if (dirs(join(runsRoot(), repo)).includes(runId)) return readRun(repo, runId);
   }
