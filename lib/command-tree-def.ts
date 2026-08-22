@@ -719,6 +719,13 @@ export const TREE: Record<string, CommandNode> = {
             default: false,
             hint: "Start a new machine profile (named by --profile, or this machine's hostname slug) instead of adopting an existing one",
           },
+          {
+            name: "No materialize",
+            flag: "--no-materialize",
+            type: "boolean",
+            default: false,
+            hint: "Skip the last phase — regenerating rt's PATH shims/daemon registration and each installed tool's setup verb",
+          },
         ],
       },
       key: {
