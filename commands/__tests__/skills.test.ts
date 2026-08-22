@@ -202,6 +202,33 @@ describe("skillsCompile", () => {
     expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
   });
 
+  test("--preview prints the compiled body and writes nothing", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+
+    await skillsCompile(["--pack", "t", "--verb", "watch-ci", "--preview",
+      "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
+
+    const out = logs.join("\n");
+    expect(out).toContain("<!-- part: step source=");
+    expect(out).not.toContain("compiled watch-ci (");
+    expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
+  });
+
+  test("--preview requires exactly one verb", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile(["--pack", "t", "--preview",
+        "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]));
+
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("--preview needs a single --verb");
+  });
+
   test("real run emits SKILL.md + vendored files matching a golden compile, byte for byte", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
