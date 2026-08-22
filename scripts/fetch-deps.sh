@@ -103,7 +103,9 @@ assert_safe_name() {
 
 # bash's `read` treats tab as "IFS whitespace" and collapses runs of it even
 # when IFS is set to only tab, dropping empty TSV fields and shifting every
-# later field left. Split by hand so an empty field stays a field.
+# later field left. Split by hand so an empty field stays a field. Kept in
+# sync by hand with the identical copies in rt-tray/build.sh and
+# rt-tray/check-bundle.sh.
 split_tsv() {
   local rest="$1" field
   FIELDS=()
