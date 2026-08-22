@@ -12,6 +12,12 @@ import { updateRepoIndex } from "../../repo-index.ts";
 import { withoutUrls } from "../../team/redact.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
+import { toFailedOutcome } from "./step-utils.ts";
+
+/** Mirrors lib/team/join.ts's own clone env — never prompt for credentials in an unattended run, and never let a global gitconfig credential helper substitute one in behind the operator's back. */
+const CLONE_ENV = { GIT_TERMINAL_PROMPT: "0", GIT_PROTOCOL_FROM_USER: "0" };
+/** Generous but bounded: a stalled clone must surface as a failed/counted identity, never hang the whole Install button with no progress. */
+const CLONE_TIMEOUT_MS = 120_000;
 
 /** The identity's last path segment (`github.com/acme/repo` -> `repo`) — the clone destination's directory name. */
 function repoBasename(identity: string): string {
@@ -27,16 +33,40 @@ function skippedIdentities(env: Record<string, string | undefined>): Set<string>
   );
 }
 
-async function reposCloneRun(ctx: ApplyContext): Promise<StepOutcome> {
-  const { p } = ctx;
-  const root = getSetting<string[]>("rt.repoRoots").value?.[0];
-  if (!root) return { state: "failed", detail: "no repo root" };
+/** A real clone of `identity`, not just any directory that happens to share its basename — two tracked identities can collide on basename (`gitlab.com/a/api`, `github.com/b/api`), and an unrelated folder can already occupy the path. */
+function isCloneOf(p: ApplyContext["p"], dest: string, identity: string): boolean {
+  const config = p.readFile(join(dest, ".git", "config"));
+  return config !== null && config.includes(identity);
+}
 
+async function reposCloneRun(ctx: ApplyContext): Promise<StepOutcome> {
+  try {
+    return await reposCloneRunUnsafe(ctx);
+  } catch (err) {
+    return toFailedOutcome(err);
+  }
+}
+
+async function reposCloneRunUnsafe(ctx: ApplyContext): Promise<StepOutcome> {
+  const { p } = ctx;
+
+  // Computed BEFORE the root check: zero identities means there is no work
+  // regardless of whether a root is configured, and `skipped` — the
+  // engine's honest "nothing to do here" — is the truth, not `failed`.
   const skip = skippedIdentities(p.env);
   const identities = (ctx.snapshot?.trackingIdentities ?? []).filter((identity) => {
     const base = repoBasename(identity);
     return !skip.has(identity) && !skip.has(base);
   });
+
+  if (identities.length === 0) {
+    return { state: "skipped", detail: "no repos to clone" };
+  }
+
+  const root = getSetting<string[]>("rt.repoRoots").value?.[0];
+  if (!root) {
+    return { state: "failed", detail: "no repo root configured", remedy: "Set a repo root (rt.repoRoots), then Retry" };
+  }
 
   let cloned = 0;
   let present = 0;
@@ -47,12 +77,17 @@ async function reposCloneRun(ctx: ApplyContext): Promise<StepOutcome> {
     const dest = join(root, base);
 
     if (p.exists(dest)) {
-      present++;
-      updateRepoIndex(base, dest);
+      if (isCloneOf(p, dest, identity)) {
+        present++;
+        updateRepoIndex(base, dest);
+      } else {
+        failed++;
+        ctx.log("repos.clone", `${base}: ${dest} exists but isn't a clone of ${identity} (basename collision or unrelated folder) — resolve by hand`);
+      }
       continue;
     }
 
-    const result = await p.exec(["git", "clone", `https://${identity}.git`, dest]);
+    const result = await p.exec(["git", "clone", `https://${identity}.git`, dest], { env: CLONE_ENV, timeoutMs: CLONE_TIMEOUT_MS });
     if (result.code !== 0) {
       failed++;
       ctx.log("repos.clone", `${base}: clone failed — ${withoutUrls(`${result.stdout}\n${result.stderr}`.trim())}`);

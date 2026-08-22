@@ -7,12 +7,13 @@
 
 import { createTeam, type CreateTeamOpts } from "../../team/create.ts";
 import { forgeLogin } from "../../team/forge.ts";
-import { joinRedeem, realJoinRedeemSeams } from "../../team/join.ts";
+import { JoinKeyExchangeError, joinRedeem, realJoinRedeemSeams } from "../../team/join.ts";
 import { publishTeam } from "../../team/publish.ts";
-import { createRealTeamSecretsSeams } from "../../secrets/team-store.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
 import { UserActionableError } from "../errors.ts";
+import { readIntent } from "../intent.ts";
+import { toFailedOutcome } from "./step-utils.ts";
 
 /**
  * Resolves this run's create opts from whichever source triggered
@@ -50,8 +51,12 @@ async function teamCreateRun(ctx: ApplyContext): Promise<StepOutcome> {
   try {
     created = await createTeam(ctx.p, opts, ctx.secrets.ageKeySeam);
   } catch (err) {
+    // createTeam's own git-step failures are all UserActionableError, but its
+    // ensureAgeKey call (a keychain/age-keygen subprocess) is not wrapped and
+    // can throw a plain Error — that must still become a failed step, not a
+    // crash.
     if (err instanceof UserActionableError) return { state: "failed", detail: err.message };
-    throw err;
+    return toFailedOutcome(err);
   }
 
   try {
@@ -62,23 +67,49 @@ async function teamCreateRun(ctx: ApplyContext): Promise<StepOutcome> {
       const remedy = err.code === "push-denied" ? "Check your push access to the team repo, then Retry" : undefined;
       return { state: "failed", detail: err.message, ...(remedy !== undefined ? { remedy } : {}) };
     }
-    throw err;
+    return toFailedOutcome(err);
   }
 }
 
+/** `no-join-intent` (the real code `joinRedeem` throws for this) only ever means one thing at this point in the run: `applies()` gated this step in from a `ctx.intent` snapshot taken before the run started, and a prior drive of this exact step already redeemed the invite and cleared it — `joinRedeem` clears intent on full success. That is a completed join, not a missing one. */
+function noJoinIntentOnDisk(ctx: ApplyContext): boolean {
+  const intent = readIntent(ctx.p);
+  return intent?.mode !== "join" || !intent.join;
+}
+
 async function teamJoinRun(ctx: ApplyContext): Promise<StepOutcome> {
+  if (noJoinIntentOnDisk(ctx)) {
+    return { state: "skipped", detail: "already joined — no invite in progress" };
+  }
+
   // realJoinRedeemSeams()'s ageKeySeam is overridden with ctx.secrets.ageKeySeam
   // — the one already threaded through the whole apply run (and what tests
   // fake) — so join's own key exchange never reaches for a second,
-  // independently-real keychain seam.
+  // independently-real keychain seam. ctx.teamSecrets is the same discipline
+  // for the team-secret (switchboard token) read.
   const seams = { ...realJoinRedeemSeams(), ageKeySeam: ctx.secrets.ageKeySeam };
-  const result = await joinRedeem(ctx.p, ctx.relay, createRealTeamSecretsSeams, {}, seams);
 
-  if (result.access === "ok") return { state: "done", detail: result.message };
-  if (result.access === "denied") {
-    return { state: "failed", detail: result.message, remedy: "Ask the owner to grant access, then Retry" };
+  try {
+    const result = await joinRedeem(ctx.p, ctx.relay, ctx.teamSecrets, {}, seams);
+
+    if (result.access === "ok") return { state: "done", detail: result.message };
+    if (result.access === "denied") {
+      return { state: "failed", detail: result.message, remedy: "Ask the owner to grant access, then Retry" };
+    }
+    return { state: "failed", detail: result.message, remedy: "Check your network, then Retry" };
+  } catch (err) {
+    // Fires only after the clone and the relay redeem have already
+    // succeeded — the invite is spent, so the fix is never "get a new code."
+    if (err instanceof JoinKeyExchangeError) {
+      return {
+        state: "failed",
+        detail: err.message,
+        remedy: "Unlock your keychain, then Retry — the invite is already redeemed, so Retry resumes here without a new code",
+      };
+    }
+    if (err instanceof UserActionableError) return { state: "failed", detail: err.message };
+    return toFailedOutcome(err);
   }
-  return { state: "failed", detail: result.message, remedy: "Check your network, then Retry" };
 }
 
 export const teamCreateStep: StepDef = {

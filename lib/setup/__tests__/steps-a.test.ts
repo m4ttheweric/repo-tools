@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { execSync } from "child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import type { AgeExecResult, AgeKeySeam } from "../../home/age-key.ts";
 import { HELPERS_DIR, RT_BUNDLE_PATH, __test__ as bundleLayoutTest } from "../../bundle-layout.ts";
+import { rtDir, teamSettingsPath } from "../../rt-paths.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import { setSetting } from "../../settings/write.ts";
 import { linkPath } from "../../deps/links.ts";
 import type { ExecResult, Probes } from "../probes.ts";
 import type { SecretsExecResult, SecretsExecSeam, SecretsSeams } from "../../secrets/store.ts";
+import { readTeamSecret, teamSopsYamlPath } from "../../secrets/team-store.ts";
 import type { RelayClient } from "../../team/relay-client.ts";
 import type { ApplyContext, StepOutcome } from "../apply.ts";
 import { AUTH_FAILURE_PATTERN } from "../../team/publish.ts";
@@ -50,9 +53,16 @@ function fakeAgeKeySeamAbsent(): AgeKeySeam {
 }
 
 /** Round-trips whatever it just "encrypted" back out of "-d", the same trick lib/secrets/__tests__/store.test.ts uses — writeSecret's own post-encrypt readback check would otherwise fail every write. */
+/**
+ * "Encrypts" by just copying the staged plaintext to the output path
+ * unchanged — a fake standing in for sops, not a real cipher — so both the
+ * post-encrypt readback INSIDE `encryptAtLocation` and a later, independent
+ * decrypt (e.g. this test's own `readTeamSecret` call, after the real
+ * `fsyncAndRename` has moved the content from a tmp path to the final one)
+ * decrypt to the same real JSON either way.
+ */
 class FakeSecretsExecSeam implements SecretsExecSeam {
   files = new Map<string, string>();
-  private roundTrippable = new Map<string, string>();
 
   fileExists(path: string): boolean {
     return this.files.has(path);
@@ -86,15 +96,13 @@ class FakeSecretsExecSeam implements SecretsExecSeam {
   async run(cmd: string[]): Promise<SecretsExecResult> {
     if (cmd[0] === "sops" && cmd[1] === "-d") {
       const target = cmd[cmd.length - 1]!;
-      const staged = this.roundTrippable.get(target);
-      return staged !== undefined ? { code: 0, stdout: staged, stderr: "" } : { code: 0, stdout: "{}", stderr: "" };
+      const content = this.files.get(target);
+      return content !== undefined ? { code: 0, stdout: content, stderr: "" } : { code: 0, stdout: "{}", stderr: "" };
     }
     if (cmd[0] === "sops" && cmd[1] === "-e") {
       const outputPath = cmd[cmd.indexOf("--output") + 1]!;
       const stagingPath = cmd[cmd.length - 1]!;
-      this.files.set(outputPath, "ciphertext");
-      const staged = this.files.get(stagingPath);
-      if (staged !== undefined) this.roundTrippable.set(outputPath, staged);
+      this.files.set(outputPath, this.files.get(stagingPath) ?? "{}");
       return { code: 0, stdout: "", stderr: "" };
     }
     throw new Error(`FakeSecretsExecSeam: unexpected call ${cmd.join(" ")}`);
@@ -116,6 +124,10 @@ const fakeRelay: RelayClient = {
 
 function makeCtx(p: Probes, overrides: Partial<ApplyContext> = {}): { ctx: ApplyContext; logs: { id: string; line: string }[] } {
   const logs: { id: string; line: string }[] = [];
+  // Defaults to the SAME seams as `secrets` (respecting an `overrides.secrets`
+  // override) so a step's team-scoped writes land in the one fake exec seam a
+  // test can inspect, unless a test overrides `teamSecrets` itself.
+  const secrets = overrides.secrets ?? fakeSecrets();
   const ctx: ApplyContext = {
     p,
     emit: () => {},
@@ -130,7 +142,8 @@ function makeCtx(p: Probes, overrides: Partial<ApplyContext> = {}): { ctx: Apply
     teamOfOne: false,
     appPath: null,
     ci: false,
-    secrets: fakeSecrets(),
+    secrets,
+    teamSecrets: () => secrets,
     relay: fakeRelay,
     redact: () => {},
     async need() {
@@ -298,14 +311,31 @@ describe("team.create", () => {
     expect(p.exists("/fake-home/.mattstack/teams/personal/mattstack/mattstack.jsonc")).toBe(true);
   });
 
-  test("idempotent re-run: a zone already scaffolded and pushed reports done again without re-scaffolding", async () => {
+  test("idempotent re-run: a zone with a real matching clone on disk skips re-scaffolding entirely — proven by which exec calls the second run does NOT make", async () => {
     const remote = "https://github.com/acme/mattstack-team-personal.git";
     const p = fakeProbes({ home: "/fake-home", env: { RT_TEAM_REMOTE: remote }, exec: gitExecFor(remote) });
     const { ctx } = makeCtx(p, { teamOfOne: true, intent: null, team: { slug: "", name: "", mode: "none" } });
 
     expect((await teamCreateStep.run(ctx)).state).toBe("done");
+
+    // The fake `exec` above never touches the fake filesystem — a real `git
+    // init`/`git remote add` would have, so without simulating that here,
+    // createTeam's own origin-match + SCAFFOLD_MARKER short-circuit is never
+    // actually exercised by a second run, and asserting only `state ===
+    // "done"` would pass even on a broken re-scaffolding path.
+    const dir = "/fake-home/.mattstack/teams/personal";
+    p.mkdirp(join(dir, ".git"));
+    p.writeFile(join(dir, ".git", "config"), `[remote "origin"]\n\turl = ${remote}\n`);
+
+    const execCallsBefore = p.calls.exec.length;
     const secondCtx = makeCtx(p, { teamOfOne: true, intent: null, team: { slug: "", name: "", mode: "none" } }).ctx;
-    expect((await teamCreateStep.run(secondCtx)).state).toBe("done");
+    const second = await teamCreateStep.run(secondCtx);
+
+    expect(second.state).toBe("done");
+    // createTeam's early return means the ONLY exec call left for the second
+    // run is publishTeam's own `git push` — never another
+    // init/remote-add/add/commit, which real idempotency depends on skipping.
+    expect(p.calls.exec.slice(execCallsBefore)).toEqual([["git", "push", "-u", "origin", "main"]]);
   });
 
   test("push-denied -> failed with a credentials remedy, from an explicit create intent", async () => {
@@ -391,25 +421,91 @@ describe("team.join", () => {
     expect((outcome as { detail: string }).detail).toContain("you don't have access yet");
     expect((outcome as { remedy?: string }).remedy).toBe("Ask the owner to grant access, then Retry");
   });
+
+  test("no join intent on disk -> skipped, never joinRedeem's own no-join-intent throw (F11: a prior in-process run already redeemed and cleared it)", async () => {
+    const p = fakeProbes({ home: "/fake-home" }); // no intent file written
+    const { ctx } = makeCtx(p, { intent: joinIntent }); // ctx.intent is a stale snapshot from before applies() gated this in
+
+    const outcome = await teamJoinStep.run(ctx);
+    expect(outcome).toEqual({ state: "skipped", detail: "already joined — no invite in progress" });
+  });
+
+  test("a locked keychain AFTER the invite is already redeemed fails the step honestly instead of crashing the run (F2), with a remedy that accounts for the spent invite", async () => {
+    const p = fakeProbes({
+      home: "/fake-home",
+      files: intentFile("/fake-home", joinIntent),
+      exec: async (argv) => {
+        if (argv[0] === "git" && argv[1] === "clone") return ok();
+        if (argv[0] === "gh" && argv[1] === "api") return ok(JSON.stringify({ login: "carol" }));
+        return ok();
+      },
+    });
+    // readAgeKey succeeds (finds a key) but deriving its public half fails —
+    // exactly the shape `ensureAgeKey` turns into a plain Error, which
+    // `joinRedeem` (fired only after clone+redeem already succeeded) wraps
+    // as `JoinKeyExchangeError`.
+    const lockedForKeygen: AgeKeySeam = {
+      async run(cmd) {
+        if (cmd[0] === "security") return { code: 0, stdout: "AGE-SECRET-KEY-1FAKE\n", stderr: "" };
+        if (cmd[0] === "age-keygen" && cmd[1] === "-y") return { code: 1, stdout: "", stderr: "keychain locked" };
+        throw new Error(`lockedForKeygen: unexpected call ${cmd.join(" ")}`);
+      },
+    };
+    const relay: RelayClient = { ...fakeRelay, redeem: async () => "redeemed", reply: async () => {} };
+    const { ctx } = makeCtx(p, { intent: joinIntent, relay, secrets: fakeSecrets(lockedForKeygen) });
+
+    const outcome = await teamJoinStep.run(ctx);
+    expect(outcome.state).toBe("failed"); // not a thrown/crashed process
+    expect((outcome as { remedy?: string }).remedy).toBe(
+      "Unlock your keychain, then Retry — the invite is already redeemed, so Retry resumes here without a new code",
+    );
+  });
 });
 
 // ─── secrets.write ───────────────────────────────────────────────────────────
 
 describe("secrets.write", () => {
-  function stagedProbes(staged: Record<string, Record<string, string>>): ReturnType<typeof fakeProbes> {
+  function stagedProbes(staged: Record<string, Record<string, string>>, extraFiles: Record<string, string> = {}): ReturnType<typeof fakeProbes> {
     const dir = stagingDir("/fake-home");
-    const files: Record<string, string> = {};
+    const files: Record<string, string> = { ...extraFiles };
     for (const [domain, kv] of Object.entries(staged)) files[`${dir}/${domain}.json`] = JSON.stringify(kv);
     return fakeProbes({ home: "/fake-home", files, dirs: { [dir]: Object.keys(staged).map((d) => `${d}.json`) } });
   }
 
-  test("happy path: drains every staged domain through the real writer, including a team-<slug>-<domain> shape", async () => {
-    const p = stagedProbes({ rt: { token: "abc" }, "team-acme-linear": { apiKey: "xyz" } });
+  test("happy path: a personal-domain staged secret drains through the real writer", async () => {
+    const p = stagedProbes({ rt: { token: "abc" } });
     const { ctx } = makeCtx(p);
 
     const outcome = await secretsWriteStep.run(ctx);
-    expect(outcome).toEqual({ state: "done", detail: "2 staged secrets written" });
+    expect(outcome).toEqual({ state: "done", detail: "1 staged secrets written" });
     expect(p.readDir(stagingDir("/fake-home"))).toEqual([]); // drained
+  });
+
+  test("a team-<slug>-<domain> staged secret routes to the TEAM store (ctx.teamSecrets), not the personal one, and is readable afterward via realTeamSecrets.read's own path (readTeamSecret)", async () => {
+    const slug = "acme";
+    // A seam DISTINCT from ctx.secrets — proves the write actually went
+    // through ctx.teamSecrets(slug), not the personal store's seam, which
+    // is exactly the bug this test used to lock in (F1). The team seam's own
+    // exec fake needs the team's .sops.yaml (writeTeamSecret's recipients
+    // check reads it through THIS seam, not through Probes).
+    const teamSeams = fakeSecrets();
+    (teamSeams.execSeam as FakeSecretsExecSeam).files.set(
+      teamSopsYamlPath(slug),
+      "creation_rules:\n  - path_regex: mattstack/secrets/.*\n    age: age1testrecipient\n",
+    );
+    const p = stagedProbes({ "team-acme-board": { slackWebhook: "https://hooks.example/x" } });
+    const { ctx } = makeCtx(p, { teamSecrets: () => teamSeams });
+
+    const outcome = await secretsWriteStep.run(ctx);
+    expect(outcome).toEqual({ state: "done", detail: "1 staged secrets written" });
+
+    // Never landed in the personal store's own exec seam.
+    const personalFiles = Object.keys((ctx.secrets.execSeam as FakeSecretsExecSeam).files);
+    expect(personalFiles.some((f) => f.includes("team-acme-board"))).toBe(false);
+
+    // Readable back through the exact path realTeamSecrets.read uses.
+    const readBack = await readTeamSecret(slug, "board", "slackWebhook", teamSeams);
+    expect(readBack).toBe("https://hooks.example/x");
   });
 
   test("idempotent re-run: nothing staged the second time reports an honest zero, not a re-write", async () => {
@@ -428,6 +524,25 @@ describe("secrets.write", () => {
     const outcome = await secretsWriteStep.run(ctx);
     expect(outcome.state).toBe("failed");
     expect((outcome as { remedy?: string }).remedy).toBe("home.init did not mint a key — Retry from home.init");
+  });
+
+  test("a non-NoAgeKeyError store failure (no team recipients yet) fails the step honestly instead of crashing the run", async () => {
+    // No .sops.yaml staged for "acme" -> readTeamRecipients() -> [] -> NoTeamRecipientsError, a plain Error.
+    const p = stagedProbes({ "team-acme-board": { x: "y" } });
+    const { ctx } = makeCtx(p, { teamSecrets: () => fakeSecrets() });
+
+    const outcome = await secretsWriteStep.run(ctx);
+    expect(outcome.state).toBe("failed");
+    expect((outcome as { detail: string }).detail).toContain("no recipients yet");
+  });
+
+  test("every staged value is registered with ctx.redact before the write is attempted", async () => {
+    const p = stagedProbes({ rt: { token: "super-secret-value-123456" } });
+    const redacted: string[] = [];
+    const { ctx } = makeCtx(p, { redact: (v) => redacted.push(v) });
+
+    await secretsWriteStep.run(ctx);
+    expect(redacted).toContain("super-secret-value-123456");
   });
 });
 
@@ -521,6 +636,20 @@ describe("path.link / settings.seed / repos.clone / intercepts.install (real HOM
     expect(zshenv.split("mattstack — PATH precedence").length).toBe(2); // exactly one occurrence
   });
 
+  test("path.link: an unwritable ~/.zshenv (F3) reports the real work honestly instead of crashing — symlinks already landed", async () => {
+    mkdirSync(join(home, ".zshenv")); // a directory at that path -> EISDIR on read/write
+    const p = bundleProbe();
+    const { ctx, logs } = makeCtx(p);
+
+    const outcome = await pathLinkStep.run(ctx);
+    expect(outcome.state).toBe("done"); // never a crash/failed step over a shell-config problem
+    expect((outcome as { detail: string }).detail).toContain("linked: rt, fast-browser, gitq, deck");
+    expect((outcome as { detail: string }).detail).toContain("~/.zshenv PATH precedence not installed");
+    expect(logs.some((l) => l.line.includes("~/.zshenv PATH precedence not installed"))).toBe(true);
+    // the real work (tagged links) still happened despite the rc-file problem
+    expect(p.exists(linkPath(home, "gitq"))).toBe(true);
+  });
+
   test("settings.seed: writes mattstack.appPath from ctx.appPath and detects a repo root that exists", async () => {
     const githubRoot = join(home, "Documents", "GitHub");
     const p = fakeProbes({ home, dirs: { [githubRoot]: [] } });
@@ -530,6 +659,22 @@ describe("path.link / settings.seed / repos.clone / intercepts.install (real HOM
     expect(outcome.state).toBe("done");
     expect(getSetting<string>("mattstack.appPath").value).toBe(appRoot);
     expect(getSetting<string[]>("rt.repoRoots").value).toEqual([githubRoot]);
+  });
+
+  test("settings.seed: idempotent re-run — an unchanged appPath is not rewritten a second time (F15)", async () => {
+    // A path DIFFERENT from beforeEach's own seeded mattstack.appPath (appRoot)
+    // so the first run's write is real, not a no-op from the fixture setup.
+    const newAppPath = "/Applications/mattstack.app";
+    const githubRoot = join(home, "Documents", "GitHub");
+    const p = fakeProbes({ home, dirs: { [githubRoot]: [] } });
+
+    const first = await settingsSeedStep.run(makeCtx(p, { appPath: newAppPath }).ctx);
+    expect(first).toEqual({ state: "done", detail: "wrote: mattstack.appPath, rt.repoRoots" });
+    expect(getSetting<string>("mattstack.appPath").value).toBe(newAppPath);
+
+    const second = await settingsSeedStep.run(makeCtx(p, { appPath: newAppPath }).ctx);
+    expect(second).toEqual({ state: "done", detail: "nothing to seed" });
+    expect(getSetting<string>("mattstack.appPath").value).toBe(newAppPath);
   });
 
   test("settings.seed: a transient (/Volumes) app root is refused — failed, nothing written", async () => {
@@ -567,11 +712,16 @@ describe("path.link / settings.seed / repos.clone / intercepts.install (real HOM
     expect(p.calls.exec).toEqual([["git", "clone", "https://gitlab.com/acme/acme-dev.git", dest]]);
   });
 
-  test("repos.clone: an already-present directory is skipped (idempotent re-run never re-clones)", async () => {
+  test("repos.clone: an already-present, genuinely-matching clone is skipped (idempotent re-run never re-clones)", async () => {
     setSetting("rt.repoRoots", [join(home, "code")], "machine");
     const dest = join(home, "code", "acme-dev");
 
-    const p = fakeProbes({ home, dirs: { [dest]: [] }, exec: async () => ok() });
+    const p = fakeProbes({
+      home,
+      dirs: { [dest]: [".git"] },
+      files: { [join(dest, ".git", "config")]: '[remote "origin"]\n\turl = https://gitlab.com/acme/acme-dev.git\n' },
+      exec: async () => ok(),
+    });
     const { ctx } = makeCtx(p, { snapshot: { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/acme/acme-dev"], marketplaces: [], plugins: [], remote: null } });
 
     const outcome = await reposCloneStep.run(ctx);
@@ -579,16 +729,60 @@ describe("path.link / settings.seed / repos.clone / intercepts.install (real HOM
     expect(p.calls.exec).toEqual([]);
   });
 
-  test("repos.clone: no configured repo root -> failed", async () => {
-    const p = fakeProbes({ home });
+  test("repos.clone: a directory occupying the destination that isn't actually a clone of the identity is counted failed, not present", async () => {
+    setSetting("rt.repoRoots", [join(home, "code")], "machine");
+    const dest = join(home, "code", "acme-dev");
+
+    const p = fakeProbes({ home, dirs: { [dest]: [] }, exec: async () => ok() });
+    const { ctx, logs } = makeCtx(p, { snapshot: { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/acme/acme-dev"], marketplaces: [], plugins: [], remote: null } });
+
+    const outcome = await reposCloneStep.run(ctx);
+    expect(outcome).toEqual({ state: "done", detail: "cloned 0, present 0, failed 1" });
+    expect(p.calls.exec).toEqual([]); // never blindly clones into an occupied path
+    expect(logs.some((l) => l.line.includes("isn't a clone of"))).toBe(true);
+  });
+
+  test("repos.clone: zero identities to clone -> skipped, never a hard failure", async () => {
+    const p = fakeProbes({ home }); // no rt.repoRoots configured either — must not matter
     const { ctx } = makeCtx(p);
 
-    expect(await reposCloneStep.run(ctx)).toEqual({ state: "failed", detail: "no repo root" });
+    expect(await reposCloneStep.run(ctx)).toEqual({ state: "skipped", detail: "no repos to clone" });
+  });
+
+  test("repos.clone: identities to clone but no repo root configured -> failed, with a remedy", async () => {
+    const p = fakeProbes({ home });
+    const { ctx } = makeCtx(p, { snapshot: { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/acme/acme-dev"], marketplaces: [], plugins: [], remote: null } });
+
+    const outcome = await reposCloneStep.run(ctx);
+    expect(outcome.state).toBe("failed");
+    expect((outcome as { remedy?: string }).remedy).toBe("Set a repo root (rt.repoRoots), then Retry");
   });
 
   test("intercepts.install: an empty repo index reports 'no commands to shim'", async () => {
     const { ctx } = makeCtx(fakeProbes({ home }));
     const outcome = await interceptsInstallStep.run(ctx);
     expect(outcome).toEqual({ state: "done", detail: "no commands to shim" });
+  });
+
+  test("intercepts.install: idempotent re-run — the second pass reports the same total without re-touching an already-current shim", async () => {
+    const repoDir = mkdtempSync(join(tmpdir(), "rt-steps-a-intercepts-repo-"));
+    execSync("git init -q", { cwd: repoDir });
+    execSync("git remote add origin git@x:acme/r-steps-a.git", { cwd: repoDir });
+
+    mkdirSync(dirname(teamSettingsPath("acme")), { recursive: true });
+    writeFileSync(
+      teamSettingsPath("acme"),
+      JSON.stringify({ repos: { "x/acme/r-steps-a": { "rt.intercepts": [{ command: "fakecmd-steps-a", matches: [{ cwdGlob: ".", role: "x" }] }] } } }),
+    );
+    mkdirSync(rtDir(), { recursive: true });
+    writeFileSync(join(rtDir(), "repos.json"), JSON.stringify({ "r-steps-a": repoDir }));
+
+    const first = await interceptsInstallStep.run(makeCtx(fakeProbes({ home })).ctx);
+    expect(first).toEqual({ state: "done", detail: "1 shims" });
+
+    const second = await interceptsInstallStep.run(makeCtx(fakeProbes({ home })).ctx);
+    expect(second).toEqual({ state: "done", detail: "1 shims" }); // same total; installShims itself distinguishes installed vs current internally
+
+    rmSync(repoDir, { recursive: true, force: true });
   });
 });

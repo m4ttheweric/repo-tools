@@ -234,14 +234,27 @@ export function ensureHistoryHook(): boolean {
  * is unconditional on shell type — a non-zsh machine simply never sources
  * ~/.zshenv, and writing it anyway costs nothing.
  */
-export function installZshenvPrecedence(): { alreadyInstalled: boolean; written: boolean } {
+export interface ZshenvPrecedenceResult {
+  alreadyInstalled: boolean;
+  written: boolean;
+  error?: string;
+}
+
+export function installZshenvPrecedence(): ZshenvPrecedenceResult {
   const path = zshenvPath();
-  const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
-  if (existing.includes(ZSHENV_MARKER)) {
-    return { alreadyInstalled: true, written: false };
+  try {
+    const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
+    if (existing.includes(ZSHENV_MARKER)) {
+      return { alreadyInstalled: true, written: false };
+    }
+    writeFileSync(path, existing + zshenvBlock());
+    return { alreadyInstalled: false, written: true };
+  } catch (err: any) {
+    // An unreadable/unwritable ~/.zshenv (permissions, a directory sitting at
+    // that path) is an expected environment condition, not a bug — mirrors
+    // installShellIntegration's own {error} shape rather than throwing.
+    return { alreadyInstalled: false, written: false, error: err?.message ?? String(err) };
   }
-  writeFileSync(path, existing + zshenvBlock());
-  return { alreadyInstalled: false, written: true };
 }
 
 export interface RemoveBlockResult {

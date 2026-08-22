@@ -16,6 +16,7 @@ import { getSetting } from "../../settings/resolve.ts";
 import { setSetting } from "../../settings/write.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
+import { toFailedOutcome } from "./step-utils.ts";
 
 /** The DMG mount or a Gatekeeper-translocated copy — a bundle running from either is a transient location `mattstack.appPath` must never point at, since the app can vanish out from under that path the moment the DMG is ejected. */
 function isTransientAppRoot(root: string): boolean {
@@ -44,8 +45,13 @@ async function settingsSeedRun(ctx: ApplyContext): Promise<StepOutcome> {
         remedy: "Move mattstack.app to /Applications and relaunch it",
       };
     }
-    setSetting("mattstack.appPath", ctx.appPath, "machine");
-    written.push("mattstack.appPath");
+    // Only when it actually changes — a same-valued write on every Retry is
+    // noise (a "wrote to the local store" line every time) and a lie about
+    // what this run actually did.
+    if (getSetting<string>("mattstack.appPath").value !== ctx.appPath) {
+      setSetting("mattstack.appPath", ctx.appPath, "machine");
+      written.push("mattstack.appPath");
+    }
   }
 
   if (repoRootsUnset()) {
@@ -59,10 +65,18 @@ async function settingsSeedRun(ctx: ApplyContext): Promise<StepOutcome> {
   return { state: "done", detail: written.length > 0 ? `wrote: ${written.join(", ")}` : "nothing to seed" };
 }
 
+async function settingsSeedRunSafe(ctx: ApplyContext): Promise<StepOutcome> {
+  try {
+    return await settingsSeedRun(ctx);
+  } catch (err) {
+    return toFailedOutcome(err);
+  }
+}
+
 export const settingsSeedStep: StepDef = {
   id: "settings.seed",
   title: "Seed your settings",
   kind: "rt",
   applies: () => true,
-  run: settingsSeedRun,
+  run: settingsSeedRunSafe,
 };
