@@ -7,6 +7,8 @@
 import { join } from "path";
 import { appBundlePath } from "../deps/resolve.ts";
 import type { SecretsSeams } from "../secrets/store.ts";
+import { createRealTeamSecretsSeams } from "../secrets/team-store.ts";
+import type { SecretsSeamsFactory } from "../team/join.ts";
 import type { RelayClient } from "../team/relay-client.ts";
 import { STEP_IDS, type NeedRequest, type StepId, type StepKind, type TeamRef } from "./contract.ts";
 import type { Emit } from "./emit.ts";
@@ -41,6 +43,17 @@ export interface ApplyContext {
   appPath: string | null;
   ci: boolean;
   secrets: SecretsSeams;
+  /**
+   * Builds a team's secret-store seams (ageKeySeam + a sops execSeam pinned
+   * to that team's clone root) for one `slug`. Every step that needs to read
+   * or write a TEAM-scoped secret (secrets.write's `team-<slug>-<domain>`
+   * staged entries, team.join's switchboard-token read) must go through this
+   * rather than calling `createRealTeamSecretsSeams` directly — a step that
+   * bypasses it and builds its own real seam can never be driven by a fully
+   * faked `ctx.secrets` in a test, and would reach the real keychain/sops
+   * even under one.
+   */
+  teamSecrets: SecretsSeamsFactory;
   relay: RelayClient;
   /**
    * Registers `value` as a secret literal: every `log` line and every `step`
@@ -199,6 +212,8 @@ export interface CreateApplyContextDeps {
   probes: Probes;
   emit: Emit;
   secrets: SecretsSeams;
+  /** Defaults to `createRealTeamSecretsSeams` — override for a fully-faked run/test so a team-secret read/write can never fall through to a real keychain/sops. */
+  teamSecrets?: SecretsSeamsFactory;
   relay: RelayClient;
   flags: { nonInteractive: boolean; teamOfOne: boolean; ci: boolean };
   /** Threaded straight into `awaitNeed`'s poll loop for the reachable/interactive branch of `need()` — real timers and `Date.now` by default. Tests inject a fake clock/sleep so that branch is driven deterministically instead of pinned to a real 10-minute deadline and 1 s polls. */
@@ -278,6 +293,7 @@ export async function createApplyContext(deps: CreateApplyContextDeps): Promise<
     appPath,
     ci: flags.ci,
     secrets,
+    teamSecrets: deps.teamSecrets ?? createRealTeamSecretsSeams,
     relay,
     redact: redactor.redact,
     async need(id: StepId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app"> {

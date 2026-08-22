@@ -8,6 +8,7 @@ import { DEFAULT_EXPOSED, link } from "../../deps/links.ts";
 import { installShellIntegration, installZshenvPrecedence } from "../../shell-integration.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
+import { toFailedOutcome } from "./step-utils.ts";
 
 async function pathLinkRun(ctx: ApplyContext): Promise<StepOutcome> {
   const linked: string[] = [];
@@ -25,13 +26,36 @@ async function pathLinkRun(ctx: ApplyContext): Promise<StepOutcome> {
     }
   }
 
-  installShellIntegration();
-  installZshenvPrecedence();
+  // Neither of these throws (installZshenvPrecedence wraps its own fs calls)
+  // — their symlinks above have already landed either way, so a rc-file
+  // problem here is reported honestly in the detail rather than silently
+  // dropped or turned into a step failure that would undo real progress.
+  const notes: string[] = [];
 
-  return {
-    state: "done",
-    detail: `linked: ${linked.length > 0 ? linked.join(", ") : "none"} · skipped: ${skipped.length > 0 ? skipped.join(", ") : "none"}`,
-  };
+  const shellResult = installShellIntegration();
+  if (!shellResult.written && !shellResult.alreadyInstalled) {
+    const note = `shell integration not installed (${shellResult.shell}): ${shellResult.error ?? "unknown reason"}`;
+    ctx.log("path.link", note);
+    notes.push(note);
+  }
+
+  const zshenvResult = installZshenvPrecedence();
+  if (!zshenvResult.written && !zshenvResult.alreadyInstalled) {
+    const note = `~/.zshenv PATH precedence not installed: ${zshenvResult.error ?? "unknown reason"}`;
+    ctx.log("path.link", note);
+    notes.push(note);
+  }
+
+  const base = `linked: ${linked.length > 0 ? linked.join(", ") : "none"} · skipped: ${skipped.length > 0 ? skipped.join(", ") : "none"}`;
+  return { state: "done", detail: notes.length > 0 ? `${base} · ${notes.join(" · ")}` : base };
+}
+
+async function pathLinkRunSafe(ctx: ApplyContext): Promise<StepOutcome> {
+  try {
+    return await pathLinkRun(ctx);
+  } catch (err) {
+    return toFailedOutcome(err);
+  }
 }
 
 export const pathLinkStep: StepDef = {
@@ -39,5 +63,5 @@ export const pathLinkStep: StepDef = {
   title: "Link rt onto your PATH",
   kind: "rt",
   applies: () => true,
-  run: pathLinkRun,
+  run: pathLinkRunSafe,
 };

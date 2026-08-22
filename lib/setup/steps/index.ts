@@ -6,7 +6,7 @@
  * adding/removing ids.
  */
 
-import type { StepDef, StepOutcome } from "../apply.ts";
+import type { ApplyContext, StepDef, StepOutcome } from "../apply.ts";
 import { STEP_IDS, type StepId, type StepKind } from "../contract.ts";
 import { installShims } from "../../endpoint/shim.ts";
 import { homeInitStep, homeRestoreStep } from "./home.ts";
@@ -15,6 +15,7 @@ import { secretsWriteStep } from "./secrets.ts";
 import { pathLinkStep } from "./path.ts";
 import { settingsSeedStep } from "./settings.ts";
 import { reposCloneStep } from "./repos.ts";
+import { toFailedOutcome } from "./step-utils.ts";
 
 function stubStep(id: StepId, title: string, kind: StepKind): StepDef {
   return {
@@ -28,10 +29,21 @@ function stubStep(id: StepId, title: string, kind: StepKind): StepDef {
   };
 }
 
-async function interceptsInstallRun(): Promise<StepOutcome> {
-  const result = await installShims();
-  const total = result.installed.length + result.current.length;
-  return { state: "done", detail: total === 0 ? "no commands to shim" : `${total} shims` };
+async function interceptsInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
+  try {
+    const result = await installShims();
+    const total = result.installed.length + result.current.length;
+    if (result.skipped.length > 0) {
+      ctx.log("intercepts.install", `not ours, left alone: ${result.skipped.join(", ")}`);
+    }
+    const detail =
+      total === 0 && result.skipped.length === 0
+        ? "no commands to shim"
+        : `${total} shims${result.skipped.length > 0 ? ` · skipped (occupied): ${result.skipped.join(", ")}` : ""}`;
+    return { state: "done", detail };
+  } catch (err) {
+    return toFailedOutcome(err);
+  }
 }
 
 export const interceptsInstallStep: StepDef = {

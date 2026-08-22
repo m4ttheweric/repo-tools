@@ -26,6 +26,8 @@ const fakeSecrets: SecretsSeams = {
   },
 };
 
+const fakeTeamSecrets = (): SecretsSeams => fakeSecrets;
+
 const fakeRelay: RelayClient = {
   create: async () => ({ id: "", creatorSecret: "" }),
   fetch: async () => "gone",
@@ -54,6 +56,7 @@ function testCtx(overrides: Partial<ApplyContext> = {}): { ctx: ApplyContext; ev
     appPath: null,
     ci: false,
     secrets: fakeSecrets,
+    teamSecrets: fakeTeamSecrets,
     relay: fakeRelay,
     redact: () => {},
     async need() {
