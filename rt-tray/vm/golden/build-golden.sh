@@ -1,6 +1,6 @@
 #!/bin/bash
-# Build mattstack-golden-<ver> from the cirruslabs vanilla image.
-# Usage: build-golden.sh <14|15|26> [--dry-run] [--rebuild]
+# Build mattstack-golden-<ver>[-xcode] from the cirruslabs vanilla or xcode image.
+# Usage: build-golden.sh <14|15|26> [--xcode] [--dry-run] [--rebuild]
 # ORCHESTRATOR/MATT: downloads ~25 GB per image; pauses once for manual TCC clicks.
 set -euo pipefail
 source "$(cd "$(dirname "$0")/.." && pwd)/lib/common.sh"

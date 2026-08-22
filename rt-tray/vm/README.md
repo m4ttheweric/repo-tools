@@ -15,7 +15,7 @@ Every run's deliverable is `artifacts/<run-id>/` (screenshots, logs,
 
 ## Status: what's built vs. gated
 
-Everything below is written and runnable today except the three pieces still
+Everything below is written and runnable today except the two pieces still
 gated on other lanes:
 
 - **`run/guest/ax.sh` + `run/guest/drive-setup.sh`** (screens 1–5, FDA/Login
@@ -27,12 +27,21 @@ gated on other lanes:
   daemon restart) — beyond the appcast server and `--update-dir` preflight
   that `walkthrough.sh` already carries, the update phase reports `skip`
   ("no --update-dir…") until this and L3's `MATTSTACK_APPCAST_URL` hook land.
-- **`run/xcuitest.sh`** (layer (b) via XCUITest instead of AppleScript) —
-  gated on Xcode being present and a `--xcode`-flavour golden; `--xcode` is
-  not yet a `build-golden.sh` flag. When T13 lands, re-add the
-  `build-golden --xcode --dry-run` and `run/xcuitest.sh` usage lines to
-  `check-vm-scripts.sh` (the `bash -n` glob picks the file up automatically,
-  the behavioural gates do not return by themselves).
+
+`run/xcuitest.sh` (layer (b) via XCUITest instead of AppleScript) is in the
+tree and runnable today; it self-gates at runtime rather than depending on
+another lane. Its gate phase checks, in order: the host has Xcode
+(`xcode-select -p` under `/Applications/Xcode*.app/`), `rt-tray/project.yml`
+exists (L3), and a `-xcode`-flavour golden has been built
+(`golden/build-golden.sh <ver> --xcode`) — any miss renders a clean `skip`,
+never a failure. **The `-xcode` golden is not a clean room**: it keeps CLT,
+brew, and Gatekeeper-as-shipped so `xcodebuild` can run, and
+`verify-golden.sh` skips the `no CLT`/`no brew`/`Gatekeeper enabled` checks
+against it (see Golden images below). The XCUITest phase drives the same
+stub-driven suite the host build uses (`XCUIApplication()` + `RT_STUB_PATH`,
+per L3's `SetupFlowUITests.swift`) against the sources staged into the
+guest — not the DMG the `install` phase copies into `/Applications`; driving
+the *installed* bundle from XCUITest is future L3-side work.
 
 A few other things worth knowing before running this layer:
 - **fzf**: confirmed not provisioned into any golden or clean-room guest, and
@@ -82,7 +91,7 @@ rt-tray/vm/
 scripts/e2e-cleanroom.sh         layer (a) locally: artifact → extract → rt --post-install → rt daemon install → rt verify --ci
 ```
 
-Not yet in the tree (see Status above): `run/guest/ax.sh` + `run/guest/drive-setup.sh` (gated on L3's screens), `run/guest/trigger-update.sh` (gated on L3/L4's Sparkle hooks), `run/xcuitest.sh` (gated on Xcode). Every other path above exists on this branch today.
+Not yet in the tree (see Status above): `run/guest/ax.sh` + `run/guest/drive-setup.sh` (gated on L3's screens), `run/guest/trigger-update.sh` (gated on L3/L4's Sparkle hooks). Every other path above, including `run/xcuitest.sh`, exists on this branch today.
 
 ## Prerequisites (host, Apple Silicon)
 
@@ -95,8 +104,9 @@ Not yet in the tree (see Status above): `run/guest/ax.sh` + `run/guest/drive-set
 
 ## Golden images (built once, never run again — every run is a clone)
 
-`golden/build-golden.sh 26` and `golden/build-golden.sh 14` (`15` optional). A future `--xcode` flag for the XCUITest flavour (keeps CLT/brew, so not a clean room for the Tools rows) is planned but not yet implemented — `build-golden.sh` today only takes `<14|15|26> [--dry-run] [--rebuild]`; it's gated with `run/xcuitest.sh` (T13, needs Xcode).
+`golden/build-golden.sh 26` and `golden/build-golden.sh 14` (`15` optional). `build-golden.sh` takes `<14|15|26> [--xcode] [--dry-run] [--rebuild]`.
 Image source: `ghcr.io/cirruslabs/macos-{sonoma,sequoia,tahoe}-vanilla:latest` (no brew, no guest agent → ssh only). Provisioning: remove Apple CLT (the vanilla template installs it), assert no brew, re-enable Gatekeeper (the image ships it disabled), create standard user `tester`/`tester` as the auto-login console user (`admin`/`admin` keeps NOPASSWD sudo for provisioning and plays the "admin credentials" role in the installer's privileged step), Remote Login for all users, ssh key for both, sleep/screensaver/screen-lock off, marker `/Users/Shared/mattstack-golden.json`.
+**`--xcode`** builds `mattstack-golden-<ver>-xcode` from `ghcr.io/cirruslabs/macos-{sonoma,sequoia,tahoe}-xcode:latest` instead, and skips the CLT-removal/brew-removal/Gatekeeper-reenable steps (`SKIP_CLEANROOM=1`) so `xcodebuild` has what it needs. **This golden is not a clean room for the Tools rows** — it legitimately carries CLT, brew, and Gatekeeper-as-shipped; the marker records `"flavour": "xcuitest"` and `verify-golden.sh` reads it back to skip the `no CLT`/`no brew`/`Gatekeeper enabled` checks only for that golden. It exists to run `run/xcuitest.sh` (layer (b) via XCUITest), gated on Xcode being present on the host. Hand-running `verify-golden.sh` against it needs either the explicit VM name (`verify-golden.sh 26 mattstack-golden-26-xcode`) or `--xcode` (`verify-golden.sh 26 --xcode`) — the bare `verify-golden.sh 26` targets the cleanroom name.
 **One manual step per golden** (TCC cannot be pre-approved by script; `tccutil` only resets; PPPC needs MDM): in the VM, Privacy & Security → Accessibility → add `/usr/libexec/sshd-keygen-wrapper` and `/usr/bin/osascript`; then approve the Automation prompt for System Events when the script sends its probe. `golden/verify-golden.sh` proves it (the probe fails with "not allowed assistive access" until done). macOS 26.1/26.2 had a bug adding CLI tools there; the tahoe image is ≥ 26.3.
 
 ## Runs

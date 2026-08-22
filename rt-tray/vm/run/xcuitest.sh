@@ -28,18 +28,18 @@ vm_wait_ssh "$VM_TESTER_USER" "$RUN_VM" 420 && vm_phase_end boot pass || { vm_ph
 vm_phase_begin stage
 cp "$DMG" "$VM_RUN_DIR/in/mattstack.dmg"; cp -R "$VM_ROOT/run/guest" "$VM_RUN_DIR/in/guest"
 mkdir -p "$VM_RUN_DIR/in/src"; rsync -a --exclude .build --exclude '*.app' --exclude vm "$VM_ROOT/../" "$VM_RUN_DIR/in/src/rt-tray/"
-vm_ssh "$VM_TESTER_USER" "$RUN_VM" "rm -rf ~/src && cp -R '$GUEST_RUN/in/src' ~/src && cd ~/src/rt-tray && (command -v xcodegen >/dev/null || brew install xcodegen) && xcodegen generate" >>"$VM_RUN_DIR/logs/stage.log" 2>&1 \
-  && vm_phase_end stage pass || { vm_phase_end stage fail "xcodegen generate failed (logs/stage.log)"; exit 1; }
+vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "rm -rf ~/src && cp -R '$GUEST_RUN/in/src' ~/src && cd ~/src/rt-tray && (command -v xcodegen >/dev/null || brew install xcodegen) && xcodegen generate && touch '$GUEST_RUN/logs/.write-probe' && rm -f '$GUEST_RUN/logs/.write-probe'" >>"$VM_RUN_DIR/logs/stage.log" 2>&1 \
+  && vm_phase_end stage pass || { vm_phase_end stage fail "xcodegen generate or virtiofs share not writable by tester (logs/stage.log)"; exit 1; }
 
 vm_phase_begin install
-vm_ssh "$VM_ADMIN_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash '$GUEST_RUN/in/guest/install-app.sh' copy '$GUEST_RUN/in/mattstack.dmg' --no-quarantine" >>"$VM_RUN_DIR/logs/install.log" 2>&1 \
+vm_ssh_try "$VM_ADMIN_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash '$GUEST_RUN/in/guest/install-app.sh' copy '$GUEST_RUN/in/mattstack.dmg' --no-quarantine" >>"$VM_RUN_DIR/logs/install.log" 2>&1 \
   && vm_phase_end install pass || { vm_phase_end install fail "copy (logs/install.log)"; exit 1; }
 
 vm_phase_begin xcuitest
-if vm_ssh "$VM_TESTER_USER" "$RUN_VM" "cd ~/src/rt-tray && xcodebuild test -project mattstack.xcodeproj -scheme mattstack -destination 'platform=macOS' -only-testing:mattstackUITests -resultBundlePath '$GUEST_RUN/logs/xcuitest.xcresult' CODE_SIGN_IDENTITY=\"-\" CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=\"\" ENABLE_HARDENED_RUNTIME=NO MATTSTACK_UITEST_REAL_APP=/Applications/mattstack.app" >"$VM_RUN_DIR/logs/xcodebuild.log" 2>&1; then
+if vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "cd ~/src/rt-tray && xcodebuild test -project mattstack.xcodeproj -scheme mattstack -destination 'platform=macOS' -only-testing:mattstackUITests -resultBundlePath '$GUEST_RUN/logs/xcuitest.xcresult' CODE_SIGN_IDENTITY=\"-\" CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=\"\" ENABLE_HARDENED_RUNTIME=NO" >"$VM_RUN_DIR/logs/xcodebuild.log" 2>&1; then
   vm_phase_end xcuitest pass
 else vm_phase_end xcuitest fail "xcodebuild test failed (logs/xcodebuild.log)"; fi
-vm_ssh "$VM_TESTER_USER" "$RUN_VM" "xcrun xcresulttool export attachments --path '$GUEST_RUN/logs/xcuitest.xcresult' --output-path '$GUEST_RUN/screenshots' 2>/dev/null || true" >/dev/null 2>&1
+vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "xcrun xcresulttool export attachments --path '$GUEST_RUN/logs/xcuitest.xcresult' --output-path '$GUEST_RUN/screenshots' 2>/dev/null || true" >/dev/null 2>&1
 
 vm_phase_begin assert
-vm_ssh "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash '$GUEST_RUN/in/guest/assert-installed.sh'" >"$VM_RUN_DIR/logs/assert.log" 2>&1 && vm_phase_end assert pass || vm_phase_end assert fail "see logs/assert.log"
+vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash '$GUEST_RUN/in/guest/assert-installed.sh'" >"$VM_RUN_DIR/logs/assert.log" 2>&1 && vm_phase_end assert pass || vm_phase_end assert fail "see logs/assert.log"

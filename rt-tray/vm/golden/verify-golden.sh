@@ -1,8 +1,15 @@
 #!/bin/bash
-# Usage: verify-golden.sh <ver> [<vm-name>]   (the VM must be running)
+# Usage: verify-golden.sh <ver> [--xcode] [<vm-name>]   (the VM must be running)
 set -euo pipefail
 source "$(cd "$(dirname "$0")/.." && pwd)/lib/common.sh"
-VER="$1"; VM="${2:-$(vm_golden_name "$VER")}"
+VER="${1:-}"; shift || true
+[ -n "$VER" ] || vm_die "usage: verify-golden.sh <ver> [--xcode] [<vm-name>]"
+# --xcode only steers the *default* VM name when none is given explicitly; the
+# CLT/brew/Gatekeeper exemption below stays keyed off the guest's own marker, not this flag.
+DEFAULT_FLAVOUR=cleanroom; VM=""
+for a in "$@"; do case "$a" in --xcode) DEFAULT_FLAVOUR=xcuitest;; *) VM="$a";; esac; done
+VM="${VM:-$(vm_golden_name "$VER" "$DEFAULT_FLAVOUR")}"
+vm_log "verifying $VM"
 fails=0
 ok()   { vm_log "  ✓ $1"; }
 bad()  { vm_warn "  ✗ $1"; fails=$((fails+1)); }
