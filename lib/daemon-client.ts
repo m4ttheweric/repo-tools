@@ -8,6 +8,7 @@
  */
 
 import { existsSync } from "fs";
+import { join } from "path";
 import {
   isDaemonInstalled,
   getDaemonConfig,
@@ -15,6 +16,7 @@ import {
   TRAY_SOCK_PATH,
   API_PORT,
 } from "./daemon-config.ts";
+import { rtDir } from "./rt-paths.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -87,11 +89,32 @@ export async function trayQuery(
   }
 }
 
+// ─── Read-only daemon socket query ────────────────────────────────────────────
+
+/**
+ * Read-only daemon query for the setup probes seam: unlike `daemonQuery`,
+ * a missing/down daemon never triggers the tray `/daemon/start` POST or the
+ * stderr "daemon down" warning — a `rt setup check` must never mutate
+ * machine state or write outside its NDJSON stream just by probing.
+ */
+export async function daemonSocketQuery(
+  cmd: string,
+  payload?: Record<string, any>,
+  timeoutMs?: number,
+): Promise<DaemonResponse | null> {
+  return trySocketQuery(cmd, payload, timeoutMs);
+}
+
 // ─── Tray request client (MAT-383 setup verbs) ───────────────────────────────
 
-/** RT_APP_SOCKET (set by the app when it spawns rt) wins over the default tray.sock path. */
+/**
+ * RT_APP_SOCKET (set by the app when it spawns rt) wins over the default
+ * tray.sock path. Resolves `rtDir()` at CALL time, not `TRAY_SOCK_PATH`
+ * (a module-load const) — a caller that repoints HOME after this module
+ * has loaded (every test in this repo) must see the new path.
+ */
 export function traySocketPath(): string {
-  return process.env.RT_APP_SOCKET || TRAY_SOCK_PATH;
+  return process.env.RT_APP_SOCKET || join(rtDir(), "tray.sock");
 }
 
 export interface TrayReply<T = unknown> {

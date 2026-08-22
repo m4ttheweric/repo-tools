@@ -7,7 +7,7 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { daemonQuery, trayRequest, type DaemonResponse, type TrayClient } from "../daemon-client.ts";
+import { daemonSocketQuery, trayRequest, type DaemonResponse, type TrayClient } from "../daemon-client.ts";
 import { UserActionableError } from "./errors.ts";
 
 export interface ExecResult {
@@ -35,53 +35,112 @@ export interface Probes {
   env: Record<string, string | undefined>;
   home: string;
   now(): Date;
-  /** Spawns this same rt (process.execPath) with args; stdin from `input`. Never throws. */
+  /**
+   * Spawns this same rt (process.execPath) with args; stdin from `input`.
+   * Never throws. Under `bun run cli.ts` (dev/test) `process.execPath` is the
+   * `bun` binary, not `rt` — argv becomes `bun <args>`. That's only correct
+   * for the compiled binary, which is the real target for every setup step
+   * that calls this.
+   */
   runRt(args: string[], opts?: { input?: string; timeoutMs?: number }): Promise<ExecResult>;
 }
 
 const DEFAULT_FETCH_TIMEOUT_MS = 5000;
+/** Grace between SIGTERM and SIGKILL once timeoutMs elapses — long enough for a well-behaved child to exit on TERM, short enough to keep the 124 path bounded. */
+const KILL_GRACE_MS = 200;
 
 async function execWithTimeout(argv: string[], opts?: { cwd?: string; timeoutMs?: number; env?: Record<string, string>; input?: string; inherit?: boolean }): Promise<ExecResult> {
-  try {
-    const hasInput = opts?.input !== undefined && !opts?.inherit;
-    const proc = Bun.spawn(argv, {
+  const hasInput = opts?.input !== undefined && !opts?.inherit;
+
+  // A local no-arg closure (rather than `Bun.spawn(argv, {...})` inline
+  // under an explicitly-typed `let proc`) so TS infers `proc`'s type from
+  // this specific literal options shape — pre-declaring `proc`'s type
+  // against the generic `ReturnType<typeof Bun.spawn>` collapses `stdin` to
+  // `number | FileSink`, losing the `FileSink` narrowing the write below needs.
+  const trySpawn = () =>
+    Bun.spawn(argv, {
       cwd: opts?.cwd,
-      // Bun.spawn resolves the executable against the PATH captured at
-      // process start; a runtime process.env.PATH mutation is invisible to
-      // it, so this must be a live reference, not a snapshot taken earlier.
+      // Spread at call time (not a module-level snapshot) so a caller that
+      // sets env vars right before invoking the probe sees them; opts.env
+      // then overlays that copy of process.env.
       env: { ...process.env, ...opts?.env },
       stdin: opts?.inherit ? "inherit" : hasInput ? "pipe" : "ignore",
       stdout: opts?.inherit ? "inherit" : "pipe",
       stderr: opts?.inherit ? "inherit" : "pipe",
     });
 
+  let proc: ReturnType<typeof trySpawn>;
+  try {
+    proc = trySpawn();
+  } catch {
+    // Bun.spawn throws synchronously (posix_spawn ENOENT) only for a
+    // missing/unexecutable binary — narrowed to just the spawn call so a
+    // later failure (stdin delivery, stream read) is never mislabeled 127.
+    return { code: 127, stdout: "", stderr: `ENOENT: ${argv[0]}` };
+  }
+
+  let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+
+  try {
     if (hasInput) {
       // stdin's static type is FileSink | undefined because the "pipe"
       // literal above is widened through the ternary; hasInput guarantees
       // stdin:"pipe" was actually passed, so it's defined at runtime.
-      proc.stdin!.write(opts!.input!);
-      proc.stdin!.end();
+      try {
+        await proc.stdin!.write(opts!.input!);
+        await proc.stdin!.end();
+      } catch {
+        // Best-effort delivery: a child that closes or never reads stdin
+        // (e.g. `exit 0` fed a multi-MB payload) rejects the write/end with
+        // EPIPE. That must never escape as an unhandled rejection — the
+        // real outcome is whatever exit code the child produces below.
+      }
     }
 
-    let timedOut = false;
-    const timer = opts?.timeoutMs
-      ? setTimeout(() => {
-          timedOut = true;
-          proc.kill();
-        }, opts.timeoutMs)
-      : null;
+    const stdoutP = opts?.inherit ? Promise.resolve("") : new Response(proc.stdout as ReadableStream).text();
+    const stderrP = opts?.inherit ? Promise.resolve("") : new Response(proc.stderr as ReadableStream).text();
+    const collected = Promise.all([stdoutP, stderrP, proc.exited]);
 
-    const [stdout, stderr, code] = await Promise.all([
-      opts?.inherit ? Promise.resolve("") : new Response(proc.stdout).text(),
-      opts?.inherit ? Promise.resolve("") : new Response(proc.stderr).text(),
-      proc.exited,
+    if (!opts?.timeoutMs) {
+      const [stdout, stderr, code] = await collected;
+      return { code, stdout, stderr };
+    }
+
+    // A backgrounded grandchild can hold the stdout/stderr pipe open even
+    // after the direct child is killed, and a child can trap SIGTERM
+    // outright — either way `collected` may never settle, so it races the
+    // deadline instead of being awaited unconditionally.
+    const timedOut = new Promise<true>((resolve) => {
+      deadlineTimer = setTimeout(() => resolve(true), opts.timeoutMs);
+    });
+    const raceResult = await Promise.race([
+      collected.then((r) => ({ timedOut: false as const, r })),
+      timedOut.then(() => ({ timedOut: true as const })),
     ]);
-    if (timer) clearTimeout(timer);
 
-    return { code: timedOut ? 124 : code, stdout, stderr };
-  } catch {
-    // Bun.spawn throws synchronously (posix_spawn ENOENT) for a missing binary.
-    return { code: 127, stdout: "", stderr: `ENOENT: ${argv[0]}` };
+    if (!raceResult.timedOut) return { code: raceResult.r[2], stdout: raceResult.r[0], stderr: raceResult.r[1] };
+
+    try {
+      proc.kill("SIGTERM");
+    } catch {
+      // already exited
+    }
+    // Escalate past a signal-trapping child; fire-and-forget — the caller
+    // already has its 124 and isn't waiting on this.
+    setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // already exited
+      }
+    }, KILL_GRACE_MS);
+    // The abandoned stream/exit reads may still settle (or reject) later —
+    // swallow so that doesn't surface as an unhandled rejection.
+    collected.catch(() => {});
+
+    return { code: 124, stdout: "", stderr: "" };
+  } finally {
+    if (deadlineTimer) clearTimeout(deadlineTimer);
   }
 }
 
@@ -102,7 +161,11 @@ export function createRealProbes(): Probes {
     },
 
     readDir(path) {
-      return readdirSync(path);
+      try {
+        return readdirSync(path);
+      } catch {
+        return []; // missing or unreadable — matches the fake, and every other read on this seam
+      }
     },
 
     readlink(path) {
@@ -163,7 +226,7 @@ export function createRealProbes(): Probes {
     tray: trayRequest,
 
     async daemon(cmd, payload, timeoutMs) {
-      return daemonQuery(cmd, payload, timeoutMs);
+      return daemonSocketQuery(cmd, payload, timeoutMs);
     },
 
     env: process.env,
