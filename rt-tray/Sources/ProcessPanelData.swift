@@ -155,7 +155,7 @@ class ColumnSettings: ObservableObject {
     @Published var visibleColumns: Set<ProcessColumn>
 
     private static let configPath: String = {
-        let home = NSHomeDirectory()
+        let home = AppHome.current
         return "\(home)/.mattstack/rt/panel-columns.json"
     }()
 

@@ -8,17 +8,16 @@ import Foundation
 /// so every flavor-dependent decision reads from here.
 ///
 /// Keys:
-///   MSDaemonLabel — the launchd Label this flavor owns (`com.rt.daemon`
-///                   prod, `com.rt.daemon.dev` dev). DaemonLifecycle derives
-///                   both the agent plist name and every launchctl label
-///                   from it.
+///   MSDaemonLabel — the launchd Label this flavor owns
+///                   (`com.mattstack.daemon` prod, `com.mattstack.daemon.dev`
+///                   dev). DaemonLifecycle derives both the agent plist name
+///                   and every launchctl label from it.
 ///   MSDevBuild    — true only in the dev bundle. Gates the menu-bar `dev`
-///                   mark and silences UpdateChecker.
+///                   mark and silences UpdaterController.
 enum BundleFlavor {
 
     /// Fallback when MSDaemonLabel is absent (an unbundled `swift run` build,
-    /// or a bundle built before the key existed): the prod label, which is
-    /// what every pre-MAT-383 build hardcoded.
+    /// or a bundle built before the key existed): the prod label.
     static let defaultDaemonLabel = "com.mattstack.daemon"
 
     static var daemonLabel: String {
@@ -30,6 +29,37 @@ enum BundleFlavor {
 
     static var isDevBuild: Bool {
         Bundle.main.object(forInfoDictionaryKey: "MSDevBuild") as? Bool ?? false
+    }
+
+    /// True only in a DEBUG build launched with both `RT_STUB_SCENARIO` and
+    /// `RT_STUB_PATH` set (the XCUITest / manual-QA harness) — the same pair
+    /// `RtBinaryLocator` requires before it'll pick the stub `rt`. Requiring
+    /// both here too, kept here so callers that never touch rt resolution
+    /// (login-item and service registration) can gate on it, means a DEBUG
+    /// run with only the scenario set can't end up talking to the real `rt`
+    /// while still getting no-op providers.
+    static var isStubActive: Bool {
+        #if DEBUG
+        let env = ProcessInfo.processInfo.environment
+        return !(env["RT_STUB_SCENARIO"] ?? "").isEmpty && !(env["RT_STUB_PATH"] ?? "").isEmpty
+        #else
+        return false
+        #endif
+    }
+}
+
+// MARK: - AppHome
+
+/// `NSHomeDirectory()` resolves through the passwd entry and does not honor
+/// a `HOME` environment override on this platform for a plain (non-sandboxed)
+/// process -- every HOME-scoped path in this app (tray/daemon sockets,
+/// FirstRunDetector, PermissionsService) must read through here instead, or
+/// the stub/XCUITest harness's `HOME` override silently falls through to the
+/// real `~/.mattstack` and collides with whatever tray/daemon is really running.
+enum AppHome {
+    static var current: String {
+        if let override = ProcessInfo.processInfo.environment["HOME"], !override.isEmpty { return override }
+        return NSHomeDirectory()
     }
 }
 
