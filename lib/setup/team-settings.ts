@@ -59,8 +59,8 @@ function defaultWarn(message: string): void {
   console.error(message);
 }
 
-/** `[remote "origin"]`'s `url =` line, scoped to that section (stops at the next `[` header) so a later `[remote "upstream"]` block, or a `url =` line inside a `[branch]` section, can never be mistaken for origin's. `pushurl` is a distinct key and never matches `\burl\s*=`. */
-function parseOriginUrl(gitConfig: string): string | null {
+/** `[remote "origin"]`'s `url =` line, scoped to that section (stops at the next `[` header) so a later `[remote "upstream"]` block, or a `url =` line inside a `[branch]` section, can never be mistaken for origin's. `pushurl` is a distinct key and never matches `\burl\s*=`. Exported so lib/team's create/publish can read the same `.git/config` shape without a second regex. */
+export function parseOriginUrl(gitConfig: string): string | null {
   const match = gitConfig.match(/\[remote "origin"\][^[]*?(?:^|\n)\s*url\s*=\s*(\S+)/m);
   return match ? match[1]! : null;
 }
