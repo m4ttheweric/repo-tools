@@ -7,6 +7,8 @@ import MattstackCore
 final class ScriptedRt: RtRunning, @unchecked Sendable {
     var answers: [String: (Int32, String)] = [:]   // key: args joined by space
     var calls: [(args: [String], stdin: String?)] = []
+    /// NDJSON lines every `stream` call yields before it finishes.
+    var streamLines: [String] = []
 
     func run(_ args: [String], stdin: Data?) async throws -> RtResult {
         calls.append((args, stdin.map { String(decoding: $0, as: UTF8.self) }))
@@ -20,6 +22,10 @@ final class ScriptedRt: RtRunning, @unchecked Sendable {
 
     func stream(_ args: [String], stdin: Data?) -> AsyncThrowingStream<String, Error> {
         calls.append((args, stdin.map { String(decoding: $0, as: UTF8.self) }))
-        return AsyncThrowingStream { $0.finish() }
+        let lines = streamLines
+        return AsyncThrowingStream { cont in
+            for line in lines { cont.yield(line) }
+            cont.finish()
+        }
     }
 }

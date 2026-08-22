@@ -52,7 +52,7 @@ final class SetupCoordinator {
             if let from { args += ["--from", from] }
             return rt.stream(args + ["--json"], stdin: nil)
         }, needs: needs)
-        teamSettings = TeamSettingsModel(rt: rt)
+        teamSettings = TeamSettingsModel(rt: rt, needs: needs)
     }
 
     var setupIsComplete: Bool {
