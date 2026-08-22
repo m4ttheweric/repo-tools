@@ -109,9 +109,13 @@ export class NoAgeKeyError extends Error {
 // without breaking every real key this store is meant to hold.
 const DOMAIN_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
-// Team slugs share the domain shape — both become filesystem path segments
-// under a fixed root, so the same path-escape-proof pattern applies.
-const SLUG_PATTERN = DOMAIN_PATTERN;
+// Team slugs share the domain shape (both become filesystem path segments
+// under a fixed root, so the same path-escape-proof pattern applies) but are
+// ALSO capped at slugify's own MAX_LENGTH (lib/team/slug.ts) — an oversized
+// slug (an attacker-minted invite pointer, not just a hand-typed one) should
+// fail validation cleanly here, not surface as an opaque ENAMETOOLONG deep
+// inside a git invocation.
+const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/;
 
 /** `domain`/`key`/`slug` become path/object-key components — reject anything else before any fs/exec call. */
 export class InvalidSecretsSegmentError extends Error {
