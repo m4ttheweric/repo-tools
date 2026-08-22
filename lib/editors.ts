@@ -30,10 +30,11 @@ export const EDITOR_PATTERNS: Array<{ appName: string; cliBinary: string; displa
 
 const APP_DIRS = ["/Applications", join(homedir(), "Applications")];
 
-export function detectEditors(): DetectedEditor[] {
+/** `appDirs` defaults to the real /Applications + ~/Applications; overridable so tests can point at a fixture root instead of the reviewer's own machine. */
+export function detectEditors(appDirs: string[] = APP_DIRS): DetectedEditor[] {
   const editors: DetectedEditor[] = [];
 
-  for (const appDir of APP_DIRS) {
+  for (const appDir of appDirs) {
     if (!existsSync(appDir)) continue;
 
     let apps: string[];
