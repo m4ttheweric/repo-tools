@@ -474,11 +474,11 @@ describe("worktree config", () => {
   });
 
   describe("loadWorktreeAppConfig", () => {
-    test("defaults when neither worktrees.json nor parking-lot.json exists", () => {
+    test("neither file nor store: defaults", () => {
       expect(loadWorktreeAppConfig()).toEqual({ enabled: true, killProcesses: true });
     });
 
-    test("seeds from parking-lot.json once, then reads the new file thereafter", () => {
+    test("file only (store unowned): seeds from parking-lot.json once, then reads the new file thereafter", () => {
       mkdirSync(rtDir(), { recursive: true });
       writeFileSync(
         join(rtDir(), "parking-lot.json"),
@@ -492,6 +492,30 @@ describe("worktree config", () => {
       writeJson(join(rtDir(), "worktrees.json"), { enabled: true, killProcesses: false });
       const second = loadWorktreeAppConfig();
       expect(second).toEqual({ enabled: true, killProcesses: false });
+    });
+
+    test("store only: store field-bag wins, per-field defaults applied", () => {
+      writeStore(machineSettingsPath(), { "rt.worktreeApp": { killProcesses: false } });
+
+      expect(loadWorktreeAppConfig()).toEqual({ enabled: true, killProcesses: false });
+    });
+
+    test("store and file both present: store wins per-field, file is never consulted", () => {
+      mkdirSync(rtDir(), { recursive: true });
+      writeJson(join(rtDir(), "worktrees.json"), { enabled: false, killProcesses: false });
+      writeStore(machineSettingsPath(), { "rt.worktreeApp": { enabled: false } });
+
+      expect(loadWorktreeAppConfig()).toEqual({ enabled: false, killProcesses: true });
+    });
+
+    test("malformed store probe (unregistered/invalid value) degrades to unowned — file stays authoritative", () => {
+      mkdirSync(rtDir(), { recursive: true });
+      writeJson(join(rtDir(), "worktrees.json"), { enabled: false, killProcesses: true });
+      // An array is the wrong top-level type for an "object" key — the resolver
+      // rejects this scope's value, so the key resolves as unowned.
+      writeStore(machineSettingsPath(), { "rt.worktreeApp": ["nope"] });
+
+      expect(loadWorktreeAppConfig()).toEqual({ enabled: false, killProcesses: true });
     });
   });
 });

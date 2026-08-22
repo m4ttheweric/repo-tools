@@ -51,7 +51,7 @@ describe("settings/registry", () => {
       }
     });
 
-    test("exactly 17 keys are migrated:true", () => {
+    test("exactly 20 keys are migrated:true", () => {
       const migrated = allDefs().filter((d) => d.migrated);
 
       expect(migrated.map((d) => d.key).sort()).toEqual(
@@ -59,9 +59,36 @@ describe("settings/registry", () => {
           "rt.intercepts", "rt.repoIdentityOverrides", "rt.repoRoots", "rt.roles", "rt.worktrees",
           "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runsPruneDays", "rt.runaway", "rt.workspacePrefs",
           "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
-          "rt.homeSnapshot",
+          "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays",
         ].sort(),
       );
+    });
+
+    test("rt.logRetentionDays is a machine+user number, default 14 (a fresh key, not a latch port)", () => {
+      const def = getDef("rt.logRetentionDays");
+
+      expect(def?.scopes.sort()).toEqual(["machine", "user"]);
+      expect(def?.type).toBe("number");
+      expect(def?.merge).toBe("replace");
+      expect(def?.default).toBe(14);
+    });
+
+    test("rt.worktreeApp is a machine-only field-bag object with no default (ownership latch)", () => {
+      const def = getDef("rt.worktreeApp");
+
+      expect(def?.scopes).toEqual(["machine"]);
+      expect(def?.type).toBe("object");
+      expect(def?.merge).toBe("deep");
+      expect(def?.default).toBeUndefined();
+    });
+
+    test("rt.sdmEnrichment is a TEAM-ONLY map with no default (ownership latch, employer-resource invariant)", () => {
+      const def = getDef("rt.sdmEnrichment");
+
+      expect(def?.scopes).toEqual(["team"]);
+      expect(def?.type).toBe("object");
+      expect(def?.merge).toBe("replace");
+      expect(def?.default).toBeUndefined();
     });
 
     test("every def carries scopes", () => {
@@ -166,7 +193,7 @@ describe("settings/registry", () => {
       expect(def?.merge).toBe("replace");
     });
 
-    test("has exactly the 1 remaining migrated:false key, the 17 migrated:true keys, and the 30 suite keys", () => {
+    test("has exactly the 1 remaining migrated:false key, the 20 migrated:true keys, and the 30 suite keys", () => {
       const migratedFalseKeys = [
         "rt.hooks",
       ];
@@ -174,7 +201,7 @@ describe("settings/registry", () => {
         "rt.roles", "rt.intercepts", "rt.worktrees", "rt.repoIdentityOverrides", "rt.repoRoots",
         "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runsPruneDays", "rt.runaway", "rt.workspacePrefs",
         "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
-        "rt.homeSnapshot",
+        "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays",
       ];
       const suiteKeys = [
         "mattstack.integrations",

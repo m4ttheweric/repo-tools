@@ -43,12 +43,19 @@
  * to "nothing declared" with one warning rather than taking a reconcile pass
  * (or every repo behind it) down.
  *
- * ── The app-level file is NOT migrated in wave 1 ──────────────────────────
- * `~/.mattstack/rt/worktrees.json` — owned entirely by this module. `{enabled,
- * killProcesses}`, seeded once from the legacy `~/.mattstack/rt/parking-lot.json`
- * (section 11.1 retires the old file after the seed) when the new file is
- * absent and the old one exists. Both default to true, matching
- * parking-lot-config.ts's legacy `raw?.enabled !== false` semantics.
+ * ── The app-level file is an ownership-latch port (wave 2) ────────────────
+ * `~/.mattstack/rt/worktrees.json` — registry key `rt.worktreeApp` (a
+ * DIFFERENT key from `rt.worktrees` above: same file family, unrelated shape
+ * and scope — `rt.worktrees` is per-repo and repoScoped, this one is a single
+ * machine-wide toggle). `getSetting("rt.worktreeApp").value === undefined`
+ * means the store does not own the key yet: the file stays authoritative,
+ * INCLUDING the one-time seed from the legacy `~/.mattstack/rt/parking-lot.json`
+ * when the new file is absent and the old one exists. Once the store owns the
+ * key it wins PER-FIELD (`rt.worktreeApp` is a field-bag object, not a map) —
+ * a store value carrying only `killProcesses` still gets `enabled`'s default.
+ * Both fields default to true either way, matching the legacy
+ * `raw?.enabled !== false` semantics. A probe failure (thrown by getSetting)
+ * counts as unowned plus one warning that never echoes the store's value.
  */
 
 import { existsSync, readFileSync } from "fs";
@@ -353,13 +360,29 @@ export function resolveReadySteps(cfg: WorktreeRepoConfig, repoPath: string): Re
 // ─── App-level config ────────────────────────────────────────────────────────
 
 const APP_CONFIG_DEFAULTS: WorktreeAppConfig = { enabled: true, killProcesses: true };
+const APP_SETTING_KEY = "rt.worktreeApp";
+
+/**
+ * The ownership-latch probe: `undefined` means `rt.worktreeApp` is unowned
+ * (no store rung has a value) and the legacy file stays authoritative. A
+ * probe failure degrades to unowned too, with one warning that names the key
+ * but never the value.
+ */
+function probeAppConfigStore(): { enabled?: boolean; killProcesses?: boolean } | undefined {
+  try {
+    return getSetting<{ enabled?: boolean; killProcesses?: boolean }>(APP_SETTING_KEY).value;
+  } catch (err) {
+    console.warn(`rt: ignoring "${APP_SETTING_KEY}" — ${(err as Error).message}`);
+    return undefined;
+  }
+}
 
 /**
  * ~/.mattstack/rt/worktrees.json; if absent AND ~/.mattstack/rt/parking-lot.json exists, seed from
  * it once (write the new file), then read the new file. Defaults
  * { enabled: true, killProcesses: true }.
  */
-export function loadWorktreeAppConfig(): WorktreeAppConfig {
+function loadFromLegacyFile(): WorktreeAppConfig {
   const path = join(rtDir(), "worktrees.json");
   const legacyPath = join(rtDir(), "parking-lot.json");
 
@@ -373,4 +396,20 @@ export function loadWorktreeAppConfig(): WorktreeAppConfig {
   }
 
   return readJson<WorktreeAppConfig>(path, APP_CONFIG_DEFAULTS);
+}
+
+/**
+ * `rt.worktreeApp`, ownership-latch semantics (module header): store-owned
+ * wins per field over the legacy file, which stays authoritative — seed
+ * included — until the store carries a value.
+ */
+export function loadWorktreeAppConfig(): WorktreeAppConfig {
+  const declared = probeAppConfigStore();
+  if (declared !== undefined) {
+    return {
+      enabled: declared.enabled !== false,
+      killProcesses: declared.killProcesses !== false,
+    };
+  }
+  return loadFromLegacyFile();
 }
