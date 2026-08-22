@@ -1,26 +1,38 @@
 /**
- * rt team create|publish|invite|join — the team-repo lifecycle verbs.
+ * rt team create|publish|invite|join|members|status — the team-repo
+ * lifecycle verbs.
  *
  *   rt team create <name> (--remote <url> | --create-repo <owner>) [--others] [--json]
  *   rt team publish [--team <slug>] --remote <url> [--json]
  *   rt team invite --handle <h> [--team <slug>] [--json]
  *   rt team join [--dry-run] [--json]   (code on stdin as {"code":"..."}, or a prompt on a TTY)
+ *   rt team members sync [--team <slug>] [--json]
+ *   rt team members remove <handle> [--team <slug>] [--json]
+ *   rt team status [--team <slug>] [--json]
  *
  * Every mutating path funnels through one `UserActionableError` → exit-2
- * envelope, via `exitUserError` (lib/setup/errors.ts).
+ * envelope, via `exitUserError` (lib/setup/errors.ts). `members sync`/`members
+ * remove` are the one exception that ALSO exits 1 (not 2) for a non-user
+ * error — a re-encryption rollback from lib/secrets/team-store.ts, or a
+ * keychain failure — since those are environment/state problems, not usage
+ * refusals, and their own `.message` already names what's still safe vs. not.
  */
 
+import { join } from "path";
 import type { AgeKeySeam } from "../lib/home/age-key.ts";
 import { createRealAgeKeySeam } from "../lib/home/age-key.ts";
 import { promptSecret } from "../lib/prompt-secret.ts";
 import { createRealTeamSecretsSeams } from "../lib/secrets/team-store.ts";
+import { getSetting } from "../lib/settings/resolve.ts";
 import { listTeams } from "../lib/settings/stores.ts";
 import { envelope } from "../lib/setup/contract.ts";
 import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
 import { createRealProbes, readStdinJson, type Probes } from "../lib/setup/probes.ts";
+import { readTeamSnapshot, type SettingsReader } from "../lib/setup/team-settings.ts";
 import { createTeam } from "../lib/team/create.ts";
 import { mintInvite } from "../lib/team/invite.ts";
 import { JoinKeyExchangeError, joinDryRun, joinRedeem, realJoinRedeemSeams, type JoinRedeemSeams, type JoinResult } from "../lib/team/join.ts";
+import { membersRemove, membersSync } from "../lib/team/members.ts";
 import { publishTeam } from "../lib/team/publish.ts";
 import { createRelayClient, inviteRelayUrl } from "../lib/team/relay-client.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
@@ -34,6 +46,8 @@ export interface TeamDeps {
   readCode?: (json: boolean) => Promise<string>;
   /** Overrides `joinRedeem`'s `read`/`readTeamSecret`/`forgeLogin`/`warn` seams — real by default, so a test never has to rely on the isolated test HOME happening to lack a switchboard config. */
   joinRedeemSeams?: Partial<JoinRedeemSeams>;
+  /** Overrides `teamStatus`'s `board.title`/`board.members` reads — real by default, so a test never has to seed a real settings store just to check envelope shape. */
+  statusRead?: SettingsReader;
 }
 
 async function defaultReadCode(json: boolean): Promise<string> {
@@ -206,6 +220,111 @@ export async function teamJoin(args: string[], _ctx: CommandContext = {}, deps: 
       process.exit(1);
     }
     if (err instanceof UserActionableError) exitUserError(err, json, "team join", deps.print);
+    throw err;
+  }
+}
+
+/** A non-UserActionableError from the members path (a rollback error from addTeamRecipient/removeTeamRecipient, a keychain failure) already carries a complete, human-readable explanation in its own message — print it verbatim rather than letting it fall through to a raw stack trace, and exit 1 (an environment/state problem, not a usage refusal). */
+function reportMembersError(err: unknown, deps: TeamDeps, json: boolean, verb: string): never {
+  if (err instanceof UserActionableError) exitUserError(err, json, verb, deps.print);
+  const message = err instanceof Error ? err.message : String(err);
+  deps.print(json ? JSON.stringify(envelope({ error: { code: "members-error", message } })) : `rt ${verb}: ${message}`);
+  process.exit(1);
+}
+
+export async function teamMembersSync(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
+  const json = args.includes("--json");
+
+  try {
+    const slug = resolveTeamSlug(args);
+    const relay = createRelayClient(deps.probes.fetch, inviteRelayUrl(deps.probes.env));
+    const secrets = createRealTeamSecretsSeams(slug);
+    const result = await membersSync(deps.probes, relay, secrets, slug);
+
+    if (json) {
+      deps.print(JSON.stringify(envelope(result)));
+      return;
+    }
+    deps.print(`rt team members sync: added ${result.added.length} key(s)`);
+    if (result.pending.length > 0) deps.print(`  still awaiting a reply: ${result.pending.join(", ")}`);
+    if (result.reencrypted.length > 0) deps.print(`  re-encrypted: ${result.reencrypted.join(", ")}`);
+  } catch (err) {
+    reportMembersError(err, deps, json, "team members sync");
+  }
+}
+
+export async function teamMembersRemove(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
+  const json = args.includes("--json");
+  const handle = positional(args, ["--team"])[0];
+
+  if (!handle) {
+    usageError(deps, json, "team members remove", "rt team members remove <handle> [--team <slug>] [--json]");
+  }
+
+  try {
+    const slug = resolveTeamSlug(args);
+    const secrets = createRealTeamSecretsSeams(slug);
+    const result = await membersRemove(deps.probes, secrets, slug, handle);
+
+    if (json) {
+      deps.print(JSON.stringify(envelope(result)));
+      return;
+    }
+    deps.print(`rt team members remove: "${handle}" — forge access ${result.forgeAccess}, roster ${result.rosterRemoved ? "updated" : "unchanged"}`);
+    if (result.manualSteps.length > 0) {
+      deps.print("Finish revoking forge access by hand:");
+      for (const step of result.manualSteps) deps.print(`  - ${step}`);
+    }
+    deps.print(result.residueNote);
+  } catch (err) {
+    reportMembersError(err, deps, json, "team members remove");
+  }
+}
+
+function defaultStatusRead(): SettingsReader {
+  return <T>(key: string): T | undefined => {
+    try {
+      return getSetting<T>(key).value;
+    } catch {
+      return undefined;
+    }
+  };
+}
+
+interface RosterEntry {
+  username: string;
+}
+
+export async function teamStatus(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
+  const json = args.includes("--json");
+
+  try {
+    const slug = resolveTeamSlug(args);
+    const dir = join(deps.probes.home, ".mattstack", "teams", slug);
+    if (!deps.probes.exists(dir)) {
+      throw new UserActionableError("no-team", `team "${slug}" is not cloned locally at ${dir} — run \`rt team join\` or \`rt team create\` first`);
+    }
+
+    const read = deps.statusRead ?? defaultStatusRead();
+    const snapshot = readTeamSnapshot(deps.probes, slug, { read, warn: () => {} });
+    const title = read<string>("board.title");
+    const name = title && title.length > 0 ? title : slug;
+    const membersRaw = read<RosterEntry[]>("board.members") ?? [];
+    const members = (Array.isArray(membersRaw) ? membersRaw : []).map((m) => ({ username: m.username }));
+
+    const log = await deps.probes.exec(["git", "-C", dir, "log", "-1", "--format=%cI", "origin/main"]);
+    const lastPush = log.code === 0 ? log.stdout.trim() || null : null;
+
+    const result = { slug, name, remote: snapshot.remote, lastPush, members };
+    if (json) {
+      deps.print(JSON.stringify(envelope(result)));
+      return;
+    }
+    deps.print(
+      `rt team status: ${name} (${slug}) — remote ${result.remote ?? "(none)"}, last push ${lastPush ?? "never"}, ${members.length} member(s)`,
+    );
+  } catch (err) {
+    if (err instanceof UserActionableError) exitUserError(err, json, "team status", deps.print);
     throw err;
   }
 }

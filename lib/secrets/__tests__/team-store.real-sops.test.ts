@@ -27,6 +27,7 @@ import {
 } from "../team-store.ts";
 import { teamsDir } from "../../rt-paths.ts";
 import type { AgeExecResult, AgeKeySeam } from "../../home/age-key.ts";
+import { openReply, sealReply } from "../../team/invite-crypto.ts";
 
 const hasRealSops = Bun.which("sops") !== null && Bun.which("age-keygen") !== null;
 
@@ -96,5 +97,32 @@ describe.skipIf(!hasRealSops)("team-store against real sops + age", () => {
     expect(await readTeamSecret(slug, "board", "slackClientSecret", seamsB)).toBe("real-sops-value");
     expect(await readTeamSecret(slug, "rt", "switchboardAdminToken", seamsB)).toBe("another-real-value");
     await expect(readTeamSecret(slug, "board", "slackClientSecret", seamsA)).rejects.toThrow();
+  }, 30_000);
+
+  test("membersSync's add-recipient path end to end: a real sealed reply's age key becomes a real sops recipient", async () => {
+    const slug = `realsops-members-${process.pid}`;
+    const root = join(teamsDir(), slug);
+    mkdirSync(join(root, "mattstack", "secrets"), { recursive: true });
+
+    const owner = await generateAgeKeypair();
+    const joiner = await generateAgeKeypair();
+    const execSeam = createRealSecretsExecSeam(root);
+    const seamsOwner: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey(owner.privateKey), execSeam };
+    const seamsJoiner: SecretsSeams = { ageKeySeam: fakeAgeKeySeamWithKey(joiner.privateKey), execSeam };
+
+    writeTeamRecipients(slug, [owner.publicKey], seamsOwner);
+    await writeTeamSecret(slug, "board", "slackClientSecret", "owner-only-value", seamsOwner);
+
+    // The exact shape membersSync decrypts: a real AES-GCM reply blob carrying the joiner's real age public key.
+    const inviteKey = new Uint8Array(32).fill(3);
+    const idHex = "0102030405060708090a0b0c0d0e0f10";
+    const blob = await sealReply({ v: 1, agePublicKey: joiner.publicKey, handle: "joiner" }, inviteKey, idHex);
+    const opened = await openReply(blob, inviteKey, idHex);
+
+    const addResult = await addTeamRecipient(slug, opened.agePublicKey, seamsOwner);
+
+    expect(addResult.added).toBe(true);
+    expect(addResult.reencrypted).toEqual([join(root, "mattstack", "secrets", "board.json")]);
+    expect(await readTeamSecret(slug, "board", "slackClientSecret", seamsJoiner)).toBe("owner-only-value");
   }, 30_000);
 });
