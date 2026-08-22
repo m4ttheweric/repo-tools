@@ -14,6 +14,8 @@ export interface FakeProbesOpts {
   files?: Record<string, string>;
   dirs?: Record<string, string[]>;
   links?: Record<string, string>;
+  /** Explicit fileSize() overrides, keyed by the queried path — for simulating a large binary without storing megabytes of fake content. */
+  sizes?: Record<string, number>;
   exec?: ExecScript;
   fetch?: Probes["fetch"];
   tray?: TrayClient;
@@ -52,6 +54,17 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
   const defaultTray: TrayClient = async () => ({ status: 0, json: null });
   const tray = opts.tray ?? defaultTray;
 
+  // Resolves through `links` the way real existsSync/statSync do: a symlink
+  // whose target isn't itself a tracked file/dir (or another link) is
+  // dangling and does NOT exist, even though the link entry itself is
+  // present. Depth-capped against a link cycle, which real fs would ELOOP on.
+  function resolveThroughLinks(path: string, depth = 0): string | null {
+    if (depth > 10) return null;
+    const target = links[path];
+    if (target === undefined) return path in files || path in dirs ? path : null;
+    return resolveThroughLinks(target, depth + 1);
+  }
+
   const probes: Probes = {
     async exec(argv, execOpts) {
       calls.exec.push(argv);
@@ -60,7 +73,15 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
     },
 
     exists(path) {
-      return path in files || path in dirs || path in links;
+      return resolveThroughLinks(path) !== null;
+    },
+
+    fileSize(path) {
+      const override = opts.sizes?.[path];
+      if (override !== undefined) return override;
+      const resolved = resolveThroughLinks(path);
+      if (resolved === null || resolved in dirs) return null; // dangling, or a directory — never a file size
+      return Buffer.byteLength(files[resolved] ?? "", "utf8");
     },
 
     readFile(path) {

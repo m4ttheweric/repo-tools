@@ -50,7 +50,11 @@ export async function depsLink(args: string[], _ctx: CommandContext = {}, p: Pro
   const outcome = link(p, t, { force: args.includes("--force") });
 
   if (args.includes("--json")) {
+    // Exit status carries the outcome in both modes: --json prints the
+    // envelope either way, but a script parsing it should not have to also
+    // inspect body.ok to notice the verb refused.
     console.log(JSON.stringify(envelope(outcome)));
+    if (!outcome.ok) process.exit(1);
     return;
   }
 
