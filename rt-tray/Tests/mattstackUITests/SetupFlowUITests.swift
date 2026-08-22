@@ -13,6 +13,22 @@ final class SetupFlowUITests: XCTestCase {
     /// regardless of how deep $TMPDIR is on the machine running the suite.
     private func shortHex() -> String { String(format: "%08x", UInt32.random(in: .min ... .max)) }
 
+    /// The UI test runner is itself sandboxed (com.apple.security.app-sandbox),
+    /// so NSHomeDirectory() here returns the runner's OWN container, not the
+    /// real account's home -- "<that>/.bun/bin/bun" is never where bun lives.
+    /// The sandbox does grant read-only access to the whole filesystem, so
+    /// this finds the real one instead of guessing from a home-directory API.
+    private func findBun() -> String {
+        for candidate in ["/opt/homebrew/bin/bun", "/usr/local/bin/bun"]
+        where FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
+        let users = (try? FileManager.default.contentsOfDirectory(atPath: "/Users")) ?? []
+        for user in users {
+            let path = "/Users/\(user)/.bun/bin/bun"
+            if FileManager.default.isExecutableFile(atPath: path) { return path }
+        }
+        return "/opt/homebrew/bin/bun"
+    }
+
     override func tearDown() {
         app?.terminate()
         if let home { try? FileManager.default.removeItem(at: home) }
@@ -31,11 +47,20 @@ final class SetupFlowUITests: XCTestCase {
         app.launchEnvironment["RT_STUB_PATH"] = stub
         app.launchEnvironment["RT_STUB_STATE_DIR"] = stateDir.path
         app.launchEnvironment["HOME"] = home.path
+        // RtBinaryLocator's stub path defaults RT_STUB_BUN to "<HOME>/.bun/bin/bun"
+        // -- against the throwaway HOME above that's nowhere real, so the stub
+        // process never spawns. Resolve the real one explicitly instead of
+        // leaving the app to guess against a HOME that was never real either.
+        app.launchEnvironment["RT_STUB_BUN"] = findBun()
         app.launch()
     }
 
     private func el(_ id: String) -> XCUIElement { app.descendants(matching: .any)[id] }
-    private func waitFor(_ id: String, _ timeout: TimeInterval = 10) {
+    /// 20s, not 10: every screen past Welcome/Team-card-selection waits on an
+    /// actual `rt` round trip (spawn bun, run the stub script, drain both
+    /// pipes to EOF), and a debug build under a loaded machine can visibly
+    /// take several seconds just to get there.
+    private func waitFor(_ id: String, _ timeout: TimeInterval = 20) {
         XCTAssertTrue(el(id).waitForExistence(timeout: timeout), "missing \(id)")
     }
 
@@ -50,16 +75,20 @@ final class SetupFlowUITests: XCTestCase {
         el("setup.team.continue").click()
         waitFor("setup.checklist.screen")
         waitFor("setup.checklist.row.perm.fda")
-        XCTAssertTrue(el("setup.checklist.continue").waitForExistence(timeout: 10))
+        XCTAssertTrue(el("setup.checklist.continue").waitForExistence(timeout: 20))
         XCTAssertTrue(el("setup.checklist.continue").isEnabled, "join-happy plan is installable")
         el("setup.checklist.continue").click()
         waitFor("setup.install.screen")
-        waitFor("setup.install.step.verify", 30)
+        // Not waited on individually: the stub's apply() finishes all 11
+        // steps in under 2s and flow.next() fires the instant the last one
+        // succeeds, so "verify" can come and go between polls -- the install
+        // screen appearing, then done appearing, is what actually proves the
+        // run went through.
         waitFor("setup.done.screen", 60)
         // Not clicked: DoneScreen.openBoard() logs instead of opening a real
         // browser tab under stub mode, but there's nothing to assert on from
         // here besides existence/enablement, so leave the real click unfired.
-        XCTAssertTrue(el("setup.done.openBoard").exists)
+        waitFor("setup.done.openBoard")
         XCTAssertTrue(el("setup.done.openBoard").isEnabled)
         el("setup.done.continue").click()
     }
@@ -86,11 +115,12 @@ final class SetupFlowUITests: XCTestCase {
         launch("join-no-access")
         waitFor("setup.welcome.screen")
         el("setup.welcome.continue").click()
+        waitFor("setup.team.screen")
         el("setup.team.card.join").click()
         el("setup.team.join.code").click()
         el("setup.team.join.code").typeText("ABCD")
         el("setup.team.continue").click()
-        XCTAssertTrue(app.staticTexts["You don't have access yet: ask matt to grant you access to Acme."].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["You don't have access yet: ask matt to grant you access to Acme."].waitForExistence(timeout: 20))
         XCTAssertFalse(el("setup.checklist.screen").exists)
     }
 
@@ -98,6 +128,7 @@ final class SetupFlowUITests: XCTestCase {
         launch("perm-denied-then-granted")
         waitFor("setup.welcome.screen")
         el("setup.welcome.continue").click()
+        waitFor("setup.team.screen")
         el("setup.team.card.join").click()
         el("setup.team.join.code").click(); el("setup.team.join.code").typeText("ABCD")
         el("setup.team.continue").click()
@@ -113,6 +144,7 @@ final class SetupFlowUITests: XCTestCase {
         launch("apply-fail-retry")
         waitFor("setup.welcome.screen")
         el("setup.welcome.continue").click()
+        waitFor("setup.team.screen")
         el("setup.team.card.join").click()
         el("setup.team.join.code").click(); el("setup.team.join.code").typeText("ABCD")
         el("setup.team.continue").click()
@@ -132,9 +164,9 @@ final class SetupFlowUITests: XCTestCase {
         // Settings opens on whichever tab was last selected (persisted in
         // UserDefaults) and defaults to General on a clean run, so the
         // Uninstall tab has to be selected explicitly before its button exists.
-        waitFor("settings.tab.uninstall", 10)
+        waitFor("settings.tab.uninstall")
         el("settings.tab.uninstall").click()
-        waitFor("settings.uninstall.button", 10)
+        waitFor("settings.uninstall.button")
         el("settings.uninstall.button").click()
         waitFor("settings.uninstall.confirm")
         XCTAssertTrue(app.staticTexts["Stop and remove the rt daemon and deck services"].exists)
