@@ -867,6 +867,7 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Verb", flag: "--verb", type: "text", placeholder: "watch-ci", hint: "Compile only this verb (repeatable); omit for every verb in the roster" },
           { name: "Manifest", flag: "--manifest", type: "text", placeholder: "/path/to/skills.jsonc", hint: "Manifest path; omit to auto-find the newest ~/.mattstack/repos/*/skills.jsonc naming this pack" },
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print what would be written without touching disk" },
+          { name: "Preview", flag: "--preview", type: "boolean", default: false, hint: "Print the compiled SKILL.md to stdout and write nothing (needs a single --verb)" },
         ],
       },
       check: {
