@@ -8,6 +8,14 @@ rt is one piece of a plan spanning five repos, so the governing design docs are
 not in any single repo. Before proposing anything about rt's scope, mr-board,
 glance, gitq, or the acme skills, read `docs/architecture.md` for the links.
 
+## Settings architecture
+
+Every key any mattstack app reads lives in the suite settings stores behind the
+resolver in `packages/rt-client`. Before adding a key, porting config, or
+touching `~/.mattstack`, read `docs/settings-architecture.md` — it carries the
+scope model, the registry checklist, the ownership-latch pattern, and the
+footguns (call-time HOME, file:-dep copies, sops cwd triple).
+
 ## Logging architecture
 
 Logging is structural, not per-feature. Outcomes are logged at central seams; feature code only logs domain events. When adding a feature, you almost never need to add logging — check this list before writing any.
