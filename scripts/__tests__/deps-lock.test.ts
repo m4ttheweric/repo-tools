@@ -25,6 +25,34 @@ describe("deps-lock.ts TSV emitter", () => {
   test("emits 11 tab-separated fields in the documented order", () => {
     expect(toTsvRow(tool()).split("\t")).toHaveLength(11);
   });
+  test("emits fields in the documented column order", () => {
+    const t = tool({
+      name: "toolname",
+      version: "9.9.9",
+      url: "https://example.com/toolname",
+      sha256: "b".repeat(64),
+      archive: "tar.gz",
+      extract: "toolname",
+      bundlePath: "Contents/Helpers/toolname",
+      entitlements: "jit",
+      status: "bundled",
+      kind: "helper",
+      exposeByDefault: true,
+    });
+    expect(toTsvRow(t).split("\t")).toEqual([
+      "toolname",
+      "9.9.9",
+      "https://example.com/toolname",
+      "b".repeat(64),
+      "tar.gz",
+      "toolname",
+      "Contents/Helpers/toolname",
+      "jit",
+      "bundled",
+      "helper",
+      "true",
+    ]);
+  });
   test("throws rather than emit a field containing a tab", () => {
     expect(() => toTsvRow(tool({ version: "1.0\t0" }))).toThrow(/tab or newline/);
   });
