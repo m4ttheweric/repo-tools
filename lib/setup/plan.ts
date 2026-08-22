@@ -8,42 +8,64 @@
  * place that flips it, so a row is never flipped twice.
  */
 
-import { join } from "path";
 import type { DaemonResponse } from "../daemon-client.ts";
 import { createRealAgeKeySeam } from "../home/age-key.ts";
 import { createRealSecretsExecSeam, NoAgeKeyError, readSecret, type SecretsSeams } from "../secrets/store.ts";
-import { listTeams } from "../settings/stores.ts";
 import { finalizePlan, GROUP_TITLES, row, type Group, type GroupId, type Plan, type Row, type TeamRef } from "./contract.ts";
+import { UserActionableError } from "./errors.ts";
 import { readIntent, teamRefFromIntent, type SetupIntent } from "./intent.ts";
 import { fetchPermissions, permissionRows } from "./permissions.ts";
 import { createRealProbes, type Probes } from "./probes.ts";
 import { readPackRequirements } from "./requirements.ts";
-import { stagingDir } from "./staging.ts";
+import { readStagedSecret } from "./staging.ts";
 import { forgeFromRemote, readTeamSnapshot, type TeamSnapshot } from "./team-settings.ts";
 import { accessRows } from "./validators/access.ts";
 import { accountRows, type SecretPresence } from "./validators/accounts.ts";
 import { macRows } from "./validators/mac.ts";
 import { rtHealthRows } from "./validators/rt-health.ts";
-import { toolRows } from "./validators/tools.ts";
+import { INSTALLED_BY_INSTALL_NOTE, toolRows } from "./validators/tools.ts";
 
 export interface PlanInputs {
   p: Probes;
   secrets: SecretPresence;
   ci: boolean;
   mode: "plan" | "status";
+  /** Discovered team slugs — the real caller passes `listTeams()`; tests inject their own list instead of swapping process.env.HOME. */
+  teams: string[];
   teamOverride?: string;
 }
 
 const EMPTY_SNAPSHOT: TeamSnapshot = { slug: "", integrations: {}, trackingIdentities: [], marketplaces: [], plugins: [], remote: null };
 
+/** A named team the user asked for that isn't actually cloned must never silently substitute a different (or empty) plan — that's exactly the honesty rule this repo enforces everywhere else. */
 function resolveTeam(intent: SetupIntent | null, teams: string[], teamOverride: string | undefined): TeamRef {
-  if (teamOverride && teams.includes(teamOverride)) return { slug: teamOverride, name: teamOverride, mode: "none" };
+  if (teamOverride) {
+    if (!teams.includes(teamOverride)) {
+      const discovered = teams.length ? teams.join(", ") : "(none)";
+      throw new UserActionableError("unknown-team", `no cloned team named "${teamOverride}" — discovered teams: ${discovered}`);
+    }
+    return { slug: teamOverride, name: teamOverride, mode: "none" };
+  }
   return teamRefFromIntent(intent, teams);
 }
 
-/** Before the team's home repo exists to record it, a create/join intent already knows the forge (from its own remote) — the one signal declaredIntegrations() has no other way to see. */
+/**
+ * Before the team's home repo exists to record it, a create/join intent
+ * already knows the forge — the one signal declaredIntegrations() has no
+ * other way to see. A join invite's pointer carries its own explicit forge
+ * host (set by the inviter, so more authoritative than re-deriving it);
+ * derivation from the intent's own remote is the fallback for create mode
+ * and for a join pointer that somehow omits it.
+ */
 function enrichSnapshotForge(snapshot: TeamSnapshot, intent: SetupIntent | null): TeamSnapshot {
   if (snapshot.integrations.forge) return snapshot;
+
+  const pointerForge = intent?.mode === "join" ? intent.join?.pointer.forge : undefined;
+  if (pointerForge) {
+    const forge = { host: pointerForge, provider: (pointerForge === "github.com" ? "github" : "gitlab") as "github" | "gitlab" };
+    return { ...snapshot, integrations: { ...snapshot.integrations, forge } };
+  }
+
   const remote = intent?.mode === "create" ? intent.team?.remote : intent?.mode === "join" ? intent.join?.pointer.remote : null;
   if (!remote) return snapshot;
   const forge = forgeFromRemote(remote);
@@ -63,7 +85,16 @@ async function detectHasBrew(p: Probes): Promise<boolean> {
   return res.code === 0;
 }
 
-/** A validator group throwing (a bug, an unexpected shape) must degrade to one honest error row, never take the whole plan down. */
+const REBUILD_ACTION = { type: "run" as const, label: "Re-check", verb: ["setup", "status"] };
+
+/**
+ * A validator group throwing (a bug, an unexpected shape) must degrade to
+ * one honest error row, never take the whole plan down — but that row must
+ * stay `required:true`: the group's checks never ran, so whatever it was
+ * carrying toward `requiredMissing` cannot just vanish, or canInstall could
+ * read true while the group is still unverified. The action gives a way
+ * back to a real answer instead of a required row with no next step.
+ */
 async function buildGroup(id: GroupId, build: () => Promise<Row[]>): Promise<Group> {
   try {
     return { id, title: GROUP_TITLES[id], rows: await build() };
@@ -77,9 +108,10 @@ async function buildGroup(id: GroupId, build: () => Promise<Row[]>): Promise<Gro
           kind: "info",
           title: GROUP_TITLES[id],
           why: "This group's checks could not complete.",
-          required: false,
+          required: true,
           status: "error",
           detail: err instanceof Error ? err.message : String(err),
+          action: REBUILD_ACTION,
         }),
       ],
     };
@@ -87,7 +119,6 @@ async function buildGroup(id: GroupId, build: () => Promise<Row[]>): Promise<Gro
 }
 
 const INSTALL_SATISFIED_IDS = new Set(["perm.login-items", "tool.daemon"]);
-const INSTALL_SATISFIED_NOTE = "Installed by Install.";
 
 function isInstallSatisfied(id: string): boolean {
   return INSTALL_SATISFIED_IDS.has(id) || id.startsWith("pack.");
@@ -99,16 +130,16 @@ function applyInstallSatisfiedFlip(groups: Group[], mode: "plan" | "status"): Gr
     ...g,
     rows: g.rows.map((r) => {
       if (!isInstallSatisfied(r.id)) return r;
+      // optionalNote reads as "works without this" downstream — false the moment required flips to true, so it's dropped rather than carried over.
       if (mode === "status") return { ...r, required: true, optionalNote: null };
-      return { ...r, required: false, optionalNote: r.optionalNote ?? INSTALL_SATISFIED_NOTE };
+      return { ...r, required: false, optionalNote: r.optionalNote ?? INSTALLED_BY_INSTALL_NOTE };
     }),
   }));
 }
 
 export async function composePlan(i: PlanInputs): Promise<Plan> {
   const intent = readIntent(i.p);
-  const teams = listTeams();
-  const team = resolveTeam(intent, teams, i.teamOverride);
+  const team = resolveTeam(intent, i.teams, i.teamOverride);
 
   const snapshot = enrichSnapshotForge(team.slug ? readTeamSnapshot(i.p, team.slug) : EMPTY_SNAPSHOT, intent);
   const reqs = readPackRequirements(i.p, team.slug);
@@ -148,13 +179,7 @@ export function realSecretPresence(): SecretPresence {
       } catch (err) {
         if (!(err instanceof NoAgeKeyError)) throw err;
       }
-      const raw = p.readFile(join(stagingDir(p.home), `${domain}.json`));
-      if (raw === null) return null;
-      try {
-        return (JSON.parse(raw) as Record<string, string>)[key] ?? null;
-      } catch {
-        return null;
-      }
+      return readStagedSecret(p, domain, key);
     },
   };
 }

@@ -193,6 +193,26 @@ async function accountRowFor(p: Probes, entry: DeclaredEntry, team: TeamSnapshot
   return genericRow(p, base, def, secrets, ctx);
 }
 
+const ACCOUNT_RECHECK_ACTION: Action = { type: "run", label: "Re-check", verb: ["setup", "status"] };
+
+/** One entry's `secrets.has()`/`def.validate()` throwing (a bad recipient, a corrupt staged file, a network stack that throws instead of returning) must degrade to that entry's own error row — never take every other declared integration's row down with it. */
+async function accountRowForSafe(p: Probes, entry: DeclaredEntry, team: TeamSnapshot, secrets: SecretPresence, intent: SetupIntent | null): Promise<Row> {
+  try {
+    return await accountRowFor(p, entry, team, secrets, intent);
+  } catch (err) {
+    return row({
+      id: `account.${entry.id}`,
+      kind: "account",
+      title: entry.id,
+      why: "This account's check could not complete.",
+      required: entry.required,
+      status: "error",
+      detail: err instanceof Error ? err.message : String(err),
+      action: ACCOUNT_RECHECK_ACTION,
+    });
+  }
+}
+
 function slackAppRow(required: boolean): Row {
   return row({
     id: "account.slack-app",
@@ -218,7 +238,7 @@ export async function accountRows(p: Probes, team: TeamSnapshot, reqs: PackRequi
   const slackAppNeeded = wantsSlack && !team.integrations.slack?.clientId;
   const slackAppRequired = intent?.mode === "create";
 
-  const idRows = await Promise.all(declared.map((entry) => accountRowFor(p, entry, team, secrets, intent)));
+  const idRows = await Promise.all(declared.map((entry) => accountRowForSafe(p, entry, team, secrets, intent)));
 
   const rows: Row[] = [];
   declared.forEach((entry, i) => {

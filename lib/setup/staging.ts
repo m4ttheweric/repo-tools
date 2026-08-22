@@ -25,6 +25,11 @@ function readDomainFile(p: Probes, path: string): Record<string, string> {
   }
 }
 
+/** The one reader of a single staged value — realSecretPresence's fallback goes through this rather than re-deriving domainPath/readDomainFile itself. */
+export function readStagedSecret(p: Probes, domain: string, key: string): string | null {
+  return readDomainFile(p, domainPath(p.home, domain))[key] ?? null;
+}
+
 export function stageSecret(p: Probes, domain: string, key: string, value: string): void {
   const path = domainPath(p.home, domain);
   const staged = readDomainFile(p, path);

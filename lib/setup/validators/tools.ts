@@ -330,6 +330,9 @@ function pluginListHasPack(stdout: string, pack: string): boolean {
   return stdout.split("\n").some((line) => line.trim().startsWith(needle));
 }
 
+/** Shared with plan.ts's install-satisfied flip so the two never drift apart into two different wordings for the same fact. */
+export const INSTALLED_BY_INSTALL_NOTE = "Installed by Install (plugins.install).";
+
 /** RULING R-T8-L1b: a malformed pack (readPackRequirements/parseRequirements set `.error`) surfaces as an honest error row here — the one row this module always emits per pack — rather than being silently dropped. */
 function packRow(req: PackRequirements, pluginList: ExecResult): Row {
   const base = {
@@ -338,7 +341,7 @@ function packRow(req: PackRequirements, pluginList: ExecResult): Row {
     title: req.pack,
     why: `Installed by Install for the ${req.pack} pack.`,
     required: false,
-    optionalNote: "Installed by Install (plugins.install).",
+    optionalNote: INSTALLED_BY_INSTALL_NOTE,
   };
   if (req.error) return row({ ...base, status: "error", detail: req.error });
 

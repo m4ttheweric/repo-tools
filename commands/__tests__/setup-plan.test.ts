@@ -1,9 +1,24 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, spyOn } from "bun:test";
 import { setupPlan, setupStatus, setupInteractive, renderPlanHuman, type SetupDeps } from "../setup.ts";
 import type { Plan } from "../../lib/setup/contract.ts";
 import type { SecretPresence } from "../../lib/setup/validators/accounts.ts";
 import { fakeProbes, ok } from "../../lib/setup/__tests__/fakes.ts";
 import type { ExecScript } from "../../lib/setup/__tests__/fakes.ts";
+
+/** setupPlan/setupStatus call process.exit(2) on a user-actionable error; the sentinel throw stops it from actually killing the test process, and the caller reads the exit code off the spy. */
+async function runExpectingExit(fn: () => Promise<void>): Promise<number | undefined> {
+  const exitSpy = spyOn(process, "exit").mockImplementation(() => {
+    throw new Error("process.exit sentinel");
+  });
+  try {
+    await fn();
+    return undefined;
+  } catch {
+    return exitSpy.mock.calls.at(-1)?.[0] as number | undefined;
+  } finally {
+    exitSpy.mockRestore();
+  }
+}
 
 function fakeSecrets(): SecretPresence {
   return { async has() { return null; } };
@@ -41,6 +56,28 @@ describe("setupPlan", () => {
 
     expect(deps.lines).toContain("Your Mac");
   });
+
+  test("--team naming an unknown team --json: exit 2 with the contract's error envelope on stdout (deps.print)", async () => {
+    const deps = captureDeps();
+    const exitCode = await runExpectingExit(() => setupPlan(["--team", "ghost", "--json"], {}, deps));
+
+    expect(exitCode).toBe(2);
+    expect(deps.lines).toHaveLength(1);
+    const payload = JSON.parse(deps.lines[0]!) as { contract: 1; error: { code: string; message: string } };
+    expect(payload.contract).toBe(1);
+    expect(payload.error.code).toBe("unknown-team");
+    expect(payload.error.message).toContain("ghost");
+  });
+
+  test("--team naming an unknown team, human mode: exit 2 with a one-line rt-prefixed message", async () => {
+    const deps = captureDeps();
+    const exitCode = await runExpectingExit(() => setupPlan(["--team", "ghost"], {}, deps));
+
+    expect(exitCode).toBe(2);
+    expect(deps.lines).toHaveLength(1);
+    expect(deps.lines[0]).toStartWith("rt setup: ");
+    expect(deps.lines[0]).toContain("ghost");
+  });
 });
 
 describe("setupStatus", () => {
@@ -62,7 +99,7 @@ describe("setupStatus", () => {
 });
 
 describe("setupInteractive", () => {
-  test("is the same handler as setupStatus (Task 27 replaces it with the interactive walk)", () => {
+  test("is the same handler as setupStatus", () => {
     expect(setupInteractive).toBe(setupStatus);
   });
 });
