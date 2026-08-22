@@ -1,5 +1,16 @@
 import { describe, test, expect } from "bun:test";
-import { buildInitPlan, InvalidMachineKeyError, STATE_DIR_NAMES, type HomeState, type InitPlanConfig } from "../init-plan.ts";
+import {
+  buildInitPlan,
+  chooseMachineProfile,
+  InvalidMachineKeyError,
+  InvalidProfileKeyError,
+  ProfileChoiceRequiredError,
+  STATE_DIR_NAMES,
+  UnknownProfileFlagError,
+  type ChooseMachineProfileInput,
+  type HomeState,
+  type InitPlanConfig,
+} from "../init-plan.ts";
 
 const CONFIG: InitPlanConfig = { url: "https://github.com/m4ttheweric/mattstack-home", machineKey: "mbp-14" };
 
@@ -159,5 +170,87 @@ describe("buildInitPlan", () => {
         InvalidMachineKeyError,
       );
     });
+  });
+});
+
+describe("chooseMachineProfile", () => {
+  const BASE: ChooseMachineProfileInput = {
+    profiles: [],
+    hostnameSlug: "mbp-14",
+    flags: {},
+    interactive: false,
+  };
+
+  test("zero profiles, no flags: falls back to the hostname slug regardless of interactivity", () => {
+    expect(chooseMachineProfile({ ...BASE, interactive: false })).toEqual({ key: "mbp-14", source: "hostname" });
+    expect(chooseMachineProfile({ ...BASE, interactive: true })).toEqual({ key: "mbp-14", source: "hostname" });
+  });
+
+  test("--profile naming an existing profile: adopts it, source 'existing'", () => {
+    const result = chooseMachineProfile({ ...BASE, profiles: ["desktop", "laptop"], flags: { profile: "laptop" } });
+    expect(result).toEqual({ key: "laptop", source: "existing" });
+  });
+
+  test("--profile naming a non-existent profile without --new-profile: throws, names the flag and the existing profiles", () => {
+    expect(() =>
+      chooseMachineProfile({ ...BASE, profiles: ["desktop"], flags: { profile: "new-box" } }),
+    ).toThrow(UnknownProfileFlagError);
+    try {
+      chooseMachineProfile({ ...BASE, profiles: ["desktop"], flags: { profile: "new-box" } });
+    } catch (err) {
+      expect((err as Error).message).toContain("new-box");
+      expect((err as Error).message).toContain("desktop");
+      expect((err as Error).message).toContain("--new-profile");
+    }
+  });
+
+  test("--profile + --new-profile naming a NEW key: creates it, source 'flag'", () => {
+    const result = chooseMachineProfile({
+      ...BASE,
+      profiles: ["desktop"],
+      flags: { profile: "new-box", newProfile: true },
+    });
+    expect(result).toEqual({ key: "new-box", source: "flag" });
+  });
+
+  test("bare --new-profile (no --profile): uses the hostname slug, source 'flag'", () => {
+    const result = chooseMachineProfile({ ...BASE, profiles: ["desktop"], flags: { newProfile: true } });
+    expect(result).toEqual({ key: "mbp-14", source: "flag" });
+  });
+
+  test("existing profiles, no flags, non-interactive: throws, directs to --profile/--new-profile", () => {
+    expect(() => chooseMachineProfile({ ...BASE, profiles: ["desktop", "laptop"], interactive: false })).toThrow(
+      ProfileChoiceRequiredError,
+    );
+    try {
+      chooseMachineProfile({ ...BASE, profiles: ["desktop", "laptop"], interactive: false });
+    } catch (err) {
+      expect((err as Error).message).toContain("--profile");
+      expect((err as Error).message).toContain("--new-profile");
+      expect((err as Error).message).toContain("desktop");
+    }
+  });
+
+  test("existing profiles, no flags, interactive: hands back 'prompt-needed' rather than picking itself", () => {
+    const result = chooseMachineProfile({ ...BASE, profiles: ["desktop", "laptop"], interactive: true });
+    expect(result).toEqual({ key: "", source: "prompt-needed" });
+  });
+
+  test.each([
+    ["empty", ""],
+    ["exactly \".\"", "."],
+    ["exactly \"..\"", ".."],
+    ["a forward slash", "evil/key"],
+    ["a backslash", "evil\\key"],
+  ])("unsafe --profile + --new-profile key (%s): throws InvalidProfileKeyError", (_label, badKey) => {
+    expect(() =>
+      chooseMachineProfile({ ...BASE, profiles: [], flags: { profile: badKey, newProfile: true } }),
+    ).toThrow(InvalidProfileKeyError);
+  });
+
+  test("unsafe hostname slug (defensive — machineKey() itself never produces one): throws InvalidProfileKeyError", () => {
+    expect(() => chooseMachineProfile({ ...BASE, hostnameSlug: "../escape", profiles: [] })).toThrow(
+      InvalidProfileKeyError,
+    );
   });
 });

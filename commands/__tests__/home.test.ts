@@ -8,11 +8,13 @@ import {
   homeKeyImport,
   homeRelease,
   homeSnapshot,
+  InvalidProfileArgError,
   InvalidUrlArgError,
   readStdinTrimmed,
   type AgeKeyInputSeam,
   type HomeDaemonSeam,
   type HomeProbes,
+  type MachineProfilePickerSeam,
   type SopsYamlSeam,
 } from "../home.ts";
 import { Readable } from "stream";
@@ -92,6 +94,7 @@ function fakeProbes(overrides: Partial<HomeProbes>): HomeProbes {
     exists: () => false,
     readSymlinkTarget: () => null,
     isFile: () => false,
+    listProfiles: () => [],
     ...overrides,
   };
 }
@@ -183,6 +186,23 @@ class FakeSeam implements ExecSeam {
   }
 }
 
+/** Never picks anything — used as the default injected picker so a test that doesn't expect the prompt fails loudly instead of hanging on a real fzf. */
+class UnreachablePickerSeam implements MachineProfilePickerSeam {
+  async pick(): Promise<string | null> {
+    throw new Error("MachineProfilePickerSeam.pick should not have been called");
+  }
+}
+
+/** Records the (profiles, hostnameSlug) it was called with and returns a scripted choice. */
+class FakePickerSeam implements MachineProfilePickerSeam {
+  calls: { profiles: string[]; hostnameSlug: string }[] = [];
+  constructor(private result: string | null) {}
+  async pick(profiles: string[], hostnameSlug: string): Promise<string | null> {
+    this.calls.push({ profiles, hostnameSlug });
+    return this.result;
+  }
+}
+
 /** Runs `homeInit`, catching the `process.exit` call the failure paths make. */
 async function runHomeInit(
   probes: HomeProbes,
@@ -191,6 +211,8 @@ async function runHomeInit(
   args: string[] = [],
   sopsYamlSeam: SopsYamlSeam = new FakeSopsYamlSeam(),
   key: string = KEY,
+  pickerSeam: MachineProfilePickerSeam = new UnreachablePickerSeam(),
+  isInteractive: () => boolean = () => false,
 ): Promise<{ exitCode: number | undefined; logs: string[]; errors: string[] }> {
   const exitSpy = spyOn(process, "exit").mockImplementation(() => {
     throw new Error("process.exit");
@@ -204,7 +226,7 @@ async function runHomeInit(
     errors.push(parts.map(String).join(" "));
   });
   try {
-    await homeInit(args, {}, probes, exec, ageKeySeam, sopsYamlSeam, key);
+    await homeInit(args, {}, probes, exec, ageKeySeam, sopsYamlSeam, key, pickerSeam, isInteractive);
     return { exitCode: undefined, logs, errors };
   } catch {
     const code = exitSpy.mock.calls.at(-1)?.[0] as number | undefined;
@@ -490,6 +512,286 @@ describe("homeInit", () => {
 
       expect(exitCode).toBe(1);
       expect(seam.calls.some((c) => c.kind === "mkdirp" || c.kind === "writeFile")).toBe(false);
+    });
+  });
+
+  describe("machine profile picker", () => {
+    /** Repo already cloned (userRepoPresent), but no machine-key file yet — the picker's usual entry point. */
+    const REPO_PRESENT_NO_KEY = (listProfiles: () => string[]): HomeProbes =>
+      fakeProbes({
+        isGitRepo: (dir) => dir.endsWith("/user"),
+        exists: (path) => path.endsWith("/user"),
+        listProfiles,
+      });
+
+    test("machine-key file present: the picker never runs, even when listProfiles would find multiple profiles", async () => {
+      const seam = new FakeSeam();
+      const probes = fakeProbes({
+        isGitRepo: (dir) => dir.endsWith("/user"),
+        exists: () => true,
+        readSymlinkTarget: (path) => (path.endsWith("/skills.jsonc") ? join("user", "skills.jsonc") : null),
+        listProfiles: () => {
+          throw new Error("listProfiles should never be called when machine-key already exists");
+        },
+      });
+
+      const { exitCode } = await runHomeInit(probes, seam, new FakeAgeKeySeam());
+      expect(exitCode).toBeUndefined();
+    });
+
+    test("zero existing profiles: falls back to the hostname slug automatically — no picker, no flag needed", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => []);
+
+      const { exitCode } = await runHomeInit(probes, seam, new FakeAgeKeySeam(), [], new FakeSopsYamlSeam(), KEY);
+
+      expect(exitCode).toBeUndefined();
+      expect(seam.calls).toContainEqual({ kind: "writeFile", arg: { path: "machine-key", content: KEY } });
+      expect(seam.calls).toContainEqual({ kind: "mkdirp", arg: join("user", "local", KEY) });
+    });
+
+    test("--profile <existing>: adopts it without ever invoking the picker seam", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop", "laptop"]);
+      const picker = new FakePickerSeam("should-not-be-picked");
+
+      const { exitCode } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        ["--profile", "laptop"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        picker,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(picker.calls).toEqual([]);
+      expect(seam.calls).toContainEqual({ kind: "writeFile", arg: { path: "machine-key", content: "laptop" } });
+      // Already-existing profile dir — ensureProfileDir must not fire for it.
+      expect(seam.calls.some((c) => c.kind === "mkdirp" && c.arg === join("user", "local", "laptop"))).toBe(false);
+    });
+
+    test("--profile <new> --new-profile: creates the named profile", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop"]);
+
+      const { exitCode } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        ["--profile", "new-box", "--new-profile"],
+        new FakeSopsYamlSeam(),
+        KEY,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(seam.calls).toContainEqual({ kind: "writeFile", arg: { path: "machine-key", content: "new-box" } });
+      expect(seam.calls).toContainEqual({ kind: "mkdirp", arg: join("user", "local", "new-box") });
+    });
+
+    test("--profile naming a non-existent profile without --new-profile: exits 1, directs to --new-profile, touches nothing", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop"]);
+      const picker = new FakePickerSeam("desktop");
+
+      const { exitCode, errors } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        ["--profile", "ghost"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        picker,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes("ghost") && e.includes("--new-profile"))).toBe(true);
+      expect(picker.calls).toEqual([]);
+      expect(seam.calls).toEqual([]);
+    });
+
+    test("existing profiles, no flags, non-interactive: exits 1 directing to --profile/--new-profile, never invokes the picker", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop", "laptop"]);
+      const picker = new FakePickerSeam("desktop");
+
+      const { exitCode, errors } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        picker,
+        () => false,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes("--profile") && e.includes("--new-profile"))).toBe(true);
+      expect(picker.calls).toEqual([]);
+      expect(seam.calls).toEqual([]);
+    });
+
+    test("existing profiles, no flags, interactive: runs the picker with the profile list + hostname slug, uses its answer", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop", "laptop"]);
+      const picker = new FakePickerSeam("laptop");
+
+      const { exitCode } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        picker,
+        () => true,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(picker.calls).toEqual([{ profiles: ["desktop", "laptop"], hostnameSlug: KEY }]);
+      expect(seam.calls).toContainEqual({ kind: "writeFile", arg: { path: "machine-key", content: "laptop" } });
+    });
+
+    test("interactive picker returns null (Esc/Ctrl-C): exits 1, never writes a machine-key", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop", "laptop"]);
+      const picker = new FakePickerSeam(null);
+
+      const { exitCode, errors } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        picker,
+        () => true,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes("no machine profile selected"))).toBe(true);
+      expect(seam.calls.some((c) => c.kind === "writeFile" && (c.arg as any).path === "machine-key")).toBe(false);
+    });
+
+    test("existing profiles, no flags, interactive, --dry-run: reports a prompt would run, executes nothing", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop", "laptop"]);
+      const picker = new FakePickerSeam("laptop");
+
+      const { exitCode, logs } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        ["--dry-run"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        picker,
+        () => true,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(picker.calls).toEqual([]);
+      expect(logs.some((l) => l.includes("desktop") && l.includes("laptop"))).toBe(true);
+      expect(seam.calls).toEqual([]);
+    });
+
+    test("--profile resolved by flag, --dry-run: still prints the full remaining plan instead of stopping short", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop", "laptop"]);
+
+      const { exitCode, logs } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        ["--profile", "laptop", "--dry-run"],
+        new FakeSopsYamlSeam(),
+        KEY,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(seam.calls).toEqual([]);
+      expect(logs.some((l) => l.includes("machine-key"))).toBe(true);
+    });
+
+    test("truly fresh machine (no local user/ clone yet): clones BEFORE the profile choice, then provisions with the chosen key", async () => {
+      const seam = new FakeSeam();
+      let cloned = false;
+      const probes = fakeProbes({
+        isGitRepo: () => false,
+        exists: () => false,
+        listProfiles: () => {
+          // Only knowable once the clone has actually happened.
+          if (!cloned) throw new Error("listProfiles called before the clone step ran");
+          return ["desktop"];
+        },
+      });
+      const cloneAwareSeam = new (class extends FakeSeam {
+        override async run(cmd: string[]) {
+          const result = await super.run(cmd);
+          if (cmd[0] === "git" && cmd[1] === "clone") cloned = true;
+          return result;
+        }
+      })();
+
+      const { exitCode } = await runHomeInit(
+        probes,
+        cloneAwareSeam,
+        new FakeAgeKeySeam(),
+        ["--profile", "desktop"],
+        new FakeSopsYamlSeam(),
+        KEY,
+      );
+
+      expect(exitCode).toBeUndefined();
+      const cloneCall = cloneAwareSeam.calls.find((c) => c.kind === "run") as { kind: string; arg: string[] } | undefined;
+      expect(cloneCall?.arg).toEqual(["git", "clone", DEFAULT_USER_REPO_URL, "user"]);
+      expect(cloneAwareSeam.calls).toContainEqual({ kind: "writeFile", arg: { path: "machine-key", content: "desktop" } });
+    });
+
+    test("truly fresh machine, --dry-run: never clones, notes the key shown is only the no-profiles-yet fallback", async () => {
+      const seam = new FakeSeam();
+      const probes = fakeProbes({ isGitRepo: () => false, exists: () => false });
+
+      const { exitCode, logs } = await runHomeInit(probes, seam, new FakeAgeKeySeam(), ["--dry-run"], new FakeSopsYamlSeam(), KEY);
+
+      expect(exitCode).toBeUndefined();
+      expect(seam.calls).toEqual([]);
+      expect(logs.some((l) => l.includes("no machine-key file yet"))).toBe(true);
+    });
+
+    test("--new-profile as a bare flag: uses the hostname slug, no picker", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop"]);
+
+      const { exitCode } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        ["--new-profile"],
+        new FakeSopsYamlSeam(),
+        KEY,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(seam.calls).toContainEqual({ kind: "writeFile", arg: { path: "machine-key", content: KEY } });
+      expect(seam.calls).toContainEqual({ kind: "mkdirp", arg: join("user", "local", KEY) });
+    });
+  });
+
+  describe("--profile arg validation", () => {
+    test("--profile as the last arg (no value): exits 1 with a clear error, runs nothing", async () => {
+      const seam = new FakeSeam();
+      const { exitCode, errors } = await runHomeInit(fakeProbes({}), seam, new FakeAgeKeySeam(), ["--profile"]);
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes("--profile requires a value"))).toBe(true);
+      expect(seam.calls).toEqual([]);
+    });
+
+    test("InvalidProfileArgError is exported and matches what homeInit catches", () => {
+      expect(new InvalidProfileArgError("x")).toBeInstanceOf(Error);
     });
   });
 });
