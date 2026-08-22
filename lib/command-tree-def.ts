@@ -116,6 +116,43 @@ const commitNode: CommandNode = {
   args: [],
 };
 
+const SETUP_JSON_ARG = { name: "JSON", flag: "--json", type: "boolean" as const, default: false, hint: "Machine-readable result" };
+
+/** One `status`/`connect` pair per integration id, generated so the tree, the module's `setup<Id>Status`/`setup<Id>Connect` exports, and the app's contract stay in lockstep. Slack alone also gets `create-app` (the owner-once Slack app bootstrap). Pure — no side effects, safe to call at module load. */
+function integrationNode(id: string, title: string): CommandNode {
+  const fnId = id[0]!.toUpperCase() + id.slice(1);
+  const subcommands: Record<string, CommandNode> = {
+    status: {
+      description: `${title}: check this account`,
+      module: "./commands/setup.ts",
+      fn: `setup${fnId}Status`,
+      args: [SETUP_JSON_ARG],
+    },
+    connect: {
+      description: `${title}: connect this account`,
+      module: "./commands/setup.ts",
+      fn: `setup${fnId}Connect`,
+      args: [
+        SETUP_JSON_ARG,
+        { name: "Token on stdin", flag: "--token-stdin", type: "boolean", default: false, hint: "Read a raw token line from stdin instead of JSON" },
+        { name: "Use gh", flag: "--use-gh", type: "boolean", default: false, hint: "Use the existing gh CLI session instead of a token" },
+      ],
+    },
+  };
+  if (id === "slack") {
+    subcommands["create-app"] = {
+      description: "Slack: create the team's Slack app (owner-once)",
+      module: "./commands/setup.ts",
+      fn: "setupSlackCreateApp",
+      args: [
+        { name: "Config token on stdin", flag: "--config-token-stdin", type: "boolean", default: false, hint: "Read a raw app configuration token line from stdin instead of JSON" },
+        SETUP_JSON_ARG,
+      ],
+    };
+  }
+  return { description: `${title}: check or connect this account`, subcommands };
+}
+
 export const TREE: Record<string, CommandNode> = {
   git: {
     description: "Git operations (rebase, reset, commit, backup)",
@@ -973,6 +1010,14 @@ export const TREE: Record<string, CommandNode> = {
         fn: "setupStatus",
         args: [{ name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable plan" }],
       },
+      github: integrationNode("github", "GitHub"),
+      gitlab: integrationNode("gitlab", "GitLab"),
+      linear: integrationNode("linear", "Linear"),
+      slack: integrationNode("slack", "Slack"),
+      switchboard: integrationNode("switchboard", "Switchboard"),
+      sdm: integrationNode("sdm", "StrongDM"),
+      doppler: integrationNode("doppler", "Doppler"),
+      ldcli: integrationNode("ldcli", "LaunchDarkly"),
     },
   },
 };
