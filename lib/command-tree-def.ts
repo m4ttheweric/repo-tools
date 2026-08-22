@@ -933,9 +933,35 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  repos: {
+    description: "Register repos with rt (index + tracking)",
+    subcommands: {
+      register: {
+        description: "Add repo paths to the rt index, optionally granting background tracking",
+        module: "./commands/repos.ts",
+        fn: "reposRegister",
+        args: [
+          { name: "Path", type: "text", placeholder: "/path/to/repo", hint: "Repo path to register (pass more than one to register several at once)" },
+          { name: "Track", flag: "--track", type: "select", options: [{ value: "live", label: "live" }, { value: "poll", label: "poll" }], hint: "Grant background tracking at this level; omit to register without tracking" },
+          { name: "Caches", flag: "--caches", type: "text", placeholder: "branches,project-mrs", hint: "Comma-separated cache kinds for --track (default branches)" },
+          SETUP_JSON_ARG,
+        ],
+      },
+    },
+  },
+
   skills: {
     description: "Compile, check, and manage the surface of the pack's committed skills",
     subcommands: {
+      materialize: {
+        description: "Run merge-manifests.sh to materialize skill bindings for registered repos",
+        module: "./commands/skills.ts",
+        fn: "skillsMaterialize",
+        args: [
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "myrepo", hint: "Materialize only this registered repo; omit for every known repo" },
+          SETUP_JSON_ARG,
+        ],
+      },
       compile: {
         description: "Compile pack verbs from step sources + manifest bindings into committed SKILL.md files",
         module: "./commands/skills.ts",
@@ -965,6 +991,21 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Mode", type: "text", placeholder: "list", hint: "list | set <name> --public|--internal | apply; omit for the fzf palette" },
           { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "apply only: print planned moves without touching disk" },
+        ],
+      },
+    },
+  },
+
+  cron: {
+    description: "Daemon cron triggers",
+    subcommands: {
+      install: {
+        description: "Install a daemon cron trigger",
+        module: "./commands/cron.ts",
+        fn: "cronInstall",
+        args: [
+          { name: "Trigger", type: "select", options: [{ value: "board-triage", label: "board-triage" }] },
+          SETUP_JSON_ARG,
         ],
       },
     },

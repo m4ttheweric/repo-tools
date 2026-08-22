@@ -14,6 +14,7 @@ import * as extension from "../commands/extension.ts";
 import * as home from "../commands/home.ts";
 import * as hooks from "../commands/hooks.ts";
 import * as port from "../commands/port.ts";
+import * as repos from "../commands/repos.ts";
 import * as run from "../commands/run.ts";
 import * as runs from "../commands/runs.ts";
 import * as secrets from "../commands/secrets.ts";
@@ -39,6 +40,7 @@ import * as worktree from "../commands/worktree.ts";
 import * as intercept from "../commands/intercept.ts";
 import * as endpoint from "../commands/endpoint.ts";
 import * as team from "../commands/team.ts";
+import * as cron from "../commands/cron.ts";
 
 export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/commit.ts": commit,
@@ -49,6 +51,7 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/home.ts": home,
   "./commands/hooks.ts": hooks,
   "./commands/port.ts": port,
+  "./commands/repos.ts": repos,
   "./commands/run.ts": run,
   "./commands/runs.ts": runs,
   "./commands/secrets.ts": secrets,
@@ -74,4 +77,5 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/intercept.ts": intercept,
   "./commands/endpoint.ts": endpoint,
   "./commands/team.ts": team,
+  "./commands/cron.ts": cron,
 };
