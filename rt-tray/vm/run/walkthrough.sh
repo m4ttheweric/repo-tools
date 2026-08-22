@@ -40,7 +40,7 @@ cleanup() {
   vm_render_report
   local f; f=$(vm_phases_failed)
   vm_log "done: $(grep -c '"status":"pass"' "$VM_RUN_DIR/phases.jsonl" || true) passed, $f failed, $(grep -c '"status":"skip"' "$VM_RUN_DIR/phases.jsonl" || true) skipped → $VM_RUN_DIR/report.md"
-  exit "$([ "${f:-0}" -eq 0 ] && echo 0 || echo 1)"
+  exit "$([ "$f" -eq 0 ] && echo 0 || echo 1)"
 }
 trap cleanup EXIT
 

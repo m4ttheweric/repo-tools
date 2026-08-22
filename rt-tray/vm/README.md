@@ -19,14 +19,18 @@ Everything below is written and runnable today except the two pieces still
 gated on other lanes:
 
 - **`run/guest/ax.sh` + `run/guest/drive-setup.sh`** (screens 1–5, FDA/Login
-  Items/Notifications dances) — gated on L3 landing its setup screens and
-  `AccessibilityIDs.swift`. Until then `--scenario create`/`join` will reach
-  the `screens` phase and fail there (guest script not staged); `--scenario
-  headless` does not depend on this, but it fails too today — see fzf below.
+  Items/Notifications dances) — both are in the tree, staged into the guest
+  by `walkthrough.sh` (copied into `$GUEST_BIN`, chmod'd) and invoked by the
+  `screens` phase. `--scenario create`/`join` still fails there today — not
+  because the guest scripts are missing, but because it's gated on L3's
+  setup screens fully wiring `AccessibilityIDs.swift`'s identifiers.
+  `--scenario headless` does not depend on this, but it fails too today —
+  see fzf below.
 - **`run/guest/trigger-update.sh`** (drives Sparkle, asserts vN→vN+1 +
-  daemon restart) — beyond the appcast server and `--update-dir` preflight
-  that `walkthrough.sh` already carries, the update phase reports `skip`
-  ("no --update-dir…") until this and L3's `MATTSTACK_APPCAST_URL` hook land.
+  daemon restart) — in the tree, staged the same way, and the update phase
+  runs it whenever `--update-dir` is passed; it reports `skip` ("no
+  --update-dir…") only when that flag is omitted. The remaining gate is L3's
+  `MATTSTACK_APPCAST_URL` hook.
 
 `run/xcuitest.sh` (layer (b) via XCUITest instead of AppleScript) is in the
 tree and runnable today; it self-gates at runtime rather than depending on
@@ -91,7 +95,7 @@ rt-tray/vm/
 scripts/e2e-cleanroom.sh         layer (a) locally: artifact → extract → rt --post-install → rt daemon install → rt verify --ci
 ```
 
-Not yet in the tree (see Status above): `run/guest/ax.sh` + `run/guest/drive-setup.sh` (gated on L3's screens), `run/guest/trigger-update.sh` (gated on L3/L4's Sparkle hooks). Every other path above, including `run/xcuitest.sh`, exists on this branch today.
+Every path above exists on this branch today. `run/guest/ax.sh`, `run/guest/drive-setup.sh`, and `run/guest/trigger-update.sh` are in the tree and staged into every walkthrough run; the `screens` and `update` phases still run gated on L3 (see Status above), not on anything missing from this directory.
 
 ## Prerequisites (host, Apple Silicon)
 
@@ -99,7 +103,7 @@ Not yet in the tree (see Status above): `run/guest/ax.sh` + `run/guest/drive-set
 - `brew install cirruslabs/cli/sshpass` (golden build only — the first password login; everything after is key-based).
 - Apple CLT (`swiftc`, for `run/host/winid.swift`) and Bun (compiles `appcast-server`).
 - Screen Recording for your terminal app (System Settings → Privacy & Security → Screen & System Audio Recording) — host-side screenshots of the Tart window. One-time.
-- ~60 GB free disk per golden (25–27 GB download, 50 GB virtual disk, APFS-sparse). Clones are copy-on-write.
+- ~60 GB free disk per **cleanroom** golden (25–27 GB download, 50 GB virtual disk, APFS-sparse). An **`--xcode`** golden needs substantially more — the `-xcode` image bundles a full Xcode install on top of the base OS, so budget well beyond the vanilla figures above (exact numbers not yet measured; see Costs below). Clones are copy-on-write either way.
 - GitHub-hosted runners cannot run this (no nested macOS virtualisation); local only, or a self-hosted Apple-Silicon runner later.
 
 ## Golden images (built once, never run again — every run is a clone)
@@ -144,6 +148,7 @@ Throwaway GitHub org (default `mattstack-vmtest`; override with `MATTSTACK_VMTES
 |---|---|---|---|---|
 | 26 | | | | |
 | 14 | | | | |
+| 26 `--xcode` | | | | (n/a — `run/xcuitest.sh` instead) |
 
 ## Manual alternative
 

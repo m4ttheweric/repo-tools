@@ -34,7 +34,7 @@ if [ "$DRY" = 1 ]; then
   exit 0
 fi
 
-tart run "$GOLDEN" --no-audio > "$VM_ARTIFACTS/golden-$VER-tart.log" 2>&1 &
+tart run "$GOLDEN" --no-audio > "$VM_ARTIFACTS/$GOLDEN-tart.log" 2>&1 &
 TART_PID=$!
 trap 'kill $TART_PID 2>/dev/null || true' EXIT
 vm_log "waiting for ssh as admin (password)…"
