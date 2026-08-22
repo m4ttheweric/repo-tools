@@ -1,16 +1,29 @@
 import { describe, test, expect, spyOn, beforeEach, afterEach } from "bun:test";
 import {
   DEFAULT_USER_REPO_URL,
+  claudePluginsPointerMessage,
+  defaultAgeKeyInputSeam,
+  defaultMaterializeEnv,
   gatherHomeState,
   homeClaim,
   homeInit,
+  homeKeyImport,
   homeRelease,
   homeSnapshot,
   InvalidUrlArgError,
+  probeDeckHealthy,
+  readStdinTrimmed,
+  type AgeKeyInputSeam,
+  type DeckHealthProbe,
   type HomeDaemonSeam,
   type HomeProbes,
+  type MachineProfilePickerSeam,
   type SopsYamlSeam,
 } from "../home.ts";
+import { setSetting } from "../../lib/settings/write.ts";
+import { Readable } from "stream";
+import { EventEmitter } from "events";
+import type { PromptIO, PromptStdin } from "../../lib/prompt-secret.ts";
 import { STATE_DIR_NAMES } from "../../lib/home/init-plan.ts";
 import type { ExecResult, ExecSeam } from "../../lib/home/init-exec.ts";
 import { renderSopsYaml, type AgeExecResult, type AgeKeySeam } from "../../lib/home/age-key.ts";
@@ -18,7 +31,8 @@ import { mattstackHome } from "../../lib/rt-paths.ts";
 import { readOwners } from "../../lib/home/snapshot-owners.ts";
 import type { DaemonResponse } from "../../lib/daemon-client.ts";
 import type { SnapshotResult, SnapshotStatus } from "../../lib/daemon/home-snapshot.ts";
-import { mkdtempSync, rmSync } from "fs";
+import type { MaterializeEnv, MaterializeExecResult, MaterializeExecSeam } from "../../lib/home/materialize.ts";
+import { mkdtempSync, realpathSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -85,6 +99,7 @@ function fakeProbes(overrides: Partial<HomeProbes>): HomeProbes {
     exists: () => false,
     readSymlinkTarget: () => null,
     isFile: () => false,
+    listProfiles: () => [],
     ...overrides,
   };
 }
@@ -176,6 +191,39 @@ class FakeSeam implements ExecSeam {
   }
 }
 
+/** Never picks anything — used as the default injected picker so a test that doesn't expect the prompt fails loudly instead of hanging on a real fzf. */
+class UnreachablePickerSeam implements MachineProfilePickerSeam {
+  async pick(): Promise<string | null> {
+    throw new Error("MachineProfilePickerSeam.pick should not have been called");
+  }
+}
+
+/** Records the (profiles, hostnameSlug) it was called with and returns a scripted choice. */
+class FakePickerSeam implements MachineProfilePickerSeam {
+  calls: { profiles: string[]; hostnameSlug: string }[] = [];
+  constructor(private result: string | null) {}
+  async pick(profiles: string[], hostnameSlug: string): Promise<string | null> {
+    this.calls.push({ profiles, hostnameSlug });
+    return this.result;
+  }
+}
+
+/** Nothing installed, nothing tracked — `planMaterialize` reduces this to a single `rtInterceptInstall` step. The default materialize env for every test below that isn't exercising materialize itself. */
+const NOOP_MATERIALIZE_ENV: MaterializeEnv = { deckOnPath: false, deckHealthy: false, boardRepoPath: null, daemonInstalled: true, trackedRepos: [] };
+
+/** Never spawns a real process. Records every argv it's asked to run; scripts a result per exact argv, defaulting to a clean exit 0. */
+class FakeMaterializeExecSeam implements MaterializeExecSeam {
+  calls: string[][] = [];
+  constructor(private scripted: Map<string, MaterializeExecResult> = new Map()) {}
+  script(argv: string[], result: MaterializeExecResult): void {
+    this.scripted.set(argv.join(" "), result);
+  }
+  async run(argv: [string, ...string[]]): Promise<MaterializeExecResult> {
+    this.calls.push(argv);
+    return this.scripted.get(argv.join(" ")) ?? { stdout: "", stderr: "", exitCode: 0 };
+  }
+}
+
 /** Runs `homeInit`, catching the `process.exit` call the failure paths make. */
 async function runHomeInit(
   probes: HomeProbes,
@@ -184,6 +232,10 @@ async function runHomeInit(
   args: string[] = [],
   sopsYamlSeam: SopsYamlSeam = new FakeSopsYamlSeam(),
   key: string = KEY,
+  pickerSeam: MachineProfilePickerSeam = new UnreachablePickerSeam(),
+  isInteractive: () => boolean = () => false,
+  materializeEnv: () => Promise<MaterializeEnv> = async () => NOOP_MATERIALIZE_ENV,
+  materializeExec: MaterializeExecSeam = new FakeMaterializeExecSeam(),
 ): Promise<{ exitCode: number | undefined; logs: string[]; errors: string[] }> {
   const exitSpy = spyOn(process, "exit").mockImplementation(() => {
     throw new Error("process.exit");
@@ -197,7 +249,7 @@ async function runHomeInit(
     errors.push(parts.map(String).join(" "));
   });
   try {
-    await homeInit(args, {}, probes, exec, ageKeySeam, sopsYamlSeam, key);
+    await homeInit(args, {}, { probes, exec, ageKeySeam, sopsYamlSeam, key, pickerSeam, isInteractive, materializeEnv, materializeExec });
     return { exitCode: undefined, logs, errors };
   } catch {
     const code = exitSpy.mock.calls.at(-1)?.[0] as number | undefined;
@@ -240,14 +292,22 @@ describe("homeInit", () => {
     expect(sopsYamlSeam.writes).toEqual([]);
   });
 
-  test("fully provisioned, key ALREADY in the keychain (not minted): a stale .sops.yaml recipient is rewritten — a deliberate rotation, not a fresh machine guessing", async () => {
+  test("fully provisioned, key ALREADY in the keychain (not minted), a stale .sops.yaml recipient: RULED — refuses, never silently rewrites, leaves the file untouched, exits 1", async () => {
     const seam = new FakeSeam();
     const ageKeySeam = new FakeAgeKeySeamWithExistingKey();
     const sopsYamlSeam = new FakeSopsYamlSeam({ path: SOPS_YAML_PATH, content: renderSopsYaml("age1stale") });
 
-    await runHomeInit(FULLY_PROVISIONED_PROBES(), seam, ageKeySeam, [], sopsYamlSeam);
+    const { exitCode, errors } = await runHomeInit(FULLY_PROVISIONED_PROBES(), seam, ageKeySeam, [], sopsYamlSeam);
 
-    expect(sopsYamlSeam.files.get(SOPS_YAML_PATH)).toBe(renderSopsYaml(FAKE_PUBLIC_KEY));
+    expect(exitCode).toBe(1);
+    expect(sopsYamlSeam.writes).toEqual([]);
+    expect(sopsYamlSeam.files.get(SOPS_YAML_PATH)).toBe(renderSopsYaml("age1stale"));
+    // Names both recipients (truncated) and both recovery paths.
+    expect(errors.some((e) => e.includes("age1stale"))).toBe(true);
+    expect(errors.some((e) => e.includes(FAKE_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    expect(errors.some((e) => e.includes("rt home key import --force"))).toBe(true);
+    expect(errors.some((e) => e.includes("deliberate ceremony"))).toBe(true);
+    expect(errors.some((e) => e.includes("rt secrets set"))).toBe(true);
   });
 
   test("fully provisioned, key ALREADY in the keychain, recipient matches: no-op", async () => {
@@ -273,6 +333,10 @@ describe("homeInit", () => {
     expect(sopsYamlSeam.files.get(SOPS_YAML_PATH)).toBe(renderSopsYaml("age1the-other-machines-recipient"));
     expect(errors.some((e) => e.includes("age1the-other-machines-recipient"))).toBe(true);
     expect(errors.some((e) => e.includes("rt home key import"))).toBe(true);
+    // A placeholder key was already minted and stored — a plain `rt home key
+    // import` would hit the exists-refusal, so the message must name --force.
+    expect(errors.some((e) => e.includes("already") && e.includes("minted") && e.includes("stored"))).toBe(true);
+    expect(errors.some((e) => e.includes("rt home key import --force"))).toBe(true);
   });
 
   test("fully provisioned, key JUST MINTED, a cloned .sops.yaml already names the SAME recipient: no-op (the astronomically unlikely match is still safe)", async () => {
@@ -485,6 +549,883 @@ describe("homeInit", () => {
       expect(seam.calls.some((c) => c.kind === "mkdirp" || c.kind === "writeFile")).toBe(false);
     });
   });
+
+  describe("machine profile picker", () => {
+    /** Repo already cloned (userRepoPresent), but no machine-key file yet — the picker's usual entry point. */
+    const REPO_PRESENT_NO_KEY = (listProfiles: () => string[]): HomeProbes =>
+      fakeProbes({
+        isGitRepo: (dir) => dir.endsWith("/user"),
+        exists: (path) => path.endsWith("/user"),
+        listProfiles,
+      });
+
+    test("machine-key file present: the picker never runs, even when listProfiles would find multiple profiles", async () => {
+      const seam = new FakeSeam();
+      const probes = fakeProbes({
+        isGitRepo: (dir) => dir.endsWith("/user"),
+        exists: () => true,
+        readSymlinkTarget: (path) => (path.endsWith("/skills.jsonc") ? join("user", "skills.jsonc") : null),
+        listProfiles: () => {
+          throw new Error("listProfiles should never be called when machine-key already exists");
+        },
+      });
+
+      const { exitCode } = await runHomeInit(probes, seam, new FakeAgeKeySeam());
+      expect(exitCode).toBeUndefined();
+    });
+
+    test("zero existing profiles: falls back to the hostname slug automatically — no picker, no flag needed", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => []);
+
+      const { exitCode } = await runHomeInit(probes, seam, new FakeAgeKeySeam(), [], new FakeSopsYamlSeam(), KEY);
+
+      expect(exitCode).toBeUndefined();
+      expect(seam.calls).toContainEqual({ kind: "writeFile", arg: { path: "machine-key", content: KEY } });
+      expect(seam.calls).toContainEqual({ kind: "mkdirp", arg: join("user", "local", KEY) });
+    });
+
+    test("--profile <existing>: adopts it without ever invoking the picker seam", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop", "laptop"]);
+      const picker = new FakePickerSeam("should-not-be-picked");
+
+      const { exitCode } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        ["--profile", "laptop"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        picker,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(picker.calls).toEqual([]);
+      expect(seam.calls).toContainEqual({ kind: "writeFile", arg: { path: "machine-key", content: "laptop" } });
+      // Already-existing profile dir — ensureProfileDir must not fire for it.
+      expect(seam.calls.some((c) => c.kind === "mkdirp" && c.arg === join("user", "local", "laptop"))).toBe(false);
+    });
+
+    test("--profile <new> --new-profile: creates the named profile", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop"]);
+
+      const { exitCode } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        ["--profile", "new-box", "--new-profile"],
+        new FakeSopsYamlSeam(),
+        KEY,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(seam.calls).toContainEqual({ kind: "writeFile", arg: { path: "machine-key", content: "new-box" } });
+      expect(seam.calls).toContainEqual({ kind: "mkdirp", arg: join("user", "local", "new-box") });
+    });
+
+    test("--profile naming a non-existent profile without --new-profile: exits 1, directs to --new-profile, touches nothing", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop"]);
+      const picker = new FakePickerSeam("desktop");
+
+      const { exitCode, errors } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        ["--profile", "ghost"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        picker,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes("ghost") && e.includes("--new-profile"))).toBe(true);
+      expect(picker.calls).toEqual([]);
+      expect(seam.calls).toEqual([]);
+    });
+
+    test("existing profiles, no flags, non-interactive: exits 1 directing to --profile/--new-profile, never invokes the picker", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop", "laptop"]);
+      const picker = new FakePickerSeam("desktop");
+
+      const { exitCode, errors } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        picker,
+        () => false,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes("--profile") && e.includes("--new-profile"))).toBe(true);
+      expect(picker.calls).toEqual([]);
+      expect(seam.calls).toEqual([]);
+    });
+
+    test("existing profiles, no flags, interactive: runs the picker with the profile list + hostname slug, uses its answer", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop", "laptop"]);
+      const picker = new FakePickerSeam("laptop");
+
+      const { exitCode } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        picker,
+        () => true,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(picker.calls).toEqual([{ profiles: ["desktop", "laptop"], hostnameSlug: KEY }]);
+      expect(seam.calls).toContainEqual({ kind: "writeFile", arg: { path: "machine-key", content: "laptop" } });
+    });
+
+    test("interactive picker returns null (Esc/Ctrl-C): exits 1, never writes a machine-key", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop", "laptop"]);
+      const picker = new FakePickerSeam(null);
+
+      const { exitCode, errors } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        picker,
+        () => true,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes("no machine profile selected"))).toBe(true);
+      expect(seam.calls.some((c) => c.kind === "writeFile" && (c.arg as any).path === "machine-key")).toBe(false);
+    });
+
+    test("existing profiles, no flags, interactive, --dry-run: reports a prompt would run, executes nothing", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop", "laptop"]);
+      const picker = new FakePickerSeam("laptop");
+
+      const { exitCode, logs } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        ["--dry-run"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        picker,
+        () => true,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(picker.calls).toEqual([]);
+      expect(logs.some((l) => l.includes("desktop") && l.includes("laptop"))).toBe(true);
+      expect(seam.calls).toEqual([]);
+    });
+
+    test("--profile resolved by flag, --dry-run: still prints the full remaining plan instead of stopping short", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop", "laptop"]);
+
+      const { exitCode, logs } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        ["--profile", "laptop", "--dry-run"],
+        new FakeSopsYamlSeam(),
+        KEY,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(seam.calls).toEqual([]);
+      expect(logs.some((l) => l.includes("machine-key"))).toBe(true);
+    });
+
+    test("truly fresh machine (no local user/ clone yet): clones BEFORE the profile choice, then provisions with the chosen key", async () => {
+      const seam = new FakeSeam();
+      let cloned = false;
+      const probes = fakeProbes({
+        isGitRepo: () => false,
+        exists: () => false,
+        listProfiles: () => {
+          // Only knowable once the clone has actually happened.
+          if (!cloned) throw new Error("listProfiles called before the clone step ran");
+          return ["desktop"];
+        },
+      });
+      const cloneAwareSeam = new (class extends FakeSeam {
+        override async run(cmd: string[]) {
+          const result = await super.run(cmd);
+          if (cmd[0] === "git" && cmd[1] === "clone") cloned = true;
+          return result;
+        }
+      })();
+
+      const { exitCode } = await runHomeInit(
+        probes,
+        cloneAwareSeam,
+        new FakeAgeKeySeam(),
+        ["--profile", "desktop"],
+        new FakeSopsYamlSeam(),
+        KEY,
+      );
+
+      expect(exitCode).toBeUndefined();
+      const cloneCall = cloneAwareSeam.calls.find((c) => c.kind === "run") as { kind: string; arg: string[] } | undefined;
+      expect(cloneCall?.arg).toEqual(["git", "clone", DEFAULT_USER_REPO_URL, "user"]);
+      expect(cloneAwareSeam.calls).toContainEqual({ kind: "writeFile", arg: { path: "machine-key", content: "desktop" } });
+    });
+
+    test("truly fresh machine, --dry-run: never clones, notes the key shown is only the no-profiles-yet fallback", async () => {
+      const seam = new FakeSeam();
+      const probes = fakeProbes({ isGitRepo: () => false, exists: () => false });
+
+      const { exitCode, logs } = await runHomeInit(probes, seam, new FakeAgeKeySeam(), ["--dry-run"], new FakeSopsYamlSeam(), KEY);
+
+      expect(exitCode).toBeUndefined();
+      expect(seam.calls).toEqual([]);
+      expect(logs.some((l) => l.includes("no machine-key file yet"))).toBe(true);
+    });
+
+    test("--new-profile as a bare flag: uses the hostname slug, no picker", async () => {
+      const seam = new FakeSeam();
+      const probes = REPO_PRESENT_NO_KEY(() => ["desktop"]);
+
+      const { exitCode } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        ["--new-profile"],
+        new FakeSopsYamlSeam(),
+        KEY,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(seam.calls).toContainEqual({ kind: "writeFile", arg: { path: "machine-key", content: KEY } });
+      expect(seam.calls).toContainEqual({ kind: "mkdirp", arg: join("user", "local", KEY) });
+    });
+  });
+
+  describe("--profile arg validation", () => {
+    test("--profile as the last arg (no value): exits 1 with a clear error, runs nothing", async () => {
+      const seam = new FakeSeam();
+      const { exitCode, errors } = await runHomeInit(fakeProbes({}), seam, new FakeAgeKeySeam(), ["--profile"]);
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes("--profile requires a value"))).toBe(true);
+      expect(seam.calls).toEqual([]);
+    });
+
+  });
+
+  describe("--profile/--new-profile on an already-keyed machine", () => {
+    test("--profile on a fully-provisioned machine: exits 1 with a directed message, never prints 'fully provisioned'", async () => {
+      const seam = new FakeSeam();
+      const picker = new FakePickerSeam("should-not-be-picked");
+
+      const { exitCode, logs, errors } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        ["--profile", "other-box"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        picker,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes(KEY) && e.includes("machine-key"))).toBe(true);
+      expect(logs.some((l) => l.includes("fully provisioned"))).toBe(false);
+      expect(picker.calls).toEqual([]);
+      expect(seam.calls).toEqual([]);
+    });
+
+    test("--new-profile on a fully-provisioned machine: exits 1 with the same directed message, touches nothing", async () => {
+      const seam = new FakeSeam();
+
+      const { exitCode, errors } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        ["--new-profile"],
+        new FakeSopsYamlSeam(),
+        KEY,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes(KEY) && e.includes("machine-key"))).toBe(true);
+      expect(seam.calls).toEqual([]);
+    });
+
+    test("neither flag, machine-key already present: unaffected — still runs (or no-ops) normally", async () => {
+      const seam = new FakeSeam();
+      const { exitCode, logs } = await runHomeInit(FULLY_PROVISIONED_PROBES(), seam, new FakeAgeKeySeam());
+
+      expect(exitCode).toBeUndefined();
+      expect(logs.some((l) => l.includes("machine-key"))).toBe(false);
+    });
+  });
+
+  describe("materialize (last phase)", () => {
+    test("runs on a fully-provisioned machine too, even though no init step is due", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+
+      const { exitCode, logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => NOOP_MATERIALIZE_ENV,
+        exec,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(exec.calls).toEqual([["rt", "intercept", "install"]]);
+      expect(logs.some((l) => l.includes("materializing"))).toBe(true);
+      expect(logs.some((l) => l.includes("rt intercept install"))).toBe(true);
+      // Materialize always does at least rtInterceptInstall, so a live run
+      // must never claim "nothing to do" one breath before doing something.
+      expect(logs.some((l) => l.includes("already fully provisioned"))).toBe(false);
+    });
+
+    test("--no-materialize on a live, fully-provisioned run: 'nothing to do' is honest again since materialize is actually skipped", async () => {
+      const seam = new FakeSeam();
+      const { logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        ["--no-materialize"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => NOOP_MATERIALIZE_ENV,
+      );
+
+      expect(logs.some((l) => l.includes("already fully provisioned"))).toBe(true);
+    });
+
+    test("--no-materialize skips gathering the env and running any step", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      let envCalled = false;
+
+      const { exitCode, logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        ["--no-materialize"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => {
+          envCalled = true;
+          return NOOP_MATERIALIZE_ENV;
+        },
+        exec,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(envCalled).toBe(false);
+      expect(exec.calls).toEqual([]);
+      expect(logs.some((l) => l.includes("materialize skipped"))).toBe(true);
+    });
+
+    test("--dry-run previews the materialize plan (read-only env gathering) without running any step", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, deckOnPath: true };
+
+      const { exitCode, logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        ["--dry-run"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(exec.calls).toEqual([]); // env gathering never spawns a materialize step
+      expect(logs.some((l) => l.includes("materialize would run"))).toBe(true);
+      expect(logs.some((l) => l.includes("rt intercept install"))).toBe(true);
+      expect(logs.some((l) => l.includes("deck setup"))).toBe(true);
+    });
+
+    test("--dry-run previews an already-healthy deck as skipped, not as a pending deck setup", async () => {
+      const seam = new FakeSeam();
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, deckOnPath: true, deckHealthy: true };
+
+      const { logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        ["--dry-run"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+      );
+
+      expect(logs.some((l) => l.includes("skipped") && l.includes("already healthy"))).toBe(true);
+    });
+
+    test("--dry-run on a fully-provisioned machine no longer claims 'nothing to do' once materialize would run something", async () => {
+      const seam = new FakeSeam();
+      const { logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        ["--dry-run"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => NOOP_MATERIALIZE_ENV, // still plans rtInterceptInstall
+      );
+
+      expect(logs.some((l) => l.includes("already fully provisioned"))).toBe(false);
+      expect(logs.some((l) => l.includes("materialize would run"))).toBe(true);
+    });
+
+    test("--dry-run --no-materialize: no preview, 'nothing to do' still prints on a fully-provisioned machine", async () => {
+      const seam = new FakeSeam();
+      let envCalled = false;
+      const { logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        ["--dry-run", "--no-materialize"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => {
+          envCalled = true;
+          return NOOP_MATERIALIZE_ENV;
+        },
+      );
+
+      expect(envCalled).toBe(false);
+      expect(logs.some((l) => l.includes("materialize would run"))).toBe(false);
+      expect(logs.some((l) => l.includes("already fully provisioned"))).toBe(true);
+    });
+
+    test("a missing rt daemon runs rtDaemonInstall too, in addition to rtInterceptInstall", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, daemonInstalled: false };
+
+      await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      expect(exec.calls).toEqual([
+        ["rt", "intercept", "install"],
+        ["rt", "daemon", "install"],
+      ]);
+    });
+
+    test("deck on PATH and mr-board cloned locally: both setup steps run", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, deckOnPath: true, boardRepoPath: "/repos/mr-board" };
+
+      const { logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      expect(exec.calls).toEqual([["rt", "intercept", "install"], ["deck", "setup"]]);
+      // boardSetup never spawns — mr-board's setup prompts interactively — it only prints the manual command, once.
+      expect(logs.some((l) => l.includes("mr-board setup"))).toBe(true);
+      const manualCommandLines = logs.filter((l) => l.includes("/repos/mr-board") && l.includes("scripts/setup.ts"));
+      expect(manualCommandLines).toHaveLength(1);
+    });
+
+    test("deck on PATH but already healthy: deck setup never spawns (it restarts the live proxy) — reported as skipped instead", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, deckOnPath: true, deckHealthy: true };
+
+      const { logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      expect(exec.calls).toEqual([["rt", "intercept", "install"]]); // deck setup never spawned
+      expect(logs.some((l) => l.includes("already healthy"))).toBe(true);
+      expect(logs.some((l) => l.includes("deck healthy — setup skipped"))).toBe(true);
+    });
+
+    test("a tracked repo missing from disk is reported by name, never cloned", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      const env: MaterializeEnv = {
+        ...NOOP_MATERIALIZE_ENV,
+        trackedRepos: [{ name: "gitq", path: "/repos/gitq", present: false }],
+      };
+
+      const { logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      expect(exec.calls).toEqual([["rt", "intercept", "install"]]); // report-only: no clone spawned
+      expect(logs.some((l) => l.includes("gitq") && l.includes("not present locally"))).toBe(true);
+    });
+
+    test("an rt-own step failing exits 1, but a non-rt-own step failing does not", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      exec.script(["rt", "intercept", "install"], { stdout: "", stderr: "boom", exitCode: 1 });
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, deckOnPath: true };
+      exec.script(["deck", "setup"], { stdout: "", stderr: "deck exploded", exitCode: 1 });
+
+      const { exitCode, errors, logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(errors.some((e) => e.includes("rt-owned step"))).toBe(true);
+      // The failing non-rt-own step still ran and is reported, not swallowed.
+      expect(logs.some((l) => l.includes("deck setup"))).toBe(true);
+      expect(logs.some((l) => l.includes("deck exploded"))).toBe(true);
+      // The failed-check runs BEFORE the success line — an rt-own failure must never claim "provisioned."
+      expect(logs.some((l) => l.includes("is provisioned"))).toBe(false);
+    });
+
+    test("a deckSetup failure alone (rt-own steps all ok) still prints success and exits 0", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, deckOnPath: true };
+      exec.script(["deck", "setup"], { stdout: "", stderr: "deck exploded", exitCode: 1 });
+
+      const { exitCode, logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(logs.some((l) => l.includes("is provisioned"))).toBe(true);
+    });
+
+    test("rt-own steps' stdout is printed even on a clean exit — rt daemon install's approval guidance must not be discarded", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      exec.script(["rt", "daemon", "install"], {
+        stdout: "daemon not yet responding — approve it in System Settings",
+        stderr: "",
+        exitCode: 0,
+      });
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, daemonInstalled: false };
+
+      const { exitCode, logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(logs.some((l) => l.includes("approve it in System Settings"))).toBe(true);
+    });
+
+    test("multi-line captured stdout is indented per line, not just on its first line", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      exec.script(["rt", "daemon", "install"], {
+        stdout: "line one\nline two\nline three",
+        stderr: "",
+        exitCode: 0,
+      });
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, daemonInstalled: false };
+
+      const { logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      // Each source line becomes its own indented console.log call — none of
+      // them fall back to column 0 as an embedded "\n" inside one line would.
+      expect(logs.some((l) => l.includes("line one"))).toBe(true);
+      expect(logs.some((l) => l.includes("line two"))).toBe(true);
+      expect(logs.some((l) => l.includes("line three"))).toBe(true);
+      expect(logs.some((l) => l.includes("line one") && l.includes("\n"))).toBe(false);
+      expect(logs.some((l) => l.includes("line two") && l.includes("\n"))).toBe(false);
+      expect(logs.some((l) => l.includes("line three") && l.includes("\n"))).toBe(false);
+    });
+
+    test("a throwing materializeEnv on the real (non-dry-run) run is caught, reported, and never crashes init — provisioning already succeeded", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+
+      const { exitCode, errors, logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => {
+          throw new Error("boom: env gathering exploded");
+        },
+        exec,
+      );
+
+      expect(exitCode).toBeUndefined(); // a non-rt-own materialize failure never gates the exit code
+      expect(errors.some((e) => e.includes("boom: env gathering exploded"))).toBe(true);
+      expect(logs.some((l) => l.includes("is provisioned"))).toBe(true);
+      expect(exec.calls).toEqual([]); // never reached runMaterialize
+    });
+
+    test("a symlink-blocked run never reaches materialize at all", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      const probes = fakeProbes({
+        isGitRepo: (dir) => dir.endsWith("/user"),
+        exists: () => true,
+        readSymlinkTarget: () => null, // a real file blocks the skills.jsonc symlink
+      });
+
+      const { exitCode } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => {
+          throw new Error("materializeEnv should not have been called");
+        },
+        exec,
+      );
+
+      expect(exitCode).toBe(1);
+      expect(exec.calls).toEqual([]);
+    });
+
+    test("--dry-run on a symlink-blocked plan never previews materialize — the live run would exit 1 before ever reaching it", async () => {
+      const seam = new FakeSeam();
+      const probes = fakeProbes({
+        isGitRepo: (dir) => dir.endsWith("/user"),
+        exists: () => true,
+        readSymlinkTarget: () => null, // a real file blocks the skills.jsonc symlink
+      });
+
+      const { exitCode, logs } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        ["--dry-run"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => {
+          throw new Error("materializeEnv should not have been called on a blocked dry-run either");
+        },
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(logs.some((l) => l.includes("materialize would run"))).toBe(false);
+    });
+
+    test("a configured claude.marketplaces prints the installer pointer, never replays anything itself", async () => {
+      const origHome = process.env.HOME;
+      const isolatedHome = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-claude-pointer-")));
+      process.env.HOME = isolatedHome;
+      try {
+        const seam = new FakeSeam();
+        setSetting("claude.marketplaces", [{ name: "example" }], "user");
+
+        const { logs } = await runHomeInit(FULLY_PROVISIONED_PROBES(), seam, new FakeAgeKeySeam());
+
+        expect(logs.some((l) => l.includes("claude.marketplaces") && l.includes("installer"))).toBe(true);
+      } finally {
+        process.env.HOME = origHome;
+        rmSync(isolatedHome, { recursive: true, force: true });
+      }
+    });
+  });
+});
+
+describe("claudePluginsPointerMessage", () => {
+  test("neither key resolved: no message", () => {
+    expect(claudePluginsPointerMessage(undefined, undefined)).toBeNull();
+  });
+
+  test("marketplaces resolved, plugins not: points at the installer", () => {
+    const message = claudePluginsPointerMessage([{ name: "x" }], undefined);
+    expect(message).toContain("claude.marketplaces");
+    expect(message).toContain("installer");
+  });
+
+  test("plugins resolved, marketplaces not: points at the installer", () => {
+    const message = claudePluginsPointerMessage(undefined, ["some-plugin"]);
+    expect(message).toContain("claude.plugins");
+  });
+
+  test("never suggests rt home init itself replays them", () => {
+    const message = claudePluginsPointerMessage([{ name: "x" }], ["y"]);
+    expect(message).toContain("not rt home init's");
+  });
+});
+
+/** Scripts readPort/checkHealthz; never touches a real file or the network. */
+function fakeDeckHealthProbe(overrides: Partial<DeckHealthProbe> & { checkHealthzCalls?: number[] } = {}): DeckHealthProbe {
+  const calls = overrides.checkHealthzCalls ?? [];
+  return {
+    readPort: overrides.readPort ?? (() => 41000),
+    checkHealthz: overrides.checkHealthz ?? (async (port: number) => { calls.push(port); return true; }),
+  };
+}
+
+describe("probeDeckHealthy", () => {
+  test("api.json present, healthz answers ok: healthy", async () => {
+    const probe = fakeDeckHealthProbe({ readPort: () => 41000, checkHealthz: async (port) => port === 41000 });
+    expect(await probeDeckHealthy(probe)).toBe(true);
+  });
+
+  test("api.json present, healthz refused/times out: unhealthy", async () => {
+    const probe = fakeDeckHealthProbe({ readPort: () => 41000, checkHealthz: async () => false });
+    expect(await probeDeckHealthy(probe)).toBe(false);
+  });
+
+  test("api.json missing or corrupt (readPort null): unhealthy, and healthz is never even attempted", async () => {
+    let checkHealthzCalled = false;
+    const probe = fakeDeckHealthProbe({
+      readPort: () => null,
+      checkHealthz: async () => {
+        checkHealthzCalled = true;
+        return true;
+      },
+    });
+    expect(await probeDeckHealthy(probe)).toBe(false);
+    expect(checkHealthzCalled).toBe(false);
+  });
+});
+
+describe("defaultMaterializeEnv (deck health wiring)", () => {
+  /** which deck exits 0 with a real path — deck is on PATH. */
+  const deckOnPathExec = { run: async (argv: string[]) => argv[0] === "which" ? { stdout: "/usr/local/bin/deck\n", stderr: "", exitCode: 0 } : { stdout: "", stderr: "", exitCode: 0 } };
+  const deckOffPathExec = { run: async () => ({ stdout: "", stderr: "not found", exitCode: 1 }) };
+
+  test("deck on PATH and healthy: env.deckHealthy is true", async () => {
+    const env = await defaultMaterializeEnv(deckOnPathExec, fakeDeckHealthProbe({ checkHealthz: async () => true }));
+    expect(env.deckOnPath).toBe(true);
+    expect(env.deckHealthy).toBe(true);
+  });
+
+  test("deck on PATH but unhealthy: env.deckHealthy is false", async () => {
+    const env = await defaultMaterializeEnv(deckOnPathExec, fakeDeckHealthProbe({ checkHealthz: async () => false }));
+    expect(env.deckOnPath).toBe(true);
+    expect(env.deckHealthy).toBe(false);
+  });
+
+  test("deck off PATH: the health probe is never even invoked", async () => {
+    let probed = false;
+    const env = await defaultMaterializeEnv(
+      deckOffPathExec,
+      fakeDeckHealthProbe({
+        readPort: () => {
+          probed = true;
+          return 41000;
+        },
+      }),
+    );
+    expect(env.deckOnPath).toBe(false);
+    expect(env.deckHealthy).toBe(false);
+    expect(probed).toBe(false);
+  });
 });
 
 /** Records calls and returns a scripted response; used as the injected daemon seam. */
@@ -613,6 +1554,219 @@ describe("homeSnapshot", () => {
 
     expect(exitCode).toBe(1);
     expect(errors.some((e) => e.includes("git commit failed"))).toBe(true);
+  });
+});
+
+describe("readStdinTrimmed", () => {
+  test("reads the whole stream and trims surrounding whitespace/newline", async () => {
+    const stream = Readable.from([Buffer.from("AGE-SECRET-KEY-1FOO"), Buffer.from("BAR\n")]);
+    const value = await readStdinTrimmed(stream);
+    expect(value).toBe("AGE-SECRET-KEY-1FOOBAR");
+  });
+});
+
+/** Drives promptSecret's `data` handler synthetically, via defaultAgeKeyInputSeam — never a real TTY. */
+class FakePromptStdin extends EventEmitter implements PromptStdin {
+  isTTY = true;
+  setRawMode(): void {}
+  resume(): void {}
+  pause(): void {}
+}
+
+describe("defaultAgeKeyInputSeam", () => {
+  test("fromPrompt trims the typed value the same way fromStdin trims a stdin paste", async () => {
+    const stdin = new FakePromptStdin();
+    const io: PromptIO = { stdin, write: () => {} };
+
+    const pending = defaultAgeKeyInputSeam(io).fromPrompt();
+    stdin.emit("data", Buffer.from(`  ${FAKE_PRIVATE_KEY}  `));
+    stdin.emit("data", Buffer.from("\n"));
+
+    await expect(pending).resolves.toBe(FAKE_PRIVATE_KEY);
+  });
+});
+
+describe("homeKeyImport", () => {
+  const OTHER_PUBLIC_KEY = "age1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+  const OTHER_PRIVATE_KEY = "AGE-SECRET-KEY-1ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ";
+
+  /**
+   * Models the keychain well enough for import: find/derive-existing,
+   * derive-new, and store — never the real keychain. importAgeKey always
+   * derives the freshly-pasted key BEFORE it looks up (and, if present,
+   * derives) any existing one, so the first `age-keygen -y` call is always
+   * the new key and a second one (only reachable when a key already
+   * exists) is always the existing key — this fake keys off that order
+   * rather than inspecting which private key was piped in.
+   */
+  class FakeImportSeam implements AgeKeySeam {
+    calls: string[][] = [];
+    private deriveCalls = 0;
+    constructor(private opts: { existingPrivateKey?: string; existingPublicKey?: string } = {}) {}
+
+    async run(cmd: string[]): Promise<AgeExecResult> {
+      this.calls.push(cmd);
+      if (cmd[1] === "find-generic-password") {
+        if (this.opts.existingPrivateKey) return { code: 0, stdout: `${this.opts.existingPrivateKey}\n`, stderr: "" };
+        return { code: 44, stdout: "", stderr: "The specified item could not be found in the keychain." };
+      }
+      if (cmd[0] === "age-keygen" && cmd[1] === "-y") {
+        this.deriveCalls++;
+        if (this.deriveCalls === 1) return { code: 0, stdout: `${FAKE_PUBLIC_KEY}\n`, stderr: "" };
+        return { code: 0, stdout: `${this.opts.existingPublicKey}\n`, stderr: "" };
+      }
+      if (cmd[1] === "add-generic-password") {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`FakeImportSeam: unexpected call ${cmd.join(" ")}`);
+    }
+  }
+
+  function fakeInput(privateKey: string): AgeKeyInputSeam {
+    return {
+      fromStdin: async () => {
+        throw new Error("fromStdin should not be called without --stdin");
+      },
+      fromPrompt: async () => privateKey,
+    };
+  }
+
+  async function runImport(
+    args: string[],
+    seam: AgeKeySeam,
+    sopsYamlSeam: SopsYamlSeam = new FakeSopsYamlSeam(),
+    input: AgeKeyInputSeam = fakeInput(FAKE_PRIVATE_KEY),
+  ) {
+    return runCatchingExit(() => homeKeyImport(args, {}, seam, sopsYamlSeam, input));
+  }
+
+  test("valid import, no existing key: succeeds, prints the truncated recipient", async () => {
+    const seam = new FakeImportSeam({});
+
+    const { exitCode, logs } = await runImport([], seam);
+
+    expect(exitCode).toBeUndefined();
+    expect(logs.some((l) => l.includes(FAKE_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    expect(logs.some((l) => l.includes("decryptable on this machine"))).toBe(true);
+    expect(seam.calls.some((c) => c.includes("add-generic-password") && !c.includes("-U"))).toBe(true);
+  });
+
+  test("malformed key (wrong prefix): refused, exits 1, never calls the seam", async () => {
+    const seam = new FakeImportSeam({});
+
+    const { exitCode, errors } = await runImport([], seam, new FakeSopsYamlSeam(), fakeInput("not-an-age-key"));
+
+    expect(exitCode).toBe(1);
+    expect(errors.some((e) => e.includes("not a valid age private key"))).toBe(true);
+    expect(seam.calls).toEqual([]);
+  });
+
+  test("the private key pasted as a positional argument: refused, exits 1, never touches the seam or the input seam — it already leaked", async () => {
+    const seam = new FakeImportSeam({});
+    const input: AgeKeyInputSeam = {
+      fromStdin: async () => {
+        throw new Error("fromStdin should not be called — the positional-key guard must run first");
+      },
+      fromPrompt: async () => {
+        throw new Error("fromPrompt should not be called — the positional-key guard must run first");
+      },
+    };
+
+    const { exitCode, errors } = await runImport([FAKE_PRIVATE_KEY], seam, new FakeSopsYamlSeam(), input);
+
+    expect(exitCode).toBe(1);
+    expect(seam.calls).toEqual([]);
+    expect(errors.some((e) => e.includes("positional argument"))).toBe(true);
+    expect(errors.some((e) => e.includes("shell history"))).toBe(true);
+    expect(errors.some((e) => e.includes("rotate"))).toBe(true);
+  });
+
+  test("the positional-key guard fires even alongside --stdin/--force (order-independent scan)", async () => {
+    const seam = new FakeImportSeam({});
+
+    const { exitCode, errors } = await runImport(["--force", FAKE_PRIVATE_KEY, "--stdin"], seam, new FakeSopsYamlSeam(), {
+      fromStdin: async () => {
+        throw new Error("fromStdin should not be called");
+      },
+      fromPrompt: async () => {
+        throw new Error("fromPrompt should not be called");
+      },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(errors.some((e) => e.includes("positional argument"))).toBe(true);
+  });
+
+  test("existing key, no --force: refused, exits 1, names the existing recipient, never overwrites", async () => {
+    const seam = new FakeImportSeam({ existingPrivateKey: OTHER_PRIVATE_KEY, existingPublicKey: OTHER_PUBLIC_KEY });
+
+    const { exitCode, errors } = await runImport([], seam);
+
+    expect(exitCode).toBe(1);
+    expect(errors.some((e) => e.includes(OTHER_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    expect(errors.some((e) => e.includes("--force"))).toBe(true);
+    expect(seam.calls.some((c) => c.includes("add-generic-password"))).toBe(false);
+  });
+
+  test("existing key, --force: overwrites (-U) and succeeds", async () => {
+    const seam = new FakeImportSeam({ existingPrivateKey: OTHER_PRIVATE_KEY, existingPublicKey: OTHER_PUBLIC_KEY });
+
+    const { exitCode, logs } = await runImport(["--force"], seam);
+
+    expect(exitCode).toBeUndefined();
+    expect(logs.some((l) => l.includes(FAKE_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    const addCall = seam.calls.find((c) => c.includes("add-generic-password"));
+    expect(addCall).toContain("-U");
+  });
+
+  test("imported key's derived recipient does not match this repo's .sops.yaml recipient: exits 2, names both truncated", async () => {
+    const seam = new FakeImportSeam({});
+    const sopsYamlSeam = new FakeSopsYamlSeam({ path: SOPS_YAML_PATH, content: renderSopsYaml(OTHER_PUBLIC_KEY) });
+
+    const { exitCode, errors } = await runImport([], seam, sopsYamlSeam);
+
+    expect(exitCode).toBe(2);
+    expect(errors.some((e) => e.includes(FAKE_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    expect(errors.some((e) => e.includes(OTHER_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    // The wrong key is already stored, so a plain retry hits the exists-refusal — the message must say so.
+    expect(errors.some((e) => e.includes("rt home key import --force"))).toBe(true);
+  });
+
+  test("imported key's recipient matches an existing .sops.yaml: succeeds, no mismatch warning", async () => {
+    const seam = new FakeImportSeam({});
+    const sopsYamlSeam = new FakeSopsYamlSeam({ path: SOPS_YAML_PATH, content: renderSopsYaml(FAKE_PUBLIC_KEY) });
+
+    const { exitCode, errors, logs } = await runImport([], seam, sopsYamlSeam);
+
+    expect(exitCode).toBeUndefined();
+    expect(errors).toEqual([]);
+    expect(logs.some((l) => l.includes(FAKE_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    expect(logs.some((l) => l.includes("decryptable on this machine"))).toBe(true);
+  });
+
+  test("--stdin: reads the key via input.fromStdin, never input.fromPrompt", async () => {
+    const seam = new FakeImportSeam({});
+    let stdinCalled = false;
+    let promptCalled = false;
+    const input: AgeKeyInputSeam = {
+      fromStdin: async () => {
+        stdinCalled = true;
+        return FAKE_PRIVATE_KEY;
+      },
+      fromPrompt: async () => {
+        promptCalled = true;
+        return FAKE_PRIVATE_KEY;
+      },
+    };
+
+    const { exitCode, errors, logs } = await runImport(["--stdin"], seam, new FakeSopsYamlSeam(), input);
+
+    expect(exitCode).toBeUndefined();
+    expect(errors).toEqual([]);
+    expect(logs.some((l) => l.includes(FAKE_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    expect(logs.some((l) => l.includes("decryptable on this machine"))).toBe(true);
+    expect(stdinCalled).toBe(true);
+    expect(promptCalled).toBe(false);
   });
 });
 

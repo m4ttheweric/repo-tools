@@ -2,15 +2,23 @@
  * rt home — the git-backed ~/.mattstack/user personal repo, plus per-machine
  * provisioning of the ~/.mattstack tree around it.
  *
- *   rt home init [--dry-run] [--url <remote>]   print, then run, the provisioning plan
+ *   rt home init [--dry-run] [--url <remote>] [--profile <key>] [--new-profile] [--no-materialize]
+ *                                                     print, then run, the provisioning plan
  *   rt home key export                          print the age private key once, for a password manager
+ *   rt home key import [--stdin] [--force]      bring an external age key into the keychain
  *   rt home snapshot [--status]                       run (or report on) the auto-commit daemon
  *   rt home claim <zone> [--owner] [--note] [--force]  tell the daemon to leave a path alone
  *   rt home release <zone>                             let the daemon resume auto-committing a path
  *
  * `init` gathers state, prints the plan from lib/home/init-plan.ts, and
  * (unless --dry-run) runs it through lib/home/init-exec.ts's injected seam.
- * `key export` delegates entirely to lib/home/age-key.ts.
+ * On a fresh machine (no ~/.mattstack/machine-key yet) it also resolves
+ * which `user/local/<key>/` profile to adopt or create — see
+ * `chooseMachineProfile` in lib/home/init-plan.ts and the "machine profile
+ * picker" section of `homeInit` below. `--profile`/`--new-profile` are only
+ * meaningful on that fresh-machine path; passing either once machine-key is
+ * already pinned is refused.
+ * `key export`/`key import` delegate to lib/home/age-key.ts.
  * `snapshot`/`snapshot --status` are a thin round-trip to the daemon's
  * `home:snapshot`/`home:snapshot-status` handlers (lib/daemon/handlers/home.ts).
  * `claim`/`release` write user/snapshot-owners.jsonc directly via
@@ -24,25 +32,54 @@
  * released, or says so plainly when there was nothing to release.
  */
 
-import { existsSync, readFileSync, readlinkSync, statSync, writeFileSync } from "fs";
+import { existsSync, readdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { bold, dim, green, red, reset, yellow } from "../lib/ansi.ts";
-import { machineKey, mattstackHome } from "../lib/rt-paths.ts";
-import { buildInitPlan, InvalidMachineKeyError, STATE_DIR_NAMES, type HomeState, type InitStep } from "../lib/home/init-plan.ts";
+import { isSafeMachineKeySegment, machineKey, mattstackHome } from "../lib/rt-paths.ts";
+import {
+  buildInitPlan,
+  chooseMachineProfile,
+  InvalidMachineKeyError,
+  InvalidProfileKeyError,
+  ProfileChoiceRequiredError,
+  ProfileNameCollisionError,
+  STATE_DIR_NAMES,
+  UnknownProfileFlagError,
+  type ChooseMachineProfileResult,
+  type HomeState,
+  type InitPlan,
+  type InitStep,
+} from "../lib/home/init-plan.ts";
 import { createRealExecSeam, executeInitPlan, type ExecSeam } from "../lib/home/init-exec.ts";
 import {
   AgeKeyAbsentError,
   createRealAgeKeySeam,
   ensureAgeKey,
+  importAgeKey,
   keyExport,
   renderSopsYaml,
   sopsYamlRecipient,
   type AgeKeySeam,
 } from "../lib/home/age-key.ts";
 import { claimZone, InvalidZoneError, normalizeZone, releaseZone, ZoneOwnedByOthersError, type ZoneKind } from "../lib/home/snapshot-owners.ts";
+import { promptSecret, type PromptIO } from "../lib/prompt-secret.ts";
 import { daemonQuery, type DaemonResponse } from "../lib/daemon-client.ts";
 import type { SnapshotResult, SnapshotStatus } from "../lib/daemon/home-snapshot.ts";
+import {
+  planMaterialize,
+  runMaterialize,
+  RT_OWN_STEP_KINDS,
+  type MaterializeEnv,
+  type MaterializeExecSeam,
+  type MaterializeResult,
+  type MaterializeStep,
+} from "../lib/home/materialize.ts";
+import { runCapture } from "../lib/subprocess.ts";
+import { loadRepoIndex } from "../lib/daemon/repo-index.ts";
+import { loadMachineRepoTracking } from "../lib/repo-tracking.ts";
+import { isDaemonInstalled } from "../lib/daemon-config.ts";
+import { getSetting } from "../lib/settings/resolve.ts";
 
 export const DEFAULT_USER_REPO_URL = "https://github.com/m4ttheweric/mattstack-home";
 
@@ -53,6 +90,8 @@ export interface HomeProbes {
   readSymlinkTarget(path: string): string | null;
   /** True when `path` exists and is a regular file (not a directory, not a symlink-to-dir) — decides whether `rt home claim` writes a file zone or a dir zone. */
   isFile(path: string): boolean;
+  /** Directory names directly under `userLocalDir` that carry settings.local.jsonc — the adoptable machine profiles. Empty (not thrown) when the dir doesn't exist yet. */
+  listProfiles(userLocalDir: string): string[];
 }
 
 export interface SopsYamlSeam {
@@ -90,6 +129,17 @@ function defaultProbes(): HomeProbes {
       } catch {
         return false;
       }
+    },
+    listProfiles: (userLocalDir) => {
+      let entries: string[];
+      try {
+        entries = readdirSync(userLocalDir, { withFileTypes: true })
+          .filter((e) => e.isDirectory())
+          .map((e) => e.name);
+      } catch {
+        return [];
+      }
+      return entries.filter((name) => existsSync(join(userLocalDir, name, "settings.local.jsonc")));
     },
   };
 }
@@ -151,6 +201,39 @@ function parseUrlArg(args: string[]): string {
   return value;
 }
 
+/** Thrown by parseProfileArg for a `--profile` with no usable value. */
+export class InvalidProfileArgError extends Error {}
+
+function parseProfileArg(args: string[]): string | undefined {
+  const idx = args.indexOf("--profile");
+  if (idx === -1) return undefined;
+
+  const value = args[idx + 1];
+  if (value === undefined || value.startsWith("--")) {
+    throw new InvalidProfileArgError("--profile requires a value, e.g. --profile mbp-14");
+  }
+  return value;
+}
+
+/** Seam for the interactive machine-profile prompt — real impl below uses the repo's fzf-backed filterableSelect (lib/rt-render.tsx); tests inject a fake so no real fzf/TTY is ever touched. */
+export interface MachineProfilePickerSeam {
+  /** Returns the chosen key, or null when the user backed out (Esc/Ctrl-C). */
+  pick(profiles: string[], hostnameSlug: string): Promise<string | null>;
+}
+
+export function createRealMachineProfilePickerSeam(): MachineProfilePickerSeam {
+  return {
+    async pick(profiles, hostnameSlug) {
+      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      const options = [
+        ...profiles.map((p) => ({ value: p, label: p })),
+        { value: hostnameSlug, label: `new profile (${hostnameSlug})` },
+      ];
+      return filterableSelect({ message: "Pick a machine profile", options });
+    },
+  };
+}
+
 export type EnsureHomeAgeKeyResult = { ok: true } | { ok: false; message: string };
 
 /**
@@ -193,17 +276,38 @@ async function ensureHomeAgeKey(
   const sopsYamlPath = join(userDir, ".sops.yaml");
   const existing = sopsYamlSeam.read(sopsYamlPath);
   const existingRecipient = existing === null ? null : sopsYamlRecipient(existing);
+  const mismatched = existing !== null && existingRecipient !== publicKey;
 
-  if (minted && existing !== null && existingRecipient !== publicKey) {
+  if (mismatched && minted) {
     return {
       ok: false,
       message:
-        `secrets are encrypted to ${existingRecipient ?? "an unrecognized recipient"}; ` +
-        "import the age key from your password manager (`rt home key import`) before initializing.",
+        `secrets are encrypted to ${existingRecipient ?? "an unrecognized recipient"}; a placeholder age key was ` +
+        "already minted and stored in this machine's keychain, but that isn't the key these secrets need — import " +
+        "the correct key from your password manager (`rt home key import --force`; a plain `rt home key import` " +
+        "will hit the exists-refusal now that a placeholder key is stored) before initializing.",
     };
   }
 
-  if (existing === null || existingRecipient !== publicKey) {
+  // RULED: never silently rewrite .sops.yaml on a recipient mismatch, even
+  // for a key this machine already held before this call (not just-minted).
+  // Rewriting would orphan every secret still encrypted to the recipient
+  // .sops.yaml currently names — that's either a wrong-key accident (fixed
+  // by importing the right key) or a deliberate rotation (a ceremony a
+  // human must run by hand, not something init silently does for them).
+  if (mismatched) {
+    return {
+      ok: false,
+      message:
+        `secrets are encrypted to ${truncateKey(existingRecipient ?? "an unrecognized recipient")}, but this ` +
+        `machine's keychain holds a different key (${truncateKey(publicKey)}) — refusing to rewrite ${sopsYamlPath}.\n` +
+        "  If you imported the wrong key: `rt home key import --force` with the right one.\n" +
+        "  If you mean to rotate the recipient: that's a deliberate ceremony — rewrite user/.sops.yaml and " +
+        "re-encrypt each secret (`rt secrets set <domain> <key>`), then re-run.",
+    };
+  }
+
+  if (existing === null) {
     sopsYamlSeam.write(sopsYamlPath, renderSopsYaml(publicKey));
     console.log(
       `rt home init: wrote ${sopsYamlPath} (recipient ${publicKey}) — it's tracked, so commit it:\n` +
@@ -219,37 +323,10 @@ async function ensureHomeAgeKey(
   return { ok: true };
 }
 
-export async function homeInit(
-  args: string[],
-  _ctx: CommandContext = {},
-  probes: HomeProbes = defaultProbes(),
-  exec: ExecSeam = createRealExecSeam(mattstackHome()),
-  ageKeySeam: AgeKeySeam = createRealAgeKeySeam(),
-  sopsYamlSeam: SopsYamlSeam = defaultSopsYamlSeam(),
-  // Evaluated at call time, like every other default here — a real fs read
-  // (~/.mattstack/machine-key), so tests inject a fixed value instead of
-  // depending on the test-runner's actual hostname/override file.
-  key: string = machineKey(),
-): Promise<void> {
-  const dryRun = args.includes("--dry-run");
-  const home = mattstackHome();
-
-  let url: string;
+/** buildInitPlan's only checked failure (InvalidMachineKeyError) turned into the CLI's print-and-exit(1) — shared by every one of homeInit's three plan builds so the three don't drift. */
+function planOrExit(state: HomeState, config: { url: string; machineKey: string }): InitPlan {
   try {
-    url = parseUrlArg(args);
-  } catch (err) {
-    if (err instanceof InvalidUrlArgError) {
-      console.error(`rt home init: ${err.message}`);
-      process.exit(1);
-    }
-    throw err;
-  }
-
-  const state = gatherHomeState(home, probes, key);
-
-  let plan: ReturnType<typeof buildInitPlan>;
-  try {
-    plan = buildInitPlan(state, { url, machineKey: key });
+    return buildInitPlan(state, config);
   } catch (err) {
     if (err instanceof InvalidMachineKeyError) {
       console.error(`rt home init: ${err.message}`);
@@ -257,22 +334,359 @@ export async function homeInit(
     }
     throw err;
   }
+}
+
+function printPlan(home: string, steps: InitStep[]): void {
+  console.log(`rt home init plan for ${home}:`);
+  steps.forEach((step, i) => console.log(`  ${i + 1}. ${describeStep(step)}`));
+}
+
+function printSkillsSymlinkBlocked(home: string): void {
+  console.error(
+    `\nrt home init: a real file already exists at ${join(home, "skills.jsonc")} — refusing to overwrite it. ` +
+      "Move it aside by hand, then rerun.",
+  );
+}
+
+// ─── materialize (init's last phase) ────────────────────────────────────────
+
+function defaultMaterializeExec(): MaterializeExecSeam {
+  return { run: (argv, opts) => runCapture(argv, { stderr: "pipe", ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}) }) };
+}
+
+/**
+ * The argv[0] rt-own materialize steps self-invoke. Mirrors
+ * commands/post-install.ts's `spawnSync(process.execPath, ["daemon",
+ * "install"], ...)`: `bun build --compile` embeds this module's resources
+ * under `/$bunfs`, and `process.execPath` for a running compiled binary IS
+ * that binary's own path — the same self-invocation `rt --daemon` already
+ * relies on (cli.ts). Running from source (`bun run cli.ts`/`bun test`),
+ * `import.meta.url` is a real file:// path, `process.execPath` is `bun`
+ * itself (not rt), so this keeps the bare "rt" name — on PATH or not,
+ * that's the honest dev-mode failure, not a silent `bun intercept install`.
+ */
+function rtSelfBin(): string {
+  return new URL(import.meta.url).pathname.startsWith("/$bunfs") ? process.execPath : "rt";
+}
+
+/** Reads `~/.mattstack/deck/api.json` (port, pid) and probes deck's own `/healthz`. Injectable so tests never touch a real file or the network. */
+export interface DeckHealthProbe {
+  /** The port deck is (supposedly) listening on, or null if the file is absent/corrupt. Never throws. */
+  readPort(): number | null;
+  /** True only on a 200 from `/healthz`. Never throws — a refused connection, timeout, or non-2xx all resolve false. */
+  checkHealthz(port: number): Promise<boolean>;
+}
+
+const DECK_HEALTHZ_TIMEOUT_MS = 1_500;
+
+function defaultDeckHealthProbe(): DeckHealthProbe {
+  return {
+    readPort(): number | null {
+      try {
+        const raw = JSON.parse(readFileSync(join(mattstackHome(), "deck", "api.json"), "utf8"));
+        return typeof raw.port === "number" ? raw.port : null;
+      } catch {
+        return null;
+      }
+    },
+    async checkHealthz(port: number): Promise<boolean> {
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(DECK_HEALTHZ_TIMEOUT_MS) });
+        return res.ok;
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
+/** `deckSetup` re-bootstraps deck under launchd — restarts the live proxy, blipping every `*.localhost` app — so this must be checked before planning it, not run unconditionally. */
+export async function probeDeckHealthy(probe: DeckHealthProbe): Promise<boolean> {
+  const port = probe.readPort();
+  if (port === null) return false;
+  return probe.checkHealthz(port);
+}
+
+/**
+ * `which deck`, deck's own health, the repo index, `rt.repoTracking`, and
+ * the daemon-install marker. All read-only; a throw here is caught by
+ * homeInit's materialize try/catch and reported as a non-rt-own failure,
+ * never a crash.
+ */
+export async function defaultMaterializeEnv(
+  exec: MaterializeExecSeam,
+  deckHealth: DeckHealthProbe = defaultDeckHealthProbe(),
+): Promise<MaterializeEnv> {
+  // Deliberately not run through STEP_TIMEOUT_MS (runMaterialize's steps) — a
+  // plain `which` never blocks like `rt daemon install`'s tray poll does, so
+  // it keeps runCapture's short default.
+  const which = await exec.run(["which", "deck"]);
+  const deckOnPath = which.exitCode === 0 && which.stdout.trim().length > 0;
+  const deckHealthy = deckOnPath && (await probeDeckHealthy(deckHealth));
+
+  const index = loadRepoIndex();
+  const boardRepoPath = index["mr-board"] ?? null;
+
+  const tracking = loadMachineRepoTracking();
+  const trackedRepos = Object.keys(tracking)
+    .sort()
+    .map((name) => {
+      const path = index[name] ?? "";
+      return { name, path, present: path !== "" && existsSync(path) };
+    });
+
+  return { deckOnPath, deckHealthy, boardRepoPath, daemonInstalled: isDaemonInstalled(), trackedRepos };
+}
+
+function describeMaterializeStep(step: MaterializeStep): string {
+  switch (step.kind) {
+    case "rtInterceptInstall":
+      return "rt intercept install";
+    case "rtDaemonInstall":
+      return "rt daemon install";
+    case "reportMissingRepos":
+      return `tracked repos not present locally (not cloned): ${step.names.join(", ")}`;
+    case "deckSetup":
+      return "deck setup";
+    case "reportDeckHealthy":
+      return "deck setup (skipped — already healthy)";
+    case "boardSetup":
+      return "mr-board setup (interactive — not run automatically)";
+  }
+}
+
+/** Indents every line of `text` under a step's ✓/✗ mark — a multi-line captured stdout (e.g. `rt daemon install`'s several lines of approval guidance) must not fall back to column 0 after its first line. */
+function printIndented(text: string): void {
+  for (const line of text.split("\n")) console.log(`    ${dim}${line}${reset}`);
+}
+
+function printMaterializeResults(results: MaterializeResult[]): void {
+  console.log(`\nrt home init: materializing (regenerating everything re-derivable from settings)…`);
+  for (const result of results) {
+    const mark = result.ok ? `${green}✓${reset}` : `${red}✗${reset}`;
+    console.log(`  ${mark} ${describeMaterializeStep(result.step)}`);
+    if (!result.ok && result.stderr) printIndented(result.stderr);
+    if (result.stdout) printIndented(result.stdout);
+    if (result.note) printIndented(result.note);
+  }
+}
+
+/**
+ * `claude.marketplaces`/`claude.plugins` replay is the installer's job, not
+ * init's — this only points at it when either resolves to a value, so a
+ * machine with nothing configured stays silent.
+ */
+export function claudePluginsPointerMessage(marketplaces: unknown, plugins: unknown): string | null {
+  if (marketplaces === undefined && plugins === undefined) return null;
+  return (
+    "claude.marketplaces/claude.plugins are configured — replaying them is the mattstack installer's job, " +
+    "not rt home init's; re-run the installer if this machine needs them applied."
+  );
+}
+
+function printClaudePluginsPointer(): void {
+  const message = claudePluginsPointerMessage(
+    getSetting<unknown>("claude.marketplaces").value,
+    getSetting<unknown>("claude.plugins").value,
+  );
+  if (message) console.log(`\n  ${dim}${message}${reset}`);
+}
+
+export interface HomeInitSeams {
+  probes?: HomeProbes;
+  exec?: ExecSeam;
+  ageKeySeam?: AgeKeySeam;
+  sopsYamlSeam?: SopsYamlSeam;
+  /**
+   * Evaluated at call time, like every other default here — a real fs read
+   * (~/.mattstack/machine-key), so tests inject a fixed value instead of
+   * depending on the test-runner's actual hostname/override file. When the
+   * machine-key file is absent this doubles as the hostname-slug fallback
+   * the profile chooser below offers ("new profile (<this>)").
+   */
+  key?: string;
+  pickerSeam?: MachineProfilePickerSeam;
+  isInteractive?: () => boolean;
+  /** Gathers the materialize phase's inputs (which deck, repo index, rt.repoTracking, daemon-install marker). Defaults to real reads; tests inject a fixed env instead of faking each underlying probe. */
+  materializeEnv?: () => Promise<MaterializeEnv>;
+  /** Runs each materialize step's subprocess. Defaults to a real `runCapture` wrap; tests inject a fake that never touches a real binary. */
+  materializeExec?: MaterializeExecSeam;
+}
+
+export async function homeInit(args: string[], _ctx: CommandContext = {}, seams: HomeInitSeams = {}): Promise<void> {
+  const probes = seams.probes ?? defaultProbes();
+  const exec = seams.exec ?? createRealExecSeam(mattstackHome());
+  const ageKeySeam = seams.ageKeySeam ?? createRealAgeKeySeam();
+  const sopsYamlSeam = seams.sopsYamlSeam ?? defaultSopsYamlSeam();
+  const key = seams.key ?? machineKey();
+  const pickerSeam = seams.pickerSeam ?? createRealMachineProfilePickerSeam();
+  const isInteractive = seams.isInteractive ?? (() => Boolean(process.stdin.isTTY));
+  const materializeExec = seams.materializeExec ?? defaultMaterializeExec();
+  const materializeEnv = seams.materializeEnv ?? (() => defaultMaterializeEnv(materializeExec));
+
+  const dryRun = args.includes("--dry-run");
+  const noMaterialize = args.includes("--no-materialize");
+  const home = mattstackHome();
+
+  let url: string;
+  let profileFlag: string | undefined;
+  try {
+    url = parseUrlArg(args);
+    profileFlag = parseProfileArg(args);
+  } catch (err) {
+    if (err instanceof InvalidUrlArgError || err instanceof InvalidProfileArgError) {
+      console.error(`rt home init: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+  const newProfileFlag = args.includes("--new-profile");
+
+  let state = gatherHomeState(home, probes, key);
+  let chosenKey = key;
+
+  // The profile list under user/local/ only exists once user/ is cloned, but
+  // this machine's key (and thus which profile it should adopt) can only be
+  // decided from that list — so a machine-key-less machine picks its key
+  // AFTER the clone lands, never before. A machine that already has
+  // machine-key written is already provisioned; the picker never runs for it.
+  if (!state.machineKeyFilePresent) {
+    if (!state.userRepoPresent) {
+      if (dryRun) {
+        const previewPlan = planOrExit(state, { url, machineKey: key });
+        printPlan(home, previewPlan.steps);
+        if (previewPlan.blocked === "skills-symlink-real-file") printSkillsSymlinkBlocked(home);
+        console.log(
+          `\n  rt home init: this machine has no machine-key file yet — existing profiles under user/local/ ` +
+            `aren't knowable until the repo above is actually cloned, so the key shown here ("${key}") is only ` +
+            "the no-profiles-yet fallback. Pass --profile <key> or --new-profile to pin the real choice ahead of time.",
+        );
+        return;
+      }
+
+      // Phase 1: clone only. writeMachineKey/ensureProfileDir/writeSkillsSymlink
+      // all wait for phase 2 (below) — the first two because the key isn't
+      // chosen yet, the symlink just to keep this phase minimal and focused.
+      const cloneOnlyState: HomeState = {
+        ...state,
+        machineKeyFilePresent: true,
+        profileDirPresent: true,
+        skillsSymlinkPresent: true,
+        skillsSymlinkBlocked: false,
+      };
+      const clonePlan = planOrExit(cloneOnlyState, { url, machineKey: key });
+      printPlan(home, clonePlan.steps);
+
+      const cloneResult = await executeInitPlan(clonePlan.steps, exec, (message) => console.log(`  ${message}`));
+      if (!cloneResult.ok) {
+        console.error(`\nrt home init: failed at step "${cloneResult.failedStep}":\n${cloneResult.stderr}`);
+        process.exit(1);
+      }
+
+      // Known true from the steps that just succeeded, not re-probed: fake
+      // probes in tests are static and wouldn't reflect the clone anyway,
+      // and in production a fresh fs read here would just re-derive the
+      // same facts the exec seam already confirmed.
+      state = { ...state, userRepoPresent: true, stateDirsMissing: [] };
+    }
+
+    const userLocalDir = join(home, "user", "local");
+    const profiles = probes.listProfiles(userLocalDir);
+
+    let choice: ChooseMachineProfileResult;
+    try {
+      choice = chooseMachineProfile({
+        profiles,
+        hostnameSlug: key,
+        flags: { profile: profileFlag, newProfile: newProfileFlag },
+        interactive: isInteractive(),
+      });
+    } catch (err) {
+      if (
+        err instanceof UnknownProfileFlagError ||
+        err instanceof ProfileChoiceRequiredError ||
+        err instanceof ProfileNameCollisionError ||
+        err instanceof InvalidProfileKeyError
+      ) {
+        console.error(`rt home init: ${err.message}`);
+        process.exit(1);
+      }
+      throw err;
+    }
+
+    if (choice.source === "prompt-needed") {
+      if (dryRun) {
+        console.log(
+          `rt home init: ${home} needs a machine profile — existing: ${profiles.join(", ")}, or start a new one ` +
+            `("${key}"). A prompt would run here interactively; pass --profile <key> or --new-profile to skip it.`,
+        );
+        return;
+      }
+      const picked = await pickerSeam.pick(profiles, key);
+      if (picked === null || !isSafeMachineKeySegment(picked)) {
+        console.error(
+          "rt home init: no machine profile selected — aborting. Pass --profile <key> or --new-profile to skip the prompt.",
+        );
+        process.exit(1);
+      }
+      chosenKey = picked;
+    } else {
+      chosenKey = choice.key;
+    }
+
+    state = { ...state, profileDirPresent: profiles.includes(chosenKey) };
+  } else if (profileFlag !== undefined || newProfileFlag) {
+    // --profile/--new-profile only make sense while this machine is still
+    // choosing its FIRST profile. Once machine-key is pinned, silently
+    // ignoring them would look like the flag worked (see: "fully
+    // provisioned" printing on an already-keyed machine passed --profile
+    // other-box) when nothing happened at all.
+    console.error(
+      `rt home init: this machine's machine-key file already pins "${key}" — --profile/--new-profile only apply ` +
+        `while choosing a machine's first profile. Edit or remove ~/.mattstack/machine-key and re-run to change it.`,
+    );
+    process.exit(1);
+  }
+
+  const plan = planOrExit(state, { url, machineKey: chosenKey });
+
+  // Env gathering is read-only (which deck, the repo index, rt.repoTracking,
+  // the daemon-install marker) — safe to run under --dry-run, so the preview
+  // below reflects what materialize would actually do instead of silently
+  // omitting init's last phase. Gathered ONLY for dry-run, and only when the
+  // plan isn't already blocked (the live run exits 1 before ever reaching
+  // materialize on a blocked plan, so a preview there would promise
+  // something that never happens). The live path below gathers its own
+  // (possibly different, if state changed) env right before actually
+  // running it. A throw here never aborts --dry-run: it's reported and
+  // treated as "nothing to preview," same as --no-materialize.
+  let materializeSteps: MaterializeStep[] = [];
+  if (dryRun && !noMaterialize && !plan.blocked) {
+    try {
+      materializeSteps = planMaterialize(await materializeEnv());
+    } catch (err) {
+      console.error(`\nrt home init: could not preview the materialize plan: ${(err as Error).message ?? err}`);
+    }
+  }
 
   if (plan.steps.length > 0) {
-    console.log(`rt home init plan for ${home}:`);
-    plan.steps.forEach((step, i) => console.log(`  ${i + 1}. ${describeStep(step)}`));
-  } else if (!plan.blocked) {
+    printPlan(home, plan.steps);
+  } else if (!plan.blocked && (dryRun ? materializeSteps.length === 0 : noMaterialize)) {
+    // Live run: materialize always does at least rtInterceptInstall unless
+    // --no-materialize was passed, so "nothing to do" would otherwise be
+    // said one breath before materialize does something — dishonest.
     console.log(`rt home init: ${home} is already fully provisioned — nothing to do.`);
   }
 
-  if (plan.blocked === "skills-symlink-real-file") {
-    console.error(
-      `\nrt home init: a real file already exists at ${join(home, "skills.jsonc")} — refusing to overwrite it. ` +
-        "Move it aside by hand, then rerun.",
-    );
-  }
+  if (plan.blocked === "skills-symlink-real-file") printSkillsSymlinkBlocked(home);
 
-  if (dryRun) return;
+  if (dryRun) {
+    if (materializeSteps.length > 0) {
+      console.log(`\nrt home init: materialize would run (regenerating everything re-derivable from settings):`);
+      materializeSteps.forEach((step, i) => console.log(`  ${i + 1}. ${describeMaterializeStep(step)}`));
+    }
+    return;
+  }
 
   const result = await executeInitPlan(plan.steps, exec, (message) => console.log(`  ${message}`));
 
@@ -295,6 +709,43 @@ export async function homeInit(
     process.exit(1);
   }
 
+  // Materialize is init's LAST phase, run on every non-dry-run invocation —
+  // including an already-fully-provisioned machine — so re-derivable state
+  // (PATH shims, daemon registration, each installed tool's own setup)
+  // stays current without a separate command to remember to run. A throw
+  // anywhere in here (env gathering, a step, printing) is caught and
+  // reported as a non-rt-own failure: provisioning already succeeded above,
+  // so this must never crash init to a bare exception after that.
+  let materializeFailed = false;
+  if (noMaterialize) {
+    console.log(`\n  ${dim}materialize skipped (--no-materialize)${reset}`);
+  } else {
+    try {
+      const env = await materializeEnv();
+      const steps = planMaterialize(env);
+      const results = await runMaterialize(steps, materializeExec, rtSelfBin());
+      printMaterializeResults(results);
+      materializeFailed = results.some((r) => !r.ok && RT_OWN_STEP_KINDS.has(r.step.kind));
+    } catch (err) {
+      console.error(`\nrt home init: materialize threw and was skipped: ${(err as Error).message ?? err}`);
+    }
+  }
+
+  try {
+    printClaudePluginsPointer();
+  } catch (err) {
+    console.error(`\nrt home init: could not check claude.marketplaces/claude.plugins: ${(err as Error).message ?? err}`);
+  }
+
+  // Checked BEFORE the success line — printing "provisioned" ahead of a
+  // known rt-own materialize failure would tell the operator init fully
+  // worked when a regenerated piece of rt's own state (PATH shims, daemon
+  // registration) is known broken.
+  if (materializeFailed) {
+    console.error(`\nrt home init: materialize failed on an rt-owned step — see above.`);
+    process.exit(1);
+  }
+
   console.log(`\nrt home init: ${home} is provisioned.`);
 }
 
@@ -312,6 +763,120 @@ export async function homeKeyExport(
     }
     throw err;
   }
+}
+
+export interface AgeKeyInputSeam {
+  fromStdin(): Promise<string>;
+  fromPrompt(): Promise<string>;
+}
+
+/** `stream` is injectable so tests exercise the trimming behavior without touching the real process.stdin. */
+export async function readStdinTrimmed(stream: NodeJS.ReadableStream = process.stdin): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks).toString("utf8").trim();
+}
+
+/**
+ * Both input paths must yield the same shape of value — a `--stdin` paste
+ * and a typed-then-Enter prompt answer are otherwise indistinguishable to
+ * `importAgeKey`, so both are trimmed here rather than one trimmed
+ * (readStdinTrimmed) and the other not. `promptIO`, when passed, is forwarded
+ * to `promptSecret` so tests can drive the prompt path without a real TTY.
+ */
+export function defaultAgeKeyInputSeam(promptIO?: PromptIO): AgeKeyInputSeam {
+  return {
+    fromStdin: () => readStdinTrimmed(),
+    fromPrompt: () => promptSecret("Paste the age private key", promptIO).then((value) => value.trim()),
+  };
+}
+
+/** First 12 chars + an ellipsis — enough to eyeball-match two recipients in a warning without printing the full key. */
+function truncateKey(key: string): string {
+  return `${key.slice(0, 12)}…`;
+}
+
+/**
+ * The counterpart to `rt home init`'s mint-refusal: when a cloned repo's
+ * secrets are encrypted to a key this machine doesn't hold, this is what
+ * gets it in. Only THIS command's success writes the keychain item from
+ * outside key material — `ensureAgeKey` mints, this imports; the two never
+ * run against the same "no key yet" state for different reasons.
+ *
+ * The recipient check runs AFTER a successful import (not before) so the
+ * refusal message can name the ACTUAL derived recipient of what was just
+ * pasted, not a guess — a wrong paste that happens to parse still gets
+ * caught here before the operator believes their secrets are decryptable.
+ */
+/** The unmistakable prefix of a pasted age private key — never a legitimate flag or value for anything else this command takes. */
+const AGE_PRIVATE_KEY_PREFIX = "AGE-SECRET-KEY-1";
+
+export async function homeKeyImport(
+  args: string[],
+  _ctx: CommandContext = {},
+  seams: AgeKeySeam = createRealAgeKeySeam(),
+  sopsYamlSeam: SopsYamlSeam = defaultSopsYamlSeam(),
+  input: AgeKeyInputSeam = defaultAgeKeyInputSeam(),
+): Promise<void> {
+  // The key must arrive via --stdin or the hidden interactive prompt — never
+  // as a positional argument. By the time it shows up here as one, it has
+  // already landed in the operator's shell history and rt's own CLI log
+  // (dispatch() logs every command's args) — refuse outright rather than
+  // silently proceeding as if the leak never happened.
+  const pastedKeyArg = args.find((a) => a.startsWith(AGE_PRIVATE_KEY_PREFIX));
+  if (pastedKeyArg !== undefined) {
+    console.error(
+      "rt home key import: the private key must be piped via --stdin or entered at the interactive prompt, " +
+        "never as a positional argument — it just landed in your shell history and rt's own CLI log. " +
+        "Treat it as compromised and rotate it (mint a new key, re-encrypt every secret to the new recipient) " +
+        "before using it for anything.",
+    );
+    process.exit(1);
+  }
+
+  const force = args.includes("--force");
+
+  let privateKey: string;
+  try {
+    privateKey = args.includes("--stdin") ? await input.fromStdin() : await input.fromPrompt();
+  } catch (err) {
+    console.error(`rt home key import: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
+  const result = await importAgeKey(seams, privateKey, { force });
+
+  if (!result.ok) {
+    if (result.reason === "malformed") {
+      console.error("rt home key import: not a valid age private key (expected an AGE-SECRET-KEY-1… value)");
+    } else {
+      console.error(
+        `rt home key import: a key already exists in the keychain (recipient ${truncateKey(result.existingPublicKey)}) — ` +
+          "pass --force to overwrite it.",
+      );
+    }
+    process.exit(1);
+  }
+
+  const { publicKey } = result;
+
+  const userDir = join(mattstackHome(), "user");
+  const sopsYamlPath = join(userDir, ".sops.yaml");
+  const existing = sopsYamlSeam.read(sopsYamlPath);
+  const existingRecipient = existing === null ? null : sopsYamlRecipient(existing);
+
+  if (existingRecipient !== null && existingRecipient !== publicKey) {
+    console.error(
+      `rt home key import: imported key's recipient (${truncateKey(publicKey)}) does not match this repo's ` +
+        `.sops.yaml recipient (${truncateKey(existingRecipient)}) — this key can't decrypt the secrets already here. ` +
+        "The wrong key is already stored, so a plain retry will hit the exists-refusal — " +
+        "re-run `rt home key import --force` once you have the right key.",
+    );
+    process.exit(2);
+  }
+
+  console.log(`  ${green}✓${reset} imported — recipient ${bold}${truncateKey(publicKey)}${reset}`);
+  console.log(`    ${dim}secrets encrypted to this recipient are now decryptable on this machine${reset}`);
 }
 
 // ─── snapshot / claim / release ─────────────────────────────────────────────
