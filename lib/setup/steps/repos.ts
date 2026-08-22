@@ -19,8 +19,8 @@ const CLONE_ENV = { GIT_TERMINAL_PROMPT: "0", GIT_PROTOCOL_FROM_USER: "0" };
 /** Generous but bounded: a stalled clone must surface as a failed/counted identity, never hang the whole Install button with no progress. */
 const CLONE_TIMEOUT_MS = 120_000;
 
-/** The identity's last path segment (`github.com/acme/repo` -> `repo`) — the clone destination's directory name. */
-function repoBasename(identity: string): string {
+/** The identity's last path segment (`github.com/acme/repo` -> `repo`) — the clone destination's directory name. Exported: `steps/skills.ts`'s `board.keys` derives the same registered-repo-name set from tracking identities and must agree with this step on what a repo is called. */
+export function repoBasename(identity: string): string {
   return identity.split("/").pop() || identity;
 }
 

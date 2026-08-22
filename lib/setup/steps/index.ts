@@ -1,9 +1,9 @@
 /**
  * The ordered step registry `rt setup apply` runs — one `StepDef` per
- * `STEP_IDS` entry, in the contract's pinned order. Task 24 replaces the
- * first block of stubs (home through repos.clone) with real bodies; the
- * rest stay stubs for Tasks 25/26 to replace in place, never reordering or
- * adding/removing ids.
+ * `STEP_IDS` entry, in the contract's pinned order. Tasks 24/25 replace the
+ * first two blocks of stubs (home through repos.clone, services.register
+ * through cron.triage) with real bodies; the rest stay stubs for Task 26 to
+ * replace in place, never reordering or adding/removing ids.
  */
 
 import type { ApplyContext, StepDef, StepOutcome } from "../apply.ts";
@@ -15,6 +15,9 @@ import { secretsWriteStep } from "./secrets.ts";
 import { pathLinkStep } from "./path.ts";
 import { settingsSeedStep } from "./settings.ts";
 import { reposCloneStep } from "./repos.ts";
+import { servicesRegisterStep, proxyInstallStep } from "./services.ts";
+import { deckManagedStep } from "./deck.ts";
+import { skillsMaterializeStep, boardKeysStep, cronTriageStep } from "./skills.ts";
 import { toFailedOutcome } from "./step-utils.ts";
 
 function stubStep(id: StepId, title: string, kind: StepKind): StepDef {
@@ -64,12 +67,12 @@ export const STEPS: StepDef[] = [
   interceptsInstallStep,
   settingsSeedStep,
   reposCloneStep,
-  stubStep("services.register", "Register background services", "app"),
-  stubStep("proxy.install", "Install the local proxy", "privileged"),
-  stubStep("deck.managed", "Set up managed deck", "rt"),
-  stubStep("skills.materialize", "Materialize skills", "rt"),
-  stubStep("board.keys", "Generate board keys", "rt"),
-  stubStep("cron.triage", "Install triage cron", "rt"),
+  servicesRegisterStep,
+  proxyInstallStep,
+  deckManagedStep,
+  skillsMaterializeStep,
+  boardKeysStep,
+  cronTriageStep,
   stubStep("plugins.install", "Install plugins", "rt"),
   stubStep("fastbrowser.setup", "Set up Fast Browser", "rt"),
   stubStep("herdr.integration", "Set up herdr integration", "rt"),

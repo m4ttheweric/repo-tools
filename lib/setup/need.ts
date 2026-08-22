@@ -18,6 +18,7 @@
 
 import type { TrayClient } from "../daemon-client.ts";
 import { bundledToolPath } from "../deps/resolve.ts";
+import type { StepOutcome } from "./apply.ts";
 import type { EventId } from "./contract.ts";
 import type { Probes } from "./probes.ts";
 
@@ -102,4 +103,20 @@ export async function awaitNeed(
     if (now() >= deadline) return "timeout";
     await sleep(pollMs);
   }
+}
+
+/**
+ * The one place `ctx.need`'s four-way reply becomes a `StepOutcome`, so no
+ * step body hand-rolls this mapping and risks turning a stalled or absent
+ * app into a false success. `no-app` is the only non-fatal case — a
+ * nonInteractive run legitimately has nobody to satisfy the need; a real
+ * timeout or a vanished app is always a failure, never a skip. Lives here
+ * (not apply.ts, which re-exports it) so a step file can import it without
+ * a runtime cycle back through steps/index.ts.
+ */
+export function outcomeFromNeed(reply: NeedReply | "timeout" | "app-gone" | "no-app"): StepOutcome {
+  if (reply === "no-app") return { state: "skipped", detail: "no mattstack.app running to complete this step" };
+  if (reply === "timeout") return { state: "failed", detail: "timed out waiting for mattstack.app" };
+  if (reply === "app-gone") return { state: "failed", detail: "mattstack.app stopped responding" };
+  return reply.ok ? { state: "done", detail: reply.detail } : { state: "failed", detail: reply.detail ?? "mattstack.app reported failure" };
 }
