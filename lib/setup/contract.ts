@@ -98,7 +98,7 @@ export type NeedRequest =
   | { type: "app-privileged"; op: "proxy-install" | "proxy-remove" };
 
 /** Uninstall streams the same event shapes with these ids (contract §uninstall: "NDJSON like apply"). */
-export type UninstallActionId = "services.unregister" | "deck.managed-remove" | "proxy.remove" | "path.unlink" | "shell.remove" | "extension.uninstall" | "plugins.uninstall" | "data" | "app.trash";
+export type UninstallActionId = "services.unregister" | "deck.managed-remove" | "proxy.remove" | "path.unlink" | "shell.remove" | "extension.uninstall" | "plugins.uninstall" | "cron.uninstall" | "data" | "app.trash";
 
 export type EventId = StepId | UninstallActionId;
 

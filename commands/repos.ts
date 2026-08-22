@@ -4,9 +4,15 @@
  *
  *   rt repos register <path…> [--track live|poll] [--caches branches,project-mrs] [--json]
  *
+ * All-or-nothing: every path is resolved and verified as a real git repo
+ * before ANY write happens, so a bad path among several never leaves an
+ * earlier one half-registered (indexed but missing the tracking grant the
+ * same call asked for).
+ *
  * Used standalone and by the apply engine's repos.clone step.
  */
 
+import { execFileSync } from "child_process";
 import { realpathSync } from "fs";
 import { basename } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
@@ -53,6 +59,15 @@ function resolveRealpath(inputPath: string): string | null {
   }
 }
 
+function isGitRepo(path: string): boolean {
+  try {
+    execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: path, stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function reposRegister(args: string[], _ctx: CommandContext = {}, deps: RegisterDeps = realRegisterDeps()): Promise<void> {
   const json = args.includes("--json");
   const track = flagValue(args, "--track");
@@ -79,6 +94,21 @@ export async function reposRegister(args: string[], _ctx: CommandContext = {}, d
     }
   }
 
+  // Validation pass FIRST, no writes yet: a bad path later in the list must
+  // never leave an earlier one indexed without the tracking grant this same
+  // call asked for.
+  const resolved: { name: string; real: string }[] = [];
+  for (const inputPath of paths) {
+    const real = resolveRealpath(inputPath);
+    if (real === null) {
+      exitUserError(new UserActionableError("bad-path", `"${inputPath}" does not exist`), json, "repos register", deps.print);
+    }
+    if (!isGitRepo(real)) {
+      exitUserError(new UserActionableError("not-a-git-repo", `"${inputPath}" is not a git repository`), json, "repos register", deps.print);
+    }
+    resolved.push({ name: basename(real), real });
+  }
+
   type Registered = { name: string; path: string; tracking: { mode: TrackingMode; caches: CacheKind[] } | null };
   const registered: Registered[] = [];
   // A read-modify-write must start from the RAW machine map, never a merged
@@ -87,12 +117,7 @@ export async function reposRegister(args: string[], _ctx: CommandContext = {}, d
   // call never meant to touch.
   const rawTracking = track ? loadMachineRepoTrackingRaw() : null;
 
-  for (const inputPath of paths) {
-    const real = resolveRealpath(inputPath);
-    if (real === null) {
-      exitUserError(new UserActionableError("bad-path", `"${inputPath}" does not exist`), json, "repos register", deps.print);
-    }
-    const name = basename(real);
+  for (const { name, real } of resolved) {
     updateRepoIndex(name, real);
 
     let tracking: Registered["tracking"] = null;

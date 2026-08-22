@@ -554,8 +554,14 @@ export async function skillsMaterialize(args: string[]): Promise<void> {
       console.log(JSON.stringify(envelope(result)));
       return;
     }
+    // A top-level skip (merge-manifests.sh not installed yet) is the normal
+    // fresh-machine outcome, not a failure -- exit 0, never exit 2.
+    if (result.skipped) {
+      console.log(`skipped: ${result.reason}`);
+      return;
+    }
     for (const r of result.repos) {
-      console.log(`${r.ok ? "materialized" : "skipped"} ${r.name}: ${r.detail}`);
+      console.log(`${r.ok ? "materialized" : "failed"} ${r.name}: ${r.detail}`);
     }
   } catch (err) {
     if (err instanceof UserActionableError) exitUserError(err, json, "skills materialize", console.log);

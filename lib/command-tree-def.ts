@@ -1008,6 +1008,15 @@ export const TREE: Record<string, CommandNode> = {
           SETUP_JSON_ARG,
         ],
       },
+      remove: {
+        description: "Remove an installed daemon cron trigger",
+        module: "./commands/cron.ts",
+        fn: "cronRemove",
+        args: [
+          { name: "Trigger", type: "select", options: [{ value: "board-triage", label: "board-triage" }] },
+          SETUP_JSON_ARG,
+        ],
+      },
     },
   },
 

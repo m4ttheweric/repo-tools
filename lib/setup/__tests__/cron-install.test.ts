@@ -1,13 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { installCronTrigger, triageTrigger, type CronTrigger, type InstallCronTriggerDeps } from "../cron-install.ts";
-
-const REAL_DEF = { key: "rt.cron", type: "object" as const, scopes: ["machine" as const], merge: "deep" as const, migrated: true, description: "" };
+import {
+  installCronTrigger,
+  removeCronTrigger,
+  resolveBoardTriage,
+  triageTrigger,
+  type CronTrigger,
+  type InstallCronTriggerDeps,
+} from "../cron-install.ts";
 
 function fakeDeps(overrides: Partial<InstallCronTriggerDeps> = {}): InstallCronTriggerDeps & { setSettingCalls: [string, unknown, string][] } {
   const setSettingCalls: [string, unknown, string][] = [];
   return {
-    getDef: (() => REAL_DEF) as InstallCronTriggerDeps["getDef"],
-    isMigrated: (() => true) as InstallCronTriggerDeps["isMigrated"],
     getSetting: (() => ({ value: { triggers: [] }, provenance: [] })) as InstallCronTriggerDeps["getSetting"],
     setSetting: ((key: string, value: unknown, scope: string) => {
       setSettingCalls.push([key, value, scope]);
@@ -18,32 +21,61 @@ function fakeDeps(overrides: Partial<InstallCronTriggerDeps> = {}): InstallCronT
 }
 
 describe("triageTrigger", () => {
-  test("builds the board-triage trigger shape", () => {
-    expect(triageTrigger("/path/to/board")).toEqual({
+  test("builds the board-triage trigger shape around the given run argv", () => {
+    expect(triageTrigger(["bun", "run", "/checkout/board/bin/triage.ts"])).toEqual({
       name: "board-triage",
       event: "project-mrs",
-      run: ["/path/to/board", "triage", "--once"],
+      run: ["bun", "run", "/checkout/board/bin/triage.ts"],
       debounceMs: 5000,
     });
   });
 });
 
+describe("resolveBoardTriage", () => {
+  const boardRepo = { repoName: "board", worktrees: [{ path: "/repos/board", branch: "main", isBare: false }] };
+
+  test("checkout: a registered board repo carrying bin/triage.ts wires bun run against it", () => {
+    const p = { exists: (path: string) => path === "/repos/board/bin/triage.ts" };
+    const result = resolveBoardTriage(p, [boardRepo], "/opt/board");
+    expect(result).toEqual({ kind: "checkout", run: ["bun", "run", "/repos/board/bin/triage.ts"] });
+  });
+
+  test("checkout wins even when a compiled board also resolves", () => {
+    const p = { exists: () => true };
+    const result = resolveBoardTriage(p, [boardRepo], "/opt/board");
+    expect(result.kind).toBe("checkout");
+  });
+
+  test("a board repo without bin/triage.ts does not count as a checkout", () => {
+    const p = { exists: () => false };
+    const result = resolveBoardTriage(p, [boardRepo], "/opt/board");
+    expect(result).toEqual({ kind: "unavailable" });
+  });
+
+  test("an unregistered (scanned) board candidate is not trusted as a checkout", () => {
+    const p = { exists: () => true };
+    const scanned = { ...boardRepo, registered: false };
+    const result = resolveBoardTriage(p, [scanned], "/opt/board");
+    expect(result).toEqual({ kind: "unavailable" });
+  });
+
+  test("no checkout, no resolvable board at all: missing", () => {
+    const p = { exists: () => false };
+    const result = resolveBoardTriage(p, [], null);
+    expect(result).toEqual({ kind: "missing" });
+  });
+
+  test("no checkout, but a compiled board resolves: unavailable (never wires the broken form)", () => {
+    const p = { exists: () => false };
+    const result = resolveBoardTriage(p, [], "/opt/board");
+    expect(result).toEqual({ kind: "unavailable" });
+  });
+});
+
 describe("installCronTrigger", () => {
-  test("written:false, with a reason, when rt.cron is not migrated", () => {
-    const deps = fakeDeps({ isMigrated: () => false });
-    const result = installCronTrigger(triageTrigger("/path/to/board"), deps);
-    expect(result).toEqual({ written: false, reason: "rt.cron is not migrated to the settings stores yet (settings lane in flight)" });
-  });
-
-  test("written:false when the def itself is unknown", () => {
-    const deps = fakeDeps({ getDef: (() => undefined) as InstallCronTriggerDeps["getDef"] });
-    const result = installCronTrigger(triageTrigger("/path/to/board"), deps);
-    expect(result.written).toBe(false);
-  });
-
-  test("writes {triggers} via setSetting with machine scope when migrated", () => {
+  test("writes {triggers} via setSetting with machine scope", () => {
     const deps = fakeDeps();
-    const trigger = triageTrigger("/path/to/board");
+    const trigger = triageTrigger(["bun", "run", "/checkout/board/bin/triage.ts"]);
 
     const result = installCronTrigger(trigger, deps);
 
@@ -52,15 +84,42 @@ describe("installCronTrigger", () => {
   });
 
   test("replaces an existing trigger of the same name instead of duplicating it", () => {
-    const stale: CronTrigger = { name: "board-triage", event: "project-mrs", run: ["/old/board", "triage", "--once"], debounceMs: 5000 };
+    const stale: CronTrigger = { name: "board-triage", event: "project-mrs", run: ["bun", "run", "/old/board/bin/triage.ts"], debounceMs: 5000 };
     const other: CronTrigger = { name: "other-trigger", event: "x", run: ["y"] };
     const deps = fakeDeps({
       getSetting: (() => ({ value: { triggers: [stale, other] }, provenance: [] })) as InstallCronTriggerDeps["getSetting"],
     });
-    const trigger = triageTrigger("/new/board");
+    const trigger = triageTrigger(["bun", "run", "/new/board/bin/triage.ts"]);
 
     installCronTrigger(trigger, deps);
 
     expect(deps.setSettingCalls).toEqual([["rt.cron", { triggers: [other, trigger] }, "machine"]]);
+  });
+});
+
+describe("removeCronTrigger", () => {
+  test("drops the named trigger and leaves the rest", () => {
+    const target: CronTrigger = { name: "board-triage", event: "project-mrs", run: ["bun", "run", "/x/bin/triage.ts"], debounceMs: 5000 };
+    const other: CronTrigger = { name: "other-trigger", event: "x", run: ["y"] };
+    const deps = fakeDeps({
+      getSetting: (() => ({ value: { triggers: [target, other] }, provenance: [] })) as InstallCronTriggerDeps["getSetting"],
+    });
+
+    const result = removeCronTrigger("board-triage", deps);
+
+    expect(result).toEqual({ written: true, removed: true });
+    expect(deps.setSettingCalls).toEqual([["rt.cron", { triggers: [other] }, "machine"]]);
+  });
+
+  test("removing a trigger that was never installed is a coherent no-op", () => {
+    const other: CronTrigger = { name: "other-trigger", event: "x", run: ["y"] };
+    const deps = fakeDeps({
+      getSetting: (() => ({ value: { triggers: [other] }, provenance: [] })) as InstallCronTriggerDeps["getSetting"],
+    });
+
+    const result = removeCronTrigger("board-triage", deps);
+
+    expect(result).toEqual({ written: true, removed: false });
+    expect(deps.setSettingCalls).toEqual([["rt.cron", { triggers: [other] }, "machine"]]);
   });
 });

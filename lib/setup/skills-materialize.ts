@@ -1,21 +1,32 @@
 /**
- * Runs the mattstack plugin's merge-manifests.sh against every registered
- * repo, materializing that repo's skills.jsonc binding manifest.
+ * Runs the mattstack plugin's merge-manifests.sh against every REGISTERED
+ * repo (never a repo `getKnownRepos()` only discovered by scanning
+ * `rt.repoRoots` — those show up with `registered:false` and are excluded
+ * here, matching the "not a registered repo" refusal text below), materializing
+ * each repo's skills.jsonc binding manifest.
  *
- * Idempotent and re-callable: the apply engine's skills.materialize step
- * runs before plugins.install (script not installed yet, so it skips
- * honestly), and plugins.install calls materializeSkills again once the
- * plugin is on disk — this module exposes no state of its own, so a repeat
- * call just reruns the script.
+ * Idempotent and re-callable, and NEVER throws for the ordinary fresh-machine
+ * case: the apply engine's skills.materialize step runs before plugins.install
+ * (contract order), so merge-manifests.sh is routinely absent the first time
+ * this runs. That case comes back as `{skipped: true, reason}` — a future
+ * plugins.install step handler MUST read `result.skipped` (not treat any
+ * non-throw as success, and not treat this function throwing as the signal —
+ * it deliberately doesn't throw for this case) and map it to a skipped/done
+ * step state, then call `materializeSkills` again once the plugin is on disk.
+ * This module holds no state of its own, so that repeat call is just a normal
+ * rerun.
  */
 
 import { join } from "path";
-import { getKnownRepos } from "../repo-index.ts";
+import { getKnownRepos, type KnownRepo } from "../repo-index.ts";
 import { UserActionableError } from "./errors.ts";
 import type { Probes } from "./probes.ts";
 
 const CACHE_DIR_SEGMENTS = ["plugins", "cache", "mattstack", "mattstack"];
 const SCRIPT_SEGMENTS = ["plugin", "skills", "parameterized-skills", "scripts", "merge-manifests.sh"];
+
+/** The `reason` detail's stable prefix when merge-manifests.sh isn't installed yet — a future step handler may match on this instead of parsing prose. */
+export const MERGE_MANIFESTS_MISSING_CODE = "merge-manifests-missing";
 
 /** Dotted-numeric compare, missing segments treated as 0 — matches lib/setup/semver.ts's looseness; version dirs here are plain "x.y.z". */
 function compareVersions(a: string, b: string): number {
@@ -51,13 +62,25 @@ export interface MaterializeRepoResult {
   detail: string;
 }
 
-export async function materializeSkills(p: Probes, opts: { repo?: string }): Promise<{ repos: MaterializeRepoResult[] }> {
+export type MaterializeSkillsResult =
+  | { skipped: true; reason: string; repos: [] }
+  | { skipped: false; repos: MaterializeRepoResult[] };
+
+function registeredKnownRepos(): Pick<KnownRepo, "repoName" | "worktrees">[] {
+  return getKnownRepos().filter((r) => r.registered !== false);
+}
+
+export async function materializeSkills(p: Probes, opts: { repo?: string }): Promise<MaterializeSkillsResult> {
   const script = findMergeManifests(p);
   if (!script) {
-    throw new UserActionableError("merge-manifests-missing", "install the mattstack plugin first (plugins.install)");
+    return {
+      skipped: true,
+      reason: `${MERGE_MANIFESTS_MISSING_CODE}: install the mattstack plugin first (plugins.install), then rerun`,
+      repos: [],
+    };
   }
 
-  const known = getKnownRepos();
+  const known = registeredKnownRepos();
   let targets: { name: string; path: string }[];
   if (opts.repo) {
     const match = known.find((r) => r.repoName === opts.repo);
@@ -82,5 +105,5 @@ export async function materializeSkills(p: Probes, opts: { repo?: string }): Pro
     );
   }
 
-  return { repos };
+  return { skipped: false, repos };
 }
