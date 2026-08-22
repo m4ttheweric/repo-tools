@@ -181,7 +181,55 @@ if [ -n "$DEV" ]; then
     cmp -s "$PROD/Contents/Resources/AppIcon.icns" "$DEV/Contents/Resources/AppIcon.icns" && fail "prod/dev icons identical (dev tint missing)" || pass "prod/dev icons differ"
 fi
 
-# ═══ Helpers (deps.lock) — not yet asserted ══════════════════════════════════
+# ═══ Helpers (deps.lock) ═══
+# bash `read` collapses runs of an IFS-whitespace delimiter (tab included)
+# even when IFS is set to only tab, which would drop deps.lock's empty
+# pending-row fields and shift later columns left. Split by hand instead.
+split_tsv() {
+    local rest="$1" field
+    FIELDS=()
+    while [[ "$rest" == *$'\t'* ]]; do
+        field="${rest%%$'\t'*}"
+        FIELDS+=("$field")
+        rest="${rest#*$'\t'}"
+    done
+    FIELDS+=("$rest")
+}
+LOCK_TSV="$(bun "$SCRIPT_DIR/../scripts/lib/deps-lock.ts" --kind helper)"
+check_helpers() { # app
+    local app="$1" exe; exe="$(plist "$app/Contents/Info.plist" CFBundleExecutable)"
+    if [ ! -d "$SCRIPT_DIR/deps/arm64" ] && ! $INSTALLED_ONLY; then echo "  ⚠ $exe: rt-tray/deps/arm64 absent — Helpers assertions skipped (scripts/fetch-deps.sh arm64)"; return; fi
+    cmp -s "$SCRIPT_DIR/deps.lock" "$app/Contents/Resources/deps.lock" && pass "$exe Resources/deps.lock matches rt-tray/deps.lock" || fail "$exe Resources/deps.lock missing or stale"
+    local row name bundlePath ent status p
+    while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        split_tsv "$row"
+        name="${FIELDS[0]}"; bundlePath="${FIELDS[6]}"; ent="${FIELDS[7]}"; status="${FIELDS[8]}"
+        p="$app/$bundlePath"
+        if [ "$status" = pending ]; then
+            [ -e "$p" ] && fail "$exe ships $name although deps.lock says pending" || pass "$exe: $name absent (pending until L5)"
+            continue
+        fi
+        [ -e "$p" ] || { fail "$exe missing Helpers/$name at $bundlePath"; continue; }
+        pass "$exe ships Helpers/$name"
+        while IFS= read -r -d '' f; do
+            file -b "$f" | grep -q "Mach-O" || continue
+            check_signed "$f" "$exe Helpers/$name/$(basename "$f")" "$ent"
+            assert_eq "$exe $name identifier" "Identifier=com.mattstack.helper.$(basename "$f")" "$(codesign -dv "$f" 2>&1 | grep '^Identifier=' || true)"
+        done < <(find "$p" -type f -print0)
+    done <<< "$LOCK_TSV"
+    # Every bundled helper answers --version from inside the bundle (signed, entitled).
+    [ -x "$app/Contents/Helpers/fzf" ] && "$app/Contents/Helpers/fzf" --version >/dev/null 2>&1 && pass "$exe Helpers/fzf runs" || fail "$exe Helpers/fzf does not run"
+    [ -x "$app/Contents/Helpers/jq" ] && "$app/Contents/Helpers/jq" --version >/dev/null 2>&1 && pass "$exe Helpers/jq runs" || fail "$exe Helpers/jq does not run"
+    [ -x "$app/Contents/Helpers/bun" ] && "$app/Contents/Helpers/bun" --version >/dev/null 2>&1 && pass "$exe Helpers/bun runs (jit entitlement sufficient)" || fail "$exe Helpers/bun does not run under its entitlements"
+    [ -x "$app/Contents/Helpers/node/bin/node" ] && "$app/Contents/Helpers/node/bin/node" -e 'process.exit(0)' >/dev/null 2>&1 && pass "$exe Helpers/node runs" || fail "$exe Helpers/node does not run under its entitlements"
+    [ -f "$app/Contents/Helpers/fast-browser/bin/fast-browser.mjs" ] && pass "$exe Helpers/fast-browser package present" || fail "$exe Helpers/fast-browser package missing"
+}
+check_helpers "$PROD"
+[ -n "$DEV" ] && check_helpers "$DEV"
+# Agent PATH is the static system set (asserted per plist in check_identity); services never
+# capture a shell PATH and never bake in an install location — rt/deck prepend their own Helpers dir.
+
 # ═══ Sparkle — not yet asserted ══════════════════════════════════════════════
 
 # ─── Dev shim exit-code contract ────────────────────────────────────────────
