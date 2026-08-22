@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,34 +14,47 @@ env:
 jobs:
   release:
     runs-on: macos-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      publish: ${{ steps.meta.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # needed for git describe
+          fetch-depth: 0
 
-      # ── Setup ────────────────────────────────────────────────────────────────
+      - name: Release metadata
+        id: meta
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"; PUBLISH=true
+          else
+            TAG="v0.0.0-ci${GITHUB_RUN_NUMBER}"; PUBLISH=false
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+
       - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v4
         with:
-          node-version: 22
-
+          bun-version: 1.3.13
       - name: Install dependencies
         run: bun install
 
-      # ── Import Developer ID certificate (skipped if secrets not set) ─────────
-      # When present, the CLI gets a stable Dev ID signature so macOS TCC grants
-      # (Full Disk Access) survive across releases. Without it, every release
-      # invalidates the user's TCC grant and they hit EPERM on ~/Documents/...
+      # ── Developer ID (required on a tag; ad-hoc on a dry run) ────────────────
       - name: Check signing secrets
         id: signing
         env:
           CERT_B64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          PUBLISH: ${{ steps.meta.outputs.publish }}
         run: |
           if [ -n "$CERT_B64" ]; then
             echo "available=true" >> $GITHUB_OUTPUT
+          elif [ "$PUBLISH" = "true" ]; then
+            echo "::error::Developer ID secrets missing — a tagged release must be signed and notarized"; exit 1
           else
             echo "available=false" >> $GITHUB_OUTPUT
-            echo "::warning::Developer ID secrets not configured, falling back to ad-hoc signing (TCC grants will be invalidated on every release)"
+            echo "::warning::Developer ID secrets not configured — dry run will be ad-hoc signed"
           fi
 
       - name: Import Developer ID certificate
@@ -52,214 +66,136 @@ jobs:
           KEYCHAIN_PATH="$RUNNER_TEMP/rt-signing.keychain-db"
           KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
           CERT_PATH="$RUNNER_TEMP/cert.p12"
-
           echo "$APPLE_CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
-
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-          security import "$CERT_PATH" -P "$APPLE_CERT_P12_PASSWORD" \
-            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-
-          security set-key-partition-list -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-          # Prepend our keychain so codesign (and rt-tray/build.sh) can find the cert
+          security import "$CERT_PATH" -P "$APPLE_CERT_P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
-
-          SIGNING_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-            | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
-
-          if [ -z "$SIGNING_IDENTITY" ]; then
-            echo "::error::Developer ID Application certificate not found in imported keychain"
-            security find-identity -v -p codesigning "$KEYCHAIN_PATH"
-            exit 1
-          fi
-
-          echo "Found signing identity: $SIGNING_IDENTITY"
+          SIGNING_IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+          [ -n "$SIGNING_IDENTITY" ] || { echo "::error::Developer ID Application certificate not found"; exit 1; }
           echo "SIGNING_IDENTITY=$SIGNING_IDENTITY" >> $GITHUB_ENV
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> $GITHUB_ENV
           rm -f "$CERT_PATH"
 
-      # ── Build rt binary (arm64 + x64) ────────────────────────────────────────
+      # ── Inputs to the bundle ─────────────────────────────────────────────────
       - name: Compile rt (arm64)
-        run: bun build --compile --target=bun-darwin-arm64 ./cli.ts --outfile rt-arm64 --define RT_VERSION='"${{ github.ref_name }}"'
+        run: bun build --compile --target=bun-darwin-arm64 ./cli.ts --outfile dist/rt --define RT_VERSION='"${{ steps.meta.outputs.tag }}"'
 
-      - name: Compile rt (x64)
-        run: bun build --compile --target=bun-darwin-x64 ./cli.ts --outfile rt-x64 --define RT_VERSION='"${{ github.ref_name }}"'
+      - name: Fetch bundled dependencies
+        run: scripts/fetch-deps.sh arm64
 
-      # ── Sign rt binaries (must run BEFORE tray build so the embedded daemon
-      # carries Bun JIT entitlements baked in by codesign, re-signing later
-      # would invalidate the parent bundle's seal). ───────────────────────────
-      - name: Sign rt binaries
-        run: |
-          if [ -n "$SIGNING_IDENTITY" ]; then
-            echo "Signing rt binaries with Developer ID: $SIGNING_IDENTITY"
-            for bin in rt-arm64 rt-x64; do
-              codesign --remove-signature "$bin"
-              codesign --force --sign "$SIGNING_IDENTITY" \
-                --options runtime --timestamp \
-                --entitlements scripts/entitlements.plist "$bin"
-            done
-          else
-            echo "Ad-hoc signing rt binaries (no Dev ID configured)"
-            for bin in rt-arm64 rt-x64; do
-              codesign --remove-signature "$bin"
-              codesign --force --sign - --entitlements scripts/entitlements.plist "$bin"
-            done
-          fi
-
-      # ── Build mattstack.app per arch (embeds matching rt as rt-daemon) ───────
-      # build.sh reads RT_DAEMON_BIN to copy the daemon into Contents/MacOS,
-      # ships LaunchAgent.plist into Contents/Library/LaunchAgents, and signs
-      # the bundle.
-      - name: Build mattstack (arm64)
-        run: |
-          RT_DAEMON_BIN="$(pwd)/rt-arm64" rt-tray/build.sh release
-          mv rt-tray/mattstack.app rt-tray/mattstack-arm64.app
-
-      - name: Build mattstack (x64)
-        run: |
-          RT_DAEMON_BIN="$(pwd)/rt-x64" rt-tray/build.sh release
-          mv rt-tray/mattstack.app rt-tray/mattstack-x64.app
-
-      # ── Package VS Code extension ────────────────────────────────────────────
       - name: Build extension
         run: |
           cd extensions/vscode/rt-context
           bun install
           bun run package
+          echo "RT_VSIX=$(ls "$PWD"/*.vsix | head -1)" >> $GITHUB_ENV
 
-      # ── Bundle release archives ──────────────────────────────────────────────
-      - name: Create release bundles
-        run: |
-          VERSION="${GITHUB_REF_NAME}"
-          VSIX=$(ls extensions/vscode/rt-context/*.vsix | head -1)
+      # ── The app (build.sh signs inside-out with the imported identity) ───────
+      - name: Build mattstack.app
+        env:
+          RT_DAEMON_BIN: ${{ github.workspace }}/dist/rt
+          RT_VERSION: ${{ steps.meta.outputs.tag }}
+          RT_REQUIRE_DEPS: "1"
+          RT_BUILD_TOOL: swift
+        run: rt-tray/build.sh release
 
-          # arm64 bundle
-          mkdir -p dist/arm64
-          cp rt-arm64 dist/arm64/rt
-          chmod +x dist/arm64/rt
-          cp -R rt-tray/mattstack-arm64.app dist/arm64/mattstack.app
-          cp "$VSIX" dist/arm64/rt-context.vsix
+      - name: Assert the bundle contract
+        run: rt-tray/check-bundle.sh --app rt-tray/mattstack.app
 
-          # x64 bundle
-          mkdir -p dist/x64
-          cp rt-x64 dist/x64/rt
-          chmod +x dist/x64/rt
-          cp -R rt-tray/mattstack-x64.app dist/x64/mattstack.app
-          cp "$VSIX" dist/x64/rt-context.vsix
-
-      # ── Notarize mattstack.app (skipped if notarization secrets not set) ─────
-      # Submits the signed .app to Apple's notary service and staples the result
-      # so Gatekeeper accepts it offline. Without this, users see "mattstack
-      # cannot be opened because the developer cannot be verified" on first run.
-      - name: Check notarization secrets
-        id: notary
+      - name: Notarize and staple the app
         if: steps.signing.outputs.available == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_ID_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
-            echo "available=true" >> $GITHUB_OUTPUT
-          else
-            echo "available=false" >> $GITHUB_OUTPUT
-            echo "::warning::Notarization secrets not set, mattstack.app will trigger Gatekeeper warning on first launch"
-          fi
+        run: scripts/release/notarize.sh rt-tray/mattstack.app
 
-      - name: Notarize and staple mattstack.app
-        if: steps.notary.outputs.available == 'true'
-        continue-on-error: true
+      # ── Artifacts ────────────────────────────────────────────────────────────
+      - name: Zip enclosure + DMG
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          mkdir -p out
+          scripts/release/make-zip.sh rt-tray/mattstack.app "out/mattstack-${VERSION}.zip"
+          scripts/release/make-dmg.sh rt-tray/mattstack.app "out/mattstack-${VERSION}.dmg" "${SIGNING_IDENTITY:-}"
+
+      - name: Notarize and staple the DMG
+        if: steps.signing.outputs.available == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: scripts/release/notarize.sh "out/mattstack-${VERSION}.dmg"
+
+      - name: Appcast (signed, with deltas)
+        if: steps.meta.outputs.publish == 'true'
+        env:
+          SPARKLE_ED_KEY: ${{ secrets.SPARKLE_ED_KEY }}
         run: |
-          # Notarize the tray app once; copy stapled result into both bundles
-          ditto -c -k --keepParent dist/arm64/mattstack.app "$RUNNER_TEMP/mattstack.zip"
+          [ -n "$SPARKLE_ED_KEY" ] || { echo "::error::SPARKLE_ED_KEY secret missing"; exit 1; }
+          scripts/release/appcast.sh out "${{ steps.meta.outputs.tag }}"
 
-          xcrun notarytool submit "$RUNNER_TEMP/mattstack.zip" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_ID_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait
+      - name: Checksums
+        run: cd out && shasum -a 256 mattstack-*.dmg mattstack-*.zip *.delta appcast.xml 2>/dev/null > SHA256SUMS; cat out/SHA256SUMS
 
-          # Staple the original .app (notarytool checks by hash, not zip path)
-          xcrun stapler staple dist/arm64/mattstack.app
-          xcrun stapler validate dist/arm64/mattstack.app
-
-          # Mirror stapled .app into x64 bundle (it's the same Swift binary, same signature)
-          rm -rf dist/x64/mattstack.app
-          cp -R dist/arm64/mattstack.app dist/x64/mattstack.app
-
-      - name: Create release tarballs
-        run: |
-          VERSION="${GITHUB_REF_NAME}"
-          tar -czf "rt-darwin-arm64-${VERSION}.tar.gz" -C dist/arm64 .
-          tar -czf "rt-darwin-x64-${VERSION}.tar.gz" -C dist/x64 .
-
-      # ── Cleanup signing keychain ─────────────────────────────────────────────
       - name: Cleanup keychain
         if: always() && env.KEYCHAIN_PATH != ''
         run: security delete-keychain "$KEYCHAIN_PATH" || true
 
-      # ── Create GitHub Release ────────────────────────────────────────────────
-      # RELEASE_NOTES.md is committed by the rt-release skill at the tagged
-      # commit and is the single source of the release body. The guard keeps a
-      # hand-pushed tag (no skill) from failing the publish.
+      # ── Publish ──────────────────────────────────────────────────────────────
       - name: Ensure release notes exist
+        if: steps.meta.outputs.publish == 'true'
         run: '[ -f RELEASE_NOTES.md ] || echo "Release ${GITHUB_REF_NAME}." > RELEASE_NOTES.md'
 
       - name: Create Release
+        if: steps.meta.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
           body_path: RELEASE_NOTES.md
           files: |
-            rt-darwin-arm64-*.tar.gz
-            rt-darwin-x64-*.tar.gz
+            out/mattstack-*.dmg
+            out/mattstack-*.zip
+            out/*.delta
+            out/appcast.xml
+            out/SHA256SUMS
 
-  # ── Post-release install test ─────────────────────────────────────────────
-  # Installs from the published tarball on a fresh runner, the same artifact
-  # mattstack.app's installer and `rt update` consume.
-  test-install:
+      - name: Upload dry-run artifacts
+        if: steps.meta.outputs.publish != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dry-run
+          path: out/
+          retention-days: 7
+
+  # ── Clean room (spec §12.2 layer a): a fresh runner installs from the zip ───
+  clean-room:
     needs: release
     runs-on: macos-latest
     steps:
-      - name: Download release tarball
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts
+            rt-tray
+
+      - name: Download the app zip (release)
+        if: needs.release.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download "${GITHUB_REF_NAME}" -R "${GITHUB_REPOSITORY}" \
-            -p "rt-darwin-arm64-*.tar.gz" -D "$RUNNER_TEMP"
-          mkdir -p "$RUNNER_TEMP/release"
-          tar -xzf "$RUNNER_TEMP"/rt-darwin-arm64-*.tar.gz -C "$RUNNER_TEMP/release"
-          ls -la "$RUNNER_TEMP/release"
+          mkdir -p "$RUNNER_TEMP/dl"
+          gh release download "${{ needs.release.outputs.tag }}" -R "$GITHUB_REPOSITORY" -p "mattstack-*.zip" -D "$RUNNER_TEMP/dl"
 
-      - name: Install runtime dependencies
-        run: brew install fzf tmux
+      - name: Download the app zip (dry run)
+        if: needs.release.outputs.publish != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dry-run
+          path: ${{ runner.temp }}/dl
 
-      - name: Verify binary
-        run: |
-          "$RUNNER_TEMP/release/rt" --version
-          echo "Binary OK: $("$RUNNER_TEMP/release/rt" --version)"
-
-      - name: Run the installer
-        run: |
-          "$RUNNER_TEMP/release/rt" --post-install
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Installed binary on PATH
-        run: |
-          test -x "$HOME/.local/bin/rt"
-          rt --version
-
-      - name: Install and start daemon
-        run: |
-          rt daemon install
-          sleep 3
-
-      - name: Verify installation
-        run: rt verify --ci
+      - name: Headless install + verify
+        run: scripts/e2e-cleanroom.sh "$(ls "$RUNNER_TEMP"/dl/mattstack-*.zip | head -1)"
