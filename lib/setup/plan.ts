@@ -57,7 +57,7 @@ function resolveTeam(intent: SetupIntent | null, teams: string[], teamOverride: 
  * derivation from the intent's own remote is the fallback for create mode
  * and for a join pointer that somehow omits it.
  */
-function enrichSnapshotForge(snapshot: TeamSnapshot, intent: SetupIntent | null): TeamSnapshot {
+export function enrichSnapshotForge(snapshot: TeamSnapshot, intent: SetupIntent | null): TeamSnapshot {
   if (snapshot.integrations.forge) return snapshot;
 
   const pointerForge = intent?.mode === "join" ? intent.join?.pointer.forge : undefined;
