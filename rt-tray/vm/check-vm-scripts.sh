@@ -32,15 +32,18 @@ t "drive-setup.sh refuses when GUEST_RUN unmounted" bash -c '! (env -u GUEST_RUN
 t "drive-setup.sh rejects unknown scenario"       bash -c '! (env GUEST_RUN=/tmp/vmcheck-ax AX_APP=x bash run/guest/drive-setup.sh bogus >/dev/null 2>&1)'
 t "drive-setup.sh rejects unknown flag"           bash -c '! (env GUEST_RUN=/tmp/vmcheck-ax AX_APP=x bash run/guest/drive-setup.sh create --nope >/dev/null 2>&1)'
 
+rm -rf /tmp/vmcheck-tu
 mkdir -p /tmp/vmcheck-tu/upd
 : > /tmp/vmcheck-tu/upd/appcast.xml
 t "trigger-update.sh usage (no update-dir)"       bash -c 'out=$(GUEST_RUN=/tmp/vmcheck-ax bash run/guest/trigger-update.sh /nonexistent 1.2.3 2>&1); rc=$?; [ "$rc" -eq 1 ] && printf "%s" "$out" | grep -q "^usage: trigger-update.sh"'
 t "trigger-update.sh usage (appcast-server missing/not executable)" bash -c 'out=$(GUEST_RUN=/tmp/vmcheck-ax bash run/guest/trigger-update.sh /tmp/vmcheck-tu/upd 1.2.3 2>&1); rc=$?; [ "$rc" -eq 1 ] && printf "%s" "$out" | grep -q "^usage: trigger-update.sh"'
 touch /tmp/vmcheck-tu/upd/appcast-server; chmod +x /tmp/vmcheck-tu/upd/appcast-server
 t "trigger-update.sh usage (missing new-version arg)" bash -c 'out=$(GUEST_RUN=/tmp/vmcheck-ax bash run/guest/trigger-update.sh /tmp/vmcheck-tu/upd 2>&1); rc=$?; [ "$rc" -eq 1 ] && printf "%s" "$out" | grep -q "^usage: trigger-update.sh"'
+t "trigger-update.sh usage (malformed new-version)" bash -c 'out=$(GUEST_RUN=/tmp/vmcheck-ax bash run/guest/trigger-update.sh /tmp/vmcheck-tu/upd 2.9 2>&1); rc=$?; [ "$rc" -eq 1 ] && printf "%s" "$out" | grep -q "^usage: trigger-update.sh"'
+t "trigger-update.sh ax.sh mount guard actually aborts" bash -c 'out=$(env GUEST_RUN=/tmp/vmcheck-tu-nonexistent bash run/guest/trigger-update.sh /tmp/vmcheck-tu/upd 1.2.3 2>&1); rc=$?; [ "$rc" -eq 1 ] && printf "%s" "$out" | grep -q "is not mounted" && ! printf "%s" "$out" | grep -q ASSERT'
 
 t "e2e-cleanroom usage"          bash -c '! bash ../../scripts/e2e-cleanroom.sh >/dev/null 2>&1'
 t "winid compiles"               swiftc -O -o /tmp/vmcheck-winid run/host/winid.swift
 t "appcast-server compiles"      bun build --compile run/helpers/appcast-server.ts --outfile /tmp/vmcheck-appcast
-rm -rf /tmp/vmcheck-art /tmp/vmcheck-winid /tmp/vmcheck-appcast /tmp/vmcheck.out /tmp/vmcheck-invite.txt /tmp/vmcheck-ax /tmp/vmcheck-tu
+rm -rf /tmp/vmcheck-art /tmp/vmcheck-winid /tmp/vmcheck-appcast /tmp/vmcheck.out /tmp/vmcheck-invite.txt /tmp/vmcheck-ax /tmp/vmcheck-tu /tmp/vmcheck-tu-nonexistent
 echo; [ "$fails" -eq 0 ] && echo "  all vm checks ok" || { echo "  $fails check(s) failed"; exit 1; }
