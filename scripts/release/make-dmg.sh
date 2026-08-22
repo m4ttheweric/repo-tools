@@ -11,25 +11,26 @@ APP="$1"; OUT="$2"; IDENTITY="${3:-}"
 
 [ -d "$APP" ] || { echo "✗ no app bundle at $APP" >&2; exit 1; }
 
-is_mounted() {
-    mount | grep -qF " on $1 ("
-}
-
 STAGE=""
 MOUNTPOINT=""
 cleanup() {
-    # Runs on every exit path, including a failed attach/verify, so a busted
-    # build never leaves a volume mounted behind it.
-    if [ -n "$MOUNTPOINT" ] && is_mounted "$MOUNTPOINT"; then
-        hdiutil detach "$MOUNTPOINT" -quiet -force >/dev/null 2>&1 || true
+    # A trap that fails, or that falls through to its own last command's
+    # status, silently overwrites the script's real exit code — capture it
+    # first and re-exit with it explicitly once cleanup is done.
+    local rc=$?
+    if [ -n "$MOUNTPOINT" ]; then
+        hdiutil detach "$MOUNTPOINT" -force >/dev/null 2>&1 || true
+        rm -rf "$MOUNTPOINT" || true
     fi
-    [ -n "$STAGE" ] && rm -rf "$STAGE"
-    [ -n "$MOUNTPOINT" ] && rm -rf "$MOUNTPOINT"
+    if [ -n "$STAGE" ]; then
+        rm -rf "$STAGE" || true
+    fi
+    exit "$rc"
 }
 trap cleanup EXIT
 
-STAGE="$(mktemp -d "${TMPDIR:-/tmp}/mattstack-release-stage.XXXXXX")"
-MOUNTPOINT="$(mktemp -d "${TMPDIR:-/tmp}/mattstack-release-mount.XXXXXX")"
+STAGE="$(mktemp -d -t mattstack-release-stage)"
+MOUNTPOINT="$(mktemp -d -t mattstack-release-mount)"
 
 ditto "$APP" "$STAGE/$(basename "$APP")"
 ln -s /Applications "$STAGE/Applications"
