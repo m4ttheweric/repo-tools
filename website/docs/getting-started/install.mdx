@@ -7,10 +7,10 @@ title: Install
 
 ```bash
 brew install m4ttheweric/tap/rt
-rt verify                  # completes first-run setup, then verifies everything
+rt setup status             # confirms the tray app, daemon, and integrations are healthy
 ```
 
-[`rt verify`](/reference/verify) does double duty. On first run it performs the setup that installs the tray app, daemon, editor extensions, and shell integration, and on every subsequent run it health-checks each of those pieces so you can confirm the install is still in good shape.
+`rt setup status` and [`rt verify`](/reference/verify) both health-check the tray app, daemon, editor extensions, and shell integration so you can confirm the install is in good shape. Run `rt setup plan` beforehand to see the readiness checklist for what Install still needs from you.
 
 Then configure your API tokens:
 

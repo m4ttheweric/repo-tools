@@ -35,4 +35,32 @@ describe("first-run", () => {
     const combined = result.stdout + result.stderr;
     expect(combined).not.toContain("rt is not set up yet");
   }, 30_000);
+
+  test("a setup-adjacent command (skip list) never sees the hint, even on a fresh HOME", async () => {
+    const fresh = createTestHome();
+    try {
+      expect(existsSync(join(fresh.path, ".mattstack", "rt", "daemon.json"))).toBe(false);
+
+      const result = await rtRaw(["setup", "plan", "--json"], { home: fresh.path });
+
+      const combined = result.stdout + result.stderr;
+      expect(combined).not.toContain("rt is not set up yet");
+    } finally {
+      fresh.cleanup();
+    }
+  }, 30_000);
+
+  test("RT_APP_SOCKET set skips the hint for a non-skip command on a fresh HOME", async () => {
+    const fresh = createTestHome();
+    try {
+      expect(existsSync(join(fresh.path, ".mattstack", "rt", "daemon.json"))).toBe(false);
+
+      const result = await rtRaw(["daemon", "install"], { home: fresh.path, env: { RT_APP_SOCKET: "/tmp/rt-e2e-tray.sock" } });
+
+      const combined = result.stdout + result.stderr;
+      expect(combined).not.toContain("rt is not set up yet");
+    } finally {
+      fresh.cleanup();
+    }
+  }, 30_000);
 });

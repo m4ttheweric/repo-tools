@@ -7,6 +7,8 @@
  */
 
 import type { CommandContext } from "../lib/command-tree.ts";
+import { listTeams } from "../lib/settings/stores.ts";
+import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
 import { composePlan, realSecretPresence } from "../lib/setup/plan.ts";
 import { createRealProbes, type Probes } from "../lib/setup/probes.ts";
 import type { Plan, RowStatus } from "../lib/setup/contract.ts";
@@ -47,16 +49,24 @@ export function renderPlanHuman(plan: Plan): string[] {
   return lines;
 }
 
-async function runPlan(args: string[], deps: SetupDeps, mode: "plan" | "status", header?: string): Promise<void> {
-  const plan = await composePlan({
-    p: deps.probes,
-    secrets: deps.secrets,
-    ci: process.env.CI === "true",
-    mode,
-    teamOverride: flagValue(args, "--team"),
-  });
+async function runPlan(args: string[], deps: SetupDeps, mode: "plan" | "status", verb: string, header?: string): Promise<void> {
+  const json = args.includes("--json");
+  let plan: Plan;
+  try {
+    plan = await composePlan({
+      p: deps.probes,
+      secrets: deps.secrets,
+      ci: process.env.CI === "true",
+      mode,
+      teams: listTeams(),
+      teamOverride: flagValue(args, "--team"),
+    });
+  } catch (err) {
+    if (err instanceof UserActionableError) exitUserError(err, json, verb, deps.print);
+    throw err;
+  }
 
-  if (args.includes("--json")) {
+  if (json) {
     deps.print(JSON.stringify(plan));
     return;
   }
@@ -65,13 +75,12 @@ async function runPlan(args: string[], deps: SetupDeps, mode: "plan" | "status",
 }
 
 export async function setupPlan(args: string[], _ctx: CommandContext = {}, deps: SetupDeps = realSetupDeps()): Promise<void> {
-  await runPlan(args, deps, "plan");
+  await runPlan(args, deps, "plan", "setup");
 }
 
 export async function setupStatus(args: string[], _ctx: CommandContext = {}, deps: SetupDeps = realSetupDeps()): Promise<void> {
-  await runPlan(args, deps, "status", "rt setup status");
+  await runPlan(args, deps, "status", "setup", "rt setup status");
 }
 
-// Task 27 replaces this with the real interactive walk; today it's the same
-// health view `rt setup status` gives.
+// Today this is the same health view `rt setup status` gives.
 export const setupInteractive = setupStatus;

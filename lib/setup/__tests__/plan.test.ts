@@ -1,8 +1,6 @@
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { describe, test, expect } from "bun:test";
 import { composePlan } from "../plan.ts";
+import { UserActionableError } from "../errors.ts";
 import { writeIntent, type SetupIntent } from "../intent.ts";
 import type { SecretPresence } from "../validators/accounts.ts";
 import { fakeProbes, fakeTray, ok } from "./fakes.ts";
@@ -39,7 +37,7 @@ const grantedTray = fakeTray({
 describe("composePlan", () => {
   test("no intent, no teams -> 4 groups in contract order, team.mode none, perm.fda ready", async () => {
     const p = fakeProbes({ exec: readyExec, tray: grantedTray });
-    const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "status" });
+    const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "status", teams: [] });
 
     expect(plan.contract).toBe(1);
     expect(plan.groups.map((g) => g.id)).toEqual(["mac", "accounts", "access", "tools"]);
@@ -56,7 +54,7 @@ describe("composePlan", () => {
       // Default fakeProbes tray already answers status 0 (unreachable) when not overridden.
       daemon: async (cmd) => (cmd === "tcc:check" ? { ok: true, data: { blocked: [], accessible: ["a", "b"], totalRepos: 2 } } : null),
     });
-    const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "status" });
+    const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "status", teams: [] });
 
     const mac = plan.groups.find((g) => g.id === "mac")!;
     const fda = mac.rows.find((r) => r.id === "perm.fda")!;
@@ -74,47 +72,64 @@ describe("composePlan", () => {
     };
     writeIntent(p, intent);
 
-    const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "plan" });
+    const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "plan", teams: [] });
 
     expect(plan.team).toEqual({ slug: "acme", name: "Acme", mode: "create" });
     const accounts = plan.groups.find((g) => g.id === "accounts")!;
     expect(accounts.rows.some((r) => r.id === "account.github")).toBe(true);
   });
 
-  test("teamOverride is ignored when it names no discovered team", async () => {
+  test("join intent -> forge derived from the invite pointer's own forge field, not re-parsed from its remote", async () => {
     const p = fakeProbes({ exec: readyExec, tray: grantedTray });
-    const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "status", teamOverride: "not-a-real-team" });
-    // No discovered teams -> override is ignored, falls back to teamRefFromIntent's empty ref.
-    expect(plan.team).toEqual({ slug: "", name: "", mode: "none" });
+    const intent: SetupIntent = {
+      v: 1,
+      at: "x",
+      mode: "join",
+      join: {
+        id: "inv1",
+        keyB64: "k",
+        pointer: {
+          v: 1,
+          team: "acme",
+          name: "Acme",
+          // The remote alone would derive "example.com", not "github.com" — proves the pointer's own forge wins.
+          remote: "https://example.com/acme/mattstack.git",
+          owner: "owner1",
+          forge: "github.com",
+          createdAt: "x",
+        },
+      },
+    };
+    writeIntent(p, intent);
+
+    const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "plan", teams: [] });
+
+    const accounts = plan.groups.find((g) => g.id === "accounts")!;
+    expect(accounts.rows.some((r) => r.id === "account.github")).toBe(true);
   });
 
-  describe("teamOverride naming a real discovered team", () => {
-    const origHome = process.env.HOME;
-    let home: string;
+  test("--team naming an unknown team rejects with a user-actionable error instead of silently substituting a different plan", async () => {
+    const p = fakeProbes({ exec: readyExec, tray: grantedTray });
 
-    beforeAll(() => {
-      home = mkdtempSync(join(tmpdir(), "rt-plan-teams-"));
-      process.env.HOME = home;
-      mkdirSync(join(home, ".mattstack", "teams", "acme", "mattstack"), { recursive: true });
-      writeFileSync(join(home, ".mattstack", "teams", "acme", "mattstack", "settings.team.jsonc"), "{}");
-    });
+    await expect(
+      composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "status", teams: ["acme"], teamOverride: "ghost" }),
+    ).rejects.toThrow(UserActionableError);
 
-    afterAll(() => {
-      process.env.HOME = origHome;
-      rmSync(home, { recursive: true, force: true });
-    });
-
-    test("wins over an unrelated intent's team", async () => {
-      const p = fakeProbes({ exec: readyExec, tray: grantedTray, home });
-      const intent: SetupIntent = { v: 1, at: "x", mode: "restore", restore: { homeRepo: "r" } };
-      writeIntent(p, intent);
-
-      const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "status", teamOverride: "acme" });
-      expect(plan.team).toEqual({ slug: "acme", name: "acme", mode: "none" });
-    });
+    await expect(
+      composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "status", teams: ["acme"], teamOverride: "ghost" }),
+    ).rejects.toThrow(/ghost/);
   });
 
-  test("a group builder that throws degrades to one error row, never a rejected plan", async () => {
+  test("--team naming a discovered team wins over an unrelated intent's team", async () => {
+    const p = fakeProbes({ exec: readyExec, tray: grantedTray });
+    const intent: SetupIntent = { v: 1, at: "x", mode: "restore", restore: { homeRepo: "r" } };
+    writeIntent(p, intent);
+
+    const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "status", teams: ["acme"], teamOverride: "acme" });
+    expect(plan.team).toEqual({ slug: "acme", name: "acme", mode: "none" });
+  });
+
+  test("a group builder that throws degrades to one required error row with a re-check action, and canInstall stays false", async () => {
     const p = fakeProbes({
       exec: (argv) => {
         if (argv[0] === "sw_vers") throw new Error("boom");
@@ -123,19 +138,27 @@ describe("composePlan", () => {
       tray: grantedTray,
     });
 
-    const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "status" });
+    const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "status", teams: [] });
 
     const mac = plan.groups.find((g) => g.id === "mac")!;
     expect(mac.rows).toHaveLength(1);
-    expect(mac.rows[0]!.status).toBe("error");
-    expect(mac.rows[0]!.detail).toContain("boom");
+    const errorRow = mac.rows[0]!;
+    expect(errorRow.status).toBe("error");
+    expect(errorRow.detail).toContain("boom");
+    expect(errorRow.required).toBe(true);
+    expect(errorRow.action).toEqual({ type: "run", label: "Re-check", verb: ["setup", "status"] });
+
+    // The group's unrun checks must still count against canInstall — a
+    // degraded group is not the same thing as a group that came back clean.
+    expect(plan.canInstall).toBe(false);
+    expect(plan.requiredMissing).toContain(errorRow.id);
   });
 });
 
 describe("composePlan — install-satisfied flip", () => {
   test("plan mode: perm.login-items and tool.daemon read required:false with an optionalNote", async () => {
     const p = fakeProbes({ exec: readyExec, tray: grantedTray });
-    const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "plan" });
+    const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "plan", teams: [] });
 
     const mac = plan.groups.find((g) => g.id === "mac")!;
     const loginItems = mac.rows.find((r) => r.id === "perm.login-items")!;
@@ -150,7 +173,7 @@ describe("composePlan — install-satisfied flip", () => {
 
   test("status mode: perm.login-items and tool.daemon read required:true with no optionalNote", async () => {
     const p = fakeProbes({ exec: readyExec, tray: grantedTray });
-    const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "status" });
+    const plan = await composePlan({ p, secrets: fakeSecrets(), ci: false, mode: "status", teams: [] });
 
     const mac = plan.groups.find((g) => g.id === "mac")!;
     const loginItems = mac.rows.find((r) => r.id === "perm.login-items")!;

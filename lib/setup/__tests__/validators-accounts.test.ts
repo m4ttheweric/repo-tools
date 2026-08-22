@@ -370,3 +370,34 @@ describe("accountRows — secrets never leak", () => {
     for (const argv of p.calls.exec) expect(argv.join(" ")).not.toContain(SENTINEL);
   });
 });
+
+describe("accountRows — per-entry isolation", () => {
+  test("one integration's secrets.has() throwing degrades to that entry's own error row; every other declared integration's row is untouched", async () => {
+    const team = baseTeam({
+      integrations: {
+        forge: { host: "gitlab.example.com", provider: "gitlab" },
+        linear: { teamKey: "RT" },
+      },
+    });
+    const secrets: SecretPresence = {
+      async has(domain, key) {
+        if (domain === "rt" && key === "gitlabToken") throw new Error("sops -d exited 1: wrong recipient");
+        return null;
+      },
+    };
+    const exec: ExecScript = () => ok();
+
+    const rows = await accountRows(fakeProbes({ exec }), team, [], secrets, null);
+
+    const gitlab = rows.find((r) => r.id === "account.gitlab")!;
+    expect(gitlab.status).toBe("error");
+    expect(gitlab.required).toBe(true);
+    expect(gitlab.detail).toContain("wrong recipient");
+    expect(gitlab.action).toEqual({ type: "run", label: "Re-check", verb: ["setup", "status"] });
+
+    // linear's own secrets.has() call never threw — its row must read exactly
+    // as if gitlab's entry did not exist at all.
+    const linear = rows.find((r) => r.id === "account.linear")!;
+    expect(linear.status).toBe("missing");
+  });
+});
