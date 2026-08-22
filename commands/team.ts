@@ -16,7 +16,9 @@ import { envelope } from "../lib/setup/contract.ts";
 import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
 import { createRealProbes, type Probes } from "../lib/setup/probes.ts";
 import { createTeam } from "../lib/team/create.ts";
+import { mintInvite } from "../lib/team/invite.ts";
 import { publishTeam } from "../lib/team/publish.ts";
+import { createRelayClient, inviteRelayUrl } from "../lib/team/relay-client.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
 
 export interface TeamDeps {
@@ -108,6 +110,37 @@ export async function teamPublish(args: string[], _ctx: CommandContext = {}, dep
     deps.print(`rt team publish: pushed "${slug}" to ${result.remote}`);
   } catch (err) {
     if (err instanceof UserActionableError) exitUserError(err, json, "team publish", deps.print);
+    throw err;
+  }
+}
+
+export async function teamInvite(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
+  const json = args.includes("--json");
+  const handle = flagValue(args, "--handle");
+
+  if (!handle) {
+    deps.print("rt team invite: usage: rt team invite --handle <h> [--team <slug>] [--json]");
+    return (deps.exit ?? process.exit)(1);
+  }
+
+  try {
+    const slug = resolveTeamSlug(args);
+    const relay = createRelayClient(deps.probes.fetch, inviteRelayUrl(deps.probes.env));
+    const result = await mintInvite(deps.probes, relay, { slug, handle, now: deps.probes.now() });
+
+    if (json) {
+      deps.print(JSON.stringify(envelope(result)));
+      return;
+    }
+
+    deps.print(result.pasteBlock);
+    if (result.forgeAccess !== "granted") {
+      deps.print("");
+      deps.print(`rt team invite: forge access is ${result.forgeAccess} — finish it by hand:`);
+      for (const step of result.manualSteps) deps.print(`  - ${step}`);
+    }
+  } catch (err) {
+    if (err instanceof UserActionableError) exitUserError(err, json, "team invite", deps.print);
     throw err;
   }
 }

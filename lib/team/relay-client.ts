@@ -23,8 +23,13 @@ function stripTrailingSlash(url: string): string {
 }
 
 export interface RelayClient {
-  /** POST /v1/invites {ciphertext, expiresAt} */
-  create(ciphertext: string, expiresAt: string): Promise<{ id: string; creatorSecret: string }>;
+  /**
+   * POST /v1/invites {ciphertext, expiresAt, id?}. The invite id doubles as
+   * the sealed blob's AAD (see invite-crypto.ts), which must be fixed before
+   * the ciphertext can exist — so the caller generates it and asks the relay
+   * to store the record under that id rather than waiting for one back.
+   */
+  create(ciphertext: string, expiresAt: string, id?: string): Promise<{ id: string; creatorSecret: string }>;
   /** GET /v1/invites/:id — 404/410 (expired or claimed away) both read as "gone" */
   fetch(id: string): Promise<{ ciphertext: string } | "gone">;
   /** POST /v1/invites/:id/redeem — 409 means another redeemer already won the race */
@@ -94,8 +99,9 @@ export function createRelayClient(fetchFn: Probes["fetch"], baseUrl: string): Re
   }
 
   return {
-    async create(ciphertext, expiresAt) {
-      const res = await send("/v1/invites", { method: "POST", json: { ciphertext, expiresAt } });
+    async create(ciphertext, expiresAt, id) {
+      if (id !== undefined) assertOpaqueId(id);
+      const res = await send("/v1/invites", { method: "POST", json: { ciphertext, expiresAt, ...(id !== undefined ? { id } : {}) } });
       if (!isSuccess(res.status)) throw relayError(res.status, res.path);
       const parsed = parseJsonObject(res.body);
       if (typeof parsed?.id !== "string" || typeof parsed?.creatorSecret !== "string") {
