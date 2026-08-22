@@ -67,26 +67,43 @@ struct ProcessPanelView: View {
 
     private func makeGearMenu() -> NSMenu {
         let menu = NSMenu()
-        menu.addItem(ActionMenuItem("Restart Daemon") {
+        // NSMenu.autoenablesItems defaults true and re-enables any item whose
+        // target has no validateMenuItem — that would silently override the
+        // Check for Updates item's explicit isEnabled below.
+        menu.autoenablesItems = false
+        menu.addItem(ActionMenuItem("Restart Daemon", axid: AXID.menuGearRestartDaemon) {
             NotificationCenter.default.post(name: .rtRestartDaemon, object: nil)
         })
-        menu.addItem(ActionMenuItem("Stop Daemon") {
+        menu.addItem(ActionMenuItem("Stop Daemon", axid: AXID.menuGearStopDaemon) {
             NotificationCenter.default.post(name: .rtStopDaemon, object: nil)
         })
         menu.addItem(.separator())
-        menu.addItem(ActionMenuItem("View Logs…") {
+        menu.addItem(ActionMenuItem("View Logs…", axid: AXID.menuGearViewLogs) {
             NotificationCenter.default.post(name: .rtViewDaemonLogs, object: nil)
         })
         menu.addItem(.separator())
-        menu.addItem(ActionMenuItem("Start at Login", state: startAtLogin ? .on : .off) {
+        menu.addItem(ActionMenuItem("Setup status…", axid: AXID.menuGearSetupStatus) {
+            NotificationCenter.default.post(name: .rtShowSetupStatus, object: nil)
+        })
+        menu.addItem(ActionMenuItem("Settings…", axid: AXID.menuGearSettings) {
+            NotificationCenter.default.post(name: .rtShowSettings, object: nil)
+        })
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem("Start at Login", state: startAtLogin ? .on : .off, axid: AXID.menuGearStartAtLogin) {
             toggleStartAtLogin()
         })
         menu.addItem(.separator())
-        menu.addItem(ActionMenuItem(updateMenuTitle) {
+        let updateItem = ActionMenuItem(updateMenuTitle, axid: AXID.menuGearCheckForUpdates) {
             NotificationCenter.default.post(name: .rtCheckUpdates, object: nil)
+        }
+        updateItem.isEnabled = trayState.canCheckForUpdates || trayState.updateAvailable != nil
+        menu.addItem(updateItem)
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem("Uninstall mattstack…", axid: AXID.menuGearUninstall) {
+            NotificationCenter.default.post(name: .rtShowUninstall, object: nil)
         })
         menu.addItem(.separator())
-        menu.addItem(ActionMenuItem("Quit mattstack") {
+        menu.addItem(ActionMenuItem("Quit mattstack", axid: AXID.menuGearQuit) {
             NSApplication.shared.terminate(nil)
         })
         return menu
@@ -392,11 +409,12 @@ private struct MenuAnchor: NSViewRepresentable {
 final class ActionMenuItem: NSMenuItem {
     private let handler: () -> Void
 
-    init(_ title: String, state: NSControl.StateValue = .off, handler: @escaping () -> Void) {
+    init(_ title: String, state: NSControl.StateValue = .off, axid: String? = nil, handler: @escaping () -> Void) {
         self.handler = handler
         super.init(title: title, action: #selector(invoke), keyEquivalent: "")
         self.target = self
         self.state = state
+        if let axid { setAccessibilityIdentifier(axid) }
     }
 
     required init(coder: NSCoder) {

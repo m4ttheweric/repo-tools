@@ -34,12 +34,15 @@ const API_INDEX = {
     { method: "POST", path: "/api/events/emit",     description: "Emit an event onto the pane-communication bus" },
     { method: "GET",  path: "/api/events",          description: "List events matching a topic pattern" },
     { method: "GET",  path: "/api/secrets",          description: "Whitelisted secret values (linearApiKey, gitlabToken) — token-gated" },
+    { method: "GET",  path: "/api/runs",            description: "Pipeline runs, newest first (?repo= to scope)" },
+    { method: "GET",  path: "/api/runs/:repo/:runId", description: "One run: stages, fields, decisions" },
   ],
   websocket_events: [
     { type: "status",         description: "Full daemon status — after each cache refresh (~5 min)" },
     { type: "ports",          description: "Full port list — after each port scan (~30s)" },
     { type: "notification",   description: "Notification event — when a transition fires" },
     { type: "system-processes", description: "Repo processes with CPU/memory — after each 10s scan" },
+    { type: "event",          description: "Events-bus broadcast frame; topic run-updated announces pipeline run writes" },
   ],
   auth: {
     header: "X-RT-Token",
@@ -60,6 +63,7 @@ const REST_ROUTES: Record<string, { cmd: string; method: string }> = {
   "/api/sdm/reconnect": { cmd: "sdm:reconnect", method: "POST" },
   "/api/events/emit":   { cmd: "events:emit", method: "POST" },
   "/api/events":        { cmd: "events:list", method: "GET" },
+  "/api/runs":          { cmd: "runs:list", method: "GET" },
   // "/api/secrets" is NOT here — see the dedicated block in fetch() below:
   // it needs its header token forwarded into the command payload (the
   // secrets:read handler checks payload.token itself, not just this layer),
@@ -148,6 +152,23 @@ export function startApiServer(deps: ApiServerDeps): Server<any> {
           const repo = decodeURIComponent(url.pathname.slice("/api/hooks/".length, -"/repair".length));
           const result = await handleCommand("hooks:repair", { repo }, req.signal);
           return Response.json(result, { headers: corsHeaders });
+        }
+
+        // Runs detail: /api/runs/:repo/:runId
+        if (url.pathname.startsWith("/api/runs/") && req.method === "GET") {
+          let rest: string | undefined;
+          try {
+            rest = decodeURIComponent(url.pathname.slice("/api/runs/".length));
+          } catch {
+            rest = undefined; // malformed %-encoding -> fall through to the 404 path below
+          }
+          if (rest !== undefined) {
+            const slash = rest.indexOf("/");
+            if (slash > 0 && slash < rest.length - 1) {
+              const result = await handleCommand("runs:get", { repo: rest.slice(0, slash), runId: rest.slice(slash + 1) }, req.signal);
+              return Response.json(result, { headers: corsHeaders });
+            }
+          }
         }
 
         // Secrets: forward the X-RT-Token header (already verified above by

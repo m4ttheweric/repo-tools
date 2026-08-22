@@ -3,10 +3,16 @@ import UserNotifications
 import ServiceManagement
 import Network
 import SwiftUI
+import MattstackCore
 
 // MARK: - AppDelegate
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+// `VersionProviding` (a `Sendable` protocol, adopted below) lets `TrayRoutes`
+// call `versionInfo()` from its own async route-handling `Task`, off the main
+// actor — the only member of this class ever reached off-main, and it only
+// reads immutable process-global state (`Bundle.main`, `BundleFlavor`).
+// `@unchecked` because the compiler can't see that from the conformance site.
+class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
 
     // ── Menu bar ────────────────────────────────────────────────────────────
     private var statusItem: NSStatusItem!
@@ -27,11 +33,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // ── State ───────────────────────────────────────────────────────────────
     private var currentHealth: DaemonHealth = .unknown
-    private let updateChecker = UpdateChecker.shared
+    // `lazy`: constructing it starts Sparkle (when enabled). A translocated
+    // or DMG-mounted launch returns before `buildServices()` (the first
+    // touch) ever runs, so Sparkle never spins up on a copy that's about to
+    // be told to quit. Stub mode counts as a dev build here too -- the
+    // placeholder SUPublicEDKey already blocks Sparkle in every build this
+    // repo produces, but a future real key must not revive it under the
+    // stub-driven UI-test/QA harness.
+    lazy var updater = UpdaterController(isDevBuild: BundleFlavor.isDevBuild || BundleFlavor.isStubActive, isBusy: { SetupSession.isRunning })
+    private var updaterObservation: NSKeyValueObservation?
+
+    // ── Setup / Settings / rt ────────────────────────────────────────────────
+    private var permissionsService: PermissionsService!
+    private var servicesRegistrar: ServicesRegistrar!
+    private var needBroker: NeedBroker!
+    private var coordinator: SetupCoordinator?
+    private var rtClient: RtClient?
+    /// A `mattstack://join/<code>` event can arrive before `buildServices()`
+    /// builds the coordinator (launch-by-link). Stashed here and drained at
+    /// the end of `buildServices()`.
+    private var pendingJoinCode: String?
 
     // MARK: - Lifecycle
 
+    /// Registered ahead of the first event so a `mattstack://join/<code>` link
+    /// used to launch the app (not just to activate an already-running one)
+    /// still reaches `handleGetURL`.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleGetURL(_:with:)),
+                                                     forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if LaunchGuard.isTranslocatedOrOnRemovableVolume(bundlePath: Bundle.main.bundlePath) {
+            showMoveToApplicationsAlert()
+            return
+        }
+        buildServices()
+        installMainMenu()
         setupMenuBar()
         setupNotifications()
         setupTrayServer()
@@ -62,15 +101,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(checkForUpdates), name: .rtCheckUpdates, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(showKeyboardConflictWindow), name: .showKeyboardConflict, object: nil)
+
+        // Setup / Settings surfaces, posted by the gear menu and the Done screen
+        NotificationCenter.default.addObserver(self, selector: #selector(showSetupStatus), name: .rtShowSetupStatus, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(showSettings), name: .rtShowSettings, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(showUninstall), name: .rtShowUninstall, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(showSettingsTeam), name: .rtShowSettingsTeam, object: nil)
+
         checkMissionControlConflict()
         autoRegisterLoginItem()
 
-        // Register the daemon as a LaunchAgent. Idempotent — if already
-        // registered, this is a no-op. If the user hasn't approved it yet,
-        // status flips to .requiresApproval and the menu surfaces a prompt.
         Task { @MainActor in
             setHealth(.starting)
-            daemonLifecycle.startDaemon()
+            if BundleFlavor.isStubActive {
+                TrayLog.info("stub mode: skipping real service registration and version-change restart")
+            } else {
+                servicesRegistrar.registerAll()
+                let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+                let change = await servicesRegistrar.handleVersionChange(current: version, store: UserDefaults.standard)
+                TrayLog.info("version change evaluated", ["change": String(describing: change)])
+            }
+            await recordAppPath()
+
+            // First-run Setup has no daemon dependency — show it now rather
+            // than after the wait loop below, or a genuine first run (daemon
+            // not installed yet) sits at a blank menu bar for the full 4s.
+            if let coordinator, !coordinator.setupIsComplete { coordinator.showSetup() }
 
             // Wait for launchd to bring the daemon up
             for _ in 0..<8 {
@@ -82,10 +138,122 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @MainActor
+    private func buildServices() {
+        permissionsService = PermissionsService(bundleId: Bundle.main.bundleIdentifier ?? "com.mattstack.app",
+                                                agentStatuses: { [weak self] in self?.servicesRegistrar.smStatuses() ?? [] },
+                                                runner: SystemCommandRunner())
+        servicesRegistrar = ServicesRegistrar(bundlePath: Bundle.main.bundlePath, runner: SystemCommandRunner())
+        daemonLifecycle.services = servicesRegistrar
+        let privileged = PrivilegedInstaller(bundlePath: Bundle.main.bundlePath, escalator: AuthorizationServicesEscalator())
+        // Stub mode never lets a real provider reach a mutating/probing call.
+        #if DEBUG
+        let servicesForNeeds: ServicesProviding = BundleFlavor.isStubActive ? StubServicesProvider() : servicesRegistrar
+        let privilegedForNeeds: PrivilegedInstalling = BundleFlavor.isStubActive ? StubPrivilegedInstaller() : privileged
+        let permissionProbe: PermissionProbing? = BundleFlavor.isStubActive ? StubPermissionProbe() : nil
+        #else
+        let servicesForNeeds: ServicesProviding = servicesRegistrar
+        let privilegedForNeeds: PrivilegedInstalling = privileged
+        let permissionProbe: PermissionProbing? = nil
+        #endif
+        needBroker = NeedBroker(services: servicesForNeeds, privileged: privilegedForNeeds)
+        // Assigned here, in buildServices(), and not in setupTrayServer():
+        // applicationDidFinishLaunching runs buildServices() before it starts
+        // the listener, so no connection can arrive while `routes` is still
+        // nil and fall through to the legacy 404 handler.
+        TrayServer.shared.routes = TrayRoutes(permissions: permissionsService, services: servicesForNeeds, privileged: privilegedForNeeds,
+                                              needs: needBroker, updater: updater, version: self)
+        rtClient = RtClientFactory.make()
+        if let rt = rtClient {
+            coordinator = SetupCoordinator(rt: rt, permissions: permissionsService, permissionProbe: permissionProbe, needs: needBroker, updater: updater)
+            if let code = pendingJoinCode {
+                pendingJoinCode = nil
+                coordinator?.handleJoin(code: code)
+            }
+        } else if pendingJoinCode != nil {
+            pendingJoinCode = nil
+            TrayLog.warn("mattstack://join link received but rt could not be resolved; dropping")
+        }
+        updaterObservation = updater.observe(\.canCheckForUpdates, options: [.initial, .new]) { u, _ in
+            DispatchQueue.main.async { TrayState.shared.canCheckForUpdates = u.canCheckForUpdates }
+        }
+    }
+
+    /// The machine store learns where this bundle lives, every launch — rt
+    /// owns the store, so the app only ever writes through `rt settings set`.
+    private func recordAppPath() async {
+        guard let rt = rtClient else { return }
+        do {
+            let r = try await rt.run(AppPathSetting.arguments(bundlePath: Bundle.main.bundlePath), stdin: nil)
+            if r.exitCode != 0 {
+                TrayLog.warn("mattstack.appPath write failed", ["exit": Int(r.exitCode), "err": r.userError?.message ?? r.failureCopy(verb: "settings set")])
+            }
+        } catch {
+            TrayLog.warn("mattstack.appPath write failed to start", ["err": (error as? RtClientError)?.copy ?? "rt settings set failed to start."])
+        }
+    }
+
+    /// The App menu carries the only global keyboard shortcut an LSUIElement
+    /// app can offer (there is no Window menu): ⌘, opens Settings whenever
+    /// any window is key, matching every other Mac app.
+    private func installMainMenu() {
+        let main = NSMenu()
+        let appItem = NSMenuItem(); main.addItem(appItem)
+        let appMenu = NSMenu()
+        let settingsItem = appMenu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+        settingsItem.setAccessibilityIdentifier(AXID.menuAppSettings)
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Quit mattstack", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        let editItem = NSMenuItem(); main.addItem(editItem)
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit
+        NSApp.mainMenu = main
+    }
+
+    /// Gatekeeper's translocation and a DMG mount both make SMAppService and
+    /// Sparkle unusable — the only recovery is a real, on-disk copy.
+    private func showMoveToApplicationsAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Move mattstack to Applications"
+        alert.informativeText = "mattstack is running from a disk image or a temporary location, so it can't register its background services. Drag mattstack.app to /Applications (or ~/Applications) and open it from there."
+        alert.addButton(withTitle: "Quit")
+        alert.runModal()
+        NSApp.terminate(nil)
+    }
+
+    @objc private func handleGetURL(_ event: NSAppleEventDescriptor, with reply: NSAppleEventDescriptor) {
+        guard let s = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue, let url = URL(string: s) else { return }
+        guard let code = JoinLink.code(from: url) else {
+            // Never the raw string: an unrecognized URL can carry a
+            // malformed invite code in its path.
+            TrayLog.warn("ignored URL", ["scheme": url.scheme ?? "", "host": url.host ?? ""])
+            return
+        }
+        Task { @MainActor in
+            guard let coordinator else {
+                // Launch-by-link: the kAEGetURL event can arrive before
+                // buildServices() constructs the coordinator. buildServices()
+                // drains this once it exists.
+                pendingJoinCode = code
+                return
+            }
+            coordinator.handleJoin(code: code)
+        }
+    }
+
+    @objc private func showSetupStatus() { Task { @MainActor in coordinator?.openSetupStatus() } }
+    @objc private func showSettings() { Task { @MainActor in coordinator?.showSettings() } }
+    @objc private func showUninstall() { Task { @MainActor in coordinator?.showSettings(pane: .uninstall) } }
+    @objc private func showSettingsTeam() { Task { @MainActor in coordinator?.showSettings(pane: .team) } }
+
     func applicationWillTerminate(_ notification: Notification) {
         statusTimer?.invalidate()
         notificationTimer?.invalidate()
-        updateChecker.stopChecking()
         TrayServer.shared.stop()
     }
 
@@ -104,6 +272,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// `.requiresApproval` is the user's pending decision in System Settings
     /// and re-registering would not change it.
     private func autoRegisterLoginItem() {
+        guard !BundleFlavor.isStubActive else {
+            TrayLog.info("login item auto-register skipped (stub mode)")
+            return
+        }
         guard !LoginItemPreference.isOptedOut else {
             TrayLog.info("login item auto-register skipped (user opted out)")
             return
@@ -222,10 +394,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             default:
                 TrayState.shared.statusText = "Daemon: not running"
             }
-            TrayState.shared.needsApproval = daemonLifecycle.status == .requiresApproval
+            TrayState.shared.needsApproval = needsLoginItemApproval()
         default:
             break
         }
+    }
+
+    /// The worst status across every agent this bundle registers (daemon,
+    /// deck, …), not just the daemon — a single-agent check would miss a
+    /// second agent stuck in Login Items while the daemon itself is fine.
+    private func needsLoginItemApproval() -> Bool {
+        PermissionsService.combinedLoginItems(servicesRegistrar?.smStatuses() ?? []) == "requiresApproval"
     }
 
     // MARK: - Actions
@@ -234,7 +413,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             setHealth(.starting)
 
-            daemonLifecycle.restartDaemon()
+            await daemonLifecycle.restartDaemon()
 
             // Poll until it comes back (up to 8s)
             for _ in 0..<16 {
@@ -325,10 +504,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// it's killed only if the user Ctrl-Cs the spawned rt OR the rt-tray
     /// app group is terminated.
     private func spawnRtDaemonLogs() {
-        let home = NSHomeDirectory()
+        let home = AppHome.current
         let candidates = [
             "\(home)/.local/bin/rt",
-            Bundle.main.bundlePath + "/Contents/MacOS/rt-daemon",
+            Bundle.main.bundlePath + "/Contents/MacOS/rt",
         ]
         let rtBin = candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
 
@@ -346,7 +525,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func checkForUpdates() {
-        updateChecker.checkForUpdates(userInitiated: true)
+        updater.checkForUpdatesFromMenu()
     }
 
     @objc private func showProcessPanel() {
@@ -402,33 +581,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Auto-Update
 
     private func setupAutoUpdate() {
-        updateChecker.onUpdateAvailable = { [weak self] release in
-            self?.handleUpdateAvailable(release)
+        updater.onUpdateAvailable = { version in
+            TrayState.shared.updateAvailable = version.isEmpty ? nil : version
         }
-        updateChecker.startPeriodicChecks()
-    }
-
-    private func handleUpdateAvailable(_ release: GitHubRelease) {
-        // Surface in the panel's gear menu
-        TrayState.shared.updateAvailable = release.tagName
-
-        if updateChecker.isDevBuild { return }
-
-        // Fire native notification — sound is played manually so the
-        // category→sound mapping stays in one place (NotificationManager).
-        let content = UNMutableNotificationContent()
-        content.title = "mattstack Update Available"
-        content.body = "\(release.tagName) is available — run: rt update"
-        content.sound = nil
-        content.categoryIdentifier = "UPDATE"
-        NotificationManager.playSound(for: "UPDATE")
-
-        let request = UNNotificationRequest(
-            identifier: "rt-update-\(release.tagName)",
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(request)
     }
 
     // MARK: - Polling
@@ -483,8 +638,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateMenuBarTitle(status: health)
         TrayState.shared.health = health
         TrayState.shared.statusText = "Daemon: running · pid \(status.pid) · \(formatUptime(status.uptime))"
-        // Daemon is reachable → approval clearly worked
-        TrayState.shared.needsApproval = false
+        // The daemon being reachable only proves the daemon's own agent is
+        // approved — another registered agent (deck) can still be pending.
+        TrayState.shared.needsApproval = needsLoginItemApproval()
     }
 
     private func drainPendingNotifications() async {
@@ -579,6 +735,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hours = minutes / 60
         let remainingMinutes = minutes % 60
         return "\(hours)h \(remainingMinutes)m"
+    }
+}
+
+extension AppDelegate: VersionProviding {
+    /// `build` is the numeric CFBundleVersion L4 writes — major*1e6 +
+    /// minor*1e3 + patch (e.g. 2.8.0 → 2008000) — never a string; a
+    /// non-numeric or missing value reads as 0, but never silently: a build
+    /// pipeline that regresses to a dotted string should show up in logs,
+    /// not just as a suspiciously-always-0 build number.
+    func versionInfo() -> VersionInfo {
+        let raw = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+        let build = raw.flatMap(Int.init) ?? {
+            TrayLog.warn("CFBundleVersion not numeric", ["value": raw ?? "(missing)"])
+            return 0
+        }()
+        return VersionInfo(version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev",
+                           build: build,
+                           flavor: BundleFlavor.isDevBuild ? "dev" : "prod",
+                           path: Bundle.main.bundlePath)
     }
 }
 

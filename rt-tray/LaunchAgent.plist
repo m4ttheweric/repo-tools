@@ -2,18 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Label: com.rt.daemon (prod) / com.rt.daemon.dev (dev). Templated by
-         build.sh -- must match the flavor's MSDaemonLabel in Info.plist, and
-         the installed filename inside the bundle is "$Label.plist". -->
+    <!-- Label: com.mattstack.daemon (prod) / com.mattstack.daemon.dev (dev). -->
     <key>Label</key>
     <string>@@DAEMON_LABEL@@</string>
 
     <key>BundleProgram</key>
-    <string>Contents/MacOS/rt-daemon</string>
+    <string>Contents/MacOS/rt</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>Contents/MacOS/rt-daemon</string>
+        <string>Contents/MacOS/rt</string>
         <string>--daemon</string>
     </array>
 
@@ -27,13 +25,17 @@
     <key>RunAtLoad</key>
     <true/>
 
-    <!-- KeepAlive is injected by build.sh via PlistBuddy, not sed -- its
-         shape differs by flavor: prod is a plain bool true; dev is
-         { SuccessfulExit = false } so the shim's exit-0 (unconfigured)
-         paths stay down while real crashes still restart. -->
+    <!-- KeepAlive is injected by `scripts/render-launchagents.sh` as
+         {SuccessfulExit:false} for both flavors. -->
 
     <key>ThrottleInterval</key>
     <integer>10</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
 
     <!-- ProcessType=Interactive defaults ExitTimeOut to 5s, which is too tight
          for cleanup() (close API/WS server, drain 8+ websockets, tear down

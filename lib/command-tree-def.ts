@@ -48,6 +48,18 @@ const eventsSubcommands: Record<string, CommandNode> = {
   },
 };
 
+const runsSubcommands: Record<string, CommandNode> = {
+  show: {
+    description: "One run: stages, fields, decisions",
+    module: "./commands/runs.ts",
+    fn: "runsShow",
+    args: [
+      { name: "Run", type: "text", placeholder: "20260821-010101-abcd", hint: "Run id (repo auto-resolved; --repo to pin)" },
+      { name: "Repo", flag: "--repo", type: "text", placeholder: "myrepo", hint: "Registry repo name" },
+    ],
+  },
+};
+
 const interceptSubcommands: Record<string, CommandNode> = {
   run: {
     description: "Hidden verb the generated PATH shim execs — never call directly",
@@ -567,6 +579,16 @@ export const TREE: Record<string, CommandNode> = {
   events: {
     description: "Optional event bus for panes and skills",
     subcommands: eventsSubcommands,
+  },
+
+  runs: {
+    description: "Pipeline run state (read-only, from the run DB)",
+    module: "./commands/runs.ts",
+    fn: "runsList",
+    args: [
+      { name: "Repo", flag: "--repo", type: "text", placeholder: "myrepo", hint: "Scope to one registry repo" },
+    ],
+    subcommands: runsSubcommands,
   },
 
   intercept: {
