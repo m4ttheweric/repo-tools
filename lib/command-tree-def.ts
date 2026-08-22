@@ -1080,6 +1080,31 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  tools: {
+    description: "Install or run the setup verb for a tool from a setup plan row",
+    subcommands: {
+      install: {
+        description: "Install a tool (brew, vendor curl|sh, apple-clt, or the bundled copy)",
+        module: "./commands/tools.ts",
+        fn: "toolsInstall",
+        args: [
+          { name: "Tool", type: "text", placeholder: "herdr", hint: "Tool name (herdr, claude, apple-clt, or a team-declared tool)" },
+          SETUP_JSON_ARG,
+        ],
+      },
+      setup: {
+        description: "Run a tool's own post-install setup (herdr integration, fast-browser runtime, editor extension)",
+        module: "./commands/tools.ts",
+        fn: "toolsSetup",
+        args: [
+          { name: "Tool", type: "text", placeholder: "herdr", hint: "Tool name (herdr, fast-browser, extension)" },
+          { name: "Config dir", flag: "--config-dir", type: "text", placeholder: "/path/to/.claude", hint: "Extra Claude config dir to set up (repeatable); herdr's own CLAUDE_CONFIG_DIR + ~/.claude are always included" },
+          SETUP_JSON_ARG,
+        ],
+      },
+    },
+  },
+
   team: {
     description: "Team repo: create, join, invite, publish, members",
     subcommands: {

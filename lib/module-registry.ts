@@ -41,6 +41,7 @@ import * as intercept from "../commands/intercept.ts";
 import * as endpoint from "../commands/endpoint.ts";
 import * as team from "../commands/team.ts";
 import * as cron from "../commands/cron.ts";
+import * as tools from "../commands/tools.ts";
 
 export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/commit.ts": commit,
@@ -78,4 +79,5 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/endpoint.ts": endpoint,
   "./commands/team.ts": team,
   "./commands/cron.ts": cron,
+  "./commands/tools.ts": tools,
 };
