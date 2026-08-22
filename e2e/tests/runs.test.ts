@@ -9,6 +9,12 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { createTestHome, RT_BINARY } from "../harness.ts";
+import type { RunDetail, RunSummary } from "../../packages/rt-client/src/commands.ts";
+
+// REST envelope shape (lib/daemon.ts's handleCommand): { ok: true, data } |
+// { ok: false, error } — mirrored here since rt-client can't be imported by
+// the daemon and there's no shared envelope type to reach for.
+type ApiEnvelope<T> = { ok: boolean; data: T; error?: string };
 
 async function waitForSocket(sockPath: string, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -151,17 +157,17 @@ describe("rt runs (read-side e2e)", () => {
   test("GET /api/runs over the harness REST port includes the run", async () => {
     const res = await fetch(`http://127.0.0.1:${apiPort}/api/runs`);
     expect(res.status).toBe(200);
-    const out = await res.json();
+    const out = (await res.json()) as ApiEnvelope<{ runs: RunSummary[] }>;
     expect(out.ok).toBe(true);
-    const found = out.data.runs.find((r: { id: string }) => r.id === RUN_ID);
+    const found = out.data.runs.find((r) => r.id === RUN_ID);
     expect(found).toBeDefined();
-    expect(found.repo).toBe(REPO);
+    expect(found!.repo).toBe(REPO);
   }, 20_000);
 
   test("GET /api/runs/:repo/:runId returns the same detail as rt runs show", async () => {
     const res = await fetch(`http://127.0.0.1:${apiPort}/api/runs/${REPO}/${RUN_ID}`);
     expect(res.status).toBe(200);
-    const out = await res.json();
+    const out = (await res.json()) as ApiEnvelope<RunDetail>;
     expect(out.ok).toBe(true);
     expect(out.data.run.id).toBe(RUN_ID);
     expect(out.data.stages).toHaveLength(1);
