@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { execFileSync, spawnSync } from "child_process";
 import {
-  mkdtempSync, mkdirSync, rmSync, cpSync, copyFileSync, writeFileSync,
+  mkdtempSync, mkdirSync, rmSync, copyFileSync, writeFileSync,
   chmodSync, existsSync, readFileSync,
 } from "fs";
 import { tmpdir } from "os";
@@ -20,7 +20,6 @@ const GEN = join(SPARKLE_BIN, "generate_appcast");
 const SIGN = join(SPARKLE_BIN, "sign_update");
 const MAKE_ZIP = join(ROOT, "scripts", "release", "make-zip.sh");
 const APPCAST_SH = join(ROOT, "scripts", "release", "appcast.sh");
-const DEV_APP = join(ROOT, "rt-tray", "mattstack-dev.app");
 
 const HAVE_SPARKLE = existsSync(GEN) && existsSync(SIGN);
 if (!HAVE_SPARKLE) {
@@ -93,19 +92,16 @@ const MINIMAL_PLIST = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `;
 
-// Copies mattstack-dev.app when it's been built locally; otherwise assembles
-// a minimal but genuinely signable bundle (a real Mach-O + a plist) so
-// codesign and generate_appcast's own signing-identity check both succeed.
+// Always a minimal, from-scratch bundle (a real Mach-O + a plist) — enough
+// for codesign and generate_appcast's own signing-identity check to succeed,
+// and independent of whatever bundle rt-tray/build.sh happens to have
+// produced in this checkout (that bundle can run into the hundreds of MB).
 function buildFixtureApp(workdir: string): string {
   const appPath = join(workdir, "mattstack-fixture.app");
-  if (existsSync(DEV_APP)) {
-    cpSync(DEV_APP, appPath, { recursive: true });
-  } else {
-    mkdirSync(join(appPath, "Contents", "MacOS"), { recursive: true });
-    copyFileSync("/bin/echo", join(appPath, "Contents", "MacOS", "mattstack-fixture"));
-    chmodSync(join(appPath, "Contents", "MacOS", "mattstack-fixture"), 0o755);
-    writeFileSync(join(appPath, "Contents", "Info.plist"), MINIMAL_PLIST);
-  }
+  mkdirSync(join(appPath, "Contents", "MacOS"), { recursive: true });
+  copyFileSync("/bin/echo", join(appPath, "Contents", "MacOS", "mattstack-fixture"));
+  chmodSync(join(appPath, "Contents", "MacOS", "mattstack-fixture"), 0o755);
+  writeFileSync(join(appPath, "Contents", "Info.plist"), MINIMAL_PLIST);
   return appPath;
 }
 
