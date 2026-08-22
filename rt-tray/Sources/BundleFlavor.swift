@@ -8,17 +8,16 @@ import Foundation
 /// so every flavor-dependent decision reads from here.
 ///
 /// Keys:
-///   MSDaemonLabel — the launchd Label this flavor owns (`com.rt.daemon`
-///                   prod, `com.rt.daemon.dev` dev). DaemonLifecycle derives
-///                   both the agent plist name and every launchctl label
-///                   from it.
+///   MSDaemonLabel — the launchd Label this flavor owns
+///                   (`com.mattstack.daemon` prod, `com.mattstack.daemon.dev`
+///                   dev). DaemonLifecycle derives both the agent plist name
+///                   and every launchctl label from it.
 ///   MSDevBuild    — true only in the dev bundle. Gates the menu-bar `dev`
 ///                   mark and silences UpdaterController.
 enum BundleFlavor {
 
     /// Fallback when MSDaemonLabel is absent (an unbundled `swift run` build,
-    /// or a bundle built before the key existed): the prod label, which is
-    /// what every pre-MAT-383 build hardcoded.
+    /// or a bundle built before the key existed): the prod label.
     static let defaultDaemonLabel = "com.mattstack.daemon"
 
     static var daemonLabel: String {

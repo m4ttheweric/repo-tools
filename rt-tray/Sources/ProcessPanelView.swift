@@ -71,14 +71,14 @@ struct ProcessPanelView: View {
         // target has no validateMenuItem — that would silently override the
         // Check for Updates item's explicit isEnabled below.
         menu.autoenablesItems = false
-        menu.addItem(ActionMenuItem("Restart Daemon") {
+        menu.addItem(ActionMenuItem("Restart Daemon", axid: AXID.menuGearRestartDaemon) {
             NotificationCenter.default.post(name: .rtRestartDaemon, object: nil)
         })
-        menu.addItem(ActionMenuItem("Stop Daemon") {
+        menu.addItem(ActionMenuItem("Stop Daemon", axid: AXID.menuGearStopDaemon) {
             NotificationCenter.default.post(name: .rtStopDaemon, object: nil)
         })
         menu.addItem(.separator())
-        menu.addItem(ActionMenuItem("View Logs…") {
+        menu.addItem(ActionMenuItem("View Logs…", axid: AXID.menuGearViewLogs) {
             NotificationCenter.default.post(name: .rtViewDaemonLogs, object: nil)
         })
         menu.addItem(.separator())
@@ -89,7 +89,7 @@ struct ProcessPanelView: View {
             NotificationCenter.default.post(name: .rtShowSettings, object: nil)
         })
         menu.addItem(.separator())
-        menu.addItem(ActionMenuItem("Start at Login", state: startAtLogin ? .on : .off) {
+        menu.addItem(ActionMenuItem("Start at Login", state: startAtLogin ? .on : .off, axid: AXID.menuGearStartAtLogin) {
             toggleStartAtLogin()
         })
         menu.addItem(.separator())
@@ -103,7 +103,7 @@ struct ProcessPanelView: View {
             NotificationCenter.default.post(name: .rtShowUninstall, object: nil)
         })
         menu.addItem(.separator())
-        menu.addItem(ActionMenuItem("Quit mattstack") {
+        menu.addItem(ActionMenuItem("Quit mattstack", axid: AXID.menuGearQuit) {
             NSApplication.shared.terminate(nil)
         })
         return menu

@@ -40,6 +40,11 @@ public final class TeamChoiceModel: ObservableObject {
     // unlatched: it's a dry run, and re-running picks up access granted
     // while the user was sitting on the screen.
     private var preparedFingerprint: String?
+    // The repo a real `rt restore` already finished for. The age key is wiped
+    // from memory right after, so nothing may demand it again for that repo:
+    // without this latch Back→Continue is dead (canContinue wants a key) and
+    // re-pasting one re-runs the whole restore.
+    private var restoredRepo: String?
 
     public init(rt: RtRunning) { self.rt = rt }
 
@@ -55,7 +60,8 @@ public final class TeamChoiceModel: ObservableObject {
         case .join:
             return !normalizedInviteCode.isEmpty
         case .restore:
-            return !restoreRepo.trimmingCharacters(in: .whitespaces).isEmpty && !restoreAgeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let repo = restoreRepo.trimmingCharacters(in: .whitespaces)
+            return !repo.isEmpty && (restoredRepo == repo || !restoreAgeKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
 
@@ -76,6 +82,7 @@ public final class TeamChoiceModel: ObservableObject {
     /// Idempotent for create/restore — a repeat call with unchanged inputs
     /// (e.g. Back then Continue again) skips the verb rather than re-running it.
     public func validateAndPrepare() async -> String? {
+        if choice == .restore, restoredRepo == restoreRepo.trimmingCharacters(in: .whitespaces) { return nil }
         let fingerprint = preparationFingerprint()
         if let fingerprint, fingerprint == preparedFingerprint { return nil }
         isChecking = true
@@ -114,6 +121,7 @@ public final class TeamChoiceModel: ObservableObject {
                 if let e = intent.userError { return e.message }
                 guard intent.exitCode == 0 else { return intent.failureCopy(verb: "setup intent restore") }
                 preparedFingerprint = fingerprint
+                restoredRepo = repo
                 restoreAgeKey = ""
                 return nil
             }
@@ -131,7 +139,10 @@ public final class TeamChoiceModel: ObservableObject {
         case .join:
             return nil
         case .restore:
-            return ["restore", restoreRepo.trimmingCharacters(in: .whitespaces), restoreAgeKey].joined(separator: "\u{1}")
+            // The key is hashed, never stored: this value outlives the field
+            // (which is wiped after a successful restore) and only ever has to
+            // answer "did the inputs change".
+            return ["restore", restoreRepo.trimmingCharacters(in: .whitespaces), String(restoreAgeKey.hashValue)].joined(separator: "\u{1}")
         }
     }
 

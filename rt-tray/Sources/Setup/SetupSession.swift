@@ -8,10 +8,19 @@ import Foundation
 /// window repainting itself could clear a real in-progress onboarding run
 /// out from under it, or vice versa. Any future third window contributes
 /// its own key the same way, so this can't regress by omission.
+///
+/// Locked rather than MainActor-isolated: the writers are window controllers
+/// on the main thread, but the reader is Sparkle's idle-gate callback, which
+/// makes no such promise.
 enum SetupSession {
+    private static let lock = NSLock()
     private static var owners = Set<ObjectIdentifier>()
-    static var isRunning: Bool { !owners.isEmpty }
+    static var isRunning: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return !owners.isEmpty
+    }
     static func setRunning(_ running: Bool, for owner: ObjectIdentifier) {
+        lock.lock(); defer { lock.unlock() }
         if running { owners.insert(owner) } else { owners.remove(owner) }
     }
 }
