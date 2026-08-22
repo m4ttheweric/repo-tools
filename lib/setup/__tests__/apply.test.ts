@@ -435,9 +435,28 @@ describe("STEPS registry", () => {
     expect(STEPS.map((s) => s.id)).toEqual([...STEP_IDS]);
   });
 
-  test("every step applies unconditionally and stubs skipped/not implemented", async () => {
+  // Task 24 replaced the first block of stubs (home.init through repos.clone,
+  // plus intercepts.install) with real bodies — lib/setup/__tests__/steps-a.test.ts
+  // covers those. Everything after repos.clone is still a stub for Tasks 25/26.
+  const STILL_STUBBED: StepId[] = [
+    "services.register",
+    "proxy.install",
+    "deck.managed",
+    "skills.materialize",
+    "board.keys",
+    "cron.triage",
+    "plugins.install",
+    "fastbrowser.setup",
+    "herdr.integration",
+    "extension.install",
+    "services.start",
+    "snapshot.push",
+    "verify",
+  ];
+
+  test("every remaining stub applies unconditionally and reports skipped/not implemented", async () => {
     const { ctx } = testCtx();
-    for (const step of STEPS) {
+    for (const step of STEPS.filter((s) => STILL_STUBBED.includes(s.id))) {
       expect(step.applies(ctx)).toBe(true);
       expect(await step.run(ctx)).toEqual({ state: "skipped", detail: "not implemented" });
     }

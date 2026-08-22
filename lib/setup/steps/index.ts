@@ -1,12 +1,20 @@
 /**
  * The ordered step registry `rt setup apply` runs — one `StepDef` per
- * `STEP_IDS` entry, in the contract's pinned order. Every id is a stub here;
- * Tasks 24-26 replace each `stubStep(...)` call in place with the step's
- * real body, never reordering or adding/removing ids.
+ * `STEP_IDS` entry, in the contract's pinned order. Task 24 replaces the
+ * first block of stubs (home through repos.clone) with real bodies; the
+ * rest stay stubs for Tasks 25/26 to replace in place, never reordering or
+ * adding/removing ids.
  */
 
 import type { StepDef, StepOutcome } from "../apply.ts";
 import { STEP_IDS, type StepId, type StepKind } from "../contract.ts";
+import { installShims } from "../../endpoint/shim.ts";
+import { homeInitStep, homeRestoreStep } from "./home.ts";
+import { teamCreateStep, teamJoinStep } from "./team.ts";
+import { secretsWriteStep } from "./secrets.ts";
+import { pathLinkStep } from "./path.ts";
+import { settingsSeedStep } from "./settings.ts";
+import { reposCloneStep } from "./repos.ts";
 
 function stubStep(id: StepId, title: string, kind: StepKind): StepDef {
   return {
@@ -20,16 +28,30 @@ function stubStep(id: StepId, title: string, kind: StepKind): StepDef {
   };
 }
 
+async function interceptsInstallRun(): Promise<StepOutcome> {
+  const result = await installShims();
+  const total = result.installed.length + result.current.length;
+  return { state: "done", detail: total === 0 ? "no commands to shim" : `${total} shims` };
+}
+
+export const interceptsInstallStep: StepDef = {
+  id: "intercepts.install",
+  title: "Install shell intercepts",
+  kind: "rt",
+  applies: () => true,
+  run: interceptsInstallRun,
+};
+
 export const STEPS: StepDef[] = [
-  stubStep("home.init", "Create your settings home repo", "rt"),
-  stubStep("home.restore", "Restore your settings home repo", "rt"),
-  stubStep("team.create", "Create your team", "rt"),
-  stubStep("team.join", "Join your team", "rt"),
-  stubStep("secrets.write", "Write your secrets", "rt"),
-  stubStep("path.link", "Link rt onto your PATH", "rt"),
-  stubStep("intercepts.install", "Install shell intercepts", "rt"),
-  stubStep("settings.seed", "Seed your settings", "rt"),
-  stubStep("repos.clone", "Clone your repos", "rt"),
+  homeInitStep,
+  homeRestoreStep,
+  teamCreateStep,
+  teamJoinStep,
+  secretsWriteStep,
+  pathLinkStep,
+  interceptsInstallStep,
+  settingsSeedStep,
+  reposCloneStep,
   stubStep("services.register", "Register background services", "app"),
   stubStep("proxy.install", "Install the local proxy", "privileged"),
   stubStep("deck.managed", "Set up managed deck", "rt"),
