@@ -333,17 +333,60 @@ function defaultMaterializeExec(): MaterializeExecSeam {
   return { run: (argv, opts) => runCapture(argv, { stderr: "pipe", ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}) }) };
 }
 
+/** Reads `~/.mattstack/deck/api.json` (port, pid) and probes deck's own `/healthz`. Injectable so tests never touch a real file or the network. */
+export interface DeckHealthProbe {
+  /** The port deck is (supposedly) listening on, or null if the file is absent/corrupt. Never throws. */
+  readPort(): number | null;
+  /** True only on a 200 from `/healthz`. Never throws — a refused connection, timeout, or non-2xx all resolve false. */
+  checkHealthz(port: number): Promise<boolean>;
+}
+
+const DECK_HEALTHZ_TIMEOUT_MS = 1_500;
+
+function defaultDeckHealthProbe(): DeckHealthProbe {
+  return {
+    readPort(): number | null {
+      try {
+        const raw = JSON.parse(readFileSync(join(mattstackHome(), "deck", "api.json"), "utf8"));
+        return typeof raw.port === "number" ? raw.port : null;
+      } catch {
+        return null;
+      }
+    },
+    async checkHealthz(port: number): Promise<boolean> {
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(DECK_HEALTHZ_TIMEOUT_MS) });
+        return res.ok;
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
+/** `deckSetup` re-bootstraps deck under launchd — restarts the live proxy, blipping every `*.localhost` app — so this must be checked before planning it, not run unconditionally. */
+export async function probeDeckHealthy(probe: DeckHealthProbe): Promise<boolean> {
+  const port = probe.readPort();
+  if (port === null) return false;
+  return probe.checkHealthz(port);
+}
+
 /**
- * `which deck`, the repo index, `rt.repoTracking`, and the daemon-install
- * marker. All read-only; a throw here is caught by homeInit's materialize
- * try/catch and reported as a non-rt-own failure, never a crash.
+ * `which deck`, deck's own health, the repo index, `rt.repoTracking`, and
+ * the daemon-install marker. All read-only; a throw here is caught by
+ * homeInit's materialize try/catch and reported as a non-rt-own failure,
+ * never a crash.
  */
-async function defaultMaterializeEnv(exec: MaterializeExecSeam): Promise<MaterializeEnv> {
+export async function defaultMaterializeEnv(
+  exec: MaterializeExecSeam,
+  deckHealth: DeckHealthProbe = defaultDeckHealthProbe(),
+): Promise<MaterializeEnv> {
   // Deliberately not run through STEP_TIMEOUT_MS (runMaterialize's steps) — a
   // plain `which` never blocks like `rt daemon install`'s tray poll does, so
   // it keeps runCapture's short default.
   const which = await exec.run(["which", "deck"]);
   const deckOnPath = which.exitCode === 0 && which.stdout.trim().length > 0;
+  const deckHealthy = deckOnPath && (await probeDeckHealthy(deckHealth));
 
   const index = loadRepoIndex();
   const boardRepoPath = index["mr-board"] ?? null;
@@ -356,7 +399,7 @@ async function defaultMaterializeEnv(exec: MaterializeExecSeam): Promise<Materia
       return { name, path, present: path !== "" && existsSync(path) };
     });
 
-  return { deckOnPath, boardRepoPath, daemonInstalled: isDaemonInstalled(), trackedRepos };
+  return { deckOnPath, deckHealthy, boardRepoPath, daemonInstalled: isDaemonInstalled(), trackedRepos };
 }
 
 function describeMaterializeStep(step: MaterializeStep): string {
@@ -369,6 +412,8 @@ function describeMaterializeStep(step: MaterializeStep): string {
       return `tracked repos not present locally (not cloned): ${step.names.join(", ")}`;
     case "deckSetup":
       return "deck setup";
+    case "reportDeckHealthy":
+      return "deck setup (skipped — already healthy)";
     case "boardSetup":
       return "mr-board setup (interactive — not run automatically)";
   }

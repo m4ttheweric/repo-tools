@@ -3,6 +3,7 @@ import {
   DEFAULT_USER_REPO_URL,
   claudePluginsPointerMessage,
   defaultAgeKeyInputSeam,
+  defaultMaterializeEnv,
   gatherHomeState,
   homeClaim,
   homeInit,
@@ -10,8 +11,10 @@ import {
   homeRelease,
   homeSnapshot,
   InvalidUrlArgError,
+  probeDeckHealthy,
   readStdinTrimmed,
   type AgeKeyInputSeam,
+  type DeckHealthProbe,
   type HomeDaemonSeam,
   type HomeProbes,
   type MachineProfilePickerSeam,
@@ -206,7 +209,7 @@ class FakePickerSeam implements MachineProfilePickerSeam {
 }
 
 /** Nothing installed, nothing tracked — `planMaterialize` reduces this to a single `rtInterceptInstall` step. The default materialize env for every test below that isn't exercising materialize itself. */
-const NOOP_MATERIALIZE_ENV: MaterializeEnv = { deckOnPath: false, boardRepoPath: null, daemonInstalled: true, trackedRepos: [] };
+const NOOP_MATERIALIZE_ENV: MaterializeEnv = { deckOnPath: false, deckHealthy: false, boardRepoPath: null, daemonInstalled: true, trackedRepos: [] };
 
 /** Never spawns a real process. Records every argv it's asked to run; scripts a result per exact argv, defaulting to a clean exit 0. */
 class FakeMaterializeExecSeam implements MaterializeExecSeam {
@@ -936,6 +939,25 @@ describe("homeInit", () => {
       expect(logs.some((l) => l.includes("deck setup"))).toBe(true);
     });
 
+    test("--dry-run previews an already-healthy deck as skipped, not as a pending deck setup", async () => {
+      const seam = new FakeSeam();
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, deckOnPath: true, deckHealthy: true };
+
+      const { logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        ["--dry-run"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+      );
+
+      expect(logs.some((l) => l.includes("skipped") && l.includes("already healthy"))).toBe(true);
+    });
+
     test("--dry-run on a fully-provisioned machine no longer claims 'nothing to do' once materialize would run something", async () => {
       const seam = new FakeSeam();
       const { logs } = await runHomeInit(
@@ -1024,6 +1046,29 @@ describe("homeInit", () => {
       expect(logs.some((l) => l.includes("mr-board setup"))).toBe(true);
       const manualCommandLines = logs.filter((l) => l.includes("/repos/mr-board") && l.includes("scripts/setup.ts"));
       expect(manualCommandLines).toHaveLength(1);
+    });
+
+    test("deck on PATH but already healthy: deck setup never spawns (it restarts the live proxy) — reported as skipped instead", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, deckOnPath: true, deckHealthy: true };
+
+      const { logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      expect(exec.calls).toEqual([["rt", "intercept", "install"]]); // deck setup never spawned
+      expect(logs.some((l) => l.includes("already healthy"))).toBe(true);
+      expect(logs.some((l) => l.includes("deck healthy — setup skipped"))).toBe(true);
     });
 
     test("a tracked repo missing from disk is reported by name, never cloned", async () => {
@@ -1221,6 +1266,74 @@ describe("claudePluginsPointerMessage", () => {
   test("never suggests rt home init itself replays them", () => {
     const message = claudePluginsPointerMessage([{ name: "x" }], ["y"]);
     expect(message).toContain("not rt home init's");
+  });
+});
+
+/** Scripts readPort/checkHealthz; never touches a real file or the network. */
+function fakeDeckHealthProbe(overrides: Partial<DeckHealthProbe> & { checkHealthzCalls?: number[] } = {}): DeckHealthProbe {
+  const calls = overrides.checkHealthzCalls ?? [];
+  return {
+    readPort: overrides.readPort ?? (() => 41000),
+    checkHealthz: overrides.checkHealthz ?? (async (port: number) => { calls.push(port); return true; }),
+  };
+}
+
+describe("probeDeckHealthy", () => {
+  test("api.json present, healthz answers ok: healthy", async () => {
+    const probe = fakeDeckHealthProbe({ readPort: () => 41000, checkHealthz: async (port) => port === 41000 });
+    expect(await probeDeckHealthy(probe)).toBe(true);
+  });
+
+  test("api.json present, healthz refused/times out: unhealthy", async () => {
+    const probe = fakeDeckHealthProbe({ readPort: () => 41000, checkHealthz: async () => false });
+    expect(await probeDeckHealthy(probe)).toBe(false);
+  });
+
+  test("api.json missing or corrupt (readPort null): unhealthy, and healthz is never even attempted", async () => {
+    let checkHealthzCalled = false;
+    const probe = fakeDeckHealthProbe({
+      readPort: () => null,
+      checkHealthz: async () => {
+        checkHealthzCalled = true;
+        return true;
+      },
+    });
+    expect(await probeDeckHealthy(probe)).toBe(false);
+    expect(checkHealthzCalled).toBe(false);
+  });
+});
+
+describe("defaultMaterializeEnv (deck health wiring)", () => {
+  /** which deck exits 0 with a real path — deck is on PATH. */
+  const deckOnPathExec = { run: async (argv: string[]) => argv[0] === "which" ? { stdout: "/usr/local/bin/deck\n", stderr: "", exitCode: 0 } : { stdout: "", stderr: "", exitCode: 0 } };
+  const deckOffPathExec = { run: async () => ({ stdout: "", stderr: "not found", exitCode: 1 }) };
+
+  test("deck on PATH and healthy: env.deckHealthy is true", async () => {
+    const env = await defaultMaterializeEnv(deckOnPathExec, fakeDeckHealthProbe({ checkHealthz: async () => true }));
+    expect(env.deckOnPath).toBe(true);
+    expect(env.deckHealthy).toBe(true);
+  });
+
+  test("deck on PATH but unhealthy: env.deckHealthy is false", async () => {
+    const env = await defaultMaterializeEnv(deckOnPathExec, fakeDeckHealthProbe({ checkHealthz: async () => false }));
+    expect(env.deckOnPath).toBe(true);
+    expect(env.deckHealthy).toBe(false);
+  });
+
+  test("deck off PATH: the health probe is never even invoked", async () => {
+    let probed = false;
+    const env = await defaultMaterializeEnv(
+      deckOffPathExec,
+      fakeDeckHealthProbe({
+        readPort: () => {
+          probed = true;
+          return 41000;
+        },
+      }),
+    );
+    expect(env.deckOnPath).toBe(false);
+    expect(env.deckHealthy).toBe(false);
+    expect(probed).toBe(false);
   });
 });
 

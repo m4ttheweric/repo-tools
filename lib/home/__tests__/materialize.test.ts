@@ -11,6 +11,7 @@ import {
 
 const BASE_ENV: MaterializeEnv = {
   deckOnPath: false,
+  deckHealthy: false,
   boardRepoPath: null,
   daemonInstalled: true,
   trackedRepos: [],
@@ -50,9 +51,21 @@ describe("planMaterialize", () => {
     expect(steps.some((s) => s.kind === "reportMissingRepos")).toBe(false);
   });
 
-  test("emits deckSetup only when deck is on PATH", () => {
-    expect(planMaterialize({ ...BASE_ENV, deckOnPath: true })).toContainEqual({ kind: "deckSetup" });
-    expect(planMaterialize({ ...BASE_ENV, deckOnPath: false }).some((s) => s.kind === "deckSetup")).toBe(false);
+  test("deck: on PATH + unhealthy plans deckSetup (deck setup restarts the live proxy, so it must only run when actually needed)", () => {
+    const steps = planMaterialize({ ...BASE_ENV, deckOnPath: true, deckHealthy: false });
+    expect(steps).toContainEqual({ kind: "deckSetup" });
+    expect(steps.some((s) => s.kind === "reportDeckHealthy")).toBe(false);
+  });
+
+  test("deck: on PATH + already healthy skips deckSetup and reports healthy instead", () => {
+    const steps = planMaterialize({ ...BASE_ENV, deckOnPath: true, deckHealthy: true });
+    expect(steps).toContainEqual({ kind: "reportDeckHealthy" });
+    expect(steps.some((s) => s.kind === "deckSetup")).toBe(false);
+  });
+
+  test("deck: off PATH plans neither deckSetup nor reportDeckHealthy, regardless of deckHealthy", () => {
+    const steps = planMaterialize({ ...BASE_ENV, deckOnPath: false, deckHealthy: true });
+    expect(steps.some((s) => s.kind === "deckSetup" || s.kind === "reportDeckHealthy")).toBe(false);
   });
 
   test("emits boardSetup with the repo path only when mr-board is cloned locally", () => {
@@ -65,6 +78,7 @@ describe("planMaterialize", () => {
   test("full table: every kind present in one plan, in the documented order", () => {
     const steps = planMaterialize({
       deckOnPath: true,
+      deckHealthy: false,
       boardRepoPath: "/repos/mr-board",
       daemonInstalled: false,
       trackedRepos: [{ name: "gitq", path: "/x/gitq", present: false }],
@@ -112,14 +126,30 @@ describe("runMaterialize", () => {
     expect(seam.calls[0]!.opts?.timeoutMs).toBe(60_000);
   });
 
-  test("reportMissingRepos and boardSetup never spawn a subprocess", async () => {
+  test("reportMissingRepos, reportDeckHealthy, and boardSetup never spawn a subprocess", async () => {
     const seam = new FakeExecSeam();
     const results = await runMaterialize(
-      [{ kind: "reportMissingRepos", names: ["gitq"] }, { kind: "boardSetup", repoPath: "/repos/mr-board" }],
+      [
+        { kind: "reportMissingRepos", names: ["gitq"] },
+        { kind: "reportDeckHealthy" },
+        { kind: "boardSetup", repoPath: "/repos/mr-board" },
+      ],
       seam,
     );
     expect(seam.calls).toEqual([]);
     expect(results.every((r) => r.ok)).toBe(true);
+  });
+
+  test("reportDeckHealthy is always ok with the skip note", async () => {
+    const seam = new FakeExecSeam();
+    const [result] = await runMaterialize([{ kind: "reportDeckHealthy" }], seam);
+    expect(result).toEqual({
+      step: { kind: "reportDeckHealthy" },
+      ok: true,
+      stderr: "",
+      stdout: "",
+      note: "deck healthy — setup skipped",
+    });
   });
 
   test("boardSetup is always report-only and ok, with the manual command in `note` (not `stderr`)", async () => {
@@ -184,5 +214,6 @@ describe("runMaterialize", () => {
     expect(RT_OWN_STEP_KINDS.has("deckSetup" as MaterializeStep["kind"])).toBe(false);
     expect(RT_OWN_STEP_KINDS.has("boardSetup" as MaterializeStep["kind"])).toBe(false);
     expect(RT_OWN_STEP_KINDS.has("reportMissingRepos" as MaterializeStep["kind"])).toBe(false);
+    expect(RT_OWN_STEP_KINDS.has("reportDeckHealthy" as MaterializeStep["kind"])).toBe(false);
   });
 });

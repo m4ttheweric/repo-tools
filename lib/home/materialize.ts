@@ -18,6 +18,7 @@ export type MaterializeStep =
   | { kind: "rtDaemonInstall" }
   | { kind: "reportMissingRepos"; names: string[] }
   | { kind: "deckSetup" }
+  | { kind: "reportDeckHealthy" }
   | { kind: "boardSetup"; repoPath: string };
 
 /** A step whose failure is rt's own responsibility — gates `rt home init`'s exit code. Any other step failing (a third-party tool, or a report-only step) never aborts the run. */
@@ -25,6 +26,8 @@ export const RT_OWN_STEP_KINDS = new Set<MaterializeStep["kind"]>(["rtInterceptI
 
 export interface MaterializeEnv {
   deckOnPath: boolean;
+  /** `deck`'s own healthz responded — `deckSetup` re-bootstraps deck under launchd (restarts the live proxy, blipping every *.localhost app), so a healthy deck must be skipped, not re-run. Meaningless when `deckOnPath` is false. */
+  deckHealthy: boolean;
   /** mr-board's checkout path from the repo index, or null if it isn't cloned locally. */
   boardRepoPath: string | null;
   daemonInstalled: boolean;
@@ -45,7 +48,7 @@ export function planMaterialize(env: MaterializeEnv): MaterializeStep[] {
   const missing = env.trackedRepos.filter((r) => !r.present).map((r) => r.name);
   if (missing.length > 0) steps.push({ kind: "reportMissingRepos", names: missing });
 
-  if (env.deckOnPath) steps.push({ kind: "deckSetup" });
+  if (env.deckOnPath) steps.push(env.deckHealthy ? { kind: "reportDeckHealthy" } : { kind: "deckSetup" });
 
   if (env.boardRepoPath) steps.push({ kind: "boardSetup", repoPath: env.boardRepoPath });
 
@@ -123,6 +126,8 @@ async function runStep(step: MaterializeStep, seam: MaterializeExecSeam): Promis
       return runSubprocessStep(step, "deck", ["deck", "setup"], seam, false);
     case "reportMissingRepos":
       return ok(step);
+    case "reportDeckHealthy":
+      return { step, ok: true, stderr: "", stdout: "", note: "deck healthy — setup skipped" };
     case "boardSetup":
       return { step, ok: true, stderr: "", stdout: "", note: `run manually (interactive): ${boardSetupCommand(step.repoPath)}` };
   }
