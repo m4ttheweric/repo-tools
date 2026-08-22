@@ -14,6 +14,7 @@ import * as home from "../commands/home.ts";
 import * as hooks from "../commands/hooks.ts";
 import * as port from "../commands/port.ts";
 import * as run from "../commands/run.ts";
+import * as runs from "../commands/runs.ts";
 import * as secrets from "../commands/secrets.ts";
 import * as settings from "../commands/settings.ts";
 import * as settingsKeys from "../commands/settings-keys.ts";
@@ -45,6 +46,7 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/hooks.ts": hooks,
   "./commands/port.ts": port,
   "./commands/run.ts": run,
+  "./commands/runs.ts": runs,
   "./commands/secrets.ts": secrets,
   "./commands/settings.ts": settings,
   "./commands/settings-keys.ts": settingsKeys,
