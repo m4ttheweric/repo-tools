@@ -55,6 +55,10 @@ screen_readiness() {
     ax_set_field setup.checklist.connect.field.token "$PAT"
     ax_click setup.checklist.connect.submit
     ax_wait_status account.github ready 60 || ax_fail "github row not ready"
+  else
+    # account.github is an inferred row id; name what's actually there on the first live run
+    # instead of letting a wrong guess surface only as a much later checklist-continue timeout.
+    ax_log "account.github row not found; checklist rows present: $(ax_dump_ids | grep -o 'setup\.checklist\.row\.[A-Za-z0-9._-]*' | sed -E 's/\.(action|status|error)$//' | sort -u | tr '\n' ' ')"
   fi
   # Full Disk Access: button → System Settings → toggle (admin auth for a standard user) → Relaunch.
   if [ "$(ax_status perm.fda || true)" != ready ]; then
@@ -104,19 +108,21 @@ screen_readiness() {
 screen_install() {
   ax_wait_screen install 10 || ax_fail "setup.install.screen did not appear"
   ax_shot 04-install-start
-  # Steps stream; a privileged step raises the admin prompt (standard user → admin creds).
+  # Steps stream; a privileged step raises the admin prompt (standard user → admin creds). The
+  # loop must stay a fast ~2s tick — ax_admin_auth_once returns immediately when no dialog is up,
+  # unlike ax_admin_auth's own 30s wait-for-appearance form, which would turn every tick into a
+  # 30s stall and the 15-minute budget below into hours.
   local n=900 failed
   while [ "$n" -gt 0 ]; do
-    ax_admin_auth 2>/dev/null && ax_shot 04-admin-auth || true
+    ax_admin_auth_once && ax_shot 04-admin-auth || true
     if ax_wait_window "mattstack" 1 && ax_find setup.done.continue >/dev/null 2>&1; then ax_shot 04-install-done; return 0; fi
     # Failure = the Retry button is present; the failing step's own AXIdentifier is the nearest
     # setup.install.step.* seen before it in the flattened tree (the button lives inside that step's row).
     if ax_find setup.install.retry >/dev/null 2>&1; then
-      failed=$(ax_osa "tell application \"System Events\" to tell process \"$AX_APP\" to get value of attribute \"AXIdentifier\" of every UI element of entire contents of window 1" 2>/dev/null \
-        | tr ',' '\n' | awk '
-            /setup\.install\.step\./ { match($0, /setup\.install\.step\.[A-Za-z0-9._-]*/); last = substr($0, RSTART, RLENGTH) }
-            /setup\.install\.retry/  { print last; exit }
-          ')
+      failed=$(ax_dump_ids | awk '
+          /setup\.install\.step\./ { match($0, /setup\.install\.step\.[A-Za-z0-9._-]*/); last = substr($0, RSTART, RLENGTH) }
+          /setup\.install\.retry/  { print last; exit }
+        ')
       failed="${failed%.status}"; failed="${failed%.log}"
       ax_fail "install step failed (${failed:-see setup.install.retry}); log: setup.install.log.copy"
     fi
