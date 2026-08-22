@@ -37,6 +37,10 @@ struct InstallScreen: View {
         }
         .sheet(item: $logFor) { s in LogSheet(title: s.info.title, lines: model.logLines(for: s.id)) }
         .sheet(isPresented: $showNotes) { LogSheet(title: "Diagnostic notes", lines: model.streamNotes) }
+        // .contain: without it, the "View"/"Retry" buttons in the plain
+        // HStacks below the Form report THIS screen-level identifier instead
+        // of their own -- same fix as stepRow and ChecklistScreen.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AXID.installScreen)
     }
 
@@ -80,6 +84,11 @@ struct InstallScreen: View {
                 .padding(.top, 2)
             }
         }
+        // .contain: without it, AppKit collapses the row into one element and
+        // every child (status badge, "Show log", "Retry from here") reports
+        // THIS identifier instead of its own -- the row-level id and each
+        // control's own id both need to resolve independently.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AXID.installStep(step.id))
     }
 

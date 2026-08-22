@@ -31,6 +31,10 @@ struct DoneScreen: View {
             Spacer()
         }
         .padding(24)
+        // .contain: without it, the plain HStack's buttons (Open the board,
+        // Invite teammates…) report THIS screen-level identifier instead of
+        // their own -- same fix as InstallScreen's stepRow and ChecklistScreen.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AXID.doneScreen)
     }
 
