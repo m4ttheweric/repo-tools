@@ -41,7 +41,7 @@ function positional(args: string[], valueFlags: string[]): string[] {
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (valueFlags.includes(a)) {
-      i++; // also skip the flag's value
+      i++;
       continue;
     }
     if (a.startsWith("--")) continue;

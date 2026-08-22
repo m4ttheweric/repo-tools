@@ -3,9 +3,16 @@ import { fakeProbes } from "../../setup/__tests__/fakes.ts";
 import { publishTeam } from "../publish.ts";
 import { UserActionableError } from "../../setup/errors.ts";
 
+const DIR = "/home/x/.mattstack/teams/acme";
+
+/** publishTeam prechecks the zone exists (finding 7) — every test that means to reach the git steps must seed the dir. */
+function probesWithZone(overrides: Parameters<typeof fakeProbes>[0] = {}) {
+  return fakeProbes({ dirs: { [DIR]: [] }, ...overrides });
+}
+
 describe("publishTeam", () => {
   test("set-url then push -u origin main", async () => {
-    const p = fakeProbes({ home: "/home/x" });
+    const p = probesWithZone({ home: "/home/x" });
     const result = await publishTeam(p, "acme", "https://github.com/acme/repo.git");
 
     expect(p.calls.exec).toEqual([
@@ -16,7 +23,7 @@ describe("publishTeam", () => {
   });
 
   test("falls back to remote add when set-url fails (no origin yet)", async () => {
-    const p = fakeProbes({
+    const p = probesWithZone({
       home: "/home/x",
       exec: (argv) => (argv[2] === "set-url" ? { code: 2, stdout: "", stderr: "error: No such remote 'origin'" } : { code: 0, stdout: "", stderr: "" }),
     });
@@ -30,9 +37,9 @@ describe("publishTeam", () => {
   });
 
   test("no explicit remote: pushes with the existing origin, no remote-changing calls", async () => {
-    const p = fakeProbes({
+    const p = probesWithZone({
       home: "/home/x",
-      files: { "/home/x/.mattstack/teams/acme/.git/config": '[remote "origin"]\n\turl = https://github.com/acme/repo.git\n' },
+      files: { [`${DIR}/.git/config`]: '[remote "origin"]\n\turl = https://github.com/acme/repo.git\n' },
     });
     const result = await publishTeam(p, "acme", null);
 
@@ -40,9 +47,39 @@ describe("publishTeam", () => {
     expect(result.remote).toBe("https://github.com/acme/repo.git");
   });
 
+  test("no zone for the slug: typed no-team-zone error, no exec calls at all", async () => {
+    const p = fakeProbes({ home: "/home/x" }); // DIR deliberately not seeded
+
+    let thrown: unknown;
+    try {
+      await publishTeam(p, "acme", "https://github.com/acme/repo.git");
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(UserActionableError);
+    expect((thrown as UserActionableError).code).toBe("no-team-zone");
+    expect(p.calls.exec).toEqual([]);
+  });
+
+  test("an unvalidated --team never resolves outside teamsDir()", async () => {
+    const p = fakeProbes({ home: "/home/x", dirs: { "/some/other-repo": [] } });
+
+    let thrown: unknown;
+    try {
+      await publishTeam(p, "../../some-repo", "https://github.com/acme/repo.git");
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(UserActionableError);
+    expect((thrown as UserActionableError).code).toBe("invalid-team-slug");
+    expect(p.calls.exec).toEqual([]);
+  });
+
   test("auth failure (exit 128) throws push-denied with the credential-bearing URL stripped", async () => {
     const remote = "https://x-access-token:SECRET@github.com/acme/repo.git";
-    const p = fakeProbes({
+    const p = probesWithZone({
       home: "/home/x",
       exec: (argv) =>
         argv[0] === "git" && argv[1] === "push"
@@ -64,11 +101,13 @@ describe("publishTeam", () => {
     expect(err.message).not.toContain("https://");
   });
 
-  test("non-auth push failure is not push-denied — it propagates as a real error", async () => {
-    const p = fakeProbes({
+  test("non-fast-forward rejection (existing EMPTY-repo contract violated) is a typed remote-not-empty error", async () => {
+    const p = probesWithZone({
       home: "/home/x",
       exec: (argv) =>
-        argv[0] === "git" && argv[1] === "push" ? { code: 1, stdout: "", stderr: "fatal: the remote end hung up unexpectedly" } : { code: 0, stdout: "", stderr: "" },
+        argv[0] === "git" && argv[1] === "push"
+          ? { code: 1, stdout: "", stderr: "! [rejected]        main -> main (fetch first)\nerror: failed to push some refs" }
+          : { code: 0, stdout: "", stderr: "" },
     });
 
     let thrown: unknown;
@@ -78,7 +117,60 @@ describe("publishTeam", () => {
       thrown = err;
     }
 
-    expect(thrown).not.toBeInstanceOf(UserActionableError);
-    expect(thrown).toBeInstanceOf(Error);
+    expect(thrown).toBeInstanceOf(UserActionableError);
+    const err = thrown as UserActionableError;
+    expect(err.code).toBe("remote-not-empty");
+    expect(err.message).toContain("EMPTY");
+  });
+
+  test("every other push failure is still a typed, redacted error — never a plain Error crash", async () => {
+    const remote = "https://x-access-token:SECRET@github.com/acme/repo.git";
+    const p = probesWithZone({
+      home: "/home/x",
+      exec: (argv) =>
+        argv[0] === "git" && argv[1] === "push"
+          ? { code: 1, stdout: "", stderr: `fatal: unable to access '${remote}': Could not resolve host` }
+          : { code: 0, stdout: "", stderr: "" },
+    });
+
+    let thrown: unknown;
+    try {
+      await publishTeam(p, "acme", remote);
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(UserActionableError);
+    const err = thrown as UserActionableError;
+    expect(err.code).toBe("push-failed");
+    expect(err.message).not.toContain("SECRET");
+  });
+
+  test("a failed remote add is also a typed, redacted error", async () => {
+    const remote = "https://x-access-token:SECRET@github.com/acme/repo.git";
+    const p = probesWithZone({
+      home: "/home/x",
+      exec: (argv) => (argv[0] === "git" && argv[1] === "remote" ? { code: 1, stdout: "", stderr: `fatal: bad remote ${remote}` } : { code: 0, stdout: "", stderr: "" }),
+    });
+
+    let thrown: unknown;
+    try {
+      await publishTeam(p, "acme", remote);
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(UserActionableError);
+    const err = thrown as UserActionableError;
+    expect(err.code).toBe("git-remote-failed");
+    expect(err.message).not.toContain("SECRET");
+  });
+
+  test("a credential-bearing remote is stripped of userinfo before it reaches the returned result (the JSON envelope's source)", async () => {
+    const p = probesWithZone({ home: "/home/x" });
+    const result = await publishTeam(p, "acme", "https://x-access-token:SECRET@github.com/acme/repo.git");
+
+    expect(result.remote).toBe("https://github.com/acme/repo.git");
+    expect(result.detail).not.toContain("SECRET");
   });
 });

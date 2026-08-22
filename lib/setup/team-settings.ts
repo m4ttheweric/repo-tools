@@ -87,8 +87,15 @@ export function readTeamSnapshot(p: Probes, slug: string, opts: { read?: Setting
   };
 }
 
-/** Strips `user:pass@`/`user@` userinfo that a credential-bearing URL (`https://token@host/...`) would otherwise leak into an integration's `host`. */
-function stripUserinfo(hostWithScheme: string): string {
+/**
+ * Strips `user:pass@`/`user@` userinfo that a credential-bearing URL
+ * (`https://token@host/...`) would otherwise leak into an integration's
+ * `host`. Works on a full URL too (scheme + userinfo + host + path) since
+ * the match is anchored at the start and stops at the first `@`; exported so
+ * `lib/team/create.ts`/`publish.ts` can sanitize a `remote` before it enters
+ * a result or a JSON envelope, without a second regex.
+ */
+export function stripUserinfo(hostWithScheme: string): string {
   return hostWithScheme.replace(/^(https?:\/\/)[^@/]+@/, "$1");
 }
 
