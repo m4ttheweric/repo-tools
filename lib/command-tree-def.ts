@@ -906,6 +906,7 @@ export const TREE: Record<string, CommandNode> = {
         args: [
           { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
           { name: "Key", type: "text", placeholder: "linearApiKey", hint: "Key name within the domain" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "claimview", hint: "Write to this team's N-recipient store instead of your personal one" },
           { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the value from stdin instead of a no-echo prompt (scripting)" },
         ],
       },
@@ -915,15 +916,17 @@ export const TREE: Record<string, CommandNode> = {
         fn: "secretsList",
         args: [
           { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "claimview", hint: "List from this team's store instead of your personal one" },
         ],
       },
       rotate: {
-        description: "Replace a secret's value; prints the rotation commit message — value prompted, never a CLI arg",
+        description: "Replace a secret's value, or (--team with no domain/key) re-encrypt every team domain file to its current recipients — value prompted, never a CLI arg",
         module: "./commands/secrets.ts",
         fn: "secretsRotate",
         args: [
-          { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
-          { name: "Key", type: "text", placeholder: "gitlabToken", hint: "Key name within the domain" },
+          { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board) — omit with --team to re-encrypt every domain file instead" },
+          { name: "Key", type: "text", placeholder: "gitlabToken", hint: "Key name within the domain — omit with --team to re-encrypt every domain file instead" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "claimview", hint: "Rotate in this team's N-recipient store instead of your personal one" },
           { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the new value from stdin instead of a no-echo prompt (scripting)" },
         ],
       },

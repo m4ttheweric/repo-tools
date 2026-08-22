@@ -5,6 +5,7 @@ import {
   importAgeKey,
   readAgeKey,
   renderSopsYaml,
+  renderSopsYamlFor,
   keyExport,
   withArgvRedaction,
   AgeKeyAbsentError,
@@ -296,6 +297,18 @@ describe("renderSopsYaml", () => {
     const yaml = renderSopsYaml("age1xyz");
     expect(yaml).toContain("path_regex: secrets/.*");
     expect(yaml).toContain("age1xyz");
+  });
+});
+
+describe("renderSopsYamlFor", () => {
+  test("emits a creation rule matching the given path_regex, one comma-separated age: value for every recipient", () => {
+    const yaml = renderSopsYamlFor("mattstack/secrets/.*", ["age1aaa", "age1bbb"]);
+    expect(yaml).toContain("path_regex: mattstack/secrets/.*");
+    expect(yaml).toContain("age: age1aaa,age1bbb");
+  });
+
+  test("renderSopsYaml is the single-recipient special case of this", () => {
+    expect(renderSopsYaml("age1xyz")).toBe(renderSopsYamlFor("secrets/.*", ["age1xyz"]));
   });
 });
 

@@ -31,7 +31,7 @@
  * safe for concurrent/multi-process writers.
  */
 
-import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from "fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeSync } from "fs";
 import { dirname, join } from "path";
 import { mattstackHome, rtDir } from "../rt-paths.ts";
 import { readAgeKey, type AgeKeySeam } from "../home/age-key.ts";
@@ -45,6 +45,14 @@ export interface SecretsExecResult {
 export interface SecretsExecSeam {
   run(cmd: string[], opts?: { env?: Record<string, string>; sensitive?: boolean }): Promise<SecretsExecResult>;
   fileExists(path: string): boolean;
+  /**
+   * Direct child names of a directory (not recursive); [] when the directory
+   * doesn't exist. Only team-store's domain-file discovery
+   * (`reencryptTeamSecrets`) needs this — optional so other
+   * `SecretsExecSeam` implementations elsewhere in the codebase don't have
+   * to grow a method they'll never call.
+   */
+  listDir?(path: string): string[];
   /**
    * mtime/size signature for the domain memo's staleness check — a rotation
    * landing on disk from another process (a CLI `rt secrets set` next to a
@@ -70,6 +78,21 @@ export interface SecretsSeams {
   execSeam: SecretsExecSeam;
 }
 
+/**
+ * Where one domain's ciphertext lives and how sops should address it —
+ * factored out so the personal store (`user/secrets/<domain>.json`, cwd
+ * `<mattstackHome>/user`) and the team store (`team-store.ts`'s
+ * `teams/<slug>/mattstack/secrets/<domain>.json`, cwd the team clone root)
+ * share the same encrypt/decrypt machinery below instead of two divergent
+ * copies of it. `filenameOverride` is cwd-relative on purpose — see
+ * `encryptAtLocation`'s doc for why it can't be `filePath` itself.
+ */
+export interface SecretsLocation {
+  filePath: string;
+  filenameOverride: string;
+  cwd: string;
+}
+
 /** Thrown when the keychain provably holds no age key yet (readAgeKey's `{absent:true}`). */
 export class NoAgeKeyError extends Error {
   constructor() {
@@ -86,26 +109,43 @@ export class NoAgeKeyError extends Error {
 // without breaking every real key this store is meant to hold.
 const DOMAIN_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+// Team slugs share the domain shape — both become filesystem path segments
+// under a fixed root, so the same path-escape-proof pattern applies.
+const SLUG_PATTERN = DOMAIN_PATTERN;
 
-/** `domain`/`key` become path/object-key components — reject anything else before any fs/exec call. */
+/** `domain`/`key`/`slug` become path/object-key components — reject anything else before any fs/exec call. */
 export class InvalidSecretsSegmentError extends Error {
-  constructor(kind: "domain" | "key", value: string, pattern: RegExp) {
+  constructor(kind: "domain" | "key" | "slug", value: string, pattern: RegExp) {
     super(`invalid ${kind} "${value}" — must match ${pattern}`);
   }
 }
 
-function validateDomain(domain: string): void {
+export function validateDomain(domain: string): void {
   if (!DOMAIN_PATTERN.test(domain)) throw new InvalidSecretsSegmentError("domain", domain, DOMAIN_PATTERN);
 }
 
-function validateKey(key: string): void {
+export function validateKey(key: string): void {
   if (!KEY_PATTERN.test(key)) throw new InvalidSecretsSegmentError("key", key, KEY_PATTERN);
+}
+
+/** team-store.ts's one choke point for a team slug, mirroring `validateDomain`. */
+export function validateSlug(slug: string): void {
+  if (!SLUG_PATTERN.test(slug)) throw new InvalidSecretsSegmentError("slug", slug, SLUG_PATTERN);
 }
 
 /** Validates `domain` — every path construction routes through here, so this is the one choke point. */
 export function secretsFilePath(domain: string): string {
   validateDomain(domain);
   return join(mattstackHome(), "user", "secrets", `${domain}.json`);
+}
+
+/** The personal store's `SecretsLocation`: `user/secrets/<domain>.json`, cwd `<mattstackHome>/user`. */
+function personalLocation(domain: string): SecretsLocation {
+  return {
+    filePath: secretsFilePath(domain), // validates domain
+    filenameOverride: join("secrets", `${domain}.json`),
+    cwd: join(mattstackHome(), "user"),
+  };
 }
 
 /**
@@ -166,24 +206,37 @@ function freshMemoEntry(domain: string, filePath: string, seams: SecretsSeams): 
 /**
  * Null means the file doesn't exist — distinct from a keychain error, which
  * throws. fileExists is checked BEFORE consulting the memo (not after) so a
- * domain deleted out from under the process re-reads as missing instead of
- * serving a stale cached value.
+ * location deleted out from under the process re-reads as missing instead of
+ * serving a stale cached value. `memoKey` opts a caller into the per-process
+ * memo (personal domains use their domain name; team-store reads skip it —
+ * see its own module doc for why).
  */
-async function decryptDomain(domain: string, seams: SecretsSeams): Promise<Record<string, string> | null> {
-  const filePath = secretsFilePath(domain);
-  if (!seams.execSeam.fileExists(filePath)) {
-    domainMemo.delete(domain);
+export async function decryptAtLocation(
+  location: SecretsLocation,
+  seams: SecretsSeams,
+  memoKey?: string,
+): Promise<Record<string, string> | null> {
+  if (!seams.execSeam.fileExists(location.filePath)) {
+    if (memoKey) domainMemo.delete(memoKey);
     return null;
   }
 
-  const fresh = freshMemoEntry(domain, filePath, seams);
-  if (fresh) return fresh;
+  if (memoKey) {
+    const fresh = freshMemoEntry(memoKey, location.filePath, seams);
+    if (fresh) return fresh;
+  }
 
   const env = await sopsAgeKeyEnv(seams.ageKeySeam);
-  const parsed = await sopsDecrypt(filePath, env, seams.execSeam);
-  const sig = seams.execSeam.statFile(filePath) ?? { mtimeMs: -1, size: -1 };
-  domainMemo.set(domain, { payload: parsed, sig });
+  const parsed = await sopsDecrypt(location.filePath, env, seams.execSeam);
+  if (memoKey) {
+    const sig = seams.execSeam.statFile(location.filePath) ?? { mtimeMs: -1, size: -1 };
+    domainMemo.set(memoKey, { payload: parsed, sig });
+  }
   return parsed;
+}
+
+function decryptDomain(domain: string, seams: SecretsSeams): Promise<Record<string, string> | null> {
+  return decryptAtLocation(personalLocation(domain), seams, domain);
 }
 
 export async function readSecret(domain: string, key: string, seams: SecretsSeams): Promise<string | null> {
@@ -208,10 +261,14 @@ export async function listSecretNames(domain: string, seams: SecretsSeams): Prom
  * Every path this touches outside the real target is removed in `finally`,
  * so a thrown error never needs to name a file for the user to clean up —
  * there isn't one, and the target is untouched on every failure.
+ *
+ * `location.filenameOverride` (not `location.filePath`) is what sops matches
+ * against its `.sops.yaml` `path_regex`, cwd-relative — the real staged
+ * input lives under `rt/tmp`, which would never match.
  */
-async function encryptDomain(
-  domain: string,
-  targetPath: string,
+export async function encryptAtLocation(
+  location: SecretsLocation,
+  stagingKey: string,
   payload: Record<string, string>,
   key: string,
   value: string,
@@ -220,24 +277,21 @@ async function encryptDomain(
 ): Promise<void> {
   const stagingDir = join(rtDir(), "tmp");
   execSeam.ensureDir(stagingDir, 0o700);
-  execSeam.ensureDir(dirname(targetPath), 0o700);
+  execSeam.ensureDir(dirname(location.filePath), 0o700);
 
-  const stagingPath = join(stagingDir, `${domain}.${process.pid}.json`);
-  const outputTmpPath = `${targetPath}.${process.pid}.tmp`;
-  // Relative to the pinned cwd (<mattstackHome>/user), matching .sops.yaml's
-  // `path_regex: secrets/.*` — the real input path (under rt/tmp) would never match.
-  const filenameOverride = join("secrets", `${domain}.json`);
+  const stagingPath = join(stagingDir, `${stagingKey}.${process.pid}.json`);
+  const outputTmpPath = `${location.filePath}.${process.pid}.tmp`;
 
   try {
     execSeam.writeFile(stagingPath, JSON.stringify(payload, null, 2));
 
     const result = await execSeam.run(
-      ["sops", "-e", "--filename-override", filenameOverride, "--output", outputTmpPath, stagingPath],
+      ["sops", "-e", "--filename-override", location.filenameOverride, "--output", outputTmpPath, stagingPath],
       { sensitive: true },
     );
     if (result.code !== 0) {
       throw new Error(
-        `sops -e ${domain}: encryption failed — ${result.stderr}\n` +
+        `sops -e ${stagingKey}: encryption failed — ${result.stderr}\n` +
           "no plaintext was left on disk (staging files are always cleaned up)",
       );
     }
@@ -262,23 +316,35 @@ async function encryptDomain(
     }
     if (roundTripped?.[key] !== value) {
       throw new Error(
-        `sops -e ${domain}: post-encrypt read-back of ${outputTmpPath} does not round-trip "${key}" — ` +
-          `refusing to declare success (${targetPath} was left untouched)`,
+        `sops -e ${stagingKey}: post-encrypt read-back of ${outputTmpPath} does not round-trip "${key}" — ` +
+          `refusing to declare success (${location.filePath} was left untouched)`,
       );
     }
 
-    execSeam.fsyncAndRename(outputTmpPath, targetPath);
-    execSeam.chmod(targetPath, 0o600);
+    execSeam.fsyncAndRename(outputTmpPath, location.filePath);
+    execSeam.chmod(location.filePath, 0o600);
   } finally {
     execSeam.removeFile(stagingPath);
     execSeam.removeFile(outputTmpPath);
   }
 }
 
-export async function writeSecret(domain: string, key: string, value: string, seams: SecretsSeams): Promise<void> {
-  validateKey(key);
-  const filePath = secretsFilePath(domain);
-
+/**
+ * The read-merge-encrypt body shared by `writeSecret` and team-store's
+ * `writeTeamSecret`: decrypts whatever's already at `location` (nothing if
+ * absent), merges in `key`/`value`, and re-encrypts through
+ * `encryptAtLocation`. Callers validate `domain`/`key`/`slug` themselves
+ * before reaching here — this trusts `location` and `key` are already safe
+ * path/object-key components.
+ */
+export async function writeAtLocation(
+  location: SecretsLocation,
+  stagingKey: string,
+  key: string,
+  value: string,
+  seams: SecretsSeams,
+  memoKey?: string,
+): Promise<void> {
   // Encryption alone only needs the recipient's PUBLIC key (from .sops.yaml)
   // — a brand-new domain would otherwise encrypt successfully even on a
   // machine that holds no private key at all, silently writing a credential
@@ -287,18 +353,26 @@ export async function writeSecret(domain: string, key: string, value: string, se
   const env = await sopsAgeKeyEnv(seams.ageKeySeam);
 
   let existing: Record<string, string>;
-  if (!seams.execSeam.fileExists(filePath)) {
+  if (!seams.execSeam.fileExists(location.filePath)) {
     existing = {};
   } else {
-    existing = freshMemoEntry(domain, filePath, seams) ?? await sopsDecrypt(filePath, env, seams.execSeam);
+    existing =
+      (memoKey ? freshMemoEntry(memoKey, location.filePath, seams) : undefined) ??
+      (await sopsDecrypt(location.filePath, env, seams.execSeam));
   }
 
   // Invalidate before mutating disk: after a failed encrypt the file may
   // hold nothing usable, so a cached ciphertext-derived read would be stale.
-  domainMemo.delete(domain);
+  if (memoKey) domainMemo.delete(memoKey);
 
   const updated = { ...existing, [key]: value };
-  await encryptDomain(domain, filePath, updated, key, value, env, seams.execSeam);
+  await encryptAtLocation(location, stagingKey, updated, key, value, env, seams.execSeam);
+}
+
+export async function writeSecret(domain: string, key: string, value: string, seams: SecretsSeams): Promise<void> {
+  validateKey(key);
+  const location = personalLocation(domain);
+  await writeAtLocation(location, domain, key, value, seams, domain);
 }
 
 /**
@@ -349,15 +423,19 @@ function debugLog(cmd: string[], sensitive: boolean | undefined): void {
  * resolve the home repo's `.sops.yaml` (also under `user/`) and its
  * `secrets/.*` path_regex regardless of the caller's cwd — the regex is
  * cwd-relative, not root-relative, so this cwd and that regex move together.
+ * `opts.cwd`, when given, overrides the `<mattstackHome>/user` default —
+ * team-store's real seam is the one caller that ever passes it (its own
+ * `.sops.yaml` lives at the team clone root, not under `user/`); every
+ * personal-store call leaves it unset, so the default is unchanged.
  */
-export function buildSecretsSpawnOptions(opts?: { env?: Record<string, string> }): {
+export function buildSecretsSpawnOptions(opts?: { env?: Record<string, string>; cwd?: string }): {
   cwd: string;
   env: Record<string, string | undefined>;
   stdout: "pipe";
   stderr: "pipe";
 } {
   return {
-    cwd: join(mattstackHome(), "user"),
+    cwd: opts?.cwd ?? join(mattstackHome(), "user"),
     // A fresh object every call (not a live reference/pass-through like
     // init-exec.ts's raw `env: process.env`) — but since it's built from
     // process.env at call time rather than cached once at module load, a
@@ -369,12 +447,18 @@ export function buildSecretsSpawnOptions(opts?: { env?: Record<string, string> }
   };
 }
 
-/** Real seam: Bun.spawn-based capture, real fs reads/writes. */
-export function createRealSecretsExecSeam(): SecretsExecSeam {
+/**
+ * Real seam: Bun.spawn-based capture, real fs reads/writes. `cwd`, when
+ * given, is pinned for every sops spawn this seam instance makes — the
+ * personal store's default seam (`cwd` omitted) resolves `<mattstackHome>/user`;
+ * team-store.ts constructs its own instance per team with `cwd` set to that
+ * team's clone root (see `buildTeamSpawnOptions`).
+ */
+export function createRealSecretsExecSeam(cwd?: string): SecretsExecSeam {
   return {
     async run(cmd, opts) {
       debugLog(cmd, opts?.sensitive);
-      const proc = Bun.spawn(cmd, buildSecretsSpawnOptions(opts));
+      const proc = Bun.spawn(cmd, buildSecretsSpawnOptions({ env: opts?.env, cwd }));
       const [stdout, stderr, code] = await Promise.all([
         new Response(proc.stdout).text(),
         new Response(proc.stderr).text(),
@@ -384,6 +468,13 @@ export function createRealSecretsExecSeam(): SecretsExecSeam {
     },
     fileExists(path) {
       return existsSync(path);
+    },
+    listDir(path) {
+      try {
+        return readdirSync(path);
+      } catch {
+        return [];
+      }
     },
     statFile(path) {
       try {
