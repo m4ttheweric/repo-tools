@@ -11,13 +11,16 @@ struct SetupEnvironment {
     let isDevBuild: Bool
     let bundleId: String
     let bundlePath: String
+    /// "Setup status…" — screen 3 as a health view, never a wizard step
+    /// (SetupFlowModel.readOnly carries the footer semantics).
+    var readOnly = false
 }
 
 /// One dedicated NSWindow hosting SwiftUI (AppKit lifecycle stays). ~560 pt
 /// wide, fixed; close/minimize appear only once setup is done.
 final class SetupWindowController: NSWindowController, NSWindowDelegate {
     static let width: CGFloat = 560
-    let flow = SetupFlowModel()
+    let flow: SetupFlowModel
     let team: TeamChoiceModel
     /// Set by the caller (e.g. re-entering an already-complete setup, or the
     /// read-only "Setup status…" view) to make the window closable even
@@ -30,6 +33,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
 
     init(environment: SetupEnvironment) {
         self.environment = environment
+        self.flow = SetupFlowModel(readOnly: environment.readOnly)
         self.team = TeamChoiceModel(rt: environment.rt)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 620),
                               styleMask: [.titled], backing: .buffered, defer: false)

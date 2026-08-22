@@ -10,6 +10,10 @@ enum AXID {
     static func back(_ screen: String) -> String { "setup.\(screen).back" }
     static func error(_ screen: String) -> String { "setup.\(screen).error" }
     static let continueLimited = "setup.checklist.continueLimited"
+    /// The read-only "Setup status…" window's primary button, in place of
+    /// `setup.<screen>.continue`: a walkthrough must be able to tell a health
+    /// view's Close from a wizard's Install.
+    static let statusClose = "setup.status.close"
 
     // Screens (the root view of each)
     static let welcomeScreen = "setup.welcome.screen"

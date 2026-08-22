@@ -30,9 +30,20 @@ public final class SetupFlowModel: ObservableObject {
     /// extra decrement that could steal another window's share of
     /// `ReadinessModel`'s shared visibility depth count.
     public var readinessIsVisible = false
-    public init() {}
+    /// The "Setup status…" window renders screen 3 as a health view, not as a
+    /// wizard step: there is no flow behind it to walk back into, and its
+    /// primary button closes. A Continue here would advance into `.install`
+    /// and start a real `rt setup apply` — whose next `start()` SIGTERMs the
+    /// previous process, killing a live install the onboarding window owns.
+    public let readOnly: Bool
+    public init(readOnly: Bool = false) { self.readOnly = readOnly }
+
+    public var showsBack: Bool { !readOnly }
+    public var primaryClosesWindow: Bool { readOnly }
+    public var mayStartInstall: Bool { !readOnly }
 
     public var canGoBack: Bool {
+        guard !readOnly else { return false }
         switch step {
         case .welcome, .done: return false
         case .install: return !isInstalling
@@ -40,6 +51,7 @@ public final class SetupFlowModel: ObservableObject {
         }
     }
     public var continueTitle: String {
+        if readOnly { return "Close" }
         switch step {
         case .checklist: return "Install"
         case .done: return "Finish"
