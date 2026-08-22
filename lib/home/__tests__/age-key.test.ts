@@ -2,6 +2,7 @@ import { describe, test, expect, spyOn } from "bun:test";
 import * as fs from "fs";
 import {
   ensureAgeKey,
+  importAgeKey,
   readAgeKey,
   renderSopsYaml,
   keyExport,
@@ -168,6 +169,94 @@ describe("ensureAgeKey", () => {
       expect(seam.calls.some((c) => c.cmd[0] === "age-keygen")).toBe(false);
       expect(seam.calls.some((c) => c.cmd.includes("add-generic-password"))).toBe(false);
     });
+  });
+});
+
+describe("importAgeKey", () => {
+  const OTHER_PUBLIC_KEY = "age1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+  const OTHER_PRIVATE_KEY = "AGE-SECRET-KEY-1ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ";
+
+  test("no existing key: derives the public key via age-keygen -y, stores WITHOUT -U, returns {ok: true, publicKey}", async () => {
+    const seam = new FakeAgeKeySeam({ find: { code: 44, stdout: "" } });
+
+    const result = await importAgeKey(seam, FAKE_PRIVATE_KEY);
+
+    expect(result).toEqual({ ok: true, publicKey: FAKE_PUBLIC_KEY });
+    const addCall = seam.calls.find((c) => c.cmd[1] === "add-generic-password");
+    expect(addCall?.cmd).toEqual([...ADD_CMD_PREFIX, FAKE_PRIVATE_KEY]);
+    expect(addCall?.cmd).not.toContain("-U");
+  });
+
+  test("malformed value (wrong prefix): refused before any seam call", async () => {
+    const seam = new FakeAgeKeySeam({ find: { code: 44, stdout: "" } });
+
+    const result = await importAgeKey(seam, "not-an-age-key");
+
+    expect(result).toEqual({ ok: false, reason: "malformed" });
+    expect(seam.calls).toEqual([]);
+  });
+
+  test("right prefix but age-keygen -y rejects it: refused as malformed", async () => {
+    const seam = new FakeAgeKeySeam({ find: { code: 44, stdout: "" }, deriveY: { code: 1, stdout: "" } });
+
+    const result = await importAgeKey(seam, FAKE_PRIVATE_KEY);
+
+    expect(result).toEqual({ ok: false, reason: "malformed" });
+    expect(seam.calls.some((c) => c.cmd.includes("add-generic-password"))).toBe(false);
+  });
+
+  test("a key already exists, no --force: refused with the existing recipient, never overwrites", async () => {
+    const seam = new FakeAgeKeySeam({ find: { code: 0, stdout: `${OTHER_PRIVATE_KEY}\n` } });
+    // age-keygen -y is called twice (new key, then existing key) — give distinct answers by call order.
+    let call = 0;
+    const origRun = seam.run.bind(seam);
+    seam.run = async (cmd, opts) => {
+      if (cmd[0] === "age-keygen" && cmd[1] === "-y") {
+        call++;
+        return call === 1 ? { code: 0, stdout: `${FAKE_PUBLIC_KEY}\n`, stderr: "" } : { code: 0, stdout: `${OTHER_PUBLIC_KEY}\n`, stderr: "" };
+      }
+      return origRun(cmd, opts);
+    };
+
+    const result = await importAgeKey(seam, FAKE_PRIVATE_KEY);
+
+    expect(result).toEqual({ ok: false, reason: "exists", existingPublicKey: OTHER_PUBLIC_KEY });
+    expect(seam.calls.some((c) => c.cmd.includes("add-generic-password"))).toBe(false);
+  });
+
+  test("a key already exists, --force: overwrites via -U, returns the new public key", async () => {
+    const seam = new FakeAgeKeySeam({ find: { code: 0, stdout: `${OTHER_PRIVATE_KEY}\n` } });
+
+    const result = await importAgeKey(seam, FAKE_PRIVATE_KEY, { force: true });
+
+    expect(result).toEqual({ ok: true, publicKey: FAKE_PUBLIC_KEY });
+    const addCall = seam.calls.find((c) => c.cmd[1] === "add-generic-password");
+    expect(addCall?.cmd).toContain("-U");
+    expect(addCall?.cmd.at(-1)).toBe(FAKE_PRIVATE_KEY);
+    // --force skips the existing-key lookup entirely — no read-before-write race.
+    expect(seam.calls.some((c) => c.cmd[1] === "find-generic-password")).toBe(false);
+  });
+
+  test("no existing key: the exact call sequence is derive-new, find, store — nothing else", async () => {
+    const seam = new FakeAgeKeySeam({ find: { code: 44, stdout: "" } });
+
+    await importAgeKey(seam, FAKE_PRIVATE_KEY);
+
+    expect(seam.calls.map((c) => c.cmd)).toEqual([
+      ["age-keygen", "-y"],
+      FIND_CMD,
+      [...ADD_CMD_PREFIX, FAKE_PRIVATE_KEY],
+    ]);
+  });
+
+  test("non-force path: readAgeKey throwing (locked keychain) propagates, and nothing is ever stored", async () => {
+    const seam = new FakeAgeKeySeam({
+      find: { code: 36, stdout: "", stderr: "SecKeychainItemCopyContent: the user name or passphrase is not correct" },
+    });
+
+    await expect(importAgeKey(seam, FAKE_PRIVATE_KEY)).rejects.toThrow(/keychain unreachable/i);
+
+    expect(seam.calls.some((c) => c.cmd.includes("add-generic-password"))).toBe(false);
   });
 });
 

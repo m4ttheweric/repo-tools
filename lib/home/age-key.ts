@@ -45,8 +45,11 @@ const FIND_CMD = ["security", "find-generic-password", "-a", KEYCHAIN_ACCOUNT, "
  * (update-if-exists): a duplicate item makes this call fail outright rather
  * than silently overwrite — see ensureAgeKey's doc.
  */
-function addCmd(privateKey: string): string[] {
-  return ["security", "add-generic-password", "-a", KEYCHAIN_ACCOUNT, "-s", KEYCHAIN_SERVICE, "-w", privateKey];
+function addCmd(privateKey: string, opts?: { update?: boolean }): string[] {
+  const cmd = ["security", "add-generic-password", "-a", KEYCHAIN_ACCOUNT, "-s", KEYCHAIN_SERVICE];
+  if (opts?.update) cmd.push("-U");
+  cmd.push("-w", privateKey);
+  return cmd;
 }
 
 const ITEM_NOT_FOUND_EXIT_CODE = 44; // macOS security's errSecItemNotFound
@@ -129,6 +132,64 @@ export async function ensureAgeKey(seams: AgeKeySeam): Promise<{ publicKey: stri
   }
 
   return { publicKey, minted: true };
+}
+
+const PRIVATE_KEY_PREFIX = "AGE-SECRET-KEY-1";
+
+export type ImportAgeKeyResult =
+  | { ok: true; publicKey: string }
+  | { ok: false; reason: "malformed" }
+  | { ok: false; reason: "exists"; existingPublicKey: string };
+
+/**
+ * The fresh-machine counterpart to ensureAgeKey's mint: imports a key
+ * supplied by the caller (a password manager paste) instead of generating
+ * one. Shape is checked twice — the `AGE-SECRET-KEY-1` prefix rejects an
+ * obviously-wrong paste before any subprocess runs, and `age-keygen -y`
+ * rejects anything with the right prefix but invalid key bytes — both
+ * collapse to the same typed `malformed` refusal.
+ *
+ * An existing keychain item is a typed refusal too, not a throw, so the
+ * caller (a CLI command) can decide what to do — prompt, `--force`, abort —
+ * without unwinding a stack for an expected, recoverable state. Only
+ * `force` overwrites, via `-U`; without it, an existing item is never
+ * touched, and `readAgeKey` runs first specifically so this refusal can
+ * name the recipient already there.
+ */
+export async function importAgeKey(
+  seams: AgeKeySeam,
+  privateKey: string,
+  opts: { force?: boolean } = {},
+): Promise<ImportAgeKeyResult> {
+  if (!privateKey.startsWith(PRIVATE_KEY_PREFIX)) {
+    return { ok: false, reason: "malformed" };
+  }
+
+  const derived = await seams.run(["age-keygen", "-y"], { input: privateKey, sensitive: true });
+  if (derived.code !== 0) {
+    return { ok: false, reason: "malformed" };
+  }
+  const publicKey = derived.stdout.trim();
+
+  if (!opts.force) {
+    const existing = await readAgeKey(seams);
+    if ("key" in existing) {
+      const existingDerived = await seams.run(["age-keygen", "-y"], { input: existing.key, sensitive: true });
+      if (existingDerived.code !== 0) {
+        throw new Error(
+          `age-keygen -y: could not derive the public key from the already-stored private key\n${existingDerived.stderr}`,
+        );
+      }
+      return { ok: false, reason: "exists", existingPublicKey: existingDerived.stdout.trim() };
+    }
+  }
+
+  const stored = await seams.run(addCmd(privateKey, { update: opts.force }), { sensitive: true });
+  if (stored.code !== 0) {
+    throw new Error(`security add-generic-password: failed to store the imported age key in the keychain\n${stored.stderr}`);
+  }
+
+  return { ok: true, publicKey };
 }
 
 export function renderSopsYaml(publicKey: string): string {

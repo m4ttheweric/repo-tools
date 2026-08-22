@@ -71,6 +71,102 @@ export class InvalidMachineKeyError extends Error {
   }
 }
 
+// ─── Machine-profile picker (rt home init on a fresh/keyless machine) ──────
+
+export interface ChooseMachineProfileInput {
+  /** Existing `user/local/<key>/` profiles (dirs carrying settings.local.jsonc) — only knowable once `user/` is cloned. */
+  profiles: string[];
+  hostnameSlug: string;
+  flags: { profile?: string; newProfile?: boolean };
+  /** True only when stdin is a real TTY — gates whether "prompt-needed" is reachable at all. */
+  interactive: boolean;
+}
+
+export type ChooseMachineProfileSource = "flag" | "existing" | "hostname" | "prompt-needed";
+
+export interface ChooseMachineProfileResult {
+  /** Empty when source is "prompt-needed" — the caller must run the interactive picker; this function never blocks on I/O itself. */
+  key: string;
+  source: ChooseMachineProfileSource;
+}
+
+/** `--profile <key>` named something not already in `profiles`, and `--new-profile` wasn't passed to say that's intentional. */
+export class UnknownProfileFlagError extends Error {
+  constructor(profile: string, profiles: string[]) {
+    super(
+      `--profile ${profile} isn't one of the existing profiles (${profiles.length > 0 ? profiles.join(", ") : "none yet"}) — ` +
+        "pass --new-profile as well to create it.",
+    );
+  }
+}
+
+/** Multiple profiles exist, no flag picked one, and stdin isn't a TTY to prompt on — never silently guess. */
+export class ProfileChoiceRequiredError extends Error {
+  constructor(profiles: string[]) {
+    super(
+      `${profiles.length} existing machine profile(s) (${profiles.join(", ")}) and no terminal to prompt on — ` +
+        "pass --profile <key> to adopt one, or --new-profile to start a new one.",
+    );
+  }
+}
+
+/** Mirrors InvalidMachineKeyError for a profile key chosen by flag or hostname slug, before it ever reaches buildInitPlan. */
+export class InvalidProfileKeyError extends Error {
+  constructor(key: string) {
+    super(`"${key}" is not a safe machine-profile key (empty, ".", "..", or containing "/" or "\\")`);
+  }
+}
+
+/**
+ * Bare `--new-profile` (no explicit `--profile <name>`) defaults to the
+ * hostname slug — but if that slug already names an EXISTING profile, using
+ * it as "new" would silently adopt (and let this machine overwrite) another
+ * machine's settings.local.jsonc: two machines sharing one LocalHostName
+ * slug is exactly the cross-machine clobber.
+ */
+export class ProfileNameCollisionError extends Error {
+  constructor(hostnameSlug: string) {
+    super(
+      `--new-profile's default name ("${hostnameSlug}") is already an existing profile — ` +
+        `using it would silently share that profile with whichever other machine created it. ` +
+        `Pass --profile <name> --new-profile with a distinct name.`,
+    );
+  }
+}
+
+/**
+ * Pure decision only — never touches fs, git, or a terminal. `profiles` and
+ * `interactive` are probed by the caller (post-clone, since the profile list
+ * only exists once `user/local/` has landed); this just resolves what those
+ * facts, plus the flags, mean. "prompt-needed" hands the interactive picker
+ * back to the caller rather than running one here.
+ */
+export function chooseMachineProfile(input: ChooseMachineProfileInput): ChooseMachineProfileResult {
+  const { profiles, hostnameSlug, flags, interactive } = input;
+
+  function resolved(key: string, source: ChooseMachineProfileSource): ChooseMachineProfileResult {
+    if (!isSafeMachineKeySegment(key)) throw new InvalidProfileKeyError(key);
+    return { key, source };
+  }
+
+  if (flags.profile !== undefined) {
+    if (profiles.includes(flags.profile)) return resolved(flags.profile, "existing");
+    if (flags.newProfile) return resolved(flags.profile, "flag");
+    throw new UnknownProfileFlagError(flags.profile, profiles);
+  }
+
+  if (flags.newProfile) {
+    if (profiles.includes(hostnameSlug)) throw new ProfileNameCollisionError(hostnameSlug);
+    return resolved(hostnameSlug, "flag");
+  }
+
+  if (profiles.length === 0) return resolved(hostnameSlug, "hostname");
+
+  if (!interactive) throw new ProfileChoiceRequiredError(profiles);
+
+  return { key: "", source: "prompt-needed" };
+}
+
 /**
  * Idempotence lives here, not in the executor: each step is gated on its own
  * probe, so a fully-provisioned machine naturally converges to an empty
