@@ -24,6 +24,7 @@ import { TRAY_APP_NAME, TRAY_APP_BUNDLE, trayAppInstallDest, legacyTrayAppPaths 
 import { currentMode, installRtBinary, rtBinaryPath } from "../lib/dev-mode.ts";
 import { RT_BUNDLE_PATH } from "../lib/bundle-layout.ts";
 import { installShellIntegration, detectShell, shellRcPath } from "../lib/shell-integration.ts";
+import { EDITOR_PATTERNS } from "../lib/editors.ts";
 
 const HOME = homedir();
 
@@ -129,16 +130,6 @@ function installTrayApp(): void {
 }
 
 // ─── 3. Extension ─────────────────────────────────────────────────────────────
-
-const EDITOR_PATTERNS = [
-  { appName: "Cursor.app",                        cliBinary: "cursor",      displayName: "Cursor" },
-  { appName: "Cursor Personal.app",               cliBinary: "cursor",      displayName: "Cursor Personal" },
-  { appName: "Visual Studio Code.app",            cliBinary: "code",        displayName: "VS Code" },
-  { appName: "Visual Studio Code - Insiders.app", cliBinary: "code-insiders", displayName: "VS Code Insiders" },
-  { appName: "VSCodium.app",                      cliBinary: "codium",      displayName: "VSCodium" },
-  { appName: "Antigravity.app",                   cliBinary: "antigravity", displayName: "Antigravity" },
-  { appName: "Windsurf.app",                      cliBinary: "windsurf",    displayName: "Windsurf" },
-];
 
 function findVsix(): string | null {
   const candidate = resolve(process.execPath, "../rt-context.vsix");
