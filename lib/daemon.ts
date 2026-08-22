@@ -144,6 +144,15 @@ setInterval(() => {
     log.warn({ err }, "runs prune failed");
   }
 }, 24 * 60 * 60 * 1000);
+// Boot-time prune to handle frequent daemon restarts that would otherwise starve the daily interval.
+setTimeout(() => {
+  try {
+    const { removed } = pruneRuns();
+    if (removed.length > 0) log.info({ removed: removed.length }, "pruned old pipeline runs");
+  } catch (err) {
+    log.warn({ err }, "runs prune failed");
+  }
+}, 60_000);
 
 // Cron trigger layer (mechanism-only, MAT-161): sees every broadcast frame.
 const cron = startCron(loadCronConfig(log), { log });

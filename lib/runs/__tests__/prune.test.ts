@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, utimesSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { assertPrunable, pruneRuns } from "../prune.ts";
@@ -67,6 +67,18 @@ describe("pruneRuns", () => {
     expect(existsSync(join(dir, "alpha", "old-done"))).toBe(false);
     expect(existsSync(join(dir, "alpha", "new-done"))).toBe(true);
     expect(existsSync(join(dir, "alpha", "still-running"))).toBe(true);
+  });
+
+  test("a running run ages out once its state.db mtime crosses the floor", () => {
+    const dir = root();
+    const now = Date.now();
+    seedRun(dir, "alpha", "stale-running", now - 40 * DAY);
+    const dbPath = join(dir, "alpha", "stale-running", "state.db");
+    const oldTime = new Date(now - 40 * DAY);
+    utimesSync(dbPath, oldTime, oldTime);
+    const { removed } = pruneRuns(now);
+    expect(removed).toEqual([join(dir, "alpha", "stale-running")]);
+    expect(existsSync(join(dir, "alpha", "stale-running"))).toBe(false);
   });
 
   test("the guard refuses anything that is not <runsRoot>/<repo>/<runId>", () => {

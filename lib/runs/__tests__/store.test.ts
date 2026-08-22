@@ -81,4 +81,10 @@ describe("runs store", () => {
     expect(readRun("alpha", "corrupt")).toBeNull();
     expect(findRun("corrupt")).toBeNull();
   });
+
+  test("path-traversal repo/runId components are rejected, not joined", () => {
+    root();
+    expect(readRun("..", "x")).toBeNull();
+    expect(findRun("a/b")).toBeNull();
+  });
 });
