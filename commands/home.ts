@@ -2,15 +2,23 @@
  * rt home — the git-backed ~/.mattstack/user personal repo, plus per-machine
  * provisioning of the ~/.mattstack tree around it.
  *
- *   rt home init [--dry-run] [--url <remote>]   print, then run, the provisioning plan
+ *   rt home init [--dry-run] [--url <remote>] [--profile <key>] [--new-profile]
+ *                                                     print, then run, the provisioning plan
  *   rt home key export                          print the age private key once, for a password manager
+ *   rt home key import [--stdin] [--force]      bring an external age key into the keychain
  *   rt home snapshot [--status]                       run (or report on) the auto-commit daemon
  *   rt home claim <zone> [--owner] [--note] [--force]  tell the daemon to leave a path alone
  *   rt home release <zone>                             let the daemon resume auto-committing a path
  *
  * `init` gathers state, prints the plan from lib/home/init-plan.ts, and
  * (unless --dry-run) runs it through lib/home/init-exec.ts's injected seam.
- * `key export` delegates entirely to lib/home/age-key.ts.
+ * On a fresh machine (no ~/.mattstack/machine-key yet) it also resolves
+ * which `user/local/<key>/` profile to adopt or create — see
+ * `chooseMachineProfile` in lib/home/init-plan.ts and the "machine profile
+ * picker" section of `homeInit` below. `--profile`/`--new-profile` are only
+ * meaningful on that fresh-machine path; passing either once machine-key is
+ * already pinned is refused.
+ * `key export`/`key import` delegate to lib/home/age-key.ts.
  * `snapshot`/`snapshot --status` are a thin round-trip to the daemon's
  * `home:snapshot`/`home:snapshot-status` handlers (lib/daemon/handlers/home.ts).
  * `claim`/`release` write user/snapshot-owners.jsonc directly via
@@ -35,10 +43,12 @@ import {
   InvalidMachineKeyError,
   InvalidProfileKeyError,
   ProfileChoiceRequiredError,
+  ProfileNameCollisionError,
   STATE_DIR_NAMES,
   UnknownProfileFlagError,
   type ChooseMachineProfileResult,
   type HomeState,
+  type InitPlan,
   type InitStep,
 } from "../lib/home/init-plan.ts";
 import { createRealExecSeam, executeInitPlan, type ExecSeam } from "../lib/home/init-exec.ts";
@@ -278,22 +288,57 @@ async function ensureHomeAgeKey(
   return { ok: true };
 }
 
-export async function homeInit(
-  args: string[],
-  _ctx: CommandContext = {},
-  probes: HomeProbes = defaultProbes(),
-  exec: ExecSeam = createRealExecSeam(mattstackHome()),
-  ageKeySeam: AgeKeySeam = createRealAgeKeySeam(),
-  sopsYamlSeam: SopsYamlSeam = defaultSopsYamlSeam(),
-  // Evaluated at call time, like every other default here — a real fs read
-  // (~/.mattstack/machine-key), so tests inject a fixed value instead of
-  // depending on the test-runner's actual hostname/override file. When the
-  // machine-key file is absent this doubles as the hostname-slug fallback
-  // the profile chooser below offers ("new profile (<this>)").
-  key: string = machineKey(),
-  pickerSeam: MachineProfilePickerSeam = createRealMachineProfilePickerSeam(),
-  isInteractive: () => boolean = () => Boolean(process.stdin.isTTY),
-): Promise<void> {
+/** buildInitPlan's only checked failure (InvalidMachineKeyError) turned into the CLI's print-and-exit(1) — shared by every one of homeInit's three plan builds so the three don't drift. */
+function planOrExit(state: HomeState, config: { url: string; machineKey: string }): InitPlan {
+  try {
+    return buildInitPlan(state, config);
+  } catch (err) {
+    if (err instanceof InvalidMachineKeyError) {
+      console.error(`rt home init: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+}
+
+function printPlan(home: string, steps: InitStep[]): void {
+  console.log(`rt home init plan for ${home}:`);
+  steps.forEach((step, i) => console.log(`  ${i + 1}. ${describeStep(step)}`));
+}
+
+function printSkillsSymlinkBlocked(home: string): void {
+  console.error(
+    `\nrt home init: a real file already exists at ${join(home, "skills.jsonc")} — refusing to overwrite it. ` +
+      "Move it aside by hand, then rerun.",
+  );
+}
+
+export interface HomeInitSeams {
+  probes?: HomeProbes;
+  exec?: ExecSeam;
+  ageKeySeam?: AgeKeySeam;
+  sopsYamlSeam?: SopsYamlSeam;
+  /**
+   * Evaluated at call time, like every other default here — a real fs read
+   * (~/.mattstack/machine-key), so tests inject a fixed value instead of
+   * depending on the test-runner's actual hostname/override file. When the
+   * machine-key file is absent this doubles as the hostname-slug fallback
+   * the profile chooser below offers ("new profile (<this>)").
+   */
+  key?: string;
+  pickerSeam?: MachineProfilePickerSeam;
+  isInteractive?: () => boolean;
+}
+
+export async function homeInit(args: string[], _ctx: CommandContext = {}, seams: HomeInitSeams = {}): Promise<void> {
+  const probes = seams.probes ?? defaultProbes();
+  const exec = seams.exec ?? createRealExecSeam(mattstackHome());
+  const ageKeySeam = seams.ageKeySeam ?? createRealAgeKeySeam();
+  const sopsYamlSeam = seams.sopsYamlSeam ?? defaultSopsYamlSeam();
+  const key = seams.key ?? machineKey();
+  const pickerSeam = seams.pickerSeam ?? createRealMachineProfilePickerSeam();
+  const isInteractive = seams.isInteractive ?? (() => Boolean(process.stdin.isTTY));
+
   const dryRun = args.includes("--dry-run");
   const home = mattstackHome();
 
@@ -322,24 +367,9 @@ export async function homeInit(
   if (!state.machineKeyFilePresent) {
     if (!state.userRepoPresent) {
       if (dryRun) {
-        let previewPlan: ReturnType<typeof buildInitPlan>;
-        try {
-          previewPlan = buildInitPlan(state, { url, machineKey: key });
-        } catch (err) {
-          if (err instanceof InvalidMachineKeyError) {
-            console.error(`rt home init: ${err.message}`);
-            process.exit(1);
-          }
-          throw err;
-        }
-        console.log(`rt home init plan for ${home}:`);
-        previewPlan.steps.forEach((step, i) => console.log(`  ${i + 1}. ${describeStep(step)}`));
-        if (previewPlan.blocked === "skills-symlink-real-file") {
-          console.error(
-            `\nrt home init: a real file already exists at ${join(home, "skills.jsonc")} — refusing to overwrite it. ` +
-              "Move it aside by hand, then rerun.",
-          );
-        }
+        const previewPlan = planOrExit(state, { url, machineKey: key });
+        printPlan(home, previewPlan.steps);
+        if (previewPlan.blocked === "skills-symlink-real-file") printSkillsSymlinkBlocked(home);
         console.log(
           `\n  rt home init: this machine has no machine-key file yet — existing profiles under user/local/ ` +
             `aren't knowable until the repo above is actually cloned, so the key shown here ("${key}") is only ` +
@@ -358,18 +388,8 @@ export async function homeInit(
         skillsSymlinkPresent: true,
         skillsSymlinkBlocked: false,
       };
-      let clonePlan: ReturnType<typeof buildInitPlan>;
-      try {
-        clonePlan = buildInitPlan(cloneOnlyState, { url, machineKey: key });
-      } catch (err) {
-        if (err instanceof InvalidMachineKeyError) {
-          console.error(`rt home init: ${err.message}`);
-          process.exit(1);
-        }
-        throw err;
-      }
-      console.log(`rt home init plan for ${home}:`);
-      clonePlan.steps.forEach((step, i) => console.log(`  ${i + 1}. ${describeStep(step)}`));
+      const clonePlan = planOrExit(cloneOnlyState, { url, machineKey: key });
+      printPlan(home, clonePlan.steps);
 
       const cloneResult = await executeInitPlan(clonePlan.steps, exec, (message) => console.log(`  ${message}`));
       if (!cloneResult.ok) {
@@ -399,6 +419,7 @@ export async function homeInit(
       if (
         err instanceof UnknownProfileFlagError ||
         err instanceof ProfileChoiceRequiredError ||
+        err instanceof ProfileNameCollisionError ||
         err instanceof InvalidProfileKeyError
       ) {
         console.error(`rt home init: ${err.message}`);
@@ -428,32 +449,28 @@ export async function homeInit(
     }
 
     state = { ...state, profileDirPresent: profiles.includes(chosenKey) };
+  } else if (profileFlag !== undefined || newProfileFlag) {
+    // --profile/--new-profile only make sense while this machine is still
+    // choosing its FIRST profile. Once machine-key is pinned, silently
+    // ignoring them would look like the flag worked (see: "fully
+    // provisioned" printing on an already-keyed machine passed --profile
+    // other-box) when nothing happened at all.
+    console.error(
+      `rt home init: this machine's machine-key file already pins "${key}" — --profile/--new-profile only apply ` +
+        `while choosing a machine's first profile. Edit or remove ~/.mattstack/machine-key and re-run to change it.`,
+    );
+    process.exit(1);
   }
 
-  let plan: ReturnType<typeof buildInitPlan>;
-  try {
-    plan = buildInitPlan(state, { url, machineKey: chosenKey });
-  } catch (err) {
-    if (err instanceof InvalidMachineKeyError) {
-      console.error(`rt home init: ${err.message}`);
-      process.exit(1);
-    }
-    throw err;
-  }
+  const plan = planOrExit(state, { url, machineKey: chosenKey });
 
   if (plan.steps.length > 0) {
-    console.log(`rt home init plan for ${home}:`);
-    plan.steps.forEach((step, i) => console.log(`  ${i + 1}. ${describeStep(step)}`));
+    printPlan(home, plan.steps);
   } else if (!plan.blocked) {
     console.log(`rt home init: ${home} is already fully provisioned — nothing to do.`);
   }
 
-  if (plan.blocked === "skills-symlink-real-file") {
-    console.error(
-      `\nrt home init: a real file already exists at ${join(home, "skills.jsonc")} — refusing to overwrite it. ` +
-        "Move it aside by hand, then rerun.",
-    );
-  }
+  if (plan.blocked === "skills-symlink-real-file") printSkillsSymlinkBlocked(home);
 
   if (dryRun) return;
 

@@ -5,6 +5,7 @@ import {
   InvalidMachineKeyError,
   InvalidProfileKeyError,
   ProfileChoiceRequiredError,
+  ProfileNameCollisionError,
   STATE_DIR_NAMES,
   UnknownProfileFlagError,
   type ChooseMachineProfileInput,
@@ -216,6 +217,37 @@ describe("chooseMachineProfile", () => {
   test("bare --new-profile (no --profile): uses the hostname slug, source 'flag'", () => {
     const result = chooseMachineProfile({ ...BASE, profiles: ["desktop"], flags: { newProfile: true } });
     expect(result).toEqual({ key: "mbp-14", source: "flag" });
+  });
+
+  test("--profile <existing> --new-profile: adopts the existing profile (existing-match wins over the new-profile flag — deliberate ordering)", () => {
+    const result = chooseMachineProfile({
+      ...BASE,
+      profiles: ["desktop"],
+      flags: { profile: "desktop", newProfile: true },
+    });
+    expect(result).toEqual({ key: "desktop", source: "existing" });
+  });
+
+  test("bare --new-profile whose default hostname-slug name collides with an EXISTING profile: throws, never silently shares that profile", () => {
+    expect(() =>
+      chooseMachineProfile({ ...BASE, hostnameSlug: "mbp-14", profiles: ["mbp-14", "desktop"], flags: { newProfile: true } }),
+    ).toThrow(ProfileNameCollisionError);
+    try {
+      chooseMachineProfile({ ...BASE, hostnameSlug: "mbp-14", profiles: ["mbp-14", "desktop"], flags: { newProfile: true } });
+    } catch (err) {
+      expect((err as Error).message).toContain("mbp-14");
+      expect((err as Error).message).toContain("--profile");
+    }
+  });
+
+  test("--profile <name> --new-profile with a name that collides with an existing profile: adopts it instead of colliding (an explicit name always resolves to 'existing', never the collision error)", () => {
+    const result = chooseMachineProfile({
+      ...BASE,
+      hostnameSlug: "mbp-14",
+      profiles: ["mbp-14", "desktop"],
+      flags: { profile: "mbp-14", newProfile: true },
+    });
+    expect(result).toEqual({ key: "mbp-14", source: "existing" });
   });
 
   test("existing profiles, no flags, non-interactive: throws, directs to --profile/--new-profile", () => {
