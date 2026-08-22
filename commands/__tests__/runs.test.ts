@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { formatRunLine, formatRunDetail, runsList, runsShow } from "../runs.ts";
+import { formatRunLine, formatRunDetail, runsList, runsShow, runsAbandon } from "../runs.ts";
 
 /**
  * Mock process.exit to throw a sentinel so the real test process never
@@ -69,5 +69,19 @@ describe("rt runs --repo flag validation", () => {
     const { exitCode, errors } = await runExpectingCleanExit(() => runsShow(["20260821-010101-aaaa", "--repo"]));
     expect(exitCode).toBe(1);
     expect(errors.join("\n")).toContain("--repo requires a value");
+  });
+});
+
+describe("rt runs abandon argument validation", () => {
+  test("runs abandon requires a run id", async () => {
+    const { exitCode, errors } = await runExpectingCleanExit(() => runsAbandon([]));
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("abandon needs a run id");
+  });
+
+  test("runs abandon rejects a dangling --reason", async () => {
+    const { exitCode, errors } = await runExpectingCleanExit(() => runsAbandon(["some-id", "--reason"]));
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("--reason requires a value");
   });
 });

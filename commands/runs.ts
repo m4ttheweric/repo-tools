@@ -26,7 +26,7 @@ function flagValue(args: string[], flag: string): string | undefined {
 
 // Index-based scan (not value comparison — a positional that EQUALS a flag's
 // value, e.g. `rt runs show abc --repo abc`, must still parse).
-const FLAGS_WITH_VALUES = new Set(["--repo"]);
+const FLAGS_WITH_VALUES = new Set(["--repo", "--reason"]);
 function positional(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
@@ -81,4 +81,15 @@ export async function runsShow(args: string[]): Promise<void> {
   const data = res.data as RunDetail;
   if (args.includes("--json")) { console.log(JSON.stringify(data)); return; }
   console.log(formatRunDetail(data));
+}
+
+export async function runsAbandon(args: string[]): Promise<void> {
+  const runId = positional(args);
+  if (!runId) fail("abandon needs a run id");
+  const repo = flagValue(args, "--repo");
+  const reason = flagValue(args, "--reason") ?? "reconciled by hand";
+  const res = await daemonQuery("runs:abandon", { runId, repo, reason });
+  if (!res) fail("daemon unavailable — the run DB needs the rt daemon (rt daemon start)");
+  if (!res.ok) fail(res.error ?? "abandon failed");
+  console.log(`abandoned ${runId}`);
 }

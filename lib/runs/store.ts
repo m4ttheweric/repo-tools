@@ -27,7 +27,7 @@ function dirs(path: string): string[] {
 // repo/runId reach a path join straight from a network-reachable readonly
 // seam (runs:get via REST decodes %2F) — reject anything that could step
 // outside <runsRoot>/<repo>/<runId> before it ever hits the filesystem.
-function isPathComponent(s: string): boolean {
+export function isPathComponent(s: string): boolean {
   return s.length > 0 && s !== "." && s !== ".." && !s.includes("/") && !s.includes("\\");
 }
 

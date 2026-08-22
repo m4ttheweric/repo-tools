@@ -44,6 +44,11 @@ export function buildRoutedHandlers(opts: {
   homeSnapshot: HomeSnapshotHandle;
 }): TypedHandlers & HandlerMap {
   const { ctx, broadcast, systemProcessScanner } = opts;
+  const emitEvent = (topic: string, payload: unknown) => {
+    const emittedAt = Date.now();
+    const id = opts.eventsBus.emitAt(topic, payload, emittedAt);
+    broadcast("event", { id, topic, payload, emittedAt });
+  };
   return {
     ...createCacheHandlers(ctx),
     ...createHooksHandlers(ctx),
@@ -53,7 +58,7 @@ export function buildRoutedHandlers(opts: {
     ...createDiscussionHandlers(ctx, broadcast),
     ...createSystemProcessHandlers(systemProcessScanner, ctx),
     ...createSdmHandlers(ctx),
-    ...createRunsHandlers(ctx),
+    ...createRunsHandlers(ctx, emitEvent),
     ...createSecretsHandlers(ctx),
     ...createProjectMRsHandlers(ctx, broadcast),
     ...createEventsHandlers(opts.eventsBus, broadcast),
