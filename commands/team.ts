@@ -1,22 +1,27 @@
 /**
- * rt team create|publish — scaffold the local team zone and push it.
+ * rt team create|publish|invite|join — the team-repo lifecycle verbs.
  *
  *   rt team create <name> (--remote <url> | --create-repo <owner>) [--others] [--json]
  *   rt team publish [--team <slug>] --remote <url> [--json]
+ *   rt team invite --handle <h> [--team <slug>] [--json]
+ *   rt team join [--dry-run] [--json]   (code on stdin as {"code":"..."}, or a prompt on a TTY)
  *
- * join/invite/members are separate tasks; this module only owns the two
- * verbs above. Every mutating path funnels through one `UserActionableError`
- * → exit-2 envelope, via `exitUserError` (lib/setup/errors.ts).
+ * Every mutating path funnels through one `UserActionableError` → exit-2
+ * envelope, via `exitUserError` (lib/setup/errors.ts).
  */
 
 import type { AgeKeySeam } from "../lib/home/age-key.ts";
 import { createRealAgeKeySeam } from "../lib/home/age-key.ts";
+import { promptSecret } from "../lib/prompt-secret.ts";
+import { createRealTeamSecretsSeams } from "../lib/secrets/team-store.ts";
 import { listTeams } from "../lib/settings/stores.ts";
 import { envelope } from "../lib/setup/contract.ts";
 import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
-import { createRealProbes, type Probes } from "../lib/setup/probes.ts";
+import { clearIntent } from "../lib/setup/intent.ts";
+import { createRealProbes, readStdinJson, type Probes } from "../lib/setup/probes.ts";
 import { createTeam } from "../lib/team/create.ts";
 import { mintInvite } from "../lib/team/invite.ts";
+import { joinDryRun, joinRedeem, realJoinRedeemSeams, type JoinResult } from "../lib/team/join.ts";
 import { publishTeam } from "../lib/team/publish.ts";
 import { createRelayClient, inviteRelayUrl } from "../lib/team/relay-client.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
@@ -26,10 +31,23 @@ export interface TeamDeps {
   print: (s: string) => void;
   exit?: (code: number) => never;
   ageKeySeam?: AgeKeySeam;
+  /** `json` gates the interactive TTY prompt — a machine caller must never block waiting on a terminal that isn't there. */
+  readCode?: (json: boolean) => Promise<string>;
+}
+
+async function defaultReadCode(json: boolean): Promise<string> {
+  if (!json && process.stdin.isTTY) {
+    return promptSecret("Invite code");
+  }
+  const parsed = await readStdinJson<{ code?: string }>();
+  if (!parsed?.code) {
+    throw new UserActionableError("usage", 'pass the invite code on stdin as {"code": "..."}');
+  }
+  return parsed.code;
 }
 
 export function realTeamDeps(): TeamDeps {
-  return { probes: createRealProbes(), print: (s) => console.log(s), exit: process.exit, ageKeySeam: createRealAgeKeySeam() };
+  return { probes: createRealProbes(), print: (s) => console.log(s), exit: process.exit, ageKeySeam: createRealAgeKeySeam(), readCode: defaultReadCode };
 }
 
 function flagValue(args: string[], flag: string): string | undefined {
@@ -144,6 +162,40 @@ export async function teamInvite(args: string[], _ctx: CommandContext = {}, deps
     }
   } catch (err) {
     if (err instanceof UserActionableError) exitUserError(err, json, "team invite", deps.print);
+    throw err;
+  }
+}
+
+export async function teamJoin(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
+  const json = args.includes("--json");
+  const dryRun = args.includes("--dry-run");
+  const extra = positional(args, ["--dry-run", "--json"]);
+
+  try {
+    if (extra.length > 0) {
+      throw new UserActionableError("code-on-argv", "pass the invite code on stdin, never as an argument");
+    }
+
+    const code = await (deps.readCode ?? defaultReadCode)(json);
+    const relay = createRelayClient(deps.probes.fetch, inviteRelayUrl(deps.probes.env));
+
+    let result: JoinResult;
+    if (dryRun) {
+      result = await joinDryRun(deps.probes, relay, code);
+    } else {
+      // ageKeySeam routes through TeamDeps (never realJoinRedeemSeams' own default) so a test-injected fake never lets a real redeem touch the actual keychain.
+      const seams = { ...realJoinRedeemSeams(), ageKeySeam: deps.ageKeySeam ?? createRealAgeKeySeam() };
+      result = await joinRedeem(deps.probes, relay, createRealTeamSecretsSeams, { code }, seams);
+      if (result.access === "ok") clearIntent(deps.probes);
+    }
+
+    if (json) {
+      deps.print(JSON.stringify(envelope(result)));
+      return;
+    }
+    deps.print(`rt team join: ${result.message}`);
+  } catch (err) {
+    if (err instanceof UserActionableError) exitUserError(err, json, "team join", deps.print);
     throw err;
   }
 }
