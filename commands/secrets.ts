@@ -15,6 +15,7 @@
 
 import type { CommandContext } from "../lib/command-tree.ts";
 import { createRealAgeKeySeam } from "../lib/home/age-key.ts";
+import { promptSecret } from "../lib/prompt-secret.ts";
 import {
   InvalidSecretsSegmentError,
   NoAgeKeyError,
@@ -24,9 +25,6 @@ import {
   writeSecret,
   type SecretsSeams,
 } from "../lib/secrets/store.ts";
-
-const CTRL_C = "";
-const DEL = "";
 
 function createRealSecretsSeams(): SecretsSeams {
   return { ageKeySeam: createRealAgeKeySeam(), execSeam: createRealSecretsExecSeam() };
@@ -51,53 +49,8 @@ async function readValueFromStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
 }
 
-/**
- * No-echo prompt (like `read -s`): raw mode so keystrokes never reach the
- * terminal, and nothing is echoed back (not even asterisks) — the value
- * never touches argv, so this is the only place it's typed.
- */
-function promptSecretValue(message: string): Promise<string> {
-  if (!process.stdin.isTTY) {
-    return Promise.reject(new Error(`${message}: not a TTY — pass --stdin to read the value from stdin instead`));
-  }
-  process.stdout.write(`${message}: `);
-  return new Promise((resolve, reject) => {
-    const stdin = process.stdin;
-    let value = "";
-    const cleanup = () => {
-      stdin.setRawMode(false);
-      stdin.pause();
-      stdin.removeListener("data", onData);
-    };
-    const onData = (chunk: Buffer) => {
-      for (const ch of chunk.toString("utf8")) {
-        if (ch === "\n" || ch === "\r") {
-          cleanup();
-          process.stdout.write("\n");
-          resolve(value);
-          return;
-        }
-        if (ch === CTRL_C) {
-          cleanup();
-          process.stdout.write("\n");
-          reject(new Error("cancelled"));
-          return;
-        }
-        if (ch === DEL || ch === "\b") {
-          value = value.slice(0, -1);
-          continue;
-        }
-        value += ch;
-      }
-    };
-    stdin.resume();
-    stdin.setRawMode(true);
-    stdin.on("data", onData);
-  });
-}
-
 async function collectValue(message: string, args: string[]): Promise<string> {
-  return args.includes("--stdin") ? readValueFromStdin() : promptSecretValue(message);
+  return args.includes("--stdin") ? readValueFromStdin() : promptSecret(message);
 }
 
 export async function secretsSet(
