@@ -100,6 +100,14 @@ jobs:
       - name: Fetch bundled dependencies
         run: scripts/fetch-deps.sh arm64
 
+      # bunx vsce package runs a Node CLI under Bun's Node-compat shim, which
+      # this repo has already hit drift on (bunx --bun wrangler silently
+      # no-ops); pin the runtime instead of trusting the runner image's
+      # ambient node.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Build extension
         shell: bash
         run: |

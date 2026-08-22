@@ -9,6 +9,7 @@ set -euo pipefail
 #   ./build.sh install    release + copy to /Applications + launch
 #
 # Env: RT_DAEMON_BIN RT_VSIX RT_VERSION RT_REQUIRE_DEPS SPARKLE_PUBLIC_ED_KEY RT_BUILD_TOOL
+#      RT_SANDBOX_PRESIGN (sandboxed dev gates only — never CI, never a real release)
 #
 # The bundle id, daemon label, and display name live ONLY here; Info.plist is a
 # sed template and the LaunchAgent plists come from scripts/render-launchagents.sh.
@@ -184,6 +185,15 @@ bundle_helpers() {
         return
     fi
     local row name version bundlePath ent status src dest prune
+    # Materialized to a file rather than streamed through `done < <(cmd)`: a
+    # process-substitution loop never sees cmd's exit status, even under
+    # set -o pipefail — an emitter crash (malformed lock, bun missing) would
+    # otherwise iterate zero rows and this function would silently bundle no
+    # helpers while the rest of build.sh reports success. Same shape as
+    # scripts/fetch-deps.sh's materialize-and-count guard.
+    local tsv; tsv="$(mktemp)"; trap 'rm -f "$tsv"' RETURN
+    bun "$REPO_DIR/scripts/lib/deps-lock.ts" --kind helper > "$tsv"
+    [ -s "$tsv" ] || { echo "  ✗ deps-lock emitter produced no helper rows"; exit 1; }
     while IFS= read -r row; do
         [ -n "$row" ] || continue
         split_tsv "$row"
@@ -208,7 +218,7 @@ bundle_helpers() {
         done < <(find "$dest" -depth -type d \( -name '.claude-plugin' -o -name '.codex-plugin' \) -print0)
         HELPER_ENTITLEMENTS+=("$dest	$ent")
         echo "  ✓ Helpers/$name $version"
-    done < <(bun "$REPO_DIR/scripts/lib/deps-lock.ts" --kind helper)
+    done < "$tsv"
     cp "$SCRIPT_DIR/deps.lock" "$CONTENTS/Resources/deps.lock"
 }
 bundle_helpers
