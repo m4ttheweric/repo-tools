@@ -185,6 +185,8 @@ fi
 # bash `read` collapses runs of an IFS-whitespace delimiter (tab included)
 # even when IFS is set to only tab, which would drop deps.lock's empty
 # pending-row fields and shift later columns left. Split by hand instead.
+# Kept in sync by hand with the identical copies in scripts/fetch-deps.sh and
+# rt-tray/build.sh.
 split_tsv() {
     local rest="$1" field
     FIELDS=()
