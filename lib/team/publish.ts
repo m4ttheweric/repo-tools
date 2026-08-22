@@ -18,8 +18,8 @@ export interface PublishTeamResult {
   detail: string;
 }
 
-/** git's own auth-failure phrasing on a denied push — distinguishes a credentials problem (user-actionable) from every other push failure. */
-const AUTH_FAILURE_PATTERN = /authentication failed|permission denied|could not read username|denied to|403|access denied/i;
+/** git's own auth-failure phrasing on a denied push — distinguishes a credentials problem (user-actionable) from every other push failure. Exported for join.ts, which classifies `git ls-remote`/`git clone` failures the same way. */
+export const AUTH_FAILURE_PATTERN = /authentication failed|permission denied|could not read username|denied to|403|access denied/i;
 
 /** git's non-fast-forward rejection — the contract requires an existing EMPTY repo, so this specific shape means the pasted/created remote already has commits, not a generic push failure. */
 const REJECTED_PATTERN = /\[rejected\]|fetch first|non-fast-forward|failed to push some refs/i;

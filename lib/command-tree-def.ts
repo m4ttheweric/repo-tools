@@ -1065,6 +1065,15 @@ export const TREE: Record<string, CommandNode> = {
           SETUP_JSON_ARG,
         ],
       },
+      join: {
+        description: "Redeem an invite (code on stdin, never an argument)",
+        module: "./commands/team.ts",
+        fn: "teamJoin",
+        args: [
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Validate the code and check access without cloning or redeeming" },
+          SETUP_JSON_ARG,
+        ],
+      },
     },
   },
 };
