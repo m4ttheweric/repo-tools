@@ -54,6 +54,7 @@ import {
 import { startDiscussionsPoller } from "./daemon/discussions-poller.ts";
 import { createCleanup, installSignalHandlers } from "./daemon/shutdown.ts";
 import { createEventsBus } from "./daemon/events-bus.ts";
+import { pruneRuns } from "./runs/prune.ts";
 import { releaseEndpointsForWorktree } from "./daemon/handlers/endpoint.ts";
 import type { HandlerContext } from "./daemon/handlers/types.ts";
 import type { PortEntry } from "./port-scanner.ts";
@@ -133,6 +134,26 @@ const eventsBus = createEventsBus({ dbPath: join(RT_DIR, "events.db"), log });
 setInterval(() => eventsBus.sweep(), 60 * 60 * 1000);
 // Boot-time sweep to handle frequent daemon restarts that would otherwise starve the hourly interval.
 setTimeout(() => eventsBus.sweep(), 30_000);
+
+// Age-floor prune of pipeline run dirs — daily; assertPrunable in prune.ts
+// guards every deletion against the runs root.
+setInterval(() => {
+  try {
+    const { removed } = pruneRuns();
+    if (removed.length > 0) log.info({ removed: removed.length }, "pruned old pipeline runs");
+  } catch (err) {
+    log.warn({ err }, "runs prune failed");
+  }
+}, 24 * 60 * 60 * 1000);
+// Boot-time prune to handle frequent daemon restarts that would otherwise starve the daily interval.
+setTimeout(() => {
+  try {
+    const { removed } = pruneRuns();
+    if (removed.length > 0) log.info({ removed: removed.length }, "pruned old pipeline runs");
+  } catch (err) {
+    log.warn({ err }, "runs prune failed");
+  }
+}, 60_000);
 
 // Cron trigger layer (mechanism-only, MAT-161): sees every broadcast frame.
 const cron = startCron(loadCronConfig(log), { log });

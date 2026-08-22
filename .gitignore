@@ -8,6 +8,9 @@ rt-tray/.build/
 rt-tray/rt-tray.app/
 rt-tray/mattstack.app/
 rt-tray/mattstack-dev.app/
+rt-tray/*.xcodeproj/
+rt-tray/Generated/
+rt-tray/Tests/stub-rt/.state/
 .worktrees/
 
 # Local-only superpowers spec/plan notes (untracked)
@@ -23,3 +26,7 @@ e2e/artifacts/*
 # Docusaurus site build output
 website/build/
 website/.docusaurus/
+
+rt-tray/deps/
+rt-tray/out/
+rt-tray/.build-xcode/

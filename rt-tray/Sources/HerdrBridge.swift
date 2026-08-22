@@ -103,13 +103,13 @@ class HerdrBridge {
            FileManager.default.fileExists(atPath: sockPath) {
             return true
         }
-        let sock = "\(NSHomeDirectory())/.config/herdr/herdr.sock"
+        let sock = "\(AppHome.current)/.config/herdr/herdr.sock"
         return FileManager.default.fileExists(atPath: sock)
     }
 
     private func herdrPath() -> String {
         let candidates = [
-            "\(NSHomeDirectory())/.local/bin/herdr",
+            "\(AppHome.current)/.local/bin/herdr",
             "/opt/homebrew/bin/herdr",
             "/usr/local/bin/herdr",
         ]

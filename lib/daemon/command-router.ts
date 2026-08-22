@@ -15,6 +15,7 @@ import { createWorktreeHandlers, type WorktreeHandlerOpts } from "./handlers/wor
 import { createDiscussionHandlers } from "./handlers/discussions.ts";
 import { createSystemProcessHandlers } from "./handlers/system-processes.ts";
 import { createSdmHandlers } from "./handlers/sdm.ts";
+import { createRunsHandlers } from "./handlers/runs.ts";
 import { createSecretsHandlers } from "./handlers/secrets.ts";
 import { createProjectMRsHandlers } from "./handlers/project-mrs.ts";
 import { createEventsHandlers } from "./handlers/events.ts";
@@ -52,6 +53,7 @@ export function buildRoutedHandlers(opts: {
     ...createDiscussionHandlers(ctx, broadcast),
     ...createSystemProcessHandlers(systemProcessScanner, ctx),
     ...createSdmHandlers(ctx),
+    ...createRunsHandlers(ctx),
     ...createSecretsHandlers(ctx),
     ...createProjectMRsHandlers(ctx, broadcast),
     ...createEventsHandlers(opts.eventsBus, broadcast),

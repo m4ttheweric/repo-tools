@@ -1,7 +1,7 @@
 // rt-daemon-shim
 //
 // Tiny signed exec-proxy that lets the daemon run from source under launchd
-// supervision. This binary IS the dev bundle's Contents/MacOS/rt-daemon
+// supervision. This binary IS the dev bundle's Contents/MacOS/rt
 // (spec MAT-383 §3) — permanently the dev flavor's daemon launcher, never a
 // swap payload dropped into the prod bundle. It execs
 // `bun run <sourcePath>/lib/daemon.ts` so edits take effect on the next
@@ -23,7 +23,7 @@
 //             restarts, which is the right response to a real crash.
 //
 // Signed with the same Developer ID as the rest of the dev bundle, keeping the
-// `-i rt-daemon` identifier override so launchd's LWCR check accepts it.
+// `-i rt` identifier override so launchd's LWCR check accepts it.
 // TCC inherits from the app bundle because the shim lives inside it.
 
 import Foundation
