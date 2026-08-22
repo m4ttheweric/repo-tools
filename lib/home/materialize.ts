@@ -94,7 +94,11 @@ function ok(step: MaterializeStep, stdout = ""): MaterializeResult {
 }
 
 function failureMessage(bin: string, r: MaterializeExecResult): string {
-  if (r.exitCode === -1) return `could not run \`${bin}\` — is it on PATH?`;
+  if (r.exitCode === -1) {
+    // rtBin can be an absolute self-invocation path (compiled binary) rather
+    // than a bare command — "is it on PATH?" would be a non sequitur there.
+    return bin.includes("/") ? `could not run \`${bin}\` — not found` : `could not run \`${bin}\` — is it on PATH?`;
+  }
   return r.stderr || `exit ${r.exitCode}`;
 }
 
@@ -116,12 +120,12 @@ async function runSubprocessStep(
   };
 }
 
-async function runStep(step: MaterializeStep, seam: MaterializeExecSeam): Promise<MaterializeResult> {
+async function runStep(step: MaterializeStep, seam: MaterializeExecSeam, rtBin: string): Promise<MaterializeResult> {
   switch (step.kind) {
     case "rtInterceptInstall":
-      return runSubprocessStep(step, "rt", ["rt", "intercept", "install"], seam, true);
+      return runSubprocessStep(step, rtBin, [rtBin, "intercept", "install"], seam, true);
     case "rtDaemonInstall":
-      return runSubprocessStep(step, "rt", ["rt", "daemon", "install"], seam, true);
+      return runSubprocessStep(step, rtBin, [rtBin, "daemon", "install"], seam, true);
     case "deckSetup":
       return runSubprocessStep(step, "deck", ["deck", "setup"], seam, false);
     case "reportMissingRepos":
@@ -139,11 +143,16 @@ async function runStep(step: MaterializeStep, seam: MaterializeExecSeam): Promis
  * state). Returns the full per-step result list for the caller to render and
  * to decide the exit code from (only an `RT_OWN_STEP_KINDS` failure should
  * ever fail `rt home init` itself).
+ *
+ * `rtBin` is the argv[0] the two rt-own steps self-invoke — defaults to
+ * "rt" on PATH (the caller resolves the compiled binary's own path via
+ * `process.execPath` and passes it here instead, so a compiled `rt` never
+ * depends on itself also being on PATH; see commands/home.ts's `rtSelfBin`).
  */
-export async function runMaterialize(steps: MaterializeStep[], seam: MaterializeExecSeam): Promise<MaterializeResult[]> {
+export async function runMaterialize(steps: MaterializeStep[], seam: MaterializeExecSeam, rtBin = "rt"): Promise<MaterializeResult[]> {
   const results: MaterializeResult[] = [];
   for (const step of steps) {
-    results.push(await runStep(step, seam));
+    results.push(await runStep(step, seam, rtBin));
   }
   return results;
 }

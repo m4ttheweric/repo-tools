@@ -292,14 +292,22 @@ describe("homeInit", () => {
     expect(sopsYamlSeam.writes).toEqual([]);
   });
 
-  test("fully provisioned, key ALREADY in the keychain (not minted): a stale .sops.yaml recipient is rewritten — a deliberate rotation, not a fresh machine guessing", async () => {
+  test("fully provisioned, key ALREADY in the keychain (not minted), a stale .sops.yaml recipient: RULED — refuses, never silently rewrites, leaves the file untouched, exits 1", async () => {
     const seam = new FakeSeam();
     const ageKeySeam = new FakeAgeKeySeamWithExistingKey();
     const sopsYamlSeam = new FakeSopsYamlSeam({ path: SOPS_YAML_PATH, content: renderSopsYaml("age1stale") });
 
-    await runHomeInit(FULLY_PROVISIONED_PROBES(), seam, ageKeySeam, [], sopsYamlSeam);
+    const { exitCode, errors } = await runHomeInit(FULLY_PROVISIONED_PROBES(), seam, ageKeySeam, [], sopsYamlSeam);
 
-    expect(sopsYamlSeam.files.get(SOPS_YAML_PATH)).toBe(renderSopsYaml(FAKE_PUBLIC_KEY));
+    expect(exitCode).toBe(1);
+    expect(sopsYamlSeam.writes).toEqual([]);
+    expect(sopsYamlSeam.files.get(SOPS_YAML_PATH)).toBe(renderSopsYaml("age1stale"));
+    // Names both recipients (truncated) and both recovery paths.
+    expect(errors.some((e) => e.includes("age1stale"))).toBe(true);
+    expect(errors.some((e) => e.includes(FAKE_PUBLIC_KEY.slice(0, 12)))).toBe(true);
+    expect(errors.some((e) => e.includes("rt home key import --force"))).toBe(true);
+    expect(errors.some((e) => e.includes("deliberate ceremony"))).toBe(true);
+    expect(errors.some((e) => e.includes("rt secrets set"))).toBe(true);
   });
 
   test("fully provisioned, key ALREADY in the keychain, recipient matches: no-op", async () => {
@@ -325,6 +333,10 @@ describe("homeInit", () => {
     expect(sopsYamlSeam.files.get(SOPS_YAML_PATH)).toBe(renderSopsYaml("age1the-other-machines-recipient"));
     expect(errors.some((e) => e.includes("age1the-other-machines-recipient"))).toBe(true);
     expect(errors.some((e) => e.includes("rt home key import"))).toBe(true);
+    // A placeholder key was already minted and stored — a plain `rt home key
+    // import` would hit the exists-refusal, so the message must name --force.
+    expect(errors.some((e) => e.includes("already") && e.includes("minted") && e.includes("stored"))).toBe(true);
+    expect(errors.some((e) => e.includes("rt home key import --force"))).toBe(true);
   });
 
   test("fully provisioned, key JUST MINTED, a cloned .sops.yaml already names the SAME recipient: no-op (the astronomically unlikely match is still safe)", async () => {
@@ -885,6 +897,26 @@ describe("homeInit", () => {
       expect(exec.calls).toEqual([["rt", "intercept", "install"]]);
       expect(logs.some((l) => l.includes("materializing"))).toBe(true);
       expect(logs.some((l) => l.includes("rt intercept install"))).toBe(true);
+      // Materialize always does at least rtInterceptInstall, so a live run
+      // must never claim "nothing to do" one breath before doing something.
+      expect(logs.some((l) => l.includes("already fully provisioned"))).toBe(false);
+    });
+
+    test("--no-materialize on a live, fully-provisioned run: 'nothing to do' is honest again since materialize is actually skipped", async () => {
+      const seam = new FakeSeam();
+      const { logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        ["--no-materialize"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => NOOP_MATERIALIZE_ENV,
+      );
+
+      expect(logs.some((l) => l.includes("already fully provisioned"))).toBe(true);
     });
 
     test("--no-materialize skips gathering the env and running any step", async () => {
@@ -1175,6 +1207,39 @@ describe("homeInit", () => {
       expect(logs.some((l) => l.includes("approve it in System Settings"))).toBe(true);
     });
 
+    test("multi-line captured stdout is indented per line, not just on its first line", async () => {
+      const seam = new FakeSeam();
+      const exec = new FakeMaterializeExecSeam();
+      exec.script(["rt", "daemon", "install"], {
+        stdout: "line one\nline two\nline three",
+        stderr: "",
+        exitCode: 0,
+      });
+      const env: MaterializeEnv = { ...NOOP_MATERIALIZE_ENV, daemonInstalled: false };
+
+      const { logs } = await runHomeInit(
+        FULLY_PROVISIONED_PROBES(),
+        seam,
+        new FakeAgeKeySeam(),
+        [],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => env,
+        exec,
+      );
+
+      // Each source line becomes its own indented console.log call — none of
+      // them fall back to column 0 as an embedded "\n" inside one line would.
+      expect(logs.some((l) => l.includes("line one"))).toBe(true);
+      expect(logs.some((l) => l.includes("line two"))).toBe(true);
+      expect(logs.some((l) => l.includes("line three"))).toBe(true);
+      expect(logs.some((l) => l.includes("line one") && l.includes("\n"))).toBe(false);
+      expect(logs.some((l) => l.includes("line two") && l.includes("\n"))).toBe(false);
+      expect(logs.some((l) => l.includes("line three") && l.includes("\n"))).toBe(false);
+    });
+
     test("a throwing materializeEnv on the real (non-dry-run) run is caught, reported, and never crashes init — provisioning already succeeded", async () => {
       const seam = new FakeSeam();
       const exec = new FakeMaterializeExecSeam();
@@ -1226,6 +1291,32 @@ describe("homeInit", () => {
 
       expect(exitCode).toBe(1);
       expect(exec.calls).toEqual([]);
+    });
+
+    test("--dry-run on a symlink-blocked plan never previews materialize — the live run would exit 1 before ever reaching it", async () => {
+      const seam = new FakeSeam();
+      const probes = fakeProbes({
+        isGitRepo: (dir) => dir.endsWith("/user"),
+        exists: () => true,
+        readSymlinkTarget: () => null, // a real file blocks the skills.jsonc symlink
+      });
+
+      const { exitCode, logs } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        ["--dry-run"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => {
+          throw new Error("materializeEnv should not have been called on a blocked dry-run either");
+        },
+      );
+
+      expect(exitCode).toBeUndefined();
+      expect(logs.some((l) => l.includes("materialize would run"))).toBe(false);
     });
 
     test("a configured claude.marketplaces prints the installer pointer, never replays anything itself", async () => {
@@ -1568,6 +1659,42 @@ describe("homeKeyImport", () => {
     expect(exitCode).toBe(1);
     expect(errors.some((e) => e.includes("not a valid age private key"))).toBe(true);
     expect(seam.calls).toEqual([]);
+  });
+
+  test("the private key pasted as a positional argument: refused, exits 1, never touches the seam or the input seam — it already leaked", async () => {
+    const seam = new FakeImportSeam({});
+    const input: AgeKeyInputSeam = {
+      fromStdin: async () => {
+        throw new Error("fromStdin should not be called — the positional-key guard must run first");
+      },
+      fromPrompt: async () => {
+        throw new Error("fromPrompt should not be called — the positional-key guard must run first");
+      },
+    };
+
+    const { exitCode, errors } = await runImport([FAKE_PRIVATE_KEY], seam, new FakeSopsYamlSeam(), input);
+
+    expect(exitCode).toBe(1);
+    expect(seam.calls).toEqual([]);
+    expect(errors.some((e) => e.includes("positional argument"))).toBe(true);
+    expect(errors.some((e) => e.includes("shell history"))).toBe(true);
+    expect(errors.some((e) => e.includes("rotate"))).toBe(true);
+  });
+
+  test("the positional-key guard fires even alongside --stdin/--force (order-independent scan)", async () => {
+    const seam = new FakeImportSeam({});
+
+    const { exitCode, errors } = await runImport(["--force", FAKE_PRIVATE_KEY, "--stdin"], seam, new FakeSopsYamlSeam(), {
+      fromStdin: async () => {
+        throw new Error("fromStdin should not be called");
+      },
+      fromPrompt: async () => {
+        throw new Error("fromPrompt should not be called");
+      },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(errors.some((e) => e.includes("positional argument"))).toBe(true);
   });
 
   test("existing key, no --force: refused, exits 1, names the existing recipient, never overwrites", async () => {

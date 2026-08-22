@@ -276,17 +276,38 @@ async function ensureHomeAgeKey(
   const sopsYamlPath = join(userDir, ".sops.yaml");
   const existing = sopsYamlSeam.read(sopsYamlPath);
   const existingRecipient = existing === null ? null : sopsYamlRecipient(existing);
+  const mismatched = existing !== null && existingRecipient !== publicKey;
 
-  if (minted && existing !== null && existingRecipient !== publicKey) {
+  if (mismatched && minted) {
     return {
       ok: false,
       message:
-        `secrets are encrypted to ${existingRecipient ?? "an unrecognized recipient"}; ` +
-        "import the age key from your password manager (`rt home key import`) before initializing.",
+        `secrets are encrypted to ${existingRecipient ?? "an unrecognized recipient"}; a placeholder age key was ` +
+        "already minted and stored in this machine's keychain, but that isn't the key these secrets need — import " +
+        "the correct key from your password manager (`rt home key import --force`; a plain `rt home key import` " +
+        "will hit the exists-refusal now that a placeholder key is stored) before initializing.",
     };
   }
 
-  if (existing === null || existingRecipient !== publicKey) {
+  // RULED: never silently rewrite .sops.yaml on a recipient mismatch, even
+  // for a key this machine already held before this call (not just-minted).
+  // Rewriting would orphan every secret still encrypted to the recipient
+  // .sops.yaml currently names — that's either a wrong-key accident (fixed
+  // by importing the right key) or a deliberate rotation (a ceremony a
+  // human must run by hand, not something init silently does for them).
+  if (mismatched) {
+    return {
+      ok: false,
+      message:
+        `secrets are encrypted to ${truncateKey(existingRecipient ?? "an unrecognized recipient")}, but this ` +
+        `machine's keychain holds a different key (${truncateKey(publicKey)}) — refusing to rewrite ${sopsYamlPath}.\n` +
+        "  If you imported the wrong key: `rt home key import --force` with the right one.\n" +
+        "  If you mean to rotate the recipient: that's a deliberate ceremony — rewrite user/.sops.yaml and " +
+        "re-encrypt each secret (`rt secrets set <domain> <key>`), then re-run.",
+    };
+  }
+
+  if (existing === null) {
     sopsYamlSeam.write(sopsYamlPath, renderSopsYaml(publicKey));
     console.log(
       `rt home init: wrote ${sopsYamlPath} (recipient ${publicKey}) — it's tracked, so commit it:\n` +
@@ -331,6 +352,21 @@ function printSkillsSymlinkBlocked(home: string): void {
 
 function defaultMaterializeExec(): MaterializeExecSeam {
   return { run: (argv, opts) => runCapture(argv, { stderr: "pipe", ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}) }) };
+}
+
+/**
+ * The argv[0] rt-own materialize steps self-invoke. Mirrors
+ * commands/post-install.ts's `spawnSync(process.execPath, ["daemon",
+ * "install"], ...)`: `bun build --compile` embeds this module's resources
+ * under `/$bunfs`, and `process.execPath` for a running compiled binary IS
+ * that binary's own path — the same self-invocation `rt --daemon` already
+ * relies on (cli.ts). Running from source (`bun run cli.ts`/`bun test`),
+ * `import.meta.url` is a real file:// path, `process.execPath` is `bun`
+ * itself (not rt), so this keeps the bare "rt" name — on PATH or not,
+ * that's the honest dev-mode failure, not a silent `bun intercept install`.
+ */
+function rtSelfBin(): string {
+  return new URL(import.meta.url).pathname.startsWith("/$bunfs") ? process.execPath : "rt";
 }
 
 /** Reads `~/.mattstack/deck/api.json` (port, pid) and probes deck's own `/healthz`. Injectable so tests never touch a real file or the network. */
@@ -419,14 +455,19 @@ function describeMaterializeStep(step: MaterializeStep): string {
   }
 }
 
+/** Indents every line of `text` under a step's ✓/✗ mark — a multi-line captured stdout (e.g. `rt daemon install`'s several lines of approval guidance) must not fall back to column 0 after its first line. */
+function printIndented(text: string): void {
+  for (const line of text.split("\n")) console.log(`    ${dim}${line}${reset}`);
+}
+
 function printMaterializeResults(results: MaterializeResult[]): void {
   console.log(`\nrt home init: materializing (regenerating everything re-derivable from settings)…`);
   for (const result of results) {
     const mark = result.ok ? `${green}✓${reset}` : `${red}✗${reset}`;
     console.log(`  ${mark} ${describeMaterializeStep(result.step)}`);
-    if (!result.ok && result.stderr) console.log(`    ${dim}${result.stderr}${reset}`);
-    if (result.stdout) console.log(`    ${dim}${result.stdout}${reset}`);
-    if (result.note) console.log(`    ${dim}${result.note}${reset}`);
+    if (!result.ok && result.stderr) printIndented(result.stderr);
+    if (result.stdout) printIndented(result.stdout);
+    if (result.note) printIndented(result.note);
   }
 }
 
@@ -612,12 +653,15 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
   // Env gathering is read-only (which deck, the repo index, rt.repoTracking,
   // the daemon-install marker) — safe to run under --dry-run, so the preview
   // below reflects what materialize would actually do instead of silently
-  // omitting init's last phase. Gathered ONLY for dry-run: the live path
-  // below gathers its own (possibly different, if state changed) env right
-  // before actually running it. A throw here never aborts --dry-run: it's
-  // reported and treated as "nothing to preview," same as --no-materialize.
+  // omitting init's last phase. Gathered ONLY for dry-run, and only when the
+  // plan isn't already blocked (the live run exits 1 before ever reaching
+  // materialize on a blocked plan, so a preview there would promise
+  // something that never happens). The live path below gathers its own
+  // (possibly different, if state changed) env right before actually
+  // running it. A throw here never aborts --dry-run: it's reported and
+  // treated as "nothing to preview," same as --no-materialize.
   let materializeSteps: MaterializeStep[] = [];
-  if (dryRun && !noMaterialize) {
+  if (dryRun && !noMaterialize && !plan.blocked) {
     try {
       materializeSteps = planMaterialize(await materializeEnv());
     } catch (err) {
@@ -627,7 +671,10 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
 
   if (plan.steps.length > 0) {
     printPlan(home, plan.steps);
-  } else if (!plan.blocked && materializeSteps.length === 0) {
+  } else if (!plan.blocked && (dryRun ? materializeSteps.length === 0 : noMaterialize)) {
+    // Live run: materialize always does at least rtInterceptInstall unless
+    // --no-materialize was passed, so "nothing to do" would otherwise be
+    // said one breath before materialize does something — dishonest.
     console.log(`rt home init: ${home} is already fully provisioned — nothing to do.`);
   }
 
@@ -676,7 +723,7 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
     try {
       const env = await materializeEnv();
       const steps = planMaterialize(env);
-      const results = await runMaterialize(steps, materializeExec);
+      const results = await runMaterialize(steps, materializeExec, rtSelfBin());
       printMaterializeResults(results);
       materializeFailed = results.some((r) => !r.ok && RT_OWN_STEP_KINDS.has(r.step.kind));
     } catch (err) {
@@ -761,6 +808,9 @@ function truncateKey(key: string): string {
  * pasted, not a guess — a wrong paste that happens to parse still gets
  * caught here before the operator believes their secrets are decryptable.
  */
+/** The unmistakable prefix of a pasted age private key — never a legitimate flag or value for anything else this command takes. */
+const AGE_PRIVATE_KEY_PREFIX = "AGE-SECRET-KEY-1";
+
 export async function homeKeyImport(
   args: string[],
   _ctx: CommandContext = {},
@@ -768,6 +818,22 @@ export async function homeKeyImport(
   sopsYamlSeam: SopsYamlSeam = defaultSopsYamlSeam(),
   input: AgeKeyInputSeam = defaultAgeKeyInputSeam(),
 ): Promise<void> {
+  // The key must arrive via --stdin or the hidden interactive prompt — never
+  // as a positional argument. By the time it shows up here as one, it has
+  // already landed in the operator's shell history and rt's own CLI log
+  // (dispatch() logs every command's args) — refuse outright rather than
+  // silently proceeding as if the leak never happened.
+  const pastedKeyArg = args.find((a) => a.startsWith(AGE_PRIVATE_KEY_PREFIX));
+  if (pastedKeyArg !== undefined) {
+    console.error(
+      "rt home key import: the private key must be piped via --stdin or entered at the interactive prompt, " +
+        "never as a positional argument — it just landed in your shell history and rt's own CLI log. " +
+        "Treat it as compromised and rotate it (mint a new key, re-encrypt every secret to the new recipient) " +
+        "before using it for anything.",
+    );
+    process.exit(1);
+  }
+
   const force = args.includes("--force");
 
   let privateKey: string;

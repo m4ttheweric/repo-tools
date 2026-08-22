@@ -233,13 +233,15 @@ to a value, `rt home init` prints a pointer to the mattstack installer, which
 owns replaying them — init never does that itself.
 
 ```bash
-rt home init                                       # Provision this machine's ~/.mattstack tree (+ materialize)
+rt home init                                        # Provision this machine's ~/.mattstack tree (+ materialize)
 rt home init --no-materialize                       # Provision only — skip the last (materialize) phase
-rt home snapshot                                   # Run the auto-commit cycle right now (reason: manual)
-rt home snapshot --status                          # Show daemon state: enabled, last run/commit, push state, claimed zones
-rt home claim <zone> [--owner] [--note] [--force]   # Tell the daemon to stop auto-committing a path
-rt home release <zone>                              # Let the daemon resume auto-committing a path
-rt home key export                                  # Print the age private key once, for your password manager
+rt home init --profile <key> [--new-profile]        # Fresh/keyless machine: adopt (or start) a machine profile without the interactive picker
+rt home snapshot                                    # Run the auto-commit cycle right now (reason: manual)
+rt home snapshot --status                           # Show daemon state: enabled, last run/commit, push state, claimed zones
+rt home claim <zone> [--owner] [--note] [--force]    # Tell the daemon to stop auto-committing a path
+rt home release <zone>                               # Let the daemon resume auto-committing a path
+rt home key export                                   # Print the age private key once, for your password manager
+rt home key import [--stdin] [--force]               # Bring an external age key into the keychain
 ```
 
 A **zone** is a path relative to `~/.mattstack/user`, and is either a
