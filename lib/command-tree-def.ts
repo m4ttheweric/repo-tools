@@ -1080,6 +1080,36 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  services: {
+    description: "App-registered services (daemon, deck) via mattstack.app",
+    subcommands: {
+      list: {
+        description: "List LaunchAgents mattstack.app has registered",
+        module: "./commands/services.ts",
+        fn: "servicesList",
+        args: [SETUP_JSON_ARG],
+      },
+      register: {
+        description: "Ask mattstack.app to register the daemon (and deck, when bundled) LaunchAgents",
+        module: "./commands/services.ts",
+        fn: "servicesRegister",
+        args: [
+          { name: "Plist", flag: "--plist", type: "text", placeholder: "com.mattstack.daemon.plist", hint: "Plist filename to register (repeatable); omit for the default set" },
+          SETUP_JSON_ARG,
+        ],
+      },
+      restart: {
+        description: "Ask mattstack.app to restart a registered LaunchAgent",
+        module: "./commands/services.ts",
+        fn: "servicesRestart",
+        args: [
+          { name: "Label", type: "text", placeholder: "com.mattstack.daemon", hint: "LaunchAgent label" },
+          SETUP_JSON_ARG,
+        ],
+      },
+    },
+  },
+
   tools: {
     description: "Install or run the setup verb for a tool from a setup plan row",
     subcommands: {
