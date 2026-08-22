@@ -1092,6 +1092,7 @@ export const TREE: Record<string, CommandNode> = {
             fn: "teamMembersRemove",
             args: [
               { name: "Handle", type: "text", placeholder: "octocat", hint: "The member's forge username" },
+              { name: "Key", flag: "--key", type: "text", placeholder: "age1...", hint: "The recipient to remove, if it isn't recorded on the roster (a hand-edited store, a suspect entry)" },
               { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to remove from; omit when only one is cloned" },
               SETUP_JSON_ARG,
             ],

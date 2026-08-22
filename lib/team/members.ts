@@ -8,33 +8,80 @@
  * relay itself, or anyone who intercepted the invite code, could have
  * posted it) — `openReply` only proves the blob decrypted under THIS
  * invite's key/AAD, not that its `agePublicKey` is actually a usable age
- * recipient. That shape is checked again here before the key ever reaches
- * `addTeamRecipient` (and so `.sops.yaml`): a malformed value stays pending
- * for the next sync rather than poisoning the recipient list.
+ * recipient, and not that it is a NEW recipient rather than an echo of one
+ * that already exists. `.sops.yaml` is committed to the team repo and every
+ * invitee already has forge read at mint time, so the owner's own public key
+ * is readable by any invitee before they ever reply — a reply that echoes an
+ * existing recipient's key back is checked for and refused (first-claim-wins:
+ * a key belongs to exactly one handle), and `membersRemove` separately
+ * refuses outright to remove whatever key this machine's own `ensureAgeKey`
+ * resolves to, regardless of which roster entry it was filed under. Either
+ * guard alone closes the owner-lockout path; both are kept so one is never
+ * load-bearing for the other.
  */
 
 import { ensureAgeKey } from "../home/age-key.ts";
 import { teamSettingsPath } from "../rt-paths.ts";
 import type { SecretsSeams } from "../secrets/store.ts";
-import { addTeamRecipient, removeTeamRecipient } from "../secrets/team-store.ts";
+import { addTeamRecipient, readTeamRecipients, removeTeamRecipient } from "../secrets/team-store.ts";
 import { readStore } from "../settings/stores.ts";
 import { setSetting } from "../settings/write.ts";
+import { UserActionableError } from "../setup/errors.ts";
 import type { Probes } from "../setup/probes.ts";
-import { parseOriginUrl, type SettingsReader } from "../setup/team-settings.ts";
+import { parseOriginUrl } from "../setup/team-settings.ts";
 import { revokeRead, type RevokeAccess } from "./forge.ts";
 import { openReply } from "./invite-crypto.ts";
 import { readInviteRecords, removeInviteRecord } from "./invite-records.ts";
 import type { RelayClient } from "./relay-client.ts";
 
-// Real age1 recipients are bech32 (lowercase, digits, excluding 1/b/i/o in
-// the data portion) after the fixed "age1" prefix — a plain typeof-string
-// check (openReply's own shape guard) would let a joiner's reply carry
-// arbitrary bytes (including YAML-breaking characters) straight into
-// .sops.yaml's `age:` line.
-const AGE_PUBLIC_KEY_PATTERN = /^age1[023456789acdefghjklmnpqrstuvwxyz]{50,}$/;
+const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+const AGE_HRP = "age";
+// A real age X25519 recipient is HRP "age" + a fixed 32-byte payload, bech32-encoded
+// as 52 five-bit data groups plus a 6-character checksum — always exactly 58
+// characters after "age1", never fewer or more.
+const AGE_DATA_CHARS = 58;
 
+function bech32Polymod(values: number[]): number {
+  const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let chk = 1;
+  for (const v of values) {
+    const top = chk >>> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) if ((top >>> i) & 1) chk ^= GEN[i]!;
+  }
+  return chk;
+}
+
+function bech32HrpExpand(hrp: string): number[] {
+  const lead = [...hrp].map((c) => c.charCodeAt(0) >>> 5);
+  const tail = [...hrp].map((c) => c.charCodeAt(0) & 31);
+  return [...lead, 0, ...tail];
+}
+
+/**
+ * Real bech32 (BIP-173) validation — not a charset/length sniff. Rejects
+ * mixed case, decodes every data character against the bech32 charset, pins
+ * the exact length a real age recipient always has, and verifies the
+ * 6-character checksum against the "age" HRP. A charset-valid, length-valid
+ * string that was never produced by `age-keygen` fails the checksum and is
+ * rejected here, before it can ever reach `addTeamRecipient`/`.sops.yaml` —
+ * the fresh-team path has no other gate, since `reencryptTeamSecrets` is a
+ * no-op with zero domain files.
+ */
 function isValidAgePublicKey(key: string): boolean {
-  return AGE_PUBLIC_KEY_PATTERN.test(key);
+  if (key.length !== AGE_HRP.length + 1 + AGE_DATA_CHARS) return false;
+  if (key !== key.toLowerCase()) return false;
+  if (!key.startsWith(`${AGE_HRP}1`)) return false;
+
+  const dataPart = key.slice(AGE_HRP.length + 1);
+  const values: number[] = [];
+  for (const ch of dataPart) {
+    const idx = BECH32_CHARSET.indexOf(ch);
+    if (idx === -1) return false;
+    values.push(idx);
+  }
+
+  return bech32Polymod([...bech32HrpExpand(AGE_HRP), ...values]) === 1;
 }
 
 function base64ToKey(b64: string): Uint8Array {
@@ -52,7 +99,7 @@ function readRoster(seams: MembersSeams, slug: string): RosterMember[] {
   return Array.isArray(store["board.members"]) ? (store["board.members"] as RosterMember[]) : [];
 }
 
-/** Sets (or overwrites) one roster entry's `agePublicKey` — the sync-time record of which sops recipient a handle maps to, so `membersRemove` can find it later without a `--age-public-key` argument. */
+/** Sets (or overwrites) one roster entry's `agePublicKey` — the sync-time record of which sops recipient a handle maps to, so `membersRemove` can find it later without a `--key` argument. */
 function recordRosterKey(seams: MembersSeams, slug: string, handle: string, agePublicKey: string): void {
   const existing = readRoster(seams, slug);
   const updated = existing.some((m) => m.username === handle)
@@ -94,10 +141,38 @@ export interface MembersSyncResult {
 }
 
 /**
+ * Thrown when an infrastructure failure (a re-encryption rollback, a
+ * keychain error) aborts a sync partway through. `added`/`pending` are
+ * exactly what the caller would have received had the sync succeeded up to
+ * this point — `.sops.yaml` itself is already consistent (every completed
+ * add's rollback already ran inside `addTeamRecipient`); this error only
+ * carries forward what a bare rethrow would otherwise lose from the report.
+ */
+export class MembersSyncAbortedError extends Error {
+  constructor(
+    public readonly added: string[],
+    public readonly pending: string[],
+    causeMessage: string,
+  ) {
+    super(
+      `rt team members sync: aborted after adding ${added.length} key(s)${added.length ? ` (${added.join(", ")})` : ""}` +
+        `${pending.length ? `, ${pending.length} still pending (${pending.join(", ")})` : ""} — ${causeMessage}`,
+    );
+  }
+}
+
+/**
  * Ensures the owner's own key is a recipient (a fresh team has zero
- * recipients until this runs), then walks every outstanding invite record:
- * a posted reply becomes a sops recipient and a roster entry; no reply yet
- * leaves the record in place and reports the handle as pending.
+ * recipients until this runs), then walks every outstanding invite record: a
+ * posted reply becomes a sops recipient and a roster entry; no reply yet, a
+ * malformed/undecryptable reply, or a reply echoing a key that is ALREADY a
+ * recipient (first-claim-wins — see the module doc) all leave the handle
+ * pending with the invite record retained for a retry. A hostile/malformed
+ * reply is deliberately never fatal to the whole sync (the relay's reply
+ * endpoint is unauthenticated, so one poisoned blob must not deny every
+ * other honest joiner); an infrastructure failure from `addTeamRecipient`
+ * itself IS fatal (throws `MembersSyncAbortedError`), since `.sops.yaml`'s
+ * consistency is what's in question then, not one member's input.
  */
 export async function membersSync(
   p: Probes,
@@ -110,39 +185,65 @@ export async function membersSync(
   const pending: string[] = [];
   const reencrypted = new Set<string>();
 
-  const { publicKey: ownerPublicKey } = await ensureAgeKey(secrets.ageKeySeam);
-  const ownerResult = await addTeamRecipient(slug, ownerPublicKey, secrets);
-  for (const f of ownerResult.reencrypted) reencrypted.add(f);
+  try {
+    const { publicKey: ownerPublicKey } = await ensureAgeKey(secrets.ageKeySeam);
+    const ownerResult = await addTeamRecipient(slug, ownerPublicKey, secrets);
+    for (const f of ownerResult.reencrypted) reencrypted.add(f);
+    if (ownerResult.added) added.push(ownerPublicKey);
 
-  const records = readInviteRecords(p, slug);
-  for (const [handle, rec] of Object.entries(records)) {
-    const reply = await relay.readReply(rec.id, rec.creatorSecret);
-    if (reply === "none") {
-      pending.push(handle);
-      continue;
-    }
-
-    let agePublicKey: string;
-    try {
-      const opened = await openReply(reply.blob, base64ToKey(rec.keyB64), rec.id);
-      if (!isValidAgePublicKey(opened.agePublicKey)) {
-        throw new Error("reply's age public key is not a recognizable age1 recipient");
+    const records = readInviteRecords(p, slug);
+    for (const [handle, rec] of Object.entries(records)) {
+      const reply = await relay.readReply(rec.id, rec.creatorSecret);
+      if (reply === "none") {
+        pending.push(handle);
+        continue;
       }
-      agePublicKey = opened.agePublicKey;
-    } catch (err) {
-      seams.warn(
-        `rt team members sync: the reply for "${handle}" could not be used (${err instanceof Error ? err.message : String(err)}) — leaving the invite in place to retry`,
-      );
-      pending.push(handle);
-      continue;
+
+      let agePublicKey: string;
+      try {
+        const opened = await openReply(reply.blob, base64ToKey(rec.keyB64), rec.id);
+        if (!isValidAgePublicKey(opened.agePublicKey)) {
+          throw new Error("reply's age public key is not a well-formed age1 recipient (bech32 checksum failed)");
+        }
+        agePublicKey = opened.agePublicKey;
+      } catch (err) {
+        seams.warn(
+          `rt team members sync: the reply for "${handle}" could not be used (${err instanceof Error ? err.message : String(err)}) — leaving the invite in place to retry`,
+        );
+        pending.push(handle);
+        continue;
+      }
+
+      if (readTeamRecipients(slug, secrets).includes(agePublicKey)) {
+        seams.warn(
+          `rt team members sync: the reply for "${handle}" claims an age key that is already a recipient (a key belongs to exactly one handle) — treating as suspect and leaving the invite in place; investigate before re-syncing`,
+        );
+        pending.push(handle);
+        continue;
+      }
+
+      const result = await addTeamRecipient(slug, agePublicKey, secrets);
+      for (const f of result.reencrypted) reencrypted.add(f);
+      if (!result.added) {
+        // Lost a race against a concurrent sync, or the duplicate check above
+        // was somehow stale — either way, nothing was actually added, so this
+        // must not be reported as a success.
+        seams.warn(`rt team members sync: "${handle}"'s key turned out to already be a recipient — leaving the invite in place`);
+        pending.push(handle);
+        continue;
+      }
+
+      recordRosterKey(seams, slug, handle, agePublicKey);
+      removeInviteRecord(p, slug, handle);
+      added.push(agePublicKey);
     }
-
-    const result = await addTeamRecipient(slug, agePublicKey, secrets);
-    for (const f of result.reencrypted) reencrypted.add(f);
-
-    recordRosterKey(seams, slug, handle, agePublicKey);
-    removeInviteRecord(p, slug, handle);
-    added.push(agePublicKey);
+  } catch (err) {
+    // A usage-shaped refusal (a corrupt invite-records file, an invalid
+    // slug) already carries its own exit-2 contract identity — only an
+    // infrastructure failure from addTeamRecipient/ensureAgeKey gets
+    // wrapped, since that's the one class this error exists to enrich.
+    if (err instanceof MembersSyncAbortedError || err instanceof UserActionableError) throw err;
+    throw new MembersSyncAbortedError(added, pending, err instanceof Error ? err.message : String(err));
   }
 
   return { added, pending, reencrypted: [...reencrypted].sort() };
@@ -163,7 +264,16 @@ const RESIDUE_NOTE =
  * Revokes forge read access, drops the roster entry, and re-encrypts every
  * domain file without the member's key. `agePublicKey` is optional because
  * `membersSync` already recorded it on the roster entry — passing it
- * explicitly only matters for a member who was removed before ever syncing.
+ * explicitly is how a recipient with no roster entry (a hostile add, a
+ * hand-edited store, a roster lost to a bad merge) can still be removed.
+ *
+ * Refuses outright — before revoking access or touching the roster — when
+ * the key resolved for removal (explicit or roster-recorded) matches this
+ * machine's OWN age key: a reply that echoed the owner's public key (the
+ * exact attack the duplicate-recipient check in `membersSync` also guards
+ * against) would otherwise let a routine removal strip the owner's own
+ * recipient entry, and `sops updatekeys` needs that exact key to decrypt
+ * before it can re-encrypt to anyone else — an unrecoverable lockout.
  */
 export async function membersRemove(
   p: Probes,
@@ -173,11 +283,31 @@ export async function membersRemove(
   agePublicKey?: string,
   seams: MembersSeams = realMembersSeams(),
 ): Promise<MembersRemoveResult> {
-  const remote = teamRemote(p, slug);
-  const revoke = remote !== null ? await seams.revokeRead(p, remote, handle) : { access: "skipped" as RevokeAccess, manualSteps: [] as string[] };
+  if (agePublicKey !== undefined && !isValidAgePublicKey(agePublicKey)) {
+    throw new UserActionableError(
+      "invalid-age-key",
+      `"${agePublicKey}" is not a well-formed age1 recipient (bech32 checksum failed) — pass the exact key from \`rt team status\` or the roster`,
+    );
+  }
 
   const existing = readRoster(seams, slug);
   const existingEntry = existing.find((m) => m.username === handle);
+  const keyToRemove = agePublicKey ?? (typeof existingEntry?.agePublicKey === "string" ? existingEntry.agePublicKey : undefined);
+
+  if (keyToRemove) {
+    const { publicKey: ownerPublicKey } = await ensureAgeKey(secrets.ageKeySeam);
+    if (keyToRemove === ownerPublicKey) {
+      throw new UserActionableError(
+        "own-key-removal-refused",
+        `refusing to remove "${handle}" — the key on record for them is this machine's OWN age key, so removing it would lock this operator out of every team secret. ` +
+          `If "${handle}" genuinely echoed your key back in their invite reply, fix the roster by hand (it never should have been recorded as theirs) rather than removing it here.`,
+      );
+    }
+  }
+
+  const remote = teamRemote(p, slug);
+  const revoke = remote !== null ? await seams.revokeRead(p, remote, handle) : { access: "skipped" as RevokeAccess, manualSteps: [] as string[] };
+
   const rosterRemoved = existingEntry !== undefined;
   if (rosterRemoved) {
     seams.writeSetting(
@@ -188,7 +318,6 @@ export async function membersRemove(
     );
   }
 
-  const keyToRemove = agePublicKey ?? (typeof existingEntry?.agePublicKey === "string" ? existingEntry.agePublicKey : undefined);
   let reencrypted: string[] = [];
   if (keyToRemove) {
     const result = await removeTeamRecipient(slug, keyToRemove, secrets);
