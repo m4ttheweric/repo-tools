@@ -599,7 +599,7 @@ export const TREE: Record<string, CommandNode> = {
         args: [
           { name: "Key", type: "text", placeholder: "rt.worktrees", hint: "Namespaced settings key (must be migrated:true)" },
           { name: "Value", type: "text", placeholder: "{\"onDeck\":3}", hint: "JSON(C) value" },
-          { name: "Scope", flag: "--scope", type: "select", hint: "Which store to write into", options: [{ value: "user", label: "user", hint: "~/.mattstack/user/settings.jsonc" }, { value: "team", label: "team", hint: "the local team clone's settings.jsonc" }, { value: "machine", label: "machine", hint: "~/.mattstack/settings.local.jsonc" }] },
+          { name: "Scope", flag: "--scope", type: "select", hint: "Which store to write into", options: [{ value: "user", label: "user", hint: "~/.mattstack/user/settings.user.jsonc" }, { value: "team", label: "team", hint: "the local team clone's settings.team.jsonc" }, { value: "machine", label: "machine", hint: "~/.mattstack/user/local/<machine-key>/settings.local.jsonc" }] },
           { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Repo name from ~/.mattstack/rt/repos.json — required for repo-scoped keys" },
           { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which team's local store to write, for --scope team (only needed when several are cloned)" },
         ],
@@ -692,14 +692,20 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   home: {
-    description: "The git-backed ~/.mattstack home repo",
+    description: "The git-backed ~/.mattstack/user personal repo",
     subcommands: {
       init: {
-        description: "Provision the home repo: print, then run, the adoption plan",
+        description: "Provision this machine: print, then run, the plan (which clones the user repo as one of its steps)",
         module: "./commands/home.ts",
         fn: "homeInit",
         args: [
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print the plan without running it" },
+          {
+            name: "Clone URL",
+            flag: "--url",
+            type: "text",
+            hint: "The user repo to clone (default: https://github.com/m4ttheweric/mattstack-home)",
+          },
         ],
       },
       key: {
@@ -712,6 +718,44 @@ export const TREE: Record<string, CommandNode> = {
             args: [],
           },
         },
+      },
+      snapshot: {
+        description: "Run the snapshot daemon now (or show its status with --status)",
+        module: "./commands/home.ts",
+        fn: "homeSnapshot",
+        args: [
+          {
+            name: "Status",
+            flag: "--status",
+            type: "boolean",
+            default: false,
+            hint: "Show status instead of snapshotting: enabled, last run/commit, push state, claimed zones",
+          },
+        ],
+      },
+      claim: {
+        description: "Claim a zone so the daemon leaves it for you to commit by hand",
+        module: "./commands/home.ts",
+        fn: "homeClaim",
+        args: [
+          {
+            name: "Zone",
+            type: "text",
+            placeholder: "prefs/",
+            hint: "Path (relative to the home repo) the daemon should stop auto-committing — a directory (prefs/) or a single file (scripts/deploy.sh)",
+          },
+          { name: "Owner", flag: "--owner", type: "text", hint: "Defaults to <you>@<machine-key>" },
+          { name: "Note", flag: "--note", type: "text", hint: "Optional free-text reason, visible to anyone reading the owners file" },
+          { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Reassign a zone already claimed by someone else" },
+        ],
+      },
+      release: {
+        description: "Release a claimed zone so the daemon resumes auto-committing it",
+        module: "./commands/home.ts",
+        fn: "homeRelease",
+        args: [
+          { name: "Zone", type: "text", placeholder: "prefs/", hint: "Zone to release" },
+        ],
       },
     },
   },
@@ -745,6 +789,43 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
           { name: "Key", type: "text", placeholder: "gitlabToken", hint: "Key name within the domain" },
           { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the new value from stdin instead of a no-echo prompt (scripting)" },
+        ],
+      },
+    },
+  },
+
+  skills: {
+    description: "Compile, check, and manage the surface of the pack's committed skills",
+    subcommands: {
+      compile: {
+        description: "Compile pack verbs from step sources + manifest bindings into committed SKILL.md files",
+        module: "./commands/skills.ts",
+        fn: "skillsCompile",
+        args: [
+          { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
+          { name: "Verb", flag: "--verb", type: "text", placeholder: "watch-ci", hint: "Compile only this verb (repeatable); omit for every verb in the roster" },
+          { name: "Manifest", flag: "--manifest", type: "text", placeholder: "/path/to/skills.jsonc", hint: "Manifest path; omit to auto-find the newest ~/.mattstack/repos/*/skills.jsonc naming this pack" },
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print what would be written without touching disk" },
+        ],
+      },
+      check: {
+        description: "Report compiled skills that no longer match their sources",
+        module: "./commands/skills.ts",
+        fn: "skillsCheck",
+        args: [
+          { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
+          { name: "Verb", flag: "--verb", type: "text", placeholder: "watch-ci", hint: "Check only this verb (repeatable); omit for every compiled verb" },
+          { name: "Manifest", flag: "--manifest", type: "text", placeholder: "/path/to/skills.jsonc", hint: "Manifest path; omit to auto-find the newest ~/.mattstack/repos/*/skills.jsonc naming this pack" },
+        ],
+      },
+      surface: {
+        description: "List, set, or apply the pack's public/internal skill surface (bare invocation opens an fzf multi-toggle palette)",
+        module: "./commands/skills.ts",
+        fn: "skillsSurface",
+        args: [
+          { name: "Mode", type: "text", placeholder: "list", hint: "list | set <name> --public|--internal | apply; omit for the fzf palette" },
+          { name: "Pack", flag: "--pack", type: "text", placeholder: "acme", hint: "Pack name (--team still accepted); omit to pick from the discovered packs" },
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "apply only: print planned moves without touching disk" },
         ],
       },
     },

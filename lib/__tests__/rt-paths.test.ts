@@ -12,18 +12,26 @@
  * here instead of a scavenger hunt.
  */
 
-import { describe, test, expect, afterEach } from "bun:test";
+import { describe, test, expect, afterEach, mock } from "bun:test";
 import {
   existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync,
   rmSync, statSync, symlinkSync, writeFileSync,
 } from "fs";
+import * as osReal from "os";
 import { tmpdir } from "os";
-import { join } from "path";
+// `mock.module` mutates the live "os" namespace object in place, so
+// `osReal.hostname` itself becomes the mock the moment it's installed —
+// restoring with `() => osReal` would restore the mock to itself. Capture
+// the real function BEFORE any test can call mock.module("os", ...).
+const realHostname = osReal.hostname;
+import { dirname, join } from "path";
 import {
   rtDir, reposDir, repoDataDir, logsDir,
   migrateLegacyRtDir, legacyDirsPresent,
   TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE, DEV_TRAY_APP_BUNDLE,
   trayAppPath, devTrayAppPath, legacyTrayAppPaths, installedTrayAppPath, machineSettingsPath,
+  legacyUserAppPath, trayAppInstallDest,
+  machineKey, userSettingsPath, teamSettingsPath, isSafeMachineKeySegment,
 } from "../rt-paths.ts";
 
 describe("rt-paths", () => {
@@ -68,6 +76,118 @@ describe("rt-paths", () => {
     process.env.HOME = "/tmp/h";
     expect(repoDataDir("x")).toBe(join(reposDir(), "x"));
     expect(repoDataDir("x")).not.toBe(join(rtDir(), "x"));
+  });
+
+  // ── Settings store paths (home-repo reroot) ─────────────────────────────────
+
+  describe("settings store path shapes", () => {
+    test("userSettingsPath nests under user/settings.user.jsonc", () => {
+      process.env.HOME = "/tmp/fake-home-store-1";
+      expect(userSettingsPath()).toBe("/tmp/fake-home-store-1/.mattstack/user/settings.user.jsonc");
+    });
+
+    test("machineSettingsPath nests under user/local/<machineKey()>/settings.local.jsonc", () => {
+      const home = mkdtempSync(join(tmpdir(), "rt-paths-machine-store-"));
+      process.env.HOME = home;
+      expect(machineSettingsPath()).toBe(join(home, ".mattstack", "user", "local", machineKey(), "settings.local.jsonc"));
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    test("teamSettingsPath nests under teams/<team>/mattstack/settings.team.jsonc", () => {
+      process.env.HOME = "/tmp/fake-home-store-2";
+      expect(teamSettingsPath("acme")).toBe("/tmp/fake-home-store-2/.mattstack/teams/acme/mattstack/settings.team.jsonc");
+    });
+  });
+
+  describe("machineKey", () => {
+    const makeKeyHome = () => mkdtempSync(join(tmpdir(), "rt-paths-machine-key-"));
+
+    afterEach(() => {
+      mock.module("os", () => ({ ...osReal, hostname: realHostname }));
+    });
+
+    test("an override file wins, trimmed", () => {
+      const home = makeKeyHome();
+      process.env.HOME = home;
+      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      writeFileSync(join(home, ".mattstack", "machine-key"), "  my-custom-key  \n");
+      expect(machineKey()).toBe("my-custom-key");
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    test("an override file that is empty after trim falls through to the hostname slug", () => {
+      const home = makeKeyHome();
+      process.env.HOME = home;
+      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      writeFileSync(join(home, ".mattstack", "machine-key"), "   \n");
+      mock.module("os", () => ({ ...osReal, hostname: () => "Real-Host" }));
+      expect(machineKey()).toBe("real-host");
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    // An override becomes a directory name directly under user/local/, so a
+    // value that isn't a safe single path segment must not be honored — it
+    // would escape that directory (a separator) or resolve to a no-op/parent
+    // segment (".", "..") instead of a distinct machine's namespace.
+    test.each([
+      ["a forward slash", "evil/key"],
+      ["a backslash", "evil\\key"],
+      ["exactly \".\"", "."],
+      ["exactly \"..\"", ".."],
+    ])("an override value containing %s is rejected — falls through to the hostname slug", (_label, unsafe) => {
+      const home = makeKeyHome();
+      process.env.HOME = home;
+      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      writeFileSync(join(home, ".mattstack", "machine-key"), unsafe);
+      mock.module("os", () => ({ ...osReal, hostname: () => "Safe-Host" }));
+      expect(machineKey()).toBe("safe-host");
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    test("no override file at all: falls through to the hostname slug", () => {
+      const home = makeKeyHome();
+      process.env.HOME = home;
+      mock.module("os", () => ({ ...osReal, hostname: () => "Some-Host" }));
+      expect(machineKey()).toBe("some-host");
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    test("hostname slug: lowercased, trailing .local stripped", () => {
+      const home = makeKeyHome();
+      process.env.HOME = home;
+      mock.module("os", () => ({ ...osReal, hostname: () => "Matts-MacBook-Pro.local" }));
+      expect(machineKey()).toBe("matts-macbook-pro");
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    test("hostname slug: illegal characters collapse to single dashes, edges trimmed", () => {
+      const home = makeKeyHome();
+      process.env.HOME = home;
+      mock.module("os", () => ({ ...osReal, hostname: () => "  weird_host!!name@@ " }));
+      expect(machineKey()).toBe("weird-host-name");
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    test("hostname slug: an all-illegal hostname slugs to empty and falls back to \"default\"", () => {
+      const home = makeKeyHome();
+      process.env.HOME = home;
+      mock.module("os", () => ({ ...osReal, hostname: () => "!!!" }));
+      expect(machineKey()).toBe("default");
+      rmSync(home, { recursive: true, force: true });
+    });
+  });
+
+  describe("isSafeMachineKeySegment", () => {
+    test.each([
+      ["a plain slug", "mbp-14", true],
+      ["empty", "", false],
+      ["exactly \".\"", ".", false],
+      ["exactly \"..\"", "..", false],
+      ["a forward slash", "evil/key", false],
+      ["a backslash", "evil\\key", false],
+    ])("%s -> %s", (_label, value, expected) => {
+      expect(isSafeMachineKeySegment(value)).toBe(expected);
+    });
   });
 
   // ── migrateLegacyRtDir ───────────────────────────────────────────────────────
@@ -164,18 +284,37 @@ describe("rt-paths", () => {
     expect(DEV_TRAY_APP_BUNDLE).toBe("mattstack-dev.app");
   });
 
-  test("trayAppPath resolves under ~/Applications at call-time HOME", () => {
+  test("trayAppPath resolves under ~/Applications at call-time HOME when that's the only candidate present", () => {
+    const onlyUnderHome = (p: string) => p === join(process.env.HOME!, "Applications", TRAY_APP_BUNDLE);
     process.env.HOME = "/tmp/fake-home-tray-1";
-    expect(trayAppPath()).toBe("/tmp/fake-home-tray-1/Applications/mattstack.app");
+    expect(trayAppPath(onlyUnderHome)).toBe("/tmp/fake-home-tray-1/Applications/mattstack.app");
     process.env.HOME = "/tmp/fake-home-tray-2";
-    expect(trayAppPath()).toBe("/tmp/fake-home-tray-2/Applications/mattstack.app");
+    expect(trayAppPath(onlyUnderHome)).toBe("/tmp/fake-home-tray-2/Applications/mattstack.app");
   });
 
-  test("devTrayAppPath resolves under ~/Applications at call-time HOME", () => {
+  test("devTrayAppPath resolves under ~/Applications at call-time HOME when that's the only candidate present", () => {
+    const onlyUnderHome = (p: string) => p === join(process.env.HOME!, "Applications", DEV_TRAY_APP_BUNDLE);
     process.env.HOME = "/tmp/fake-home-dev-tray-1";
-    expect(devTrayAppPath()).toBe("/tmp/fake-home-dev-tray-1/Applications/mattstack-dev.app");
+    expect(devTrayAppPath(onlyUnderHome)).toBe("/tmp/fake-home-dev-tray-1/Applications/mattstack-dev.app");
     process.env.HOME = "/tmp/fake-home-dev-tray-2";
-    expect(devTrayAppPath()).toBe("/tmp/fake-home-dev-tray-2/Applications/mattstack-dev.app");
+    expect(devTrayAppPath(onlyUnderHome)).toBe("/tmp/fake-home-dev-tray-2/Applications/mattstack-dev.app");
+  });
+
+  test("trayAppPath prefers the installed bundle (machine key, /Applications, ~/Applications) and defaults to /Applications", () => {
+    const none = () => false;
+    expect(trayAppPath(none)).toBe("/Applications/mattstack.app");
+    expect(devTrayAppPath(none)).toBe("/Applications/mattstack-dev.app");
+    const userOnly = (p: string) => p === join(process.env.HOME!, "Applications", "mattstack.app");
+    expect(trayAppPath(userOnly)).toBe(join(process.env.HOME!, "Applications", "mattstack.app"));
+  });
+
+  test("legacyUserAppPath and trayAppInstallDest resolve under ~/Applications at call-time HOME", () => {
+    process.env.HOME = "/tmp/fake-home-legacy-user-app-1";
+    expect(legacyUserAppPath()).toBe("/tmp/fake-home-legacy-user-app-1/Applications/mattstack.app");
+    expect(trayAppInstallDest()).toBe("/tmp/fake-home-legacy-user-app-1/Applications/mattstack.app");
+    process.env.HOME = "/tmp/fake-home-legacy-user-app-2";
+    expect(legacyUserAppPath()).toBe("/tmp/fake-home-legacy-user-app-2/Applications/mattstack.app");
+    expect(trayAppInstallDest()).toBe("/tmp/fake-home-legacy-user-app-2/Applications/mattstack.app");
   });
 
   test("legacyTrayAppPaths is a function (call-time HOME rule, not a const)", () => {
@@ -219,7 +358,7 @@ describe("rt-paths", () => {
     test("the mattstack.appPath machine setting wins over both fixed locations", () => {
       const home = makeHome();
       process.env.HOME = home;
-      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      mkdirSync(dirname(machineSettingsPath()), { recursive: true });
       writeFileSync(machineSettingsPath(), JSON.stringify({ "mattstack.appPath": "/custom/place/mattstack.app" }));
 
       const exists = (p: string) => p === "/custom/place/mattstack.app" || p === "/Applications/mattstack.app";
@@ -231,7 +370,7 @@ describe("rt-paths", () => {
     test("a machine setting naming a different bundle is never trusted for this lookup, even if it exists on disk", () => {
       const home = makeHome();
       process.env.HOME = home;
-      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      mkdirSync(dirname(machineSettingsPath()), { recursive: true });
       // The setting names the PROD bundle; this call asks for the dev bundle.
       writeFileSync(machineSettingsPath(), JSON.stringify({ "mattstack.appPath": "/Applications/mattstack.app" }));
 
@@ -244,7 +383,7 @@ describe("rt-paths", () => {
     test("a machine setting pointing at a bundle that no longer exists is not trusted — falls through to the fixed locations", () => {
       const home = makeHome();
       process.env.HOME = home;
-      mkdirSync(join(home, ".mattstack"), { recursive: true });
+      mkdirSync(dirname(machineSettingsPath()), { recursive: true });
       writeFileSync(machineSettingsPath(), JSON.stringify({ "mattstack.appPath": "/gone/mattstack.app" }));
 
       const exists = (p: string) => p === "/Applications/mattstack.app";

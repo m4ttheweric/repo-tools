@@ -27,3 +27,26 @@ macOS utilities for customizing app icons. `tint-icon.swift` applies a color tin
 swift scripts/tint-icon.swift <input> <output> <color>
 swift scripts/set-app-icon.swift <app-path> <icon-path>
 ```
+
+## e2e-cleanroom.sh
+
+The release workflow's `test-install` recipe (extract the zip → `rt --post-install --non-interactive --team-of-one --no-launch` → `rt daemon install` → `rt verify --ci` → `rt-tray/check-bundle.sh --app`, only when that script's source advertises `--app` support — a static grep, never an execution, since the script has no argument parsing today and any invocation falls through to a full rebuild), runnable locally against a release tag, a `mattstack-<ver>.zip`/`.dmg`, or an installed `mattstack.app`. `release.yml` calls it with the zip as a single positional argument. Refuses to run as a user who already has mattstack registered (without `--no-launch` the post-install would launch a second app) — use it inside the VM walkthrough (`rt-tray/vm/run/walkthrough.sh --scenario headless`), as the smoke user (`rt-tray/vm/run/second-user.sh run`), or on CI. Output lands in `rt-tray/vm/artifacts/cleanroom-<ts>/`. Under `CI=true` a daemon that is not booted is a warning, not a failure. `rt-tray/check-bundle.sh --app <bundle>` asserts an existing bundle without rebuilding (the no-arg mode still rebuilds both flavors in place); the clean-room step runs it for real. Until the app-shell lane merges, several of its assertions fail by design — that red is the dependency signal, not an install failure. `--non-interactive --team-of-one --no-launch` are not yet parsed by `rt --post-install` (pre-L1) and are currently inert.
+
+```sh
+scripts/e2e-cleanroom.sh --tag v2.8.0
+scripts/e2e-cleanroom.sh ~/Downloads/mattstack-2.8.0.zip --home "$(mktemp -d)"
+scripts/e2e-cleanroom.sh --artifact ~/Downloads/mattstack-2.8.0.dmg --home "$(mktemp -d)"
+```
+
+## fetch-deps.sh
+
+Fetches and sha256-verifies rt-tray's bundled third-party helper tools (e.g. Sparkle) per `rt-tray/deps.lock`.
+
+## release/
+
+The mattstack.app release pipeline. Run in this order: `make-zip.sh` → `make-dmg.sh` → `notarize.sh` (each artifact) → `appcast.sh`.
+
+- `make-zip.sh <app> <out.zip>` — the Sparkle update enclosure (`ditto -c -k --sequesterRsrc --keepParent`).
+- `make-dmg.sh <app> <out.dmg> [signing-identity]` — the first-install APFS/LZFSE disk image with a drag-to-Applications symlink.
+- `notarize.sh <path.app|path.dmg>` — submits to Apple's notary service, staples, and validates; orchestrator-only, needs `APPLE_ID`/`APPLE_ID_PASSWORD`/`APPLE_TEAM_ID`.
+- `appcast.sh <archives-dir> <tag>` — generates the signed Sparkle appcast (with deltas against prior releases) from the zip(s) in `<archives-dir>`; needs `SPARKLE_ED_KEY`.

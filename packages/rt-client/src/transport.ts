@@ -23,15 +23,27 @@ export interface RtClientOptions {
 
 // Duplicates the ~/.mattstack/rt layout: rt-client has no dependency on rt's
 // lib/, so this literal cannot import rtDir(). repo-tools/lib/rt-paths.ts is
-// the authority — change there first, mirror here.
-export const DEFAULT_SOCK = join(homedir(), ".mattstack", "rt", "rt.sock");
+// the authority — change there first, mirror here (same convention as
+// settings/paths.ts's call-time `home()`).
+function defaultSock(): string {
+  return join(process.env.HOME ?? homedir(), ".mattstack", "rt", "rt.sock");
+}
+
+/**
+ * Display-only: a module-load snapshot for callers that just want to show
+ * the default path (no consumer imports it today — checked). `rtCommand`
+ * itself never reads this constant; it calls `defaultSock()` fresh on every
+ * invocation so a test can repoint `process.env.HOME` at any time before
+ * calling, not only before this module first loads.
+ */
+export const DEFAULT_SOCK = defaultSock();
 
 export async function rtCommand<T = unknown>(
   cmd: string,
   payload: Record<string, unknown>,
   opts: { sockPath?: string; timeoutMs?: number } = {},
 ): Promise<RtResponse<T>> {
-  const sockPath = opts.sockPath ?? DEFAULT_SOCK;
+  const sockPath = opts.sockPath ?? defaultSock();
   try {
     const res = await fetch(`http://localhost/${cmd}`, {
       unix: sockPath,

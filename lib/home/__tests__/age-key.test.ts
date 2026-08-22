@@ -113,7 +113,7 @@ describe("ensureAgeKey", () => {
 
     const result = await ensureAgeKey(seam);
 
-    expect(result).toEqual({ publicKey: FAKE_PUBLIC_KEY });
+    expect(result).toEqual({ publicKey: FAKE_PUBLIC_KEY, minted: true });
     expect(seam.calls.map((c) => c.cmd)).toEqual([FIND_CMD, ["age-keygen"], [...ADD_CMD_PREFIX, FAKE_PRIVATE_KEY]]);
   });
 
@@ -136,7 +136,7 @@ describe("ensureAgeKey", () => {
 
     const result = await ensureAgeKey(seam);
 
-    expect(result).toEqual({ publicKey: FAKE_PUBLIC_KEY });
+    expect(result).toEqual({ publicKey: FAKE_PUBLIC_KEY, minted: false });
     expect(seam.calls.map((c) => c.cmd)).toEqual([FIND_CMD, ["age-keygen", "-y"]]);
     // The private key is piped via stdin, never argv.
     const deriveCall = seam.calls.find((c) => c.cmd[0] === "age-keygen" && c.cmd[1] === "-y");
@@ -203,9 +203,9 @@ describe("withArgvRedaction", () => {
 });
 
 describe("renderSopsYaml", () => {
-  test("emits a creation rule encrypting user/secrets/** to the given recipient", () => {
+  test("emits a creation rule encrypting secrets/** (cwd-relative, cwd pinned to <mattstackHome>/user) to the given recipient", () => {
     const yaml = renderSopsYaml("age1xyz");
-    expect(yaml).toContain("path_regex: user/secrets/.*");
+    expect(yaml).toContain("path_regex: secrets/.*");
     expect(yaml).toContain("age1xyz");
   });
 });

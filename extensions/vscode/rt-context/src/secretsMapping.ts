@@ -14,7 +14,7 @@ export interface DaemonSecretsResponse {
   error?: string;
 }
 
-/** The daemon's secrets:read verb whitelists exactly these two fields (lib/daemon/handlers/secrets.ts) — keep in lockstep. */
+/** The daemon's secrets:read verb's extension scope whitelists exactly these two fields (lib/daemon/handlers/secrets.ts) — keep in lockstep. */
 export type DaemonSecretKey = 'linearApiKey' | 'gitlabToken';
 
 /**

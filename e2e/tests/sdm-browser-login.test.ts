@@ -93,14 +93,6 @@ exit 0
 `,
     );
     chmodSync(fakeSdm, 0o755);
-
-    // sdmEmail must be set or the orchestrator returns needs-manual before
-    // ever launching a browser (the email preflight).
-    mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
-    writeFileSync(
-      join(home, ".mattstack", "rt", "secrets.json"),
-      JSON.stringify({ sdmEmail: "nobody@example.test" }, null, 2),
-    );
   });
 
   afterEach(async () => {
@@ -117,10 +109,13 @@ exit 0
 
   test("silent path drives the fake SAML flow to completion", async () => {
     const fakeSdm = join(home, "fakebin", "sdm");
+    // sdmEmail must be set or the orchestrator returns needs-manual before
+    // ever launching a browser (the email preflight) — SDM_EMAIL overrides
+    // the encrypted store for exactly this preflight read.
     session = await startInteractive({
       args: ["sdm", "login"],
       home,
-      env: { RT_SDM_BIN: fakeSdm },
+      env: { RT_SDM_BIN: fakeSdm, SDM_EMAIL: "nobody@example.test" },
       timeoutMs: 20_000,
     });
 

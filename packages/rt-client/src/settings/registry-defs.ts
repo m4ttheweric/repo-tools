@@ -103,6 +103,15 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Per-machine editor/terminal preferences applied when opening a worktree.",
   },
   {
+    key: "rt.homeSnapshot",
+    type: "object",
+    scopes: ["machine"],
+    default: { enabled: true, debounceSec: 20, pushDelaySec: 60, janitorThresholdHours: 6, janitorIntervalMin: 30 },
+    merge: "deep",
+    migrated: true,
+    description: "Home-repo snapshot daemon config: enabled, debounce/push delays, and the janitor threshold/interval for zones left dirty too long.",
+  },
+  {
     key: "rt.sync",
     type: "object",
     scopes: ALL_SCOPES,
@@ -223,6 +232,10 @@ export const REGISTRY: readonly SettingDef[] = [
   },
 
   // --- board (team) --------------------------------------------------------
+  // board.* rows carry NO `default`: the board's store-ownership latch is
+  // `getSetting(key).value === undefined`, and a registry default materializes
+  // as a present value — adding one flips that key store-authoritative on
+  // every install and blanks the file's value.
   {
     key: "board.gitlabHost",
     type: "string",

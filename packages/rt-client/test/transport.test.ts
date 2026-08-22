@@ -1,4 +1,5 @@
 import { describe, expect, test, afterEach } from "bun:test";
+import { mkdtempSync, rmSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { rtCommand } from "../src/transport.ts";
@@ -40,5 +41,19 @@ describe("rtCommand", () => {
     const res = await rtCommand("slow-cmd", {}, { sockPath: sock, timeoutMs: 20 });
     expect(res.ok).toBe(false);
     expect(res.error).toContain(`rt daemon unreachable at ${sock}`);
+  });
+
+  test("no sockPath resolves the default at call time from process.env.HOME, not a module-load snapshot", async () => {
+    const origHome = process.env.HOME;
+    const fakeHome = realpathSync(mkdtempSync(join(tmpdir(), "rt-client-transport-home-")));
+    process.env.HOME = fakeHome;
+    try {
+      const res = await rtCommand("project-mrs:read", { repoName: "x" }, {});
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain(join(fakeHome, ".mattstack", "rt", "rt.sock"));
+    } finally {
+      process.env.HOME = origHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
   });
 });

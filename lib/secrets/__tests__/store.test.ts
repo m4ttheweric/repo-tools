@@ -128,7 +128,7 @@ class FakeSecretsExecSeam implements SecretsExecSeam {
     this.calls.push({ cmd, opts: runOpts });
 
     if (cmd[0] === "sops" && cmd[1] === "-d") {
-      const target = cmd[2]!;
+      const target = cmd[cmd.length - 1]!;
       const staged = this.roundTrippablePlaintext.get(target);
       if (staged !== undefined) return { code: 0, stdout: staged, stderr: "" };
       return this.opts.decrypt ? this.opts.decrypt() : { code: 0, stdout: "{}", stderr: "" };
@@ -302,8 +302,8 @@ describe("writeSecret", () => {
 
     expect(execSeam.calls.map((c) => c.cmd)).toEqual([
       ["sops", "-d", path],
-      ["sops", "-e", "--filename-override", join("user", "secrets", `${domain}.json`), "--output", outputTmp, staging],
-      ["sops", "-d", outputTmp],
+      ["sops", "-e", "--filename-override", join("secrets", `${domain}.json`), "--output", outputTmp, staging],
+      ["sops", "-d", "--input-type", "json", "--output-type", "json", outputTmp],
     ]);
     // The round-trip readback carries the same SOPS_AGE_KEY env as any other sops call — never argv.
     expect(execSeam.calls[2]?.opts).toEqual({ env: { SOPS_AGE_KEY: "AGE-X" }, sensitive: true });
@@ -331,8 +331,8 @@ describe("writeSecret", () => {
 
     const outputTmp = `${path}.${process.pid}.tmp`;
     expect(execSeam.calls.map((c) => c.cmd)).toEqual([
-      ["sops", "-e", "--filename-override", join("user", "secrets", `${domain}.json`), "--output", outputTmp, stagingPath(domain)],
-      ["sops", "-d", outputTmp],
+      ["sops", "-e", "--filename-override", join("secrets", `${domain}.json`), "--output", outputTmp, stagingPath(domain)],
+      ["sops", "-d", "--input-type", "json", "--output-type", "json", outputTmp],
     ]);
     expect(execSeam.files.get(path)).toBe(DEFAULT_CIPHERTEXT);
   });
@@ -549,15 +549,15 @@ describe("rotateSecret", () => {
   });
 });
 
-describe("real seam spawn options — cwd pin (Task 5 carried review item)", () => {
-  test("pins cwd to mattstackHome() so sops resolves THIS home's .sops.yaml, never a foreign cwd's", () => {
+describe("real seam spawn options — cwd pin", () => {
+  test("pins cwd to <mattstackHome>/user so sops resolves THIS home's .sops.yaml (and secrets/.* regex), never a foreign cwd's", () => {
     const opts = buildSecretsSpawnOptions();
-    expect(opts.cwd).toBe(mattstackHome());
+    expect(opts.cwd).toBe(join(mattstackHome(), "user"));
   });
 
   test("still layers opts.env (e.g. SOPS_AGE_KEY) over process.env alongside the cwd pin", () => {
     const opts = buildSecretsSpawnOptions({ env: { SOPS_AGE_KEY: "age-secret-key-test" } });
-    expect(opts.cwd).toBe(mattstackHome());
+    expect(opts.cwd).toBe(join(mattstackHome(), "user"));
     expect(opts.env.SOPS_AGE_KEY).toBe("age-secret-key-test");
   });
 });
