@@ -58,45 +58,73 @@ export interface MaterializeExecResult {
   exitCode: number;
 }
 
-/** Shaped exactly like `lib/subprocess.ts`'s `runCapture` so the real seam is a one-line wrap. */
+/** Shaped like `lib/subprocess.ts`'s `runCapture` so the real seam is a one-line wrap. */
 export interface MaterializeExecSeam {
-  run(argv: [string, ...string[]], opts?: { cwd?: string }): Promise<MaterializeExecResult>;
+  run(argv: [string, ...string[]], opts?: { timeoutMs?: number }): Promise<MaterializeExecResult>;
 }
 
 export interface MaterializeResult {
   step: MaterializeStep;
   ok: boolean;
   stderr: string;
+  /** Captured stdout — non-empty only for `RT_OWN_STEP_KINDS` steps, and printed even on `ok: true`: `rt daemon install` writes operator-critical approval guidance to stdout on a clean exit. */
+  stdout: string;
+  /** An informational note to show even on `ok: true` — e.g. `boardSetup`'s manual-run command. Never a failure message (that's `stderr`). */
+  note: string;
 }
 
 /**
- * `mr-board`'s `scripts/setup.ts` prompts interactively (GitLab token, Slack
- * OAuth) and reaches the network — it cannot be run unattended by init. This
- * step is therefore always report-only: it names the command for the
- * operator to run themselves rather than spawning it.
+ * `rt daemon install` polls the tray over HTTP for up to ~27s worst case;
+ * `runCapture`'s 10s default would SIGKILL it mid-poll. Applied to every
+ * subprocess step here — the `which deck` probe (env gathering, not a step)
+ * is deliberately NOT run through this and keeps runCapture's short default.
  */
+const STEP_TIMEOUT_MS = 60_000;
+
+/** `mr-board`'s `scripts/setup.ts` prompts interactively (GitLab token, Slack OAuth) and reaches the network — it cannot be run unattended by init. */
 function boardSetupCommand(repoPath: string): string {
-  return `cd ${repoPath} && bun run scripts/setup.ts`;
+  return `cd "${repoPath}" && bun run scripts/setup.ts`;
+}
+
+function ok(step: MaterializeStep, stdout = ""): MaterializeResult {
+  return { step, ok: true, stderr: "", stdout, note: "" };
+}
+
+function failureMessage(bin: string, r: MaterializeExecResult): string {
+  if (r.exitCode === -1) return `could not run \`${bin}\` — is it on PATH?`;
+  return r.stderr || `exit ${r.exitCode}`;
+}
+
+async function runSubprocessStep(
+  step: MaterializeStep,
+  bin: string,
+  argv: [string, ...string[]],
+  seam: MaterializeExecSeam,
+  captureStdout: boolean,
+): Promise<MaterializeResult> {
+  const r = await seam.run(argv, { timeoutMs: STEP_TIMEOUT_MS });
+  const succeeded = r.exitCode === 0;
+  return {
+    step,
+    ok: succeeded,
+    stderr: succeeded ? "" : failureMessage(bin, r),
+    stdout: captureStdout ? r.stdout.trim() : "",
+    note: "",
+  };
 }
 
 async function runStep(step: MaterializeStep, seam: MaterializeExecSeam): Promise<MaterializeResult> {
   switch (step.kind) {
-    case "rtInterceptInstall": {
-      const r = await seam.run(["rt", "intercept", "install"]);
-      return { step, ok: r.exitCode === 0, stderr: r.exitCode === 0 ? "" : r.stderr || `exit ${r.exitCode}` };
-    }
-    case "rtDaemonInstall": {
-      const r = await seam.run(["rt", "daemon", "install"]);
-      return { step, ok: r.exitCode === 0, stderr: r.exitCode === 0 ? "" : r.stderr || `exit ${r.exitCode}` };
-    }
-    case "deckSetup": {
-      const r = await seam.run(["deck", "setup"]);
-      return { step, ok: r.exitCode === 0, stderr: r.exitCode === 0 ? "" : r.stderr || `exit ${r.exitCode}` };
-    }
+    case "rtInterceptInstall":
+      return runSubprocessStep(step, "rt", ["rt", "intercept", "install"], seam, true);
+    case "rtDaemonInstall":
+      return runSubprocessStep(step, "rt", ["rt", "daemon", "install"], seam, true);
+    case "deckSetup":
+      return runSubprocessStep(step, "deck", ["deck", "setup"], seam, false);
     case "reportMissingRepos":
-      return { step, ok: true, stderr: "" };
+      return ok(step);
     case "boardSetup":
-      return { step, ok: true, stderr: `run manually (interactive): ${boardSetupCommand(step.repoPath)}` };
+      return { step, ok: true, stderr: "", stdout: "", note: `run manually (interactive): ${boardSetupCommand(step.repoPath)}` };
   }
 }
 

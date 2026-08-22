@@ -2,7 +2,7 @@
  * rt home — the git-backed ~/.mattstack/user personal repo, plus per-machine
  * provisioning of the ~/.mattstack tree around it.
  *
- *   rt home init [--dry-run] [--url <remote>] [--profile <key>] [--new-profile]
+ *   rt home init [--dry-run] [--url <remote>] [--profile <key>] [--new-profile] [--no-materialize]
  *                                                     print, then run, the provisioning plan
  *   rt home key export                          print the age private key once, for a password manager
  *   rt home key import [--stdin] [--force]      bring an external age key into the keychain
@@ -330,18 +330,18 @@ function printSkillsSymlinkBlocked(home: string): void {
 // ─── materialize (init's last phase) ────────────────────────────────────────
 
 function defaultMaterializeExec(): MaterializeExecSeam {
-  return { run: (argv, opts) => runCapture(argv, { ...opts, stderr: "pipe" }) };
+  return { run: (argv, opts) => runCapture(argv, { stderr: "pipe", ...(opts?.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}) }) };
 }
 
 /**
  * `which deck`, the repo index, `rt.repoTracking`, and the daemon-install
- * marker — all read-only, no seam of their own beyond `exec` (for `which`).
- * Kept as one function (rather than four separate probes on HomeInitSeams)
- * because nothing here needs independent faking in a test that isn't
- * exercising materialize itself: `homeInit`'s tests inject a whole
- * `materializeEnv` instead.
+ * marker. All read-only; a throw here is caught by homeInit's materialize
+ * try/catch and reported as a non-rt-own failure, never a crash.
  */
 async function defaultMaterializeEnv(exec: MaterializeExecSeam): Promise<MaterializeEnv> {
+  // Deliberately not run through STEP_TIMEOUT_MS (runMaterialize's steps) — a
+  // plain `which` never blocks like `rt daemon install`'s tray poll does, so
+  // it keeps runCapture's short default.
   const which = await exec.run(["which", "deck"]);
   const deckOnPath = which.exitCode === 0 && which.stdout.trim().length > 0;
 
@@ -370,7 +370,7 @@ function describeMaterializeStep(step: MaterializeStep): string {
     case "deckSetup":
       return "deck setup";
     case "boardSetup":
-      return `mr-board setup — run manually, it's interactive: cd ${step.repoPath} && bun run scripts/setup.ts`;
+      return "mr-board setup (interactive — not run automatically)";
   }
 }
 
@@ -380,17 +380,15 @@ function printMaterializeResults(results: MaterializeResult[]): void {
     const mark = result.ok ? `${green}✓${reset}` : `${red}✗${reset}`;
     console.log(`  ${mark} ${describeMaterializeStep(result.step)}`);
     if (!result.ok && result.stderr) console.log(`    ${dim}${result.stderr}${reset}`);
-    else if (result.ok && result.step.kind === "boardSetup") console.log(`    ${dim}${result.stderr}${reset}`);
+    if (result.stdout) console.log(`    ${dim}${result.stdout}${reset}`);
+    if (result.note) console.log(`    ${dim}${result.note}${reset}`);
   }
 }
 
 /**
  * `claude.marketplaces`/`claude.plugins` replay is the installer's job, not
- * init's (rt orchestrates materialize; the installer owns the plugin/
- * marketplace replay itself) — this only points at it when either resolves
- * to a value, so a machine with nothing configured stays silent. Pure so the
- * decision is unit-testable without writing through the real settings
- * resolver.
+ * init's — this only points at it when either resolves to a value, so a
+ * machine with nothing configured stays silent.
  */
 export function claudePluginsPointerMessage(marketplaces: unknown, plugins: unknown): string | null {
   if (marketplaces === undefined && plugins === undefined) return null;
@@ -566,15 +564,37 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
 
   const plan = planOrExit(state, { url, machineKey: chosenKey });
 
+  // Env gathering is read-only (which deck, the repo index, rt.repoTracking,
+  // the daemon-install marker) — safe to run under --dry-run, so the preview
+  // below reflects what materialize would actually do instead of silently
+  // omitting init's last phase. Gathered ONLY for dry-run: the live path
+  // below gathers its own (possibly different, if state changed) env right
+  // before actually running it. A throw here never aborts --dry-run: it's
+  // reported and treated as "nothing to preview," same as --no-materialize.
+  let materializeSteps: MaterializeStep[] = [];
+  if (dryRun && !noMaterialize) {
+    try {
+      materializeSteps = planMaterialize(await materializeEnv());
+    } catch (err) {
+      console.error(`\nrt home init: could not preview the materialize plan: ${(err as Error).message ?? err}`);
+    }
+  }
+
   if (plan.steps.length > 0) {
     printPlan(home, plan.steps);
-  } else if (!plan.blocked) {
+  } else if (!plan.blocked && materializeSteps.length === 0) {
     console.log(`rt home init: ${home} is already fully provisioned — nothing to do.`);
   }
 
   if (plan.blocked === "skills-symlink-real-file") printSkillsSymlinkBlocked(home);
 
-  if (dryRun) return;
+  if (dryRun) {
+    if (materializeSteps.length > 0) {
+      console.log(`\nrt home init: materialize would run (regenerating everything re-derivable from settings):`);
+      materializeSteps.forEach((step, i) => console.log(`  ${i + 1}. ${describeMaterializeStep(step)}`));
+    }
+    return;
+  }
 
   const result = await executeInitPlan(plan.steps, exec, (message) => console.log(`  ${message}`));
 
@@ -600,26 +620,41 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
   // Materialize is init's LAST phase, run on every non-dry-run invocation —
   // including an already-fully-provisioned machine — so re-derivable state
   // (PATH shims, daemon registration, each installed tool's own setup)
-  // stays current without a separate command to remember to run.
+  // stays current without a separate command to remember to run. A throw
+  // anywhere in here (env gathering, a step, printing) is caught and
+  // reported as a non-rt-own failure: provisioning already succeeded above,
+  // so this must never crash init to a bare exception after that.
   let materializeFailed = false;
   if (noMaterialize) {
     console.log(`\n  ${dim}materialize skipped (--no-materialize)${reset}`);
   } else {
-    const env = await materializeEnv();
-    const steps = planMaterialize(env);
-    const results = await runMaterialize(steps, materializeExec);
-    printMaterializeResults(results);
-    materializeFailed = results.some((r) => !r.ok && RT_OWN_STEP_KINDS.has(r.step.kind));
+    try {
+      const env = await materializeEnv();
+      const steps = planMaterialize(env);
+      const results = await runMaterialize(steps, materializeExec);
+      printMaterializeResults(results);
+      materializeFailed = results.some((r) => !r.ok && RT_OWN_STEP_KINDS.has(r.step.kind));
+    } catch (err) {
+      console.error(`\nrt home init: materialize threw and was skipped: ${(err as Error).message ?? err}`);
+    }
   }
 
-  printClaudePluginsPointer();
+  try {
+    printClaudePluginsPointer();
+  } catch (err) {
+    console.error(`\nrt home init: could not check claude.marketplaces/claude.plugins: ${(err as Error).message ?? err}`);
+  }
 
-  console.log(`\nrt home init: ${home} is provisioned.`);
-
+  // Checked BEFORE the success line — printing "provisioned" ahead of a
+  // known rt-own materialize failure would tell the operator init fully
+  // worked when a regenerated piece of rt's own state (PATH shims, daemon
+  // registration) is known broken.
   if (materializeFailed) {
     console.error(`\nrt home init: materialize failed on an rt-owned step — see above.`);
     process.exit(1);
   }
+
+  console.log(`\nrt home init: ${home} is provisioned.`);
 }
 
 export async function homeKeyExport(
