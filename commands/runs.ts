@@ -15,7 +15,13 @@ function fail(msg: string): never {
 
 function flagValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
+  if (i < 0) return undefined;
+  const v = args[i + 1];
+  // Dangling flag (nothing after it, or the next token is itself a flag)
+  // must fail loudly -- silently falling back to "no value" here would
+  // turn `rt runs --repo` into an unscoped list instead of an error.
+  if (v === undefined || v.startsWith("--")) fail(`${flag} requires a value`);
+  return v;
 }
 
 // Index-based scan (not value comparison — a positional that EQUALS a flag's

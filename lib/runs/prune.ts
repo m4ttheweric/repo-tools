@@ -5,7 +5,7 @@
  * and must stay in front of every rmSync.
  */
 import { Database } from "bun:sqlite";
-import { existsSync, readdirSync, realpathSync, rmSync, statSync } from "fs";
+import { existsSync, readdirSync, realpathSync, rmSync, statSync, type Dirent } from "fs";
 import { basename, dirname, join, sep } from "path";
 import { getSetting } from "../settings/resolve.ts";
 import { runsRoot } from "./store.ts";
@@ -42,6 +42,20 @@ export function assertPrunable(dir: string, root: string): void {
   }
 }
 
+// Real (non-symlink) directories only — readdirSync entries can be regular
+// files or symlinks, and a stale one would otherwise reach rmSync via the
+// mtime fallback below (assertPrunable checks position under the root, not
+// that the target is actually a run directory).
+function realDirNames(path: string): string[] {
+  try {
+    return readdirSync(path, { withFileTypes: true })
+      .filter((d: Dirent) => d.isDirectory() && !d.isSymbolicLink())
+      .map((d: Dirent) => d.name);
+  } catch {
+    return [];
+  }
+}
+
 function floorDays(): number {
   try {
     const v = getSetting<unknown>("rt.runsPruneDays").value;
@@ -73,11 +87,9 @@ export function pruneRuns(now: number = Date.now()): { removed: string[] } {
   const cutoff = now - floorDays() * DAY;
   const removed: string[] = [];
   if (!existsSync(root)) return { removed };
-  for (const repo of readdirSync(root)) {
+  for (const repo of realDirNames(root)) {
     const repoDir = join(root, repo);
-    let ids: string[];
-    try { ids = readdirSync(repoDir); } catch { continue; }
-    for (const id of ids) {
+    for (const id of realDirNames(repoDir)) {
       const runDir = join(repoDir, id);
       const dbPath = join(runDir, "state.db");
       let stamp = endedAtOf(dbPath);
