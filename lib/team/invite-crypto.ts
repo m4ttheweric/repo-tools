@@ -113,6 +113,11 @@ export function generateKey(): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(KEY_BYTES));
 }
 
+/** A fresh, CSPRNG invite id — the id format (`INVITE_ID_BYTES`, lowercase hex) is owned here, not by callers that only consume it. */
+export function generateId(): string {
+  return bytesToHex(crypto.getRandomValues(new Uint8Array(INVITE_ID_BYTES)));
+}
+
 /**
  * AES-256-GCM seal of raw bytes with an explicit IV and AAD — the seam that
  * lets tests pin a fixed vector. `seal`/`sealReply` are thin wrappers that

@@ -8,7 +8,7 @@ const GITLAB_REMOTE = "https://gitlab.com/acme/widgets.git";
 const SELF_HOSTED_GITLAB_REMOTE = "https://gitlab.acme.internal/acme/widgets.git";
 
 describe("grantRead", () => {
-  test("github: PUTs the collaborator with pull permission on success", async () => {
+  test("github: a 204 (empty body — access already effective) PUT grants", async () => {
     const script: ExecScript = () => ok();
     const p = fakeProbes({ exec: script });
 
@@ -18,8 +18,71 @@ describe("grantRead", () => {
     expect(p.calls.exec).toEqual([["gh", "api", "-X", "PUT", "/repos/acme/widgets/collaborators/octocat", "-f", "permission=pull"]]);
   });
 
-  test("github: gh missing (127) reports manual with the settings-access URL", async () => {
+  test("github: a 201 (invitation body — pending acceptance) PUT is manual, not granted", async () => {
+    const script: ExecScript = () => ok(JSON.stringify({ id: 1, invitee: { login: "octocat" } }));
+    const p = fakeProbes({ exec: script });
+
+    const result = await grantRead(p, GITHUB_REMOTE, "octocat");
+
+    expect(result.access).toBe("manual");
+    expect(result.manualSteps).toHaveLength(1);
+    expect(result.manualSteps[0]).toContain("must accept the pending GitHub collaboration invite");
+  });
+
+  test("github: gh missing (127) reports manual with an install step ahead of the settings-access steps", async () => {
     const script: ExecScript = () => missing("gh");
+    const p = fakeProbes({ exec: script });
+
+    const result = await grantRead(p, GITHUB_REMOTE, "octocat");
+
+    expect(result).toEqual({
+      access: "manual",
+      manualSteps: [
+        "Install the GitHub CLI (`gh`), then run `gh auth login`",
+        "Open https://github.com/acme/widgets/settings/access",
+        "Invite octocat with Read",
+      ],
+    });
+  });
+
+  test("github: unauthenticated stderr reports manual with a login step", async () => {
+    const script: ExecScript = () => ({ code: 1, stdout: "", stderr: "gh: not logged in to any GitHub hosts" });
+    const p = fakeProbes({ exec: script });
+
+    const result = await grantRead(p, GITHUB_REMOTE, "octocat");
+
+    expect(result.manualSteps[0]).toBe("Run `gh auth login`, then retry `rt team invite`");
+  });
+
+  test("github: an org SAML/SSO denial reports manual with an authorize-SSO step", async () => {
+    const script: ExecScript = () => ({ code: 1, stdout: "", stderr: "gh: Resource protected by organization SAML enforcement." });
+    const p = fakeProbes({ exec: script });
+
+    const result = await grantRead(p, GITHUB_REMOTE, "octocat");
+
+    expect(result.manualSteps[0]).toContain("SAML/SSO enforcement");
+  });
+
+  test("github: a 404 (unknown handle) reports manual naming the handle as not found", async () => {
+    const script: ExecScript = () => ({ code: 1, stdout: "", stderr: "gh: HTTP 404: Not Found" });
+    const p = fakeProbes({ exec: script });
+
+    const result = await grantRead(p, GITHUB_REMOTE, "octocat");
+
+    expect(result.manualSteps[0]).toContain('"octocat" is a real GitHub username');
+  });
+
+  test("github: a 403 (insufficient token scope) reports manual naming the permission gap", async () => {
+    const script: ExecScript = () => ({ code: 1, stdout: "", stderr: "gh: HTTP 403: Forbidden" });
+    const p = fakeProbes({ exec: script });
+
+    const result = await grantRead(p, GITHUB_REMOTE, "octocat");
+
+    expect(result.manualSteps[0]).toContain("token lacks permission");
+  });
+
+  test("github: an unclassified failure still reports manual with just the base steps", async () => {
+    const script: ExecScript = () => ({ code: 1, stdout: "", stderr: "boom" });
     const p = fakeProbes({ exec: script });
 
     const result = await grantRead(p, GITHUB_REMOTE, "octocat");
@@ -28,15 +91,6 @@ describe("grantRead", () => {
       access: "manual",
       manualSteps: ["Open https://github.com/acme/widgets/settings/access", "Invite octocat with Read"],
     });
-  });
-
-  test("github: a non-zero exit also reports manual", async () => {
-    const script: ExecScript = () => ({ code: 1, stdout: "", stderr: "not found" });
-    const p = fakeProbes({ exec: script });
-
-    const result = await grantRead(p, GITHUB_REMOTE, "octocat");
-
-    expect(result.access).toBe("manual");
   });
 
   test("gitlab: looks up the user id, then POSTs a Reporter (access_level=20) membership", async () => {
@@ -55,7 +109,7 @@ describe("grantRead", () => {
     ]);
   });
 
-  test("gitlab: an unresolvable username reports manual with the project-members URL", async () => {
+  test("gitlab: an unresolvable username reports manual with a not-found lead step", async () => {
     const script: ExecScript = (argv) => {
       if (argv[2]?.startsWith("users?")) return { code: 0, stdout: "[]", stderr: "" };
       return ok();
@@ -66,7 +120,11 @@ describe("grantRead", () => {
 
     expect(result).toEqual({
       access: "manual",
-      manualSteps: ["Open https://gitlab.com/acme/widgets/-/project_members", "Invite zaphod with Reporter access"],
+      manualSteps: [
+        'Check that "zaphod" is a real GitLab username — it was not found',
+        "Open https://gitlab.com/acme/widgets/-/project_members",
+        "Invite zaphod with Reporter access",
+      ],
     });
   });
 
@@ -98,6 +156,18 @@ describe("grantRead", () => {
     }
   });
 
+  test("handle is URL-encoded on both the github path segment and the gitlab query string", async () => {
+    const script: ExecScript = () => ok();
+    const p = fakeProbes({ exec: script });
+
+    await grantRead(p, GITHUB_REMOTE, "weird/handle");
+    expect(p.calls.exec[0]).toEqual(["gh", "api", "-X", "PUT", "/repos/acme/widgets/collaborators/weird%2Fhandle", "-f", "permission=pull"]);
+
+    const p2 = fakeProbes({ exec: script });
+    await grantRead(p2, GITLAB_REMOTE, "weird handle");
+    expect(p2.calls.exec[0]).toEqual(["glab", "api", "users?username=weird%20handle"]);
+  });
+
   test("an unparsable remote is skipped, not manual", async () => {
     const p = fakeProbes();
     const result = await grantRead(p, "not-a-remote", "octocat");
@@ -113,8 +183,17 @@ describe("revokeRead", () => {
 
     const result = await revokeRead(p, GITHUB_REMOTE, "octocat");
 
-    expect(result).toEqual({ access: "granted", manualSteps: [] });
+    expect(result).toEqual({ access: "revoked", manualSteps: [] });
     expect(p.calls.exec).toEqual([["gh", "api", "-X", "DELETE", "/repos/acme/widgets/collaborators/octocat"]]);
+  });
+
+  test("github: a failure reports manual", async () => {
+    const script: ExecScript = () => ({ code: 1, stdout: "", stderr: "boom" });
+    const p = fakeProbes({ exec: script });
+
+    const result = await revokeRead(p, GITHUB_REMOTE, "octocat");
+
+    expect(result.access).toBe("manual");
   });
 
   test("gitlab: looks up the user id, then DELETEs the membership", async () => {
@@ -126,11 +205,45 @@ describe("revokeRead", () => {
 
     const result = await revokeRead(p, GITLAB_REMOTE, "zaphod");
 
-    expect(result).toEqual({ access: "granted", manualSteps: [] });
+    expect(result).toEqual({ access: "revoked", manualSteps: [] });
     expect(p.calls.exec).toEqual([
       ["glab", "api", "users?username=zaphod"],
       ["glab", "api", "-X", "DELETE", "projects/acme%2Fwidgets/members/42"],
     ]);
+  });
+
+  test("gitlab: a 404 on the DELETE (already not a member) is idempotent success, matching github's parity", async () => {
+    const script: ExecScript = (argv) => {
+      if (argv[2] === "users?username=zaphod") return ok(JSON.stringify([{ id: 42 }]));
+      return { code: 1, stdout: "", stderr: "glab: HTTP 404: Not Found" };
+    };
+    const p = fakeProbes({ exec: script });
+
+    const result = await revokeRead(p, GITLAB_REMOTE, "zaphod");
+
+    expect(result).toEqual({ access: "revoked", manualSteps: [] });
+  });
+
+  test("gitlab: an unresolvable username (no such account) is also idempotent success — it cannot be a member", async () => {
+    const script: ExecScript = (argv) => {
+      if (argv[2]?.startsWith("users?")) return { code: 0, stdout: "[]", stderr: "" };
+      return ok();
+    };
+    const p = fakeProbes({ exec: script });
+
+    const result = await revokeRead(p, GITLAB_REMOTE, "zaphod");
+
+    expect(result).toEqual({ access: "revoked", manualSteps: [] });
+  });
+
+  test("gitlab: a lookup failure for another reason (not just 'not found') still reports manual", async () => {
+    const script: ExecScript = () => missing("glab");
+    const p = fakeProbes({ exec: script });
+
+    const result = await revokeRead(p, GITLAB_REMOTE, "zaphod");
+
+    expect(result.access).toBe("manual");
+    expect(result.manualSteps[0]).toContain("Install the GitLab CLI");
   });
 
   test("an unparsable remote is skipped", async () => {

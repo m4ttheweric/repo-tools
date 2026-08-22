@@ -52,6 +52,11 @@ function positional(args: string[], valueFlags: string[]): string[] {
   return result;
 }
 
+/** Every verb's usage guard routes through here so `--json` gets the same exit-2 envelope a real failure gets, instead of a plain-text line that would corrupt an app-side parse. */
+function usageError(deps: TeamDeps, json: boolean, verb: string, usage: string): never {
+  exitUserError(new UserActionableError("usage", `usage: ${usage}`), json, verb, deps.print);
+}
+
 export async function teamCreate(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {
   const json = args.includes("--json");
   const others = args.includes("--others");
@@ -60,8 +65,7 @@ export async function teamCreate(args: string[], _ctx: CommandContext = {}, deps
   const name = positional(args, ["--remote", "--create-repo"])[0];
 
   if (!name) {
-    deps.print("rt team create: usage: rt team create <name> (--remote <url> | --create-repo <owner>) [--others] [--json]");
-    return (deps.exit ?? process.exit)(1);
+    usageError(deps, json, "team create", "rt team create <name> (--remote <url> | --create-repo <owner>) [--others] [--json]");
   }
 
   try {
@@ -119,8 +123,7 @@ export async function teamInvite(args: string[], _ctx: CommandContext = {}, deps
   const handle = flagValue(args, "--handle");
 
   if (!handle) {
-    deps.print("rt team invite: usage: rt team invite --handle <h> [--team <slug>] [--json]");
-    return (deps.exit ?? process.exit)(1);
+    usageError(deps, json, "team invite", "rt team invite --handle <h> [--team <slug>] [--json]");
   }
 
   try {

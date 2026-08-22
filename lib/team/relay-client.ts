@@ -27,7 +27,10 @@ export interface RelayClient {
    * POST /v1/invites {ciphertext, expiresAt, id?}. The invite id doubles as
    * the sealed blob's AAD (see invite-crypto.ts), which must be fixed before
    * the ciphertext can exist — so the caller generates it and asks the relay
-   * to store the record under that id rather than waiting for one back.
+   * to store the record under that id rather than waiting for one back. A
+   * 409 means the id was already taken on the relay — this is distinct from
+   * every other create failure: the fix is a fresh id, not a retry of the
+   * same request (`relay-id-conflict`, not the opaque `relay-error`).
    */
   create(ciphertext: string, expiresAt: string, id?: string): Promise<{ id: string; creatorSecret: string }>;
   /** GET /v1/invites/:id — 404/410 (expired or claimed away) both read as "gone" */
@@ -54,6 +57,10 @@ function relayUnreachable(): UserActionableError {
 
 function relayError(status: number, path: string): UserActionableError {
   return new UserActionableError("relay-error", `${status} ${path}`);
+}
+
+function relayIdConflict(): UserActionableError {
+  return new UserActionableError("relay-id-conflict", "invite id already exists on the relay — retry with a fresh id");
 }
 
 function parseJsonObject(body: string): Record<string, unknown> | undefined {
@@ -102,6 +109,7 @@ export function createRelayClient(fetchFn: Probes["fetch"], baseUrl: string): Re
     async create(ciphertext, expiresAt, id) {
       if (id !== undefined) assertOpaqueId(id);
       const res = await send("/v1/invites", { method: "POST", json: { ciphertext, expiresAt, ...(id !== undefined ? { id } : {}) } });
+      if (res.status === 409) throw relayIdConflict();
       if (!isSuccess(res.status)) throw relayError(res.status, res.path);
       const parsed = parseJsonObject(res.body);
       if (typeof parsed?.id !== "string" || typeof parsed?.creatorSecret !== "string") {
