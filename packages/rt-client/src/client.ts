@@ -5,7 +5,7 @@
  */
 import { rtCommand } from "./transport.ts";
 import type { RtResponse, RtClientOptions } from "./transport.ts";
-import type { DemandDecl, ProjectMRsData, DiscussionsData, MrByBranchData, ForgeSlug, ForgeTokenData } from "./commands.ts";
+import type { DemandDecl, ProjectMRsData, DiscussionsData, MrByBranchData, ForgeSlug, ForgeTokenData, RunSummary, RunDetail } from "./commands.ts";
 
 /**
  * One repo's project open-MR store. A cold repo forces a full paginated sync
@@ -70,4 +70,23 @@ export function resolveForgeToken(
     { repoName, forge },
     { sockPath: opts.sockPath, timeoutMs: 10_000 },
   );
+}
+
+export function listRuns(
+  repo?: string,
+  opts: RtClientOptions = {},
+): Promise<RtResponse<{ runs: RunSummary[] }>> {
+  const payload: Record<string, unknown> = {};
+  if (repo !== undefined) payload.repo = repo;
+  return rtCommand<{ runs: RunSummary[] }>("runs:list", payload, { sockPath: opts.sockPath, timeoutMs: 10_000 });
+}
+
+export function getRun(
+  runId: string,
+  repo?: string,
+  opts: RtClientOptions = {},
+): Promise<RtResponse<RunDetail>> {
+  const payload: Record<string, unknown> = { runId };
+  if (repo !== undefined) payload.repo = repo;
+  return rtCommand<RunDetail>("runs:get", payload, { sockPath: opts.sockPath, timeoutMs: 10_000 });
 }
