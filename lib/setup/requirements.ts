@@ -34,36 +34,51 @@ export interface PackRequirements {
 const REQUIREMENTS_FILE = "requirements.jsonc";
 /** teams/<slug>/mattstack/packs/<pack>/requirements.jsonc is 4 path segments deep from the team root. */
 const MAX_DEPTH = 4;
+/** Never worth descending into on a real team clone — .git alone would cost a readdir per loose-object shard at every depth. */
+const SKIP_DIRS = new Set([".git", "node_modules"]);
 
 const KNOWN_INTEGRATION_IDS = new Set<Integration>(Object.keys(INTEGRATIONS) as Integration[]);
 
 function findRequirementsFiles(p: Pick<Probes, "readDir">, dir: string, depth: number, out: string[]): void {
   if (depth > MAX_DEPTH) return;
   for (const entry of p.readDir(dir)) {
+    if (SKIP_DIRS.has(entry)) continue;
     const full = join(dir, entry);
     if (entry === REQUIREMENTS_FILE) out.push(full);
     else findRequirementsFiles(p, full, depth + 1, out);
   }
 }
 
-/** [] when the team has no packs with a requirements.jsonc; a file that fails to read yields one error entry rather than being silently skipped. */
+/** [] when the team has no packs with a requirements.jsonc; a file that fails to read yields one error entry rather than being silently skipped. Sorted and deduped by pack name — discovery order is filesystem-dependent, and two directories sharing a pack name must still yield one entry. */
 export function readPackRequirements(p: Pick<Probes, "readDir" | "readFile" | "exists" | "home">, teamSlug: string): PackRequirements[] {
   const root = join(p.home, ".mattstack", "teams", teamSlug);
   const files: string[] = [];
   findRequirementsFiles(p, root, 1, files);
 
-  return files.map((file) => {
+  const results = files.map((file) => {
     const packName = basename(dirname(file));
     const text = p.readFile(file);
     if (text === null) return { pack: packName, tools: [], integrations: [], error: `could not read ${file}` };
     return parseRequirements(packName, text);
   });
+
+  const seen = new Set<string>();
+  const deduped: PackRequirements[] = [];
+  for (const r of results) {
+    if (seen.has(r.pack)) continue;
+    seen.add(r.pack);
+    deduped.push(r);
+  }
+  return deduped.sort((a, b) => a.pack.localeCompare(b.pack));
 }
 
-function parseToolRequirement(t: unknown): ToolRequirement | null {
-  if (typeof t !== "object" || t === null) return null;
+/** Malformed entries and a dropped connect.integration are both reported through `error`, never silently — `index`/`packName` name which tool a pack author needs to fix, since two skipped entries in one file would otherwise render as identical, unactionable text. */
+function parseToolRequirement(t: unknown, index: number, packName: string): { tool: ToolRequirement | null; error?: string } {
+  if (typeof t !== "object" || t === null) return { tool: null, error: `pack "${packName}": tools[${index}] is malformed, skipped` };
   const o = t as Record<string, unknown>;
-  if (typeof o.name !== "string" || typeof o.why !== "string") return null;
+  if (typeof o.name !== "string" || typeof o.why !== "string") {
+    return { tool: null, error: `pack "${packName}": tools[${index}] is malformed, skipped` };
+  }
 
   const result: ToolRequirement = { name: o.name, why: o.why };
   if (typeof o.floor === "string") result.floor = o.floor;
@@ -77,16 +92,21 @@ function parseToolRequirement(t: unknown): ToolRequirement | null {
     result.install = install;
   }
 
+  let connectError: string | undefined;
   if (typeof o.connect === "object" && o.connect !== null) {
     const c = o.connect as Record<string, unknown>;
-    if (typeof c.integration === "string" && KNOWN_INTEGRATION_IDS.has(c.integration as Integration)) {
-      result.connect = { integration: c.integration as Integration };
-    } else if (Array.isArray(c.verb) && typeof c.label === "string") {
+    if (typeof c.integration === "string") {
+      if (KNOWN_INTEGRATION_IDS.has(c.integration as Integration)) {
+        result.connect = { integration: c.integration as Integration };
+      } else {
+        connectError = `pack "${packName}": tool "${result.name}" declares unknown integration "${c.integration}"`;
+      }
+    } else if (Array.isArray(c.verb) && c.verb.every((v) => typeof v === "string") && typeof c.label === "string") {
       result.connect = { verb: c.verb as string[], label: c.label };
     }
   }
 
-  return result;
+  return { tool: result, error: connectError };
 }
 
 /** stripJsonc + shape validation. Unknown integration ids and malformed tool entries are dropped, not fatal — the pack still yields whatever parsed, plus `error` naming what was dropped. Totally unparsable JSON or a non-object root yields empty tools/integrations with `error` set. */
@@ -105,11 +125,11 @@ export function parseRequirements(packName: string, text: string): PackRequireme
 
   const tools: ToolRequirement[] = [];
   if (Array.isArray(obj.tools)) {
-    for (const t of obj.tools) {
-      const parsed = parseToolRequirement(t);
-      if (parsed) tools.push(parsed);
-      else errors.push(`skipped a malformed tool entry`);
-    }
+    obj.tools.forEach((t, index) => {
+      const { tool, error } = parseToolRequirement(t, index, packName);
+      if (tool) tools.push(tool);
+      if (error) errors.push(error);
+    });
   }
 
   const integrations: Integration[] = [];
