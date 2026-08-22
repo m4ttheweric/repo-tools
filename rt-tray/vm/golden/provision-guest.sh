@@ -7,8 +7,7 @@ TESTER=tester
 
 say() { printf '  [guest] %s\n' "$*"; }
 
-# The -xcode golden legitimately carries CLT/brew/Gatekeeper-disabled state for xcodebuild;
-# SKIP_CLEANROOM=1 skips steps 1-3 so that image isn't wiped of the tooling it needs.
+# SKIP_CLEANROOM=1 is the xcuitest flavour (see lib/common.sh vm_golden_name/vm_image_for).
 if [ "${SKIP_CLEANROOM:-0}" != 1 ]; then
   # 1. No Apple command line tools (the vanilla templates install them).
   if [ -d /Library/Developer/CommandLineTools ]; then
@@ -71,6 +70,6 @@ sudo -u "$TESTER" defaults write NSGlobalDomain AppleKeyboardUIMode -int 3
 
 # 6. Marker.
 FLAVOUR=cleanroom; [ "${SKIP_CLEANROOM:-0}" = 1 ] && FLAVOUR=xcuitest
-printf '{ "ver": "%s", "builtAt": "%s", "provisionRev": 1, "consoleUser": "%s", "flavour": "%s" }\n' \
+printf '{ "ver": "%s", "builtAt": "%s", "provisionRev": 2, "consoleUser": "%s", "flavour": "%s" }\n' \
   "$VER" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TESTER" "$FLAVOUR" | sudo tee /Users/Shared/mattstack-golden.json >/dev/null
 say "provisioned (ver $VER)"

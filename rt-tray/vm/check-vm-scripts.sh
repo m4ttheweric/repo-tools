@@ -16,9 +16,11 @@ t "walkthrough --dry-run"        env VM_ARTIFACTS=/tmp/vmcheck-art bash run/walk
 t "walkthrough usage"            bash -c '! bash run/walkthrough.sh >/dev/null 2>&1'
 t "xcuitest.sh usage (missing args)" bash -c \
   'out=$(bash run/xcuitest.sh 2>&1); rc=$?; [ "$rc" -ne 0 ] && printf "%s" "$out" | grep -q "usage: xcuitest.sh"'
+# --ver 99 keeps this deterministic: no ghcr image maps to 99, so no real -xcode golden can
+# ever exist for it, and the gate must skip on every host regardless of Xcode/project.yml state.
 t "xcuitest.sh gates clean without a built -xcode golden" bash -c '
   rm -rf /tmp/vmcheck-xcui-art; touch /tmp/vmcheck-xcui.dmg
-  out=$(env VM_ARTIFACTS=/tmp/vmcheck-xcui-art bash run/xcuitest.sh --ver 26 --dmg /tmp/vmcheck-xcui.dmg 2>&1); rc=$?
+  out=$(env VM_ARTIFACTS=/tmp/vmcheck-xcui-art bash run/xcuitest.sh --ver 99 --dmg /tmp/vmcheck-xcui.dmg 2>&1); rc=$?
   rm -rf /tmp/vmcheck-xcui-art /tmp/vmcheck-xcui.dmg
   [ "$rc" -eq 0 ] && printf "%s" "$out" | grep -q "gate skipped:"
 '
