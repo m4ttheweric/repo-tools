@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { updateRepoIndex } from "../../repo-index.ts";
+import { setSetting } from "../../settings/write.ts";
 import { fakeProbes } from "./fakes.ts";
-import { findMergeManifests, materializeSkills } from "../skills-materialize.ts";
+import { findMergeManifests, materializeSkills, MERGE_MANIFESTS_MISSING_CODE } from "../skills-materialize.ts";
 import { UserActionableError } from "../errors.ts";
 
 const VERSIONS_DIR = "/fake-home/.claude/plugins/cache/mattstack/mattstack";
@@ -81,7 +82,7 @@ describe("materializeSkills", () => {
     const result = await materializeSkills(p, { repo: repoName });
 
     expect(calls).toEqual([{ argv: ["bash", "/fake-home/merge-manifests.sh", "--repo", repoDir], env: { MATTSTACK_HOME: "/fake-home/.mattstack" } }]);
-    expect(result.repos).toEqual([{ name: repoName, path: repoDir, ok: true, detail: "wrote skills.jsonc" }]);
+    expect(result).toEqual({ skipped: false, repos: [{ name: repoName, path: repoDir, ok: true, detail: "wrote skills.jsonc" }] });
   });
 
   test("exit 2 (no git remote) is reported per-repo, not thrown", async () => {
@@ -94,19 +95,18 @@ describe("materializeSkills", () => {
 
     const result = await materializeSkills(p, { repo: repoName });
 
-    expect(result.repos).toEqual([{ name: repoName, path: repoDir, ok: false, detail: "no git remote" }]);
+    expect(result).toEqual({ skipped: false, repos: [{ name: repoName, path: repoDir, ok: false, detail: "no git remote" }] });
   });
 
-  test("throws UserActionableError('merge-manifests-missing') when the script can't be found", async () => {
+  test("skips honestly (never throws) when the script can't be found — the ordinary fresh-machine case", async () => {
     const p = fakeProbes({ home: "/fake-home" });
 
-    await expect(materializeSkills(p, {})).rejects.toThrow(UserActionableError);
-    try {
-      await materializeSkills(p, {});
-      throw new Error("should have thrown");
-    } catch (err) {
-      expect((err as UserActionableError).code).toBe("merge-manifests-missing");
-    }
+    const result = await materializeSkills(p, {});
+
+    expect(result.skipped).toBe(true);
+    if (!result.skipped) throw new Error("expected skipped:true");
+    expect(result.reason).toContain(MERGE_MANIFESTS_MISSING_CODE);
+    expect(result.repos).toEqual([]);
   });
 
   test("throws UserActionableError('repo-not-registered') for an unknown --repo", async () => {
@@ -118,5 +118,55 @@ describe("materializeSkills", () => {
     } catch (err) {
       expect((err as UserActionableError).code).toBe("repo-not-registered");
     }
+  });
+
+  test("targets only registered repos, not scanned (unregistered) candidates", async () => {
+    seedRepo(); // registered
+
+    const scannedDir = mkdtempSync(join(home, "scanned-"));
+    mkdirSync(join(scannedDir, ".git")); // a real .git marker, never indexed via updateRepoIndex
+    setSetting("rt.repoRoots", [home], "machine"); // makes `home` a configured root scanRoot() walks
+
+    const p = fakeProbes({
+      home: "/fake-home",
+      env: { RT_MERGE_MANIFESTS: "/fake-home/merge-manifests.sh" },
+      exec: async () => ({ code: 0, stdout: "ok", stderr: "" }),
+    });
+
+    const result = await materializeSkills(p, {});
+
+    expect(result.skipped).toBe(false);
+    if (result.skipped) throw new Error("expected skipped:false");
+    expect(result.repos.map((r) => r.name)).toEqual([repoName]);
+  });
+
+  test("idempotent: two calls against the same present script produce the same outcome", async () => {
+    seedRepo();
+    const p = fakeProbes({
+      home: "/fake-home",
+      env: { RT_MERGE_MANIFESTS: "/fake-home/merge-manifests.sh" },
+      exec: async () => ({ code: 0, stdout: "wrote skills.jsonc", stderr: "" }),
+    });
+
+    const first = await materializeSkills(p, { repo: repoName });
+    const second = await materializeSkills(p, { repo: repoName });
+
+    expect(second).toEqual(first);
+  });
+
+  test("re-callable: a skipped call followed by a call after the plugin appears succeeds (plugins.install's re-call contract)", async () => {
+    seedRepo();
+    const beforePlugin = fakeProbes({ home: "/fake-home" });
+    const first = await materializeSkills(beforePlugin, { repo: repoName });
+    expect(first.skipped).toBe(true);
+
+    const afterPlugin = fakeProbes({
+      home: "/fake-home",
+      env: { RT_MERGE_MANIFESTS: "/fake-home/merge-manifests.sh" },
+      exec: async () => ({ code: 0, stdout: "wrote skills.jsonc", stderr: "" }),
+    });
+    const second = await materializeSkills(afterPlugin, { repo: repoName });
+
+    expect(second).toEqual({ skipped: false, repos: [{ name: repoName, path: repoDir, ok: true, detail: "wrote skills.jsonc" }] });
   });
 });

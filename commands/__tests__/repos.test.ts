@@ -116,4 +116,29 @@ describe("reposRegister", () => {
     const code = await runExpectingProcessExit(() => reposRegister([repoPath, "--track", "bogus"], {}, deps));
     expect(code).toBe(2);
   });
+
+  test("a directory that exists but isn't a git repo exits 2, not a claimed success", async () => {
+    const plainDir = realpathSync(mkdtempSync(join(home, "notarepo-")));
+    const deps = testDeps();
+
+    const code = await runExpectingProcessExit(() => reposRegister([plainDir], {}, deps));
+
+    expect(code).toBe(2);
+    expect(getKnownRepos().find((r) => r.repoName === basename(plainDir))).toBeUndefined();
+  });
+
+  test("multi-path register is all-or-nothing: a bad path later in the list leaves an earlier good one untouched", async () => {
+    const goodPath = makeTempRepo();
+    const goodName = basename(goodPath);
+    const badPath = realpathSync(mkdtempSync(join(home, "notarepo-")));
+    const deps = testDeps();
+
+    const code = await runExpectingProcessExit(() => reposRegister([goodPath, badPath, "--track", "live"], {}, deps));
+
+    expect(code).toBe(2);
+    // Neither the index nor the tracking grant for the good path was written —
+    // a partial apply would leave it indexed without the --track it asked for.
+    expect(getKnownRepos().find((r) => r.repoName === goodName)).toBeUndefined();
+    expect(loadRepoTracking()[goodName]).toBeUndefined();
+  });
 });
