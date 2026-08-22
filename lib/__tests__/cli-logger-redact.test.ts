@@ -95,4 +95,23 @@ describe("redactSensitiveArgs", () => {
       expect(redactSensitiveArgs(args, "rt sdm connect")).toEqual(args);
     });
   });
+
+  describe("a pasted age private key (AGE-SECRET-KEY-1...) is redacted wherever it appears, command-independent", () => {
+    test("under the home key import label — the guard it's meant to back up", () => {
+      expect(redactSensitiveArgs(["home", "key", "import", "AGE-SECRET-KEY-1QQQ"], "rt home key import")).toEqual([
+        "home",
+        "key",
+        "import",
+        "[redacted]",
+      ]);
+    });
+
+    test("under an arbitrary other command label — not gated on home key import specifically", () => {
+      expect(redactSensitiveArgs(["sdm", "connect", "AGE-SECRET-KEY-1QQQ"], "rt sdm connect")).toEqual([
+        "sdm",
+        "connect",
+        "[redacted]",
+      ]);
+    });
+  });
 });

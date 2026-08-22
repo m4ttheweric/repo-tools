@@ -79,9 +79,16 @@ function redactSecretsWriteTail(args: string[], command?: string): string[] {
   return args;
 }
 
+/** The unmistakable prefix of a pasted age private key — never a legitimate flag or value for anything else. Matched command-independently: a key pasted where it never belongs (a positional arg) is still a key regardless of which command it landed under. */
+const AGE_PRIVATE_KEY_PREFIX = "AGE-SECRET-KEY-1";
+
 /**
  * Returns a copy of args with the value following any `--reason` flag
- * replaced by "[redacted]" (also handles the `--reason=value` form), plus
+ * replaced by "[redacted]" (also handles the `--reason=value` form), any
+ * arg starting with `AGE-SECRET-KEY-1` replaced outright (defense in depth
+ * for a pasted age private key — see commands/home.ts's `homeKeyImport`
+ * guard, which refuses the command but this must still keep the raw key
+ * out of the log even if some other path ever lets one through), plus
  * anything past `secrets set|rotate <domain> <key>` (see
  * redactSecretsWriteTail). Reason text is free-form and often sensitive
  * (e.g. `rt sdm connect`), so it must never reach the on-disk CLI log. This
@@ -102,6 +109,10 @@ export function redactSensitiveArgs(args: string[], command?: string): string[] 
     }
     if (arg.startsWith("--reason=")) {
       result.push("--reason=[redacted]");
+      continue;
+    }
+    if (arg.startsWith(AGE_PRIVATE_KEY_PREFIX)) {
+      result.push("[redacted]");
       continue;
     }
     result.push(arg);
