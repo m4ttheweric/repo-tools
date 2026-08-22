@@ -4,11 +4,11 @@
  * (docs/superpowers/specs/2026-08-21-rt-setup-contract.md, "rt setup apply").
  */
 
+import { join } from "path";
 import { appBundlePath } from "../deps/resolve.ts";
 import type { SecretsSeams } from "../secrets/store.ts";
-import { listTeams } from "../settings/stores.ts";
 import type { RelayClient } from "../team/relay-client.ts";
-import type { NeedRequest, StepId, StepKind, TeamRef } from "./contract.ts";
+import { STEP_IDS, type NeedRequest, type StepId, type StepKind, type TeamRef } from "./contract.ts";
 import type { Emit } from "./emit.ts";
 import { UserActionableError } from "./errors.ts";
 import { readIntent, teamRefFromIntent, clearIntent, type SetupIntent } from "./intent.ts";
@@ -24,6 +24,13 @@ export type StepOutcome = { state: "done"; detail?: string } | { state: "skipped
 export interface ApplyContext {
   p: Probes;
   emit: Emit;
+  /**
+   * Emits a `log` event under `id`. Step bodies MUST call `ctx.redact(value)`
+   * for every secret they read or receive — an API token, a `need` reply, a
+   * value pulled through `secrets`/`relay` — BEFORE it can reach a log line
+   * or a `StepOutcome.detail`/`remedy`. Only exact values registered that way
+   * are scrubbed; this is not a pattern scanner.
+   */
   log(id: StepId, line: string): void;
   intent: SetupIntent | null;
   team: TeamRef;
@@ -35,6 +42,15 @@ export interface ApplyContext {
   ci: boolean;
   secrets: SecretsSeams;
   relay: RelayClient;
+  /**
+   * Registers `value` as a secret literal: every `log` line and every `step`
+   * event's `detail`/`remedy` emitted afterward has exact occurrences of it
+   * replaced with `***` before reaching `emit`. Deliberately exact-string
+   * only, never a regex/pattern scrubber — a heuristic over arbitrary command
+   * output is false confidence and mangles legitimate text. An unregistered
+   * secret is not caught.
+   */
+  redact(value: string): void;
   /** "no-app" is an rt-side judgment (not the app's), made only when nonInteractive AND a quick pre-check finds no live tray.sock — otherwise the real app-gone/timeout dance in `awaitNeed` decides. */
   need(id: StepId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app">;
 }
@@ -47,75 +63,132 @@ export interface StepDef {
   run(ctx: ApplyContext): Promise<StepOutcome>;
 }
 
+/**
+ * The one place `ctx.need`'s four-way reply becomes a `StepOutcome`, so no
+ * step body hand-rolls this mapping and risks turning a stalled or absent
+ * app into a false success. `no-app` is the only non-fatal case — a
+ * nonInteractive run legitimately has nobody to satisfy the need; a real
+ * timeout or a vanished app is always a failure, never a skip.
+ */
+export function outcomeFromNeed(reply: NeedReply | "timeout" | "app-gone" | "no-app"): StepOutcome {
+  if (reply === "no-app") return { state: "skipped", detail: "no mattstack.app running to complete this step" };
+  if (reply === "timeout") return { state: "failed", detail: "timed out waiting for mattstack.app" };
+  if (reply === "app-gone") return { state: "failed", detail: "mattstack.app stopped responding" };
+  return reply.ok ? { state: "done", detail: reply.detail } : { state: "failed", detail: reply.detail ?? "mattstack.app reported failure" };
+}
+
 function stepEventFields(outcome: StepOutcome): { detail?: string; remedy?: string } {
   if (outcome.state === "failed") return { detail: outcome.detail, ...(outcome.remedy !== undefined ? { remedy: outcome.remedy } : {}) };
   return outcome.detail !== undefined ? { detail: outcome.detail } : {};
 }
 
 /**
- * A step id absent from the resumed run's own step list (an unknown
- * `--from`, or one gated out by `applies`) resumes from the start rather
- * than silently running nothing — --from names an intent, not a guarantee.
+ * Resolves `--from` to a start index into `applicable`, or throws a
+ * user-actionable exit-2 error before anything reaches the stream.
+ *
+ * Three cases: no `from` starts at 0; `from` present in `applicable` starts
+ * exactly there; `from` a real step id that THIS run's `applies()` gated out
+ * (an idempotent step Retry names after it already ran) resumes at the first
+ * applicable step at-or-after its position in the contract's full order —
+ * never at 0, which would silently redo every already-completed step. An id
+ * that is not a step id at all is a typo, not a resume point, and must never
+ * quietly re-run the whole install.
  */
-function resumeIndex(steps: StepDef[], from: StepId | undefined): number {
-  if (!from) return 0;
-  const i = steps.findIndex((s) => s.id === from);
-  return i < 0 ? 0 : i;
+function resumeStart(applicable: StepDef[], from: StepId | undefined): number {
+  if (from === undefined) return 0;
+
+  if (!STEP_IDS.includes(from)) {
+    throw new UserActionableError("unknown-step", `unknown --from step id "${from}" — valid ids: ${STEP_IDS.join(", ")}`);
+  }
+
+  const exact = applicable.findIndex((s) => s.id === from);
+  if (exact >= 0) return exact;
+
+  const fromPos = STEP_IDS.indexOf(from);
+  const next = applicable.findIndex((s) => STEP_IDS.indexOf(s.id) >= fromPos);
+  return next < 0 ? applicable.length : next; // nothing left to run — everything at or after `from` is already gone from this run
+}
+
+/** Best-effort bookkeeping after the run: never allowed to suppress the terminal `done` event a throw would otherwise swallow. A failure here becomes a `log` warning (tagged with the last step that actually ran) instead of an exception. */
+function persistTerminalState(ctx: ApplyContext, ok: boolean, lastRanId: StepId | undefined): void {
+  try {
+    updateSetupState(ctx.p, (s) => ({ ...s, lastApplyAt: ctx.p.now().toISOString() }));
+    if (ok) clearIntent(ctx.p);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (lastRanId) ctx.emit({ event: "log", id: lastRanId, line: `warn: setup state not persisted: ${message}` });
+  }
 }
 
 /**
  * Runs an explicit step list against a context — the seam `runApply` closes
- * over `STEPS` for. `plan` lists every step this run will touch, including
- * ones before `--from`, because each of those still gets its own `step`
- * event (skipped, not omitted) — the stream stays self-describing without a
- * reader needing to know the resume point up front.
+ * over `STEPS` for. `plan` lists every applicable step for this run, even
+ * ones before `--from`: the app merges `plan` by id and drops `step` events
+ * for ids it never saw listed, so a full plan is the only safe choice. Steps
+ * before `--from` get NO `step` event at all — the shipped app deliberately
+ * preserves a retried run's earlier `done` rows, and a `skipped` event here
+ * would overwrite them.
  */
 export async function runApplyWith(steps: StepDef[], ctx: ApplyContext, opts: { from?: StepId } = {}): Promise<{ ok: boolean; failedStep?: StepId }> {
   const applicable = steps.filter((s) => s.applies(ctx));
+  const start = resumeStart(applicable, opts.from);
+
   ctx.emit({ event: "plan", steps: applicable.map((s) => ({ id: s.id, title: s.title, kind: s.kind })) });
 
-  const start = resumeIndex(applicable, opts.from);
-  for (let i = 0; i < start; i++) {
-    ctx.emit({ event: "step", id: applicable[i]!.id, state: "skipped", detail: "before --from" });
-  }
+  let lastRanId: StepId | undefined;
+  let result: { ok: boolean; failedStep?: StepId } = { ok: true };
+  let hasBug = false;
+  let bug: unknown;
 
-  for (let i = start; i < applicable.length; i++) {
-    const step = applicable[i]!;
-    ctx.emit({ event: "step", id: step.id, state: "running" });
+  try {
+    for (let i = start; i < applicable.length; i++) {
+      const step = applicable[i]!;
+      lastRanId = step.id;
+      ctx.emit({ event: "step", id: step.id, state: "running" });
 
-    let outcome: StepOutcome;
-    try {
-      outcome = await step.run(ctx);
-    } catch (err) {
-      if (err instanceof UserActionableError) {
-        const remedy = typeof err.extra.remedy === "string" ? err.extra.remedy : undefined;
-        outcome = { state: "failed", detail: err.message, ...(remedy !== undefined ? { remedy } : {}) };
-      } else {
-        // A bug, not a user-actionable failure: report it on the stream as
-        // any other failed step, but rethrow so the process crashes (exit 1)
-        // instead of exiting cleanly at 2 like a real setup problem would.
-        const message = err instanceof Error ? err.message : String(err);
-        ctx.emit({ event: "step", id: step.id, state: "failed", detail: `bug: ${message}` });
-        ctx.emit({ event: "done", ok: false, failedStep: step.id });
-        throw err;
+      let outcome: StepOutcome;
+      try {
+        outcome = await step.run(ctx);
+      } catch (err) {
+        if (err instanceof UserActionableError) {
+          const remedy = typeof err.extra.remedy === "string" ? err.extra.remedy : undefined;
+          outcome = { state: "failed", detail: err.message, ...(remedy !== undefined ? { remedy } : {}) };
+        } else {
+          // A bug, not a user-actionable failure: report it on the stream as
+          // any other failed step, but rethrow (below, after the terminal
+          // `done` is guaranteed) so the process crashes at exit 1 instead of
+          // exiting cleanly at 2 like a real setup problem would.
+          const message = err instanceof Error ? err.message : String(err);
+          ctx.emit({ event: "step", id: step.id, state: "failed", detail: `bug: ${message}` });
+          result = { ok: false, failedStep: step.id };
+          hasBug = true;
+          bug = err;
+          break;
+        }
       }
-    }
 
-    ctx.emit({ event: "step", id: step.id, state: outcome.state, ...stepEventFields(outcome) });
+      ctx.emit({ event: "step", id: step.id, state: outcome.state, ...stepEventFields(outcome) });
 
-    if (outcome.state === "failed") {
-      ctx.emit({ event: "done", ok: false, failedStep: step.id });
-      return { ok: false, failedStep: step.id };
+      if (outcome.state === "failed") {
+        result = { ok: false, failedStep: step.id };
+        break;
+      }
+      // "skipped" is non-fatal by contract (a fresh machine skips
+      // skills.materialize honestly before plugins.install runs it for real)
+      // — only "failed" stops the run.
     }
-    // "skipped" is non-fatal by contract (a fresh machine skips
-    // skills.materialize honestly before plugins.install runs it for real)
-    // — only "failed" stops the run.
+  } finally {
+    // `lastApplyAt` is written on every terminal outcome, success or
+    // failure — a run that dies at step 20 still answers "when did apply
+    // last run". `done` is emitted here, in a `finally`, so no exit path
+    // (early return, a rethrown bug) can leave the stream without its one
+    // required terminal event.
+    persistTerminalState(ctx, result.ok, lastRanId);
+    ctx.emit({ event: "done", ok: result.ok, ...(result.failedStep !== undefined ? { failedStep: result.failedStep } : {}) });
   }
 
-  updateSetupState(ctx.p, (s) => ({ ...s, lastApplyAt: ctx.p.now().toISOString() }));
-  clearIntent(ctx.p);
-  ctx.emit({ event: "done", ok: true });
-  return { ok: true };
+  if (hasBug) throw bug;
+  return result;
 }
 
 export async function runApply(ctx: ApplyContext, opts: { from?: StepId } = {}): Promise<{ ok: boolean; failedStep?: StepId }> {
@@ -128,6 +201,8 @@ export interface CreateApplyContextDeps {
   secrets: SecretsSeams;
   relay: RelayClient;
   flags: { nonInteractive: boolean; teamOfOne: boolean; ci: boolean };
+  /** Threaded straight into `awaitNeed`'s poll loop for the reachable/interactive branch of `need()` — real timers and `Date.now` by default. Tests inject a fake clock/sleep so that branch is driven deterministically instead of pinned to a real 10-minute deadline and 1 s polls. */
+  needOpts?: { timeoutMs?: number; pollMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number };
 }
 
 /** Cheap tray reachability probe, distinct from the polling `awaitNeed` does — an id that has never been requested reads as `pending` (200) just like a real one, so this checks a path no `need` id will ever use. */
@@ -136,14 +211,57 @@ async function trayReachable(p: Probes): Promise<boolean> {
   return res.status !== 0;
 }
 
+/** Every locally-cloned team's slug — subdirectories of `<home>/.mattstack/teams` that have a `mattstack/settings.team.jsonc`. Deliberately built off `Probes` (`p.home`/`p.readDir`/`p.exists`) rather than `listTeams()`, which resolves `process.env.HOME` at call time: a context built from a fake `Probes` must never leak the real ambient HOME into which team it resolves. */
+function discoverTeams(p: Probes): string[] {
+  const dir = join(p.home, ".mattstack", "teams");
+  return p.readDir(dir).filter((name) => p.exists(join(dir, name, "mattstack", "settings.team.jsonc")));
+}
+
+function createRedactor(): { redact(value: string): void; wrap(emit: Emit): Emit } {
+  const secrets = new Set<string>();
+
+  function apply(text: string): string {
+    let out = text;
+    for (const secret of secrets) {
+      if (secret) out = out.split(secret).join("***");
+    }
+    return out;
+  }
+
+  return {
+    redact(value) {
+      if (value) secrets.add(value);
+    },
+    wrap(emit) {
+      return (ev) => {
+        if (ev.event === "log") {
+          emit({ ...ev, line: apply(ev.line) });
+        } else if (ev.event === "step") {
+          emit({ ...ev, ...(ev.detail !== undefined ? { detail: apply(ev.detail) } : {}), ...(ev.remedy !== undefined ? { remedy: apply(ev.remedy) } : {}) });
+        } else {
+          emit(ev);
+        }
+      };
+    },
+  };
+}
+
 export async function createApplyContext(deps: CreateApplyContextDeps): Promise<ApplyContext> {
-  const { probes: p, emit, secrets, relay, flags } = deps;
+  const { probes: p, secrets, relay, flags, needOpts } = deps;
 
   const intent = readIntent(p);
-  const team = teamRefFromIntent(intent, listTeams());
+  const team = teamRefFromIntent(intent, discoverTeams(p));
   const snapshot = team.slug ? readTeamSnapshot(p, team.slug) : null;
   const reqs = team.slug ? readPackRequirements(p, team.slug) : [];
   const appPath = appBundlePath(p);
+
+  const redactor = createRedactor();
+  const emit = redactor.wrap(deps.emit);
+
+  // The raw invite decryption key is the highest-value secret the engine
+  // itself constructs (readIntent reads it straight off disk) — every other
+  // secret a step body handles has to be registered by that step.
+  if (intent?.mode === "join" && intent.join) redactor.redact(intent.join.keyB64);
 
   return {
     p,
@@ -161,11 +279,14 @@ export async function createApplyContext(deps: CreateApplyContextDeps): Promise<
     ci: flags.ci,
     secrets,
     relay,
+    redact: redactor.redact,
     async need(id: StepId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app"> {
-      emit({ event: "need", id, request });
+      // Reachability is checked BEFORE the `need` event goes out: a
+      // nonInteractive run with no live tray.sock has nobody to answer it,
+      // so emitting first would strand an unanswerable `need` on the stream.
       if (flags.nonInteractive && !(await trayReachable(p))) return "no-app";
-      return awaitNeed(p.tray, id);
+      emit({ event: "need", id, request });
+      return awaitNeed(p.tray, id, needOpts);
     },
   };
 }
-
