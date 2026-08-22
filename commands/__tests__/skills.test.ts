@@ -229,6 +229,22 @@ describe("skillsCompile", () => {
     expect(errors.join("\n")).toContain("--preview needs a single --verb");
   });
 
+  test("--preview on a retired (surface-internal) verb leaves its stale output directory alone", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+    // watch-ci is absent from surface.jsonc's public list, so it is internal/retired --
+    // this is the transition-window state computeInternalRoster's own comment describes.
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
+    // A stale output dir from an earlier (pre-retirement) real compile.
+    writeFile(join(packDir, "skills", "watch-ci", "SKILL.md"), "stale\n");
+
+    await skillsCompile(["--pack", "t", "--verb", "watch-ci", "--preview",
+      "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
+
+    expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(true);
+  });
+
   test("real run emits SKILL.md + vendored files matching a golden compile, byte for byte", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
