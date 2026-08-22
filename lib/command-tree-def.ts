@@ -706,6 +706,19 @@ export const TREE: Record<string, CommandNode> = {
             type: "text",
             hint: "The user repo to clone (default: https://github.com/m4ttheweric/mattstack-home)",
           },
+          {
+            name: "Profile",
+            flag: "--profile",
+            type: "text",
+            hint: "Adopt this machine profile (user/local/<key>/); combine with --new-profile to create a new one under this name — skips the interactive picker on a fresh machine",
+          },
+          {
+            name: "New profile",
+            flag: "--new-profile",
+            type: "boolean",
+            default: false,
+            hint: "Start a new machine profile (named by --profile, or this machine's hostname slug) instead of adopting an existing one",
+          },
         ],
       },
       key: {

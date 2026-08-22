@@ -24,12 +24,23 @@
  * released, or says so plainly when there was nothing to release.
  */
 
-import { existsSync, readFileSync, readlinkSync, statSync, writeFileSync } from "fs";
+import { existsSync, readdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { bold, dim, green, red, reset, yellow } from "../lib/ansi.ts";
-import { machineKey, mattstackHome } from "../lib/rt-paths.ts";
-import { buildInitPlan, InvalidMachineKeyError, STATE_DIR_NAMES, type HomeState, type InitStep } from "../lib/home/init-plan.ts";
+import { isSafeMachineKeySegment, machineKey, mattstackHome } from "../lib/rt-paths.ts";
+import {
+  buildInitPlan,
+  chooseMachineProfile,
+  InvalidMachineKeyError,
+  InvalidProfileKeyError,
+  ProfileChoiceRequiredError,
+  STATE_DIR_NAMES,
+  UnknownProfileFlagError,
+  type ChooseMachineProfileResult,
+  type HomeState,
+  type InitStep,
+} from "../lib/home/init-plan.ts";
 import { createRealExecSeam, executeInitPlan, type ExecSeam } from "../lib/home/init-exec.ts";
 import {
   AgeKeyAbsentError,
@@ -55,6 +66,8 @@ export interface HomeProbes {
   readSymlinkTarget(path: string): string | null;
   /** True when `path` exists and is a regular file (not a directory, not a symlink-to-dir) — decides whether `rt home claim` writes a file zone or a dir zone. */
   isFile(path: string): boolean;
+  /** Directory names directly under `userLocalDir` that carry settings.local.jsonc — the adoptable machine profiles. Empty (not thrown) when the dir doesn't exist yet. */
+  listProfiles(userLocalDir: string): string[];
 }
 
 export interface SopsYamlSeam {
@@ -92,6 +105,17 @@ function defaultProbes(): HomeProbes {
       } catch {
         return false;
       }
+    },
+    listProfiles: (userLocalDir) => {
+      let entries: string[];
+      try {
+        entries = readdirSync(userLocalDir, { withFileTypes: true })
+          .filter((e) => e.isDirectory())
+          .map((e) => e.name);
+      } catch {
+        return [];
+      }
+      return entries.filter((name) => existsSync(join(userLocalDir, name, "settings.local.jsonc")));
     },
   };
 }
@@ -151,6 +175,39 @@ function parseUrlArg(args: string[]): string {
     throw new InvalidUrlArgError("--url requires a value, e.g. --url https://github.com/org/mattstack-home");
   }
   return value;
+}
+
+/** Thrown by parseProfileArg for a `--profile` with no usable value. */
+export class InvalidProfileArgError extends Error {}
+
+function parseProfileArg(args: string[]): string | undefined {
+  const idx = args.indexOf("--profile");
+  if (idx === -1) return undefined;
+
+  const value = args[idx + 1];
+  if (value === undefined || value.startsWith("--")) {
+    throw new InvalidProfileArgError("--profile requires a value, e.g. --profile mbp-14");
+  }
+  return value;
+}
+
+/** Seam for the interactive machine-profile prompt — real impl below uses the repo's fzf-backed filterableSelect (lib/rt-render.tsx); tests inject a fake so no real fzf/TTY is ever touched. */
+export interface MachineProfilePickerSeam {
+  /** Returns the chosen key, or null when the user backed out (Esc/Ctrl-C). */
+  pick(profiles: string[], hostnameSlug: string): Promise<string | null>;
+}
+
+export function createRealMachineProfilePickerSeam(): MachineProfilePickerSeam {
+  return {
+    async pick(profiles, hostnameSlug) {
+      const { filterableSelect } = await import("../lib/rt-render.tsx");
+      const options = [
+        ...profiles.map((p) => ({ value: p, label: p })),
+        { value: hostnameSlug, label: `new profile (${hostnameSlug})` },
+      ];
+      return filterableSelect({ message: "Pick a machine profile", options });
+    },
+  };
 }
 
 export type EnsureHomeAgeKeyResult = { ok: true } | { ok: false; message: string };
@@ -230,28 +287,152 @@ export async function homeInit(
   sopsYamlSeam: SopsYamlSeam = defaultSopsYamlSeam(),
   // Evaluated at call time, like every other default here — a real fs read
   // (~/.mattstack/machine-key), so tests inject a fixed value instead of
-  // depending on the test-runner's actual hostname/override file.
+  // depending on the test-runner's actual hostname/override file. When the
+  // machine-key file is absent this doubles as the hostname-slug fallback
+  // the profile chooser below offers ("new profile (<this>)").
   key: string = machineKey(),
+  pickerSeam: MachineProfilePickerSeam = createRealMachineProfilePickerSeam(),
+  isInteractive: () => boolean = () => Boolean(process.stdin.isTTY),
 ): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const home = mattstackHome();
 
   let url: string;
+  let profileFlag: string | undefined;
   try {
     url = parseUrlArg(args);
+    profileFlag = parseProfileArg(args);
   } catch (err) {
-    if (err instanceof InvalidUrlArgError) {
+    if (err instanceof InvalidUrlArgError || err instanceof InvalidProfileArgError) {
       console.error(`rt home init: ${err.message}`);
       process.exit(1);
     }
     throw err;
   }
+  const newProfileFlag = args.includes("--new-profile");
 
-  const state = gatherHomeState(home, probes, key);
+  let state = gatherHomeState(home, probes, key);
+  let chosenKey = key;
+
+  // The profile list under user/local/ only exists once user/ is cloned, but
+  // this machine's key (and thus which profile it should adopt) can only be
+  // decided from that list — so a machine-key-less machine picks its key
+  // AFTER the clone lands, never before. A machine that already has
+  // machine-key written is already provisioned; the picker never runs for it.
+  if (!state.machineKeyFilePresent) {
+    if (!state.userRepoPresent) {
+      if (dryRun) {
+        let previewPlan: ReturnType<typeof buildInitPlan>;
+        try {
+          previewPlan = buildInitPlan(state, { url, machineKey: key });
+        } catch (err) {
+          if (err instanceof InvalidMachineKeyError) {
+            console.error(`rt home init: ${err.message}`);
+            process.exit(1);
+          }
+          throw err;
+        }
+        console.log(`rt home init plan for ${home}:`);
+        previewPlan.steps.forEach((step, i) => console.log(`  ${i + 1}. ${describeStep(step)}`));
+        if (previewPlan.blocked === "skills-symlink-real-file") {
+          console.error(
+            `\nrt home init: a real file already exists at ${join(home, "skills.jsonc")} — refusing to overwrite it. ` +
+              "Move it aside by hand, then rerun.",
+          );
+        }
+        console.log(
+          `\n  rt home init: this machine has no machine-key file yet — existing profiles under user/local/ ` +
+            `aren't knowable until the repo above is actually cloned, so the key shown here ("${key}") is only ` +
+            "the no-profiles-yet fallback. Pass --profile <key> or --new-profile to pin the real choice ahead of time.",
+        );
+        return;
+      }
+
+      // Phase 1: clone only. writeMachineKey/ensureProfileDir/writeSkillsSymlink
+      // all wait for phase 2 (below) — the first two because the key isn't
+      // chosen yet, the symlink just to keep this phase minimal and focused.
+      const cloneOnlyState: HomeState = {
+        ...state,
+        machineKeyFilePresent: true,
+        profileDirPresent: true,
+        skillsSymlinkPresent: true,
+        skillsSymlinkBlocked: false,
+      };
+      let clonePlan: ReturnType<typeof buildInitPlan>;
+      try {
+        clonePlan = buildInitPlan(cloneOnlyState, { url, machineKey: key });
+      } catch (err) {
+        if (err instanceof InvalidMachineKeyError) {
+          console.error(`rt home init: ${err.message}`);
+          process.exit(1);
+        }
+        throw err;
+      }
+      console.log(`rt home init plan for ${home}:`);
+      clonePlan.steps.forEach((step, i) => console.log(`  ${i + 1}. ${describeStep(step)}`));
+
+      const cloneResult = await executeInitPlan(clonePlan.steps, exec, (message) => console.log(`  ${message}`));
+      if (!cloneResult.ok) {
+        console.error(`\nrt home init: failed at step "${cloneResult.failedStep}":\n${cloneResult.stderr}`);
+        process.exit(1);
+      }
+
+      // Known true from the steps that just succeeded, not re-probed: fake
+      // probes in tests are static and wouldn't reflect the clone anyway,
+      // and in production a fresh fs read here would just re-derive the
+      // same facts the exec seam already confirmed.
+      state = { ...state, userRepoPresent: true, stateDirsMissing: [] };
+    }
+
+    const userLocalDir = join(home, "user", "local");
+    const profiles = probes.listProfiles(userLocalDir);
+
+    let choice: ChooseMachineProfileResult;
+    try {
+      choice = chooseMachineProfile({
+        profiles,
+        hostnameSlug: key,
+        flags: { profile: profileFlag, newProfile: newProfileFlag },
+        interactive: isInteractive(),
+      });
+    } catch (err) {
+      if (
+        err instanceof UnknownProfileFlagError ||
+        err instanceof ProfileChoiceRequiredError ||
+        err instanceof InvalidProfileKeyError
+      ) {
+        console.error(`rt home init: ${err.message}`);
+        process.exit(1);
+      }
+      throw err;
+    }
+
+    if (choice.source === "prompt-needed") {
+      if (dryRun) {
+        console.log(
+          `rt home init: ${home} needs a machine profile — existing: ${profiles.join(", ")}, or start a new one ` +
+            `("${key}"). A prompt would run here interactively; pass --profile <key> or --new-profile to skip it.`,
+        );
+        return;
+      }
+      const picked = await pickerSeam.pick(profiles, key);
+      if (picked === null || !isSafeMachineKeySegment(picked)) {
+        console.error(
+          "rt home init: no machine profile selected — aborting. Pass --profile <key> or --new-profile to skip the prompt.",
+        );
+        process.exit(1);
+      }
+      chosenKey = picked;
+    } else {
+      chosenKey = choice.key;
+    }
+
+    state = { ...state, profileDirPresent: profiles.includes(chosenKey) };
+  }
 
   let plan: ReturnType<typeof buildInitPlan>;
   try {
-    plan = buildInitPlan(state, { url, machineKey: key });
+    plan = buildInitPlan(state, { url, machineKey: chosenKey });
   } catch (err) {
     if (err instanceof InvalidMachineKeyError) {
       console.error(`rt home init: ${err.message}`);
