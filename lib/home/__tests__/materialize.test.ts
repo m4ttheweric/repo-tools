@@ -79,35 +79,37 @@ describe("planMaterialize", () => {
   });
 });
 
-/** Records every argv it was asked to run; scripts each call's result by exact argv match. */
+/** Records every {argv, opts} it was asked to run; scripts each call's result by exact argv match. */
 class FakeExecSeam implements MaterializeExecSeam {
-  calls: string[][] = [];
+  calls: { argv: string[]; opts?: { timeoutMs?: number } }[] = [];
   constructor(private scripted: Map<string, MaterializeExecResult> = new Map()) {}
 
   script(argv: string[], result: MaterializeExecResult): void {
     this.scripted.set(argv.join(" "), result);
   }
 
-  async run(argv: [string, ...string[]]): Promise<MaterializeExecResult> {
-    this.calls.push(argv);
+  async run(argv: [string, ...string[]], opts?: { timeoutMs?: number }): Promise<MaterializeExecResult> {
+    this.calls.push({ argv, opts });
     return this.scripted.get(argv.join(" ")) ?? { stdout: "", stderr: "", exitCode: 0 };
   }
 }
 
 describe("runMaterialize", () => {
-  test("rt-own steps shell out to the rt CLI itself", async () => {
+  test("rt-own steps shell out to the rt CLI itself, with a generous timeout", async () => {
     const seam = new FakeExecSeam();
     await runMaterialize([{ kind: "rtInterceptInstall" }, { kind: "rtDaemonInstall" }], seam);
-    expect(seam.calls).toEqual([
+    expect(seam.calls.map((c) => c.argv)).toEqual([
       ["rt", "intercept", "install"],
       ["rt", "daemon", "install"],
     ]);
+    expect(seam.calls.every((c) => c.opts?.timeoutMs === 60_000)).toBe(true);
   });
 
-  test("deckSetup shells out to deck setup", async () => {
+  test("deckSetup shells out to deck setup, also with the generous timeout", async () => {
     const seam = new FakeExecSeam();
     await runMaterialize([{ kind: "deckSetup" }], seam);
-    expect(seam.calls).toEqual([["deck", "setup"]]);
+    expect(seam.calls[0]!.argv).toEqual(["deck", "setup"]);
+    expect(seam.calls[0]!.opts?.timeoutMs).toBe(60_000);
   });
 
   test("reportMissingRepos and boardSetup never spawn a subprocess", async () => {
@@ -120,12 +122,16 @@ describe("runMaterialize", () => {
     expect(results.every((r) => r.ok)).toBe(true);
   });
 
-  test("boardSetup is always report-only and ok — mr-board's setup script prompts interactively and can't run unattended", async () => {
+  test("boardSetup is always report-only and ok, with the manual command in `note` (not `stderr`)", async () => {
     const seam = new FakeExecSeam();
     const [result] = await runMaterialize([{ kind: "boardSetup", repoPath: "/repos/mr-board" }], seam);
-    expect(result!.ok).toBe(true);
-    expect(result!.stderr).toContain("/repos/mr-board");
-    expect(result!.stderr.toLowerCase()).toContain("manual");
+    expect(result).toEqual({
+      step: { kind: "boardSetup", repoPath: "/repos/mr-board" },
+      ok: true,
+      stderr: "",
+      stdout: "",
+      note: 'run manually (interactive): cd "/repos/mr-board" && bun run scripts/setup.ts',
+    });
   });
 
   test("a failing step is reported but does not stop the remaining steps from running", async () => {
@@ -137,18 +143,39 @@ describe("runMaterialize", () => {
       seam,
     );
 
-    expect(seam.calls).toEqual([["rt", "intercept", "install"], ["deck", "setup"]]);
-    expect(results[0]).toEqual({ step: { kind: "rtInterceptInstall" }, ok: false, stderr: "boom" });
+    expect(seam.calls.map((c) => c.argv)).toEqual([["rt", "intercept", "install"], ["deck", "setup"]]);
+    expect(results[0]).toEqual({ step: { kind: "rtInterceptInstall" }, ok: false, stderr: "boom", stdout: "", note: "" });
     expect(results[1]!.ok).toBe(true);
   });
 
-  test("a spawn failure (exitCode -1, no stderr) still yields a non-empty failure message", async () => {
+  test("a spawn failure (exitCode -1) names the missing binary rather than an empty message", async () => {
     const seam = new FakeExecSeam();
     seam.script(["deck", "setup"], { stdout: "", stderr: "", exitCode: -1 });
 
     const [result] = await runMaterialize([{ kind: "deckSetup" }], seam);
     expect(result!.ok).toBe(false);
-    expect(result!.stderr.length).toBeGreaterThan(0);
+    expect(result!.stderr).toBe("could not run `deck` — is it on PATH?");
+  });
+
+  test("rt-own steps capture stdout even on a clean exit — rt daemon install's approval guidance is printed there, not discarded", async () => {
+    const seam = new FakeExecSeam();
+    seam.script(["rt", "daemon", "install"], {
+      stdout: "daemon not yet responding — approve it in System Settings\n",
+      stderr: "",
+      exitCode: 0,
+    });
+
+    const [result] = await runMaterialize([{ kind: "rtDaemonInstall" }], seam);
+    expect(result!.ok).toBe(true);
+    expect(result!.stdout).toBe("daemon not yet responding — approve it in System Settings");
+  });
+
+  test("deckSetup does NOT capture stdout — only RT_OWN_STEP_KINDS steps do", async () => {
+    const seam = new FakeExecSeam();
+    seam.script(["deck", "setup"], { stdout: "some deck output", stderr: "", exitCode: 0 });
+
+    const [result] = await runMaterialize([{ kind: "deckSetup" }], seam);
+    expect(result!.stdout).toBe("");
   });
 
   test("RT_OWN_STEP_KINDS names exactly the two rt-authored steps", () => {
