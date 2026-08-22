@@ -15,7 +15,8 @@ import { randomBytes } from "crypto";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { readAgeKey, createRealAgeKeySeam } from "../lib/home/age-key.ts";
 import { promptSecret } from "../lib/prompt-secret.ts";
-import { NoAgeKeyError, createRealSecretsExecSeam, readSecret, writeSecret, type SecretsSeams } from "../lib/secrets/store.ts";
+import { NoAgeKeyError, createRealSecretsExecSeam, writeSecret, type SecretsSeams } from "../lib/secrets/store.ts";
+import { createRealTeamSecretsSeams, readTeamSecret, writeTeamSecret } from "../lib/secrets/team-store.ts";
 import { listTeams } from "../lib/settings/stores.ts";
 import { setSetting } from "../lib/settings/write.ts";
 import { envelope, type ConnectField, type Integration } from "../lib/setup/contract.ts";
@@ -140,15 +141,16 @@ export function realSecretWriter(): SecretWriter {
 
 /**
  * Team-scoped secrets (Slack's client/signing secret, a future shared service
- * token). Backed today by the same single-recipient sops store `SecretWriter`
- * uses, keyed under a team-qualified domain — correct for the current
- * single-operator machine and swappable behind this same interface once a
- * real multi-recipient team store exists. `write` mirrors `storeCredential`'s
- * own age-key-gated fallback (stage when there's no key yet) so a team
- * secret written before `rt home init` still lands somewhere real instead of
- * throwing; every OTHER store failure (a malformed slug, sops itself failing)
- * still propagates so the caller can turn it into an honest exit-2 before any
- * settings write happens.
+ * token). Backed by the real N-recipient team store (lib/secrets/team-store.ts):
+ * `teams/<slug>/mattstack/secrets/<domain>.json`, encrypted to every team
+ * member's age key via `teams/<slug>/.sops.yaml`. `write` mirrors
+ * `storeCredential`'s own age-key-gated fallback (stage when there's no key
+ * yet) so a team secret written before `rt home init` still lands somewhere
+ * real instead of throwing; every OTHER store failure (a missing recipient
+ * list, sops itself failing) still propagates so the caller can turn it into
+ * an honest exit-2 before any settings write happens. The staging domain
+ * name is unchanged from the store's pre-team-store interim so staged values
+ * from before this swap keep resolving.
  */
 export interface TeamSecrets {
   read(slug: string, domain: "rt" | "board", key: string): Promise<string | null>;
@@ -160,26 +162,25 @@ function teamScopedDomain(slug: string, domain: string): string {
 }
 
 export function realTeamSecrets(p: Probes): TeamSecrets {
-  const seams: SecretsSeams = { ageKeySeam: createRealAgeKeySeam(), execSeam: createRealSecretsExecSeam() };
   return {
     async read(slug, domain, key) {
-      const scoped = teamScopedDomain(slug, domain);
+      const seams = createRealTeamSecretsSeams(slug);
       try {
-        const stored = await readSecret(scoped, key, seams);
+        const stored = await readTeamSecret(slug, domain, key, seams);
         if (stored !== null) return stored;
       } catch (err) {
         if (!(err instanceof NoAgeKeyError)) throw err;
       }
-      return readStagedSecret(p, scoped, key);
+      return readStagedSecret(p, teamScopedDomain(slug, domain), key);
     },
     async write(slug, domain, key, value) {
-      const scoped = teamScopedDomain(slug, domain);
+      const seams = createRealTeamSecretsSeams(slug);
       try {
-        await writeSecret(scoped, key, value, seams);
+        await writeTeamSecret(slug, domain, key, value, seams);
         return { staged: false };
       } catch (err) {
         if (!(err instanceof NoAgeKeyError)) throw err;
-        stageSecret(p, scoped, key, value);
+        stageSecret(p, teamScopedDomain(slug, domain), key, value);
         return { staged: true };
       }
     },
