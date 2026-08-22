@@ -7,7 +7,9 @@
  * every row composePlan already computed becomes one flat check. There is no
  * separate check logic here — the plan's validators are the single source
  * of truth for what "installed correctly" means, for both `rt setup` and
- * `rt verify`.
+ * `rt verify`. This means verify's scope now also covers the accounts and
+ * access groups (credential presence, forge/repo reachability over the
+ * network) in addition to the local machine/tool checks it always ran.
  *
  * Designed to run in CI or as a post-install check:
  *   rt verify           # full check with human output
@@ -49,13 +51,16 @@ function actionHint(action: Action | null): string {
 /**
  * perm.* rows read the tray over its unix socket, which CI's headless daemon
  * cannot answer — a required perm gap there is the expected CI shape, not a
- * broken install, so it never blocks the exit code. tool.daemon's needs-you
- * carries the same CI-expected shape (a fresh daemon needs Login Items
- * approval no CI runner can grant); its other non-ready statuses still fail.
+ * broken install, so it never blocks the exit code. account.* and access.*
+ * rows are credential-dependent (sops secrets, forge tokens) that a CI
+ * runner never carries, so the same reasoning applies there. tool.daemon's
+ * needs-you carries the same CI-expected shape (a fresh daemon needs Login
+ * Items approval no CI runner can grant); its other non-ready statuses
+ * still fail.
  */
 function ciNeverCritical(r: Row, ci: boolean): boolean {
   if (!ci) return false;
-  if (r.id.startsWith("perm.")) return true;
+  if (r.id.startsWith("perm.") || r.id.startsWith("account.") || r.id.startsWith("access.")) return true;
   return r.id === "tool.daemon" && r.status === "needs-you";
 }
 

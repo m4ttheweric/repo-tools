@@ -80,6 +80,24 @@ describe("rowsToChecks", () => {
     expect(check.status).toBe("warn");
   });
 
+  test("account.github missing in ci -> warn, never critical (credential-dependent, CI carries none)", () => {
+    const check = oneCheck([baseRow({ id: "account.github", status: "missing", required: true, detail: "not signed in" })], { ci: true });
+    expect(check.status).toBe("warn");
+    expect(check.severity).toBe("warning");
+  });
+
+  test("account.github missing, not ci -> still fail, critical", () => {
+    const check = oneCheck([baseRow({ id: "account.github", status: "missing", required: true, detail: "not signed in" })], { ci: false });
+    expect(check.status).toBe("fail");
+    expect(check.severity).toBe("critical");
+  });
+
+  test("access.forge needs-you in ci -> warn, never critical (network-reaching, CI carries no credentials)", () => {
+    const check = oneCheck([baseRow({ id: "access.forge", status: "needs-you", required: true, detail: "could not reach forge" })], { ci: true });
+    expect(check.status).toBe("warn");
+    expect(check.severity).toBe("warning");
+  });
+
   test("tool.daemon needs-you in ci -> warn (existing behavior)", () => {
     const check = oneCheck([baseRow({ id: "tool.daemon", status: "needs-you", required: true, detail: "not booted (expected in CI)" })], { ci: true });
     expect(check.status).toBe("warn");
