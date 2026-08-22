@@ -166,6 +166,37 @@ export const REGISTRY: readonly SettingDef[] = [
     description: "Template used to generate a repo's Doppler secrets config.",
   },
 
+  // --- wave 2 (ownership-latch ports, RT-53) ------------------------------
+  // These rows carry NO `default`: the ownership latch is `getSetting(key)
+  // .value === undefined`, and a registry default materializes as a present
+  // value — adding one flips the key store-authoritative on every install
+  // (same invariant as the board.* block above).
+  {
+    key: "rt.worktreeApp",
+    type: "object",
+    scopes: ["machine"],
+    merge: "deep",
+    migrated: true,
+    description: "Machine-local worktree feature toggle (enabled, killProcesses); ownership-latch port of ~/.mattstack/rt/worktrees.json, store wins per field. A distinct key from rt.worktrees (the per-repo pool config above) on purpose — same file family, unrelated shape and scope.",
+  },
+  {
+    key: "rt.sdmEnrichment",
+    type: "object",
+    scopes: ["team"],
+    merge: "replace",
+    migrated: true,
+    description: "Team-declared StrongDM resource enrichment (resource name -> label/tier/db/reasonSuggestion); team-ONLY by design, enrichment names employer resources and must never be settable in a user or machine store. Ownership-latch port of ~/.mattstack/rt/sdm/enrichment.jsonc, store wins wholesale (a name-keyed map, not a field-bag).",
+  },
+  {
+    key: "rt.logRetentionDays",
+    type: "number",
+    scopes: ["machine", "user"],
+    default: 14,
+    merge: "replace",
+    migrated: true,
+    description: "Age floor in days for the log janitor pruning every surface's rotated log files under ~/.mattstack/rt/logs (default 14). A fresh key, not an ownership-latch port, so a default is fine here.",
+  },
+
   // --- migrated:false (deferred by ruling) --------------------------------
   {
     key: "rt.hooks",

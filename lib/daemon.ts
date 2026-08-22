@@ -55,6 +55,8 @@ import { startDiscussionsPoller } from "./daemon/discussions-poller.ts";
 import { createCleanup, installSignalHandlers } from "./daemon/shutdown.ts";
 import { createEventsBus } from "./daemon/events-bus.ts";
 import { pruneRuns } from "./runs/prune.ts";
+import { pruneLogs } from "./log-janitor.ts";
+import { getSetting } from "./settings/resolve.ts";
 import { releaseEndpointsForWorktree } from "./daemon/handlers/endpoint.ts";
 import type { HandlerContext } from "./daemon/handlers/types.ts";
 import type { PortEntry } from "./port-scanner.ts";
@@ -63,7 +65,7 @@ import type { PortEntry } from "./port-scanner.ts";
 // Must run BEFORE the logger's first write can create the new rt dir and turn
 // a clean rename of a real legacy tree into a conflict. Idempotent — the CLI
 // entry (cli.ts) also runs it, but `bun run lib/daemon.ts` skips cli.ts.
-import { migrateLegacyRtDir, LEGACY_RT_LABEL, RT_DIR_LABEL } from "./rt-paths.ts";
+import { migrateLegacyRtDir, LEGACY_RT_LABEL, RT_DIR_LABEL, logsDir } from "./rt-paths.ts";
 const rtMigration = migrateLegacyRtDir();
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
@@ -151,6 +153,38 @@ setTimeout(() => {
     if (removed.length > 0) log.info({ removed: removed.length }, "pruned old pipeline runs");
   } catch (err) {
     log.warn({ err }, "runs prune failed");
+  }
+}, 60_000);
+
+// Age-floor prune of every surface's rotated log files — daily; generalizes
+// cli-logger.ts's own age sweep (which stays as-is for the cli surface) to
+// every surface, since pino-roll's limit.count is a FILE floor, not a day
+// floor. rt.logRetentionDays is read fresh each sweep (no caching) so a
+// mid-run settings change takes effect on the next tick.
+function logRetentionDays(): number {
+  try {
+    const v = getSetting<unknown>("rt.logRetentionDays").value;
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : 14;
+  } catch {
+    return 14;
+  }
+}
+setInterval(() => {
+  try {
+    const { removed } = pruneLogs(logsDir(), logRetentionDays(), Date.now());
+    if (removed.length > 0) log.info({ removed: removed.length }, "pruned old surface logs");
+  } catch (err) {
+    log.warn({ err }, "log prune failed");
+  }
+}, 24 * 60 * 60 * 1000);
+// Boot-time sweep to handle frequent daemon restarts that would otherwise starve the daily interval.
+setTimeout(() => {
+  try {
+    const { removed } = pruneLogs(logsDir(), logRetentionDays(), Date.now());
+    if (removed.length > 0) log.info({ removed: removed.length }, "pruned old surface logs");
+  } catch (err) {
+    log.warn({ err }, "log prune failed");
   }
 }, 60_000);
 
