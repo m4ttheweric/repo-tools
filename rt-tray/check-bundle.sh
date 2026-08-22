@@ -1,9 +1,8 @@
 #!/bin/bash
 # rt-tray/check-bundle.sh — asserts the mattstack.app bundle contract for BOTH
 # flavors. Builds them via build.sh (no notarization; that is CI-only), then
-# checks identity, layout, signing, and the dev shim's exit codes (Helpers and
-# Sparkle assertions land in later tasks). Exit 0 only when every assertion
-# passes.
+# checks identity, layout, signing, Helpers (deps.lock), Sparkle, and the dev
+# shim's exit codes. Exit 0 only when every assertion passes.
 #
 # Usage:
 #   RT_DAEMON_BIN=../dist/rt ./check-bundle.sh     # embed a compiled rt (a
@@ -140,20 +139,32 @@ PROD_RT_SIZE=$(stat -f%z "$PROD/Contents/MacOS/rt" 2>/dev/null || echo 0)
 if [ "$PROD_RT_SIZE" -gt 1000000 ]; then pass "prod rt looks compiled ($PROD_RT_SIZE bytes)"; else echo "  ⚠ prod rt is $PROD_RT_SIZE bytes — pass RT_DAEMON_BIN=<compiled rt> for a meaningful check"; fi
 
 # ─── Signing: every Mach-O signed, hardened runtime when Developer ID, jit-only entitlements ───
-sign_flags() { codesign -dvv "$1" 2>&1 | grep -E '^(flags|Authority)=' | head -2 | tr '\n' ' '; }
+# `flags=` sits mid-line inside the CodeDirectory record (not line-anchored
+# like `Authority=`), so it needs -o extraction rather than a `^` anchor.
+sign_flags() { codesign -dvv "$1" 2>&1 | grep -oE '(^Authority=.*|flags=[^ ]+)' | head -2 | tr '\n' ' '; }
 # Piping codesign straight into `grep -q` is a pipefail trap: grep exits on
 # its first match while codesign is still writing later lines, so codesign
 # dies of SIGPIPE and pipefail reports the whole pipeline as failed even
 # though the pattern WAS found. Capture full output first, then match on the
-# captured string so nothing is still writing when the match happens.
-has_runtime() { local out; out="$(codesign -dvv "$1" 2>&1)"; [[ "$out" =~ flags=.*runtime ]]; }
+# captured string (a here-string, not a pipe, so there is no producer left
+# for a second grep to SIGPIPE) so nothing is still writing when the match
+# happens.
+has_runtime() { local out; out="$(codesign -dvv "$1" 2>&1)"; grep -q 'flags=.*runtime' <<< "$out"; }
 is_devid() { local out; out="$(codesign -dvv "$1" 2>&1)"; [[ "$out" == *"Authority=Developer ID Application"* ]]; }
-ent_has() { codesign -d --entitlements - --xml "$1" 2>/dev/null | grep -q "$2"; }
+ent_has() { local out; out="$(codesign -d --entitlements - --xml "$1" 2>/dev/null)"; grep -q "$2" <<< "$out"; }
+SKIPPED_RUNTIME=0
+assert_hardened_runtime() { # path label
+    if is_devid "$1"; then
+        has_runtime "$1" && pass "$2 has hardened runtime" || fail "$2 lacks hardened runtime ($(sign_flags "$1"))"
+    else
+        SKIPPED_RUNTIME=$((SKIPPED_RUNTIME + 1))
+    fi
+}
 check_signed() { # path label want-ent(none|jit)
     local p="$1" label="$2" want="$3"
     [ -f "$p" ] || { fail "$label missing at $p"; return; }
     codesign --verify --strict "$p" 2>/dev/null && pass "$label signature verifies" || fail "$label signature does not verify"
-    if is_devid "$p"; then has_runtime "$p" && pass "$label has hardened runtime" || fail "$label lacks hardened runtime ($(sign_flags "$p"))"; fi
+    assert_hardened_runtime "$p" "$label"
     if ent_has "$p" 'allow-jit'; then [ "$want" = jit ] && pass "$label has allow-jit" || fail "$label unexpectedly has allow-jit"; else [ "$want" = none ] && pass "$label has no jit entitlement" || fail "$label missing allow-jit"; fi
     ent_has "$p" 'allow-unsigned-executable-memory' && fail "$label carries allow-unsigned-executable-memory (JIT-only entitlements only)" || pass "$label has no allow-unsigned-executable-memory"
 }
@@ -164,11 +175,11 @@ for app in "${APPS[@]}"; do
     if [ ! -f "$app/Contents/Info.plist" ]; then fail "Info.plist missing, cannot determine executable name for signing checks ($app)"; continue; fi
     exe="$(plist "$app/Contents/Info.plist" CFBundleExecutable)"
     if [ -z "$exe" ]; then fail "CFBundleExecutable unreadable from $app/Contents/Info.plist, skipping signing checks"; continue; fi
-    # THE deep-verify gate (R-T4-5): build.sh itself only ever runs --strict
-    # (never --deep, which would corrupt the nested Sparkle XPC signatures),
-    # so this is the only place the full inside-out signature chain is
-    # proven. Any stderr output counts as a failure even at rc 0 — codesign
-    # can print a warning and still exit clean.
+    # build.sh itself only ever runs --strict (never --deep, which would
+    # corrupt the nested Sparkle XPC signatures), so this is the only place
+    # the full inside-out signature chain is proven. Any stderr output
+    # counts as a failure even at rc 0 — codesign can print a warning and
+    # still exit clean.
     DEEP_VERIFY_OUT="$(codesign --verify --deep --strict "$app" 2>&1)"; DEEP_VERIFY_RC=$?
     if [ "$DEEP_VERIFY_RC" -eq 0 ] && [ -z "$DEEP_VERIFY_OUT" ]; then
         pass "$exe bundle deep-verifies clean (--deep --strict, no output)"
@@ -194,7 +205,7 @@ check_core_framework() { # app
     local app="$1" exe fw; exe="$(plist "$app/Contents/Info.plist" CFBundleExecutable)"; fw="$app/Contents/Frameworks/MattstackCore.framework"
     [ -d "$fw" ] || { echo "  · $exe: MattstackCore.framework absent (swift-build path, not xcodebuild)"; return; }
     codesign --verify --strict "$fw" 2>/dev/null && pass "$exe MattstackCore.framework signature verifies" || fail "$exe MattstackCore.framework signature does not verify"
-    if is_devid "$fw"; then has_runtime "$fw" && pass "$exe MattstackCore.framework has hardened runtime" || fail "$exe MattstackCore.framework lacks hardened runtime ($(sign_flags "$fw"))"; fi
+    assert_hardened_runtime "$fw" "$exe MattstackCore.framework"
 }
 check_core_framework "$PROD"
 [ -n "$DEV" ] && check_core_framework "$DEV"
@@ -365,6 +376,8 @@ if ! $INSTALLED_ONLY; then
     assert_bin_has "silent dev updater" "update check skipped (dev build)"
     rm -f "$TRAY_STRINGS"
 fi
+
+[ "$SKIPPED_RUNTIME" -gt 0 ] && echo "  · skip: $SKIPPED_RUNTIME hardened-runtime checks (not Developer ID signed)"
 
 echo ""
 echo "  $PASS passed, $FAIL failed"
