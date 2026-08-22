@@ -1,37 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { findRun, listRuns, readRun } from "../store.ts";
+import { root, seedRun } from "./fixtures.ts";
 
-function root(): string {
-  const dir = mkdtempSync(join(tmpdir(), "rt-runs-store-"));
-  process.env.RT_RUNS_ROOT = dir;
-  return dir;
-}
 afterEach(() => { delete process.env.RT_RUNS_ROOT; });
-
-function seedRun(dir: string, repo: string, id: string, startedAt: number, userVersion = 1): void {
-  const runDir = join(dir, repo, id);
-  mkdirSync(runDir, { recursive: true });
-  const db = new Database(join(runDir, "state.db"));
-  db.exec(`
-    PRAGMA user_version=${userVersion};
-    CREATE TABLE runs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, work_type TEXT NOT NULL,
-      pipeline TEXT NOT NULL, status TEXT NOT NULL, current_stage TEXT,
-      spawned_by TEXT, started_at INTEGER NOT NULL, ended_at INTEGER);
-    CREATE TABLE stages (run_id TEXT, name TEXT, status TEXT, attempt INTEGER DEFAULT 1,
-      started_at INTEGER, ended_at INTEGER, PRIMARY KEY (run_id, name, attempt));
-    CREATE TABLE fields (run_id TEXT, key TEXT, value TEXT, produced_by TEXT, at INTEGER, PRIMARY KEY (run_id, key));
-    CREATE TABLE decisions (run_id TEXT, contract TEXT, scope TEXT, selection TEXT, decided_by TEXT, decided_at INTEGER, PRIMARY KEY (run_id, contract, scope));
-    INSERT INTO runs VALUES ('${id}', '${repo}', 'feature', 'default', 'running', 'plan', NULL, ${startedAt}, NULL);
-    INSERT INTO stages VALUES ('${id}', 'plan', 'running', 1, ${startedAt}, NULL);
-    INSERT INTO fields VALUES ('${id}', 'ticket', 'ACME-1', 'plan', ${startedAt});
-    INSERT INTO decisions VALUES ('${id}', 'execution-strategy@1', 'run', '{"tier":"direct-tdd"}', 'stage-plan', ${startedAt});
-  `);
-  db.close();
-}
 
 describe("runs store", () => {
   test("listRuns returns newest first, scoped to a repo or across all", () => {
@@ -86,5 +59,30 @@ describe("runs store", () => {
     root();
     expect(readRun("..", "x")).toBeNull();
     expect(findRun("a/b")).toBeNull();
+  });
+
+  test("reads a v2 DB's failure reason and pack provenance", () => {
+    const dir = root();
+    seedRun(dir, "acme", "20260822-120000-aaaa", 1000, 2,
+      { packCommits: "mattstack=59b90cd", packDirty: 1, stageReason: "assertion failed", stageDetailPath: "/tmp/g.log" });
+
+    const detail = readRun("acme", "20260822-120000-aaaa")!;
+    expect(detail.stages[0]!.reason).toBe("assertion failed");
+    expect(detail.stages[0]!.detail_path).toBe("/tmp/g.log");
+    expect(detail.run.pack_commits).toBe("mattstack=59b90cd");
+    expect(detail.run.pack_dirty).toBe(1);
+    expect(detail.schemaAhead).toBe(false);
+  });
+
+  test("a v1 DB still reads, with the new fields null", () => {
+    const dir = root();
+    seedRun(dir, "acme", "20260801-090000-bbbb", 1000);   // userVersion defaults to 1
+
+    const detail = readRun("acme", "20260801-090000-bbbb")!;
+    expect(detail).not.toBeNull();
+    expect(detail.stages[0]!.name).toBe("plan");
+    expect(detail.stages[0]!.reason).toBeNull();
+    expect(detail.run.pack_commits).toBeNull();
+    expect(detail.run.pack_dirty).toBe(0);
   });
 });

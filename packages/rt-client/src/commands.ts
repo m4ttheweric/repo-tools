@@ -62,8 +62,15 @@ export interface RunSummary {
   id: string; repo: string; work_type: string; pipeline: string;
   status: string; current_stage: string | null; spawned_by: string | null;
   started_at: number; ended_at: number | null;
+  // v2. Null on runs written before schema v2; pack_dirty means the pack tree
+  // had uncommitted changes, so the as-run text may exist in no commit.
+  pack_commits: string | null; pack_dirty: number;
 }
-export interface RunStageRow { name: string; status: string; attempt: number; started_at: number | null; ended_at: number | null; }
+export interface RunStageRow {
+  name: string; status: string; attempt: number;
+  started_at: number | null; ended_at: number | null;
+  reason: string | null; detail_path: string | null;
+}
 export interface RunFieldRow { key: string; value: string; produced_by: string; at: number; }
 export interface RunDecisionRow { contract: string; scope: string; selection: string; decided_by: string; decided_at: number; }
 export interface RunDetail { run: RunSummary; stages: RunStageRow[]; fields: RunFieldRow[]; decisions: RunDecisionRow[]; schemaAhead: boolean; }
