@@ -1074,6 +1074,39 @@ export const TREE: Record<string, CommandNode> = {
           SETUP_JSON_ARG,
         ],
       },
+      members: {
+        description: "Roster: collect invitee keys / remove a member",
+        subcommands: {
+          sync: {
+            description: "Collect every outstanding invite's reply key and add it as a sops recipient",
+            module: "./commands/team.ts",
+            fn: "teamMembersSync",
+            args: [
+              { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to sync; omit when only one is cloned" },
+              SETUP_JSON_ARG,
+            ],
+          },
+          remove: {
+            description: "Revoke forge access, drop the roster entry, and re-encrypt without the member's key",
+            module: "./commands/team.ts",
+            fn: "teamMembersRemove",
+            args: [
+              { name: "Handle", type: "text", placeholder: "octocat", hint: "The member's forge username" },
+              { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to remove from; omit when only one is cloned" },
+              SETUP_JSON_ARG,
+            ],
+          },
+        },
+      },
+      status: {
+        description: "Team summary (name, remote, last push, members)",
+        module: "./commands/team.ts",
+        fn: "teamStatus",
+        args: [
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to summarize; omit when only one is cloned" },
+          SETUP_JSON_ARG,
+        ],
+      },
     },
   },
 };
