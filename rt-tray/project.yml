@@ -1,0 +1,181 @@
+name: mattstack
+options:
+  bundleIdPrefix: com.mattstack
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+  xcodeVersion: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    ENABLE_HARDENED_RUNTIME: YES
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: 5BF66B3X4V
+    MARKETING_VERSION: "2.8.0"
+    CURRENT_PROJECT_VERSION: 1
+    LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
+  configs:
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.9.6"
+
+targetTemplates:
+  MattstackApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+        excludes: ["**/.DS_Store"]
+    dependencies:
+      - target: MattstackCore
+        embed: true
+      - package: Sparkle
+    preBuildScripts:
+      - name: Render LaunchAgents
+        script: |
+          "${SRCROOT}/scripts/render-launchagents.sh" "${MS_FLAVOR}" "${SRCROOT}/Generated/LaunchAgents-${MS_FLAVOR}"
+        inputFiles:
+          - "${SRCROOT}/scripts/render-launchagents.sh"
+          - "${SRCROOT}/LaunchAgent.plist"
+          - "${SRCROOT}/LaunchAgent-deck.plist"
+        outputFiles:
+          - "${SRCROOT}/Generated/LaunchAgents-${MS_FLAVOR}/${MS_DAEMON_LABEL}.plist"
+          - "${SRCROOT}/Generated/LaunchAgents-${MS_FLAVOR}/${MS_DECK_LABEL}.plist"
+    postCompileScripts:
+      - name: Copy LaunchAgents into bundle
+        script: |
+          DEST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/LaunchAgents"
+          mkdir -p "$DEST"
+          cp "${SRCROOT}/Generated/LaunchAgents-${MS_FLAVOR}/"*.plist "$DEST/"
+    settings:
+      base:
+        CODE_SIGN_ENTITLEMENTS: entitlements/mattstack.entitlements
+        INFOPLIST_KEY_LSUIElement: YES
+    info:
+      properties:
+        CFBundleIconFile: AppIcon
+        CFBundlePackageType: APPL
+        LSUIElement: true
+        LSMinimumSystemVersion: "14.0"
+        NSUserNotificationAlertStyle: alert
+        CFBundleURLTypes:
+          - CFBundleURLName: "$(PRODUCT_BUNDLE_IDENTIFIER).join"
+            CFBundleURLSchemes: [mattstack]
+        SUFeedURL: https://github.com/m4ttstack/rt/releases/latest/download/appcast.xml
+        SUPublicEDKey: REPLACE_WITH_RELEASE_PUBLIC_ED_KEY
+        SUEnableAutomaticChecks: true
+        SUAutomaticallyUpdate: true
+        SUVerifyUpdateBeforeExtraction: true
+        SUScheduledCheckInterval: 21600
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+
+targets:
+  MattstackCore:
+    type: framework
+    platform: macOS
+    sources: [Sources-core]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mattstack.core
+        SKIP_INSTALL: YES
+        GENERATE_INFOPLIST_FILE: YES
+
+  mattstack:
+    templates: [MattstackApp]
+    settings:
+      base:
+        PRODUCT_NAME: mattstack
+        PRODUCT_BUNDLE_IDENTIFIER: com.mattstack.app
+        MS_FLAVOR: prod
+        MS_DAEMON_LABEL: com.mattstack.daemon
+        MS_DECK_LABEL: com.mattstack.deck
+    info:
+      path: Generated/mattstack-Info.plist
+      properties:
+        CFBundleName: mattstack
+        CFBundleDisplayName: mattstack
+        CFBundleExecutable: mattstack
+        MSDaemonLabel: com.mattstack.daemon
+        MSDevBuild: false
+
+  mattstack-dev:
+    templates: [MattstackApp]
+    settings:
+      base:
+        PRODUCT_NAME: mattstack-dev
+        PRODUCT_BUNDLE_IDENTIFIER: com.mattstack.app.dev
+        MS_FLAVOR: dev
+        MS_DAEMON_LABEL: com.mattstack.daemon.dev
+        MS_DECK_LABEL: com.mattstack.deck.dev
+    info:
+      path: Generated/mattstack-dev-Info.plist
+      properties:
+        CFBundleName: mattstack-dev
+        CFBundleDisplayName: mattstack-dev
+        CFBundleExecutable: mattstack-dev
+        MSDaemonLabel: com.mattstack.daemon.dev
+        MSDevBuild: true
+        SUEnableAutomaticChecks: false
+
+  MattstackCoreChecks:
+    type: framework
+    platform: macOS
+    sources: [Tests/MattstackCoreChecks]
+    dependencies:
+      - target: MattstackCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mattstack.core.checks
+        GENERATE_INFOPLIST_FILE: YES
+
+  MattstackCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [Tests/MattstackCoreTests]
+    dependencies:
+      - target: MattstackCoreChecks
+      - target: MattstackCore
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+
+  mattstackUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources: [Tests/mattstackUITests]
+    dependencies:
+      - target: mattstack
+    settings:
+      base:
+        TEST_TARGET_NAME: mattstack
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  mattstack:
+    build:
+      targets:
+        mattstack: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets: [MattstackCoreTests, mattstackUITests]
+    archive:
+      config: Release
+  mattstack-dev:
+    build:
+      targets:
+        mattstack-dev: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets: [MattstackCoreTests]

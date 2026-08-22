@@ -11,8 +11,11 @@ class TrayState: ObservableObject {
     @Published var statusText: String = "Daemon: checking…"
     /// SMAppService wants the user to approve the daemon in Login Items.
     @Published var needsApproval: Bool = false
-    /// Set when UpdateChecker finds a newer release (its tag name).
+    /// Set when UpdaterController finds a newer release (its version string).
     @Published var updateAvailable: String? = nil
+    /// Mirrors UpdaterController's Sparkle KVO — gates the gear menu's
+    /// "Check for Updates…" item independently of an already-found update.
+    @Published var canCheckForUpdates: Bool = false
 
     var healthColor: Color {
         switch health {
@@ -32,4 +35,7 @@ extension Notification.Name {
     static let rtStopDaemon     = Notification.Name("rtStopDaemon")
     static let rtViewDaemonLogs = Notification.Name("rtViewDaemonLogs")
     static let rtCheckUpdates   = Notification.Name("rtCheckUpdates")
+    static let rtShowSetupStatus = Notification.Name("rtShowSetupStatus")
+    static let rtShowSettings    = Notification.Name("rtShowSettings")
+    static let rtShowUninstall   = Notification.Name("rtShowUninstall")
 }
