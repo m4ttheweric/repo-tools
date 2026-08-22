@@ -456,7 +456,7 @@ export async function skillsCompile(args: string[]): Promise<void> {
 
       if (publicSet && !publicSet.has(verb.name)) {
         console.log(`internal: ${verb.name} (not compiled; roster entry retired)`);
-        if (!flags.dryRun && existsSync(outDir)) {
+        if (!flags.dryRun && !flags.preview && existsSync(outDir)) {
           rmSync(outDir, { recursive: true, force: true });
         }
         continue;
