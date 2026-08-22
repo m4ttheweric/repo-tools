@@ -61,4 +61,13 @@ let planModelsChecks: [Check] = [
         let again = try JSONDecoder().decode(Plan.self, from: data)
         c.expectEqual(again, plan)
     },
+    Check("an ActionField with no `secret` key decodes as not-secret instead of failing the whole plan") { c in
+        let json = Data(#"{"name":"token","label":"Personal access token","hint":"scopes: read_api"}"#.utf8)
+        let field = try JSONDecoder().decode(ActionField.self, from: json)
+        c.expectEqual(field.secret, false)
+        c.expectEqual(field.hint, "scopes: read_api")
+        let bare = try JSONDecoder().decode(ActionField.self, from: Data(#"{"name":"handle","label":"Handle"}"#.utf8))
+        c.expectEqual(bare.secret, false)
+        c.expectEqual(bare.hint, nil)
+    },
 ]

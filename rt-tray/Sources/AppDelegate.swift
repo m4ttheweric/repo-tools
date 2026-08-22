@@ -157,6 +157,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, @unchecked Sendable {
         let permissionProbe: PermissionProbing? = nil
         #endif
         needBroker = NeedBroker(services: servicesForNeeds, privileged: privilegedForNeeds)
+        // Assigned here, in buildServices(), and not in setupTrayServer():
+        // applicationDidFinishLaunching runs buildServices() before it starts
+        // the listener, so no connection can arrive while `routes` is still
+        // nil and fall through to the legacy 404 handler.
         TrayServer.shared.routes = TrayRoutes(permissions: permissionsService, services: servicesForNeeds, privileged: privilegedForNeeds,
                                               needs: needBroker, updater: updater, version: self)
         rtClient = RtClientFactory.make()

@@ -133,4 +133,24 @@ let teamChoiceChecks: [Check] = [
         c.expectEqual(rt.calls[1].args, ["setup", "intent", "restore", "m4ttheweric/mattstack-home", "--json"])
         c.expect(rt.calls.allSatisfy { !$0.args.contains("AGE-SECRET-KEY-1XYZ") }, "key never on argv")
     },
+    Check("a finished restore survives Back→Continue: the wiped key doesn't disable Continue and doesn't re-run the real restore") { c in
+        let rt = ScriptedRt()
+        rt.answers["restore"] = (0, #"{"contract":1,"ok":true,"repo":"m4ttheweric/mattstack-home"}"#)
+        rt.answers["setup intent restore"] = (0, #"{"contract":1,"ok":true,"intent":"restore","repo":"m4ttheweric/mattstack-home"}"#)
+        let m = await MainActor.run { TeamChoiceModel(rt: rt) }
+        await MainActor.run { m.choice = .restore; m.restoreRepo = "m4ttheweric/mattstack-home"; m.restoreAgeKey = "AGE-SECRET-KEY-1XYZ" }
+        c.expect(await m.validateAndPrepare() == nil)
+        let afterFirst = rt.calls.count
+        await MainActor.run {
+            c.expectEqual(m.restoreAgeKey, "", "the key is wiped once the restore lands")
+            c.expectEqual(m.canContinue, true, "Back→Continue must stay live for a repo already restored")
+        }
+        c.expect(await m.validateAndPrepare() == nil, "Continue again is a no-op, not a failure")
+        c.expectEqual(rt.calls.count, afterFirst, "the real restore must not run a second time")
+        // A different repo is a different restore: it needs its own key again.
+        await MainActor.run {
+            m.restoreRepo = "m4ttheweric/other-home"
+            c.expectEqual(m.canContinue, false)
+        }
+    },
 ]

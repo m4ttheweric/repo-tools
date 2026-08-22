@@ -69,6 +69,17 @@ public struct ActionField: Codable, Equatable, Sendable {
     public init(name: String, label: String, secret: Bool, hint: String? = nil) {
         self.name = name; self.label = label; self.secret = secret; self.hint = hint
     }
+    /// The contract marks secrecy explicitly, so an absent `secret` means "not
+    /// secret" — and it degrades this one field rather than failing the decode,
+    /// which on a newer rt that stopped emitting the key would blank the whole
+    /// checklist.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        label = try c.decode(String.self, forKey: .label)
+        secret = try c.decodeIfPresent(Bool.self, forKey: .secret) ?? false
+        hint = try c.decodeIfPresent(String.self, forKey: .hint)
+    }
 }
 
 public struct ActionAlternative: Codable, Equatable, Sendable {
