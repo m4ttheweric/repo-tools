@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { getKnownRepos } from "../../lib/repo-index.ts";
 import { loadRepoTracking } from "../../lib/repo-tracking.ts";
+import { closeStateDb } from "../../lib/state/index.ts";
 import { reposRegister, type RegisterDeps } from "../repos.ts";
 
 function testDeps(): RegisterDeps & { lines: string[] } {
@@ -37,9 +38,15 @@ describe("reposRegister", () => {
     // shared with other test files that assume nothing else touches it.
     home = realpathSync(mkdtempSync(join(tmpdir(), "rt-repos-register-home-")));
     process.env.HOME = home;
+    // getStateDb()'s singleton binds to whatever HOME is live on its first
+    // call and is held for the rest of the process — without this reset,
+    // this test's loadRepoIndex traffic reuses a handle opened under a
+    // different HOME (or, after afterEach below, a deleted one).
+    closeStateDb();
   });
 
   afterEach(() => {
+    closeStateDb();
     process.env.HOME = origHome;
     rmSync(home, { recursive: true, force: true });
   });

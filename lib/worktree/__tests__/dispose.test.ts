@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
 import { teamSettingsPath } from "../../rt-paths.ts";
 import { setSetting } from "../../settings/write.ts";
+import { closeStateDb } from "../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../registry.ts";
 import { branchExistsLocalAsync, listWorktreesAsync, remoteRefExists } from "../git-async.ts";
 import { hasFreshAttendantLease } from "../lease.ts";
@@ -194,6 +195,7 @@ describe("classifyDirtyAsync", () => {
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtdispose-home-")));
+    closeStateDb();
     repo = makeRepo();
     seedIdentity(addBareOrigin(repo));
     tree = addTree(repo, "tree-a", "feature-a");
@@ -260,6 +262,7 @@ describe("disposeTree", () => {
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtdispose-home-")));
+    closeStateDb();
     repo = makeRepo();
     seedIdentity(addBareOrigin(repo));
     events = [];

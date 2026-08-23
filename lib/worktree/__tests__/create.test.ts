@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { machineSettingsPath } from "../../rt-paths.ts";
 import { deriveRepoIdentity } from "../../settings/identity.ts";
+import { closeStateDb } from "../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../registry.ts";
 import { branchExistsLocalAsync, listWorktreesAsync } from "../git-async.ts";
 import { createTree, scrapTree, type CreateDeps } from "../create.ts";
@@ -83,6 +84,7 @@ describe("createTree", () => {
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtcreate-home-")));
+    closeStateDb();
     repo = makeRepo();
     addBareOrigin(repo);
     repoName = "acme";
@@ -157,6 +159,7 @@ describe("scrapTree", () => {
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtcreate-home-")));
+    closeStateDb();
     repo = makeRepo();
     addBareOrigin(repo);
     repoName = "acme";

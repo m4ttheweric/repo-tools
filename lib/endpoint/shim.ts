@@ -28,13 +28,14 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join, relative } from "path";
-import { readJson, writeJson } from "../json-store.ts";
 import {
   machineSettingsPath,
   rtDir,
   teamSettingsPath,
   userSettingsPath,
 } from "../rt-paths.ts";
+import { loadRepoIndex } from "../repo-index.ts";
+import { getKvValue, hasKvValue, importLegacyJsonFile, renameLegacyOutOfTheWay, setKvValue } from "../state/index.ts";
 import { identityFromRemote } from "../settings/identity.ts";
 import { listTeams } from "../settings/stores.ts";
 import { runCapture } from "../subprocess.ts";
@@ -58,14 +59,20 @@ export interface InterceptRule {
  */
 export const GENERATED_MARKER = "# rt intercept shim — generated; do not edit (rt intercept install)";
 
-// ─── intercepts.json ─────────────────────────────────────────────────────────
+// ─── intercepts cache (state.db, ns='intercepts', k='rules') ─────────────────
 
+const INTERCEPTS_NS = "intercepts";
+const INTERCEPTS_KEY = "rules";
+
+/** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
 export function interceptsPath(): string {
   return join(rtDir(), "intercepts.json");
 }
 
 interface RulesFile {
   rules: InterceptRule[];
+  /** `Date.now()` at write time — staleIntercepts' comparison point now that there's no file mtime. */
+  generatedAt: number;
 }
 
 /** Keeps only well-shaped match entries; drops anything malformed rather than throwing. */
@@ -101,13 +108,41 @@ function sanitizeRules(raw: unknown): InterceptRule[] {
 }
 
 export function writeInterceptRules(rules: InterceptRule[]): void {
-  const file: RulesFile = { rules };
-  writeJson(interceptsPath(), file);
+  const file: RulesFile = { rules, generatedAt: Date.now() };
+  setKvValue(INTERCEPTS_NS, INTERCEPTS_KEY, file);
+  renameLegacyOutOfTheWay(interceptsPath());
+}
+
+/**
+ * The legacy intercepts.json predates `generatedAt` (staleness used the
+ * file's own mtime instead — see staleIntercepts below); imported rows get
+ * the file's mtime as their generatedAt so a machine mid-upgrade with an
+ * already-stale cache still reports stale, rather than looking freshly
+ * generated the moment it's imported.
+ */
+function readRulesFile(): RulesFile | null {
+  if (hasKvValue(INTERCEPTS_NS, INTERCEPTS_KEY)) {
+    return getKvValue<RulesFile | null>(INTERCEPTS_NS, INTERCEPTS_KEY, null);
+  }
+
+  const path = interceptsPath();
+  const result = importLegacyJsonFile<RulesFile>(path, (json) => {
+    const parsed = json as Partial<RulesFile> | null;
+    let generatedAt = Date.now();
+    try {
+      generatedAt = statSync(path).mtimeMs;
+    } catch {
+      // file vanished between the import read and this stat — Date.now() fallback is fine
+    }
+    const file: RulesFile = { rules: sanitizeRules(parsed?.rules), generatedAt };
+    setKvValue(INTERCEPTS_NS, INTERCEPTS_KEY, file);
+    return file;
+  }, { verifyPersisted: () => hasKvValue(INTERCEPTS_NS, INTERCEPTS_KEY) });
+  return result.imported ? result.value! : null;
 }
 
 export function loadInterceptRules(): InterceptRule[] {
-  const data = readJson<Partial<RulesFile>>(interceptsPath(), { rules: [] });
-  return sanitizeRules(data.rules);
+  return sanitizeRules(readRulesFile()?.rules);
 }
 
 // ─── buildInterceptRules ─────────────────────────────────────────────────────
@@ -121,10 +156,10 @@ async function captureRepoRemote(repoPath: string): Promise<string | null> {
 }
 
 /**
- * Reads the repo index (mirrors `lib/port-scanner.ts:loadRepoIndex`'s read of
- * `~/.mattstack/rt/repos.json`) and, for each registered repo, flattens its
- * resolved `rt.intercepts` into one `InterceptRule` per intercept entry. Repos
- * with no intercepts contribute nothing.
+ * Reads the repo index (`lib/repo-index.ts:loadRepoIndex`) and, for each
+ * registered repo, flattens its resolved `rt.intercepts` into one
+ * `InterceptRule` per intercept entry. Repos with no intercepts contribute
+ * nothing.
  *
  * The remote is captured for EVERY registered repo, before its config is
  * consulted (RT-47) — it is no longer just the `repoRemote` field of the
@@ -144,7 +179,7 @@ async function captureRepoRemote(repoPath: string): Promise<string | null> {
  * calls it) is async while the rest of this module is synchronous.
  */
 export async function buildInterceptRules(): Promise<InterceptRule[]> {
-  const index = readJson<Record<string, string>>(join(rtDir(), "repos.json"), {});
+  const index = loadRepoIndex();
   const rules: InterceptRule[] = [];
   for (const [repo, repoPath] of Object.entries(index)) {
     const repoRemote = await captureRepoRemote(repoPath);
@@ -169,35 +204,30 @@ function interceptSourceFiles(): string[] {
 }
 
 /**
- * Whether intercepts.json is older than any file it was generated from — the
- * "you edited a store, now re-run `rt intercept install`" probe rendered by
- * `rt intercept status` and the `rt verify` intercept check (spec: three-part
- * answer, part c).
+ * Whether the cached rules are older than any file they were generated from —
+ * the "you edited a store, now re-run `rt intercept install`" probe rendered
+ * by `rt intercept status` and the `rt verify` intercept check (spec:
+ * three-part answer, part c).
  *
- * A cache file that does not exist is NOT stale: there is nothing to be stale,
- * and "no rules registered" is already what `shimReport`/`rt intercept status`
- * say for that machine. Reporting staleness there would fire on every machine
- * that has settings stores and no intercepts at all.
+ * A cache that was never generated is NOT stale: there is nothing to be
+ * stale, and "no rules registered" is already what `shimReport`/`rt intercept
+ * status` say for that machine. Reporting staleness there would fire on every
+ * machine that has settings stores and no intercepts at all.
  *
- * mtime-only, deliberately: comparing resolved content would mean deriving an
- * identity per repo (spawns) on a path that runs inside `rt verify`. An mtime
- * that moved without the content changing costs one redundant `rt intercept
- * install`; a content check that needed 20 git spawns would cost every verify
- * run.
+ * `generatedAt`-only, deliberately: comparing resolved content would mean
+ * deriving an identity per repo (spawns) on a path that runs inside `rt
+ * verify`. A timestamp that moved without the content changing costs one
+ * redundant `rt intercept install`; a content check that needed 20 git spawns
+ * would cost every verify run.
  */
 export function staleIntercepts(): { stale: boolean; reason?: string } {
-  const cachePath = interceptsPath();
-  let cacheMtime: number;
-  try {
-    cacheMtime = statSync(cachePath).mtimeMs;
-  } catch {
-    return { stale: false }; // never generated (or unreadable) — nothing to compare
-  }
+  const cached = readRulesFile();
+  if (!cached) return { stale: false }; // never generated — nothing to compare
 
   const newer: string[] = [];
   for (const file of interceptSourceFiles()) {
     try {
-      if (statSync(file).mtimeMs > cacheMtime) newer.push(file);
+      if (statSync(file).mtimeMs > cached.generatedAt) newer.push(file);
     } catch {
       // absent source (the common case — most machines have no team store);
       // a file that isn't there cannot be newer than the cache.
@@ -205,7 +235,7 @@ export function staleIntercepts(): { stale: boolean; reason?: string } {
   }
 
   if (newer.length === 0) return { stale: false };
-  return { stale: true, reason: `${newer.join(", ")} newer than ${cachePath}` };
+  return { stale: true, reason: `${newer.join(", ")} newer than the cached intercept rules` };
 }
 
 // ─── shim render + path ──────────────────────────────────────────────────────

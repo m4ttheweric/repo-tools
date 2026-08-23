@@ -18,7 +18,7 @@ import type { EndpointRepoConfig, RoleConfig } from "../../endpoint/config.ts";
 import { loadEndpointConfig } from "../../endpoint/config.ts";
 import { deriveRepoIdentity } from "../../settings/identity.ts";
 import type { EndpointClaim } from "../../endpoint/store.ts";
-import { claimsEpoch, loadClaims, saveClaims } from "../../endpoint/store.ts";
+import { loadClaims, saveClaims } from "../../endpoint/store.ts";
 import type { Probes } from "../../endpoint/allocator.ts";
 import { defaultProbes, isLiveClaim, releaseWorktree, resolveClaim } from "../../endpoint/allocator.ts";
 import type { HandlerContext, HandlerMap } from "./types.ts";
@@ -122,23 +122,15 @@ export function createEndpointHandlers(
 
       const probes = await probesFn();
 
-      // Epoch-guarded exactly like `patchTree`: the awaits above are the only
-      // yield points, so a concurrent claim/release could have saved a newer
-      // claims file while we were suspended there. Reload-and-redo once if
-      // that happened; the second pass always saves (same event loop, no
-      // further awaits, so a second collision cannot occur).
-      let applied!: { claims: EndpointClaim[]; changed: boolean; port: number; refs: Record<string, RoleRef> };
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const claims = loadClaims(repo);
-        const epoch = claimsEpoch(repo);
-        const res = resolveRoleAndNeeds(claims, repoCfg, repo, worktree, role, roleCfg, pid, probes);
-        if ("error" in res) return { ok: false, error: res.error };
-        applied = res;
-        if (claimsEpoch(repo) === epoch || attempt === 1) {
-          saveClaims(repo, res.claims);
-          break;
-        }
-      }
+      // load → compute → save, all synchronous once `probes` resolves (no
+      // further await between them): nothing else can interleave on this
+      // event loop between the load and the save, so there is no lost-update
+      // window here to guard against.
+      const claims = loadClaims(repo);
+      const res = resolveRoleAndNeeds(claims, repoCfg, repo, worktree, role, roleCfg, pid, probes);
+      if ("error" in res) return { ok: false, error: res.error };
+      const applied = res;
+      saveClaims(repo, res.claims);
 
       if (applied.changed) {
         ctx.log.debug({ repo, worktree, role, port: applied.port }, "endpoint claimed");

@@ -1,24 +1,29 @@
 /**
- * Global repo index — tracks all known repos in ~/.mattstack/rt/repos.json.
+ * Global repo index — tracks all known repos in state.db's kv store
+ * (ns='repo-index', one row per repo: k=repoName, v=main-worktree path).
  *
- * repos.json is a DISPOSABLE CACHE (RT-49): a name → main-worktree-path map
- * that self-populates as rt visits repos (`updateRepoIndex`, called from
- * lib/repo.ts's `getRepoIdentity`). Deleting it loses nothing durable — every
+ * The index is a DISPOSABLE CACHE (RT-49, collapsed into state.db by RT-50):
+ * it self-populates as rt visits repos (`updateRepoIndex`, called from
+ * lib/repo.ts's `getRepoIdentity`). Losing it loses nothing durable — every
  * entry regenerates the next time rt runs inside that repo, and meanwhile the
  * picker still surfaces every repo reachable under the `rt.repoRoots`
  * settings key (below) as an unregistered candidate. It is not part of any
  * backup/restore story and never will be.
+ *
+ * ~/.mattstack/rt/repos.json is written alongside state.db purely as a
+ * derived compatibility file for out-of-process rt-client consumers — see
+ * repoIndexCompatPath's doc comment below.
  *
  * Provides repo discovery with worktree enumeration so commands
  * can offer pickers when run outside a git repo.
  */
 
 import { execSync } from "child_process";
-import { existsSync, readdirSync, realpathSync, type Dirent } from "fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, type Dirent } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join, resolve as resolvePath } from "path";
 import { repoDataDir, rtDir } from "./rt-paths.ts";
-import { readJson, writeJson } from "./json-store.ts";
+import { listKvValues, setKvValue } from "./state/index.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
 
@@ -40,29 +45,108 @@ interface RepoIndex {
   [repoName: string]: string; // repoName → primary repo root path
 }
 
-function repoIndexPath(): string {
+const REPO_INDEX_NS = "repo-index";
+
+/**
+ * Deprecated derived-compatibility path: state.db is authoritative, but
+ * out-of-process rt-client consumers still read this file directly against
+ * a PUBLISHED @mattstack/rt-client (gitq's secrets.ts and data.ts, at
+ * minimum — they run in their own process and cannot see this process's
+ * state.db handle). Kept in sync on every repo-index write so those readers
+ * don't go stale. Safe to delete once rt-client resolves the repo index
+ * through state.db (or the daemon) and every consumer has upgraded past
+ * @mattstack/rt-client 0.3.0.
+ */
+function repoIndexCompatPath(): string {
   return join(rtDir(), "repos.json");
 }
 
-function loadRepoIndex(): RepoIndex {
-  return readJson<RepoIndex>(repoIndexPath(), {});
+/** Best-effort mirror: a write failure here (permissions, disk full) must never break the state.db write it mirrors, or the command that triggered it — the out-of-process reader just sees a stale file until the next successful write. */
+function writeRepoIndexCompat(index: RepoIndex): void {
+  try {
+    writeFileSync(repoIndexCompatPath(), JSON.stringify(index));
+  } catch {
+    // best effort — see repoIndexCompatPath's doc comment
+  }
+}
+
+/**
+ * On a machine upgrading from pre-Phase-2 rt, the index namespace starts
+ * empty while ~/.mattstack/rt/repos.json still holds every previously
+ * visited repo — importing it here (rather than via LEGACY_IMPORTS, gated to
+ * fire only once from user_version 0) means a repo registered before the
+ * upgrade doesn't silently drop out of `rt cd`'s picker until it's visited
+ * again. Only fires when the namespace is truly empty — a repo already
+ * indexed on this machine short-circuits, so a live compat file (kept
+ * current by every `updateRepoIndex` call below) is never re-imported over
+ * itself.
+ *
+ * Deliberately NOT `lib/state/legacy-import.ts`'s `importLegacyJsonFile`:
+ * every other migrated path treats its legacy file as retired and safe to
+ * rename away once imported, but repos.json is the ONE path in the set with
+ * a second, ongoing job — `updateRepoIndex` below keeps it live as the
+ * out-of-process compat mirror gitq reads (see `repoIndexCompatPath`'s doc
+ * comment). Renaming it here, even briefly, would delete gitq's data source
+ * for every reader between this import and the next `updateRepoIndex` call
+ * — which, on a daemon that only primes the index at boot and never writes
+ * (lib/daemon/repo-index.ts), could be indefinite. So this import REFRESHES
+ * the mirror in place instead of renaming: the file is never deleted, only
+ * ever rewritten to the current index, exactly like a normal
+ * `updateRepoIndex` write would.
+ */
+export function loadRepoIndex(): RepoIndex {
+  const existing = listKvValues<string>(REPO_INDEX_NS);
+  if (Object.keys(existing).length > 0) return existing;
+
+  const path = repoIndexCompatPath();
+  if (!existsSync(path)) return existing;
+
+  let json: unknown;
+  try {
+    json = JSON.parse(readFileSync(path, "utf8"));
+  } catch (err) {
+    console.warn(`rt: legacy state file ${path} is corrupt JSON, leaving in place: ${(err as Error).message}`);
+    return existing;
+  }
+
+  const map = json && typeof json === "object" && !Array.isArray(json) ? (json as Record<string, unknown>) : {};
+  const imported: RepoIndex = {};
+  for (const [name, repoPath] of Object.entries(map)) {
+    if (typeof repoPath !== "string") continue;
+    // Best-effort per entry: a swallowed SQLITE_BUSY here still leaves the
+    // entry in `imported` below, so the mirror this function rewrites stays
+    // correct even for a row that didn't make it into state.db this time —
+    // unlike every other migrated path, nothing is deleted, so a missed row
+    // simply retries on the next call that finds the namespace still empty.
+    try {
+      setKvValue(REPO_INDEX_NS, name, repoPath);
+    } catch { /* best effort */ }
+    imported[name] = repoPath;
+  }
+
+  writeRepoIndexCompat({ ...existing, ...imported });
+  return Object.keys(imported).length > 0 ? imported : existing;
 }
 
 export function updateRepoIndex(repoName: string, repoRoot: string): void {
-  const index = loadRepoIndex();
+  let mainPath: string;
   try {
     const mainWorktree = execSync("git worktree list --porcelain", {
       cwd: repoRoot,
       encoding: "utf8",
       stdio: "pipe",
     });
-    const mainPath = mainWorktree.split("\n")[0]?.replace("worktree ", "").trim();
-    index[repoName] = mainPath || repoRoot;
+    mainPath = mainWorktree.split("\n")[0]?.replace("worktree ", "").trim() || repoRoot;
   } catch {
-    index[repoName] = repoRoot;
+    mainPath = repoRoot;
   }
   try {
-    writeJson(repoIndexPath(), index);
+    // loadRepoIndex() can throw (an unopenable state.db — e.g. root-owned
+    // after a sudo invocation) — inside the try along with the write it
+    // depends on, so getRepoIdentity() (which every in-repo command calls)
+    // degrades to skipping the index update rather than crashing the command.
+    setKvValue(REPO_INDEX_NS, repoName, mainPath);
+    writeRepoIndexCompat(loadRepoIndex());
   } catch { /* best effort */ }
 }
 
@@ -200,7 +284,16 @@ function buildRootSet(known: KnownRepo[]): RootEntry[] {
  * Used when rt is run outside a git repo to offer a picker.
  */
 export function getKnownRepos(): KnownRepo[] {
-  const index = loadRepoIndex();
+  // Same degrade-don't-crash rule as getRepoIdentity()'s index write: an
+  // unopenable state.db (root-owned after a `sudo rt …`) must not take down
+  // the `rt cd`/`rt run` picker — it falls back to the unregistered-scan
+  // results below, exactly like an empty index does.
+  let index: RepoIndex;
+  try {
+    index = loadRepoIndex();
+  } catch {
+    index = {};
+  }
   const repos: KnownRepo[] = [];
 
   for (const [repoName, mainPath] of Object.entries(index)) {

@@ -196,17 +196,14 @@ export const REGISTRY: readonly SettingDef[] = [
     migrated: true,
     description: "Age floor in days for the log janitor pruning every surface's rotated log files under ~/.mattstack/rt/logs (default 14). A fresh key, not an ownership-latch port, so a default is fine here.",
   },
-
-  // --- migrated:false (deferred by ruling) --------------------------------
   {
     key: "rt.hooks",
     type: "object",
     scopes: ALL_SCOPES,
     merge: "deep",
     repoScoped: true,
-    migrated: false,
-    legacyFile: "repos/<repo>/hooks.json",
-    description: "User-defined lifecycle hooks rt runs around commands (pre/post command scripts).",
+    migrated: true,
+    description: "Per-repo git hook enable/disable state ({enabled, hooks: {<hookName>: boolean}}); ownership-latch port of repos/<repo>/hooks.json, store wins per field once it owns the key — including per-hook-name entries inside the nested hooks map, each defaulting to enabled when absent. The installed git-hook shim still greps repos/<repo>/hooks.json with zero process spawns (a hook fires on every git operation); that file is now a DERIVED CACHE this key writes through, kept current by commands/hooks.ts's regenerateHooksCache at every write seam.",
   },
 
   // --- mattstack (installer-lane) -----------------------------------------

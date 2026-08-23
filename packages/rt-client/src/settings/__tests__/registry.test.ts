@@ -51,7 +51,7 @@ describe("settings/registry", () => {
       }
     });
 
-    test("exactly 21 keys are migrated:true", () => {
+    test("exactly 22 keys are migrated:true", () => {
       const migrated = allDefs().filter((d) => d.migrated);
 
       expect(migrated.map((d) => d.key).sort()).toEqual(
@@ -59,7 +59,7 @@ describe("settings/registry", () => {
           "rt.intercepts", "rt.repoIdentityOverrides", "rt.repoRoots", "rt.roles", "rt.worktrees",
           "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runsPruneDays", "rt.runaway", "rt.workspacePrefs",
           "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
-          "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays", "rt.integrations",
+          "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays", "rt.integrations", "rt.hooks",
         ].sort(),
       );
     });
@@ -173,10 +173,14 @@ describe("settings/registry", () => {
       }
     });
 
-    test("the one remaining repo-scoped legacy key carries repoScoped:true and the repos/<repo>/ prefix", () => {
+    test("rt.hooks is a repo-scoped field-bag object with no default (ownership latch, per-hook-name fields too)", () => {
       const def = getDef("rt.hooks");
       expect(def?.repoScoped, "rt.hooks should be repoScoped:true").toBe(true);
-      expect(def?.legacyFile, "rt.hooks legacyFile").toBe("repos/<repo>/hooks.json");
+      expect(def?.scopes.sort()).toEqual(["machine", "team", "user"]);
+      expect(def?.type).toBe("object");
+      expect(def?.merge).toBe("deep");
+      expect(def?.default).toBeUndefined();
+      expect(def?.legacyFile).toBeUndefined();
     });
 
     test("the five newly migrated repo-scoped keys carry repoScoped:true and no legacyFile", () => {
@@ -193,15 +197,13 @@ describe("settings/registry", () => {
       expect(def?.merge).toBe("replace");
     });
 
-    test("has exactly the 1 remaining migrated:false key, the 21 migrated:true keys, and the 30 suite keys", () => {
-      const migratedFalseKeys = [
-        "rt.hooks",
-      ];
+    test("has exactly the 22 migrated:true keys and the 30 suite keys", () => {
+      const migratedFalseKeys: string[] = [];
       const migratedTrueKeys = [
         "rt.roles", "rt.intercepts", "rt.worktrees", "rt.repoIdentityOverrides", "rt.repoRoots",
         "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runsPruneDays", "rt.runaway", "rt.workspacePrefs",
         "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
-        "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays", "rt.integrations",
+        "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays", "rt.integrations", "rt.hooks",
       ];
       const suiteKeys = [
         "mattstack.integrations",

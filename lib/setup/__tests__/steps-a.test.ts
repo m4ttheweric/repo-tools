@@ -8,6 +8,7 @@ import { HELPERS_DIR, RT_BUNDLE_PATH, __test__ as bundleLayoutTest } from "../..
 import { rtDir, teamSettingsPath } from "../../rt-paths.ts";
 import { getSetting } from "../../settings/resolve.ts";
 import { setSetting } from "../../settings/write.ts";
+import { closeStateDb } from "../../state/index.ts";
 import { linkPath } from "../../deps/links.ts";
 import type { ExecResult, Probes } from "../probes.ts";
 import type { SecretsExecResult, SecretsExecSeam, SecretsSeams } from "../../secrets/store.ts";
@@ -574,6 +575,12 @@ describe("path.link / settings.seed / repos.clone / intercepts.install (real HOM
     bundleLayoutTest.resetBundleLayoutMemo();
     home = realpathSync(mkdtempSync(join(tmpdir(), "rt-steps-a-home-")));
     process.env.HOME = home;
+    // getStateDb()'s singleton binds to whatever HOME is live on its first
+    // call (loadRepoIndex, via intercepts.install, is one path in here) and
+    // is held for the rest of the process — without this reset, this
+    // describe block's real-HOME repo-index traffic reuses a handle opened
+    // under a different HOME, or one afterEach below has since deleted.
+    closeStateDb();
 
     appRoot = join(realpathSync(mkdtempSync(join(tmpdir(), "rt-steps-a-app-"))), "mattstack.app");
     mkdirSync(join(appRoot, "Contents", "Resources"), { recursive: true });
@@ -589,6 +596,7 @@ describe("path.link / settings.seed / repos.clone / intercepts.install (real HOM
   });
 
   afterEach(() => {
+    closeStateDb();
     process.env.HOME = origHome;
     rmSync(home, { recursive: true, force: true });
     bundleLayoutTest.resetBundleLayoutMemo();

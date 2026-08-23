@@ -15,14 +15,14 @@
  */
 
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, readFileSync, renameSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync } from "fs";
 import { dirname, join } from "path";
 import { rtDir } from "../rt-paths.ts";
 
 export type DbFlavor = "cli" | "daemon";
 
-/** PRAGMA user_version target for the schema below ("Tables (v1)"). */
-export const SCHEMA_VERSION = 1;
+/** PRAGMA user_version target for the combined schema below (v1 + v2). */
+export const SCHEMA_VERSION = 2;
 
 // busy_timeout is per-process, not per-store (spec "The database"): a CLI
 // command may block briefly; the daemon's event loop must never block long,
@@ -130,6 +130,37 @@ CREATE TABLE IF NOT EXISTS kv (
 );
 `;
 
+// Tables (v2): only state whose access pattern needs a point query, a
+// point mutation, or a bounded-retention delete gets its own table — every
+// other new cache is a `kv` row (one ns per cache, one row per whole-blob
+// value). `kv` alone cannot serve `endpoint_claims` or `run_history` without
+// forcing every point mutation to decode-mutate-reencode a whole array.
+const V2_SCHEMA = `
+CREATE TABLE IF NOT EXISTS endpoint_claims (
+  repo     TEXT NOT NULL,
+  worktree TEXT NOT NULL,
+  role     TEXT NOT NULL,
+  port     INTEGER NOT NULL,
+  pid      INTEGER,
+  ts       TEXT NOT NULL,                -- ISO
+  PRIMARY KEY (repo, worktree, role)
+);
+
+CREATE TABLE IF NOT EXISTS run_history (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,  -- insertion order within a repo
+  repo     TEXT NOT NULL,
+  ts       TEXT NOT NULL,                -- ISO
+  cmd      TEXT NOT NULL,
+  cwd      TEXT NOT NULL,
+  worktree TEXT NOT NULL,
+  branch   TEXT NOT NULL,
+  pkg      TEXT NOT NULL,
+  script   TEXT NOT NULL,
+  exit     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_run_history_repo_id ON run_history(repo, id);
+`;
+
 /** bun:sqlite error codes that mean "the file on disk is not a usable db". */
 function isCorruptionError(err: unknown): boolean {
   const code = (err as { code?: string } | undefined)?.code;
@@ -172,6 +203,27 @@ function applyPragmas(db: Database, budgetMs: number): void {
   db.exec(`PRAGMA busy_timeout = ${budgetMs};`);
   execRetryingBusy(db, "PRAGMA journal_mode = WAL;", budgetMs);
   db.exec("PRAGMA synchronous = NORMAL;");
+}
+
+/**
+ * Every reader of this db (CLI, daemon, tray, VS Code extension host) runs
+ * as the same uid, so group/other read buys nothing and, once a credential
+ * row lands here, only widens exposure. Applied on EVERY open, not just
+ * creation, so a file left at a looser mode — from before this ran, or from
+ * any other writer — gets tightened rather than trusted. Operates only on
+ * the exact path this call opened, plus its WAL sidecars (same string,
+ * `-wal`/`-shm` suffixed) — never a directory scan: other files also named
+ * `state.db` exist elsewhere on disk with an unrelated schema and must
+ * never be touched by this call.
+ */
+function tightenFileMode(path: string): void {
+  for (const target of [path, `${path}-wal`, `${path}-shm`]) {
+    try {
+      chmodSync(target, 0o600);
+    } catch {
+      // sidecar absent — fine, WAL mode doesn't always leave one
+    }
+  }
 }
 
 /**
@@ -236,8 +288,20 @@ function runMigrations(db: Database, dir: string): void {
   try {
     const { user_version } = db.query("PRAGMA user_version;").get() as { user_version: number };
     if (user_version < SCHEMA_VERSION) {
-      db.exec(V1_SCHEMA);
-      toRename = importLegacyStores(db, dir);
+      // One exec of the full combined schema, not a per-version step: every
+      // statement is IF NOT EXISTS, so replaying v1's DDL against an
+      // already-v1 db is a no-op and existing rows are untouched.
+      db.exec(V1_SCHEMA + V2_SCHEMA);
+      // Legacy-JSON import is single-shot and only correct from a true
+      // v0 (never-migrated) database: branch-cache's UPSERT would silently
+      // overwrite current rows with stale ones, and project-mrs-store's
+      // plain INSERT would hit its UNIQUE constraint, roll back this whole
+      // migration, and make every later openStateDb call throw. A v1->v2
+      // bump (this schema's own case, and any future one) must apply the
+      // new DDL without re-arming this seam.
+      if (user_version === 0) {
+        toRename = importLegacyStores(db, dir);
+      }
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
     }
     db.exec("COMMIT;");
@@ -285,18 +349,29 @@ export function openStateDb(path: string, flavor: DbFlavor = "cli"): Database {
   // Migration is done: drop from the startup budget to the flavor's
   // steady-state serve-time policy (daemon = 250ms warn-and-defer).
   db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS[flavor]};`);
+  tightenFileMode(path);
   return db;
 }
 
 let singleton: Database | null = null;
+let singletonPath: string | null = null;
 
 /**
  * The lazy production singleton: one connection per process, held for the
- * process lifetime (spec "The database"). Never call this at module scope.
+ * process lifetime (spec "The database") — true in production, where
+ * `rtDir()` never changes mid-process. Re-derived on every call (not cached
+ * at first open) so a test suite that swaps `process.env.HOME` between
+ * cases — the standard per-test isolation pattern elsewhere in this repo —
+ * transparently gets a fresh connection at the new path instead of silently
+ * reusing a handle whose underlying file a DIFFERENT test's cleanup may have
+ * since deleted (SQLITE_IOERR_VNODE). Never call this at module scope.
  */
 export function getStateDb(flavor: DbFlavor = "cli"): Database {
-  if (!singleton) {
-    singleton = openStateDb(join(rtDir(), "state.db"), flavor);
+  const path = join(rtDir(), "state.db");
+  if (!singleton || singletonPath !== path) {
+    singleton?.close();
+    singleton = openStateDb(path, flavor);
+    singletonPath = path;
   }
   return singleton;
 }
@@ -306,5 +381,6 @@ export function closeStateDb(): void {
   if (singleton) {
     singleton.close();
     singleton = null;
+    singletonPath = null;
   }
 }
