@@ -1,6 +1,7 @@
+import { unlinkSync } from "fs";
 import { join } from "path";
-import { readJson, writeJson } from "../json-store.ts";
 import { repoDataDir } from "../rt-paths.ts";
+import { getKvValue, setKvValue } from "../state/index.ts";
 
 export type TreeKind = "main" | "ephemeral" | "unmanaged";
 export type TreeState = "creating" | "on-deck" | "claimed" | "disposable";
@@ -23,18 +24,24 @@ export interface TreeRecord {
   nextRetryAt?: string; // ISO; skip mutating work until then
 }
 
-interface RegistryFile {
-  trees: TreeRecord[];
-}
+const WORKTREE_REGISTRY_NS = "worktree-registry";
 
+/** Retired storage location — kept only so a leftover pre-migration file can be cleaned up. */
 export function registryPath(repoName: string): string {
   return join(repoDataDir(repoName), "worktrees.json");
 }
 
+function unlinkLegacyRegistry(repoName: string): void {
+  try {
+    unlinkSync(registryPath(repoName));
+  } catch {
+    // already gone, or never existed
+  }
+}
+
 export function loadRegistry(repoName: string): TreeRecord[] {
-  const path = registryPath(repoName);
-  const data = readJson<Partial<RegistryFile>>(path, { trees: [] });
-  return Array.isArray(data?.trees) ? data.trees : [];
+  const raw = getKvValue<unknown>(WORKTREE_REGISTRY_NS, repoName, []);
+  return Array.isArray(raw) ? (raw as TreeRecord[]) : [];
 }
 
 /**
@@ -57,8 +64,8 @@ export function registryEpoch(repoName: string): number {
 }
 
 export function saveRegistry(repoName: string, trees: TreeRecord[]): void {
-  const path = registryPath(repoName);
-  writeJson(path, { trees });
+  setKvValue(WORKTREE_REGISTRY_NS, repoName, trees);
+  unlinkLegacyRegistry(repoName);
   epochs.set(repoName, registryEpoch(repoName) + 1);
 }
 
