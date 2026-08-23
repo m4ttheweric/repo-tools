@@ -549,7 +549,7 @@ describe("settings/resolve", () => {
 
       expect(listed[0]?.key).toBe("rt.roles");
       expect(listed.find((e) => e.key === "rt.roles")?.migrated).toBe(true);
-      expect(listed.find((e) => e.key === "rt.hooks")?.migrated).toBe(false);
+      expect(listed.find((e) => e.key === "rt.hooks")?.migrated).toBe(true);
       expect(listed.every((e) => Array.isArray(e.provenance))).toBe(true);
     });
 
