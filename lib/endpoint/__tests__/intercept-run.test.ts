@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { teamSettingsPath } from "../../rt-paths.ts";
+import { closeStateDb } from "../../state/index.ts";
 import { runInterception } from "../run.ts";
 
 /** Merges `identity`'s roles into the shared team store rather than clobbering earlier entries — every test in this describe shares one per-test HOME. */
@@ -46,6 +47,7 @@ describe("runInterception", () => {
   beforeEach(() => {
     home = realpathSync(mkdtempSync(join(tmpdir(), "rt-intercept-run-")));
     process.env.HOME = home;
+    closeStateDb();
     // Role "web" for repo "r1" — reached via `loadEndpointConfig`
     // (lib/endpoint/config.ts) inside runInterception's env step, keyed by
     // the identity `identityFromRemote` derives from the rule's own
@@ -58,6 +60,7 @@ describe("runInterception", () => {
 
   afterEach(() => {
     process.env.HOME = origHome;
+    closeStateDb();
     rmSync(home, { recursive: true, force: true });
   });
 

@@ -12,6 +12,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { machineSettingsPath, teamSettingsPath, teamsDir, userSettingsPath } from "../../rt-paths.ts";
+import { closeStateDb, setKvValue } from "../../state/index.ts";
 import { loadEndpointConfig } from "../config.ts";
 
 const IDENTITY = "gitlab.com/fake/endpoint-repo";
@@ -25,6 +26,7 @@ describe("loadEndpointConfig", () => {
   beforeEach(() => {
     home = realpathSync(mkdtempSync(join(tmpdir(), "rt-endpoint-config-")));
     process.env.HOME = home;
+    closeStateDb();
     // "warn + degrade" is the specified behaviour for an unsatisfiable
     // variable, so the spy is both the quiet-run trick and the assertion.
     warnSpy = spyOn(console, "warn").mockImplementation(() => {});
@@ -33,6 +35,7 @@ describe("loadEndpointConfig", () => {
   afterEach(() => {
     warnSpy.mockRestore();
     process.env.HOME = origHome;
+    closeStateDb();
     rmSync(home, { recursive: true, force: true });
   });
 
@@ -41,9 +44,11 @@ describe("loadEndpointConfig", () => {
     writeFileSync(file, JSON.stringify(obj, null, 2));
   }
 
-  /** Registers `repo` → a path in repos.json, which is where `${repoRoot}` comes from. */
+  /** Registers `repo` → a path in the repo-index store, which is where `${repoRoot}` comes from. */
   function writeRepoIndex(index: Record<string, string>): void {
-    write(join(home, ".mattstack", "rt", "repos.json"), index);
+    for (const [repoName, repoPath] of Object.entries(index)) {
+      setKvValue("repo-index", repoName, repoPath);
+    }
   }
 
   test("missing everything yields empty config", () => {

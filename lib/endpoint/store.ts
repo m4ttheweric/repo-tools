@@ -1,27 +1,33 @@
 import { join } from "path";
-import { readJson, writeJson } from "../json-store.ts";
 import { repoDataDir } from "../rt-paths.ts";
+import {
+  hasEndpointClaims,
+  importLegacyJsonFile,
+  listEndpointClaims,
+  replaceEndpointClaims,
+  type EndpointClaim,
+} from "../state/index.ts";
 
-export interface EndpointClaim {
-  worktree: string;
-  role: string;
-  port: number;
-  pid?: number;
-  ts: string; // ISO
-}
+export type { EndpointClaim } from "../state/index.ts";
 
-interface ClaimsFile {
-  claims: EndpointClaim[];
-}
-
+/** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
 export function endpointsPath(repoName: string): string {
   return join(repoDataDir(repoName), "endpoints.json");
 }
 
-/** Keeps only well-shaped claim entries; drops anything malformed rather than throwing. */
+/**
+ * Keeps only well-shaped claim entries; drops anything malformed rather than
+ * throwing. Deduped on (worktree, role) — the destination table's PRIMARY
+ * KEY is `(repo, worktree, role)`, and a legacy file with a duplicate pair
+ * (e.g. hand-edited, or written by an older rt before some invariant held)
+ * would otherwise throw a UNIQUE-constraint error out of the plain INSERT in
+ * `replaceEndpointClaims`, permanently poisoning every future `loadClaims`
+ * for this repo since the file stays in place after any throw. Last entry
+ * for a pair wins, matching an INSERT ... ON CONFLICT DO UPDATE.
+ */
 function sanitizeClaims(raw: unknown): EndpointClaim[] {
   if (!Array.isArray(raw)) return [];
-  const out: EndpointClaim[] = [];
+  const byKey = new Map<string, EndpointClaim>();
   for (const entry of raw) {
     if (!entry || typeof entry !== "object") continue;
     const c = entry as Record<string, unknown>;
@@ -30,38 +36,33 @@ function sanitizeClaims(raw: unknown): EndpointClaim[] {
     if (typeof c.ts !== "string") continue;
     const claim: EndpointClaim = { worktree: c.worktree, role: c.role, port: c.port, ts: c.ts };
     if (typeof c.pid === "number" && Number.isInteger(c.pid)) claim.pid = c.pid;
-    out.push(claim);
+    byKey.set(JSON.stringify([c.worktree, c.role]), claim);
   }
-  return out;
+  return [...byKey.values()];
 }
 
 export function loadClaims(repoName: string): EndpointClaim[] {
-  const path = endpointsPath(repoName);
-  const data = readJson<Partial<ClaimsFile>>(path, { claims: [] });
-  return sanitizeClaims(data?.claims);
-}
+  if (hasEndpointClaims(repoName)) return listEndpointClaims(repoName);
 
-/**
- * Per-repo write counter, bumped by every `saveClaims`.
- *
- * The claims store has exactly one writer process (the daemon), but not one
- * writer *task*: allocation, release, and reconcile all interleave on the same
- * event loop. Anything that loads a whole-file snapshot, awaits, and then
- * saves that snapshot back would silently overwrite whatever landed in
- * between. An in-memory counter is enough to detect that (no cross-process
- * concern) and lives here because `saveClaims` is the seam every write already
- * funnels through. Callers compare `claimsEpoch(repo)` captured right after
- * their load against its value in the same synchronous block as their save.
- */
-const epochs = new Map<string, number>();
-
-/** How many times this repo's claims file has been saved in this process. */
-export function claimsEpoch(repoName: string): number {
-  return epochs.get(repoName) ?? 0;
+  // An imported empty array has nothing to lose either way (the transaction
+  // is a no-op DELETE+no-INSERT, indistinguishable from a swallowed BUSY on
+  // an already-empty repo) — safe to rename regardless. A non-empty import
+  // must actually be found in the table before the source file goes away.
+  let importedCount = 0;
+  const result = importLegacyJsonFile<EndpointClaim[]>(endpointsPath(repoName), (json) => {
+    const parsed = json as { claims?: unknown } | null;
+    const claims = sanitizeClaims(parsed?.claims);
+    importedCount = claims.length;
+    replaceEndpointClaims(repoName, claims);
+    return claims;
+  }, { verifyPersisted: () => importedCount === 0 || hasEndpointClaims(repoName) });
+  return result.imported ? result.value! : [];
 }
 
 export function saveClaims(repoName: string, claims: EndpointClaim[]): void {
-  const path = endpointsPath(repoName);
-  writeJson(path, { claims });
-  epochs.set(repoName, claimsEpoch(repoName) + 1);
+  // Folds in (and safely imports/renames) any legacy endpoints.json first —
+  // see worktree/registry.ts's saveRegistry for the same reasoning: a save
+  // reached without a prior load must not strand an unread legacy file.
+  loadClaims(repoName);
+  replaceEndpointClaims(repoName, claims);
 }

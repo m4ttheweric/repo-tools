@@ -24,6 +24,19 @@
  *
  * Later RT-48 tasks add their store modules to the side-effect import list
  * and re-export block below.
+ *
+ * kv-blob.ts, endpoint-claims-store.ts, and run-history-store.ts do not
+ * register a LEGACY_IMPORTS entry, but NOT because their contents are all
+ * regenerable cache data — the worktree registry (a `kv` blob) and
+ * run_history both carry durable, non-regenerable state (ephemeral-tree
+ * claim/disposal bookkeeping; `rt run again`'s history). The reason is that
+ * LEGACY_IMPORTS' one-shot v0->v1 seam (see db.ts) cannot serve a store
+ * whose row is created lazily, key by key, long after that migration has
+ * already run (a new repo, a new worktree). Those stores instead import
+ * their own legacy JSON file on first READ, directly against
+ * lib/state/legacy-import.ts — see repo-index.ts, worktree/registry.ts,
+ * endpoint/{store,shim}.ts, run-history.ts, sdm/{state,scan}.ts, and
+ * daemon/{home-snapshot,worktree-reconciler}.ts.
  */
 
 // Side-effect imports: these load each store module (and therefore register
@@ -64,3 +77,25 @@ export {
 } from "./notifier-store.ts";
 
 export { createCursorStore, type CursorStore } from "./cursors-store.ts";
+
+export { getKvValue, setKvValue, deleteKvValue, listKvValues, hasKvValue } from "./kv-blob.ts";
+
+export {
+  listEndpointClaims,
+  replaceEndpointClaims,
+  hasEndpointClaims,
+  type EndpointClaim,
+} from "./endpoint-claims-store.ts";
+
+export {
+  appendRunHistoryEntry,
+  listRunHistory,
+  hasRunHistory,
+  type RunHistoryEntry,
+} from "./run-history-store.ts";
+
+export {
+  importLegacyJsonFile,
+  renameLegacyOutOfTheWay,
+  type LegacyImportResult,
+} from "./legacy-import.ts";

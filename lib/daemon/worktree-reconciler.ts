@@ -11,8 +11,8 @@
 import { basename, join } from "path";
 import { realpathSync } from "fs";
 import type { Logger } from "pino";
-import { readJson, writeJson } from "../json-store.ts";
 import { rtDir } from "../rt-paths.ts";
+import { getKvValue, hasKvValue, importLegacyJsonFile, renameLegacyOutOfTheWay, setKvValue } from "../state/index.ts";
 import {
   findByBranch,
   findByPath,
@@ -273,21 +273,38 @@ interface ReactorState {
   fired: string[];
 }
 
+const REACTOR_STATE_NS = "worktree-reactor";
+const REACTOR_STATE_KEY = "state";
+
+/** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
 export function reactorStatePath(): string {
   return join(rtDir(), "worktree-reactor-state.json");
 }
 
-function loadReactorState(): ReactorState {
-  const raw = readJson<Partial<ReactorState>>(reactorStatePath(), {});
+function normalizeReactorState(raw: Partial<ReactorState> | null | undefined): ReactorState {
   return {
     mrState: raw?.mrState ?? {},
     fired: Array.isArray(raw?.fired) ? raw.fired : [],
   };
 }
 
+function loadReactorState(): ReactorState {
+  if (hasKvValue(REACTOR_STATE_NS, REACTOR_STATE_KEY)) {
+    return normalizeReactorState(getKvValue<Partial<ReactorState>>(REACTOR_STATE_NS, REACTOR_STATE_KEY, {}));
+  }
+
+  const result = importLegacyJsonFile<ReactorState>(reactorStatePath(), (json) => {
+    const state = normalizeReactorState(json as Partial<ReactorState> | null);
+    setKvValue(REACTOR_STATE_NS, REACTOR_STATE_KEY, state);
+    return state;
+  }, { verifyPersisted: () => hasKvValue(REACTOR_STATE_NS, REACTOR_STATE_KEY) });
+  return result.imported ? result.value! : normalizeReactorState({});
+}
+
 function saveReactorState(state: ReactorState, log: Logger): void {
   try {
-    writeJson(reactorStatePath(), state);
+    setKvValue(REACTOR_STATE_NS, REACTOR_STATE_KEY, state);
+    renameLegacyOutOfTheWay(reactorStatePath());
   } catch (err) {
     log.warn({ err }, "worktree reactor: could not persist state");
   }
@@ -1107,6 +1124,9 @@ export const __test__ = {
   detectTransitions,
   reapRepoTrash,
   reactorStatePath,
+  hasReactorState: () => getKvValue<ReactorState | null>(REACTOR_STATE_NS, REACTOR_STATE_KEY, null) !== null,
+  loadReactorState,
+  saveReactorState,
   freshenRepo,
   replenishAndShrink,
   poolCounts,

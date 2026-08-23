@@ -3,30 +3,32 @@
  *
  * `lib/daemon-config.ts`'s RT_DIR is a MODULE-LOAD-TIME constant (frozen to
  * whatever HOME was active the first time that module was imported in this
- * process), so `readRepoIndex()` in commands/daemon.ts does NOT follow a
+ * process), and the repo-index store's `getStateDb()` singleton binds to
+ * ambient HOME the same way (first call in the process, no per-test repoint
+ * here) — so `readRepoIndex()` in commands/daemon.ts does NOT follow a
  * per-test HOME repoint the way the settings stores do. Rather than fight
  * that, this test drives manageTracking through its real seams as they
- * actually exist: repos.json under the (ambient, process-wide) RT_DIR, and
- * the settings stores under the (same, dynamically-resolved) HOME. Nothing
- * is mocked — console.log is captured only to keep the run quiet. Every
- * fixture is written with a name unique to this file and precisely restored
- * in afterEach, since the ambient HOME is shared with every other test file
- * in this process that doesn't repoint it.
+ * actually exist: the repo-index store (ns='repo-index') under the (ambient,
+ * process-wide) state.db, and the settings stores under the (same,
+ * dynamically-resolved) HOME. Nothing is mocked — console.log is captured
+ * only to keep the run quiet. Every fixture is written with a name unique to
+ * this file and precisely restored in afterEach, since the ambient HOME is
+ * shared with every other test file in this process that doesn't repoint it.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { RT_DIR } from "../../lib/daemon-config.ts";
 import { machineSettingsPath, teamSettingsPath } from "../../lib/rt-paths.ts";
 import { getSetting } from "../../lib/settings/resolve.ts";
+import { deleteKvValue, getKvValue, setKvValue } from "../../lib/state/index.ts";
 import { manageTracking } from "../daemon.ts";
 
 const REPO_NAME = "rt-rider-cli-wiring-repo";
 const TEAM_NAME = "rt-rider-cli-wiring-team";
 const IDENTITY = `rttest/${REPO_NAME}`;
-const REPOS_JSON_PATH = join(RT_DIR, "repos.json");
+const REPO_INDEX_NS = "repo-index";
 
 function readOrNull(path: string): string | null {
   try {
@@ -47,7 +49,7 @@ function restore(path: string, prior: string | null): void {
 
 describe("manageTracking off-branch (CLI wiring)", () => {
   const origLog = console.log;
-  let priorReposJson: string | null;
+  let priorRepoIndexEntry: string | null;
   let priorTeamStore: string | null;
   let priorMachineStore: string | null;
   let repoPath: string;
@@ -55,7 +57,7 @@ describe("manageTracking off-branch (CLI wiring)", () => {
   beforeEach(() => {
     console.log = () => {};
 
-    priorReposJson = readOrNull(REPOS_JSON_PATH);
+    priorRepoIndexEntry = getKvValue<string | null>(REPO_INDEX_NS, REPO_NAME, null);
     priorTeamStore = readOrNull(teamSettingsPath(TEAM_NAME));
     priorMachineStore = readOrNull(machineSettingsPath());
 
@@ -65,10 +67,7 @@ describe("manageTracking off-branch (CLI wiring)", () => {
     execSync("git init -q", { cwd: repoPath });
     execSync(`git remote add origin git@rttest:${REPO_NAME}.git`, { cwd: repoPath });
 
-    mkdirSync(RT_DIR, { recursive: true });
-    const repos = priorReposJson ? JSON.parse(priorReposJson) : {};
-    repos[REPO_NAME] = repoPath;
-    writeFileSync(REPOS_JSON_PATH, JSON.stringify(repos));
+    setKvValue(REPO_INDEX_NS, REPO_NAME, repoPath);
 
     // Team intent still declares this repo — mattstack.tracking's VALUE has
     // its own "repos" field (identity → intent); it is not the store file's
@@ -93,7 +92,8 @@ describe("manageTracking off-branch (CLI wiring)", () => {
   afterEach(() => {
     console.log = origLog;
     rmSync(repoPath, { recursive: true, force: true });
-    restore(REPOS_JSON_PATH, priorReposJson);
+    if (priorRepoIndexEntry === null) deleteKvValue(REPO_INDEX_NS, REPO_NAME);
+    else setKvValue(REPO_INDEX_NS, REPO_NAME, priorRepoIndexEntry);
     restore(teamSettingsPath(TEAM_NAME), priorTeamStore);
     restore(machineSettingsPath(), priorMachineStore);
   });

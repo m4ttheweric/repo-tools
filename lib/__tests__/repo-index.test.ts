@@ -28,9 +28,11 @@ import { dirname, join } from "path";
 import { machineSettingsPath, repoDataDir, rtDir, teamSettingsPath } from "../rt-paths.ts";
 import { getSetting } from "../settings/resolve.ts";
 import { setSetting } from "../settings/write.ts";
-import { getKnownRepos, __test__ } from "../repo-index.ts";
+import { closeStateDb, getStateDb, setKvValue } from "../state/index.ts";
+import { getKnownRepos, loadRepoIndex, updateRepoIndex, __test__ } from "../repo-index.ts";
 
 const TEAM = "acme";
+const REPO_INDEX_NS = "repo-index";
 
 describe("repo-index — rt.repoRoots (RT-49)", () => {
   const origHome = process.env.HOME;
@@ -41,6 +43,7 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "rt-repoindex-home-"));
     process.env.HOME = home;
+    closeStateDb();
     warnSpy = spyOn(console, "warn").mockImplementation(() => {});
   });
 
@@ -48,6 +51,7 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
     warnSpy.mockRestore();
     process.env.HOME = origHome;
     process.env.PATH = origPath;
+    closeStateDb();
     rmSync(home, { recursive: true, force: true });
   });
 
@@ -70,13 +74,11 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
     execSync('git -c user.email=t@t -c user.name=t commit --allow-empty -q -m init', { cwd: dir, stdio: "pipe" });
   }
 
-  /** Registers `repoName` -> `mainPath` directly in repos.json (bypassing
-   *  updateRepoIndex, which is off-limits for this ticket). */
+  /** Registers `repoName` -> `mainPath` directly in the store (bypassing
+   *  updateRepoIndex's git-worktree-list spawn, which is off-limits for this
+   *  ticket). */
   function indexRepo(repoName: string, mainPath: string): void {
-    const p = join(rtDir(), "repos.json");
-    mkdirSync(dirname(p), { recursive: true });
-    const existing = existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : {};
-    writeFileSync(p, JSON.stringify({ ...existing, [repoName]: mainPath }));
+    setKvValue(REPO_INDEX_NS, repoName, mainPath);
   }
 
   function setRepoRoots(entries: unknown[]): void {
@@ -473,22 +475,168 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
   // ─── 13. Disposable cache ─────────────────────────────────────────────────
 
   describe("13. disposable cache", () => {
-    test("deleting repos.json still surfaces everything under a configured root, nothing crashes", () => {
+    test("a pre-migration repos.json entry for a path that no longer exists is imported, then filtered from the picker", () => {
       const root = mkdtempSync(join(tmpdir(), "rt-cache-root-"));
       const repo = markerRepo(root, "stillhere");
       setRepoRoots([root]);
 
+      // A leftover pre-migration file: getKnownRepos() imports it (empty
+      // index, file present), but a registered path that no longer exists on
+      // disk is filtered out the same way it always was.
       const p = join(rtDir(), "repos.json");
-      if (existsSync(p)) rmSync(p);
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, JSON.stringify({ "stale-repo": "/nonexistent/path" }));
 
       const repos = getKnownRepos();
       expect(byName(repos, "stillhere")?.worktrees[0]?.path).toBe(repo);
+      expect(byName(repos, "stale-repo")).toBeUndefined();
+      expect(loadRepoIndex()["stale-repo"]).toBe("/nonexistent/path"); // imported into the store regardless
+      // repos.json is the live out-of-process compat mirror gitq reads, NOT
+      // a retired legacy file — it must never be renamed away, only kept
+      // in sync (unlike every other migrated path in this fix round).
+      expect(existsSync(p)).toBe(true);
+      expect(existsSync(`${p}.migrated`)).toBe(false);
+
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    test("a pre-migration repos.json is imported on first read, and stays in place (refreshed, never renamed) as the live compat mirror", () => {
+      const p = join(rtDir(), "repos.json");
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, JSON.stringify({ "repo-a": "/path/a", "repo-b": "/path/b" }));
+
+      expect(loadRepoIndex()).toEqual({ "repo-a": "/path/a", "repo-b": "/path/b" });
+      expect(existsSync(p)).toBe(true);
+      expect(existsSync(`${p}.migrated`)).toBe(false);
+      expect(JSON.parse(readFileSync(p, "utf8"))).toEqual({ "repo-a": "/path/a", "repo-b": "/path/b" });
+
+      // A second read sees the store directly (namespace non-empty), not a re-import.
+      expect(loadRepoIndex()).toEqual({ "repo-a": "/path/a", "repo-b": "/path/b" });
+    });
+
+    test("a daemon that only primes the index and never calls updateRepoIndex still leaves repos.json intact for gitq's out-of-process reader", () => {
+      const p = join(rtDir(), "repos.json");
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, JSON.stringify({ "repo-a": "/path/a" }));
+
+      // Simulates lib/daemon/repo-index.ts's boot-time prime: a read-only
+      // call site that never writes through updateRepoIndex.
+      loadRepoIndex();
+      loadRepoIndex();
+
+      expect(existsSync(p)).toBe(true);
+      expect(JSON.parse(readFileSync(p, "utf8"))).toEqual({ "repo-a": "/path/a" });
+    });
+
+    test("corrupt repos.json warns and is left in place, index reads as empty", () => {
+      const p = join(rtDir(), "repos.json");
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, "{ not valid json");
+
+      expect(loadRepoIndex()).toEqual({});
+      expect(existsSync(p)).toBe(true);
+      expect(existsSync(`${p}.migrated`)).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+    });
+
+    test("updateRepoIndex never throws when state.db cannot be opened (e.g. root-owned after sudo)", () => {
+      const parent = realpathSync(mkdtempSync(join(tmpdir(), "rt-updateindex-unopenable-")));
+      const root = join(parent, "repo");
+      realRepo(root);
+
+      // Materialize state.db, then strip all permissions so the next open
+      // throws instead of quarantining (quarantine only fires for
+      // corruption, not permission errors) — the getRepoIdentity() crash
+      // this test guards against.
+      getStateDb();
+      closeStateDb();
+      const dbPath = join(rtDir(), "state.db");
+      chmodSync(dbPath, 0o000);
+
+      try {
+        expect(() => updateRepoIndex("updated-repo", root)).not.toThrow();
+      } finally {
+        chmodSync(dbPath, 0o600); // afterEach's rmSync needs read access
+      }
+
+      rmSync(parent, { recursive: true, force: true });
+    });
+
+    test("getKnownRepos never throws when state.db cannot be opened — degrades to unregistered-scan results", () => {
+      const root = mkdtempSync(join(tmpdir(), "rt-getknown-unopenable-"));
+      const repo = markerRepo(root, "scannable");
+      setRepoRoots([root]);
+
+      getStateDb();
+      closeStateDb();
+      const dbPath = join(rtDir(), "state.db");
+      chmodSync(dbPath, 0o000);
+
+      try {
+        let repos: ReturnType<typeof getKnownRepos> = [];
+        expect(() => { repos = getKnownRepos(); }).not.toThrow();
+        expect(byName(repos, "scannable")?.worktrees[0]?.path).toBe(repo);
+      } finally {
+        chmodSync(dbPath, 0o600);
+      }
 
       rmSync(root, { recursive: true, force: true });
     });
 
     test("unset key + empty index = empty result, no crash", () => {
       expect(getKnownRepos()).toEqual([]);
+    });
+
+    test("updateRepoIndex round-trips through state.db, and rewrites repos.json as a synced compat mirror", () => {
+      const parent = realpathSync(mkdtempSync(join(tmpdir(), "rt-updateindex-")));
+      const root = join(parent, "repo");
+      realRepo(root);
+
+      const p = join(rtDir(), "repos.json");
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, JSON.stringify({ "stale-repo": "/somewhere" }));
+
+      updateRepoIndex("updated-repo", root);
+
+      // state.db is authoritative: the compat file is fully regenerated from
+      // it, not merged with whatever was already on disk.
+      expect(loadRepoIndex()["updated-repo"]).toBe(root);
+      expect(JSON.parse(readFileSync(p, "utf8"))).toEqual({ "updated-repo": root });
+
+      rmSync(parent, { recursive: true, force: true });
+    });
+
+    test("the compat file mirrors every repo-index entry, not just the one just updated", () => {
+      const parent = realpathSync(mkdtempSync(join(tmpdir(), "rt-updateindex-multi-")));
+      const rootA = join(parent, "repo-a");
+      const rootB = join(parent, "repo-b");
+      realRepo(rootA);
+      realRepo(rootB);
+
+      updateRepoIndex("repo-a", rootA);
+      updateRepoIndex("repo-b", rootB);
+
+      const p = join(rtDir(), "repos.json");
+      expect(JSON.parse(readFileSync(p, "utf8"))).toEqual({ "repo-a": rootA, "repo-b": rootB });
+
+      rmSync(parent, { recursive: true, force: true });
+    });
+
+    test("a repos.json compat-write failure never breaks the state.db write", () => {
+      const parent = realpathSync(mkdtempSync(join(tmpdir(), "rt-updateindex-failcompat-")));
+      const root = join(parent, "repo");
+      realRepo(root);
+
+      // Occupy the compat path with a directory so writeFileSync fails —
+      // state.db lives at a different filename in the same rtDir, so its
+      // own write is unaffected.
+      const p = join(rtDir(), "repos.json");
+      mkdirSync(p, { recursive: true });
+
+      expect(() => updateRepoIndex("updated-repo", root)).not.toThrow();
+      expect(loadRepoIndex()["updated-repo"]).toBe(root);
+
+      rmSync(parent, { recursive: true, force: true });
     });
   });
 

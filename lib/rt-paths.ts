@@ -60,6 +60,17 @@ export function logsDir(): string {
 }
 
 /**
+ * ~/.mattstack/rt/tmp — scratch files an external tool needs on disk (a
+ * config a subprocess reads via `--flag`, staged plaintext before
+ * encryption) but that carry no durable state of their own. Distinct from
+ * `rtDir()`'s top level, which `rt verify`/backup tooling treat as "the
+ * durable tree" — a file here must never be load-bearing if missing.
+ */
+export function tmpDir(): string {
+  return join(rtDir(), "tmp");
+}
+
+/**
  * ~/.mattstack/rt/repos/<repoName> — a single repo's data directory (config,
  * hooks, scripts, run-history, etc.). This is `RepoIdentity.dataDir`.
  */
