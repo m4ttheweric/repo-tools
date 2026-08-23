@@ -790,7 +790,9 @@ export const TREE: Record<string, CommandNode> = {
         description: "Toggle between local dev source and the installed production binary",
         module: "./commands/settings.ts",
         fn: "toggleDevMode",
-        requiresTTY: true,
+        // Only needs a TTY to prompt for Target — the app's Settings pane
+        // (and any other non-interactive caller) always supplies it directly.
+        requiresTTY: (args) => !args.some((a) => !a.startsWith("--")),
         args: [
           { name: "Target", type: "select", hint: "Omit to be prompted interactively", options: [{ value: "dev", label: "dev", hint: "Run from local source" }, { value: "prod", label: "prod", hint: "Run the installed binary (from mattstack.app)" }] },
         ],

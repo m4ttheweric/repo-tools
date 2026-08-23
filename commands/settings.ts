@@ -606,8 +606,6 @@ async function handoffToFlavor(outgoing: FlavorInfo, incoming: FlavorInfo): Prom
 }
 
 export async function toggleDevMode(args: string[], exists: (path: string) => boolean = existsSync): Promise<void> {
-  const { select } = await import("../lib/rt-render.tsx");
-
   const mode = currentMode();
   const sourcePath = detectSourcePath();
 
@@ -626,6 +624,13 @@ export async function toggleDevMode(args: string[], exists: (path: string) => bo
   let target = args[0] as "dev" | "prod" | undefined;
 
   if (target !== "dev" && target !== "prod") {
+    if (!process.stdin.isTTY) {
+      console.log(`  ${red}✗ no target given and no terminal to prompt in${reset}`);
+      console.log(`  ${dim}usage: rt settings dev-mode <dev|prod>${reset}\n`);
+      process.exitCode = 2;
+      return;
+    }
+    const { select } = await import("../lib/rt-render.tsx");
     target = await select({
       message: "Switch to",
       options: [

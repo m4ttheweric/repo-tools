@@ -12,6 +12,7 @@
  */
 
 import { randomBytes } from "crypto";
+import { dim, green, red, reset, yellow } from "../lib/ansi.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { readAgeKey, createRealAgeKeySeam } from "../lib/home/age-key.ts";
 import { promptSecret } from "../lib/prompt-secret.ts";
@@ -33,7 +34,7 @@ import { DEFAULT_CALLBACK_PORT, DEFAULT_SCOPE_NEEDS, buildSlackManifest } from "
 import { STEPS } from "../lib/setup/steps/index.ts";
 import { readStagedSecret, stageSecret } from "../lib/setup/staging.ts";
 import { readTeamSnapshot, type TeamSnapshot } from "../lib/setup/team-settings.ts";
-import type { Plan, RowStatus } from "../lib/setup/contract.ts";
+import type { Plan, Row, RowStatus } from "../lib/setup/contract.ts";
 import { createRelayClient, inviteRelayUrl, type RelayClient } from "../lib/team/relay-client.ts";
 import type { SecretPresence } from "../lib/setup/validators/accounts.ts";
 
@@ -73,14 +74,39 @@ const GLYPH: Record<RowStatus, string> = {
   checking: "…",
 };
 
+const GLYPH_COLOR: Record<RowStatus, string> = {
+  ready: green,
+  missing: red,
+  invalid: red,
+  error: red,
+  "needs-you": yellow,
+  skipped: dim,
+  checking: dim,
+};
+
 export function renderPlanHuman(plan: Plan): string[] {
   const lines: string[] = [];
   for (const group of plan.groups) {
     lines.push(group.title);
-    for (const r of group.rows) lines.push(`  ${GLYPH[r.status]} ${r.title}  ${r.detail}`);
+    for (const r of group.rows) lines.push(`  ${GLYPH_COLOR[r.status]}${GLYPH[r.status]}${reset} ${r.title}  ${r.detail}`);
   }
   lines.push(plan.canInstall ? "Install: ready" : `Install: blocked by: ${plan.requiredMissing.join(", ")}`);
   return lines;
+}
+
+/** `rt setup <integration> connect`, for a missing account row — only "connect"/"oauth" actions name that verb; the owner-once slack-app row (and any row still waiting on it, which carries no action at all) has no per-integration connect flow to point at. */
+function accountConnectVerb(r: { status: RowStatus; action: Row["action"] }): string | null {
+  if (r.status !== "missing") return null;
+  if (r.action?.type !== "connect" && r.action?.type !== "oauth") return null;
+  return `rt setup ${r.action.integration} connect`;
+}
+
+function missingAccountLines(plan: Plan): string[] {
+  const rows = plan.groups.find((g) => g.id === "accounts")?.rows ?? [];
+  return rows.flatMap((r) => {
+    const verb = accountConnectVerb(r);
+    return verb ? [`  - ${r.title}: ${verb}`] : [];
+  });
 }
 
 async function runPlan(args: string[], deps: SetupDeps, mode: "plan" | "status", verb: string, header?: string): Promise<void> {
@@ -106,6 +132,15 @@ async function runPlan(args: string[], deps: SetupDeps, mode: "plan" | "status",
   }
   if (header) deps.print(header);
   for (const line of renderPlanHuman(plan)) deps.print(line);
+
+  if (mode === "status") {
+    const missingAccounts = missingAccountLines(plan);
+    if (missingAccounts.length > 0) {
+      deps.print("");
+      deps.print("Missing accounts — connect with:");
+      for (const line of missingAccounts) deps.print(line);
+    }
+  }
 }
 
 export async function setupPlan(args: string[], _ctx: CommandContext = {}, deps: SetupDeps = realSetupDeps()): Promise<void> {

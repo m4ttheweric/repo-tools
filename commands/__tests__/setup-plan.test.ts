@@ -1,9 +1,11 @@
 import { describe, test, expect, spyOn } from "bun:test";
 import { setupPlan, setupStatus, renderPlanHuman, type SetupDeps } from "../setup.ts";
 import type { Plan } from "../../lib/setup/contract.ts";
+import { writeIntent } from "../../lib/setup/intent.ts";
 import type { SecretPresence } from "../../lib/setup/validators/accounts.ts";
-import { fakeProbes, ok } from "../../lib/setup/__tests__/fakes.ts";
+import { fakeProbes, missing, ok } from "../../lib/setup/__tests__/fakes.ts";
 import type { ExecScript } from "../../lib/setup/__tests__/fakes.ts";
+import { green, red, reset } from "../../lib/ansi.ts";
 
 /** setupPlan/setupStatus call process.exit(2) on a user-actionable error; the sentinel throw stops it from actually killing the test process, and the caller reads the exit code off the spy. */
 async function runExpectingExit(fn: () => Promise<void>): Promise<number | undefined> {
@@ -96,6 +98,32 @@ describe("setupStatus", () => {
     const plan = JSON.parse(deps.lines[0]!) as Plan;
     expect(plan.contract).toBe(1);
   });
+
+  test("human mode appends a footer naming `rt setup <integration> connect` for each missing account", async () => {
+    const lines: string[] = [];
+    const p = fakeProbes({
+      exec: (argv) => (argv[0] === "sw_vers" ? ok("15.6") : argv[0] === "gh" ? missing("gh") : ok()),
+    });
+    writeIntent(p, {
+      v: 1,
+      at: "2026-08-21T00:00:00.000Z",
+      mode: "create",
+      team: { slug: "acme", name: "Acme", remote: "https://github.com/o/r.git", others: false },
+    });
+    const deps: SetupDeps = { probes: p, secrets: fakeSecrets(), print: (s) => lines.push(s) };
+
+    await setupStatus([], {}, deps);
+
+    expect(lines).toContain("Missing accounts — connect with:");
+    expect(lines).toContain("  - GitHub: rt setup github connect");
+  });
+
+  test("human mode omits the missing-accounts footer entirely when nothing is missing", async () => {
+    const deps = captureDeps();
+    await setupStatus([], {}, deps);
+
+    expect(deps.lines.some((l) => l.includes("Missing accounts"))).toBe(false);
+  });
 });
 
 // setupInteractive (the real TTY walk, not the old setupStatus alias) is
@@ -122,8 +150,29 @@ describe("renderPlanHuman", () => {
 
     const lines = renderPlanHuman(plan);
     expect(lines[0]).toBe("Your Mac");
-    expect(lines[1]).toBe("  ✓ Full Disk Access  Granted");
+    expect(lines[1]).toBe(`  ${green}✓${reset} Full Disk Access  Granted`);
     expect(lines.at(-1)).toBe("Install: blocked by: perm.fda");
+  });
+
+  test("a missing row's glyph is colored red", () => {
+    const plan: Plan = {
+      contract: 1,
+      at: "2026-08-21T00:00:00.000Z",
+      team: { slug: "acme", name: "Acme", mode: "join" },
+      groups: [
+        {
+          id: "accounts",
+          title: "Accounts",
+          rows: [
+            { id: "account.linear", kind: "account", title: "Linear", why: "x", required: true, optionalNote: null, status: "missing", detail: "no account connected", action: null, recheck: "on-change" },
+          ],
+        },
+      ],
+      canInstall: false,
+      requiredMissing: ["account.linear"],
+    };
+
+    expect(renderPlanHuman(plan)[1]).toBe(`  ${red}✗${reset} Linear  no account connected`);
   });
 
   test("canInstall:true renders 'Install: ready'", () => {

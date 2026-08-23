@@ -7,7 +7,7 @@ sidebar_label: init
 
 `rt › home › init`
 
-Provision the home repo: print, then run, the adoption plan
+Provision this machine: print, then run, the plan (which clones the user repo as one of its steps)
 
 ## Usage
 
@@ -20,6 +20,10 @@ rt home init [flags]
 | Flag / Arg | Type | Default | Description |
 | --- | --- | --- | --- |
 | [`--dry-run`](/guides/common-flags) | boolean | `false` | Print the plan without running it |
+| `--url` | text |  | The user repo to clone (default: https://github.com/m4ttheweric/mattstack-home) |
+| `--profile` | text |  | Adopt this machine profile (user/local/&lt;key&gt;/); combine with --new-profile to create a new one under this name — skips the interactive picker on a fresh machine |
+| `--new-profile` | boolean | `false` | Start a new machine profile (named by --profile, or this machine's hostname slug) instead of adopting an existing one |
+| `--no-materialize` | boolean | `false` | Skip the last phase — regenerating rt's PATH shims/daemon registration and each installed tool's setup verb |
 
 _See code: [commands/home.ts › homeInit](https://github.com/m4ttstack/rt/blob/main/commands/home.ts)_
 
