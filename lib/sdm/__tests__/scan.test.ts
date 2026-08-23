@@ -1,5 +1,10 @@
 import { describe, test, expect } from "bun:test";
-import { parseCatalogResources } from "../scan.ts";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
+import { tmpdir } from "os";
+import { openStateDb } from "../../state/db.ts";
+import { closeStateDb } from "../../state/index.ts";
+import { CATALOG_CACHE_MS, parseCatalogResources, readScanCache, scanCachePath, writeScanCache, type SdmResource } from "../scan.ts";
 
 const CATALOG = [
   "ID                     NAME                     PUBLIC   TYPE              AUTH                 ACCESS       TAGS",
@@ -32,5 +37,62 @@ describe("parseCatalogResources", () => {
     expect(names).toContain("assured-dev");                 // status-only standing access
     expect(rows.find(r => r.name === "assured-dev")!.standingAccess).toBe(true);
     expect(names.filter(n => n === "assured-amfam-staging")).toHaveLength(1); // deduped
+  });
+});
+
+function freshDb() {
+  const dir = mkdtempSync(join(tmpdir(), "rt-sdm-scan-"));
+  return { db: openStateDb(join(dir, "state.db"), "cli"), dir };
+}
+
+const RESOURCES: SdmResource[] = [{ name: "assured-dev", type: "postgres", tags: [], standingAccess: true }];
+
+describe("readScanCache / writeScanCache", () => {
+  test("round-trips through the store within CATALOG_CACHE_MS", () => {
+    const { db, dir } = freshDb();
+    expect(readScanCache(db)).toBeNull();
+    writeScanCache(RESOURCES, db);
+    expect(readScanCache(db)).toEqual(RESOURCES);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("an empty result never clobbers a good cache", () => {
+    const { db, dir } = freshDb();
+    writeScanCache(RESOURCES, db);
+    writeScanCache([], db);
+    expect(readScanCache(db)).toEqual(RESOURCES);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a cache older than CATALOG_CACHE_MS reads as null (stale)", () => {
+    const { db, dir } = freshDb();
+    db.query("INSERT INTO kv (ns, k, v, updated_at) VALUES ('sdm-scan-cache', 'state', ?, 0);")
+      .run(JSON.stringify({ builtAt: Date.now() - CATALOG_CACHE_MS - 1, resources: RESOURCES }));
+    expect(readScanCache(db)).toBeNull();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a stale on-disk sdm/scan-cache.json is ignored once the store owns the value, and gets unlinked on write", () => {
+    const home = mkdtempSync(join(tmpdir(), "rt-sdm-scan-home-"));
+    const origHome = process.env.HOME;
+    process.env.HOME = home;
+    closeStateDb();
+    try {
+      const legacyPath = scanCachePath();
+      mkdirSync(dirname(legacyPath), { recursive: true });
+      writeFileSync(legacyPath, JSON.stringify({ builtAt: Date.now(), resources: [{ name: "stale-only", type: "postgres", tags: [], standingAccess: true }] }));
+      expect(existsSync(legacyPath)).toBe(true);
+
+      // The store, not the stale file, is authoritative — a fresh store has nothing yet.
+      expect(readScanCache()).toBeNull();
+
+      writeScanCache(RESOURCES);
+      expect(readScanCache()).toEqual(RESOURCES);
+      expect(existsSync(legacyPath)).toBe(false);
+    } finally {
+      process.env.HOME = origHome;
+      closeStateDb();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

@@ -1,9 +1,10 @@
 /**
- * Global repo index — tracks all known repos in ~/.mattstack/rt/repos.json.
+ * Global repo index — tracks all known repos in state.db's kv store
+ * (ns='repo-index', one row per repo: k=repoName, v=main-worktree path).
  *
- * repos.json is a DISPOSABLE CACHE (RT-49): a name → main-worktree-path map
- * that self-populates as rt visits repos (`updateRepoIndex`, called from
- * lib/repo.ts's `getRepoIdentity`). Deleting it loses nothing durable — every
+ * The index is a DISPOSABLE CACHE (RT-49, collapsed into state.db by RT-50):
+ * it self-populates as rt visits repos (`updateRepoIndex`, called from
+ * lib/repo.ts's `getRepoIdentity`). Losing it loses nothing durable — every
  * entry regenerates the next time rt runs inside that repo, and meanwhile the
  * picker still surfaces every repo reachable under the `rt.repoRoots`
  * settings key (below) as an unregistered candidate. It is not part of any
@@ -14,11 +15,11 @@
  */
 
 import { execSync } from "child_process";
-import { existsSync, readdirSync, realpathSync, type Dirent } from "fs";
+import { existsSync, readdirSync, realpathSync, unlinkSync, type Dirent } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join, resolve as resolvePath } from "path";
 import { repoDataDir, rtDir } from "./rt-paths.ts";
-import { readJson, writeJson } from "./json-store.ts";
+import { listKvValues, setKvValue } from "./state/index.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
 
@@ -40,29 +41,40 @@ interface RepoIndex {
   [repoName: string]: string; // repoName → primary repo root path
 }
 
+const REPO_INDEX_NS = "repo-index";
+
+/** Retired storage location — kept only so a leftover pre-migration file can be cleaned up. */
 function repoIndexPath(): string {
   return join(rtDir(), "repos.json");
 }
 
-function loadRepoIndex(): RepoIndex {
-  return readJson<RepoIndex>(repoIndexPath(), {});
+function unlinkLegacyRepoIndex(): void {
+  try {
+    unlinkSync(repoIndexPath());
+  } catch {
+    // already gone, or never existed
+  }
+}
+
+export function loadRepoIndex(): RepoIndex {
+  return listKvValues<string>(REPO_INDEX_NS);
 }
 
 export function updateRepoIndex(repoName: string, repoRoot: string): void {
-  const index = loadRepoIndex();
+  let mainPath: string;
   try {
     const mainWorktree = execSync("git worktree list --porcelain", {
       cwd: repoRoot,
       encoding: "utf8",
       stdio: "pipe",
     });
-    const mainPath = mainWorktree.split("\n")[0]?.replace("worktree ", "").trim();
-    index[repoName] = mainPath || repoRoot;
+    mainPath = mainWorktree.split("\n")[0]?.replace("worktree ", "").trim() || repoRoot;
   } catch {
-    index[repoName] = repoRoot;
+    mainPath = repoRoot;
   }
   try {
-    writeJson(repoIndexPath(), index);
+    setKvValue(REPO_INDEX_NS, repoName, mainPath);
+    unlinkLegacyRepoIndex();
   } catch { /* best effort */ }
 }
 

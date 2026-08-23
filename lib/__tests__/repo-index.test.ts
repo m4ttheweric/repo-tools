@@ -28,9 +28,11 @@ import { dirname, join } from "path";
 import { machineSettingsPath, repoDataDir, rtDir, teamSettingsPath } from "../rt-paths.ts";
 import { getSetting } from "../settings/resolve.ts";
 import { setSetting } from "../settings/write.ts";
-import { getKnownRepos, __test__ } from "../repo-index.ts";
+import { closeStateDb, setKvValue } from "../state/index.ts";
+import { getKnownRepos, loadRepoIndex, updateRepoIndex, __test__ } from "../repo-index.ts";
 
 const TEAM = "acme";
+const REPO_INDEX_NS = "repo-index";
 
 describe("repo-index — rt.repoRoots (RT-49)", () => {
   const origHome = process.env.HOME;
@@ -41,6 +43,7 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "rt-repoindex-home-"));
     process.env.HOME = home;
+    closeStateDb();
     warnSpy = spyOn(console, "warn").mockImplementation(() => {});
   });
 
@@ -48,6 +51,7 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
     warnSpy.mockRestore();
     process.env.HOME = origHome;
     process.env.PATH = origPath;
+    closeStateDb();
     rmSync(home, { recursive: true, force: true });
   });
 
@@ -70,13 +74,11 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
     execSync('git -c user.email=t@t -c user.name=t commit --allow-empty -q -m init', { cwd: dir, stdio: "pipe" });
   }
 
-  /** Registers `repoName` -> `mainPath` directly in repos.json (bypassing
-   *  updateRepoIndex, which is off-limits for this ticket). */
+  /** Registers `repoName` -> `mainPath` directly in the store (bypassing
+   *  updateRepoIndex's git-worktree-list spawn, which is off-limits for this
+   *  ticket). */
   function indexRepo(repoName: string, mainPath: string): void {
-    const p = join(rtDir(), "repos.json");
-    mkdirSync(dirname(p), { recursive: true });
-    const existing = existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : {};
-    writeFileSync(p, JSON.stringify({ ...existing, [repoName]: mainPath }));
+    setKvValue(REPO_INDEX_NS, repoName, mainPath);
   }
 
   function setRepoRoots(entries: unknown[]): void {
@@ -473,22 +475,43 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
   // ─── 13. Disposable cache ─────────────────────────────────────────────────
 
   describe("13. disposable cache", () => {
-    test("deleting repos.json still surfaces everything under a configured root, nothing crashes", () => {
+    test("a stale on-disk repos.json is ignored — the store is authoritative, nothing crashes", () => {
       const root = mkdtempSync(join(tmpdir(), "rt-cache-root-"));
       const repo = markerRepo(root, "stillhere");
       setRepoRoots([root]);
 
+      // A leftover pre-migration file with different, stale data must never
+      // be read back.
       const p = join(rtDir(), "repos.json");
-      if (existsSync(p)) rmSync(p);
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, JSON.stringify({ "stale-repo": "/nonexistent/path" }));
 
       const repos = getKnownRepos();
       expect(byName(repos, "stillhere")?.worktrees[0]?.path).toBe(repo);
+      expect(byName(repos, "stale-repo")).toBeUndefined();
 
       rmSync(root, { recursive: true, force: true });
     });
 
     test("unset key + empty index = empty result, no crash", () => {
       expect(getKnownRepos()).toEqual([]);
+    });
+
+    test("updateRepoIndex round-trips through state.db, not repos.json, and unlinks a leftover legacy file", () => {
+      const parent = realpathSync(mkdtempSync(join(tmpdir(), "rt-updateindex-")));
+      const root = join(parent, "repo");
+      realRepo(root);
+
+      const p = join(rtDir(), "repos.json");
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, JSON.stringify({ "other-repo": "/somewhere" }));
+
+      updateRepoIndex("updated-repo", root);
+
+      expect(loadRepoIndex()["updated-repo"]).toBe(root);
+      expect(existsSync(p)).toBe(false);
+
+      rmSync(parent, { recursive: true, force: true });
     });
   });
 

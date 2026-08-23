@@ -1,21 +1,16 @@
 /**
- * Repo discovery — the ~/.mattstack/rt/repos.json index (name → absolute path) and
- * per-repo git metadata resolution.
+ * Repo discovery — the repo index (name → absolute path, in state.db's kv
+ * store) and per-repo git metadata resolution.
  */
 
 import { existsSync, readFileSync, statSync } from "fs";
 import { join, resolve } from "path";
-import { RT_DIR } from "../daemon-config.ts";
+import { loadRepoIndex as loadRepoIndexFromStore } from "../repo-index.ts";
 import type { RepoIndex } from "./handlers/types.ts";
 
-export const REPOS_JSON_PATH = join(RT_DIR, "repos.json");
-
+/** Thin re-export so this module's existing callers keep working unchanged. */
 export function loadRepoIndex(): RepoIndex {
-  try {
-    return JSON.parse(readFileSync(REPOS_JSON_PATH, "utf8"));
-  } catch {
-    return {};
-  }
+  return loadRepoIndexFromStore();
 }
 
 /**
