@@ -1174,6 +1174,19 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  uninstall: {
+    description: "Uninstall mattstack: reverses setup — services, links, plugins, optionally ~/.mattstack",
+    module: "./commands/uninstall.ts",
+    fn: "runUninstallCommand",
+    args: [
+      { name: "Keep data", flag: "--keep-data", type: "boolean", default: false, hint: "Keep ~/.mattstack (settings, teams, secrets) — the default" },
+      { name: "Delete data", flag: "--delete-data", type: "boolean", default: false, hint: "Also delete ~/.mattstack; requires --yes when not on a TTY" },
+      { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "List what would be removed without removing anything" },
+      { name: "Yes", flag: "--yes", type: "boolean", default: false, hint: "Skip the confirmation prompt" },
+      SETUP_JSON_ARG,
+    ],
+  },
+
   team: {
     description: "Team repo: create, join, invite, publish, members",
     subcommands: {

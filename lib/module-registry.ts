@@ -43,6 +43,7 @@ import * as team from "../commands/team.ts";
 import * as cron from "../commands/cron.ts";
 import * as services from "../commands/services.ts";
 import * as tools from "../commands/tools.ts";
+import * as uninstall from "../commands/uninstall.ts";
 
 export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/commit.ts": commit,
@@ -82,4 +83,5 @@ export const MODULE_REGISTRY: Record<string, any> = {
   "./commands/cron.ts": cron,
   "./commands/services.ts": services,
   "./commands/tools.ts": tools,
+  "./commands/uninstall.ts": uninstall,
 };
