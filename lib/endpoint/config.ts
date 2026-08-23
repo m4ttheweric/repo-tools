@@ -42,9 +42,7 @@
  * either.
  */
 
-import { join } from "node:path";
-import { readJson } from "../json-store.ts";
-import { rtDir } from "../rt-paths.ts";
+import { loadRepoIndex } from "../repo-index.ts";
 import { getSetting, type ResolveOpts } from "../settings/resolve.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -221,8 +219,7 @@ function sanitizeIntercepts(raw: unknown): InterceptConfig[] {
  * still resolves everything that doesn't need one.
  */
 function repoRootFor(repoName: string): string | undefined {
-  const index = readJson<Record<string, string>>(join(rtDir(), "repos.json"), {});
-  return index[repoName];
+  return loadRepoIndex()[repoName];
 }
 
 /**

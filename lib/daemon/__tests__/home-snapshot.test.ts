@@ -1,11 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { execFileSync } from "child_process";
+import type { Database } from "bun:sqlite";
 import type { Logger } from "pino";
 import type { RunResult } from "../../subprocess.ts";
 import type { Owners } from "../../home/snapshot-owners.ts";
+import { openStateDb } from "../../state/db.ts";
+import { closeStateDb, getKvValue } from "../../state/index.ts";
 import { startHomeSnapshot, type HomeSnapshotDeps, type HomeSnapshotSettings } from "../home-snapshot.ts";
 
 // ─── test doubles ────────────────────────────────────────────────────────────
@@ -160,17 +163,24 @@ async function flushAsync(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-// baseDeps' default statePath points at a real (but throwaway) temp
-// directory, not a bogus literal like "/fake/state.json" — persistState
-// does a real mkdirSync+writeFileSync+rename, and a fake, unwritable path
-// would silently fail (caught and warned, per its own design) rather than
-// exercising the real write path these tests want to cover.
+// baseDeps' default db points at a real (but throwaway) temp state.db, not a
+// bogus in-memory stand-in — persistState does a real setKvValue against it,
+// and a fake unwritable target would silently fail (caught and warned, per
+// its own design) rather than exercising the real write path these tests
+// want to cover. Every call gets its OWN fresh db (never the process-wide
+// getStateDb() singleton), so tests never leak state into each other.
 const createdStateDirs: string[] = [];
 afterAll(() => {
   for (const dir of createdStateDirs) {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
   }
 });
+
+function freshDb(): Database {
+  const stateDir = mkdtempSync(join(tmpdir(), "rt-home-snapshot-fakestate-"));
+  createdStateDirs.push(stateDir);
+  return openStateDb(join(stateDir, "state.db"), "cli");
+}
 
 function baseDeps(overrides: Partial<HomeSnapshotDeps> = {}): {
   deps: HomeSnapshotDeps;
@@ -185,8 +195,6 @@ function baseDeps(overrides: Partial<HomeSnapshotDeps> = {}): {
   const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders());
   const watch = makeFakeWatch();
   const timers = makeFakeTimers();
-  const stateDir = mkdtempSync(join(tmpdir(), "rt-home-snapshot-fakestate-"));
-  createdStateDirs.push(stateDir);
 
   const deps: HomeSnapshotDeps = {
     log,
@@ -199,7 +207,7 @@ function baseDeps(overrides: Partial<HomeSnapshotDeps> = {}): {
     now: () => 1_000_000,
     readSettings: () => DEFAULT_SETTINGS,
     readOwners: () => NO_OWNERS,
-    statePath: join(stateDir, "state.json"),
+    db: freshDb(),
     ...overrides,
   };
 
@@ -600,15 +608,17 @@ describe("startHomeSnapshot — commit shapes", () => {
 
   test("janitor zone commits ONLY on reason janitor/manual, never on watch, exact message shape, own pathspec-restricted commit", async () => {
     const owners: Owners = { zones: { "prefs/": { owner: "matt", claimedAt: "2026-01-01T00:00:00.000Z" } } };
-    // Zone dirty since long before now, past the (small) threshold.
-    const statePath = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-state-"))) + "/state.json";
-    writeFileSync(statePath, JSON.stringify({ firstSeenDirty: { "prefs/": 0 } }));
+    // Zone dirty since long before now, past the (small) threshold — seeded
+    // straight into the store, matching how a prior run's persistState left it.
+    const db = freshDb();
+    db.query("INSERT INTO kv (ns, k, v, updated_at) VALUES ('home-snapshot', 'state', ?, 0);")
+      .run(JSON.stringify({ firstSeenDirty: { "prefs/": 0 } }));
 
     const { fn: execFn, calls: execCalls } = makeFakeExec(defaultResponders({ statusZ: "?? prefs/x.md\0" }));
     const { deps, broadcasts } = baseDeps({
       exec: execFn,
       readOwners: () => owners,
-      statePath,
+      db,
       now: () => 10_000_000, // far past a 1-hour threshold from firstSeenDirty=0 -> floor(10_000_000/3_600_000) = 2 hours
     });
 
@@ -626,8 +636,6 @@ describe("startHomeSnapshot — commit shapes", () => {
       "git", "commit", "-q", "-m", "snapshot (janitor): prefs/ dirty >2h, owner matt", "--", "prefs/",
     ]);
     expect(broadcasts.some((b) => b.type === "home:snapshot" && (b.data as any).paths.includes("prefs/"))).toBe(true);
-
-    rmSync(statePath, { force: true });
   });
 });
 
@@ -809,68 +817,77 @@ describe("startHomeSnapshot — push", () => {
   });
 });
 
-// ─── state file round-trip ───────────────────────────────────────────────────
+// ─── state store round-trip (RT-50 collapse) ──────────────────────────────────
 
 describe("startHomeSnapshot — state persistence", () => {
-  test("nextFirstSeenDirty is persisted atomically (temp file + rename, no stray .tmp) and reloaded by a fresh handle", async () => {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-state-")));
-    const statePath = join(dir, "home-snapshot-state.json");
+  test("nextFirstSeenDirty is persisted to the store and reloaded by a fresh handle sharing the same db", async () => {
+    const owners: Owners = { zones: { "prefs/": { owner: "matt", claimedAt: "2026-01-01T00:00:00.000Z" } } };
+    const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? prefs/x.md\0" }));
+    const { deps } = baseDeps({ exec: execFn, readOwners: () => owners, now: () => 42 });
+
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+    await handle.runNow("manual");
+
+    const onStore = getKvValue<{ firstSeenDirty: Record<string, number> }>("home-snapshot", "state", { firstSeenDirty: {} }, deps.db);
+    expect(onStore.firstSeenDirty["prefs/"]).toBe(42);
+    expect(handle.status().firstSeenDirty["prefs/"]).toBe(42);
+
+    // A second handle sharing the SAME db (a daemon restart against the same
+    // state.db) picks the persisted value back up.
+    const { deps: deps2 } = baseDeps({ readOwners: () => owners, db: deps.db });
+    const handle2 = startHomeSnapshot(deps2);
+    await handle2.ready;
+    expect(handle2.status().firstSeenDirty["prefs/"]).toBe(42);
+  });
+
+  test("a malformed stored row starts from empty state instead of crashing", async () => {
+    const db = freshDb();
+    db.query("INSERT INTO kv (ns, k, v, updated_at) VALUES ('home-snapshot', 'state', '{not json', 0);").run();
+    const { deps } = baseDeps({ db });
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    expect(handle.status().firstSeenDirty).toEqual({});
+  });
+
+  test("no prior write (first run) does NOT warn", async () => {
+    const { deps, log } = baseDeps();
+    const handle = startHomeSnapshot(deps);
+    await handle.ready;
+
+    expect(log.calls.filter((c) => c.level === "warn").length).toBe(0);
+    expect(handle.status().firstSeenDirty).toEqual({});
+  });
+
+  test("a stale on-disk home-snapshot-state.json is ignored once the store owns the value, and gets unlinked on write", async () => {
+    const home = mkdtempSync(join(tmpdir(), "rt-home-snapshot-legacy-home-"));
+    const origHome = process.env.HOME;
+    process.env.HOME = home;
+    closeStateDb();
     try {
-      const owners: Owners = { zones: { "prefs/": { owner: "matt", claimedAt: "2026-01-01T00:00:00.000Z" } } };
-      const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? prefs/x.md\0" }));
-      const { deps } = baseDeps({ exec: execFn, readOwners: () => owners, statePath, now: () => 42 });
+      const legacyPath = join(home, ".mattstack", "rt", "home-snapshot-state.json");
+      mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
+      writeFileSync(legacyPath, JSON.stringify({ firstSeenDirty: { "stale/": 1 } }));
+      expect(existsSync(legacyPath)).toBe(true);
+
+      const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? notes.md\0" }));
+      // No `db` override: this run goes through the real getStateDb() singleton,
+      // matching the real daemon wiring, so the legacy-unlink path (which
+      // targets rtDir()) actually lands under the HOME faked above.
+      const { deps } = baseDeps({ exec: execFn, db: undefined, now: () => 99 });
 
       const handle = startHomeSnapshot(deps);
       await handle.ready;
       await handle.runNow("manual");
 
-      expect(existsSync(statePath)).toBe(true);
-      const onDisk = JSON.parse(readFileSync(statePath, "utf8"));
-      expect(onDisk.firstSeenDirty["prefs/"]).toBe(42);
-      expect(handle.status().firstSeenDirty["prefs/"]).toBe(42);
-      // No leftover `<path>.<pid>.<rand>.tmp` from the write-temp-then-rename.
-      const leftoverTmp = readdirSync(dir).filter((f) => f !== "home-snapshot-state.json");
-      expect(leftoverTmp).toEqual([]);
-
-      const { deps: deps2 } = baseDeps({ readOwners: () => owners, statePath });
-      const handle2 = startHomeSnapshot(deps2);
-      await handle2.ready;
-      expect(handle2.status().firstSeenDirty["prefs/"]).toBe(42);
+      // The store, not the stale file, is authoritative.
+      expect(handle.status().firstSeenDirty["stale/"]).toBeUndefined();
+      expect(existsSync(legacyPath)).toBe(false);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("a corrupt state file warns loudly (path + err) and starts from empty state instead of crashing", async () => {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-state-corrupt-")));
-    const statePath = join(dir, "home-snapshot-state.json");
-    writeFileSync(statePath, "{ not valid json ][");
-    try {
-      const { deps, log } = baseDeps({ statePath });
-      const handle = startHomeSnapshot(deps);
-      await handle.ready;
-
-      const warnCall = log.calls.find((c) => c.level === "warn" && (c.args[1] as string)?.includes?.("state file unreadable"));
-      expect(warnCall).toBeDefined();
-      expect((warnCall!.args[0] as any).path).toBe(statePath);
-      expect(handle.status().firstSeenDirty).toEqual({});
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test("a missing state file (first run) does NOT warn", async () => {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-state-missing-")));
-    const statePath = join(dir, "home-snapshot-state.json");
-    try {
-      const { deps, log } = baseDeps({ statePath });
-      const handle = startHomeSnapshot(deps);
-      await handle.ready;
-
-      expect(log.calls.filter((c) => c.level === "warn").length).toBe(0);
-      expect(handle.status().firstSeenDirty).toEqual({});
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
+      process.env.HOME = origHome;
+      closeStateDb();
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });
@@ -910,7 +927,7 @@ describe("startHomeSnapshot — real git integration", () => {
   test("commits auto paths, pushes to the local bare origin, leaves a claimed zone uncommitted", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-integration-")));
     const { originDir, repoDir } = initRepoWithOrigin(root);
-    const statePath = join(root, "state.json");
+    const db = openStateDb(join(root, "state.db"), "cli");
 
     try {
       writeFileSync(join(repoDir, "README.md"), "seed\n");
@@ -933,7 +950,7 @@ describe("startHomeSnapshot — real git integration", () => {
         log,
         broadcast: () => {},
         repoDir,
-        statePath,
+        db,
         readSettings: () => ({ ...DEFAULT_SETTINGS, pushDelaySec: 1 }),
         readOwners: () => owners,
       });
@@ -965,7 +982,7 @@ describe("startHomeSnapshot — real git integration", () => {
   test("a staged file inside a claimed zone survives a snapshot uncommitted", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-staged-zone-")));
     const { repoDir } = initRepoWithOrigin(root);
-    const statePath = join(root, "state.json");
+    const db = openStateDb(join(root, "state.db"), "cli");
 
     try {
       mkdirSync(join(repoDir, "prefs"), { recursive: true });
@@ -986,7 +1003,7 @@ describe("startHomeSnapshot — real git integration", () => {
         log: fakeLog(),
         broadcast: () => {},
         repoDir,
-        statePath,
+        db,
         readSettings: () => ({ ...DEFAULT_SETTINGS, pushDelaySec: 3600 }), // don't push in this test
         readOwners: () => owners,
       });
@@ -1012,7 +1029,7 @@ describe("startHomeSnapshot — real git integration", () => {
   test("a claimed FILE zone is genuinely excluded end-to-end — the exclude pathspec, against real git, actually protects a single file", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-file-zone-")));
     const { repoDir } = initRepoWithOrigin(root);
-    const statePath = join(root, "state.json");
+    const db = openStateDb(join(root, "state.db"), "cli");
 
     try {
       mkdirSync(join(repoDir, "scripts"), { recursive: true });
@@ -1032,7 +1049,7 @@ describe("startHomeSnapshot — real git integration", () => {
         log: fakeLog(),
         broadcast: () => {},
         repoDir,
-        statePath,
+        db,
         readSettings: () => ({ ...DEFAULT_SETTINGS, pushDelaySec: 3600 }),
         readOwners: () => owners,
       });

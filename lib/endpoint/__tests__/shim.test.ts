@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { machineSettingsPath, rtDir, teamSettingsPath, userSettingsPath } from "../../rt-paths.ts";
+import { closeStateDb, getStateDb, setKvValue } from "../../state/index.ts";
 import {
   buildInterceptRules,
   installShims,
@@ -30,8 +31,9 @@ function writeRepoIntercepts(identity: string, intercepts: unknown): void {
 }
 
 function writeRepoIndex(index: Record<string, string>): void {
-  mkdirSync(rtDir(), { recursive: true });
-  writeFileSync(join(rtDir(), "repos.json"), JSON.stringify(index));
+  for (const [repoName, repoPath] of Object.entries(index)) {
+    setKvValue("repo-index", repoName, repoPath);
+  }
 }
 
 /** A throwaway git repo, optionally with `origin` configured, for repoRemote capture. */
@@ -114,31 +116,57 @@ describe("matchInvocation", () => {
   });
 });
 
-// ─── intercepts.json round-trip ───────────────────────────────────────────────
+// ─── intercepts cache round-trip (RT-50 collapse) ─────────────────────────────
 
-test("interceptsPath points at intercepts.json under rtDir", () => {
+test("interceptsPath points at the retired intercepts.json location under rtDir", () => {
   expect(interceptsPath()).toBe(join(rtDir(), "intercepts.json"));
 });
 
-test("writeInterceptRules + loadInterceptRules round-trip", () => {
+test("writeInterceptRules + loadInterceptRules round-trip through the store", () => {
   writeInterceptRules(rules);
-  expect(existsSync(interceptsPath())).toBe(true);
   expect(loadInterceptRules()).toEqual(rules);
 });
 
-test("loadInterceptRules degrades to [] on a missing or malformed file", () => {
+test("a stale on-disk intercepts.json is ignored once the store owns the value, and gets unlinked on write", () => {
+  const dir = mkdtempSync(join(tmpdir(), "shim-test-stale-home-"));
+  const origHome = process.env.HOME;
+  process.env.HOME = dir;
+  closeStateDb();
+  try {
+    mkdirSync(rtDir(), { recursive: true });
+    writeFileSync(interceptsPath(), JSON.stringify({ rules: [{ command: "stale-cmd", repo: "r", repoRemote: null, matches: [] }] }));
+    expect(existsSync(interceptsPath())).toBe(true);
+
+    // The store, not the stale file, is authoritative — nothing written yet.
+    expect(loadInterceptRules()).toEqual([]);
+
+    writeInterceptRules(rules);
+    expect(loadInterceptRules()).toEqual(rules);
+    expect(existsSync(interceptsPath())).toBe(false);
+  } finally {
+    process.env.HOME = origHome;
+    closeStateDb();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadInterceptRules degrades to [] on a missing or malformed store row", () => {
   const dir = mkdtempSync(join(tmpdir(), "shim-test-home-"));
   const origHome = process.env.HOME;
   process.env.HOME = dir;
+  closeStateDb();
   try {
     expect(loadInterceptRules()).toEqual([]);
-    mkdirSync(rtDir(), { recursive: true });
-    writeFileSync(interceptsPath(), "not json");
+    // Raw corrupt JSON in the row — same shape kv-blob's own tests use.
+    getStateDb().query("INSERT INTO kv (ns, k, v, updated_at) VALUES ('intercepts', 'rules', '{not json', 0);").run();
     expect(loadInterceptRules()).toEqual([]);
-    writeFileSync(interceptsPath(), JSON.stringify({ rules: [{ command: "ok", repo: "r" }, { repo: "missing-command" }, "garbage"] }));
+    // Well-shaped row, malformed entries sanitized.
+    setKvValue("intercepts", "rules", { rules: [{ command: "ok", repo: "r" }, { repo: "missing-command" }, "garbage"], generatedAt: Date.now() });
     expect(loadInterceptRules()).toEqual([{ command: "ok", repo: "r", repoRemote: null, matches: [] }]);
   } finally {
     process.env.HOME = origHome;
+    closeStateDb();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -151,10 +179,12 @@ describe("buildInterceptRules", () => {
   beforeEach(() => {
     home = realpathSync(mkdtempSync(join(tmpdir(), "rt-shim-build-")));
     process.env.HOME = home;
+    closeStateDb();
   });
 
   afterEach(() => {
     process.env.HOME = origHome;
+    closeStateDb();
     rmSync(home, { recursive: true, force: true });
   });
 
@@ -212,10 +242,12 @@ describe("installShims / uninstallShims / shimReport", () => {
   beforeEach(() => {
     home = realpathSync(mkdtempSync(join(tmpdir(), "rt-shim-install-")));
     process.env.HOME = home;
+    closeStateDb();
   });
 
   afterEach(() => {
     process.env.HOME = origHome;
+    closeStateDb();
     rmSync(home, { recursive: true, force: true });
   });
 
@@ -306,10 +338,12 @@ describe("staleIntercepts", () => {
   beforeEach(() => {
     home = realpathSync(mkdtempSync(join(tmpdir(), "rt-stale-")));
     process.env.HOME = home;
+    closeStateDb();
   });
 
   afterEach(() => {
     process.env.HOME = origHome;
+    closeStateDb();
     rmSync(home, { recursive: true, force: true });
   });
 
@@ -323,13 +357,15 @@ describe("staleIntercepts", () => {
     utimesSync(file, when, when);
   }
 
-  /** intercepts.json holding one rule for `repo`, stamped at T0. */
+  /** The intercepts cache holding one rule for `repo`, stamped at T0. */
   function writeCache(repo: string): void {
-    writeInterceptRules([{ command: "c", repo, repoRemote: null, matches: [] }]);
-    utimesSync(interceptsPath(), T0, T0);
+    setKvValue("intercepts", "rules", {
+      rules: [{ command: "c", repo, repoRemote: null, matches: [] }],
+      generatedAt: T0.getTime(),
+    });
   }
 
-  test("no cache file at all is not stale (there is nothing to be stale)", () => {
+  test("no cache at all is not stale (there is nothing to be stale)", () => {
     expect(staleIntercepts()).toEqual({ stale: false });
   });
 

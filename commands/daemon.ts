@@ -36,6 +36,7 @@ import { isGitLabRemote } from "../lib/enrich.ts";
 import type { CacheKind, RepoTrackingEntry } from "../lib/repo-tracking.ts";
 import { loadRepoTracking, loadMachineRepoTracking, loadMachineRepoTrackingRaw, saveRepoTrackingRaw, grants, parseCachesArg, CACHE_KINDS, DEFAULT_PROJECT_MRS_WINDOW_DAYS, teamNamesIdentity } from "../lib/repo-tracking.ts";
 import { deriveRepoIdentity } from "../lib/settings/identity.ts";
+import { loadRepoIndex } from "../lib/repo-index.ts";
 import { createProjectMRs } from "../lib/daemon/project-mrs-store.ts";
 import { getStateDb } from "../lib/state/index.ts";
 import { timeAgo } from "../lib/tui/utils/label.ts";
@@ -302,11 +303,7 @@ function formatWindowLabel(rawWindowDays: number | undefined): string {
 }
 
 function readRepoIndex(): Record<string, string> {
-  try {
-    return JSON.parse(readFileSync(join(RT_DIR, "repos.json"), "utf8"));
-  } catch {
-    return {};
-  }
+  return loadRepoIndex();
 }
 
 /**

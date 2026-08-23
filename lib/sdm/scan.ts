@@ -6,10 +6,11 @@
  * catalog itself did not list.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import type { Database } from "bun:sqlite";
+import { unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { rtDir } from "../rt-paths.ts";
-import { dirname, join } from "node:path";
+import { getKvValue, getStateDb, setKvValue } from "../state/index.ts";
 import { fetchAccessCatalog, getSdmSnapshot } from "./core.ts";
 
 export interface SdmResource {
@@ -51,8 +52,20 @@ export function parseCatalogResources(catalogOutput: string, statusNames: string
 
 export const CATALOG_CACHE_MS = 10 * 60_000;
 
+const SCAN_CACHE_NS = "sdm-scan-cache";
+const SCAN_CACHE_KEY = "state";
+
+/** Retired storage location — kept only so a leftover pre-migration file can be cleaned up. */
 export function scanCachePath(): string {
   return join(rtDir(), "sdm", "scan-cache.json");
+}
+
+function unlinkLegacyScanCache(): void {
+  try {
+    unlinkSync(scanCachePath());
+  } catch {
+    // already gone, or never existed
+  }
 }
 
 interface PersistedScanCache {
@@ -61,43 +74,40 @@ interface PersistedScanCache {
 }
 
 /**
- * Guarded read of the on-disk scan cache: a missing file, corrupt JSON, or a
- * shape that doesn't look like a PersistedScanCache all fall through to null
+ * Guarded read of the scan cache: a missing row, malformed row, or a shape
+ * that doesn't look like a PersistedScanCache all fall through to null
  * (caller re-scans), same convention as the catalog-cache helper this
  * replaces.
  */
-function readScanCache(path = scanCachePath()): SdmResource[] | null {
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    if (
-      typeof parsed?.builtAt === "number" &&
-      Array.isArray(parsed.resources) &&
-      Date.now() - parsed.builtAt < CATALOG_CACHE_MS
-    ) {
-      return parsed.resources as SdmResource[];
-    }
-  } catch {
-    // Missing or corrupt cache file: fall through to scanning fresh.
+export function readScanCache(db: Database = getStateDb()): SdmResource[] | null {
+  const parsed = getKvValue<Partial<PersistedScanCache> | null>(SCAN_CACHE_NS, SCAN_CACHE_KEY, null, db);
+  if (
+    typeof parsed?.builtAt === "number" &&
+    Array.isArray(parsed.resources) &&
+    Date.now() - parsed.builtAt < CATALOG_CACHE_MS
+  ) {
+    return parsed.resources as SdmResource[];
   }
   return null;
 }
 
 /**
- * Never overwrite the file with an empty result: a transient sdm outage
- * would otherwise blank a previously-good cache until the outage clears.
+ * Never overwrite a good cache with an empty result: a transient sdm outage
+ * would otherwise blank it until the outage clears.
  */
-function writeScanCache(resources: SdmResource[], path = scanCachePath()): void {
+export function writeScanCache(resources: SdmResource[], db: Database = getStateDb()): void {
   if (resources.length === 0) return;
-  mkdirSync(dirname(path), { recursive: true });
   const payload: PersistedScanCache = { builtAt: Date.now(), resources };
-  writeFileSync(path, JSON.stringify(payload, null, 2) + "\n");
+  setKvValue(SCAN_CACHE_NS, SCAN_CACHE_KEY, payload, db);
+  unlinkLegacyScanCache();
 }
 
 export async function scanSdmResources(
-  opts: { refresh?: boolean } = {},
+  opts: { refresh?: boolean; db?: Database } = {},
 ): Promise<{ resources: SdmResource[]; fromCache: boolean; error?: string }> {
+  const db = opts.db ?? getStateDb();
   if (!opts.refresh) {
-    const cached = readScanCache();
+    const cached = readScanCache(db);
     if (cached) return { resources: cached, fromCache: true };
   }
   const [catalog, snapshot] = await Promise.all([fetchAccessCatalog(opts.refresh), getSdmSnapshot(opts.refresh)]);
@@ -107,9 +117,9 @@ export async function scanSdmResources(
     ? [...snapshot.resources.entries()].filter(([, s]) => s.kind === "datasource").map(([name]) => name)
     : [];
   if (!catalog.ok && snapshot.health.status !== "ok") {
-    return { resources: readScanCache() ?? [], fromCache: false, error: catalog.output.trim() || "sdm unavailable" };
+    return { resources: readScanCache(db) ?? [], fromCache: false, error: catalog.output.trim() || "sdm unavailable" };
   }
   const resources = parseCatalogResources(catalog.ok ? catalog.output : "", statusNames);
-  if (resources.length > 0) writeScanCache(resources); // never clobber a good cache with empty
+  if (resources.length > 0) writeScanCache(resources, db); // never clobber a good cache with empty
   return { resources, fromCache: false };
 }
