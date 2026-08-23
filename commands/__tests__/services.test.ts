@@ -66,7 +66,7 @@ describe("servicesList", () => {
   });
 
   test("tray unreachable (status 0) exits 2 with app-not-running", async () => {
-    const deps = baseDeps({ probes: fakeProbes({ home: "/home/x", tray: fakeTray({}) }) });
+    const deps = baseDeps({ probes: fakeProbes({ home: "/home/x" }) });
 
     const code = await runExpectingProcessExit(() => servicesList(["--json"], {}, deps));
 
@@ -175,7 +175,7 @@ describe("servicesRegister", () => {
   });
 
   test("tray unreachable exits 2 with app-not-running", async () => {
-    const deps = baseDeps({ probes: fakeProbes({ home: "/home/x", tray: fakeTray({}) }) });
+    const deps = baseDeps({ probes: fakeProbes({ home: "/home/x" }) });
 
     const code = await runExpectingProcessExit(() => servicesRegister(["--json"], {}, deps));
 
@@ -231,7 +231,7 @@ describe("servicesRestart", () => {
   });
 
   test("tray unreachable exits 2 with app-not-running", async () => {
-    const deps = baseDeps({ probes: fakeProbes({ home: "/home/x", tray: fakeTray({}) }) });
+    const deps = baseDeps({ probes: fakeProbes({ home: "/home/x" }) });
 
     const code = await runExpectingProcessExit(() => servicesRestart(["com.mattstack.daemon", "--json"], {}, deps));
 

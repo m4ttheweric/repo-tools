@@ -100,6 +100,13 @@ describe("rt uninstall — dry-run", () => {
     const deps = baseDeps({ isTTY: () => false });
     await runUninstallCommand(["--json", "--dry-run", "--delete-data"], {}, deps);
     expect(deps.exitCodes).toEqual([]);
+    // "read-only" proven, not assumed: no exec, no removal, no write, no
+    // tray round-trip — a dry-run that actually removed something would
+    // still pass a bare exit-code check, so that check alone is not enough.
+    expect(deps.probes.calls.exec).toEqual([]);
+    expect(deps.probes.calls.removed).toEqual([]);
+    expect(deps.probes.calls.writes).toEqual({});
+    expect(deps.probes.calls.tray).toEqual([]);
   });
 
   test("human dry-run: one line per action title, no JSON", async () => {
