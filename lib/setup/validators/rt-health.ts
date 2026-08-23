@@ -78,7 +78,6 @@ const LINK_BUNDLED_RT: Action = { type: "link-bundled", label: "Use mattstack's"
 const LINK_BUNDLED_FZF: Action = { type: "link-bundled", label: "Use mattstack's", tool: "fzf" };
 const REINSTALL_SHIMS_ACTION: Action = { type: "run", label: "Re-install shims", verb: ["intercept", "install"] };
 const INSTALL_EXTENSION_ACTION: Action = { type: "run", label: "Install extension", verb: ["tools", "setup", "extension"] };
-const LINK_RT_PATH_ACTION: Action = { type: "run", label: "Link into the app", verb: ["setup", "apply", "--from", "path.link"] };
 const MERGE_LEGACY_STATE_ACTION: Action = {
   type: "steps",
   label: "Merge legacy state",
@@ -115,7 +114,13 @@ function rtLinkRow(p: Probes): Row {
   const expected = join(root, RT_BUNDLE_PATH);
   const actual = p.readlink(linkPath(p.home, "rt"));
   if (actual === expected) return row({ ...base, status: "ready", detail: "linked into the bundle" });
-  return row({ ...base, status: "needs-you", detail: "not a link into mattstack.app — run: rt setup apply --from path.link", action: LINK_RT_PATH_ACTION });
+  // A "run" action pointing at `setup apply --from path.link` would replay
+  // the full 16-step chain from that point — buffered, one-shot, no
+  // NeedBroker — and any `need` a later step raises (services.register,
+  // proxy.install) would hang this cosmetic row for the full 10-minute
+  // await timeout. `link-bundled` dispatches the single one-shot verb this
+  // row actually needs (`rt deps link rt --json`).
+  return row({ ...base, status: "needs-you", detail: "not a link into mattstack.app — run: rt deps link rt", action: LINK_BUNDLED_RT });
 }
 
 function legacyDirsRow(): Row {
@@ -292,8 +297,17 @@ async function daemonRow(p: Probes, opts: { ci: boolean }): Promise<Row> {
   ]);
 
   const data = (statusRes?.data ?? {}) as { pid?: number; uptime?: number; watchedRepos?: number };
-  const launchdOk = launchd.code === 0 && !launchd.stdout.includes("Could not find");
-  const worktreesOk = worktrees !== null;
+
+  // launchctl exiting 124 (this module's own timeout code) or 127 (not
+  // found) means the probe never produced an answer — that is "could not
+  // determine", not "determined not registered". Only a clean exit whose
+  // output actually says so is a real negative. Same distinction for
+  // `worktrees === null`, which is the daemon-client's transport-failure
+  // sentinel, not the endpoint answering "no".
+  const launchdInconclusive = launchd.code === 124 || launchd.code === 127;
+  const launchdOk = !launchdInconclusive && launchd.code === 0 && !launchd.stdout.includes("Could not find");
+  const launchdMissing = !launchdInconclusive && !launchdOk;
+  const worktreesInconclusive = worktrees === null;
 
   const parts: string[] = [];
   if (data.pid !== undefined) parts.push(`pid ${data.pid}`);
@@ -306,13 +320,17 @@ async function daemonRow(p: Probes, opts: { ci: boolean }): Promise<Row> {
   // (`rt verify` today hard-fails on exactly this — verify.ts's "daemon api"
   // check). Folding these into a "ready" detail would let a structurally
   // broken daemon enable Install.
-  const failing: string[] = [];
-  if (!launchdOk) failing.push("not registered with launchd");
-  if (!worktreesOk) failing.push("worktrees endpoint not responding");
+  const inconclusive: string[] = [];
+  if (launchdInconclusive) inconclusive.push(`launchctl check failed (${launchd.code === 124 ? "timed out" : "not found"})`);
+  if (worktreesInconclusive) inconclusive.push("worktrees endpoint check failed (daemon unreachable)");
 
-  if (failing.length > 0) {
-    return row({ ...base, status: "invalid", detail: [...parts, ...failing].join(", ") });
-  }
+  const missing: string[] = [];
+  if (launchdMissing) missing.push("not registered with launchd");
+
+  // Any inconclusive sub-fact makes the whole row "could not determine" —
+  // never "invalid" alongside evidence that never actually arrived.
+  if (inconclusive.length > 0) return row({ ...base, status: "error", detail: [...parts, ...missing, ...inconclusive].join(", ") });
+  if (missing.length > 0) return row({ ...base, status: "invalid", detail: [...parts, ...missing].join(", ") });
 
   parts.push("registered with launchd", "worktrees endpoint responding");
   return row({ ...base, status: "ready", detail: parts.join(", ") });

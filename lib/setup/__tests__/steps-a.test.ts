@@ -692,6 +692,31 @@ describe("path.link / settings.seed / repos.clone / intercepts.install (real HOM
     expect(getSetting<string>("mattstack.appPath").value).toBe(before); // untouched
   });
 
+  test("settings.seed: no candidate directory exists, but the team has repos to track -> creates Documents/GitHub", async () => {
+    const p = fakeProbes({ home });
+    const { ctx } = makeCtx(p, {
+      appPath: null,
+      snapshot: { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/acme/api"], marketplaces: [], plugins: [], remote: null },
+    });
+
+    const expectedRoot = join(home, "Documents", "GitHub");
+    expect(p.exists(expectedRoot)).toBe(false);
+    const outcome = await settingsSeedStep.run(ctx);
+    expect(outcome).toEqual({ state: "done", detail: "wrote: rt.repoRoots" });
+    expect(getSetting<string[]>("rt.repoRoots").value).toEqual([expectedRoot]);
+    expect(p.exists(expectedRoot)).toBe(true);
+  });
+
+  test("settings.seed: no candidate directory and nothing to track -> nothing created, nothing written", async () => {
+    const p = fakeProbes({ home });
+    const { ctx } = makeCtx(p, { appPath: null });
+
+    const outcome = await settingsSeedStep.run(ctx);
+    expect(outcome).toEqual({ state: "done", detail: "nothing to seed" });
+    expect(getSetting<string[]>("rt.repoRoots").value).toEqual([]); // registry default, never written
+    expect(p.exists(join(home, "Documents", "GitHub"))).toBe(false);
+  });
+
   test("settings.seed: rt.repoRoots already set is left alone (existing wins over detected)", async () => {
     setSetting("rt.repoRoots", ["/already/configured"], "machine");
     const githubRoot = join(home, "Documents", "GitHub");
@@ -752,13 +777,17 @@ describe("path.link / settings.seed / repos.clone / intercepts.install (real HOM
     expect(await reposCloneStep.run(ctx)).toEqual({ state: "skipped", detail: "no repos to clone" });
   });
 
-  test("repos.clone: identities to clone but no repo root configured -> failed, with a remedy", async () => {
+  test("repos.clone: identities to clone but no repo root configured -> skipped, never a dead-end failure", async () => {
+    // A clean Mac with none of settings.seed's candidate directories yet is
+    // the ordinary fresh-machine starting state, not an error a human needs
+    // to notice: `failed` here would dead-end Install with a Retry that
+    // resumes at this exact step and fails identically every time.
     const p = fakeProbes({ home });
     const { ctx } = makeCtx(p, { snapshot: { slug: "acme", integrations: {}, trackingIdentities: ["gitlab.com/acme/acme-dev"], marketplaces: [], plugins: [], remote: null } });
 
     const outcome = await reposCloneStep.run(ctx);
-    expect(outcome.state).toBe("failed");
-    expect((outcome as { remedy?: string }).remedy).toBe("Set a repo root (rt.repoRoots), then Retry");
+    expect(outcome.state).toBe("skipped");
+    expect(p.calls.exec).toEqual([]);
   });
 
   test("intercepts.install: an empty repo index reports 'no commands to shim'", async () => {

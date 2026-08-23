@@ -24,9 +24,29 @@ export function isTransientAppRoot(root: string): boolean {
 }
 
 const CANDIDATE_ROOT_NAMES = ["Documents/GitHub", "GitHub", "code", "src"];
+/** The candidate this step creates when a team declares repos to clone but nothing on disk already matches — first in CANDIDATE_ROOT_NAMES, rt's own convention. */
+const DEFAULT_ROOT_NAME = CANDIDATE_ROOT_NAMES[0]!;
 
 function detectRepoRoots(ctx: ApplyContext): string[] {
   return CANDIDATE_ROOT_NAMES.map((rel) => join(ctx.p.home, rel)).filter((path) => ctx.p.exists(path));
+}
+
+/**
+ * A fresh Mac has none of the candidate directories yet, which previously
+ * left `rt.repoRoots` unset and `repos.clone` (step 9) with nowhere to
+ * clone into — a normal fresh-machine condition, not something a human
+ * needs to notice and fix by hand. Only creates the directory when there is
+ * real work waiting on it (a team actually declares repos to track); a
+ * team-less install gets no directory it doesn't need.
+ */
+function detectOrCreateDefaultRoot(ctx: ApplyContext): string[] {
+  const detected = detectRepoRoots(ctx);
+  if (detected.length > 0) return detected;
+  if ((ctx.snapshot?.trackingIdentities.length ?? 0) === 0) return [];
+
+  const path = join(ctx.p.home, DEFAULT_ROOT_NAME);
+  ctx.p.mkdirp(path);
+  return [path];
 }
 
 function repoRootsUnset(): boolean {
@@ -55,7 +75,7 @@ async function settingsSeedRun(ctx: ApplyContext): Promise<StepOutcome> {
   }
 
   if (repoRootsUnset()) {
-    const detected = detectRepoRoots(ctx);
+    const detected = detectOrCreateDefaultRoot(ctx);
     if (detected.length > 0) {
       setSetting("rt.repoRoots", detected, "machine");
       written.push("rt.repoRoots");

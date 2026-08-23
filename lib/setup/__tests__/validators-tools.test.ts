@@ -158,26 +158,27 @@ describe("toolRows — tool.claude", () => {
     expect(r.action).toEqual({ type: "steps", label: "Show steps…", steps: ["Open a terminal", "Run: claude", "Follow the sign-in prompt"] });
   });
 
-  test("auth status unknown subcommand (stderr mentions unknown) -> ready, sign-in not checked", async () => {
+  test("auth status unknown subcommand (stderr mentions unknown) -> needs-you, sign-in not checked — never a guessed ready (H-1)", async () => {
     const exec: ExecScript = (argv) => {
       if (argv[0] === "claude" && argv[1] === "--version") return ok("1.2.3\n");
       if (argv[0] === "claude" && argv[1] === "auth") return { code: 1, stdout: "", stderr: "unknown command \"auth\"" };
       return ok();
     };
     const r = await pickRow(toolRows(fakeProbes({ exec }), [], { hasBrew: true }, NOOP_SEAMS), "tool.claude");
-    expect(r.status).toBe("ready");
-    expect(r.detail).toBe("installed (sign-in not checked)");
+    expect(r.status).toBe("needs-you");
+    expect(r.detail).toContain("sign-in could not be checked");
+    expect(r.action).not.toBeNull();
   });
 
-  test("unknown subcommand sniffed off STDOUT too, not stderr only (L13)", async () => {
+  test("unknown subcommand sniffed off STDOUT too, not stderr only (L13) -> needs-you, never a guessed ready (H-1)", async () => {
     const exec: ExecScript = (argv) => {
       if (argv[0] === "claude" && argv[1] === "--version") return ok("1.2.3\n");
       if (argv[0] === "claude" && argv[1] === "auth") return { code: 1, stdout: "Unknown subcommand: auth", stderr: "" };
       return ok();
     };
     const r = await pickRow(toolRows(fakeProbes({ exec }), [], { hasBrew: true }, NOOP_SEAMS), "tool.claude");
-    expect(r.status).toBe("ready");
-    expect(r.detail).toBe("installed (sign-in not checked)");
+    expect(r.status).toBe("needs-you");
+    expect(r.detail).toContain("sign-in could not be checked");
   });
 
   test("auth status known non-zero exit, non-JSON -> needs-you, sign in steps", async () => {
