@@ -180,8 +180,11 @@ fi
 HELPER_ENTITLEMENTS=()   # "path<TAB>jit|none" for the signing pass
 bundle_helpers() {
     if [ ! -d "$DEPS_DIR" ]; then
-        if [ "${RT_REQUIRE_DEPS:-0}" = 1 ]; then echo "  ✗ $DEPS_DIR missing — run scripts/fetch-deps.sh arm64"; exit 1; fi
-        echo "  ⚠ $DEPS_DIR missing — Helpers skipped (scripts/fetch-deps.sh arm64 to bundle them)"
+        # Fatal by default: a warn-and-continue here silently produces a bundle
+        # with NO helpers, which then passes every gate that only asserts the
+        # helpers it can find. Set RT_REQUIRE_DEPS=0 to opt out deliberately.
+        if [ "${RT_REQUIRE_DEPS:-1}" = 1 ]; then echo "  ✗ $DEPS_DIR missing — run scripts/fetch-deps.sh arm64 (RT_REQUIRE_DEPS=0 to build without helpers)"; exit 1; fi
+        echo "  ⚠ $DEPS_DIR missing — Helpers skipped (RT_REQUIRE_DEPS=0 set)"
         return
     fi
     local row name version bundlePath ent status src dest prune
@@ -216,6 +219,19 @@ bundle_helpers() {
             rm -rf "$prune"
             echo "  · pruned $name/${prune#"$dest"/}"
         done < <(find "$dest" -depth -type d \( -name '.claude-plugin' -o -name '.codex-plugin' \) -print0)
+        # node ships a full development distribution, but the bundle needs it
+        # only to run fast-browser's .mjs. include/ is 2726 C++ headers node-gyp
+        # uses to compile native addons at build time; lib/node_modules/{npm,
+        # corepack} and their bin/ symlinks are unreferenced here. Beyond the
+        # ~78MB, every file under Contents/Helpers must be individually signed,
+        # so this dead weight also costs ~8 minutes of timestamp round-trips per
+        # release build (4708 files → ~61). The symlinks go too: a dangling one
+        # left behind breaks the outer seal.
+        if [ "$name" = node ]; then
+            rm -rf "$dest/include" "$dest/lib/node_modules/npm" "$dest/lib/node_modules/corepack" "$dest/share"
+            rm -f "$dest/bin/npm" "$dest/bin/npx" "$dest/bin/corepack"
+            echo "  · pruned node/{include,lib/node_modules,share} (dev distribution, unused in-bundle)"
+        fi
         HELPER_ENTITLEMENTS+=("$dest	$ent")
         echo "  ✓ Helpers/$name $version"
     done < "$tsv"
@@ -339,19 +355,49 @@ if [ -d "$CORE_FW" ]; then
     echo "  ✓ Signed MattstackCore.framework"
 fi
 
-sign_helper_tree() { # root ent — signs every Mach-O under root (files or a dir like node/)
-    local root="$1" ent="$2" f
+# Everything under Contents/Helpers is classified as nested code by codesign's
+# bundle seal — not just the Mach-O binaries — so every regular file here must
+# carry a signature or the outer `sign "$APP_BUNDLE"` refuses with "code object
+# is not signed at all / In subcomponent: <first unsigned file>". A pure-script
+# helper (fast-browser: .mjs + LICENSE + package.json, zero Mach-O) has no
+# binary to match, so a Mach-O-only pass signs nothing in it and the seal fails.
+# Non-Mach-O files get a plain signature stored in an xattr; only real binaries
+# take the JIT entitlement and the helper identifier.
+sign_helper_tree() { # root ent — signs every regular file under root (files or a dir like node/)
+    local root="$1" ent="$2" f signed
+    signed=$(find "$root" -type f | wc -l | tr -d ' ')
+    # A helper that contributes zero files can only mean the tree was never
+    # staged — the seal would fail later and much less legibly.
+    [ "$signed" -gt 0 ] || { echo "  ✗ $(basename "$root"): no files to sign under $root"; exit 1; }
+
+    # Pass 1 — plain-sign EVERY regular file, in parallel. codesign's bundle
+    # seal treats everything under Contents/Helpers as nested code, not just
+    # the Mach-O binaries, so a single unsigned file (a .mjs, a LICENSE, one of
+    # node/'s thousands of headers) makes the outer `sign "$APP_BUNDLE"` fail
+    # with "code object is not signed at all / In subcomponent: <that file>".
+    # Batched (many paths per codesign call), NOT `xargs -I{}`: the -I form
+    # runs one process per file, is ~6x slower, and was observed leaving files
+    # silently unsigned — which only surfaces later as an opaque outer-seal
+    # failure naming one arbitrary file. stderr is kept, not discarded: hiding
+    # it is what made the misses invisible the first time.
+    find "$root" -type f -print0 | xargs -0 -P 8 codesign "${SIGN_FLAGS[@]}" 2>&1 \
+        | grep -v "replacing existing signature" || true
+
+    # Pass 2 — re-sign just the Mach-O binaries with their identifier and
+    # entitlements, overwriting pass 1's plain signature. Must come second:
+    # whichever pass runs last is the signature that survives.
     while IFS= read -r -d '' f; do
         if file -b "$f" | grep -q "Mach-O"; then
             if [ "$ent" = jit ]; then sign -i "com.mattstack.helper.$(basename "$f")" --entitlements "$ENTITLEMENTS_JIT" "$f"
             else sign -i "com.mattstack.helper.$(basename "$f")" "$f"; fi
         fi
     done < <(find "$root" -type f -print0)
+    SIGNED_FILE_COUNT=$signed
 }
 for entry in "${HELPER_ENTITLEMENTS[@]+"${HELPER_ENTITLEMENTS[@]}"}"; do
     path="${entry%%	*}"; ent="${entry##*	}"
     sign_helper_tree "$path" "$ent"
-    echo "  ✓ Signed Helpers/$(basename "$path") ($ent)"
+    echo "  ✓ Signed Helpers/$(basename "$path") ($ent, $SIGNED_FILE_COUNT files)"
 done
 
 if [ -f "$CONTENTS/MacOS/rt" ]; then
