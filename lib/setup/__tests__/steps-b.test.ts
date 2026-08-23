@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 import { HELPERS_DIR, RT_BUNDLE_PATH, __test__ as bundleLayoutTest } from "../../bundle-layout.ts";
@@ -146,7 +146,14 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       const outcome = await servicesRegisterStep.run(ctx);
       expect(outcome).toEqual({ state: "done", detail: "registered" });
       expect(logs.some((l) => l.line.includes("deck not bundled"))).toBe(true);
-      expect(getDaemonConfig()?.installed).toBe(true);
+      // markDaemonInstalled is called with ctx.p.home (services.ts), not the
+      // ambient shared preload HOME — read back through the SAME explicit
+      // `home` to prove the write actually landed under THIS test's temp
+      // HOME, and independently off real fs to prove it isn't a fakeProbes
+      // illusion.
+      expect(getDaemonConfig(home)?.installed).toBe(true);
+      const raw = JSON.parse(readFileSync(join(home, ".mattstack", "rt", "daemon.json"), "utf8"));
+      expect(raw.installed).toBe(true);
     });
 
     test("deck bundled: requests both plists, no log", async () => {
@@ -205,7 +212,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       const { ctx: second } = makeCtx(p, { need });
       expect(await servicesRegisterStep.run(first)).toEqual({ state: "done", detail: "registered" });
       expect(await servicesRegisterStep.run(second)).toEqual({ state: "done", detail: "registered" });
-      expect(getDaemonConfig()?.installed).toBe(true);
+      expect(getDaemonConfig(home)?.installed).toBe(true);
     });
   });
 
@@ -259,6 +266,34 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       const need: ApplyContext["need"] = async () => ({ ok: true, detail: "already installed" });
       expect(await proxyInstallStep.run(makeCtx(fakeProbes({ home }), { need }).ctx)).toEqual({ state: "done", detail: "already installed" });
       expect(await proxyInstallStep.run(makeCtx(fakeProbes({ home }), { need }).ctx)).toEqual({ state: "done", detail: "already installed" });
+    });
+
+    test("the portless LaunchDaemon already exists on disk: done without ever calling ctx.need — a from-scratch re-run must not re-raise the admin prompt", async () => {
+      let needCalled = false;
+      const p = fakeProbes({ home, files: { "/Library/LaunchDaemons/sh.portless.proxy.plist": "<plist/>" } });
+      const { ctx } = makeCtx(p, {
+        need: async () => {
+          needCalled = true;
+          return { ok: true, detail: "" };
+        },
+      });
+
+      expect(await proxyInstallStep.run(ctx)).toEqual({ state: "done", detail: "already installed" });
+      expect(needCalled).toBe(false);
+    });
+
+    test("the portless LaunchDaemon is absent: falls through to ctx.need as normal", async () => {
+      const p = fakeProbes({ home });
+      let requested = false;
+      const { ctx } = makeCtx(p, {
+        need: async () => {
+          requested = true;
+          return { ok: true, detail: "installed" };
+        },
+      });
+
+      expect(await proxyInstallStep.run(ctx)).toEqual({ state: "done", detail: "installed" });
+      expect(requested).toBe(true);
     });
   });
 
@@ -362,9 +397,8 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(await deckManagedStep.run(ctx)).toEqual({ state: "failed", detail: "name taken", remedy: "Retry" });
     });
 
-    test("gitq has no resolvable binary: logged and reported, board portion still completes", async () => {
-      // "board" only, no "gitq" — resolveTool(p, "gitq").chosen has nothing bundled
-      // to find, and PATH is empty (bundledProbes' default), so nothing on disk either.
+    test("gitq not bundled: logged and reported, board portion still completes, never fatal", async () => {
+      // "board" only, no "gitq" — bundledToolPath(p, "gitq") has nothing to find.
       const p = bundledProbes({
         tools: ["board"],
         overrides: {
@@ -375,29 +409,78 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       });
       const { ctx, logs } = makeCtx(p);
       const outcome = await deckManagedStep.run(ctx);
-      expect(outcome.state).toBe("done");
-      expect(detailOf(outcome)).toContain("board adopted (repointed)");
-      expect(detailOf(outcome)).toContain("gitq: no binary");
-      expect(logs.some((l) => l.line.includes("gitq") && l.line.includes("no binary"))).toBe(true);
+      expect(outcome).toEqual({ state: "done", detail: "board adopted (repointed); gitq not registered: not bundled" });
+      expect(logs.some((l) => l.line.includes("gitq") && l.line.includes("not bundled"))).toBe(true);
       expect(p.calls.exec).toHaveLength(1); // only the adopt — no `deck add gitq` with a null bin
     });
 
-    test("idempotent re-run: adopt/repoint/gitq-add all succeed again with the same pinned argv", async () => {
+    test("gitq's real 'deck add' is a stub (MAT-384): a driver-fatal response is logged and tallied, never fails the run", async () => {
       const p = bundledProbes({
         tools: ["gitq", "board"],
         overrides: {
           files: { [join(home, ".mattstack", "deck", "api.json")]: JSON.stringify({ port: 4100 }) },
           fetch: healthyFetch(4100),
-          // Second call for each argv answers "already" — deck's own idempotent replies.
-          exec: async (argv) => (argv.includes("add") ? { code: 1, stdout: "", stderr: "already managed" } : ok("")),
+          exec: async (argv) => (argv.includes("add") ? { code: 400, stdout: "", stderr: "command + workingDirectory, or staticPort, required" } : ok("")),
+        },
+      });
+      const { ctx, logs } = makeCtx(p);
+      const outcome = await deckManagedStep.run(ctx);
+      expect(outcome.state).toBe("done");
+      expect(detailOf(outcome)).toContain("gitq not registered: command + workingDirectory, or staticPort, required");
+      expect(logs.some((l) => l.line.includes("deck add failed"))).toBe(true);
+    });
+
+    test("gitq duplicate registration answers deck's frozen 'name taken', not '/already/' — recognized as already-registered, not a failure", async () => {
+      const p = bundledProbes({
+        tools: ["gitq", "board"],
+        overrides: {
+          files: { [join(home, ".mattstack", "deck", "api.json")]: JSON.stringify({ port: 4100 }) },
+          fetch: healthyFetch(4100),
+          exec: async (argv) => (argv.includes("add") ? { code: 1, stdout: "", stderr: '409 {"error":"name taken"}' } : ok("")),
+        },
+      });
+      const { ctx } = makeCtx(p);
+      const outcome = await deckManagedStep.run(ctx);
+      expect(outcome).toEqual({ state: "done", detail: "board adopted (repointed); gitq already registered" });
+    });
+
+    test("fresh install (no legacy 'mrs'): adopt answers 'unknown app' — skips the board leg honestly, run continues past deck.managed", async () => {
+      const p = bundledProbes({
+        tools: ["gitq", "board"],
+        overrides: {
+          files: { [join(home, ".mattstack", "deck", "api.json")]: JSON.stringify({ port: 4100 }) },
+          fetch: healthyFetch(4100),
+          exec: async (argv) => (argv.includes("adopt") ? { code: 1, stdout: '{"adopted":false,"error":"unknown app"}', stderr: "" } : ok("")),
+        },
+      });
+      const { ctx } = makeCtx(p);
+      const outcome = await deckManagedStep.run(ctx);
+      // "done", not "failed" — the run is free to proceed to skills.materialize/board.keys/cron.triage next.
+      expect(outcome).toEqual({ state: "done", detail: "board not adopted (no legacy mrs to adopt); gitq registered" });
+      // No repoint PATCH was issued — there was nothing to repoint.
+      expect(p.calls.fetch.some((u) => u.includes("/api/v1/apps/board"))).toBe(false);
+    });
+
+    test("idempotent re-run: second pass's adopt/repoint/gitq-add all still succeed against deck's real idempotent replies", async () => {
+      let addCalls = 0;
+      const p = bundledProbes({
+        tools: ["gitq", "board"],
+        overrides: {
+          files: { [join(home, ".mattstack", "deck", "api.json")]: JSON.stringify({ port: 4100 }) },
+          fetch: healthyFetch(4100),
+          exec: async (argv) => {
+            // adopt: exit 0 both passes — deck's own "already adopted" idempotency.
+            if (!argv.includes("add")) return ok("");
+            // add: only the SECOND call is a duplicate — deck's frozen "name taken".
+            addCalls += 1;
+            return addCalls === 1 ? ok("") : { code: 1, stdout: "", stderr: '409 {"error":"name taken"}' };
+          },
         },
       });
       const { ctx: first } = makeCtx(p);
       const { ctx: second } = makeCtx(p);
-      const firstOutcome = await deckManagedStep.run(first);
-      const secondOutcome = await deckManagedStep.run(second);
-      expect(firstOutcome.state).toBe("done");
-      expect(secondOutcome.state).toBe("done");
+      expect(await deckManagedStep.run(first)).toEqual({ state: "done", detail: "board adopted (repointed); gitq registered" });
+      expect(await deckManagedStep.run(second)).toEqual({ state: "done", detail: "board adopted (repointed); gitq already registered" });
     });
   });
 

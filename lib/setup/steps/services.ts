@@ -23,7 +23,7 @@ async function servicesRegisterRun(ctx: ApplyContext): Promise<StepOutcome> {
     timeoutRemedy: "Retry with mattstack.app running",
   });
 
-  if (outcome.state === "done") markDaemonInstalled();
+  if (outcome.state === "done") markDaemonInstalled(ctx.p.home);
   return outcome;
 }
 
@@ -43,7 +43,12 @@ export const servicesRegisterStep: StepDef = {
   run: servicesRegisterRunSafe,
 };
 
+/** The uninstall plan's own signal for "portless is installed" (docs/superpowers/plans/2026-08-21-rt-setup-verbs.md's proxy.remove gate) — reused here so a from-scratch re-run recognizes an already-installed proxy without re-raising the admin prompt. */
+const PORTLESS_LAUNCHD_PLIST = "/Library/LaunchDaemons/sh.portless.proxy.plist";
+
 async function proxyInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
+  if (ctx.p.exists(PORTLESS_LAUNCHD_PLIST)) return { state: "done", detail: "already installed" };
+
   const reply = await ctx.need("proxy.install", { type: "app-privileged", op: "proxy-install" });
   return needOutcome(reply, ctx, {
     noAppDetail: "mattstack.app not running — open it to install the local proxy",

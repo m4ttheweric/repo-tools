@@ -106,13 +106,17 @@ export async function awaitNeed(
 }
 
 /**
- * The one place `ctx.need`'s four-way reply becomes a `StepOutcome`, so no
- * step body hand-rolls this mapping and risks turning a stalled or absent
- * app into a false success. `no-app` is the only non-fatal case — a
- * nonInteractive run legitimately has nobody to satisfy the need; a real
- * timeout or a vanished app is always a failure, never a skip. Lives here
- * (not apply.ts, which re-exports it) so a step file can import it without
- * a runtime cycle back through steps/index.ts.
+ * The one place `ctx.need`'s ok/failed/timeout/app-gone reply becomes a
+ * `StepOutcome`, so no step body hand-rolls that decision and risks turning
+ * a stalled or absent app into a false success: a real timeout or a vanished
+ * app is always mapped to `failed`, never `skipped`. `no-app` maps to
+ * `skipped` here as this function's own default, but every real caller
+ * wraps it in `steps/step-utils.ts`'s `needOutcome`, which decides `no-app`'s
+ * actual SEVERITY (skipped when nonInteractive left nobody to answer it,
+ * failed-with-remedy when a person was expected to) — this function still
+ * owns the terminal-state classification `needOutcome` builds on top of.
+ * Lives here (not apply.ts, which re-exports it) so a step file can import
+ * it without a runtime cycle back through steps/index.ts.
  */
 export function outcomeFromNeed(reply: NeedReply | "timeout" | "app-gone" | "no-app"): StepOutcome {
   if (reply === "no-app") return { state: "skipped", detail: "no mattstack.app running to complete this step" };
