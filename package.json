@@ -15,7 +15,8 @@
     "docs:gen": "bun scripts/gen-docs.ts",
     "docs:check": "bun scripts/check-docs.ts",
     "docs:update": "bun scripts/update-docs.ts",
-    "docs:deploy": "bash scripts/deploy-docs.sh"
+    "docs:deploy": "bash scripts/deploy-docs.sh",
+    "postinstall": "bun run --cwd packages/rt-client build"
   },
   "devDependencies": {
     "@types/bun": "latest",

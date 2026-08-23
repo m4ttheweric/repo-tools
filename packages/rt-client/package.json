@@ -41,8 +41,7 @@
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target node --format esm --packages external && tsc -p tsconfig.json",
     "check-types": "tsc --noEmit -p tsconfig.json",
-    "prepack": "bun run build",
-    "postinstall": "bun run build"
+    "prepack": "bun run build"
   },
   "publishConfig": {
     "access": "public"
