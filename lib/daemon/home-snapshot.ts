@@ -155,7 +155,15 @@ function redactCredentials(text: string): string {
   return text.replace(/:\/\/[^/@\s]+@/g, "://<redacted>@");
 }
 
-/** `git remote` prints nothing (exit 0) once no remote is configured — the same signal a spawn/exec failure produces, so both read as "no remote" here rather than a push ever being attempted against a broken git. */
+/**
+ * True only when `git remote` succeeds and lists at least one name. An
+ * exec failure (spawn error, `GIT_TIMEOUT_MS` kill — `exitCode: -1`) also
+ * reads as "no remote" here, same end result as a healthy repo with none
+ * configured but via a different exit code, not the same signal. The two
+ * are deliberately NOT distinguished for now: a broken/timed-out git
+ * currently goes quiet (debug log, no push attempt) instead of raising
+ * `home:push-failed` the way an actual push attempt would.
+ */
 async function hasRemote(exec: ExecFn, cwd: string): Promise<boolean> {
   const result = await exec(["git", "remote"], { cwd, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
   return result.exitCode === 0 && result.stdout.trim().length > 0;
@@ -168,16 +176,25 @@ async function hasRemote(exec: ExecFn, cwd: string): Promise<boolean> {
  * remote-tracking ref itself exists. A missing ref means everything is
  * unpushed (an absent ref is FATAL to `rev-list`, not empty), so its
  * absence is checked explicitly before ever calling `rev-list` against it.
+ *
+ * An unborn branch (a remote attached before the first commit ever landed
+ * — e.g. `git commit` failing outright with no `user.name`/`user.email`
+ * configured) prints its branch name via `symbolic-ref` just fine, exit 0,
+ * same as a normal branch — HEAD itself must be verified separately, or
+ * this arms a `git push` with nothing to push ("src refspec HEAD does not
+ * match any"), which fails every time and drives a retry storm.
  */
 async function unpushedAgainstOrigin(exec: ExecFn, cwd: string): Promise<boolean> {
   const branchResult = await exec(["git", "symbolic-ref", "--short", "HEAD"], { cwd, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
   if (branchResult.exitCode !== 0) return false; // detached HEAD: never green, never arm
+  const headResult = await exec(["git", "rev-parse", "--verify", "-q", "HEAD"], { cwd, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+  if (headResult.exitCode !== 0) return false; // unborn branch: no commits yet, nothing to push
   const branch = branchResult.stdout.trim();
   const ref = `refs/remotes/origin/${branch}`;
   const hasRef = await exec(["git", "rev-parse", "--verify", "-q", ref], { cwd, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
   if (hasRef.exitCode !== 0) return true; // no remote-tracking ref yet: everything is unpushed
-  const ahead = await exec(["git", "rev-list", `${ref}..HEAD`], { cwd, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
-  return ahead.exitCode === 0 && ahead.stdout.trim().length > 0;
+  const ahead = await exec(["git", "rev-list", "--count", `${ref}..HEAD`], { cwd, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+  return ahead.exitCode === 0 && Number(ahead.stdout.trim()) > 0;
 }
 
 const HOME_SNAPSHOT_NS = "home-snapshot";
@@ -482,8 +499,14 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     }
     // Local-only (rt home init with no remote attached) is a permanent,
     // supported state — not a push failure: no exec, no retry, no broadcast.
+    // Clearing pushPending/lastPushError here matters for a remote that
+    // existed, failed to push, and was then removed by hand — without this,
+    // a stale failure latches into status() forever and `committed ||
+    // pushPending` re-arms a push every cycle that only ever no-ops here.
     if (!(await hasRemote(deps.exec, deps.repoDir))) {
       deps.log.debug("home-snapshot: no remote configured; nothing to push");
+      pushPending = false;
+      lastPushError = null;
       return;
     }
     const result = await deps.exec(["git", "push", "-q", "origin", "HEAD"], {

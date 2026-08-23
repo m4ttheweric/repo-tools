@@ -1571,31 +1571,80 @@ describe("startHomeSnapshot — local-only remote state", () => {
 
   test("no remote: commits, never pushes, never broadcasts a failure", async () => {
     const h = await harnessWithLocalOnlyRepo();
-    await h.writeFile("user/settings.user.jsonc", "{}");
-    await h.runCycles(3);
-    expect(h.commits().length).toBeGreaterThan(0);
-    expect(h.execCalls().filter((c) => c[1] === "push")).toEqual([]);
-    expect(h.broadcasts("home:push-failed")).toEqual([]);
-    h.stop();
+    try {
+      await h.writeFile("user/settings.user.jsonc", "{}");
+      await h.runCycles(3);
+      expect(h.commits().length).toBeGreaterThan(0);
+      expect(h.execCalls().filter((c) => c[1] === "push")).toEqual([]);
+      expect(h.broadcasts("home:push-failed")).toEqual([]);
+    } finally {
+      h.stop();
+    }
   }, 15_000);
 
   test("a freshly attached remote arms a push with no new commit", async () => {
     const h = await harnessWithLocalOnlyRepo();
-    await h.writeFile("user/a", "1");
-    await h.runCycles(1); // commits locally, no push
-    await h.attachRemote(); // git remote add origin <bare>
-    await h.janitorTick(); // no file change
-    expect(h.execCalls().filter((c) => c[1] === "push").length).toBe(1);
-    h.stop();
+    try {
+      await h.writeFile("user/a", "1");
+      await h.runCycles(1); // commits locally, no push
+      await h.attachRemote(); // git remote add origin <bare>
+      await h.janitorTick(); // no file change
+      expect(h.execCalls().filter((c) => c[1] === "push").length).toBe(1);
+    } finally {
+      h.stop();
+    }
   }, 15_000);
 
   test("second push only fires when there is something ahead of the ref", async () => {
     const h = await harnessWithLocalOnlyRepo();
-    await h.attachRemote();
-    await h.writeFile("user/a", "1");
-    await h.runCycles(1); // first push
-    await h.janitorTick(); // nothing new
-    expect(h.execCalls().filter((c) => c[1] === "push").length).toBe(1);
-    h.stop();
+    try {
+      await h.attachRemote();
+      await h.writeFile("user/a", "1");
+      await h.runCycles(1); // first push
+      await h.janitorTick(); // nothing new
+      expect(h.execCalls().filter((c) => c[1] === "push").length).toBe(1);
+    } finally {
+      h.stop();
+    }
+  }, 15_000);
+
+  test("remote attached, zero commits (unborn branch): no push armed, no push-failed", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-unborn-")));
+    createdRoots.push(root);
+    const repoDir = join(root, "user");
+    const originDir = join(root, "origin.git");
+    mkdirSync(repoDir, { recursive: true });
+    execFileSync("git", ["init", "-q", "-b", "main", repoDir]);
+    execFileSync("git", ["config", "user.email", "rt@example.test"], { cwd: repoDir });
+    execFileSync("git", ["config", "user.name", "rt test"], { cwd: repoDir });
+    execFileSync("git", ["init", "--bare", "-q", originDir]);
+    execFileSync("git", ["remote", "add", "origin", originDir], { cwd: repoDir });
+
+    const db = openStateDb(join(root, "state.db"), "cli");
+    const broadcastLog: { type: string; data: unknown }[] = [];
+    const calls: string[][] = [];
+    const exec: NonNullable<HomeSnapshotDeps["exec"]> = async (argv, opts) => {
+      calls.push([...argv]);
+      return runCapture(argv, opts);
+    };
+    const handle = startHomeSnapshot({
+      log: fakeLog(),
+      broadcast: (type, data) => broadcastLog.push({ type, data }),
+      repoDir,
+      db,
+      exec,
+      readSettings: () => LOCAL_ONLY_SETTINGS,
+      readOwners: () => NO_OWNERS,
+    });
+    try {
+      await handle.ready;
+      await handle.runNow("janitor"); // no files, nothing to auto-commit — the branch this is actually testing
+      await new Promise((resolve) => setTimeout(resolve, PUSH_SETTLE_MS));
+
+      expect(calls.filter((c) => c[1] === "push")).toEqual([]);
+      expect(broadcastLog.filter((b) => b.type === "home:push-failed")).toEqual([]);
+    } finally {
+      handle.stop();
+    }
   }, 15_000);
 });
