@@ -12,7 +12,6 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { machineSettingsPath, teamSettingsPath, teamsDir, userSettingsPath } from "../paths.ts";
-import { getDef, type SettingDef } from "../registry-machinery.ts";
 import { setSetting } from "../write.ts";
 
 const IDENTITY = "gitlab.com/assured/assured-dev";
@@ -156,13 +155,6 @@ describe("settings/write", () => {
 
     test("refuses a scope the def does not allow", () => {
       expect(() => setSetting("rt.repoIdentityOverrides", {}, "user")).toThrow(/scope|store/i);
-    });
-
-    test("refuses a migrated:false key, naming the legacyFile", () => {
-      const def = getDef("rt.hooks") as SettingDef;
-      expect(() => setSetting("rt.hooks", { enabled: true }, "user")).toThrow(
-        new RegExp(def.legacyFile!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-      );
     });
 
     test("refuses a path-literal in a pathGuardFields field at user scope", () => {

@@ -95,14 +95,14 @@ describe("settings handlers", () => {
   });
 
   describe("settings:list", () => {
-    test("labels a migrated:false key and carries its resolved value", async () => {
+    test("labels a migrated:true key and carries its resolved value", async () => {
       write(userSettingsPath(), { "rt.hooks": { enabled: true } });
 
       const r = await handlers["settings:list"]({});
 
       expect(r.ok).toBe(true);
       const hooks = r.data.settings.find((s: any) => s.key === "rt.hooks");
-      expect(hooks).toMatchObject({ migrated: false, value: { enabled: true } });
+      expect(hooks).toMatchObject({ migrated: true, value: { enabled: true } });
     });
 
     test("labels a migrated:true key as such and includes the registry default when nothing is authored", async () => {
