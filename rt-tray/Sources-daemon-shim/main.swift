@@ -24,10 +24,10 @@
 // `rt settings dev-mode`. Remove this fallback once enough time has passed
 // that no machine still has an un-migrated dev-mode.json.
 //
-// TRUST: state.db is a shared multi-namespace store written by many rt code
-// paths (unlike the old single-purpose dev-mode.json), so its row is only
-// trusted when the file is owned by this process's uid and not group/other-
-// writable — see isTrustedStateDb. Both `sourcePath` and any `bunPath` are
+// TRUST: whichever source supplies the config chooses the binary the daemon
+// execs at every boot, so BOTH state.db and the legacy dev-mode.json are only
+// trusted when owned by this process's uid and not group/other-writable — see
+// isTrustedConfigFile. Both `sourcePath` and any `bunPath` are
 // required to be absolute; a relative `bunPath` is treated as absent (falls
 // back to ~/.bun/bin/bun) and a relative `sourcePath` invalidates the row
 // entirely (no sensible default). Even a READ-ONLY open of a WAL-mode
@@ -105,12 +105,13 @@ func finalizeConfig(sourcePathRaw: String?, bunPathRaw: String?, home: String) -
     return DevModeConfig(sourcePath: sourcePathRaw, bunPath: bunPath)
 }
 
-/// Refuses to trust state.db's contents unless it is owned by this
-/// process's uid and not group/other-writable. The row now lives in a
-/// shared multi-namespace store written by many rt code paths, rather than
-/// a single-purpose file, so this keeps "the shim can only ever run what
-/// this user configured" an enforced property rather than an assumption.
-func isTrustedStateDb(_ path: String) -> Bool {
+/// Refuses to trust a config source's contents unless it is owned by this
+/// process's uid and not group/other-writable. Whatever this returns true for
+/// chooses the binary the daemon execs at every boot, so it gates BOTH the
+/// state.db row and the legacy dev-mode.json fallback — a source that skipped
+/// it would hand that choice to anyone who can write the file. Follows
+/// symlinks (stat, not lstat) so the target's ownership is what counts.
+func isTrustedConfigFile(_ path: String) -> Bool {
     var st = stat()
     guard stat(path, &st) == 0 else { return false }
     guard st.st_uid == getuid() else { return false }
@@ -139,7 +140,7 @@ func readDevModeConfigFromStateDb(dbPath: String, home: String) -> (DevModeConfi
     guard FileManager.default.fileExists(atPath: dbPath) else {
         return (nil, "no state.db at \(dbPath)")
     }
-    guard isTrustedStateDb(dbPath) else {
+    guard isTrustedConfigFile(dbPath) else {
         return (nil, "state.db at \(dbPath) is not owned by this user or is group/other-writable — refusing to trust it")
     }
 
@@ -201,6 +202,9 @@ func readDevModeConfigFromStateDb(dbPath: String, home: String) -> (DevModeConfi
 func readDevModeConfigFromLegacyFile(path: String, home: String) -> (DevModeConfig?, String) {
     guard let raw = FileManager.default.contents(atPath: path) else {
         return (nil, "no legacy config at \(path)")
+    }
+    guard isTrustedConfigFile(path) else {
+        return (nil, "legacy config at \(path) is not owned by this user or is group/other-writable")
     }
     guard let parsed = try? JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
         return (nil, "legacy config at \(path) is not valid JSON")
