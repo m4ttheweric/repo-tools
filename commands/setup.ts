@@ -26,6 +26,7 @@ import { createHumanEmitter, createNdjsonEmitter } from "../lib/setup/emit.ts";
 import { UserActionableError, userErrorPayload } from "../lib/setup/errors.ts";
 import { integrationDef, type ValidateCtx } from "../lib/setup/integrations.ts";
 import { clearIntent, readIntent, teamRefFromIntent, writeIntent } from "../lib/setup/intent.ts";
+import { NO_MANIFEST_DETAIL, setupPackFlow } from "../lib/setup/pack.ts";
 import { composePlan, enrichSnapshotForge, realSecretPresence } from "../lib/setup/plan.ts";
 import { createRealProbes, type Probes } from "../lib/setup/probes.ts";
 import { DEFAULT_CALLBACK_PORT, DEFAULT_SCOPE_NEEDS, buildSlackManifest } from "../lib/setup/slack-app.ts";
@@ -213,6 +214,42 @@ export async function setupApply(args: string[], _ctx: CommandContext = {}, deps
   }
 
   if (!result.ok) deps.exit(2);
+}
+
+// ─── pack (`rt setup pack`) ─────────────────────────────────────────────
+
+/** Maps `setupPackFlow`'s honest `{ok,stage?,detail}` to an exit-2 code: a named stage is always `stage-unresolved`; the flow's own fixed no-manifest detail gets its own code; anything else (a malformed pack, a step failure) is a generic pack error rather than a misleading "no manifest". */
+function packErrorCode(result: { stage?: string; detail: string }): string {
+  if (result.stage) return "stage-unresolved";
+  if (result.detail === NO_MANIFEST_DETAIL) return "no-manifest";
+  return "pack-error";
+}
+
+export async function setupPack(args: string[], _ctx: CommandContext = {}, deps: ApplyDeps = realApplyDeps()): Promise<void> {
+  const json = args.includes("--json");
+  const verb = "setup pack";
+  try {
+    const ctx: ApplyContext = await createApplyContext({
+      probes: deps.probes,
+      emit: () => {},
+      secrets: deps.secrets,
+      relay: deps.relay,
+      secretPresence: deps.secretPresence,
+      flags: applyFlags(args),
+      needOpts: deps.needOpts,
+    });
+    const result = await setupPackFlow(ctx);
+    if (!result.ok) {
+      throw new UserActionableError(packErrorCode(result), result.detail, result.stage ? { stage: result.stage } : {});
+    }
+    deps.print(json ? JSON.stringify(envelope({ ok: true, detail: result.detail }, deps.probes.now())) : `setup pack: ${result.detail}`);
+  } catch (err) {
+    if (err instanceof UserActionableError) {
+      deps.print(json ? JSON.stringify(userErrorPayload(err, deps.probes.now())) : `rt ${verb}: ${err.message}`);
+      return deps.exit(2);
+    }
+    throw err;
+  }
 }
 
 // ─── setup (`rt setup`, no args — the TTY walk) ────────────────────────────
