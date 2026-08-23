@@ -20,7 +20,7 @@
 
 import { execSync, spawn, spawnSync } from "child_process";
 import { join } from "path";
-import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { bold, dim, green, yellow, red, reset } from "../lib/tui.ts";
 import {
   isDaemonInstalled,
@@ -40,7 +40,7 @@ import { loadRepoIndex } from "../lib/repo-index.ts";
 import { createProjectMRs } from "../lib/daemon/project-mrs-store.ts";
 import { getStateDb } from "../lib/state/index.ts";
 import { timeAgo } from "../lib/tui/utils/label.ts";
-import { trayAppPath, installedTrayAppPath, TRAY_APP_NAME, TRAY_APP_BUNDLE } from "../lib/rt-paths.ts";
+import { trayAppPath, installedTrayAppPath, TRAY_APP_NAME, TRAY_APP_BUNDLE, tmpDir } from "../lib/rt-paths.ts";
 
 /** Where to point an "open it" hint: the bundle's real install location if we can find one, else the conventional ~/Applications destination. */
 function trayAppHintPath(): string {
@@ -717,6 +717,28 @@ const LOGDY_PINO_COLUMNS_JSON = JSON.stringify(
 );
 
 /**
+ * Materialize the logdy column config under rt/tmp (rewriting only if it
+ * changed, so edits to LOGDY_PINO_COLUMNS_JSON above propagate without
+ * manual cache busting) and clear out any pre-RT-33-collapse copy left at
+ * the rt/ top level. Returns the path logdy's `--config` flag should get.
+ */
+export function materializeLogdyConfig(): string {
+  mkdirSync(tmpDir(), { recursive: true });
+  const configPath = join(tmpDir(), "logdy-pino-columns.json");
+  const existing = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
+  if (existing !== LOGDY_PINO_COLUMNS_JSON) {
+    writeFileSync(configPath, LOGDY_PINO_COLUMNS_JSON);
+  }
+
+  const legacyPath = join(RT_DIR, "logdy-pino-columns.json");
+  try {
+    if (existsSync(legacyPath)) unlinkSync(legacyPath);
+  } catch { /* best-effort */ }
+
+  return configPath;
+}
+
+/**
  * Spawn logdy follow + open browser. Stays attached so user can Ctrl-C.
  */
 async function runWebViewer(logPaths: string[]): Promise<void> {
@@ -728,13 +750,7 @@ async function runWebViewer(logPaths: string[]): Promise<void> {
     process.exit(1);
   }
 
-  // Materialize the column config once; rewrite if it changed (so edits to
-  // LOGDY_PINO_COLUMNS_JSON above propagate without manual cache busting).
-  const configPath = join(LOG_DIR, "..", "logdy-pino-columns.json");
-  const existing = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
-  if (existing !== LOGDY_PINO_COLUMNS_JSON) {
-    writeFileSync(configPath, LOGDY_PINO_COLUMNS_JSON);
-  }
+  const configPath = materializeLogdyConfig();
 
   const port = "5544";
   const url = `http://localhost:${port}`;
