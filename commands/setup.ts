@@ -15,20 +15,25 @@ import { randomBytes } from "crypto";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { readAgeKey, createRealAgeKeySeam } from "../lib/home/age-key.ts";
 import { promptSecret } from "../lib/prompt-secret.ts";
+import { confirm } from "../lib/rt-render.tsx";
 import { NoAgeKeyError, createRealSecretsExecSeam, writeSecret, type SecretsSeams } from "../lib/secrets/store.ts";
 import { NoTeamRecipientsError, createRealTeamSecretsSeams, readTeamSecret, writeTeamSecret } from "../lib/secrets/team-store.ts";
 import { listTeams } from "../lib/settings/stores.ts";
 import { setSetting } from "../lib/settings/write.ts";
-import { envelope, type ConnectField, type Integration } from "../lib/setup/contract.ts";
+import { createApplyContext, runApplyWith, type ApplyContext, type CreateApplyContextDeps, type StepDef } from "../lib/setup/apply.ts";
+import { envelope, type ConnectField, type Integration, type StepId } from "../lib/setup/contract.ts";
+import { createHumanEmitter, createNdjsonEmitter } from "../lib/setup/emit.ts";
 import { UserActionableError, userErrorPayload } from "../lib/setup/errors.ts";
 import { integrationDef, type ValidateCtx } from "../lib/setup/integrations.ts";
-import { readIntent, teamRefFromIntent } from "../lib/setup/intent.ts";
+import { clearIntent, readIntent, teamRefFromIntent, writeIntent } from "../lib/setup/intent.ts";
 import { composePlan, enrichSnapshotForge, realSecretPresence } from "../lib/setup/plan.ts";
 import { createRealProbes, type Probes } from "../lib/setup/probes.ts";
 import { DEFAULT_CALLBACK_PORT, DEFAULT_SCOPE_NEEDS, buildSlackManifest } from "../lib/setup/slack-app.ts";
+import { STEPS } from "../lib/setup/steps/index.ts";
 import { readStagedSecret, stageSecret } from "../lib/setup/staging.ts";
 import { readTeamSnapshot, type TeamSnapshot } from "../lib/setup/team-settings.ts";
 import type { Plan, RowStatus } from "../lib/setup/contract.ts";
+import { createRelayClient, inviteRelayUrl, type RelayClient } from "../lib/team/relay-client.ts";
 import type { SecretPresence } from "../lib/setup/validators/accounts.ts";
 
 export interface SetupDeps {
@@ -110,8 +115,190 @@ export async function setupStatus(args: string[], _ctx: CommandContext = {}, dep
   await runPlan(args, deps, "status", "setup", "rt setup status");
 }
 
-// Today this is the same health view `rt setup status` gives.
-export const setupInteractive = setupStatus;
+// ─── apply (`rt setup apply`) ──────────────────────────────────────────────
+
+export interface ApplyDeps {
+  probes: Probes;
+  secrets: SecretsSeams;
+  relay: RelayClient;
+  /** Defaults to `realSecretPresence()` inside `createApplyContext` — override in tests. */
+  secretPresence?: SecretPresence;
+  /** Overrides the real 22-step registry — the seam every apply test drives instead. */
+  steps?: StepDef[];
+  needOpts?: CreateApplyContextDeps["needOpts"];
+  print: (s: string) => void;
+  exit: (code: number) => never;
+  isTTY: () => boolean;
+  confirm: (message: string) => Promise<boolean>;
+}
+
+export function realApplyDeps(): ApplyDeps {
+  const probes = createRealProbes();
+  return {
+    probes,
+    secrets: { ageKeySeam: createRealAgeKeySeam(), execSeam: createRealSecretsExecSeam() },
+    relay: createRelayClient(probes.fetch, inviteRelayUrl(probes.env)),
+    print: (s) => console.log(s),
+    exit: process.exit,
+    isTTY: () => process.stdin.isTTY === true,
+    confirm: (message) => confirm({ message }),
+  };
+}
+
+function applyFlags(args: string[]): { nonInteractive: boolean; teamOfOne: boolean; ci: boolean } {
+  return {
+    nonInteractive: args.includes("--non-interactive"),
+    teamOfOne: args.includes("--team-of-one"),
+    ci: args.includes("--ci") || process.env.CI === "true",
+  };
+}
+
+/**
+ * `rt setup apply [--from <stepId>] --json` — the verb the app spawns for
+ * Install. `--json` mode emits ONLY NDJSON on stdout, one object per line
+ * (the app's spawn-and-parse contract); every other flag/branch below prints
+ * through `deps.print`/`emit`, never a bare `console.*` call, so that
+ * invariant holds regardless of which flags are passed. `--no-launch` (and
+ * `--ci`/`CI=true`, which implies it) is accepted for compatibility with
+ * scripts/e2e-cleanroom.sh and release.yml's headless job — nothing in this
+ * flow (nor any of the 22 step bodies) ever spawns `open` on a GUI app, so
+ * there is no separate branch to gate; the invariant it promises holds by
+ * construction, not by checking the flag.
+ */
+export async function setupApply(args: string[], _ctx: CommandContext = {}, deps: ApplyDeps = realApplyDeps()): Promise<void> {
+  const json = args.includes("--json");
+  const emit = json
+    ? createNdjsonEmitter((line) => deps.print(line.endsWith("\n") ? line.slice(0, -1) : line))
+    : createHumanEmitter(deps.print);
+
+  const from = flagValue(args, "--from") as StepId | undefined;
+
+  const ctx: ApplyContext = await createApplyContext({
+    probes: deps.probes,
+    emit,
+    secrets: deps.secrets,
+    relay: deps.relay,
+    secretPresence: deps.secretPresence,
+    flags: applyFlags(args),
+    needOpts: deps.needOpts,
+  });
+
+  let result: { ok: boolean; failedStep?: StepId };
+  try {
+    result = await runApplyWith(deps.steps ?? STEPS, ctx, { from });
+  } catch (err) {
+    if (err instanceof UserActionableError) {
+      // Thrown by resumeStart before `plan` ever reaches the stream (an
+      // unknown --from id, or one naming a step this run gated out) — print
+      // the same exit-2 envelope every other setup verb uses.
+      deps.print(json ? JSON.stringify(userErrorPayload(err, deps.probes.now())) : `rt setup apply: ${err.message}`);
+      return deps.exit(2);
+    }
+    // A real bug: apply.ts's `finally` block already emitted the terminal
+    // `done` event before rethrowing, so the stream is complete — let the
+    // process crash at exit 1 rather than report this as user-actionable.
+    throw err;
+  }
+
+  if (!result.ok) deps.exit(2);
+}
+
+// ─── setup (`rt setup`, no args — the TTY walk) ────────────────────────────
+
+/** `plan.requiredMissing`'s row ids, resolved back to their titles/action labels for the human-readable blocked-list. */
+function missingRowLines(plan: Plan): string[] {
+  const byId = new Map(plan.groups.flatMap((g) => g.rows).map((r) => [r.id, r] as const));
+  return plan.requiredMissing.map((id) => {
+    const row = byId.get(id);
+    return `  - ${row?.title ?? id}${row?.action ? ` (${row.action.label})` : ""}`;
+  });
+}
+
+/**
+ * `rt setup` with no args. A TTY gets the interactive walk: the plan, then a
+ * confirmation before running Install. Anything else (no TTY, or `--json`
+ * explicitly requested) behaves exactly like `rt setup status` — never a
+ * prompt, since nobody's there to answer it.
+ */
+export async function setupInteractive(args: string[], _ctx: CommandContext = {}, deps: ApplyDeps = realApplyDeps()): Promise<void> {
+  const json = args.includes("--json");
+  const setupDeps: SetupDeps = { probes: deps.probes, secrets: deps.secretPresence ?? realSecretPresence(), print: deps.print, exit: deps.exit };
+
+  if (!deps.isTTY() || json) return setupStatus(args, _ctx, setupDeps);
+
+  const plan = await composePlan({ p: deps.probes, secrets: setupDeps.secrets, ci: process.env.CI === "true", mode: "plan", teams: listTeams() });
+  for (const line of renderPlanHuman(plan)) deps.print(line);
+
+  if (!plan.canInstall && !args.includes("--force")) {
+    for (const line of missingRowLines(plan)) deps.print(line);
+    const err = new UserActionableError("not-ready", `not ready to install — blocked by: ${plan.requiredMissing.join(", ")}`);
+    deps.print(`rt setup: ${err.message}`);
+    return deps.exit(2);
+  }
+
+  const proceed = await deps.confirm("Install now?");
+  if (!proceed) return;
+
+  return setupApply([], _ctx, deps);
+}
+
+// ─── intent (`rt setup intent`) ────────────────────────────────────────────
+
+export interface IntentDeps {
+  probes: Probes;
+  print: (s: string) => void;
+  exit: (code: number) => never;
+}
+
+export function realIntentDeps(): IntentDeps {
+  return { probes: createRealProbes(), print: (s) => console.log(s), exit: process.exit };
+}
+
+// Safe as a directory-name-free identifier and readable in a log line — not a
+// full org/repo syntax check, just enough to catch an empty or malformed arg
+// before it's persisted as this machine's restore target.
+const HOME_REPO_PATTERN = /^[\w.-]+\/[\w.-]+$/;
+
+function printIntentResult(deps: IntentDeps, json: boolean, body: Record<string, unknown>): void {
+  if (json) {
+    deps.print(JSON.stringify(envelope(body, deps.probes.now())));
+    return;
+  }
+  deps.print(`setup intent: ${body.mode}${body.homeRepo ? ` ${body.homeRepo}` : ""}`);
+}
+
+/**
+ * `rt setup intent restore <org>/<repo>` / `rt setup intent clear` — hidden,
+ * records intent only. The app runs the real restore; there is no `rt
+ * restore` command.
+ */
+export async function setupIntent(args: string[], _ctx: CommandContext = {}, deps: IntentDeps = realIntentDeps()): Promise<void> {
+  const json = args.includes("--json");
+  try {
+    const sub = args[0];
+    if (sub === "restore") {
+      const homeRepo = args[1];
+      if (!homeRepo || !HOME_REPO_PATTERN.test(homeRepo)) {
+        throw new UserActionableError("bad-args", "usage: rt setup intent restore <org>/<repo>");
+      }
+      writeIntent(deps.probes, { v: 1, at: deps.probes.now().toISOString(), mode: "restore", restore: { homeRepo } });
+      printIntentResult(deps, json, { mode: "restore", homeRepo });
+      return;
+    }
+    if (sub === "clear") {
+      clearIntent(deps.probes);
+      printIntentResult(deps, json, { mode: "clear" });
+      return;
+    }
+    throw new UserActionableError("bad-args", "usage: rt setup intent restore <org>/<repo> | rt setup intent clear");
+  } catch (err) {
+    if (err instanceof UserActionableError) {
+      deps.print(json ? JSON.stringify(userErrorPayload(err, deps.probes.now())) : `rt setup intent: ${err.message}`);
+      return deps.exit(2);
+    }
+    throw err;
+  }
+}
 
 // ─── Per-integration verbs ─────────────────────────────────────────────────
 

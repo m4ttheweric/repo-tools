@@ -1052,7 +1052,10 @@ export const TREE: Record<string, CommandNode> = {
     description: "Set this Mac up for mattstack: readiness plan, install steps, account connections",
     module: "./commands/setup.ts",
     fn: "setupInteractive",
-    args: [{ name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable plan" }],
+    args: [
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable plan (skips the interactive walk)" },
+      { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Confirm install even though required rows are missing" },
+    ],
     subcommands: {
       plan: {
         description: "Compute the readiness checklist",
@@ -1068,6 +1071,31 @@ export const TREE: Record<string, CommandNode> = {
         module: "./commands/setup.ts",
         fn: "setupStatus",
         args: [{ name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable plan" }],
+      },
+      apply: {
+        description: "Run the install steps (hidden — the app spawns this for Install)",
+        module: "./commands/setup.ts",
+        fn: "setupApply",
+        hidden: true,
+        args: [
+          { name: "From", flag: "--from", type: "text", placeholder: "path.link", hint: "Resume from this step id" },
+          { name: "Non-interactive", flag: "--non-interactive", type: "boolean", default: false, hint: "Never prompt; skip steps that need a human" },
+          { name: "Team of one", flag: "--team-of-one", type: "boolean", default: false, hint: "Solo install, no team" },
+          { name: "CI", flag: "--ci", type: "boolean", default: false, hint: "Headless CI run" },
+          { name: "No launch", flag: "--no-launch", type: "boolean", default: false, hint: "Never open a GUI app" },
+          SETUP_JSON_ARG,
+        ],
+      },
+      intent: {
+        description: "Record a setup intent for the app to act on (hidden)",
+        module: "./commands/setup.ts",
+        fn: "setupIntent",
+        hidden: true,
+        args: [
+          { name: "Mode", type: "text", placeholder: "restore", hint: "restore <org>/<repo> | clear" },
+          { name: "HomeRepo", type: "text", placeholder: "org/repo", hint: "org/repo of the home repo to restore (restore only)" },
+          SETUP_JSON_ARG,
+        ],
       },
       github: integrationNode("github", "GitHub"),
       gitlab: integrationNode("gitlab", "GitLab"),

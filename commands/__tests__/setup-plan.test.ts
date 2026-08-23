@@ -1,5 +1,5 @@
 import { describe, test, expect, spyOn } from "bun:test";
-import { setupPlan, setupStatus, setupInteractive, renderPlanHuman, type SetupDeps } from "../setup.ts";
+import { setupPlan, setupStatus, renderPlanHuman, type SetupDeps } from "../setup.ts";
 import type { Plan } from "../../lib/setup/contract.ts";
 import type { SecretPresence } from "../../lib/setup/validators/accounts.ts";
 import { fakeProbes, ok } from "../../lib/setup/__tests__/fakes.ts";
@@ -98,11 +98,8 @@ describe("setupStatus", () => {
   });
 });
 
-describe("setupInteractive", () => {
-  test("is the same handler as setupStatus", () => {
-    expect(setupInteractive).toBe(setupStatus);
-  });
-});
+// setupInteractive (the real TTY walk, not the old setupStatus alias) is
+// covered in commands/__tests__/setup-apply.test.ts.
 
 describe("renderPlanHuman", () => {
   test("group headers, one line per row with a status glyph, and an install footer", () => {
