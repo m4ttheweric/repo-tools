@@ -28,7 +28,7 @@ import { dirname, join } from "path";
 import { machineSettingsPath, repoDataDir, rtDir, teamSettingsPath } from "../rt-paths.ts";
 import { getSetting } from "../settings/resolve.ts";
 import { setSetting } from "../settings/write.ts";
-import { closeStateDb, setKvValue } from "../state/index.ts";
+import { closeStateDb, getStateDb, setKvValue } from "../state/index.ts";
 import { getKnownRepos, loadRepoIndex, updateRepoIndex, __test__ } from "../repo-index.ts";
 
 const TEAM = "acme";
@@ -475,13 +475,14 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
   // ─── 13. Disposable cache ─────────────────────────────────────────────────
 
   describe("13. disposable cache", () => {
-    test("a stale on-disk repos.json is ignored — the store is authoritative, nothing crashes", () => {
+    test("a pre-migration repos.json entry for a path that no longer exists is imported, then filtered from the picker", () => {
       const root = mkdtempSync(join(tmpdir(), "rt-cache-root-"));
       const repo = markerRepo(root, "stillhere");
       setRepoRoots([root]);
 
-      // A leftover pre-migration file with different, stale data must never
-      // be read back.
+      // A leftover pre-migration file: getKnownRepos() imports it (empty
+      // index, file present), but a registered path that no longer exists on
+      // disk is filtered out the same way it always was.
       const p = join(rtDir(), "repos.json");
       mkdirSync(dirname(p), { recursive: true });
       writeFileSync(p, JSON.stringify({ "stale-repo": "/nonexistent/path" }));
@@ -489,8 +490,58 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
       const repos = getKnownRepos();
       expect(byName(repos, "stillhere")?.worktrees[0]?.path).toBe(repo);
       expect(byName(repos, "stale-repo")).toBeUndefined();
+      expect(loadRepoIndex()["stale-repo"]).toBe("/nonexistent/path"); // imported into the store regardless
+      expect(existsSync(p)).toBe(false);
+      expect(existsSync(`${p}.migrated`)).toBe(true);
 
       rmSync(root, { recursive: true, force: true });
+    });
+
+    test("a pre-migration repos.json is imported on first read and renamed to .migrated", () => {
+      const p = join(rtDir(), "repos.json");
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, JSON.stringify({ "repo-a": "/path/a", "repo-b": "/path/b" }));
+
+      expect(loadRepoIndex()).toEqual({ "repo-a": "/path/a", "repo-b": "/path/b" });
+      expect(existsSync(p)).toBe(false);
+      expect(existsSync(`${p}.migrated`)).toBe(true);
+
+      // A second read sees the store, not a re-import (the file is already renamed away).
+      expect(loadRepoIndex()).toEqual({ "repo-a": "/path/a", "repo-b": "/path/b" });
+    });
+
+    test("corrupt repos.json warns and is left in place, index reads as empty", () => {
+      const p = join(rtDir(), "repos.json");
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, "{ not valid json");
+
+      expect(loadRepoIndex()).toEqual({});
+      expect(existsSync(p)).toBe(true);
+      expect(existsSync(`${p}.migrated`)).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+    });
+
+    test("updateRepoIndex never throws when state.db cannot be opened (e.g. root-owned after sudo)", () => {
+      const parent = realpathSync(mkdtempSync(join(tmpdir(), "rt-updateindex-unopenable-")));
+      const root = join(parent, "repo");
+      realRepo(root);
+
+      // Materialize state.db, then strip all permissions so the next open
+      // throws instead of quarantining (quarantine only fires for
+      // corruption, not permission errors) — the getRepoIdentity() crash
+      // this test guards against.
+      getStateDb();
+      closeStateDb();
+      const dbPath = join(rtDir(), "state.db");
+      chmodSync(dbPath, 0o000);
+
+      try {
+        expect(() => updateRepoIndex("updated-repo", root)).not.toThrow();
+      } finally {
+        chmodSync(dbPath, 0o600); // afterEach's rmSync needs read access
+      }
+
+      rmSync(parent, { recursive: true, force: true });
     });
 
     test("unset key + empty index = empty result, no crash", () => {

@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, spyOn } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { tmpdir } from "os";
@@ -59,11 +59,11 @@ describe("recordRecent", () => {
   });
 });
 
-describe("saveSdmState — legacy file cleanup, real (HOME-faked) singleton", () => {
+describe("loadSdmState — legacy import, real (HOME-faked) singleton", () => {
   const origHome = process.env.HOME;
   let home: string;
 
-  test("round-trips through the store, and a leftover pre-migration sdm/state.json is unlinked on write", () => {
+  test("a pre-existing sdm/state.json is imported on first read, and renamed to .migrated", () => {
     home = mkdtempSync(join(tmpdir(), "rt-sdm-state-home-"));
     process.env.HOME = home;
     closeStateDb();
@@ -73,12 +73,37 @@ describe("saveSdmState — legacy file cleanup, real (HOME-faked) singleton", ()
       writeFileSync(legacyPath, JSON.stringify({ version: 1, recents: [entry("stale")] }));
       expect(existsSync(legacyPath)).toBe(true);
 
-      saveSdmState({ version: 1, recents: [{ ...entry("fresh"), lastConnectedAt: "2026-07-01T12:00:00.000Z" }] });
-
-      // The store, not the stale file, is authoritative.
-      expect(loadSdmState().recents.map(r => r.key)).toEqual(["fresh"]);
+      expect(loadSdmState().recents.map(r => r.key)).toEqual(["stale"]);
       expect(existsSync(legacyPath)).toBe(false);
+      expect(existsSync(`${legacyPath}.migrated`)).toBe(true);
+
+      // A later save still overwrites the imported value, and renames (not
+      // unlinks) anything left at the legacy path.
+      saveSdmState({ version: 1, recents: [{ ...entry("fresh"), lastConnectedAt: "2026-07-01T12:00:00.000Z" }] });
+      expect(loadSdmState().recents.map(r => r.key)).toEqual(["fresh"]);
     } finally {
+      process.env.HOME = origHome;
+      closeStateDb();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a corrupt sdm/state.json warns and is left in place; loadSdmState reads as empty", () => {
+    home = mkdtempSync(join(tmpdir(), "rt-sdm-state-corrupt-home-"));
+    process.env.HOME = home;
+    closeStateDb();
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const legacyPath = sdmStatePath();
+      mkdirSync(dirname(legacyPath), { recursive: true });
+      writeFileSync(legacyPath, "{ not valid json");
+
+      expect(loadSdmState()).toEqual({ version: 1, recents: [] });
+      expect(existsSync(legacyPath)).toBe(true);
+      expect(existsSync(`${legacyPath}.migrated`)).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
       process.env.HOME = origHome;
       closeStateDb();
       rmSync(home, { recursive: true, force: true });

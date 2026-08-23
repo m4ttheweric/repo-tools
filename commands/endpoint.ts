@@ -68,7 +68,7 @@ export async function endpointLookup(args: string[]): Promise<void> {
   // path, so equality-matching the path would false-negative every time).
   const index = loadRepoIndex();
   if (!(repoName in index)) {
-    fail(`repo "${repoName}" is not registered in ~/.mattstack/rt/repos.json`);
+    fail(`repo "${repoName}" is not registered — visit it with rt first (repos.json is a derived mirror, not the source of truth)`);
   }
 
   const res = await daemonQuery("endpoint:lookup", { repo: repoName, worktree: toplevel, role }, 10_000);

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { execSync } from "child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -127,23 +127,48 @@ test("writeInterceptRules + loadInterceptRules round-trip through the store", ()
   expect(loadInterceptRules()).toEqual(rules);
 });
 
-test("a stale on-disk intercepts.json is ignored once the store owns the value, and gets unlinked on write", () => {
+test("a pre-existing intercepts.json is imported on first read and renamed to .migrated", () => {
   const dir = mkdtempSync(join(tmpdir(), "shim-test-stale-home-"));
   const origHome = process.env.HOME;
   process.env.HOME = dir;
   closeStateDb();
   try {
     mkdirSync(rtDir(), { recursive: true });
-    writeFileSync(interceptsPath(), JSON.stringify({ rules: [{ command: "stale-cmd", repo: "r", repoRemote: null, matches: [] }] }));
+    const legacyRules: InterceptRule[] = [{ command: "stale-cmd", repo: "r", repoRemote: null, matches: [] }];
+    writeFileSync(interceptsPath(), JSON.stringify({ rules: legacyRules }));
     expect(existsSync(interceptsPath())).toBe(true);
 
-    // The store, not the stale file, is authoritative — nothing written yet.
-    expect(loadInterceptRules()).toEqual([]);
+    // First read imports the legacy file's rules into the store.
+    expect(loadInterceptRules()).toEqual(legacyRules);
+    expect(existsSync(interceptsPath())).toBe(false);
+    expect(existsSync(`${interceptsPath()}.migrated`)).toBe(true);
 
+    // A later explicit write still overwrites the imported value.
     writeInterceptRules(rules);
     expect(loadInterceptRules()).toEqual(rules);
-    expect(existsSync(interceptsPath())).toBe(false);
   } finally {
+    process.env.HOME = origHome;
+    closeStateDb();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("corrupt intercepts.json warns and is left in place; loadInterceptRules reads as empty", () => {
+  const dir = mkdtempSync(join(tmpdir(), "shim-test-corrupt-home-"));
+  const origHome = process.env.HOME;
+  const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+  process.env.HOME = dir;
+  closeStateDb();
+  try {
+    mkdirSync(rtDir(), { recursive: true });
+    writeFileSync(interceptsPath(), "{ not valid json");
+
+    expect(loadInterceptRules()).toEqual([]);
+    expect(existsSync(interceptsPath())).toBe(true);
+    expect(existsSync(`${interceptsPath()}.migrated`)).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+  } finally {
+    warnSpy.mockRestore();
     process.env.HOME = origHome;
     closeStateDb();
     rmSync(dir, { recursive: true, force: true });
@@ -389,5 +414,14 @@ describe("staleIntercepts", () => {
     writeCache("r");
     writeAt(teamSettingsPath("claimview"), "{}", NEWER);
     expect(staleIntercepts().stale).toBe(true);
+  });
+
+  test("a legacy intercepts.json (no store row yet) is imported by the probe itself, and a newer store still reports stale — not the pre-fix {stale:false} on a null cache", () => {
+    writeAt(interceptsPath(), JSON.stringify({ rules: [{ command: "c", repo: "r", repoRemote: null, matches: [] }] }), T0);
+    writeAt(userSettingsPath(), "{}", NEWER);
+
+    const probe = staleIntercepts();
+    expect(probe.stale).toBe(true);
+    expect(existsSync(interceptsPath())).toBe(false); // imported and renamed as a side effect of the probe
   });
 });

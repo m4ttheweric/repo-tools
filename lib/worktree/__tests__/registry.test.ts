@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, spyOn } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
@@ -64,17 +64,54 @@ describe("worktree registry", () => {
     setKvValue("worktree-registry", "r", null);
     expect(loadRegistry("r")).toEqual([]);
   });
-  test("a stale on-disk worktrees.json is ignored once the store owns the value, and gets unlinked on write", () => {
+  test("a pre-existing worktrees.json is imported on first read, including fields no git repo records", () => {
+    const path = registryPath("r");
+    mkdirSync(dirname(path), { recursive: true });
+    const legacyTree = rec({
+      name: "claimed-tree",
+      kind: "ephemeral",
+      state: "claimed",
+      owner: "matt",
+      disposal: "merge",
+      claimedAt: "2026-08-20T00:00:00Z",
+      readyStamp: "abc123",
+      retryFailures: 2,
+    });
+    writeFileSync(path, JSON.stringify({ trees: [legacyTree] }));
+    expect(existsSync(path)).toBe(true);
+
+    expect(loadRegistry("r")).toEqual([legacyTree]);
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(`${path}.migrated`)).toBe(true);
+
+    // A second read sees the store, not a re-import.
+    expect(loadRegistry("r")).toEqual([legacyTree]);
+  });
+
+  test("a corrupt worktrees.json warns and is left in place; loadRegistry reads as empty", () => {
+    const path = registryPath("corrupt-r");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "{ not valid json");
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      expect(loadRegistry("corrupt-r")).toEqual([]);
+      expect(existsSync(path)).toBe(true);
+      expect(existsSync(`${path}.migrated`)).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("saveRegistry renames (never deletes) a legacy worktrees.json it supersedes", () => {
     const path = registryPath("r");
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify({ trees: [rec({ name: "stale-tree" })] }));
-    expect(existsSync(path)).toBe(true);
-
-    // The store, not the stale file, is authoritative — nothing written yet.
-    expect(loadRegistry("r")).toEqual([]);
 
     saveRegistry("r", [rec({ name: "fresh-tree" })]);
     expect(loadRegistry("r").map((t) => t.name)).toEqual(["fresh-tree"]);
     expect(existsSync(path)).toBe(false);
+    expect(existsSync(`${path}.migrated`)).toBe(true);
   });
 });

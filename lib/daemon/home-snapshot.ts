@@ -21,7 +21,7 @@
  * caller asked for "manual". Running it again gets a fresh manual cycle.
  */
 
-import { existsSync, unlinkSync, watch as fsWatch } from "fs";
+import { existsSync, watch as fsWatch } from "fs";
 import { isAbsolute, join } from "path";
 import type { Database } from "bun:sqlite";
 import type { Logger } from "pino";
@@ -29,7 +29,14 @@ import type { Logger } from "pino";
 import { mattstackHome, rtDir } from "../rt-paths.ts";
 import { runCapture, type RunResult } from "../subprocess.ts";
 import { getSetting } from "../settings/resolve.ts";
-import { getKvValue, getStateDb, setKvValue } from "../state/index.ts";
+import {
+  getKvValue,
+  getStateDb,
+  hasKvValue,
+  importLegacyJsonFile,
+  renameLegacyOutOfTheWay,
+  setKvValue,
+} from "../state/index.ts";
 import { readOwners as readOwnersReal, type Owners } from "../home/snapshot-owners.ts";
 import { parsePorcelainZ, planSnapshot } from "./home-snapshot-plan.ts";
 
@@ -155,37 +162,43 @@ interface PersistedHomeSnapshotState {
   firstSeenDirty?: Record<string, number>;
 }
 
-/** Retired storage location — kept only so a leftover pre-migration file can be cleaned up. */
+/** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
 function legacyStatePath(): string {
   return join(rtDir(), "home-snapshot-state.json");
 }
 
-function unlinkLegacyState(): void {
-  try {
-    unlinkSync(legacyStatePath());
-  } catch {
-    // already gone, or never existed
-  }
+function firstSeenDirtyOf(raw: PersistedHomeSnapshotState | null | undefined): Record<string, number> {
+  return raw && typeof raw.firstSeenDirty === "object" && raw.firstSeenDirty !== null ? raw.firstSeenDirty : {};
 }
 
 /** A missing row is the normal first-run case (silent); a present-but-unparseable row is a real loss of the janitor-threshold clock and must be loud, per the catch policy. */
 function loadState(db: Database, log: Logger): Record<string, number> {
-  const raw = getKvValue<PersistedHomeSnapshotState>(
-    HOME_SNAPSHOT_NS,
-    HOME_SNAPSHOT_KEY,
-    {},
-    db,
-    (err) => log.warn({ err }, "home-snapshot: state row corrupt; starting from empty first-seen-dirty state"),
+  if (hasKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, db)) {
+    return firstSeenDirtyOf(getKvValue<PersistedHomeSnapshotState>(
+      HOME_SNAPSHOT_NS,
+      HOME_SNAPSHOT_KEY,
+      {},
+      db,
+      (err) => log.warn({ err }, "home-snapshot: state row corrupt; starting from empty first-seen-dirty state"),
+    ));
+  }
+
+  const result = importLegacyJsonFile<Record<string, number>>(
+    legacyStatePath(),
+    (json) => {
+      const firstSeenDirty = firstSeenDirtyOf(json as PersistedHomeSnapshotState | null);
+      setKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, { firstSeenDirty }, db);
+      return firstSeenDirty;
+    },
+    (err) => log.warn({ err }, "home-snapshot: legacy state file corrupt; starting from empty first-seen-dirty state"),
   );
-  return raw && typeof raw.firstSeenDirty === "object" && raw.firstSeenDirty !== null
-    ? raw.firstSeenDirty
-    : {};
+  return result.imported ? result.value! : {};
 }
 
 function persistState(db: Database, firstSeenDirty: Record<string, number>, log: Logger): void {
   try {
     setKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, { firstSeenDirty }, db);
-    unlinkLegacyState();
+    renameLegacyOutOfTheWay(legacyStatePath());
   } catch (err) {
     log.warn({ err }, "home-snapshot: failed to persist state");
   }

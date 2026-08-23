@@ -54,3 +54,8 @@ export function appendRunHistoryEntry(repo: string, entry: RunHistoryEntry, db: 
 export function listRunHistory(repo: string, limit = MAX_ENTRIES, db: Database = getStateDb()): RunHistoryEntry[] {
   return db.query(SELECT_SQL).all(repo, limit) as RunHistoryEntry[];
 }
+
+/** Whether this repo has any rows at all — the migrate-on-read gate for the legacy run-history.jsonl importer. */
+export function hasRunHistory(repo: string, db: Database = getStateDb()): boolean {
+  return db.query(`SELECT 1 FROM run_history WHERE repo = ? LIMIT 1;`).get(repo) != null;
+}

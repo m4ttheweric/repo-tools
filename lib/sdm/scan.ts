@@ -7,10 +7,16 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { rtDir } from "../rt-paths.ts";
-import { getKvValue, getStateDb, setKvValue } from "../state/index.ts";
+import {
+  getKvValue,
+  getStateDb,
+  hasKvValue,
+  importLegacyJsonFile,
+  renameLegacyOutOfTheWay,
+  setKvValue,
+} from "../state/index.ts";
 import { fetchAccessCatalog, getSdmSnapshot } from "./core.ts";
 
 export interface SdmResource {
@@ -55,22 +61,20 @@ export const CATALOG_CACHE_MS = 10 * 60_000;
 const SCAN_CACHE_NS = "sdm-scan-cache";
 const SCAN_CACHE_KEY = "state";
 
-/** Retired storage location — kept only so a leftover pre-migration file can be cleaned up. */
+/** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
 export function scanCachePath(): string {
   return join(rtDir(), "sdm", "scan-cache.json");
-}
-
-function unlinkLegacyScanCache(): void {
-  try {
-    unlinkSync(scanCachePath());
-  } catch {
-    // already gone, or never existed
-  }
 }
 
 interface PersistedScanCache {
   builtAt: number;
   resources: SdmResource[];
+}
+
+function freshResources(parsed: Partial<PersistedScanCache> | null | undefined): SdmResource[] | null {
+  return typeof parsed?.builtAt === "number" && Array.isArray(parsed.resources) && Date.now() - parsed.builtAt < CATALOG_CACHE_MS
+    ? (parsed.resources as SdmResource[])
+    : null;
 }
 
 /**
@@ -80,15 +84,18 @@ interface PersistedScanCache {
  * replaces.
  */
 export function readScanCache(db: Database = getStateDb()): SdmResource[] | null {
-  const parsed = getKvValue<Partial<PersistedScanCache> | null>(SCAN_CACHE_NS, SCAN_CACHE_KEY, null, db);
-  if (
-    typeof parsed?.builtAt === "number" &&
-    Array.isArray(parsed.resources) &&
-    Date.now() - parsed.builtAt < CATALOG_CACHE_MS
-  ) {
-    return parsed.resources as SdmResource[];
+  if (hasKvValue(SCAN_CACHE_NS, SCAN_CACHE_KEY, db)) {
+    return freshResources(getKvValue<Partial<PersistedScanCache> | null>(SCAN_CACHE_NS, SCAN_CACHE_KEY, null, db));
   }
-  return null;
+
+  const result = importLegacyJsonFile<PersistedScanCache | null>(scanCachePath(), (json) => {
+    const parsed = json as Partial<PersistedScanCache> | null;
+    if (typeof parsed?.builtAt !== "number" || !Array.isArray(parsed.resources)) return null;
+    const payload: PersistedScanCache = { builtAt: parsed.builtAt, resources: parsed.resources as SdmResource[] };
+    setKvValue(SCAN_CACHE_NS, SCAN_CACHE_KEY, payload, db);
+    return payload;
+  });
+  return result.imported ? freshResources(result.value) : null;
 }
 
 /**
@@ -99,7 +106,7 @@ export function writeScanCache(resources: SdmResource[], db: Database = getState
   if (resources.length === 0) return;
   const payload: PersistedScanCache = { builtAt: Date.now(), resources };
   setKvValue(SCAN_CACHE_NS, SCAN_CACHE_KEY, payload, db);
-  unlinkLegacyScanCache();
+  renameLegacyOutOfTheWay(scanCachePath());
 }
 
 export async function scanSdmResources(

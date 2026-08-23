@@ -93,10 +93,8 @@ export function startPollers(deps: PollerDeps): void {
   // Runs every 60s; each call is cheap (one git-config read per watched repo).
   //
   // Rides the same interval to re-prime the team-tracking identity map: this
-  // is the RELIABLE re-prime mechanism, not the repos.json fs.watch in
-  // daemon.ts — an atomic-rename write (the common way repos.json gets
-  // replaced) changes the file's inode, and fs.watch on most platforms stops
-  // delivering events after that, so the watch is best-effort only.
+  // is the ONLY re-prime mechanism now that the repo index lives in
+  // state.db (RT-50) — there is no file left to fs.watch (see daemon.ts).
   setInterval(async () => {
     const repos = deps.repoIndex();
     await primeTeamTrackingIdentityMap(repos).catch((err) => {
