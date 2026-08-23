@@ -11,7 +11,7 @@
  */
 
 import { existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { basename, isAbsolute, join } from "path";
 import { markDaemonUninstalled } from "../daemon-config.ts";
 import { currentMode } from "../dev-mode.ts";
 import { DEFAULT_EXPOSED, isOurLink, unlink } from "../deps/links.ts";
@@ -213,7 +213,14 @@ function isAlreadyGone(res: { stdout: string; stderr: string }): boolean {
 
 async function extensionUninstallRun(ctx: ApplyContext, seams: UninstallSeams = REAL_UNINSTALL_SEAMS): Promise<ActionResult> {
   const editors = seams.detectEditors();
-  if (editors.length === 0) return { outcome: { state: "skipped", detail: "no editor found" } };
+  if (editors.length === 0) {
+    // No editor exists to uninstall from — whatever setup-state recorded is
+    // now stale by definition. Clear it here too, not just on the happy
+    // path, so a deleted editor doesn't keep this action in every future
+    // plan forever.
+    updateSetupState(ctx.p, (s) => ({ ...s, extensionEditors: [] }));
+    return { outcome: { state: "skipped", detail: "no editor found" } };
+  }
 
   const uninstalled: string[] = [];
   const failed: string[] = [];
@@ -265,10 +272,19 @@ function mattstackDataDir(p: Pick<Probes, "home">): string {
   return join(p.home, ".mattstack");
 }
 
-/** Refuses BEFORE removing anything: an unsafe `home` (empty, or "/") would turn `removeDir` into deleting far more than this machine's mattstack data — validate first, remove second. */
+/**
+ * Refuses BEFORE removing anything: an unsafe `home` (empty, "/", or
+ * relative — a relative HOME would turn `removeDir` into deleting
+ * `.mattstack` relative to whatever the process's CWD happens to be, not
+ * this machine's real data) would turn `removeDir` into deleting far more
+ * than this machine's mattstack data. Validates both the input (`home`) and
+ * the resolved target's shape (mirrors `appTrashRun`'s own target-shape
+ * check below) — validate first, remove second.
+ */
 async function dataRun(ctx: ApplyContext): Promise<ActionResult> {
   const dir = mattstackDataDir(ctx.p);
-  if (!ctx.p.home || ctx.p.home.trim() === "" || ctx.p.home === "/") {
+  const homeUnsafe = !ctx.p.home || ctx.p.home.trim() === "" || ctx.p.home === "/" || !isAbsolute(ctx.p.home);
+  if (homeUnsafe || basename(dir) !== ".mattstack") {
     return { outcome: { state: "failed", detail: `refusing to delete ${dir} — HOME resolved to an unsafe value ("${ctx.p.home}")` } };
   }
   if (!ctx.p.exists(dir)) return { outcome: { state: "skipped", detail: `${dir} does not exist` } };

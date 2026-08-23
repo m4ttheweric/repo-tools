@@ -499,6 +499,17 @@ describe("rt uninstall", () => {
       expect(result.ok).toBe(true);
     });
 
+    test("no editors, but setup-state still records a stale entry -> skip clears it, so the action doesn't haunt every future plan", async () => {
+      const p = bareProbes();
+      updateSetupState(p, (s) => ({ ...s, extensionEditors: ["Cursor"] }));
+      const { ctx } = makeCtx(p);
+
+      const result = await runUninstall(ctx, [{ id: "extension.uninstall", title: "x", kind: "rt" }], noEditorSeams);
+      expect(result.ok).toBe(true);
+      expect(readSetupState(p).extensionEditors).toEqual([]);
+      expect(computeUninstallActions(p, { keepData: true }, noEditorSeams).some((a) => a.id === "extension.uninstall")).toBe(false);
+    });
+
     test("uninstalls from every detected editor with the exact argv, clears them from setup-state", async () => {
       const execCalls: string[][] = [];
       const p = bareProbes({
@@ -613,6 +624,18 @@ describe("rt uninstall", () => {
       const emptyResult = await runUninstall(emptyCtx, [{ id: "data", title: "x", kind: "rt" }]);
       expect(emptyResult.ok).toBe(false);
       expect(emptyHomeProbes.calls.removed).toEqual([]);
+    });
+
+    test("ownership refusal: a RELATIVE HOME refuses instead of resolving against process CWD", async () => {
+      // A relative `home` (e.g. ".") would otherwise turn removeDir into
+      // deleting ".mattstack" relative to wherever the process happens to be
+      // running from, not this machine's real data — must refuse, not resolve.
+      const p = fakeProbes({ home: ".", dirs: { ".mattstack": ["x"] } });
+      const { ctx } = makeCtx(p);
+
+      const result = await runUninstall(ctx, [{ id: "data", title: "x", kind: "rt" }]);
+      expect(result.ok).toBe(false);
+      expect(p.calls.removed).toEqual([]);
     });
   });
 
