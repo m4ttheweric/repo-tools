@@ -29,6 +29,19 @@ describe("runs store", () => {
     expect(d.decisions[0]!.contract).toBe("execution-strategy@1");
     expect(d.schemaAhead).toBe(false);
     expect(readRun("alpha", "nope")).toBeNull();
+
+    expect(d.run.ticket).toBe("ACME-1");
+    expect(d.run.branch).toBe("goodwin/mat-1");
+    expect(d.run.last_event_at).toBe(1000 + 5000); // the branch field, seeded latest
+  });
+
+  test("listRuns denormalizes last_event_at/ticket/branch onto the summary row too", () => {
+    const dir = root();
+    seedRun(dir, "alpha", "20260821-010101-aaaa", 1000);
+    const [row] = listRuns("alpha");
+    expect(row!.ticket).toBe("ACME-1");
+    expect(row!.branch).toBe("goodwin/mat-1");
+    expect(row!.last_event_at).toBe(1000 + 5000);
   });
 
   test("findRun resolves the repo by scanning; newer schema flags schemaAhead", () => {
