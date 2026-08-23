@@ -176,7 +176,7 @@ describe("toggleDevMode — flavor handoff", () => {
     mkdirSync(FAKE_DEV_APP, { recursive: true }); // incoming bundle present
     setUpFakes();
 
-    await toggleDevMode(["dev"], isolatedExists);
+    await toggleDevMode(["dev"], {}, isolatedExists);
 
     const log = readLog();
     expect(oneShotSteps(log)).toEqual(["retire", "osascript", "pkill", "open"]);
@@ -200,7 +200,7 @@ describe("toggleDevMode — flavor handoff", () => {
     mkdirSync(FAKE_DEV_APP, { recursive: true }); // incoming bundle present
     setUpFakes();
 
-    await toggleDevMode(["dev"], isolatedExists);
+    await toggleDevMode(["dev"], {}, isolatedExists);
 
     // enableDevMode() must never open-and-truncate through the old symlink —
     // the bundle binary it pointed at has to come out byte-for-byte intact.
@@ -221,7 +221,7 @@ describe("toggleDevMode — flavor handoff", () => {
     writeFileSync(join(FAKE_PROD_APP, "Contents", "MacOS", "rt"), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x00]), { mode: 0o755 }); // Mach-O magic, not a script
     setUpFakes();
 
-    await toggleDevMode(["prod"], isolatedExists);
+    await toggleDevMode(["prod"], {}, isolatedExists);
 
     const log = readLog();
     expect(oneShotSteps(log)).toEqual(["retire", "osascript", "pkill", "open"]);
@@ -243,7 +243,7 @@ describe("toggleDevMode — flavor handoff", () => {
     // Deliberately do NOT create FAKE_DEV_APP — the incoming bundle.
     setUpFakes();
 
-    await toggleDevMode(["dev"], isolatedExists);
+    await toggleDevMode(["dev"], {}, isolatedExists);
 
     expect(readLog()).toEqual([]); // no retire, no osascript, no pkill, no open
     expect(existsSync(WRAPPER_PATH)).toBe(false); // CLI half never toggled
@@ -255,7 +255,7 @@ describe("toggleDevMode — flavor handoff", () => {
     // Deliberately do NOT create FAKE_PROD_APP — the incoming (prod) bundle.
     setUpFakes();
 
-    await toggleDevMode(["prod"], isolatedExists);
+    await toggleDevMode(["prod"], {}, isolatedExists);
 
     expect(readLog()).toEqual([]);
     expect(existsSync(WRAPPER_PATH)).toBe(true); // disableDevMode() never ran

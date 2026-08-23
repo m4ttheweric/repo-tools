@@ -427,9 +427,14 @@ or via the pack.
 Owner side (`rt team invite`):
 
 1. Pointer = `{v:1, team:<slug>, name, remote, owner:<forge handle>, forge:<host>, createdAt}`.
-2. Generate 32-byte key; encrypt pointer (XChaCha20-Poly1305 or AES-256-GCM);
-   `POST /v1/invites` to the relay with `{ciphertext, expiresAt}` → `{id}`.
-   Relay stores `id`, ciphertext, created/expires/redeemed timestamps only.
+2. Generate a 16-byte id and a 32-byte key; the id doubles as the seal's AES-GCM
+   AAD, so it must exist before the ciphertext does — the CLIENT generates it
+   (CSPRNG, 128 bits), not the relay. Encrypt pointer (AES-256-GCM);
+   `POST /v1/invites` to the relay with `{ciphertext, expiresAt, id}` → `{id,
+   creatorSecret}`. Relay stores `id`, ciphertext, created/expires/redeemed
+   timestamps only. **A duplicate `id` MUST return 409** and must never
+   overwrite the existing record or return its `creatorSecret` — a client that
+   hits 409 mints again with a fresh id.
 3. Code = base32(id ‖ key) chunked for reading (~77 chars; Crockford base32 of
    16 + 32 bytes). Paste block: "Install
    mattstack from <download url>, then open `mattstack://join/<code>` or paste
@@ -456,7 +461,9 @@ idle) → post the member's age public key as the reply blob. Failure messages
 in §4.2.
 
 Relay (mr-board `switchboard/`, Railway, `mattstack` shared instance):
-`POST /v1/invites` (any client; rate-limited), `GET /v1/invites/:id` (returns
+`POST /v1/invites` (any client; rate-limited; body carries a client-chosen
+`id` — 409 on collision, never a silent overwrite or an existing record's
+`creatorSecret`), `GET /v1/invites/:id` (returns
 ciphertext if unexpired and unredeemed), `POST /v1/invites/:id/redeem` (CAS),
 `POST /v1/invites/:id/reply` (second opaque blob, once), `DELETE` by the
 creator (holds a creator secret returned on create). No admin token needed for

@@ -304,6 +304,22 @@ describe("installShims / uninstallShims / shimReport", () => {
     expect(existsSync(untouchedPath)).toBe(true);
   });
 
+  test("installShims never clobbers a pre-existing file at the shim path that isn't ours — reports it skipped instead (F8: this now runs unattended behind Install)", async () => {
+    const repoPath = makeGitRepo("git@x:assured/r-occupied.git");
+    writeRepoIntercepts("x/assured/r-occupied", [{ command: "fakecmd-occupied", matches: [{ cwdGlob: ".", role: "x" }] }]);
+    writeRepoIndex({ "r-occupied": repoPath });
+
+    const userScript = "#!/bin/sh\necho this is MY wrapper, not rt's\n";
+    mkdirSync(dirname(shimPath("fakecmd-occupied")), { recursive: true });
+    writeFileSync(shimPath("fakecmd-occupied"), userScript);
+
+    const result = await installShims();
+    expect(result.installed).toEqual([]);
+    expect(result.current).toEqual([]);
+    expect(result.skipped).toEqual(["fakecmd-occupied"]);
+    expect(readFileSync(shimPath("fakecmd-occupied"), "utf8")).toBe(userScript); // untouched
+  });
+
   test("re-install repairs a stripped exec bit even when the content is already current", async () => {
     const repoPath = makeGitRepo("git@x:assured/r-chmod.git");
     writeRepoIntercepts("x/assured/r-chmod", [{ command: "fakecmd-chmod", matches: [{ cwdGlob: ".", role: "x" }] }]);

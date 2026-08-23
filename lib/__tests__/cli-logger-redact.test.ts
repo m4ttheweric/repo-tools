@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { redactSensitiveArgs } from "../cli-logger.ts";
+import { encodeCode } from "../team/invite-crypto.ts";
 
 describe("redactSensitiveArgs", () => {
   test("redacts the value following --reason", () => {
@@ -112,6 +113,42 @@ describe("redactSensitiveArgs", () => {
         "connect",
         "[redacted]",
       ]);
+    });
+  });
+
+  describe("an rt team join invite code is redacted even though the command refuses the run", () => {
+    const CODE = encodeCode("0102030405060708090a0b0c0d0e0f10", new Uint8Array(32).fill(7));
+
+    test("raw argv shape — 'team join' is still in the array", () => {
+      expect(redactSensitiveArgs(["team", "join", CODE])).toEqual(["team", "join", "[redacted]"]);
+    });
+
+    test("raw argv shape: flags around the code survive, only the code is redacted", () => {
+      expect(redactSensitiveArgs(["team", "join", "--dry-run", CODE, "--json"])).toEqual([
+        "team",
+        "join",
+        "--dry-run",
+        "[redacted]",
+        "--json",
+      ]);
+    });
+
+    test("leaf `rest` shape — command carries the 'team join' context", () => {
+      expect(redactSensitiveArgs([CODE], "rt team join")).toEqual(["[redacted]"]);
+    });
+
+    test("code-shaped pattern match is command-independent, defense in depth", () => {
+      expect(redactSensitiveArgs(["sdm", "connect", CODE], "rt sdm connect")).toEqual(["sdm", "connect", "[redacted]"]);
+    });
+
+    test("a short lookalike token that isn't actually code-shaped is left alone", () => {
+      const args = ["team", "join", "--dry-run"];
+      expect(redactSensitiveArgs(args)).toEqual(args);
+    });
+
+    test("unrelated commands are never affected by the team-join check", () => {
+      const args = ["sdm", "connect", "k"];
+      expect(redactSensitiveArgs(args, "rt sdm connect")).toEqual(args);
     });
   });
 });
