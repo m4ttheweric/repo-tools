@@ -12,10 +12,10 @@ describe("rt-tray/deps.lock", () => {
     expect(lock.schema).toBe(1);
     expect(lock.arch).toBe("arm64");
   });
-  test("bundles fzf/jq/gh/glab/bun/node/fast-browser; suite apps + proxy helper pending; sparkle is a build tool", () => {
+  test("bundles fzf/jq/gh/glab/bun/node/fast-browser/gitq; remaining suite apps + proxy helper pending; sparkle is a build tool", () => {
     const by = Object.fromEntries(lock.tools.map((t) => [t.name, t]));
-    for (const n of ["fzf", "jq", "gh", "glab", "bun", "node", "fast-browser"]) expect(by[n]?.status).toBe("bundled");
-    for (const n of ["deck", "board", "gitq", "mattstack-proxy-install"]) expect(by[n]?.status).toBe("pending");
+    for (const n of ["fzf", "jq", "gh", "glab", "bun", "node", "fast-browser", "gitq"]) expect(by[n]?.status).toBe("bundled");
+    for (const n of ["deck", "board", "mattstack-proxy-install"]) expect(by[n]?.status).toBe("pending");
     expect(by["sparkle"]?.kind).toBe("buildtool");
   });
   test("default-exposed set is exactly fast-browser, gitq, deck (rt is exposed by the binary link, not a helper)", () => {
