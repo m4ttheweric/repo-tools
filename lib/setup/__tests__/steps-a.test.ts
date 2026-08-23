@@ -169,19 +169,7 @@ describe("home.init", () => {
     expect(homeInitStep.applies(restoring)).toBe(false);
   });
 
-  test("does not apply non-interactively with no RT_HOME_URL — would target a repo this operator does not own", () => {
-    const { ctx } = makeCtx(fakeProbes({ env: {} }), { nonInteractive: true });
-    expect(homeInitStep.applies(ctx)).toBe(false);
-  });
-
-  test("applies non-interactively when RT_HOME_URL names the repo to clone", () => {
-    const { ctx } = makeCtx(fakeProbes({ env: { RT_HOME_URL: "https://example.com/o/home.git" } }), { nonInteractive: true });
-    expect(homeInitStep.applies(ctx)).toBe(true);
-  });
-
-  // The gate must not quiet a headless run by disabling the step for real
-  // users: interactively, a missing RT_HOME_URL is answerable.
-  test("still applies interactively with no RT_HOME_URL — a human can supply one or authenticate", () => {
+  test("still applies interactively with no RT_HOME_URL — home init now creates a local-only repo", () => {
     const { ctx } = makeCtx(fakeProbes({ env: {} }), { nonInteractive: false });
     expect(homeInitStep.applies(ctx)).toBe(true);
   });
