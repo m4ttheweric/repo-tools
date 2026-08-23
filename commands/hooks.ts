@@ -14,10 +14,13 @@
  * once anything lands in the store for a repo, the store wins). hooks.json
  * is then a DERIVED CACHE of whatever the store currently resolves to for
  * that repo — regenerated at every seam that can change the resolved value
- * (`rt hooks on/off/<name>`, and a `rt settings set rt.hooks ... --repo`),
- * mirroring lib/repo-index.ts's `writeRepoIndexCompat` pattern: independent
- * try/catch, best-effort, and the file is never renamed or unlinked out from
- * under the shim.
+ * (`rt hooks on/off/<name>`), at the `rt settings set rt.hooks ... --repo`
+ * seam (commands/settings-keys.ts), AND on `rt hooks status` (including the
+ * non-TTY fallback) — status is the natural place a human notices the cache
+ * disagrees with the store, so it self-heals on inspect rather than just
+ * reporting the mismatch. Mirrors lib/repo-index.ts's `writeRepoIndexCompat`
+ * pattern throughout: independent try/catch, best-effort, and the file is
+ * never renamed or unlinked out from under the shim.
  *
  * Works with ALL git clients (Cursor, VS Code, GitHub Desktop, terminal).
  * Cross-worktree (all worktrees share the same git config).
@@ -148,6 +151,23 @@ export function regenerateHooksCache(repoRoot: string, dataDir: string, repoIden
   } catch {
     // best-effort — see module doc
     return false;
+  }
+}
+
+/**
+ * `rt hooks status` looks read-only but must still self-heal a stale cache —
+ * it's the natural place a human notices the git shim disagrees with what
+ * this command just told them, and the guidance in commands/settings-keys.ts
+ * points a failed `rt settings set --repo` write here to "fix" it. Wrapped in
+ * its own try/catch (on top of regenerateHooksCache's own) because a
+ * status-display command must never throw or change its exit code over a
+ * cache write it wasn't asked to perform.
+ */
+function refreshHooksCacheBestEffort(repoRoot: string, dataDir: string, repoIdentity: string | null): void {
+  try {
+    regenerateHooksCache(repoRoot, dataDir, repoIdentity);
+  } catch {
+    // best-effort — see module doc
   }
 }
 
@@ -346,6 +366,7 @@ export async function toggleHooks(args: string[], ctx: CommandContext): Promise<
   // ── rt hooks status ───────────────────────────────────────────────────────
 
   if (sub === "status") {
+    refreshHooksCacheBestEffort(repoRoot, dataDir, repoIdentity);
     showStatus(config, repoName);
     return;
   }
@@ -376,6 +397,7 @@ export async function toggleHooks(args: string[], ctx: CommandContext): Promise<
   // ── rt hooks (interactive) ────────────────────────────────────────────────
 
   if (!process.stdin.isTTY) {
+    refreshHooksCacheBestEffort(repoRoot, dataDir, repoIdentity);
     showStatus(config, repoName);
     return;
   }
