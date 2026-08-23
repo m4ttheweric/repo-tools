@@ -242,7 +242,7 @@ if let dbConfig {
     config = dbConfig
 } else {
     let legacyPath = "\(home)/.mattstack/rt/dev-mode.json"
-    let (legacyConfig, legacyDetail) = readDevModeConfigFromLegacyFile(legacyPath, home: home)
+    let (legacyConfig, legacyDetail) = readDevModeConfigFromLegacyFile(path: legacyPath, home: home)
     guard let legacyConfig else {
         standDown("no dev-mode config — state.db: \(dbDetail); legacy file: \(legacyDetail)")
     }
