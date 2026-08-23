@@ -5,7 +5,7 @@
  * module so both cli.ts (runtime dispatch) and scripts/gen-docs.ts (docs
  * generation) can import it without triggering the CLI entry logic.
  */
-import type { CommandNode } from "./command-tree.ts";
+import type { CommandArg, CommandNode } from "./command-tree.ts";
 
 const eventsSubcommands: Record<string, CommandNode> = {
   emit: {
@@ -125,6 +125,60 @@ const commitNode: CommandNode = {
   requiresTTY: true,
   args: [],
 };
+
+const SETUP_JSON_ARG = { name: "JSON", flag: "--json", type: "boolean" as const, default: false, hint: "Machine-readable result" };
+
+/**
+ * One `status`/`connect` pair per integration id, generated so the tree, the
+ * module's `setup<Id>Status`/`setup<Id>Connect` exports, and the app's
+ * contract stay in lockstep. Slack alone also gets `create-app` (the
+ * owner-once Slack app bootstrap). Pure — no side effects, safe to call at
+ * module load. Stdin is self-describing (JSON parses as JSON, anything else
+ * is read as the raw value) so there is no `--token-stdin`/
+ * `--config-token-stdin` flag to declare; `--use-gh` only ever does anything
+ * on github's `connect`, so only github's node offers it.
+ */
+function integrationNode(id: string, title: string): CommandNode {
+  const fnId = id[0]!.toUpperCase() + id.slice(1);
+  const connectArgs: CommandArg[] = [SETUP_JSON_ARG];
+  if (id === "github") {
+    connectArgs.push({ name: "Use gh", flag: "--use-gh", type: "boolean", default: false, hint: "Use the existing gh CLI session instead of a token" });
+  }
+  if (id === "gitlab" || id === "switchboard") {
+    connectArgs.push({
+      name: "Host",
+      flag: "--host",
+      type: "text",
+      hint:
+        id === "gitlab"
+          ? "Confirm a self-hosted GitLab (e.g. gitlab.example.com) — a team-declared host is never used until you confirm it here"
+          : "Confirm your switchboard URL (e.g. https://switchboard.example.com) — a team-declared URL is never used until you confirm it here",
+    });
+  }
+  const subcommands: Record<string, CommandNode> = {
+    status: {
+      description: `${title}: check this account`,
+      module: "./commands/setup.ts",
+      fn: `setup${fnId}Status`,
+      args: [SETUP_JSON_ARG],
+    },
+    connect: {
+      description: `${title}: connect this account`,
+      module: "./commands/setup.ts",
+      fn: `setup${fnId}Connect`,
+      args: connectArgs,
+    },
+  };
+  if (id === "slack") {
+    subcommands["create-app"] = {
+      description: "Slack: create the team's Slack app (owner-once)",
+      module: "./commands/setup.ts",
+      fn: "setupSlackCreateApp",
+      args: [SETUP_JSON_ARG],
+    };
+  }
+  return { description: `${title}: check or connect this account`, subcommands };
+}
 
 export const TREE: Record<string, CommandNode> = {
   git: {
@@ -394,10 +448,10 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   update: {
-    description: "Update rt to the latest GitHub release",
+    description: "Check for updates via mattstack.app",
     module: "./commands/update.ts",
     fn: "runUpdate",
-    args: [],
+    args: [SETUP_JSON_ARG],
   },
 
   version: {
@@ -611,6 +665,48 @@ export const TREE: Record<string, CommandNode> = {
     subcommands: endpointSubcommands,
   },
 
+  deps: {
+    description: "Bundled tools: resolve by absolute path, expose on PATH with tagged links",
+    subcommands: {
+      resolve: {
+        description: "Show where a tool actually runs from — bundled, a user copy on PATH, or unresolved",
+        module: "./commands/deps.ts",
+        fn: "depsResolve",
+        args: [
+          { name: "Tool", type: "text", placeholder: "gh", hint: "Tool name (rt, gh, fast-browser, gitq, deck, ...)" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the envelope as JSON" },
+        ],
+      },
+      link: {
+        description: "Expose a bundled tool at ~/.local/bin/<tool> (symlink, or a tagged wrapper for multi-argv tools)",
+        module: "./commands/deps.ts",
+        fn: "depsLink",
+        args: [
+          { name: "Tool", type: "text", placeholder: "gh", hint: "Tool name to link" },
+          { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Replace an existing user copy or unrelated file at the link path" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the outcome as JSON" },
+        ],
+      },
+      unlink: {
+        description: "Remove a tagged link (only ever removes rt's own links, never a user's file)",
+        module: "./commands/deps.ts",
+        fn: "depsUnlink",
+        args: [
+          { name: "Tool", type: "text", placeholder: "gh", hint: "Tool name to unlink" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the outcome as JSON" },
+        ],
+      },
+      reconcile: {
+        description: "Auto-unlink any tagged link whose tool now has a genuine user copy elsewhere on PATH",
+        module: "./commands/deps.ts",
+        fn: "depsReconcile",
+        args: [
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Print the outcome as JSON" },
+        ],
+      },
+    },
+  },
+
   settings: {
     description: "Configure tokens, team, and repo data",
     subcommands: {
@@ -715,7 +811,9 @@ export const TREE: Record<string, CommandNode> = {
         description: "Toggle between local dev source and the installed production binary",
         module: "./commands/settings.ts",
         fn: "toggleDevMode",
-        requiresTTY: true,
+        // Only needs a TTY to prompt for Target — the app's Settings pane
+        // (and any other non-interactive caller) always supplies it directly.
+        requiresTTY: (args) => !args.some((a) => !a.startsWith("--")),
         args: [
           { name: "Target", type: "select", hint: "Omit to be prompted interactively", options: [{ value: "dev", label: "dev", hint: "Run from local source" }, { value: "prod", label: "prod", hint: "Run the installed binary (from mattstack.app)" }] },
         ],
@@ -831,6 +929,7 @@ export const TREE: Record<string, CommandNode> = {
         args: [
           { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
           { name: "Key", type: "text", placeholder: "linearApiKey", hint: "Key name within the domain" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Write to this team's N-recipient store instead of your personal one" },
           { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the value from stdin instead of a no-echo prompt (scripting)" },
         ],
       },
@@ -840,16 +939,35 @@ export const TREE: Record<string, CommandNode> = {
         fn: "secretsList",
         args: [
           { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "List from this team's store instead of your personal one" },
         ],
       },
       rotate: {
-        description: "Replace a secret's value; prints the rotation commit message — value prompted, never a CLI arg",
+        description: "Replace a secret's value, or (--team with no domain/key) re-encrypt every team domain file to its current recipients — value prompted, never a CLI arg",
         module: "./commands/secrets.ts",
         fn: "secretsRotate",
         args: [
-          { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board)" },
-          { name: "Key", type: "text", placeholder: "gitlabToken", hint: "Key name within the domain" },
-          { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the new value from stdin instead of a no-echo prompt (scripting)" },
+          { name: "Domain", type: "text", placeholder: "rt", hint: "Secrets domain (rt, deck, board) — omit with --team to re-encrypt every domain file instead" },
+          { name: "Key", type: "text", placeholder: "gitlabToken", hint: "Key name within the domain — omit with --team to re-encrypt every domain file instead" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Rotate in this team's N-recipient store instead of your personal one" },
+          { name: "Stdin", flag: "--stdin", type: "boolean", default: false, hint: "Read the new value from stdin instead of a no-echo prompt (scripting) — ignored by --team with no domain/key, which re-encrypts instead of taking a value" },
+        ],
+      },
+    },
+  },
+
+  repos: {
+    description: "Register repos with rt (index + tracking)",
+    subcommands: {
+      register: {
+        description: "Add repo paths to the rt index, optionally granting background tracking",
+        module: "./commands/repos.ts",
+        fn: "reposRegister",
+        args: [
+          { name: "Path", type: "text", placeholder: "/path/to/repo", hint: "Repo path to register (pass more than one to register several at once)" },
+          { name: "Track", flag: "--track", type: "select", options: [{ value: "live", label: "live" }, { value: "poll", label: "poll" }], hint: "Grant background tracking at this level; omit to register without tracking" },
+          { name: "Caches", flag: "--caches", type: "text", placeholder: "branches,project-mrs", hint: "Comma-separated cache kinds for --track (default branches)" },
+          SETUP_JSON_ARG,
         ],
       },
     },
@@ -858,6 +976,15 @@ export const TREE: Record<string, CommandNode> = {
   skills: {
     description: "Compile, check, and manage the surface of the pack's committed skills",
     subcommands: {
+      materialize: {
+        description: "Run merge-manifests.sh to materialize skill bindings for registered repos",
+        module: "./commands/skills.ts",
+        fn: "skillsMaterialize",
+        args: [
+          { name: "Repo", flag: "--repo", type: "text", placeholder: "myrepo", hint: "Materialize only this registered repo; omit for every known repo" },
+          SETUP_JSON_ARG,
+        ],
+      },
       compile: {
         description: "Compile pack verbs from step sources + manifest bindings into committed SKILL.md files",
         module: "./commands/skills.ts",
@@ -893,6 +1020,30 @@ export const TREE: Record<string, CommandNode> = {
     },
   },
 
+  cron: {
+    description: "Daemon cron triggers",
+    subcommands: {
+      install: {
+        description: "Install a daemon cron trigger",
+        module: "./commands/cron.ts",
+        fn: "cronInstall",
+        args: [
+          { name: "Trigger", type: "select", options: [{ value: "board-triage", label: "board-triage" }] },
+          SETUP_JSON_ARG,
+        ],
+      },
+      remove: {
+        description: "Remove an installed daemon cron trigger",
+        module: "./commands/cron.ts",
+        fn: "cronRemove",
+        args: [
+          { name: "Trigger", type: "select", options: [{ value: "board-triage", label: "board-triage" }] },
+          SETUP_JSON_ARG,
+        ],
+      },
+    },
+  },
+
   plugin: {
     description: "Manage user plugins",
     subcommands: {
@@ -916,6 +1067,226 @@ export const TREE: Record<string, CommandNode> = {
         fn: "runValidate",
         args: [
           { name: "Plugin", type: "text", placeholder: "my-plugin", hint: "Validate only this plugin by directory name; omit to validate all installed plugins" },
+        ],
+      },
+    },
+  },
+
+  setup: {
+    description: "Set this Mac up for mattstack: readiness plan, install steps, account connections",
+    module: "./commands/setup.ts",
+    fn: "setupInteractive",
+    args: [
+      { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable plan (skips the interactive walk)" },
+      { name: "Force", flag: "--force", type: "boolean", default: false, hint: "Confirm install even though required rows are missing" },
+    ],
+    subcommands: {
+      plan: {
+        description: "Compute the readiness checklist",
+        module: "./commands/setup.ts",
+        fn: "setupPlan",
+        args: [
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to plan for" },
+          { name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable plan" },
+        ],
+      },
+      status: {
+        description: "The same checklist as a post-install health view",
+        module: "./commands/setup.ts",
+        fn: "setupStatus",
+        args: [{ name: "JSON", flag: "--json", type: "boolean", default: false, hint: "Machine-readable plan" }],
+      },
+      apply: {
+        description: "Run the install steps (hidden — the app spawns this for Install)",
+        module: "./commands/setup.ts",
+        fn: "setupApply",
+        hidden: true,
+        args: [
+          { name: "From", flag: "--from", type: "text", placeholder: "path.link", hint: "Resume from this step id" },
+          { name: "Non-interactive", flag: "--non-interactive", type: "boolean", default: false, hint: "Never prompt; skip steps that need a human" },
+          { name: "Team of one", flag: "--team-of-one", type: "boolean", default: false, hint: "Solo install, no team" },
+          { name: "CI", flag: "--ci", type: "boolean", default: false, hint: "Headless CI run" },
+          { name: "No launch", flag: "--no-launch", type: "boolean", default: false, hint: "Never open a GUI app" },
+          SETUP_JSON_ARG,
+        ],
+      },
+      pack: {
+        description: "Install a pack's plugins + skills, then check its pipeline stages resolve",
+        module: "./commands/setup.ts",
+        fn: "setupPack",
+        args: [
+          { name: "Non-interactive", flag: "--non-interactive", type: "boolean", default: false, hint: "Never prompt; skip steps that need a human" },
+          { name: "Team of one", flag: "--team-of-one", type: "boolean", default: false, hint: "Solo install, no team" },
+          { name: "CI", flag: "--ci", type: "boolean", default: false, hint: "Headless CI run" },
+          SETUP_JSON_ARG,
+        ],
+      },
+      intent: {
+        description: "Record a setup intent for the app to act on (hidden)",
+        module: "./commands/setup.ts",
+        fn: "setupIntent",
+        hidden: true,
+        args: [
+          { name: "Mode", type: "text", placeholder: "restore", hint: "restore <org>/<repo> | clear" },
+          { name: "HomeRepo", type: "text", placeholder: "org/repo", hint: "org/repo of the home repo to restore (restore only)" },
+          SETUP_JSON_ARG,
+        ],
+      },
+      github: integrationNode("github", "GitHub"),
+      gitlab: integrationNode("gitlab", "GitLab"),
+      linear: integrationNode("linear", "Linear"),
+      slack: integrationNode("slack", "Slack"),
+      switchboard: integrationNode("switchboard", "Switchboard"),
+      sdm: integrationNode("sdm", "StrongDM"),
+      doppler: integrationNode("doppler", "Doppler"),
+      ldcli: integrationNode("ldcli", "LaunchDarkly"),
+    },
+  },
+
+  services: {
+    description: "App-registered services (daemon, deck) via mattstack.app",
+    subcommands: {
+      list: {
+        description: "List LaunchAgents mattstack.app has registered",
+        module: "./commands/services.ts",
+        fn: "servicesList",
+        args: [SETUP_JSON_ARG],
+      },
+      register: {
+        description: "Ask mattstack.app to register the daemon (and deck, when bundled) LaunchAgents",
+        module: "./commands/services.ts",
+        fn: "servicesRegister",
+        args: [
+          { name: "Plist", flag: "--plist", type: "text", placeholder: "com.mattstack.daemon.plist", hint: "Plist filename to register (repeatable); omit for the default set" },
+          SETUP_JSON_ARG,
+        ],
+      },
+      restart: {
+        description: "Ask mattstack.app to restart a registered LaunchAgent",
+        module: "./commands/services.ts",
+        fn: "servicesRestart",
+        args: [
+          { name: "Label", type: "text", placeholder: "com.mattstack.daemon", hint: "LaunchAgent label" },
+          SETUP_JSON_ARG,
+        ],
+      },
+    },
+  },
+
+  tools: {
+    description: "Install or run the setup verb for a tool from a setup plan row",
+    subcommands: {
+      install: {
+        description: "Install a tool (brew, vendor curl|sh, apple-clt, or the bundled copy)",
+        module: "./commands/tools.ts",
+        fn: "toolsInstall",
+        args: [
+          { name: "Tool", type: "text", placeholder: "herdr", hint: "Tool name (herdr, claude, apple-clt, or a team-declared tool)" },
+          SETUP_JSON_ARG,
+        ],
+      },
+      setup: {
+        description: "Run a tool's own post-install setup (herdr integration, fast-browser runtime, editor extension)",
+        module: "./commands/tools.ts",
+        fn: "toolsSetup",
+        args: [
+          { name: "Tool", type: "text", placeholder: "herdr", hint: "Tool name (herdr, fast-browser, extension)" },
+          { name: "Config dir", flag: "--config-dir", type: "text", placeholder: "/path/to/.claude", hint: "Extra Claude config dir to set up (repeatable); herdr's own CLAUDE_CONFIG_DIR + ~/.claude are always included" },
+          SETUP_JSON_ARG,
+        ],
+      },
+    },
+  },
+
+  uninstall: {
+    description: "Uninstall mattstack: reverses setup — services, links, plugins, optionally ~/.mattstack",
+    module: "./commands/uninstall.ts",
+    fn: "runUninstallCommand",
+    args: [
+      { name: "Keep data", flag: "--keep-data", type: "boolean", default: false, hint: "Keep ~/.mattstack (settings, teams, secrets) — the default" },
+      { name: "Delete data", flag: "--delete-data", type: "boolean", default: false, hint: "Also delete ~/.mattstack; requires --yes when not on a TTY" },
+      { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "List what would be removed without removing anything" },
+      { name: "Yes", flag: "--yes", type: "boolean", default: false, hint: "Skip the confirmation prompt" },
+      SETUP_JSON_ARG,
+    ],
+  },
+
+  team: {
+    description: "Team repo: create, join, invite, publish, members",
+    subcommands: {
+      create: {
+        description: "Scaffold a fresh team zone (~/.mattstack/teams/<slug>) and set its remote — Install pushes it",
+        module: "./commands/team.ts",
+        fn: "teamCreate",
+        args: [
+          { name: "Name", type: "text", placeholder: "Acme", hint: "Team display name — slugified for the on-disk directory" },
+          { name: "Remote", flag: "--remote", type: "text", placeholder: "https://github.com/acme/mattstack-team-acme.git", hint: "An existing empty repo's URL" },
+          { name: "Create repo", flag: "--create-repo", type: "text", placeholder: "acme", hint: "Owner (user or org) to create <owner>/mattstack-team-<slug> under via gh, instead of pasting --remote" },
+          { name: "Others", flag: "--others", type: "boolean", default: false, hint: "Mark the team as having members beyond you" },
+          SETUP_JSON_ARG,
+        ],
+      },
+      publish: {
+        description: "Push the local team zone to its remote (or a new one)",
+        module: "./commands/team.ts",
+        fn: "teamPublish",
+        args: [
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to publish; omit when only one is cloned" },
+          { name: "Remote", flag: "--remote", type: "text", placeholder: "https://github.com/acme/mattstack-team-acme.git", hint: "Set (or change) the remote before pushing" },
+          SETUP_JSON_ARG,
+        ],
+      },
+      invite: {
+        description: "Mint an opaque invite code for a handle, and grant them forge read access",
+        module: "./commands/team.ts",
+        fn: "teamInvite",
+        args: [
+          { name: "Handle", flag: "--handle", type: "text", placeholder: "octocat", hint: "The invitee's forge username" },
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to invite into; omit when only one is cloned" },
+          SETUP_JSON_ARG,
+        ],
+      },
+      join: {
+        description: "Redeem an invite (code on stdin, never an argument)",
+        module: "./commands/team.ts",
+        fn: "teamJoin",
+        args: [
+          { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Validate the code and check access without cloning or redeeming" },
+          SETUP_JSON_ARG,
+        ],
+      },
+      members: {
+        description: "Roster: collect invitee keys / remove a member",
+        subcommands: {
+          sync: {
+            description: "Collect every outstanding invite's reply key and add it as a sops recipient",
+            module: "./commands/team.ts",
+            fn: "teamMembersSync",
+            args: [
+              { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to sync; omit when only one is cloned" },
+              SETUP_JSON_ARG,
+            ],
+          },
+          remove: {
+            description: "Revoke forge access, drop the roster entry, and re-encrypt without the member's key",
+            module: "./commands/team.ts",
+            fn: "teamMembersRemove",
+            args: [
+              { name: "Handle", type: "text", placeholder: "octocat", hint: "The member's forge username" },
+              { name: "Key", flag: "--key", type: "text", placeholder: "age1...", hint: "The recipient to remove, if it isn't recorded on the roster (a hand-edited store, a suspect entry)" },
+              { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to remove from; omit when only one is cloned" },
+              SETUP_JSON_ARG,
+            ],
+          },
+        },
+      },
+      status: {
+        description: "Team summary (name, remote, last push, members)",
+        module: "./commands/team.ts",
+        fn: "teamStatus",
+        args: [
+          { name: "Team", flag: "--team", type: "text", placeholder: "acme", hint: "Which cloned team to summarize; omit when only one is cloned" },
+          SETUP_JSON_ARG,
         ],
       },
     },

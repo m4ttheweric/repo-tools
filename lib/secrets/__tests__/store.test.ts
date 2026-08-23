@@ -78,6 +78,11 @@ class FakeSecretsExecSeam implements SecretsExecSeam {
     return this.files.has(path);
   }
 
+  /** Unused by the personal-store tests below — team-store's own tests exercise this. */
+  listDir(_path: string): string[] {
+    return [];
+  }
+
   /** Fake mtime/size signature — bumped on every write this class knows about, so freshMemoEntry sees a real change. */
   private touch(path: string): void {
     this.mtimeCounter += 1;
@@ -559,6 +564,12 @@ describe("real seam spawn options — cwd pin", () => {
     const opts = buildSecretsSpawnOptions({ env: { SOPS_AGE_KEY: "age-secret-key-test" } });
     expect(opts.cwd).toBe(join(mattstackHome(), "user"));
     expect(opts.env.SOPS_AGE_KEY).toBe("age-secret-key-test");
+  });
+
+  // team-store's real seam needs a different cwd; the personal-store default above must stay exactly as it was.
+  test("an explicit opts.cwd overrides the <mattstackHome>/user default — team-store's own pin", () => {
+    const opts = buildSecretsSpawnOptions({ cwd: "/tmp/some/team/clone" });
+    expect(opts.cwd).toBe("/tmp/some/team/clone");
   });
 });
 

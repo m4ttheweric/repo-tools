@@ -7,10 +7,10 @@ title: Install
 
 ```bash
 brew install m4ttheweric/tap/rt
-rt verify                  # completes first-run setup, then verifies everything
+rt setup status             # confirms the tray app, daemon, and integrations are healthy
 ```
 
-[`rt verify`](/reference/verify) does double duty. On first run it performs the setup that installs the tray app, daemon, editor extensions, and shell integration, and on every subsequent run it health-checks each of those pieces so you can confirm the install is still in good shape.
+`rt setup status` and [`rt verify`](/reference/verify) both health-check the tray app, daemon, editor extensions, and shell integration so you can confirm the install is in good shape. Run `rt setup plan` beforehand to see the readiness checklist for what Install still needs from you.
 
 Then configure your API tokens:
 
@@ -44,4 +44,4 @@ rt verify
 rt update
 ```
 
-The tray app checks for new releases automatically and, when one is available, prompts you to run [`rt update`](/reference/update) from your terminal. It never runs the upgrade itself. `rt update` also re-runs the post-install setup, so the tray app, daemon, and editor extensions are refreshed in a single step.
+[`rt update`](/reference/update) asks mattstack.app (Sparkle) to check for an update — the app owns the whole upgrade lifecycle (signature verification, staged install, restart); `rt` never downloads or installs its own updates. If the app isn't running, `rt update` points you at the latest release instead.

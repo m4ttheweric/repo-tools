@@ -1,9 +1,11 @@
 /**
  * rt skills -- compile pack verbs from step sources + manifest bindings into
- * committed SKILL.md files, and check compiled output against its sources.
+ * committed SKILL.md files, check compiled output against its sources, and
+ * materialize skill bindings for registered repos.
  *
  *   rt skills compile [--team <name>] [--verb <name> ...] [--manifest <path>] [--dry-run]
  *   rt skills check [--team <name>] [--verb <name> ...] [--manifest <path>]
+ *   rt skills materialize [--repo <name>] [--json]
  *
  * --pack-dir / --mattstack-dir are test-only escape hatches (hidden from the
  * command tree): they let tests point the whole resolution chain at a
@@ -22,6 +24,10 @@ import { createInterface } from "node:readline";
 import { dirname, isAbsolute as isAbsolutePath, join, relative as relativePath, resolve as resolvePath, sep } from "path";
 import { resolveFzf } from "../lib/fzf.ts";
 import { mattstackHome } from "../lib/rt-paths.ts";
+import { envelope } from "../lib/setup/contract.ts";
+import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
+import { createRealProbes } from "../lib/setup/probes.ts";
+import { materializeSkills } from "../lib/setup/skills-materialize.ts";
 import { compileSkill, HEADER_COMMENT } from "../lib/skills/compile.ts";
 import { discoverPacks, surfaceFileFor, type PackInfo } from "../lib/skills/packs.ts";
 import {
@@ -550,6 +556,36 @@ export async function skillsCheck(args: string[]): Promise<void> {
 
     if (anyStale) process.exitCode = 1;
   });
+}
+
+function skillsFlagValue(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag);
+  return i >= 0 ? args[i + 1] : undefined;
+}
+
+export async function skillsMaterialize(args: string[]): Promise<void> {
+  const json = args.includes("--json");
+  const repo = skillsFlagValue(args, "--repo");
+
+  try {
+    const result = await materializeSkills(createRealProbes(), { repo });
+    if (json) {
+      console.log(JSON.stringify(envelope(result)));
+      return;
+    }
+    // A top-level skip (merge-manifests.sh not installed yet) is the normal
+    // fresh-machine outcome, not a failure -- exit 0, never exit 2.
+    if (result.skipped) {
+      console.log(`skipped: ${result.reason}`);
+      return;
+    }
+    for (const r of result.repos) {
+      console.log(`${r.ok ? "materialized" : "failed"} ${r.name}: ${r.detail}`);
+    }
+  } catch (err) {
+    if (err instanceof UserActionableError) exitUserError(err, json, "skills materialize", console.log);
+    throw err;
+  }
 }
 
 // ─── rt skills surface -- list / set / apply / fzf palette ────────────────

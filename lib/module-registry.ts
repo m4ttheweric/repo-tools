@@ -41,4 +41,12 @@ export const MODULE_REGISTRY: Record<string, () => Promise<any>> = {
   "./commands/worktree.ts": () => import("../commands/worktree.ts"),
   "./commands/intercept.ts": () => import("../commands/intercept.ts"),
   "./commands/endpoint.ts": () => import("../commands/endpoint.ts"),
+  "./commands/deps.ts": () => import("../commands/deps.ts"),
+  "./commands/repos.ts": () => import("../commands/repos.ts"),
+  "./commands/setup.ts": () => import("../commands/setup.ts"),
+  "./commands/team.ts": () => import("../commands/team.ts"),
+  "./commands/cron.ts": () => import("../commands/cron.ts"),
+  "./commands/services.ts": () => import("../commands/services.ts"),
+  "./commands/tools.ts": () => import("../commands/tools.ts"),
+  "./commands/uninstall.ts": () => import("../commands/uninstall.ts"),
 };

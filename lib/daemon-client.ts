@@ -8,6 +8,7 @@
  */
 
 import { existsSync } from "fs";
+import { join } from "path";
 import {
   isDaemonInstalled,
   getDaemonConfig,
@@ -15,6 +16,7 @@ import {
   TRAY_SOCK_PATH,
   API_PORT,
 } from "./daemon-config.ts";
+import { rtDir } from "./rt-paths.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -86,6 +88,80 @@ export async function trayQuery(
     return null;
   }
 }
+
+// ─── Read-only daemon socket query ────────────────────────────────────────────
+
+/**
+ * Read-only daemon query for the setup probes seam: unlike `daemonQuery`,
+ * a missing/down daemon never triggers the tray `/daemon/start` POST or the
+ * stderr "daemon down" warning — a `rt setup check` must never mutate
+ * machine state or write outside its NDJSON stream just by probing.
+ */
+export async function daemonSocketQuery(
+  cmd: string,
+  payload?: Record<string, any>,
+  timeoutMs?: number,
+): Promise<DaemonResponse | null> {
+  return trySocketQuery(cmd, payload, timeoutMs);
+}
+
+// ─── Tray request client (MAT-383 setup verbs) ───────────────────────────────
+
+/**
+ * RT_APP_SOCKET (set by the app when it spawns rt) wins over the default
+ * tray.sock path. Resolves `rtDir()` at CALL time, not `TRAY_SOCK_PATH`
+ * (a module-load const) — a caller that repoints HOME after this module
+ * has loaded (every test in this repo) must see the new path.
+ */
+export function traySocketPath(): string {
+  return process.env.RT_APP_SOCKET || join(rtDir(), "tray.sock");
+}
+
+export interface TrayReply<T = unknown> {
+  status: number;
+  json: T | null;
+}
+
+/**
+ * General-purpose tray.sock request client for setup probes — unlike
+ * `trayQuery`, callers choose the method and may send a JSON body.
+ * Never throws: socket absent, connection failure, and timeout all resolve
+ * `{status: 0, json: null}` so probe code can treat every tray outage
+ * uniformly instead of catching transport errors itself.
+ */
+export async function trayRequest<T = unknown>(
+  path: string,
+  init: { method: "GET" | "POST"; body?: unknown; timeoutMs?: number } = { method: "GET" },
+): Promise<TrayReply<T>> {
+  const sockPath = traySocketPath();
+  if (!existsSync(sockPath)) return { status: 0, json: null };
+
+  try {
+    const hasBody = init.body !== undefined;
+    const response = await fetch(`http://localhost${path}`, {
+      unix: sockPath,
+      method: init.method,
+      headers: hasBody ? { "Content-Type": "application/json" } : undefined,
+      body: hasBody ? JSON.stringify(init.body) : undefined,
+      signal: AbortSignal.timeout(init.timeoutMs ?? REQUEST_TIMEOUT_MS),
+    } as any);
+
+    const text = await response.text();
+    let json: T | null = null;
+    if (text.length > 0) {
+      try {
+        json = JSON.parse(text) as T;
+      } catch {
+        json = null; // tolerate a non-JSON body rather than surfacing a parse error
+      }
+    }
+    return { status: response.status, json };
+  } catch {
+    return { status: 0, json: null };
+  }
+}
+
+export type TrayClient = typeof trayRequest;
 
 // ─── Auto-recovery ───────────────────────────────────────────────────────────
 

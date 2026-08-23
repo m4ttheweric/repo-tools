@@ -10,6 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { homedir } from "os";
+import type { CommandContext } from "../lib/command-tree.ts";
 import {
   rtDir,
   TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE,
@@ -605,9 +606,7 @@ async function handoffToFlavor(outgoing: FlavorInfo, incoming: FlavorInfo): Prom
   console.log(`  ${green}✓${reset} launched ${incoming.appPath}`);
 }
 
-export async function toggleDevMode(args: string[], exists: (path: string) => boolean = existsSync): Promise<void> {
-  const { select } = await import("../lib/rt-render.tsx");
-
+export async function toggleDevMode(args: string[], _ctx: CommandContext = {}, exists: (path: string) => boolean = existsSync): Promise<void> {
   const mode = currentMode();
   const sourcePath = detectSourcePath();
 
@@ -626,6 +625,13 @@ export async function toggleDevMode(args: string[], exists: (path: string) => bo
   let target = args[0] as "dev" | "prod" | undefined;
 
   if (target !== "dev" && target !== "prod") {
+    if (!process.stdin.isTTY) {
+      console.log(`  ${red}✗ no target given and no terminal to prompt in${reset}`);
+      console.log(`  ${dim}usage: rt settings dev-mode <dev|prod>${reset}\n`);
+      process.exitCode = 2;
+      return;
+    }
+    const { select } = await import("../lib/rt-render.tsx");
     target = await select({
       message: "Switch to",
       options: [

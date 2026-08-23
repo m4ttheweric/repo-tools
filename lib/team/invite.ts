@@ -1,0 +1,166 @@
+/**
+ * `rt team invite` — mints an opaque relay invite for a handle: pointer
+ * (team/name/remote/owner/forge) sealed under a fresh key and a
+ * client-generated id, stored on the relay as ciphertext only, and handed
+ * back as a short paste-able code. Also grants forge read access at mint
+ * time so the invitee can clone the moment they redeem.
+ */
+
+import { teamSettingsPath } from "../rt-paths.ts";
+import { readStore } from "../settings/stores.ts";
+import { UserActionableError } from "../setup/errors.ts";
+import type { InvitePointer } from "../setup/intent.ts";
+import type { Probes } from "../setup/probes.ts";
+import { forgeFromRemote, readTeamSnapshot, type SettingsReader } from "../setup/team-settings.ts";
+import { getSetting } from "../settings/resolve.ts";
+import { setSetting } from "../settings/write.ts";
+import { forgeLogin, grantRead, type ForgeAccess } from "./forge.ts";
+import { encodeCode, generateId, generateKey, seal } from "./invite-crypto.ts";
+import { readInviteRecords, upsertInviteRecord } from "./invite-records.ts";
+import type { RelayClient } from "./relay-client.ts";
+
+export const INVITE_TTL_DAYS = 7;
+
+/** Forge usernames only (letters, digits, `.`, `_`, `-`; must start alphanumeric) — this handle also becomes a `board.members` entry and a mint-record key, so it is checked before anything downstream trusts it. */
+const HANDLE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,38}$/;
+
+export function pasteBlock(code: string, downloadUrl = "https://github.com/m4ttstack/rt/releases/latest"): string {
+  return `Install mattstack from ${downloadUrl}, then open mattstack://join/${code} or paste the code into Setup → Join a team.\n\nInvite code:\n${code}`;
+}
+
+export interface InviteResult {
+  code: string;
+  expiresAt: string;
+  pasteBlock: string;
+  forgeAccess: ForgeAccess;
+  manualSteps: string[];
+}
+
+export interface MintInviteOpts {
+  slug: string;
+  handle: string;
+  now: Date;
+}
+
+export interface MintInviteSeams {
+  read: SettingsReader;
+  /** The ONE team's own store, unmixed with the resolver's multi-team overlay — `addToRoster` must read-modify-write the team it is about to push a value into, not the union of every locally-cloned team's roster. */
+  readTeamStore: (slug: string) => Record<string, unknown>;
+  writeSetting: typeof setSetting;
+  grantRead: typeof grantRead;
+  forgeLogin: typeof forgeLogin;
+  warn: (message: string) => void;
+}
+
+/** Degrades to `undefined` on a resolver-layer throw rather than taking the mint down with it — mirrors team-settings.ts's own default reader. */
+function defaultRead(): SettingsReader {
+  return <T>(key: string): T | undefined => {
+    try {
+      return getSetting<T>(key).value;
+    } catch {
+      return undefined;
+    }
+  };
+}
+
+function defaultReadTeamStore(slug: string): Record<string, unknown> {
+  return readStore(teamSettingsPath(slug)).global;
+}
+
+/** stderr only, so a `--json` command's stdout envelope stays uncorrupted — mirrors team-settings.ts's own default warn. */
+function defaultWarn(message: string): void {
+  console.error(message);
+}
+
+export function realMintInviteSeams(): MintInviteSeams {
+  return { read: defaultRead(), readTeamStore: defaultReadTeamStore, writeSetting: setSetting, grantRead, forgeLogin, warn: defaultWarn };
+}
+
+interface BoardMember {
+  username: string;
+  [key: string]: unknown;
+}
+
+function addToRoster(seams: MintInviteSeams, slug: string, handle: string): void {
+  const store = seams.readTeamStore(slug);
+  const existing = Array.isArray(store["board.members"]) ? (store["board.members"] as BoardMember[]) : [];
+  if (existing.some((m) => m.username === handle)) return;
+  seams.writeSetting("board.members", [...existing, { username: handle }], "team", { team: slug });
+}
+
+function assertValidHandle(handle: string): void {
+  if (!HANDLE_PATTERN.test(handle)) {
+    throw new UserActionableError(
+      "invalid-handle",
+      `"${handle}" doesn't look like a forge username — letters, digits, ".", "_", "-" only, starting with a letter or digit`,
+    );
+  }
+}
+
+export async function mintInvite(p: Probes, relay: RelayClient, opts: MintInviteOpts, seams: MintInviteSeams = realMintInviteSeams()): Promise<InviteResult> {
+  assertValidHandle(opts.handle);
+
+  const snapshot = readTeamSnapshot(p, opts.slug, { read: seams.read, warn: seams.warn });
+  if (!snapshot.remote) {
+    throw new UserActionableError("no-team-remote", `team "${opts.slug}" has no git remote configured yet — run \`rt team create\` or \`rt team publish\` first`);
+  }
+  const remote = snapshot.remote;
+  const forge = snapshot.integrations.forge ?? forgeFromRemote(remote) ?? undefined;
+  const owner = (forge ? await seams.forgeLogin(p, forge.provider, forge.host) : null) ?? p.env.USER ?? "unknown";
+
+  const title = seams.read<string>("board.title");
+  const pointer: InvitePointer = {
+    v: 1,
+    team: opts.slug,
+    name: title && title.length > 0 ? title : opts.slug,
+    remote,
+    owner,
+    forge: forge?.host ?? "",
+    createdAt: opts.now.toISOString(),
+  };
+
+  // Captured before this handle's new record is minted — replace-on-mint's revoke of THIS value runs last, after the new invite is safely live (finding: create-before-destroy).
+  const priorRecord = readInviteRecords(p, opts.slug)[opts.handle];
+
+  const key = generateKey();
+  const idHex = generateId();
+  const ciphertext = await seal(pointer, key, idHex);
+  const expiresAt = new Date(opts.now.getTime() + INVITE_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const created = await relay.create(ciphertext, expiresAt, idHex);
+  if (created.id !== idHex) {
+    throw new UserActionableError("relay-id-mismatch", "the invite relay did not honor the requested invite id — this invite cannot be safely opened");
+  }
+
+  const code = encodeCode(created.id, key);
+
+  // The record is the ONLY copy of creatorSecret (revoke capability) and keyB64 (reply-read capability) — persist it before anything else fallible runs, and if the write itself fails, name the id/code so the invite is still recoverable by hand.
+  try {
+    upsertInviteRecord(p, opts.slug, opts.handle, {
+      id: created.id,
+      creatorSecret: created.creatorSecret,
+      keyB64: Buffer.from(key).toString("base64"),
+      expiresAt,
+    });
+  } catch (err) {
+    throw new UserActionableError(
+      "invite-record-write-failed",
+      `minted invite ${created.id} (code ${code}) but could not save its local record, so it cannot be revoked or synced automatically — write the code down now: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  const { access: forgeAccess, manualSteps } = await seams.grantRead(p, remote, opts.handle);
+
+  addToRoster(seams, opts.slug, opts.handle);
+
+  if (priorRecord) {
+    try {
+      await relay.delete(priorRecord.id, priorRecord.creatorSecret);
+    } catch (err) {
+      seams.warn(
+        `rt team invite: minted a new invite for "${opts.handle}", but could not revoke the previous one (id ${priorRecord.id}) — ${err instanceof Error ? err.message : String(err)}; it will simply expire on its own.`,
+      );
+    }
+  }
+
+  return { code, expiresAt, pasteBlock: pasteBlock(code), forgeAccess, manualSteps };
+}

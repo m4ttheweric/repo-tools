@@ -10,7 +10,6 @@ import {
   readManifestBindings,
   readVerbRoster,
   stripFrontmatter,
-  stripJsonc,
   type PluginRoots,
 } from "../sources.ts";
 
@@ -99,30 +98,6 @@ function makeFixtureRoots(): { rootDir: string; roots: PluginRoots } {
 
   return { rootDir, roots };
 }
-
-describe("stripJsonc", () => {
-  test("removes full-line // comments but leaves inline content alone", () => {
-    const raw = [
-      "// header comment",
-      "{",
-      '  "url": "http://example.com",',
-      "  // trailing comment",
-      '  "n": 1',
-      "}",
-    ].join("\n");
-
-    const stripped = stripJsonc(raw);
-
-    expect(stripped).toBe(["{", '  "url": "http://example.com",', '  "n": 1', "}"].join("\n"));
-    expect(JSON.parse(stripped)).toEqual({ url: "http://example.com", n: 1 });
-  });
-
-  test("tolerates indented // comment lines", () => {
-    const raw = ['{', '  "a": 1,', '    // indented comment', '  "b": 2', "}"].join("\n");
-    const stripped = stripJsonc(raw);
-    expect(stripped).toBe(['{', '  "a": 1,', '  "b": 2', "}"].join("\n"));
-  });
-});
 
 describe("stripFrontmatter", () => {
   test("round-trips body exactly and parses frontmatter", () => {

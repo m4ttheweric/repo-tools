@@ -294,7 +294,7 @@ export function shimPath(command: string): string {
 
 // ─── install / uninstall / report ────────────────────────────────────────────
 
-export async function installShims(): Promise<{ installed: string[]; current: string[]; rules: number }> {
+export async function installShims(): Promise<{ installed: string[]; current: string[]; skipped: string[]; rules: number }> {
   const rules = await buildInterceptRules();
   writeInterceptRules(rules);
 
@@ -303,10 +303,22 @@ export async function installShims(): Promise<{ installed: string[]; current: st
 
   const installed: string[] = [];
   const current: string[] = [];
+  const skipped: string[] = [];
   for (const command of commands) {
     const path = shimPath(command);
     const rendered = renderInterceptShim(command);
     const existing = existsSync(path) ? readFileSync(path, "utf8") : null;
+
+    // Ownership discipline, same posture as lib/deps/links.ts's `link()`: a
+    // file at `path` that doesn't carry our marker is someone else's — a
+    // hand-rolled wrapper, a different tool's own install — and must never
+    // be clobbered, whether this runs from an interactive `rt intercept
+    // install` or unattended behind the app's Install button.
+    if (existing !== null && !existing.includes(GENERATED_MARKER)) {
+      skipped.push(command);
+      continue;
+    }
+
     if (existing === rendered) {
       current.push(command);
     } else {
@@ -319,7 +331,7 @@ export async function installShims(): Promise<{ installed: string[]; current: st
     // every time so `rt intercept install` always repairs it.
     chmodSync(path, 0o755);
   }
-  return { installed, current, rules: rules.length };
+  return { installed, current, skipped, rules: rules.length };
 }
 
 /**
