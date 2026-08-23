@@ -1086,6 +1086,17 @@ export const TREE: Record<string, CommandNode> = {
           SETUP_JSON_ARG,
         ],
       },
+      pack: {
+        description: "Install a pack's plugins + skills, then check its pipeline stages resolve",
+        module: "./commands/setup.ts",
+        fn: "setupPack",
+        args: [
+          { name: "Non-interactive", flag: "--non-interactive", type: "boolean", default: false, hint: "Never prompt; skip steps that need a human" },
+          { name: "Team of one", flag: "--team-of-one", type: "boolean", default: false, hint: "Solo install, no team" },
+          { name: "CI", flag: "--ci", type: "boolean", default: false, hint: "Headless CI run" },
+          SETUP_JSON_ARG,
+        ],
+      },
       intent: {
         description: "Record a setup intent for the app to act on (hidden)",
         module: "./commands/setup.ts",

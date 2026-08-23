@@ -156,7 +156,8 @@ async function pluginsInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
   return { state: "done", detail: `${marketplaces.length} marketplace(s), ${plugins.length} plugin(s) across ${configDirs.length} config dir(s) · ${materializeDetail}` };
 }
 
-async function pluginsInstallRunSafe(ctx: ApplyContext): Promise<StepOutcome> {
+/** The plugins.install step body — also `rt setup pack`'s first phase, so it lives under one name rather than two copies of the same try/catch. */
+export async function installPlugins(ctx: ApplyContext): Promise<StepOutcome> {
   try {
     return await pluginsInstallRun(ctx);
   } catch (err) {
@@ -169,5 +170,5 @@ export const pluginsInstallStep: StepDef = {
   title: "Install plugins",
   kind: "rt",
   applies: () => true,
-  run: pluginsInstallRunSafe,
+  run: installPlugins,
 };
