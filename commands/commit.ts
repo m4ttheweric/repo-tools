@@ -26,7 +26,6 @@ import { tmpdir } from "node:os";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { CommandContext } from "../lib/command-tree.ts";
-import { textInput } from "../lib/rt-render.tsx";
 import { ensureFzf } from "../lib/fzf.ts";
 import {
   getChangedFiles,
@@ -291,6 +290,7 @@ export async function commitFlow(_args: string[], ctx: CommandContext): Promise<
     const stagedList = result.paths.map((p) => `  \x1b[32m+\x1b[0m ${p}`).join("\n");
     process.stderr.write(`\n${stagedList}\n\n`);
 
+    const { textInput } = await import("../lib/rt-render.tsx");
     const message = await textInput({
       message: "Commit message",
       placeholder: "feat: ...",

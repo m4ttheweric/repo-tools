@@ -19,10 +19,6 @@ import { join, relative, basename } from "path";
 
 const SHELL = process.env.SHELL ?? "bash";
 import type { CommandContext } from "../lib/command-tree.ts";
-import {
-  filterableSelect,
-  textInput,
-} from "../lib/rt-render.tsx";
 import { getKnownRepos } from "../lib/repo-index.ts";
 import { rtDir } from "../lib/rt-paths.ts";
 import { ensureHistoryHook } from "../lib/shell-integration.ts";
@@ -324,7 +320,7 @@ async function selectPackageAndScript(
 
         // Save as preset, then ask whether to run it now
         if (val === SAVE_PRESET_SENTINEL) {
-          const { confirm } = await import("../lib/rt-render.tsx");
+          const { confirm, textInput } = await import("../lib/rt-render.tsx");
           const name = await textInput({
             message: "Preset name",
             placeholder: "e.g. backend-lite",
@@ -530,6 +526,7 @@ async function selectPackageAndScript(
         if (varResult.key === "ctrl-up") break; // back to script picker
 
         if (varResult.value === ADD_SENTINEL) {
+          const { textInput } = await import("../lib/rt-render.tsx");
           const name = await textInput({
             message: "Variation name",
             placeholder: "e.g. with debug",
@@ -928,6 +925,7 @@ export async function runAgainCommand(
     process.exit(0);
   }
 
+  const { filterableSelect } = await import("../lib/rt-render.tsx");
   const chosen = await filterableSelect({
     message: "Recent runs",
     options: entries.map((tagged) => ({
