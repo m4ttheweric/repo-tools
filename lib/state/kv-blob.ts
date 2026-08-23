@@ -22,12 +22,25 @@ const KV_UPSERT_SQL = `
 `;
 const KV_DELETE_SQL = `DELETE FROM kv WHERE ns = ? AND k = ?;`;
 
-export function getKvValue<T>(ns: string, key: string, fallback: T, db: Database = getStateDb()): T {
+/**
+ * `onCorrupt` fires only when a row EXISTS but its JSON fails to parse —
+ * never for a missing row. Callers that must distinguish "cold start" from
+ * "lost data" (a seam, per the catch policy) pass it to warn; callers that
+ * genuinely don't care leave it out and get today's silent fallback.
+ */
+export function getKvValue<T>(
+  ns: string,
+  key: string,
+  fallback: T,
+  db: Database = getStateDb(),
+  onCorrupt?: (err: unknown) => void,
+): T {
   const row = db.query(KV_SELECT_SQL).get(ns, key) as { v: string } | null;
   if (!row) return fallback;
   try {
     return JSON.parse(row.v) as T;
-  } catch {
+  } catch (err) {
+    onCorrupt?.(err);
     return fallback;
   }
 }
