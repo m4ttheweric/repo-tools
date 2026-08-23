@@ -39,6 +39,7 @@ import { toggleDevMode } from "../../commands/settings.ts";
 import { TRAY_SOCK_PATH } from "../daemon-config.ts";
 import { currentMode } from "../dev-mode.ts";
 import { DEV_TRAY_APP_BUNDLE, TRAY_APP_BUNDLE } from "../rt-paths.ts";
+import { deleteKvValue } from "../state/index.ts";
 
 function isolatedExists(path: string): boolean {
   return path.startsWith("/Applications/") ? false : existsSync(path);
@@ -168,6 +169,11 @@ afterEach(() => {
   for (const p of [FAKE_PROD_APP, FAKE_DEV_APP, FAKE_INSTALLED_BUNDLE_DIR]) {
     try { rmSync(p, { recursive: true, force: true }); } catch { /* absent */ }
   }
+  // enableDevMode() (RT-48/MAT-383 §9) now writes the dev-mode config into
+  // state.db's kv table instead of DEV_MODE_CONFIG — clean that row up too,
+  // for the same reason the file cleanup above exists: this suite's fixed
+  // HOME is shared across every test() in this file.
+  try { deleteKvValue("dev-mode", "config"); } catch { /* state.db not opened by this test */ }
 });
 
 describe("toggleDevMode — flavor handoff", () => {
