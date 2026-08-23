@@ -34,6 +34,7 @@ export function seedRun(dir: string, repo: string, id: string, startedAt: number
     INSERT INTO runs VALUES ('${id}', '${repo}', 'feature', 'default', '${o.status ?? "running"}', 'plan', NULL, ${startedAt}, NULL${v2 ? `, ${o.packCommits ? `'${o.packCommits}'` : "NULL"}, ${o.packDirty ?? 0}` : ""});
     INSERT INTO stages VALUES ('${id}', 'plan', 'running', 1, ${startedAt}, NULL${v2 ? `, ${o.stageReason ? `'${o.stageReason}'` : "NULL"}, ${o.stageDetailPath ? `'${o.stageDetailPath}'` : "NULL"}` : ""});
     INSERT INTO fields VALUES ('${id}', 'ticket', 'CV-1', 'plan', ${startedAt});
+    INSERT INTO fields VALUES ('${id}', 'branch', 'goodwin/mat-1', 'plan', ${startedAt + 5000});
     INSERT INTO decisions VALUES ('${id}', 'execution-strategy@1', 'run', '{"tier":"direct-tdd"}', 'stage-plan', ${startedAt});
   `);
   db.close();

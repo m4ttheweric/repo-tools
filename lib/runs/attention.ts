@@ -21,13 +21,19 @@ const NONE: Attention = { needs: false, reason: null, evidence: "" };
 // events at all, not a floor on the events that do exist — a stage that
 // started long before the run's own started_at column caught up (clock skew
 // on resume, backfilled rows) must still be measured by its own timestamp.
-function lastEventAt(run: RunSummary, stages: RunStageRow[], fields: RunFieldRow[], decisions: RunDecisionRow[]): number {
+export function lastEventAt(run: RunSummary, stages: RunStageRow[], fields: RunFieldRow[], decisions: RunDecisionRow[]): number {
   let last: number | null = null;
   const bump = (t: number | null | undefined) => { if (t != null && (last == null || t > last)) last = t; };
   for (const s of stages) { bump(s.started_at); bump(s.ended_at); }
   for (const f of fields) bump(f.at);
   for (const d of decisions) bump(d.decided_at);
   return last ?? run.started_at;
+}
+
+// `fields` is one row per key (see the table's primary key in
+// lib/runs/__tests__/fixtures.ts), so there's never more than one candidate.
+export function fieldValue(fields: RunFieldRow[], key: string): string | null {
+  return fields.find((f) => f.key === key)?.value ?? null;
 }
 
 function has(fields: RunFieldRow[], key: string): boolean {

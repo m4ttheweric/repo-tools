@@ -90,3 +90,20 @@ export function getRun(
   if (repo !== undefined) payload.repo = repo;
   return rtCommand<RunDetail>("runs:get", payload, { sockPath: opts.sockPath, timeoutMs: 10_000 });
 }
+
+/**
+ * SKILLS-54. rt's only write path into run state, so a wedged run can be
+ * resolved by a person instead of lying in the data forever. The write happens
+ * in the daemon and is attributed there; consumers never touch the run DB.
+ */
+export function abandonRun(
+  runId: string,
+  repo?: string,
+  reason?: string,
+  opts: RtClientOptions = {},
+): Promise<RtResponse<{ ok: boolean }>> {
+  const payload: Record<string, unknown> = { runId };
+  if (repo !== undefined) payload.repo = repo;
+  if (reason !== undefined) payload.reason = reason;
+  return rtCommand<{ ok: boolean }>("runs:abandon", payload, { sockPath: opts.sockPath, timeoutMs: 10_000 });
+}
