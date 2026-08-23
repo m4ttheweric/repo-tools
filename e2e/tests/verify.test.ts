@@ -69,13 +69,13 @@ describe("verify", () => {
   });
 
   test("rt binary check passes", () => {
-    const check = findCheck("rt binary");
+    const check = findCheck("tool.rt");
     expect(check).toBeDefined();
     expect(check!.status).toBe("pass");
   });
 
   test("fzf check passes", () => {
-    const check = findCheck("fzf");
+    const check = findCheck("tool.fzf");
     expect(check).toBeDefined();
     expect(check!.status).toBe("pass");
   });
@@ -88,24 +88,20 @@ describe("verify", () => {
     // check even against an otherwise-empty fixture home, so assert against
     // that reality instead of assuming a fixed "always fails" outcome.
     const activeBundle = activeFlavor(home) === "dev" ? DEV_TRAY_APP_BUNDLE : TRAY_APP_BUNDLE;
-    const check = findCheck(activeBundle);
+    const check = findCheck("tool.app");
     expect(check).toBeDefined();
     const reallyInstalledSystemWide = existsSync(join("/Applications", activeBundle));
     expect(check!.status).toBe(reallyInstalledSystemWide ? "pass" : "fail");
   });
 
-  test("inactive flavor's tray app is informational, never a failure", () => {
-    const inactiveBundle = activeFlavor(home) === "dev" ? TRAY_APP_BUNDLE : DEV_TRAY_APP_BUNDLE;
-    const check = findCheck(inactiveBundle);
-    expect(check).toBeDefined();
-    expect(check!.status).toBe("skip");
-    expect(check!.severity).toBe("info");
-  });
+  // The plan's tool.app row (lib/setup/validators/rt-health.ts) checks only
+  // the active flavor — there is no longer a separate row for the inactive
+  // one, so there is nothing to assert "never a failure" about.
 
   test("daemon checks warn in CI (no Login Items approval)", () => {
-    const daemonRunning = findCheck("daemon running");
-    if (daemonRunning) {
-      expect(["warn", "fail", "skip"]).toContain(daemonRunning.status);
+    const daemon = findCheck("tool.daemon");
+    if (daemon) {
+      expect(["warn", "fail", "skip"]).toContain(daemon.status);
     }
   });
 });

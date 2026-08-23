@@ -82,8 +82,13 @@ export interface CommandNode {
    */
   context?: "repo" | "worktree";
 
-  /** Guard: exit early with a message if not in an interactive terminal. */
-  requiresTTY?: boolean;
+  /**
+   * Guard: exit early with a message if not in an interactive terminal.
+   * A function form is evaluated against the leaf's own args (e.g. a node
+   * only needs a TTY to prompt for an arg the caller could instead supply
+   * directly — see `settings dev-mode`'s Target).
+   */
+  requiresTTY?: boolean | ((args: string[]) => boolean);
 
   /** Name aliases (e.g. ["sw"] for switch). */
   aliases?: string[];
@@ -210,7 +215,8 @@ export async function dispatch(
   if (!node.fullscreen) renderHeader([...breadcrumb, resolvedName]);
 
   // TTY guard — bypass when RT_BATCH=1 (called programmatically, no picker needed)
-  if (node.requiresTTY && !process.stdin.isTTY && !process.env.RT_BATCH) {
+  const needsTTY = typeof node.requiresTTY === "function" ? node.requiresTTY(rest) : node.requiresTTY;
+  if (needsTTY && !process.stdin.isTTY && !process.env.RT_BATCH) {
     const { yellow } = await import("./tui.ts");
     const label = breadcrumb.slice(1).concat(resolvedName).join(" ");
     console.error(`\n  ${yellow}rt ${label} requires an interactive terminal${reset}\n`);

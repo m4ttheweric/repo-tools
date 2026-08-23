@@ -100,11 +100,11 @@ if (args[0] === "--version" || args[0] === "-V") {
   const { interceptRun } = await import("./commands/intercept.ts");
   await interceptRun(args.slice(2));
 } else if (args[0] === "--post-install") {
-  // Hidden entry point: the installer. Run from an extracted release tarball
-  // it installs the binary, the app, the extension, the daemon, and shell
-  // integration; `rt update` re-execs it from the freshly downloaded release.
+  // Hidden entry point: the headless installer. Sweeps legacy state, then
+  // runs `rt setup apply --non-interactive --team-of-one`. Remaining args
+  // (e.g. `--json`, `--no-launch`) forward straight into that apply call.
   const { runPostInstall } = await import("./commands/post-install.ts");
-  await runPostInstall();
+  await runPostInstall(args.slice(1));
 } else if (args[0] === "--grant-fda") {
   // Hidden entry point: open System Settings → Privacy → Full Disk Access.
   // The daemon inherits TCC grants from mattstack.app via SMAppService's
@@ -122,24 +122,31 @@ if (args[0] === "--version" || args[0] === "-V") {
     process.exit(1);
   }
 } else if (args[0] === "update") {
-  // `update` bypasses first-run setup — its own post-upgrade step runs it.
+  // Bypasses the first-run "not set up yet" hint below — asking the app to
+  // check for updates never depends on rt's own daemon.json existing.
   const { runUpdate } = await import("./commands/update.ts");
   await runUpdate(args.slice(1));
   process.exit(0);
 } else {
-  // ── First-run auto-setup ──────────────────────────────────────────────────
-  // If daemon.json doesn't exist, post-install has never completed. Run it
-  // now transparently before the requested command. This also applies to
-  // `rt verify`, the command we recommend after installing — it should set
-  // up + then verify in one shot.
-  if (process.env.CI !== "true" && process.env.RT_SKIP_SETUP !== "1") {
+  // ── First-run hint ────────────────────────────────────────────────────────
+  // `rt setup` (not this hook) owns getting a machine set up — an auto-run
+  // here would defeat `rt setup plan`'s canInstall being reachable
+  // pre-install. A command that IS part of getting set up must reach its own
+  // handler untouched; RT_APP_SOCKET means mattstack.app is driving rt and
+  // already knows the setup state.
+  const FIRST_RUN_HINT_SKIP = new Set([
+    "setup", "team", "deps", "services", "tools", "repos", "skills", "cron", "uninstall", "home", "secrets", "restore", "verify",
+  ]);
+  if (
+    process.env.CI !== "true" &&
+    process.env.RT_SKIP_SETUP !== "1" &&
+    !process.env.RT_APP_SOCKET &&
+    !FIRST_RUN_HINT_SKIP.has(args[0] ?? "")
+  ) {
     const { existsSync } = await import("fs");
     const { join } = await import("path");
-    const { homedir } = await import("os");
     if (!existsSync(join(rtDir(), "daemon.json"))) {
-      console.log("\n  rt — first run detected, completing setup…\n");
-      const { runPostInstall } = await import("./commands/post-install.ts");
-      await runPostInstall();
+      console.error("  rt is not set up yet — open mattstack.app, or run: rt setup");
     }
   }
 

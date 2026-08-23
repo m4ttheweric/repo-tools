@@ -56,7 +56,7 @@ RT="$APP/Contents/MacOS/rt"
 [ -x "${RT:-}" ] || { echo "no rt binary at $APP/Contents/MacOS/rt" >&2; exit 1; }
 
 export CI=true
-if [ -n "$HOME_DIR" ]; then export HOME="$HOME_DIR"; mkdir -p "$HOME"; fi
+if [ -n "$HOME_DIR" ]; then mkdir -p "$HOME_DIR"; export HOME="$(cd "$HOME_DIR" && pwd -P)"; fi
 # $REAL_HOME/.bun/bin, not $HOME/.bun/bin: oven-sh/setup-bun installs into the
 # runner's actual home directory, which is unrelated to the clean room's
 # simulated $HOME above. Without it, bun is unresolvable on a CI runner and
@@ -65,6 +65,7 @@ if [ -n "$HOME_DIR" ]; then export HOME="$HOME_DIR"; mkdir -p "$HOME"; fi
 # guard for the other half of this fix).
 export PATH="$HOME/.local/bin:$REAL_HOME/.bun/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
 command -v bun >/dev/null 2>&1 || { echo "  ✗ bun not resolvable on the clean-room PATH ($PATH)" >&2; exit 1; }
+
 step "rt --version (from artifact)";   run "$RT" --version | tee "$OUTDIR/versions.txt" >/dev/null || exit 1
 step "rt --post-install $PIA";          run "$RT" --post-install $PIA || exit 1
 step "installed rt on PATH";            run test -x "$HOME/.local/bin/rt" && run rt --version || exit 1

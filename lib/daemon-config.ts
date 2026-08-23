@@ -9,7 +9,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { rtDir } from "./rt-paths.ts";
 import { currentMode } from "./dev-mode.ts";
 
@@ -73,9 +73,24 @@ export const API_PORT = Number(process.env.RT_API_PORT) || 9401;
 
 // ─── Read / Write ────────────────────────────────────────────────────────────
 
-export function getDaemonConfig(): DaemonConfig | null {
+// `home`, when passed, overrides the module-load `DAEMON_CONFIG_PATH` const
+// with a path under that specific home instead — the apply engine's
+// services.register step (lib/setup/steps/services.ts) passes `ctx.p.home`
+// so a faked Probes' home is the one this ever writes into during a test,
+// never whatever real HOME happened to be live when this module first
+// loaded. Every OTHER caller (the daemon itself, `rt daemon install`,
+// daemon-client.ts) omits it and keeps today's exact behavior — this is
+// additive, not a switch to ambient call-time HOME resolution (which would
+// make this pair newly sensitive to HOME mutations any OTHER test file
+// leaves behind, an isolation regression discovered and rejected while
+// building this).
+function daemonConfigPath(home?: string): string {
+  return home !== undefined ? join(home, ".mattstack", "rt", "daemon.json") : DAEMON_CONFIG_PATH;
+}
+
+export function getDaemonConfig(home?: string): DaemonConfig | null {
   try {
-    const raw = JSON.parse(readFileSync(DAEMON_CONFIG_PATH, "utf8"));
+    const raw = JSON.parse(readFileSync(daemonConfigPath(home), "utf8"));
     if (!raw.installed) return null;
     // Normalize legacy modes ("launchd", "manual", "tray") → "smappservice".
     return {
@@ -92,14 +107,15 @@ export function isDaemonInstalled(): boolean {
   return getDaemonConfig() !== null;
 }
 
-export function markDaemonInstalled(): void {
-  mkdirSync(RT_DIR, { recursive: true });
+export function markDaemonInstalled(home?: string): void {
+  const path = daemonConfigPath(home);
+  mkdirSync(dirname(path), { recursive: true });
   const config: DaemonConfig = {
     installed: true,
     installedAt: new Date().toISOString(),
     mode: "smappservice",
   };
-  writeFileSync(DAEMON_CONFIG_PATH, JSON.stringify(config, null, 2));
+  writeFileSync(path, JSON.stringify(config, null, 2));
 }
 
 export function markDaemonUninstalled(): void {
