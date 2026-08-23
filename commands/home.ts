@@ -561,6 +561,16 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
             `aren't knowable until the repo above is actually cloned, so the key shown here ("${key}") is only ` +
             "the no-profiles-yet fallback. Pass --profile <key> or --new-profile to pin the real choice ahead of time.",
         );
+        // Materialize's plan depends on what the clone lands (tracked repos,
+        // which tools are installed), so it cannot be previewed from here —
+        // but staying silent would let a fresh machine's dry run, the exact
+        // case this path serves, imply provisioning is the whole story.
+        if (!noMaterialize) {
+          console.log(
+            `\n  rt home init: materialize will also run after provisioning — its plan can't be previewed ` +
+              "until user/ is cloned. Re-run --dry-run afterwards to see it, or pass --no-materialize to skip it.",
+          );
+        }
         return;
       }
 
