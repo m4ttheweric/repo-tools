@@ -51,6 +51,26 @@ if [ -n "$ART" ]; then
   esac
   run ls -la "$WORK/release"
   APP="$WORK/release/mattstack.app"
+
+  # Stamp the quarantine attribute the way a browser download does. Extracting
+  # an artifact in a shell does NOT set it, so without this the clean-room
+  # exercises a path no real user takes -- and cannot catch the class of
+  # failure notarization exists to prevent (a correctly signed but
+  # un-notarized app is refused on first launch, and every check here would
+  # still pass). Best-effort: a filesystem that rejects xattrs must not fail
+  # the run, but it must say so rather than silently testing the easy path.
+  step "quarantine + Gatekeeper (as a downloaded artifact)"
+  if xattr -w com.apple.quarantine "0083;00000000;Safari;" "$APP" 2>/dev/null; then
+    if spctl --assess --type exec --context context:primary-signature -vv "$APP" 2>&1 | tee -a "$LOG" | grep -q accepted; then
+      echo "  ✓ Gatekeeper accepts the quarantined app" | tee -a "$LOG"
+    else
+      echo "  ✗ Gatekeeper REJECTS the quarantined app — a real download would be blocked on first launch" | tee -a "$LOG"
+      GATEKEEPER_FAILED=1
+    fi
+    xattr -d com.apple.quarantine "$APP" 2>/dev/null || true
+  else
+    echo "  ⚠ could not set com.apple.quarantine here — Gatekeeper path NOT exercised" | tee -a "$LOG"
+  fi
 fi
 RT="$APP/Contents/MacOS/rt"
 [ -x "${RT:-}" ] || { echo "no rt binary at $APP/Contents/MacOS/rt" >&2; exit 1; }
@@ -82,5 +102,6 @@ if [ -x "$CHECK" ] && grep -q -- '--app' "$CHECK"; then
 else
   step "check-bundle.sh";               echo "skipped: check-bundle.sh has no --app mode" | tee -a "$LOG"
 fi
+[ "${GATEKEEPER_FAILED:-0}" = 1 ] && RC=1
 printf '\nexit=%s\nartifacts=%s\n' "$RC" "$OUTDIR" | tee -a "$LOG"
 exit "$RC"
