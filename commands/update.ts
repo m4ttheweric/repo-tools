@@ -1,109 +1,78 @@
 #!/usr/bin/env bun
 
 /**
- * rt update — install the latest GitHub release.
+ * rt update — asks mattstack.app (Sparkle) to check for an update.
  *
- * Downloads the release tarball (the same artifact mattstack.app ships in),
- * then runs the EXTRACTED binary's --post-install so the rt binary, the app
- * bundle, and the editor extension are installed by the one code path a fresh
- * install uses. Nothing here knows how to install; post-install does.
+ * rt does not download or install its own updates; the app owns that whole
+ * lifecycle (signature verification, staged install, restart). This verb is
+ * a thin `POST /update/check` over tray.sock — the exact route the app's
+ * "Check for Updates…" menu item triggers — so the CLI and the menu bar stay
+ * one code path.
  */
 
-import { spawnSync } from "child_process";
-import { existsSync, mkdirSync, rmSync } from "fs";
-import { join } from "path";
-import { currentMode } from "../lib/dev-mode.ts";
-import { rtDir } from "../lib/rt-paths.ts";
-import { bold, dim, green, red, reset, yellow } from "../lib/tui.ts";
+import type { CommandContext } from "../lib/command-tree.ts";
+import { trayRequest } from "../lib/daemon-client.ts";
+import { currentMode as realCurrentMode } from "../lib/dev-mode.ts";
+import { envelope } from "../lib/setup/contract.ts";
 
-declare const RT_VERSION: string;
+export const RELEASES_URL = "https://github.com/m4ttstack/rt/releases/latest";
 
-export const RELEASES_API = "https://api.github.com/repos/m4ttstack/rt/releases/latest";
-
-interface ReleaseAsset { name: string; browser_download_url: string }
-interface Release { tag_name: string; assets: ReleaseAsset[] }
-
-export function releaseAssetName(tag: string, arch: string = process.arch): string {
-  return `rt-darwin-${arch === "arm64" ? "arm64" : "x64"}-${tag}.tar.gz`;
+export interface UpdateDeps {
+  /** POSTs `/update/check` over tray.sock; `null` means the app isn't running (never throws). */
+  tray: (endpoint: string, method: "GET" | "POST") => Promise<{ ok: boolean; error?: string } | null>;
+  currentMode: () => "dev" | "prod";
+  log: (line: string) => void;
+  exit: (code: number) => never;
 }
 
-function stripV(v: string): string {
-  return v.startsWith("v") ? v.slice(1) : v;
+async function realTray(endpoint: string, method: "GET" | "POST"): Promise<{ ok: boolean; error?: string } | null> {
+  const res = await trayRequest<{ ok: boolean; error?: string }>(endpoint, { method });
+  if (res.status === 0) return null;
+  if (res.json && typeof res.json.ok === "boolean") return res.json;
+  return { ok: false, error: `unexpected response (status ${res.status})` };
 }
 
-export async function runUpdate(_args: string[]): Promise<void> {
-  if (currentMode() === "dev") {
-    console.log(`\n  ${yellow}⚠${reset}  dev mode is active — you're running from local source.`);
-    console.log(`  ${dim}Switch to prod first: rt settings dev-mode prod${reset}\n`);
-    process.exit(1);
-  }
+export const realDeps: UpdateDeps = {
+  tray: realTray,
+  currentMode: realCurrentMode,
+  log: (line) => console.log(line),
+  exit: process.exit,
+};
 
-  // RT_VERSION is injected at compile time via bun build --define.
-  const current = (typeof RT_VERSION !== "undefined" ? RT_VERSION : null) ?? process.env.RT_VERSION ?? "dev";
-  console.log(`  ${dim}current: ${current}${reset}`);
+function printError(deps: UpdateDeps, json: boolean, code: string, message: string): void {
+  deps.log(json ? JSON.stringify(envelope({ error: { code, message } })) : message);
+  deps.exit(2);
+}
 
-  let release: Release;
-  try {
-    const res = await fetch(RELEASES_API, { headers: { Accept: "application/vnd.github+json" } });
-    if (!res.ok) throw new Error(`GitHub API ${res.status}`);
-    release = (await res.json()) as Release;
-  } catch (err: any) {
-    console.log(`\n  ${red}✗${reset}  could not check releases: ${err?.message ?? err}\n`);
-    process.exit(1);
-  }
+export async function runUpdate(args: string[], _ctx: CommandContext = {}, deps: UpdateDeps = realDeps): Promise<void> {
+  const json = args.includes("--json");
 
-  const tag = release.tag_name;
-  if (stripV(tag) === stripV(current)) {
-    console.log(`  ${green}✓${reset}  already up to date\n`);
+  if (deps.currentMode() === "dev") {
+    printError(deps, json, "dev-mode", "dev mode is active — switch to prod first: rt settings dev-mode prod");
     return;
   }
 
-  const assetName = releaseAssetName(tag);
-  const asset = release.assets.find((a) => a.name === assetName);
-  if (!asset) {
-    console.log(`\n  ${red}✗${reset}  release ${tag} has no ${assetName}\n`);
-    process.exit(1);
+  const res = await deps.tray("/update/check", "POST");
+
+  if (res === null) {
+    printError(
+      deps,
+      json,
+      "app-not-running",
+      `Updates come from mattstack.app (Sparkle). Open the app to check, or download the latest DMG: ${RELEASES_URL}`,
+    );
+    return;
   }
 
-  console.log(`  ${dim}latest:  ${tag}${reset}\n`);
-  console.log(`  downloading ${bold}${assetName}${reset}…`);
-
-  const stage = join(rtDir(), "updates", tag);
-  rmSync(stage, { recursive: true, force: true });
-  mkdirSync(stage, { recursive: true });
-  const tarball = join(stage, assetName);
-
-  try {
-    const res = await fetch(asset.browser_download_url);
-    if (!res.ok) throw new Error(`download ${res.status}`);
-    await Bun.write(tarball, res);
-  } catch (err: any) {
-    console.log(`\n  ${red}✗${reset}  download failed: ${err?.message ?? err}\n`);
-    process.exit(1);
+  if (!res.ok) {
+    printError(
+      deps,
+      json,
+      "app-too-old",
+      `this mattstack.app can't be asked from the CLI (${res.error}) — use the menu bar: mattstack → Check for Updates…`,
+    );
+    return;
   }
 
-  const untar = spawnSync("tar", ["-xzf", tarball, "-C", stage], { stdio: "pipe", env: process.env });
-  if (untar.status !== 0) {
-    console.log(`\n  ${red}✗${reset}  extract failed: ${untar.stderr?.toString().trim()}\n`);
-    process.exit(1);
-  }
-
-  const newRt = join(stage, "rt");
-  if (!existsSync(newRt)) {
-    console.log(`\n  ${red}✗${reset}  tarball has no rt binary\n`);
-    process.exit(1);
-  }
-
-  console.log(`\n  running post-install from ${tag}…\n`);
-  const post = spawnSync(newRt, ["--post-install"], {
-    stdio: "inherit",
-    env: { ...process.env, RT_SKIP_SETUP: "1" },
-  });
-  if (post.status !== 0) {
-    console.log(`\n  ${red}✗${reset}  post-install failed — the extracted release is at ${stage}\n`);
-    process.exit(1);
-  }
-
-  rmSync(stage, { recursive: true, force: true });
-  console.log(`\n  ${green}✓${reset}  rt updated to ${tag} — restart your terminal for the new version\n`);
+  deps.log(json ? JSON.stringify(envelope({ asked: true })) : "asked mattstack.app to check for updates (Sparkle) — watch the menu bar");
 }

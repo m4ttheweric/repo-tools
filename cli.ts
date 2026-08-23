@@ -95,9 +95,8 @@ if (args[0] === "--version" || args[0] === "-V") {
   await interceptRun(args.slice(2));
 } else if (args[0] === "--post-install") {
   // Hidden entry point: the headless installer. Sweeps legacy state, then
-  // runs `rt setup apply --non-interactive --team-of-one`; `rt update`
-  // re-execs it from the freshly downloaded release. Remaining args (e.g.
-  // `--json`, `--no-launch`) forward straight into that apply call.
+  // runs `rt setup apply --non-interactive --team-of-one`. Remaining args
+  // (e.g. `--json`, `--no-launch`) forward straight into that apply call.
   const { runPostInstall } = await import("./commands/post-install.ts");
   await runPostInstall(args.slice(1));
 } else if (args[0] === "--grant-fda") {
@@ -117,7 +116,8 @@ if (args[0] === "--version" || args[0] === "-V") {
     process.exit(1);
   }
 } else if (args[0] === "update") {
-  // `update` bypasses first-run setup — its own post-upgrade step runs it.
+  // Bypasses the first-run "not set up yet" hint below — asking the app to
+  // check for updates never depends on rt's own daemon.json existing.
   const { runUpdate } = await import("./commands/update.ts");
   await runUpdate(args.slice(1));
   process.exit(0);

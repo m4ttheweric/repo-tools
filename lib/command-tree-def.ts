@@ -427,10 +427,10 @@ export const TREE: Record<string, CommandNode> = {
   },
 
   update: {
-    description: "Update rt to the latest GitHub release",
+    description: "Check for updates via mattstack.app",
     module: "./commands/update.ts",
     fn: "runUpdate",
-    args: [],
+    args: [SETUP_JSON_ARG],
   },
 
   version: {
