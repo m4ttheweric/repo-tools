@@ -100,6 +100,36 @@ export async function getDaemonLogger(): Promise<DaemonLoggerHandle> {
   return cached;
 }
 
+/**
+ * A `childLogger(module)` result usable synchronously from module load
+ * (no top-level await, which would make every importer async-initializing
+ * and block `bun build --compile`). Calls made before getDaemonLogger()
+ * resolves are queued and replayed in order once it does, so no line is
+ * lost or reordered relative to today's `await`-at-module-scope behavior —
+ * only its write to disk shifts later by the same startup delay
+ * getDaemonLogger() always had.
+ */
+export function lazyChildLogger(module: string): Logger {
+  let real: Logger | undefined;
+  const pending: Array<() => void> = [];
+  getDaemonLogger().then((handle) => {
+    real = handle.childLogger(module);
+    for (const call of pending) call();
+    pending.length = 0;
+  });
+
+  return new Proxy({} as Logger, {
+    get(_target, prop, _receiver) {
+      if (real) return (real as any)[prop];
+      // Pino's logging methods (info/warn/error/debug/…) are the only
+      // members these seven call sites use — queue the invocation.
+      return (...args: unknown[]) => {
+        pending.push(() => { (real as any)[prop](...args); });
+      };
+    },
+  });
+}
+
 // ─── Native stderr capture ───────────────────────────────────────────────────
 
 /**

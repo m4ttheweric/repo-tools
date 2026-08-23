@@ -9,10 +9,10 @@
  * non-listening processes that can still run away with CPU/memory.
  */
 
-import { getDaemonLogger } from "./../daemon-logger.ts";
+import { lazyChildLogger } from "./../daemon-logger.ts";
 import { runCapture } from "../subprocess.ts";
 
-const log = (await getDaemonLogger()).childLogger("process-scan");
+const log = lazyChildLogger("process-scan");
 import { homedir } from "os";
 import { getSetting } from "../settings/resolve.ts";
 import {

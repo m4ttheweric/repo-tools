@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // We import the factory (not the singleton) so each test gets isolation.
-import { createDaemonLogger } from "../daemon-logger.ts";
+import { createDaemonLogger, lazyChildLogger } from "../daemon-logger.ts";
+import { logsDir } from "../rt-paths.ts";
 
 let logDir: string;
 
@@ -82,5 +83,45 @@ describe("daemon-logger", () => {
     logger.info("test");
     await flush(logger);
     expect(existsSync(nested)).toBe(true);
+  });
+});
+
+describe("lazyChildLogger", () => {
+  // lazyChildLogger binds to the production getDaemonLogger() singleton, so
+  // these read the singleton's real (HOME-isolated by test-setup.ts) log dir
+  // rather than a per-test tmpdir like the suite above.
+  function readSingletonLog(): string {
+    const dir = logsDir();
+    if (!existsSync(dir)) return "";
+    const files = readdirSync(dir).filter((f) => /^daemon\..+\.log$/.test(f));
+    if (files.length === 0) return "";
+    files.sort().reverse();
+    return readFileSync(join(dir, files[0]!), "utf8");
+  }
+
+  it("queues calls made before the singleton resolves and replays them in order, tagged with the module name", async () => {
+    const log = lazyChildLogger("lazy-order-test");
+    // Fires synchronously, before getDaemonLogger()'s internal await settles.
+    log.info("lazy-first");
+    log.warn("lazy-second");
+
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+
+    const content = readSingletonLog();
+    expect(content).toContain('"module":"lazy-order-test"');
+    expect(content).toContain('"msg":"lazy-first"');
+    expect(content).toContain('"msg":"lazy-second"');
+    expect(content.indexOf("lazy-first")).toBeLessThan(content.indexOf("lazy-second"));
+  });
+
+  it("passes calls straight through once the singleton is already warm", async () => {
+    // The singleton is warm from the previous test in this file.
+    const log = lazyChildLogger("lazy-warm-test");
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+    log.info("lazy-warm-line");
+    await new Promise((r) => setImmediate(r));
+    const content = readSingletonLog();
+    expect(content).toContain('"module":"lazy-warm-test"');
+    expect(content).toContain('"msg":"lazy-warm-line"');
   });
 });
