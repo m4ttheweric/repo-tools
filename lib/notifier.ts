@@ -24,7 +24,7 @@ import { setSetting } from "./settings/write.ts";
 import { parseEtimeMs, type PortEntry } from "./port-scanner.ts";
 import type { SystemProcess } from "./daemon/system-process-scanner.ts";
 import { agentSessionPids } from "./daemon/worktree-process-kill.ts";
-import { getDaemonLogger } from "./daemon-logger.ts";
+import { lazyChildLogger } from "./daemon-logger.ts";
 import {
   getNotifierStateBlob,
   setNotifierStateBlob,
@@ -35,7 +35,7 @@ import {
   removeQueuedNotification,
   type NotificationEvent,
 } from "./state/index.ts";
-const log = (await getDaemonLogger()).childLogger("notifier");
+const log = lazyChildLogger("notifier");
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

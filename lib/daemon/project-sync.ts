@@ -33,9 +33,9 @@ import type { PullRequest } from "@mattstack/glance";
 import { getRepoContext, getSelfUsername, resolveSelfUsername } from "./freshness.ts";
 import { getProjectMRs, freshnessOf, type ProjectMRs, type ProjectMRStore } from "./project-mrs-store.ts";
 import { loadRepoTracking, grants } from "../repo-tracking.ts";
-import { getDaemonLogger } from "../daemon-logger.ts";
+import { lazyChildLogger } from "../daemon-logger.ts";
 
-const log = (await getDaemonLogger()).childLogger("project-sync");
+const log = lazyChildLogger("project-sync");
 
 /** A repo without a record, or whose last DEEP sync is older than this, forces DEEP. */
 export const DEEP_RECONCILE_MS = 24 * 60 * 60 * 1000;

@@ -29,8 +29,8 @@ import {
 import { getProjectMRs, type ProjectMRs } from "./project-mrs-store.ts";
 import { loadRepoTracking, grants, type RepoTracking } from "../repo-tracking.ts";
 import type { HandlerContext, CacheEntry } from "./handlers/types.ts";
-import { getDaemonLogger } from "../daemon-logger.ts";
-const log = (await getDaemonLogger()).childLogger("discussions");
+import { lazyChildLogger } from "../daemon-logger.ts";
+const log = lazyChildLogger("discussions");
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000;
 
