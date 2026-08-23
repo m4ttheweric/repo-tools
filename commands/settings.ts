@@ -361,6 +361,11 @@ export const DEV_MODE_PRELOAD = join(rtDir(), "dev-restore-cwd.ts");
 // kv row (ns='dev-mode', k='config') — see lib/state/db.ts's note on the kv
 // table before touching this shape: rt-tray/Sources-daemon-shim/main.swift
 // queries it directly over libsqlite3, before bun (and this module) exist.
+// The shim ALSO falls back to reading devModeConfigPath() directly (read-
+// only) when this row is absent — this module is the only thing that ever
+// migrates/renames that legacy file, so an un-migrated machine (this row
+// never written) still boots correctly until the next `enableDevMode()`
+// call folds it in. See the shim's own "LEGACY FALLBACK" header comment.
 const DEV_MODE_NS = "dev-mode";
 const DEV_MODE_KEY = "config";
 
@@ -430,7 +435,22 @@ function detectBunPath(): string {
   for (const p of [`${Bun.env.HOME}/.bun/bin/bun`, "/opt/homebrew/bin/bun", "/usr/local/bin/bun"]) {
     if (existsSync(p)) return p;
   }
-  return "bun"; // hope PATH resolves it at exec time
+  return "bun"; // hope PATH resolves it at exec time — fine for the shell wrapper below (inherits PATH), never fine for the stored kv value (see bunPathForStorage)
+}
+
+/**
+ * The Swift shim (rt-tray/Sources-daemon-shim/main.swift) never does shell
+ * PATH resolution — it only ever `fileExists(atPath:)`s the exact string —
+ * so a bare `"bun"` stored in the kv row would resolve against launchd's cwd
+ * (`/`) and always stand down. `detectBunPath()`'s last resort ("hope PATH
+ * resolves it") is a valid fallback for the shell wrapper it also feeds
+ * (which does inherit PATH), but must never be persisted for the shim to
+ * read: `undefined` here means "not configured", and the shim's own default
+ * (`~/.bun/bin/bun`) takes over instead — strictly better than a value that
+ * can never resolve.
+ */
+export function bunPathForStorage(detected: string): string | undefined {
+  return detected.startsWith("/") ? detected : undefined;
 }
 
 export function enableDevMode(sourcePath: string): void {
@@ -442,7 +462,8 @@ export function enableDevMode(sourcePath: string): void {
   // otherwise strand an unread legacy file the moment this write makes the
   // store non-empty (the same hazard saveRegistry/saveClaims guard against).
   readDevModeConfig();
-  setKvValue(DEV_MODE_NS, DEV_MODE_KEY, { sourcePath, bunPath });
+  const storedBunPath = bunPathForStorage(bunPath);
+  setKvValue(DEV_MODE_NS, DEV_MODE_KEY, storedBunPath ? { sourcePath, bunPath: storedBunPath } : { sourcePath });
 
   // Ensure rtDir()/~/.local/bin exist for the preload script + wrapper writes below.
   mkdirSync(rtDir(), { recursive: true });

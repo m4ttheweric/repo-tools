@@ -467,7 +467,7 @@ rt settings dev-mode prod   # switch back to the installed binary
 - `dev` mode writes a wrapper script at `~/.local/bin/rt` that calls `bun run /path/to/cli.ts "$@"` and hands the tray over to `mattstack-dev.app`
 - `prod` mode installs the compiled binary carried inside `mattstack.app` at that same path and hands the tray back to `mattstack.app`
 - `~/.local/bin` is added to your PATH automatically (in your shell rc file) by the installer and on first `dev-mode dev`
-- The source path is remembered in `~/.mattstack/rt/dev-mode.json`, so there's no re-entry needed when toggling back
+- The source path is remembered in `~/.mattstack/rt/state.db` (a `kv` row, ns `dev-mode`), so there's no re-entry needed when toggling back
 
 `rt version` tells you which is active (and the source path in dev mode);
 `rt --version` is the short form that just prints the version string.
