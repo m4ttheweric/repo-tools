@@ -33,12 +33,12 @@ import { loadSecrets } from "../linear.ts";
 import { parseRemoteUrl, isGitLabRemote, toMRInfo } from "../enrich.ts";
 import { checkAndNotify } from "../notifier.ts";
 import type { HandlerContext } from "./handlers/types.ts";
-import { getDaemonLogger } from "../daemon-logger.ts";
+import { lazyChildLogger } from "../daemon-logger.ts";
 import { getProjectMRs, type ProjectMRs } from "./project-mrs-store.ts";
 import { getDiscussionsFileStore } from "./discussions-file-store.ts";
 import { createCursorStore, type CursorStore } from "../state/index.ts";
 
-const log = (await getDaemonLogger()).childLogger("freshness");
+const log = lazyChildLogger("freshness");
 
 // ─── Env bundle (passed in from daemon.ts to avoid circular imports) ────────
 

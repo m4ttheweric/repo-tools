@@ -68,6 +68,12 @@ const _RT_VERSION = (typeof RT_VERSION !== "undefined" ? RT_VERSION : null) ?? p
 
 const baseDir = import.meta.dir; // resolve module paths relative to cli.ts
 
+// Everything below runs inside an async function rather than at true module
+// scope: a real top-level await here would make cli.ts (and every module
+// that imports it) async-initializing, which blocks `bun build --compile
+// --bytecode`. __main().catch() below must keep the same crash behavior a
+// top-level await would have had — see the call site at the end of the file.
+async function __main() {
 // Invocation logging + crash capture for every CLI entry path, including the
 // ~100 process.exit() sites that never return to dispatch(). The daemon path
 // is excluded — it installs its own pino crash handlers.
@@ -163,3 +169,11 @@ if (args[0] === "--version" || args[0] === "-V") {
     throw err;
   }
 }
+}
+
+// Rethrowing here reproduces exactly what a top-level await throw used to
+// do: Bun formats a rethrow-from-.catch the same as an uncaught top-level
+// exception (full stack, exit code 1) — verified empirically, not assumed.
+__main().catch((err) => {
+  throw err;
+});

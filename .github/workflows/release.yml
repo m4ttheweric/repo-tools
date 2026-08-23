@@ -97,6 +97,15 @@ jobs:
       - name: Compile rt (arm64)
         run: bun build --compile --target=bun-darwin-arm64 ./cli.ts --outfile dist/rt --define RT_VERSION='"${{ steps.meta.outputs.tag }}"'
 
+      # ADVISORY, not blocking: the 86ms threshold has never been calibrated
+      # against macos-15 (this runner) — continue-on-error keeps a bad
+      # calibration from blocking every release. The measured number still
+      # prints below. Drop continue-on-error once a real macos-15 baseline
+      # sets the threshold (see scripts/bench-startup.ts).
+      - name: Startup benchmark
+        run: bun scripts/bench-startup.ts
+        continue-on-error: true
+
       - name: Fetch bundled dependencies
         run: scripts/fetch-deps.sh arm64
 
