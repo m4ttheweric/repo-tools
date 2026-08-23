@@ -80,8 +80,7 @@ import { loadRepoIndex } from "../lib/daemon/repo-index.ts";
 import { loadMachineRepoTracking } from "../lib/repo-tracking.ts";
 import { isDaemonInstalled } from "../lib/daemon-config.ts";
 import { getSetting } from "../lib/settings/resolve.ts";
-
-export const DEFAULT_USER_REPO_URL = "https://github.com/m4ttheweric/mattstack-home";
+import { readIntent as readIntentFromDisk, type SetupIntent } from "../lib/setup/intent.ts";
 
 export interface HomeProbes {
   isGitRepo(dir: string): boolean;
@@ -187,18 +186,36 @@ function describeStep(step: InitStep): string {
   }
 }
 
-/** Thrown by parseUrlArg for a `--url` with no usable value — never silently absorbed into the default or into the next flag. */
+/** Thrown by parseUrlArg for a `--url` with no usable value — never silently absorbed into a default or into the next flag. */
 export class InvalidUrlArgError extends Error {}
 
-function parseUrlArg(args: string[]): string {
+function parseUrlArg(args: string[]): string | null {
   const idx = args.indexOf("--url");
-  if (idx === -1) return DEFAULT_USER_REPO_URL;
+  if (idx === -1) return null;
 
   const value = args[idx + 1];
   if (value === undefined || value.startsWith("--")) {
     throw new InvalidUrlArgError("--url requires a value, e.g. --url https://github.com/org/mattstack-home");
   }
   return value;
+}
+
+/**
+ * The precedence chain for which repo `rt home init` provisions: an explicit
+ * `--url` beats the setup intent's `homeRepo` (set once, ahead of time, by
+ * `create`/`join`), which beats `RT_HOME_URL` (a per-invocation override).
+ * `null` means no rung supplied one — a deliberate, first-class outcome, not
+ * a fallback to any repo this operator never chose.
+ */
+export function resolveHomeUrl(
+  args: string[],
+  seams: { readIntent: () => SetupIntent | null; env: Record<string, string | undefined> },
+): string | null {
+  const fromFlag = parseUrlArg(args);
+  if (fromFlag !== null) return fromFlag;
+  const fromIntent = seams.readIntent()?.homeRepo;
+  if (fromIntent) return fromIntent;
+  return seams.env.RT_HOME_URL ?? null;
 }
 
 /** Thrown by parseProfileArg for a `--profile` with no usable value. */
@@ -511,6 +528,8 @@ export interface HomeInitSeams {
   materializeEnv?: () => Promise<MaterializeEnv>;
   /** Runs each materialize step's subprocess. Defaults to a real `runCapture` wrap; tests inject a fake that never touches a real binary. */
   materializeExec?: MaterializeExecSeam;
+  /** Defaults to a real read of ~/.mattstack/rt/setup-intent.json; tests inject a fixed value instead of writing that file for real. */
+  readIntent?: () => SetupIntent | null;
 }
 
 export async function homeInit(args: string[], _ctx: CommandContext = {}, seams: HomeInitSeams = {}): Promise<void> {
@@ -523,15 +542,28 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
   const isInteractive = seams.isInteractive ?? (() => Boolean(process.stdin.isTTY));
   const materializeExec = seams.materializeExec ?? defaultMaterializeExec();
   const materializeEnv = seams.materializeEnv ?? (() => defaultMaterializeEnv(materializeExec));
+  const readIntent =
+    seams.readIntent ??
+    (() =>
+      readIntentFromDisk({
+        readFile: (path) => {
+          try {
+            return readFileSync(path, "utf8");
+          } catch {
+            return null;
+          }
+        },
+        home: mattstackHome(),
+      }));
 
   const dryRun = args.includes("--dry-run");
   const noMaterialize = args.includes("--no-materialize");
   const home = mattstackHome();
 
-  let url: string;
+  let resolvedUrl: string | null;
   let profileFlag: string | undefined;
   try {
-    url = parseUrlArg(args);
+    resolvedUrl = resolveHomeUrl(args, { readIntent, env: process.env });
     profileFlag = parseProfileArg(args);
   } catch (err) {
     if (err instanceof InvalidUrlArgError || err instanceof InvalidProfileArgError) {
@@ -540,6 +572,11 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
     }
     throw err;
   }
+  // buildInitPlan only reads .url on the branch that pushes cloneUserRepo
+  // (state.userRepoPresent === false); an unresolved url that DOES reach a
+  // real clone attempt fails loudly via the existing step-failure path
+  // instead of silently picking a repo nobody chose.
+  const url = resolvedUrl ?? "";
   const newProfileFlag = args.includes("--new-profile");
 
   let state = gatherHomeState(home, probes, key);

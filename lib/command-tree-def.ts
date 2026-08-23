@@ -834,7 +834,7 @@ export const TREE: Record<string, CommandNode> = {
             name: "Clone URL",
             flag: "--url",
             type: "text",
-            hint: "The user repo to clone (default: https://github.com/m4ttheweric/mattstack-home)",
+            hint: "The user repo to clone — falls back to the setup intent's homeRepo, then RT_HOME_URL, then no clone",
           },
           {
             name: "Profile",
