@@ -7,8 +7,11 @@
 // `bun run <sourcePath>/lib/daemon.ts` so edits take effect on the next
 // daemon restart without a release cycle.
 //
-// Configuration comes from ~/.mattstack/rt/dev-mode.json:
-//   { "sourcePath": "/path/to/repo-tools", "bunPath": "/Users/.../.bun/bin/bun" }
+// Configuration comes from ~/.mattstack/rt/state.db (RT-48/MAT-383 §9): the
+// `kv` table's row where ns='dev-mode', k='config', v = JSON
+// `{ "sourcePath": "/path/to/repo-tools", "bunPath": "/Users/.../.bun/bin/bun" }`.
+// This table/columns/row shape is a cross-language contract — see the note
+// on the `kv` table in lib/state/db.ts before changing either side.
 //
 // EXIT-CODE CONTRACT (spec MAT-383 §3) — the dev agent plist sets
 // KeepAlive = { SuccessfulExit = false }, which makes the exit code the only
@@ -17,7 +20,10 @@
 //   exit 0  — a precondition isn't met (no dev-mode config, source tree moved,
 //             bun not installed). Nothing is wrong with the machine; the dev
 //             flavor simply has nothing to run. launchd leaves it down, and
-//             one log line says why. NOT an error, NOT a crash loop.
+//             one log line says why. NOT an error, NOT a crash loop. A
+//             missing state.db, a missing `kv` table, and a missing/corrupt
+//             row all fold into this same path — none of them is more
+//             "wrong" than a fresh machine with no dev-mode.json ever was.
 //   exit >0 — something genuinely unexpected failed after every precondition
 //             checked out (execv into an existing bun refused). launchd
 //             restarts, which is the right response to a real crash.
@@ -27,6 +33,7 @@
 // TCC inherits from the app bundle because the shim lives inside it.
 
 import Foundation
+import SQLite3
 
 private func log(_ msg: String) {
     FileHandle.standardError.write(Data("rt-daemon-shim: \(msg)\n".utf8))
@@ -46,23 +53,81 @@ func fail(_ msg: String) -> Never {
     exit(70) // EX_SOFTWARE
 }
 
+// sqlite3_bind_text's destructor argument: -1 cast to the function-pointer
+// type it expects, telling sqlite3 to copy the string itself. Not bridged
+// automatically from the C macro of the same name.
+private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+struct DevModeConfig {
+    let sourcePath: String
+    let bunPath: String
+}
+
+/// Reads the ns='dev-mode', k='config' row out of `kv` in `dbPath`.
+///
+/// Every failure mode — the file doesn't exist, it isn't a database, the
+/// `kv` table doesn't exist yet (a state.db older than this migration, or
+/// none at all), the row doesn't exist, or the row's JSON has no
+/// `sourcePath` — returns `nil` and is handled identically by the caller's
+/// `standDown`, matching the missing-dev-mode.json contract this replaces.
+/// `busy_timeout` is set before any query so a concurrent CLI writer
+/// (`rt settings dev-mode on`, which opens the same db to migrate/write)
+/// cannot wedge daemon boot — this shim waits, briefly, rather than either
+/// blocking forever or failing hard on the first SQLITE_BUSY.
+func readDevModeConfig(dbPath: String, home: String) -> DevModeConfig? {
+    guard FileManager.default.fileExists(atPath: dbPath) else { return nil }
+
+    var db: OpaquePointer?
+    // Read-only: this shim only ever reads state.db, never migrates or
+    // creates it — that stays the CLI/daemon's job (lib/state/db.ts).
+    guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else {
+        sqlite3_close(db)
+        return nil
+    }
+    defer { sqlite3_close(db) }
+
+    sqlite3_busy_timeout(db, 5000)
+
+    var stmt: OpaquePointer?
+    let sql = "SELECT v FROM kv WHERE ns = ? AND k = ?;"
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
+        // Most commonly "no such table: kv" on a pre-migration db.
+        sqlite3_finalize(stmt)
+        return nil
+    }
+    defer { sqlite3_finalize(stmt) }
+
+    sqlite3_bind_text(stmt, 1, "dev-mode", -1, SQLITE_TRANSIENT)
+    sqlite3_bind_text(stmt, 2, "config", -1, SQLITE_TRANSIENT)
+
+    guard sqlite3_step(stmt) == SQLITE_ROW, let cText = sqlite3_column_text(stmt, 0) else {
+        return nil // no row for this key — a fresh machine, or dev mode never enabled
+    }
+
+    let json = String(cString: cText)
+    guard
+        let data = json.data(using: .utf8),
+        let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let sourcePath = parsed["sourcePath"] as? String
+    else {
+        return nil
+    }
+
+    let bunPath = (parsed["bunPath"] as? String) ?? "\(home)/.bun/bin/bun"
+    return DevModeConfig(sourcePath: sourcePath, bunPath: bunPath)
+}
+
 guard let home = ProcessInfo.processInfo.environment["HOME"] else {
     standDown("HOME not set")
 }
 
-let configPath = "\(home)/.mattstack/rt/dev-mode.json"
-guard let raw = FileManager.default.contents(atPath: configPath) else {
-    standDown("no dev-mode config at \(configPath)")
+let dbPath = "\(home)/.mattstack/rt/state.db"
+guard let config = readDevModeConfig(dbPath: dbPath, home: home) else {
+    standDown("no dev-mode config in \(dbPath)")
 }
 
-guard
-    let parsed = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
-    let sourcePath = parsed["sourcePath"] as? String
-else {
-    standDown("dev-mode config has no sourcePath: \(configPath)")
-}
-
-let bunPath = (parsed["bunPath"] as? String) ?? "\(home)/.bun/bin/bun"
+let sourcePath = config.sourcePath
+let bunPath = config.bunPath
 let daemonEntry = "\(sourcePath)/lib/daemon.ts"
 
 guard FileManager.default.fileExists(atPath: bunPath) else {
