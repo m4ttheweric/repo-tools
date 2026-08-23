@@ -136,7 +136,7 @@ export const REGISTRY: readonly SettingDef[] = [
     merge: "deep",
     repoScoped: true,
     migrated: true,
-    description: "Branch-naming templates. rt itself has no readers of this key yet — the VS Code extension still reads repos/<repo>/branch-naming.json by repo name, which stays authoritative until the extension ports over. Setting this key stores a value nothing consumes.",
+    description: "Branch-naming templates, repoScoped. Read by the VS Code extension (extensions/vscode/rt-context), which lazily imports the legacy repos/<repo>/branch-naming.json into this key on first read; rt itself has no CLI-side reader.",
   },
   {
     key: "rt.variations",
