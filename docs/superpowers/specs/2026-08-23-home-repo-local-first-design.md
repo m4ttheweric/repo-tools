@@ -99,6 +99,36 @@ Wording matters as much as the state. The row says what is and is not true:
 Not "not configured" (it is configured, deliberately), and not an error (nothing
 is wrong). The tray's health row carries the same state and the same sentence.
 
+### Green means a push succeeded, never that a remote exists
+
+A remote that is set but has never been pushed to — wrong URL, missing auth,
+failing every cycle — is still *"your settings are not backed up anywhere"*. A
+probe that reads git config and reports `ready` on `remote exists` would call
+that safe. It is the same mistake as asserting a bundled binary's signature and
+size instead of running it: the shape is right and the path is dead.
+
+So the probe reports four states, and `ready` requires evidence of a **completed
+push**:
+
+| condition | state |
+|---|---|
+| no remote | warning — the local-only wording above |
+| remote set, never pushed | warning — "remote configured, nothing pushed yet" |
+| remote set, last push failed | warning — names the failure; this is the state a user is least likely to notice and most likely to be hurt by |
+| remote set, push succeeded | `ready` — naming when it last succeeded |
+
+The snapshot daemon is the thing pushing, so it records each push outcome rather
+than the probe inferring one. It already persists to `state.db` under the
+`home-snapshot` namespace (`lib/daemon/home-snapshot.ts:158`), which is where the
+last-push result belongs: outcome and timestamp, written on success and on
+failure.
+
+**The fallback, if recording proves harder than it looks:** never report `ready`
+on remote-configured alone — collapse "configured but unproven" into the same
+warning tier as local-only. Weaker, because a working setup then reads as
+warning forever, but it cannot lie. A probe that overstates safety is worse than
+one that understates it, because the failure is silent and the loss is total.
+
 **Shipping surfaces are `rt verify` and the tray.** The settings page from
 `2026-08-23-settings-console-page-design.md` is specced but not built, and is
 queued behind the console's binary-compile work — so it cannot be where this
@@ -152,6 +182,10 @@ real users. Its expected reason changes; its value does not.
 - **The daemon pushes once a remote is attached**, with no restart.
 - **`rt verify` reports local-only as a warning, not a failure**, and the run
   still passes its critical checks.
+- **Green requires a completed push.** Each of the four probe states renders
+  correctly, and specifically: a repo with a remote that has never pushed, and
+  one whose last push failed, both report a warning rather than `ready`. This is
+  the assertion that stops the probe reporting shape instead of outcome.
 - **`home.init` still applies interactively with no URL** (the kept gate test).
 
 **Test against a HOME with no clone.** This machine cannot detect a regression
