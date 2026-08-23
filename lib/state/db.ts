@@ -124,11 +124,18 @@ CREATE INDEX IF NOT EXISTS idx_notify_queue_event_id ON notify_queue(event_id);
 CREATE TABLE IF NOT EXISTS kv (
   ns         TEXT NOT NULL,
   k          TEXT NOT NULL,
-  v          TEXT NOT NULL,              -- JSON
+  v          TEXT NOT NULL,              -- JSON: for ns='dev-mode', k='config' see the note below
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (ns, k)
 );
 `;
+
+// kv row (ns='dev-mode', k='config') has an OUT-OF-TREE READER:
+// rt-tray/Sources-daemon-shim/main.swift execv's into the dev daemon before
+// bun exists, so it queries this table/columns directly via libsqlite3
+// rather than through this module. The table name, the `ns`/`k`/`v` columns,
+// and this row's `{sourcePath, bunPath}` JSON shape cannot change without
+// updating that Swift file in the same commit.
 
 // Tables (v2): only state whose access pattern needs a point query, a
 // point mutation, or a bounded-retention delete gets its own table — every

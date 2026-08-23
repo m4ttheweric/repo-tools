@@ -7,7 +7,7 @@
  *   settings gitlab token   — set GitLab personal access token
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { homedir } from "os";
 import type { CommandContext } from "../lib/command-tree.ts";
@@ -34,6 +34,12 @@ import {
 import { installShellIntegration } from "../lib/shell-integration.ts";
 import { getSetting } from "../lib/settings/resolve.ts";
 import { setSetting } from "../lib/settings/write.ts";
+import {
+  getKvValue,
+  hasKvValue,
+  importLegacyJsonFile,
+  setKvValue,
+} from "../lib/state/index.ts";
 
 // ─── Linear token ────────────────────────────────────────────────────────────
 
@@ -350,15 +356,49 @@ export async function sendTestPushNotification(): Promise<void> {
 // ─── Dev mode toggle ─────────────────────────────────────────────────────────
 
 const DEV_MODE_WRAPPER = `${Bun.env.HOME}/.local/bin/rt`;
-const DEV_MODE_CONFIG  = join(rtDir(), "dev-mode.json");
 export const DEV_MODE_PRELOAD = join(rtDir(), "dev-restore-cwd.ts");
 
-function readDevModeConfig(): { sourcePath?: string; bunPath?: string } {
-  try {
-    return JSON.parse(readFileSync(DEV_MODE_CONFIG, "utf8"));
-  } catch {
-    return {};
+// kv row (ns='dev-mode', k='config') — see lib/state/db.ts's note on the kv
+// table before touching this shape: rt-tray/Sources-daemon-shim/main.swift
+// queries it directly over libsqlite3, before bun (and this module) exist.
+// The shim ALSO falls back to reading devModeConfigPath() directly (read-
+// only) when this row is absent — this module is the only thing that ever
+// migrates/renames that legacy file, so an un-migrated machine (this row
+// never written) still boots correctly until the next `enableDevMode()`
+// call folds it in. See the shim's own "LEGACY FALLBACK" header comment.
+const DEV_MODE_NS = "dev-mode";
+const DEV_MODE_KEY = "config";
+
+interface DevModeConfig {
+  sourcePath?: string;
+  bunPath?: string;
+}
+
+/** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
+export function devModeConfigPath(): string {
+  return join(rtDir(), "dev-mode.json");
+}
+
+function sanitizeDevModeConfig(raw: unknown): DevModeConfig {
+  if (!raw || typeof raw !== "object") return {};
+  const r = raw as Record<string, unknown>;
+  const out: DevModeConfig = {};
+  if (typeof r.sourcePath === "string") out.sourcePath = r.sourcePath;
+  if (typeof r.bunPath === "string") out.bunPath = r.bunPath;
+  return out;
+}
+
+export function readDevModeConfig(): DevModeConfig {
+  if (hasKvValue(DEV_MODE_NS, DEV_MODE_KEY)) {
+    return sanitizeDevModeConfig(getKvValue<unknown>(DEV_MODE_NS, DEV_MODE_KEY, {}));
   }
+
+  const result = importLegacyJsonFile<DevModeConfig>(devModeConfigPath(), (json) => {
+    const config = sanitizeDevModeConfig(json);
+    setKvValue(DEV_MODE_NS, DEV_MODE_KEY, config);
+    return config;
+  }, { verifyPersisted: () => hasKvValue(DEV_MODE_NS, DEV_MODE_KEY) });
+  return result.imported ? result.value! : {};
 }
 
 function detectSourcePath(): string | null {
@@ -395,17 +435,38 @@ function detectBunPath(): string {
   for (const p of [`${Bun.env.HOME}/.bun/bin/bun`, "/opt/homebrew/bin/bun", "/usr/local/bin/bun"]) {
     if (existsSync(p)) return p;
   }
-  return "bun"; // hope PATH resolves it at exec time
+  return "bun"; // hope PATH resolves it at exec time — fine for the shell wrapper below (inherits PATH), never fine for the stored kv value (see bunPathForStorage)
 }
 
-function enableDevMode(sourcePath: string): void {
+/**
+ * The Swift shim (rt-tray/Sources-daemon-shim/main.swift) never does shell
+ * PATH resolution — it only ever `fileExists(atPath:)`s the exact string —
+ * so a bare `"bun"` stored in the kv row would resolve against launchd's cwd
+ * (`/`) and always stand down. `detectBunPath()`'s last resort ("hope PATH
+ * resolves it") is a valid fallback for the shell wrapper it also feeds
+ * (which does inherit PATH), but must never be persisted for the shim to
+ * read: `undefined` here means "not configured", and the shim's own default
+ * (`~/.bun/bin/bun`) takes over instead — strictly better than a value that
+ * can never resolve.
+ */
+export function bunPathForStorage(detected: string): string | undefined {
+  return detected.startsWith("/") ? detected : undefined;
+}
+
+export function enableDevMode(sourcePath: string): void {
   const bunPath = detectBunPath();
 
-  // Save source + bun paths — also read by rt-daemon-shim inside mattstack.app
-  mkdirSync(rtDir(), { recursive: true });
-  writeFileSync(DEV_MODE_CONFIG, JSON.stringify({ sourcePath, bunPath }, null, 2));
+  // Save source + bun paths — also read by rt-daemon-shim inside mattstack.app.
+  // readDevModeConfig() first folds in (and safely imports/renames) any
+  // legacy dev-mode.json — a save reached without a prior load would
+  // otherwise strand an unread legacy file the moment this write makes the
+  // store non-empty (the same hazard saveRegistry/saveClaims guard against).
+  readDevModeConfig();
+  const storedBunPath = bunPathForStorage(bunPath);
+  setKvValue(DEV_MODE_NS, DEV_MODE_KEY, storedBunPath ? { sourcePath, bunPath: storedBunPath } : { sourcePath });
 
-  // Ensure ~/.local/bin exists
+  // Ensure rtDir()/~/.local/bin exist for the preload script + wrapper writes below.
+  mkdirSync(rtDir(), { recursive: true });
   mkdirSync(`${Bun.env.HOME}/.local/bin`, { recursive: true });
 
   // Write wrapper script. Use the absolute bun path (not bare `bun`) and
