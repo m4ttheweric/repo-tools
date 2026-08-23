@@ -28,7 +28,7 @@ import { toHex, T } from "./tui/palette.ts";
 const IS_DEV_MODE = existsSync(join(homedir(), ".local/bin/rt"));
 import type { RepoIdentity } from "./repo.ts";
 import { MODULE_REGISTRY } from "./module-registry.ts";
-import { BackNavigation } from "./rt-render.tsx";
+import { BackNavigation } from "./back-navigation.ts";
 import type { SelectOption } from "./rt-render.tsx";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
