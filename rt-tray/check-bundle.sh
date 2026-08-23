@@ -353,9 +353,14 @@ if [ -n "$DEV" ]; then
     command -v python3 >/dev/null 2>&1 || { fail "shim tests: python3 not on PATH — cannot run the busy-contention case"; SHIM_DEPS_OK=false; }
 
 if $SHIM_DEPS_OK; then
+    # The shim redirects fd 2 to ~/.mattstack/rt/logs/daemon-stderr.log before
+    # evaluating any precondition, so its stand-down message lands in that file
+    # rather than the caller's captured stderr. Assertions read both.
+    shim_output() { cat "$1/.mattstack/rt/logs/daemon-stderr.log" 2>/dev/null; }
     shim_case() {
         local desc="$1" expected_code="$2" home="$3" out rc
         out=$(env -i HOME="$home" "$SHIM" --daemon 2>&1); rc=$?
+        out="$out$(shim_output "$home")"
         if [ "$rc" -ne "$expected_code" ]; then fail "$desc: expected exit $expected_code, got $rc (${out:-<empty>})"; return; fi
         if [ "$expected_code" -eq 0 ] && [ "$(printf '%s' "$out" | grep -c 'standing down' || true)" -ne 1 ]; then fail "$desc: exit 0 but not exactly one stand-down line"; return; fi
         pass "$desc → exit $rc"
@@ -427,6 +432,7 @@ EOF
     JSON8=$(printf '{"sourcePath":"%s/legacysrc","bunPath":"%s/legacy-fake-bun"}' "$SHIM_TMP" "$SHIM_TMP")
     echo "$JSON8" > "$H8/.mattstack/rt/dev-mode.json"
     OUT8=$(env -i HOME="$H8" "$SHIM" --daemon 2>&1); RC8=$?
+    OUT8="$OUT8$(shim_output "$H8")"
     if [ "$RC8" -eq 0 ] && printf '%s' "$OUT8" | grep -q "legacy-fake-bun invoked with: run $SHIM_TMP/legacysrc/lib/daemon.ts --daemon"; then
         pass "shim: no dev-mode row but legacy dev-mode.json present → falls back and succeeds (no manual step)"
     else
@@ -439,6 +445,7 @@ EOF
     H9="$SHIM_TMP/relative-sourcepath"; mkdir -p "$H9/.mattstack/rt"
     shim_write_kv "$H9/.mattstack/rt/state.db" '{"sourcePath":"relative/src","bunPath":"/bin/echo"}'
     OUT9=$(env -i HOME="$H9" "$SHIM" --daemon 2>&1); RC9=$?
+    OUT9="$OUT9$(shim_output "$H9")"
     [ "$RC9" -eq 0 ] && printf '%s' "$OUT9" | grep -q 'has no absolute sourcePath' && pass "shim: relative sourcePath → exit 0, invalidates the row" || fail "shim: relative sourcePath should stand down naming the reason (rc=$RC9, out=$OUT9)"
 
     # F3: a relative bunPath IS defaulted (falls back to ~/.bun/bin/bun,
@@ -449,6 +456,7 @@ EOF
     JSON10=$(printf '{"sourcePath":"%s/relbunsrc","bunPath":"relative-bun"}' "$SHIM_TMP")
     shim_write_kv "$H10/.mattstack/rt/state.db" "$JSON10"
     OUT10=$(env -i HOME="$H10" "$SHIM" --daemon 2>&1); RC10=$?
+    OUT10="$OUT10$(shim_output "$H10")"
     [ "$RC10" -eq 0 ] && printf '%s' "$OUT10" | grep -qF "bun not found at $H10/.bun/bin/bun" && pass "shim: relative bunPath ignored, default engages" || fail "shim: relative bunPath should fall back to the default bunPath (rc=$RC10, out=$OUT10)"
 
     # F3: state.db is now a shared multi-namespace store (unlike the old
@@ -461,6 +469,7 @@ EOF
     shim_write_kv "$H11/.mattstack/rt/state.db" "$JSON11"
     chmod 664 "$H11/.mattstack/rt/state.db"
     OUT11=$(env -i HOME="$H11" "$SHIM" --daemon 2>&1); RC11=$?
+    OUT11="$OUT11$(shim_output "$H11")"
     [ "$RC11" -eq 0 ] && printf '%s' "$OUT11" | grep -q 'not owned by this user or is group/other-writable' && pass "shim: group-writable state.db is refused, not trusted" || fail "shim: group-writable state.db should be refused by name (rc=$RC11, out=$OUT11)"
 
     # The legacy fallback reaches execv the same way the state.db row does, so
@@ -472,6 +481,7 @@ EOF
     printf '{"sourcePath":"%s/untrustedlegacysrc","bunPath":"/bin/echo"}' "$SHIM_TMP" > "$H11B/.mattstack/rt/dev-mode.json"
     chmod 664 "$H11B/.mattstack/rt/dev-mode.json"
     OUT11B=$(env -i HOME="$H11B" "$SHIM" --daemon 2>&1); RC11B=$?
+    OUT11B="$OUT11B$(shim_output "$H11B")"
     [ "$RC11B" -eq 0 ] && printf '%s' "$OUT11B" | grep -q 'not owned by this user or is group/other-writable' && pass "shim: group-writable legacy dev-mode.json is refused, not trusted" || fail "shim: group-writable legacy dev-mode.json should be refused by name (rc=$RC11B, out=$OUT11B)"
 
     # F4 fix: this case previously used WAL mode, where a reader is NOT
@@ -505,6 +515,7 @@ PYEOF
     sleep 0.3
     BUSY_START=$(date +%s)
     OUT7=$(env -i HOME="$H7" "$SHIM" --daemon 2>&1); RC7=$?
+    OUT7="$OUT7$(shim_output "$H7")"
     BUSY_ELAPSED=$(( $(date +%s) - BUSY_START ))
     wait "$BUSY_BLOCKER_PID" 2>/dev/null
     if [ "$RC7" -eq 0 ] && [ "$BUSY_ELAPSED" -ge 1 ] && [ "$BUSY_ELAPSED" -le 6 ] \
