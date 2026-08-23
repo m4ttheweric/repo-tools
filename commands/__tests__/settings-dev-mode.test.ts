@@ -23,7 +23,20 @@ import { Database } from "bun:sqlite";
 import { dirname } from "node:path";
 import { rtDir } from "../../lib/rt-paths.ts";
 import { closeStateDb, getStateDb, hasKvValue, setKvValue } from "../../lib/state/index.ts";
-import { devModeConfigPath, enableDevMode, readDevModeConfig } from "../settings.ts";
+import { bunPathForStorage, devModeConfigPath, enableDevMode, readDevModeConfig } from "../settings.ts";
+
+describe("bunPathForStorage", () => {
+  test("an absolute path is kept as-is", () => {
+    expect(bunPathForStorage("/Users/matt/.bun/bin/bun")).toBe("/Users/matt/.bun/bin/bun");
+  });
+  test("a bare command name is dropped — the shim never does PATH resolution", () => {
+    expect(bunPathForStorage("bun")).toBeUndefined();
+  });
+  test("a relative path is dropped", () => {
+    expect(bunPathForStorage("./bun")).toBeUndefined();
+    expect(bunPathForStorage("../bun/bun")).toBeUndefined();
+  });
+});
 
 // `mock.module` mutates the live "fs" namespace object IN PLACE, so
 // `fsReal.existsSync` itself becomes the mock the moment it's installed —
@@ -214,7 +227,11 @@ describe("dev-mode config (state.db)", () => {
   test("round-trip via enableDevMode", () => {
     enableDevMode("/tmp/source-repo");
     expect(readDevModeConfig()).toMatchObject({ sourcePath: "/tmp/source-repo" });
-    expect(typeof readDevModeConfig().bunPath).toBe("string");
+    // The shim never does PATH resolution — a stored bunPath must be absolute
+    // or absent (bunPathForStorage), never the bare "bun" detectBunPath()'s
+    // last resort can return.
+    const stored = readDevModeConfig().bunPath;
+    if (stored !== undefined) expect(stored.startsWith("/")).toBe(true);
   });
 
   test("a malformed stored value ({}) reads as {}", () => {

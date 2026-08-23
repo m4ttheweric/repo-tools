@@ -13,25 +13,54 @@
 // This table/columns/row shape is a cross-language contract — see the note
 // on the `kv` table in lib/state/db.ts before changing either side.
 //
+// LEGACY FALLBACK: if state.db has no row yet, this also reads the retired
+// ~/.mattstack/rt/dev-mode.json directly (read-only — this shim never
+// migrates or writes state.db; that stays commands/settings.ts's job). The
+// TS-side importer is reachable only from `rt settings dev-mode`, and this
+// shim runs before bun exists, so it cannot depend on any prior rt
+// invocation having migrated the file first. Without this fallback, an
+// existing dev-mode machine that just picks up a new dev bundle loses its
+// daemon silently on the next restart until someone happens to re-run
+// `rt settings dev-mode`. Remove this fallback once enough time has passed
+// that no machine still has an un-migrated dev-mode.json.
+//
+// TRUST: state.db is a shared multi-namespace store written by many rt code
+// paths (unlike the old single-purpose dev-mode.json), so its row is only
+// trusted when the file is owned by this process's uid and not group/other-
+// writable — see isTrustedStateDb. Both `sourcePath` and any `bunPath` are
+// required to be absolute; a relative `bunPath` is treated as absent (falls
+// back to ~/.bun/bin/bun) and a relative `sourcePath` invalidates the row
+// entirely (no sensible default). Even a READ-ONLY open of a WAL-mode
+// state.db can create/rewrite its `-shm` sidecar, so an unwritable or
+// foreign-owned ~/.mattstack/rt is itself a (silent, stand-down) precondition
+// failure for daemon boot, not just for the CLI/daemon's own writes.
+//
 // EXIT-CODE CONTRACT (spec MAT-383 §3) — the dev agent plist sets
 // KeepAlive = { SuccessfulExit = false }, which makes the exit code the only
 // signal launchd has:
 //
-//   exit 0  — a precondition isn't met (no dev-mode config, source tree moved,
-//             bun not installed). Nothing is wrong with the machine; the dev
-//             flavor simply has nothing to run. launchd leaves it down, and
-//             one log line says why. NOT an error, NOT a crash loop. A
-//             missing state.db, a missing `kv` table, and a missing/corrupt
-//             row all fold into this same path — none of them is more
-//             "wrong" than a fresh machine with no dev-mode.json ever was.
+//   exit 0  — a precondition isn't met (no dev-mode config anywhere, source
+//             tree moved, bun not installed). Nothing is wrong with the
+//             machine; the dev flavor simply has nothing to run. launchd
+//             leaves it down, and one log line says why. NOT an error, NOT
+//             a crash loop. A missing state.db, a missing `kv` table, a
+//             missing/corrupt/untrusted row, and a missing legacy file all
+//             fold into this same path.
 //   exit >0 — something genuinely unexpected failed after every precondition
 //             checked out (execv into an existing bun refused). launchd
 //             restarts, which is the right response to a real crash.
+//
+// LOGGING: fd 2 is redirected to ~/.mattstack/rt/logs/daemon-stderr.log
+// BEFORE any precondition is evaluated (see the freopen call below) — the
+// LaunchAgent plist deliberately omits StandardErrorPath, so without this
+// redirect happening first, every stand-down message below is written to a
+// fd launchd sends to /dev/null and is invisible anywhere.
 //
 // Signed with the same Developer ID as the rest of the dev bundle, keeping the
 // `-i rt` identifier override so launchd's LWCR check accepts it.
 // TCC inherits from the app bundle because the shim lives inside it.
 
+import Darwin
 import Foundation
 import SQLite3
 
@@ -63,26 +92,65 @@ struct DevModeConfig {
     let bunPath: String
 }
 
+/// Shared validation/defaulting both config sources (state.db row, legacy
+/// JSON file) go through. `sourcePath` has no sensible default, so a
+/// relative value invalidates the whole config; `bunPath` does have a
+/// default, so a relative value is simply treated as absent — this shim
+/// never treats a relative path as PATH-relative (`fileExists` resolves it
+/// against launchd's cwd, not a shell PATH), so a non-absolute value could
+/// never have worked anyway.
+func finalizeConfig(sourcePathRaw: String?, bunPathRaw: String?, home: String) -> DevModeConfig? {
+    guard let sourcePathRaw, sourcePathRaw.hasPrefix("/") else { return nil }
+    let bunPath = (bunPathRaw?.hasPrefix("/") == true) ? bunPathRaw! : "\(home)/.bun/bin/bun"
+    return DevModeConfig(sourcePath: sourcePathRaw, bunPath: bunPath)
+}
+
+/// Refuses to trust state.db's contents unless it is owned by this
+/// process's uid and not group/other-writable. The row now lives in a
+/// shared multi-namespace store written by many rt code paths, rather than
+/// a single-purpose file, so this keeps "the shim can only ever run what
+/// this user configured" an enforced property rather than an assumption.
+func isTrustedStateDb(_ path: String) -> Bool {
+    var st = stat()
+    guard stat(path, &st) == 0 else { return false }
+    guard st.st_uid == getuid() else { return false }
+    let writableByGroupOrOther = mode_t(S_IWGRP) | mode_t(S_IWOTH)
+    return (st.st_mode & writableByGroupOrOther) == 0
+}
+
+private func sqliteErrorMessage(_ db: OpaquePointer?) -> String {
+    guard let db, let cMsg = sqlite3_errmsg(db) else { return "unknown error" }
+    return String(cString: cMsg)
+}
+
 /// Reads the ns='dev-mode', k='config' row out of `kv` in `dbPath`.
 ///
-/// Every failure mode — the file doesn't exist, it isn't a database, the
-/// `kv` table doesn't exist yet (a state.db older than this migration, or
-/// none at all), the row doesn't exist, or the row's JSON has no
-/// `sourcePath` — returns `nil` and is handled identically by the caller's
-/// `standDown`, matching the missing-dev-mode.json contract this replaces.
-/// `busy_timeout` is set before any query so a concurrent CLI writer
-/// (`rt settings dev-mode on`, which opens the same db to migrate/write)
-/// cannot wedge daemon boot — this shim waits, briefly, rather than either
-/// blocking forever or failing hard on the first SQLITE_BUSY.
-func readDevModeConfig(dbPath: String, home: String) -> DevModeConfig? {
-    guard FileManager.default.fileExists(atPath: dbPath) else { return nil }
+/// Returns `(config, "")` on success, `(nil, detail)` on any failure —
+/// `detail` is always populated (file missing, untrusted ownership/mode,
+/// open/prepare/step sqlite errors via `sqlite3_errmsg`, no row, or a row
+/// whose JSON doesn't validate) so the caller's `standDown` can say
+/// specifically why, distinguishing "never configured" from a transient
+/// read failure. `busy_timeout` is set before any query so a concurrent CLI
+/// writer (`rt settings dev-mode on`, which opens the same db to
+/// migrate/write) cannot wedge daemon boot — this shim waits, briefly,
+/// rather than either blocking forever or failing hard on the first
+/// SQLITE_BUSY.
+func readDevModeConfigFromStateDb(dbPath: String, home: String) -> (DevModeConfig?, String) {
+    guard FileManager.default.fileExists(atPath: dbPath) else {
+        return (nil, "no state.db at \(dbPath)")
+    }
+    guard isTrustedStateDb(dbPath) else {
+        return (nil, "state.db at \(dbPath) is not owned by this user or is group/other-writable — refusing to trust it")
+    }
 
     var db: OpaquePointer?
     // Read-only: this shim only ever reads state.db, never migrates or
     // creates it — that stays the CLI/daemon's job (lib/state/db.ts).
-    guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let db else {
+    let openResult = sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil)
+    guard openResult == SQLITE_OK, let db else {
+        let msg = sqliteErrorMessage(db)
         sqlite3_close(db)
-        return nil
+        return (nil, "could not open \(dbPath): \(msg)")
     }
     defer { sqlite3_close(db) }
 
@@ -90,40 +158,95 @@ func readDevModeConfig(dbPath: String, home: String) -> DevModeConfig? {
 
     var stmt: OpaquePointer?
     let sql = "SELECT v FROM kv WHERE ns = ? AND k = ?;"
-    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
+    let prepareResult = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+    guard prepareResult == SQLITE_OK, let stmt else {
         // Most commonly "no such table: kv" on a pre-migration db.
+        let msg = sqliteErrorMessage(db)
         sqlite3_finalize(stmt)
-        return nil
+        return (nil, "could not query \(dbPath): \(msg)")
     }
     defer { sqlite3_finalize(stmt) }
 
     sqlite3_bind_text(stmt, 1, "dev-mode", -1, SQLITE_TRANSIENT)
     sqlite3_bind_text(stmt, 2, "config", -1, SQLITE_TRANSIENT)
 
-    guard sqlite3_step(stmt) == SQLITE_ROW, let cText = sqlite3_column_text(stmt, 0) else {
-        return nil // no row for this key — a fresh machine, or dev mode never enabled
+    let stepResult = sqlite3_step(stmt)
+    guard stepResult == SQLITE_ROW else {
+        if stepResult == SQLITE_DONE {
+            return (nil, "no dev-mode row in \(dbPath)") // a fresh machine, or dev mode never enabled
+        }
+        return (nil, "could not read dev-mode row from \(dbPath): \(sqliteErrorMessage(db)) (sqlite code \(stepResult))")
+    }
+    guard let cText = sqlite3_column_text(stmt, 0) else {
+        return (nil, "dev-mode row in \(dbPath) has a NULL value")
     }
 
     let json = String(cString: cText)
     guard
         let data = json.data(using: .utf8),
-        let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-        let sourcePath = parsed["sourcePath"] as? String
+        let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else {
-        return nil
+        return (nil, "dev-mode row in \(dbPath) is not valid JSON")
     }
 
-    let bunPath = (parsed["bunPath"] as? String) ?? "\(home)/.bun/bin/bun"
-    return DevModeConfig(sourcePath: sourcePath, bunPath: bunPath)
+    guard let config = finalizeConfig(sourcePathRaw: parsed["sourcePath"] as? String, bunPathRaw: parsed["bunPath"] as? String, home: home) else {
+        return (nil, "dev-mode row in \(dbPath) has no absolute sourcePath")
+    }
+    return (config, "")
+}
+
+/// See the LEGACY FALLBACK note at the top of this file. Read-only, exactly
+/// like the state.db path — never writes, never renames; migrating the file
+/// out of the way stays commands/settings.ts's job.
+func readDevModeConfigFromLegacyFile(path: String, home: String) -> (DevModeConfig?, String) {
+    guard let raw = FileManager.default.contents(atPath: path) else {
+        return (nil, "no legacy config at \(path)")
+    }
+    guard let parsed = try? JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
+        return (nil, "legacy config at \(path) is not valid JSON")
+    }
+    guard let config = finalizeConfig(sourcePathRaw: parsed["sourcePath"] as? String, bunPathRaw: parsed["bunPath"] as? String, home: home) else {
+        return (nil, "legacy config at \(path) has no absolute sourcePath")
+    }
+    return (config, "")
 }
 
 guard let home = ProcessInfo.processInfo.environment["HOME"] else {
     standDown("HOME not set")
 }
 
+// Redirect fd 2 to ~/.mattstack/rt/logs/daemon-stderr.log so bun's native
+// panics (segfaults, ASan output, runtime asserts) land in a file instead of
+// /dev/null, AND so every stand-down message below is captured too — moved
+// above every precondition check (was after) because the LaunchAgent plist
+// omits StandardErrorPath: under launchd, anything logged before this point
+// is unrecoverable, and anything after it is the only diagnostic a stuck
+// daemon leaves behind. pino captures JS-side stderr separately once bun is
+// running — this only catches what bypasses JS, plus this shim's own
+// messages, which is everything that runs before bun exists.
+let logsDir = "\(home)/.mattstack/rt/logs"
+try? FileManager.default.createDirectory(
+    atPath: logsDir,
+    withIntermediateDirectories: true
+)
+// "a" (append) — preserve prior crash output until the user clears it.
+// freopen returns NULL on failure; we ignore failure so a permissions issue
+// doesn't blackhole the daemon — stderr stays pointed at its inherited fd.
+_ = freopen("\(logsDir)/daemon-stderr.log", "a", stderr)
+
 let dbPath = "\(home)/.mattstack/rt/state.db"
-guard let config = readDevModeConfig(dbPath: dbPath, home: home) else {
-    standDown("no dev-mode config in \(dbPath)")
+let (dbConfig, dbDetail) = readDevModeConfigFromStateDb(dbPath: dbPath, home: home)
+
+let config: DevModeConfig
+if let dbConfig {
+    config = dbConfig
+} else {
+    let legacyPath = "\(home)/.mattstack/rt/dev-mode.json"
+    let (legacyConfig, legacyDetail) = readDevModeConfigFromLegacyFile(legacyPath, home: home)
+    guard let legacyConfig else {
+        standDown("no dev-mode config — state.db: \(dbDetail); legacy file: \(legacyDetail)")
+    }
+    config = legacyConfig
 }
 
 let sourcePath = config.sourcePath
@@ -136,21 +259,6 @@ guard FileManager.default.fileExists(atPath: bunPath) else {
 guard FileManager.default.fileExists(atPath: daemonEntry) else {
     standDown("daemon source not found at \(daemonEntry)")
 }
-
-// Redirect fd 2 to ~/.mattstack/rt/logs/daemon-stderr.log so bun's native panics
-// (segfaults, ASan output, runtime asserts) land in a file instead of /dev/null.
-// pino captures JS-side stderr separately — this only catches what bypasses JS.
-// The shim runs BEFORE bun, so it's the only place we can dup fd 2 before any
-// code that might crash.
-let logsDir = "\(home)/.mattstack/rt/logs"
-try? FileManager.default.createDirectory(
-    atPath: logsDir,
-    withIntermediateDirectories: true
-)
-// "a" (append) — preserve prior crash output until the user clears it.
-// freopen returns NULL on failure; we ignore failure so a permissions issue
-// doesn't blackhole the daemon — stderr stays pointed at its inherited fd.
-_ = freopen("\(logsDir)/daemon-stderr.log", "a", stderr)
 
 // Forward any args launchd passes (e.g. "--daemon")
 let forwarded = Array(CommandLine.arguments.dropFirst())
