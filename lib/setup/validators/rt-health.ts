@@ -18,8 +18,9 @@ import { resolveFzf } from "../../fzf.ts";
 import { legacyDirsPresent, legacyTrayAppPaths, RT_DIR_LABEL } from "../../rt-paths.ts";
 import { detectShellFrom, shellRcPathFor } from "../../shell-integration.ts";
 import { row, type Action, type Row } from "../contract.ts";
+import { hasRemote, isGitRepo, originPushState } from "../home-git.ts";
 import { LOGIN_ITEMS_SETTINGS_ACTION } from "../permissions.ts";
-import type { Probes } from "../probes.ts";
+import { createRealProbes, type Probes } from "../probes.ts";
 
 // ─── rt-context extension check (moved from commands/verify.ts) ──────────────
 
@@ -71,6 +72,7 @@ export interface RtHealthSeams {
 }
 
 const REAL_SEAMS: RtHealthSeams = { resolveFzf };
+const REAL_EXEC: Probes["exec"] = createRealProbes().exec;
 
 // ─── row builders ──────────────────────────────────────────────────────────
 
@@ -78,6 +80,8 @@ const LINK_BUNDLED_RT: Action = { type: "link-bundled", label: "Use mattstack's"
 const LINK_BUNDLED_FZF: Action = { type: "link-bundled", label: "Use mattstack's", tool: "fzf" };
 const REINSTALL_SHIMS_ACTION: Action = { type: "run", label: "Re-install shims", verb: ["intercept", "install"] };
 const INSTALL_EXTENSION_ACTION: Action = { type: "run", label: "Install extension", verb: ["tools", "setup", "extension"] };
+/** No `rt home remote set` verb exists yet (installer-lane scope), so the remedy names the raw git command instead of a `run` action. */
+const HOME_BACKUP_ADD_REMOTE_ACTION: Action = { type: "steps", label: "Show steps…", steps: ["git -C ~/.mattstack/user remote add origin <url>"] };
 const MERGE_LEGACY_STATE_ACTION: Action = {
   type: "steps",
   label: "Merge legacy state",
@@ -336,6 +340,51 @@ async function daemonRow(p: Probes, opts: { ci: boolean }): Promise<Row> {
   return row({ ...base, status: "ready", detail: parts.join(", ") });
 }
 
+/** Wall-clock, not an injected `now()` — this row takes a bare `exec`, not a full Probes, so there is no seam to inject. */
+function relativeWhen(committedAt: Date | null): string {
+  if (!committedAt) return "recently";
+  const mins = Math.floor((Date.now() - committedAt.getTime()) / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+/**
+ * Green means a push actually happened, never merely that a remote is
+ * configured — read from git's own remote-tracking ref, so this is right on
+ * a machine where the daemon has never run and right when the user pushed
+ * by hand. Takes a bare `repoDir` + `exec` (not the full `Probes`) so it can
+ * be pointed at a real git repo directly, independent of the OS `$HOME` a
+ * full `Probes` carries.
+ */
+export async function homeBackupRow(repoDir: string, exec: Probes["exec"] = REAL_EXEC): Promise<Row> {
+  const base = {
+    id: "home.backup",
+    kind: "tool" as const,
+    title: "Home repo backup",
+    why: "Local-only is fully supported — this only confirms whether your settings are actually backed up anywhere, not just committed on this machine.",
+    required: false,
+    optionalNote: "Works without this; local-only just means this machine is the only copy of your settings.",
+    recheck: "on-activate" as const,
+  };
+
+  if (!(await isGitRepo(exec, repoDir))) {
+    return row({ ...base, status: "needs-you", detail: "no home repo found yet — nothing to back up" });
+  }
+
+  if (!(await hasRemote(exec, repoDir))) {
+    return row({ ...base, status: "needs-you", detail: "local only — your settings are versioned on this machine but are not backed up anywhere", action: HOME_BACKUP_ADD_REMOTE_ACTION });
+  }
+
+  const state = await originPushState(exec, repoDir);
+  if (state.kind === "no-ref") return row({ ...base, status: "needs-you", detail: "remote configured, nothing pushed yet" });
+  if (state.kind === "ahead") return row({ ...base, status: "needs-you", detail: `${state.count} commit(s) not pushed` });
+  if (state.kind === "unknown") return row({ ...base, status: "needs-you", detail: "could not determine push status — the rev-list check failed" });
+  return row({ ...base, status: "ready", detail: `last pushed ${relativeWhen(state.committedAt)}` });
+}
+
 // ─── entry point ────────────────────────────────────────────────────────────
 
 export async function rtHealthRows(p: Probes, opts: { ci: boolean }, seams: RtHealthSeams = REAL_SEAMS): Promise<Row[]> {
@@ -350,5 +399,6 @@ export async function rtHealthRows(p: Probes, opts: { ci: boolean }, seams: RtHe
     extensionRow(p),
     shellRow(p),
     await daemonRow(p, opts),
+    await homeBackupRow(join(p.home, ".mattstack", "user"), p.exec),
   ];
 }
