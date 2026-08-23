@@ -9,6 +9,13 @@
  * fast result if that check is skipped.
  *
  * Usage: bun scripts/bench-startup.ts [thresholdMs]
+ *
+ * Default threshold (86ms) is 20% above the ~71.5ms median achieved after
+ * the lazy module registry (task 2) and the remaining eager-TUI cleanup
+ * (task 3) — see .superpowers/sdd/2026-08-22-startup-and-substrate/task-3-report.md.
+ * Wired into the release workflow so a reintroduced eager import (e.g. a
+ * static rt-render/ink import in command-tree.ts or module-registry.ts)
+ * fails the build instead of shipping silently.
  */
 
 import { spawnSync } from "child_process";
@@ -18,7 +25,8 @@ import { resolve } from "path";
 const BINARY = resolve(import.meta.dir, "..", "dist", "rt");
 const WARMUP_RUNS = 2;
 const TIMED_RUNS = 10;
-const threshold = Number(process.argv[2] ?? 120);
+const DEFAULT_THRESHOLD_MS = 86;
+const threshold = Number(process.argv[2] ?? DEFAULT_THRESHOLD_MS);
 
 function runOnce(): number {
   const start = performance.now();

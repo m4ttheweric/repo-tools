@@ -97,6 +97,11 @@ jobs:
       - name: Compile rt (arm64)
         run: bun build --compile --target=bun-darwin-arm64 ./cli.ts --outfile dist/rt --define RT_VERSION='"${{ steps.meta.outputs.tag }}"'
 
+      # Gate: an eager import reintroduced on the dispatch path (command-tree.ts,
+      # module-registry.ts) regresses `rt --version` startup silently otherwise.
+      - name: Startup benchmark
+        run: bun scripts/bench-startup.ts
+
       - name: Fetch bundled dependencies
         run: scripts/fetch-deps.sh arm64
 
