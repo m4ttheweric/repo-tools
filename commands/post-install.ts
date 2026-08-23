@@ -1,7 +1,8 @@
 /**
  * rt --post-install — the headless installer entry. Auto-triggered on the
- * first `rt` invocation without a daemon.json, and re-run by `rt update`
- * from a freshly extracted release.
+ * first `rt` invocation without a daemon.json (cli.ts). `rt update` does not
+ * re-run this: it only asks mattstack.app (Sparkle) to check for an update —
+ * the app owns download/install/restart.
  *
  * Three things happen, in order:
  *   1. A refusal if the running app is at a transient location (a mounted
@@ -28,8 +29,7 @@
 
 import { spawnSync } from "child_process";
 import { existsSync } from "fs";
-import { join, resolve } from "path";
-import { bundleRootFromExec, RT_BUNDLE_PATH } from "../lib/bundle-layout.ts";
+import { bundleRootFromExec } from "../lib/bundle-layout.ts";
 import { legacyTrayAppPaths, legacyUserAppPath, TRAY_APP_BUNDLE, TRAY_APP_NAME } from "../lib/rt-paths.ts";
 import { isTransientAppRoot } from "../lib/setup/steps/settings.ts";
 import { setupApply, type ApplyDeps } from "./setup.ts";
@@ -129,27 +129,4 @@ export async function runPostInstall(args: string[], opts: PostInstallOptions = 
   // returns or throws first) — the daemon this checks is one of apply's own
   // steps, so checking any earlier would verify nothing.
   if (swept) await reportMigrationOutcome();
-}
-
-// ─── rt binary link source resolution (kept for its own test suite) ───────
-
-/**
- * Where `~/.local/bin/rt` should link from once a bundle is installed at
- * `bundleInstallDest` — the `path.link` step's own concern now, this pure
- * decision function is kept here only because
- * `lib/__tests__/post-install-rt-binary-src.test.ts` still exercises it in
- * isolation. Prefers the rt inside the bundle over `execPath` (the
- * transient extracted-tarball binary, gone once install finishes) and falls
- * back to `execPath` only when the bundle carries no `Contents/MacOS/rt` at
- * all but we can tell we're running from an extracted release.
- */
-export function resolveRtBinarySrc(
-  bundleInstallDest: string,
-  execPath: string,
-  exists: (path: string) => boolean = existsSync,
-): { src: string; fallbackWarning: boolean } | null {
-  const bundleBinary = join(bundleInstallDest, RT_BUNDLE_PATH);
-  if (exists(bundleBinary)) return { src: bundleBinary, fallbackWarning: false };
-  if (exists(resolve(execPath, `../${TRAY_APP_BUNDLE}`))) return { src: execPath, fallbackWarning: true };
-  return null;
 }

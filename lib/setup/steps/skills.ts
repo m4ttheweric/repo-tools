@@ -138,20 +138,11 @@ async function cronTriageRun(ctx: ApplyContext): Promise<StepOutcome> {
   const enabled = getSetting<{ enabled?: boolean }>("board.triage").value?.enabled === true;
   if (!enabled) return { state: "skipped", detail: "board.triage not enabled" };
 
-  const board = resolveTool(ctx.p, "board").chosen;
+  const board = resolveTool(ctx.p, "board").exec;
   const resolution = resolveBoardTriage(ctx.p, getKnownRepos(), board);
 
   if (resolution.kind === "missing") {
     return { state: "skipped", detail: "board binary not found — resolve it first (`rt deps resolve board`)" };
-  }
-  if (resolution.kind === "unavailable") {
-    // The compiled board binary has no triage subcommand — wiring this
-    // trigger against it would boot board's HTTP server on every event
-    // instead of running one triage pass.
-    return {
-      state: "skipped",
-      detail: "triage isn't available on this install — the board binary has no triage subcommand yet; register a board checkout instead (`rt repos register <path-to-board>`)",
-    };
   }
 
   installCronTrigger(triageTrigger(resolution.run));

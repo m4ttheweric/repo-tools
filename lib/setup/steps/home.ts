@@ -101,7 +101,7 @@ async function homeRestoreRun(ctx: ApplyContext): Promise<StepOutcome> {
   return {
     state: "failed",
     detail: `the home repo clone or its local age key could not be confirmed at ${join(p.home, ".mattstack", "user")}`,
-    remedy: "Run `rt restore <org>/<repo>` (pastes your age key), then Retry",
+    remedy: "Run `rt setup intent restore <org>/<repo>`, then `rt home key import` to paste your age key, then Retry",
   };
 }
 

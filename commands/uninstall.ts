@@ -76,14 +76,9 @@ export async function runUninstallCommand(args: string[], _ctx: CommandContext =
       return;
     }
 
-    // The app's confirmation sheet IS the consent — it always passes --yes
-    // with --delete-data. Anyone else who can reach this without a human
-    // literally at the prompt (non-TTY, OR --json even on a TTY — a `--json
-    // --delete-data` invocation has nowhere to render a prompt either) gets
-    // an honest exit-2 instead of an implicit go-ahead. `!deps.isTTY() ||
-    // json` — not just `!isTTY()` — is what closes the `--json` on a TTY hole:
-    // without it, that combination reached neither this refusal nor the
-    // prompt below and deleted ~/.mattstack with zero consent of any kind.
+    // `!deps.isTTY() || json`, not just `!isTTY()`: a `--json` invocation has
+    // nowhere to render a confirm prompt even on a TTY, so it must hit this
+    // refusal rather than fall through to the prompt below unconfirmed.
     if (deleteData && !yes && (!deps.isTTY() || json)) {
       throw new UserActionableError("confirm-required", "--delete-data needs --yes when not on a TTY (or when --json is set)");
     }

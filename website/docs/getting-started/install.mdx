@@ -44,4 +44,4 @@ rt verify
 rt update
 ```
 
-The tray app checks for new releases automatically and, when one is available, prompts you to run [`rt update`](/reference/update) from your terminal. It never runs the upgrade itself. `rt update` also re-runs the post-install setup, so the tray app, daemon, and editor extensions are refreshed in a single step.
+[`rt update`](/reference/update) asks mattstack.app (Sparkle) to check for an update — the app owns the whole upgrade lifecycle (signature verification, staged install, restart); `rt` never downloads or installs its own updates. If the app isn't running, `rt update` points you at the latest release instead.

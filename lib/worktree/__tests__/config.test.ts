@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { execSync } from "child_process";
 import { mkdtempSync, realpathSync, writeFileSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
@@ -43,8 +43,15 @@ function writeStore(file: string, obj: unknown): void {
 }
 
 describe("worktree config", () => {
+  const REAL_HOME = process.env.HOME;
+
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtcfg-home-")));
+  });
+
+  afterEach(() => {
+    if (REAL_HOME === undefined) delete process.env.HOME;
+    else process.env.HOME = REAL_HOME;
   });
 
   describe("loadWorktreeRepoConfig", () => {
