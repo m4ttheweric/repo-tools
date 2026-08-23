@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { skillsCheck, skillsCompile } from "../skills.ts";
+import { skillsCheck, skillsCompile, skillsComposition, skillsPacks } from "../skills.ts";
 import { compileSkill } from "../../lib/skills/compile.ts";
 import { invocableRoster, loadAttachment, loadStepSource } from "../../lib/skills/sources.ts";
 import type { PluginRoots } from "../../lib/skills/sources.ts";
@@ -66,6 +66,42 @@ const STUBS_JSONC = `{
 }
 `;
 
+/**
+ * A second, unrelated verb ("helper-verb") sharing watch-ci's engine, kept
+ * out of surface.jsonc's public list so computeInternalRoster tags it
+ * "claimview:helper-verb" -- watch-ci's own description names that token,
+ * which is exactly what lintInternalRoster flags (the only producer of
+ * compileVerb's returned errors[], as opposed to a thrown failure).
+ */
+const STUBS_WITH_INTERNAL_REF = `{
+  "verbs": {
+    "watch-ci": {
+      "engine": "watch-ci",
+      "description": "Use when watching CI; see claimview:helper-verb for internal detail."
+    },
+    "helper-verb": {
+      "engine": "watch-ci",
+      "description": "Internal helper, never surfaced."
+    }
+  }
+}
+`;
+
+/** A second verb pointing at an engine that does not exist under any plugin root -- loadStepSource throws. */
+const STUBS_TWO_VERBS = `{
+  "verbs": {
+    "watch-ci": {
+      "engine": "watch-ci",
+      "description": "Use when watching or triaging CI."
+    },
+    "broken": {
+      "engine": "no-such-engine",
+      "description": "Points at a retired engine."
+    }
+  }
+}
+`;
+
 function manifestJsonc(team: string, withForge: boolean): string {
   const bindings = withForge
     ? `{
@@ -119,6 +155,22 @@ function makeManifest(team: string, withForge = true): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-manifest-")));
   const path = join(dir, "skills.jsonc");
   writeFile(path, manifestJsonc(team, withForge));
+  return path;
+}
+
+/** domain is bound to a name nothing provides -- loadAttachment throws, exercising composition's per-slot degrade. */
+function makeManifestDanglingDomain(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-manifest-")));
+  const path = join(dir, "skills.jsonc");
+  writeFile(path, `{
+  "bindings": {
+    "mattstack:watch-ci": {
+      "domain": "claimview:does-not-exist",
+      "forge": "mattstack:gitlab-forge"
+    }
+  }
+}
+`);
   return path;
 }
 
@@ -512,5 +564,405 @@ describe("skillsCheck", () => {
     expect(staleLine).toBeDefined();
     expect(staleLine).toContain("watch-ci");
     expect(process.exitCode).toBe(1);
+  });
+});
+
+describe("skillsCheck --json", () => {
+  test("emits one row per verb (never compiled)", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("claimview");
+
+    await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.pack).toBe("claimview");
+    expect(parsed.packDir).toBe(packDir);
+    expect(parsed.verbs).toEqual([
+      { name: "watch-ci", status: "never-compiled", staleFiles: [], orphanFiles: [] },
+    ]);
+  });
+
+  test("prints ONLY json -- no human lines on stdout", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("claimview");
+
+    await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    expect(() => JSON.parse(logs.join("\n"))).not.toThrow();
+  });
+
+  test("reports in-sync right after a compile", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("claimview");
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+    logs = [];
+
+    await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.verbs).toEqual([
+      { name: "watch-ci", status: "in-sync", staleFiles: [], orphanFiles: [] },
+    ]);
+  });
+
+  test("separates staleFiles (content drift) from orphanFiles (leftover) instead of merging them", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("claimview");
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci"]);
+    const skillMdPath = join(packDir, "skills", "watch-ci", "SKILL.md");
+    writeFileSync(skillMdPath, readFileSync(skillMdPath, "utf8") + "\nhand-edited drift\n");
+    writeFileSync(join(packDir, "skills", "watch-ci", "leftover.txt"), "stale content\n");
+    logs = [];
+
+    await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.verbs).toEqual([
+      { name: "watch-ci", status: "stale", staleFiles: ["SKILL.md"], orphanFiles: ["leftover.txt"] },
+    ]);
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("internal verb with missing outDir: internal-unchecked, and does not count as stale", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("claimview");
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
+
+    await skillsCheck(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.verbs).toEqual([
+      { name: "watch-ci", status: "internal-unchecked", staleFiles: [], orphanFiles: [] },
+    ]);
+    expect(process.exitCode).not.toBe(1);
+  });
+});
+
+describe("skillsCompile --json", () => {
+  test("compiled verb: files + warnings reported, nothing written to disk", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("claimview");
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci", "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.pack).toBe("claimview");
+    expect(parsed.verbs).toHaveLength(1);
+    const verb = parsed.verbs[0];
+    expect(verb.name).toBe("watch-ci");
+    expect(verb.status).toBe("compiled");
+    expect(verb.errors).toEqual([]);
+    expect(verb.files.map((f: { path: string }) => f.path).sort()).toEqual([
+      "SKILL.md",
+      "parts/domain/ci-config.json",
+      "scripts/ci-watch.sh",
+    ]);
+    expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
+  });
+
+  test("internal (retired) verb: internal-skipped, no compile attempted, no disk write", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("claimview");
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci", "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.verbs).toEqual([
+      { name: "watch-ci", status: "internal-skipped", files: [], warnings: [], errors: [] },
+    ]);
+  });
+
+  test("lint-erroring verb (returned errors[]): errored with the message, other verbs unaffected -- command does not die", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "stubs.jsonc"), STUBS_WITH_INTERNAL_REF);
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
+    const manifestPath = makeManifest("claimview");
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    const watchCi = parsed.verbs.find((v: { name: string }) => v.name === "watch-ci");
+    expect(watchCi.status).toBe("errored");
+    expect(watchCi.files).toEqual([]);
+    expect(watchCi.errors).toHaveLength(1);
+    expect(watchCi.errors[0]).toContain("claimview:helper-verb");
+
+    const helper = parsed.verbs.find((v: { name: string }) => v.name === "helper-verb");
+    expect(helper.status).toBe("internal-skipped");
+  });
+
+  test("unbound required slot (compileVerb throws): errored, not a crash", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("claimview", false);
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci", "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.verbs).toHaveLength(1);
+    expect(parsed.verbs[0].status).toBe("errored");
+    expect(parsed.verbs[0].files).toEqual([]);
+    expect(parsed.verbs[0].errors[0]).toContain("forge");
+  });
+
+  test("prints ONLY json -- no human lines on stdout", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("claimview");
+
+    await skillsCompile(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--verb", "watch-ci", "--json"]);
+
+    expect(() => JSON.parse(logs.join("\n"))).not.toThrow();
+  });
+});
+
+describe("skillsCompile --preview error handling", () => {
+  test("lint-erroring verb: message on stderr, empty stdout, exit code set but no crash", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "stubs.jsonc"), STUBS_WITH_INTERNAL_REF);
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
+    const manifestPath = makeManifest("claimview");
+
+    const errors: string[] = [];
+    const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    });
+    try {
+      await skillsCompile([
+        "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
+        "--verb", "watch-ci", "--preview",
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(logs).toEqual([]);
+    expect(errors.join("\n")).toContain("claimview:helper-verb");
+    expect(process.exitCode).toBe(1);
+  });
+
+  test("unbound required slot: message on stderr, empty stdout, exit code set but no crash", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("claimview", false);
+
+    const errors: string[] = [];
+    const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    });
+    try {
+      await skillsCompile([
+        "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
+        "--verb", "watch-ci", "--preview",
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(logs).toEqual([]);
+    expect(errors.join("\n")).toContain("forge");
+    expect(process.exitCode).toBe(1);
+  });
+});
+
+describe("skillsComposition --json", () => {
+  test("verb, slots, fills, and binders reflect the manifest", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("claimview");
+
+    await skillsComposition(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.pack).toBe("claimview");
+    expect(parsed.packDir).toBe(packDir);
+    expect(parsed.verbs).toHaveLength(1);
+
+    const verb = parsed.verbs[0];
+    expect(verb.name).toBe("watch-ci");
+    expect(verb.engine).toBe("watch-ci");
+    expect(verb.engineRef).toBe("mattstack:watch-ci");
+    expect(verb.plugin).toBe("mattstack");
+    expect(verb.public).toBe(true);
+    expect(verb.sourcePath).toBe(join(mattstackDir, "plugins", "mattstack", "skills", "pipeline", "watch-ci", "SKILL.md"));
+    expect(verb.artifactPath).toBe(join(packDir, "skills", "watch-ci"));
+    expect(verb.engineError).toBeUndefined();
+
+    const domainSlot = verb.slots.find((s: { name: string }) => s.name === "domain");
+    expect(domainSlot.contract).toBe("watch-ci-domain@1");
+    expect(domainSlot.required).toBe(false);
+    expect(domainSlot.boundTo).toBe("claimview:watch-ci-domain");
+    expect(domainSlot.fillSourcePath).toBe(
+      join(mattstackDir, "plugins", "claimview", "attachments", "watch-ci-domain", "SKILL.md"),
+    );
+    expect(domainSlot.fillVersion).toBe("0.3.0");
+    expect(domainSlot.registered).toBe(false);
+    expect(domainSlot.inlined).toBe(true);
+    expect(domainSlot.resolveError).toBeUndefined();
+
+    const forgeSlot = verb.slots.find((s: { name: string }) => s.name === "forge");
+    expect(forgeSlot.required).toBe(true);
+    expect(forgeSlot.boundTo).toBe("mattstack:gitlab-forge");
+    expect(forgeSlot.registered).toBe(true);
+    expect(forgeSlot.inlined).toBe(false);
+
+    expect(parsed.fills).toHaveLength(2);
+    const domainFill = parsed.fills.find((f: { binding: string }) => f.binding === "claimview:watch-ci-domain");
+    expect(domainFill).toEqual({
+      binding: "claimview:watch-ci-domain",
+      provides: "watch-ci-domain@1",
+      sourcePath: join(mattstackDir, "plugins", "claimview", "attachments", "watch-ci-domain", "SKILL.md"),
+      registered: false,
+    });
+    const forgeFill = parsed.fills.find((f: { binding: string }) => f.binding === "mattstack:gitlab-forge");
+    expect(forgeFill.registered).toBe(true);
+    expect(forgeFill.provides).toBe("ci-forge@1");
+
+    const binder = parsed.binders.find((b: { ref: string }) => b.ref === "mattstack:watch-ci");
+    expect(binder.verb).toBe("watch-ci");
+    expect(binder.kind).toBe("verb");
+    expect(binder.slots).toEqual([
+      { name: "domain", boundTo: "claimview:watch-ci-domain" },
+      { name: "forge", boundTo: "mattstack:gitlab-forge" },
+    ]);
+  });
+
+  test("degrades per-slot (dangling binding) and per-verb (broken engine) without blanking the payload", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "stubs.jsonc"), STUBS_TWO_VERBS);
+    const manifestPath = makeManifestDanglingDomain();
+
+    await skillsComposition(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.verbs).toHaveLength(2);
+
+    const watchCi = parsed.verbs.find((v: { name: string }) => v.name === "watch-ci");
+    expect(watchCi.engineRef).toBe("mattstack:watch-ci");
+    expect(watchCi.engineError).toBeUndefined();
+    const domainSlot = watchCi.slots.find((s: { name: string }) => s.name === "domain");
+    expect(domainSlot.boundTo).toBe("claimview:does-not-exist");
+    expect(domainSlot.resolveError).toContain("does-not-exist");
+    expect(domainSlot.fillSourcePath).toBeNull();
+    expect(domainSlot.fillVersion).toBeNull();
+    const forgeSlot = watchCi.slots.find((s: { name: string }) => s.name === "forge");
+    expect(forgeSlot.resolveError).toBeUndefined();
+    expect(forgeSlot.fillSourcePath).not.toBeNull();
+
+    const broken = parsed.verbs.find((v: { name: string }) => v.name === "broken");
+    expect(broken.engineRef).toBeNull();
+    expect(broken.plugin).toBeNull();
+    expect(broken.sourcePath).toBeNull();
+    expect(broken.slots).toEqual([]);
+    expect(broken.engineError).toContain("no-such-engine");
+    expect(broken.artifactPath).toBe(join(packDir, "skills", "broken"));
+
+    // The payload as a whole is still populated -- one broken verb/slot pair
+    // does not blank fills or binders either.
+    expect(parsed.fills.length).toBeGreaterThan(0);
+    expect(parsed.binders.length).toBeGreaterThan(0);
+  });
+
+  test("ignores a stray --verb flag: verbs stays the full roster, never truncated", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "stubs.jsonc"), STUBS_TWO_VERBS);
+    const manifestPath = makeManifest("claimview");
+
+    await skillsComposition([
+      "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
+      "--verb", "watch-ci", "--json",
+    ]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.verbs.map((v: { name: string }) => v.name).sort()).toEqual(["broken", "watch-ci"]);
+  });
+
+  test("binder kind is derived from pipelines/roster membership, not a ref string heuristic", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-manifest-")));
+    const manifestPath = join(manifestDir, "skills.jsonc");
+    writeFile(manifestPath, `{
+  "pipelines": {
+    "feature": ["mattstack:stage-provision"]
+  },
+  "bindings": {
+    "mattstack:watch-ci": {
+      "domain": "claimview:watch-ci-domain",
+      "forge": "mattstack:gitlab-forge"
+    },
+    "mattstack:stage-provision": {
+      "domain": "claimview:watch-ci-domain"
+    },
+    "mattstack:review-core": {
+      "criteria": "claimview:watch-ci-domain"
+    },
+    "mr-board:review": {
+      "skill": "claimview:watch-ci-domain"
+    }
+  }
+}
+`);
+
+    await skillsComposition(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    const byRef = Object.fromEntries(parsed.binders.map((b: { ref: string; kind: string; verb: string | null }) => [b.ref, b]));
+
+    // mattstack:stage-provision has NO roster verb, so this also proves kind
+    // isn't derived by string-matching "stage-" -- only pipelines membership does it.
+    expect(byRef["mattstack:watch-ci"]).toMatchObject({ kind: "verb", verb: "watch-ci" });
+    expect(byRef["mattstack:stage-provision"]).toMatchObject({ kind: "stage", verb: null });
+    expect(byRef["mattstack:review-core"]).toMatchObject({ kind: "skill", verb: null });
+    expect(byRef["mr-board:review"]).toMatchObject({ kind: "external", verb: null });
+  });
+
+  test("rosterless pack: empty verbs, fills, and binders -- not a failure", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-pack-empty-")));
+
+    await skillsComposition(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed).toEqual({ pack: "claimview", packDir, verbs: [], fills: [], binders: [] });
+  });
+
+  test("prints ONLY json -- no human lines on stdout", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("claimview");
+
+    await skillsComposition(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    expect(() => JSON.parse(logs.join("\n"))).not.toThrow();
+  });
+});
+
+describe("skillsPacks --json", () => {
+  test("no packs discovered: empty packs array, not an error", async () => {
+    await skillsPacks(["--settings-path", "/nonexistent/settings.json", "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed).toEqual({ packs: [] });
+  });
+
+  test("prints ONLY json -- no human lines on stdout", async () => {
+    await skillsPacks(["--settings-path", "/nonexistent/settings.json", "--json"]);
+
+    expect(() => JSON.parse(logs.join("\n"))).not.toThrow();
   });
 });

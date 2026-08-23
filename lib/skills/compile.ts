@@ -37,6 +37,17 @@ function registeredNameRe(...sources: Iterable<string>[]): RegExp {
 
 type BoundSlot = { slotName: string; fill: AttachmentSource };
 
+/**
+ * Registered-and-public is the only case that stays a reference instead of
+ * being vendored into the compiled body -- everything else (unregistered
+ * attachments, and registered-but-still-internal fills mid surface
+ * transition) inlines. Exported so callers outside the compiler (composition
+ * reporting) can't drift from this rule by re-deriving it.
+ */
+export function isInlined(fill: AttachmentSource, internalRoster: Set<string>): boolean {
+  return !fill.registered || internalRoster.has(fill.binding);
+}
+
 function rewriteSkillDirRefs(text: string, slotName: string): string {
   return text.split(CLAUDE_SKILL_DIR_TOKEN).join(`${CLAUDE_SKILL_DIR_TOKEN}/parts/${slotName}`);
 }
@@ -134,9 +145,7 @@ function buildBody(
   sections.push(step.body);
 
   for (const { slotName, fill } of boundSlots) {
-    const internal = internalRoster.has(fill.binding);
-
-    if (fill.registered && !internal) {
+    if (!isInlined(fill, internalRoster)) {
       // Registered, surface-public skills stay singly-canonical: reference, never inline.
       sections.push(
         `Slot ${slotName} is bound to \`${fill.binding}\` (${fill.binding}@${fill.version}) -- invoke that skill when this flow needs it.`,
@@ -144,7 +153,7 @@ function buildBody(
       continue;
     }
 
-    if (fill.registered && internal) {
+    if (fill.registered) {
       // Transition window: the file already lives under skills/ but surface.jsonc
       // has not declared it public yet -- inline so the compiled output stays correct.
       notes.push(`note: ${fill.binding} is surface-internal; inlined`);

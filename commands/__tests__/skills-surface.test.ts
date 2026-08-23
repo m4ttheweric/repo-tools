@@ -110,6 +110,38 @@ describe("skillsSurface list", () => {
     expect(errors[0]).toStartWith("rt skills: ");
     expect(errors[0]).toContain("--bogus");
   });
+
+  test("--json: rows match the human listing, with pack and packDir", async () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, { "my-verb": { engine: "my-verb", description: "Do the thing" } });
+    writeFile(join(packDir, "skills", "hand-authored-public", "SKILL.md"), "---\nname: x\n---\nbody\n");
+    writeFile(join(packDir, "attachments", "hand-authored-internal", "SKILL.md"), "---\nname: y\n---\nbody\n");
+
+    await skillsSurface(["list", "--pack-dir", packDir, "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.pack).toBe("claimview");
+    expect(parsed.packDir).toBe(packDir);
+    expect(parsed.rows.map((r: { name: string }) => r.name).sort()).toEqual([
+      "hand-authored-internal",
+      "hand-authored-public",
+      "my-verb",
+    ]);
+    expect(parsed.rows.find((r: { name: string }) => r.name === "my-verb")).toEqual({
+      name: "my-verb",
+      kind: "compiled",
+      status: "public",
+    });
+  });
+
+  test("--json prints ONLY json -- no human lines on stdout", async () => {
+    const packDir = makePackDir();
+    writeStubs(packDir, {});
+
+    await skillsSurface(["list", "--pack-dir", packDir, "--json"]);
+
+    expect(() => JSON.parse(logs.join("\n"))).not.toThrow();
+  });
 });
 
 describe("skillsSurface set", () => {

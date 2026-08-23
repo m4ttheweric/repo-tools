@@ -332,6 +332,18 @@ export function readManifestBindings(manifestPath: string): Record<string, Recor
   return parsed.bindings ?? {};
 }
 
+/**
+ * Separate reader rather than widening readManifestBindings: that function's
+ * flat-Record return is depended on by every existing compile/check call
+ * site, and pipelines is only ever needed alongside it, never instead of it.
+ */
+export function readManifestPipelines(manifestPath: string): Record<string, string[]> {
+  const parsed = JSON.parse(stripJsonc(readFileSync(manifestPath, "utf8"))) as {
+    pipelines?: Record<string, string[]>;
+  };
+  return parsed.pipelines ?? {};
+}
+
 export type SurfaceConfig = { public: string[] };
 
 export function readSurface(packDir: string): SurfaceConfig | null {
