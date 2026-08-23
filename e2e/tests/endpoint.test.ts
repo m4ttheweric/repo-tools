@@ -23,11 +23,27 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { Database } from "bun:sqlite";
 import { execFileSync } from "child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { createTestHome, RT_BINARY } from "../harness.ts";
 import { machineSettingsPath } from "../../lib/rt-paths.ts";
+
+/**
+ * The intercepts cache moved off `intercepts.json` onto state.db's `kv`
+ * table (ns='intercepts', k='rules') — the daemon/CLI subprocess under test
+ * is the sole writer, so this test process only ever reads.
+ */
+function readInterceptRulesRow(testHome: string): { rules: { command: string; repo: string; repoRemote: string | null }[] } | null {
+  const db = new Database(join(testHome, ".mattstack", "rt", "state.db"));
+  try {
+    const row = db.query("SELECT v FROM kv WHERE ns = 'intercepts' AND k = 'rules'").get() as { v: string } | null;
+    return row ? JSON.parse(row.v) : null;
+  } finally {
+    db.close();
+  }
+}
 
 // ─── Shared helpers (mirroring e2e/tests/events.test.ts) ─────────────────────
 
@@ -328,11 +344,11 @@ describe("rt endpoint / intercept (just-works e2e)", () => {
     expect(existsSync(shim)).toBe(true);
     expect(readFileSync(shim, "utf8")).toContain("exec rt intercept run fakestart --");
 
-    const rules = JSON.parse(readFileSync(join(home, ".mattstack", "rt", "intercepts.json"), "utf8"));
-    expect(rules.rules).toHaveLength(1);
-    expect(rules.rules[0].command).toBe("fakestart");
-    expect(rules.rules[0].repo).toBe(REPO_NAME);
-    expect(rules.rules[0].repoRemote).toBe(REMOTE_URL);
+    const rules = readInterceptRulesRow(home);
+    expect(rules?.rules).toHaveLength(1);
+    expect(rules?.rules[0]?.command).toBe("fakestart");
+    expect(rules?.rules[0]?.repo).toBe(REPO_NAME);
+    expect(rules?.rules[0]?.repoRemote).toBe(REMOTE_URL);
   }, 30_000);
 
   test("intercepted run in the primary worktree gets the first pool port and the injected flag", async () => {

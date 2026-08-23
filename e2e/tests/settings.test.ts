@@ -20,19 +20,37 @@
  *   file is newer than the rules cache and `rt intercept install` clears it.
  *
  * The load-bearing step is the intercept one: it is the only place where the
- * whole chain (store file → resolver → identity → intercepts.json → shim →
- * daemon claim → role hook → child env) has to agree, and no unit test can
- * reach it.
+ * whole chain (store file → resolver → identity → intercepts rules cache
+ * (state.db) → shim → daemon claim → role hook → child env) has to agree,
+ * and no unit test can reach it.
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { Database } from "bun:sqlite";
 import { execFileSync } from "child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { createTestHome, RT_BINARY } from "../harness.ts";
 import { machineSettingsPath, teamSettingsPath, userSettingsPath } from "../../lib/rt-paths.ts";
 
 // ─── Shared helpers (mirroring e2e/tests/endpoint.test.ts) ───────────────────
+
+/**
+ * The intercepts cache moved off `intercepts.json` onto state.db's `kv`
+ * table (ns='intercepts', k='rules') — the daemon/CLI subprocess under test
+ * is the sole writer, so this test process only ever reads. `generatedAt` is
+ * the cache's write-time timestamp (ms), the state.db-era equivalent of the
+ * retired file's own mtime.
+ */
+function readInterceptRulesRow(testHome: string): { rules: { repo: string; repoRemote: string | null }[]; generatedAt: number } | null {
+  const db = new Database(join(testHome, ".mattstack", "rt", "state.db"));
+  try {
+    const row = db.query("SELECT v FROM kv WHERE ns = 'intercepts' AND k = 'rules'").get() as { v: string } | null;
+    return row ? JSON.parse(row.v) : null;
+  } finally {
+    db.close();
+  }
+}
 
 async function waitForSocket(sockPath: string, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -410,19 +428,13 @@ describe("rt settings (four stores, one resolver — e2e)", () => {
     ]);
   }, 30_000);
 
-  test("get labels a migrated:false key with the legacy file it still reads", async () => {
-    const out = await rtJson(["settings", "get", "rt.hooks", "--json"]);
-    expect(out.migrated).toBe(false);
-    expect(out.legacyFile).toBe("repos/<repo>/hooks.json");
-  }, 30_000);
-
   test("list reports migrated flags and labels the team store's unregistered key", async () => {
     const out = await rtJson(["settings", "list", "--repo", REPO_NAME, "--json"]);
     const byKey = new Map<string, any>(out.settings.map((s: any) => [s.key, s]));
 
     expect(byKey.get("rt.worktrees").migrated).toBe(true);
     expect(byKey.get("rt.worktrees").value.onDeck).toBe(3);
-    expect(byKey.get("rt.hooks").migrated).toBe(false);
+    expect(byKey.get("rt.hooks").migrated).toBe(true);
 
     const unknown = byKey.get("rt.e2eFutureKey");
     expect(unknown.unregistered).toBe(true);
@@ -499,10 +511,10 @@ describe("rt settings (four stores, one resolver — e2e)", () => {
     expect(existsSync(shim)).toBe(true);
     expect(readFileSync(shim, "utf8")).toContain("exec rt intercept run fakestart --");
 
-    const rules = JSON.parse(readFileSync(join(home, ".mattstack", "rt", "intercepts.json"), "utf8"));
-    expect(rules.rules).toHaveLength(1);
-    expect(rules.rules[0].repo).toBe(REPO_NAME);
-    expect(rules.rules[0].repoRemote).toBe(REMOTE_URL);
+    const rules = readInterceptRulesRow(home);
+    expect(rules?.rules).toHaveLength(1);
+    expect(rules?.rules[0]?.repo).toBe(REPO_NAME);
+    expect(rules?.rules[0]?.repoRemote).toBe(REMOTE_URL);
   }, 40_000);
 
   test("the intercepted command gets the team store's port and the ${team:...} hook's env", async () => {
@@ -523,13 +535,12 @@ describe("rt settings (four stores, one resolver — e2e)", () => {
   // ── 4. staleness ───────────────────────────────────────────────────────────
 
   test("a store file newer than the rules cache reports stale, and install clears it", async () => {
-    const cachePath = join(home, ".mattstack", "rt", "intercepts.json");
     const fresh = await rtJson(["intercept", "status", "--json"]);
     expect(fresh.stale.stale).toBe(false);
 
     // Explicit utimes, never a bare `touch`: same-tick mtimes flake, so the
-    // store is pushed a full 2s past the CACHE's own mtime.
-    const cacheSeconds = statSync(cachePath).mtimeMs / 1000;
+    // store is pushed a full 2s past the CACHE's own generatedAt.
+    const cacheSeconds = readInterceptRulesRow(home)!.generatedAt / 1000;
     utimesSync(teamStore, cacheSeconds + 2, cacheSeconds + 2);
 
     const stale = await rtJson(["intercept", "status", "--json"]);

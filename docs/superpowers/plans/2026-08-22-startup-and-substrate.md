@@ -141,7 +141,7 @@ The installed hook (`commands/hooks.ts:108-136`, wired via `core.hooksPath`) gre
 
 - [ ] **Step 1:** Measure the current hook's cost (`/usr/bin/time` on a git operation in a hooked repo). Record it — this is the number the change is judged against.
 - [ ] **Step 2:** Failing tests: `rt hooks check <name>` exits 0/1 per stored config; the generated hook body execs rt, propagates the exit code, and still runs the on-deck guard and husky delegation.
-- [ ] **Step 3:** Implement — config into the store (barrel API), grep becomes an exec.
+- [ ] **Step 3:** Implement — grep becomes an exec, and the config moves to a **settings key `rt.hooks`**, NOT `state.db`. Hook enablement is human intent, and the three-layer rule in `docs/settings-architecture.md` puts intent in a settings store. `rt.hooks` was deferred earlier only because bash could not run the jsonc resolver; this task removes that constraint by making the hook exec `rt hooks check`. Standard ownership-latch port with NO registry default, repo-scoped. This supersedes RT-53's "hooks.json DEFERRED" line.
 - [ ] **Step 4:** Re-measure git-operation cost. If the delta exceeds the Phase 1 saving, STOP and report: the ruling assumed startup would absorb it.
 - [ ] **Step 5:** Gates, commit.
 

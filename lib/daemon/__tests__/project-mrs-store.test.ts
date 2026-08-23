@@ -11,7 +11,7 @@ import { existsSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createProjectMRs, freshnessOf } from "../project-mrs-store.ts";
-import { openStateDb } from "../../state/index.ts";
+import { openStateDb, SCHEMA_VERSION } from "../../state/index.ts";
 import type { PullRequest } from "@mattstack/glance";
 
 function tmpDb(): Database {
@@ -420,9 +420,9 @@ describe("legacy import (project-mrs.json)", () => {
 
     const db = openStateDb(dbPath, "cli");
 
-    // Migration committed: v1 reached, source renamed, nothing rolled back.
+    // Migration committed: SCHEMA_VERSION reached, source renamed, nothing rolled back.
     const { user_version } = db.query("PRAGMA user_version;").get() as { user_version: number };
-    expect(user_version).toBe(1);
+    expect(user_version).toBe(SCHEMA_VERSION);
     expect(existsSync(legacyPath)).toBe(false);
     expect(existsSync(`${legacyPath}.migrated`)).toBe(true);
 

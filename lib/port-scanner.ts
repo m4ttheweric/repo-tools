@@ -10,10 +10,9 @@
  * would freeze the event loop long enough to time out status polls.
  */
 
-import { existsSync, readFileSync } from "fs";
+import { existsSync } from "fs";
 import { homedir } from "os";
-import { rtDir } from "./rt-paths.ts";
-import { join } from "path";
+import { loadRepoIndex as loadRepoIndexFromStore } from "./repo-index.ts";
 import { runCapture } from "./subprocess.ts";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -55,14 +54,9 @@ export function parseEtimeMs(etime: string): number | null {
   );
 }
 
-const REPOS_JSON_PATH = join(rtDir(), "repos.json");
-
+/** Thin re-export so this module's existing callers keep working unchanged. */
 export function loadRepoIndex(): Record<string, string> {
-  try {
-    return JSON.parse(readFileSync(REPOS_JSON_PATH, "utf8"));
-  } catch {
-    return {};
-  }
+  return loadRepoIndexFromStore();
 }
 
 // ─── Pure parsers ────────────────────────────────────────────────────────────

@@ -145,7 +145,7 @@ export const __test__ = { reportSave };
  */
 async function selectPackageAndScript(
   worktreePath: string,
-  dataDir: string | undefined,
+  repoName: string | undefined,
   contextLabel?: string,
   queue?: QueuedItem[],
 ): Promise<ScriptSelection | typeof QUEUE_LAUNCHED | null> {
@@ -411,8 +411,8 @@ async function selectPackageAndScript(
 
     // Last-run sentinel
     let lastRun: RunHistoryEntry | undefined;
-    if (dataDir) {
-      lastRun = readRunHistory(dataDir).find(
+    if (repoName) {
+      lastRun = readRunHistory(repoName).find(
         (e) => e.cwd === packagePath && scripts.includes(e.script),
       );
     }
@@ -658,7 +658,7 @@ export async function runCommand(
   // follow the labeled `break repoLoop` flow.
   let worktreePath!: string;
   let worktreeBranch!: string;
-  let dataDir: string | undefined;
+  let repoName: string | undefined;
   let packagePath = "";
   let packageLabel = "";
   let selectedScript = "";
@@ -671,7 +671,7 @@ export async function runCommand(
   let useResolved = !!ctx.identity;
   if (useResolved) {
     worktreePath = ctx.identity!.repoRoot;
-    dataDir = ctx.identity!.dataDir;
+    repoName = ctx.identity!.repoName;
 
     // ── Preset direct invoke: `rt run <preset-name>` ──────────────────────
     const presetArg = args.find((a) => !a.startsWith("-") && a !== "again");
@@ -694,7 +694,7 @@ export async function runCommand(
     }
 
     const ctxLabel = `${ctx.identity!.repoName} / ${basename(worktreePath)}`;
-    const sel = await selectPackageAndScript(worktreePath, dataDir, ctxLabel, queue);
+    const sel = await selectPackageAndScript(worktreePath, repoName, ctxLabel, queue);
     if (sel === QUEUE_LAUNCHED) {
       // Queue was built and user chose "Launch all" -- launch and exit
       await launchQueue(queue, worktreePath);
@@ -805,14 +805,14 @@ export async function runCommand(
           worktreeBranch = wt.branch;
         }
 
-        dataDir = selectedRepo.dataDir;
+        repoName = selectedRepo.repoName;
 
         // ── Package + script ────────────────────────────────────────────
         while (true) {
           const wtCtx = worktrees.length > 1
             ? `${selectedRepo.repoName} / ${basename(worktreePath)}`
             : selectedRepo.repoName;
-          const sel = await selectPackageAndScript(worktreePath, dataDir, wtCtx, queue);
+          const sel = await selectPackageAndScript(worktreePath, repoName, wtCtx, queue);
           if (sel === QUEUE_LAUNCHED) {
             await launchQueue(queue, worktreePath);
             return;
@@ -886,7 +886,7 @@ export async function runCommand(
 
   // Record to per-repo run history for rt run again / rt no-arg Recent.
   if (ctx.identity) {
-    appendRunHistory(ctx.identity.dataDir, {
+    appendRunHistory(ctx.identity.repoName, {
       ts: new Date().toISOString(),
       cmd,
       cwd: packagePath,
@@ -906,7 +906,7 @@ export async function runCommand(
 /**
  * rt run again — flat fzf picker of recently-run scripts across all known repos.
  *
- * No repo/worktree resolution step. Reads every known repo's run-history.jsonl,
+ * No repo/worktree resolution step. Reads every known repo's run history,
  * merges newest-first, and shows one flat list. The hint tells you where each
  * entry would run; selecting one executes it at the recorded cwd.
  */
@@ -941,7 +941,7 @@ export async function runAgainCommand(
   const picked = entries.find((t) => taggedId(t) === chosen);
   if (!picked) process.exit(1);
 
-  const { entry, dataDir } = picked;
+  const { entry, repoName } = picked;
 
   if (!existsSync(entry.cwd)) {
     process.stderr.write(
@@ -979,7 +979,7 @@ export async function runAgainCommand(
 
   const exitCode = await proc.exited;
 
-  appendRunHistory(dataDir, {
+  appendRunHistory(repoName, {
     ...entry,
     ts: new Date().toISOString(),
     exit: typeof exitCode === "number" ? exitCode : null,
@@ -991,16 +991,14 @@ export async function runAgainCommand(
 interface TaggedEntry {
   entry: RunHistoryEntry;
   repoName: string;
-  /** dataDir the entry was read from — used for re-logging on replay. */
-  dataDir: string;
 }
 
 function loadAllRunHistory(): { entries: TaggedEntry[]; totalRepos: number } {
   const repos = getKnownRepos();
   const all: TaggedEntry[] = [];
   for (const repo of repos) {
-    for (const entry of readRunHistory(repo.dataDir)) {
-      all.push({ entry, repoName: repo.repoName, dataDir: repo.dataDir });
+    for (const entry of readRunHistory(repo.repoName)) {
+      all.push({ entry, repoName: repo.repoName });
     }
   }
   all.sort((a, b) =>
