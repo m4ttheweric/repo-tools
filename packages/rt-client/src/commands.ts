@@ -74,6 +74,15 @@ export interface RunSummary {
   // had uncommitted changes, so the as-run text may exist in no commit.
   pack_commits: string | null; pack_dirty: number;
   attention: Attention;
+  /** Max over stage, field, and decision timestamps; falls back to
+      `started_at` when the run has produced no events yet. The board orders
+      by silence, so this — not `started_at` — is its sort key. */
+  last_event_at: number;
+  /** Denormalized from the run's `ticket` / `branch` fields so the LIST view
+      can render and search them without a detail fetch per row. Null when
+      the run has not produced that field yet. */
+  ticket: string | null;
+  branch: string | null;
 }
 export interface RunStageRow {
   name: string; status: string; attempt: number;
