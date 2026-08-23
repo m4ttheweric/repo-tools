@@ -118,7 +118,17 @@ local-only would sit unpushed until the next file change happens to produce a
 commit — a janitor tick alone would not push them.
 
 **The rule: arm a push when a remote exists and HEAD is ahead of
-`refs/remotes/origin/<branch>`, not only when this cycle committed.** That covers the attach-a-remote case
+`refs/remotes/origin/<branch>`, not only when this cycle committed.**
+
+**A missing `refs/remotes/origin/<branch>` counts as everything-unpushed and
+arms the push.** That is the state of a freshly attached remote — the exact user
+who just followed the remedy above — and `rev-list refs/remotes/origin/<branch>..HEAD`
+is *fatal* when the ref does not exist, not empty. Only once the ref exists is
+the comparison meaningful. Treating the fatal as "nothing to push" would leave
+the local-only backlog sitting unpushed until some later file change happened to
+commit, reinstating the gap this rule closes.
+
+That covers the attach-a-remote case
 without the alternative's cost — setting `pushPending = true` while remote-less
 would make `status()` and the tray show a permanently pending push that nothing
 is going to perform.
@@ -205,9 +215,9 @@ until their next push.
 | condition | status | row says |
 |---|---|---|
 | no remote | `needs-you` | **local only.** Your settings are versioned on this machine but are not backed up anywhere. Remedy names the `git remote add` command from §2. |
-| remote set, no upstream ref | `needs-you` | remote configured, nothing pushed yet |
+| remote set, no `refs/remotes/origin/<branch>` | `needs-you` | remote configured, nothing pushed yet |
 | remote set, commits unpushed | `needs-you` | names how many commits are unpushed, and the last push failure if one is recorded |
-| remote set, upstream current | `ready` | naming when the last push succeeded, if known |
+| remote set, ref exists, nothing ahead of it | `ready` | naming when the last push succeeded, if known |
 
 Not "not configured" (it is configured, deliberately), and not an error (nothing
 is wrong).
