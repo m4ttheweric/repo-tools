@@ -74,6 +74,17 @@ async function runStep(step: InitStep, exec: ExecSeam, log: StepLog): Promise<vo
       await run(exec, ["git", "clone", step.url, "user"]);
       return;
     }
+    case "initUserRepo": {
+      log("initialising user/ as a local repo (no remote)");
+      await run(exec, ["git", "init", "-b", "main", "user"]);
+      return;
+    }
+    case "commitInitialUserRepo": {
+      log("committing the initial user/ tree");
+      await run(exec, ["git", "-C", "user", "add", "-A"]);
+      await run(exec, ["git", "-C", "user", "commit", "-m", "initial home repo"]);
+      return;
+    }
     case "writeGitignore": {
       await writeIfAbsent(exec, "user/.gitignore", step.content, log, "user/.gitignore");
       return;

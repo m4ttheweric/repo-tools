@@ -173,6 +173,10 @@ function describeStep(step: InitStep): string {
       return `create missing state dirs: ${step.dirs.join(", ")}`;
     case "cloneUserRepo":
       return `clone ${step.url} into user/`;
+    case "initUserRepo":
+      return "git init a local-only user/ repo (no remote)";
+    case "commitInitialUserRepo":
+      return "commit the initial user/ tree";
     case "writeGitignore":
       return "write the user repo's .gitignore";
     case "writeOwners":
@@ -341,7 +345,7 @@ async function ensureHomeAgeKey(
 }
 
 /** buildInitPlan's only checked failure (InvalidMachineKeyError) turned into the CLI's print-and-exit(1) — shared by every one of homeInit's three plan builds so the three don't drift. */
-function planOrExit(state: HomeState, config: { url: string; machineKey: string }): InitPlan {
+function planOrExit(state: HomeState, config: { url: string | null; machineKey: string }): InitPlan {
   try {
     return buildInitPlan(state, config);
   } catch (err) {
@@ -575,11 +579,6 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
     }
     throw err;
   }
-  // buildInitPlan only reads .url on the branch that pushes cloneUserRepo
-  // (state.userRepoPresent === false); an unresolved url that DOES reach a
-  // real clone attempt fails loudly via the existing step-failure path
-  // instead of silently picking a repo nobody chose.
-  const url = resolvedUrl ?? "";
   const newProfileFlag = args.includes("--new-profile");
 
   let state = gatherHomeState(home, probes, key);
@@ -593,7 +592,7 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
   if (!state.machineKeyFilePresent) {
     if (!state.userRepoPresent) {
       if (dryRun) {
-        const previewPlan = planOrExit(state, { url, machineKey: key });
+        const previewPlan = planOrExit(state, { url: resolvedUrl, machineKey: key });
         printPlan(home, previewPlan.steps);
         if (previewPlan.blocked === "skills-symlink-real-file") printSkillsSymlinkBlocked(home);
         console.log(
@@ -624,7 +623,7 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
         skillsSymlinkPresent: true,
         skillsSymlinkBlocked: false,
       };
-      const clonePlan = planOrExit(cloneOnlyState, { url, machineKey: key });
+      const clonePlan = planOrExit(cloneOnlyState, { url: resolvedUrl, machineKey: key });
       printPlan(home, clonePlan.steps);
 
       const cloneResult = await executeInitPlan(clonePlan.steps, exec, (message) => console.log(`  ${message}`));
@@ -698,7 +697,7 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
     process.exit(1);
   }
 
-  const plan = planOrExit(state, { url, machineKey: chosenKey });
+  const plan = planOrExit(state, { url: resolvedUrl, machineKey: chosenKey });
 
   // Env gathering is read-only (which deck, the repo index, rt.repoTracking,
   // the daemon-install marker) — safe to run under --dry-run, so the preview

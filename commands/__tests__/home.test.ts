@@ -408,7 +408,7 @@ describe("homeInit", () => {
     expect(cloneCall?.arg).toEqual(["git", "clone", TEST_URL, "user"]);
   });
 
-  test("no url anywhere: the clone step still runs (a real clone attempt fails loudly on its own), never silently substituting a built-in default repo", async () => {
+  test("no url anywhere: git-inits a local-only repo and commits its initial tree, never silently substituting a built-in default repo", async () => {
     const seam = new FakeSeam();
     await runHomeInit(
       fakeProbes({}),
@@ -424,8 +424,11 @@ describe("homeInit", () => {
       {}, // no RT_HOME_URL — proves the "no url resolved" path, independent of the ambient shell's actual env
     );
 
-    const cloneCall = seam.calls.find((c) => c.kind === "run") as { kind: string; arg: string[] } | undefined;
-    expect(cloneCall?.arg).toEqual(["git", "clone", "", "user"]);
+    const runCalls = seam.calls.filter((c) => c.kind === "run").map((c) => c.arg as string[]);
+    expect(runCalls).toContainEqual(["git", "init", "-b", "main", "user"]);
+    expect(runCalls).toContainEqual(["git", "-C", "user", "add", "-A"]);
+    expect(runCalls).toContainEqual(["git", "-C", "user", "commit", "-m", "initial home repo"]);
+    expect(runCalls.some((arg) => arg[1] === "clone")).toBe(false);
   });
 
   test("--dry-run never touches the age key or runs any step, even on a fresh (not-yet-provisioned) home", async () => {
