@@ -43,6 +43,12 @@ trap cleanup EXIT
 PROD="$SCRIPT_DIR/mattstack.app"
 DEV="$SCRIPT_DIR/mattstack-dev.app"
 INSTALLED_ONLY=false
+# Opt-in, and deliberately not inferred from "is a ticket stapled?": a build
+# that silently lost its notarization would then simply stop being checked,
+# which is the vacuous-pass shape this whole file exists to avoid. CI passes
+# the flag after notarize, so a missing ticket there is a failure, not a skip.
+NOTARIZED=false
+for arg in "$@"; do [ "$arg" = "--notarized" ] && NOTARIZED=true; done
 if [ "${1:-}" = "--app" ]; then
     INSTALLED_ONLY=true
     APP_ARG="${2:?--app requires a bundle path}"
@@ -66,6 +72,33 @@ echo "== Assertions =="
 # ─── build.sh never notarizes, never --deep signs ───────────────────────────
 if grep -qi notarize build.sh; then fail "build.sh contains a notarize step (CI-only: scripts/release/notarize.sh)"; else pass "build.sh has no local notarize step"; fi
 if grep -E 'codesign.*--deep' build.sh | grep -vq '^ *#'; then fail "build.sh signs with --deep (forbidden: corrupts nested Sparkle XPC signatures)"; else pass "build.sh never signs with --deep"; fi
+
+# ─── Notarization + Gatekeeper (opt-in: --notarized) ────────────────────────
+# Asserts what a USER's machine actually enforces, rather than properties of
+# the artifact. A bundle can be correctly signed, pass every check below, and
+# still be refused on first launch because it was never notarized -- and the
+# clean-room never caught that class, because extracting a zip into a scratch
+# HOME is not what a browser download produces.
+check_gatekeeper() { # app label
+    local app="$1" label="$2"
+    if ! $NOTARIZED; then
+        echo "  · $label: notarization not asserted (pass --notarized after notarize.sh)"
+        return
+    fi
+    xcrun stapler validate "$app" >/dev/null 2>&1 \
+        && pass "$label has a stapled notarization ticket" \
+        || fail "$label has no stapled ticket -- Gatekeeper will refuse it on a machine that has not seen it before"
+    # -t exec + --context: assess it the way Launch Services does, not as an
+    # install package. Offline is the point: a stapled ticket must verify with
+    # no network, which is the case a first launch on a locked-down or airplane
+    # machine actually hits.
+    local out
+    out="$(spctl --assess --type exec --context context:primary-signature -vv "$app" 2>&1)"
+    printf '%s' "$out" | grep -q "accepted" \
+        && pass "$label is accepted by Gatekeeper" \
+        || fail "$label is rejected by Gatekeeper: $(printf '%s' "$out" | tr '\n' ' ')"
+}
+check_gatekeeper "$PROD" "$(basename "$PROD")"
 
 # ─── Identity ────────────────────────────────────────────────────────────────
 check_identity() { # app bundle-id exe label devbuild
@@ -286,6 +319,13 @@ check_helpers() { # app
     [ -x "$app/Contents/Helpers/jq" ] && "$app/Contents/Helpers/jq" --version >/dev/null 2>&1 && pass "$exe Helpers/jq runs" || fail "$exe Helpers/jq does not run"
     [ -x "$app/Contents/Helpers/bun" ] && "$app/Contents/Helpers/bun" --version >/dev/null 2>&1 && pass "$exe Helpers/bun runs (jit entitlement sufficient)" || fail "$exe Helpers/bun does not run under its entitlements"
     [ -x "$app/Contents/Helpers/node/bin/node" ] && "$app/Contents/Helpers/node/bin/node" -e 'process.exit(0)' >/dev/null 2>&1 && pass "$exe Helpers/node runs" || fail "$exe Helpers/node does not run under its entitlements"
+    # Only asserted when bundled: gitq is a deps.lock row that can be `pending`,
+    # and a missing-file check here would pass vacuously in that state.
+    if [ -x "$app/Contents/Helpers/gitq" ]; then
+        "$app/Contents/Helpers/gitq" --version >/dev/null 2>&1 \
+            && pass "$exe Helpers/gitq runs" \
+            || fail "$exe Helpers/gitq does not run from inside the bundle"
+    fi
     # Actually RUN it, like every other helper above. Asserting the entry file
     # merely exists is what let a bundled fast-browser that crashes at module
     # load pass every gate: build.sh prunes .claude-plugin/ (a dotted dir the
