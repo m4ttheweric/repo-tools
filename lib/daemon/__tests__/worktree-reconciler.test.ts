@@ -1,10 +1,11 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, spyOn } from "bun:test";
 import { execSync } from "child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 import type { Logger } from "pino";
 import { readJson, writeJson } from "../../json-store.ts";
+import { closeStateDb } from "../../state/index.ts";
 import { machineSettingsPath, rtDir, teamSettingsPath } from "../../rt-paths.ts";
 import { deriveRepoIdentity } from "../../settings/identity.ts";
 import { findByPath, loadRegistry, saveRegistry, type TreeRecord } from "../../worktree/registry.ts";
@@ -107,6 +108,7 @@ describe("reconcileRepoRegistry", () => {
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtrecon-home-")));
+    closeStateDb();
     __test__.createBackoff.clear();
     repo = makeRepo();
     repoName = "acme";
@@ -322,6 +324,7 @@ describe("createWorktreeReconciler", () => {
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtrecon-home-")));
+    closeStateDb();
     __test__.createBackoff.clear();
     repo = makeRepo();
     repoName = "acme";
@@ -477,12 +480,57 @@ describe("createWorktreeReconciler", () => {
     expect(await headSha(repo)).toBe(beforeSha);
     // Replenish skipped: no on-deck tree created despite onDeck:1.
     expect(trees.some((t) => t.kind === "ephemeral")).toBe(false);
-    // Reactor skipped: it never even opened/wrote its state file.
-    expect(existsSync(__test__.reactorStatePath())).toBe(false);
+    // Reactor skipped: it never even opened/wrote its state.
+    expect(__test__.hasReactorState()).toBe(false);
     expect(events.length).toBe(0);
     // Reap skipped: it deletes directories, so it is gated like every other
     // mutating duty.
     expect(existsSync(seededTrash)).toBe(true);
+  });
+});
+
+// ─── Reactor state persistence (RT-50 collapse) ───────────────────────────────
+
+describe("reactor state — state.db persistence", () => {
+  beforeEach(() => {
+    process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtreactstate-home-")));
+    closeStateDb();
+  });
+
+  test("saveReactorState/loadReactorState round-trip through state.db", () => {
+    expect(__test__.hasReactorState()).toBe(false);
+    __test__.saveReactorState({ mrState: { "acme:feat-x": "opened" }, fired: ["disposed:acme:1:merged"] }, fakeLog());
+    expect(__test__.hasReactorState()).toBe(true);
+    expect(__test__.loadReactorState()).toEqual({ mrState: { "acme:feat-x": "opened" }, fired: ["disposed:acme:1:merged"] });
+  });
+
+  test("a pre-existing worktree-reactor-state.json is imported on first read, and renamed to .migrated", () => {
+    mkdirSync(rtDir(), { recursive: true });
+    const legacyState = { mrState: { "acme:x": "opened" }, fired: ["disposed:acme:1:merged"] };
+    writeFileSync(__test__.reactorStatePath(), JSON.stringify(legacyState));
+    expect(existsSync(__test__.reactorStatePath())).toBe(true);
+
+    expect(__test__.loadReactorState()).toEqual(legacyState);
+    expect(existsSync(__test__.reactorStatePath())).toBe(false);
+    expect(existsSync(`${__test__.reactorStatePath()}.migrated`)).toBe(true);
+
+    __test__.saveReactorState({ mrState: { "fresh:y": "merged" }, fired: [] }, fakeLog());
+    expect(__test__.loadReactorState()).toEqual({ mrState: { "fresh:y": "merged" }, fired: [] });
+  });
+
+  test("a corrupt worktree-reactor-state.json warns and is left in place; loadReactorState reads as empty", () => {
+    mkdirSync(rtDir(), { recursive: true });
+    writeFileSync(__test__.reactorStatePath(), "{ not valid json");
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      expect(__test__.loadReactorState()).toEqual({ mrState: {}, fired: [] });
+      expect(existsSync(__test__.reactorStatePath())).toBe(true);
+      expect(existsSync(`${__test__.reactorStatePath()}.migrated`)).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
@@ -501,6 +549,7 @@ describe("merge reactor (detectTransitions)", () => {
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtreact-home-")));
+    closeStateDb();
     __test__.createBackoff.clear();
     repo = makeRepo();
     addBareOrigin(repo);
@@ -539,7 +588,7 @@ describe("merge reactor (detectTransitions)", () => {
   }
 
   function reactorState(): { mrState: Record<string, string | null>; fired: string[] } {
-    return readJson(__test__.reactorStatePath(), { mrState: {}, fired: [] });
+    return __test__.loadReactorState();
   }
 
   function tracked(path: string): TreeRecord | undefined {
@@ -789,10 +838,10 @@ describe("merge reactor (detectTransitions)", () => {
   });
 
   test("another repo's snapshot and fired keys survive a single-repo pass", async () => {
-    writeJson(__test__.reactorStatePath(), {
+    __test__.saveReactorState({
       mrState: { "otherrepo:feat-theirs": "opened" },
       fired: ["disposed:otherrepo:9:merged"],
-    });
+    }, fakeLog());
     ephemeralTree("india", "feat-india");
 
     await detect(mrCache("feat-india", "opened"));
@@ -879,6 +928,7 @@ describe("freshen", () => {
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtfreshen-home-")));
+    closeStateDb();
     __test__.createBackoff.clear();
     repo = makeRepo();
     addBareOrigin(repo);
@@ -1075,6 +1125,7 @@ describe("replenish / shrink", () => {
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtpool-home-")));
+    closeStateDb();
     __test__.createBackoff.clear();
     repo = makeRepo();
     addBareOrigin(repo);
@@ -1222,6 +1273,7 @@ async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<voi
 describe("detached trigger / latency", () => {
   test("kick() returns synchronously, coalesces a second kick during the pass, and creationInFlight tracks it", async () => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtkick-home-")));
+    closeStateDb();
     __test__.createBackoff.clear();
     const repoName = "acme";
     const repo = makeRepo();
@@ -1263,6 +1315,7 @@ describe("reapRepoTrash", () => {
 
   beforeEach(() => {
     process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtrecon-home-")));
+    closeStateDb();
     repo = makeRepo();
   });
 

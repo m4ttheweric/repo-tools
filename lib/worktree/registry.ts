@@ -1,6 +1,6 @@
 import { join } from "path";
-import { readJson, writeJson } from "../json-store.ts";
 import { repoDataDir } from "../rt-paths.ts";
+import { getKvValue, hasKvValue, importLegacyJsonFile, setKvValue } from "../state/index.ts";
 
 export type TreeKind = "main" | "ephemeral" | "unmanaged";
 export type TreeState = "creating" | "on-deck" | "claimed" | "disposable";
@@ -23,18 +23,33 @@ export interface TreeRecord {
   nextRetryAt?: string; // ISO; skip mutating work until then
 }
 
-interface RegistryFile {
-  trees: TreeRecord[];
-}
+const WORKTREE_REGISTRY_NS = "worktree-registry";
 
+/** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
 export function registryPath(repoName: string): string {
   return join(repoDataDir(repoName), "worktrees.json");
 }
 
+/**
+ * A pre-Phase-2 worktrees.json carries fields no git repository has any
+ * other record of — `kind: "ephemeral"`, claim/dispose `state`, `owner`,
+ * `disposal`, `claimedAt`, `readyStamp`, `retryFailures`. Losing it makes
+ * the reconciler re-adopt every tree as `unmanaged`, so imported trees are
+ * returned as-is on first read, before any git-truth reconciliation runs.
+ */
 export function loadRegistry(repoName: string): TreeRecord[] {
-  const path = registryPath(repoName);
-  const data = readJson<Partial<RegistryFile>>(path, { trees: [] });
-  return Array.isArray(data?.trees) ? data.trees : [];
+  if (hasKvValue(WORKTREE_REGISTRY_NS, repoName)) {
+    const raw = getKvValue<unknown>(WORKTREE_REGISTRY_NS, repoName, []);
+    return Array.isArray(raw) ? (raw as TreeRecord[]) : [];
+  }
+
+  const result = importLegacyJsonFile<TreeRecord[]>(registryPath(repoName), (json) => {
+    const parsed = json as { trees?: unknown } | null;
+    const trees = Array.isArray(parsed?.trees) ? (parsed.trees as TreeRecord[]) : [];
+    setKvValue(WORKTREE_REGISTRY_NS, repoName, trees);
+    return trees;
+  }, { verifyPersisted: () => hasKvValue(WORKTREE_REGISTRY_NS, repoName) });
+  return result.imported ? result.value! : [];
 }
 
 /**
@@ -57,8 +72,14 @@ export function registryEpoch(repoName: string): number {
 }
 
 export function saveRegistry(repoName: string, trees: TreeRecord[]): void {
-  const path = registryPath(repoName);
-  writeJson(path, { trees });
+  // Folds in (and safely imports/renames) any legacy worktrees.json first —
+  // every current call site loads before saving, but nothing enforced that,
+  // and a save reached without a prior load would otherwise strand an
+  // unread legacy file the moment this function's own write makes the store
+  // non-empty. loadRegistry() is the no-op it looks like once already
+  // migrated (one indexed point lookup).
+  loadRegistry(repoName);
+  setKvValue(WORKTREE_REGISTRY_NS, repoName, trees);
   epochs.set(repoName, registryEpoch(repoName) + 1);
 }
 

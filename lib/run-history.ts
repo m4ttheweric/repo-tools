@@ -1,102 +1,115 @@
 /**
- * Per-repo history of `rt run` invocations.
- *
- * Storage: <dataDir>/run-history.jsonl — append-only JSONL.
- * Bounded: compacted to the most-recent MAX_ENTRIES when the file grows
- * past COMPACT_THRESHOLD.
+ * Per-repo history of `rt run` invocations — thin wrapper over
+ * lib/state/run-history-store.ts's `run_history` table.
  *
  * Consumed by `rt run again` (the fzf picker of recents) and the `rt`
  * no-arg menu's Recent section.
  */
 
-import { existsSync, appendFileSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join, dirname } from "path";
+import { existsSync, readFileSync, renameSync } from "fs";
+import { join } from "path";
+import { repoDataDir } from "./rt-paths.ts";
+import {
+  appendRunHistoryEntry,
+  hasRunHistory,
+  listRunHistory,
+  type RunHistoryEntry,
+} from "./state/index.ts";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+export type { RunHistoryEntry } from "./state/index.ts";
 
-export interface RunHistoryEntry {
-  /** ISO timestamp of the invocation. */
-  ts: string;
-  /** Resolved command string, e.g. "pnpm run test:user". */
-  cmd: string;
-  /** Absolute directory the command ran in. */
-  cwd: string;
-  /** Worktree root path at invocation time. */
-  worktree: string;
-  /** Branch checked out at invocation time. */
-  branch: string;
-  /** Package label (e.g. "api", "web", ".", "root"). */
-  pkg: string;
-  /** Script name (e.g. "test:user", "dev"). */
-  script: string;
-  /** Exit code. null while running or if not captured. */
-  exit: number | null;
+/** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
+function legacyHistoryPath(repoName: string): string {
+  return join(repoDataDir(repoName), "run-history.jsonl");
 }
-
-// ─── Tuning ──────────────────────────────────────────────────────────────────
-
-const MAX_ENTRIES = 200;
-const COMPACT_THRESHOLD = 300;
-
-// ─── Paths ───────────────────────────────────────────────────────────────────
-
-function historyPath(dataDir: string): string {
-  return join(dataDir, "run-history.jsonl");
-}
-
-// ─── Read ────────────────────────────────────────────────────────────────────
 
 /**
- * Read entries in newest-first order. Malformed lines are skipped silently.
+ * JSONL, not a single JSON document, so there is no one `JSON.parse` whose
+ * failure means "corrupt file" — a malformed LINE is skipped exactly as the
+ * pre-migration reader tolerated it. The file only counts as corrupt (warn,
+ * leave in place) when it has content but NONE of it parsed, or when the
+ * read itself fails.
+ *
+ * Renames only after CONFIRMING the inserts landed (`hasRunHistory`) —
+ * `appendRunHistoryEntry` writes through `persistOrWarn`, which warns and
+ * swallows `SQLITE_BUSY` rather than throwing, so entries.length > 0 does
+ * NOT mean the rows are actually in the table. A file that had genuinely no
+ * entries to begin with (`lines.length === 0`) has nothing to lose either
+ * way and is always safe to rename.
+ *
+ * Called from BOTH read (`readRunHistory`) and write (`appendRunHistory`) —
+ * a bare append reached without a prior read must still absorb any legacy
+ * history first, or it would strand the file the moment the append makes
+ * the table non-empty for this repo.
  */
-export function readRunHistory(dataDir: string, limit = MAX_ENTRIES): RunHistoryEntry[] {
-  const path = historyPath(dataDir);
-  if (!existsSync(path)) return [];
+function importLegacyHistoryFile(repoName: string): void {
+  if (hasRunHistory(repoName)) return;
+
+  const path = legacyHistoryPath(repoName);
+  if (!existsSync(path)) return;
 
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");
-  } catch {
-    return [];
+  } catch (err) {
+    console.warn(`rt: legacy run history ${path} could not be read, leaving in place: ${(err as Error).message}`);
+    return;
   }
 
   const lines = raw.split("\n").filter((l) => l.length > 0);
   const entries: RunHistoryEntry[] = [];
   for (const line of lines) {
     try {
-      entries.push(JSON.parse(line));
+      entries.push(JSON.parse(line) as RunHistoryEntry);
     } catch {
-      // skip malformed line
+      // malformed line — skip, matches the pre-migration reader's tolerance
     }
   }
-
-  return entries.reverse().slice(0, limit);
-}
-
-// ─── Write ───────────────────────────────────────────────────────────────────
-
-/**
- * Append an entry. Compacts the file when it grows past COMPACT_THRESHOLD.
- * Best-effort — silently swallows write errors to avoid breaking the user's
- * actual command invocation.
- */
-export function appendRunHistory(dataDir: string, entry: RunHistoryEntry): void {
-  const path = historyPath(dataDir);
-  try {
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, JSON.stringify(entry) + "\n");
-  } catch {
+  if (lines.length > 0 && entries.length === 0) {
+    console.warn(`rt: legacy run history ${path} had no parseable entries, leaving in place`);
     return;
   }
 
-  // Lazy compaction: rewrite with the tail when we've drifted past the threshold.
+  // Oldest-first insert order (JSONL append order), so autoincrement id
+  // order — and therefore MAX_ENTRIES trimming — matches chronological order.
+  for (const entry of entries) appendRunHistoryEntry(repoName, entry);
+
+  if (entries.length > 0 && !hasRunHistory(repoName)) {
+    console.warn(`rt: imported legacy run history ${path} but the write did not land (db busy?) — leaving it in place to retry on the next read`);
+    return;
+  }
+
   try {
-    const raw = readFileSync(path, "utf8");
-    const lines = raw.split("\n").filter((l) => l.length > 0);
-    if (lines.length > COMPACT_THRESHOLD) {
-      writeFileSync(path, lines.slice(-MAX_ENTRIES).join("\n") + "\n");
-    }
-  } catch {
-    // best effort
+    renameSync(path, `${path}.migrated`);
+  } catch (err) {
+    console.warn(`rt: imported legacy run history ${path} but could not rename it to .migrated: ${(err as Error).message}`);
+  }
+}
+
+/** Newest-first. */
+export function readRunHistory(repoName: string, limit?: number): RunHistoryEntry[] {
+  importLegacyHistoryFile(repoName);
+  return limit === undefined ? listRunHistory(repoName) : listRunHistory(repoName, limit);
+}
+
+/**
+ * Best-effort — a dropped write must never break the user's actual command
+ * invocation. Call sites (commands/run.ts) run this AFTER the user's command
+ * has already completed, so ANY failure here (not just SQLITE_BUSY, which
+ * appendRunHistoryEntry's persistOrWarn already swallows) must be caught,
+ * not rethrown.
+ *
+ * Imports any legacy history FIRST, never just renames it away: a single-
+ * script package's `rt run` (commands/run.ts's early-return path) reaches
+ * this function without ever calling `readRunHistory` first, so this is the
+ * only chance to fold pre-upgrade history in before this call's own append
+ * makes the table non-empty and the read-side import gate stops firing.
+ */
+export function appendRunHistory(repoName: string, entry: RunHistoryEntry): void {
+  try {
+    importLegacyHistoryFile(repoName);
+    appendRunHistoryEntry(repoName, entry);
+  } catch (err) {
+    console.warn(`rt: failed to record run history for ${repoName}: ${(err as Error).message}`);
   }
 }

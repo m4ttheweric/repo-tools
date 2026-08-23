@@ -22,11 +22,9 @@
  * consumers and are deliberately expand:false, repo-context-free.
  */
 
-import { join } from "path";
 import { parse, type ParseError } from "jsonc-parser";
 import { bold, dim, green, red, reset, yellow } from "../lib/tui.ts";
-import { readJson } from "../lib/json-store.ts";
-import { rtDir } from "../lib/rt-paths.ts";
+import { loadRepoIndex } from "../lib/repo-index.ts";
 import { deriveRepoIdentity } from "../lib/settings/identity.ts";
 import {
   explainSetting,
@@ -83,7 +81,7 @@ interface RepoContext {
 }
 
 function repoIndex(): Record<string, string> {
-  return readJson<Record<string, string>>(join(rtDir(), "repos.json"), {});
+  return loadRepoIndex();
 }
 
 /**

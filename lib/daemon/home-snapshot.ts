@@ -21,14 +21,22 @@
  * caller asked for "manual". Running it again gets a fresh manual cycle.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, watch as fsWatch, writeFileSync } from "fs";
-import { randomBytes } from "crypto";
-import { dirname, isAbsolute, join } from "path";
+import { existsSync, watch as fsWatch } from "fs";
+import { isAbsolute, join } from "path";
+import type { Database } from "bun:sqlite";
 import type { Logger } from "pino";
 
 import { mattstackHome, rtDir } from "../rt-paths.ts";
 import { runCapture, type RunResult } from "../subprocess.ts";
 import { getSetting } from "../settings/resolve.ts";
+import {
+  getKvValue,
+  getStateDb,
+  hasKvValue,
+  importLegacyJsonFile,
+  renameLegacyOutOfTheWay,
+  setKvValue,
+} from "../state/index.ts";
 import { readOwners as readOwnersReal, type Owners } from "../home/snapshot-owners.ts";
 import { parsePorcelainZ, planSnapshot } from "./home-snapshot-plan.ts";
 
@@ -103,7 +111,7 @@ export interface HomeSnapshotDeps {
   now?: () => number;
   readSettings?: () => HomeSnapshotSettings;
   readOwners?: (path: string) => Owners;
-  statePath?: string;
+  db?: Database;
 }
 
 const GIT_TIMEOUT_MS = 15_000;
@@ -147,29 +155,54 @@ function redactCredentials(text: string): string {
   return text.replace(/:\/\/[^/@\s]+@/g, "://<redacted>@");
 }
 
-/** A missing file is the normal first-run case (no warn); a present-but-unparseable file is a real loss of the janitor-threshold clock and must be loud, not silently swallowed. */
-function loadState(path: string, log: Logger): Record<string, number> {
-  if (!existsSync(path)) return {};
-  try {
-    const raw = JSON.parse(readFileSync(path, "utf8")) as { firstSeenDirty?: unknown };
-    return raw && typeof raw.firstSeenDirty === "object" && raw.firstSeenDirty !== null
-      ? (raw.firstSeenDirty as Record<string, number>)
-      : {};
-  } catch (err) {
-    log.warn({ err, path }, "home-snapshot: state file unreadable; starting from empty first-seen-dirty state");
-    return {};
-  }
+const HOME_SNAPSHOT_NS = "home-snapshot";
+const HOME_SNAPSHOT_KEY = "state";
+
+interface PersistedHomeSnapshotState {
+  firstSeenDirty?: Record<string, number>;
 }
 
-/** Write-temp-then-rename (mirrors lib/home/snapshot-owners.ts's writeIntoOwnersFile) — a crash mid-write must never leave a truncated/corrupt state.json for the next boot's loadState to choke on. */
-function persistState(path: string, firstSeenDirty: Record<string, number>, log: Logger): void {
-  const tmp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+/** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
+function legacyStatePath(): string {
+  return join(rtDir(), "home-snapshot-state.json");
+}
+
+function firstSeenDirtyOf(raw: PersistedHomeSnapshotState | null | undefined): Record<string, number> {
+  return raw && typeof raw.firstSeenDirty === "object" && raw.firstSeenDirty !== null ? raw.firstSeenDirty : {};
+}
+
+/** A missing row is the normal first-run case (silent); a present-but-unparseable row is a real loss of the janitor-threshold clock and must be loud, per the catch policy. */
+function loadState(db: Database, log: Logger): Record<string, number> {
+  if (hasKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, db)) {
+    return firstSeenDirtyOf(getKvValue<PersistedHomeSnapshotState>(
+      HOME_SNAPSHOT_NS,
+      HOME_SNAPSHOT_KEY,
+      {},
+      db,
+      (err) => log.warn({ err }, "home-snapshot: state row corrupt; starting from empty first-seen-dirty state"),
+    ));
+  }
+
+  const result = importLegacyJsonFile<Record<string, number>>(
+    legacyStatePath(),
+    (json) => {
+      const firstSeenDirty = firstSeenDirtyOf(json as PersistedHomeSnapshotState | null);
+      setKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, { firstSeenDirty }, db);
+      return firstSeenDirty;
+    },
+    {
+      onCorrupt: (err) => log.warn({ err }, "home-snapshot: legacy state file corrupt; starting from empty first-seen-dirty state"),
+      verifyPersisted: () => hasKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, db),
+    },
+  );
+  return result.imported ? result.value! : {};
+}
+
+function persistState(db: Database, firstSeenDirty: Record<string, number>, log: Logger): void {
   try {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(tmp, JSON.stringify({ firstSeenDirty }, null, 2));
-    renameSync(tmp, path);
+    setKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, { firstSeenDirty }, db);
+    renameLegacyOutOfTheWay(legacyStatePath());
   } catch (err) {
-    try { unlinkSync(tmp); } catch { /* tmp was never created, or already gone */ }
     log.warn({ err }, "home-snapshot: failed to persist state");
   }
 }
@@ -188,7 +221,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     now: rawDeps.now ?? (() => Date.now()),
     readSettings: () => clampSettings(rawReadSettings()),
     readOwners: rawDeps.readOwners ?? readOwnersReal,
-    statePath: rawDeps.statePath ?? join(rtDir(), "home-snapshot-state.json"),
+    db: rawDeps.db ?? getStateDb(),
   };
 
   const ownersPath = ownersPathFor(deps.repoDir);
@@ -215,7 +248,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   let lastPushError: string | null = null;
   /** True once `home:push-failed` has been broadcast for the CURRENT unbroken run of push failures — reset to false the moment a push succeeds, so a retry storm broadcasts once, not on every attempt. */
   let pushFailureBroadcast = false;
-  let firstSeenDirty: Record<string, number> = loadState(deps.statePath, deps.log);
+  let firstSeenDirty: Record<string, number> = loadState(deps.db, deps.log);
   let lastLoggedOwnersError: string | null = null;
   /** Shared dedup key for every "deps.readSettings() itself threw" warn (armWatcher's debounce read, status()) — a settings store that broke after boot and stays broken must warn once, not on every fs event or every `rt home snapshot --status` poll. */
   let lastLoggedSettingsError: string | null = null;
@@ -547,7 +580,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
     });
 
     firstSeenDirty = plan.nextFirstSeenDirty;
-    persistState(deps.statePath, firstSeenDirty, deps.log);
+    persistState(deps.db, firstSeenDirty, deps.log);
 
     let committed = false;
     let sha: string | null = null;

@@ -19,6 +19,7 @@ import { join } from "path";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import { RT_DIR } from "../lib/daemon-config.ts";
 import { getRepoIdentity } from "../lib/repo.ts";
+import { loadRepoIndex } from "../lib/repo-index.ts";
 import { daemonQuery, lastQueryTimedOut, type DaemonResponse } from "../lib/daemon-client.ts";
 import { listWorktrees } from "../lib/git-worktrees.ts";
 import {
@@ -501,11 +502,7 @@ function fail(msg: string): never {
 }
 
 function loadRepos(): Record<string, string> {
-  try {
-    return JSON.parse(readFileSync(join(RT_DIR, "repos.json"), "utf8"));
-  } catch {
-    return {};
-  }
+  return loadRepoIndex();
 }
 
 /** Bindings from the daemon's registry-aware worktree:list, when it's up. */
