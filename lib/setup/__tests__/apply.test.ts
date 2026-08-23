@@ -438,28 +438,8 @@ describe("STEPS registry", () => {
     expect(STEPS.map((s) => s.id)).toEqual([...STEP_IDS]);
   });
 
-  // Task 24 replaced the first block of stubs (home.init through repos.clone,
-  // plus intercepts.install) with real bodies — lib/setup/__tests__/steps-a.test.ts
-  // covers those. Task 25 replaced services.register through cron.triage —
-  // lib/setup/__tests__/steps-b.test.ts covers those. Everything after
-  // cron.triage is still a stub for Task 26.
-  const STILL_STUBBED: StepId[] = [
-    "plugins.install",
-    "fastbrowser.setup",
-    "herdr.integration",
-    "extension.install",
-    "services.start",
-    "snapshot.push",
-    "verify",
-  ];
-
-  test("every remaining stub applies unconditionally and reports skipped/not implemented", async () => {
-    const { ctx } = testCtx();
-    for (const step of STEPS.filter((s) => STILL_STUBBED.includes(s.id))) {
-      expect(step.applies(ctx)).toBe(true);
-      expect(await step.run(ctx)).toEqual({ state: "skipped", detail: "not implemented" });
-    }
-  });
+  // Every step body is real now — steps-a/b/c.test.ts cover home.init
+  // through cron.triage and plugins.install through verify respectively.
 
   test("services.register is kind app, proxy.install is kind privileged, everything else is kind rt", () => {
     for (const step of STEPS) {

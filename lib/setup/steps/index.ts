@@ -1,13 +1,10 @@
 /**
  * The ordered step registry `rt setup apply` runs — one `StepDef` per
- * `STEP_IDS` entry, in the contract's pinned order. Tasks 24/25 replace the
- * first two blocks of stubs (home through repos.clone, services.register
- * through cron.triage) with real bodies; the rest stay stubs for Task 26 to
- * replace in place, never reordering or adding/removing ids.
+ * `STEP_IDS` entry, in the contract's pinned order.
  */
 
 import type { ApplyContext, StepDef, StepOutcome } from "../apply.ts";
-import { STEP_IDS, type StepId, type StepKind } from "../contract.ts";
+import { STEP_IDS } from "../contract.ts";
 import { installShims } from "../../endpoint/shim.ts";
 import { homeInitStep, homeRestoreStep } from "./home.ts";
 import { teamCreateStep, teamJoinStep } from "./team.ts";
@@ -18,19 +15,10 @@ import { reposCloneStep } from "./repos.ts";
 import { servicesRegisterStep, proxyInstallStep } from "./services.ts";
 import { deckManagedStep } from "./deck.ts";
 import { skillsMaterializeStep, boardKeysStep, cronTriageStep } from "./skills.ts";
+import { pluginsInstallStep } from "./plugins.ts";
+import { fastbrowserSetupStep, herdrIntegrationStep, extensionInstallStep, servicesStartStep, snapshotPushStep } from "./tools.ts";
+import { verifyStep } from "./verify.ts";
 import { toFailedOutcome } from "./step-utils.ts";
-
-function stubStep(id: StepId, title: string, kind: StepKind): StepDef {
-  return {
-    id,
-    title,
-    kind,
-    applies: () => true,
-    async run(): Promise<StepOutcome> {
-      return { state: "skipped", detail: "not implemented" };
-    },
-  };
-}
 
 async function interceptsInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
   try {
@@ -73,13 +61,13 @@ export const STEPS: StepDef[] = [
   skillsMaterializeStep,
   boardKeysStep,
   cronTriageStep,
-  stubStep("plugins.install", "Install plugins", "rt"),
-  stubStep("fastbrowser.setup", "Set up Fast Browser", "rt"),
-  stubStep("herdr.integration", "Set up herdr integration", "rt"),
-  stubStep("extension.install", "Install the browser extension", "rt"),
-  stubStep("services.start", "Start services", "rt"),
-  stubStep("snapshot.push", "Push your first snapshot", "rt"),
-  stubStep("verify", "Verify your setup", "rt"),
+  pluginsInstallStep,
+  fastbrowserSetupStep,
+  herdrIntegrationStep,
+  extensionInstallStep,
+  servicesStartStep,
+  snapshotPushStep,
+  verifyStep,
 ];
 
 if (STEPS.length !== STEP_IDS.length) {
