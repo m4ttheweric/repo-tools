@@ -86,8 +86,14 @@ unowned plus ONE warning that never echoes values. Once the store owns the key
 it wins (per-field for field-bag objects, wholesale for maps — document which),
 and store values go through the SAME validators as file values. Writers hitting
 ENOENT on the legacy file write the store instead (file-authority is
-meaningless with no file). The cutover imports live values, verifies, then
-deletes the file. Reference implementations: `mr-board/src/config.ts`,
+meaningless with no file). The cutover imports live values, VERIFIES the write
+actually persisted, then renames the legacy file to `<name>.migrated` — never
+unlinks it, so an interrupted run loses nothing and a corrupt file (left in
+place, unrenamed) stays recoverable by hand. Verifying is not optional:
+`persistOrWarn` swallows `SQLITE_BUSY`, so a write that returned is not
+necessarily a write that landed. Reference implementations:
+`lib/state/legacy-import.ts`, `lib/run-history.ts`,
+`extensions/vscode/rt-context/src/branchNaming.ts`, `mr-board/src/config.ts`,
 `gitq/src/core/{worktrees,forges}.ts`, `local-apps/src/api/platform-settings.ts`.
 
 **Invariant: keys behind an ownership latch must carry NO registry `default`** —
