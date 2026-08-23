@@ -24,6 +24,11 @@
  *
  * Later RT-48 tasks add their store modules to the side-effect import list
  * and re-export block below.
+ *
+ * kv-blob.ts, endpoint-claims-store.ts, and run-history-store.ts hold only
+ * regenerable cache data (a repo self-repopulates it), so none of them
+ * register a LEGACY_IMPORTS entry and none needs a side-effect import below
+ * — a plain re-export is enough since there is no one-shot importer to race.
  */
 
 // Side-effect imports: these load each store module (and therefore register
@@ -64,3 +69,17 @@ export {
 } from "./notifier-store.ts";
 
 export { createCursorStore, type CursorStore } from "./cursors-store.ts";
+
+export { getKvValue, setKvValue, deleteKvValue, listKvValues } from "./kv-blob.ts";
+
+export {
+  listEndpointClaims,
+  replaceEndpointClaims,
+  type EndpointClaim,
+} from "./endpoint-claims-store.ts";
+
+export {
+  appendRunHistoryEntry,
+  listRunHistory,
+  type RunHistoryEntry,
+} from "./run-history-store.ts";

@@ -8,7 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
@@ -52,22 +52,26 @@ function tableNames(db: Database): string[] {
   return rows.map(r => r.name).sort();
 }
 
+const V2_TABLE_NAMES = [
+  "branch_cache",
+  "discussions",
+  "endpoint_claims",
+  "kv",
+  "notify_queue",
+  "project_mr_demands",
+  "project_mrs",
+  "project_mrs_meta",
+  "run_history",
+  "sqlite_sequence", // AUTOINCREMENT bookkeeping table (notify_queue.id, run_history.id)
+];
+
 describe("openStateDb — fresh open", () => {
-  test("creates the v1 schema and sets user_version = 1", () => {
+  test("a fresh database reaches v2 directly, gaining every v1 and v2 table", () => {
     const dbPath = join(dir, "state.db");
     const db = openStateDb(dbPath, "cli");
+    expect(SCHEMA_VERSION).toBe(2);
     expect(userVersion(db)).toBe(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(1);
-    expect(tableNames(db)).toEqual([
-      "branch_cache",
-      "discussions",
-      "kv",
-      "notify_queue",
-      "project_mr_demands",
-      "project_mrs",
-      "project_mrs_meta",
-      "sqlite_sequence", // AUTOINCREMENT bookkeeping table (notify_queue.id)
-    ]);
+    expect(tableNames(db)).toEqual(V2_TABLE_NAMES);
     db.close();
   });
 
@@ -75,6 +79,72 @@ describe("openStateDb — fresh open", () => {
     const dbPath = join(dir, "state.db");
     const db = openStateDb(dbPath, "cli");
     expect(existsSync(dbPath)).toBe(true);
+    db.close();
+  });
+});
+
+describe("openStateDb — v1 database migrates to v2", () => {
+  /** Hand-built v1-shaped fixture — the exact schema/version a pre-Task-4 machine has on disk, not produced via openStateDb (which would already build v2). */
+  function buildV1Fixture(path: string): Database {
+    const db = new Database(path, { create: true });
+    db.exec(`
+      CREATE TABLE branch_cache (
+        branch TEXT PRIMARY KEY, repo TEXT, ticket TEXT,
+        linear_id TEXT NOT NULL DEFAULT '', mr TEXT, fetched_at INTEGER NOT NULL
+      );
+      CREATE TABLE discussions (
+        repo TEXT NOT NULL, iid INTEGER NOT NULL, discussions TEXT NOT NULL,
+        fetched_at INTEGER NOT NULL, PRIMARY KEY (repo, iid)
+      );
+      CREATE TABLE notify_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL, event TEXT NOT NULL
+      );
+      CREATE TABLE project_mrs (
+        repo TEXT NOT NULL, iid INTEGER NOT NULL, pr TEXT NOT NULL,
+        fetched_at INTEGER NOT NULL, PRIMARY KEY (repo, iid)
+      );
+      CREATE TABLE project_mrs_meta (
+        repo TEXT PRIMARY KEY, list_synced_at INTEGER NOT NULL DEFAULT 0,
+        delta_synced_at INTEGER, source TEXT NOT NULL DEFAULT 'poll',
+        project_path TEXT NOT NULL DEFAULT '', scope TEXT
+      );
+      CREATE TABLE project_mr_demands (
+        repo TEXT NOT NULL, client TEXT NOT NULL, authors TEXT NOT NULL,
+        declared_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, PRIMARY KEY (repo, client)
+      );
+      CREATE TABLE kv (
+        ns TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL,
+        updated_at INTEGER NOT NULL, PRIMARY KEY (ns, k)
+      );
+    `);
+    db.query("INSERT INTO branch_cache (branch, repo, ticket, linear_id, mr, fetched_at) VALUES (?, ?, ?, ?, ?, ?);")
+      .run("main", "repo-a", null, "RT-1", null, 1000);
+    db.query("INSERT INTO kv (ns, k, v, updated_at) VALUES (?, ?, ?, ?);")
+      .run("events-cursor", "repo-a", JSON.stringify({ since: null, lastEventId: 5 }), 999);
+    db.exec("PRAGMA user_version = 1;");
+    db.close();
+    return db;
+  }
+
+  test("existing v1 rows survive, and v2's new tables appear alongside them", () => {
+    const dbPath = join(dir, "state.db");
+    buildV1Fixture(dbPath);
+
+    const db = openStateDb(dbPath, "cli");
+    expect(userVersion(db)).toBe(2);
+    expect(tableNames(db)).toEqual(V2_TABLE_NAMES);
+
+    const branchRow = db.query("SELECT branch, repo, linear_id, fetched_at FROM branch_cache WHERE branch = ?;").get("main");
+    expect(branchRow).toEqual({ branch: "main", repo: "repo-a", linear_id: "RT-1", fetched_at: 1000 });
+
+    const kvRow = db.query("SELECT v FROM kv WHERE ns = ? AND k = ?;").get("events-cursor", "repo-a") as { v: string };
+    expect(JSON.parse(kvRow.v)).toEqual({ since: null, lastEventId: 5 });
+
+    const { n: claimCount } = db.query("SELECT COUNT(*) as n FROM endpoint_claims;").get() as { n: number };
+    const { n: historyCount } = db.query("SELECT COUNT(*) as n FROM run_history;").get() as { n: number };
+    expect(claimCount).toBe(0);
+    expect(historyCount).toBe(0);
+
     db.close();
   });
 });
@@ -92,12 +162,12 @@ describe("openStateDb — reopen is a no-op", () => {
     });
 
     const db1 = openStateDb(dbPath, "cli");
-    expect(userVersion(db1)).toBe(1);
+    expect(userVersion(db1)).toBe(SCHEMA_VERSION);
     expect(importCount).toBe(1);
     db1.close();
 
     const db2 = openStateDb(dbPath, "cli");
-    expect(userVersion(db2)).toBe(1);
+    expect(userVersion(db2)).toBe(SCHEMA_VERSION);
     expect(importCount).toBe(1); // not re-imported
     db2.close();
   });
@@ -233,12 +303,12 @@ describe("startup busy budget — open+migrate blocks, it does not throw", () =>
 });
 
 describe("corruption escape", () => {
-  test("a file that cannot be opened as sqlite is quarantined, then a fresh v1 db is created", () => {
+  test("a file that cannot be opened as sqlite is quarantined, then a fresh db is created at SCHEMA_VERSION", () => {
     const dbPath = join(dir, "state.db");
     writeFileSync(dbPath, "definitely not a sqlite database, just bytes");
 
     const db = openStateDb(dbPath, "cli");
-    expect(userVersion(db)).toBe(1);
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
     db.close();
 
     const survivors = Array.from(new Bun.Glob("state.db.corrupt-*").scanSync({ cwd: dir }));
@@ -254,7 +324,7 @@ describe("getStateDb / closeStateDb — lazy singleton", () => {
     const db1 = getStateDb("cli");
     const db2 = getStateDb("cli");
     expect(db1).toBe(db2);
-    expect(userVersion(db1)).toBe(1);
+    expect(userVersion(db1)).toBe(SCHEMA_VERSION);
   });
 
   test("closeStateDb releases the singleton so the next getStateDb call reopens", () => {
@@ -262,7 +332,7 @@ describe("getStateDb / closeStateDb — lazy singleton", () => {
     closeStateDb();
     const db2 = getStateDb("cli");
     expect(db1).not.toBe(db2);
-    expect(userVersion(db2)).toBe(1);
+    expect(userVersion(db2)).toBe(SCHEMA_VERSION);
   });
 
   test("importing db.ts performs no module-load db access (no file created merely by import)", async () => {
@@ -271,7 +341,7 @@ describe("getStateDb / closeStateDb — lazy singleton", () => {
     // unrelated exports (reading SCHEMA_VERSION, pushing to LEGACY_IMPORTS)
     // never opens or creates a db file on its own.
     const before = SCHEMA_VERSION;
-    expect(before).toBe(1);
+    expect(before).toBe(2);
     LEGACY_IMPORTS.push({ file: "x.json", import: () => {} });
     LEGACY_IMPORTS.length = 0;
     // No db.ts function that touches disk was called above; nothing to assert
@@ -282,7 +352,7 @@ describe("getStateDb / closeStateDb — lazy singleton", () => {
 });
 
 describe("two connections racing v0 (real OS-level race)", () => {
-  test("exactly one process imports the legacy store; neither throws; both land at v1", async () => {
+  test("exactly one process imports the legacy store; neither throws; both land at SCHEMA_VERSION", async () => {
     const dbPath = join(dir, "state.db");
     const legacyPath = join(dir, "fake-store.json");
     writeFileSync(legacyPath, JSON.stringify({ race: true }));
@@ -325,7 +395,7 @@ describe("two connections racing v0 (real OS-level race)", () => {
     expect(existsSync(`${legacyPath}.migrated`)).toBe(true);
 
     const finalDb = new Database(dbPath, { readonly: true });
-    expect(userVersion(finalDb)).toBe(1);
+    expect(userVersion(finalDb)).toBe(SCHEMA_VERSION);
     finalDb.close();
   }, 20_000);
 });
@@ -337,5 +407,68 @@ describe("db path helpers", () => {
     const db = openStateDb(nested, "cli");
     expect(existsSync(nested)).toBe(true);
     db.close();
+  });
+});
+
+function mode(path: string): number {
+  return statSync(path).mode & 0o777;
+}
+
+describe("file mode — 0600", () => {
+  test("a freshly created state.db is 0600", () => {
+    const dbPath = join(dir, "state.db");
+    const db = openStateDb(dbPath, "cli");
+    db.close();
+    expect(mode(dbPath)).toBe(0o600);
+  });
+
+  test("an existing 0644 state.db is tightened to 0600 on open, not just at creation", () => {
+    const dbPath = join(dir, "state.db");
+    openStateDb(dbPath, "cli").close();
+    chmodSync(dbPath, 0o644);
+    expect(mode(dbPath)).toBe(0o644);
+
+    const db = openStateDb(dbPath, "cli");
+    db.close();
+    expect(mode(dbPath)).toBe(0o600);
+  });
+});
+
+describe("isolation from unrelated state.db files (pipeline run DBs)", () => {
+  test("migrating/chmod'ing rt/state.db never touches a sibling runs/<repo>/<runId>/state.db", () => {
+    const home = mkdtempSync(join(tmpdir(), "rt-state-isolation-"));
+    const rtStatePath = join(home, ".mattstack", "rt", "state.db");
+    const decoyPath = join(home, ".mattstack", "runs", "somerepo", "run1", "state.db");
+    mkdirSync(dirname(decoyPath), { recursive: true });
+
+    // A decoy pipeline-run db: unrelated schema, written and closed by a
+    // SEPARATE writer before our migration ever runs — pipeline-state.sh
+    // shells out to the sqlite3 binary, it never shares this process's
+    // open handle, so this fixture closes before openStateDb is called.
+    const decoyDb = new Database(decoyPath, { create: true });
+    decoyDb.exec("CREATE TABLE runs (id INTEGER PRIMARY KEY, status TEXT);");
+    decoyDb.query("INSERT INTO runs (id, status) VALUES (1, 'ok');").run();
+    decoyDb.close();
+    chmodSync(decoyPath, 0o644);
+
+    const decoyModeBefore = mode(decoyPath);
+    const decoyMtimeBefore = statSync(decoyPath).mtimeMs;
+    const decoyContentBefore = readFileSync(decoyPath);
+
+    const db = openStateDb(rtStatePath, "cli");
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
+    db.close();
+
+    expect(mode(decoyPath)).toBe(decoyModeBefore);
+    expect(statSync(decoyPath).mtimeMs).toBe(decoyMtimeBefore);
+    expect(readFileSync(decoyPath).equals(decoyContentBefore)).toBe(true);
+    expect(existsSync(`${decoyPath}-wal`)).toBe(false);
+    expect(existsSync(`${decoyPath}-shm`)).toBe(false);
+
+    // The real db, at its own distinct path, DID get tightened — proving
+    // the two are independently reachable, not that nothing ran at all.
+    expect(mode(rtStatePath)).toBe(0o600);
+
+    rmSync(home, { recursive: true, force: true });
   });
 });
