@@ -2,6 +2,16 @@ import { describe, test, expect, afterEach, mock } from "bun:test";
 import { dispatch, walkTree, type CommandContext, type CommandNode } from "../command-tree.ts";
 import type { KnownRepo, RepoIdentity } from "../repo.ts";
 
+// mock.module mutates the live "../repo.ts" namespace object IN PLACE, so
+// `realRepoModule.getKnownRepos` itself becomes the mock the moment it's
+// installed — restoring with `() => realRepoModule` would restore the mock
+// to itself. Capture the individual overridden bindings before any
+// mock.module("../repo.ts", ...) call in this file.
+const realRepoModule = await import("../repo.ts");
+const realGetKnownRepos = realRepoModule.getKnownRepos;
+const realPickWorktreeFromRepo = realRepoModule.pickWorktreeFromRepo;
+const realGetRepoIdentity = realRepoModule.getRepoIdentity;
+
 const noop = async () => {};
 
 const TREE: Record<string, CommandNode> = {
@@ -75,13 +85,17 @@ describe("dispatch --repo flag scoping", () => {
   // mocks the three functions dispatch dynamically imports from "./repo.ts",
   // restored via mock.module in afterEach so nothing else in the process sees
   // the fake repo past this one test.
-  afterEach(async () => {
-    const real = await import("../repo.ts");
-    mock.module("../repo.ts", () => real);
+  afterEach(() => {
+    mock.module("../repo.ts", () => ({
+      ...realRepoModule,
+      getKnownRepos: realGetKnownRepos,
+      pickWorktreeFromRepo: realPickWorktreeFromRepo,
+      getRepoIdentity: realGetRepoIdentity,
+    }));
   });
 
   test('context:"worktree" node: --repo is stripped from args and resolved onto ctx.identity', async () => {
-    const real = await import("../repo.ts");
+    const real = realRepoModule;
     // chdir to the CURRENT cwd (a real, always-existing directory) so
     // dispatch's real process.chdir() call is a harmless no-op — no fake
     // filesystem path needed, and no process-wide cwd side effect to undo.

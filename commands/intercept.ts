@@ -277,7 +277,8 @@ export async function interceptInstall(args: string[]): Promise<void> {
   console.log(`\n  ${bold}${cyan}rt intercept install${reset} ${dim}(${result.rules} rule${result.rules === 1 ? "" : "s"})${reset}\n`);
   if (result.installed.length > 0) console.log(`  ${green}✓ installed${reset} ${result.installed.join(", ")}`);
   if (result.current.length > 0) console.log(`  ${dim}already current${reset} ${result.current.join(", ")}`);
-  if (result.installed.length === 0 && result.current.length === 0) console.log(`  ${dim}no commands to shim${reset}`);
+  if (result.skipped.length > 0) console.log(`  ${yellow}⚠ skipped (not ours)${reset} ${result.skipped.join(", ")}`);
+  if (result.installed.length === 0 && result.current.length === 0 && result.skipped.length === 0) console.log(`  ${dim}no commands to shim${reset}`);
   console.log();
 }
 

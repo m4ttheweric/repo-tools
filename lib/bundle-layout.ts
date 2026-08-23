@@ -143,12 +143,24 @@ let appBundleRootMemo: string | null = null;
 
 /**
  * The bundle rt belongs to: the one it runs from, else the installed active
- * flavor. Memoized per process on success only — this sits on the fzf-picker
- * hot path (ensureFzf → appBundleRoot on every spawn) — so `exists` is only
- * honoured until the first hit; reset via __test__.resetBundleLayoutMemo().
+ * flavor. Memoized per process on success only, and ONLY for the true
+ * default (`exists === existsSync`, i.e. a zero-arg call) — this sits on the
+ * fzf-picker hot path (ensureFzf → appBundleRoot() with no args, on every
+ * spawn) and that path is the memo's whole reason to exist. A caller that
+ * INJECTS an `exists` (every Probes-driven caller, e.g.
+ * `lib/deps/resolve.ts`'s `appBundlePath(p)` → `appBundleRoot(p.exists)`)
+ * bypasses the memo entirely, both read and write: those callers exist
+ * specifically so tests (and `rt deps`) can point resolution at a fake
+ * bundle without touching real disk, and a shared process-wide cache keyed
+ * by the FIRST such call would let one test's fake bundle pin every later
+ * `appBundlePath(p)` call in the same process, real callers included. Reset
+ * the default-path memo via __test__.resetBundleLayoutMemo() (still needed
+ * between tests that call the zero-arg form, e.g. through `resolveFzf()`'s
+ * own default).
  */
 export function appBundleRoot(exists: (p: string) => boolean = existsSync): string | null {
-  if (appBundleRootMemo) return appBundleRootMemo;
+  const usingDefaultExists = exists === existsSync;
+  if (usingDefaultExists && appBundleRootMemo) return appBundleRootMemo;
   const fromExec = bundleRootFromExec();
   let value: string | null;
   if (fromExec) {
@@ -157,7 +169,7 @@ export function appBundleRoot(exists: (p: string) => boolean = existsSync): stri
     const bundle = currentMode() === "dev" ? DEV_TRAY_APP_BUNDLE : TRAY_APP_BUNDLE;
     value = installedTrayAppPath(bundle, exists);
   }
-  if (value) appBundleRootMemo = value;
+  if (usingDefaultExists && value) appBundleRootMemo = value;
   return value;
 }
 

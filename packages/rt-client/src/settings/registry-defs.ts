@@ -228,6 +228,15 @@ export const REGISTRY: readonly SettingDef[] = [
     merge: "replace",
     description: "Absolute path to the installed mattstack.app bundle, written by the app at launch so rt stops hardcoding ~/Applications.",
   },
+  {
+    key: "rt.integrations",
+    type: "object",
+    scopes: ["user"],
+    merge: "deep",
+    migrated: true,
+    description:
+      "User-confirmed integration hosts (forgeHost, switchboardUrl), written only by an explicit `rt setup <id> connect --host` after that host validates a real credential. The one trusted source a credential is ever sent to — mattstack.integrations' team-declared host is shown to the user but never auto-used for a fetch.",
+  },
 
   // --- claude (installer-lane) --------------------------------------------
   {

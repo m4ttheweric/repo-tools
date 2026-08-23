@@ -83,17 +83,51 @@ function redactSecretsWriteTail(args: string[], command?: string): string[] {
 const AGE_PRIVATE_KEY_PREFIX = "AGE-SECRET-KEY-1";
 
 /**
+ * `encodeCode`'s exact output shape (lib/team/invite-crypto.ts): Crockford
+ * base32 (no I/L/O/U) in dash-separated groups. Matched command-independently
+ * — a live, still-redeemable invite code is exactly the kind of secret that
+ * ends up as a stray positional wherever a user pastes it, not just under
+ * `team join`.
+ */
+const INVITE_CODE_PATTERN = /^[0-9A-HJKMNPQRSTVWXYZ]{2,5}(-[0-9A-HJKMNPQRSTVWXYZ]{2,5}){3,}$/i;
+
+const TEAM_JOIN_FLAGS = new Set(["--dry-run", "--json"]);
+
+/**
+ * `rt team join` never wants an argv code at all (`commands/team.ts` refuses
+ * the run with `code-on-argv`) — but the refusal happens AFTER this same
+ * argv already reached `logCommand`, so anything positional under `team
+ * join` is redacted regardless, the same defense-in-depth `redactSecretsWriteTail`
+ * applies to `secrets set|rotate`. `INVITE_CODE_PATTERN` above is the
+ * command-independent backstop; this is the command-aware one for a token
+ * that doesn't happen to match the code's exact shape.
+ */
+function redactTeamJoinTail(args: string[], command?: string): string[] {
+  if (command && /(?:^|\s)team join$/.test(command)) {
+    return args.map((a) => (TEAM_JOIN_FLAGS.has(a) ? a : "[redacted]"));
+  }
+
+  for (let i = 0; i + 1 < args.length; i++) {
+    if (args[i] === "team" && args[i + 1] === "join") {
+      return args.map((a, idx) => (idx <= i + 1 || TEAM_JOIN_FLAGS.has(a) ? a : "[redacted]"));
+    }
+  }
+  return args;
+}
+
+/**
  * Returns a copy of args with the value following any `--reason` flag
  * replaced by "[redacted]" (also handles the `--reason=value` form), any
  * arg starting with `AGE-SECRET-KEY-1` replaced outright (defense in depth
  * for a pasted age private key — see commands/home.ts's `homeKeyImport`
  * guard, which refuses the command but this must still keep the raw key
- * out of the log even if some other path ever lets one through), plus
- * anything past `secrets set|rotate <domain> <key>` (see
- * redactSecretsWriteTail). Reason text is free-form and often sensitive
- * (e.g. `rt sdm connect`), so it must never reach the on-disk CLI log. This
- * only affects what gets logged -- the real args passed to command handlers
- * are never touched.
+ * out of the log even if some other path ever lets one through), any
+ * code-shaped token (`INVITE_CODE_PATTERN`), plus anything past `secrets
+ * set|rotate <domain> <key>` or `team join` (see redactSecretsWriteTail /
+ * redactTeamJoinTail). Reason text is free-form and often sensitive (e.g.
+ * `rt sdm connect`), so it must never reach the on-disk CLI log. This only
+ * affects what gets logged -- the real args passed to command handlers are
+ * never touched.
  */
 export function redactSensitiveArgs(args: string[], command?: string): string[] {
   const result: string[] = [];
@@ -115,9 +149,13 @@ export function redactSensitiveArgs(args: string[], command?: string): string[] 
       result.push("[redacted]");
       continue;
     }
+    if (INVITE_CODE_PATTERN.test(arg)) {
+      result.push("[redacted]");
+      continue;
+    }
     result.push(arg);
   }
-  return redactSecretsWriteTail(result, command);
+  return redactTeamJoinTail(redactSecretsWriteTail(result, command), command);
 }
 
 export function logCommand(entry: CommandLog): void {

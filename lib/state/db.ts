@@ -354,14 +354,24 @@ export function openStateDb(path: string, flavor: DbFlavor = "cli"): Database {
 }
 
 let singleton: Database | null = null;
+let singletonPath: string | null = null;
 
 /**
  * The lazy production singleton: one connection per process, held for the
- * process lifetime (spec "The database"). Never call this at module scope.
+ * process lifetime (spec "The database") — true in production, where
+ * `rtDir()` never changes mid-process. Re-derived on every call (not cached
+ * at first open) so a test suite that swaps `process.env.HOME` between
+ * cases — the standard per-test isolation pattern elsewhere in this repo —
+ * transparently gets a fresh connection at the new path instead of silently
+ * reusing a handle whose underlying file a DIFFERENT test's cleanup may have
+ * since deleted (SQLITE_IOERR_VNODE). Never call this at module scope.
  */
 export function getStateDb(flavor: DbFlavor = "cli"): Database {
-  if (!singleton) {
-    singleton = openStateDb(join(rtDir(), "state.db"), flavor);
+  const path = join(rtDir(), "state.db");
+  if (!singleton || singletonPath !== path) {
+    singleton?.close();
+    singleton = openStateDb(path, flavor);
+    singletonPath = path;
   }
   return singleton;
 }
@@ -371,5 +381,6 @@ export function closeStateDb(): void {
   if (singleton) {
     singleton.close();
     singleton = null;
+    singletonPath = null;
   }
 }
