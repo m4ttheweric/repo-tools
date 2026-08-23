@@ -113,23 +113,23 @@ describe("rt deps commands", () => {
     expect(p.calls.symlinks[linkPath(home, "gh")]).toBe(ghPath);
   });
 
-  test("depsLink exits 1 on refusal in human mode (F13: occupied)", async () => {
+  test("depsLink exits 2 on a user-actionable refusal in human mode (F13: occupied)", async () => {
     const path = linkPath(home, "gh");
     const p = bundleProbe({ files: { [path]: "#!/bin/sh\necho unrelated\n" } });
-    const { exitCode, errors } = await runCapturingExit(() => depsLink(["gh"], {}, p));
-    expect(exitCode).toBe(1);
-    expect(errors.join("\n")).toContain("exists and is not a mattstack-managed link");
+    const { exitCode, logs } = await runCapturingExit(() => depsLink(["gh"], {}, p));
+    expect(exitCode).toBe(2);
+    expect(logs.join("\n")).toContain("exists and is not a mattstack-managed link");
   });
 
-  test("depsLink --json also exits 1 on refusal, after printing the envelope (R-T5-h)", async () => {
+  test("depsLink --json also exits 2 on refusal, with the contract's {error} envelope an app can decode", async () => {
     const path = linkPath(home, "gh");
     const p = bundleProbe({ files: { [path]: "#!/bin/sh\necho unrelated\n" } });
     const { exitCode, logs } = await runCapturingExit(() => depsLink(["gh", "--json"], {}, p));
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(2);
     expect(logs).toHaveLength(1);
     const body = JSON.parse(logs[0]!);
-    expect(body.ok).toBe(false);
-    expect(body.reason).toBe("occupied");
+    expect(body.error.code).toBe("occupied");
+    expect(body.error.message).toContain("exists and is not a mattstack-managed link");
   });
 
   test("depsLink --force overrides the occupied refusal", async () => {
