@@ -155,6 +155,31 @@ function redactCredentials(text: string): string {
   return text.replace(/:\/\/[^/@\s]+@/g, "://<redacted>@");
 }
 
+/** `git remote` prints nothing (exit 0) once no remote is configured — the same signal a spawn/exec failure produces, so both read as "no remote" here rather than a push ever being attempted against a broken git. */
+async function hasRemote(exec: ExecFn, cwd: string): Promise<boolean> {
+  const result = await exec(["git", "remote"], { cwd, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+  return result.exitCode === 0 && result.stdout.trim().length > 0;
+}
+
+/**
+ * Compares against `refs/remotes/origin/<branch>` directly — never `@{u}`.
+ * A repo `git init`-ed locally and given a remote later has no
+ * `branch.<name>.remote` configured, so `@{u}` exits 128 even though the
+ * remote-tracking ref itself exists. A missing ref means everything is
+ * unpushed (an absent ref is FATAL to `rev-list`, not empty), so its
+ * absence is checked explicitly before ever calling `rev-list` against it.
+ */
+async function unpushedAgainstOrigin(exec: ExecFn, cwd: string): Promise<boolean> {
+  const branchResult = await exec(["git", "symbolic-ref", "--short", "HEAD"], { cwd, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+  if (branchResult.exitCode !== 0) return false; // detached HEAD: never green, never arm
+  const branch = branchResult.stdout.trim();
+  const ref = `refs/remotes/origin/${branch}`;
+  const hasRef = await exec(["git", "rev-parse", "--verify", "-q", ref], { cwd, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+  if (hasRef.exitCode !== 0) return true; // no remote-tracking ref yet: everything is unpushed
+  const ahead = await exec(["git", "rev-list", `${ref}..HEAD`], { cwd, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
+  return ahead.exitCode === 0 && ahead.stdout.trim().length > 0;
+}
+
 const HOME_SNAPSHOT_NS = "home-snapshot";
 const HOME_SNAPSHOT_KEY = "state";
 
@@ -455,6 +480,12 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       deps.log.debug("home-snapshot: disabled via rt.homeSnapshot.enabled=false; skipping a due push");
       return;
     }
+    // Local-only (rt home init with no remote attached) is a permanent,
+    // supported state — not a push failure: no exec, no retry, no broadcast.
+    if (!(await hasRemote(deps.exec, deps.repoDir))) {
+      deps.log.debug("home-snapshot: no remote configured; nothing to push");
+      return;
+    }
     const result = await deps.exec(["git", "push", "-q", "origin", "HEAD"], {
       cwd: deps.repoDir,
       timeoutMs: PUSH_TIMEOUT_MS,
@@ -669,7 +700,14 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       }
     }
 
-    if (committed || pushPending) schedulePush();
+    if (committed || pushPending) {
+      schedulePush();
+    } else if (await hasRemote(deps.exec, deps.repoDir) && await unpushedAgainstOrigin(deps.exec, deps.repoDir)) {
+      // The only path that notices a remote attached by hand after commits
+      // already existed — nothing else this cycle sets `committed` or
+      // `pushPending` for a run that made no local changes.
+      schedulePush();
+    }
 
     if (!committed && plan.autoPaths.length === 0 && plan.janitorZones.length === 0) {
       return { committed: false, sha: null, paths: [], reason, skipped: "no-changes" };

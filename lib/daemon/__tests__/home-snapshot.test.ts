@@ -1,11 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { execFileSync } from "child_process";
 import type { Database } from "bun:sqlite";
 import type { Logger } from "pino";
-import type { RunResult } from "../../subprocess.ts";
+import { runCapture, type RunResult } from "../../subprocess.ts";
 import type { Owners } from "../../home/snapshot-owners.ts";
 import { openStateDb } from "../../state/db.ts";
 import { closeStateDb, getKvValue } from "../../state/index.ts";
@@ -34,9 +34,11 @@ function defaultResponders(opts: {
   pushExit?: number;
   pushStderr?: string;
   sha?: string;
+  hasRemote?: boolean;
 } = {}): Responder[] {
   const {
     isRepo = true, branch = "main", branchExit = 0, statusZ = "", commitExit = 0, addExit = 0, pushExit = 0, pushStderr = "", sha = "abc123",
+    hasRemote = true,
   } = opts;
   return [
     (argv) => (argv[1] === "rev-parse" && argv[2] === "--is-inside-work-tree")
@@ -51,6 +53,8 @@ function defaultResponders(opts: {
     (argv) => (argv[1] === "status") ? { stdout: statusZ, stderr: "", exitCode: 0 } : undefined,
     (argv) => (argv[1] === "add") ? { stdout: "", stderr: "", exitCode: addExit } : undefined,
     (argv) => (argv[1] === "commit") ? { stdout: "", stderr: "", exitCode: commitExit } : undefined,
+    // `hasRemote()`'s own probe — most fixtures simulate a repo that already has origin configured, matching every pre-existing push test's assumption.
+    (argv) => (argv[1] === "remote" && argv.length === 2) ? { stdout: hasRemote ? "origin\n" : "", stderr: "", exitCode: 0 } : undefined,
     (argv) => (argv[1] === "push") ? { stdout: "", stderr: pushStderr, exitCode: pushExit } : undefined,
   ];
 }
@@ -1488,4 +1492,110 @@ describe("startHomeSnapshot — settings-read resilience", () => {
     const warnLine = "home-snapshot: failed to read settings in status(); using the last-known value";
     expect(log.calls.filter((c) => c.level === "warn" && c.args[1] === warnLine).length).toBe(1);
   });
+});
+
+// ─── local-only remote state: real git, no clone — no remote is a state ────
+
+describe("startHomeSnapshot — local-only remote state", () => {
+  const createdRoots: string[] = [];
+  afterAll(() => {
+    for (const root of createdRoots) {
+      try { rmSync(root, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+    }
+  });
+
+  const LOCAL_ONLY_SETTINGS: HomeSnapshotSettings = { ...DEFAULT_SETTINGS, pushDelaySec: 1 };
+  const PUSH_SETTLE_MS = 1500;
+
+  /** Builds the full sequence against real git — `git init` -> commit -> (later) attach remote -> push -> push again — never a clone, since a clone arrives with upstream already configured and every defect this suite guards against is invisible there. */
+  async function harnessWithLocalOnlyRepo() {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-snapshot-localonly-")));
+    createdRoots.push(root);
+    const repoDir = join(root, "user");
+    const originDir = join(root, "origin.git");
+    mkdirSync(repoDir, { recursive: true });
+    execFileSync("git", ["init", "-q", "-b", "main", repoDir]);
+    execFileSync("git", ["config", "user.email", "rt@example.test"], { cwd: repoDir });
+    execFileSync("git", ["config", "user.name", "rt test"], { cwd: repoDir });
+    writeFileSync(join(repoDir, "README.md"), "seed\n");
+    execFileSync("git", ["add", "-A"], { cwd: repoDir });
+    execFileSync("git", ["commit", "-q", "-m", "seed"], { cwd: repoDir });
+    execFileSync("git", ["init", "--bare", "-q", originDir]);
+
+    const db = openStateDb(join(root, "state.db"), "cli");
+    const broadcastLog: { type: string; data: unknown }[] = [];
+    const calls: string[][] = [];
+    const exec: NonNullable<HomeSnapshotDeps["exec"]> = async (argv, opts) => {
+      calls.push([...argv]);
+      return runCapture(argv, opts);
+    };
+
+    const handle = startHomeSnapshot({
+      log: fakeLog(),
+      broadcast: (type, data) => broadcastLog.push({ type, data }),
+      repoDir,
+      db,
+      exec,
+      readSettings: () => LOCAL_ONLY_SETTINGS,
+      readOwners: () => NO_OWNERS,
+    });
+    await handle.ready;
+
+    const settle = () => new Promise((resolve) => setTimeout(resolve, PUSH_SETTLE_MS));
+
+    return {
+      async writeFile(relPath: string, content: string): Promise<void> {
+        const target = join(root, relPath);
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, content);
+      },
+      async runCycles(n: number): Promise<void> {
+        for (let i = 0; i < n; i++) {
+          await handle.runNow("watch");
+          await settle();
+        }
+      },
+      async janitorTick(): Promise<void> {
+        await handle.runNow("janitor");
+        await settle();
+      },
+      async attachRemote(): Promise<void> {
+        execFileSync("git", ["remote", "add", "origin", originDir], { cwd: repoDir });
+      },
+      execCalls: () => calls,
+      commits: () => broadcastLog.filter((b) => b.type === "home:snapshot"),
+      broadcasts: (type: string) => broadcastLog.filter((b) => b.type === type).map((b) => b.data),
+      stop: () => handle.stop(),
+    };
+  }
+
+  test("no remote: commits, never pushes, never broadcasts a failure", async () => {
+    const h = await harnessWithLocalOnlyRepo();
+    await h.writeFile("user/settings.user.jsonc", "{}");
+    await h.runCycles(3);
+    expect(h.commits().length).toBeGreaterThan(0);
+    expect(h.execCalls().filter((c) => c[1] === "push")).toEqual([]);
+    expect(h.broadcasts("home:push-failed")).toEqual([]);
+    h.stop();
+  }, 15_000);
+
+  test("a freshly attached remote arms a push with no new commit", async () => {
+    const h = await harnessWithLocalOnlyRepo();
+    await h.writeFile("user/a", "1");
+    await h.runCycles(1); // commits locally, no push
+    await h.attachRemote(); // git remote add origin <bare>
+    await h.janitorTick(); // no file change
+    expect(h.execCalls().filter((c) => c[1] === "push").length).toBe(1);
+    h.stop();
+  }, 15_000);
+
+  test("second push only fires when there is something ahead of the ref", async () => {
+    const h = await harnessWithLocalOnlyRepo();
+    await h.attachRemote();
+    await h.writeFile("user/a", "1");
+    await h.runCycles(1); // first push
+    await h.janitorTick(); // nothing new
+    expect(h.execCalls().filter((c) => c[1] === "push").length).toBe(1);
+    h.stop();
+  }, 15_000);
 });
