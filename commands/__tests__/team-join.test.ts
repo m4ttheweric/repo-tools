@@ -264,13 +264,13 @@ describe("teamJoin", () => {
     expect(body.access).toBe("unreachable");
   });
 
-  test("a keychain failure after clone+redeem exits 1 (not 2), with a clean message, --json still gets a valid envelope", async () => {
+  test("a keychain failure after clone+redeem is user-actionable — exit 2 with a decodable envelope, a distinct code keeping it from reading as a dead invite", async () => {
     const probes = fakeProbes({ home: HOME, fetch: relayFetch(), exec: () => ({ code: 0, stdout: "", stderr: "" }) });
     const deps = baseDeps({ probes, ageKeySeam: new FakeAgeKeySeamLocked() });
 
     const code = await runExpectingProcessExit(() => teamJoin(["--json"], {}, deps));
 
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     const body = JSON.parse(deps.lines[0]!);
     expect(body.error.code).toBe("age-key-unavailable");
     expect(body.error.message).toContain("redeemed the invite");
@@ -282,7 +282,7 @@ describe("teamJoin", () => {
 
     const code = await runExpectingProcessExit(() => teamJoin([], {}, deps));
 
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(deps.lines[0]).toContain("rt team join:");
     expect(deps.lines[0]).not.toContain("at ");
   });

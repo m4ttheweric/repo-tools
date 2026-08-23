@@ -11,11 +11,11 @@
  *   rt team status [--team <slug>] [--json]
  *
  * Every mutating path funnels through one `UserActionableError` → exit-2
- * envelope, via `exitUserError` (lib/setup/errors.ts). `members sync`/`members
- * remove` are the one exception that ALSO exits 1 (not 2) for a non-user
- * error — a re-encryption rollback from lib/secrets/team-store.ts, or a
- * keychain failure — since those are environment/state problems, not usage
- * refusals, and their own `.message` already names what's still safe vs. not.
+ * envelope, via `exitUserError` (lib/setup/errors.ts) — including a locked
+ * keychain or a `members sync`/`members remove` re-encryption rollback: the
+ * user can act on either (unlock, retry), so both get a distinct `code` and
+ * exit 2 rather than an envelope-shaped body at exit 1, which the app's
+ * decoder (envelope only at exit 2) could never have used.
  */
 
 import { join } from "path";
@@ -229,21 +229,23 @@ export async function teamJoin(args: string[], _ctx: CommandContext = {}, deps: 
     }
     deps.print(`rt team join: ${result.message}`);
   } catch (err) {
+    // A distinct code (not the exit code) is what keeps a locked keychain
+    // from reading as a dead invite (R-T18-b) — the exit code itself must
+    // still be 2, matching every other user-actionable failure, or the
+    // app's envelope decoder (exit 2 only) never sees this message at all.
     if (err instanceof JoinKeyExchangeError) {
-      deps.print(json ? JSON.stringify(envelope({ error: { code: "age-key-unavailable", message: err.message } })) : `rt team join: ${err.message}`);
-      process.exit(1);
+      return exitUserError(new UserActionableError("age-key-unavailable", err.message), json, "team join", deps.print);
     }
     if (err instanceof UserActionableError) exitUserError(err, json, "team join", deps.print);
     throw err;
   }
 }
 
-/** A non-UserActionableError from the members path (a rollback error from addTeamRecipient/removeTeamRecipient, a keychain failure) already carries a complete, human-readable explanation in its own message — print it verbatim rather than letting it fall through to a raw stack trace, and exit 1 (an environment/state problem, not a usage refusal). */
+/** A non-UserActionableError from the members path (a rollback error from addTeamRecipient/removeTeamRecipient, a keychain failure) already carries a complete, human-readable explanation in its own message — the user can act on it (retry, unlock), so it gets its own code and the same exit-2 envelope every other actionable failure uses, rather than falling through to a raw stack trace or an envelope the app's decoder can't reach at exit 1. */
 function reportMembersError(err: unknown, deps: TeamDeps, json: boolean, verb: string): never {
   if (err instanceof UserActionableError) exitUserError(err, json, verb, deps.print);
   const message = err instanceof Error ? err.message : String(err);
-  deps.print(json ? JSON.stringify(envelope({ error: { code: "members-error", message } })) : `rt ${verb}: ${message}`);
-  process.exit(1);
+  return exitUserError(new UserActionableError("members-error", message), json, verb, deps.print);
 }
 
 export async function teamMembersSync(args: string[], _ctx: CommandContext = {}, deps: TeamDeps = realTeamDeps()): Promise<void> {

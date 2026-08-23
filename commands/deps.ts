@@ -12,6 +12,7 @@
 
 import type { CommandContext } from "../lib/command-tree.ts";
 import { envelope } from "../lib/setup/contract.ts";
+import { UserActionableError, exitUserError } from "../lib/setup/errors.ts";
 import { createRealProbes, type Probes } from "../lib/setup/probes.ts";
 import { link, reconcile, unlink } from "../lib/deps/links.ts";
 import { resolveTool } from "../lib/deps/resolve.ts";
@@ -48,17 +49,18 @@ export async function depsLink(args: string[], _ctx: CommandContext = {}, p: Pro
   if (!t) fail("usage: rt deps link <tool> [--force] [--json]");
 
   const outcome = link(p, t, { force: args.includes("--force") });
+  const json = args.includes("--json");
 
-  if (args.includes("--json")) {
-    // Exit status carries the outcome in both modes: --json prints the
-    // envelope either way, but a script parsing it should not have to also
-    // inspect body.ok to notice the verb refused.
+  // A refusal here is user-actionable (a foreign copy on PATH, dev mode
+  // owning ~/.local/bin/rt, no bundled tool) — exit 2 with the contract's
+  // `{error}` envelope, the same shape `rt tools install` already uses, so
+  // an app decoding row-action failures only ever needs the one path.
+  if (!outcome.ok) return exitUserError(new UserActionableError(outcome.reason, outcome.detail), json, "deps link", console.log);
+
+  if (json) {
     console.log(JSON.stringify(envelope(outcome)));
-    if (!outcome.ok) process.exit(1);
     return;
   }
-
-  if (!outcome.ok) fail(outcome.detail);
   console.log(outcome.state === "already" ? `rt deps: ${t} already linked at ${outcome.path}` : `rt deps: linked ${t} at ${outcome.path}`);
 }
 
