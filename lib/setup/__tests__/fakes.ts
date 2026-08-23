@@ -202,11 +202,21 @@ export function fakeProbes(opts: FakeProbesOpts = {}): Probes & {
   return { ...probes, calls };
 }
 
+/**
+ * Simulates a REACHABLE app: an unregistered route answers 404, matching
+ * real `trayRequest` (lib/daemon-client.ts), which returns status 0 only for
+ * a transport failure (no socket — nobody home) and 404 for a route the app
+ * genuinely doesn't have. A fake that answered 0 for both let a step pointed
+ * at a wrong/stale tray path test green by reading as "app not running"
+ * instead of the real "app running, route doesn't exist" — use
+ * `fakeProbes({ home })`'s own bare default (no `tray` option) to simulate
+ * an actually-unreachable app.
+ */
 export function fakeTray(routes: Record<string, (body?: unknown) => { status: number; json: unknown }>): TrayClient {
   return (async (path, init = { method: "GET" }) => {
     const key = `${init.method} ${path}`;
     const handler = routes[key];
-    if (!handler) return { status: 0, json: null };
+    if (!handler) return { status: 404, json: null };
     return handler(init.body);
   }) as TrayClient;
 }

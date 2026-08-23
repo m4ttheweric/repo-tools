@@ -15,7 +15,7 @@ import { MERGE_MANIFESTS_MISSING_CODE } from "../skills-materialize.ts";
 import { fakeProbes, fakeTray, ok } from "./fakes.ts";
 import type { Probes } from "../probes.ts";
 
-import { servicesRegisterStep, proxyInstallStep } from "../steps/services.ts";
+import { servicesRegisterStep, proxyInstallStep, PORTLESS_LAUNCHD_PLIST } from "../steps/services.ts";
 import { deckManagedStep } from "../steps/deck.ts";
 import { skillsMaterializeStep, boardKeysStep, cronTriageStep } from "../steps/skills.ts";
 
@@ -205,14 +205,27 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(outcome).toEqual({ state: "failed", detail: "plist rejected by launchd" });
     });
 
-    test("idempotent re-run: a second `done` reply registers again cleanly", async () => {
+    test("idempotent re-run: a second run round-trips through the app again (no local skip) and daemon.json stays correct", async () => {
       const p = fakeProbes({ home });
-      const need = needViaTray({ "GET /setup/need/services.register": () => ({ status: 200, json: { state: "done", detail: "registered" } }) });
+      let needCalls = 0;
+      const registerNeed = needViaTray({ "GET /setup/need/services.register": () => ({ status: 200, json: { state: "done", detail: "registered" } }) });
+      const need: ApplyContext["need"] = async (id, request) => {
+        needCalls++;
+        return registerNeed(id, request);
+      };
 
       const { ctx: first } = makeCtx(p, { need });
       const { ctx: second } = makeCtx(p, { need });
       expect(await servicesRegisterStep.run(first)).toEqual({ state: "done", detail: "registered" });
+      expect(needCalls).toBe(1);
+      expect(getDaemonConfig(home)?.installed).toBe(true);
+
+      // This step has no local "already registered" memory — the daemon's
+      // own handler is what's idempotent — so a genuine second run always
+      // round-trips through the app again, proven here by the call count
+      // actually incrementing rather than staying frozen at one.
       expect(await servicesRegisterStep.run(second)).toEqual({ state: "done", detail: "registered" });
+      expect(needCalls).toBe(2);
       expect(getDaemonConfig(home)?.installed).toBe(true);
     });
   });
@@ -263,10 +276,25 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(await proxyInstallStep.run(ctx)).toEqual({ state: "failed", detail: "admin prompt cancelled" });
     });
 
-    test("idempotent re-run: two ok replies both report done", async () => {
-      const need: ApplyContext["need"] = async () => ({ ok: true, detail: "already installed" });
-      expect(await proxyInstallStep.run(makeCtx(fakeProbes({ home }), { need }).ctx)).toEqual({ state: "done", detail: "already installed" });
-      expect(await proxyInstallStep.run(makeCtx(fakeProbes({ home }), { need }).ctx)).toEqual({ state: "done", detail: "already installed" });
+    test("idempotent re-run: the second run never re-raises the admin prompt, because the first run's plist is still on disk", async () => {
+      const p = fakeProbes({ home });
+      let needCalls = 0;
+      const need: ApplyContext["need"] = async () => {
+        needCalls++;
+        // The real privileged installer's side effect, carried on the SAME
+        // probes instance across both runs — the fake state a from-scratch
+        // second run would actually see.
+        p.writeFile(PORTLESS_LAUNCHD_PLIST, "<plist/>");
+        return { ok: true, detail: "already installed" };
+      };
+
+      expect(await proxyInstallStep.run(makeCtx(p, { need }).ctx)).toEqual({ state: "done", detail: "already installed" });
+      expect(needCalls).toBe(1);
+
+      // Proven, not assumed: a second run against the state the first left
+      // behind must never call ctx.need again.
+      expect(await proxyInstallStep.run(makeCtx(p, { need }).ctx)).toEqual({ state: "done", detail: "already installed" });
+      expect(needCalls).toBe(1);
     });
 
     test("the portless LaunchDaemon already exists on disk: done without ever calling ctx.need — a from-scratch re-run must not re-raise the admin prompt", async () => {

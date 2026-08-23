@@ -177,17 +177,25 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
       expect(outcome.state).toBe("done");
       expect(detailOf(outcome)).toContain("3 marketplace(s), 3 plugin(s) across 1 config dir(s)");
       expect(detailOf(outcome)).toContain(MERGE_MANIFESTS_MISSING_CODE); // no mattstack plugin on disk yet in this fake — materialize honestly skips
+      // acme-skills is team-authored (came from the team's own marketplace.json) — installed, never auto-enabled.
+      expect(detailOf(outcome)).toContain("awaiting your approval to enable: acme-skills@acme-market");
 
       const marketAdds = execCalls.filter((c) => c.argv.includes("marketplace") && c.argv.includes("add"));
       const installs = execCalls.filter((c) => c.argv[1] === "plugin" && c.argv[2] === "install");
       const enables = execCalls.filter((c) => c.argv[1] === "plugin" && c.argv[2] === "enable");
       expect(marketAdds).toHaveLength(3);
       expect(installs).toHaveLength(3);
-      expect(enables).toHaveLength(3);
+      // Only the trusted plugins (rt's own baseline) are auto-enabled — the
+      // team-authored one is installed but never gets the enable call (R-F3).
+      expect(enables).toHaveLength(2);
+      expect(enables.map((c) => c.argv.at(-1))).not.toContain("acme-skills@acme-market");
       expect(execCalls.every((c) => c.argv[0] === "/usr/local/bin/claude")).toBe(true);
       expect(execCalls.every((c) => c.env?.CLAUDE_CONFIG_DIR === join(home, ".claude"))).toBe(true);
 
+      // rt's own marketplace is added FIRST — a hostile marketplace could
+      // otherwise squat the "mattstack" name before rt's own add runs.
       const marketSrcs = marketAdds.map((c) => c.argv.at(-1) ?? "");
+      expect(marketSrcs[0]).toBe(MATTSTACK_MARKETPLACE_SOURCE);
       expect(marketSrcs).toEqual(expect.arrayContaining(["https://example.com/extra-market", MATTSTACK_MARKETPLACE_SOURCE, teamDir]));
 
       const pluginNames = installs.map((c) => c.argv.at(-1) ?? "");
@@ -280,10 +288,15 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
       expect(p.calls.exec).toEqual([["/usr/local/bin/fast-browser", "setup"]]);
     });
 
-    test("idempotent re-run: two clean setups both done", async () => {
+    test("idempotent re-run: two independent setups each make their own real call — nothing memoized between runs", async () => {
       const p = fakeProbes({ home, env: { PATH: "/usr/local/bin" }, files: { "/usr/local/bin/fast-browser": "bin" }, exec: async () => ok("") });
       expect(await fastbrowserSetupStep.run(makeCtx(p).ctx)).toEqual({ state: "done", detail: "fast-browser setup complete" });
+      expect(p.calls.exec).toEqual([["/usr/local/bin/fast-browser", "setup"]]);
       expect(await fastbrowserSetupStep.run(makeCtx(p).ctx)).toEqual({ state: "done", detail: "fast-browser setup complete" });
+      expect(p.calls.exec).toEqual([
+        ["/usr/local/bin/fast-browser", "setup"],
+        ["/usr/local/bin/fast-browser", "setup"],
+      ]);
     });
 
     test("not bundled, no user copy -> skipped honestly, never execs", async () => {
@@ -318,10 +331,15 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
       expect(p.calls.exec).toEqual([["herdr", "integration", "install", "claude"]]);
     });
 
-    test("idempotent re-run: two clean installs both done", async () => {
+    test("idempotent re-run: two independent installs each make their own real call — nothing memoized between runs", async () => {
       const p = fakeProbes({ home, env: { PATH: "/usr/local/bin" }, files: { "/usr/local/bin/herdr": "bin" }, exec: async () => ok("") });
       expect((await herdrIntegrationStep.run(makeCtx(p).ctx)).state).toBe("done");
+      expect(p.calls.exec).toEqual([["herdr", "integration", "install", "claude"]]);
       expect((await herdrIntegrationStep.run(makeCtx(p).ctx)).state).toBe("done");
+      expect(p.calls.exec).toEqual([
+        ["herdr", "integration", "install", "claude"],
+        ["herdr", "integration", "install", "claude"],
+      ]);
     });
 
     test("herdr not installed -> skipped, points at the Tools row", async () => {
@@ -371,11 +389,14 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
       expect(detailOf(outcome)).toContain("Cursor");
     });
 
-    test("idempotent re-run: two clean installs both done", async () => {
+    test("idempotent re-run: two independent installs each make their own real call — nothing memoized between runs", async () => {
       const p = fakeProbes({ home, exec: async () => ok("") });
       const seams: ToolsInstallSeams = { ...NOOP_SEAMS, findVsix: () => "/fake/rt-context.vsix", detectEditors: () => [{ name: "Cursor", cliPath: "/x/cursor", appPath: "/x" }] };
+      const expectedCall = ["/x/cursor", "--install-extension", "/fake/rt-context.vsix", "--force"];
       expect((await extensionInstallRun(makeCtx(p).ctx, seams)).state).toBe("done");
+      expect(p.calls.exec).toEqual([expectedCall]);
       expect((await extensionInstallRun(makeCtx(p).ctx, seams)).state).toBe("done");
+      expect(p.calls.exec).toEqual([expectedCall, expectedCall]);
     });
 
     test("vsix missing -> skipped 'extension not bundled'", async () => {
@@ -414,14 +435,22 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
       expect(await servicesStartStep.run(ctx)).toEqual({ state: "done", detail: "daemon running" });
     });
 
-    test("idempotent re-run: two clean starts both done", async () => {
+    test("idempotent re-run: two independent starts each hit the tray and poll the daemon again — nothing memoized between runs", async () => {
+      let pings = 0;
       const p = fakeProbes({
         home,
         tray: fakeTray({ "POST /daemon/start": () => ({ status: 200, json: {} }) }),
-        daemon: async () => ({ ok: true }),
+        daemon: async () => {
+          pings++;
+          return { ok: true };
+        },
       });
       expect(await servicesStartStep.run(makeCtx(p).ctx)).toEqual({ state: "done", detail: "daemon running" });
+      expect(p.calls.tray).toEqual(["/daemon/start"]);
+      expect(pings).toBe(1);
       expect(await servicesStartStep.run(makeCtx(p).ctx)).toEqual({ state: "done", detail: "daemon running" });
+      expect(p.calls.tray).toEqual(["/daemon/start", "/daemon/start"]);
+      expect(pings).toBe(2);
     });
 
     test("tray unreachable + nonInteractive -> skipped", async () => {
@@ -476,10 +505,19 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
       expect(outcome).toEqual({ state: "done", detail: "committed abcdef12" });
     });
 
-    test("idempotent re-run: two clean triggers both done", async () => {
-      const p = fakeProbes({ home, daemon: async () => ({ ok: true, data: { committed: true, sha: "abcdef1234567890", paths: [], reason: "manual" } }) });
+    test("idempotent re-run: two independent triggers each call the daemon again — nothing memoized between runs", async () => {
+      let daemonCalls = 0;
+      const p = fakeProbes({
+        home,
+        daemon: async () => {
+          daemonCalls++;
+          return { ok: true, data: { committed: true, sha: "abcdef1234567890", paths: [], reason: "manual" } };
+        },
+      });
       expect((await snapshotPushStep.run(makeCtx(p).ctx)).state).toBe("done");
+      expect(daemonCalls).toBe(1);
       expect((await snapshotPushStep.run(makeCtx(p).ctx)).state).toBe("done");
+      expect(daemonCalls).toBe(2);
     });
 
     test("daemon reachable, snapshot disabled -> skipped honestly", async () => {
