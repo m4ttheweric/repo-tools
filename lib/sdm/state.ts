@@ -57,7 +57,7 @@ export function loadSdmState(db: Database = getStateDb()): SdmState {
     const state = normalizeState(json as Partial<SdmState> | null);
     setKvValue(SDM_STATE_NS, SDM_STATE_KEY, state, db);
     return state;
-  });
+  }, { verifyPersisted: () => hasKvValue(SDM_STATE_NS, SDM_STATE_KEY, db) });
   return result.imported ? result.value! : { version: 1, recents: [] };
 }
 

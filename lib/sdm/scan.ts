@@ -88,13 +88,19 @@ export function readScanCache(db: Database = getStateDb()): SdmResource[] | null
     return freshResources(getKvValue<Partial<PersistedScanCache> | null>(SCAN_CACHE_NS, SCAN_CACHE_KEY, null, db));
   }
 
+  // A shape that doesn't look like PersistedScanCache never calls setKvValue
+  // at all (nothing to verify — always safe to rename, there was nothing to
+  // lose); `attempted` distinguishes that from an actual write this function
+  // must confirm landed before the source file goes away.
+  let attempted = false;
   const result = importLegacyJsonFile<PersistedScanCache | null>(scanCachePath(), (json) => {
     const parsed = json as Partial<PersistedScanCache> | null;
     if (typeof parsed?.builtAt !== "number" || !Array.isArray(parsed.resources)) return null;
     const payload: PersistedScanCache = { builtAt: parsed.builtAt, resources: parsed.resources as SdmResource[] };
+    attempted = true;
     setKvValue(SCAN_CACHE_NS, SCAN_CACHE_KEY, payload, db);
     return payload;
-  });
+  }, { verifyPersisted: () => !attempted || hasKvValue(SCAN_CACHE_NS, SCAN_CACHE_KEY, db) });
   return result.imported ? freshResources(result.value) : null;
 }
 

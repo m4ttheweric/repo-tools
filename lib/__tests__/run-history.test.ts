@@ -2,12 +2,13 @@
  * lib/run-history.ts — thin domain wrapper over lib/state/run-history-store.ts.
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from "fs";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { repoDataDir, rtDir } from "../rt-paths.ts";
-import { closeStateDb } from "../state/index.ts";
+import { closeStateDb, getStateDb } from "../state/index.ts";
 import { appendRunHistory, readRunHistory, type RunHistoryEntry } from "../run-history.ts";
 
 function entry(overrides: Partial<RunHistoryEntry> = {}): RunHistoryEntry {
@@ -99,6 +100,56 @@ describe("run history — state.db persistence", () => {
       warnSpy.mockRestore();
     }
   });
+
+  test("appendRunHistory reached WITHOUT a prior read (the single-script rt run early-return path) still imports pre-existing history instead of stranding it", () => {
+    const path = legacyHistoryPath("repo-g");
+    mkdirSync(join(rtDir(), "repos", "repo-g"), { recursive: true });
+    const lines = [entry({ cmd: "pre-upgrade-1" }), entry({ cmd: "pre-upgrade-2" })].map((e) => JSON.stringify(e)).join("\n") + "\n";
+    writeFileSync(path, lines);
+
+    // No readRunHistory("repo-g") call before this — commands/run.ts's
+    // single-script early return hits appendRunHistory directly.
+    appendRunHistory("repo-g", entry({ cmd: "fresh" }));
+
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(`${path}.migrated`)).toBe(true);
+    expect(readRunHistory("repo-g").map((e) => e.cmd)).toEqual(["fresh", "pre-upgrade-2", "pre-upgrade-1"]);
+  });
+
+  test("real contended write: a held write lock during appendRunHistory's legacy import must NOT rename run-history.jsonl", () => {
+    // Materialize AND KEEP OPEN state.db's singleton (see the equivalent
+    // worktree registry test for why closeStateDb() here would make the
+    // wrong thing fail — the migration's own BEGIN IMMEDIATE, not the
+    // plain insert this test targets).
+    getStateDb();
+    const dbPath = join(rtDir(), "state.db");
+
+    const path = legacyHistoryPath("repo-h");
+    mkdirSync(join(rtDir(), "repos", "repo-h"), { recursive: true });
+    writeFileSync(path, JSON.stringify(entry({ cmd: "held-back" })) + "\n");
+
+    const blocker = new Database(dbPath);
+    blocker.exec("PRAGMA busy_timeout = 0;");
+    blocker.exec("BEGIN IMMEDIATE;");
+
+    try {
+      expect(() => appendRunHistory("repo-h", entry({ cmd: "new-during-contention" }))).not.toThrow();
+    } finally {
+      blocker.exec("ROLLBACK;");
+      blocker.close();
+    }
+
+    // Both the legacy import's insert AND this call's own append were
+    // swallowed by the same held lock — nothing may be destroyed.
+    expect(existsSync(path)).toBe(true);
+    expect(existsSync(`${path}.migrated`)).toBe(false);
+
+    // A retry once the lock is released recovers everything.
+    appendRunHistory("repo-h", entry({ cmd: "new-after-release" }));
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(`${path}.migrated`)).toBe(true);
+    expect(readRunHistory("repo-h").map((e) => e.cmd)).toEqual(["new-after-release", "held-back"]);
+  }, 20_000);
 
   test("appendRunHistory is best-effort: a persistence failure warns rather than throwing", () => {
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});

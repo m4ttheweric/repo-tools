@@ -35,7 +35,7 @@ import {
   userSettingsPath,
 } from "../rt-paths.ts";
 import { loadRepoIndex } from "../repo-index.ts";
-import { getKvValue, importLegacyJsonFile, renameLegacyOutOfTheWay, setKvValue } from "../state/index.ts";
+import { getKvValue, hasKvValue, importLegacyJsonFile, renameLegacyOutOfTheWay, setKvValue } from "../state/index.ts";
 import { identityFromRemote } from "../settings/identity.ts";
 import { listTeams } from "../settings/stores.ts";
 import { runCapture } from "../subprocess.ts";
@@ -121,8 +121,9 @@ export function writeInterceptRules(rules: InterceptRule[]): void {
  * generated the moment it's imported.
  */
 function readRulesFile(): RulesFile | null {
-  const cached = getKvValue<RulesFile | null>(INTERCEPTS_NS, INTERCEPTS_KEY, null);
-  if (cached) return cached;
+  if (hasKvValue(INTERCEPTS_NS, INTERCEPTS_KEY)) {
+    return getKvValue<RulesFile | null>(INTERCEPTS_NS, INTERCEPTS_KEY, null);
+  }
 
   const path = interceptsPath();
   const result = importLegacyJsonFile<RulesFile>(path, (json) => {
@@ -136,7 +137,7 @@ function readRulesFile(): RulesFile | null {
     const file: RulesFile = { rules: sanitizeRules(parsed?.rules), generatedAt };
     setKvValue(INTERCEPTS_NS, INTERCEPTS_KEY, file);
     return file;
-  });
+  }, { verifyPersisted: () => hasKvValue(INTERCEPTS_NS, INTERCEPTS_KEY) });
   return result.imported ? result.value! : null;
 }
 

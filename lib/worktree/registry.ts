@@ -1,6 +1,6 @@
 import { join } from "path";
 import { repoDataDir } from "../rt-paths.ts";
-import { getKvValue, hasKvValue, importLegacyJsonFile, renameLegacyOutOfTheWay, setKvValue } from "../state/index.ts";
+import { getKvValue, hasKvValue, importLegacyJsonFile, setKvValue } from "../state/index.ts";
 
 export type TreeKind = "main" | "ephemeral" | "unmanaged";
 export type TreeState = "creating" | "on-deck" | "claimed" | "disposable";
@@ -48,7 +48,7 @@ export function loadRegistry(repoName: string): TreeRecord[] {
     const trees = Array.isArray(parsed?.trees) ? (parsed.trees as TreeRecord[]) : [];
     setKvValue(WORKTREE_REGISTRY_NS, repoName, trees);
     return trees;
-  });
+  }, { verifyPersisted: () => hasKvValue(WORKTREE_REGISTRY_NS, repoName) });
   return result.imported ? result.value! : [];
 }
 
@@ -72,8 +72,14 @@ export function registryEpoch(repoName: string): number {
 }
 
 export function saveRegistry(repoName: string, trees: TreeRecord[]): void {
+  // Folds in (and safely imports/renames) any legacy worktrees.json first —
+  // every current call site loads before saving, but nothing enforced that,
+  // and a save reached without a prior load would otherwise strand an
+  // unread legacy file the moment this function's own write makes the store
+  // non-empty. loadRegistry() is the no-op it looks like once already
+  // migrated (one indexed point lookup).
+  loadRegistry(repoName);
   setKvValue(WORKTREE_REGISTRY_NS, repoName, trees);
-  renameLegacyOutOfTheWay(registryPath(repoName));
   epochs.set(repoName, registryEpoch(repoName) + 1);
 }
 

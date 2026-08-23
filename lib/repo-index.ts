@@ -19,11 +19,11 @@
  */
 
 import { execSync } from "child_process";
-import { existsSync, readdirSync, realpathSync, writeFileSync, type Dirent } from "fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, type Dirent } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join, resolve as resolvePath } from "path";
 import { repoDataDir, rtDir } from "./rt-paths.ts";
-import { importLegacyJsonFile, listKvValues, setKvValue } from "./state/index.ts";
+import { listKvValues, setKvValue } from "./state/index.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
 
@@ -80,22 +80,52 @@ function writeRepoIndexCompat(index: RepoIndex): void {
  * indexed on this machine short-circuits, so a live compat file (kept
  * current by every `updateRepoIndex` call below) is never re-imported over
  * itself.
+ *
+ * Deliberately NOT `lib/state/legacy-import.ts`'s `importLegacyJsonFile`:
+ * every other migrated path treats its legacy file as retired and safe to
+ * rename away once imported, but repos.json is the ONE path in the set with
+ * a second, ongoing job — `updateRepoIndex` below keeps it live as the
+ * out-of-process compat mirror gitq reads (see `repoIndexCompatPath`'s doc
+ * comment). Renaming it here, even briefly, would delete gitq's data source
+ * for every reader between this import and the next `updateRepoIndex` call
+ * — which, on a daemon that only primes the index at boot and never writes
+ * (lib/daemon/repo-index.ts), could be indefinite. So this import REFRESHES
+ * the mirror in place instead of renaming: the file is never deleted, only
+ * ever rewritten to the current index, exactly like a normal
+ * `updateRepoIndex` write would.
  */
 export function loadRepoIndex(): RepoIndex {
   const existing = listKvValues<string>(REPO_INDEX_NS);
   if (Object.keys(existing).length > 0) return existing;
 
-  const result = importLegacyJsonFile<RepoIndex>(repoIndexCompatPath(), (json) => {
-    const map = json && typeof json === "object" && !Array.isArray(json) ? (json as Record<string, unknown>) : {};
-    const imported: RepoIndex = {};
-    for (const [name, path] of Object.entries(map)) {
-      if (typeof path !== "string") continue;
-      setKvValue(REPO_INDEX_NS, name, path);
-      imported[name] = path;
-    }
-    return imported;
-  });
-  return result.imported ? result.value! : existing;
+  const path = repoIndexCompatPath();
+  if (!existsSync(path)) return existing;
+
+  let json: unknown;
+  try {
+    json = JSON.parse(readFileSync(path, "utf8"));
+  } catch (err) {
+    console.warn(`rt: legacy state file ${path} is corrupt JSON, leaving in place: ${(err as Error).message}`);
+    return existing;
+  }
+
+  const map = json && typeof json === "object" && !Array.isArray(json) ? (json as Record<string, unknown>) : {};
+  const imported: RepoIndex = {};
+  for (const [name, repoPath] of Object.entries(map)) {
+    if (typeof repoPath !== "string") continue;
+    // Best-effort per entry: a swallowed SQLITE_BUSY here still leaves the
+    // entry in `imported` below, so the mirror this function rewrites stays
+    // correct even for a row that didn't make it into state.db this time —
+    // unlike every other migrated path, nothing is deleted, so a missed row
+    // simply retries on the next call that finds the namespace still empty.
+    try {
+      setKvValue(REPO_INDEX_NS, name, repoPath);
+    } catch { /* best effort */ }
+    imported[name] = repoPath;
+  }
+
+  writeRepoIndexCompat({ ...existing, ...imported });
+  return Object.keys(imported).length > 0 ? imported : existing;
 }
 
 export function updateRepoIndex(repoName: string, repoRoot: string): void {
@@ -254,7 +284,16 @@ function buildRootSet(known: KnownRepo[]): RootEntry[] {
  * Used when rt is run outside a git repo to offer a picker.
  */
 export function getKnownRepos(): KnownRepo[] {
-  const index = loadRepoIndex();
+  // Same degrade-don't-crash rule as getRepoIdentity()'s index write: an
+  // unopenable state.db (root-owned after a `sudo rt …`) must not take down
+  // the `rt cd`/`rt run` picker — it falls back to the unregistered-scan
+  // results below, exactly like an empty index does.
+  let index: RepoIndex;
+  try {
+    index = loadRepoIndex();
+  } catch {
+    index = {};
+  }
   const repos: KnownRepo[] = [];
 
   for (const [repoName, mainPath] of Object.entries(index)) {
