@@ -11,7 +11,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -21,8 +21,10 @@ import {
   loadHooksConfig,
   regenerateHooksCache,
   saveHooksConfig,
+  toggleHooks,
   type HooksConfig,
 } from "../hooks.ts";
+import type { CommandContext } from "../../lib/command-tree.ts";
 import { repoDataDir, userSettingsPath } from "../../lib/rt-paths.ts";
 import { getSetting } from "../../lib/settings/resolve.ts";
 import { setSetting } from "../../lib/settings/write.ts";
@@ -217,6 +219,48 @@ describe("commands/hooks", () => {
       generateShims(dataDir, ["pre-push"]);
       const shim = readFileSync(join(dataDir, "hooks", "pre-push"), "utf8");
       expect(shim).not.toContain("on-deck");
+    });
+  });
+
+  // ─── rt hooks status self-heals the cache ───────────────────────────────────
+
+  describe("toggleHooks status regenerates the cache before displaying", () => {
+    function ctxFor(remoteUrl: string): CommandContext {
+      return { identity: { repoName: "repo", repoRoot, dataDir, remoteUrl, baseUrl: "" } };
+    }
+
+    test("stale cache + store-owned value -> status leaves hooks.json matching the resolved store value", async () => {
+      writeLegacy({ enabled: true, hooks: { "pre-commit": true, "pre-push": true } }); // stale, pre-store
+      writeStoreValue({ enabled: false, hooks: { "pre-commit": true } });
+
+      await toggleHooks(["status"], ctxFor("git@example.com:org/repo.git"));
+
+      expect(readCache()).toEqual({ enabled: false, hooks: { "pre-commit": true, "pre-push": true } });
+    });
+
+    test("the non-TTY no-subcommand fallback also self-heals", async () => {
+      writeLegacy({ enabled: true, hooks: {} });
+      writeStoreValue({ enabled: false, hooks: {} });
+
+      await toggleHooks([], ctxFor("git@example.com:org/repo.git")); // process.stdin.isTTY is false under the test runner
+
+      expect(readCache()).toEqual({ enabled: false, hooks: { "pre-commit": true, "pre-push": true } });
+    });
+
+    test("a regen failure during status does not throw, break the display, or change what's on disk", async () => {
+      writeStoreValue({ enabled: true, hooks: {} });
+      writeLegacy({ enabled: true, hooks: { "pre-commit": true, "pre-push": true } });
+      // Strip write permission on the FILE (not just the dir — an existing
+      // file's content can be overwritten without directory write access)
+      // so the cache write inside regenerateHooksCache fails with EACCES.
+      chmodSync(hooksConfigPath(dataDir), 0o400);
+      try {
+        await expect(toggleHooks(["status"], ctxFor("git@example.com:org/repo.git"))).resolves.toBeUndefined();
+      } finally {
+        chmodSync(hooksConfigPath(dataDir), 0o600);
+      }
+      // the pre-existing (now stale) file is untouched — the failed write never landed
+      expect(readCache()).toEqual({ enabled: true, hooks: { "pre-commit": true, "pre-push": true } });
     });
   });
 
