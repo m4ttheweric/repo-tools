@@ -33,6 +33,30 @@ Logging is structural, not per-feature. Outcomes are logged at central seams; fe
 
 **The catch policy:** never swallow errors in a seam. Below a logged seam, an empty catch is acceptable only for genuinely expected conditions (socket already closed, file already gone) — anything else logs at `warn` with `{ err }`.
 
+## Operating on this machine
+
+This repo's tooling runs as live services on the developer's own machine. Four
+rules, each written after it cost real damage:
+
+- **A built binary is only ever run under an isolated HOME** — `env -i HOME=<temp> …`,
+  every invocation, not just tests. The daemon shim and the compiled `rt` both
+  read `~/.mattstack` and will act on it: a single unisolated run started a real
+  daemon that spent minutes creating worktrees and running installs.
+- **Never rebuild, re-sign, or reinstall an app bundle macOS has blessed**
+  (`/Applications/mattstack.app`, `rt-tray/mattstack-dev.app`). Build into a
+  scratch directory instead. Re-signing invalidates Login Items and TCC grants,
+  and the failure is silent.
+- **Check `git branch --show-current` before syncing the main checkout.** It is
+  shared with other sessions and is what the dev-mode `rt` wrapper executes;
+  it is not always on `main`.
+- **Diagnose live services without starting competing instances.** An extra
+  daemon squats `rt.sock` and produces exactly the symptom — starts, binds
+  nothing, logs nothing — that then gets misdiagnosed as a permissions problem.
+
+A claimed recovery path (self-heal, fallback, retry) is load-bearing: trace the
+code that performs it before documenting it, or the docs will tell users to run
+something that does nothing.
+
 ## Footguns
 
 ### Module registry
