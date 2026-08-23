@@ -39,6 +39,18 @@ const VENDOR_ALLOWED_HOSTS = new Set(["herdr.dev", "claude.ai"]);
 
 export const BREW_FORMULAE: Record<string, string> = { herdr: "herdr", claude: "claude-code" };
 
+/**
+ * A team-declared `install.brew` runs as `brew install <formula>` — tap
+ * syntax (`owner/tap/formula`) taps an arbitrary GitHub repo and evaluates
+ * its Ruby, the same escalation R-T21-b closed for `install.url`. Only a
+ * bare homebrew-core formula name is eligible for the one-click Install
+ * button; anything else falls through to a shown-not-run remedy.
+ */
+const BARE_FORMULA_RE = /^[a-z0-9][a-z0-9@+._-]*$/;
+export function isValidBrewFormula(formula: string): boolean {
+  return BARE_FORMULA_RE.test(formula);
+}
+
 /** A team-declared `--version`/probe must never hang `rt tools install` forever. */
 const PROBE_TIMEOUT_MS = 5000;
 /** brew/vendor installs (and the vendor download step) are slow and network-bound; bounded, never run in tests. */
@@ -108,9 +120,11 @@ export async function installTool(p: Probes, tool: string, reqs: PackRequirement
   }
 
   const teamTool = reqs.flatMap((r) => r.tools).find((t) => t.name === tool);
+  const teamBrew = teamTool?.install?.brew;
+  const teamBrewValid = teamBrew !== undefined && isValidBrewFormula(teamBrew);
 
   const brewCheck = await p.exec(["brew", "--version"], { timeoutMs: PROBE_TIMEOUT_MS });
-  const formula = BREW_FORMULAE[tool] ?? teamTool?.install?.brew;
+  const formula = BREW_FORMULAE[tool] ?? (teamBrewValid ? teamBrew : undefined);
   if (brewCheck.code === 0 && formula) {
     return runInstallerAndVerify(p, tool, "brew", ["brew", "install", formula], `brew install ${formula}`, `installed via brew (${formula})`);
   }
@@ -127,6 +141,16 @@ export async function installTool(p: Probes, tool: string, reqs: PackRequirement
     throw new UserActionableError(
       "manual-install-required",
       `${tool} declares an install URL from a team pack — rt never auto-runs a team-authored install script; install it yourself: ${teamTool.install.url}`,
+    );
+  }
+
+  // A team-declared install.brew rt won't auto-run (tap syntax, a path, or
+  // anything else outside a bare formula name) is shown the same way, never
+  // silently dropped and never auto-executed — same trust boundary as above.
+  if (teamBrew !== undefined && !teamBrewValid) {
+    throw new UserActionableError(
+      "manual-install-required",
+      `${tool} declares install.brew "${teamBrew}" from a team pack — rt only auto-runs a bare formula name; install it yourself: brew install ${teamBrew}`,
     );
   }
 

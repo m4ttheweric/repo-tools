@@ -7,9 +7,11 @@
  */
 
 import { row, type Action, type Row } from "../contract.ts";
+import { isValidHostname, isValidHttpsUrl } from "../host-validate.ts";
 import type { SetupIntent } from "../intent.ts";
 import type { Probes } from "../probes.ts";
-import type { TeamSnapshot } from "../team-settings.ts";
+import type { TeamSnapshot, UserIntegrationOverrides } from "../team-settings.ts";
+import { withoutUrls } from "../../team/redact.ts";
 
 const LS_REMOTE_TIMEOUT_MS = 15000;
 /** Never prompts for credentials on a headless probe — an interactive prompt would hang setup indefinitely instead of surfacing the honest "no access yet" row. */
@@ -19,11 +21,6 @@ const AUTH_REFUSAL_PATTERN = /Authentication failed|403|Permission denied/;
 /** git had no credential to offer at all (no helper configured, and GIT_TERMINAL_PROMPT=0 suppressed the interactive prompt) — a could-not-determine, not a verdict that this identity was refused: rt holds its forge tokens in its own store, not necessarily in git's credential helper, so a user who DOES have access can hit this. */
 const NO_CREDENTIAL_PATTERN = /could not read Username/;
 const RECHECK_ACTION: Action = { type: "run", label: "Re-check", verb: ["setup", "status"] };
-
-/** Redacts `user:pass@`/`user@` userinfo from a URL embedded in git's own stderr — a remote of the form `https://user:token@host/x.git` must never reach a row's `detail`. */
-function redactCredentials(text: string): string {
-  return text.replace(/:\/\/[^\s/]+@/g, "://");
-}
 
 interface LsRemoteOutcome {
   status: "ready" | "needs-you" | "error";
@@ -44,7 +41,7 @@ async function lsRemoteOutcome(p: Probes, remote: string): Promise<LsRemoteOutco
     }
   }
   if (res.code === 124) return { status: "error", detail: "unreachable: git ls-remote timed out" };
-  const firstLine = redactCredentials(res.stderr.trim().split("\n")[0] || `exit ${res.code}`);
+  const firstLine = withoutUrls(res.stderr.trim().split("\n")[0] || `exit ${res.code}`);
   return { status: "error", detail: `unreachable: ${firstLine}` };
 }
 
@@ -60,15 +57,25 @@ async function teamRepoRow(p: Probes, team: TeamSnapshot, intent: SetupIntent | 
   return row({ ...base, status: outcome.status, detail: outcome.detail, action });
 }
 
-async function forgeRow(p: Probes, team: TeamSnapshot): Promise<Row> {
-  const base = { id: "access.forge", kind: "access" as const, title: "Forge reachability", why: "Confirms your network can reach the team's forge host before rt tries to open PRs/MRs there.", required: true, recheck: "on-activate" as const };
-  const host = team.integrations.forge?.host;
-  // No forge configured yet is resolved by an earlier screen, same as team-repo's missing branch.
-  if (!host) return row({ ...base, status: "missing", detail: "no forge configured yet" });
+/** A joined team names its own forge/switchboard host, but a team is not the user — probing (let alone authenticating against) that host is a network access rt takes on the user's behalf, so it waits for the same user-confirmed `rt.integrations` override ctxFor's credential validators require, rather than dialing an inviter-controlled host on its own. */
+function connectHostSteps(id: "gitlab" | "switchboard", declaredHost: string): Action {
+  return { type: "steps", label: "Show steps…", steps: [`Run: rt setup ${id} connect --host ${declaredHost}`, "This confirms the host yourself before rt talks to it"] };
+}
 
-  const res = await p.fetch(`https://${host}/`, { method: "HEAD", timeoutMs: 5000 });
-  if (res.status > 0) return row({ ...base, status: "ready", detail: `${host} reachable (status ${res.status})` });
-  return row({ ...base, status: "error", detail: `couldn't reach ${host} — check your network or proxy`, action: RECHECK_ACTION });
+async function forgeRow(p: Probes, team: TeamSnapshot, overrides: UserIntegrationOverrides): Promise<Row> {
+  const base = { id: "access.forge", kind: "access" as const, title: "Forge reachability", why: "Confirms your network can reach the team's forge host before rt tries to open PRs/MRs there.", required: true, recheck: "on-activate" as const };
+  const declaredHost = team.integrations.forge?.host;
+  // No forge configured yet is resolved by an earlier screen, same as team-repo's missing branch.
+  if (!declaredHost) return row({ ...base, status: "missing", detail: "no forge configured yet" });
+
+  const confirmedHost = overrides.forgeHost && isValidHostname(overrides.forgeHost) ? overrides.forgeHost : null;
+  if (!confirmedHost) {
+    return row({ ...base, status: "needs-you", detail: `your team declares forge host "${declaredHost}" — unverified; confirm it yourself before rt reaches out to it`, action: connectHostSteps("gitlab", declaredHost) });
+  }
+
+  const res = await p.fetch(`https://${confirmedHost}/`, { method: "HEAD", timeoutMs: 5000 });
+  if (res.status > 0) return row({ ...base, status: "ready", detail: `${confirmedHost} reachable (status ${res.status})` });
+  return row({ ...base, status: "error", detail: `couldn't reach ${confirmedHost} — check your network or proxy`, action: RECHECK_ACTION });
 }
 
 async function repoRow(p: Probes, identity: string): Promise<Row> {
@@ -84,9 +91,9 @@ async function repoRow(p: Probes, identity: string): Promise<Row> {
   return row({ ...base, status: outcome.status, detail: outcome.detail });
 }
 
-async function switchboardRow(p: Probes, team: TeamSnapshot): Promise<Row | null> {
-  const url = team.integrations.switchboard?.url;
-  if (!url) return null;
+async function switchboardRow(p: Probes, team: TeamSnapshot, overrides: UserIntegrationOverrides): Promise<Row | null> {
+  const declaredUrl = team.integrations.switchboard?.url;
+  if (!declaredUrl) return null;
   const base = {
     id: "access.switchboard",
     kind: "access" as const,
@@ -95,18 +102,24 @@ async function switchboardRow(p: Probes, team: TeamSnapshot): Promise<Row | null
     required: false,
     optionalNote: "Works without this; only matters if your pack uses switchboard.",
   };
-  const res = await p.fetch(`${url}/health`);
+
+  const confirmedUrl = overrides.switchboardUrl && isValidHttpsUrl(overrides.switchboardUrl) ? overrides.switchboardUrl : null;
+  if (!confirmedUrl) {
+    return row({ ...base, status: "needs-you", detail: `your team declares switchboard at "${declaredUrl}" — unverified; confirm it yourself before rt reaches out to it`, action: connectHostSteps("switchboard", declaredUrl) });
+  }
+
+  const res = await p.fetch(`${confirmedUrl}/health`);
   if (res.status === 200) return row({ ...base, status: "ready", detail: "reachable" });
-  if (res.status === 0) return row({ ...base, status: "error", detail: `couldn't reach ${url} — check your network or proxy` });
+  if (res.status === 0) return row({ ...base, status: "error", detail: `couldn't reach ${confirmedUrl} — check your network or proxy` });
   return row({ ...base, status: "error", detail: `switchboard /health returned ${res.status}` });
 }
 
 /** Every probe here is independent (different remote/host/URL each), so they run concurrently — worst-case latency is the slowest single probe, not their sum; team-repo/forge/switchboard/each tracking identity all keep their own bounded timeout. */
-export async function accessRows(p: Probes, team: TeamSnapshot, intent: SetupIntent | null): Promise<Row[]> {
+export async function accessRows(p: Probes, team: TeamSnapshot, intent: SetupIntent | null, overrides: UserIntegrationOverrides = {}): Promise<Row[]> {
   const [teamRepo, forge, switchboard, ...repos] = await Promise.all([
     teamRepoRow(p, team, intent),
-    forgeRow(p, team),
-    switchboardRow(p, team),
+    forgeRow(p, team, overrides),
+    switchboardRow(p, team, overrides),
     ...team.trackingIdentities.map((identity) => repoRow(p, identity)),
   ]);
 

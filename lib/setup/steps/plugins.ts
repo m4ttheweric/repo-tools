@@ -14,8 +14,8 @@
 
 import { join } from "path";
 import { resolveTool } from "../../deps/resolve.ts";
+import { stripJsonc } from "../../jsonc.ts";
 import { getSetting } from "../../settings/resolve.ts";
-import { stripJsonc } from "../../skills/sources.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
 import { materializeSkills } from "../skills-materialize.ts";
@@ -61,13 +61,21 @@ function teamMarketplacePath(home: string, slug: string): string {
   return join(home, ".mattstack", "teams", slug, ".claude-plugin", "marketplace.json");
 }
 
-/** Absent or unparsable both read as "no team marketplace" — a fresh clone or a marketplace.json this repo doesn't own yet is never a step failure. */
-function readTeamMarketplace(p: Pick<Probes, "readFile" | "home">, slug: string): TeamMarketplaceFile | null {
-  const raw = p.readFile(teamMarketplacePath(p.home, slug));
+/**
+ * Absent read as "no team marketplace" — a fresh clone this repo doesn't own
+ * yet is never a step failure. An unparsable file is DIFFERENT: the team
+ * authored it and its plugins would otherwise vanish from a `done` step with
+ * no trace, so the caller logs the parse failure by name rather than
+ * treating it the same as "nothing here yet".
+ */
+function readTeamMarketplace(ctx: ApplyContext, slug: string): TeamMarketplaceFile | null {
+  const path = teamMarketplacePath(ctx.p.home, slug);
+  const raw = ctx.p.readFile(path);
   if (raw === null) return null;
   try {
     return JSON.parse(stripJsonc(raw)) as TeamMarketplaceFile;
-  } catch {
+  } catch (err) {
+    ctx.log("plugins.install", `${path} did not parse as JSONC — its plugins are omitted this run (${err instanceof Error ? err.message : String(err)})`);
     return null;
   }
 }
@@ -76,21 +84,46 @@ function teamMarketplaceDir(p: Pick<Probes, "home">, slug: string): string {
   return join(p.home, ".mattstack", "teams", slug);
 }
 
+/** A scope's resolved value is team-authored the moment `team`/`team.repo` is anywhere in its provenance — for a `merge:"replace"` key that's a single entry, present only when no stronger (user) scope overrode it. */
+function isTeamAuthored(provenance: { scope: string }[]): boolean {
+  return provenance.some((p) => p.scope === "team" || p.scope === "team.repo");
+}
+
+/**
+ * rt's own marketplace is added FIRST, ahead of anything team- or
+ * user-declared: a hostile marketplace claiming the name "mattstack" would
+ * otherwise make rt's own subsequent `add` read as "already exists" (see
+ * `isAlready`), silently substituting the attacker's source for every
+ * BASE_PLUGINS install that follows.
+ */
 function computeMarketplaces(ctx: ApplyContext): string[] {
   const userSet = stringSettingArray(ctx, "claude.marketplaces", getSetting<unknown>("claude.marketplaces").value);
   const mattstackSource = ctx.p.env.RT_MATTSTACK_MARKETPLACE || MATTSTACK_MARKETPLACE_SOURCE;
   const teamSource = ctx.team.slug ? [teamMarketplaceDir(ctx.p, ctx.team.slug)] : [];
-  return dedupe([...userSet, mattstackSource, ...teamSource]);
+  return dedupe([mattstackSource, ...teamSource, ...userSet]);
 }
 
-function computePlugins(ctx: ApplyContext, teamMarketplace: TeamMarketplaceFile | null): string[] {
-  const userSet = stringSettingArray(ctx, "claude.plugins", getSetting<unknown>("claude.plugins").value);
+interface ComputedPlugins {
+  /** rt's own baseline, plus anything the USER explicitly chose (claude.plugins resolved from user/machine scope) — installed and enabled. */
+  trusted: string[];
+  /** Reached this list only via team-scope settings or the team's marketplace.json — installed, never auto-enabled; a joined team does not get to grant itself execution on the strength of its own settings file. */
+  teamAuthored: string[];
+}
+
+function computePlugins(ctx: ApplyContext, teamMarketplace: TeamMarketplaceFile | null): ComputedPlugins {
+  const resolved = getSetting<unknown>("claude.plugins");
+  const settingPlugins = stringSettingArray(ctx, "claude.plugins", resolved.value);
+  const settingIsTeamAuthored = isTeamAuthored(resolved.provenance);
+
   const marketplaceName = teamMarketplace?.name ?? ctx.team.slug;
   const teamPlugins = (teamMarketplace?.plugins ?? [])
     .map((plugin) => plugin.name)
     .filter((name): name is string => typeof name === "string" && name.length > 0)
     .map((name) => `${name}@${marketplaceName}`);
-  return dedupe([...userSet, ...BASE_PLUGINS, ...teamPlugins]);
+
+  const trusted = dedupe([...(settingIsTeamAuthored ? [] : settingPlugins), ...BASE_PLUGINS]);
+  const teamAuthored = dedupe([...(settingIsTeamAuthored ? settingPlugins : []), ...teamPlugins]).filter((p) => !trusted.includes(p));
+  return { trusted, teamAuthored };
 }
 
 async function runMaterializeAfterInstall(ctx: ApplyContext): Promise<string> {
@@ -120,9 +153,10 @@ async function pluginsInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
       : { state: "failed", detail, remedy: "Install Claude Code (Tools row), then Retry." };
   }
 
-  const teamMarketplace = ctx.team.slug ? readTeamMarketplace(ctx.p, ctx.team.slug) : null;
+  const teamMarketplace = ctx.team.slug ? readTeamMarketplace(ctx, ctx.team.slug) : null;
   const marketplaces = computeMarketplaces(ctx);
-  const plugins = computePlugins(ctx, teamMarketplace);
+  const { trusted: trustedPlugins, teamAuthored: teamAuthoredPlugins } = computePlugins(ctx, teamMarketplace);
+  const allPlugins = dedupe([...trustedPlugins, ...teamAuthoredPlugins]);
   const configDirs = claudeConfigDirs(ctx.p, []);
 
   for (const dir of configDirs) {
@@ -135,11 +169,17 @@ async function pluginsInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
       }
     }
 
-    for (const plugin of plugins) {
+    for (const plugin of allPlugins) {
       const install = await ctx.p.exec([...claude.exec, "plugin", "install", plugin], { env, timeoutMs: PLUGIN_EXEC_TIMEOUT_MS });
       if (install.code !== 0 && !isAlready(install)) {
         return { state: "failed", detail: `claude plugin install exited ${install.code}`, remedy: RETRY_REMEDY };
       }
+
+      // A team-authored plugin is installed (Install already gates who gets
+      // here) but never auto-enabled — joining a team must not also hand it
+      // execution on the user's next Claude run. Enabling it is the user's
+      // own decision, made outside this non-interactive step.
+      if (teamAuthoredPlugins.includes(plugin)) continue;
 
       // `enable` is best-effort: an older claude build without the
       // subcommand must never fail an otherwise-successful install.
@@ -150,10 +190,15 @@ async function pluginsInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
     }
   }
 
-  updateSetupState(ctx.p, (s) => ({ ...s, marketplaces: [...s.marketplaces, ...marketplaces], plugins: [...s.plugins, ...plugins] }));
+  updateSetupState(ctx.p, (s) => ({ ...s, marketplaces: [...s.marketplaces, ...marketplaces], plugins: [...s.plugins, ...allPlugins] }));
+
+  if (teamAuthoredPlugins.length > 0) {
+    ctx.log("plugins.install", `installed but NOT enabled (team-authored, needs your own \`claude plugin enable <name>\`): ${teamAuthoredPlugins.join(", ")}`);
+  }
 
   const materializeDetail = await runMaterializeAfterInstall(ctx);
-  return { state: "done", detail: `${marketplaces.length} marketplace(s), ${plugins.length} plugin(s) across ${configDirs.length} config dir(s) · ${materializeDetail}` };
+  const pendingNote = teamAuthoredPlugins.length > 0 ? ` · ${teamAuthoredPlugins.length} awaiting your approval to enable: ${teamAuthoredPlugins.join(", ")}` : "";
+  return { state: "done", detail: `${marketplaces.length} marketplace(s), ${allPlugins.length} plugin(s) across ${configDirs.length} config dir(s) · ${materializeDetail}${pendingNote}` };
 }
 
 /** The plugins.install step body — also `rt setup pack`'s first phase, so it lives under one name rather than two copies of the same try/catch. */

@@ -24,6 +24,7 @@ import { createApplyContext, runApplyWith, type ApplyContext, type CreateApplyCo
 import { envelope, STEP_IDS, type ConnectField, type Integration, type StepId } from "../lib/setup/contract.ts";
 import { createHumanEmitter, createNdjsonEmitter } from "../lib/setup/emit.ts";
 import { UserActionableError, userErrorPayload } from "../lib/setup/errors.ts";
+import { isValidHostname, isValidHttpsUrl } from "../lib/setup/host-validate.ts";
 import { integrationDef, type ValidateCtx } from "../lib/setup/integrations.ts";
 import { clearIntent, readIntent, teamRefFromIntent, writeIntent } from "../lib/setup/intent.ts";
 import { NO_MANIFEST_DETAIL, setupPackFlow } from "../lib/setup/pack.ts";
@@ -32,7 +33,7 @@ import { createRealProbes, type Probes } from "../lib/setup/probes.ts";
 import { DEFAULT_CALLBACK_PORT, DEFAULT_SCOPE_NEEDS, buildSlackManifest } from "../lib/setup/slack-app.ts";
 import { STEPS } from "../lib/setup/steps/index.ts";
 import { readStagedSecret, stageSecret } from "../lib/setup/staging.ts";
-import { readTeamSnapshot, type TeamSnapshot } from "../lib/setup/team-settings.ts";
+import { readTeamSnapshot, readUserIntegrationOverrides, type TeamSnapshot, type UserIntegrationOverrides } from "../lib/setup/team-settings.ts";
 import type { Plan, Row, RowStatus } from "../lib/setup/contract.ts";
 import { createRelayClient, inviteRelayUrl, type RelayClient } from "../lib/team/relay-client.ts";
 import type { SecretPresence } from "../lib/setup/validators/accounts.ts";
@@ -52,6 +53,8 @@ export interface SetupDeps {
    * `accountRows`'s tests pass a `TeamSnapshot` literal straight in.
    */
   teamSnapshot?: () => TeamSnapshot;
+  /** Optional: injects `rt.integrations` (user-scope) directly instead of resolving it through `getSetting` — same rationale as `teamSnapshot`. */
+  userIntegrationOverrides?: () => UserIntegrationOverrides;
 }
 
 export function realSetupDeps(): SetupDeps {
@@ -587,16 +590,32 @@ function snapshotFor(deps: SetupDeps): TeamSnapshot {
   return deps.teamSnapshot ? deps.teamSnapshot() : realResolveTeamSnapshot(deps.probes);
 }
 
-function ctxFor(id: Integration, team: TeamSnapshot): ValidateCtx {
-  const host =
-    id === "gitlab"
-      ? team.integrations.forge?.provider === "gitlab"
-        ? team.integrations.forge.host
-        : null
-      : id === "switchboard"
-        ? (team.integrations.switchboard?.url ?? null)
-        : null;
-  return { host, team: { slug: team.slug, remote: team.remote }, linearTeamKey: team.integrations.linear?.teamKey ?? null };
+/** `deps.userIntegrationOverrides` when a caller injected one (tests); the real resolver otherwise. */
+function overridesFor(deps: SetupDeps): UserIntegrationOverrides {
+  return deps.userIntegrationOverrides ? deps.userIntegrationOverrides() : readUserIntegrationOverrides();
+}
+
+/**
+ * A joined team's `mattstack.integrations` names where a credential goes, but
+ * a team is not the user — `host` is populated ONLY from `overrides`
+ * (user-scope, set by an explicit `connect --host`), and only once it
+ * re-passes shape validation (a stale/hand-edited store value is never
+ * trusted either). The team's own declaration still reaches `declaredHost`,
+ * for the row/validator to show honestly without ever fetching against it.
+ */
+function ctxFor(id: Integration, team: TeamSnapshot, overrides: UserIntegrationOverrides): ValidateCtx {
+  const base = { team: { slug: team.slug, remote: team.remote }, linearTeamKey: team.integrations.linear?.teamKey ?? null };
+  if (id === "gitlab") {
+    const declaredHost = team.integrations.forge?.provider === "gitlab" ? team.integrations.forge.host : null;
+    const host = overrides.forgeHost && isValidHostname(overrides.forgeHost) ? overrides.forgeHost : null;
+    return { ...base, host, declaredHost };
+  }
+  if (id === "switchboard") {
+    const declaredHost = team.integrations.switchboard?.url ?? null;
+    const host = overrides.switchboardUrl && isValidHttpsUrl(overrides.switchboardUrl) ? overrides.switchboardUrl : null;
+    return { ...base, host, declaredHost };
+  }
+  return { ...base, host: null };
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -679,7 +698,7 @@ async function evalSlack(p: Probes, secrets: SecretPresence, snapshot: TeamSnaps
   }
   const stored = await secrets.has(def.secret!.domain, def.secret!.key);
   if (stored === null) return { status: "missing", detail: "no Slack account connected", scopesSeen: [] };
-  return nonErrorEval(await def.validate(p, stored, ctxFor("slack", snapshot)));
+  return nonErrorEval(await def.validate(p, stored, ctxFor("slack", snapshot, {})));
 }
 
 async function evalGeneric(id: Integration, p: Probes, secrets: SecretPresence, ctx: ValidateCtx): Promise<IntegrationEval> {
@@ -697,7 +716,7 @@ export async function integrationStatus(id: Integration, args: string[], deps: S
   const verb = `setup ${id} status`;
   try {
     const snapshot = snapshotFor(deps);
-    const ctx = ctxFor(id, snapshot);
+    const ctx = ctxFor(id, snapshot, overridesFor(deps));
     const r =
       id === "github" ? await evalGithub(deps.probes, deps.secrets, ctx)
       : id === "slack" ? await evalSlack(deps.probes, deps.secrets, snapshot)
@@ -740,10 +759,31 @@ function extractFieldValue(field: ConnectField, input: unknown): string | null {
   return null;
 }
 
+/** Bare hostname for gitlab, full https URL for switchboard — the two shapes `--host` accepts, matching what `ctxFor` will demand back before trusting it. */
+function hostFlagValid(id: Integration, host: string): boolean {
+  return id === "gitlab" ? isValidHostname(host) : isValidHttpsUrl(host);
+}
+
 async function connectCredential(id: Integration, args: string[], deps: ConnectDeps): Promise<void> {
   const def = integrationDef(id);
   const field = def.fields[0];
-  const ctx = ctxFor(id, snapshotFor(deps));
+
+  // A team can declare a self-hosted forge/switchboard, but that declaration
+  // is never sent a credential on its own — the user confirms it once, here,
+  // by passing --host; ctxFor then only ever trusts the confirmed value.
+  const hostFlag = id === "gitlab" || id === "switchboard" ? flagValue(args, "--host") : undefined;
+  if (hostFlag !== undefined && !hostFlagValid(id, hostFlag)) {
+    throw new UserActionableError(
+      "bad-host",
+      id === "gitlab"
+        ? `--host must be a bare hostname (e.g. gitlab.example.com), got "${hostFlag}"`
+        : `--host must be a valid https URL (e.g. https://switchboard.example.com), got "${hostFlag}"`,
+    );
+  }
+  const overrides = overridesFor(deps);
+  const confirmedOverrides: UserIntegrationOverrides =
+    hostFlag === undefined ? overrides : id === "gitlab" ? { ...overrides, forgeHost: hostFlag } : { ...overrides, switchboardUrl: hostFlag };
+  const ctx = ctxFor(id, snapshotFor(deps), confirmedOverrides);
 
   let value: string;
   let sourceDetail: string | null = null;
@@ -777,6 +817,10 @@ async function connectCredential(id: Integration, args: string[], deps: ConnectD
   }
   if (result.status === "error") throw new UserActionableError("unreachable", result.detail);
 
+  // Only reached once the host just validated a real credential against a
+  // real service — never persisted on the strength of the flag alone.
+  if (hostFlag !== undefined) deps.writeSetting("rt.integrations", confirmedOverrides, "user");
+
   let staged = false;
   if (def.secret) {
     staged = (await storeCredential(deps, def.secret.domain, def.secret.key, value)).staged;
@@ -794,7 +838,7 @@ async function connectCredential(id: Integration, args: string[], deps: ConnectD
 async function connectCliSession(id: "doppler" | "ldcli", args: string[], deps: ConnectDeps): Promise<void> {
   await deps.probes.exec(id === "doppler" ? ["doppler", "login"] : ["ldcli", "login"], { inherit: true });
   const def = integrationDef(id);
-  const ctx = ctxFor(id, snapshotFor(deps));
+  const ctx = ctxFor(id, snapshotFor(deps), overridesFor(deps));
   const result = await def.validate(deps.probes, "", ctx);
   if (result.status === "invalid") {
     printIntegrationResult(deps, args.includes("--json"), { integration: id, status: "invalid", detail: result.detail, scopesSeen: result.scopesSeen });

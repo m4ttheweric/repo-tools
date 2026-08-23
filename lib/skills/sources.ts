@@ -2,16 +2,13 @@ import { execSync } from "child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "fs";
 import { join, relative } from "path";
 import { parse as parseYaml } from "yaml";
+import { stripJsonc } from "../jsonc.ts";
 import type { AttachmentSource, SlotSpec, StepSource, VerbDef } from "./types.ts";
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 
-export function stripJsonc(raw: string): string {
-  return raw
-    .split("\n")
-    .filter((line) => !line.trim().startsWith("//"))
-    .join("\n");
-}
+/** Single definition lives in lib/jsonc.ts — a line-filter fork here previously missed block comments, trailing commas, and inline `//` after content. */
+export { stripJsonc };
 
 export function stripFrontmatter(
   md: string,
