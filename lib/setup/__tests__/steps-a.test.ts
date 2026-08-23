@@ -169,6 +169,23 @@ describe("home.init", () => {
     expect(homeInitStep.applies(restoring)).toBe(false);
   });
 
+  test("does not apply non-interactively with no RT_HOME_URL — would target a repo this operator does not own", () => {
+    const { ctx } = makeCtx(fakeProbes({ env: {} }), { nonInteractive: true });
+    expect(homeInitStep.applies(ctx)).toBe(false);
+  });
+
+  test("applies non-interactively when RT_HOME_URL names the repo to clone", () => {
+    const { ctx } = makeCtx(fakeProbes({ env: { RT_HOME_URL: "https://example.com/o/home.git" } }), { nonInteractive: true });
+    expect(homeInitStep.applies(ctx)).toBe(true);
+  });
+
+  // The gate must not quiet a headless run by disabling the step for real
+  // users: interactively, a missing RT_HOME_URL is answerable.
+  test("still applies interactively with no RT_HOME_URL — a human can supply one or authenticate", () => {
+    const { ctx } = makeCtx(fakeProbes({ env: {} }), { nonInteractive: false });
+    expect(homeInitStep.applies(ctx)).toBe(true);
+  });
+
   test("already cloned + key present -> done, never re-runs `rt home init`", async () => {
     const p = fakeProbes({ home: "/fake-home", dirs: { "/fake-home/.mattstack/user": [".git"] }, files: { "/fake-home/.mattstack/user/.git": "gitdir" } });
     const { ctx } = makeCtx(p, { secrets: fakeSecrets(fakeAgeKeySeamWithKey()) });
