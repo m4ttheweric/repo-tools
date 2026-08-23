@@ -164,6 +164,12 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: scripts/release/notarize.sh rt-tray/mattstack.app
 
+      # After notarize, not before: this asserts what a user's machine
+      # enforces on first launch (stapled ticket + an offline Gatekeeper
+      # accept), which the pre-notarize contract check cannot see.
+      - name: Assert Gatekeeper accepts the notarized app
+        run: rt-tray/check-bundle.sh --app rt-tray/mattstack.app --notarized
+
       # ── Artifacts ────────────────────────────────────────────────────────────
       - name: Make zip
         shell: bash
