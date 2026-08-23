@@ -113,7 +113,7 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
   });
 
   /** Writes the real bundle (deps.lock, rt binary, whichever of deck/gitq/board are requested) to disk and points `mattstack.appPath` at it, then returns a fakeProbes mirroring the same layout so the Probes-side `exists`/`readFile` calls agree with what's really on disk. `deck` is always included — every deck.managed test needs the gate to pass; omit "gitq" or "board" from `tools` to simulate either not being bundled yet. */
-  function bundledProbes(opts: { tools?: ("gitq" | "board")[]; overrides?: Partial<Parameters<typeof fakeProbes>[0]> } = {}): ReturnType<typeof fakeProbes> {
+  function bundledProbes(opts: { tools?: ("gitq" | "board" | "console")[]; overrides?: Partial<Parameters<typeof fakeProbes>[0]> } = {}): ReturnType<typeof fakeProbes> {
     const names = ["deck", ...(opts.tools ?? ["gitq"])];
     mkdirSync(join(appRoot, "Contents", "Resources"), { recursive: true });
     mkdirSync(join(appRoot, "Contents", "MacOS"), { recursive: true });
@@ -354,9 +354,9 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(p.calls.exec).toEqual([]);
     });
 
-    test("healthy + board bundled: adopts, repoints via PATCH, registers gitq", async () => {
+    test("healthy + board bundled: adopts, repoints via PATCH, registers gitq and console as mattstack-managed", async () => {
       const p = bundledProbes({
-        tools: ["gitq", "board"],
+        tools: ["gitq", "board", "console"],
         overrides: {
           files: { [join(home, ".mattstack", "deck", "api.json")]: JSON.stringify({ port: 4100 }) },
           fetch: healthyFetch(4100),
@@ -368,17 +368,26 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       const outcome = await deckManagedStep.run(ctx);
       expect(outcome.state).toBe("done");
       expect(detailOf(outcome)).toContain("repointed");
-      expect(detailOf(outcome)).toContain("gitq registered");
+      expect(detailOf(outcome)).toContain("gitq registered (managed)");
+      expect(detailOf(outcome)).toContain("console registered (managed)");
 
       const deckBin = join(appRoot, HELPERS_DIR, "deck");
       expect(p.calls.exec[0]).toEqual([deckBin, "adopt", "mrs", "--as", "board", "--json"]);
-      expect(p.calls.exec[1]).toEqual([deckBin, "add", "gitq", "--cmd", join(appRoot, HELPERS_DIR, "gitq"), "--managed-by", "mattstack", "--host", "gitq.mattstack"]);
+      // `deck add` alone leaves the record managedBy:"user" — invisible to
+      // `deck remove --managed` — so every app is added THEN adopted. The
+      // registrar id is "rt"; deck renders that as "mattstack".
+      // gitq's bare argv is its CLI — deck must supervise `gitq board`, the
+      // server verb, not a command that prints usage and exits.
+      expect(p.calls.exec[1]).toEqual([deckBin, "add", "gitq", "--cmd", `${join(appRoot, HELPERS_DIR, "gitq")} board`, "--dir", join(home, ".mattstack", "gitq")]);
+      expect(p.calls.exec[2]).toEqual([deckBin, "adopt", "gitq", "--managed-by", "rt", "--json"]);
+      expect(p.calls.exec[3]).toEqual([deckBin, "add", "console", "--cmd", join(appRoot, HELPERS_DIR, "console"), "--dir", join(home, ".mattstack", "console")]);
+      expect(p.calls.exec[4]).toEqual([deckBin, "adopt", "console", "--managed-by", "rt", "--json"]);
       expect(p.calls.fetch).toContain("http://127.0.0.1:4100/api/v1/apps/board");
     });
 
     test("healthy + board NOT bundled: adopts, skips the repoint honestly", async () => {
       const p = bundledProbes({
-        tools: ["gitq"],
+        tools: ["gitq", "console"],
         overrides: {
           files: { [join(home, ".mattstack", "deck", "api.json")]: JSON.stringify({ port: 4100 }) },
           fetch: healthyFetch(4100),
@@ -438,9 +447,13 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       });
       const { ctx, logs } = makeCtx(p);
       const outcome = await deckManagedStep.run(ctx);
-      expect(outcome).toEqual({ state: "done", detail: "board adopted (repointed); gitq not registered: not bundled" });
+      expect(outcome).toEqual({
+        state: "done",
+        detail: "board adopted (repointed); gitq not registered: not bundled; console not registered: not bundled",
+      });
       expect(logs.some((l) => l.line.includes("gitq") && l.line.includes("not bundled"))).toBe(true);
-      expect(p.calls.exec).toHaveLength(1); // only the adopt — no `deck add gitq` with a null bin
+      expect(logs.some((l) => l.line.includes("console") && l.line.includes("not bundled"))).toBe(true);
+      expect(p.calls.exec).toHaveLength(1); // only the adopt — no `deck add` with a null bin
     });
 
     test("gitq's real 'deck add' is a stub (MAT-384): a driver-fatal response is logged and tallied, never fails the run", async () => {
@@ -470,7 +483,11 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       });
       const { ctx } = makeCtx(p);
       const outcome = await deckManagedStep.run(ctx);
-      expect(outcome).toEqual({ state: "done", detail: "board adopted (repointed); gitq already registered" });
+      // "name taken" on add is not the end of the story: the adopt still runs,
+      // because a record left over from an earlier add may still be
+      // managedBy:"user" and would survive uninstall unclaimed.
+      expect(detailOf(outcome)).toContain("gitq already registered (managed)");
+      expect(p.calls.exec.some((argv) => argv.includes("adopt") && argv.includes("gitq"))).toBe(true);
     });
 
     test("fresh install (no legacy 'mrs'): adopt answers 'unknown app' — skips the board leg honestly, run continues past deck.managed", async () => {
@@ -479,13 +496,19 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
         overrides: {
           files: { [join(home, ".mattstack", "deck", "api.json")]: JSON.stringify({ port: 4100 }) },
           fetch: healthyFetch(4100),
-          exec: async (argv) => (argv.includes("adopt") ? { code: 1, stdout: '{"adopted":false,"error":"unknown app"}', stderr: "" } : ok("")),
+          // Scoped to the legacy-mrs adopt only: the gitq/console adopts that
+          // follow are a different call and must still succeed, or this test
+          // would assert the unknown-app path for all three at once.
+          exec: async (argv) => (argv.includes("adopt") && argv.includes("mrs") ? { code: 1, stdout: '{"adopted":false,"error":"unknown app"}', stderr: "" } : ok("")),
         },
       });
       const { ctx } = makeCtx(p);
       const outcome = await deckManagedStep.run(ctx);
       // "done", not "failed" — the run is free to proceed to skills.materialize/board.keys/cron.triage next.
-      expect(outcome).toEqual({ state: "done", detail: "board not adopted (no legacy mrs to adopt); gitq registered" });
+      expect(outcome).toEqual({
+        state: "done",
+        detail: "board not adopted (no legacy mrs to adopt); gitq registered (managed); console not registered: not bundled",
+      });
       // No repoint PATCH was issued — there was nothing to repoint.
       expect(p.calls.fetch.some((u) => u.includes("/api/v1/apps/board"))).toBe(false);
     });
@@ -508,8 +531,14 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       });
       const { ctx: first } = makeCtx(p);
       const { ctx: second } = makeCtx(p);
-      expect(await deckManagedStep.run(first)).toEqual({ state: "done", detail: "board adopted (repointed); gitq registered" });
-      expect(await deckManagedStep.run(second)).toEqual({ state: "done", detail: "board adopted (repointed); gitq already registered" });
+      expect(await deckManagedStep.run(first)).toEqual({
+        state: "done",
+        detail: "board adopted (repointed); gitq registered (managed); console not registered: not bundled",
+      });
+      expect(await deckManagedStep.run(second)).toEqual({
+        state: "done",
+        detail: "board adopted (repointed); gitq already registered (managed); console not registered: not bundled",
+      });
     });
   });
 
