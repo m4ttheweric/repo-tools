@@ -25,7 +25,7 @@
  * decision logic in one (testable, TypeScript) place.
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join, relative } from "path";
 import {
@@ -35,7 +35,7 @@ import {
   userSettingsPath,
 } from "../rt-paths.ts";
 import { loadRepoIndex } from "../repo-index.ts";
-import { getKvValue, setKvValue } from "../state/index.ts";
+import { getKvValue, importLegacyJsonFile, renameLegacyOutOfTheWay, setKvValue } from "../state/index.ts";
 import { identityFromRemote } from "../settings/identity.ts";
 import { listTeams } from "../settings/stores.ts";
 import { runCapture } from "../subprocess.ts";
@@ -64,17 +64,9 @@ export const GENERATED_MARKER = "# rt intercept shim — generated; do not edit 
 const INTERCEPTS_NS = "intercepts";
 const INTERCEPTS_KEY = "rules";
 
-/** Retired storage location — kept only so a leftover pre-migration file can be cleaned up. */
+/** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
 export function interceptsPath(): string {
   return join(rtDir(), "intercepts.json");
-}
-
-function unlinkLegacyIntercepts(): void {
-  try {
-    unlinkSync(interceptsPath());
-  } catch {
-    // already gone, or never existed
-  }
 }
 
 interface RulesFile {
@@ -118,12 +110,38 @@ function sanitizeRules(raw: unknown): InterceptRule[] {
 export function writeInterceptRules(rules: InterceptRule[]): void {
   const file: RulesFile = { rules, generatedAt: Date.now() };
   setKvValue(INTERCEPTS_NS, INTERCEPTS_KEY, file);
-  unlinkLegacyIntercepts();
+  renameLegacyOutOfTheWay(interceptsPath());
+}
+
+/**
+ * The legacy intercepts.json predates `generatedAt` (staleness used the
+ * file's own mtime instead — see staleIntercepts below); imported rows get
+ * the file's mtime as their generatedAt so a machine mid-upgrade with an
+ * already-stale cache still reports stale, rather than looking freshly
+ * generated the moment it's imported.
+ */
+function readRulesFile(): RulesFile | null {
+  const cached = getKvValue<RulesFile | null>(INTERCEPTS_NS, INTERCEPTS_KEY, null);
+  if (cached) return cached;
+
+  const path = interceptsPath();
+  const result = importLegacyJsonFile<RulesFile>(path, (json) => {
+    const parsed = json as Partial<RulesFile> | null;
+    let generatedAt = Date.now();
+    try {
+      generatedAt = statSync(path).mtimeMs;
+    } catch {
+      // file vanished between the import read and this stat — Date.now() fallback is fine
+    }
+    const file: RulesFile = { rules: sanitizeRules(parsed?.rules), generatedAt };
+    setKvValue(INTERCEPTS_NS, INTERCEPTS_KEY, file);
+    return file;
+  });
+  return result.imported ? result.value! : null;
 }
 
 export function loadInterceptRules(): InterceptRule[] {
-  const data = getKvValue<Partial<RulesFile>>(INTERCEPTS_NS, INTERCEPTS_KEY, { rules: [] });
-  return sanitizeRules(data.rules);
+  return sanitizeRules(readRulesFile()?.rules);
 }
 
 // ─── buildInterceptRules ─────────────────────────────────────────────────────
@@ -202,7 +220,7 @@ function interceptSourceFiles(): string[] {
  * would cost every verify run.
  */
 export function staleIntercepts(): { stale: boolean; reason?: string } {
-  const cached = getKvValue<RulesFile | null>(INTERCEPTS_NS, INTERCEPTS_KEY, null);
+  const cached = readRulesFile();
   if (!cached) return { stale: false }; // never generated — nothing to compare
 
   const newer: string[] = [];

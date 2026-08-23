@@ -23,7 +23,7 @@ import { existsSync, readdirSync, realpathSync, writeFileSync, type Dirent } fro
 import { homedir } from "os";
 import { basename, dirname, join, resolve as resolvePath } from "path";
 import { repoDataDir, rtDir } from "./rt-paths.ts";
-import { listKvValues, setKvValue } from "./state/index.ts";
+import { importLegacyJsonFile, listKvValues, setKvValue } from "./state/index.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
 
@@ -70,8 +70,32 @@ function writeRepoIndexCompat(index: RepoIndex): void {
   }
 }
 
+/**
+ * On a machine upgrading from pre-Phase-2 rt, the index namespace starts
+ * empty while ~/.mattstack/rt/repos.json still holds every previously
+ * visited repo — importing it here (rather than via LEGACY_IMPORTS, gated to
+ * fire only once from user_version 0) means a repo registered before the
+ * upgrade doesn't silently drop out of `rt cd`'s picker until it's visited
+ * again. Only fires when the namespace is truly empty — a repo already
+ * indexed on this machine short-circuits, so a live compat file (kept
+ * current by every `updateRepoIndex` call below) is never re-imported over
+ * itself.
+ */
 export function loadRepoIndex(): RepoIndex {
-  return listKvValues<string>(REPO_INDEX_NS);
+  const existing = listKvValues<string>(REPO_INDEX_NS);
+  if (Object.keys(existing).length > 0) return existing;
+
+  const result = importLegacyJsonFile<RepoIndex>(repoIndexCompatPath(), (json) => {
+    const map = json && typeof json === "object" && !Array.isArray(json) ? (json as Record<string, unknown>) : {};
+    const imported: RepoIndex = {};
+    for (const [name, path] of Object.entries(map)) {
+      if (typeof path !== "string") continue;
+      setKvValue(REPO_INDEX_NS, name, path);
+      imported[name] = path;
+    }
+    return imported;
+  });
+  return result.imported ? result.value! : existing;
 }
 
 export function updateRepoIndex(repoName: string, repoRoot: string): void {
@@ -87,9 +111,13 @@ export function updateRepoIndex(repoName: string, repoRoot: string): void {
     mainPath = repoRoot;
   }
   try {
+    // loadRepoIndex() can throw (an unopenable state.db — e.g. root-owned
+    // after a sudo invocation) — inside the try along with the write it
+    // depends on, so getRepoIdentity() (which every in-repo command calls)
+    // degrades to skipping the index update rather than crashing the command.
     setKvValue(REPO_INDEX_NS, repoName, mainPath);
+    writeRepoIndexCompat(loadRepoIndex());
   } catch { /* best effort */ }
-  writeRepoIndexCompat(loadRepoIndex());
 }
 
 // ─── rt.repoRoots (RT-49) ───────────────────────────────────────────────────

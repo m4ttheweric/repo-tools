@@ -45,6 +45,11 @@ export function getKvValue<T>(
   }
 }
 
+/** Whether a row exists for `ns`+`key`, independent of whether its JSON parses — the migrate-on-read gate needs this distinction, `getKvValue`'s fallback-on-missing collapses it. */
+export function hasKvValue(ns: string, key: string, db: Database = getStateDb()): boolean {
+  return db.query(KV_SELECT_SQL).get(ns, key) != null;
+}
+
 /** Cache write: shared warn-and-defer (busy.ts) — a dropped write just means the next read starts from slightly stale state. */
 export function setKvValue<T>(ns: string, key: string, value: T, db: Database = getStateDb()): void {
   persistOrWarn(

@@ -83,49 +83,49 @@ describe("openStateDb — fresh open", () => {
   });
 });
 
-describe("openStateDb — v1 database migrates to v2", () => {
-  /** Hand-built v1-shaped fixture — the exact schema/version a pre-Task-4 machine has on disk, not produced via openStateDb (which would already build v2). */
-  function buildV1Fixture(path: string): Database {
-    const db = new Database(path, { create: true });
-    db.exec(`
-      CREATE TABLE branch_cache (
-        branch TEXT PRIMARY KEY, repo TEXT, ticket TEXT,
-        linear_id TEXT NOT NULL DEFAULT '', mr TEXT, fetched_at INTEGER NOT NULL
-      );
-      CREATE TABLE discussions (
-        repo TEXT NOT NULL, iid INTEGER NOT NULL, discussions TEXT NOT NULL,
-        fetched_at INTEGER NOT NULL, PRIMARY KEY (repo, iid)
-      );
-      CREATE TABLE notify_queue (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL, event TEXT NOT NULL
-      );
-      CREATE TABLE project_mrs (
-        repo TEXT NOT NULL, iid INTEGER NOT NULL, pr TEXT NOT NULL,
-        fetched_at INTEGER NOT NULL, PRIMARY KEY (repo, iid)
-      );
-      CREATE TABLE project_mrs_meta (
-        repo TEXT PRIMARY KEY, list_synced_at INTEGER NOT NULL DEFAULT 0,
-        delta_synced_at INTEGER, source TEXT NOT NULL DEFAULT 'poll',
-        project_path TEXT NOT NULL DEFAULT '', scope TEXT
-      );
-      CREATE TABLE project_mr_demands (
-        repo TEXT NOT NULL, client TEXT NOT NULL, authors TEXT NOT NULL,
-        declared_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, PRIMARY KEY (repo, client)
-      );
-      CREATE TABLE kv (
-        ns TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL,
-        updated_at INTEGER NOT NULL, PRIMARY KEY (ns, k)
-      );
-    `);
-    db.query("INSERT INTO branch_cache (branch, repo, ticket, linear_id, mr, fetched_at) VALUES (?, ?, ?, ?, ?, ?);")
-      .run("main", "repo-a", null, "RT-1", null, 1000);
-    db.query("INSERT INTO kv (ns, k, v, updated_at) VALUES (?, ?, ?, ?);")
-      .run("events-cursor", "repo-a", JSON.stringify({ since: null, lastEventId: 5 }), 999);
-    db.exec("PRAGMA user_version = 1;");
-    db.close();
-    return db;
-  }
+/** Hand-built v1-shaped fixture — the exact schema/version a pre-Task-4 machine has on disk, not produced via openStateDb (which would already build v2). */
+function buildV1Fixture(path: string): Database {
+  const db = new Database(path, { create: true });
+  db.exec(`
+    CREATE TABLE branch_cache (
+      branch TEXT PRIMARY KEY, repo TEXT, ticket TEXT,
+      linear_id TEXT NOT NULL DEFAULT '', mr TEXT, fetched_at INTEGER NOT NULL
+    );
+    CREATE TABLE discussions (
+      repo TEXT NOT NULL, iid INTEGER NOT NULL, discussions TEXT NOT NULL,
+      fetched_at INTEGER NOT NULL, PRIMARY KEY (repo, iid)
+    );
+    CREATE TABLE notify_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL, event TEXT NOT NULL
+    );
+    CREATE TABLE project_mrs (
+      repo TEXT NOT NULL, iid INTEGER NOT NULL, pr TEXT NOT NULL,
+      fetched_at INTEGER NOT NULL, PRIMARY KEY (repo, iid)
+    );
+    CREATE TABLE project_mrs_meta (
+      repo TEXT PRIMARY KEY, list_synced_at INTEGER NOT NULL DEFAULT 0,
+      delta_synced_at INTEGER, source TEXT NOT NULL DEFAULT 'poll',
+      project_path TEXT NOT NULL DEFAULT '', scope TEXT
+    );
+    CREATE TABLE project_mr_demands (
+      repo TEXT NOT NULL, client TEXT NOT NULL, authors TEXT NOT NULL,
+      declared_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, PRIMARY KEY (repo, client)
+    );
+    CREATE TABLE kv (
+      ns TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL,
+      updated_at INTEGER NOT NULL, PRIMARY KEY (ns, k)
+    );
+  `);
+  db.query("INSERT INTO branch_cache (branch, repo, ticket, linear_id, mr, fetched_at) VALUES (?, ?, ?, ?, ?, ?);")
+    .run("main", "repo-a", null, "RT-1", null, 1000);
+  db.query("INSERT INTO kv (ns, k, v, updated_at) VALUES (?, ?, ?, ?);")
+    .run("events-cursor", "repo-a", JSON.stringify({ since: null, lastEventId: 5 }), 999);
+  db.exec("PRAGMA user_version = 1;");
+  db.close();
+  return db;
+}
 
+describe("openStateDb — v1 database migrates to v2", () => {
   test("existing v1 rows survive, and v2's new tables appear alongside them", () => {
     const dbPath = join(dir, "state.db");
     buildV1Fixture(dbPath);
@@ -145,6 +145,26 @@ describe("openStateDb — v1 database migrates to v2", () => {
     expect(claimCount).toBe(0);
     expect(historyCount).toBe(0);
 
+    db.close();
+  });
+
+  test("the legacy-import seam does not re-fire: a legacy file present at the v1->v2 bump is left untouched", () => {
+    const dbPath = join(dir, "state.db");
+    buildV1Fixture(dbPath);
+    const legacyPath = join(dir, "fake-store.json");
+    writeFileSync(legacyPath, JSON.stringify({ hello: "world" }));
+
+    let called = false;
+    LEGACY_IMPORTS.push({
+      file: "fake-store.json",
+      import: () => { called = true; },
+    });
+
+    const db = openStateDb(dbPath, "cli");
+    expect(userVersion(db)).toBe(SCHEMA_VERSION);
+    expect(called).toBe(false);
+    expect(existsSync(legacyPath)).toBe(true);
+    expect(existsSync(`${legacyPath}.migrated`)).toBe(false);
     db.close();
   });
 });
@@ -437,6 +457,14 @@ describe("file mode — 0600", () => {
 describe("isolation from unrelated state.db files (pipeline run DBs)", () => {
   test("migrating/chmod'ing rt/state.db never touches a sibling runs/<repo>/<runId>/state.db", () => {
     const home = mkdtempSync(join(tmpdir(), "rt-state-isolation-"));
+    // Repointed for real, not just built under a local `home` var: a future
+    // selection bug that globs **/state.db anchored on rtDir()'s HOME (rather
+    // than going through the lib/state/index.ts barrel) must land in THIS
+    // tree to have any chance of finding the decoy — leaving HOME unrepointed
+    // would let such a glob evade this test entirely.
+    const origHome = process.env.HOME;
+    try {
+    process.env.HOME = home;
     const rtStatePath = join(home, ".mattstack", "rt", "state.db");
     const decoyPath = join(home, ".mattstack", "runs", "somerepo", "run1", "state.db");
     mkdirSync(dirname(decoyPath), { recursive: true });
@@ -468,7 +496,9 @@ describe("isolation from unrelated state.db files (pipeline run DBs)", () => {
     // The real db, at its own distinct path, DID get tightened — proving
     // the two are independently reachable, not that nothing ran at all.
     expect(mode(rtStatePath)).toBe(0o600);
-
-    rmSync(home, { recursive: true, force: true });
+    } finally {
+      process.env.HOME = origHome;
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

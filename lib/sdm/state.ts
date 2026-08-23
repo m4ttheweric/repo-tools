@@ -5,10 +5,16 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { rtDir } from "../rt-paths.ts";
-import { getKvValue, getStateDb, setKvValue } from "../state/index.ts";
+import {
+  getKvValue,
+  getStateDb,
+  hasKvValue,
+  importLegacyJsonFile,
+  renameLegacyOutOfTheWay,
+  setKvValue,
+} from "../state/index.ts";
 
 export interface RecentEntry {
   key: string;
@@ -31,30 +37,33 @@ export const MAX_RECENTS = 10;
 const SDM_STATE_NS = "sdm-state";
 const SDM_STATE_KEY = "state";
 
-/** Retired storage location — kept only so a leftover pre-migration file can be cleaned up. */
+/** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
 export function sdmStatePath(): string {
   return join(rtDir(), "sdm", "state.json");
 }
 
-function unlinkLegacySdmState(): void {
-  try {
-    unlinkSync(sdmStatePath());
-  } catch {
-    // already gone, or never existed
-  }
+function normalizeState(raw: Partial<SdmState> | null | undefined): SdmState {
+  return raw?.version === 1 && Array.isArray(raw.recents)
+    ? { version: 1, recents: raw.recents as RecentEntry[] }
+    : { version: 1, recents: [] };
 }
 
 export function loadSdmState(db: Database = getStateDb()): SdmState {
-  const raw = getKvValue<Partial<SdmState>>(SDM_STATE_NS, SDM_STATE_KEY, { version: 1, recents: [] }, db);
-  if (raw?.version === 1 && Array.isArray(raw.recents)) {
-    return { version: 1, recents: raw.recents as RecentEntry[] };
+  if (hasKvValue(SDM_STATE_NS, SDM_STATE_KEY, db)) {
+    return normalizeState(getKvValue<Partial<SdmState>>(SDM_STATE_NS, SDM_STATE_KEY, { version: 1, recents: [] }, db));
   }
-  return { version: 1, recents: [] };
+
+  const result = importLegacyJsonFile<SdmState>(sdmStatePath(), (json) => {
+    const state = normalizeState(json as Partial<SdmState> | null);
+    setKvValue(SDM_STATE_NS, SDM_STATE_KEY, state, db);
+    return state;
+  });
+  return result.imported ? result.value! : { version: 1, recents: [] };
 }
 
 export function saveSdmState(state: SdmState, db: Database = getStateDb()): void {
   setKvValue(SDM_STATE_NS, SDM_STATE_KEY, state, db);
-  unlinkLegacySdmState();
+  renameLegacyOutOfTheWay(sdmStatePath());
 }
 
 export function recordRecent(

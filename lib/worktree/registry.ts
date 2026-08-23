@@ -1,7 +1,6 @@
-import { unlinkSync } from "fs";
 import { join } from "path";
 import { repoDataDir } from "../rt-paths.ts";
-import { getKvValue, setKvValue } from "../state/index.ts";
+import { getKvValue, hasKvValue, importLegacyJsonFile, renameLegacyOutOfTheWay, setKvValue } from "../state/index.ts";
 
 export type TreeKind = "main" | "ephemeral" | "unmanaged";
 export type TreeState = "creating" | "on-deck" | "claimed" | "disposable";
@@ -26,22 +25,31 @@ export interface TreeRecord {
 
 const WORKTREE_REGISTRY_NS = "worktree-registry";
 
-/** Retired storage location — kept only so a leftover pre-migration file can be cleaned up. */
+/** Retired storage location — kept only so a leftover pre-migration file can be imported once, then renamed out of the way. */
 export function registryPath(repoName: string): string {
   return join(repoDataDir(repoName), "worktrees.json");
 }
 
-function unlinkLegacyRegistry(repoName: string): void {
-  try {
-    unlinkSync(registryPath(repoName));
-  } catch {
-    // already gone, or never existed
-  }
-}
-
+/**
+ * A pre-Phase-2 worktrees.json carries fields no git repository has any
+ * other record of — `kind: "ephemeral"`, claim/dispose `state`, `owner`,
+ * `disposal`, `claimedAt`, `readyStamp`, `retryFailures`. Losing it makes
+ * the reconciler re-adopt every tree as `unmanaged`, so imported trees are
+ * returned as-is on first read, before any git-truth reconciliation runs.
+ */
 export function loadRegistry(repoName: string): TreeRecord[] {
-  const raw = getKvValue<unknown>(WORKTREE_REGISTRY_NS, repoName, []);
-  return Array.isArray(raw) ? (raw as TreeRecord[]) : [];
+  if (hasKvValue(WORKTREE_REGISTRY_NS, repoName)) {
+    const raw = getKvValue<unknown>(WORKTREE_REGISTRY_NS, repoName, []);
+    return Array.isArray(raw) ? (raw as TreeRecord[]) : [];
+  }
+
+  const result = importLegacyJsonFile<TreeRecord[]>(registryPath(repoName), (json) => {
+    const parsed = json as { trees?: unknown } | null;
+    const trees = Array.isArray(parsed?.trees) ? (parsed.trees as TreeRecord[]) : [];
+    setKvValue(WORKTREE_REGISTRY_NS, repoName, trees);
+    return trees;
+  });
+  return result.imported ? result.value! : [];
 }
 
 /**
@@ -65,7 +73,7 @@ export function registryEpoch(repoName: string): number {
 
 export function saveRegistry(repoName: string, trees: TreeRecord[]): void {
   setKvValue(WORKTREE_REGISTRY_NS, repoName, trees);
-  unlinkLegacyRegistry(repoName);
+  renameLegacyOutOfTheWay(registryPath(repoName));
   epochs.set(repoName, registryEpoch(repoName) + 1);
 }
 

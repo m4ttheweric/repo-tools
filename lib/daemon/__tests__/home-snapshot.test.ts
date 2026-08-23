@@ -861,7 +861,7 @@ describe("startHomeSnapshot — state persistence", () => {
     expect(handle.status().firstSeenDirty).toEqual({});
   });
 
-  test("a stale on-disk home-snapshot-state.json is ignored once the store owns the value, and gets unlinked on write", async () => {
+  test("a pre-existing home-snapshot-state.json is imported on first read, and renamed to .migrated", async () => {
     const home = mkdtempSync(join(tmpdir(), "rt-home-snapshot-legacy-home-"));
     const origHome = process.env.HOME;
     process.env.HOME = home;
@@ -869,22 +869,50 @@ describe("startHomeSnapshot — state persistence", () => {
     try {
       const legacyPath = join(home, ".mattstack", "rt", "home-snapshot-state.json");
       mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
-      writeFileSync(legacyPath, JSON.stringify({ firstSeenDirty: { "stale/": 1 } }));
+      writeFileSync(legacyPath, JSON.stringify({ firstSeenDirty: { "claimed-zone/": 1 } }));
       expect(existsSync(legacyPath)).toBe(true);
 
       const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? notes.md\0" }));
       // No `db` override: this run goes through the real getStateDb() singleton,
-      // matching the real daemon wiring, so the legacy-unlink path (which
+      // matching the real daemon wiring, so the legacy-import path (which
       // targets rtDir()) actually lands under the HOME faked above.
       const { deps } = baseDeps({ exec: execFn, db: undefined, now: () => 99 });
 
       const handle = startHomeSnapshot(deps);
       await handle.ready;
-      await handle.runNow("manual");
 
-      // The store, not the stale file, is authoritative.
-      expect(handle.status().firstSeenDirty["stale/"]).toBeUndefined();
+      // Imported before any run: the janitor-threshold clock for a
+      // previously-dirty claimed zone survives the upgrade.
+      expect(handle.status().firstSeenDirty["claimed-zone/"]).toBe(1);
       expect(existsSync(legacyPath)).toBe(false);
+      expect(existsSync(`${legacyPath}.migrated`)).toBe(true);
+    } finally {
+      process.env.HOME = origHome;
+      closeStateDb();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a corrupt on-disk home-snapshot-state.json warns and is left in place; state starts empty", async () => {
+    const home = mkdtempSync(join(tmpdir(), "rt-home-snapshot-legacy-corrupt-home-"));
+    const origHome = process.env.HOME;
+    process.env.HOME = home;
+    closeStateDb();
+    try {
+      const legacyPath = join(home, ".mattstack", "rt", "home-snapshot-state.json");
+      mkdirSync(join(home, ".mattstack", "rt"), { recursive: true });
+      writeFileSync(legacyPath, "{ not valid json");
+
+      const { fn: execFn } = makeFakeExec(defaultResponders({ statusZ: "?? notes.md\0" }));
+      const { deps, log } = baseDeps({ exec: execFn, db: undefined, now: () => 99 });
+
+      const handle = startHomeSnapshot(deps);
+      await handle.ready;
+
+      expect(handle.status().firstSeenDirty).toEqual({});
+      expect(existsSync(legacyPath)).toBe(true);
+      expect(existsSync(`${legacyPath}.migrated`)).toBe(false);
+      expect(log.calls.some((c) => c.level === "warn")).toBe(true);
     } finally {
       process.env.HOME = origHome;
       closeStateDb();

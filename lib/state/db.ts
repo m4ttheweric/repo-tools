@@ -292,7 +292,16 @@ function runMigrations(db: Database, dir: string): void {
       // statement is IF NOT EXISTS, so replaying v1's DDL against an
       // already-v1 db is a no-op and existing rows are untouched.
       db.exec(V1_SCHEMA + V2_SCHEMA);
-      toRename = importLegacyStores(db, dir);
+      // Legacy-JSON import is single-shot and only correct from a true
+      // v0 (never-migrated) database: branch-cache's UPSERT would silently
+      // overwrite current rows with stale ones, and project-mrs-store's
+      // plain INSERT would hit its UNIQUE constraint, roll back this whole
+      // migration, and make every later openStateDb call throw. A v1->v2
+      // bump (this schema's own case, and any future one) must apply the
+      // new DDL without re-arming this seam.
+      if (user_version === 0) {
+        toRename = importLegacyStores(db, dir);
+      }
       db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
     }
     db.exec("COMMIT;");

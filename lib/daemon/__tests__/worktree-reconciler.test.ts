@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, spyOn } from "bun:test";
 import { execSync } from "child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
@@ -504,17 +504,33 @@ describe("reactor state — state.db persistence", () => {
     expect(__test__.loadReactorState()).toEqual({ mrState: { "acme:feat-x": "opened" }, fired: ["disposed:acme:1:merged"] });
   });
 
-  test("a stale on-disk worktree-reactor-state.json is ignored once the store owns the value, and gets unlinked on write", () => {
+  test("a pre-existing worktree-reactor-state.json is imported on first read, and renamed to .migrated", () => {
     mkdirSync(rtDir(), { recursive: true });
-    writeFileSync(__test__.reactorStatePath(), JSON.stringify({ mrState: { "stale:x": "opened" }, fired: [] }));
+    const legacyState = { mrState: { "acme:x": "opened" }, fired: ["disposed:acme:1:merged"] };
+    writeFileSync(__test__.reactorStatePath(), JSON.stringify(legacyState));
     expect(existsSync(__test__.reactorStatePath())).toBe(true);
 
-    // The store, not the stale file, is authoritative — nothing written yet.
-    expect(__test__.loadReactorState()).toEqual({ mrState: {}, fired: [] });
+    expect(__test__.loadReactorState()).toEqual(legacyState);
+    expect(existsSync(__test__.reactorStatePath())).toBe(false);
+    expect(existsSync(`${__test__.reactorStatePath()}.migrated`)).toBe(true);
 
     __test__.saveReactorState({ mrState: { "fresh:y": "merged" }, fired: [] }, fakeLog());
     expect(__test__.loadReactorState()).toEqual({ mrState: { "fresh:y": "merged" }, fired: [] });
-    expect(existsSync(__test__.reactorStatePath())).toBe(false);
+  });
+
+  test("a corrupt worktree-reactor-state.json warns and is left in place; loadReactorState reads as empty", () => {
+    mkdirSync(rtDir(), { recursive: true });
+    writeFileSync(__test__.reactorStatePath(), "{ not valid json");
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      expect(__test__.loadReactorState()).toEqual({ mrState: {}, fired: [] });
+      expect(existsSync(__test__.reactorStatePath())).toBe(true);
+      expect(existsSync(`${__test__.reactorStatePath()}.migrated`)).toBe(false);
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
