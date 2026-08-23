@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { computeAttention, STALE_MS } from "../attention.ts";
+import { computeAttention, fieldValue, lastEventAt, STALE_MS } from "../attention.ts";
 import type { RunFieldRow, RunStageRow, RunSummary } from "../../../packages/rt-client/src/commands.ts";
 
 const NOW = 1_000_000_000;
@@ -8,6 +8,7 @@ function run(over: Partial<RunSummary> = {}): RunSummary {
     id: "r", repo: "acme", work_type: "ticket", pipeline: "p", status: "running",
     current_stage: "implement", spawned_by: null, started_at: NOW - 60_000, ended_at: null,
     pack_commits: null, pack_dirty: 0, attention: { needs: false, reason: null, evidence: "" },
+    last_event_at: NOW - 60_000, ticket: null, branch: null,
     ...over,
   };
 }
@@ -104,4 +105,27 @@ test("a decision counts as a heartbeat too", () => {
 test("failed beats stale when both could apply", () => {
   const a = computeAttention(run({ status: "failed" }), [stage({ status: "failed", started_at: NOW - STALE_MS * 3 })], [], [], NOW);
   expect(a.reason).toBe("failed");
+});
+
+test("lastEventAt is the newest of stage, field, and decision timestamps", () => {
+  const t = lastEventAt(
+    run({ started_at: NOW - 100_000 }),
+    [stage({ started_at: NOW - 90_000, ended_at: NOW - 80_000 })],
+    [field("ticket", "ACME-1")], // field() stamps `at: NOW`, the newest of the three
+    [{ contract: "c@1", scope: "run", selection: "{}", decided_by: "stage-plan", decided_at: NOW - 50_000 }],
+  );
+  expect(t).toBe(NOW);
+});
+
+test("lastEventAt falls back to started_at for a run with no recorded events", () => {
+  const r = run({ started_at: NOW - 100_000 });
+  expect(lastEventAt(r, [], [], [])).toBe(NOW - 100_000);
+});
+
+test("fieldValue returns the value for a present key, null when the field is absent", () => {
+  const fields = [field("ticket", "ACME-1"), field("branch", "goodwin/mat-1")];
+  expect(fieldValue(fields, "ticket")).toBe("ACME-1");
+  expect(fieldValue(fields, "branch")).toBe("goodwin/mat-1");
+  expect(fieldValue(fields, "mr")).toBeNull();
+  expect(fieldValue([], "ticket")).toBeNull();
 });

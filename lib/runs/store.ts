@@ -8,7 +8,7 @@ import { existsSync, readdirSync, type Dirent } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import type { Attention, RunDetail, RunFieldRow, RunStageRow, RunSummary } from "../../packages/rt-client/src/commands.ts";
-import { computeAttention } from "./attention.ts";
+import { computeAttention, fieldValue, lastEventAt } from "./attention.ts";
 
 export const KNOWN_SCHEMA_VERSION = 2;
 
@@ -61,6 +61,11 @@ function runRow(db: Database): RunSummary | null {
       pack_commits: (r.pack_commits as string | undefined) ?? null,
       pack_dirty: Number(r.pack_dirty ?? 0),
       attention: { needs: false, reason: null, evidence: "" },
+      // Placeholders: withAttention/readRun overwrite these once they have
+      // stages/fields/decisions in hand; this row is never returned as-is.
+      last_event_at: Number(r.started_at),
+      ticket: null,
+      branch: null,
     };
   } catch {
     return null;
@@ -85,9 +90,16 @@ const NO_ATTENTION: Attention = { needs: false, reason: null, evidence: "" };
 // listRuns has no catch around this call.
 function withAttention(db: Database, row: RunSummary): RunSummary {
   try {
+    const stages = stageRows(db);
     const fields = db.query("SELECT key, value, produced_by, at FROM fields").all() as RunFieldRow[];
     const decisions = db.query("SELECT contract, scope, selection, decided_by, decided_at FROM decisions").all() as RunDetail["decisions"];
-    return { ...row, attention: computeAttention(row, stageRows(db), fields, decisions, Date.now()) };
+    return {
+      ...row,
+      attention: computeAttention(row, stages, fields, decisions, Date.now()),
+      last_event_at: lastEventAt(row, stages, fields, decisions),
+      ticket: fieldValue(fields, "ticket"),
+      branch: fieldValue(fields, "branch"),
+    };
   } catch {
     return { ...row, attention: NO_ATTENTION };
   }
@@ -123,7 +135,13 @@ export function readRun(repo: string, runId: string): RunDetail | null {
     const fields = db.query("SELECT key, value, produced_by, at FROM fields ORDER BY at").all() as RunDetail["fields"];
     const decisions = db.query("SELECT contract, scope, selection, decided_by, decided_at FROM decisions ORDER BY decided_at").all() as RunDetail["decisions"];
     return {
-      run: { ...run, attention: computeAttention(run, stages, fields, decisions, Date.now()) },
+      run: {
+        ...run,
+        attention: computeAttention(run, stages, fields, decisions, Date.now()),
+        last_event_at: lastEventAt(run, stages, fields, decisions),
+        ticket: fieldValue(fields, "ticket"),
+        branch: fieldValue(fields, "branch"),
+      },
       stages, fields, decisions,
       schemaAhead,
     };

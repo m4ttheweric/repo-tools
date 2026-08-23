@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach } from "bun:test";
-import { readProjectMRs, readDiscussions, readMrsByBranch } from "../src/client.ts";
+import { readProjectMRs, readDiscussions, readMrsByBranch, listRuns, abandonRun } from "../src/client.ts";
 import { fakeDaemon } from "./fake-daemon.ts";
 
 const stops: Array<() => void> = [];
@@ -58,5 +58,32 @@ describe("readMrsByBranch", () => {
     const res = await readMrsByBranch("acme-dev", ["feat-a", "feat-b"], { sockPath: sock });
     expect(res.ok).toBe(true);
     expect(seen[0]!.payload).toEqual({ repoName: "acme-dev", branches: ["feat-a", "feat-b"] });
+  });
+});
+
+describe("run verbs", () => {
+  test("listRuns omits repo when not given, passes it when given", async () => {
+    const { sock, seen, stop } = fakeDaemon({
+      "runs:list": { ok: true, data: { runs: [] } },
+    });
+    stops.push(stop);
+    await listRuns(undefined, { sockPath: sock });
+    await listRuns("repo-tools", { sockPath: sock });
+    expect(seen[0]!.payload).toEqual({});
+    expect(seen[1]!.payload).toEqual({ repo: "repo-tools" });
+  });
+
+  test("abandonRun sends runId, and reason only when given", async () => {
+    const { sock, seen, stop } = fakeDaemon({
+      "runs:abandon": { ok: true, data: { ok: true } },
+    });
+    stops.push(stop);
+    await abandonRun("run-1", "repo-tools", "wedged overnight", { sockPath: sock });
+    await abandonRun("run-2", undefined, undefined, { sockPath: sock });
+    expect(seen[0]).toEqual({
+      cmd: "runs:abandon",
+      payload: { runId: "run-1", repo: "repo-tools", reason: "wedged overnight" },
+    });
+    expect(seen[1]!.payload).toEqual({ runId: "run-2" });
   });
 });

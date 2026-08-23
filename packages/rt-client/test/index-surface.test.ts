@@ -27,3 +27,11 @@ describe("index.ts settings registry surface", () => {
     expect(rtClient.isMigrated(def!)).toBe(true);
   });
 });
+
+describe("index.ts runs surface", () => {
+  test("exports the run read and reconcile API", () => {
+    expect(typeof rtClient.listRuns).toBe("function");
+    expect(typeof rtClient.getRun).toBe("function");
+    expect(typeof rtClient.abandonRun).toBe("function");
+  });
+});
