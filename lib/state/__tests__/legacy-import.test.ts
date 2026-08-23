@@ -1,9 +1,9 @@
 /**
  * lib/state/legacy-import.ts — migrate-on-read mechanics, and specifically
- * `verifyPersisted`: a re-review round found that `apply()` returning
- * normally does NOT mean the write landed, because every real caller writes
- * through `persistOrWarn` (lib/state/busy.ts), which warns and SWALLOWS
- * `SQLITE_BUSY` rather than throwing. These tests reproduce that with a
+ * `verifyPersisted`: `apply()` returning normally does NOT mean the write
+ * landed, because every real caller writes through `persistOrWarn`
+ * (lib/state/busy.ts), which warns and SWALLOWS `SQLITE_BUSY` rather than
+ * throwing. These tests reproduce that with a
  * GENUINE held write lock (a second connection, `BEGIN IMMEDIATE`, zero
  * busy_timeout — same pattern as branch-cache.test.ts's `holdWriteLock`),
  * not a mock of `apply` or `setKvValue`.
