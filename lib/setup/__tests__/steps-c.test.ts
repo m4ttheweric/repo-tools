@@ -499,10 +499,20 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
   // ─── snapshot.push ────────────────────────────────────────────────────────
 
   describe("snapshot.push", () => {
-    test("daemon reachable, commits -> done with the short sha", async () => {
+    test("daemon reachable, commits, no remote -> done, honest that nothing was pushed", async () => {
       const p = fakeProbes({ home, daemon: async () => ({ ok: true, data: { committed: true, sha: "abcdef1234567890", paths: ["a"], reason: "manual" } }) });
       const outcome = await snapshotPushStep.run(makeCtx(p).ctx);
-      expect(outcome).toEqual({ state: "done", detail: "committed abcdef12" });
+      expect(outcome).toEqual({ state: "done", detail: "committed abcdef12 locally — no remote, nothing pushed" });
+    });
+
+    test("daemon reachable, commits, remote attached -> done, defers the push claim to the daemon's next cycle (never asserts a push happened)", async () => {
+      const p = fakeProbes({
+        home,
+        daemon: async () => ({ ok: true, data: { committed: true, sha: "abcdef1234567890", paths: ["a"], reason: "manual" } }),
+        exec: async (argv) => (argv[0] === "git" && argv[1] === "remote" ? ok("origin\n") : ok("")),
+      });
+      const outcome = await snapshotPushStep.run(makeCtx(p).ctx);
+      expect(outcome).toEqual({ state: "done", detail: "committed abcdef12 — push follows on the daemon's next cycle" });
     });
 
     test("idempotent re-run: two independent triggers each call the daemon again — nothing memoized between runs", async () => {

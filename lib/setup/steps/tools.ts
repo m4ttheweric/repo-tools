@@ -7,11 +7,13 @@
  * fresh machine reads as `skipped`, not `failed`.
  */
 
+import { join } from "path";
 import { resolveTool } from "../../deps/resolve.ts";
 import type { SnapshotResult } from "../../daemon/home-snapshot.ts";
 import { withoutUrls } from "../../team/redact.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
+import { hasRemote } from "../home-git.ts";
 import type { Probes } from "../probes.ts";
 import { claudeConfigDirs, NO_EDITORS_DETAIL, setupTool, VSIX_NOT_FOUND_DETAIL, type ToolsInstallSeams } from "../tools-install.ts";
 import { toFailedOutcome } from "./step-utils.ts";
@@ -192,7 +194,13 @@ async function snapshotPushRun(ctx: ApplyContext): Promise<StepOutcome> {
   const result = reply.data as SnapshotResult | undefined;
   if (result?.skipped) return { state: "skipped", detail: `snapshot skipped: ${result.skipped}` };
   if (!result?.committed) return { state: "done", detail: "no changes to snapshot" };
-  return { state: "done", detail: `committed ${result.sha ? result.sha.slice(0, 8) : "(no sha)"}` };
+
+  const sha = result.sha ? result.sha.slice(0, 8) : "(no sha)";
+  // This step only ever observes the daemon's commit, never a push — the
+  // daemon pushes async on its own delay, and home.backup (not this step)
+  // is the row that confirms whether a push actually landed.
+  const remote = await hasRemote(ctx.p.exec, join(ctx.p.home, ".mattstack", "user"));
+  return { state: "done", detail: remote ? `committed ${sha} — push follows on the daemon's next cycle` : `committed ${sha} locally — no remote, nothing pushed` };
 }
 
 async function snapshotPushRunSafe(ctx: ApplyContext): Promise<StepOutcome> {
