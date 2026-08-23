@@ -406,7 +406,7 @@ describe("rt endpoint / intercept (just-works e2e)", () => {
   test("rt verify reports the intercept shims check", async () => {
     const res = await finished(runRt(["verify", "--json"]));
     const out = JSON.parse(res.stdout);
-    const check = out.checks.find((c: { name: string }) => c.name === "intercept shims");
+    const check = out.checks.find((c: { name: string }) => c.name === "tool.intercepts");
     expect(check).toBeDefined();
     expect(check.status).toBe("pass");
     expect(check.detail).toContain("1 installed and current");
