@@ -23,6 +23,7 @@ import {
   findWorkspaceRepo,
   getRemoteUrl,
   resolveDataDir,
+  resolveRepoIdentity,
 } from './git';
 import type { BranchInfo, GitRepository } from './types';
 
@@ -399,7 +400,7 @@ async function handleLinearCreate(
   }
 
   const dataDir = resolveDataDir(repo);
-  const namingConfig = dataDir ? loadBranchNamingConfig(dataDir) : null;
+  const namingConfig = dataDir ? loadBranchNamingConfig(dataDir, resolveRepoIdentity(repo)) : null;
 
   const ticketItems = tickets
     .map((t) => {
