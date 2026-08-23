@@ -335,6 +335,10 @@ check_sparkle "$PROD"
 [ -n "$DEV" ] && check_sparkle "$DEV"
 
 # ─── Dev shim exit-code contract ────────────────────────────────────────────
+# Config source is state.db (RT-48/MAT-383 §9: kv table, ns='dev-mode',
+# k='config') — see the note on the kv table in lib/state/db.ts. Fixtures are
+# built with sqlite3 directly, never through rt, so this stays a pure Swift-
+# side contract test.
 if [ -n "$DEV" ]; then
     SHIM="$DEV/Contents/MacOS/rt"
     SHIM_TMP=$(mktemp -d /tmp/mattstack-check-shim.XXXXXX)
@@ -346,17 +350,80 @@ if [ -n "$DEV" ]; then
         if [ "$expected_code" -eq 0 ] && [ "$(printf '%s' "$out" | grep -c 'standing down' || true)" -ne 1 ]; then fail "$desc: exit 0 but not exactly one stand-down line"; return; fi
         pass "$desc → exit $rc"
     }
-    H1="$SHIM_TMP/no-config"; mkdir -p "$H1/.mattstack/rt"; shim_case "shim: missing dev-mode.json" 0 "$H1"
-    H2="$SHIM_TMP/no-sourcepath"; mkdir -p "$H2/.mattstack/rt"; echo '{"bunPath":"/nope/bun"}' > "$H2/.mattstack/rt/dev-mode.json"; shim_case "shim: config without sourcePath" 0 "$H2"
-    H3="$SHIM_TMP/no-bun"; mkdir -p "$H3/.mattstack/rt"; echo "{\"sourcePath\":\"$SHIM_TMP/src\",\"bunPath\":\"$SHIM_TMP/absent-bun\"}" > "$H3/.mattstack/rt/dev-mode.json"; shim_case "shim: bun missing" 0 "$H3"
-    H4="$SHIM_TMP/no-source"; mkdir -p "$H4/.mattstack/rt"; echo "{\"sourcePath\":\"$SHIM_TMP/gone\",\"bunPath\":\"/bin/echo\"}" > "$H4/.mattstack/rt/dev-mode.json"; shim_case "shim: sourcePath gone" 0 "$H4"
+    # $2 is always a shell VARIABLE already holding the JSON, never a literal
+    # `{...,...}` at the call site — bash brace-expansion runs on literal
+    # source text before parameter expansion, so an inline `{"a":"x","b":"y"}`
+    # argument gets misparsed as a brace-expansion list and silently split at
+    # the comma.
+    shim_write_kv() { # dbPath json
+        local db="$1" json="$2"
+        sqlite3 "$db" "CREATE TABLE IF NOT EXISTS kv (ns TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (ns,k));"
+        sqlite3 "$db" "INSERT INTO kv (ns,k,v,updated_at) VALUES ('dev-mode','config','$json',0);"
+    }
+
+    H1="$SHIM_TMP/no-db"; mkdir -p "$H1/.mattstack/rt"; shim_case "shim: missing state.db entirely" 0 "$H1"
+
+    H1B="$SHIM_TMP/no-table"; mkdir -p "$H1B/.mattstack/rt"
+    sqlite3 "$H1B/.mattstack/rt/state.db" "CREATE TABLE other (x TEXT);"
+    shim_case "shim: state.db exists but has no kv table" 0 "$H1B"
+
+    H1C="$SHIM_TMP/no-row"; mkdir -p "$H1C/.mattstack/rt"
+    sqlite3 "$H1C/.mattstack/rt/state.db" "CREATE TABLE IF NOT EXISTS kv (ns TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (ns,k));"
+    shim_case "shim: kv table exists but no dev-mode row" 0 "$H1C"
+
+    H1D="$SHIM_TMP/corrupt-db"; mkdir -p "$H1D/.mattstack/rt"
+    echo "not a database" > "$H1D/.mattstack/rt/state.db"
+    shim_case "shim: state.db is not a valid sqlite file" 0 "$H1D"
+
+    H2="$SHIM_TMP/no-sourcepath"; mkdir -p "$H2/.mattstack/rt"
+    shim_write_kv "$H2/.mattstack/rt/state.db" '{"bunPath":"/nope/bun"}'
+    shim_case "shim: config without sourcePath" 0 "$H2"
+
+    H3="$SHIM_TMP/no-bun"; mkdir -p "$H3/.mattstack/rt"
+    JSON3=$(printf '{"sourcePath":"%s/src","bunPath":"%s/absent-bun"}' "$SHIM_TMP" "$SHIM_TMP")
+    shim_write_kv "$H3/.mattstack/rt/state.db" "$JSON3"
+    shim_case "shim: bun missing" 0 "$H3"
+
+    H4="$SHIM_TMP/no-source"; mkdir -p "$H4/.mattstack/rt"
+    JSON4=$(printf '{"sourcePath":"%s/gone","bunPath":"/bin/echo"}' "$SHIM_TMP")
+    shim_write_kv "$H4/.mattstack/rt/state.db" "$JSON4"
+    shim_case "shim: sourcePath gone" 0 "$H4"
+
     OUT5=$(env -i "$SHIM" --daemon 2>&1); RC5=$?
     [ "$RC5" -eq 0 ] && printf '%s' "$OUT5" | grep -q 'standing down: HOME not set' && pass "shim: HOME unset → exit 0" || fail "shim: HOME unset → got $RC5"
+
     H6="$SHIM_TMP/exec-fail"; mkdir -p "$H6/.mattstack/rt" "$SHIM_TMP/realsrc/lib"
     echo 'x' > "$SHIM_TMP/realsrc/lib/daemon.ts"; printf '#no\n' > "$SHIM_TMP/fake-bun"; chmod 644 "$SHIM_TMP/fake-bun"
-    echo "{\"sourcePath\":\"$SHIM_TMP/realsrc\",\"bunPath\":\"$SHIM_TMP/fake-bun\"}" > "$H6/.mattstack/rt/dev-mode.json"
+    JSON6=$(printf '{"sourcePath":"%s/realsrc","bunPath":"%s/fake-bun"}' "$SHIM_TMP" "$SHIM_TMP")
+    shim_write_kv "$H6/.mattstack/rt/state.db" "$JSON6"
     env -i HOME="$H6" "$SHIM" --daemon >/dev/null 2>&1; RC6=$?
     [ "$RC6" -ne 0 ] && grep -q 'error: execv' "$H6/.mattstack/rt/logs/daemon-stderr.log" 2>/dev/null && pass "shim: genuine execv failure → exit $RC6" || fail "shim: execv failure should exit nonzero with an error line (got $RC6)"
+
+    # A concurrent CLI writer (BEGIN IMMEDIATE via busy_timeout=0 on its own
+    # side, so this actually contends instead of also waiting) must not wedge
+    # daemon boot forever — the shim's own busy_timeout bounds the wait.
+    H7="$SHIM_TMP/busy"; mkdir -p "$H7/.mattstack/rt"
+    shim_write_kv "$H7/.mattstack/rt/state.db" '{"sourcePath":"/nope"}'
+    sqlite3 "$H7/.mattstack/rt/state.db" "PRAGMA journal_mode=WAL;" >/dev/null
+    python3 - "$H7/.mattstack/rt/state.db" <<'PYEOF' &
+import sqlite3, sys, time
+db = sqlite3.connect(sys.argv[1], isolation_level=None)
+db.execute("PRAGMA busy_timeout=0;")
+db.execute("BEGIN EXCLUSIVE;")
+time.sleep(2)
+db.execute("COMMIT;")
+PYEOF
+    BUSY_BLOCKER_PID=$!
+    sleep 0.3
+    BUSY_START=$(date +%s)
+    OUT7=$(env -i HOME="$H7" "$SHIM" --daemon 2>&1); RC7=$?
+    BUSY_ELAPSED=$(( $(date +%s) - BUSY_START ))
+    wait "$BUSY_BLOCKER_PID" 2>/dev/null
+    if [ "$RC7" -eq 0 ] && [ "$BUSY_ELAPSED" -le 6 ]; then
+        pass "shim: busy_timeout bounds a concurrent-writer wait (${BUSY_ELAPSED}s) → exit $RC7"
+    else
+        fail "shim: busy contention did not resolve as expected (rc=$RC7, elapsed=${BUSY_ELAPSED}s, out=$OUT7)"
+    fi
 fi
 
 # ─── Swift source gates that survive the rename ─────────────────────────────
