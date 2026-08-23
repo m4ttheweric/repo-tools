@@ -27,7 +27,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { runPostInstall } from "../../commands/post-install.ts";
 import type { ApplyDeps } from "../../commands/setup.ts";
@@ -37,6 +37,19 @@ import type { RelayClient } from "../team/relay-client.ts";
 import type { SecretsSeams } from "../secrets/store.ts";
 
 const HOME = process.env.HOME!;
+
+// This suite's `rm -rf` fakes really delete under `${HOME}/Applications` —
+// safe ONLY because the bunfig preload repoints `process.env.HOME` to a temp
+// dir for every bun test run. Made explicit rather than trusted implicitly:
+// `homedir()` reads the real OS-level home (ignores $HOME overrides), so a
+// preload that ever stopped firing would make this comparison catch it
+// before the first `mkdirSync`/`rmSync` touches anything real.
+if (HOME === homedir()) {
+  throw new Error(
+    `post-install-sweep.test.ts refuses to run against the real HOME (${HOME}) — its rm -rf fakes operate on ${HOME}/Applications and are only safe under an isolated test HOME (the bunfig preload should have repointed $HOME already).`,
+  );
+}
+
 const LEGACY_RT_TRAY = join(HOME, "Applications", "rt-tray.app");
 const STALE_MATTSTACK = join(HOME, "Applications", "mattstack.app");
 
@@ -217,7 +230,17 @@ describe("runPostInstall — legacy migration sweep", () => {
 });
 
 describe("runPostInstall — transient app root refusal", () => {
-  test("a mounted DMG root: exit 2 with the drag-to-Applications message, apply never runs", async () => {
+  // Both legacy artifacts a real sweep would delete are pre-seeded in every
+  // test below — the whole point is proving the refusal happens BEFORE the
+  // sweep, so nothing here may be touched no matter what the sweep would
+  // otherwise have found.
+  function seedSweepableArtifacts(): void {
+    mkdirSync(LEGACY_RT_TRAY, { recursive: true });
+    mkdirSync(STALE_MATTSTACK, { recursive: true });
+  }
+
+  test("a mounted DMG root: exit 2 with the drag-to-Applications message, ZERO removals, apply never runs", async () => {
+    seedSweepableArtifacts();
     setUpFakes();
     const deps = fakeApplyDeps({ steps: [{ id: "home.init", title: "x", kind: "rt", applies: () => true, run: async () => { throw new Error("apply must never run"); } }] });
 
@@ -226,9 +249,15 @@ describe("runPostInstall — transient app root refusal", () => {
     expect(deps.exitCodes).toEqual([2]);
     expect(deps.lines).toEqual([]); // setupApply's own NDJSON/human output never fired
     expect(stderrLines.join("\n")).toContain("drag mattstack.app to /Applications");
+    // The refusal ran before the sweep — not even the unconditional
+    // com.rt.daemon bootout fired, and nothing on disk was touched.
+    expect(readLog()).toEqual([]);
+    expect(existsSync(LEGACY_RT_TRAY)).toBe(true);
+    expect(existsSync(STALE_MATTSTACK)).toBe(true);
   }, 20_000);
 
-  test("a Gatekeeper-translocated root: same refusal", async () => {
+  test("a Gatekeeper-translocated root: same refusal, ZERO removals", async () => {
+    seedSweepableArtifacts();
     setUpFakes();
     const deps = fakeApplyDeps({ steps: [{ id: "home.init", title: "x", kind: "rt", applies: () => true, run: async () => { throw new Error("apply must never run"); } }] });
 
@@ -237,6 +266,9 @@ describe("runPostInstall — transient app root refusal", () => {
     );
 
     expect(deps.exitCodes).toEqual([2]);
+    expect(readLog()).toEqual([]);
+    expect(existsSync(LEGACY_RT_TRAY)).toBe(true);
+    expect(existsSync(STALE_MATTSTACK)).toBe(true);
   }, 20_000);
 
   test("root null is never transient: apply runs normally", async () => {

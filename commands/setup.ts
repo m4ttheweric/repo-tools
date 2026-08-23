@@ -21,7 +21,7 @@ import { NoTeamRecipientsError, createRealTeamSecretsSeams, readTeamSecret, writ
 import { listTeams } from "../lib/settings/stores.ts";
 import { setSetting } from "../lib/settings/write.ts";
 import { createApplyContext, runApplyWith, type ApplyContext, type CreateApplyContextDeps, type StepDef } from "../lib/setup/apply.ts";
-import { envelope, type ConnectField, type Integration, type StepId } from "../lib/setup/contract.ts";
+import { envelope, STEP_IDS, type ConnectField, type Integration, type StepId } from "../lib/setup/contract.ts";
 import { createHumanEmitter, createNdjsonEmitter } from "../lib/setup/emit.ts";
 import { UserActionableError, userErrorPayload } from "../lib/setup/errors.ts";
 import { integrationDef, type ValidateCtx } from "../lib/setup/integrations.ts";
@@ -165,38 +165,50 @@ function applyFlags(args: string[]): { nonInteractive: boolean; teamOfOne: boole
  * there is no separate branch to gate; the invariant it promises holds by
  * construction, not by checking the flag.
  */
+/** `--from` with no value (or immediately followed by another flag, e.g. a trailing `--from --json`) is the same failure as an unknown step id — silently falling back to "no --from" would redo the whole install instead of refusing. */
+function resolveFromArg(args: string[]): StepId | undefined {
+  const i = args.indexOf("--from");
+  if (i < 0) return undefined;
+  const value = args[i + 1];
+  if (value === undefined || value.startsWith("--")) {
+    throw new UserActionableError("unknown-step", `--from requires a step id — valid ids: ${STEP_IDS.join(", ")}`);
+  }
+  return value as StepId;
+}
+
 export async function setupApply(args: string[], _ctx: CommandContext = {}, deps: ApplyDeps = realApplyDeps()): Promise<void> {
   const json = args.includes("--json");
   const emit = json
     ? createNdjsonEmitter((line) => deps.print(line.endsWith("\n") ? line.slice(0, -1) : line))
     : createHumanEmitter(deps.print);
 
-  const from = flagValue(args, "--from") as StepId | undefined;
-
-  const ctx: ApplyContext = await createApplyContext({
-    probes: deps.probes,
-    emit,
-    secrets: deps.secrets,
-    relay: deps.relay,
-    secretPresence: deps.secretPresence,
-    flags: applyFlags(args),
-    needOpts: deps.needOpts,
-  });
-
   let result: { ok: boolean; failedStep?: StepId };
   try {
+    const from = resolveFromArg(args);
+    const ctx: ApplyContext = await createApplyContext({
+      probes: deps.probes,
+      emit,
+      secrets: deps.secrets,
+      relay: deps.relay,
+      secretPresence: deps.secretPresence,
+      flags: applyFlags(args),
+      needOpts: deps.needOpts,
+    });
     result = await runApplyWith(deps.steps ?? STEPS, ctx, { from });
   } catch (err) {
     if (err instanceof UserActionableError) {
-      // Thrown by resumeStart before `plan` ever reaches the stream (an
-      // unknown --from id, or one naming a step this run gated out) — print
-      // the same exit-2 envelope every other setup verb uses.
+      // Thrown before `plan` ever reaches the stream — a malformed/unknown
+      // --from, or resumeStart rejecting one naming a step this run gated
+      // out — so nothing else has gone out yet; print the same exit-2
+      // envelope every other setup verb uses.
       deps.print(json ? JSON.stringify(userErrorPayload(err, deps.probes.now())) : `rt setup apply: ${err.message}`);
       return deps.exit(2);
     }
-    // A real bug: apply.ts's `finally` block already emitted the terminal
-    // `done` event before rethrowing, so the stream is complete — let the
-    // process crash at exit 1 rather than report this as user-actionable.
+    // A real bug — whether it happened building the context (nothing ever
+    // reached the stream) or inside runApplyWith (apply.ts's `finally`
+    // already emitted the terminal `done` event before rethrowing) — is not
+    // user-actionable either way; let the process crash at exit 1 rather
+    // than report it as a setup problem.
     throw err;
   }
 
