@@ -94,11 +94,12 @@ if (args[0] === "--version" || args[0] === "-V") {
   const { interceptRun } = await import("./commands/intercept.ts");
   await interceptRun(args.slice(2));
 } else if (args[0] === "--post-install") {
-  // Hidden entry point: the installer. Run from an extracted release tarball
-  // it installs the binary, the app, the extension, the daemon, and shell
-  // integration; `rt update` re-execs it from the freshly downloaded release.
+  // Hidden entry point: the headless installer. Sweeps legacy state, then
+  // runs `rt setup apply --non-interactive --team-of-one`; `rt update`
+  // re-execs it from the freshly downloaded release. Remaining args (e.g.
+  // `--json`, `--no-launch`) forward straight into that apply call.
   const { runPostInstall } = await import("./commands/post-install.ts");
-  await runPostInstall();
+  await runPostInstall(args.slice(1));
 } else if (args[0] === "--grant-fda") {
   // Hidden entry point: open System Settings → Privacy → Full Disk Access.
   // The daemon inherits TCC grants from mattstack.app via SMAppService's

@@ -4,11 +4,51 @@
  * up without a manual `source`.
  */
 
+import { readFileSync, writeFileSync } from "fs";
 import { DEFAULT_EXPOSED, link } from "../../deps/links.ts";
-import { installShellIntegration, installZshenvPrecedence } from "../../shell-integration.ts";
+import { detectShell, installShellIntegration, installZshenvPrecedence, shellRcPath } from "../../shell-integration.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
 import { toFailedOutcome } from "./step-utils.ts";
+
+/**
+ * The v0.x shell wrapper used `command -v rt` to resolve the binary path. In
+ * zsh, `command -v rt` returns the function name (not the binary path), so
+ * `rt_bin="rt"` and every call recurses until FUNCNEST blows up. A machine
+ * whose rc file still has the broken text (written before this fix existed,
+ * and `installShellIntegration()` above is a no-op once a marker is already
+ * present) needs this one-time text repair; a fresh write from
+ * `installShellIntegration()` already has the fix and never matches.
+ * Log-only: never fails the step over a single-file text edit.
+ */
+function repairShellWrapper(): boolean {
+  const shell = detectShell();
+  const rcPath = shellRcPath(shell);
+  if (!rcPath) return false;
+
+  let content: string;
+  try {
+    content = readFileSync(rcPath, "utf8");
+  } catch {
+    return false;
+  }
+
+  if (!content.includes("rt() {") || !content.includes("command -v rt") || content.includes("whence -p rt")) return false;
+
+  const broken = '  [ -x "$rt_bin" ] || rt_bin="$(command -v rt 2>/dev/null || echo rt)"';
+  const fixed = [
+    '  # whence -p (zsh) / type -P (bash): PATH-only lookup, skips this function',
+    '  [ -x "$rt_bin" ] || rt_bin="$(whence -p rt 2>/dev/null || type -P rt 2>/dev/null)"',
+    '  [ -x "$rt_bin" ] || { echo "rt: binary not found in PATH" >&2; return 1; }',
+  ].join("\n");
+
+  const repaired = content.replace(broken, fixed);
+  // Exact-string replace: if the rc line differs (hand-edited whitespace),
+  // nothing changed — don't rewrite the file or claim a repair happened.
+  if (repaired === content) return false;
+  writeFileSync(rcPath, repaired);
+  return true;
+}
 
 async function pathLinkRun(ctx: ApplyContext): Promise<StepOutcome> {
   const linked: string[] = [];
@@ -45,6 +85,8 @@ async function pathLinkRun(ctx: ApplyContext): Promise<StepOutcome> {
     ctx.log("path.link", note);
     notes.push(note);
   }
+
+  if (repairShellWrapper()) ctx.log("path.link", "repaired shell wrapper FUNCNEST recursion bug");
 
   const base = `linked: ${linked.length > 0 ? linked.join(", ") : "none"} · skipped: ${skipped.length > 0 ? skipped.join(", ") : "none"}`;
   return { state: "done", detail: notes.length > 0 ? `${base} · ${notes.join(" · ")}` : base };
