@@ -16,6 +16,7 @@
 
 import type { ConnectField, Integration } from "./contract.ts";
 import { UserActionableError } from "./errors.ts";
+import { isValidHttpsUrl } from "./host-validate.ts";
 import type { Probes } from "./probes.ts";
 
 export interface ValidateResult {
@@ -26,16 +27,23 @@ export interface ValidateResult {
 
 export interface ValidateCtx {
   /**
-   * Per-integration meaning, normalized here (trailing slash stripped)
-   * before use:
+   * The TRUSTED host/URL to actually fetch — user-confirmed (rt.integrations)
+   * or rt's own default, never read directly from team-scope settings. Per
+   * -integration meaning, normalized (trailing slash stripped) before use:
    *  - gitlab: a bare hostname, e.g. "gitlab.example.com" (defaults to
    *    "gitlab.com" when null) — validate() prefixes `https://`.
-   *  - switchboard: a full base URL, e.g. "https://switchboard.example.com"
-   *    — validate() appends `/health` directly, no scheme added.
+   *  - switchboard: a full https URL, e.g. "https://switchboard.example.com"
+   *    — validate() appends `/health` directly.
    *  - github/linear/slack/sdm/doppler/ldcli: ignored (fixed API host, or
    *    no network call at all).
    */
   host: string | null;
+  /**
+   * The unvalidated host/URL a joined team's settings declare, for display
+   * only — a joined team is not the user, so this is never substituted for
+   * `host` and never reaches a fetch. Null when the team declares nothing.
+   */
+  declaredHost?: string | null;
   team: { slug: string; remote: string | null };
   /** mattstack.integrations.linear.teamKey, when the pack declares one — undeclared means "any team the token can see" is fine. */
   linearTeamKey?: string | null;
@@ -137,6 +145,19 @@ export const INTEGRATIONS: Record<Integration, IntegrationDef> = {
     fields: [{ name: "token", label: "GitLab token", secret: true, hint: "read_api, read_user" }],
     secret: { domain: "rt", key: "gitlabToken" },
     async validate(p, token, ctx) {
+      // A team can declare a self-hosted GitLab, but a joined team is not
+      // the user — ctx.host only carries a value the USER confirmed
+      // (rt.integrations, via `connect --host`). A team-declared host with
+      // no matching user confirmation is shown, never fetched against.
+      if (!ctx.host && ctx.declaredHost && ctx.declaredHost !== "gitlab.com") {
+        // "error" (never "invalid"): nothing was rejected — rt chose not to
+        // ask, so this must never imply the token itself is bad.
+        return {
+          status: "error",
+          detail: `your team declares GitLab host "${ctx.declaredHost}" — unverified; run \`rt setup gitlab connect --host ${ctx.declaredHost}\` to confirm it yourself`,
+          scopesSeen: [],
+        };
+      }
       const host = stripTrailingSlash(ctx.host ?? "gitlab.com");
       const headers = { "PRIVATE-TOKEN": token };
 
@@ -230,7 +251,20 @@ export const INTEGRATIONS: Record<Integration, IntegrationDef> = {
     fields: [{ name: "token", label: "Switchboard token", secret: true }],
     secret: { domain: "rt", key: "switchboardToken" },
     async validate(p, token, ctx) {
-      if (!ctx.host) return { status: "invalid", detail: "switchboard host not configured", scopesSeen: [] };
+      if (!ctx.host) {
+        // Same rule as gitlab: a team-declared URL is shown, never fetched
+        // against, until the user confirms it themselves via `connect --host`.
+        // "error" (never "invalid"): nothing was rejected — rt chose not to ask.
+        if (ctx.declaredHost) {
+          return {
+            status: "error",
+            detail: `your team declares switchboard at "${ctx.declaredHost}" — unverified; run \`rt setup switchboard connect --host ${ctx.declaredHost}\` to confirm it yourself`,
+            scopesSeen: [],
+          };
+        }
+        return { status: "invalid", detail: "switchboard host not configured", scopesSeen: [] };
+      }
+      if (!isValidHttpsUrl(ctx.host)) return { status: "invalid", detail: `switchboard host "${ctx.host}" must be a valid https URL`, scopesSeen: [] };
       const base = stripTrailingSlash(ctx.host);
       const res = await p.fetch(`${base}/health`, { headers: { Authorization: `Bearer ${token}` } });
       if (res.status === 0) return { status: "error", detail: unreachableDetail(base), scopesSeen: [] };

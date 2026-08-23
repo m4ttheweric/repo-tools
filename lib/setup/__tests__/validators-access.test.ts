@@ -128,10 +128,10 @@ describe("accessRows — access.team-repo", () => {
 });
 
 describe("accessRows — access.forge", () => {
-  test("host reachable (status > 0) -> ready, recheck on-activate", async () => {
+  test("host reachable (status > 0), user-confirmed -> ready, recheck on-activate", async () => {
     const team = baseTeam({ integrations: { forge: { host: "gitlab.example.com", provider: "gitlab" } } });
     const fetch = async () => ({ status: 200, body: "", headers: {} });
-    const r = await pickRow(accessRows(fakeProbes({ fetch }), team, null), "access.forge");
+    const r = await pickRow(accessRows(fakeProbes({ fetch }), team, null, { forgeHost: "gitlab.example.com" }), "access.forge");
     expect(r.status).toBe("ready");
     expect(r.recheck).toBe("on-activate");
   });
@@ -142,12 +142,21 @@ describe("accessRows — access.forge", () => {
     expect(r.action).toBeNull();
   });
 
-  test("status 0 (unreachable) -> error, never invalid, with a re-check action (finding 5)", async () => {
+  test("status 0 (unreachable), user-confirmed -> error, never invalid, with a re-check action (finding 5)", async () => {
     const team = baseTeam({ integrations: { forge: { host: "gitlab.example.com", provider: "gitlab" } } });
     const fetch = async () => ({ status: 0, body: "", headers: {} });
-    const r = await pickRow(accessRows(fakeProbes({ fetch }), team, null), "access.forge");
+    const r = await pickRow(accessRows(fakeProbes({ fetch }), team, null, { forgeHost: "gitlab.example.com" }), "access.forge");
     expect(r.status).toBe("error");
     expect(r.action).toEqual(RECHECK_ACTION);
+  });
+
+  test("team-declared host, NOT user-confirmed -> needs-you, never fetched (R-F2)", async () => {
+    const team = baseTeam({ integrations: { forge: { host: "gitlab.example.com", provider: "gitlab" } } });
+    const p = fakeProbes();
+    const r = await pickRow(accessRows(p, team, null), "access.forge");
+    expect(r.status).toBe("needs-you");
+    expect(r.detail).toContain("unverified");
+    expect(p.calls.fetch).toEqual([]);
   });
 });
 
@@ -181,28 +190,37 @@ describe("accessRows — access.switchboard", () => {
     expect(rows.some((r) => r.id === "access.switchboard")).toBe(false);
   });
 
-  test("configured, /health 200 -> ready, required false", async () => {
+  test("configured, user-confirmed, /health 200 -> ready, required false", async () => {
     const team = baseTeam({ integrations: { switchboard: { url: "https://sw.example.com" } } });
     const fetch = async (url: string) => (url === "https://sw.example.com/health" ? { status: 200, body: "", headers: {} } : { status: 0, body: "", headers: {} });
-    const r = await pickRow(accessRows(fakeProbes({ fetch }), team, null), "access.switchboard");
+    const r = await pickRow(accessRows(fakeProbes({ fetch }), team, null, { switchboardUrl: "https://sw.example.com" }), "access.switchboard");
     expect(r.status).toBe("ready");
     expect(r.required).toBe(false);
   });
 
-  test("configured, /health status 0 (unreachable) -> error, distinct detail from a non-200 refusal", async () => {
+  test("configured, user-confirmed, /health status 0 (unreachable) -> error, distinct detail from a non-200 refusal", async () => {
     const team = baseTeam({ integrations: { switchboard: { url: "https://sw.example.com" } } });
     const fetch = async () => ({ status: 0, body: "", headers: {} });
-    const r = await pickRow(accessRows(fakeProbes({ fetch }), team, null), "access.switchboard");
+    const r = await pickRow(accessRows(fakeProbes({ fetch }), team, null, { switchboardUrl: "https://sw.example.com" }), "access.switchboard");
     expect(r.status).toBe("error");
     expect(r.detail).toContain("couldn't reach");
   });
 
-  test("configured, /health non-200 -> error, distinct detail from the unreachable case", async () => {
+  test("configured, user-confirmed, /health non-200 -> error, distinct detail from the unreachable case", async () => {
     const team = baseTeam({ integrations: { switchboard: { url: "https://sw.example.com" } } });
     const fetch = async () => ({ status: 503, body: "", headers: {} });
-    const r = await pickRow(accessRows(fakeProbes({ fetch }), team, null), "access.switchboard");
+    const r = await pickRow(accessRows(fakeProbes({ fetch }), team, null, { switchboardUrl: "https://sw.example.com" }), "access.switchboard");
     expect(r.status).toBe("error");
     expect(r.detail).toBe("switchboard /health returned 503");
+  });
+
+  test("team-declared switchboard, NOT user-confirmed -> needs-you, never fetched (R-F2)", async () => {
+    const team = baseTeam({ integrations: { switchboard: { url: "https://sw.example.com" } } });
+    const p = fakeProbes();
+    const r = await pickRow(accessRows(p, team, null), "access.switchboard");
+    expect(r.status).toBe("needs-you");
+    expect(r.detail).toContain("unverified");
+    expect(p.calls.fetch).toEqual([]);
   });
 });
 

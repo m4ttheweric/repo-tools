@@ -51,7 +51,7 @@ describe("settings/registry", () => {
       }
     });
 
-    test("exactly 20 keys are migrated:true", () => {
+    test("exactly 21 keys are migrated:true", () => {
       const migrated = allDefs().filter((d) => d.migrated);
 
       expect(migrated.map((d) => d.key).sort()).toEqual(
@@ -59,7 +59,7 @@ describe("settings/registry", () => {
           "rt.intercepts", "rt.repoIdentityOverrides", "rt.repoRoots", "rt.roles", "rt.worktrees",
           "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runsPruneDays", "rt.runaway", "rt.workspacePrefs",
           "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
-          "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays",
+          "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays", "rt.integrations",
         ].sort(),
       );
     });
@@ -193,7 +193,7 @@ describe("settings/registry", () => {
       expect(def?.merge).toBe("replace");
     });
 
-    test("has exactly the 1 remaining migrated:false key, the 20 migrated:true keys, and the 30 suite keys", () => {
+    test("has exactly the 1 remaining migrated:false key, the 21 migrated:true keys, and the 30 suite keys", () => {
       const migratedFalseKeys = [
         "rt.hooks",
       ];
@@ -201,7 +201,7 @@ describe("settings/registry", () => {
         "rt.roles", "rt.intercepts", "rt.worktrees", "rt.repoIdentityOverrides", "rt.repoRoots",
         "rt.notifications", "rt.cron", "rt.repoTracking", "rt.runsPruneDays", "rt.runaway", "rt.workspacePrefs",
         "rt.sync", "rt.branchNaming", "rt.variations", "rt.presets", "rt.dopplerTemplate",
-        "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays",
+        "rt.homeSnapshot", "rt.worktreeApp", "rt.sdmEnrichment", "rt.logRetentionDays", "rt.integrations",
       ];
       const suiteKeys = [
         "mattstack.integrations",

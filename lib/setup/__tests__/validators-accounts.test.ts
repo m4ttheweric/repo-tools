@@ -54,24 +54,38 @@ describe("accountRows — account.gitlab", () => {
     });
   });
 
-  test("secret present, validate 200s -> ready", async () => {
+  test("secret present, host user-confirmed, validate 200s -> ready", async () => {
     const team = baseTeam({ integrations: { forge: { host: "gitlab.example.com", provider: "gitlab" } } });
     const fetch = async (url: string) => {
       if (url.includes("/api/v4/user")) return { status: 200, body: "{}", headers: {} };
       if (url.includes("personal_access_tokens/self")) return { status: 200, body: JSON.stringify({ scopes: ["read_api"] }), headers: {} };
       return { status: 200, body: "{}", headers: {} };
     };
-    const r = await pickRow(accountRows(fakeProbes({ fetch }), team, [], fakeSecrets({ "rt.gitlabToken": "tok123" }), null), "account.gitlab");
+    const r = await pickRow(
+      accountRows(fakeProbes({ fetch }), team, [], fakeSecrets({ "rt.gitlabToken": "tok123" }), null, { forgeHost: "gitlab.example.com" }),
+      "account.gitlab",
+    );
     expect(r.status).toBe("ready");
     expect(r.detail).toBe("gitlab token valid");
   });
 
-  test("secret present, validate rejects (401) -> invalid, WITH a connect action so a revoked token is replaceable (H2)", async () => {
+  test("secret present, host user-confirmed, validate rejects (401) -> invalid, WITH a connect action so a revoked token is replaceable (H2)", async () => {
     const team = baseTeam({ integrations: { forge: { host: "gitlab.example.com", provider: "gitlab" } } });
     const fetch = async () => ({ status: 401, body: "", headers: {} });
-    const r = await pickRow(accountRows(fakeProbes({ fetch }), team, [], fakeSecrets({ "rt.gitlabToken": "tok123" }), null), "account.gitlab");
+    const r = await pickRow(
+      accountRows(fakeProbes({ fetch }), team, [], fakeSecrets({ "rt.gitlabToken": "tok123" }), null, { forgeHost: "gitlab.example.com" }),
+      "account.gitlab",
+    );
     expect(r.status).toBe("invalid");
     expect(r.action).toEqual({ type: "connect", label: "Connect", integration: "gitlab", fields: [{ name: "token", label: "GitLab token", secret: true, hint: "read_api, read_user" }] });
+  });
+
+  test("secret present, host NOT user-confirmed -> error, and the token is never sent (R-F2)", async () => {
+    const team = baseTeam({ integrations: { forge: { host: "gitlab.example.com", provider: "gitlab" } } });
+    const p = fakeProbes();
+    const r = await pickRow(accountRows(p, team, [], fakeSecrets({ "rt.gitlabToken": "tok123" }), null), "account.gitlab");
+    expect(r.status).toBe("error");
+    expect(p.calls.fetch).toEqual([]);
   });
 
   test("secret present, validate's network call is unreachable -> error, never invalid (R-T4b), still carries an action (H2)", async () => {
@@ -254,26 +268,39 @@ describe("accountRows — account.linear declared / not declared", () => {
 });
 
 describe("accountRows — account.switchboard", () => {
-  test("join intent + secret present -> ready 'redeemed during Join', no network probe", async () => {
+  test("join intent + secret present, host NOT user-confirmed -> still re-validates (no free pass); a revoked/stale token never reads as ready on the strength of an intent file", async () => {
     const team = baseTeam({ integrations: { switchboard: { url: "https://sw.example.com" } } });
     const p = fakeProbes();
     const r = await pickRow(accountRows(p, team, [], fakeSecrets({ "rt.switchboardToken": "tok" }), JOIN_INTENT), "account.switchboard");
-    expect(r.status).toBe("ready");
-    expect(r.detail).toBe("redeemed during Join");
-    expect(p.calls.fetch).toEqual([]);
+    expect(r.status).toBe("error");
+    expect(p.calls.fetch).toEqual([]); // never sent the token to a team-declared, unconfirmed host
   });
 
-  test("join intent + secret ABSENT -> still missing with a connect action (the join short-circuit only applies once the secret exists)", async () => {
+  test("join intent + secret present + the user has confirmed this host -> ready, decorated as verified", async () => {
+    const team = baseTeam({ integrations: { switchboard: { url: "https://sw.example.com" } } });
+    const fetch = async (url: string) => (url.includes("/health") ? { status: 200, body: "", headers: {} } : { status: 0, body: "", headers: {} });
+    const r = await pickRow(
+      accountRows(fakeProbes({ fetch }), team, [], fakeSecrets({ "rt.switchboardToken": "tok" }), JOIN_INTENT, { switchboardUrl: "https://sw.example.com" }),
+      "account.switchboard",
+    );
+    expect(r.status).toBe("ready");
+    expect(r.detail).toBe("redeemed during Join, verified");
+  });
+
+  test("join intent + secret ABSENT -> still missing with a connect action", async () => {
     const team = baseTeam({ integrations: { switchboard: { url: "https://sw.example.com" } } });
     const r = await pickRow(accountRows(fakeProbes(), team, [], fakeSecrets(), JOIN_INTENT), "account.switchboard");
     expect(r.status).toBe("missing");
     expect(r.action?.type).toBe("connect");
   });
 
-  test("create intent + secret present -> falls through to validate()'s own health probe", async () => {
+  test("create intent + secret present + confirmed host -> falls through to validate()'s own health probe", async () => {
     const team = baseTeam({ integrations: { switchboard: { url: "https://sw.example.com" } } });
     const fetch = async (url: string) => (url.includes("/health") ? { status: 200, body: "", headers: {} } : { status: 0, body: "", headers: {} });
-    const r = await pickRow(accountRows(fakeProbes({ fetch }), team, [], fakeSecrets({ "rt.switchboardToken": "tok" }), null), "account.switchboard");
+    const r = await pickRow(
+      accountRows(fakeProbes({ fetch }), team, [], fakeSecrets({ "rt.switchboardToken": "tok" }), null, { switchboardUrl: "https://sw.example.com" }),
+      "account.switchboard",
+    );
     expect(r.status).toBe("ready");
     expect(r.detail).toBe("switchboard reachable");
   });

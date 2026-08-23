@@ -18,7 +18,7 @@ import { fetchPermissions, permissionRows } from "./permissions.ts";
 import { createRealProbes, type Probes } from "./probes.ts";
 import { readPackRequirements } from "./requirements.ts";
 import { readStagedSecret } from "./staging.ts";
-import { forgeFromRemote, readTeamSnapshot, type TeamSnapshot } from "./team-settings.ts";
+import { forgeFromRemote, readTeamSnapshot, readUserIntegrationOverrides, type TeamSnapshot } from "./team-settings.ts";
 import { accessRows } from "./validators/access.ts";
 import { accountRows, type SecretPresence } from "./validators/accounts.ts";
 import { macRows } from "./validators/mac.ts";
@@ -143,6 +143,7 @@ export async function composePlan(i: PlanInputs): Promise<Plan> {
 
   const snapshot = enrichSnapshotForge(team.slug ? readTeamSnapshot(i.p, team.slug) : EMPTY_SNAPSHOT, intent);
   const reqs = readPackRequirements(i.p, team.slug);
+  const userOverrides = readUserIntegrationOverrides();
 
   const groups = await Promise.all([
     buildGroup("mac", async () => {
@@ -150,7 +151,7 @@ export async function composePlan(i: PlanInputs): Promise<Plan> {
       return [...permissionRows(permReply, tccSummary(tccRes)), ...macList];
     }),
     buildGroup("accounts", () => accountRows(i.p, snapshot, reqs, i.secrets, intent)),
-    buildGroup("access", () => accessRows(i.p, snapshot, intent)),
+    buildGroup("access", () => accessRows(i.p, snapshot, intent, userOverrides)),
     buildGroup("tools", async () => {
       const [hasBrew, healthRows] = await Promise.all([detectHasBrew(i.p), rtHealthRows(i.p, { ci: i.ci })]);
       const tools = await toolRows(i.p, reqs, { hasBrew });

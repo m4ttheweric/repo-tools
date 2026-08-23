@@ -12,11 +12,12 @@
 
 import type { Action, Integration, Row } from "../contract.ts";
 import { row } from "../contract.ts";
+import { isValidHostname, isValidHttpsUrl } from "../host-validate.ts";
 import { integrationDef, type IntegrationDef, type ValidateCtx } from "../integrations.ts";
 import type { SetupIntent } from "../intent.ts";
 import type { Probes } from "../probes.ts";
 import type { PackRequirements } from "../requirements.ts";
-import type { TeamSnapshot } from "../team-settings.ts";
+import type { TeamSnapshot, UserIntegrationOverrides } from "../team-settings.ts";
 
 /** Reads user-scope secrets: the real implementation goes through lib/secrets/store.readSecret (null on NoAgeKeyError) plus staged values (staging.ts) — that wiring is a later task's job; validators only depend on this narrow shape. */
 export interface SecretPresence {
@@ -41,16 +42,27 @@ function parseGhUser(output: string): string | null {
   return match ? match[1]! : null;
 }
 
-function ctxFor(id: Integration, team: TeamSnapshot): ValidateCtx {
-  const host =
-    id === "gitlab"
-      ? team.integrations.forge?.provider === "gitlab"
-        ? team.integrations.forge.host
-        : null
-      : id === "switchboard"
-        ? (team.integrations.switchboard?.url ?? null)
-        : null;
-  return { host, team: { slug: team.slug, remote: team.remote }, linearTeamKey: team.integrations.linear?.teamKey ?? null };
+/**
+ * A joined team's declared forge/switchboard host is shown, not trusted — the
+ * token this ctx feeds to `def.validate()` belongs to the user, so only a
+ * host the user themselves confirmed (`rt.integrations`, via `connect
+ * --host`) is ever eligible to receive it. Mirrors commands/setup.ts's own
+ * ctxFor exactly; kept separate because this module has no ConnectDeps to
+ * share it through, not because the rule differs.
+ */
+function ctxFor(id: Integration, team: TeamSnapshot, overrides: UserIntegrationOverrides): ValidateCtx {
+  const base = { team: { slug: team.slug, remote: team.remote }, linearTeamKey: team.integrations.linear?.teamKey ?? null };
+  if (id === "gitlab") {
+    const declaredHost = team.integrations.forge?.provider === "gitlab" ? team.integrations.forge.host : null;
+    const host = overrides.forgeHost && isValidHostname(overrides.forgeHost) ? overrides.forgeHost : null;
+    return { ...base, host, declaredHost };
+  }
+  if (id === "switchboard") {
+    const declaredHost = team.integrations.switchboard?.url ?? null;
+    const host = overrides.switchboardUrl && isValidHttpsUrl(overrides.switchboardUrl) ? overrides.switchboardUrl : null;
+    return { ...base, host, declaredHost };
+  }
+  return { ...base, host: null };
 }
 
 /** why()'s teamHost only makes sense for the row whose OWN integration is the team's declared forge — a pack-declared `account.gitlab` under a github.com forge must not render "...on github.com". */
@@ -138,14 +150,21 @@ async function slackRow(p: Probes, base: Omit<Row, "status" | "detail" | "action
   return row({ ...base, status: result.status, detail: result.detail, action: SLACK_OAUTH_ACTION });
 }
 
-/** join redeems the switchboard token as part of accepting the invite — this row just confirms that happened rather than re-probing a health endpoint the redeem flow already exercised. */
+/**
+ * join redeems the switchboard token as part of accepting the invite, but a
+ * stored token is never proof it still works — revoked, expired, and
+ * half-written all look identical to "a token is on disk", and the join
+ * intent file stays behind on a FAILED join too (it only clears on full
+ * success), which is exactly the run where this needs to be most skeptical.
+ * Always re-validates; "redeemed during Join" only decorates a `ready` that
+ * `def.validate()` actually earned.
+ */
 async function switchboardRow(p: Probes, base: Omit<Row, "status" | "detail" | "action" | "recheck">, def: IntegrationDef, secrets: SecretPresence, intent: SetupIntent | null, ctx: ValidateCtx): Promise<Row> {
   const spec = secretSpec(def);
   const stored = await secrets.has(spec.domain, spec.key);
   if (stored === null) return row({ ...base, status: "missing", detail: "no Switchboard token configured", action: connectAction(def, true) });
-  if (intent?.mode === "join") return row({ ...base, status: "ready", detail: "redeemed during Join" });
   const result = await def.validate(p, stored, ctx);
-  if (result.status === "ready") return row({ ...base, status: "ready", detail: result.detail });
+  if (result.status === "ready") return row({ ...base, status: "ready", detail: intent?.mode === "join" ? "redeemed during Join, verified" : result.detail });
   return row({ ...base, status: result.status, detail: result.detail, action: connectAction(def, true) });
 }
 
@@ -167,7 +186,7 @@ async function genericRow(p: Probes, base: Omit<Row, "status" | "detail" | "acti
 /** doppler/ldcli's real blocker (install + sign in) already has a required row in the tools group (tool.team.<name>) — a second required, action-less row here for the same fact would be both a duplicate and a dead end. */
 const CLI_SESSION_OPTIONAL_NOTE = "Works without a stored credential here — install and sign in are tracked in the Tools group.";
 
-async function accountRowFor(p: Probes, entry: DeclaredEntry, team: TeamSnapshot, secrets: SecretPresence, intent: SetupIntent | null): Promise<Row> {
+async function accountRowFor(p: Probes, entry: DeclaredEntry, team: TeamSnapshot, secrets: SecretPresence, intent: SetupIntent | null, overrides: UserIntegrationOverrides): Promise<Row> {
   const { id } = entry;
   let def: IntegrationDef;
   try {
@@ -185,7 +204,7 @@ async function accountRowFor(p: Probes, entry: DeclaredEntry, team: TeamSnapshot
     required: cliOwned ? false : entry.required,
     optionalNote: cliOwned ? CLI_SESSION_OPTIONAL_NOTE : entry.optionalNote,
   };
-  const ctx = ctxFor(id, team);
+  const ctx = ctxFor(id, team, overrides);
 
   if (id === "github") return githubRow(p, base, def, secrets, ctx);
   if (id === "slack") return slackRow(p, base, def, secrets, ctx, team);
@@ -196,9 +215,9 @@ async function accountRowFor(p: Probes, entry: DeclaredEntry, team: TeamSnapshot
 const ACCOUNT_RECHECK_ACTION: Action = { type: "run", label: "Re-check", verb: ["setup", "status"] };
 
 /** One entry's `secrets.has()`/`def.validate()` throwing (a bad recipient, a corrupt staged file, a network stack that throws instead of returning) must degrade to that entry's own error row — never take every other declared integration's row down with it. */
-async function accountRowForSafe(p: Probes, entry: DeclaredEntry, team: TeamSnapshot, secrets: SecretPresence, intent: SetupIntent | null): Promise<Row> {
+async function accountRowForSafe(p: Probes, entry: DeclaredEntry, team: TeamSnapshot, secrets: SecretPresence, intent: SetupIntent | null, overrides: UserIntegrationOverrides): Promise<Row> {
   try {
-    return await accountRowFor(p, entry, team, secrets, intent);
+    return await accountRowFor(p, entry, team, secrets, intent, overrides);
   } catch (err) {
     return row({
       id: `account.${entry.id}`,
@@ -232,13 +251,13 @@ function slackAppRow(required: boolean): Row {
   });
 }
 
-export async function accountRows(p: Probes, team: TeamSnapshot, reqs: PackRequirements[], secrets: SecretPresence, intent: SetupIntent | null): Promise<Row[]> {
+export async function accountRows(p: Probes, team: TeamSnapshot, reqs: PackRequirements[], secrets: SecretPresence, intent: SetupIntent | null, overrides: UserIntegrationOverrides = {}): Promise<Row[]> {
   const declared = declaredIntegrations(team, reqs);
   const wantsSlack = declared.some((e) => e.id === "slack");
   const slackAppNeeded = wantsSlack && !team.integrations.slack?.clientId;
   const slackAppRequired = intent?.mode === "create";
 
-  const idRows = await Promise.all(declared.map((entry) => accountRowForSafe(p, entry, team, secrets, intent)));
+  const idRows = await Promise.all(declared.map((entry) => accountRowForSafe(p, entry, team, secrets, intent, overrides)));
 
   const rows: Row[] = [];
   declared.forEach((entry, i) => {

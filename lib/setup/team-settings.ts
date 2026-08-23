@@ -65,6 +65,18 @@ export function parseOriginUrl(gitConfig: string): string | null {
   return match ? match[1]! : null;
 }
 
+/** `rt.integrations` (user scope) — the only source a credential fetch or a reachability probe may treat as a confirmed destination; a joined team's own declaration (`TeamSnapshot.integrations`) is shown to the user but never substitutes for this. Written only by an explicit `rt setup <id> connect --host` that has already re-validated a real credential against the host. */
+export interface UserIntegrationOverrides {
+  forgeHost?: string;
+  switchboardUrl?: string;
+}
+
+export function readUserIntegrationOverrides(opts: { read?: SettingsReader; warn?: (message: string) => void } = {}): UserIntegrationOverrides {
+  const warn = opts.warn ?? defaultWarn;
+  const read = opts.read ?? defaultReader(warn);
+  return read<UserIntegrationOverrides>("rt.integrations") ?? {};
+}
+
 export function readTeamSnapshot(p: Probes, slug: string, opts: { read?: SettingsReader; warn?: (message: string) => void } = {}): TeamSnapshot {
   const warn = opts.warn ?? defaultWarn;
   const read = opts.read ?? defaultReader(warn);
@@ -99,10 +111,23 @@ export function stripUserinfo(hostWithScheme: string): string {
   return hostWithScheme.replace(/^(https?:\/\/)[^@/]+@/, "$1");
 }
 
-/** github.com is the only hosted GitHub; every other host is assumed self-hosted GitLab (rt has no other forge integration to fall back to). */
+/**
+ * A remote's host is never sufficient on its own to prove which forge (or
+ * which glab target host) rt should trust — a hostile pointer.remote can
+ * name anything. Only a host this recognizes as GitLab-shaped is treated as
+ * self-hosted GitLab; matches `lib/enrich.ts`'s own `isGitLabRemote` so
+ * provider selection reads the same signal everywhere in the codebase.
+ */
+function looksLikeGitlabHost(host: string): boolean {
+  return /gitlab\./i.test(host);
+}
+
+/** github.com is the only hosted GitHub; a GitLab-shaped host is self-hosted GitLab; anything else is an unrecognized forge — never guessed at, never handed to `glab` as a target host. */
 export function forgeFromRemote(remote: string): { host: string; provider: "github" | "gitlab" } | null {
   const parsed = parseRemoteUrl(remote);
   if (!parsed) return null;
   const host = stripUserinfo(parsed.host).replace(/^https?:\/\//, "");
-  return { host, provider: host === "github.com" ? "github" : "gitlab" };
+  if (host === "github.com") return { host, provider: "github" };
+  if (looksLikeGitlabHost(host)) return { host, provider: "gitlab" };
+  return null;
 }
