@@ -10,7 +10,7 @@ import type { SecretsSeams } from "../secrets/store.ts";
 import { createRealTeamSecretsSeams } from "../secrets/team-store.ts";
 import type { SecretsSeamsFactory } from "../team/join.ts";
 import type { RelayClient } from "../team/relay-client.ts";
-import { STEP_IDS, type NeedRequest, type StepId, type StepKind, type TeamRef } from "./contract.ts";
+import { STEP_IDS, type EventId, type NeedRequest, type StepId, type StepKind, type TeamRef } from "./contract.ts";
 import type { Emit } from "./emit.ts";
 import { UserActionableError } from "./errors.ts";
 import { readIntent, teamRefFromIntent, clearIntent, type SetupIntent } from "./intent.ts";
@@ -35,7 +35,7 @@ export interface ApplyContext {
    * or a `StepOutcome.detail`/`remedy`. Only exact values registered that way
    * are scrubbed; this is not a pattern scanner.
    */
-  log(id: StepId, line: string): void;
+  log(id: EventId, line: string): void;
   intent: SetupIntent | null;
   team: TeamRef;
   snapshot: TeamSnapshot | null;
@@ -74,8 +74,14 @@ export interface ApplyContext {
    * secret is not caught.
    */
   redact(value: string): void;
-  /** "no-app" is an rt-side judgment (not the app's), made only when nonInteractive AND a quick pre-check finds no live tray.sock — otherwise the real app-gone/timeout dance in `awaitNeed` decides. */
-  need(id: StepId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app">;
+  /**
+   * "no-app" is an rt-side judgment (not the app's), made only when
+   * nonInteractive AND a quick pre-check finds no live tray.sock — otherwise
+   * the real app-gone/timeout dance in `awaitNeed` decides. Typed over
+   * `EventId` (not `StepId`) so `rt uninstall`'s action ids — which share
+   * this same need protocol and this same context type — typecheck too.
+   */
+  need(id: EventId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app">;
 }
 
 export interface StepDef {
@@ -302,7 +308,7 @@ export async function createApplyContext(deps: CreateApplyContextDeps): Promise<
     relay,
     secretPresence: deps.secretPresence ?? realSecretPresence(),
     redact: redactor.redact,
-    async need(id: StepId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app"> {
+    async need(id: EventId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app"> {
       // Reachability is checked BEFORE the `need` event goes out: a
       // nonInteractive run with no live tray.sock has nobody to answer it,
       // so emitting first would strand an unanswerable `need` on the stream.

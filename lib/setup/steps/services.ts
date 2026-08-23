@@ -43,8 +43,8 @@ export const servicesRegisterStep: StepDef = {
   run: servicesRegisterRunSafe,
 };
 
-/** The uninstall plan's own signal for "portless is installed" (docs/superpowers/plans/2026-08-21-rt-setup-verbs.md's proxy.remove gate) — reused here so a from-scratch re-run recognizes an already-installed proxy without re-raising the admin prompt. */
-const PORTLESS_LAUNCHD_PLIST = "/Library/LaunchDaemons/sh.portless.proxy.plist";
+/** `rt uninstall`'s own signal for "portless is installed" (lib/setup/uninstall.ts's proxy.remove gate) — exported so a from-scratch re-run recognizes an already-installed proxy without re-raising the admin prompt, and so uninstall never redefines it. */
+export const PORTLESS_LAUNCHD_PLIST = "/Library/LaunchDaemons/sh.portless.proxy.plist";
 
 async function proxyInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
   if (ctx.p.exists(PORTLESS_LAUNCHD_PLIST)) return { state: "done", detail: "already installed" };

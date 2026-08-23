@@ -32,7 +32,8 @@ interface DeckApiFile {
   port?: unknown;
 }
 
-function readDeckApiPort(ctx: ApplyContext): number | null {
+/** Exported for `lib/setup/uninstall.ts`'s deck.managed-remove, which needs the same "is deck actually up" check before asking it to unmanage anything. */
+export function readDeckApiPort(ctx: ApplyContext): number | null {
   const raw = ctx.p.readFile(join(ctx.p.home, ".mattstack", "deck", "api.json"));
   if (raw === null) return null;
   try {
@@ -43,7 +44,7 @@ function readDeckApiPort(ctx: ApplyContext): number | null {
   }
 }
 
-async function deckIsHealthy(ctx: ApplyContext, port: number): Promise<boolean> {
+export async function deckIsHealthy(ctx: ApplyContext, port: number): Promise<boolean> {
   const res = await ctx.p.fetch(`http://127.0.0.1:${port}/healthz`);
   return res.status === 200;
 }

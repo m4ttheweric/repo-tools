@@ -21,7 +21,8 @@ function home(): string {
   return process.env.HOME ?? homedir();
 }
 
-const MARKER = "# rt — repo tools";
+/** Exported so `rt uninstall`'s shell.remove gate can detect the block's presence without duplicating this literal. */
+export const MARKER = "# rt — repo tools";
 const HISTORY_HOOK_MARKER = "# rt — shell history hook";
 /** Closes every block this module appends (the shell-integration block and the .zshenv precedence block) — the anchor `removeShellIntegration`/`removeZshenvPrecedence` need to strip a block precisely instead of guessing where it ends. A block written before this marker existed has no closing anchor; removal reports that case as `manual` rather than guessing at its extent. */
 export const END_MARKER = "# rt — end";
