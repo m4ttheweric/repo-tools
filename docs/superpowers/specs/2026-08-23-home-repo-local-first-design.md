@@ -309,12 +309,15 @@ quietly disabling the step for real users.
   only cycle that fires with no file change. The existing `setTimeout`/`now` deps
   support this; "no restart" does not mean "immediately".
 - **Green requires a completed push.** Each of the four states renders correctly;
-  specifically, a remote with no upstream ref and a remote with unpushed commits
-  both report `needs-you`, not `ready`. This is the assertion that stops the probe
+  specifically, a remote with no `refs/remotes/origin/<branch>` and a remote with
+  unpushed commits both report `needs-you`, not `ready`. This is the assertion that stops the probe
   reporting shape instead of outcome.
-- **The green assertion runs against a `git init` + `git remote add` repo, not a
-  clone.** A clone configures upstream and would pass even if the probe used
-  `@{u}`; only the init-then-attach path catches that.
+- **Tests build the whole sequence, not just the fixture: `git init` → commit →
+  attach a remote → first push → second push.** A clone arrives with upstream
+  configured, an origin, and history, which is why every defect found reviewing
+  this spec was invisible on the author's machine — and each one lived in a
+  different step of that sequence, so a fixture alone would not have caught them
+  all.
 - **The probe's status is `needs-you`**, asserted explicitly — `skipped` would
   render as info and show no warning.
 - **A `lastPush` record survives a commit cycle** (the clobber case).
