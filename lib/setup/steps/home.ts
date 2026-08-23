@@ -125,7 +125,19 @@ export const homeInitStep: StepDef = {
   id: "home.init",
   title: "Create your settings home repo",
   kind: "rt",
-  applies: (ctx) => ctx.intent?.mode !== "restore",
+  // Not enqueued when nothing names a repo AND nobody can be asked for one.
+  // Interactively that case is fine — a human supplies a URL or authenticates
+  // — but headless it can only reach for `rt home init`'s built-in default,
+  // which is a repo this operator does not own. A clean-room run cloning the
+  // author's private home repo is wrong even on the runs where it succeeds.
+  //
+  // The gate lives here rather than inside home.init: the command failing when
+  // it genuinely cannot clone is the right answer for a real user with a wrong
+  // RT_HOME_URL, and softening it there to quiet a headless run would trade a
+  // good error for a silent one.
+  applies: (ctx) =>
+    ctx.intent?.mode !== "restore"
+    && (!ctx.nonInteractive || Boolean(ctx.p.env.RT_HOME_URL)),
   run: homeInitRunSafe,
 };
 
