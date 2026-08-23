@@ -410,19 +410,13 @@ describe("rt settings (four stores, one resolver — e2e)", () => {
     ]);
   }, 30_000);
 
-  test("get labels a migrated:false key with the legacy file it still reads", async () => {
-    const out = await rtJson(["settings", "get", "rt.hooks", "--json"]);
-    expect(out.migrated).toBe(false);
-    expect(out.legacyFile).toBe("repos/<repo>/hooks.json");
-  }, 30_000);
-
   test("list reports migrated flags and labels the team store's unregistered key", async () => {
     const out = await rtJson(["settings", "list", "--repo", REPO_NAME, "--json"]);
     const byKey = new Map<string, any>(out.settings.map((s: any) => [s.key, s]));
 
     expect(byKey.get("rt.worktrees").migrated).toBe(true);
     expect(byKey.get("rt.worktrees").value.onDeck).toBe(3);
-    expect(byKey.get("rt.hooks").migrated).toBe(false);
+    expect(byKey.get("rt.hooks").migrated).toBe(true);
 
     const unknown = byKey.get("rt.e2eFutureKey");
     expect(unknown.unregistered).toBe(true);
