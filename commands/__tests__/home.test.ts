@@ -796,6 +796,31 @@ describe("homeInit", () => {
       expect(logs.some((l) => l.includes("no machine-key file yet"))).toBe(true);
     });
 
+    test("truly fresh machine, --dry-run: says materialize will also run, since its plan can't be previewed pre-clone", async () => {
+      const seam = new FakeSeam();
+      const probes = fakeProbes({ isGitRepo: () => false, exists: () => false });
+
+      const { logs } = await runHomeInit(probes, seam, new FakeAgeKeySeam(), ["--dry-run"], new FakeSopsYamlSeam(), KEY);
+
+      expect(logs.some((l) => l.includes("materialize will also run"))).toBe(true);
+    });
+
+    test("truly fresh machine, --dry-run --no-materialize: stays silent about materialize", async () => {
+      const seam = new FakeSeam();
+      const probes = fakeProbes({ isGitRepo: () => false, exists: () => false });
+
+      const { logs } = await runHomeInit(
+        probes,
+        seam,
+        new FakeAgeKeySeam(),
+        ["--dry-run", "--no-materialize"],
+        new FakeSopsYamlSeam(),
+        KEY,
+      );
+
+      expect(logs.some((l) => l.includes("materialize will also run"))).toBe(false);
+    });
+
     test("--new-profile as a bare flag: uses the hostname slug, no picker", async () => {
       const seam = new FakeSeam();
       const probes = REPO_PRESENT_NO_KEY(() => ["desktop"]);
