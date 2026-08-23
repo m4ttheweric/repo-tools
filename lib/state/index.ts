@@ -83,6 +83,7 @@ export { getKvValue, setKvValue, deleteKvValue, listKvValues, hasKvValue } from 
 export {
   listEndpointClaims,
   replaceEndpointClaims,
+  hasEndpointClaims,
   type EndpointClaim,
 } from "./endpoint-claims-store.ts";
 

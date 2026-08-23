@@ -297,7 +297,7 @@ function loadReactorState(): ReactorState {
     const state = normalizeReactorState(json as Partial<ReactorState> | null);
     setKvValue(REACTOR_STATE_NS, REACTOR_STATE_KEY, state);
     return state;
-  });
+  }, { verifyPersisted: () => hasKvValue(REACTOR_STATE_NS, REACTOR_STATE_KEY) });
   return result.imported ? result.value! : normalizeReactorState({});
 }
 

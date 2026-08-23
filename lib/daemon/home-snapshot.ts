@@ -190,7 +190,10 @@ function loadState(db: Database, log: Logger): Record<string, number> {
       setKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, { firstSeenDirty }, db);
       return firstSeenDirty;
     },
-    (err) => log.warn({ err }, "home-snapshot: legacy state file corrupt; starting from empty first-seen-dirty state"),
+    {
+      onCorrupt: (err) => log.warn({ err }, "home-snapshot: legacy state file corrupt; starting from empty first-seen-dirty state"),
+      verifyPersisted: () => hasKvValue(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, db),
+    },
   );
   return result.imported ? result.value! : {};
 }

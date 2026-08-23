@@ -44,6 +44,11 @@ export function listEndpointClaims(repo: string, db: Database = getStateDb()): E
   return rows.map(rowToClaim);
 }
 
+/** Whether this repo has any claim rows at all — the migrate-on-read gate for the legacy endpoints.json importer. */
+export function hasEndpointClaims(repo: string, db: Database = getStateDb()): boolean {
+  return db.query(`SELECT 1 FROM endpoint_claims WHERE repo = ? LIMIT 1;`).get(repo) != null;
+}
+
 /**
  * Whole-array replace for one repo, kept transactional so a concurrent
  * reader never observes a repo with its old claims deleted but the new set

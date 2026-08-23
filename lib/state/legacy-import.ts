@@ -18,6 +18,17 @@
  * inert. Renaming first would risk the opposite: a file gone with nothing
  * written, on a step that cannot be made atomic with the SQLite write (a
  * `rename(2)` cannot join a `bun:sqlite` transaction).
+ *
+ * `verifyPersisted` closes a second, subtler gap: every `apply` in this
+ * codebase writes through `persistOrWarn` (lib/state/busy.ts), which WARNS
+ * AND SWALLOWS `SQLITE_BUSY` rather than throwing — so `apply` returning
+ * normally does NOT mean the write landed. Without re-checking, a write that
+ * silently no-op'd under contention still gets its only other copy renamed
+ * away, permanently. `verifyPersisted` re-reads the store (a cheap point
+ * lookup — `hasKvValue`/`hasRunHistory`/equivalent) AFTER `apply` and gates
+ * the rename on it actually finding the row; a failed check still returns
+ * the freshly-parsed value to THIS caller (it did parse correctly) but skips
+ * the rename, so the legacy file survives for a retry on the next read.
  */
 
 import { existsSync, readFileSync, renameSync } from "fs";
@@ -25,6 +36,17 @@ import { existsSync, readFileSync, renameSync } from "fs";
 export interface LegacyImportResult<T> {
   imported: boolean;
   value?: T;
+}
+
+export interface ImportLegacyJsonFileOptions {
+  onCorrupt?: (err: unknown) => void;
+  /**
+   * Re-checked after `apply()` returns, before renaming. Must confirm the
+   * write `apply` performed actually reached the store (see module doc) —
+   * every current caller has a real persistence step to confirm, so this is
+   * required rather than defaulted to "always rename".
+   */
+  verifyPersisted: () => boolean;
 }
 
 function defaultOnCorrupt(legacyPath: string): (err: unknown) => void {
@@ -35,17 +57,20 @@ function defaultOnCorrupt(legacyPath: string): (err: unknown) => void {
 
 /**
  * If `legacyPath` exists, parses it as JSON and hands the parsed value to
- * `apply` (which must write it into the store), then renames the file to
+ * `apply` (which must write it into the store). Renames the file to
  * `<name>.migrated` — the same convention db.ts's own legacy-import seam
- * uses. Corrupt/unparseable JSON: warns via `onCorrupt` and returns
- * `{ imported: false }` WITHOUT renaming — a file that could not be read is
- * never destroyed, and the same corrupt file is safe to warn about again on
- * the next read.
+ * uses — ONLY when `opts.verifyPersisted()` confirms the write landed;
+ * otherwise the file is left in place (a warm retry candidate for the next
+ * read) and the freshly-parsed value is still returned to this caller.
+ * Corrupt/unparseable JSON: warns via `onCorrupt` and returns
+ * `{ imported: false }` WITHOUT calling `apply` or renaming — a file that
+ * could not be read is never destroyed, and the same corrupt file is safe to
+ * warn about again on the next read.
  */
 export function importLegacyJsonFile<T>(
   legacyPath: string,
   apply: (parsed: unknown) => T,
-  onCorrupt: (err: unknown) => void = defaultOnCorrupt(legacyPath),
+  opts: ImportLegacyJsonFileOptions,
 ): LegacyImportResult<T> {
   if (!existsSync(legacyPath)) return { imported: false };
 
@@ -53,11 +78,17 @@ export function importLegacyJsonFile<T>(
   try {
     json = JSON.parse(readFileSync(legacyPath, "utf8"));
   } catch (err) {
-    onCorrupt(err);
+    (opts.onCorrupt ?? defaultOnCorrupt(legacyPath))(err);
     return { imported: false };
   }
 
   const value = apply(json);
+
+  if (!opts.verifyPersisted()) {
+    console.warn(`rt: imported legacy state file ${legacyPath} but the write did not land (db busy?) — leaving it in place to retry on the next read`);
+    return { imported: true, value };
+  }
+
   try {
     renameSync(legacyPath, `${legacyPath}.migrated`);
   } catch (err) {
@@ -72,6 +103,13 @@ export function importLegacyJsonFile<T>(
  * read-time rename, kept to the same never-unlink rule. A failure (already
  * gone, permissions) is silently ignored: the store already holds the value
  * that matters either way.
+ *
+ * Callers whose SAVE path can run without a prior LOAD in the same process
+ * (worktree registry, endpoint claims, run history — see their modules) do
+ * NOT use this: a blind rename here would strand an unread legacy file
+ * exactly like the bug this whole module exists to close. Those instead
+ * call their own load function first, which safely imports-and-renames (or
+ * leaves in place) through `importLegacyJsonFile` above.
  */
 export function renameLegacyOutOfTheWay(legacyPath: string): void {
   try {

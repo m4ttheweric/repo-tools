@@ -1,8 +1,10 @@
 import { describe, test, expect, beforeEach, spyOn } from "bun:test";
+import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { closeStateDb, setKvValue } from "../../state/index.ts";
+import { rtDir } from "../../rt-paths.ts";
+import { closeStateDb, getStateDb, hasKvValue, setKvValue } from "../../state/index.ts";
 import {
   loadRegistry,
   registryEpoch,
@@ -114,4 +116,48 @@ describe("worktree registry", () => {
     expect(existsSync(path)).toBe(false);
     expect(existsSync(`${path}.migrated`)).toBe(true);
   });
+
+  test("real contended write (reviewer's repro): a held write lock during loadRegistry's import must NOT rename worktrees.json — the next read must still see it and retry", () => {
+    // Materialize AND KEEP OPEN state.db's singleton first (never
+    // closeStateDb() here): loadRegistry's own getStateDb() call must reuse
+    // this already-migrated connection during the lock window below, or its
+    // own open+migrate BEGIN IMMEDIATE would contend with the lock too and
+    // throw past MIGRATION_BUSY_TIMEOUT_MS instead of the plain write
+    // hitting persistOrWarn's swallow — a different failure than the one
+    // this test targets.
+    getStateDb();
+    const dbPath = join(rtDir(), "state.db");
+
+    const path = registryPath("r");
+    mkdirSync(dirname(path), { recursive: true });
+    const legacyTree = rec({ name: "claimed-tree", kind: "ephemeral", state: "claimed", owner: "matt" });
+    writeFileSync(path, JSON.stringify({ trees: [legacyTree] }));
+
+    // A second, real connection holds the write lock past loadRegistry's
+    // (cli-flavor, 5000ms) busy_timeout — a genuine SQLITE_BUSY, not a mock.
+    const blocker = new Database(dbPath);
+    blocker.exec("PRAGMA busy_timeout = 0;");
+    blocker.exec("BEGIN IMMEDIATE;");
+
+    let trees: TreeRecord[];
+    try {
+      trees = loadRegistry("r");
+    } finally {
+      blocker.exec("ROLLBACK;");
+      blocker.close();
+    }
+
+    // This caller still gets the correctly-parsed trees (apply() did run)...
+    expect(trees.map((t) => t.name)).toEqual(["claimed-tree"]);
+    // ...but the write never landed, so nothing may be destroyed: the file
+    // must survive, and the store must still be empty for this repo.
+    expect(existsSync(path)).toBe(true);
+    expect(existsSync(`${path}.migrated`)).toBe(false);
+    expect(hasKvValue("worktree-registry", "r")).toBe(false);
+
+    // The next read (lock released) succeeds for real and renames.
+    expect(loadRegistry("r").map((t) => t.name)).toEqual(["claimed-tree"]);
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(`${path}.migrated`)).toBe(true);
+  }, 20_000);
 });

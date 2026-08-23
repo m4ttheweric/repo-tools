@@ -491,23 +491,41 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
       expect(byName(repos, "stillhere")?.worktrees[0]?.path).toBe(repo);
       expect(byName(repos, "stale-repo")).toBeUndefined();
       expect(loadRepoIndex()["stale-repo"]).toBe("/nonexistent/path"); // imported into the store regardless
-      expect(existsSync(p)).toBe(false);
-      expect(existsSync(`${p}.migrated`)).toBe(true);
+      // repos.json is the live out-of-process compat mirror gitq reads, NOT
+      // a retired legacy file — it must never be renamed away, only kept
+      // in sync (unlike every other migrated path in this fix round).
+      expect(existsSync(p)).toBe(true);
+      expect(existsSync(`${p}.migrated`)).toBe(false);
 
       rmSync(root, { recursive: true, force: true });
     });
 
-    test("a pre-migration repos.json is imported on first read and renamed to .migrated", () => {
+    test("a pre-migration repos.json is imported on first read, and stays in place (refreshed, never renamed) as the live compat mirror", () => {
       const p = join(rtDir(), "repos.json");
       mkdirSync(dirname(p), { recursive: true });
       writeFileSync(p, JSON.stringify({ "repo-a": "/path/a", "repo-b": "/path/b" }));
 
       expect(loadRepoIndex()).toEqual({ "repo-a": "/path/a", "repo-b": "/path/b" });
-      expect(existsSync(p)).toBe(false);
-      expect(existsSync(`${p}.migrated`)).toBe(true);
+      expect(existsSync(p)).toBe(true);
+      expect(existsSync(`${p}.migrated`)).toBe(false);
+      expect(JSON.parse(readFileSync(p, "utf8"))).toEqual({ "repo-a": "/path/a", "repo-b": "/path/b" });
 
-      // A second read sees the store, not a re-import (the file is already renamed away).
+      // A second read sees the store directly (namespace non-empty), not a re-import.
       expect(loadRepoIndex()).toEqual({ "repo-a": "/path/a", "repo-b": "/path/b" });
+    });
+
+    test("a daemon that only primes the index and never calls updateRepoIndex still leaves repos.json intact for gitq's out-of-process reader", () => {
+      const p = join(rtDir(), "repos.json");
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, JSON.stringify({ "repo-a": "/path/a" }));
+
+      // Simulates lib/daemon/repo-index.ts's boot-time prime: a read-only
+      // call site that never writes through updateRepoIndex.
+      loadRepoIndex();
+      loadRepoIndex();
+
+      expect(existsSync(p)).toBe(true);
+      expect(JSON.parse(readFileSync(p, "utf8"))).toEqual({ "repo-a": "/path/a" });
     });
 
     test("corrupt repos.json warns and is left in place, index reads as empty", () => {
@@ -542,6 +560,27 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
       }
 
       rmSync(parent, { recursive: true, force: true });
+    });
+
+    test("getKnownRepos never throws when state.db cannot be opened — degrades to unregistered-scan results", () => {
+      const root = mkdtempSync(join(tmpdir(), "rt-getknown-unopenable-"));
+      const repo = markerRepo(root, "scannable");
+      setRepoRoots([root]);
+
+      getStateDb();
+      closeStateDb();
+      const dbPath = join(rtDir(), "state.db");
+      chmodSync(dbPath, 0o000);
+
+      try {
+        let repos: ReturnType<typeof getKnownRepos> = [];
+        expect(() => { repos = getKnownRepos(); }).not.toThrow();
+        expect(byName(repos, "scannable")?.worktrees[0]?.path).toBe(repo);
+      } finally {
+        chmodSync(dbPath, 0o600);
+      }
+
+      rmSync(root, { recursive: true, force: true });
     });
 
     test("unset key + empty index = empty result, no crash", () => {
