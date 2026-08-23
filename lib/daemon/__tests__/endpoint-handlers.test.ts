@@ -4,8 +4,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import pino from "pino";
-import { repoDataDir, teamSettingsPath } from "../../rt-paths.ts";
+import { rtDir, teamSettingsPath } from "../../rt-paths.ts";
 import { endpointsPath, loadClaims } from "../../endpoint/store.ts";
+import { closeStateDb } from "../../state/index.ts";
 import type { RepoIndex } from "../handlers/types.ts";
 import { createEndpointHandlers, releaseEndpointsForWorktree } from "../handlers/endpoint.ts";
 import type { HandlerContext } from "../handlers/types.ts";
@@ -55,6 +56,7 @@ describe("endpoint handlers", () => {
   beforeEach(() => {
     home = realpathSync(mkdtempSync(join(tmpdir(), "rt-endpoint-handlers-")));
     process.env.HOME = home;
+    closeStateDb();
     repoIndex = {};
     ctx = { log: pino({ level: "silent" }), repoIndex: () => repoIndex } as unknown as HandlerContext;
     handlers = createEndpointHandlers(ctx, { probes: fakeProbes });
@@ -62,6 +64,7 @@ describe("endpoint handlers", () => {
 
   afterEach(() => {
     process.env.HOME = origHome;
+    closeStateDb();
     rmSync(home, { recursive: true, force: true });
   });
 
@@ -110,29 +113,39 @@ describe("endpoint handlers", () => {
   test("releasing a worktree with no claims writes nothing — no endpoints.json for a repo that never claimed", async () => {
     declareRoles("repoNoClaims");
     expect(existsSync(endpointsPath("repoNoClaims"))).toBe(false);
+    expect(loadClaims("repoNoClaims")).toEqual([]);
 
     releaseEndpointsForWorktree(ctx, "repoNoClaims", "/wt/never-claimed");
     expect(existsSync(endpointsPath("repoNoClaims"))).toBe(false);
+    expect(loadClaims("repoNoClaims")).toEqual([]);
 
     const r = await handlers["endpoint:release"]({ repo: "repoNoClaims", worktree: "/wt/never-claimed" });
     expect(r).toMatchObject({ ok: true, data: { released: 0 } });
     expect(existsSync(endpointsPath("repoNoClaims"))).toBe(false);
+    expect(loadClaims("repoNoClaims")).toEqual([]);
   });
 
   test("releaseEndpointsForWorktree swallows a save failure instead of throwing", async () => {
-    // root bypasses directory permission bits entirely — chmod 0o555 would not
-    // actually block the write, so the throw this test exercises can't occur.
+    // root bypasses file permission bits entirely — chmod 0o444 would not
+    // actually block the reopen, so the throw this test exercises can't occur.
     if (process.getuid?.() === 0) return;
 
     declareRoles("repoReadonly");
     await handlers["endpoint:claim"]({ repo: "repoReadonly", worktree: "/wt/z", role: "backend", pid: 1 });
 
-    const dir = repoDataDir("repoReadonly");
-    chmodSync(dir, 0o555);
+    // An already-open fd tolerates a permission change (the OS only checks
+    // at open()), so the singleton has to be forced to reopen against the
+    // now-read-only file for this to fail at all. persistOrWarn only
+    // swallows SQLITE_BUSY, so a genuine open failure still has to reach
+    // releaseEndpointsForWorktree's own catch for this test to mean anything.
+    closeStateDb();
+    const dbPath = join(rtDir(), "state.db");
+    chmodSync(dbPath, 0o444);
     try {
       expect(() => releaseEndpointsForWorktree(ctx, "repoReadonly", "/wt/z")).not.toThrow();
     } finally {
-      chmodSync(dir, 0o755);
+      chmodSync(dbPath, 0o644);
+      closeStateDb();
     }
   });
 });

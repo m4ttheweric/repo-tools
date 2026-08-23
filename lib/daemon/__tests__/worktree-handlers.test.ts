@@ -16,6 +16,7 @@ import type { Logger } from "pino";
 import { writeJson } from "../../json-store.ts";
 import { machineSettingsPath, repoDataDir, rtDir } from "../../rt-paths.ts";
 import { deriveRepoIdentity } from "../../settings/identity.ts";
+import { closeStateDb } from "../../state/index.ts";
 import { loadRegistry, saveRegistry, type TreeRecord } from "../../worktree/registry.ts";
 import { tryLockTree } from "../../worktree/locks.ts";
 import { branchExistsLocalAsync, currentBranchAsync, headSha } from "../../worktree/git-async.ts";
@@ -157,6 +158,7 @@ const repoName = "acme";
 
 beforeEach(() => {
   process.env.HOME = realpathSync(mkdtempSync(join(tmpdir(), "rtwh-home-")));
+  closeStateDb();
   // killProcesses off: the process killer shells out to ps/lsof and has
   // nothing to find in a fixture.
   writeJson(join(rtDir(), "worktrees.json"), { enabled: true, killProcesses: false });

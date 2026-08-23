@@ -1,7 +1,8 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
+import { closeStateDb, setKvValue } from "../../state/index.ts";
 import {
   loadRegistry,
   registryEpoch,
@@ -25,6 +26,7 @@ const rec = (over: Partial<TreeRecord>): TreeRecord => ({
 describe("worktree registry", () => {
   beforeEach(() => {
     process.env.HOME = mkdtempSync(join(tmpdir(), "rtreg-"));
+    closeStateDb();
   });
   test("empty loads []", () => expect(loadRegistry("r")).toEqual([]));
   test("round-trip", () => {
@@ -54,16 +56,25 @@ describe("worktree registry", () => {
     // A write to one repo never disturbs another repo's epoch.
     expect(registryEpoch("other")).toBe(otherBefore);
   });
-  test("malformed registry file ({}) loads as []", () => {
-    const path = registryPath("r");
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, "{}");
+  test("a malformed stored value ({}) loads as []", () => {
+    setKvValue("worktree-registry", "r", {});
     expect(loadRegistry("r")).toEqual([]);
   });
-  test("malformed registry file ({\"trees\": null}) loads as []", () => {
+  test("a malformed stored value (null) loads as []", () => {
+    setKvValue("worktree-registry", "r", null);
+    expect(loadRegistry("r")).toEqual([]);
+  });
+  test("a stale on-disk worktrees.json is ignored once the store owns the value, and gets unlinked on write", () => {
     const path = registryPath("r");
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify({ trees: null }));
+    writeFileSync(path, JSON.stringify({ trees: [rec({ name: "stale-tree" })] }));
+    expect(existsSync(path)).toBe(true);
+
+    // The store, not the stale file, is authoritative — nothing written yet.
     expect(loadRegistry("r")).toEqual([]);
+
+    saveRegistry("r", [rec({ name: "fresh-tree" })]);
+    expect(loadRegistry("r").map((t) => t.name)).toEqual(["fresh-tree"]);
+    expect(existsSync(path)).toBe(false);
   });
 });
