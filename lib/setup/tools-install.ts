@@ -220,12 +220,16 @@ async function setupHerdr(p: Probes, configDirs: string[]): Promise<SetupResult>
   return { ok, detail };
 }
 
+/** Exported so a caller classifying `SetupResult.detail` (extension.install's apply step) matches against the same value this emits, rather than a copy of the prose. */
+export const VSIX_NOT_FOUND_DETAIL = "rt-context.vsix not found — expected in the app bundle or next to the binary";
+export const NO_EDITORS_DETAIL = "no compatible editors found";
+
 async function setupExtension(p: Probes, seams: ToolsInstallSeams): Promise<SetupResult> {
   const vsix = seams.findVsix(p);
-  if (!vsix) return { ok: false, detail: "rt-context.vsix not found — expected in the app bundle or next to the binary" };
+  if (!vsix) return { ok: false, detail: VSIX_NOT_FOUND_DETAIL };
 
   const editors: DetectedEditor[] = seams.detectEditors();
-  if (editors.length === 0) return { ok: false, detail: "no compatible editors found" };
+  if (editors.length === 0) return { ok: false, detail: NO_EDITORS_DETAIL };
 
   const installed: string[] = [];
   const failed: string[] = [];

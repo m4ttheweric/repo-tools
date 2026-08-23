@@ -33,16 +33,23 @@ function dedupe(values: string[]): string[] {
   return [...new Set(values)];
 }
 
-function combinedOutput(res: { stdout: string; stderr: string }): string {
-  return `${res.stdout}\n${res.stderr}`;
-}
-
-function isAlready(res: { stdout: string; stderr: string }): boolean {
-  return /already/i.test(combinedOutput(res));
+/** Anchored to known "already done" phrasing in stderr only — an unanchored match over stdout+stderr would let a genuinely failing call (whose output merely mentions the word "already" in passing) read as success. */
+function isAlready(res: { stderr: string }): boolean {
+  return /already (installed|added|exists)/i.test(res.stderr);
 }
 
 function isUnknownSubcommand(res: { stdout: string; stderr: string }): boolean {
-  return /unknown (sub)?command/i.test(combinedOutput(res));
+  return /unknown (sub)?command/i.test(`${res.stdout}\n${res.stderr}`);
+}
+
+/** `claude.marketplaces`/`claude.plugins` are `user`+`team` scope, so a team's hand-written settings.team.jsonc can carry anything the registry's `type: "array"` doesn't constrain — the same guard `team-settings.ts` already applies to these two keys. A non-string element is dropped (and logged) rather than spliced into argv, where it would stringify to `[object Object]` and fail with a misleading remedy. */
+function stringSettingArray(ctx: ApplyContext, key: string, value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const strings = value.filter((v): v is string => typeof v === "string");
+  if (strings.length !== value.length) {
+    ctx.log("plugins.install", `${key}: dropped ${value.length - strings.length} non-string entr${value.length - strings.length === 1 ? "y" : "ies"}`);
+  }
+  return strings;
 }
 
 interface TeamMarketplaceFile {
@@ -70,18 +77,18 @@ function teamMarketplaceDir(p: Pick<Probes, "home">, slug: string): string {
 }
 
 function computeMarketplaces(ctx: ApplyContext): string[] {
-  const userSet = getSetting<string[]>("claude.marketplaces").value ?? [];
+  const userSet = stringSettingArray(ctx, "claude.marketplaces", getSetting<unknown>("claude.marketplaces").value);
   const mattstackSource = ctx.p.env.RT_MATTSTACK_MARKETPLACE || MATTSTACK_MARKETPLACE_SOURCE;
   const teamSource = ctx.team.slug ? [teamMarketplaceDir(ctx.p, ctx.team.slug)] : [];
   return dedupe([...userSet, mattstackSource, ...teamSource]);
 }
 
 function computePlugins(ctx: ApplyContext, teamMarketplace: TeamMarketplaceFile | null): string[] {
-  const userSet = getSetting<string[]>("claude.plugins").value ?? [];
+  const userSet = stringSettingArray(ctx, "claude.plugins", getSetting<unknown>("claude.plugins").value);
   const marketplaceName = teamMarketplace?.name ?? ctx.team.slug;
   const teamPlugins = (teamMarketplace?.plugins ?? [])
     .map((plugin) => plugin.name)
-    .filter((name): name is string => Boolean(name))
+    .filter((name): name is string => typeof name === "string" && name.length > 0)
     .map((name) => `${name}@${marketplaceName}`);
   return dedupe([...userSet, ...BASE_PLUGINS, ...teamPlugins]);
 }
@@ -101,7 +108,16 @@ async function runMaterializeAfterInstall(ctx: ApplyContext): Promise<string> {
 async function pluginsInstallRun(ctx: ApplyContext): Promise<StepOutcome> {
   const claude = resolveTool(ctx.p, "claude");
   if (!claude.exec) {
-    return { state: "failed", detail: "claude not found (not bundled, no user copy on PATH)", remedy: "Install Claude Code (Tools row), then Retry." };
+    // The app gates Install on tool.claude (required:true), so this branch
+    // is unreachable through the shipped UI — but `rt setup apply` never
+    // checks canInstall itself, and a --non-interactive/CI run with nobody
+    // to act on a Retry must not dead-end the rest of the flow the way a
+    // hard `failed` would (services.start, snapshot.push, verify still need
+    // to run). Interactive keeps the loud failure — a human IS watching.
+    const detail = "claude not found (not bundled, no user copy on PATH)";
+    return ctx.nonInteractive
+      ? { state: "skipped", detail }
+      : { state: "failed", detail, remedy: "Install Claude Code (Tools row), then Retry." };
   }
 
   const teamMarketplace = ctx.team.slug ? readTeamMarketplace(ctx.p, ctx.team.slug) : null;

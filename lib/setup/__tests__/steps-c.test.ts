@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { basename, join } from "path";
-import { mkdtempSync, realpathSync, rmSync } from "fs";
+import { basename, dirname, join } from "path";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { __test__ as bundleLayoutTest } from "../../bundle-layout.ts";
+import { teamSettingsPath } from "../../rt-paths.ts";
 import { updateRepoIndex } from "../../repo-index.ts";
 import { setSetting } from "../../settings/write.ts";
 import type { SecretsSeams } from "../../secrets/store.ts";
@@ -72,6 +73,7 @@ function makeCtx(p: Probes, overrides: Partial<ApplyContext> = {}): { ctx: Apply
     secrets: fakeSecrets,
     teamSecrets: () => fakeSecrets,
     relay: fakeRelay,
+    secretPresence: { has: async () => null },
     redact: () => {},
     async need() {
       return "no-app";
@@ -108,9 +110,9 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
   // ─── plugins.install ────────────────────────────────────────────────────
 
   describe("plugins.install", () => {
-    test("claude not resolvable -> failed with the Tools-row remedy, nothing execed", async () => {
+    test("claude not resolvable, interactive -> failed with the Tools-row remedy, nothing execed", async () => {
       const p = fakeProbes({ home, env: {} });
-      const { ctx } = makeCtx(p);
+      const { ctx } = makeCtx(p, { nonInteractive: false });
       const outcome = await pluginsInstallStep.run(ctx);
       expect(outcome).toEqual({
         state: "failed",
@@ -118,6 +120,39 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
         remedy: "Install Claude Code (Tools row), then Retry.",
       });
       expect(p.calls.exec).toEqual([]);
+    });
+
+    test("claude not resolvable, nonInteractive -> skipped honestly (nobody can act on a Retry) — matches servicesStartRun's split", async () => {
+      const p = fakeProbes({ home, env: {} });
+      const { ctx } = makeCtx(p, { nonInteractive: true });
+      const outcome = await pluginsInstallStep.run(ctx);
+      expect(outcome).toEqual({ state: "skipped", detail: "claude not found (not bundled, no user copy on PATH)" });
+      expect(p.calls.exec).toEqual([]);
+    });
+
+    test("a non-string claude.marketplaces/claude.plugins entry is dropped, logged, and never reaches argv", async () => {
+      setSetting("claude.marketplaces", ["https://example.com/ok-market", { name: "bad" }], "user");
+      setSetting("claude.plugins", [42, "ok-plugin@ok-market"], "user");
+
+      const execCalls: string[][] = [];
+      const p = fakeProbes({
+        home,
+        env: { PATH: "/usr/local/bin" },
+        files: { "/usr/local/bin/claude": "bin" },
+        exec: async (argv) => {
+          execCalls.push(argv);
+          return ok("");
+        },
+      });
+      const { ctx, logs } = makeCtx(p);
+
+      const outcome = await pluginsInstallStep.run(ctx);
+      expect(outcome.state).toBe("done");
+      expect(execCalls.some((a) => a.includes("[object Object]"))).toBe(false);
+      expect(execCalls.some((a) => a.at(-1) === "https://example.com/ok-market")).toBe(true);
+      expect(execCalls.some((a) => a.at(-1) === "ok-plugin@ok-market")).toBe(true);
+      expect(logs.some((l) => l.line.includes("claude.marketplaces") && l.line.includes("dropped 1"))).toBe(true);
+      expect(logs.some((l) => l.line.includes("claude.plugins") && l.line.includes("dropped 1"))).toBe(true);
     });
 
     test("happy path: one custom marketplace + team marketplace/plugin, one config dir — full argv sequence, setup-state recorded", async () => {
@@ -401,6 +436,20 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
       expect(await servicesStartStep.run(ctx)).toEqual({ state: "failed", detail: "mattstack.app not running", remedy: "Open mattstack.app" });
     });
 
+    test("tray 500 (app running, refused the start) -> always failed, even nonInteractive — never buried as 'not running'", async () => {
+      const p = fakeProbes({ home, tray: fakeTray({ "POST /daemon/start": () => ({ status: 500, json: null }) }) });
+      const { ctx } = makeCtx(p, { nonInteractive: true });
+      const outcome = await servicesStartStep.run(ctx);
+      expect(outcome).toEqual({ state: "failed", detail: "mattstack.app returned status 500 starting the daemon", remedy: "Open mattstack.app" });
+    });
+
+    test("tray 404 (stale/unrecognized route) -> failed naming the status, not 'not running'", async () => {
+      const p = fakeProbes({ home, tray: fakeTray({ "POST /daemon/start": () => ({ status: 404, json: null }) }) });
+      const { ctx } = makeCtx(p);
+      const outcome = await servicesStartStep.run(ctx);
+      expect(outcome).toEqual({ state: "failed", detail: "mattstack.app returned status 404 starting the daemon", remedy: "Open mattstack.app" });
+    });
+
     test("tray 200 but the daemon never comes up -> failed after exhausting the poll (fast sleep)", async () => {
       let pings = 0;
       const p = fakeProbes({
@@ -448,61 +497,32 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
     test("daemon reports failure -> failed with the git-status remedy", async () => {
       const p = fakeProbes({ home, daemon: async () => ({ ok: false, error: "commit failed" }) });
       const outcome = await snapshotPushStep.run(makeCtx(p).ctx);
-      expect(outcome).toEqual({ state: "failed", detail: "commit failed", remedy: "check `git -C ~/.mattstack status`" });
+      expect(outcome).toEqual({ state: "failed", detail: "commit failed", remedy: "check `git -C ~/.mattstack/user status`" });
     });
 
-    describe("git fallback (daemon unreachable)", () => {
-      const repoDir = () => join(home, ".mattstack", "user");
-
-      test("commits and pushes via git directly", async () => {
-        const execCalls: string[][] = [];
-        const p = fakeProbes({
-          home,
-          dirs: { [join(repoDir(), ".git")]: [] },
-          daemon: async () => null,
-          exec: async (argv) => {
-            execCalls.push(argv);
-            return ok("");
-          },
-        });
-        const outcome = await snapshotPushStep.run(makeCtx(p).ctx);
-        expect(outcome).toEqual({ state: "done", detail: "committed and pushed" });
-        expect(execCalls).toEqual([
-          ["git", "-C", repoDir(), "add", "-A"],
-          ["git", "-C", repoDir(), "commit", "-m", "setup: snapshot"],
-          ["git", "-C", repoDir(), "push"],
-        ]);
+    test("daemon-reported failure text is run through stripUserinfo — a credential-bearing origin URL never reaches detail", async () => {
+      const p = fakeProbes({
+        home,
+        daemon: async () => ({ ok: false, error: "fatal: unable to access 'https://x-token-auth:secret123@host/repo.git/'" }),
       });
+      const outcome = await snapshotPushStep.run(makeCtx(p).ctx);
+      expect(detailOf(outcome)).not.toContain("secret123");
+    });
 
-      test("'nothing to commit' is tolerated — still pushes", async () => {
-        const p = fakeProbes({
-          home,
-          dirs: { [join(repoDir(), ".git")]: [] },
-          daemon: async () => null,
-          exec: async (argv) => (argv.includes("commit") ? { code: 1, stdout: "", stderr: "nothing to commit, working tree clean" } : ok("")),
-        });
-        const outcome = await snapshotPushStep.run(makeCtx(p).ctx);
-        expect(outcome).toEqual({ state: "done", detail: "nothing new to commit; pushed" });
+    test("daemon unreachable -> skipped honestly deferring to the daemon, NEVER runs git directly (no local zone/owners reimplementation)", async () => {
+      const execCalls: string[][] = [];
+      const p = fakeProbes({
+        home,
+        dirs: { [join(home, ".mattstack", "user", ".git")]: [] }, // even with a real repo present, no git fallback runs
+        daemon: async () => null,
+        exec: async (argv) => {
+          execCalls.push(argv);
+          return ok("");
+        },
       });
-
-      test("home repo not provisioned yet -> skipped, never runs git", async () => {
-        const execCalls: string[][] = [];
-        const p = fakeProbes({ home, daemon: async () => null, exec: async (argv) => { execCalls.push(argv); return ok(""); } });
-        const outcome = await snapshotPushStep.run(makeCtx(p).ctx);
-        expect(outcome).toEqual({ state: "skipped", detail: "home repo not provisioned yet (`rt home init`)" });
-        expect(execCalls).toEqual([]);
-      });
-
-      test("push fails -> failed with the git-status remedy", async () => {
-        const p = fakeProbes({
-          home,
-          dirs: { [join(repoDir(), ".git")]: [] },
-          daemon: async () => null,
-          exec: async (argv) => (argv.includes("push") ? { code: 1, stdout: "", stderr: "rejected" } : ok("")),
-        });
-        const outcome = await snapshotPushStep.run(makeCtx(p).ctx);
-        expect(outcome).toEqual({ state: "failed", detail: "git push failed (exit 1): rejected", remedy: "check `git -C ~/.mattstack status`" });
-      });
+      const outcome = await snapshotPushStep.run(makeCtx(p).ctx);
+      expect(outcome).toEqual({ state: "skipped", detail: "snapshot deferred to the daemon's next cycle (daemon unreachable)" });
+      expect(execCalls).toEqual([]);
     });
   });
 
@@ -556,6 +576,35 @@ describe("apply steps C: plugins, fast-browser, herdr, extension, services.start
         const first = await verifyStep.run(makeCtx(p, { ci: true }).ctx);
         const second = await verifyStep.run(makeCtx(p, { ci: true }).ctx);
         expect(first).toEqual(second);
+      });
+
+      test("reads secret presence through ctx.secretPresence, never builds its own real seam", async () => {
+        // composePlan re-derives its own TeamSnapshot straight off disk (it
+        // never reads ctx.snapshot) — a declared forge is what makes
+        // accountRows actually call secrets.has(), so the team store needs a
+        // real (if minimal) settings.team.jsonc plus the integration setting,
+        // the same seeding pattern lib/daemon/__tests__/repo-tracking.test.ts
+        // uses for a `scope: "team"` write.
+        const teamPath = teamSettingsPath("acme");
+        mkdirSync(dirname(teamPath), { recursive: true });
+        writeFileSync(teamPath, "// team store\n{}\n");
+        setSetting("mattstack.integrations", { forge: { host: "github.com", provider: "github" } }, "team", { team: "acme" });
+
+        let calls = 0;
+        const p = fakeProbes({ home });
+        const { ctx } = makeCtx(p, {
+          ci: true,
+          team: { slug: "acme", name: "Acme", mode: "none" },
+          secretPresence: {
+            has: async () => {
+              calls += 1;
+              return null;
+            },
+          },
+        });
+
+        await verifyStep.run(ctx);
+        expect(calls).toBeGreaterThan(0);
       });
     });
   });

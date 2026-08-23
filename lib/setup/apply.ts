@@ -16,10 +16,12 @@ import { UserActionableError } from "./errors.ts";
 import { readIntent, teamRefFromIntent, clearIntent, type SetupIntent } from "./intent.ts";
 import { awaitNeed, type NeedReply } from "./need.ts";
 import type { Probes } from "./probes.ts";
+import { realSecretPresence } from "./plan.ts";
 import { readPackRequirements, type PackRequirements } from "./requirements.ts";
 import { STEPS } from "./steps/index.ts";
 import { updateSetupState } from "./state.ts";
 import { readTeamSnapshot, type TeamSnapshot } from "./team-settings.ts";
+import type { SecretPresence } from "./validators/accounts.ts";
 
 export type StepOutcome = { state: "done"; detail?: string } | { state: "skipped"; detail: string } | { state: "failed"; detail: string; remedy?: string };
 
@@ -55,6 +57,14 @@ export interface ApplyContext {
    */
   teamSecrets: SecretsSeamsFactory;
   relay: RelayClient;
+  /**
+   * The credential-presence check `composePlan`'s account validators (and
+   * `verify`) read secrets through. A step must never build its own
+   * `realSecretPresence()`/real seams — that bypasses this field and, like
+   * `secrets`/`teamSecrets` above, can never be driven by a faked context in
+   * a test.
+   */
+  secretPresence: SecretPresence;
   /**
    * Registers `value` as a secret literal: every `log` line and every `step`
    * event's `detail`/`remedy` emitted afterward has exact occurrences of it
@@ -208,6 +218,8 @@ export interface CreateApplyContextDeps {
   /** Defaults to `createRealTeamSecretsSeams` — override for a fully-faked run/test so a team-secret read/write can never fall through to a real keychain/sops. */
   teamSecrets?: SecretsSeamsFactory;
   relay: RelayClient;
+  /** Defaults to `realSecretPresence()` — override for a fully-faked run/test so `verify` (and anything else reading `ctx.secretPresence`) can never reach the real keychain/sops. */
+  secretPresence?: SecretPresence;
   flags: { nonInteractive: boolean; teamOfOne: boolean; ci: boolean };
   /** Threaded straight into `awaitNeed`'s poll loop for the reachable/interactive branch of `need()` — real timers and `Date.now` by default. Tests inject a fake clock/sleep so that branch is driven deterministically instead of pinned to a real 10-minute deadline and 1 s polls. */
   needOpts?: { timeoutMs?: number; pollMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number };
@@ -288,6 +300,7 @@ export async function createApplyContext(deps: CreateApplyContextDeps): Promise<
     secrets,
     teamSecrets: deps.teamSecrets ?? createRealTeamSecretsSeams,
     relay,
+    secretPresence: deps.secretPresence ?? realSecretPresence(),
     redact: redactor.redact,
     async need(id: StepId, request: NeedRequest): Promise<NeedReply | "timeout" | "app-gone" | "no-app"> {
       // Reachability is checked BEFORE the `need` event goes out: a
