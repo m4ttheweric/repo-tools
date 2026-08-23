@@ -16,6 +16,12 @@
  * Wired into the release workflow so a reintroduced eager import (e.g. a
  * static rt-render/ink import in command-tree.ts or module-registry.ts)
  * fails the build instead of shipping silently.
+ *
+ * ADVISORY on macos-15 (release.yml runs this step with continue-on-error)
+ * — the threshold above was set on different hardware and has never been
+ * calibrated against that runner. Exit code below still reflects pass/fail;
+ * only the workflow step is non-blocking. Remove continue-on-error there
+ * once a real macos-15 baseline sets this number.
  */
 
 import { spawnSync } from "child_process";

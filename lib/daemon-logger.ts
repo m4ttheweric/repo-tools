@@ -84,21 +84,38 @@ export async function createDaemonLogger(opts: CreateOptions): Promise<DaemonLog
 
 // ─── Production singleton ────────────────────────────────────────────────────
 
-let cached: DaemonLoggerHandle | undefined;
+// Caches the in-flight PROMISE, not the resolved value: `if (!cached) cached
+// = await …` leaves a window where every caller that arrives before the
+// first resolves runs its own createDaemonLogger(), each opening a
+// pino-roll stream against the same file (rt's daemon boot has ~8
+// near-simultaneous callers). Caching the promise makes them share one init.
+let cachedPromise: Promise<DaemonLoggerHandle> | undefined;
 
 /**
  * Lazily initialize the production logger bound to ~/.mattstack/rt/logs.
  * Multiple callers share the same handle.
  */
 export async function getDaemonLogger(): Promise<DaemonLoggerHandle> {
-  if (!cached) {
-    cached = await createDaemonLogger({
+  if (!cachedPromise) {
+    cachedPromise = createDaemonLogger({
       logDir: logsDir(),
       level: (process.env.RT_LOG_LEVEL as pino.LevelWithSilent | undefined) ?? "info",
+    }).catch((err) => {
+      // Clear the cache on failure — a transient cause (log dir momentarily
+      // unwritable) may not recur, so a later call should retry rather than
+      // stay permanently poisoned.
+      cachedPromise = undefined;
+      throw err;
     });
   }
-  return cached;
+  return cachedPromise;
 }
+
+const PINO_LEVEL_METHODS = new Set(["trace", "debug", "info", "warn", "error", "fatal"]);
+
+// Lets tests read a lazyChildLogger's queue depth without adding an escape
+// hatch to the Proxy's property guard below.
+const pendingQueueLengths = new WeakMap<object, () => number>();
 
 /**
  * A `childLogger(module)` result usable synchronously from module load
@@ -108,27 +125,70 @@ export async function getDaemonLogger(): Promise<DaemonLoggerHandle> {
  * lost or reordered relative to today's `await`-at-module-scope behavior —
  * only its write to disk shifts later by the same startup delay
  * getDaemonLogger() always had.
+ *
+ * `deps.getLogger` defaults to the production singleton; tests substitute a
+ * controlled promise to exercise the failure path without touching it.
  */
-export function lazyChildLogger(module: string): Logger {
+export function lazyChildLogger(
+  module: string,
+  deps: { getLogger?: () => Promise<DaemonLoggerHandle> } = {},
+): Logger {
+  const getLogger = deps.getLogger ?? getDaemonLogger;
   let real: Logger | undefined;
+  let failed = false;
   const pending: Array<() => void> = [];
-  getDaemonLogger().then((handle) => {
-    real = handle.childLogger(module);
-    for (const call of pending) call();
-    pending.length = 0;
-  });
 
-  return new Proxy({} as Logger, {
+  getLogger()
+    .then((handle) => {
+      real = handle.childLogger(module);
+      for (const call of pending) call();
+      pending.length = 0;
+    })
+    .catch((err: unknown) => {
+      // `real` will never resolve after this — stop queuing permanently so
+      // a long-lived daemon doesn't grow this array forever, and surface
+      // the failure since it would otherwise be invisible (no logger to
+      // log it through).
+      failed = true;
+      pending.length = 0;
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`daemon-logger: init failed for module "${module}": ${message}\n`);
+    });
+
+  const proxy = new Proxy({} as Logger, {
     get(_target, prop, _receiver) {
       if (real) return (real as any)[prop];
-      // Pino's logging methods (info/warn/error/debug/…) are the only
-      // members these seven call sites use — queue the invocation.
+      // Only pino's level methods are safe to queue pre-warm: a queued call
+      // is a `real[prop](...args)` closure replayed later, which only makes
+      // sense for methods. Anything else (e.g. `.child()`, `.level`) fails
+      // loud instead of returning a function where a Logger/string is
+      // expected.
+      if (typeof prop !== "string" || !PINO_LEVEL_METHODS.has(prop)) {
+        throw new Error(
+          `lazyChildLogger("${module}"): "${String(prop)}" is not usable before the logger ` +
+          `initializes — only ${[...PINO_LEVEL_METHODS].join("/")} queue pre-warm`,
+        );
+      }
       return (...args: unknown[]) => {
+        if (failed) return;
         pending.push(() => { (real as any)[prop](...args); });
       };
     },
   });
+
+  pendingQueueLengths.set(proxy, () => pending.length);
+  return proxy;
 }
+
+export const __test__ = {
+  resetDaemonLoggerCache(): void {
+    cachedPromise = undefined;
+  },
+  pendingQueueLength(logger: Logger): number {
+    const get = pendingQueueLengths.get(logger as unknown as object);
+    return get ? get() : -1;
+  },
+};
 
 // ─── Native stderr capture ───────────────────────────────────────────────────
 
