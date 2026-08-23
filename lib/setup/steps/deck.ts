@@ -91,27 +91,56 @@ async function repointBoard(ctx: ApplyContext, port: number): Promise<string> {
 }
 
 /**
- * Never throws and never fails the run: `deck add`'s real argv (MAT-384) is
- * a stub — the shipped CLI parses only `--port`/`--cmd`/`--dir`, ignores
- * `--managed-by`/`--host` entirely, and 400s the first call for want of
- * `--dir` — so a from-scratch install would otherwise permanently wedge on
- * a known-incomplete verb. Duplicate registration answers the frozen
+ * deck's registrar id for everything mattstack ships. The stored value is
+ * "rt"; deck renders it as "mattstack" via its own MANAGER_DISPLAY map, and
+ * board already carries this exact id. Passing the display name instead
+ * produces an unrecognized registrar whose 409 escape hatch tells the user to
+ * run `mattstack uninstall <app>` — a command that does not exist.
+ */
+const MATTSTACK_REGISTRAR = "rt";
+
+/**
+ * Registers a bundled app and claims it for mattstack, in that order.
+ *
+ * Two calls, not one, because `deck add` never forwards a registrar: it parses
+ * only `--port`/`--cmd`/`--dir` (MAT-384) and the API defaults the record to
+ * `managedBy: "user"`. A user-owned record is invisible to
+ * `deck remove --managed`, which scopes to `managedBy !== "user"` — so an app
+ * registered by `add` alone silently survives uninstall. `adopt` is the only
+ * verb that sets a registrar, and it is how board became managed.
+ *
+ * Never throws and never fails the run: a from-scratch install must not wedge
+ * on a known-incomplete verb. Duplicate registration answers the frozen
  * "name taken", not a bare `/already/` match.
  */
-async function registerGitq(ctx: ApplyContext, deckBin: string): Promise<string> {
-  const bin = bundledToolPath(ctx.p, "gitq");
+async function registerManagedApp(ctx: ApplyContext, deckBin: string, name: string, serveArgs: string[] = []): Promise<string> {
+  const bin = bundledToolPath(ctx.p, name);
   if (bin === null) {
-    ctx.log("deck.managed", "gitq: not bundled — left unmanaged");
-    return "gitq not registered: not bundled";
+    ctx.log("deck.managed", `${name}: not bundled — left unmanaged`);
+    return `${name} not registered: not bundled`;
   }
 
-  const result = await ctx.p.exec([deckBin, "add", "gitq", "--cmd", bin, "--managed-by", "mattstack", "--host", "gitq.mattstack"]);
-  if (result.code === 0) return "gitq registered";
-  if (`${result.stdout}\n${result.stderr}`.includes("name taken")) return "gitq already registered";
+  const dir = join(ctx.p.home, ".mattstack", name);
+  // deck splits --cmd on whitespace into argv. A helper whose DEFAULT argv is
+  // its CLI rather than its server needs the serving subcommand here, or deck
+  // supervises a command that prints usage and exits.
+  const cmd = [bin, ...serveArgs].join(" ");
+  const added = await ctx.p.exec([deckBin, "add", name, "--cmd", cmd, "--dir", dir]);
+  const already = matchFrozenError(`${added.stdout}\n${added.stderr}`) === "name taken";
+  if (added.code !== 0 && !already) {
+    const reason = added.stderr.trim() || added.stdout.trim() || `exit ${added.code}`;
+    ctx.log("deck.managed", `${name}: deck add failed — ${reason}`);
+    return `${name} not registered: ${reason}`;
+  }
 
-  const reason = result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`;
-  ctx.log("deck.managed", `gitq: deck add failed — ${reason}`);
-  return `gitq not registered: ${reason}`;
+  // Idempotent: re-adopting an app this registrar already owns is exit 0.
+  const adopted = await ctx.p.exec([deckBin, "adopt", name, "--managed-by", MATTSTACK_REGISTRAR, "--json"]);
+  if (adopted.code !== 0) {
+    const reason = adopted.stderr.trim() || adopted.stdout.trim() || `exit ${adopted.code}`;
+    ctx.log("deck.managed", `${name}: registered but not adopted — ${reason}`);
+    return `${name} registered but left unmanaged: ${reason}`;
+  }
+  return already ? `${name} already registered (managed)` : `${name} registered (managed)`;
 }
 
 async function deckManagedRun(ctx: ApplyContext): Promise<StepOutcome> {
@@ -128,9 +157,10 @@ async function deckManagedRun(ctx: ApplyContext): Promise<StepOutcome> {
   if (adopted.kind === "failed") return adopted.outcome;
 
   const boardDetail = adopted.kind === "skip" ? `board not adopted (${adopted.detail})` : `board adopted (${await repointBoard(ctx, port)})`;
-  const gitqDetail = await registerGitq(ctx, deckBin);
+  const gitqDetail = await registerManagedApp(ctx, deckBin, "gitq", ["board"]);
+  const consoleDetail = await registerManagedApp(ctx, deckBin, "console");
 
-  return { state: "done", detail: `${boardDetail}; ${gitqDetail}` };
+  return { state: "done", detail: `${boardDetail}; ${gitqDetail}; ${consoleDetail}` };
 }
 
 async function deckManagedRunSafe(ctx: ApplyContext): Promise<StepOutcome> {

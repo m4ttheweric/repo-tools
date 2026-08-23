@@ -267,13 +267,37 @@ check_helpers() { # app
             check_signed "$f" "$exe Helpers/$name/$(basename "$f")" "$ent"
             assert_eq "$exe $name identifier" "Identifier=com.mattstack.helper.$(basename "$f")" "$(codesign -dv "$f" 2>&1 | grep '^Identifier=' || true)"
         done < <(find "$p" -type f -print0)
+        # Every regular file under Helpers — not just the Mach-O ones — is
+        # nested code to codesign's seal, and an unsigned one makes the outer
+        # `sign` fail. Asserting only Mach-O files (as the loop above does) is
+        # blind to a pure-script helper like fast-browser, and is blind again
+        # if packaging drops the xattr the non-binary signatures live in.
+        unsigned=0; first_unsigned=""
+        while IFS= read -r -d '' f; do
+            codesign --verify --strict "$f" 2>/dev/null && continue
+            unsigned=$((unsigned + 1)); [ -n "$first_unsigned" ] || first_unsigned="${f#"$p"/}"
+        done < <(find "$p" -type f -print0)
+        [ "$unsigned" -eq 0 ] \
+            && pass "$exe Helpers/$name: every file carries a signature" \
+            || fail "$exe Helpers/$name: $unsigned unsigned file(s), first: $name/$first_unsigned — the outer bundle seal will refuse this"
     done <<< "$LOCK_TSV"
     # Every bundled helper answers --version from inside the bundle (signed, entitled).
     [ -x "$app/Contents/Helpers/fzf" ] && "$app/Contents/Helpers/fzf" --version >/dev/null 2>&1 && pass "$exe Helpers/fzf runs" || fail "$exe Helpers/fzf does not run"
     [ -x "$app/Contents/Helpers/jq" ] && "$app/Contents/Helpers/jq" --version >/dev/null 2>&1 && pass "$exe Helpers/jq runs" || fail "$exe Helpers/jq does not run"
     [ -x "$app/Contents/Helpers/bun" ] && "$app/Contents/Helpers/bun" --version >/dev/null 2>&1 && pass "$exe Helpers/bun runs (jit entitlement sufficient)" || fail "$exe Helpers/bun does not run under its entitlements"
     [ -x "$app/Contents/Helpers/node/bin/node" ] && "$app/Contents/Helpers/node/bin/node" -e 'process.exit(0)' >/dev/null 2>&1 && pass "$exe Helpers/node runs" || fail "$exe Helpers/node does not run under its entitlements"
-    [ -f "$app/Contents/Helpers/fast-browser/bin/fast-browser.mjs" ] && pass "$exe Helpers/fast-browser package present" || fail "$exe Helpers/fast-browser package missing"
+    # Actually RUN it, like every other helper above. Asserting the entry file
+    # merely exists is what let a bundled fast-browser that crashes at module
+    # load pass every gate: build.sh prunes .claude-plugin/ (a dotted dir the
+    # bundle seal rejects) and lib/hosts/claude.mjs readFileSync's
+    # ../../.claude-plugin/plugin.json unconditionally at import time.
+    if [ -f "$app/Contents/Helpers/fast-browser/bin/fast-browser.mjs" ]; then
+        "$app/Contents/Helpers/node/bin/node" "$app/Contents/Helpers/fast-browser/bin/fast-browser.mjs" --version >/dev/null 2>&1 \
+            && pass "$exe Helpers/fast-browser runs" \
+            || fail "$exe Helpers/fast-browser does not run from inside the bundle"
+    else
+        fail "$exe Helpers/fast-browser package missing"
+    fi
 }
 check_helpers "$PROD"
 [ -n "$DEV" ] && check_helpers "$DEV"
