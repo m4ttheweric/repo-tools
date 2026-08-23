@@ -530,6 +530,8 @@ export interface HomeInitSeams {
   materializeExec?: MaterializeExecSeam;
   /** Defaults to a real read of ~/.mattstack/rt/setup-intent.json; tests inject a fixed value instead of writing that file for real. */
   readIntent?: () => SetupIntent | null;
+  /** Defaults to `process.env` — resolveHomeUrl's RT_HOME_URL rung; tests inject a fixed value instead of depending on the ambient shell's environment. */
+  env?: Record<string, string | undefined>;
 }
 
 export async function homeInit(args: string[], _ctx: CommandContext = {}, seams: HomeInitSeams = {}): Promise<void> {
@@ -555,6 +557,7 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
         },
         home: mattstackHome(),
       }));
+  const env = seams.env ?? process.env;
 
   const dryRun = args.includes("--dry-run");
   const noMaterialize = args.includes("--no-materialize");
@@ -563,7 +566,7 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
   let resolvedUrl: string | null;
   let profileFlag: string | undefined;
   try {
-    resolvedUrl = resolveHomeUrl(args, { readIntent, env: process.env });
+    resolvedUrl = resolveHomeUrl(args, { readIntent, env });
     profileFlag = parseProfileArg(args);
   } catch (err) {
     if (err instanceof InvalidUrlArgError || err instanceof InvalidProfileArgError) {

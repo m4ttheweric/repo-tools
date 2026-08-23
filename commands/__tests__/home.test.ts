@@ -238,6 +238,7 @@ async function runHomeInit(
   isInteractive: () => boolean = () => false,
   materializeEnv: () => Promise<MaterializeEnv> = async () => NOOP_MATERIALIZE_ENV,
   materializeExec: MaterializeExecSeam = new FakeMaterializeExecSeam(),
+  env: Record<string, string | undefined> = {},
 ): Promise<{ exitCode: number | undefined; logs: string[]; errors: string[] }> {
   const exitSpy = spyOn(process, "exit").mockImplementation(() => {
     throw new Error("process.exit");
@@ -251,7 +252,7 @@ async function runHomeInit(
     errors.push(parts.map(String).join(" "));
   });
   try {
-    await homeInit(args, {}, { probes, exec, ageKeySeam, sopsYamlSeam, key, pickerSeam, isInteractive, materializeEnv, materializeExec });
+    await homeInit(args, {}, { probes, exec, ageKeySeam, sopsYamlSeam, key, pickerSeam, isInteractive, materializeEnv, materializeExec, env });
     return { exitCode: undefined, logs, errors };
   } catch {
     const code = exitSpy.mock.calls.at(-1)?.[0] as number | undefined;
@@ -409,7 +410,19 @@ describe("homeInit", () => {
 
   test("no url anywhere: the clone step still runs (a real clone attempt fails loudly on its own), never silently substituting a built-in default repo", async () => {
     const seam = new FakeSeam();
-    await runHomeInit(fakeProbes({}), seam, new FakeAgeKeySeam());
+    await runHomeInit(
+      fakeProbes({}),
+      seam,
+      new FakeAgeKeySeam(),
+      [],
+      new FakeSopsYamlSeam(),
+      KEY,
+      new UnreachablePickerSeam(),
+      () => false,
+      async () => NOOP_MATERIALIZE_ENV,
+      new FakeMaterializeExecSeam(),
+      {}, // no RT_HOME_URL — proves the "no url resolved" path, independent of the ambient shell's actual env
+    );
 
     const cloneCall = seam.calls.find((c) => c.kind === "run") as { kind: string; arg: string[] } | undefined;
     expect(cloneCall?.arg).toEqual(["git", "clone", "", "user"]);
