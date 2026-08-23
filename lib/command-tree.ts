@@ -521,9 +521,10 @@ async function resolveHandler(node: CommandNode, baseDir?: string): Promise<(arg
 
   if (node.module) {
     // Try static registry first (required for compiled binary mode)
-    const registryMod = MODULE_REGISTRY[node.module];
-    if (registryMod) {
-      const fn = registryMod[node.fn || "run"];
+    const loader = MODULE_REGISTRY[node.module];
+    if (loader) {
+      const mod = await loader();
+      const fn = mod[node.fn || "run"];
       if (typeof fn === "function") return fn;
     }
 
