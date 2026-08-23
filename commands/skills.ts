@@ -547,9 +547,13 @@ export async function skillsCompile(args: string[]): Promise<void> {
         if (!outcome.ok) {
           // A lint-erroring verb has no previewable body -- say so on stderr
           // and leave stdout empty rather than silently producing nothing.
+          // return, not continue: --preview requires exactly one verb, so the
+          // loop would end right after anyway, and continuing would fall into
+          // the post-loop "misplaced" check below -- which prints to stdout,
+          // breaking --preview's stdout-is-the-body-or-nothing contract.
           console.error(`rt skills: ${outcome.message}`);
           process.exitCode = 1;
-          continue;
+          return;
         }
         // The body is the product here: no summary lines and no warnings
         // interleaved, so the output pipes straight into a file or a preview pane.
@@ -864,7 +868,7 @@ function buildBinders(resolved: Resolved, pipelines: Record<string, string[]>): 
 }
 
 /**
- * New work: nothing else in rt enumerates the universe of fills.
+ * Nothing else in rt enumerates the universe of fills.
  * invocableRoster walks only skills/ (never attachments/, where fills
  * live); enumerateSkillEntries covers one pack's attachments/ only, with
  * bare names and no provides. This walks every plugin root's skills/ AND

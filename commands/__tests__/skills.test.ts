@@ -753,6 +753,37 @@ describe("skillsCompile --preview error handling", () => {
     expect(process.exitCode).toBe(1);
   });
 
+  test("erroring verb in a pack that ALSO has a misplaced compiled dir: still nothing on stdout", async () => {
+    // Before the per-verb try/catch, an error always exited the whole command
+    // immediately, so the post-loop "misplaced" scan (which prints to stdout)
+    // was unreachable on any --preview error path. A bare `continue` in the
+    // catch would let the loop end normally (--preview is single-verb) and
+    // fall straight into that scan -- leaking a "misplaced: ..." line onto
+    // stdout, breaking --preview's stdout-is-the-body-or-nothing contract.
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "stubs.jsonc"), STUBS_WITH_INTERNAL_REF);
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": ["watch-ci"] }\n`);
+    writeFile(join(packDir, "skills", "leftover-verb", "SKILL.md"), "---\nname: leftover-verb\n---\nstale\n");
+    const manifestPath = makeManifest("claimview");
+
+    const errors: string[] = [];
+    const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    });
+    try {
+      await skillsCompile([
+        "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath,
+        "--verb", "watch-ci", "--preview",
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(logs).toEqual([]);
+    expect(errors.join("\n")).toContain("claimview:helper-verb");
+  });
+
   test("unbound required slot: message on stderr, empty stdout, exit code set but no crash", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
