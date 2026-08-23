@@ -739,6 +739,14 @@ type CompositionPayload = {
   verbs: CompositionVerb[];
   fills: CompositionFill[];
   binders: CompositionBinder[];
+  /**
+   * Work type -> its ordered stage refs, straight from the manifest. This is
+   * the payload's only record of order: binders[].kind says a ref IS a stage
+   * but not where it runs, and a stage ref is otherwise indistinguishable
+   * from any other mattstack: binder. A consumer wanting execution order has
+   * nowhere else to get it.
+   */
+  pipelines: Record<string, string[]>;
 };
 
 /**
@@ -920,7 +928,14 @@ export async function skillsComposition(args: string[]): Promise<void> {
     const fills = enumerateFills(resolved.pluginRoots);
     const binders = buildBinders(resolved, pipelines);
 
-    const payload: CompositionPayload = { pack: resolved.team, packDir: resolved.packDir, verbs, fills, binders };
+    const payload: CompositionPayload = {
+      pack: resolved.team,
+      packDir: resolved.packDir,
+      verbs,
+      fills,
+      binders,
+      pipelines,
+    };
 
     if (flags.json) {
       console.log(JSON.stringify(payload));

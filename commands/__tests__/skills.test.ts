@@ -969,7 +969,39 @@ describe("skillsComposition --json", () => {
     await skillsComposition(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--json"]);
 
     const parsed = JSON.parse(logs.join("\n"));
-    expect(parsed).toEqual({ pack: "claimview", packDir, verbs: [], fills: [], binders: [] });
+    expect(parsed).toEqual({ pack: "claimview", packDir, verbs: [], fills: [], binders: [], pipelines: {} });
+  });
+
+  test("pipelines carries each work type's stage order, not a set", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestDir = realpathSync(mkdtempSync(join(tmpdir(), "rt-skills-cli-manifest-order-")));
+    const manifestPath = join(manifestDir, "skills.jsonc");
+    // Deliberately NOT alphabetical: ship precedes provision. Anything that
+    // rebuilt this list from binders[] or routed it through a Set would come
+    // back sorted or in binding-insertion order, and a consumer rendering
+    // execution order would show the pipeline running backwards with nothing
+    // failing anywhere.
+    writeFile(manifestPath, `{
+  "pipelines": {
+    "feature": ["mattstack:stage-ship", "mattstack:stage-provision", "mattstack:stage-plan"],
+    "bugfix": ["mattstack:stage-provision"]
+  },
+  "bindings": {
+    "mattstack:watch-ci": {
+      "domain": "claimview:watch-ci-domain"
+    }
+  }
+}
+`);
+
+    await skillsComposition(["--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    expect(parsed.pipelines).toEqual({
+      feature: ["mattstack:stage-ship", "mattstack:stage-provision", "mattstack:stage-plan"],
+      bugfix: ["mattstack:stage-provision"],
+    });
   });
 
   test("prints ONLY json -- no human lines on stdout", async () => {
