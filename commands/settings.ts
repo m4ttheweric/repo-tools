@@ -10,6 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { homedir } from "os";
+import type { CommandContext } from "../lib/command-tree.ts";
 import {
   rtDir,
   TRAY_APP_NAME, DEV_TRAY_APP_NAME, TRAY_APP_BUNDLE,
@@ -605,7 +606,7 @@ async function handoffToFlavor(outgoing: FlavorInfo, incoming: FlavorInfo): Prom
   console.log(`  ${green}✓${reset} launched ${incoming.appPath}`);
 }
 
-export async function toggleDevMode(args: string[], exists: (path: string) => boolean = existsSync): Promise<void> {
+export async function toggleDevMode(args: string[], _ctx: CommandContext = {}, exists: (path: string) => boolean = existsSync): Promise<void> {
   const mode = currentMode();
   const sourcePath = detectSourcePath();
 
