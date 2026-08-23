@@ -85,6 +85,34 @@ describe("materializeSkills", () => {
     expect(result).toEqual({ skipped: false, repos: [{ name: repoName, path: repoDir, ok: true, detail: "wrote skills.jsonc" }] });
   });
 
+  test("the exec call is bounded with a timeoutMs — a wedged git must not hang the whole apply run", async () => {
+    seedRepo();
+    let capturedTimeout: number | undefined;
+    const p = fakeProbes({
+      home: "/fake-home",
+      env: { RT_MERGE_MANIFESTS: "/fake-home/merge-manifests.sh" },
+      exec: async (_argv, opts) => {
+        capturedTimeout = opts?.timeoutMs;
+        return { code: 0, stdout: "wrote skills.jsonc", stderr: "" };
+      },
+    });
+
+    await materializeSkills(p, { repo: repoName });
+    expect(capturedTimeout).toBeGreaterThan(0);
+  });
+
+  test("a 124 (timeout) is reported per-repo like any other exit code, never thrown or mistaken for success", async () => {
+    seedRepo();
+    const p = fakeProbes({
+      home: "/fake-home",
+      env: { RT_MERGE_MANIFESTS: "/fake-home/merge-manifests.sh" },
+      exec: async () => ({ code: 124, stdout: "", stderr: "" }),
+    });
+
+    const result = await materializeSkills(p, { repo: repoName });
+    expect(result).toEqual({ skipped: false, repos: [{ name: repoName, path: repoDir, ok: false, detail: "merge-manifests.sh exited 124" }] });
+  });
+
   test("exit 2 (no git remote) is reported per-repo, not thrown", async () => {
     seedRepo();
     const p = fakeProbes({

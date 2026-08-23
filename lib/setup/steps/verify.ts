@@ -5,7 +5,7 @@
  * `rowsToChecks`' output into one `StepOutcome`.
  */
 
-import { composePlan, realSecretPresence } from "../plan.ts";
+import { composePlan } from "../plan.ts";
 import { rowsToChecks } from "../../../commands/verify.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
@@ -29,7 +29,7 @@ export function outcomeFromChecks(checks: CheckResult[]): StepOutcome {
 async function verifyRun(ctx: ApplyContext): Promise<StepOutcome> {
   const plan = await composePlan({
     p: ctx.p,
-    secrets: realSecretPresence(),
+    secrets: ctx.secretPresence,
     ci: ctx.ci,
     mode: "status",
     teams: ctx.team.slug ? [ctx.team.slug] : [],

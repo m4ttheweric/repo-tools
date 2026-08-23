@@ -25,6 +25,9 @@ import type { Probes } from "./probes.ts";
 const CACHE_DIR_SEGMENTS = ["plugins", "cache", "mattstack", "mattstack"];
 const SCRIPT_SEGMENTS = ["plugin", "skills", "parameterized-skills", "scripts", "merge-manifests.sh"];
 
+/** Bounds the per-repo `merge-manifests.sh` call — it does real git work, so a wedged remote/auth prompt must time out (124) rather than hang the whole apply run. */
+const MATERIALIZE_TIMEOUT_MS = 60_000;
+
 /** The `reason` detail's stable prefix when merge-manifests.sh isn't installed yet — a future step handler may match on this instead of parsing prose. */
 export const MERGE_MANIFESTS_MISSING_CODE = "merge-manifests-missing";
 
@@ -96,7 +99,7 @@ export async function materializeSkills(p: Probes, opts: { repo?: string }): Pro
   const repos: MaterializeRepoResult[] = [];
 
   for (const target of targets) {
-    const res = await p.exec(["bash", script, "--repo", target.path], { env: { MATTSTACK_HOME: mattstackHome } });
+    const res = await p.exec(["bash", script, "--repo", target.path], { env: { MATTSTACK_HOME: mattstackHome }, timeoutMs: MATERIALIZE_TIMEOUT_MS });
     repos.push(
       res.code === 0
         ? { name: target.name, path: target.path, ok: true, detail: res.stdout.trim() || "materialized" }

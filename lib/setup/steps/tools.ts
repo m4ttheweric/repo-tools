@@ -7,21 +7,16 @@
  * fresh machine reads as `skipped`, not `failed`.
  */
 
-import { join } from "path";
 import { resolveTool } from "../../deps/resolve.ts";
 import type { SnapshotResult } from "../../daemon/home-snapshot.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
 import type { Probes } from "../probes.ts";
-import { claudeConfigDirs, setupTool, type ToolsInstallSeams } from "../tools-install.ts";
+import { claudeConfigDirs, NO_EDITORS_DETAIL, setupTool, VSIX_NOT_FOUND_DETAIL, type ToolsInstallSeams } from "../tools-install.ts";
 import { toFailedOutcome } from "./step-utils.ts";
 
 function realSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function firstLine(s: string): string {
-  return s.trim().split("\n")[0] ?? "";
 }
 
 // ─── fastbrowser.setup ───────────────────────────────────────────────────────
@@ -81,14 +76,11 @@ export const herdrIntegrationStep: StepDef = {
 
 // ─── extension.install ───────────────────────────────────────────────────────
 
-const VSIX_MISSING_PREFIX = "rt-context.vsix not found";
-const NO_EDITORS_DETAIL = "no compatible editors found";
-
 /** `seams` is exposed only for tests — `detectEditors`/`findVsix` read the real machine, so a test drives them the same way tools-install.test.ts does rather than through Probes. Production always takes `setupTool`'s own real-seam default. */
 export async function extensionInstallRun(ctx: ApplyContext, seams?: ToolsInstallSeams): Promise<StepOutcome> {
   const result = await setupTool(ctx.p, "extension", { configDirs: [] }, seams);
   if (result.ok) return { state: "done", detail: result.detail };
-  if (result.detail.startsWith(VSIX_MISSING_PREFIX)) return { state: "skipped", detail: "extension not bundled" };
+  if (result.detail === VSIX_NOT_FOUND_DETAIL) return { state: "skipped", detail: "extension not bundled" };
   if (result.detail === NO_EDITORS_DETAIL) return { state: "skipped", detail: "no editor found" };
   return { state: "failed", detail: result.detail, remedy: "Install the extension manually, then Retry" };
 }
@@ -133,10 +125,19 @@ export async function waitForDaemonUp(
 
 export async function servicesStartRun(ctx: ApplyContext, sleep?: (ms: number) => Promise<void>): Promise<StepOutcome> {
   const res = await ctx.p.tray("/daemon/start", { method: "POST" });
-  if (res.status !== 200) {
+
+  // status 0 is the transport-level "no socket, nobody home" case (see
+  // trayRequest) — genuinely unreachable, and a fair skip when nobody's
+  // watching. Any OTHER non-200 means the app IS running and refused the
+  // start (a real app-side failure) — that must always surface as `failed`,
+  // never silently downgrade to a "not running" skip in a CI run.
+  if (res.status === 0) {
     return ctx.nonInteractive
       ? { state: "skipped", detail: "mattstack.app not running" }
       : { state: "failed", detail: "mattstack.app not running", remedy: "Open mattstack.app" };
+  }
+  if (res.status !== 200) {
+    return { state: "failed", detail: `mattstack.app returned status ${res.status} starting the daemon`, remedy: "Open mattstack.app" };
   }
 
   const up = await waitForDaemonUp(ctx.p, { sleep });
@@ -162,33 +163,15 @@ export const servicesStartStep: StepDef = {
 
 // ─── snapshot.push ────────────────────────────────────────────────────────────
 
-const GIT_TIMEOUT_MS = 30_000;
-
-function homeUserRepoDir(p: Pick<Probes, "home">): string {
-  return join(p.home, ".mattstack", "user");
-}
-
-async function gitSnapshotFallback(ctx: ApplyContext): Promise<StepOutcome> {
-  const repoDir = homeUserRepoDir(ctx.p);
-  if (!ctx.p.exists(join(repoDir, ".git"))) {
-    return { state: "skipped", detail: "home repo not provisioned yet (`rt home init`)" };
-  }
-
-  const remedy = "check `git -C ~/.mattstack status`";
-
-  const add = await ctx.p.exec(["git", "-C", repoDir, "add", "-A"], { timeoutMs: GIT_TIMEOUT_MS });
-  if (add.code !== 0) return { state: "failed", detail: `git add failed (exit ${add.code}): ${firstLine(add.stderr || add.stdout)}`, remedy };
-
-  const commit = await ctx.p.exec(["git", "-C", repoDir, "commit", "-m", "setup: snapshot"], { timeoutMs: GIT_TIMEOUT_MS });
-  const nothingToCommit = commit.code !== 0 && /nothing to commit/i.test(`${commit.stdout}\n${commit.stderr}`);
-  if (commit.code !== 0 && !nothingToCommit) {
-    return { state: "failed", detail: `git commit failed (exit ${commit.code}): ${firstLine(commit.stderr || commit.stdout)}`, remedy };
-  }
-
-  const push = await ctx.p.exec(["git", "-C", repoDir, "push"], { timeoutMs: GIT_TIMEOUT_MS });
-  if (push.code !== 0) return { state: "failed", detail: `git push failed (exit ${push.code}): ${firstLine(push.stderr || push.stdout)}`, remedy };
-
-  return { state: "done", detail: nothingToCommit ? "nothing new to commit; pushed" : "committed and pushed" };
+/**
+ * Strips `user:pass@`/`user@` credentials out of any `http(s)://` URL found
+ * anywhere in `text` — the same userinfo shape `team-settings.ts`'s
+ * `stripUserinfo` strips, generalized to run mid-string: a daemon/git error
+ * wraps the URL in prose ("fatal: unable to access '<url>': …"), so it is
+ * never at position 0 the way `stripUserinfo`'s anchored match requires.
+ */
+function redactUrlCredentials(text: string): string {
+  return text.replace(/(https?:\/\/)[^\s'"@/]+@/gi, "$1");
 }
 
 async function snapshotPushRun(ctx: ApplyContext): Promise<StepOutcome> {
@@ -196,11 +179,24 @@ async function snapshotPushRun(ctx: ApplyContext): Promise<StepOutcome> {
   // `home:snapshot` handler (lib/daemon/handlers/home.ts) is the real
   // trigger `rt home snapshot` itself round-trips to; drive it the same way
   // rather than shelling out to a CLI verb that doesn't exist.
+  //
+  // There is deliberately NO local git fallback here. Only the daemon knows
+  // the zone/exclude/owners model (`user/snapshot-owners.jsonc`) that keeps
+  // another machine's profile, or a user's staged WIP, out of the shared
+  // home repo — it builds `:(exclude)<zone>` pathspecs onto BOTH the add and
+  // the commit (lib/daemon/home-snapshot.ts). A bare `git add -A` + `git
+  // commit` here would ship exactly what that model exists to keep out, and
+  // it would be the everyday path for a non-interactive/CI install (the
+  // daemon is usually not up in that case). A missed snapshot is
+  // recoverable on the daemon's next cycle; a leaked zone or WIP file
+  // pushed to the shared repo is not — so this skips honestly instead.
   const reply = await ctx.p.daemon("home:snapshot");
-  if (reply === null) return gitSnapshotFallback(ctx);
+  if (reply === null) {
+    return { state: "skipped", detail: "snapshot deferred to the daemon's next cycle (daemon unreachable)" };
+  }
 
   if (!reply.ok) {
-    return { state: "failed", detail: reply.error ?? "home:snapshot reported failure", remedy: "check `git -C ~/.mattstack status`" };
+    return { state: "failed", detail: redactUrlCredentials(reply.error ?? "home:snapshot reported failure"), remedy: "check `git -C ~/.mattstack/user status`" };
   }
 
   const result = reply.data as SnapshotResult | undefined;

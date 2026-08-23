@@ -65,6 +65,7 @@ function makeCtx(p: Probes, overrides: Partial<ApplyContext> = {}): { ctx: Apply
     secrets: fakeSecrets,
     teamSecrets: () => fakeSecrets,
     relay: fakeRelay,
+    secretPresence: { has: async () => null },
     redact: () => {},
     async need() {
       return "no-app";

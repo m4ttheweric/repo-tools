@@ -58,6 +58,7 @@ function testCtx(overrides: Partial<ApplyContext> = {}): { ctx: ApplyContext; ev
     secrets: fakeSecrets,
     teamSecrets: fakeTeamSecrets,
     relay: fakeRelay,
+    secretPresence: { has: async () => null },
     redact: () => {},
     async need() {
       return "app-gone";
