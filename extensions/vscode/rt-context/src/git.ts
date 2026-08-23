@@ -3,6 +3,7 @@ import * as path from 'path';
 import { homedir } from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { identityFromRemote } from '@mattstack/rt-client';
 import type { BranchInfo, WorktreeEntry, GitExtensionExports, GitAPI, GitRepository } from './types';
 import { parseWorktreePorcelain } from './worktreeParse';
 
@@ -319,4 +320,21 @@ export function resolveDataDir(repo: GitRepository): string | null {
     .pop() || "unknown";
 
   return path.join(homedir(), ".mattstack", "rt", "repos", repoName);
+}
+
+/**
+ * The normalized repo identity (rt-client's settings/identity.ts) that keys
+ * a repoScoped setting's `repos.<identity>` section — `host/path`, derived
+ * from the same `origin` remote the VS Code Git API already has in memory.
+ * Sync and spawn-free (unlike rt-client's `deriveRepoIdentity`, which shells
+ * out to git): the extension always has a `GitRepository` in hand already,
+ * so there is no path-only case to derive from. Null for a repo with no
+ * `origin` remote, or one whose remote doesn't match a recognized host form
+ * (e.g. a bare local path) — repo-scoped settings are simply unreachable for
+ * that repo, same honest degrade as the resolver's own contract.
+ */
+export function resolveRepoIdentity(repo: GitRepository): string | null {
+  const remoteUrl = getRemoteUrl(repo);
+  if (!remoteUrl) return null;
+  return identityFromRemote(remoteUrl);
 }
