@@ -4,17 +4,22 @@
  * from a freshly extracted release.
  *
  * Three things happen, in order:
- *   1. A one-shot legacy migration sweep (idempotent, safe to run every
+ *   1. A refusal if the running app is at a transient location (a mounted
+ *      DMG, or a Gatekeeper-translocated copy) — that path can vanish out
+ *      from under an install the moment it's ejected. Checked FIRST, before
+ *      anything below can delete a single file: a refusal that has already
+ *      destroyed the user's prior install is the worst outcome in this flow.
+ *   2. A one-shot legacy migration sweep (idempotent, safe to run every
  *      time): retires the pre-app-shell `com.rt.daemon` launchd label, any
  *      leftover rt-tray.app bundle, and — once a different root is the one
  *      actually running — a stale ~/Applications/mattstack.app copy left
  *      over from the phase-1 install location.
- *   2. A refusal if the running app is at a transient location (a mounted
- *      DMG, or a Gatekeeper-translocated copy) — that path can vanish out
- *      from under an install the moment it's ejected.
  *   3. `rt setup apply --non-interactive --team-of-one`, which does
  *      everything else: linking `rt` onto PATH, shell integration, the
- *      daemon, extensions, and the rest of the 22-step install.
+ *      daemon, extensions, and the rest of the 22-step install. Only once
+ *      that has actually run does a swept migration get its outcome report
+ *      — reporting on the daemon's health before apply has had a chance to
+ *      (re-)register it would verify nothing.
  *
  * All console output here goes to stderr — this entry point forwards
  * whatever args it was given straight into `setupApply`, and a `--json`
@@ -90,7 +95,7 @@ function appPathIsTransient(root: string | null): boolean {
   return root !== null && isTransientAppRoot(root);
 }
 
-/** Loud, not a silent "should work": confirms the new registration actually came up, and reminds the operator that notification/full-disk-access permissions must be re-granted since the bundle id changed. Only worth checking when the sweep actually swept something. */
+/** Loud, not a silent "should work": confirms the new registration actually came up, and reminds the operator that notification/full-disk-access permissions must be re-granted since the bundle id changed. Only worth checking when the sweep actually swept something — and only AFTER `setup apply` has run, or there is nothing yet to verify (services.register/services.start are steps inside that run, not the sweep). */
 async function reportMigrationOutcome(): Promise<void> {
   const { isDaemonRunning } = await import("../lib/daemon-client.ts");
   if (await isDaemonRunning()) {
@@ -106,15 +111,24 @@ export async function runPostInstall(args: string[], opts: PostInstallOptions = 
   const root = opts.bundleRoot !== undefined ? opts.bundleRoot : bundleRootFromExec();
   const exit = opts.applyDeps?.exit ?? process.exit;
 
-  const swept = runLegacySweep(root);
-  if (swept) await reportMigrationOutcome();
-
+  // Refuse BEFORE sweeping — the sweep deletes files (a legacy rt-tray.app,
+  // a stale ~/Applications/mattstack.app), and a transient root means this
+  // process might not even be the real install: destroying the prior
+  // install and then refusing to replace it is strictly worse than doing
+  // nothing and refusing.
   if (appPathIsTransient(root)) {
     console.error(`  rt: running from ${root} — drag mattstack.app to /Applications and run this again`);
     return exit(2);
   }
 
+  const swept = runLegacySweep(root);
+
   await setupApply(["--non-interactive", "--team-of-one", ...args], {}, opts.applyDeps);
+
+  // Only reached once apply has actually run (a failed/bug exit above
+  // returns or throws first) — the daemon this checks is one of apply's own
+  // steps, so checking any earlier would verify nothing.
+  if (swept) await reportMigrationOutcome();
 }
 
 // ─── rt binary link source resolution (kept for its own test suite) ───────
