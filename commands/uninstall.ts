@@ -53,11 +53,16 @@ function dryRunPayload(actions: UninstallAction[], now: Date): { contract: 1; at
 export async function runUninstallCommand(args: string[], _ctx: CommandContext = {}, deps: UninstallDeps = realUninstallDeps()): Promise<void> {
   const json = args.includes("--json");
   const verb = "uninstall";
+  const keepDataFlag = args.includes("--keep-data");
   const deleteData = args.includes("--delete-data");
   const yes = args.includes("--yes");
   const dryRun = args.includes("--dry-run");
 
   try {
+    if (keepDataFlag && deleteData) {
+      throw new UserActionableError("conflicting-data-flags", "--keep-data and --delete-data are mutually exclusive");
+    }
+
     const actions = deps.actions ?? computeUninstallActions(deps.probes, { keepData: !deleteData });
 
     if (dryRun) {
@@ -72,11 +77,15 @@ export async function runUninstallCommand(args: string[], _ctx: CommandContext =
     }
 
     // The app's confirmation sheet IS the consent — it always passes --yes
-    // with --delete-data. Nobody but a human at a real terminal reaches this
-    // refusal: a non-TTY caller (the app, a script, CI) that asks to delete
-    // data without saying --yes gets an honest exit-2, never an implicit go-ahead.
-    if (deleteData && !yes && !deps.isTTY()) {
-      throw new UserActionableError("confirm-required", "--delete-data needs --yes when not on a TTY");
+    // with --delete-data. Anyone else who can reach this without a human
+    // literally at the prompt (non-TTY, OR --json even on a TTY — a `--json
+    // --delete-data` invocation has nowhere to render a prompt either) gets
+    // an honest exit-2 instead of an implicit go-ahead. `!deps.isTTY() ||
+    // json` — not just `!isTTY()` — is what closes the `--json` on a TTY hole:
+    // without it, that combination reached neither this refusal nor the
+    // prompt below and deleted ~/.mattstack with zero consent of any kind.
+    if (deleteData && !yes && (!deps.isTTY() || json)) {
+      throw new UserActionableError("confirm-required", "--delete-data needs --yes when not on a TTY (or when --json is set)");
     }
 
     if (!json && deps.isTTY() && !yes) {
@@ -101,6 +110,16 @@ export async function runUninstallCommand(args: string[], _ctx: CommandContext =
     });
 
     const result = await runUninstall(ctx, actions);
+
+    // `stayed` (e.g. "~/.mattstack (kept)", a shell block that needs manual
+    // removal) has no place in the NDJSON stream's fixed event shapes — it's
+    // printed as plain lines after the stream, human-mode only, so `--json`
+    // stays strictly one-object-per-line.
+    if (!json && result.stayed.length > 0) {
+      deps.print("Kept:");
+      for (const s of result.stayed) deps.print(`  - ${s}`);
+    }
+
     if (!result.ok) deps.exit(2);
   } catch (err) {
     if (err instanceof UserActionableError) {

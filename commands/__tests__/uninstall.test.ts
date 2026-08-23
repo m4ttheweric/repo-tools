@@ -145,6 +145,44 @@ describe("rt uninstall — the --delete-data consent gate", () => {
     await runUninstallCommand(["--yes"], {}, deps);
     expect(deps.confirmCalls).toEqual([]);
   });
+
+  test("BLOCKER regression: --json --delete-data on a TTY, no --yes: refuses too — neither the refusal nor the prompt used to fire here", async () => {
+    const deps = baseDeps({ isTTY: () => true });
+
+    await runExpectingExit(() => runUninstallCommand(["--json", "--delete-data"], {}, deps));
+
+    expect(deps.exitCodes).toEqual([2]);
+    expect(deps.confirmCalls).toEqual([]); // never even reached the prompt
+    const payload = JSON.parse(deps.lines[0]!) as { error: { code: string } };
+    expect(payload.error.code).toBe("confirm-required");
+    // Nothing was ever executed against the machine.
+    expect(deps.probes.calls).toEqual({ exec: [], fetch: [], tray: [], writes: {}, removed: [], symlinks: {}, modes: {} });
+  });
+
+  test("--keep-data and --delete-data together: exit 2, conflicting-data-flags, nothing runs", async () => {
+    const deps = baseDeps({ isTTY: () => false });
+
+    await runExpectingExit(() => runUninstallCommand(["--json", "--keep-data", "--delete-data", "--yes"], {}, deps));
+
+    expect(deps.exitCodes).toEqual([2]);
+    const payload = JSON.parse(deps.lines[0]!) as { error: { code: string } };
+    expect(payload.error.code).toBe("conflicting-data-flags");
+    expect(deps.probes.calls.exec).toEqual([]);
+  });
+});
+
+describe("rt uninstall — stayed", () => {
+  test("human mode: '~/.mattstack (kept)' is printed, not silently discarded", async () => {
+    const deps = baseDeps({ isTTY: () => false });
+    await runUninstallCommand(["--yes"], {}, deps);
+    expect(deps.lines.some((l) => l.includes("~/.mattstack (kept)"))).toBe(true);
+  });
+
+  test("--json mode: stayed is never printed as a bare stdout line — the NDJSON stream stays strictly one-object-per-line", async () => {
+    const deps = baseDeps({ isTTY: () => false });
+    await runUninstallCommand(["--json", "--yes"], {}, deps);
+    for (const line of deps.lines) expect(() => JSON.parse(line)).not.toThrow();
+  });
 });
 
 describe("rt uninstall — NDJSON discipline and exit codes", () => {
