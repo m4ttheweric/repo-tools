@@ -8,10 +8,22 @@ description: Use when the user says release, cut a release, tag and release, shi
 Update the rt.cool docs, write the GitHub release notes from the previous tag
 to HEAD, commit them, and push a version tag. Pushing the tag is what publishes:
 the `.github/workflows/release.yml` workflow (trigger `on: push: tags: v*`) builds
-the macOS binaries, creates the GitHub release from the committed `RELEASE_NOTES.md`,
-attaches the tarballs, and smoke-installs from them. You never create the GitHub
-release yourself; CI owns the release object. Your job is docs, notes, the tag,
-verifying CI, and deploying rt.cool.
+and notarizes **mattstack.app**, creates the GitHub release from the committed
+`RELEASE_NOTES.md`, and attaches the `.dmg`, `.zip`, Sparkle deltas,
+`appcast.xml`, and `SHA256SUMS`. You never create the GitHub release yourself;
+CI owns the release object. Your job is docs, notes, the tag, verifying CI, and
+deploying rt.cool.
+
+> **rt no longer ships as standalone tarballs.** The `rt-darwin-arm64-*.tar.gz`
+> / `rt-darwin-x64-*.tar.gz` artifacts this skill was written around are gone —
+> `rt` is now the binary embedded at `Contents/MacOS/rt` inside the app bundle,
+> and users update through Sparkle rather than by downloading a tarball.
+>
+> This skill still owns the docs/notes/tag half of a release. The build,
+> signing, notarization, clean-room, and appcast half — plus the cross-repo
+> coordination a release needs (deck, board, gitq, fast-browser, console) — is
+> `~/.claude/skills/mattstack-release/SKILL.md`. Read that one before cutting a
+> real release; read this one for the notes and the tag.
 
 This supersedes the local `.claude/commands/release.md` command; that file can be
 left as-is or reduced to a pointer here.
@@ -59,15 +71,21 @@ left as-is or reduced to a pointer here.
    git push origin <tag>
    ```
    Do NOT run `gh release create`. The tag push triggers `release.yml`, which
-   creates the release from `RELEASE_NOTES.md`, attaches the binaries, and
-   smoke-installs from them on a fresh runner.
+   builds and notarizes the app, creates the release from `RELEASE_NOTES.md`,
+   attaches the artifacts, and installs from the zip in a clean room.
 
 8. **Verify the publish.** Find the run (`gh run list --workflow=release.yml`)
    and watch it to completion (`gh run watch <run-id> --exit-status`), then confirm with
    `gh release view <tag>`: the body is your `RELEASE_NOTES.md` (not GitHub's
-   auto-generated notes), and both `rt-darwin-arm64-*.tar.gz` and
-   `rt-darwin-x64-*.tar.gz` are attached. If CI failed or the body is wrong,
-   report it rather than papering over it.
+   auto-generated notes), and `mattstack-<ver>.dmg`, `mattstack-<ver>.zip`,
+   `appcast.xml`, and `SHA256SUMS` are all attached. The workflow asserts those
+   four itself before publishing, so a missing one fails the run rather than
+   shipping a partial release. If CI failed or the body is wrong, report it
+   rather than papering over it.
+
+   To exercise the pipeline without publishing, run it via `workflow_dispatch`:
+   it builds, notarizes, and clean-rooms exactly as a tag does, but stamps
+   `v0.0.0-ci<run>`, skips the release, and uploads `out/` as an artifact.
 
 9. **Deploy rt.cool.** Run `bash scripts/deploy-docs.sh` (builds the site, deploys
    to Cloudflare Pages via wrangler). Needs wrangler auth (`wrangler login` or

@@ -14,18 +14,22 @@ Full documentation: **https://rt.cool**
 
 ## Install
 
-Download the latest `rt-darwin-<arch>-<version>.tar.gz` from
-[GitHub Releases](https://github.com/m4ttstack/rt/releases), extract it, and run
-the installer it contains:
+Download `mattstack-<version>.dmg` from
+[GitHub Releases](https://github.com/m4ttstack/rt/releases), drag
+**mattstack.app** to Applications, and open it. The app walks you through
+setup and installs `rt`, the editor extension, the daemon, and shell
+integration.
+
+`rt` is not a separate download: it ships inside the bundle at
+`Contents/MacOS/rt` and gets linked onto your PATH during setup. Updates come
+through the app (Sparkle), not by fetching a tarball.
+
+To drive the same install from a terminal — a fresh machine, a VM, CI:
 
 ```bash
-tar -xzf rt-darwin-arm64-*.tar.gz -C rt-release && cd rt-release
-./rt --post-install        # installs rt, mattstack.app, the editor extension, the daemon, shell integration
-rt verify                  # verifies everything
+/Applications/mattstack.app/Contents/MacOS/rt --post-install
+rt verify                  # reports the health of each piece
 ```
-
-(The mattstack.app installer + onboarding UI that replaces this step is in
-progress; `rt update` already upgrades in place from GitHub Releases.)
 
 `rt verify` runs setup on first use and then reports the health of each piece:
 use it any time you want to confirm the install is in good shape.
@@ -47,11 +51,11 @@ rt verify
 
 | Component | Description |
 |---|---|
-| `rt` binary | Standalone CLI on your PATH |
-| `rt-tray.app` | Menu bar app: daemon health, notifications, auto-updates |
+| `rt` binary | Ships inside mattstack.app (`Contents/MacOS/rt`), linked onto your PATH |
+| `mattstack.app` | Menu bar app: daemon health, notifications, auto-updates |
 | `rt-context` extension | VS Code/Cursor: branch + ticket in status bar |
 | Background daemon | Caches MR/branch data, scans ports, guards git hooks |
-| `fzf` + `tmux` | Required dependencies (installed automatically) |
+| Bundled helpers | `fzf`, `jq`, `gh`, `glab`, `bun`, `node`, `fast-browser` — pinned and shipped inside the app, not installed onto your system |
 | Shell alias | `rtcd`: fast worktree directory switching |
 
 ### Upgrade
@@ -60,10 +64,10 @@ rt verify
 rt update
 ```
 
-The tray app checks for new releases automatically and, when one is available,
-prompts you to run `rt update` from your terminal (it never runs the upgrade
-itself). `rt update` also re-runs post-install so the tray app, daemon, and
-editor extensions are refreshed in a single step.
+mattstack.app owns the whole upgrade lifecycle through Sparkle: signature
+verification, staged install, restart. `rt update` asks the app to check —
+it never downloads or installs anything itself, and points you at the latest
+release if the app isn't running.
 
 ---
 
@@ -79,8 +83,8 @@ editor extensions are refreshed in a single step.
   warm.
 - **Zero-config port scanning**: `rt port` finds and kills processes on
   stale dev ports without any setup.
-- **macOS tray app**: `rt-tray` shows daemon health at a glance and delivers
-  native notifications.
+- **macOS menu bar app**: mattstack.app shows daemon health at a glance and
+  delivers native notifications.
 - **Editor status bar**: the `rt-context` VS Code/Cursor extension shows
   your worktree, branch, and linked Linear ticket.
 - **Safe plugin system**: drop a folder under `~/.rt/plugins/` to add your
