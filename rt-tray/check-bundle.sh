@@ -463,6 +463,17 @@ EOF
     OUT11=$(env -i HOME="$H11" "$SHIM" --daemon 2>&1); RC11=$?
     [ "$RC11" -eq 0 ] && printf '%s' "$OUT11" | grep -q 'not owned by this user or is group/other-writable' && pass "shim: group-writable state.db is refused, not trusted" || fail "shim: group-writable state.db should be refused by name (rc=$RC11, out=$OUT11)"
 
+    # The legacy fallback reaches execv the same way the state.db row does, so
+    # it carries the same trust gate — a source that skipped it would hand the
+    # choice of what the daemon runs to anyone who can write the file. No
+    # state.db here, so the fallback is the only path under test.
+    H11B="$SHIM_TMP/untrusted-legacy"; mkdir -p "$H11B/.mattstack/rt" "$SHIM_TMP/untrustedlegacysrc/lib"
+    echo 'x' > "$SHIM_TMP/untrustedlegacysrc/lib/daemon.ts"
+    printf '{"sourcePath":"%s/untrustedlegacysrc","bunPath":"/bin/echo"}' "$SHIM_TMP" > "$H11B/.mattstack/rt/dev-mode.json"
+    chmod 664 "$H11B/.mattstack/rt/dev-mode.json"
+    OUT11B=$(env -i HOME="$H11B" "$SHIM" --daemon 2>&1); RC11B=$?
+    [ "$RC11B" -eq 0 ] && printf '%s' "$OUT11B" | grep -q 'not owned by this user or is group/other-writable' && pass "shim: group-writable legacy dev-mode.json is refused, not trusted" || fail "shim: group-writable legacy dev-mode.json should be refused by name (rc=$RC11B, out=$OUT11B)"
+
     # F4 fix: this case previously used WAL mode, where a reader is NOT
     # blocked by a concurrent BEGIN EXCLUSIVE at all (measured 16ms vs 2530ms
     # for the same experiment against a rollback-journal db — WAL's whole
