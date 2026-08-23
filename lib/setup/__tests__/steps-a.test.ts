@@ -238,13 +238,15 @@ describe("home.restore", () => {
     expect(p.calls.exec).toEqual([]); // never shells out to `rt restore` itself
   });
 
-  test("no clone yet -> failed, remedy names `rt restore <org>/<repo>`", async () => {
+  test("no clone yet -> failed, remedy names the real `rt setup intent restore` + `rt home key import` verbs", async () => {
     const p = fakeProbes({ home: "/fake-home" });
     const { ctx } = makeCtx(p, { intent: restoreIntent, secrets: fakeSecrets(fakeAgeKeySeamAbsent()) });
 
     const outcome = await homeRestoreStep.run(ctx);
     expect(outcome.state).toBe("failed");
-    expect((outcome as { remedy?: string }).remedy).toBe("Run `rt restore <org>/<repo>` (pastes your age key), then Retry");
+    expect((outcome as { remedy?: string }).remedy).toBe(
+      "Run `rt setup intent restore <org>/<repo>`, then `rt home key import` to paste your age key, then Retry",
+    );
   });
 
   test("cloned but wrong origin -> failed (never trusts a same-shaped clone of a different repo)", async () => {

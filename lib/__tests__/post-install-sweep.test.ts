@@ -2,9 +2,9 @@
  * commands/post-install.ts — one-shot legacy migration sweep (MAT-383 §4,
  * A1-ported).
  *
- * `rt --post-install` re-execs on EVERY `rt update` and on every
- * first-run-without-daemon.json path (cli.ts), so the sweep is idempotent by
- * design: `com.rt.daemon` (the pre-app-shell daemon label, fully superseded
+ * `rt --post-install` is auto-triggered on the first-run-without-daemon.json
+ * path (cli.ts); the sweep is idempotent by design so a repeat run is
+ * harmless: `com.rt.daemon` (the pre-app-shell daemon label, fully superseded
  * by `com.mattstack.daemon`) is booted out unconditionally, a leftover
  * rt-tray.app is quit and removed only when one actually exists, and a
  * stale ~/Applications/mattstack.app (the phase-1 install location) is

@@ -9,6 +9,7 @@
 
 import { resolveTool } from "../../deps/resolve.ts";
 import type { SnapshotResult } from "../../daemon/home-snapshot.ts";
+import { withoutUrls } from "../../team/redact.ts";
 import type { ApplyContext } from "../apply.ts";
 import type { StepDef, StepOutcome } from "../apply.ts";
 import type { Probes } from "../probes.ts";
@@ -163,17 +164,6 @@ export const servicesStartStep: StepDef = {
 
 // ─── snapshot.push ────────────────────────────────────────────────────────────
 
-/**
- * Strips `user:pass@`/`user@` credentials out of any `http(s)://` URL found
- * anywhere in `text` — the same userinfo shape `team-settings.ts`'s
- * `stripUserinfo` strips, generalized to run mid-string: a daemon/git error
- * wraps the URL in prose ("fatal: unable to access '<url>': …"), so it is
- * never at position 0 the way `stripUserinfo`'s anchored match requires.
- */
-function redactUrlCredentials(text: string): string {
-  return text.replace(/(https?:\/\/)[^\s'"@/]+@/gi, "$1");
-}
-
 async function snapshotPushRun(ctx: ApplyContext): Promise<StepOutcome> {
   // `rt home snapshot` has no `push` subcommand — the daemon's own
   // `home:snapshot` handler (lib/daemon/handlers/home.ts) is the real
@@ -196,7 +186,7 @@ async function snapshotPushRun(ctx: ApplyContext): Promise<StepOutcome> {
   }
 
   if (!reply.ok) {
-    return { state: "failed", detail: redactUrlCredentials(reply.error ?? "home:snapshot reported failure"), remedy: "check `git -C ~/.mattstack/user status`" };
+    return { state: "failed", detail: withoutUrls(reply.error ?? "home:snapshot reported failure"), remedy: "check `git -C ~/.mattstack/user status`" };
   }
 
   const result = reply.data as SnapshotResult | undefined;

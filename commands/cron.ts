@@ -35,24 +35,13 @@ export async function cronInstall(args: string[], _ctx: CommandContext = {}): Pr
 
   const p = createRealProbes();
   const board = resolveTool(p, "board");
-  const resolution = resolveBoardTriage(p, getKnownRepos(), board.chosen);
+  const resolution = resolveBoardTriage(p, getKnownRepos(), board.exec);
 
   if (resolution.kind === "missing") {
     exitUserError(
       new UserActionableError(
         "board-missing",
         "board binary not found — resolve it first: `rt deps resolve board` (once bundled, `rt deps link board` exposes it)",
-      ),
-      json,
-      "cron install",
-      console.log,
-    );
-  }
-  if (resolution.kind === "unavailable") {
-    exitUserError(
-      new UserActionableError(
-        "triage-unavailable",
-        "triage isn't available on this install — the board binary has no triage subcommand yet (tracked separately); register a board checkout instead (`rt repos register <path-to-board>`) and rerun",
       ),
       json,
       "cron install",

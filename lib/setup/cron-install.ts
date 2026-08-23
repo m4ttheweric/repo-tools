@@ -30,31 +30,28 @@ export function triageTrigger(run: string[]): TriageTrigger {
 
 export type BoardTriageResolution =
   | { kind: "checkout"; run: string[] }
-  /** Board resolves (bundled or a user copy) but it's compiled-only: no source checkout carries `bin/triage.ts`. The compiled binary parses no subcommands today — firing `[board, "triage", ...]` against it would boot the HTTP server instead of running one pass. */
-  | { kind: "unavailable" }
+  /** No registered checkout carries `bin/triage.ts`, but board resolves (bundled or a user copy) — `<exec> triage` runs a one-shot pass (board main ecb43e9+; exit 0 = ran or disabled, non-zero = real failure). */
+  | { kind: "bundled"; run: string[] }
   /** Board doesn't resolve at all — nothing to wire. */
   | { kind: "missing" };
 
 /**
- * board's compiled entry (`Contents/Helpers/board`) parses only `--version`
- * and otherwise boots the HTTP server — there is no `triage` subcommand to
- * invoke there (tracked separately; not this lane's to fix). The one form
- * that actually runs a one-shot triage pass today is `bun run bin/triage.ts`
- * from a board SOURCE checkout (board's own README: "bun run triage ... on a
- * cron"). So the only safe wiring is: a registered "board" checkout carrying
- * that script, invoked directly with `bun` — never the board binary itself.
+ * A registered "board" checkout carrying `bin/triage.ts` wins (source-of-truth
+ * for anyone running board from source); otherwise fall back to whatever
+ * board resolves to — bundled binary or a PATH copy — appending its `triage`
+ * subcommand.
  */
 export function resolveBoardTriage(
   p: { exists(path: string): boolean },
   known: Pick<KnownRepo, "repoName" | "worktrees" | "registered">[],
-  boardChosen: string | null,
+  boardExec: string[] | null,
 ): BoardTriageResolution {
   const checkout = known.find((r) => r.registered !== false && r.repoName === "board");
   if (checkout) {
     const script = join(checkout.worktrees[0]!.path, "bin", "triage.ts");
     if (p.exists(script)) return { kind: "checkout", run: ["bun", "run", script] };
   }
-  return boardChosen === null ? { kind: "missing" } : { kind: "unavailable" };
+  return boardExec === null ? { kind: "missing" } : { kind: "bundled", run: [...boardExec, "triage"] };
 }
 
 export interface InstallCronTriggerDeps {

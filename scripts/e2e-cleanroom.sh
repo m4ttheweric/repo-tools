@@ -56,7 +56,7 @@ RT="$APP/Contents/MacOS/rt"
 [ -x "${RT:-}" ] || { echo "no rt binary at $APP/Contents/MacOS/rt" >&2; exit 1; }
 
 export CI=true
-if [ -n "$HOME_DIR" ]; then export HOME="$HOME_DIR"; mkdir -p "$HOME"; fi
+if [ -n "$HOME_DIR" ]; then mkdir -p "$HOME_DIR"; export HOME="$(cd "$HOME_DIR" && pwd -P)"; fi
 export PATH="$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
 step "rt --version (from artifact)";   run "$RT" --version | tee "$OUTDIR/versions.txt" >/dev/null || exit 1
 step "rt --post-install $PIA";          run "$RT" --post-install $PIA || exit 1

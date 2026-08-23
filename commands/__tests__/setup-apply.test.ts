@@ -15,6 +15,7 @@ import type { SecretsSeams } from "../../lib/secrets/store.ts";
 import type { SecretPresence } from "../../lib/setup/validators/accounts.ts";
 import { fakeProbes, ok } from "../../lib/setup/__tests__/fakes.ts";
 import type { ExecScript } from "../../lib/setup/__tests__/fakes.ts";
+import { UserActionableError } from "../../lib/setup/errors.ts";
 
 const fakeSecrets: SecretsSeams = {
   ageKeySeam: { run: async () => ({ code: 0, stdout: "", stderr: "" }) },
@@ -163,16 +164,29 @@ describe("setupApply — exit-code table", () => {
     expect(deps.exitCodes).toEqual([]); // deps.exit is never called for a bug — it propagates instead
   });
 
-  test("createApplyContext itself throwing is handled the same way as a step throwing — never a silently swallowed dead stream", async () => {
+  test("createApplyContext throwing a real bug rethrows past setupApply exactly like a step bug does", async () => {
     const deps = baseApplyDeps();
     deps.probes = { ...deps.probes, readDir: () => { throw new Error("readDir boom"); } };
 
-    // createApplyContext's discoverTeams() calls p.readDir — this proves the
-    // failure surfaces (rethrown, exit codes untouched) exactly like a step
-    // bug does, rather than being silently caught somewhere in between.
     await expect(setupApply(["--json"], {}, deps)).rejects.toThrow("readDir boom");
     expect(deps.exitCodes).toEqual([]);
     expect(deps.lines).toEqual([]); // nothing reached the stream before the throw
+  });
+
+  test("createApplyContext throwing a UserActionableError prints the same exit-2 envelope a step failure gets — never a silently swallowed dead stream", async () => {
+    const deps = baseApplyDeps();
+    deps.probes = { ...deps.probes, readDir: () => { throw new UserActionableError("team-discovery-failed", "readDir boom"); } };
+
+    // createApplyContext's discoverTeams() calls p.readDir — this proves a
+    // UserActionableError thrown from inside context creation is caught by
+    // setupApply's own try/catch (not left to propagate uncaught, which
+    // would abandon the stream with no terminal event and no exit code).
+    await runExpectingExit(() => setupApply(["--json"], {}, deps));
+    expect(deps.exitCodes).toEqual([2]);
+    expect(deps.lines).toHaveLength(1);
+    const payload = JSON.parse(deps.lines[0]!) as { error: { code: string; message: string } };
+    expect(payload.error.code).toBe("team-discovery-failed");
+    expect(payload.error.message).toBe("readDir boom");
   });
 
   test("--from bogus: exit 2 with code unknown-step, named before any event reaches the stream", async () => {

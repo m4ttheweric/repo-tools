@@ -36,27 +36,27 @@ describe("resolveBoardTriage", () => {
 
   test("checkout: a registered board repo carrying bin/triage.ts wires bun run against it", () => {
     const p = { exists: (path: string) => path === "/repos/board/bin/triage.ts" };
-    const result = resolveBoardTriage(p, [boardRepo], "/opt/board");
+    const result = resolveBoardTriage(p, [boardRepo], ["/opt/board"]);
     expect(result).toEqual({ kind: "checkout", run: ["bun", "run", "/repos/board/bin/triage.ts"] });
   });
 
-  test("checkout wins even when a compiled board also resolves", () => {
+  test("checkout wins even when a bundled board also resolves", () => {
     const p = { exists: () => true };
-    const result = resolveBoardTriage(p, [boardRepo], "/opt/board");
+    const result = resolveBoardTriage(p, [boardRepo], ["/opt/board"]);
     expect(result.kind).toBe("checkout");
   });
 
-  test("a board repo without bin/triage.ts does not count as a checkout", () => {
+  test("a board repo without bin/triage.ts falls back to the bundled binary's triage subcommand", () => {
     const p = { exists: () => false };
-    const result = resolveBoardTriage(p, [boardRepo], "/opt/board");
-    expect(result).toEqual({ kind: "unavailable" });
+    const result = resolveBoardTriage(p, [boardRepo], ["/opt/board"]);
+    expect(result).toEqual({ kind: "bundled", run: ["/opt/board", "triage"] });
   });
 
-  test("an unregistered (scanned) board candidate is not trusted as a checkout", () => {
+  test("an unregistered (scanned) board candidate is not trusted as a checkout, falls back to bundled", () => {
     const p = { exists: () => true };
     const scanned = { ...boardRepo, registered: false };
-    const result = resolveBoardTriage(p, [scanned], "/opt/board");
-    expect(result).toEqual({ kind: "unavailable" });
+    const result = resolveBoardTriage(p, [scanned], ["/opt/board"]);
+    expect(result).toEqual({ kind: "bundled", run: ["/opt/board", "triage"] });
   });
 
   test("no checkout, no resolvable board at all: missing", () => {
@@ -65,10 +65,10 @@ describe("resolveBoardTriage", () => {
     expect(result).toEqual({ kind: "missing" });
   });
 
-  test("no checkout, but a compiled board resolves: unavailable (never wires the broken form)", () => {
+  test("no checkout, but a bundled board resolves: wires its triage subcommand", () => {
     const p = { exists: () => false };
-    const result = resolveBoardTriage(p, [], "/opt/board");
-    expect(result).toEqual({ kind: "unavailable" });
+    const result = resolveBoardTriage(p, [], ["/opt/board"]);
+    expect(result).toEqual({ kind: "bundled", run: ["/opt/board", "triage"] });
   });
 });
 

@@ -614,15 +614,16 @@ describe("services B: services.register, proxy.install, deck.managed, skills.mat
       expect(getSetting("rt.cron").value).toBeUndefined();
     });
 
-    test("enabled, board only bundled (no checkout) -> skipped honestly, never wires the compiled binary as a trigger", async () => {
+    test("enabled, board only bundled (no checkout) -> installs the trigger against the bundled binary's triage subcommand", async () => {
       setSetting("board.triage", { enabled: true }, "user");
       const p = bundledProbes({ tools: ["board"] });
       const { ctx } = makeCtx(p);
 
       const outcome = await cronTriageStep.run(ctx);
-      expect(outcome.state).toBe("skipped");
-      expect(detailOf(outcome)).toContain("no triage subcommand");
-      expect(getSetting("rt.cron").value).toBeUndefined();
+      expect(outcome).toEqual({ state: "done", detail: "installed board-triage" });
+      const triggers = getSetting<{ triggers: { name: string; run: string[] }[] }>("rt.cron").value?.triggers ?? [];
+      expect(triggers).toHaveLength(1);
+      expect(triggers[0]!.run).toEqual([join(appRoot, HELPERS_DIR, "board"), "triage"]);
     });
 
     test("enabled, board not resolvable at all -> skipped, board-missing wording", async () => {
