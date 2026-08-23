@@ -22,6 +22,7 @@ import { row, type Action, type Row } from "../contract.ts";
 import type { ExecResult, Probes } from "../probes.ts";
 import type { PackRequirements, ToolRequirement } from "../requirements.ts";
 import { atLeast } from "../semver.ts";
+import { isValidBrewFormula } from "../tools-install.ts";
 
 const HERDR_FLOOR = "0.7.5";
 /** Every exec in this module is bounded — a hung team-declared `--version`, or a wedged herdr/claude/fast-browser subprocess, must surface as "error" (124), never hang `rt setup plan` forever. */
@@ -141,8 +142,16 @@ async function claudeRow(p: Probes, opts: { hasBrew: boolean }): Promise<Row> {
     return row({ ...base, status: "needs-you", detail: "sign in: run claude once", action: CLAUDE_SIGNIN_STEPS });
   }
 
+  // An older `claude` with no `auth status` subcommand answers something
+  // containing "unknown" — sign-in genuinely could not be checked, which
+  // must never read as "ready": this row is required:true and feeds
+  // canInstall, so a guessed ready would unlock Install against a claude
+  // that may not be signed in. "needs-you" with the same remedy as an
+  // explicit not-signed-in gives a real next step instead of a dead end.
   const sniff = `${authRes.stdout} ${authRes.stderr}`.toLowerCase();
-  if (sniff.includes("unknown")) return row({ ...base, status: "ready", detail: "installed (sign-in not checked)" });
+  if (sniff.includes("unknown")) {
+    return row({ ...base, status: "needs-you", detail: `claude ${version} installed, sign-in could not be checked — confirm you're signed in`, action: CLAUDE_SIGNIN_STEPS });
+  }
 
   if (authRes.code !== 0) return row({ ...base, status: "needs-you", detail: "sign in: run claude once", action: CLAUDE_SIGNIN_STEPS });
   return row({ ...base, status: "error", detail: "claude auth status returned an unexpected response" });
@@ -294,8 +303,15 @@ function dedupeTeamTools(reqs: PackRequirements[]): ToolRequirement[] {
 }
 
 function teamToolRemedyAction(req: ToolRequirement, hasBrew: boolean, verb: "Install" | "Upgrade"): Action {
-  if (req.install?.brew && hasBrew) return { type: "install", label: verb, tool: req.name, via: "brew" };
+  const brew = req.install?.brew;
+  // Tap syntax (owner/tap/formula) or anything else outside a bare formula
+  // name never becomes a one-click Install button — matches installTool's
+  // own refusal, so the row and the action it offers agree.
+  if (brew && hasBrew && isValidBrewFormula(brew)) return { type: "install", label: verb, tool: req.name, via: "brew" };
   if (req.install?.url) return { type: "open-url", label: "Download", url: req.install.url };
+  if (brew && !isValidBrewFormula(brew)) {
+    return { type: "steps", label: "Show steps…", steps: [`This pack's install.brew ("${brew}") isn't a plain formula name — rt won't auto-run it`, `brew install ${brew}`, "Then re-run rt setup status"] };
+  }
   const step = verb === "Upgrade" && req.floor ? `Upgrade ${req.name} to ${req.floor}+` : `Install ${req.name}`;
   return { type: "steps", label: "Show steps…", steps: [step, "Then re-run rt setup status"] };
 }
@@ -347,7 +363,10 @@ function packRow(req: PackRequirements, pluginList: ExecResult): Row {
 
   if (pluginList.code === 127) return row({ ...base, status: "skipped", detail: "claude not installed" });
   if (pluginList.code === 124) return row({ ...base, status: "error", detail: "claude plugin list timed out" });
-  if (pluginList.code !== 0) return row({ ...base, status: "skipped", detail: `claude plugin list failed (exit ${pluginList.code})` });
+  // Any other non-zero (corrupt config, a permissions error, a crashed CLI)
+  // is a real failure this module could not determine past — "skipped"
+  // reads as "nothing to check here", which a genuine failure is not.
+  if (pluginList.code !== 0) return row({ ...base, status: "error", detail: `claude plugin list failed (exit ${pluginList.code})` });
   if (pluginListHasPack(pluginList.stdout, req.pack)) return row({ ...base, status: "ready", detail: "installed" });
   return row({ ...base, status: "missing", detail: "installed by Install (plugins.install)" });
 }

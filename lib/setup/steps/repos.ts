@@ -63,9 +63,14 @@ async function reposCloneRunUnsafe(ctx: ApplyContext): Promise<StepOutcome> {
     return { state: "skipped", detail: "no repos to clone" };
   }
 
+  // A fresh Mac with no `Documents/GitHub`-shaped directory yet has nothing
+  // for `settings.seed` (step 8) to detect and seed rt.repoRoots from — that
+  // is a normal fresh-machine condition, not a terminal one: `failed` would
+  // dead-end Install with a Retry that resumes at this same step and fails
+  // identically (the same class settings.seed's own docblock warns against).
   const root = getSetting<string[]>("rt.repoRoots").value?.[0];
   if (!root) {
-    return { state: "failed", detail: "no repo root configured", remedy: "Set a repo root (rt.repoRoots), then Retry" };
+    return { state: "skipped", detail: "no repo root configured yet — set rt.repoRoots, then re-run rt setup apply to clone your tracked repos" };
   }
 
   let cloned = 0;

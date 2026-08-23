@@ -123,13 +123,13 @@ describe("rtHealthRows — rows that resolve the app bundle", () => {
       expect(r.optionalNote).not.toBeNull();
     });
 
-    test("readlink points elsewhere -> needs-you, with a run action to fix it (R-T7-d)", async () => {
+    test("readlink points elsewhere -> needs-you, with a one-shot link-bundled action (never a run through the full apply chain)", async () => {
       const linkedPath = join(home, ".local", "bin", "rt");
       const p = bundleProbe({ links: { [linkedPath]: "/opt/homebrew/bin/rt" } });
       const r = await pickRow(rtHealthRows(p, { ci: false }, NOOP_FZF), "tool.rt-link");
       expect(r.status).toBe("needs-you");
       expect(r.detail).toContain("not a link into mattstack.app");
-      expect(r.action).toEqual({ type: "run", label: "Link into the app", verb: ["setup", "apply", "--from", "path.link"] });
+      expect(r.action).toEqual({ type: "link-bundled", label: "Use mattstack's", tool: "rt" });
     });
 
     test("dev mode wrapper at ~/.local/bin/rt -> skipped, dev mode owns it", async () => {
@@ -471,7 +471,11 @@ describe("rtHealthRows — tool.daemon", () => {
     expect(r.detail).toContain("not registered with launchd");
   });
 
-  test("installed, ping ok, launchd registered, but the worktrees endpoint is down -> invalid, naming the failing fact (R-T7-a)", async () => {
+  test("installed, ping ok, launchd registered, but the worktrees endpoint is down -> error (could not determine), never invalid", async () => {
+    // worktrees === null is the daemon-client's own transport-failure
+    // sentinel — "the probe never produced an answer", not "the endpoint
+    // said no" — so this must read as could-not-determine, not a
+    // determined negative.
     markInstalled();
     const daemon: Probes["daemon"] = async (cmd) => {
       if (cmd === "ping") return { ok: true };
@@ -480,7 +484,24 @@ describe("rtHealthRows — tool.daemon", () => {
       return null;
     };
     const r = await pickRow(rtHealthRows(fakeProbes({ daemon, exec: launchdOk }), { ci: false }, NOOP_FZF), "tool.daemon");
-    expect(r.status).toBe("invalid");
-    expect(r.detail).toContain("worktrees endpoint not responding");
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain("worktrees endpoint check failed");
+  });
+
+  test("installed, ping ok, but launchctl itself times out -> error (could not determine), never invalid", async () => {
+    markInstalled();
+    const daemon: Probes["daemon"] = async (cmd) => {
+      if (cmd === "ping") return { ok: true };
+      if (cmd === "status") return { ok: true, data: { pid: 1, uptime: 1000, watchedRepos: 0 } };
+      if (cmd === "worktrees") return { ok: true };
+      return null;
+    };
+    const r = await pickRow(
+      rtHealthRows(fakeProbes({ daemon, exec: async (argv) => (argv[0] === "launchctl" ? { code: 124, stdout: "", stderr: "" } : { code: 0, stdout: "", stderr: "" }) }), { ci: false }, NOOP_FZF),
+      "tool.daemon",
+    );
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain("launchctl check failed");
+    expect(r.detail).not.toContain("not registered with launchd");
   });
 });
