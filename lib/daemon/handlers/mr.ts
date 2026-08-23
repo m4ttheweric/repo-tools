@@ -26,12 +26,12 @@
  */
 
 import { applyMRWriteback, getCurrentUserId, getRepoContext } from "../freshness.ts";
-import { getDaemonLogger } from "../../daemon-logger.ts";
+import { lazyChildLogger } from "../../daemon-logger.ts";
 import type { PullRequest } from "@mattstack/glance";
 import { ReadBackFailedError } from "@mattstack/glance";
 import type { HandlerContext, HandlerMap } from "./types.ts";
 
-const log = (await getDaemonLogger()).childLogger("mr");
+const log = lazyChildLogger("mr");
 
 type ActionName =
   | "merge" | "rebase" | "approve" | "unapprove"
