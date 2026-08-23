@@ -23,6 +23,7 @@ rt skills compile [flags]
 | `--verb` | text |  | Compile only this verb (repeatable); omit for every verb in the roster |
 | `--manifest` | text |  | Manifest path; omit to auto-find the newest ~/.mattstack/repos/*/skills.jsonc naming this pack |
 | [`--dry-run`](/guides/common-flags) | boolean | `false` | Print what would be written without touching disk |
+| `--preview` | boolean | `false` | Print the compiled SKILL.md to stdout and write nothing (needs a single --verb) |
 
 _See code: [commands/skills.ts › skillsCompile](https://github.com/m4ttstack/rt/blob/main/commands/skills.ts)_
 

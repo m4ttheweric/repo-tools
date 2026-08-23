@@ -31,11 +31,11 @@ rt verify
 
 | Component | Description |
 |---|---|
-| `rt` binary | Standalone CLI on your PATH |
-| `rt-tray.app` | Menu bar app... daemon health, notifications, auto-updates |
+| `rt` binary | Shipped inside mattstack.app (`Contents/MacOS/rt`), linked onto your PATH |
+| `mattstack.app` | Menu bar app... daemon health, notifications, auto-updates |
 | `rt-context` extension | VS Code/Cursor... branch + ticket in status bar |
 | Background daemon | Caches MR/branch data, scans ports, guards git hooks |
-| `fzf` + `tmux` | Required dependencies (installed automatically) |
+| Bundled helpers | `fzf`, `jq`, `gh`, `glab`, `bun`, `node`, `fast-browser` — pinned and shipped inside the app, not installed onto your system |
 | Shell alias | `rtcd`... fast worktree directory switching |
 
 ## Upgrade

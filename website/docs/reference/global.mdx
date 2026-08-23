@@ -31,7 +31,7 @@ Shows the root command picker's listing non-interactively (as if run off a TTY),
 rt --grant-fda
 ```
 
-Opens System Settings to the Privacy & Security → Full Disk Access pane and prints instructions for adding `rt-tray.app`. The daemon inherits this grant from the tray app, so the grant target is `rt-tray`, not `rt` itself. Restart the daemon (`rt daemon restart`) after granting.
+Opens System Settings to the Privacy & Security → Full Disk Access pane and prints instructions for adding `mattstack.app`. The daemon inherits this grant from the app bundle, so the grant target is `mattstack.app`, not `rt` itself. Restart the daemon (`rt daemon restart`) after granting. Note that re-signing the bundle — which any rebuild does — invalidates the grant and it must be given again.
 
 ## Internal entry points
 
