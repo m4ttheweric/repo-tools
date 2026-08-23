@@ -25,6 +25,7 @@
 import { parse, type ParseError } from "jsonc-parser";
 import { bold, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import { loadRepoIndex } from "../lib/repo-index.ts";
+import { repoDataDir } from "../lib/rt-paths.ts";
 import { deriveRepoIdentity } from "../lib/settings/identity.ts";
 import {
   explainSetting,
@@ -217,9 +218,10 @@ export async function settingsSet(args: string[]): Promise<void> {
   if (errors.length > 0) fail(`<json-value> is not valid JSON(C): ${rawValue}`);
 
   const repoName = flagValue(args, "--repo");
+  let repoPath: string | undefined;
   let repoIdentity: string | undefined;
   if (repoName) {
-    const repoPath = repoIndex()[repoName];
+    repoPath = repoIndex()[repoName];
     if (!repoPath) fail(`repo "${repoName}" is not registered in ~/.mattstack/rt/repos.json`);
     const identity = await deriveRepoIdentity(repoPath);
     if (!identity) fail(`repo "${repoName}"'s remote does not normalize to an identity — repo-scoped settings are unreachable for it (see \`rt settings explain\`)`);
@@ -243,6 +245,26 @@ export async function settingsSet(args: string[]): Promise<void> {
   } else if (regen.error) {
     console.log(`  ${yellow}could not regenerate intercepts.json (${regen.error}) — run \`rt intercept install\`${reset}`);
   }
+
+  // hooks.json is rt.hooks's own derived cache (commands/hooks.ts). Scoped to
+  // `--repo` writes only: a write with no --repo lands in that scope's GLOBAL
+  // section, which can change the resolved value for every OTHER registered
+  // repo too (deep merge), and rebuilding every repo's cache here would mean
+  // deriving every repo's identity (a git spawn each) on a single `set` —
+  // out of scope for this seam. `rt hooks status` (or any other `rt hooks`
+  // command) in an affected repo refreshes its cache the next time it runs;
+  // there is no detector for the gap in between yet (a natural home would be
+  // `rt verify`, not built here).
+  if (key === "rt.hooks" && repoPath && repoIdentity) {
+    const { regenerateHooksCache } = await import("./hooks.ts");
+    const wrote = regenerateHooksCache(repoPath, repoDataDir(repoName as string), repoIdentity);
+    if (wrote) {
+      console.log(`  ${dim}hooks.json regenerated (${repoName})${reset}`);
+    } else {
+      console.log(`  ${yellow}could not regenerate hooks.json for ${repoName} — run \`rt hooks status\` in that repo to refresh it${reset}`);
+    }
+  }
+
   console.log("");
 }
 
