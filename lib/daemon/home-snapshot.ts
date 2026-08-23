@@ -168,8 +168,15 @@ function unlinkLegacyState(): void {
   }
 }
 
-function loadState(db: Database): Record<string, number> {
-  const raw = getKvValue<PersistedHomeSnapshotState>(HOME_SNAPSHOT_NS, HOME_SNAPSHOT_KEY, {}, db);
+/** A missing row is the normal first-run case (silent); a present-but-unparseable row is a real loss of the janitor-threshold clock and must be loud, per the catch policy. */
+function loadState(db: Database, log: Logger): Record<string, number> {
+  const raw = getKvValue<PersistedHomeSnapshotState>(
+    HOME_SNAPSHOT_NS,
+    HOME_SNAPSHOT_KEY,
+    {},
+    db,
+    (err) => log.warn({ err }, "home-snapshot: state row corrupt; starting from empty first-seen-dirty state"),
+  );
   return raw && typeof raw.firstSeenDirty === "object" && raw.firstSeenDirty !== null
     ? raw.firstSeenDirty
     : {};
@@ -225,7 +232,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
   let lastPushError: string | null = null;
   /** True once `home:push-failed` has been broadcast for the CURRENT unbroken run of push failures — reset to false the moment a push succeeds, so a retry storm broadcasts once, not on every attempt. */
   let pushFailureBroadcast = false;
-  let firstSeenDirty: Record<string, number> = loadState(deps.db);
+  let firstSeenDirty: Record<string, number> = loadState(deps.db, deps.log);
   let lastLoggedOwnersError: string | null = null;
   /** Shared dedup key for every "deps.readSettings() itself threw" warn (armWatcher's debounce read, status()) — a settings store that broke after boot and stays broken must warn once, not on every fs event or every `rt home snapshot --status` poll. */
   let lastLoggedSettingsError: string | null = null;

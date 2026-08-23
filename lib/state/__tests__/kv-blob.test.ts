@@ -64,6 +64,21 @@ describe("getKvValue / setKvValue", () => {
     expect(getKvValue("intercepts", "rules", fallback, db)).toEqual(fallback);
   });
 
+  test("onCorrupt fires for a present-but-unparseable row", () => {
+    const db = openDb();
+    db.query("INSERT INTO kv (ns, k, v, updated_at) VALUES ('intercepts', 'rules', '{not json', 0);").run();
+    let seen: unknown;
+    getKvValue("intercepts", "rules", { count: -1, tags: [] }, db, (err) => { seen = err; });
+    expect(seen).toBeDefined();
+  });
+
+  test("onCorrupt does NOT fire for a missing row", () => {
+    const db = openDb();
+    let called = false;
+    getKvValue("intercepts", "never-written", { count: -1, tags: [] }, db, () => { called = true; });
+    expect(called).toBe(false);
+  });
+
   test("a fresh handle on the same file sees the last write (daemon restart)", () => {
     const dbPath = join(dir, "state.db");
     const db1 = openStateDb(dbPath, "cli");

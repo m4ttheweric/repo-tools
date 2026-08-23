@@ -497,19 +497,54 @@ describe("repo-index — rt.repoRoots (RT-49)", () => {
       expect(getKnownRepos()).toEqual([]);
     });
 
-    test("updateRepoIndex round-trips through state.db, not repos.json, and unlinks a leftover legacy file", () => {
+    test("updateRepoIndex round-trips through state.db, and rewrites repos.json as a synced compat mirror", () => {
       const parent = realpathSync(mkdtempSync(join(tmpdir(), "rt-updateindex-")));
       const root = join(parent, "repo");
       realRepo(root);
 
       const p = join(rtDir(), "repos.json");
       mkdirSync(dirname(p), { recursive: true });
-      writeFileSync(p, JSON.stringify({ "other-repo": "/somewhere" }));
+      writeFileSync(p, JSON.stringify({ "stale-repo": "/somewhere" }));
 
       updateRepoIndex("updated-repo", root);
 
+      // state.db is authoritative: the compat file is fully regenerated from
+      // it, not merged with whatever was already on disk.
       expect(loadRepoIndex()["updated-repo"]).toBe(root);
-      expect(existsSync(p)).toBe(false);
+      expect(JSON.parse(readFileSync(p, "utf8"))).toEqual({ "updated-repo": root });
+
+      rmSync(parent, { recursive: true, force: true });
+    });
+
+    test("the compat file mirrors every repo-index entry, not just the one just updated", () => {
+      const parent = realpathSync(mkdtempSync(join(tmpdir(), "rt-updateindex-multi-")));
+      const rootA = join(parent, "repo-a");
+      const rootB = join(parent, "repo-b");
+      realRepo(rootA);
+      realRepo(rootB);
+
+      updateRepoIndex("repo-a", rootA);
+      updateRepoIndex("repo-b", rootB);
+
+      const p = join(rtDir(), "repos.json");
+      expect(JSON.parse(readFileSync(p, "utf8"))).toEqual({ "repo-a": rootA, "repo-b": rootB });
+
+      rmSync(parent, { recursive: true, force: true });
+    });
+
+    test("a repos.json compat-write failure never breaks the state.db write", () => {
+      const parent = realpathSync(mkdtempSync(join(tmpdir(), "rt-updateindex-failcompat-")));
+      const root = join(parent, "repo");
+      realRepo(root);
+
+      // Occupy the compat path with a directory so writeFileSync fails —
+      // state.db lives at a different filename in the same rtDir, so its
+      // own write is unaffected.
+      const p = join(rtDir(), "repos.json");
+      mkdirSync(p, { recursive: true });
+
+      expect(() => updateRepoIndex("updated-repo", root)).not.toThrow();
+      expect(loadRepoIndex()["updated-repo"]).toBe(root);
 
       rmSync(parent, { recursive: true, force: true });
     });

@@ -841,14 +841,15 @@ describe("startHomeSnapshot — state persistence", () => {
     expect(handle2.status().firstSeenDirty["prefs/"]).toBe(42);
   });
 
-  test("a malformed stored row starts from empty state instead of crashing", async () => {
+  test("a malformed stored row starts from empty state instead of crashing, and warns loudly", async () => {
     const db = freshDb();
     db.query("INSERT INTO kv (ns, k, v, updated_at) VALUES ('home-snapshot', 'state', '{not json', 0);").run();
-    const { deps } = baseDeps({ db });
+    const { deps, log } = baseDeps({ db });
     const handle = startHomeSnapshot(deps);
     await handle.ready;
 
     expect(handle.status().firstSeenDirty).toEqual({});
+    expect(log.calls.some((c) => c.level === "warn" && c.args[1] === "home-snapshot: state row corrupt; starting from empty first-seen-dirty state")).toBe(true);
   });
 
   test("no prior write (first run) does NOT warn", async () => {

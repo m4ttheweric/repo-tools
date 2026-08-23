@@ -10,12 +10,16 @@
  * settings key (below) as an unregistered candidate. It is not part of any
  * backup/restore story and never will be.
  *
+ * ~/.mattstack/rt/repos.json is written alongside state.db purely as a
+ * derived compatibility file for out-of-process rt-client consumers — see
+ * repoIndexCompatPath's doc comment below.
+ *
  * Provides repo discovery with worktree enumeration so commands
  * can offer pickers when run outside a git repo.
  */
 
 import { execSync } from "child_process";
-import { existsSync, readdirSync, realpathSync, unlinkSync, type Dirent } from "fs";
+import { existsSync, readdirSync, realpathSync, writeFileSync, type Dirent } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join, resolve as resolvePath } from "path";
 import { repoDataDir, rtDir } from "./rt-paths.ts";
@@ -43,16 +47,26 @@ interface RepoIndex {
 
 const REPO_INDEX_NS = "repo-index";
 
-/** Retired storage location — kept only so a leftover pre-migration file can be cleaned up. */
-function repoIndexPath(): string {
+/**
+ * Deprecated derived-compatibility path: state.db is authoritative, but
+ * out-of-process rt-client consumers still read this file directly against
+ * a PUBLISHED @mattstack/rt-client (gitq's secrets.ts and data.ts, at
+ * minimum — they run in their own process and cannot see this process's
+ * state.db handle). Kept in sync on every repo-index write so those readers
+ * don't go stale. Safe to delete once rt-client resolves the repo index
+ * through state.db (or the daemon) and every consumer has upgraded past
+ * @mattstack/rt-client 0.3.0.
+ */
+function repoIndexCompatPath(): string {
   return join(rtDir(), "repos.json");
 }
 
-function unlinkLegacyRepoIndex(): void {
+/** Best-effort mirror: a write failure here (permissions, disk full) must never break the state.db write it mirrors, or the command that triggered it — the out-of-process reader just sees a stale file until the next successful write. */
+function writeRepoIndexCompat(index: RepoIndex): void {
   try {
-    unlinkSync(repoIndexPath());
+    writeFileSync(repoIndexCompatPath(), JSON.stringify(index));
   } catch {
-    // already gone, or never existed
+    // best effort — see repoIndexCompatPath's doc comment
   }
 }
 
@@ -74,8 +88,8 @@ export function updateRepoIndex(repoName: string, repoRoot: string): void {
   }
   try {
     setKvValue(REPO_INDEX_NS, repoName, mainPath);
-    unlinkLegacyRepoIndex();
   } catch { /* best effort */ }
+  writeRepoIndexCompat(loadRepoIndex());
 }
 
 // ─── rt.repoRoots (RT-49) ───────────────────────────────────────────────────
