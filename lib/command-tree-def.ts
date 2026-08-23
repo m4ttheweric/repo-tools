@@ -58,6 +58,16 @@ const runsSubcommands: Record<string, CommandNode> = {
       { name: "Repo", flag: "--repo", type: "text", placeholder: "myrepo", hint: "Registry repo name" },
     ],
   },
+  abandon: {
+    description: "Mark a wedged run abandoned (the run died with its session and the DB still says running)",
+    module: "./commands/runs.ts",
+    fn: "runsAbandon",
+    args: [
+      { name: "Run id", type: "text", placeholder: "20260822-134012-x4x2", hint: "Run to reconcile" },
+      { name: "Repo", flag: "--repo", type: "text", placeholder: "acme-dev", hint: "Repo the run belongs to; omit to scan" },
+      { name: "Reason", flag: "--reason", type: "text", placeholder: "no owning process", hint: "Recorded against the run" },
+    ],
+  },
 };
 
 const interceptSubcommands: Record<string, CommandNode> = {
@@ -973,6 +983,7 @@ export const TREE: Record<string, CommandNode> = {
           { name: "Verb", flag: "--verb", type: "text", placeholder: "watch-ci", hint: "Compile only this verb (repeatable); omit for every verb in the roster" },
           { name: "Manifest", flag: "--manifest", type: "text", placeholder: "/path/to/skills.jsonc", hint: "Manifest path; omit to auto-find the newest ~/.mattstack/repos/*/skills.jsonc naming this pack" },
           { name: "Dry run", flag: "--dry-run", type: "boolean", default: false, hint: "Print what would be written without touching disk" },
+          { name: "Preview", flag: "--preview", type: "boolean", default: false, hint: "Print the compiled SKILL.md to stdout and write nothing (needs a single --verb)" },
         ],
       },
       check: {

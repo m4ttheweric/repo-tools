@@ -5,6 +5,8 @@ export type StepSource = {
   plugin: string; // e.g. "mattstack"
   version: string; // plugin version string
   dir: string; // absolute source dir
+  srcPath: string; // source SKILL.md path, relative to its PLUGIN root
+  bodyStartLine: number; // 1-indexed line in that file where the body begins
   body: string; // frontmatter-stripped markdown
   slots: Record<string, SlotSpec>;
   allowedTools: string[]; // raw entries from frontmatter allowed-tools
@@ -16,6 +18,8 @@ export type AttachmentSource = {
   plugin: string;
   version: string;
   dir: string;
+  srcPath: string; // source SKILL.md path, relative to its PLUGIN root
+  bodyStartLine: number; // 1-indexed line in that file where the body begins
   body: string;
   provides: string; // frontmatter metadata.provides, e.g. "watch-ci-domain@1"
   allowedTools: string[];

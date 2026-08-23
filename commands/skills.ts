@@ -69,6 +69,7 @@ type Flags = {
   verbs: string[] | null;
   manifest: string | null;
   dryRun: boolean;
+  preview: boolean;
   packDir: string | null;
   mattstackDir: string | null;
 };
@@ -78,6 +79,7 @@ function parseFlags(args: string[]): Flags {
   let team: string | null = null;
   let manifest: string | null = null;
   let dryRun = false;
+  let preview = false;
   let packDir: string | null = null;
   let mattstackDir: string | null = null;
 
@@ -89,6 +91,7 @@ function parseFlags(args: string[]): Flags {
       case "--verb": { const v = args[++i]; if (v) verbs.push(v); break; }
       case "--manifest": manifest = args[++i] ?? null; break;
       case "--dry-run": dryRun = true; break;
+      case "--preview": preview = true; break;
       case "--pack-dir": packDir = args[++i] ?? null; break;
       case "--mattstack-dir": mattstackDir = args[++i] ?? null; break;
       default:
@@ -96,7 +99,7 @@ function parseFlags(args: string[]): Flags {
     }
   }
 
-  return { team, verbs: verbs.length ? verbs : null, manifest, dryRun, packDir, mattstackDir };
+  return { team, verbs: verbs.length ? verbs : null, manifest, dryRun, preview, packDir, mattstackDir };
 }
 
 function packRootDir(mattstackRoot: string, team: string): string {
@@ -450,12 +453,19 @@ export async function skillsCompile(args: string[]): Promise<void> {
     const resolved = await resolve(flags);
     const publicSet = resolved.surface ? new Set(resolved.surface.public) : null;
 
+    if (flags.preview && (flags.verbs?.length ?? 0) !== 1) {
+      throw new SkillsUsageError("--preview needs a single --verb");
+    }
+
     for (const verb of resolved.roster) {
       const outDir = join(resolved.packDir, "skills", verb.name);
 
       if (publicSet && !publicSet.has(verb.name)) {
-        console.log(`internal: ${verb.name} (not compiled; roster entry retired)`);
-        if (!flags.dryRun && existsSync(outDir)) {
+        // --preview's contract is stdout-is-the-body; this line is status,
+        // not body, so it goes to stderr when preview is set.
+        const log = flags.preview ? console.error : console.log;
+        log(`internal: ${verb.name} (not compiled; roster entry retired)`);
+        if (!flags.dryRun && !flags.preview && existsSync(outDir)) {
           rmSync(outDir, { recursive: true, force: true });
         }
         continue;
@@ -464,6 +474,15 @@ export async function skillsCompile(args: string[]): Promise<void> {
       const result = compileVerb(verb, resolved);
       if (result.errors.length > 0) {
         throw new SkillsUsageError(`verb "${verb.name}": ${result.errors.join("; ")}`);
+      }
+
+      if (flags.preview) {
+        // The body is the product here: no summary lines and no warnings
+        // interleaved, so the output pipes straight into a file or a preview pane.
+        const main = result.files.find((f) => "content" in f && f.path.endsWith("SKILL.md"));
+        if (!main || !("content" in main)) throw new SkillsUsageError(`verb "${verb.name}": produced no SKILL.md`);
+        console.log(main.content);
+        continue;
       }
 
       if (flags.dryRun) {

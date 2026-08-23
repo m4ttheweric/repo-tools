@@ -12,6 +12,10 @@ check "image for 14"           '[ "$(vm_image_for 14)" = "ghcr.io/cirruslabs/mac
 check "image for 15"           '[ "$(vm_image_for 15)" = "ghcr.io/cirruslabs/macos-sequoia-vanilla:latest" ]'
 check "image for 26"           '[ "$(vm_image_for 26)" = "ghcr.io/cirruslabs/macos-tahoe-vanilla:latest" ]'
 check "image for 99 dies"      '! (vm_image_for 99 2>/dev/null)'
+check "golden name xcuitest flavour"   '[ "$(vm_golden_name 26 xcuitest)" = "mattstack-golden-26-xcode" ]'
+check "image for xcuitest flavour"     '[ "$(vm_image_for 26 xcuitest)" = "ghcr.io/cirruslabs/macos-tahoe-xcode:latest" ]'
+check "unknown flavour dies (name)"    '! (vm_golden_name 26 bogus 2>/dev/null)'
+check "unknown flavour dies (image)"   '! (vm_image_for 26 bogus 2>/dev/null)'
 
 export VM_ARTIFACTS="$(mktemp -d)"
 vm_run_init unit

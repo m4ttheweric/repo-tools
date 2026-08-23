@@ -1,16 +1,17 @@
 #!/bin/bash
-# Build mattstack-golden-<ver> from the cirruslabs vanilla image.
-# Usage: build-golden.sh <14|15|26> [--dry-run] [--rebuild]
+# Build mattstack-golden-<ver>[-xcode] from the cirruslabs vanilla or xcode image.
+# Usage: build-golden.sh <14|15|26> [--xcode] [--dry-run] [--rebuild]
 # ORCHESTRATOR/MATT: downloads ~25 GB per image; pauses once for manual TCC clicks.
 set -euo pipefail
 source "$(cd "$(dirname "$0")/.." && pwd)/lib/common.sh"
 
 VER="${1:-}"; shift || true
-[ -n "$VER" ] || vm_die "usage: build-golden.sh <14|15|26> [--dry-run] [--rebuild]"
-DRY=0; REBUILD=0
-for a in "$@"; do case "$a" in --dry-run) DRY=1;; --rebuild) REBUILD=1;; *) vm_die "unknown arg $a";; esac; done
+[ -n "$VER" ] || vm_die "usage: build-golden.sh <14|15|26> [--xcode] [--dry-run] [--rebuild]"
+DRY=0; REBUILD=0; XCODE=0
+for a in "$@"; do case "$a" in --xcode) XCODE=1;; --dry-run) DRY=1;; --rebuild) REBUILD=1;; *) vm_die "unknown arg $a";; esac; done
 
-IMAGE=$(vm_image_for "$VER"); GOLDEN=$(vm_golden_name "$VER")
+FLAVOUR=cleanroom; [ "$XCODE" = 1 ] && FLAVOUR=xcuitest
+IMAGE=$(vm_image_for "$VER" "$FLAVOUR"); GOLDEN=$(vm_golden_name "$VER" "$FLAVOUR")
 run() { if [ "$DRY" = 1 ]; then vm_log "[dry-run] $*"; else "$@"; fi; }
 
 vm_log "golden: $GOLDEN ← $IMAGE"
@@ -33,7 +34,7 @@ if [ "$DRY" = 1 ]; then
   exit 0
 fi
 
-tart run "$GOLDEN" --no-audio > "$VM_ARTIFACTS/golden-$VER-tart.log" 2>&1 &
+tart run "$GOLDEN" --no-audio > "$VM_ARTIFACTS/$GOLDEN-tart.log" 2>&1 &
 TART_PID=$!
 trap 'kill $TART_PID 2>/dev/null || true' EXIT
 vm_log "waiting for ssh as admin (password)…"
@@ -45,7 +46,7 @@ done
 
 PUB=$(cat "$VM_SSH_KEY.pub")
 vm_ssh_pw "$VM_ADMIN_USER" "$VM_ADMIN_PASS" "$GOLDEN" "cat > /tmp/provision-guest.sh" < "$VM_ROOT/golden/provision-guest.sh"
-vm_ssh_pw "$VM_ADMIN_USER" "$VM_ADMIN_PASS" "$GOLDEN" "bash /tmp/provision-guest.sh '$VER' '$VM_TESTER_PASS' '$PUB'"
+vm_ssh_pw "$VM_ADMIN_USER" "$VM_ADMIN_PASS" "$GOLDEN" "SKIP_CLEANROOM=$XCODE bash /tmp/provision-guest.sh '$VER' '$VM_TESTER_PASS' '$PUB'"
 
 vm_log "rebooting into tester's auto-login session…"
 vm_ssh_try "$VM_ADMIN_USER" "$GOLDEN" "sudo reboot" || true

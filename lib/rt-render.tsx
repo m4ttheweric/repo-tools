@@ -17,6 +17,7 @@ import {
   ConfirmInput,
   TextInput,
 } from "@inkjs/ui";
+import { BackNavigation } from "./back-navigation.ts";
 
 // ─── Option type (matches @inkjs/ui) ────────────────────────────────────────
 
@@ -32,10 +33,7 @@ export interface SelectOption {
 
 // ─── Back Navigation ────────────────────────────────────────────────────────
 
-/** Thrown by filterableSelect when the user picks the "↩ back" sentinel. */
-export class BackNavigation extends Error {
-  constructor() { super("back"); this.name = "BackNavigation"; }
-}
+export { BackNavigation } from "./back-navigation.ts";
 
 const BACK = "__back__";
 

@@ -1,45 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
 import { createRunsHandlers } from "../handlers/runs.ts";
+import { root, seedRun } from "../../runs/__tests__/fixtures.ts";
 
-function root(): string {
-  const dir = mkdtempSync(join(tmpdir(), "rt-runs-handlers-"));
-  process.env.RT_RUNS_ROOT = dir;
-  return dir;
-}
 afterEach(() => { delete process.env.RT_RUNS_ROOT; });
 
-function seedRun(dir: string, repo: string, id: string, startedAt: number, userVersion = 1): void {
-  const runDir = join(dir, repo, id);
-  mkdirSync(runDir, { recursive: true });
-  const db = new Database(join(runDir, "state.db"));
-  db.exec(`
-    PRAGMA user_version=${userVersion};
-    CREATE TABLE runs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, work_type TEXT NOT NULL,
-      pipeline TEXT NOT NULL, status TEXT NOT NULL, current_stage TEXT,
-      spawned_by TEXT, started_at INTEGER NOT NULL, ended_at INTEGER);
-    CREATE TABLE stages (run_id TEXT, name TEXT, status TEXT, attempt INTEGER DEFAULT 1,
-      started_at INTEGER, ended_at INTEGER, PRIMARY KEY (run_id, name, attempt));
-    CREATE TABLE fields (run_id TEXT, key TEXT, value TEXT, produced_by TEXT, at INTEGER, PRIMARY KEY (run_id, key));
-    CREATE TABLE decisions (run_id TEXT, contract TEXT, scope TEXT, selection TEXT, decided_by TEXT, decided_at INTEGER, PRIMARY KEY (run_id, contract, scope));
-    INSERT INTO runs VALUES ('${id}', '${repo}', 'feature', 'default', 'running', 'plan', NULL, ${startedAt}, NULL);
-    INSERT INTO stages VALUES ('${id}', 'plan', 'running', 1, ${startedAt}, NULL);
-    INSERT INTO fields VALUES ('${id}', 'ticket', 'ACME-1', 'plan', ${startedAt});
-    INSERT INTO decisions VALUES ('${id}', 'execution-strategy@1', 'run', '{"tier":"direct-tdd"}', 'stage-plan', ${startedAt});
-  `);
-  db.close();
-}
-
 const log = { warn: () => {}, info: () => {}, debug: () => {}, error: () => {} } as any;
+const noEmit = () => {};
 
 describe("runs handlers", () => {
   test("runs:list scopes by repo; runs:get resolves with and without repo", async () => {
     const dir = root();
     seedRun(dir, "alpha", "20260821-010101-aaaa", 1000);
-    const h = createRunsHandlers({ log } as any);
+    const h = createRunsHandlers({ log } as any, noEmit);
     const listHandler = h["runs:list"] as any;
     const getHandler = h["runs:get"] as any;
     const list = await listHandler({ repo: "alpha" });
@@ -54,9 +26,36 @@ describe("runs handlers", () => {
   });
 
   test("runs:get without runId is a validation error", async () => {
-    const h = createRunsHandlers({ log } as any);
+    const h = createRunsHandlers({ log } as any, noEmit);
     const getHandler = h["runs:get"] as any;
     const r = await getHandler({} as any);
     expect(r.ok).toBe(false);
+  });
+
+  test("runs:abandon refuses a run that already ended, and emits nothing", async () => {
+    const dir = root();
+    seedRun(dir, "acme", "20260822-150000-ffff", 1000, 2, { status: "done" });
+    const emitted: string[] = [];
+    const handlers = createRunsHandlers({ log } as any, (topic) => { emitted.push(topic); });
+
+    const res = await handlers["runs:abandon"]({ runId: "20260822-150000-ffff", repo: "acme" });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain("already");
+    // A refusal must not announce a change that did not happen.
+    expect(emitted).toEqual([]);
+  });
+
+  test("runs:abandon emits run-updated on success", async () => {
+    const dir = root();
+    seedRun(dir, "acme", "20260822-150001-gggg", 1000, 2, { status: "running" });
+    const emitted: { topic: string; payload: any }[] = [];
+    const handlers = createRunsHandlers({ log } as any, (topic, payload) => { emitted.push({ topic, payload }); });
+
+    const res = await handlers["runs:abandon"]({ runId: "20260822-150001-gggg", repo: "acme" });
+
+    expect(res.ok).toBe(true);
+    expect(emitted[0]!.topic).toBe("run-updated");
+    expect(emitted[0]!.payload).toMatchObject({ repo: "acme", kind: "abandoned" });
   });
 });

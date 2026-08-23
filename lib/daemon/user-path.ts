@@ -12,6 +12,22 @@
 import { execSync } from "child_process";
 import type { Logger } from "pino";
 
+/** Which of `names` is a non-empty file on `pathValue`, keyed `has<Name>`. */
+export function probeTools(pathValue: string, names: string[]): Record<string, boolean> {
+  const entries = pathValue.split(":").filter((p) => p.length > 0);
+  const probed: Record<string, boolean> = {};
+  for (const name of names) {
+    probed[`has${name[0]!.toUpperCase()}${name.slice(1)}`] = entries.some((p) => {
+      try {
+        return Bun.file(`${p}/${name}`).size > 0;
+      } catch {
+        return false;
+      }
+    });
+  }
+  return probed;
+}
+
 export function resolveUserPath(log: Logger): string {
   const shell = process.env.SHELL ?? "/bin/zsh";
   let resolvedPath = process.env.PATH ?? ""; // baseline
@@ -38,10 +54,10 @@ export function resolveUserPath(log: Logger): string {
 
   // Log so we can verify key tools are present after restarts
   const pathEntries = resolvedPath.split(":");
-  const hasTool = (name: string) => pathEntries.some(p => {
-    try { return Bun.file(`${p}/${name}`).size > 0; } catch { return false; }
-  });
-  log.info({ entries: pathEntries.length, hasPnpm: hasTool("pnpm"), hasDoppler: hasTool("doppler") }, "PATH resolved");
+  log.info(
+    { entries: pathEntries.length, ...probeTools(resolvedPath, ["node", "pnpm", "doppler"]) },
+    "PATH resolved",
+  );
 
   return resolvedPath;
 }

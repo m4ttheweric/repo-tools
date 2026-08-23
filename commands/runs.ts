@@ -26,7 +26,7 @@ function flagValue(args: string[], flag: string): string | undefined {
 
 // Index-based scan (not value comparison — a positional that EQUALS a flag's
 // value, e.g. `rt runs show abc --repo abc`, must still parse).
-const FLAGS_WITH_VALUES = new Set(["--repo"]);
+const FLAGS_WITH_VALUES = new Set(["--repo", "--reason"]);
 function positional(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
@@ -52,7 +52,11 @@ export function formatRunDetail(d: RunDetail): string {
   const lines: string[] = [formatRunLine(d.run)];
   if (d.schemaAhead) lines.push("(newer schema than this rt knows; some data may be missing)");
   lines.push("", "stages:");
-  for (const s of d.stages) lines.push(`  ${STATUS_ICON[s.status] ?? "?"} ${s.name} (attempt ${s.attempt})`);
+  for (const s of d.stages) {
+    lines.push(`  ${STATUS_ICON[s.status] ?? "?"} ${s.name} (attempt ${s.attempt})`);
+    if (s.reason) lines.push(`      reason: ${s.reason}`);
+    if (s.detail_path) lines.push(`      detail: ${s.detail_path}`);
+  }
   lines.push("", "fields:");
   for (const f of d.fields) lines.push(`  ${f.key} = ${f.value}  [${f.produced_by}]`);
   lines.push("", "decisions:");
@@ -81,4 +85,15 @@ export async function runsShow(args: string[]): Promise<void> {
   const data = res.data as RunDetail;
   if (args.includes("--json")) { console.log(JSON.stringify(data)); return; }
   console.log(formatRunDetail(data));
+}
+
+export async function runsAbandon(args: string[]): Promise<void> {
+  const runId = positional(args);
+  if (!runId) fail("abandon needs a run id");
+  const repo = flagValue(args, "--repo");
+  const reason = flagValue(args, "--reason") ?? "reconciled by hand";
+  const res = await daemonQuery("runs:abandon", { runId, repo, reason });
+  if (!res) fail("daemon unavailable — the run DB needs the rt daemon (rt daemon start)");
+  if (!res.ok) fail(res.error ?? "abandon failed");
+  console.log(`abandoned ${runId}`);
 }

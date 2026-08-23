@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { formatRunLine, formatRunDetail, runsList, runsShow } from "../runs.ts";
+import { formatRunLine, formatRunDetail, runsList, runsShow, runsAbandon } from "../runs.ts";
 
 /**
  * Mock process.exit to throw a sentinel so the real test process never
@@ -50,6 +50,18 @@ describe("rt runs formatting", () => {
     expect(text).toContain("ticket");
     expect(text).toContain("execution-strategy@1");
   });
+
+  test("formatRunDetail shows a failed stage's reason and detail_path", () => {
+    const text = formatRunDetail({
+      run: run as any,
+      stages: [{ name: "gates", status: "failed", attempt: 1, started_at: 1, ended_at: 2, reason: "qa-islands assertion failed", detail_path: "/tmp/gates.log" }],
+      fields: [],
+      decisions: [],
+      schemaAhead: false,
+    } as any);
+    expect(text).toContain("qa-islands assertion failed");
+    expect(text).toContain("/tmp/gates.log");
+  });
 });
 
 describe("rt runs --repo flag validation", () => {
@@ -69,5 +81,19 @@ describe("rt runs --repo flag validation", () => {
     const { exitCode, errors } = await runExpectingCleanExit(() => runsShow(["20260821-010101-aaaa", "--repo"]));
     expect(exitCode).toBe(1);
     expect(errors.join("\n")).toContain("--repo requires a value");
+  });
+});
+
+describe("rt runs abandon argument validation", () => {
+  test("runs abandon requires a run id", async () => {
+    const { exitCode, errors } = await runExpectingCleanExit(() => runsAbandon([]));
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("abandon needs a run id");
+  });
+
+  test("runs abandon rejects a dangling --reason", async () => {
+    const { exitCode, errors } = await runExpectingCleanExit(() => runsAbandon(["some-id", "--reason"]));
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("--reason requires a value");
   });
 });

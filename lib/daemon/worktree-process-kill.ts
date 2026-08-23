@@ -14,10 +14,10 @@
 
 import { execSync } from "child_process";
 
-import { getDaemonLogger } from "../daemon-logger.ts";
+import { lazyChildLogger } from "../daemon-logger.ts";
 import { parseLsofCwdMap, parsePackageScripts } from "./system-process-scanner.ts";
 
-const log = (await getDaemonLogger()).childLogger("worktree-kill");
+const log = lazyChildLogger("worktree-kill");
 
 const ESCALATE_AFTER_MS = 5_000;
 

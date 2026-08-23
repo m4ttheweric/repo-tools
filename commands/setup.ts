@@ -16,7 +16,6 @@ import { dim, green, red, reset, yellow } from "../lib/ansi.ts";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { readAgeKey, createRealAgeKeySeam } from "../lib/home/age-key.ts";
 import { promptSecret } from "../lib/prompt-secret.ts";
-import { confirm } from "../lib/rt-render.tsx";
 import { NoAgeKeyError, createRealSecretsExecSeam, writeSecret, type SecretsSeams } from "../lib/secrets/store.ts";
 import { NoTeamRecipientsError, createRealTeamSecretsSeams, readTeamSecret, writeTeamSecret } from "../lib/secrets/team-store.ts";
 import { listTeams } from "../lib/settings/stores.ts";
@@ -177,7 +176,10 @@ export function realApplyDeps(): ApplyDeps {
     print: (s) => console.log(s),
     exit: process.exit,
     isTTY: () => process.stdin.isTTY === true,
-    confirm: (message) => confirm({ message }),
+    confirm: async (message: string) => {
+      const { confirm } = await import("../lib/rt-render.tsx");
+      return confirm({ message });
+    },
   };
 }
 
