@@ -17,16 +17,28 @@ export interface RunResult {
 /**
  * Run argv and capture stdout. Never throws: spawn failures and timeouts
  * surface as a non-zero exitCode with whatever stdout was collected.
+ *
+ * Children inherit the caller's live `process.env` unless `opts.env` overrides it.
  */
 export async function runCapture(
   argv: [string, ...string[]],
-  opts: { cwd?: string; timeoutMs?: number; stderr?: "ignore" | "pipe" } = {},
+  opts: {
+    cwd?: string;
+    timeoutMs?: number;
+    stderr?: "ignore" | "pipe";
+    env?: Record<string, string | undefined>;
+  } = {},
 ): Promise<RunResult> {
   const captureStderr = opts.stderr === "pipe";
   let proc: ReturnType<typeof Bun.spawn>;
   try {
     proc = Bun.spawn(argv, {
       cwd: opts.cwd,
+      // Bun.spawn ignores assignments made to process.env after startup, so an
+      // inherited env strands a PATH resolved at boot and leaves
+      // `#!/usr/bin/env node` shebangs unresolvable under launchd. execSync,
+      // which this replaces, reads process.env per call.
+      env: opts.env ?? { ...process.env },
       stdin: "ignore",
       stdout: "pipe",
       stderr: captureStderr ? "pipe" : "ignore",

@@ -19,7 +19,7 @@
 
 import { execSync, spawnSync } from "child_process";
 import { bold, cyan, dim, green, yellow, red, reset } from "../../lib/tui.ts";
-import { getCurrentBranch, hasUncommittedChanges } from "../../lib/git-ops.ts";
+import { getCurrentBranch, getRemoteDefaultBranch, hasUncommittedChanges } from "../../lib/git-ops.ts";
 import { createBackup } from "../../lib/git-backup.ts";
 import { syncLog } from "../../lib/sync-log.ts";
 import type { CommandContext } from "../../lib/command-tree.ts";
@@ -29,6 +29,7 @@ import type { CommandContext } from "../../lib/command-tree.ts";
 export type ResetStatus =
   | "in-sync"       // local == origin
   | "fast-forward"  // local is behind, no divergence
+  | "local-newer"   // local is the branch rebased onto a newer base — keep local, push
   | "reset"         // diverged, all patches on remote — simple reset
   | "cherry-picked" // diverged, local had extra commits — reset + cherry-pick
   | "error";
@@ -205,10 +206,42 @@ export async function resetToOrigin(opts: ResetOptions): Promise<ResetResult> {
     return { status: "fast-forward", branch, cherryPicked: [], backupBranch: null };
   }
 
-  // Diverged — need to figure out if we have extra commits
+  // Diverged — need to figure out which side is the newer rewrite.
+  //
+  // Both a GitLab rebase (remote rewritten) and a local `git rebase
+  // origin/master` (local rewritten) look identical topologically: same
+  // branch content, different SHAs, neither tip an ancestor of the other.
+  // "Reset to remote" is only correct in the first case. Disambiguate by
+  // where each side forks from the default branch: the side sitting on the
+  // newer base is the rewrite to keep. Resetting when LOCAL is the fresher
+  // rewrite would discard the rebase and misclassify every intervening
+  // default-branch commit as "extra local work" to cherry-pick.
+  const defaultBranch = getRemoteDefaultBranch(cwd);
+  if (defaultBranch && defaultBranch !== remoteBranch) {
+    try {
+      const localBase = git(`merge-base HEAD ${defaultBranch}`, cwd);
+      const remoteBase = git(`merge-base ${remoteBranch} ${defaultBranch}`, cwd);
+      if (localBase !== remoteBase) {
+        const r = spawnSync("git", ["merge-base", "--is-ancestor", remoteBase, localBase], {
+          cwd, stdio: "pipe",
+        });
+        if (r.status === 0) {
+          log(`  ${green}✓${reset} ${bold}${branch}${reset} ${dim}is ${remoteBranch} rebased onto a newer ${defaultBranch} base — keeping local${reset}\n`, quiet);
+          return { status: "local-newer", branch, cherryPicked: [], backupBranch: null };
+        }
+      }
+    } catch { /* fall through to patch-id comparison */ }
+  }
 
-  // 4. Get patch-ids for both sides
-  const localPatches = getPatchIds(`${mergeBase}..HEAD`, cwd);
+  // 4. Get patch-ids for both sides. Local side excludes anything reachable
+  // from the default branch: upstream history baked in by a rebase must never
+  // be treated as extra local commits, regardless of patch-id.
+  const localPatches = getPatchIds(
+    defaultBranch && defaultBranch !== remoteBranch
+      ? `${mergeBase}..HEAD ^${defaultBranch}`
+      : `${mergeBase}..HEAD`,
+    cwd,
+  );
   const remotePatches = getPatchIds(`${mergeBase}..${remoteBranch}`, cwd);
 
   // Find local commits whose patch-id is NOT on the remote

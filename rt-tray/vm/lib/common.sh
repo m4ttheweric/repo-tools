@@ -23,14 +23,29 @@ vm_require_cmd() {
   command -v "$1" >/dev/null 2>&1 || vm_die "missing command: $1${2:+ — $2}"
 }
 
-vm_golden_name() { printf 'mattstack-golden-%s' "$1"; }
+# vm_golden_name/vm_image_for take an optional flavour (default cleanroom); xcuitest
+# is the Xcode-capable golden that verify-golden.sh's CLT/brew checks must not run against.
+vm_golden_name() {
+  local ver="$1" flavour="${2:-cleanroom}"
+  case "$flavour" in
+    cleanroom) printf 'mattstack-golden-%s' "$ver" ;;
+    xcuitest)  printf 'mattstack-golden-%s-xcode' "$ver" ;;
+    *)         vm_die "unknown golden flavour: $flavour (known: cleanroom xcuitest)" ;;
+  esac
+}
 
 vm_image_for() {
-  case "$1" in
-    14) printf 'ghcr.io/cirruslabs/macos-sonoma-vanilla:latest' ;;
-    15) printf 'ghcr.io/cirruslabs/macos-sequoia-vanilla:latest' ;;
-    26) printf 'ghcr.io/cirruslabs/macos-tahoe-vanilla:latest' ;;
-    *)  vm_die "no image mapping for macOS $1 (known: 14 15 26)" ;;
+  local ver="$1" flavour="${2:-cleanroom}" base
+  case "$ver" in
+    14) base='ghcr.io/cirruslabs/macos-sonoma' ;;
+    15) base='ghcr.io/cirruslabs/macos-sequoia' ;;
+    26) base='ghcr.io/cirruslabs/macos-tahoe' ;;
+    *)  vm_die "no image mapping for macOS $ver (known: 14 15 26)" ;;
+  esac
+  case "$flavour" in
+    cleanroom) printf '%s-vanilla:latest' "$base" ;;
+    xcuitest)  printf '%s-xcode:latest' "$base" ;;
+    *)         vm_die "unknown golden flavour: $flavour (known: cleanroom xcuitest)" ;;
   esac
 }
 

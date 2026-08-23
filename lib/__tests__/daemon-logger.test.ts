@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // We import the factory (not the singleton) so each test gets isolation.
-import { createDaemonLogger } from "../daemon-logger.ts";
+import { createDaemonLogger, lazyChildLogger, getDaemonLogger, __test__ } from "../daemon-logger.ts";
+import { logsDir } from "../rt-paths.ts";
 
 let logDir: string;
 
@@ -82,5 +83,111 @@ describe("daemon-logger", () => {
     logger.info("test");
     await flush(logger);
     expect(existsSync(nested)).toBe(true);
+  });
+});
+
+describe("lazyChildLogger", () => {
+  // lazyChildLogger binds to the production getDaemonLogger() singleton, so
+  // these read the singleton's real (HOME-isolated by test-setup.ts) log dir
+  // rather than a per-test tmpdir like the suite above.
+  function readSingletonLog(): string {
+    const dir = logsDir();
+    if (!existsSync(dir)) return "";
+    const files = readdirSync(dir).filter((f) => /^daemon\..+\.log$/.test(f));
+    if (files.length === 0) return "";
+    files.sort().reverse();
+    return readFileSync(join(dir, files[0]!), "utf8");
+  }
+
+  it("queues calls made before the singleton resolves and replays them in order, tagged with the module name", async () => {
+    const log = lazyChildLogger("lazy-order-test");
+    // Fires synchronously, before getDaemonLogger()'s internal await settles.
+    log.info("lazy-first");
+    log.warn("lazy-second");
+
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+
+    const content = readSingletonLog();
+    expect(content).toContain('"module":"lazy-order-test"');
+    expect(content).toContain('"msg":"lazy-first"');
+    expect(content).toContain('"msg":"lazy-second"');
+    expect(content.indexOf("lazy-first")).toBeLessThan(content.indexOf("lazy-second"));
+  });
+
+  it("passes calls straight through once the singleton is already warm", async () => {
+    // The singleton is warm from the previous test in this file.
+    const log = lazyChildLogger("lazy-warm-test");
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+    log.info("lazy-warm-line");
+    await new Promise((r) => setImmediate(r));
+    const content = readSingletonLog();
+    expect(content).toContain('"module":"lazy-warm-test"');
+    expect(content).toContain('"msg":"lazy-warm-line"');
+  });
+});
+
+describe("getDaemonLogger — concurrency", () => {
+  it("shares one in-flight initialization across concurrent callers", async () => {
+    __test__.resetDaemonLoggerCache();
+    const results = await Promise.all(Array.from({ length: 8 }, () => getDaemonLogger()));
+    for (const handle of results) expect(handle).toBe(results[0]!);
+  });
+});
+
+describe("lazyChildLogger — init failure", () => {
+  it("diagnoses to stderr, drops the queue permanently, and never produces an unhandled rejection", async () => {
+    const stderrChunks: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: any, ...rest: any[]) => {
+      stderrChunks.push(typeof chunk === "string" ? chunk : String(chunk));
+      const cb = rest[rest.length - 1];
+      if (typeof cb === "function") cb();
+      return true;
+    }) as typeof process.stderr.write;
+
+    let sawUnhandledRejection = false;
+    const onUnhandled = () => { sawUnhandledRejection = true; };
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      const log = lazyChildLogger("init-fail-test", {
+        getLogger: () => Promise.reject(new Error("disk unwritable")),
+      });
+
+      log.info("queued-before-failure-1");
+      log.info("queued-before-failure-2");
+
+      for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+
+      expect(stderrChunks.join("")).toContain("disk unwritable");
+      expect(stderrChunks.join("")).toContain("init-fail-test");
+      expect(__test__.pendingQueueLength(log)).toBe(0);
+
+      for (let i = 0; i < 500; i++) log.warn(`post-failure-${i}`);
+      expect(__test__.pendingQueueLength(log)).toBe(0);
+
+      expect(sawUnhandledRejection).toBe(false);
+    } finally {
+      process.stderr.write = origWrite;
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+});
+
+describe("lazyChildLogger — Proxy guard", () => {
+  it("queues the known pino level methods pre-warm without throwing", () => {
+    const log = lazyChildLogger("guard-ok-test", { getLogger: () => new Promise(() => {}) });
+    expect(() => log.trace("t")).not.toThrow();
+    expect(() => log.debug("d")).not.toThrow();
+    expect(() => log.info("i")).not.toThrow();
+    expect(() => log.warn("w")).not.toThrow();
+    expect(() => log.error("e")).not.toThrow();
+    expect(() => log.fatal("f")).not.toThrow();
+  });
+
+  it("throws a clear error for a non-level property accessed pre-warm", () => {
+    const log = lazyChildLogger("guard-throw-test", { getLogger: () => new Promise(() => {}) });
+    expect(() => (log as any).child({})).toThrow(/guard-throw-test/);
+    expect(() => (log as any).level).toThrow();
   });
 });

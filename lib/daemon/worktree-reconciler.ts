@@ -38,6 +38,7 @@ import { isTreeLocked, withTreeLock } from "../worktree/locks.ts";
 import { createTree, scrapTree, type CreateDeps } from "../worktree/create.ts";
 import { classifyDirtyAsync, disposeTree } from "../worktree/dispose.ts";
 import { changedSince, stepsToRun, runReadySteps } from "../worktree/ready.ts";
+import { MAX_LOGGED_OUTPUT, outputTail } from "../subprocess.ts";
 import {
   loadWorktreeAppConfig,
   loadWorktreeRepoConfig,
@@ -750,7 +751,14 @@ async function freshenOne(deps: FreshenDeps, rec: TreeRecord): Promise<boolean> 
 
   const readyResult = await runReadySteps(rec.path, toRun);
   if (!readyResult.ok) {
-    log.warn({ ...fields, failedStep: readyResult.failedStep }, "freshen: ready step failed");
+    log.warn(
+      {
+        ...fields,
+        failedStep: readyResult.failedStep,
+        output: outputTail(readyResult.output, MAX_LOGGED_OUTPUT),
+      },
+      "freshen: ready step failed",
+    );
     fail();
     return false;
   }

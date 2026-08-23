@@ -1,6 +1,6 @@
 #!/bin/bash
-# Layer (a) of the clean-room matrix, locally: the release workflow's test-install recipe.
-# See .github/workflows/release.yml (job test-install) — keep the two in step.
+# Layer (a) of the clean-room matrix, locally: the release workflow's clean-room recipe.
+# See .github/workflows/release.yml, step "Clean-room install + verify" — keep the two in step.
 set -uo pipefail
 usage() { cat <<'EOF'
 usage: e2e-cleanroom.sh [<mattstack-*.zip|.dmg|mattstack.app>]
@@ -57,7 +57,15 @@ RT="$APP/Contents/MacOS/rt"
 
 export CI=true
 if [ -n "$HOME_DIR" ]; then mkdir -p "$HOME_DIR"; export HOME="$(cd "$HOME_DIR" && pwd -P)"; fi
-export PATH="$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
+# $REAL_HOME/.bun/bin, not $HOME/.bun/bin: oven-sh/setup-bun installs into the
+# runner's actual home directory, which is unrelated to the clean room's
+# simulated $HOME above. Without it, bun is unresolvable on a CI runner and
+# check-bundle.sh's deps.lock-driven Helpers assertions silently drop to a
+# fraction of their count instead of failing (see check-bundle.sh's LOCK_TSV
+# guard for the other half of this fix).
+export PATH="$HOME/.local/bin:$REAL_HOME/.bun/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
+command -v bun >/dev/null 2>&1 || { echo "  ✗ bun not resolvable on the clean-room PATH ($PATH)" >&2; exit 1; }
+
 step "rt --version (from artifact)";   run "$RT" --version | tee "$OUTDIR/versions.txt" >/dev/null || exit 1
 step "rt --post-install $PIA";          run "$RT" --post-install $PIA || exit 1
 step "installed rt on PATH";            run test -x "$HOME/.local/bin/rt" && run rt --version || exit 1
@@ -65,9 +73,10 @@ step "rt daemon install";               run rt daemon install; sleep 3
 step "rt verify --ci";                  rt verify --ci 2>&1 | tee "$OUTDIR/verify-ci.txt" | tee -a "$LOG"
 RC=${PIPESTATUS[0]}
 CHECK="$(cd "$(dirname "$0")/.." && pwd)/rt-tray/check-bundle.sh"
-# Static probe, never executed: check-bundle.sh today has no argument parsing at all (any invocation,
-# including --help, falls through to its unconditional `./build.sh release && ./build.sh dev`), so
-# invoking it to test for --app support would itself trigger the working-tree clobber this guards against.
+# Static probe, never executed: check-bundle.sh now parses --app, but a checkout old enough not to
+# would fall through to its unconditional `./build.sh release && ./build.sh dev` on any invocation,
+# including --help — so probing for --app support by actually invoking it would itself trigger the
+# working-tree clobber this guards against.
 if [ -x "$CHECK" ] && grep -q -- '--app' "$CHECK"; then
   step "check-bundle.sh --app";         run "$CHECK" --app "$APP" || RC=1
 else

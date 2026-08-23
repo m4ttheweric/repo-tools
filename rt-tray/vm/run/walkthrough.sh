@@ -40,7 +40,7 @@ cleanup() {
   vm_render_report
   local f; f=$(vm_phases_failed)
   vm_log "done: $(grep -c '"status":"pass"' "$VM_RUN_DIR/phases.jsonl" || true) passed, $f failed, $(grep -c '"status":"skip"' "$VM_RUN_DIR/phases.jsonl" || true) skipped → $VM_RUN_DIR/report.md"
-  exit "$([ "${f:-0}" -eq 0 ] && echo 0 || echo 1)"
+  exit "$([ "$f" -eq 0 ] && echo 0 || echo 1)"
 }
 trap cleanup EXIT
 
@@ -177,7 +177,7 @@ vm_phase_begin update
 if [ -z "$UPD" ]; then vm_phase_end update skip "no --update-dir (L4 artifacts + L3 MATTSTACK_APPCAST_URL hook required)"
 elif [ "$(vm_phases_failed)" -gt 0 ]; then vm_phase_end update skip "earlier phase failed"
 else
-  vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' bash $GUEST_BIN/trigger-update.sh '$GUEST_RUN/in/update' '$UPDV'" >"$VM_RUN_DIR/logs/update.log" 2>&1
+  vm_ssh_try "$VM_TESTER_USER" "$RUN_VM" "GUEST_RUN='$GUEST_RUN' VM_APPCAST_PORT='$VM_APPCAST_PORT' bash $GUEST_BIN/trigger-update.sh '$GUEST_RUN/in/update' '$UPDV'" >"$VM_RUN_DIR/logs/update.log" 2>&1
   rc=$?
   if [ "$rc" -eq 0 ]; then
     vm_phase_end update pass "" $(cd "$VM_RUN_DIR" && ls screenshots/06-*.png 2>/dev/null)

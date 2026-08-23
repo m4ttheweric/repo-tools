@@ -58,12 +58,28 @@ export interface ForgeTokenData {
  */
 export interface EventsBusEvent { id: number; topic: string; payload: unknown; emittedAt: number }
 
+// SKILLS-53: one judgment, computed once in rt, so the console and the tray
+// never derive two verdicts that can disagree.
+export type Attention = {
+  needs: boolean;
+  reason: "failed" | "stale" | "stranded" | null;
+  evidence: string;
+};
+
 export interface RunSummary {
   id: string; repo: string; work_type: string; pipeline: string;
   status: string; current_stage: string | null; spawned_by: string | null;
   started_at: number; ended_at: number | null;
+  // v2. Null on runs written before schema v2; pack_dirty means the pack tree
+  // had uncommitted changes, so the as-run text may exist in no commit.
+  pack_commits: string | null; pack_dirty: number;
+  attention: Attention;
 }
-export interface RunStageRow { name: string; status: string; attempt: number; started_at: number | null; ended_at: number | null; }
+export interface RunStageRow {
+  name: string; status: string; attempt: number;
+  started_at: number | null; ended_at: number | null;
+  reason: string | null; detail_path: string | null;
+}
 export interface RunFieldRow { key: string; value: string; produced_by: string; at: number; }
 export interface RunDecisionRow { contract: string; scope: string; selection: string; decided_by: string; decided_at: number; }
 export interface RunDetail { run: RunSummary; stages: RunStageRow[]; fields: RunFieldRow[]; decisions: RunDecisionRow[]; schemaAhead: boolean; }
@@ -122,6 +138,7 @@ export interface Commands {
   "events:list": { payload: { pattern: string; after?: number; limit?: number }; data: { events: EventsBusEvent[]; cursor: number } };
   "runs:list": { payload: { repo?: string }; data: { runs: RunSummary[] } };
   "runs:get": { payload: { runId: string; repo?: string }; data: RunDetail };
+  "runs:abandon": { payload: { runId: string; repo?: string; reason?: string }; data: { ok: boolean } };
 }
 
 export type CommandName = keyof Commands;
@@ -137,4 +154,5 @@ export const COMMAND_NAMES: readonly CommandName[] = [
   "events:list",
   "runs:list",
   "runs:get",
+  "runs:abandon",
 ];

@@ -202,6 +202,72 @@ describe("skillsCompile", () => {
     expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
   });
 
+  test("--preview prints the compiled body and writes nothing", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+
+    await skillsCompile(["--pack", "t", "--verb", "watch-ci", "--preview",
+      "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
+
+    const out = logs.join("\n");
+    expect(out).toContain("<!-- part: step source=");
+    expect(out).not.toContain("compiled watch-ci (");
+    expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(false);
+  });
+
+  test("--preview requires exactly one verb", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile(["--pack", "t", "--preview",
+        "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]));
+
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("--preview needs a single --verb");
+  });
+
+  test("--preview on a retired (surface-internal) verb leaves its stale output directory alone", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+    // watch-ci is absent from surface.jsonc's public list, so it is internal/retired --
+    // this is the transition-window state computeInternalRoster's own comment describes.
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
+    // A stale output dir from an earlier (pre-retirement) real compile.
+    writeFile(join(packDir, "skills", "watch-ci", "SKILL.md"), "stale\n");
+
+    await skillsCompile(["--pack", "t", "--verb", "watch-ci", "--preview",
+      "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
+
+    expect(existsSync(join(packDir, "skills", "watch-ci"))).toBe(true);
+  });
+
+  test("--preview on a retired verb writes its status line to stderr, not stdout", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
+
+    const errors: string[] = [];
+    const errorSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    });
+    try {
+      await skillsCompile(["--pack", "t", "--verb", "watch-ci", "--preview",
+        "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    // A caller piping --preview to a file must never see this status line:
+    // it belongs on stderr, and stdout must stay empty.
+    expect(logs.join("\n")).not.toContain("not compiled; roster entry retired");
+    expect(errors.join("\n")).toContain("not compiled; roster entry retired");
+  });
+
   test("real run emits SKILL.md + vendored files matching a golden compile, byte for byte", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();

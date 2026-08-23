@@ -7,7 +7,6 @@
 
 import type { CommandContext } from "../lib/command-tree.ts";
 import { createRealAgeKeySeam } from "../lib/home/age-key.ts";
-import { confirm } from "../lib/rt-render.tsx";
 import { createRealSecretsExecSeam, type SecretsSeams } from "../lib/secrets/store.ts";
 import { createApplyContext, type ApplyContext, type CreateApplyContextDeps } from "../lib/setup/apply.ts";
 import { envelope } from "../lib/setup/contract.ts";
@@ -42,7 +41,10 @@ export function realUninstallDeps(): UninstallDeps {
     print: (s) => console.log(s),
     exit: process.exit,
     isTTY: () => process.stdin.isTTY === true,
-    confirm: (message) => confirm({ message }),
+    confirm: async (message: string) => {
+      const { confirm } = await import("../lib/rt-render.tsx");
+      return confirm({ message });
+    },
   };
 }
 

@@ -28,7 +28,7 @@ import {
 } from "../lib/sdm/core.ts";
 import { scanSdmResources, type SdmResource } from "../lib/sdm/scan.ts";
 import { buildSdmConnections, type SdmConnection } from "../lib/sdm/browse.ts";
-import { loadEnrichment } from "../lib/sdm/enrichment.ts";
+import { loadEnrichment, probeEnrichmentStore } from "../lib/sdm/enrichment.ts";
 import { buildConnectionsJson, buildConnectionsRefusal, buildConnectJson, buildProductionRefusal, buildStatusJson, shouldRefuseProduction } from "../lib/sdm/agent-json.ts";
 import { loadSdmState, recordRecent, type RecentEntry } from "../lib/sdm/state.ts";
 import { runGuidedConnect, type GuidedTarget } from "../lib/sdm/flow.ts";
@@ -439,12 +439,18 @@ export function enrichmentSkeleton(names: string[]): string {
 /**
  * `rt sdm enrichment`: show how much of the scanned catalog is enriched.
  * `rt sdm enrichment init`: scaffold ~/.mattstack/rt/sdm/enrichment.jsonc with one
- * entry per scanned resource, refusing to clobber an existing file.
+ * entry per scanned resource, refusing to clobber an existing file — or, once
+ * the team store owns `rt.sdmEnrichment` (the ownership latch), refusing to
+ * scaffold the file at all, since the store is authoritative from here on.
  */
 export async function enrichmentCmd(rest: string[]): Promise<void> {
   const { enrichmentPath, loadEnrichment } = await import("../lib/sdm/enrichment.ts");
   const path = enrichmentPath();
   if (rest[0] === "init") {
+    if (probeEnrichmentStore() !== undefined) {
+      console.log(`${yellow}enrichment now lives in the team store (rt.sdmEnrichment)${reset} ${dim}— it would otherwise write ${path}${reset}`);
+      return;
+    }
     if (existsSync(path)) {
       console.error(`${yellow}${path} already exists${reset}`);
       process.exitCode = 1;

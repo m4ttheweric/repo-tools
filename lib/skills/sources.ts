@@ -1,6 +1,6 @@
 import { execSync } from "child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "fs";
-import { join } from "path";
+import { join, relative } from "path";
 import { parse as parseYaml } from "yaml";
 import type { AttachmentSource, SlotSpec, StepSource, VerbDef } from "./types.ts";
 
@@ -13,15 +13,24 @@ export function stripJsonc(raw: string): string {
     .join("\n");
 }
 
-export function stripFrontmatter(md: string): { body: string; frontmatter: Record<string, unknown> } {
+export function stripFrontmatter(
+  md: string,
+): { body: string; frontmatter: Record<string, unknown>; bodyStartLine: number } {
   const match = md.match(FRONTMATTER_RE);
-  if (!match) {
-    return { body: md.trim(), frontmatter: {} };
-  }
-  const parsed = parseYaml(match[1] ?? "");
+  const fmBlock = match?.[0] ?? "";
+  const rest = match ? md.slice(match[0].length) : md;
+  const parsed = match ? parseYaml(match[1] ?? "") : undefined;
   const frontmatter = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
-  const body = md.slice(match[0].length).trim();
-  return { body, frontmatter };
+  const body = rest.trim();
+
+  // Measure the head only: `body` is trimmed at both ends, so a
+  // length-difference formula would count trailing blank lines as leading
+  // ones and silently mis-locate every seam that points into a real file.
+  const lead = rest.length - rest.trimStart().length;
+  const countLines = (s: string) => (s.match(/\n/g) ?? []).length;
+  const bodyStartLine = countLines(fmBlock) + countLines(rest.slice(0, lead)) + 1;
+
+  return { body, frontmatter, bodyStartLine };
 }
 
 export type PluginRoots = { byName: Record<string, { dir: string; version: string }> };
@@ -192,7 +201,7 @@ export function loadStepSource(engineName: string, roots: PluginRoots): StepSour
   }
 
   const skillMdPath = join(foundDir, "SKILL.md");
-  const { body, frontmatter } = stripFrontmatter(readFileSync(skillMdPath, "utf8"));
+  const { body, frontmatter, bodyStartLine } = stripFrontmatter(readFileSync(skillMdPath, "utf8"));
 
   if (frontmatter.type !== "pipeline-step") {
     throw new Error(`loadStepSource: "${skillMdPath}" is not typed "type: pipeline-step"`);
@@ -203,6 +212,8 @@ export function loadStepSource(engineName: string, roots: PluginRoots): StepSour
     plugin: "mattstack",
     version: mattstack.version,
     dir: foundDir,
+    srcPath: relative(mattstack.dir, skillMdPath),
+    bodyStartLine,
     body,
     slots: parseSlots(frontmatter.slots),
     allowedTools: parseAllowedTools(frontmatter["allowed-tools"]),
@@ -263,7 +274,7 @@ export function loadAttachment(binding: string, slot: string, roots: PluginRoots
   }
 
   const skillMdPath = join(foundDir, "SKILL.md");
-  const { body, frontmatter } = stripFrontmatter(readFileSync(skillMdPath, "utf8"));
+  const { body, frontmatter, bodyStartLine } = stripFrontmatter(readFileSync(skillMdPath, "utf8"));
 
   const metadata = frontmatter.metadata && typeof frontmatter.metadata === "object"
     ? (frontmatter.metadata as Record<string, unknown>)
@@ -278,6 +289,8 @@ export function loadAttachment(binding: string, slot: string, roots: PluginRoots
     plugin,
     version: pluginRoot.version,
     dir: foundDir,
+    srcPath: relative(pluginRoot.dir, skillMdPath),
+    bodyStartLine,
     body,
     provides,
     allowedTools: parseAllowedTools(frontmatter["allowed-tools"]),
