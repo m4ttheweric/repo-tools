@@ -76,6 +76,12 @@ When adding a new command module referenced by `cli.ts` (any file with a `module
 
 Every registry value is a thunk — `() => import("../commands/x.ts")` with the path spelled out literally — not an eagerly-evaluated namespace import. That's what keeps `rt --version` and every other dispatch from paying for the whole command surface: the bundler still statically discovers all 30 modules, but none of them evaluate until a command actually dispatches to it. Adding a static (non-thunked) `import` of a command module to `lib/module-registry.ts`, or a static value import of `lib/rt-render.tsx`/`ink` to `lib/command-tree.ts`, is a startup regression — `scripts/bench-startup.ts` gates this in the release workflow (`.github/workflows/release.yml`), and `lib/__tests__/no-eager-tui.test.ts` gates the command-tree and command-module cases directly.
 
+### `packages/rt-client/dist/` goes stale without warning
+
+`dist/` is gitignored, but `file:` consumers (mr-board, gitq, the console) copy it **verbatim** at install time rather than building from source. So any change or merge that touches rt-client's source leaves every consumer installing the previous build — the source is right, the shipped artifact is not, and nothing about the working tree looks wrong. Run `bun run build` in `packages/rt-client` after touching it, and after any merge that does.
+
+`packages/rt-client/test/dist-freshness.test.ts` is the guard and names the fix in its failure message. Treat that failure as a real instruction, not as a flaky artifact test — it caught this three separate times in one day across three sessions.
+
 ### Bytecode compile (`--bytecode`) silently falls back on failure
 
 `bun build --compile --bytecode` does not reliably fail loudly when bytecode generation fails. Ink's dependency graph (via `yoga-layout`) and top-level await in `cli.ts` both currently break bytecode generation, but when the *post-bundle* bytecode step itself fails (as opposed to a bundling/parse error), bun still writes out a working binary — just without bytecode, and only a few hundred KB smaller than the non-bytecode build, so the artifact looks like a success. Never conclude `--bytecode` worked because a binary appeared and ran; check the build's stderr for `Failed to generate bytecode` (or read the exit code) before trusting the artifact. A hard parse-time failure (e.g. the top-level `await` in `cli.ts`) does exit non-zero with no binary produced, so that failure mode is safe -- it's specifically the later stage that goes silent.
