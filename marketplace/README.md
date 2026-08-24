@@ -4,6 +4,7 @@ The Claude Code plugin catalog `rt` adds on every machine it sets up:
 
 ```bash
 claude plugin marketplace add https://github.com/m4ttstack/mattstack-marketplace
+claude plugin install mattstack@mattstack
 claude plugin install fast-browser@mattstack
 ```
 
@@ -27,9 +28,8 @@ Claude Code resolves `sha`. `ref` records which branch the pin came from, so
 `marketplace.sh --refresh` can re-resolve it; bumping a pin is a reviewed commit
 in `rt`, never an implicit follow-the-branch.
 
-## `mattstack` needs access to a private repo
+## What `mattstack` brings
 
-`m4ttstack/skills` is private, so `claude plugin install mattstack@mattstack`
-fails for anyone without read access — git cannot authenticate and the clone
-aborts. It is listed anyway so that access, not discovery, is the only thing
-gating it.
+Beyond the skills, the pack ships a `UserPromptSubmit` + `PostToolUse` hook that
+stamps each turn with local time, zone, and UTC. It arrives with the plugin —
+there is nothing separate to install and no `settings.json` edit.
