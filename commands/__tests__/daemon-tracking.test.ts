@@ -22,12 +22,16 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { machineSettingsPath, teamSettingsPath } from "../../lib/rt-paths.ts";
 import { getSetting } from "../../lib/settings/resolve.ts";
+import { serializeIdentity } from "../../lib/settings/identity.ts";
 import { deleteKvValue, getKvValue, setKvValue } from "../../lib/state/index.ts";
 import { manageTracking } from "../daemon.ts";
 
 const REPO_NAME = "rt-rider-cli-wiring-repo";
 const TEAM_NAME = "rt-rider-cli-wiring-team";
+// The host/path the team file keys on (the readable `identity.id`)...
 const IDENTITY = `rttest/${REPO_NAME}`;
+// ...and the serialized wire form every rt store keys on now.
+const SERIALIZED = serializeIdentity({ kind: "remote", id: IDENTITY });
 const REPO_INDEX_NS = "repo-index";
 
 function readOrNull(path: string): string | null {
@@ -57,7 +61,7 @@ describe("manageTracking off-branch (CLI wiring)", () => {
   beforeEach(() => {
     console.log = () => {};
 
-    priorRepoIndexEntry = getKvValue<string | null>(REPO_INDEX_NS, REPO_NAME, null);
+    priorRepoIndexEntry = getKvValue<string | null>(REPO_INDEX_NS, SERIALIZED, null);
     priorTeamStore = readOrNull(teamSettingsPath(TEAM_NAME));
     priorMachineStore = readOrNull(machineSettingsPath());
 
@@ -67,7 +71,9 @@ describe("manageTracking off-branch (CLI wiring)", () => {
     execSync("git init -q", { cwd: repoPath });
     execSync(`git remote add origin git@rttest:${REPO_NAME}.git`, { cwd: repoPath });
 
-    setKvValue(REPO_INDEX_NS, REPO_NAME, repoPath);
+    // The index keys on the serialized identity now; the operator still types
+    // the bare name, which manageTracking reverse-resolves to this key.
+    setKvValue(REPO_INDEX_NS, SERIALIZED, repoPath);
 
     // Team intent still declares this repo — mattstack.tracking's VALUE has
     // its own "repos" field (identity → intent); it is not the store file's
@@ -84,7 +90,7 @@ describe("manageTracking off-branch (CLI wiring)", () => {
     const machine = priorMachineStore ? JSON.parse(priorMachineStore) : {};
     machine["rt.repoTracking"] = {
       ...(machine["rt.repoTracking"] ?? {}),
-      [REPO_NAME]: { mode: "live", caches: ["branches"] },
+      [SERIALIZED]: { mode: "live", caches: ["branches"] },
     };
     writeFileSync(machineStore, JSON.stringify(machine));
   });
@@ -92,8 +98,8 @@ describe("manageTracking off-branch (CLI wiring)", () => {
   afterEach(() => {
     console.log = origLog;
     rmSync(repoPath, { recursive: true, force: true });
-    if (priorRepoIndexEntry === null) deleteKvValue(REPO_INDEX_NS, REPO_NAME);
-    else setKvValue(REPO_INDEX_NS, REPO_NAME, priorRepoIndexEntry);
+    if (priorRepoIndexEntry === null) deleteKvValue(REPO_INDEX_NS, SERIALIZED);
+    else setKvValue(REPO_INDEX_NS, SERIALIZED, priorRepoIndexEntry);
     restore(teamSettingsPath(TEAM_NAME), priorTeamStore);
     restore(machineSettingsPath(), priorMachineStore);
   });
@@ -102,7 +108,8 @@ describe("manageTracking off-branch (CLI wiring)", () => {
     await manageTracking([REPO_NAME, "off"]);
 
     const saved = getSetting<Record<string, unknown>>("rt.repoTracking").value;
-    expect(saved[REPO_NAME]).toEqual({ mode: "off" });
+    expect(saved[SERIALIZED]).toEqual({ mode: "off" });
+    expect(saved[REPO_NAME]).toBeUndefined();
   });
 
   test("off on a repo the team no longer names deletes outright", async () => {
@@ -111,6 +118,6 @@ describe("manageTracking off-branch (CLI wiring)", () => {
     await manageTracking([REPO_NAME, "off"]);
 
     const saved = getSetting<Record<string, unknown>>("rt.repoTracking").value;
-    expect(saved[REPO_NAME]).toBeUndefined();
+    expect(saved[SERIALIZED]).toBeUndefined();
   });
 });

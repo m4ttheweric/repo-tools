@@ -3,7 +3,7 @@
  * machine-store setting, shared by the daemon (pure reader) and the CLI
  * (reader + writer). Spec: .local-dev/2026-07-26-typed-stores-board-rewire-design.md §4.
  *
- * Value shape: a flat repo → entry map, { "<repo>": { "mode": "live"|"poll", "caches": [...] } }.
+ * Value shape: a flat identity → entry map, { "<serialized-identity>": { "mode": "live"|"poll", "caches": [...] } }.
  *
  * `mode` is the freshness transport (live = events watcher + 5-min cycle,
  * poll = 5-min cycle only); `caches` is what that transport may maintain.
@@ -12,19 +12,21 @@
  * rewritten to the object shape on the next save.
  *
  * `loadRepoTracking` also folds in team-declared intent (`mattstack.tracking`,
- * team scope, IDENTITY-keyed: `{repos: {"<identity>": {caches:[...]}}}`) as
- * `{mode: "live", caches}` for any identity that resolves to a locally-known
- * repo NAME. Machine wins the whole entry per-repo whenever the RAW machine
- * map names that repo AT ALL — including an entry `normalizeEntry` rejects
- * (a typo'd mode, or an explicit `{mode:"off"}`) — not just when it produces
- * a valid grant: this is what makes `{mode:"off"}` a real local opt-out for
- * a team-tracked repo, and honors the same "a typo must never cause
- * accidental polling" rule for the team layer. An identity with no local
- * resolution is silently dropped (repo not cloned here). Resolution goes
- * through a primed identity→name map (see `primeTeamTrackingIdentityMap`)
- * rather than deriving live, because this loader runs synchronously on every
- * freshness tick while derivation shells out to git; an unprimed map means
- * team intent is inert, not an error.
+ * team scope, HOST/PATH-keyed: `{repos: {"<host/path>": {caches:[...]}}}` —
+ * the readable `identity.id`, not the serialized wire form) as
+ * `{mode: "live", caches}` under the SERIALIZED identity of any host/path that
+ * resolves to a locally-known repo. Machine wins the whole entry per-repo
+ * whenever the RAW machine map names that serialized identity AT ALL —
+ * including an entry `normalizeEntry` rejects (a typo'd mode, or an explicit
+ * `{mode:"off"}`) — not just when it produces a valid grant: this is what
+ * makes `{mode:"off"}` a real local opt-out for a team-tracked repo, and
+ * honors the same "a typo must never cause accidental polling" rule for the
+ * team layer. A host/path with no local resolution is silently dropped (repo
+ * not cloned here). Resolution goes through a primed host/path→serialized-
+ * identity map (see `primeTeamTrackingIdentityMap`) rather than deriving live,
+ * because this loader runs synchronously on every freshness tick while
+ * derivation shells out to git; an unprimed map means team intent is inert,
+ * not an error.
  *
  * `loadMachineRepoTracking` is the machine-only half with no team merge —
  * the only function safe to read-modify-write through, and the only one a
@@ -33,7 +35,7 @@
 
 import { getSetting } from "./settings/resolve.ts";
 import { setSetting } from "./settings/write.ts";
-import { deriveRepoIdentity } from "./settings/identity.ts";
+import { deriveRepoIdentity, parseIdentity, serializeIdentity } from "./settings/identity.ts";
 
 export const CACHE_KINDS = ["branches", "project-mrs", "discussions"] as const;
 export type CacheKind = (typeof CACHE_KINDS)[number];
@@ -84,25 +86,27 @@ function isVersionedEnvelope(value: Record<string, unknown>): value is { version
     && value.repos !== null && typeof value.repos === "object" && !Array.isArray(value.repos);
 }
 
-export type IdentityNameMap = Record<string, string>;
+// host/path (the readable `identity.id`) → serialized identity, the merge key.
+export type TeamIdentityMap = Record<string, string>;
 
 // Primed once (daemon boot) from the repo index, not derived per read —
 // loadRepoTracking is sync and called on every freshness tick.
-let primedIdentityMap: IdentityNameMap = {};
+let primedIdentityMap: TeamIdentityMap = {};
 
 /**
- * Builds the identity→name map `loadRepoTracking` consults to resolve team
- * intent, from the repo index (name → path) via `deriveRepoIdentity`. Called
- * from more than one site (daemon boot, the repos.json watch, the 60s
+ * Builds the host/path→serialized-identity map `loadRepoTracking` consults to
+ * resolve team intent (which is authored under the readable host/path), from
+ * the repo index (whose values are checkout paths) via `deriveRepoIdentity`.
+ * Called from more than one site (daemon boot, the repos.json watch, the 60s
  * hooks-scan poller) — an overlap between two calls in flight at once is
  * harmless: both build from the same repo index and the last write wins, so
  * there's nothing to guard against races on.
  */
 export async function primeTeamTrackingIdentityMap(repoIndex: Record<string, string>): Promise<void> {
-  const map: IdentityNameMap = {};
-  for (const [name, path] of Object.entries(repoIndex)) {
+  const map: TeamIdentityMap = {};
+  for (const path of Object.values(repoIndex)) {
     const identity = await deriveRepoIdentity(path);
-    if (identity.kind === "remote") map[identity.id] = name;
+    if (identity.kind === "remote") map[identity.id] = serializeIdentity(identity);
   }
   // A transient repos.json read failure yields an empty repoIndex; adopting
   // that would blank a healthy map and flap every team-tracked watcher.
@@ -146,13 +150,13 @@ function loadTeamTracking(): Record<string, unknown> {
 }
 
 interface MachineTrackingRead {
-  /** Normalized entries, keyed by repo name — what `loadMachineRepoTracking` returns. */
+  /** Normalized entries, keyed by serialized identity — what `loadMachineRepoTracking` returns. */
   out: RepoTracking;
-  /** Every repo name present in the raw machine map, BEFORE normalization — a typo'd or
-   *  `{mode:"off"}` entry still names its repo here even though it produced no `out` entry.
+  /** Every serialized identity present in the raw machine map, BEFORE normalization — a typo'd
+   *  or `{mode:"off"}` entry still names its identity here even though it produced no `out` entry.
    *  This is the set `loadRepoTracking` gates team intent on, not `out`'s keys. */
-  rawNames: Set<string>;
-  /** Every repo name's RAW authored value, unnormalized — includes entries `out` drops
+  rawIdentities: Set<string>;
+  /** Every identity's RAW authored value, unnormalized — includes entries `out` drops
    *  (a typo'd mode, or an explicit `{mode:"off"}` opt-out marker). The only base a
    *  read-modify-write may rebuild the WHOLE map from without silently erasing one of
    *  those — see `loadMachineRepoTrackingRaw`/`saveRepoTrackingRaw`. */
@@ -165,11 +169,11 @@ function readMachineTracking(): MachineTrackingRead {
     rawValue = getSetting<unknown>("rt.repoTracking").value;
   } catch (err) {
     console.warn(`rt: rt.repoTracking could not be resolved (${err instanceof Error ? err.message : err}) — tracking nothing`);
-    return { out: {}, rawNames: new Set(), raw: {} };
+    return { out: {}, rawIdentities: new Set(), raw: {} };
   }
 
   const out: RepoTracking = {};
-  const rawNames = new Set<string>();
+  const rawIdentities = new Set<string>();
   const raw: Record<string, unknown> = {};
   if (rawValue && typeof rawValue === "object" && !Array.isArray(rawValue)) {
     let repos = rawValue as Record<string, unknown>;
@@ -180,14 +184,14 @@ function readMachineTracking(): MachineTrackingRead {
       );
       repos = repos.repos;
     }
-    for (const [repo, value] of Object.entries(repos)) {
-      rawNames.add(repo);
-      raw[repo] = value;
+    for (const [key, value] of Object.entries(repos)) {
+      rawIdentities.add(key);
+      raw[key] = value;
       const entry = normalizeEntry(value);
-      if (entry) out[repo] = entry;
+      if (entry) out[key] = entry;
     }
   }
-  return { out, rawNames, raw };
+  return { out, rawIdentities, raw };
 }
 
 /**
@@ -219,37 +223,42 @@ export function loadMachineRepoTrackingRaw(): Record<string, unknown> {
 }
 
 /**
- * Whether `mattstack.tracking`'s team-authored `repos` map names `identity`
- * at all — any value, valid or not. What `rt daemon track <repo> off` needs
- * before deciding whether turning a repo off can delete its machine grant
- * outright or must instead plant an explicit `{mode:"off"}` marker (see
- * `saveRepoTracking`'s `offMarkers` and the module doc's merge rule).
+ * Whether `mattstack.tracking`'s team-authored `repos` map declares intent for
+ * the repo whose SERIALIZED identity is `serialized`. The team map is authored
+ * under the readable host/path (`identity.id`), so this converts inward: parse
+ * the serialized identity, look its `.id` up in the host/path-keyed team map.
+ * What `rt daemon track <repo> off` needs before deciding whether turning a
+ * repo off can delete its machine grant outright or must instead plant an
+ * explicit `{mode:"off"}` marker (see `saveRepoTracking`'s `offMarkers` and
+ * the module doc's merge rule).
  */
-export function teamNamesIdentity(identity: string): boolean {
-  return Object.prototype.hasOwnProperty.call(loadTeamTracking(), identity);
+export function teamNamesIdentity(serialized: string): boolean {
+  const parsed = parseIdentity(serialized);
+  if (!parsed) return false;
+  return Object.prototype.hasOwnProperty.call(loadTeamTracking(), parsed.id);
 }
 
 /** Read the merged view (machine grants + team intent) — see the module doc for the merge rule. */
-export function loadRepoTracking(opts?: { identityMap?: IdentityNameMap }): RepoTracking {
-  const { out, rawNames } = readMachineTracking();
+export function loadRepoTracking(opts?: { identityMap?: TeamIdentityMap }): RepoTracking {
+  const { out, rawIdentities } = readMachineTracking();
 
   const identityMap = opts?.identityMap ?? primedIdentityMap;
   if (Object.keys(identityMap).length > 0) {
-    for (const [identity, value] of Object.entries(loadTeamTracking())) {
-      const name = identityMap[identity];
-      // Uncloned here, or the raw machine map already names this repo
+    for (const [hostPath, value] of Object.entries(loadTeamTracking())) {
+      const serialized = identityMap[hostPath];
+      // Uncloned here, or the raw machine map already names this identity
       // (valid grant, typo, or explicit {mode:"off"} opt-out alike).
-      if (!name || rawNames.has(name)) continue;
+      if (!serialized || rawIdentities.has(serialized)) continue;
       const entry = normalizeTeamEntry(value);
-      if (entry) out[name] = { mode: "live", caches: entry.caches };
+      if (entry) out[serialized] = { mode: "live", caches: entry.caches };
     }
   }
 
   return out;
 }
 
-export function grants(tracking: RepoTracking, repoName: string): RepoGrants {
-  const entry = tracking[repoName];
+export function grants(tracking: RepoTracking, identity: string): RepoGrants {
+  const entry = tracking[identity];
   if (!entry) return { mode: "off", caches: new Set(), projectMrsWindowDays: DEFAULT_PROJECT_MRS_WINDOW_DAYS };
   return { mode: entry.mode, caches: new Set(entry.caches),
     projectMrsWindowDays: entry.projectMrsWindowDays ?? DEFAULT_PROJECT_MRS_WINDOW_DAYS };
@@ -281,18 +290,18 @@ export function saveRepoTrackingRaw(raw: Record<string, unknown>): void {
  * touch — that needs `loadMachineRepoTrackingRaw`/`saveRepoTrackingRaw`
  * directly (see `commands/daemon.ts`'s `manageTracking`).
  *
- * `offMarkers` plants an explicit `{mode:"off"}` entry for each name listed —
+ * `offMarkers` plants an explicit `{mode:"off"}` entry for each identity listed —
  * `normalizeEntry` rejects that shape (mode "off" is not a valid grant), but
- * it still names the repo in the RAW machine map, which is what makes it a
+ * it still names the identity in the RAW machine map, which is what makes it a
  * real local opt-out for a repo the team layer still declares intent for
  * (module doc's merge rule: the raw machine map winning per-repo, not just a
- * valid grant winning). A name must not appear in both `tracking` and
+ * valid grant winning). An identity must not appear in both `tracking` and
  * `offMarkers` — the marker always wins ties, but callers should never rely
  * on that.
  */
 export function saveRepoTracking(tracking: RepoTracking, offMarkers: string[] = []): void {
   const merged: Record<string, unknown> = { ...tracking };
-  for (const name of offMarkers) merged[name] = { mode: "off" };
+  for (const identity of offMarkers) merged[identity] = { mode: "off" };
   saveRepoTrackingRaw(merged);
 }
 
@@ -306,6 +315,84 @@ export function parseCachesArg(raw: string): CacheKind[] | null {
     if (!out.includes(p as CacheKind)) out.push(p as CacheKind);
   }
   return out;
+}
+
+export interface RepoTrackingRekeyReport {
+  /** Legacy keys re-keyed onto a serialized identity and verified persisted. */
+  migrated: string[];
+  /** Legacy keys left in place — unresolvable, a target collision, or a write that didn't land. */
+  retained: string[];
+}
+
+/** Looks a legacy tracking name up in the repo index and derives its serialized identity. */
+async function realResolveTrackingKey(name: string): Promise<string | null> {
+  const { loadRepoIndex } = await import("./repo-index.ts");
+  const path = loadRepoIndex()[name];
+  if (!path) return null;
+  return serializeIdentity(await deriveRepoIdentity(path));
+}
+
+/**
+ * One-shot: re-key legacy NAME-keyed `rt.repoTracking` rows onto serialized
+ * identities. A settings write is not kv — it lands as one blob, and the
+ * resolver swallows write failures — so this rewrites the whole map, RE-READS
+ * `rt.repoTracking`, and only counts a row migrated once the re-read proves
+ * the identity key landed and the legacy name is gone. Unresolvable rows (and
+ * rows whose target identity already exists) are retained under their legacy
+ * key with a warn. Idempotent: a row already keyed by a parseable identity is
+ * skipped, so a fully-migrated store does no work. Exported for the
+ * daemon-boot migration runner; this module does not wire the boot call.
+ */
+export async function rekeyRepoTrackingSettings(
+  opts: { resolve?: (name: string) => Promise<string | null> } = {},
+): Promise<RepoTrackingRekeyReport> {
+  const resolve = opts.resolve ?? realResolveTrackingKey;
+  const report: RepoTrackingRekeyReport = { migrated: [], retained: [] };
+
+  const raw = loadMachineRepoTrackingRaw();
+  const legacy = Object.keys(raw).filter((k) => parseIdentity(k) === null);
+  if (legacy.length === 0) return report;
+
+  const next: Record<string, unknown> = { ...raw };
+  const intended = new Map<string, string>(); // legacy name → target identity
+  for (const name of legacy) {
+    const identity = await resolve(name);
+    if (identity === null) {
+      console.warn(`rt: could not re-key rt.repoTracking/${name} to an identity — leaving it in place`);
+      report.retained.push(name);
+      continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(next, identity)) {
+      console.warn(`rt: rt.repoTracking/${identity} already exists; leaving legacy ${name} in place`);
+      report.retained.push(name);
+      continue;
+    }
+    next[identity] = raw[name];
+    delete next[name];
+    intended.set(name, identity);
+  }
+
+  if (intended.size === 0) return report;
+
+  saveRepoTrackingRaw(next);
+
+  // Verify-persisted: the write is a single blob and can be silently dropped,
+  // so a row counts as migrated only once the re-read shows its identity key
+  // present and its legacy name gone.
+  const persistedValue = getSetting<unknown>("rt.repoTracking").value;
+  const persisted = persistedValue && typeof persistedValue === "object" && !Array.isArray(persistedValue)
+    ? (persistedValue as Record<string, unknown>) : {};
+  for (const [name, identity] of intended) {
+    const landed = Object.prototype.hasOwnProperty.call(persisted, identity)
+      && !Object.prototype.hasOwnProperty.call(persisted, name);
+    if (landed) {
+      report.migrated.push(name);
+    } else {
+      console.warn(`rt: rt.repoTracking re-key of ${name} → ${identity} did not persist — leaving it`);
+      report.retained.push(name);
+    }
+  }
+  return report;
 }
 
 // Bypasses the non-empty-map guard in primeTeamTrackingIdentityMap — for test
