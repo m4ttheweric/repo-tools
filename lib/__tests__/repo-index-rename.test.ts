@@ -13,14 +13,15 @@
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { rtDir } from "../rt-paths.ts";
+import { repoDataDir, rtDir } from "../rt-paths.ts";
 import { closeStateDb, getStateDb, setKvValue } from "../state/index.ts";
 import {
   getKnownRepos,
   loadRepoIndexEntries,
+  migrateRepoData,
   partitionByRealpath,
   pruneRepoIndex,
   type RepoIndexEntry,
@@ -176,7 +177,14 @@ describe("repo-index — rename drift (RT-60)", () => {
       const removed = pruneRepoIndex();
 
       expect(removed).toEqual([
-        { repoName: "local-apps", path: join(scratch, "local-apps"), reason: "duplicate", keptAs: "deck" },
+        {
+          repoName: "local-apps",
+          path: join(scratch, "local-apps"),
+          reason: "duplicate",
+          keptAs: "deck",
+          // This retired name never had a data dir, so there was nothing to carry.
+          data: { moved: [], merged: [], refused: [], removedDir: false },
+        },
       ]);
       expect(loadRepoIndexEntries().map((e) => e.repoName)).toEqual(["deck"]);
     });
@@ -217,6 +225,140 @@ describe("repo-index — rename drift (RT-60)", () => {
       pruneRepoIndex();
 
       expect(Object.keys(mirror())).toEqual(["alive"]);
+    });
+  });
+  // ─── data migration (RT-60) ────────────────────────────────────────────────
+
+  describe("migrateRepoData", () => {
+    function writeData(repoName: string, file: string, body: string): string {
+      const dir = repoDataDir(repoName);
+      mkdirSync(dir, { recursive: true });
+      const path = join(dir, file);
+      writeFileSync(path, body);
+      return path;
+    }
+
+    const RUN_HISTORY = "run-history.jsonl";
+    const early = '{"ts":"2026-07-01T00:00:00.000Z","cmd":"early"}';
+    const late = '{"ts":"2026-07-25T00:00:00.000Z","cmd":"late"}';
+
+    test("moves a file the surviving name does not have", () => {
+      writeData("repo-tools", RUN_HISTORY, `${early}\n`);
+
+      const result = migrateRepoData("repo-tools", "rt");
+
+      expect(result.moved).toEqual([RUN_HISTORY]);
+      expect(result.merged).toEqual([]);
+      expect(result.removedDir).toBe(true);
+      expect(readFileSync(join(repoDataDir("rt"), RUN_HISTORY), "utf8")).toBe(`${early}\n`);
+      expect(existsSync(repoDataDir("repo-tools"))).toBe(false);
+    });
+
+    test("merges run-history by ts, oldest first, losing nothing", () => {
+      writeData("repo-tools", RUN_HISTORY, `${early}\n`);
+      writeData("rt", RUN_HISTORY, `${late}\n`);
+
+      const result = migrateRepoData("repo-tools", "rt");
+
+      expect(result.merged).toEqual([RUN_HISTORY]);
+      expect(result.refused).toEqual([]);
+      expect(readFileSync(join(repoDataDir("rt"), RUN_HISTORY), "utf8")).toBe(`${early}\n${late}\n`);
+      expect(existsSync(repoDataDir("repo-tools"))).toBe(false);
+    });
+
+    test("a corrupt run-history line survives the merge, sorted last", () => {
+      writeData("repo-tools", RUN_HISTORY, `not json\n`);
+      writeData("rt", RUN_HISTORY, `${late}\n`);
+
+      migrateRepoData("repo-tools", "rt");
+
+      expect(readFileSync(join(repoDataDir("rt"), RUN_HISTORY), "utf8")).toBe(`${late}\nnot json\n`);
+    });
+
+    test("refuses any other collision and keeps BOTH copies", () => {
+      writeData("repo-tools", "presets.json", "retired");
+      writeData("rt", "presets.json", "live");
+
+      const result = migrateRepoData("repo-tools", "rt");
+
+      expect(result.refused).toEqual(["presets.json"]);
+      expect(result.removedDir).toBe(false);
+      expect(readFileSync(join(repoDataDir("rt"), "presets.json"), "utf8")).toBe("live");
+      expect(readFileSync(join(repoDataDir("repo-tools"), "presets.json"), "utf8")).toBe("retired");
+    });
+
+    test("a refusal still lets the non-colliding files through", () => {
+      writeData("repo-tools", "presets.json", "retired");
+      writeData("repo-tools", RUN_HISTORY, `${early}\n`);
+      writeData("rt", "presets.json", "live");
+
+      const result = migrateRepoData("repo-tools", "rt");
+
+      expect(result.moved).toEqual([RUN_HISTORY]);
+      expect(result.refused).toEqual(["presets.json"]);
+      expect(existsSync(join(repoDataDir("rt"), RUN_HISTORY))).toBe(true);
+      expect(existsSync(repoDataDir("repo-tools"))).toBe(true);
+    });
+
+    test("--dry-run reports the same plan and touches nothing", () => {
+      writeData("repo-tools", RUN_HISTORY, `${early}\n`);
+      writeData("rt", RUN_HISTORY, `${late}\n`);
+
+      const planned = migrateRepoData("repo-tools", "rt", { dryRun: true });
+
+      expect(planned.merged).toEqual([RUN_HISTORY]);
+      expect(readFileSync(join(repoDataDir("rt"), RUN_HISTORY), "utf8")).toBe(`${late}\n`);
+      expect(readFileSync(join(repoDataDir("repo-tools"), RUN_HISTORY), "utf8")).toBe(`${early}\n`);
+    });
+
+    test("a retired name with no data dir is a no-op", () => {
+      const result = migrateRepoData("repo-tools", "rt");
+      expect(result).toEqual({ moved: [], merged: [], refused: [], removedDir: false });
+    });
+  });
+
+  describe("prune carries data forward", () => {
+    test("a duplicate's data reaches the surviving name before the row is dropped", () => {
+      const dir = realRepo("deck");
+      symlinkSync(dir, join(scratch, "local-apps"));
+      mkdirSync(repoDataDir("local-apps"), { recursive: true });
+      writeFileSync(join(repoDataDir("local-apps"), "run-history.jsonl"), '{"ts":"2026-07-25T00:00:00.000Z"}\n');
+
+      indexRepoAt("deck", dir, 2_000);
+      indexRepoAt("local-apps", join(scratch, "local-apps"), 1_000);
+
+      const removed = pruneRepoIndex();
+      const dup = removed.find((r) => r.repoName === "local-apps");
+
+      expect(dup?.keptAs).toBe("deck");
+      expect(dup?.data?.moved).toEqual(["run-history.jsonl"]);
+      expect(existsSync(join(repoDataDir("deck"), "run-history.jsonl"))).toBe(true);
+      expect(existsSync(repoDataDir("local-apps"))).toBe(false);
+    });
+
+    test("a missing row's data dir is left alone — there is no surviving name to carry it to", () => {
+      mkdirSync(repoDataDir("gone"), { recursive: true });
+      writeFileSync(join(repoDataDir("gone"), "run-history.jsonl"), "{}\n");
+      indexRepoAt("gone", join(scratch, "never-existed"), 1_000);
+
+      const removed = pruneRepoIndex();
+
+      expect(removed.find((r) => r.repoName === "gone")?.data).toBeUndefined();
+      expect(existsSync(join(repoDataDir("gone"), "run-history.jsonl"))).toBe(true);
+    });
+
+    test("--dry-run does not move data either", () => {
+      const dir = realRepo("deck");
+      symlinkSync(dir, join(scratch, "local-apps"));
+      mkdirSync(repoDataDir("local-apps"), { recursive: true });
+      writeFileSync(join(repoDataDir("local-apps"), "run-history.jsonl"), "{}\n");
+      indexRepoAt("deck", dir, 2_000);
+      indexRepoAt("local-apps", join(scratch, "local-apps"), 1_000);
+
+      pruneRepoIndex({ dryRun: true });
+
+      expect(existsSync(join(repoDataDir("local-apps"), "run-history.jsonl"))).toBe(true);
+      expect(existsSync(join(repoDataDir("deck"), "run-history.jsonl"))).toBe(false);
     });
   });
 });
