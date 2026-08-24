@@ -18,18 +18,25 @@ async function build() {
 }
 
 describe("compile-native end to end", () => {
-  test("work and stages compile with zero resolver references and zero placeholders", async () => {
+  test("work and every compiled stage compile with zero resolver references and zero placeholders", async () => {
     const { pack } = await build();
     const work = readFileSync(join(pack, "skills", "work", "SKILL.md"), "utf8");
-    const plan = readFileSync(join(pack, "attachments", "stage-plan", "SKILL.md"), "utf8");
-    for (const md of [work, plan]) {
+    const stages = ["stage-plan", "stage-implement", "stage-ship"].map(
+      (name) => [name, readFileSync(join(pack, "attachments", name, "SKILL.md"), "utf8")] as const,
+    );
+
+    for (const md of [work, ...stages.map(([, body]) => body)]) {
       expect(md).not.toContain("resolve-args");
       expect(md).not.toContain("resolve-pipeline");
       expect(md).not.toContain("{{");
     }
     expect(work).toContain("<!-- part: step source=mattstack:work");
+    for (const [name, body] of stages) {
+      expect(body).toContain(`<!-- part: step source=mattstack:${name}`);
+    }
+
+    const plan = stages.find(([name]) => name === "stage-plan")![1];
     expect(plan).toContain("<!-- part: slot:domain binding=");
-    expect(plan).toContain("<!-- part: step source=mattstack:stage-plan");
     expect(existsSync(join(pack, "skills", "work", "scripts", "resolve-pipeline.sh"))).toBe(false);
   });
 
