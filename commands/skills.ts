@@ -932,7 +932,7 @@ type CompositionPayload = {
  */
 function buildCompositionVerb(verb: VerbDef, resolved: Resolved, publicSet: Set<string> | null): CompositionVerb {
   const isPublic = !publicSet || publicSet.has(verb.name);
-  const artifactPath = join(resolved.packDir, "skills", verb.name);
+  const artifactPath = outDirFor(resolved.packDir, verb.name, isPublic);
 
   let step;
   try {

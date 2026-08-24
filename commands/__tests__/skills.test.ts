@@ -1037,6 +1037,20 @@ describe("skillsComposition --json", () => {
     ]);
   });
 
+  test("an internal verb's artifactPath is under attachments/, not a hardcoded skills/", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
+    const manifestPath = makeManifest("acme");
+
+    await skillsComposition(["--pack", "acme", "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath, "--json"]);
+
+    const parsed = JSON.parse(logs.join("\n"));
+    const verb = parsed.verbs.find((v: { name: string }) => v.name === "watch-ci");
+    expect(verb.public).toBe(false);
+    expect(verb.artifactPath).toBe(join(packDir, "attachments", "watch-ci"));
+  });
+
   test("degrades per-slot (dangling binding) and per-verb (broken engine) without blanking the payload", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
