@@ -28,6 +28,8 @@ Claude Code resolves `sha`. `ref` records which branch the pin came from, so
 `marketplace.sh --refresh` can re-resolve it; bumping a pin is a reviewed commit
 in `rt`, never an implicit follow-the-branch.
 
-```bash
-claude plugin install mattstack@mattstack
-```
+## What `mattstack` brings
+
+Beyond the skills, the pack ships a `UserPromptSubmit` + `PostToolUse` hook that
+stamps each turn with local time, zone, and UTC. It arrives with the plugin —
+there is nothing separate to install and no `settings.json` edit.
