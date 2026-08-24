@@ -145,8 +145,6 @@ export function ensureShellWrapper(home: string): void {
     '    local dir; dir="$("$rt_bin" cd "${@:2}")" && [ -n "$dir" ] && builtin cd "$dir"',
     '  elif [ "$1" = "nav" ]; then',
     '    local dir; dir="$("$rt_bin" nav "${@:2}")" && [ -n "$dir" ] && builtin cd "$dir"',
-    '  elif [ "$1" = "worktree" ] && [ -z "$2" ]; then',
-    '    local dir; dir="$("$rt_bin" worktree)" && [ -n "$dir" ] && builtin cd "$dir"',
     "  else",
     '    "$rt_bin" "$@"',
     "  fi",

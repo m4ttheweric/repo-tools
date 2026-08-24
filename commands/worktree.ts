@@ -2,8 +2,7 @@
 
 /**
  * rt worktree — the worktree lifecycle CLI (spec §3): provision, create,
- * dispose, list, freshen, adopt, plus the bare `rt worktree` nav picker and
- * `each` (run a command across worktrees).
+ * dispose, list, freshen, adopt, and `each` (run a command across worktrees).
  *
  * Every mutating verb here is a thin wrapper over the daemon's `worktree:*`
  * handlers (`lib/daemon/handlers/worktree.ts`) — the daemon is the single
@@ -447,51 +446,6 @@ export async function worktreeAdopt(args: string[], _ctx: unknown): Promise<void
   console.log(`  ${green}✓${reset} adopted ${d.main ? `main=${d.main}, ` : ""}${d.claimed.length} claimed, ${d.disposed.length} disposed`);
   for (const r of d.refused) console.log(`  ${yellow}⚠${reset} ${r.tree} not disposed: ${r.reason}`);
   console.log("");
-}
-
-// ─── bare `rt worktree` nav picker ────────────────────────────────────────────
-
-/**
- * Bare `rt worktree` — same contract as `rt cd`: redirect stdout while the
- * picker is up, print only the selected path to stdout on success so a shell
- * wrapper can `cd` into it.
- */
-export async function worktreeNav(_args: string[], _ctx: unknown): Promise<void> {
-  // Redirect FIRST, before any output at all — real stdout is reserved for
-  // the one line the shell wrapper reads (the selected path). Every early
-  // exit below (daemon down, refusal, empty list) goes through console.log,
-  // which now lands on stderr too, same as cd.ts's contract.
-  const realStdoutWrite = process.stdout.write.bind(process.stdout);
-  process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
-  const restore = (): void => { process.stdout.write = realStdoutWrite; };
-
-  let selected: string | null;
-  try {
-    const res = await daemonQuery("worktree:list");
-    if (res === null) { restore(); daemonUnavailable(); }
-    if (!res.ok) {
-      restore();
-      console.log(`\n  ${red}✗${reset} ${explainError(res.error ?? "unknown error")}\n`);
-      process.exit(1);
-    }
-    const rows = (res.data?.trees ?? []) as TreeRow[];
-    if (rows.length === 0) { restore(); console.log(`\n  ${dim}no worktrees${reset}\n`); return; }
-
-    const { filterableSelect } = await import("../lib/rt-render.tsx");
-    const nameWidth = Math.max(...rows.map((r) => r.name.length));
-    const stateWidth = Math.max(...rows.map((r) => (r.state ?? r.kind).length));
-    const branchWidth = Math.max(...rows.map((r) => (r.branch ?? "(detached)").length));
-    const options = rows.map((r) => ({
-      value: r.path,
-      label: `${r.name.padEnd(nameWidth)}  ${(r.state ?? r.kind).padEnd(stateWidth)}  ${(r.branch ?? "(detached)").padEnd(branchWidth)}  ${r.owner ?? ""}`,
-    }));
-    selected = await filterableSelect({ message: "Jump to worktree", options, stderr: true });
-  } finally {
-    restore();
-  }
-
-  if (!selected) process.exit(0);
-  realStdoutWrite(selected + "\n");
 }
 
 // ─── each ────────────────────────────────────────────────────────────────────

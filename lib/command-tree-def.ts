@@ -505,10 +505,6 @@ export const TREE: Record<string, CommandNode> = {
 
   worktree: {
     description: "Worktree lifecycle (provision/dispose/list) + worktree-wide operations",
-    module: "./commands/worktree.ts",
-    fn: "worktreeNav",
-    requiresTTY: true,
-    args: [],
     subcommands: {
       provision: {
         description: "Claim a worktree for a ticket or branch (from the on-deck pool, or freshly created)",
