@@ -262,6 +262,17 @@ describe("marketplace.sh --refresh", () => {
     expect(doc.plugins[0].source.sha).toBe(PINNED_SHA);
   });
 
+  // Pins are applied by name, so a duplicate would take whichever resolved
+  // last — and --refresh runs on its own, before publishing would catch it.
+  test("refuses to refresh a catalog listing one name twice", () => {
+    const src = sourceDir([urlPlugin("dup"), urlPlugin("dup")]);
+    const before = readFileSync(join(src, "marketplace.json"), "utf8");
+    const r = run(["--refresh", src]);
+    expect(r.code).not.toBe(0);
+    expect(r.out).toContain("listed twice");
+    expect(readFileSync(join(src, "marketplace.json"), "utf8")).toBe(before);
+  });
+
   test("fails loudly when a ref does not exist upstream", () => {
     const upstream = scratch("upstream");
     execFileSync("git", ["init", "-q", "-b", "main", upstream]);

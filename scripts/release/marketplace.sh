@@ -37,8 +37,30 @@ if [ "$REFRESH" -eq 1 ]; then
     # move, because the diff looks like a deliberate partial bump.
     RESOLVED="$(mktemp "${TMPDIR:-/tmp}/mattstack-marketplace-pins.XXXXXX")"
     trap 'rm -f "$RESOLVED"' EXIT
+    # Captured, not piped from a process substitution: there the emitter's exit
+    # status is discarded, so a malformed catalog would yield zero rows, skip
+    # every plugin, and report "every pin already current" — a silent pass.
+    PLAN="$(python3 - "$CATALOG" <<'PY'
+import json, sys
+# Pins are applied by name, so two entries sharing one would both take
+# whichever resolved last. Publishing rejects duplicates too, but --refresh
+# runs on its own and would corrupt the catalog before anyone published it.
+seen, rows = set(), []
+for plugin in json.load(open(sys.argv[1]))["plugins"]:
+    name = plugin["name"]
+    if name in seen:
+        sys.exit(f"{name}: listed twice — cannot refresh pins by name")
+    seen.add(name)
+    src = plugin.get("source")
+    if isinstance(src, dict) and src.get("source") == "url" and src.get("ref"):
+        rows.append("\t".join([name, src["url"], src["ref"], src.get("sha", "")]))
+print("\n".join(rows))
+PY
+    )" || { echo "✗ cannot plan a refresh of $CATALOG" >&2; exit 1; }
+
     changed=0
     while IFS=$'\t' read -r name url ref old; do
+        [ -n "$name" ] || continue
         new="$(git ls-remote "$url" "$ref" | awk 'NR==1{print $1}')"
         [ -n "$new" ] || { echo "✗ $name: $ref not found in $url" >&2; exit 1; }
         printf '%s\t%s\n' "$name" "$new" >> "$RESOLVED"
@@ -48,14 +70,7 @@ if [ "$REFRESH" -eq 1 ]; then
             echo "  $name: ${old:0:12} → ${new:0:12} ($ref)"
             changed=1
         fi
-    done < <(python3 - "$CATALOG" <<'PY'
-import json, sys
-for plugin in json.load(open(sys.argv[1]))["plugins"]:
-    src = plugin.get("source")
-    if isinstance(src, dict) and src.get("source") == "url" and src.get("ref"):
-        print("\t".join([plugin["name"], src["url"], src["ref"], src.get("sha", "")]))
-PY
-    )
+    done <<< "$PLAN"
     if [ "$changed" -eq 1 ]; then
         python3 - "$CATALOG" "$RESOLVED" <<'PY'
 import json, sys
