@@ -1213,7 +1213,7 @@ plan's task list — it is rt-side work, so it lands here.
 - Test: `lib/daemon/__tests__/chat-handlers.test.ts`
 
 **Interfaces:**
-- Consumes: `notifyEnabled` from `lib/notifier.ts`; `peekNotificationQueue` from `lib/state/index.ts`; `getSetting` for `chat.humanHandle`, `chat.push.provider`, `chat.push.target`; `setSetting(key, value, scope)` in tests.
+- Consumes: `notifyEnabled` and `peekNotifications` / `saveNotificationPrefs` from `lib/notifier.ts`; `peekNotificationQueue` from `lib/state/index.ts`; `getSetting` for `chat.humanHandle`, `chat.push.provider`, `chat.push.target`; `setSetting(key, value, scope)` in tests.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1285,6 +1285,14 @@ the wrong one breaks something different each time:
   `isEnabled(loadNotificationPrefs(), category)` and then calls `notify()`.
   That is the correct entry point.
 
+**`notifyEnabled` currently has zero call sites — that is not a reason to avoid
+it.** Its doc says it exists "for emitters outside the transition loop (which
+loads prefs once per cycle)", and `chat:post` is exactly such an emitter: a
+one-off notification, not a per-cycle sweep. The in-module callers all use
+`if (isEnabled(prefs, key)) notify(...)` because they already hold `prefs` for
+the whole cycle. Chat is `notifyEnabled`'s intended first caller, so do not
+read its unused state as dead code and reach for `notify()` instead.
+
 ```ts
 notifyEnabled("chat_mention", `#${room}`, `${authorHandle}: ${body}`,
               undefined, undefined, `chat:${messageId}`);
@@ -1301,14 +1309,19 @@ Two additive changes to `lib/notifier.ts` make that call work:
    the already-exported `isNotificationQueued` exists to check. Optional and
    defaulted to the existing UUID, so every current caller is unaffected.
 
-- [ ] **Step 4: Implement optional push on the drain side**
+- [ ] **Step 4: Implement optional push inside `notify()`**
 
 Push lives in **`lib/notifier.ts`**, beside the existing `pushToTray(event)`
-call inside `notify()` — the same fire-and-forget dispatch point, not the
-request path. That placement is the design: the post has already returned and
-already stored the message, so "a failed push must not fail the post" costs
-nothing rather than needing a try/catch around an outbound call in
-`chat:post`, and no network call touches the handler.
+call inside `notify()`. That is `notify()`'s fire-and-forget dispatch point,
+**not** the drain and not the request path — an earlier draft of this plan said
+"drain side", which was wrong: `drainNotifications()` serves the tray's polling
+and chat's event never passes through it.
+
+The placement is still the design, for the same reason: `pushToTray` is already
+fire-and-forget there, so the post has returned and stored its message before
+any outbound call happens. "A failed push must not fail the post" therefore
+costs nothing, rather than needing a try/catch around a network call in
+`chat:post` — and no network call touches the handler at all.
 
 When `chat.push.provider` is set (`ntfy` or `pushover`) with a
 `chat.push.target`, POST the drained event there as well as to the tray —
@@ -1328,7 +1341,7 @@ push as the `@matt` path, so the intended scope is unambiguous; Step 3's
 and no third-party dependency is required for the feature to work. A failed
 push logs and is not retried.
 
-- [ ] **Step 5: Test the two push guarantees**
+- [ ] **Step 5: Test the push guarantees and the preference gate**
 
 Test through `notify()` itself. **There is no `deliver()` function** — the
 dispatch logic is inline inside `notify()`, and this step does not extract it.
