@@ -600,7 +600,32 @@ describe("rtHealthRows — home.backup (real git)", () => {
     await attachRemote(repoDir);
     const row = await homeBackupRow(repoDir);
     expect(row.status).toBe("needs-you");
-    expect(row.detail).toBe("remote configured, nothing pushed yet");
+    expect(row.detail).toBe("no commits yet — nothing is versioned or backed up");
+  });
+
+  test("unborn branch, no remote: never claims settings are versioned on this machine when nothing is committed", async () => {
+    const repoDir = freshRepoDir("rt-health-backup-unborn-local-");
+    const row = await homeBackupRow(repoDir);
+    expect(row.status).toBe("needs-you");
+    expect(row.detail).toBe("no commits yet — nothing is versioned or backed up");
+  });
+
+  test("a non-origin remote reads as local-only: every push and ref comparison downstream is origin-only", async () => {
+    const repoDir = freshRepoDir("rt-health-backup-upstream-only-");
+    await commit(repoDir, "seed");
+    const otherDir = join(dirname(repoDir), "upstream.git");
+    execFileSync("git", ["init", "--bare", "-q", otherDir]);
+    execFileSync("git", ["remote", "add", "upstream", otherDir], { cwd: repoDir });
+
+    const row = await homeBackupRow(repoDir);
+    expect(row.detail).toBe("local only — your settings are versioned on this machine but are not backed up anywhere");
+  });
+
+  test("remote configured, nothing pushed: the remedy names the push, not just the remote add", async () => {
+    const repo = await localOnlyRepo();
+    await attachRemote(repo);
+    const row = await homeBackupRow(repo);
+    expect((row.action as { steps: string[] } | null)?.steps.join("\n")).toContain("push origin HEAD");
   });
 
   test("no home repo at this path yet: needs-you, never claims settings are versioned when there's nothing there", async () => {

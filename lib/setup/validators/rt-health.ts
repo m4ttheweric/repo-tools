@@ -18,9 +18,9 @@ import { resolveFzf } from "../../fzf.ts";
 import { legacyDirsPresent, legacyTrayAppPaths, RT_DIR_LABEL } from "../../rt-paths.ts";
 import { detectShellFrom, shellRcPathFor } from "../../shell-integration.ts";
 import { row, type Action, type Row } from "../contract.ts";
-import { hasRemote, isGitRepo, originPushState } from "../home-git.ts";
+import { hasCommits, hasRemote, isGitRepo, originPushState } from "../home-git.ts";
 import { LOGIN_ITEMS_SETTINGS_ACTION } from "../permissions.ts";
-import { createRealProbes, type Probes } from "../probes.ts";
+import { execWithTimeout, type Probes } from "../probes.ts";
 
 // ─── rt-context extension check (moved from commands/verify.ts) ──────────────
 
@@ -72,7 +72,9 @@ export interface RtHealthSeams {
 }
 
 const REAL_SEAMS: RtHealthSeams = { resolveFzf };
-const REAL_EXEC: Probes["exec"] = createRealProbes().exec;
+// The bare exec, not `createRealProbes().exec`: a full Probes captures $HOME at
+// construction, and this is module-load time.
+const REAL_EXEC: Probes["exec"] = execWithTimeout;
 
 // ─── row builders ──────────────────────────────────────────────────────────
 
@@ -80,8 +82,14 @@ const LINK_BUNDLED_RT: Action = { type: "link-bundled", label: "Use mattstack's"
 const LINK_BUNDLED_FZF: Action = { type: "link-bundled", label: "Use mattstack's", tool: "fzf" };
 const REINSTALL_SHIMS_ACTION: Action = { type: "run", label: "Re-install shims", verb: ["intercept", "install"] };
 const INSTALL_EXTENSION_ACTION: Action = { type: "run", label: "Install extension", verb: ["tools", "setup", "extension"] };
-/** No `rt home remote set` verb exists yet (installer-lane scope), so the remedy names the raw git command instead of a `run` action. */
-const HOME_BACKUP_ADD_REMOTE_ACTION: Action = { type: "steps", label: "Show steps…", steps: ["git -C ~/.mattstack/user remote add origin <url>"] };
+/** No `rt home remote set` verb exists yet (installer-lane scope), so the remedy names the raw git commands instead of a `run` action. */
+const HOME_BACKUP_PUSH_STEP = "git -C ~/.mattstack/user push origin HEAD (or wait — the daemon pushes on its next cycle, up to 30 minutes)";
+const HOME_BACKUP_ADD_REMOTE_ACTION: Action = {
+  type: "steps",
+  label: "Show steps…",
+  steps: ["git -C ~/.mattstack/user remote add origin <url>", HOME_BACKUP_PUSH_STEP],
+};
+const HOME_BACKUP_PUSH_ACTION: Action = { type: "steps", label: "Show steps…", steps: [HOME_BACKUP_PUSH_STEP] };
 const MERGE_LEGACY_STATE_ACTION: Action = {
   type: "steps",
   label: "Merge legacy state",
@@ -374,12 +382,18 @@ export async function homeBackupRow(repoDir: string, exec: Probes["exec"] = REAL
     return row({ ...base, status: "needs-you", detail: "no home repo found yet — nothing to back up" });
   }
 
+  // Ahead of the remote check: an unborn repo is not "versioned on this
+  // machine" either way, so a local-only one must not claim it is.
+  if (!(await hasCommits(exec, repoDir))) {
+    return row({ ...base, status: "needs-you", detail: "no commits yet — nothing is versioned or backed up" });
+  }
+
   if (!(await hasRemote(exec, repoDir))) {
     return row({ ...base, status: "needs-you", detail: "local only — your settings are versioned on this machine but are not backed up anywhere", action: HOME_BACKUP_ADD_REMOTE_ACTION });
   }
 
   const state = await originPushState(exec, repoDir);
-  if (state.kind === "no-ref") return row({ ...base, status: "needs-you", detail: "remote configured, nothing pushed yet" });
+  if (state.kind === "no-ref") return row({ ...base, status: "needs-you", detail: "remote configured, nothing pushed yet", action: HOME_BACKUP_PUSH_ACTION });
   if (state.kind === "ahead") return row({ ...base, status: "needs-you", detail: `${state.count} commit(s) not pushed` });
   if (state.kind === "unknown") return row({ ...base, status: "needs-you", detail: "could not determine push status — the rev-list check failed" });
   return row({ ...base, status: "ready", detail: `last pushed ${relativeWhen(state.committedAt)}` });

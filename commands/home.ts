@@ -33,6 +33,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from "fs";
+import { homedir } from "os";
 import { join } from "path";
 import type { CommandContext } from "../lib/command-tree.ts";
 import { bold, dim, green, red, reset, yellow } from "../lib/ansi.ts";
@@ -207,7 +208,10 @@ function parseUrlArg(args: string[]): string | null {
 /**
  * The precedence chain for which repo `rt home init` provisions: an explicit
  * `--url` beats the setup intent's `homeRepo` (set once, ahead of time, by
- * `create`/`join`), which beats `RT_HOME_URL` (a per-invocation override).
+ * `create`/`join`, or under `restore.homeRepo` in restore mode — ignoring the
+ * restore rung would provision a local-only repo that then squats the path
+ * `home.restore` needs, unrecoverably), which beats `RT_HOME_URL` (a
+ * per-invocation override).
  * `null` means no rung supplied one — a deliberate, first-class outcome, not
  * a fallback to any repo this operator never chose.
  */
@@ -217,9 +221,11 @@ export function resolveHomeUrl(
 ): string | null {
   const fromFlag = parseUrlArg(args);
   if (fromFlag !== null) return fromFlag;
-  const fromIntent = seams.readIntent()?.homeRepo;
+  const intent = seams.readIntent();
+  const fromIntent = intent?.homeRepo ?? intent?.restore?.homeRepo;
   if (fromIntent) return fromIntent;
-  return seams.env.RT_HOME_URL ?? null;
+  // An exported-but-empty RT_HOME_URL is "unset", never a clone of "".
+  return seams.env.RT_HOME_URL || null;
 }
 
 /** Thrown by parseProfileArg for a `--profile` with no usable value. */
@@ -559,7 +565,9 @@ export async function homeInit(args: string[], _ctx: CommandContext = {}, seams:
             return null;
           }
         },
-        home: mattstackHome(),
+        // The OS home, not mattstackHome(): intentPath() appends `.mattstack`
+        // itself, and every writer (setup, team create/join) passes Probes.home.
+        home: process.env.HOME ?? homedir(),
       }));
   const env = seams.env ?? process.env;
 

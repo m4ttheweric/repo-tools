@@ -33,9 +33,9 @@ import { readOwners } from "../../lib/home/snapshot-owners.ts";
 import type { DaemonResponse } from "../../lib/daemon-client.ts";
 import type { SnapshotResult, SnapshotStatus } from "../../lib/daemon/home-snapshot.ts";
 import type { MaterializeEnv, MaterializeExecResult, MaterializeExecSeam } from "../../lib/home/materialize.ts";
-import { mkdtempSync, realpathSync, rmSync } from "fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 
 const FAKE_PUBLIC_KEY = "age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
 const FAKE_PRIVATE_KEY = "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ";
@@ -427,7 +427,7 @@ describe("homeInit", () => {
     const runCalls = seam.calls.filter((c) => c.kind === "run").map((c) => c.arg as string[]);
     expect(runCalls).toContainEqual(["git", "init", "-b", "main", "user"]);
     expect(runCalls).toContainEqual(["git", "-C", "user", "add", "-A"]);
-    expect(runCalls).toContainEqual(["git", "-C", "user", "commit", "-m", "initial home repo"]);
+    expect(runCalls).toContainEqual(["git", "-c", "commit.gpgsign=false", "-C", "user", "commit", "-m", "initial home repo"]);
     expect(runCalls.some((arg) => arg[1] === "clone")).toBe(false);
   });
 
@@ -1415,6 +1415,55 @@ describe("resolveHomeUrl", () => {
 
   test("--url with no value still throws rather than falling through to local-only", () => {
     expect(() => resolveHomeUrl(["--url"], { readIntent: () => null, env: {} })).toThrow(InvalidUrlArgError);
+  });
+
+  test("an exported-but-empty RT_HOME_URL is unset, never a clone of \"\"", () => {
+    expect(resolveHomeUrl([], { readIntent: () => null, env: { RT_HOME_URL: "" } })).toBeNull();
+  });
+
+  test("restore.homeRepo is honoured — otherwise a local-only repo squats the path home.restore needs", () => {
+    const url = resolveHomeUrl([], {
+      readIntent: () => ({ v: 1, at: "", mode: "restore", restore: { homeRepo: "https://x/restore.git" } }) as SetupIntent,
+      env: { RT_HOME_URL: "https://x/c.git" },
+    });
+    expect(url).toBe("https://x/restore.git");
+  });
+});
+
+/**
+ * Deliberately NOT seamed: the seamed tests above pass `readIntent` in
+ * directly and so cannot catch a default wired at the wrong path.
+ */
+describe("homeInit — the real intent read", () => {
+  test("reads the setup-intent.json that setup actually writes, so intent still outranks RT_HOME_URL", async () => {
+    const origHome = process.env.HOME;
+    const isolatedHome = realpathSync(mkdtempSync(join(tmpdir(), "rt-home-intent-")));
+    process.env.HOME = isolatedHome;
+    try {
+      const intentFile = join(isolatedHome, ".mattstack", "rt", "setup-intent.json");
+      mkdirSync(dirname(intentFile), { recursive: true });
+      writeFileSync(intentFile, JSON.stringify({ v: 1, at: "", mode: "create", homeRepo: "https://x/from-intent.git" }));
+
+      const probes = fakeProbes({ exists: (path) => path.endsWith("/machine-key") });
+      const { logs } = await runHomeInit(
+        probes,
+        new FakeSeam(),
+        new FakeAgeKeySeam(),
+        ["--dry-run", "--no-materialize"],
+        new FakeSopsYamlSeam(),
+        KEY,
+        new UnreachablePickerSeam(),
+        () => false,
+        async () => NOOP_MATERIALIZE_ENV,
+        new FakeMaterializeExecSeam(),
+        { RT_HOME_URL: "https://x/from-env.git" },
+      );
+
+      expect(logs.join("\n")).toContain("clone https://x/from-intent.git into user/");
+    } finally {
+      process.env.HOME = origHome;
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
   });
 });
 

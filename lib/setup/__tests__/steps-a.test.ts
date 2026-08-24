@@ -208,6 +208,17 @@ describe("home.init", () => {
     expect(outcome).toEqual({ state: "failed", detail: "gh: not authenticated", remedy: "Run `gh auth login`, then Retry" });
   });
 
+  test("a local-only `git init` failure contacts no host — `gh auth login` is reserved for auth-shaped stderr", async () => {
+    const p = fakeProbes({
+      home: "/fake-home",
+      runRt: async () => ({ code: 1, stdout: "", stderr: 'rt home init: failed at step "commitInitialUserRepo":\nfatal: empty ident name not allowed' }),
+    });
+    const { ctx } = makeCtx(p, { secrets: fakeSecrets(fakeAgeKeySeamAbsent()) });
+
+    const outcome = await homeInitStep.run(ctx);
+    expect(outcome).toMatchObject({ state: "failed", remedy: "Check the error above, then Retry" });
+  });
+
   test("idempotent re-run: a repo already cloned by a prior partial run reports done again without re-running init", async () => {
     const p = fakeProbes({ home: "/fake-home", dirs: { "/fake-home/.mattstack/user": [".git"] }, files: { "/fake-home/.mattstack/user/.git": "gitdir" } });
     const { ctx } = makeCtx(p, { secrets: fakeSecrets(fakeAgeKeySeamWithKey()) });

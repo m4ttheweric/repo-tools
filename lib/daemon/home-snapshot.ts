@@ -156,17 +156,14 @@ function redactCredentials(text: string): string {
 }
 
 /**
- * True only when `git remote` succeeds and lists at least one name. An
- * exec failure (spawn error, `GIT_TIMEOUT_MS` kill — `exitCode: -1`) also
- * reads as "no remote" here, same end result as a healthy repo with none
- * configured but via a different exit code, not the same signal. The two
- * are deliberately NOT distinguished for now: a broken/timed-out git
- * currently goes quiet (debug log, no push attempt) instead of raising
- * `home:push-failed` the way an actual push attempt would.
+ * `origin` specifically, not any remote: the push below is `origin`-only, so
+ * an `upstream`-only repo would push to a remote that does not exist. An exec
+ * failure (spawn error, `GIT_TIMEOUT_MS` kill — `exitCode: -1`) also reads as
+ * "no remote", so a broken git goes quiet rather than attempting a push.
  */
 async function hasRemote(exec: ExecFn, cwd: string): Promise<boolean> {
   const result = await exec(["git", "remote"], { cwd, timeoutMs: GIT_TIMEOUT_MS, stderr: "pipe" });
-  return result.exitCode === 0 && result.stdout.trim().length > 0;
+  return result.exitCode === 0 && result.stdout.split("\n").some((name) => name.trim() === "origin");
 }
 
 /**
@@ -725,10 +722,11 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
 
     if (committed || pushPending) {
       schedulePush();
-    } else if (await hasRemote(deps.exec, deps.repoDir) && await unpushedAgainstOrigin(deps.exec, deps.repoDir)) {
+    } else if (reason === "janitor" && (await hasRemote(deps.exec, deps.repoDir)) && (await unpushedAgainstOrigin(deps.exec, deps.repoDir))) {
       // The only path that notices a remote attached by hand after commits
-      // already existed — nothing else this cycle sets `committed` or
-      // `pushPending` for a run that made no local changes.
+      // already existed. Confined to the janitor tick: on the watch debounce
+      // these five git spawns would run on every no-op cycle, to detect a
+      // state that only ever changes by hand.
       schedulePush();
     }
 
