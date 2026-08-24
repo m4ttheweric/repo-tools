@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-23-rt-chat-design.md` — read the **Web viewer** and **Notifications** sections before Task 1. On any conflict, the spec wins.
 
-**Depends on:** plan 1 (`docs/superpowers/plans/2026-08-23-rt-chat-core.md`) **Task 6 only** — the exported rt-client wrappers and types. Nothing here needs plan 1's CLI, skill, or hook, and **no `/api/chat/*` REST routes exist on the daemon**; this server is the only chat HTTP surface that will ever exist.
+**Depends on:** plan 1 (`docs/superpowers/plans/2026-08-23-rt-chat-core.md`) **Tasks 6 and 7** — Task 6 for the exported rt-client wrappers and types, and Task 7 for the `chat.humanHandle` settings def, which Tasks 2 and 7 here both read. Starting after Task 6 alone would hit an unregistered settings key. The reader is `getSetting`, already exported from `packages/rt-client/src/index.ts`. Nothing here needs plan 1's CLI, skill, or hook, and **no `/api/chat/*` REST routes exist on the daemon**; this server is the only chat HTTP surface that will ever exist.
 
 **Reference implementation:** `~/Documents/GitHub/console` is the precedent for every structural decision below. Read `src/server/{app,index,ws,runs}.ts` before Task 2.
 
@@ -65,23 +65,53 @@ A walking skeleton: a real page on a real https name before any chat feature exi
 **Interfaces:**
 - Produces: `export const health: Hono` mounting `GET /api/health`; `export const app: Hono`.
 
-- [ ] **Step 1: Scaffold**
+- [ ] **Step 1: Scaffold from the mantine-kit checkout**
+
+`create-mantine-kit` is **unpublished** (`mantine-kit/package.json` is
+`"private": true`; `npm view` 404s), so `bun create mantine-kit` and
+`bunx create-mantine-kit` both fail. Run the scaffolder from the checkout:
 
 ```bash
-cd ~/Documents/GitHub
-bun create mantine-kit chat
-cd chat
+cd ~/Documents/GitHub/mantine-kit
+bun create-cli/create.ts ~/Documents/GitHub/chat --name chat
+cd ~/Documents/GitHub/chat
 ```
 
-Then add the rt-client dependency by hand — it is a local path, not a registry package:
+It refuses to run if the target already exists.
+
+- [ ] **Step 2: Report what the scaffold actually produced, before writing any code**
+
+Paste the generated `package.json` and the `src/` tree into your report. The
+dependency actions below are written against the template as it stands today;
+if it has moved, say so rather than working around it silently.
+
+- [ ] **Step 3: Fix up dependencies**
+
+The template is **not** console, and the difference runs in both directions. Verified
+against `mantine-kit/package.json`:
+
+**Add** — the template does not ship these, and Task 2 onward assumes both:
+
+```bash
+bun add hono @tanstack/react-query
+```
+
+Then the rt-client dependency by hand, since it is a local path rather than a
+registry package:
 
 ```json
 "@mattstack/rt-client": "file:../repo-tools/packages/rt-client"
 ```
 
-Take from console: Vite, React, Mantine, Hono, TanStack Query, zod, vitest. **Do not** take Storybook, CodeMirror, `@mantine/spotlight`, `@tanstack/react-virtual`, or the `build:binary` / `generate:embedded` path — all overkill here, and the binary path buys nothing when deck supervises the process.
+**Remove** — the template *does* ship these and this app needs none of them:
+`@codemirror/*` and `codemirror`, `@mantine/spotlight`,
+`@tanstack/react-virtual`, and the Storybook devDependencies plus
+`.storybook/`. Also do not port console's `build:binary` /
+`generate:embedded` path — it buys nothing when deck supervises the process.
 
-- [ ] **Step 2: Write the failing test**
+`zod`, Vite, React, Mantine, and vitest are already in the template.
+
+- [ ] **Step 4: Write the failing test**
 
 ```ts
 // src/server/health.test.ts
@@ -101,24 +131,55 @@ test("app.ts is importable without the Bun global", async () => {
 });
 ```
 
-- [ ] **Step 3: Run it to verify it fails**
+- [ ] **Step 5: Run it to verify it fails**
 
 Run: `bunx vitest run src/server/health.test.ts`
 Expected: FAIL — no module `./app`.
 
-- [ ] **Step 4: Implement**
+- [ ] **Step 6: Implement the server**
 
-`app.ts` holds a chained `new Hono().get('/api/health', ...).route('/', health)` and exports it. `index.ts` calls `Bun.serve` and is the **only** file importing `hono/bun`.
+`app.ts` holds a chained `new Hono().get('/api/health', ...).route('/', health)`
+and exports it. `index.ts` calls `Bun.serve` and is the **only** file importing
+`hono/bun`.
 
-- [ ] **Step 5: Register with deck**
+Add console's `notFound` and `onError` handlers to `app.ts`, both of which
+carry recorded reasons: `c.notFound()` produces a response the RPC client
+cannot type, and without an `onError`, Hono answers a thrown error with
+`text/plain` "Internal Server Error" — so the client's `res.json()` throws
+while parsing it. Every other route's error handling assumes a JSON floor.
+
+- [ ] **Step 7: Serve the built client**
+
+Without this the server has only `/api/*` and `/ws`, and **every UI task from
+Task 4 onward assumes a loadable page.** Task 1's health check would pass
+regardless, so the gap stays invisible until someone says "load the page."
+
+Create `src/server/static-disk.ts` on console's non-binary path: mount
+`serveStatic` for `/assets/*`, `/fonts/*` and the favicon against `./dist`,
+and return an `index.html` handler. Two details are load-bearing:
+
+- `serveStatic` comes from **`hono/bun`**, so it mounts in `index.ts`, never
+  in `app.ts` — the same constraint as `/ws`, and an easy trap.
+- The catch-all fallback **must exclude `/api` and `/ws`**. Console records
+  why: a bare `'/*'` static fallback makes an unknown `/api/*` route return
+  200 with the SPA's `index.html`, and the RPC client then sees
+  `res.ok === true` and throws parsing HTML as JSON.
+
+Add `"build": "tsc -b && vite build"` and run it, so `dist/` exists before
+deck serves the app. Deck's working directory must be the repo root, not
+`dist` — `--dir ~/Documents/GitHub/chat` already satisfies that.
+
+- [ ] **Step 8: Register with deck**
 
 ```bash
 deck add chat --cmd "bun src/server/index.ts" --dir ~/Documents/GitHub/chat
 ```
 
-Confirm `https://chat.localhost/api/health` answers. Paste the response into your report.
+Confirm `https://chat.localhost/api/health` answers **and that
+`https://chat.localhost/` serves the built page** — not just the API. Paste
+both into your report.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git init && git add -A
@@ -306,7 +367,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ```ts
 test("GET /api/daemon reports unreachable rather than 500ing", async () => {
-  vi.mocked(rt.chatRooms).mockResolvedValueOnce({
+  vi.mocked(rt.eventsHead).mockResolvedValueOnce({
     ok: false, error: "rt daemon unreachable at /x/rt.sock: ECONNREFUSED",
   });
   const res = await app.request("/api/daemon");
@@ -330,7 +391,8 @@ Expected: FAIL — `/api/daemon` 404s.
 
 - [ ] **Step 3: Implement**
 
-The probe is a cheap daemon command whose `ok` is the answer; `reachable` is `res.ok`. It returns **200 with `reachable: false`** rather than an error status — the probe succeeded in learning the daemon is down, which is not itself a server failure.
+The probe is `eventsHead()` — it takes no payload, so it is genuinely the
+cheapest call available and needs no handle. `reachable` is its `res.ok`. It returns **200 with `reachable: false`** rather than an error status — the probe succeeded in learning the daemon is down, which is not itself a server failure.
 
 The client polls it on an interval. When unreachable: render a distinct banner, **grey the member list, and report nobody as idle or deaf.** Agent status is only meaningful while the daemon is reachable — a member list rendered from stale data during an outage is exactly the lie this task exists to prevent.
 
@@ -473,7 +535,11 @@ The 10-minute threshold absorbs two missed long-poll cycles (~4 min each) before
 
 `deaf` is the status that earns this view its keep: it surfaces the one failure the CLI cannot prevent, so you can see which agent stopped listening before wasting a message on it.
 
-Show each member's `cwd`, branch, and pane. Handles are derived and terse, so identifying *which* agent is speaking matters more here than in human chat. Clicking a member focuses its herdr pane; this degrades to nothing when viewed remotely, so it must not be the only way to read the row.
+Show each member's `cwd` and `pane`. **`ChatMember` carries no `branch`** —
+plan 1's interface is `{ room, handle, joinedAt, lastReadId, wakeOn,
+lastSeenAt?, armedAt?, cwd?, pane? }` and the `chat_members` table has no such
+column. Derive a branch client-side from `cwd` if it is worth showing; do not
+expect the daemon to supply one. Handles are derived and terse, so identifying *which* agent is speaking matters more here than in human chat. Clicking a member focuses its herdr pane; this degrades to nothing when viewed remotely, so it must not be the only way to read the row.
 
 `now` is a prop so the thresholds are testable without faking timers.
 
