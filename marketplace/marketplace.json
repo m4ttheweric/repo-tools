@@ -1,0 +1,28 @@
+{
+  "name": "mattstack",
+  "owner": {
+    "name": "Matthew Goodwin"
+  },
+  "plugins": [
+    {
+      "name": "fast-browser",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/m4ttstack/fast-browser.git",
+        "ref": "main",
+        "sha": "53e905ff7d05c7c25065834d7615db6884fb520b"
+      },
+      "description": "macOS and Chrome alpha browser automation for Claude Code and Codex"
+    },
+    {
+      "name": "mattstack",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/m4ttstack/skills.git",
+        "ref": "main",
+        "sha": "4c667016792f934b815028ae62f7d843ab29a9f5"
+      },
+      "description": "The mattstack skills pack: the work orchestrator and pipeline stages, orchestration skills, the review cluster, the GitLab CI forge adapter, and the parameterized-skill primitive with its authoring skill."
+    }
+  ]
+}
