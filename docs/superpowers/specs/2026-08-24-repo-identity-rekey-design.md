@@ -133,7 +133,7 @@ deriveRepoIdentity(repoPath: string): Promise<RepoIdentity>   // no longer nulla
 
 // new, the wire boundary
 serializeIdentity(id: RepoIdentity): string
-parseIdentity(wire: string): RepoIdentity
+parseIdentity(wire: string): RepoIdentity | null   // null on a malformed wire string
 
 // new, a ONE-TIME rewrite helper for board's existing config (not a runtime path)
 resolveNameToIdentity(name: string, reposJsonPath?: string): RepoIdentity | null
