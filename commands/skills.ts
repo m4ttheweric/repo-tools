@@ -584,7 +584,12 @@ export async function skillsCompile(args: string[]): Promise<void> {
       return;
     }
 
-    if (publicSet) {
+    // Never under --preview: its contract is stdout-is-the-body-or-nothing,
+    // and this scan walks the whole pack rather than the requested verb, so a
+    // misplaced skill anywhere would be read as that verb's compiled body. An
+    // internal verb reaches here by `continue`, which is the doorway the
+    // lint-error path above closes with `return`.
+    if (publicSet && !flags.preview) {
       for (const name of enumerateRegistered(resolved.packDir).keys()) {
         if (!publicSet.has(name)) {
           console.log(`misplaced: ${name} (run rt skills surface apply, or move it)`);

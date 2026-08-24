@@ -320,6 +320,29 @@ describe("skillsCompile", () => {
     expect(errors.join("\n")).toContain("not compiled; roster entry retired");
   });
 
+  test("retired verb in a pack that ALSO has a misplaced compiled dir: still nothing on stdout", async () => {
+    const mattstackDir = makeMattstackDir();
+    const packDir = makePackDir();
+    const manifestPath = makeManifest("t");
+    writeFile(join(packDir, "pack", "surface.jsonc"), `{ "public": [] }\n`);
+    // Registered on disk, absent from the public list, and NOT the requested
+    // verb: exactly what the post-loop scan reports. A retired verb reaches
+    // that scan by `continue` where a lint-erroring one returns before it, so
+    // this is the same leak through the other doorway -- and the console reads
+    // any non-empty stdout as the compiled body.
+    writeFile(join(packDir, "skills", "stray-skill", "SKILL.md"), "# stray\n");
+
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await skillsCompile(["--pack", "t", "--verb", "watch-ci", "--preview",
+        "--pack-dir", packDir, "--mattstack-dir", mattstackDir, "--manifest", manifestPath]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+
+    expect(logs.join("\n")).toBe("");
+  });
+
   test("real run emits SKILL.md + vendored files matching a golden compile, byte for byte", async () => {
     const mattstackDir = makeMattstackDir();
     const packDir = makePackDir();
