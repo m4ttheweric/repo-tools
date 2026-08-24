@@ -350,17 +350,39 @@ export function loadInclude(name: string, roots: PluginRoots): AttachmentSource 
 }
 
 /**
- * Verb names flow unsanitized into join(packDir, "skills", name) at two
- * destructive call sites (writeCompiledVerb's rmSync + the internal-verb
- * skip's rmSync in commands/skills.ts) -- reject path-breakout characters
- * here, at the one place every verb name is read from disk.
+ * Verb AND stage names flow unsanitized into join(packDir, "skills"|"attachments", name)
+ * at two destructive call sites -- writeCompiledVerb's rmSync and the stale-side
+ * rmSync that precedes it in commands/skills.ts's compile command (outDirFor/
+ * otherSideDir) -- reject path-breakout characters at the one place each kind
+ * of name is first read from disk: assertSafeVerbName for roster verbs,
+ * parseStageQualifiedName below for pipeline stage entries.
  */
+function isSafeName(name: string): boolean {
+  return !name.includes("/") && !name.includes("\\") && !name.includes("..");
+}
+
 function assertSafeVerbName(name: string, stubsPath: string): void {
-  if (name.includes("/") || name.includes("\\") || name.includes("..")) {
+  if (!isSafeName(name)) {
     throw new Error(
       `readVerbRoster: verb key "${name}" in ${stubsPath} is not a safe directory name (must not contain "/", "\\", or "..")`,
     );
   }
+}
+
+/**
+ * Shared by stageRoster and buildStageEntries (commands/skills.ts) so the
+ * "<plugin>:<name>" split has exactly one implementation -- a stage name
+ * reaches the same destructive rmSync call sites a roster verb name does,
+ * so it needs the same guard applied at the same place: right after the split.
+ */
+export function parseStageQualifiedName(qualified: string, where: string): string {
+  const name = qualified.includes(":") ? qualified.slice(qualified.indexOf(":") + 1) : qualified;
+  if (!isSafeName(name)) {
+    throw new Error(
+      `${where}: stage "${qualified}" resolves to name "${name}" which is not a safe directory name (must not contain "/", "\\", or "..")`,
+    );
+  }
+  return name;
 }
 
 export function readVerbRoster(packDir: string): VerbDef[] {
@@ -404,9 +426,9 @@ export function readManifestPipelines(manifestPath: string): Record<string, stri
 export function stageRoster(pipelines: Record<string, string[]>): VerbDef[] {
   const seen = new Set<string>();
   const out: VerbDef[] = [];
-  for (const list of Object.values(pipelines)) {
+  for (const [type, list] of Object.entries(pipelines)) {
     for (const qualified of list) {
-      const name = qualified.includes(":") ? qualified.slice(qualified.indexOf(":") + 1) : qualified;
+      const name = parseStageQualifiedName(qualified, `pipeline "${type}"`);
       if (seen.has(name)) continue;
       seen.add(name);
       out.push({ name, engine: name, description: "" });

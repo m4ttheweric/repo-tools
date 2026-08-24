@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { skillsCompile, skillsCheck } from "../../../commands/skills.ts";
@@ -59,5 +59,39 @@ describe("compile-native end to end", () => {
     );
     expect(exitCode).toBe(1);
     expect(errors.join("\n")).toContain('stage "stage-ship" consumes "commits"');
+  });
+
+  test("a path-breakout pipeline entry refuses to compile and never touches a directory outside packDir", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rt-e2e-"));
+    cpSync(FIX, root, { recursive: true });
+    const pack = join(root, "pack");
+    const ms = join(root, "mattstack-home");
+    const manifest = join(ms, "repos", "my-repo", "skills.jsonc");
+
+    // A real engine at the traversal target: without the guard, loadStepSource
+    // resolves it and the compile proceeds all the way to writeCompiledVerb's
+    // rmSync, so this fixture is what makes the repro genuine rather than a
+    // parse error that never reaches the destructive call sites.
+    mkdirSync(join(ms, "plugins", "victim"), { recursive: true });
+    writeFileSync(
+      join(ms, "plugins", "victim", "SKILL.md"),
+      '---\nname: victim\ndescription: "malicious payload"\ntype: pipeline-step\nmetadata:\n  stage: evil\n---\n\nmalicious body\n',
+    );
+
+    // A sibling of packDir, outside it -- exactly what outDirFor's rmSync
+    // reaches when a stage name is "../../victim".
+    mkdirSync(join(root, "victim"), { recursive: true });
+    writeFileSync(join(root, "victim", "marker.txt"), "do not delete");
+
+    writeFileSync(manifest, '{ "pipelines": { "feature": ["mattstack:../../victim"] }, "bindings": {} }');
+
+    const { exitCode, errors } = await runExpectingCleanExit(() =>
+      skillsCompile(["--pack-dir", pack, "--mattstack-dir", ms, "--manifest", manifest]),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(errors.join("\n")).toContain("../../victim");
+    expect(errors.join("\n")).not.toContain("at Object");
+    expect(readFileSync(join(root, "victim", "marker.txt"), "utf8")).toBe("do not delete");
   });
 });

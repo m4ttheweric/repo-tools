@@ -8,6 +8,7 @@ import {
   loadAttachment,
   loadInclude,
   loadStepSource,
+  parseStageQualifiedName,
   readManifestBindings,
   readManifestPipelines,
   readVerbRoster,
@@ -467,6 +468,33 @@ test("stageRoster is the distinct union across pipelines, bare names", () => {
       { name: "stage-plan", engine: "stage-plan", description: "" },
       { name: "stage-ship", engine: "stage-ship", description: "" },
     ]);
+});
+
+describe("stageRoster path-breakout guard", () => {
+  test("rejects a \"..\" stage name naming the offending pipeline entry", () => {
+    expect(() => stageRoster({ feature: ["mattstack:../../victim"] })).toThrow(/\.\.\/victim/);
+  });
+
+  test("rejects a \"/\" stage name", () => {
+    expect(() => stageRoster({ feature: ["mattstack:a/b"] })).toThrow(/not a safe directory name/);
+  });
+
+  test("rejects a \"\\\\\" stage name", () => {
+    expect(() => stageRoster({ feature: ["mattstack:a\\b"] })).toThrow(/not a safe directory name/);
+  });
+});
+
+describe("parseStageQualifiedName", () => {
+  test("splits on the first colon, bare names pass through unchanged", () => {
+    expect(parseStageQualifiedName("mattstack:stage-plan", "x")).toBe("stage-plan");
+    expect(parseStageQualifiedName("stage-plan", "x")).toBe("stage-plan");
+  });
+
+  test("names the qualified entry and the caller-supplied context on rejection", () => {
+    expect(() => parseStageQualifiedName("mattstack:../../victim", 'pipeline "feature"')).toThrow(
+      'pipeline "feature": stage "mattstack:../../victim" resolves to name "../../victim" which is not a safe directory name',
+    );
+  });
 });
 
 describe("loadInclude", () => {

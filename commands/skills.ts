@@ -38,6 +38,7 @@ import {
   loadAttachment,
   loadInclude,
   loadStepSource,
+  parseStageQualifiedName,
   readManifestBindings,
   readManifestPipelines,
   readSurface,
@@ -398,17 +399,23 @@ function computeInternalRoster(
 }
 
 /**
- * Every stage's own dir string, unioned for two purposes: an orchestrator's
- * `allowed-tools` union (stageAllowedToolsFor) and the exempt-path list a
- * stage's own compile is checked against (compileVerb's emittedSiblingDirs) --
- * a stage read as a plain file carries no frontmatter of its own to supply
- * either.
+ * Builds each work type's ordered StageEntry[] from its manifest pipeline
+ * list: one entry per qualified name, carrying the stage's dir, consumes,
+ * and produces. Stage names are validated upstream by parseStageQualifiedName
+ * (shared with stageRoster) before they ever reach outDirFor's rmSync; a dir
+ * here is always a sibling path relative to the orchestrator's own
+ * ${CLAUDE_SKILL_DIR}, never packDir-relative.
  */
 function buildStageEntries(input: Pick<Resolved, "pipelines" | "pluginRoots">): Record<string, StageEntry[]> {
   const out: Record<string, StageEntry[]> = {};
   for (const [type, names] of Object.entries(input.pipelines)) {
     out[type] = names.map((qualified) => {
-      const name = qualified.slice(qualified.indexOf(":") + 1);
+      let name: string;
+      try {
+        name = parseStageQualifiedName(qualified, `pipeline "${type}"`);
+      } catch (err) {
+        throw new SkillsUsageError((err as Error).message);
+      }
       let step: StepSource;
       try {
         step = loadStepSource(name, input.pluginRoots);
@@ -470,7 +477,12 @@ async function resolve(flags: Flags): Promise<Resolved> {
   const internalRoster = computeInternalRoster(team, packDir, surface, fullRoster);
 
   const pipelines = manifestPath ? readManifestPipelines(manifestPath) : {};
-  const stages = stageRoster(pipelines);
+  let stages: VerbDef[];
+  try {
+    stages = stageRoster(pipelines);
+  } catch (err) {
+    throw new SkillsUsageError((err as Error).message);
+  }
   // The manifest's parent directory name is the registry repo key `run-start
   // --repo` expects -- the same key `~/.mattstack/runs/<repo>/` is named by.
   const repoKey = manifestPath ? basename(dirname(manifestPath)) : "";
@@ -1236,7 +1248,11 @@ function stageNamesFor(flags: SurfaceFlags, packDir: string): Set<string> {
   const mattstackRoot = flags.mattstackDir ?? mattstackHome();
   const team = flags.team ?? packNameFor(packDir);
   const manifest = flags.manifest ?? findDefaultManifest(mattstackRoot, team);
-  return new Set(stageRoster(readManifestPipelines(manifest)).map((v) => v.name));
+  try {
+    return new Set(stageRoster(readManifestPipelines(manifest)).map((v) => v.name));
+  } catch (err) {
+    throw new SkillsUsageError((err as Error).message);
+  }
 }
 
 export function computeRows(
