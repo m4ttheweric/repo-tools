@@ -25,10 +25,20 @@
  */
 
 import { spawnSync } from "child_process";
-import { existsSync } from "fs";
-import { resolve } from "path";
+import { existsSync, mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join, resolve } from "path";
 
 const BINARY = resolve(import.meta.dir, "..", "dist", "rt");
+/**
+ * The compiled binary reads and WRITES ~/.mattstack on any invocation — even
+ * `--version` runs the first-run check. Benchmarking it against the
+ * developer's real HOME indexes whatever repo the benchmark happens to run
+ * in, so every run gets a throwaway one, per the repo's "a built binary is
+ * only ever run under an isolated HOME" rule.
+ */
+const BENCH_HOME = mkdtempSync(join(tmpdir(), "rt-bench-home-"));
+process.on("exit", () => rmSync(BENCH_HOME, { recursive: true, force: true }));
 const WARMUP_RUNS = 2;
 const TIMED_RUNS = 10;
 const DEFAULT_THRESHOLD_MS = 86;
@@ -36,7 +46,7 @@ const threshold = Number(process.argv[2] ?? DEFAULT_THRESHOLD_MS);
 
 function runOnce(): number {
   const start = performance.now();
-  const result = spawnSync(BINARY, ["--version"], { stdio: "ignore" });
+  const result = spawnSync(BINARY, ["--version"], { stdio: "ignore", env: { ...process.env, HOME: BENCH_HOME } });
   const elapsed = performance.now() - start;
   if (result.status !== 0) {
     throw new Error(`rt --version exited ${result.status} (signal ${result.signal})`);
