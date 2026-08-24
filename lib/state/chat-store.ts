@@ -276,6 +276,26 @@ export function parseMentions(body: string): string[] {
   return [...found];
 }
 
+/**
+ * The recipient rule over an already-fetched member list. Both the post path
+ * and the wake-catch-up path route through here so they can never diverge —
+ * the wake path fetches a room's members once and reuses them across every
+ * unread row rather than re-querying per row.
+ */
+function recipientsFromMembers(members: MemberRow[], authorHandle: string, mentions: string[]): string[] {
+  const mentionSet = new Set(mentions);
+  const hasHere = mentionSet.has("here");
+
+  return members
+    .filter((m) => m.handle !== authorHandle && m.wake_on !== "none")
+    // 'all' is an unconditional leg: an all-mode member wakes on every message,
+    // including one that @-mentions someone else. It is not gated on an empty
+    // mention set — that gate silences an agent that opted into all room traffic.
+    .filter((m) => m.wake_on === "all" || hasHere || mentionSet.has(m.handle))
+    .map((m) => m.handle)
+    .sort();
+}
+
 export function recipientsFor(
   room: string,
   authorHandle: string,
@@ -283,18 +303,7 @@ export function recipientsFor(
   db: Database = getStateDb(),
 ): string[] {
   const members = db.query(SELECT_ROOM_MEMBERS_SQL).all(room) as MemberRow[];
-  const mentionSet = new Set(mentions);
-  const hasHere = mentionSet.has("here");
-
-  const recipients = members
-    .filter((m) => m.handle !== authorHandle && m.wake_on !== "none")
-    // 'all' is an unconditional leg: an all-mode member wakes on every message,
-    // including one that @-mentions someone else. It is not gated on an empty
-    // mention set — that gate silences an agent that opted into all room traffic.
-    .filter((m) => m.wake_on === "all" || hasHere || mentionSet.has(m.handle))
-    .map((m) => m.handle);
-
-  return recipients.sort();
+  return recipientsFromMembers(members, authorHandle, mentions);
 }
 
 export function postMessage(
@@ -390,13 +399,14 @@ export function unreadWakingCount(
     if (cursor >= maxId) continue;
 
     const rows = db.query(SELECT_UNREAD_ALL_SQL).all(member.room, cursor) as MessageRow[];
-    // recipientsFor is the same rule the post path used to decide who to
-    // wake at post time; recomputing it here (rather than a parallel
-    // wake_on/mentions check) is what keeps the two from ever diverging.
+    // Same recipient rule the post path used, so the two never diverge. The
+    // room's member set is constant across these rows, so fetch it once and
+    // reuse it rather than re-querying inside recipientsFor for every row.
+    const roomMembers = db.query(SELECT_ROOM_MEMBERS_SQL).all(member.room) as MemberRow[];
     let count = 0;
     for (const row of rows) {
       const rowMentions: string[] = row.mentions ? (JSON.parse(row.mentions) as string[]) : [];
-      if (recipientsFor(row.room, row.handle, rowMentions, db).includes(handle)) count++;
+      if (recipientsFromMembers(roomMembers, row.handle, rowMentions).includes(handle)) count++;
     }
     if (count === 0) continue;
 
