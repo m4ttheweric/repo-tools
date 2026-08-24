@@ -1209,12 +1209,25 @@ plan's task list — it is rt-side work, so it lands here. Optional push is
 **Task 11**: independent deliverable, different module, different failure
 modes, and shippable separately.
 
-**The integration point with Task 11 — do not change this string in one task
-only.** `notifyEnabled(category, ...)` passes `category` straight into
+**The integration point with Task 11, and the constant that enforces it.**
+`notifyEnabled(category, ...)` passes `category` straight into
 `notify(title, message, url, category, pids)`, so it becomes `event.category`.
 This task emits **`"chat_mention"`** (it must: that same string is the
-`NOTIFICATION_TYPES` prefs key), and Task 11 filters on exactly that value. The
-category string is the only contract between them, and nothing type-checks it.
+`NOTIFICATION_TYPES` prefs key) and Task 11 filters on exactly that value.
+
+**Export it as a constant rather than repeating the literal:**
+
+```ts
+export const CHAT_NOTIFICATION_CATEGORY = "chat_mention";
+```
+
+in `lib/notifier.ts`, used by all three sites — the `NOTIFICATION_TYPES`
+entry's `key`, this task's `notifyEnabled` call, and Task 11's filter. Written
+as three separate literals, a divergence between producer and consumer is
+silent: no type error, no failing test, and push simply never fires. Through
+the constant it cannot diverge at all. This is not style — an earlier draft of
+this plan had Task 10 emitting `"chat_mention"` while Task 11 filtered
+`"chat"`, and every test passed.
 
 **Files:**
 - Modify: `lib/daemon/handlers/chat.ts`
@@ -1323,7 +1336,7 @@ something different each time:
   That is the correct entry point.
 
 ```ts
-notifyEnabled("chat_mention", `#${room}`, `${authorHandle}: ${body}`,
+notifyEnabled(CHAT_NOTIFICATION_CATEGORY, `#${room}`, `${authorHandle}: ${body}`,
               undefined, undefined, `chat:${messageId}`);
 ```
 
@@ -1337,7 +1350,8 @@ already hold `prefs` for a whole cycle; `chat:post` does not.
 Two additive changes to `lib/notifier.ts` make the call work:
 
 1. **A `chat_mention` entry in `NOTIFICATION_TYPES`** —
-   `{ key: "chat_mention", label: "Chat mention", description: "When an agent mentions you in a chat room" }`.
+   `{ key: CHAT_NOTIFICATION_CATEGORY, label: "Chat mention", description: "When an agent mentions you in a chat room" }`,
+   with the constant declared above it.
    That array is the user-facing on/off list; without an entry the preference
    is invisible even though `isEnabled` would honor it. Non-breaking:
    `isEnabled` is `prefs[key] !== false`, so an unset key defaults to on.
@@ -1386,11 +1400,15 @@ half-specified provider.
 Task 10 emits its notification through `notifyEnabled("chat_mention", ...)`,
 and `notifyEnabled` passes its category straight into
 `notify(title, message, url, category, pids)`, so every real chat notification
-arrives here with **`event.category === "chat_mention"`**. That is the string
-this task filters on. It is `"chat_mention"` and not `"chat"` because the same
-value is Task 10's `NOTIFICATION_TYPES` prefs key and cannot differ. Nothing
-type-checks this contract: filter on the wrong string and every test below
-still passes while no `@matt` mention is ever pushed.
+arrives here with **`event.category === "chat_mention"`**.
+
+**Import `CHAT_NOTIFICATION_CATEGORY` from `lib/notifier.ts` and filter on it.
+Do not write the literal.** Task 10 declares it, and it is also the
+`NOTIFICATION_TYPES` prefs key, so the value cannot differ between producer and
+consumer. Repeating the literal here is how this went wrong once already: an
+earlier draft filtered `"chat"` while Task 10 emitted `"chat_mention"`, and
+because the tests below fabricate their own events, all of them passed while no
+`@matt` mention would ever have been pushed.
 
 **Files:**
 - Modify: `lib/notifier.ts` — the push producer, beside `pushToTray` inside `notify()`
@@ -1400,7 +1418,7 @@ still passes while no `@matt` mention is ever pushed.
 Step 4** — this task only reads them and adds no settings defs.
 
 **Interfaces:**
-- Consumes: `getSetting` for `chat.push.provider` / `chat.push.target` (registered in Task 7); `notify`, `peekNotifications`, `drainNotifications` from `lib/notifier.ts`; `setSetting(key, value, scope)` in tests.
+- Consumes: `CHAT_NOTIFICATION_CATEGORY`, `notify`, `peekNotifications`, `drainNotifications` from `lib/notifier.ts` (the constant is declared in Task 10); `getSetting` for `chat.push.provider` / `chat.push.target` (registered in Task 7); `createChatHandlers` from `lib/daemon/handlers/chat.ts` for the end-to-end test; `setSetting(key, value, scope)` in tests.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1453,20 +1471,41 @@ test("a non-chat notification is never pushed", async () => {
 });
 ```
 
-**The positive test is load-bearing.** Three negatives and no positive would
-let a no-op push implementation — or a filter on the wrong category string —
-pass the whole file.
+- [ ] **Step 2: Add the end-to-end test — the one that drives the real producer**
+
+Every test above fabricates its event by calling `notify()` directly, which is
+exactly why a wrong filter looked correct: the tests chose the category, so
+they agreed with whatever the filter said. This one goes through `chat:post`,
+so the category comes from the production path and the producer/consumer
+contract is actually exercised.
+
+```ts
+test("a real @matt mention through chat:post reaches the push provider", async () => {
+  push();
+  const fetchSpy = inert();
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "agent" });
+  await h["chat:post"]({ room: "r", handle: "agent", body: "@matt ok to force-release?" });
+  await Bun.sleep(0);
+  expect(fetchSpy).toHaveBeenCalledWith("https://ntfy.sh/x", expect.objectContaining({ method: "POST" }));
+});
+```
+
+**This is the load-bearing test in the task.** The four above are all
+satisfiable by a wrong-but-self-consistent implementation; this one is not. If
+the constant were ever bypassed and the two sides diverged again, this is the
+only test that would go red.
 
 `notify()` is synchronous and pushes fire-and-forget, so each test awaits a
 microtask turn before asserting. There is no `deliver()` function — dispatch is
 inline in `notify()` and this task does not extract one.
 
-- [ ] **Step 2: Run them to verify they fail**
+- [ ] **Step 3: Run them to verify they fail**
 
 Run: `bun test lib/__tests__/notifier-push.test.ts`
 Expected: FAIL — no fetch is ever made.
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 4: Implement**
 
 Beside the existing `pushToTray(event)` call inside `notify()`. That is
 `notify()`'s fire-and-forget dispatch point, **not** the request path — the
@@ -1497,7 +1536,8 @@ function warnPushFailed(err: unknown): void {
 }
 ```
 
-**Push only when `event.category === "chat_mention"`.** That filter is not optional.
+**Push only when `event.category === CHAT_NOTIFICATION_CATEGORY`.** That filter
+is not optional.
 `notify()` handles *every* notification type — its `category` parameter
 defaults to `"general"` and every emitter in the module routes through it — so
 without the check, setting `chat.push.provider` would send Matt's phone MR
@@ -1511,12 +1551,12 @@ no third-party dependency is required. A failed push logs at `warn` and is not
 retried — the message is already stored and the desk notification already
 queued, so failing here would discard work that succeeded.
 
-- [ ] **Step 4: Run the suite**
+- [ ] **Step 5: Run the suite**
 
 Run: `bun test lib commands packages scripts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add lib/notifier.ts lib/__tests__/notifier-push.test.ts
