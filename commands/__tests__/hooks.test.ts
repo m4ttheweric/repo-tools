@@ -10,7 +10,7 @@
  * pattern): store files and repoDataDir() both resolve HOME at call time.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -28,6 +28,11 @@ import type { CommandContext } from "../../lib/command-tree.ts";
 import { repoDataDir, userSettingsPath } from "../../lib/rt-paths.ts";
 import { getSetting } from "../../lib/settings/resolve.ts";
 import { setSetting } from "../../lib/settings/write.ts";
+
+// Captured at module load — before any mock.module runs — so afterEach can
+// restore the real daemon client. Top-level await is legal in an ESM test file.
+const realDaemonClient = await import("../../lib/daemon-client.ts");
+const realDaemonQuery = realDaemonClient.daemonQuery;
 
 const IDENTITY = "example.com/org/repo";
 
@@ -270,5 +275,41 @@ describe("commands/hooks", () => {
     writeFileSync(join(repoRoot, ".husky", ".gitignore"), "");
     mkdirSync(join(repoRoot, ".husky", "_"));
     expect(discoverHooks(repoRoot)).toEqual(["pre-commit", "pre-push"]);
+  });
+
+  // ─── the hooks:watch daemon nudge sends the SERIALIZED identity ────────────
+
+  describe("toggleHooks daemon nudge", () => {
+    afterEach(() => {
+      mock.module("../../lib/daemon-client.ts", () => ({
+        ...realDaemonClient,
+        daemonQuery: realDaemonQuery,
+      }));
+    });
+
+    test("hooks:watch is sent ctx.identity.identity, not the display repoName", async () => {
+      const calls: { cmd: string; payload?: Record<string, unknown> }[] = [];
+      mock.module("../../lib/daemon-client.ts", () => ({
+        ...realDaemonClient,
+        daemonQuery: async (cmd: string, payload?: Record<string, unknown>) => {
+          calls.push({ cmd, payload });
+          return { ok: true, data: null };
+        },
+      }));
+
+      const ctx: CommandContext = {
+        identity: { repoName: "repo", identity: "path:/repo", repoRoot, dataDir, remoteUrl: "git@example.com:org/repo.git", baseUrl: "" },
+      };
+
+      await toggleHooks(["status"], ctx);
+      // The nudge is fire-and-forget (`.then().catch()`, not awaited) —
+      // let its microtask land before inspecting captured calls.
+      await new Promise((r) => setTimeout(r, 0));
+
+      const call = calls.find((c) => c.cmd === "hooks:watch");
+      expect(call).toBeDefined();
+      expect(call!.payload!.repo).toBe("path:/repo");
+      expect(call!.payload!.repo).not.toBe("repo");
+    });
   });
 });

@@ -14,13 +14,13 @@
  */
 
 import { spawnSync } from "child_process";
-import { existsSync, readFileSync, statSync } from "fs";
-import { basename, join } from "path";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 import { bold, cyan, dim, green, red, reset, yellow } from "../lib/tui.ts";
 import { RT_DIR } from "../lib/daemon-config.ts";
 import { getRepoIdentity } from "../lib/repo.ts";
 import { loadRepoIndex } from "../lib/repo-index.ts";
-import { deriveRepoIdentity, parseIdentity, serializeIdentity } from "../lib/settings/identity.ts";
+import { currentRepoIdentity, repoLabel, resolveRepoArg } from "../lib/repo-arg.ts";
 import { daemonQuery, lastQueryTimedOut, type DaemonResponse } from "../lib/daemon-client.ts";
 import { listWorktrees } from "../lib/git-worktrees.ts";
 import {
@@ -218,44 +218,8 @@ function requireQueryResult(json: boolean, res: DaemonResponse | null): DaemonRe
   return res;
 }
 
-/** Daemon payload key for the in-repo default — the serialized identity, not the display name. */
-function currentRepoIdentity(): string | undefined {
-  return getRepoIdentity()?.identity ?? undefined;
-}
-
-/**
- * `--repo` may be an already-serialized identity, a directory path, or a
- * bare repo name — resolve any of those to the identity the daemon and
- * repos.json key on. Exits via `failText` (not a null return) on an
- * unresolvable or ambiguous name, matching every other repoName failure in
- * this file.
- */
-async function resolveRepoArg(arg: string, json: boolean): Promise<string> {
-  if (parseIdentity(arg)) return arg;
-
-  try {
-    if (statSync(arg).isDirectory()) return serializeIdentity(await deriveRepoIdentity(arg));
-  } catch {
-    // not a directory on disk — fall through to the name lookup
-  }
-
-  const index = loadRepoIndex();
-  const matches = Object.entries(index).filter(
-    ([id, path]) => basename(path) === arg || parseIdentity(id)?.id.split("/").pop() === arg,
-  );
-  if (matches.length === 1) return matches[0]![0];
-  if (matches.length > 1) {
-    failText(json, `--repo "${arg}" matches more than one repo: ${matches.map(([id]) => id).join(", ")} — pass the full identity`);
-  }
-  failText(json, `--repo "${arg}" did not match a known repo — pass --repo <name> or run from inside a registered repo`);
-}
-
-/** Decode a daemon-returned `TreeRow.repoName` (a raw serialized identity) into its display label. Never call this on a value that will be sent back to the daemon as a payload key — it is already the identity there. */
-export function repoLabel(serialized: string): string {
-  const id = parseIdentity(serialized);
-  if (!id) return serialized;
-  return id.kind === "remote" ? (id.id.split("/").pop() ?? id.id) : basename(id.id);
-}
+/** Re-exported so existing imports of `repoLabel` from this module keep compiling — the implementation now lives in `lib/repo-arg.ts` alongside `resolveRepoArg`, which it shares a parity contract with. */
+export { repoLabel } from "../lib/repo-arg.ts";
 
 // ─── Tree rows (worktree:list) shared by list / nav / the dispose+freshen pickers ──
 
@@ -307,7 +271,7 @@ function sortDisposableFirst(rows: TreeRow[]): TreeRow[] {
 
 export async function worktreeProvision(args: string[], _ctx: unknown): Promise<void> {
   const parsed = parseProvisionArgs(args);
-  const repoName = parsed.repoName ? await resolveRepoArg(parsed.repoName, parsed.json) : currentRepoIdentity();
+  const repoName = parsed.repoName ? await resolveRepoArg(parsed.repoName, (m) => failText(parsed.json, m)) : currentRepoIdentity();
   if (!repoName) failText(parsed.json, "no repo — pass --repo <name> or run from inside a registered repo");
 
   const payload: Record<string, unknown> = { repoName };
@@ -339,7 +303,7 @@ export async function worktreeProvision(args: string[], _ctx: unknown): Promise<
 
 export async function worktreeCreate(args: string[], _ctx: unknown): Promise<void> {
   const parsed = parseCreateArgs(args);
-  const repoName = parsed.repoName ? await resolveRepoArg(parsed.repoName, parsed.json) : currentRepoIdentity();
+  const repoName = parsed.repoName ? await resolveRepoArg(parsed.repoName, (m) => failText(parsed.json, m)) : currentRepoIdentity();
   if (!repoName) failText(parsed.json, "no repo — pass --repo <name> or run from inside a registered repo");
 
   const res = await daemonQuery("worktree:create", { repoName, onDeck: parsed.onDeck }, PROVISION_TIMEOUT_MS);
@@ -357,7 +321,7 @@ export async function worktreeCreate(args: string[], _ctx: unknown): Promise<voi
 export async function worktreeDispose(args: string[], _ctx: unknown): Promise<void> {
   const parsed = parseDisposeArgs(args);
   let treeName = parsed.tree;
-  let repoName = parsed.repoName ? await resolveRepoArg(parsed.repoName, parsed.json) : undefined;
+  let repoName = parsed.repoName ? await resolveRepoArg(parsed.repoName, (m) => failText(parsed.json, m)) : undefined;
 
   if (!treeName && !parsed.owner) {
     if (!process.stdin.isTTY) {
@@ -410,7 +374,7 @@ export async function worktreeDispose(args: string[], _ctx: unknown): Promise<vo
 
 export async function worktreeList(args: string[], _ctx: unknown): Promise<void> {
   const parsed = parseListArgs(args);
-  const repoName = parsed.repoName ? await resolveRepoArg(parsed.repoName, parsed.json) : undefined;
+  const repoName = parsed.repoName ? await resolveRepoArg(parsed.repoName, (m) => failText(parsed.json, m)) : undefined;
   const rows = await fetchTreeRows(parsed.json, repoName);
 
   if (parsed.json) { console.log(JSON.stringify({ trees: rows }, null, 2)); return; }
@@ -434,7 +398,7 @@ export async function worktreeList(args: string[], _ctx: unknown): Promise<void>
 export async function worktreeFreshen(args: string[], _ctx: unknown): Promise<void> {
   const parsed = parseFreshenArgs(args);
   let treeName = parsed.tree;
-  let repoName = parsed.repoName ? await resolveRepoArg(parsed.repoName, parsed.json) : undefined;
+  let repoName = parsed.repoName ? await resolveRepoArg(parsed.repoName, (m) => failText(parsed.json, m)) : undefined;
 
   if (!treeName && process.stdin.isTTY) {
     // Mirrors freshenCandidate (lib/daemon/worktree-reconciler.ts): only
@@ -473,7 +437,7 @@ export async function worktreeAdopt(args: string[], _ctx: unknown): Promise<void
   // one sweep, so it must be pointed at explicitly rather than guessed from
   // wherever the shell happens to be.
   if (!parsed.repoName) failText(parsed.json, "--repo <name> is required for adopt");
-  const repoName = await resolveRepoArg(parsed.repoName, parsed.json);
+  const repoName = await resolveRepoArg(parsed.repoName, (m) => failText(parsed.json, m));
 
   const res = await daemonQuery("worktree:adopt", { repoName }, ADOPT_TIMEOUT_MS);
   const ok = requireQueryResult(parsed.json, res);

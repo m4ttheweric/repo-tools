@@ -6,6 +6,7 @@
  * from the CLI (single reader contract).
  */
 import { daemonQuery } from "../lib/daemon-client.ts";
+import { resolveRepoArg } from "../lib/repo-arg.ts";
 import type { RunDetail, RunSummary } from "../packages/rt-client/src/commands.ts";
 
 function fail(msg: string): never {
@@ -65,7 +66,8 @@ export function formatRunDetail(d: RunDetail): string {
 }
 
 export async function runsList(args: string[]): Promise<void> {
-  const repo = flagValue(args, "--repo");
+  const repoArg = flagValue(args, "--repo");
+  const repo = repoArg ? await resolveRepoArg(repoArg, fail) : undefined;
   const res = await daemonQuery("runs:list", { repo }, 10_000);
   if (!res) fail("daemon unavailable — the run DB needs the rt daemon (rt daemon start)");
   if (!res.ok) fail(res.error ?? "list failed");
@@ -78,7 +80,8 @@ export async function runsList(args: string[]): Promise<void> {
 export async function runsShow(args: string[]): Promise<void> {
   const runId = positional(args);
   if (!runId) fail("usage: rt runs show <runId> [--repo <name>] [--json]");
-  const repo = flagValue(args, "--repo");
+  const repoArg = flagValue(args, "--repo");
+  const repo = repoArg ? await resolveRepoArg(repoArg, fail) : undefined;
   const res = await daemonQuery("runs:get", { runId, repo }, 10_000);
   if (!res) fail("daemon unavailable — the run DB needs the rt daemon (rt daemon start)");
   if (!res.ok) fail(res.error ?? "get failed");
@@ -90,7 +93,8 @@ export async function runsShow(args: string[]): Promise<void> {
 export async function runsAbandon(args: string[]): Promise<void> {
   const runId = positional(args);
   if (!runId) fail("abandon needs a run id");
-  const repo = flagValue(args, "--repo");
+  const repoArg = flagValue(args, "--repo");
+  const repo = repoArg ? await resolveRepoArg(repoArg, fail) : undefined;
   const reason = flagValue(args, "--reason") ?? "reconciled by hand";
   const res = await daemonQuery("runs:abandon", { runId, repo, reason });
   if (!res) fail("daemon unavailable — the run DB needs the rt daemon (rt daemon start)");
