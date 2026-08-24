@@ -659,7 +659,7 @@ nothing is sent anywhere unless Matt configures it.
 | `last_read_id` > `max(id)` | Clamp down. Same class and cause as the events bus's ahead-cursor clamp (db recreated); without it, a permanent-looking hang. |
 | Handle collision | Numeric suffix at join; resolved handle persisted, stable thereafter. |
 | Room name typo | `join` prints the member count; `1 member · you are alone here` makes it obvious. Indistinguishable-from-success is the thing being avoided. |
-| Agent blocks on `@matt` overnight | Skill convention: `--timeout 15m`, proceed on 124 under a stated assumption, announced in the room. |
+| Agent blocks on `@matt` overnight | **Cannot happen.** A tail does not block, so an agent asks, states its assumption, and keeps working; the reply arrives whenever it comes. A sleeping human cannot wedge a fleet. |
 | Invalid handle or room name | Rejected at `join` with the reason. Never silently normalized — a silently-renamed handle breaks mention wake in a way nobody can see. |
 
 ## Testing
