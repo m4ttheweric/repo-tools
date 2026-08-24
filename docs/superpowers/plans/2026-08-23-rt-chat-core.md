@@ -1020,11 +1020,27 @@ Three things go wrong the moment a test reaches for a bare
 3. It never reaches `children[]`, so the blocking waiters become exactly the
    processes `afterAll` cannot reap.
 
-Also define: `waitUntilArmed(...handles)` polling `chat:who` until each
-handle's `armed_at` is set — **never a fixed sleep**; `events.test.ts` uses
-`await Bun.sleep(500)` for this and chat deliberately does not, because a
-fixed sleep makes the wake tests flaky under load. And `until(pred)`, polling
-a predicate to a deadline.
+Also define `waitUntilArmed(home, room, ...handles)`, polling `chat:who` until
+each handle's `armed_at` is set — **never a fixed sleep**; `events.test.ts`
+uses `await Bun.sleep(500)` for this and chat deliberately does not, because a
+fixed sleep makes the wake tests flaky under load.
+
+**`home` is the first parameter for the same reason `runRt` takes it, and the
+trap here is subtler than the spawn one.** This helper reaches the daemon
+without spawning a child, so it is invisible to any sweep of `Bun.spawn` call
+sites — but `defaultSock()` resolves `process.env.HOME ?? homedir()`, and only
+the *children* get the test HOME. The test process keeps the developer's real
+one, so a home-less `waitUntilArmed` polls the **real** daemon at
+`~/.mattstack/rt/rt.sock`, never observes the test handle armed, and spins to
+its deadline — failing the post→wake and wake-policy tests while the feature
+works perfectly. Implement it either as
+`finished(runRt(["chat", "who", room, "--json"], home))`, or through rt-client
+with an explicit `sockPath: join(home, ".mattstack", "rt", "rt.sock")`, which
+`RtClientOptions` already accepts. **Every helper that touches the daemon takes
+`home`, whether or not it spawns.**
+
+And `until(pred)`, polling a predicate to a deadline — a pure predicate, so it
+needs neither `home` nor env.
 
 ```ts
 // e2e/tests/chat.test.ts
@@ -1034,7 +1050,7 @@ test("post wakes an armed agent, with exactly one line of output", async () => {
   await finished(runRt(["chat", "join", "r", "--as", "listener"], home));
   await finished(runRt(["chat", "join", "r", "--as", "poster"], home));
   const waiter = runRt(["chat", "wait", "--as", "listener"], home);
-  await waitUntilArmed("listener");
+  await waitUntilArmed(home, "r", "listener");
   await finished(runRt(["chat", "post", "r", "@listener ping", "--as", "poster"], home));
   const { exitCode, stdout } = await finished(waiter);
   expect(exitCode).toBe(0);
@@ -1061,7 +1077,7 @@ test("wake policy: mention wakes only when named; all wakes always; none never",
   const mention = runRt(["chat", "wait", "--as", "m", "--timeout", "3s"], home);
   const all = runRt(["chat", "wait", "--as", "a", "--timeout", "3s"], home);
   const none = runRt(["chat", "wait", "--as", "n", "--timeout", "3s"], home);
-  await waitUntilArmed("m", "a", "n");
+  await waitUntilArmed(home, "r", "m", "a", "n");
   await finished(runRt(["chat", "post", "r", "no mention here", "--as", "poster"], home));
   expect((await finished(mention)).exitCode).toBe(124);
   expect((await finished(all)).exitCode).toBe(0);
