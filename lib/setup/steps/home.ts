@@ -88,6 +88,27 @@ async function homeInitRun(ctx: ApplyContext): Promise<StepOutcome> {
   return { state: "failed", detail: failureDetail(result.stderr), remedy: homeInitRemedy(result.stderr) };
 }
 
+/**
+ * Bun's message for an argv[0] it cannot resolve. The tool name is the only
+ * actionable part, and a raw `$PATH` error is not something a user of a signed
+ * .app can act on — they did not choose the PATH and should not have to.
+ */
+const MISSING_EXECUTABLE_STDERR = /Executable not found in \$PATH: "([^"]+)"/;
+
+/**
+ * Names the missing tool rather than echoing the PATH error.
+ *
+ * Reachable on an installed machine only if the bundle is damaged: age-keygen
+ * and sops ship inside mattstack.app and resolve from there before PATH. It
+ * stays because running rt from source is a supported path, and because a
+ * remedy that names the tool is useful in either case.
+ */
+function missingToolRemedy(stderr: string): string | null {
+  const tool = MISSING_EXECUTABLE_STDERR.exec(stderr)?.[1];
+  if (tool === undefined) return null;
+  return `"${tool}" is missing — reinstall mattstack.app, or install it yourself (brew install ${tool === "age-keygen" ? "age" : tool}), then Retry`;
+}
+
 /** Stderr that names a remote/auth failure on its own terms, with no ambiguity about which end of the wire failed. */
 const REMOTE_AUTH_STDERR = /authenticat|could not read username|access denied|repository not found|403 forbidden|invalid username or (?:password|token)|gh auth login|permission denied \(publickey/i;
 /** ssh writes "Permission denied (publickey)", but so does a plain local `fatal: cannot mkdir user: Permission denied` — on its own this says nothing about a remote. */
@@ -103,7 +124,12 @@ const CLONE_STEP_STDERR = /failed at step "cloneUserRepo"/;
  * local filesystem permission error, the very class the local-only path
  * introduced, would be sent to `gh auth login`.
  */
-function homeInitRemedy(stderr: string): string {
+export function homeInitRemedy(stderr: string): string {
+  // Checked first: a missing binary is a more specific fact than anything the
+  // auth heuristics below infer, and its stderr can otherwise match them.
+  const missing = missingToolRemedy(stderr);
+  if (missing !== null) return missing;
+
   const remoteShaped =
     REMOTE_AUTH_STDERR.test(stderr) ||
     (AMBIGUOUS_PERMISSION_STDERR.test(stderr) && CLONE_STEP_STDERR.test(stderr));
