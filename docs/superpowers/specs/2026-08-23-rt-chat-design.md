@@ -455,10 +455,29 @@ web viewer, which is the better interface for a human once it exists.
 
 ## Web viewer
 
-Sibling repo, following `board`: Bun server-rendered shell, small React island
-for live parts, no database of its own. Registered with deck
-(`deck add chat --cmd ... --dir ...`), giving `chat.localhost` immediately and
-`chat.m4tthew.dev` when published.
+Sibling repo, following **`console`**, not `board`. Console is the closer
+precedent and already solves this design's two hardest viewer problems:
+Vite + React scaffolded from `create-mantine-kit`, a Hono server on Bun, and
+`@mattstack/rt-client` for daemon access. No database of its own. Registered
+with deck (`deck add chat --cmd ... --dir ...`), giving `chat.localhost`
+immediately and `chat.m4tthew.dev` when published.
+
+**Take from console:** Vite + React + Mantine via mantine-kit, Hono with
+`upgradeWebSocket` from `hono/bun`, `@mattstack/rt-client`, TanStack Query,
+zod, vitest. **Leave:** Storybook, CodeMirror, Spotlight, virtualization, and
+the `build:binary` embedded-asset path — all overkill for a chat viewer, and
+the binary path in particular buys nothing when deck already supervises the
+process.
+
+Two conventions to carry over verbatim, both learned the hard way in console:
+
+- **`rt-client` throws when the daemon is unreachable** rather than returning
+  `ok: false`, and an `ok: false` means the daemon answered and refused. The
+  viewer maps those to different statuses (console uses 502 for the latter).
+- **The `/ws` route must live in the entry file, not the relay module.**
+  `hono/bun` reads the `Bun` global at module load, so a relay module that
+  imports it becomes unimportable under vitest's Node runtime. Console splits
+  them for exactly this reason; chat must too, or its relay is untestable.
 
 **Request path** — identical local and remote apart from the two gates:
 
@@ -480,10 +499,16 @@ preference:**
    composer post directly would expose it to anything that can read that JS,
    and the CORS-`*` mutation protection depends on the page *not* having it.
 
-**One WS subscription, fanned out.** The daemon's `/ws` is a firehose of every
-broadcast type. The app server holds one connection and re-serves chat frames
-to N browsers rather than each open tab holding a daemon WS and filtering
-client-side.
+**One WS subscription, fanned out — an existing pattern, not a new one.**
+Console's `src/server/ws.ts` `startRelay()` already does precisely this: one
+`subscribe()` from `@mattstack/rt-client` for the whole process, filtered
+server-side to `type === 'event'` and the topic of interest, republished onto
+a Bun pub/sub topic that every browser tab subscribes to, so tab count does
+not multiply daemon load. Chat's relay is that same function with the topic
+predicate changed to chat frames. The daemon multiplexes everything —
+ports, status, system-processes, discussions — through that one socket, so
+filtering server-side is what stops an unrelated daemon tick from making every
+open tab refetch.
 
 **Layout:**
 
