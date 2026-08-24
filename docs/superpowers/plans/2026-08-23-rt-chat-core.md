@@ -4,7 +4,7 @@
 
 **Goal:** Ship `rt chat` — persistent, cross-account chat rooms that agents coordinate in, with a blocking wake that never dumps a transcript into an agent's pane.
 
-**Architecture:** A semantic layer over the RT-44 event bus. Messages live in `state.db` (chat owns them); every post also emits *pointer* events carrying `{id}`, including one `chat/wake/<handle>` per recipient computed daemon-side from membership and `wake_on`. An agent parks a backgrounded `rt chat wait` that blocks on a single glob and exits when tapped, so the harness re-invokes it. Nothing in this plan builds a web UI.
+**Architecture:** A semantic layer over the RT-44 event bus. Messages live in `state.db` (chat owns them); every post also emits *pointer* events carrying `{id}`, including one `chat/wake/<handle>` per recipient computed daemon-side from membership and `wake_on`. An agent runs `rt chat tail` under Claude Code's `Monitor` with `persistent: true`; the tail streams one line per wake and Monitor turns each line into a notification, so one arming serves the whole session. Nothing in this plan builds a web UI.
 
 **Tech Stack:** Bun, TypeScript, `bun:sqlite`, `bun test`.
 
@@ -24,9 +24,9 @@ All paths below are relative to that worktree root.
 Binding on every task.
 
 - **Handles and room names match `^[a-z0-9._-]+$`.** No `@` (it is the mention sigil, and `@a@b` is ambiguous), no `/` (the handle is interpolated into the topic `chat/wake/<handle>` and a slash would reshape the glob). Invalid names are **rejected with the reason at `join`, never silently normalized** — a silently renamed handle breaks mention wake in a way nobody can see.
-- **`rt chat wait` prints exactly one line on its success path, ever.** This is the "don't flood the agent's pane" guarantee and it is a property of the binary, not a convention agents follow. A source-guard test locks it (Task 8).
+- **`rt chat tail` prints exactly one line per wake on stdout, and nothing else.** Under Monitor each stdout line is one notification, so this is the "don't flood the agent's pane" guarantee — a property of the binary, not a convention agents follow. Diagnostics go to stderr, which Monitor does not notify on. A source-guard test locks it (Task 8).
 - **`rt chat post` prints nothing on success.** Posting must not cost context.
-- **`wait` exit codes: `0` woken, `124` timeout, `69` daemon unreachable.** These must be distinct — the Stop hook branches on them, and a hook that cannot tell "woken" from "daemon dead" re-arms in a tight loop forever.
+- **`tail` exit codes: `0` clean shutdown, `69` daemon unreachable.** There is no `124` — a tail takes no `--timeout`, because Monitor owns the lifetime. A tail must **exit** rather than block silently when the daemon dies: Monitor treats silence as "nothing happened", and only an ended stream produces the distinguishable *stream ended* notification.
 - **Everything outside `lib/state/` imports store APIs through the barrel `lib/state/index.ts`**, never from `./db.ts` or a store module directly (RT-48).
 - **`db.transaction()` callbacks are synchronous** in `bun:sqlite` — it commits when the callback returns. Wrapping an async function is forbidden; all transactional store code is sync.
 - **No module-load db access, ever.** `getStateDb()` must never be called at module scope. Initialize on first use.
@@ -306,7 +306,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ### Task 3: Messages — post, recipients, read, mark
 
-The recipient computation added here is consumed by **both** the post path and Task 8's wait path. It must be one exported function called by both. If they diverge — most easily by the wait path forgetting to exclude the agent's own posts — an agent's own message makes its next `wait` exit immediately, every time, forever.
+The recipient computation added here is consumed by **both** the post path and Task 8's tail path. It must be one exported function called by both. If they diverge — most easily by the tail path forgetting to exclude the agent's own posts — every message an agent posts notifies itself, forever.
 
 **Files:**
 - Modify: `lib/state/chat-store.ts`
@@ -438,7 +438,7 @@ Expected: PASS.
 git add lib/state/chat-store.ts lib/state/__tests__/chat-store.test.ts
 git commit -m "chat: messages, mention parsing, and the shared recipient rule
 
-recipientsFor is called by both the post path and the wait path's unread
+recipientsFor is called by both the post path and the tail path's unread
 check; divergence there makes an agent's own post wake it forever.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
@@ -501,7 +501,7 @@ In `lib/daemon.ts`'s `startDaemon()`, call `clearAllArmed()` beside the
 existing `openBranchCacheStore()` call — which is to say **before**
 `startSocketServer(` and `startApiServer(`. Both halves matter:
 
-- *Why clear at all:* no waiter outlives the daemon (`events-bus.close()` settles every waiter, then closes the db), so any `armed_at` still set at boot is stale by definition. The agents cannot clear their own rows — `chat:disarm` is a daemon handler and the daemon is the thing that died, so each `rt chat wait` exits 69 with its row untouched. Skip this and every member reads as *live — will hear you* for ten minutes after each restart while every agent is disarmed, with nothing recovering it because the Stop hook must never re-arm after 69.
+- *Why clear at all:* no waiter outlives the daemon (`events-bus.close()` settles every waiter, then closes the db), so any `armed_at` still set at boot is stale by definition. The agents cannot clear their own rows — `chat:disarm` is a daemon handler and the daemon is the thing that died, so each `rt chat tail` exits 69 with its row untouched. Skip this and every member reads as *live — will hear you* for ten minutes after each restart while every agent is disarmed, and nothing recovers it until each agent's Monitor reports the ended stream and the agent re-arms.
 - *Why before serving:* run it after the socket is listening and an agent that arms in the gap has its fresh `armed_at` wiped — the mirror-image bug, a genuinely armed agent rendered deaf.
 
 - [ ] **Step 5: Add the restart test**
@@ -578,7 +578,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ### Task 5: `events:head`
 
-The wait path needs the journal head. Both `events:list` shapes are wrong for it: `limit`-bearing calls return the **last delivered event's** id rather than `maxId()` when `events.length === limit`, so `{limit: 1}` returns the *oldest* matching wake event and replays every historical wake forever; and a no-`limit` call means `after = 0`, and since `eventsAfter` applies the glob **in JS after** `SELECT ... WHERE id > ?`, it materializes the entire journal — all global bus traffic, payloads included — on the daemon thread, once per arm.
+The tail path needs the journal head. Both `events:list` shapes are wrong for it: `limit`-bearing calls return the **last delivered event's** id rather than `maxId()` when `events.length === limit`, so `{limit: 1}` returns the *oldest* matching wake event and replays every historical wake forever; and a no-`limit` call means `after = 0`, and since `eventsAfter` applies the glob **in JS after** `SELECT ... WHERE id > ?`, it materializes the entire journal — all global bus traffic, payloads included — on the daemon thread, once per tail start.
 
 **Files:**
 - Modify: `lib/daemon/events-bus.ts`
@@ -738,7 +738,7 @@ Thin — validate, delegate to the store, shape the response. Handlers own **no*
 logic that Task 3 already owns.
 
 `chat:unread-waking` wraps `unreadWakingCount` and is **not optional**: it is
-the only way Task 8's wait path can run its step-3 check. `chat:read` cannot
+the only way Task 8's tail path can run its step-3 catch-up. `chat:read` cannot
 substitute — it advances the cursor, which step 3 must not do — and
 `chat:rooms`' generic unread cannot encode the predicate, which depends on
 each member's `wake_on`.
@@ -808,7 +808,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 7: The CLI — everything except `wait`
+### Task 7: The CLI — everything except `tail`
 
 **Files:**
 - Create: `commands/chat.ts`
@@ -820,7 +820,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 - Consumes: the rt-client wrappers from Task 6.
 - Produces: `export async function chat(args: string[]): Promise<void>` — the verb dispatcher.
 
-**Verbs** (eight; `wait` lands in Task 8):
+**Verbs** (eight; `tail` lands in Task 8):
 
 | command | behavior |
 |---|---|
@@ -831,7 +831,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 | `rt chat rooms` | rooms, member counts, unread, last activity |
 | `rt chat who [room]` | members with status, cwd, branch, pane |
 | `rt chat mark [room]` | advance the cursor without printing |
-| `rt chat wait` | Task 8 |
+| `rt chat tail` | Task 8 |
 
 - [ ] **Step 1: Write the failing test**
 
@@ -904,7 +904,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 8: `rt chat wait` — the wake protocol
+### Task 8: `rt chat tail` — the wake protocol
 
 The highest-risk task in the plan. Read the spec's **Wake protocol** section in full before writing a line; the step ordering is the feature.
 
@@ -914,58 +914,79 @@ The highest-risk task in the plan. Read the spec's **Wake protocol** section in 
 
 **Interfaces:**
 - Consumes, all via rt-client: `eventsHead`, `chatUnreadWaking` (step 3's check — it reports what would wake a handle **without** advancing a cursor), `chatArm`, `chatTouch`, `chatDisarm`, and the `events:wait` handler.
-- Produces: the `wait` verb.
+- Produces: the `tail` verb.
 
-**The wait path, in this exact order:**
+**How it is run.** `tail` is a long-lived process launched under Claude Code's
+`Monitor` with `persistent: true`, **not** `Bash` with `run_in_background`.
+Monitor turns each stdout line into its own notification and stays armed for
+the session; a backgrounded Bash process delivers one notification and dies,
+which is what the earlier design's re-arm discipline, Stop hook, and `124`
+timeout all existed to compensate for. Verified against the live harness:
+an event woke a fully idle session, a second event arrived from the same
+arming with no re-arm, and the stream ending produced its own distinguishable
+notification.
+
+**The tail path, in this exact order:**
 
 1. **Snapshot the journal head** via `events:head`.
 2. `chat:arm`.
-3. Check for unread that *would have woken this handle* — using `recipientsFor`'s rule, author-exclusion included. If found: `chat:disarm`, print one line, exit 0.
-4. Otherwise call the `events:wait` handler with pattern `chat/wake/<me>` and `after` = the step-1 cursor.
-5. On wake: print one line, `chat:disarm`, exit 0.
+3. Emit one line per unread message that *would have woken this handle* —
+   using `recipientsFor`'s rule, author-exclusion included. This is the
+   catch-up, and it closes the restart gap.
+4. Loop: call the `events:wait` handler with pattern `chat/wake/<me>` and
+   `after` = the step-1 cursor, thread the returned cursor into the next call,
+   emit one line per wake, and call `chat:touch` each round.
+5. On daemon-unreachable: print one line naming it, `chat:disarm`, exit **69**.
+   Never block silently — Monitor reads silence as "nothing happened", so a
+   hung tail is indistinguishable from a quiet room.
 
-**Why step 1 precedes step 3:** `events:wait` with no `after` snapshots `head = maxId()` at registration and delivers only ids above it. Check-then-arm without a cursor leaves a window — process spawn plus IPC — in which a post commits and emits *below* the new waiter's head, seen by neither the check nor the wait. The agent then blocks holding an unread mention until some later message happens to wake it. That window falls exactly when an agent finishes a turn and re-arms, which is when a peer is most likely replying.
+**Why step 1 precedes step 3:** `events:wait` with no `after` snapshots `head = maxId()` at registration and delivers only ids above it. Reading the database and *then* registering without a cursor leaves a window — process spawn plus IPC — in which a post commits and emits *below* the new waiter's head, seen by neither the catch-up nor the stream. That message reaches nobody until some later one happens to arrive. The transport change does not touch this window: it is between the `chat_messages` read and waiter registration, both of which are unchanged.
 
-**Chat drives the `events:wait` handler directly, one round at a time — never `rt events wait`.** That CLI owns its own `while (true)` loop and never returns between polls, prints events-shaped JSON, and its `fail()` exits 1 rather than 69. Chat owns its loop, its exit codes, and its single-line output, and calls `chat:touch` each round so presence rides the loop.
+**Chat drives the `events:wait` handler directly, one round at a time — never `rt events wait`.** That CLI owns its own `while (true)` loop and never returns between polls, prints events-shaped JSON, and its `fail()` exits 1 rather than 69. Chat owns its loop, its exit codes, and its per-line output, and calls `chat:touch` each round so presence rides the loop.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-test("wait exits 124 on timeout", async () => {
-  await runChat(["join", "r"]);
-  const { code } = await runChatRaw(["wait", "--timeout", "1s"]);
-  expect(code).toBe(124);
-});
-
-test("wait exits 69 when the daemon is unreachable", async () => {
-  const { code } = await runChatRaw(["wait"], { sock: "/nonexistent.sock" });
+test("tail exits 69 when the daemon is unreachable, rather than hanging", async () => {
+  const { code } = await runChatRaw(["tail"], { sock: "/nonexistent.sock" });
   expect(code).toBe(69);
 });
 
-test("wait refuses to double-arm", async () => {
+test("tail takes no --timeout", async () => {
+  // Monitor owns the lifetime via persistent: true. A tail that could time
+  // out would end its own stream and look like a dead feed.
+  const { code, stderr } = await runChatRaw(["tail", "--timeout", "1s"]);
+  expect(code).not.toBe(0);
+  expect(stderr).toContain("--timeout");
+});
+
+test("tail refuses to double-arm", async () => {
   await runChat(["join", "r"]);
-  const first = spawnChat(["wait"]);
-  const { code, stderr } = await runChatRaw(["wait"]);
+  const first = spawnChat(["tail"]);
+  const { code, stderr } = await runChatRaw(["tail"]);
   expect(code).not.toBe(0);
   expect(stderr).toContain("already armed");
   first.kill();
 });
 
-test("the success path prints exactly one line", async () => {
+test("every stdout write in the tail path is exactly one line", async () => {
+  // Under Monitor each stdout line is one notification, so a multi-line write
+  // floods the agent's context. Diagnostics must go to stderr.
   const src = await Bun.file("commands/chat.ts").text();
-  const waitFn = src.slice(src.indexOf("async function chatWait"));
-  expect(waitFn.match(/console\.log/g) ?? []).toHaveLength(1);
+  const tailFn = src.slice(src.indexOf("async function chatTail"));
+  const logs = tailFn.match(/console\.log\([^)]*\)/g) ?? [];
+  expect(logs.every(l => !l.includes("\\n"))).toBe(true);
 });
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `bun test commands/__tests__/chat.test.ts`
-Expected: FAIL — no `wait` verb.
+Expected: FAIL — no `tail` verb.
 
 - [ ] **Step 3: Implement**
 
-**`leave` gains its waiter kill here, not in Task 7**, because the pidfile it
+**`leave` gains its tail kill here, not in Task 7**, because the pidfile it
 needs is introduced below. Extend `leave` to remove the pidfile and signal the
 process once this task's lock exists.
 
@@ -973,17 +994,17 @@ process once this task's lock exists.
 is set, create that file and block until it is removed, giving up after 2
 seconds. It names a **path**, never a command — a seam that evaluated a shell
 string from the environment would hand arbitrary code execution to anyone who
-can set env on an `rt chat wait` invocation. This is the only way the arm-race
+can set env on an `rt chat tail` invocation. This is the only way the arm-race
 window is reachable from a test.
 
-The pidfile is keyed on **handle alone**, under the rt dir — not `(room, handle)`. A room-less `wait` has no room component to key on, and because the wake topic is per-handle, two `--room`-scoped waiters for one handle are both woken by a message to either room, which is the double-wake the lock exists to prevent.
+The pidfile is keyed on **handle alone**, under the rt dir — not `(room, handle)`. A room-less tail has no room component to key on, and because the wake topic is per-handle, two `--room`-scoped tails for one handle both emit on a message to either room. Lower stakes than under the one-shot design — duplicate notifications rather than corrupted wake state — but still worth the lock.
 
-`--room` filters on the wake payload's `room` and **silently re-arms** on a non-matching wake, since the topic is per-handle. Without `--room`, a wake from any joined room exits.
+`--room` filters on the wake payload's `room` and **silently skips** a non-matching wake, continuing the stream. Without `--room`, every wake from any joined room emits.
 
-Exit line format — one line, no transcript:
+Line format — one line per wake, no transcript, and no "then re-arm" instruction, because there is nothing to re-arm:
 
 ```
-1 new in #build — @mention from repo-tools-main. `rt chat read` to see it, then re-arm.
+1 new in #build — @mention from repo-tools-main. `rt chat read` to see it.
 ```
 
 - [ ] **Step 4: Write the integration tests**
@@ -994,9 +1015,11 @@ and `setup.ts` sit at the `e2e/` root. **Build this file on
 matters here: it uses `createTestHome` and `RT_BINARY` from `../harness.ts`,
 has local `waitForSocket()` and `freePort()` helpers, and — the part chat
 cannot skip — keeps a `children[]` array so `afterAll` reaps processes
-orphaned by a mid-test assertion failure. Chat's tests spawn **blocking**
-`wait` processes; without that reaping, one failed assertion leaves a waiter
-running to its own `--timeout` and the suite hangs.
+orphaned by a mid-test assertion failure. Chat's tests spawn **long-lived**
+`tail` processes that never exit on their own; without that reaping, one
+failed assertion leaves a tail running for the life of the suite and hangs
+it. This matters more than it did under the one-shot design, where a stranded
+waiter at least died at its own `--timeout`.
 
 **Copy `events.test.ts`'s two-function helper split verbatim — do not
 collapse it into one.** `runRt(args, home, extraEnv?)` spawns `[RT_BINARY, ...args]` with
@@ -1053,67 +1076,93 @@ needs neither `home` nor env.
 // e2e/tests/chat.test.ts
 import { expect, test } from "bun:test";
 
-test("post wakes an armed agent, with exactly one line of output", async () => {
+// A tail never exits on its own, so tests read LINES from a live process
+// rather than awaiting an exit code. `nextLine(proc, ms)` resolves the next
+// stdout line or rejects on timeout; define it beside the other helpers.
+
+test("a post emits one line on a running tail", async () => {
   await finished(runRt(["chat", "join", "r", "--as", "listener"], home));
   await finished(runRt(["chat", "join", "r", "--as", "poster"], home));
-  const waiter = runRt(["chat", "wait", "--as", "listener"], home);
+  const tail = runRt(["chat", "tail", "--as", "listener"], home);
   await waitUntilArmed(home, "r", "listener");
   await finished(runRt(["chat", "post", "r", "@listener ping", "--as", "poster"], home));
-  const { exitCode, stdout } = await finished(waiter);
-  expect(exitCode).toBe(0);
-  expect(stdout.trimEnd().split("\n")).toHaveLength(1);
-  expect(stdout).toContain("#r");
+  const line = await nextLine(tail, 5_000);
+  expect(line).toContain("#r");
+  expect(line.split("\n")).toHaveLength(1);
+  tail.kill();
 });
 
-test("restart gap: a post with nobody armed is delivered on the next arm", async () => {
+test("THREE mentions arrive on ONE arming", async () => {
+  // The property the whole transport rests on. Under the previous
+  // backgrounded-Bash design the second message reached nobody, because the
+  // process had already exited delivering the first.
+  await finished(runRt(["chat", "join", "r", "--as", "listener"], home));
+  await finished(runRt(["chat", "join", "r", "--as", "poster"], home));
+  const tail = runRt(["chat", "tail", "--as", "listener"], home);
+  await waitUntilArmed(home, "r", "listener");
+  for (const n of ["one", "two", "three"]) {
+    await finished(runRt(["chat", "post", "r", `@listener ${n}`, "--as", "poster"], home));
+    expect(await nextLine(tail, 5_000)).toContain("#r");
+  }
+  expect(tail.killed).toBe(false);
+  tail.kill();
+});
+
+test("restart gap: a post with no tail running is emitted by the catch-up", async () => {
   await finished(runRt(["chat", "join", "r", "--as", "listener"], home));
   await finished(runRt(["chat", "join", "r", "--as", "poster"], home));
   await finished(runRt(["chat", "post", "r", "@listener while you were out", "--as", "poster"], home));
-  const started = Date.now();
-  const { exitCode, stdout } = await finished(runRt(["chat", "wait", "--as", "listener", "--timeout", "30s"], home));
-  expect(exitCode).toBe(0);
-  expect(Date.now() - started).toBeLessThan(5_000);
-  expect(stdout).toContain("1 new");
+  const tail = runRt(["chat", "tail", "--as", "listener"], home);
+  expect(await nextLine(tail, 5_000)).toContain("1 new");
+  tail.kill();
 });
 
-test("wake policy: mention wakes only when named; all wakes always; none never", async () => {
+test("wake policy: mention emits only when named; all always; none never", async () => {
   await finished(runRt(["chat", "join", "r", "--as", "poster"], home));
   await finished(runRt(["chat", "join", "r", "--as", "m"], home));
   await finished(runRt(["chat", "join", "r", "--as", "a", "--wake-on", "all"], home));
   await finished(runRt(["chat", "join", "r", "--as", "n", "--wake-on", "none"], home));
-  const mention = runRt(["chat", "wait", "--as", "m", "--timeout", "3s"], home);
-  const all = runRt(["chat", "wait", "--as", "a", "--timeout", "3s"], home);
-  const none = runRt(["chat", "wait", "--as", "n", "--timeout", "3s"], home);
+  const mention = runRt(["chat", "tail", "--as", "m"], home);
+  const all = runRt(["chat", "tail", "--as", "a"], home);
+  const none = runRt(["chat", "tail", "--as", "n"], home);
   await waitUntilArmed(home, "r", "m", "a", "n");
   await finished(runRt(["chat", "post", "r", "no mention here", "--as", "poster"], home));
-  expect((await finished(mention)).exitCode).toBe(124);
-  expect((await finished(all)).exitCode).toBe(0);
-  expect((await finished(none)).exitCode).toBe(124);
+  await expect(nextLine(mention, 2_000)).rejects.toThrow();
+  expect(await nextLine(all, 2_000)).toContain("#r");
+  await expect(nextLine(none, 2_000)).rejects.toThrow();
+  [mention, all, none].forEach(p => p.kill());
 });
 
-test("the arm race: a post landing between the unread check and the wait is not lost", async () => {
-  // The injection point is AFTER step 3's unread check and BEFORE the
-  // events:wait call. Injecting anywhere earlier in the step-1-to-step-4
-  // window proves nothing: step 3 catches those posts even with the step-1
-  // cursor deleted, so the test would pass against the exact regression it
-  // exists to catch. RT_CHAT_TEST_PRE_WAIT_MARKER names a FILE, never a
-  // command: the CLI creates it at that point and blocks until it is removed,
-  // so the test can post inside the window. A seam that evaluated a shell
-  // string from the environment would be arbitrary code execution in a
-  // shipped binary for anyone who can set env on an `rt chat wait`.
+test("a dead daemon ends the stream rather than going quiet", async () => {
+  // Monitor reads silence as "nothing happened", so a tail that blocks on a
+  // dead daemon is indistinguishable from a room with no traffic.
+  await finished(runRt(["chat", "join", "r", "--as", "listener"], home));
+  const tail = runRt(["chat", "tail", "--as", "listener"], home);
+  await waitUntilArmed(home, "r", "listener");
+  await stopDaemonForHome(home);
+  expect((await finished(tail)).exitCode).toBe(69);
+});
+
+test("the arm race: a post landing between the catch-up and the stream is not lost", async () => {
+  // The injection point is AFTER step 3's catch-up and BEFORE the events:wait
+  // call. Injecting anywhere earlier in the step-1-to-step-4 window proves
+  // nothing: step 3 catches those posts even with the step-1 cursor deleted,
+  // so the test would pass against the exact regression it exists to catch.
+  // RT_CHAT_TEST_PRE_WAIT_MARKER names a FILE, never a command: the CLI
+  // creates it at that point and blocks until it is removed, so the test can
+  // post inside the window. A seam that evaluated a shell string from the
+  // environment would be arbitrary code execution in a shipped binary.
   const marker = join(tmpdir(), `chat-race-${process.pid}`);
   await finished(runRt(["chat", "join", "r", "--as", "listener"], home));
   await finished(runRt(["chat", "join", "r", "--as", "poster"], home));
-  // runRt's env is hermetic by construction; the marker is threaded through
-  // its extra-env parameter rather than by spreading process.env.
-  const waiter = runRt(["chat", "wait", "--as", "listener", "--timeout", "20s"], home,
+  const tail = runRt(["chat", "tail", "--as", "listener"], home,
     { RT_CHAT_TEST_PRE_WAIT_MARKER: marker });
   await until(() => existsSync(marker));
   await finished(runRt(["chat", "post", "r", "@listener raced", "--as", "poster"], home));
   rmSync(marker);
-  expect((await finished(waiter)).exitCode).toBe(0);
+  expect(await nextLine(tail, 10_000)).toContain("#r");
+  tail.kill();
 });
-
 ```
 
 
@@ -1146,7 +1195,6 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 **Files:**
 - Create: `skills/rt-chat/SKILL.md`
-- Create: `skills/rt-chat/hooks/rearm.sh` — the Stop hook shim
 - Modify: `skills/rt-chat/SKILL.md` — document installing it into `~/.claude/settings.json`
 - Test: `commands/__tests__/chat.test.ts` — one test for the shim's exit-code branching
 
@@ -1161,41 +1209,29 @@ Description trigger: *use when asked to join or coordinate in an agent chat room
 
 Content that a `--help` page cannot carry:
 
-- **Arm in the background, never the foreground.** A foreground `wait` hangs the agent indefinitely. The most important line in the file.
-- **Re-arm after every read**, with the failure named: forget, and you go silently deaf.
+- **Arm once, with `Monitor` and `persistent: true`** — never `Bash` with `run_in_background`, which delivers one notification and dies, leaving the agent silently deaf after the first message. The most important line in the file, and the one an agent is likeliest to get wrong, because backgrounded Bash is the more familiar tool.
+- **Do not re-arm after reading.** One Monitor serves the whole session; a second tail notifies twice for every message. Re-arm only after a *stream ended* notification, which means the feed died — and check the daemon first if the exit was 69.
 - **Read is capped; do not pass `--full` without reason.**
 - **Announce before you take a file, branch, or service** — the coordination convention the system deliberately does not enforce.
-- **Never block on a human indefinitely.** When `@matt`-ing a blocking question, use `--timeout 15m`; on exit 124 proceed under a stated assumption and say so in the room. One sleeping human must not wedge a fleet.
+- **Never block on a human at all.** Ask `@matt`, state the assumption you are proceeding under, and keep working — the reply arrives as a notification whenever it comes. A tail does not block, so there is no wait to bound and no timeout to choose.
 - **A gate:** verify the daemon is reachable and you are a member before issuing control commands.
 
-- [ ] **Step 2: Write the Stop hook**
+**No Stop hook ships.** An earlier draft of this plan included one to re-arm
+agents that forgot, because a backgrounded one-shot dies after a single
+notification. Monitor stays armed for the session, so there is nothing to
+re-arm and the hook has no job. Do not add one back without revisiting the
+transport decision in the spec's **Wake protocol**.
 
-This is a **Claude Code** `Stop` hook in `~/.claude/settings.json`, not a git
-hook — `commands/hooks.ts` is git-hook machinery and is not involved. Ship the
-shim at `skills/rt-chat/hooks/rearm.sh` and have the skill document the
-settings entry that points at it; the plan does not edit the user's
-`settings.json`.
-
-Behavior: on turn end, if this handle is a room member with no live waiter,
-relaunch one in the background. It **must** branch on exit codes — a `69` from
-the last `wait` means the daemon is down, and re-arming against a dead daemon
-spins forever. Exit non-zero from the shim only when it genuinely failed;
-"nothing to do" is success.
-
-Test it as a unit by invoking the shim with a stubbed `rt` on `PATH` that
-returns 0, 124, and 69 in turn, asserting it re-arms for the first two and not
-the third.
-
-- [ ] **Step 3: Verify the skill loads**
+- [ ] **Step 2: Verify the skill loads**
 
 Run: `bun scripts/check-docs.ts` and whatever skill validation the repo has.
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add skills/rt-chat/
-git commit -m "chat: the rt:chat skill and the re-arm Stop hook
+git commit -m "chat: the rt:chat skill
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
