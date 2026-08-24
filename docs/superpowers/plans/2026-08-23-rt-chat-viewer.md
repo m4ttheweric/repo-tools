@@ -38,6 +38,7 @@ src/server/index.ts            NEW: entry — Bun.serve, /ws route, relay start
 src/server/app.ts              NEW: Hono app, chained routes, import-safe under vitest
 src/server/chat.ts             NEW: /api/chat/* routes over rt-client wrappers
 src/server/health.ts           NEW: the daemon probe route
+src/server/static-disk.ts      NEW: serves dist/ — mounted from index.ts (hono/bun)
 src/server/ws.ts               NEW: startRelay — one subscribe(), chat-filtered, fanned out
 src/server/*.test.ts           NEW: one beside each server module
 src/ui/RoomRail.tsx            NEW
@@ -59,7 +60,7 @@ A walking skeleton: a real page on a real https name before any chat feature exi
 
 **Files:**
 - Create: the `create-mantine-kit` scaffold at `~/Documents/GitHub/chat`
-- Create: `src/server/index.ts`, `src/server/app.ts`, `src/server/health.ts`
+- Create: `src/server/index.ts`, `src/server/app.ts`, `src/server/health.ts`, `src/server/static-disk.ts`
 - Test: `src/server/health.test.ts`
 
 **Interfaces:**
@@ -636,4 +637,6 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ## What this plan does not build
 
-The `@matt` notifier producer and the optional ntfy/Pushover push provider. Both are rt-side work (spec, **Notifications**), and neither is needed for the viewer to be useful — a mention already reaches Matt's desk through the tray once that producer exists.
+The `@matt` notifier producer and the optional ntfy/Pushover push provider —
+both rt-side work, and both now scheduled as **plan 1, Task 10** rather than
+left homeless. Neither is needed for the viewer to be useful.

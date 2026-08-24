@@ -1202,8 +1202,72 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
+### Task 10: The `@matt` notifier producer and optional push
+
+Spec **Notifications**. This appeared in the spec's Rollout but in neither
+plan's task list — it is rt-side work, so it lands here.
+
+**Files:**
+- Modify: `lib/daemon/handlers/chat.ts`
+- Modify: the notifier module that drains `notify_queue`
+- Test: `lib/daemon/__tests__/chat-handlers.test.ts`
+
+**Interfaces:**
+- Consumes: `enqueueNotification` / `peekNotificationQueue` from `lib/state/index.ts`; `getSetting` for `chat.humanHandle`, `chat.push.provider`, `chat.push.target`.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+test("a mention of the human handle enqueues one notification; other mentions do not", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "agent" });
+  await h["chat:join"]({ room: "r", handle: "matt" });
+  await h["chat:post"]({ room: "r", handle: "agent", body: "@matt ok to force-release?" });
+  expect(peekNotificationQueue(h.db)).toHaveLength(1);
+  await h["chat:post"]({ room: "r", handle: "agent", body: "@nobody hello" });
+  expect(peekNotificationQueue(h.db)).toHaveLength(1);
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `bun test lib/daemon/__tests__/chat-handlers.test.ts`
+Expected: FAIL — nothing is enqueued.
+
+- [ ] **Step 3: Implement the desk path**
+
+In `chat:post`, when the recipient set includes the `chat.humanHandle` setting
+(default `matt`), enqueue one notification. This adds a producer to
+`notify_queue`, which the daemon's notifier already drains to the tray — no
+new delivery machinery is built.
+
+- [ ] **Step 4: Implement optional push**
+
+When `chat.push.provider` is set (`ntfy` or `pushover`) with a
+`chat.push.target`, POST there as well. **Absent by default:** with no
+provider configured nothing is sent anywhere, and no third-party dependency is
+required for the feature to work. A failed push logs and does **not** fail the
+post — the message is already stored and the desk notification already queued,
+so failing here would discard work that succeeded.
+
+- [ ] **Step 5: Run the suite**
+
+Run: `bun test lib commands packages scripts`
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add lib/daemon/handlers/chat.ts lib/daemon/__tests__/chat-handlers.test.ts
+git commit -m "chat: notify Matt on mention, with optional push
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
 ## What this plan does not build
 
 Plan 2 (viewer repo) owns: the `create-mantine-kit` scaffold, the Hono server, `startRelay`, the daemon health probe and *daemon down* banner, the live/idle/deaf rendering, the composer, `deck add`, and integration test 5. Its dependency on this plan is the **exported rt-client wrappers from Task 6** — nothing else.
 
-Also out of scope here: the `@matt` notifier producer, the optional ntfy/Pushover push provider, and `deck domain` gates.
+Also out of scope here: `deck domain` gates, which land with the viewer.
