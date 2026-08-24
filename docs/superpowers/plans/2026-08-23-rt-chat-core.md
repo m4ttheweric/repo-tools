@@ -1241,6 +1241,24 @@ In `chat:post`, when the recipient set includes the `chat.humanHandle` setting
 `notify_queue`, which the daemon's notifier already drains to the tray — no
 new delivery machinery is built.
 
+`NotificationEvent` (`lib/state/notifier-store.ts`) is
+`{ id, title, message, category, timestamp, url?, pids? }`, all five of the
+first fields required:
+
+```ts
+enqueueNotification({
+  id: `chat:${messageId}`,
+  title: `#${room}`,
+  message: `${authorHandle}: ${body}`,
+  category: "chat",
+  timestamp: Date.now(),
+}, db);
+```
+
+**`id` is `chat:<messageId>` deliberately.** It is unique per message and
+stable, so a redelivery cannot double-notify — `isNotificationQueued` is
+already exported for exactly that check. Do not use a random id.
+
 - [ ] **Step 4: Implement optional push**
 
 When `chat.push.provider` is set (`ntfy` or `pushover`) with a
