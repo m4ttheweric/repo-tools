@@ -1,17 +1,20 @@
 /**
  * `rt team members sync|remove` — the owner side of the invite loop: sync
  * turns each outstanding invite record with a posted reply into a sops
- * recipient and a roster entry; remove revokes forge access, drops the
- * roster entry, and re-encrypts every domain file without that member's key.
+ * recipient and a roster entry; remove drops the roster entry and re-encrypts
+ * every domain file without that member's key. It revokes forge access only
+ * when this machine holds `rtMayManageMembership` for the team (MAT-387);
+ * otherwise it says so, because removal fails OPEN.
  *
  * Every reply blob crossing `relay.readReply` is attacker-controlled (the
  * relay itself, or anyone who intercepted the invite code, could have
  * posted it) — `openReply` only proves the blob decrypted under THIS
  * invite's key/AAD, not that its `agePublicKey` is actually a usable age
  * recipient, and not that it is a NEW recipient rather than an echo of one
- * that already exists. `.sops.yaml` is committed to the team repo and every
- * invitee already has forge read at mint time, so the owner's own public key
- * is readable by any invitee before they ever reply — a reply that echoes an
+ * that already exists. `.sops.yaml` is committed to the team repo and an
+ * invitee necessarily has forge read before they can redeem at all (whoever
+ * administers the repo granted it; since MAT-387 that is no longer rt), so the
+ * owner's own public key is readable by any invitee before they ever reply — a reply that echoes an
  * existing recipient's key back is checked for and refused (first-claim-wins:
  * a key belongs to exactly one handle), and `membersRemove` separately
  * refuses outright to remove whatever key this machine's own age identity
@@ -31,6 +34,7 @@ import { UserActionableError } from "../setup/errors.ts";
 import type { Probes } from "../setup/probes.ts";
 import { parseOriginUrl } from "../setup/team-settings.ts";
 import { revokeRead, type RevokeAccess } from "./forge.ts";
+import { readTeamLocal } from "./team-local.ts";
 import { openReply } from "./invite-crypto.ts";
 import { readInviteRecords, removeInviteRecord } from "./invite-records.ts";
 import type { RelayClient } from "./relay-client.ts";
@@ -144,6 +148,8 @@ export interface MembersSeams {
   readTeamStore: (slug: string) => Record<string, unknown>;
   writeSetting: typeof setSetting;
   revokeRead: typeof revokeRead;
+  /** Local, per-machine team record — carries the membership permission. Seamed like invite.ts's, so a test grants it explicitly rather than by writing a real home. */
+  readTeamLocal: typeof readTeamLocal;
   warn: (message: string) => void;
 }
 
@@ -157,7 +163,7 @@ function defaultWarn(message: string): void {
 }
 
 export function realMembersSeams(): MembersSeams {
-  return { readTeamStore: defaultReadTeamStore, writeSetting: setSetting, revokeRead, warn: defaultWarn };
+  return { readTeamStore: defaultReadTeamStore, writeSetting: setSetting, revokeRead, readTeamLocal, warn: defaultWarn };
 }
 
 function teamRemote(p: Probes, slug: string): string | null {
@@ -339,8 +345,23 @@ export async function membersRemove(
     }
   }
 
+  // Mirrors the mint side (MAT-387): rt does not administer membership on a
+  // repo it was merely pointed at. The asymmetry that matters is that removal
+  // FAILS OPEN — the person keeps their access — so when rt is not permitted to
+  // revoke, the caller is told plainly rather than in a footnote. Silence here
+  // would read as "removed", and they would still be able to clone.
   const remote = teamRemote(p, slug);
-  const revoke = remote !== null ? await seams.revokeRead(p, remote, handle) : { access: "skipped" as RevokeAccess, manualSteps: [] as string[] };
+  const mayManage = seams.readTeamLocal(p, slug).rtMayManageMembership;
+  const revoke =
+    remote !== null && mayManage
+      ? await seams.revokeRead(p, remote, handle)
+      : {
+          access: "skipped" as RevokeAccess,
+          manualSteps:
+            remote === null
+              ? ([] as string[])
+              : [`"${handle}" still has access to ${remote} — remove them there too; mattstack does not manage membership on this repo`],
+        };
 
   const rosterRemoved = existingEntry !== undefined;
   if (rosterRemoved) {
