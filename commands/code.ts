@@ -1,7 +1,12 @@
 #!/usr/bin/env bun
 
 /**
- * Editor-preference and launch machinery shared with `rt nav`.
+ * rt code — Open a worktree in your preferred editor.
+ *
+ *   rt code          the current repo (picker when you're not in one)
+ *   rt code --pick   force the worktree/repo picker
+ *
+ * The launch machinery below is shared with `rt nav`.
  *
  * Tracks a per-repo editor choice and per-directory workspace-file choice
  * (rt.workspacePrefs, machine-scoped), detects installed editors, and
@@ -16,6 +21,8 @@ import { homedir } from "os";
 import { getSetting } from "../lib/settings/resolve.ts";
 import { setSetting } from "../lib/settings/write.ts";
 import { dim, green, red, reset } from "../lib/tui.ts";
+import { getRepoIdentity, getKnownRepos } from "../lib/repo.ts";
+import { pickWorktreeWithSwitch, pickFromAllRepos, isSwitchRepo } from "../lib/pickers.ts";
 
 // ─── Preference storage (rt.workspacePrefs, machine-scoped) ────────────────
 
@@ -303,6 +310,56 @@ export async function openDirectoryInEditor(dirPath: string): Promise<void> {
     console.error(`\n  ${green}✓${reset} Opened ${dirPath.split("/").pop()} in ${editorLabel}`);
   } else {
     console.error(`\n  ${red}Failed to open ${editorLabel}. Is '${editor}' CLI installed?${reset}`);
+    process.exit(1);
+  }
+}
+
+// ─── Entry ───────────────────────────────────────────────────────────────────
+
+export async function openInEditor(args: string[]): Promise<void> {
+  const pickMode = args.includes("-p") || args.includes("--pick");
+
+  // getRepoIdentity() registers the current repo via updateRepoIndex as a side
+  // effect, so it MUST run before getKnownRepos() — otherwise a repo entered
+  // for the first time is absent from `repos` and falls through to the global
+  // picker instead of being recognized as where you already are.
+  const identity = getRepoIdentity();
+  const repos = getKnownRepos();
+  const currentRepo = identity
+    ? repos.find(r => r.repoName === identity.repoName) ?? null
+    : null;
+
+  let selectedPath: string;
+
+  if (!pickMode && currentRepo) {
+    selectedPath = identity!.repoRoot;
+  } else if (pickMode && currentRepo && currentRepo.worktrees.length > 1) {
+    const result = await pickWorktreeWithSwitch(currentRepo, identity!.repoRoot);
+    selectedPath = isSwitchRepo(result)
+      ? await pickFromAllRepos(repos)
+      : result;
+  } else {
+    selectedPath = await pickFromAllRepos(repos);
+  }
+
+  const selectedRepo = repos.find(r => r.worktrees.some(wt => wt.path === selectedPath));
+  const repoName = selectedRepo?.repoName || selectedPath.split("/").pop() || "unknown";
+
+  const prefs = loadPrefs();
+  const editor = await ensureEditor(prefs, repoName);
+  const editorLabel = editorLabelFor(editor);
+  const target = await resolveWorkspaceTarget(selectedPath, prefs);
+
+  const used = launchEditor(editor, target);
+  if (used) {
+    if (used !== editor) { prefs.editors[repoName] = used; savePrefs(prefs); }
+    const label = target.endsWith(".code-workspace")
+      ? target.split("/").pop()
+      : selectedPath.split("/").pop();
+    console.log(`\n  ${green}✓${reset} Opened ${label} in ${editorLabel}`);
+  } else {
+    console.log(`\n  ${red}Failed to open ${editorLabel}. Is '${editor}' CLI installed?${reset}`);
+    console.log(`  ${dim}Reset your editor preference with: rt settings set rt.workspacePrefs '{}' --scope machine${reset}\n`);
     process.exit(1);
   }
 }
