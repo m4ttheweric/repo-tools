@@ -66,7 +66,14 @@ else
 fi
 echo "== Assertions =="
 
-[ -d "$PROD" ] || fail "prod bundle not found at $PROD"
+# Aborts rather than recording a failure and continuing: several assertions
+# below `find` the whole of $PROD, so a --app path that is not a bundle (a
+# typo resolving to $HOME, or to /) walks the entire filesystem instead of
+# reporting the mistake.
+if [ ! -f "$PROD/Contents/Info.plist" ]; then
+    fail "prod bundle not found at $PROD (no Contents/Info.plist — not an app bundle)"
+    echo ""; echo "  $PASS passed, $FAIL failed"; exit 1
+fi
 [ -z "$DEV" ] || [ -d "$DEV" ] || fail "dev bundle not found at $DEV"
 
 # ─── build.sh never notarizes, never --deep signs ───────────────────────────
@@ -308,29 +315,34 @@ check_helpers() { # app
         unsigned=0; first_unsigned=""
         while IFS= read -r -d '' f; do
             codesign --verify --strict "$f" 2>/dev/null && continue
-            unsigned=$((unsigned + 1)); [ -n "$first_unsigned" ] || first_unsigned="${f#"$p"/}"
+            # Relative to the bundle, not to $p: a single-file helper's $p IS
+            # the file, so stripping "$p/" leaves the absolute path in the
+            # message.
+            unsigned=$((unsigned + 1)); [ -n "$first_unsigned" ] || first_unsigned="${f#"$app"/}"
         done < <(find "$p" -type f -print0)
         [ "$unsigned" -eq 0 ] \
             && pass "$exe Helpers/$name: every file carries a signature" \
-            || fail "$exe Helpers/$name: $unsigned unsigned file(s), first: $name/$first_unsigned — the outer bundle seal will refuse this"
+            || fail "$exe Helpers/$name: $unsigned unsigned file(s), first: $first_unsigned — the outer bundle seal will refuse this"
+        # Every bundled helper answers --version from inside the bundle
+        # (signed, entitled). Driven off deps.lock rather than a hand-kept
+        # list: gh and glab were both bundled for a release with no run
+        # assertion at all, because adding a row and remembering to add a line
+        # here are two separate acts. Helpers that are directories rather than
+        # single executables are asserted individually below.
+        case "$name" in
+            node|fast-browser) ;;
+            *)
+                if [ -f "$p" ] && [ -x "$p" ]; then
+                    "$p" --version >/dev/null 2>&1 \
+                        && pass "$exe Helpers/$name runs (entitlements: $ent)" \
+                        || fail "$exe Helpers/$name does not run from inside the bundle under its entitlements"
+                else
+                    fail "$exe Helpers/$name at $bundlePath is not an executable file"
+                fi
+                ;;
+        esac
     done <<< "$LOCK_TSV"
-    # Every bundled helper answers --version from inside the bundle (signed, entitled).
-    [ -x "$app/Contents/Helpers/fzf" ] && "$app/Contents/Helpers/fzf" --version >/dev/null 2>&1 && pass "$exe Helpers/fzf runs" || fail "$exe Helpers/fzf does not run"
-    [ -x "$app/Contents/Helpers/jq" ] && "$app/Contents/Helpers/jq" --version >/dev/null 2>&1 && pass "$exe Helpers/jq runs" || fail "$exe Helpers/jq does not run"
-    [ -x "$app/Contents/Helpers/bun" ] && "$app/Contents/Helpers/bun" --version >/dev/null 2>&1 && pass "$exe Helpers/bun runs (jit entitlement sufficient)" || fail "$exe Helpers/bun does not run under its entitlements"
     [ -x "$app/Contents/Helpers/node/bin/node" ] && "$app/Contents/Helpers/node/bin/node" -e 'process.exit(0)' >/dev/null 2>&1 && pass "$exe Helpers/node runs" || fail "$exe Helpers/node does not run under its entitlements"
-    # age-keygen and sops are the secrets path. A clean Mac has neither (both
-    # are Homebrew-only), which dead-ended every install at home.init until
-    # they were bundled — so assert they RUN, not merely that they shipped.
-    [ -x "$app/Contents/Helpers/age-keygen" ] && "$app/Contents/Helpers/age-keygen" --version >/dev/null 2>&1 && pass "$exe Helpers/age-keygen runs" || fail "$exe Helpers/age-keygen does not run"
-    [ -x "$app/Contents/Helpers/sops" ] && "$app/Contents/Helpers/sops" --version >/dev/null 2>&1 && pass "$exe Helpers/sops runs" || fail "$exe Helpers/sops does not run"
-    # Only asserted when bundled: gitq is a deps.lock row that can be `pending`,
-    # and a missing-file check here would pass vacuously in that state.
-    if [ -x "$app/Contents/Helpers/gitq" ]; then
-        "$app/Contents/Helpers/gitq" --version >/dev/null 2>&1 \
-            && pass "$exe Helpers/gitq runs" \
-            || fail "$exe Helpers/gitq does not run from inside the bundle"
-    fi
     # Actually RUN it, like every other helper above. Asserting the entry file
     # merely exists is what let a bundled fast-browser that crashes at module
     # load pass every gate: build.sh prunes .claude-plugin/ (a dotted dir the
