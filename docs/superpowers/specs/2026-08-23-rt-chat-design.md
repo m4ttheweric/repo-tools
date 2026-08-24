@@ -284,9 +284,18 @@ exactly as written:
 
 1. **Snapshot the journal head first**, before looking at anything else.
 2. Set `armed_at` via `chat:arm`.
-3. Emit one line per unread message past `last_read_id` that would have woken
-   this handle. This closes the restart gap — an agent whose tail died and
-   restarted never misses a mention.
+3. Emit **one line per room** summarising unread past `last_read_id` that
+   would have woken this handle — the same per-room count line the stream
+   uses — and record the highest message id covered as the watermark `W`.
+   This closes the restart gap: an agent whose tail died and restarted never
+   misses a mention.
+
+   **Per room, not per message.** An agent returning from an absence holds the
+   most unread, so per-message emission would fire N notifications at tail
+   start — the transcript dump this design's opening constraint forbids
+   ("notification must be a doorbell, not a delivery"). The one-shot design
+   aggregated for free: it had exactly one line to spend before exiting. A
+   stream has to choose to.
 4. Stream: call `events:wait` with pattern `chat/wake/<me>` and `after` set to
    the cursor from step 1, in a loop, threading the cursor and emitting one
    line per wake. Touch `last_seen_at` each round.
@@ -397,8 +406,20 @@ step 3 forgetting to exclude the agent's own posts — every message an agent
 posts notifies itself, forever. One shared
 function, called by both paths.
 
-**Double-tail is refused.** A pidfile keyed on **handle alone** under the rt
-dir; a second `tail` refuses with a clear message. Not `(room, handle)`: a
+**Double-tail is refused, and the lock must be liveness-checked.** A pidfile
+keyed on **handle alone** under the rt dir; a second `tail` refuses with a
+clear message — **but only after confirming the recorded pid is alive and is
+an `rt chat tail`.** If it is dead, remove the file and proceed.
+
+That check is not hygiene, it is the recovery path. A one-shot waiter was
+short-lived and exited normally, removing its own file. A tail is long-lived
+and dies *abnormally* — session end, machine sleep, SIGKILL, Monitor stopping
+the command — none of which run cleanup. Since the Stop hook was deleted,
+*stream ends → agent notified → agent re-arms* is the **only** recovery path,
+so a stale pidfile refuses that re-arm with "already armed" and leaves the
+agent permanently deaf while telling it a tail is running. It would also
+disagree with `armed_at`, which the daemon's startup clear resets while
+nothing clears the file. Not `(room, handle)`: a
 room-less tail has no room component to key on, and because the wake topic is
 per-handle, two `--room`-scoped tails for one handle both emit on a message to
 either room. Lower stakes than under the one-shot design — the cost is

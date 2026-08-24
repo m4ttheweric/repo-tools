@@ -322,7 +322,7 @@ The recipient computation added here is consumed by **both** the post path and T
   - `export function readUnread(args: { handle: string; room?: string; limit: number; sinceMs?: number }, db?: Database): { room: string; messages: ChatMessage[] }[]`
   - `export function listMessages(args: { room: string; before?: number; limit: number }, db?: Database): ChatMessage[]`
   - `export function markRead(handle: string, room?: string, db?: Database): void`
-  - `export function unreadWakingCount(handle: string, db?: Database): { room: string; count: number; mentions: number }[]`
+  - `export function unreadWakingCount(handle: string, db?: Database): { room: string; count: number; mentions: number; maxId: number }[]`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -656,7 +656,7 @@ export function chatMessages(a: { room: string; before?: number; limit?: number 
 export function chatArm(a: { handle: string; room?: string }, o?: RtClientOptions): Promise<RtResponse<Record<string, never>>>;
 export function chatTouch(a: { handle: string }, o?: RtClientOptions): Promise<RtResponse<Record<string, never>>>;
 export function chatDisarm(a: { handle: string }, o?: RtClientOptions): Promise<RtResponse<Record<string, never>>>;
-export function chatUnreadWaking(a: { handle: string; room?: string }, o?: RtClientOptions): Promise<RtResponse<{ rooms: { room: string; count: number; mentions: number }[] }>>;
+export function chatUnreadWaking(a: { handle: string; room?: string }, o?: RtClientOptions): Promise<RtResponse<{ rooms: { room: string; count: number; mentions: number; maxId: number }[] }>>;
 export function eventsHead(o?: RtClientOptions): Promise<RtResponse<{ cursor: number }>>;
 ```
 
@@ -708,10 +708,12 @@ test("chat:unread-waking reports what would wake a handle without advancing its 
   await h["chat:join"]({ room: "r", handle: "a" });
   await h["chat:join"]({ room: "r", handle: "b" });
   await h["chat:post"]({ room: "r", handle: "a", body: "@b hi" });
-  expect((await h["chat:unread-waking"]({ handle: "b" })).data)
-    .toMatchObject({ rooms: [{ room: "r", count: 1, mentions: 1 }] });
-  expect((await h["chat:unread-waking"]({ handle: "b" })).data)
-    .toMatchObject({ rooms: [{ room: "r", count: 1, mentions: 1 }] });
+  const first = (await h["chat:unread-waking"]({ handle: "b" })).data;
+  expect(first).toMatchObject({ rooms: [{ room: "r", count: 1, mentions: 1 }] });
+  // maxId is the watermark Task 8's step 4 skips at or below; without it the
+  // tail cannot tell which wakes the catch-up already covered.
+  expect(first.rooms[0]!.maxId).toBeGreaterThan(0);
+  expect((await h["chat:unread-waking"]({ handle: "b" })).data).toEqual(first);
 });
 ```
 
@@ -930,15 +932,23 @@ notification.
 
 1. **Snapshot the journal head** via `events:head`.
 2. `chat:arm`.
-3. Emit one line per unread message that *would have woken this handle* —
-   using `recipientsFor`'s rule, author-exclusion included. This is the
-   catch-up, and it closes the restart gap. **Record the highest message id
-   emitted** as the watermark for step 4.
+3. Call `chatUnreadWaking` and emit **one line per room** with its real count
+   — the same per-room format the stream uses. Set the watermark `W` to the
+   highest `maxId` across those rooms (`0` if there is no unread). This is the
+   catch-up, and it closes the restart gap.
+
+   **Per room, not per message**, for two reasons. The line format is a count
+   line (`1 new in #build — …`), so per-message emission would fire five
+   notifications each claiming "1 new". And an agent returning from an absence
+   holds the most unread, so N unread would mean N notifications at tail start
+   — the transcript dump the design forbids. The one-shot version aggregated
+   for free, having one line to spend before exiting; a stream must choose to.
+   Note the restart-gap test cannot catch a regression here: with a single
+   unread message, per-room and per-message emission are byte-identical.
 4. Loop: call the `events:wait` handler with pattern `chat/wake/<me>` and
    `after` = the step-1 cursor, thread the returned cursor into the next call,
    emit one line per wake, and call `chat:touch` each round. **Skip any wake
-   whose message `id` is at or below the watermark step 3 recorded** — see
-   below.
+   whose message `id` is at or below the watermark `W`** — see below.
 5. On daemon-unreachable: **retry with bounded backoff first** (about a
    minute, diagnostics to stderr, which Monitor does not notify on). Only when
    that budget is exhausted, print one line, `chat:disarm`, exit **69**. Never
@@ -954,7 +964,7 @@ notification.
 
 **Why step 1 precedes step 3:** `events:wait` with no `after` snapshots `head = maxId()` at registration and delivers only ids above it. Reading the database and *then* registering without a cursor leaves a window — process spawn plus IPC — in which a post commits and emits *below* the new waiter's head, seen by neither the catch-up nor the stream. That message reaches nobody until some later one happens to arrive. The transport change does not touch this window: it is between the `chat_messages` read and waiter registration, both of which are unchanged.
 
-**Why step 4 needs the watermark — the mirror hole the transport opened.** Under the previous one-shot design, step 3 finding unread caused an immediate exit, so step 4 was never reached and the two delivery paths could not both fire. A tail continues into step 4, and the step-1 cursor predates step 3's read — so a message posted between step 1 and step 3 is delivered **twice**: by the catch-up because its row is unread, and by the stream because its wake id exceeds the cursor. Under Monitor each line is its own notification, so the agent wakes twice for one mention — the exact cost the pidfile exists to prevent, self-inflicted by a single tail. Step 3 records the highest message id it emitted; step 4 skips wakes at or below it. Ids are monotonic, so it cannot over-suppress.
+**Why step 4 needs the watermark — the mirror hole the transport opened.** Under the previous one-shot design, step 3 finding unread caused an immediate exit, so step 4 was never reached and the two delivery paths could not both fire. A tail continues into step 4, and the step-1 cursor predates step 3's read — so a message posted between step 1 and step 3 is delivered **twice**: by the catch-up because its row is unread, and by the stream because its wake id exceeds the cursor. Under Monitor each line is its own notification, so the agent wakes twice for one mention — the exact cost the pidfile exists to prevent, self-inflicted by a single tail. Step 3 sets `W` to the highest `maxId` `chatUnreadWaking` reports; step 4 skips wakes whose payload `id` is at or below `W`. The two ids live in different spaces and are used correctly: the step-1 cursor `C` is a journal rowid gating `events:wait`'s `after`, while `W` is a `chat_messages` rowid gating the wake payload's `{id}`. Monotonicity holds both ways — a message posted after step 3's read necessarily has id > `W`, so the arm-race fix still fires, and anything at or below `W` was in the catch-up's result set by construction, so it cannot over-suppress.
 
 **Chat drives the `events:wait` handler directly, one round at a time — never `rt events wait`.** That CLI owns its own `while (true)` loop and never returns between polls, prints events-shaped JSON, and its `fail()` exits 1 rather than 69. Chat owns its loop, its exit codes, and its per-line output, and calls `chat:touch` each round so presence rides the loop.
 
@@ -1004,21 +1014,37 @@ Expected: FAIL — no `tail` verb.
 needs is introduced below. Extend `leave` to remove the pidfile and signal the
 process once this task's lock exists.
 
-**Two test seams, both marker files, never commands.** A seam that evaluated a
-shell string from the environment would hand arbitrary code execution to
-anyone who can set env on an `rt chat tail` invocation.
-`RT_CHAT_TEST_PRE_CATCHUP_MARKER` opens the **step-1 → step-3** window, which
-is where duplicate delivery lives; `RT_CHAT_TEST_PRE_WAIT_MARKER` opens the
-**step-3 → step-4** window, which is where the missed-wake race lives. They
-are different windows guarding opposite defects, and one seam cannot test
-both.
+**A tail for a non-member exits 0 with a line saying so, and the skill must
+not re-arm after a deliberate shutdown.** Same class as the three findings
+above — another guarantee termination used to provide. `leave` kills the tail,
+which ends the stream, which notifies the agent, whose standing instruction is
+to re-arm when a stream ends. That re-arm would start a tail for a room it
+just left, which exits, which notifies, which re-arms: a spin driven by the
+recovery rule itself. Two guards, both needed: `tail` exits **0** (not 69) for
+a non-member so the backoff does not mask it, and the skill's rule is
+"re-arm when a stream ends **unless you ended it**".
 
-**The test seam.** Between step 3 and step 4, if `RT_CHAT_TEST_PRE_WAIT_MARKER`
-is set, create that file and block until it is removed, giving up after 2
-seconds. It names a **path**, never a command — a seam that evaluated a shell
-string from the environment would hand arbitrary code execution to anyone who
-can set env on an `rt chat tail` invocation. This is the only way the arm-race
-window is reachable from a test.
+**Two test seams, both marker files, never commands.** Each creates its file
+at its point and blocks until the file is removed, giving up after 2 seconds.
+They name a **path**, never a command — a seam that evaluated a shell string
+from the environment would hand arbitrary code execution to anyone who can set
+env on an `rt chat tail` invocation.
+`RT_CHAT_TEST_PRE_CATCHUP_MARKER` opens the **step-1 → step-3** window, where
+duplicate delivery lives; `RT_CHAT_TEST_PRE_WAIT_MARKER` opens the
+**step-3 → step-4** window, where the missed-wake race lives. They guard
+opposite defects in different windows, and neither seam can test the other's.
+
+**The pidfile must be liveness-checked before it refuses anything.** On
+finding one, `process.kill(pid, 0)` and confirm the pid is an `rt chat tail`;
+if it is dead, remove the file and proceed. This is not hygiene — it is the
+recovery path. A one-shot waiter was short-lived and exited normally, removing
+its own file; a tail is long-lived and dies *abnormally* (session end, machine
+sleep, SIGKILL, Monitor stopping the command), none of which run cleanup.
+Since the Stop hook is gone, *stream ends → agent notified → agent re-arms* is
+the only recovery there is, so a stale pidfile refuses that re-arm with
+"already armed" and leaves the agent permanently deaf while telling it a tail
+is running. It would also disagree with `armed_at`, which the daemon's startup
+clear resets while nothing clears the file.
 
 The pidfile is keyed on **handle alone**, under the rt dir — not `(room, handle)`. A room-less tail has no room component to key on, and because the wake topic is per-handle, two `--room`-scoped tails for one handle both emit on a message to either room. Lower stakes than under the one-shot design — duplicate notifications rather than corrupted wake state — but still worth the lock.
 
