@@ -130,7 +130,8 @@ async function runCreate(
     log.warn({ repo: repoName, tree: name, path }, "worktree create: git worktree list failed; skipping doppler sync");
   } else {
     const worktreeRoots = gitEntries.map((w) => w.path);
-    const repoIdentity = await deriveRepoIdentity(repoPath);
+    const derived = await deriveRepoIdentity(repoPath);
+    const repoIdentity = derived.kind === "remote" ? derived.id : null;
     await reconcileForRepo({ repoIdentity, worktreeRoots });
   }
 

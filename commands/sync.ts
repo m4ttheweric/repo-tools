@@ -158,7 +158,8 @@ async function syncBranch(
     };
   }
 
-  const config = loadSyncConfig(await deriveRepoIdentity(cwd));
+  const derivedIdentity = await deriveRepoIdentity(cwd);
+  const config = loadSyncConfig(derivedIdentity.kind === "remote" ? derivedIdentity.id : null);
   let resetResult: ResetResult | null = null;
   let rebaseResult: RebaseResult | null = null;
   let needsPush = false;

@@ -226,7 +226,7 @@ describe("commands/hooks", () => {
 
   describe("toggleHooks status regenerates the cache before displaying", () => {
     function ctxFor(remoteUrl: string): CommandContext {
-      return { identity: { repoName: "repo", repoRoot, dataDir, remoteUrl, baseUrl: "" } };
+      return { identity: { repoName: "repo", identity: "path:/repo", repoRoot, dataDir, remoteUrl, baseUrl: "" } };
     }
 
     test("stale cache + store-owned value -> status leaves hooks.json matching the resolved store value", async () => {

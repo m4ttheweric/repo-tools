@@ -102,7 +102,7 @@ export async function primeTeamTrackingIdentityMap(repoIndex: Record<string, str
   const map: IdentityNameMap = {};
   for (const [name, path] of Object.entries(repoIndex)) {
     const identity = await deriveRepoIdentity(path);
-    if (identity) map[identity] = name;
+    if (identity.kind === "remote") map[identity.id] = name;
   }
   // A transient repos.json read failure yields an empty repoIndex; adopting
   // that would blank a healthy map and flap every team-tracked watcher.

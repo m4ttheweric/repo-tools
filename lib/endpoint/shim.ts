@@ -183,7 +183,8 @@ export async function buildInterceptRules(): Promise<InterceptRule[]> {
   const rules: InterceptRule[] = [];
   for (const [repo, repoPath] of Object.entries(index)) {
     const repoRemote = await captureRepoRemote(repoPath);
-    const repoIdentity = repoRemote === null ? null : identityFromRemote(repoRemote);
+    const derivedIdentity = repoRemote === null ? null : identityFromRemote(repoRemote);
+    const repoIdentity = derivedIdentity && derivedIdentity.kind === "remote" ? derivedIdentity.id : null;
     const config = loadEndpointConfig({ repoIdentity, repoName: repo });
     if (config.intercepts.length === 0) continue;
     for (const intercept of config.intercepts) {

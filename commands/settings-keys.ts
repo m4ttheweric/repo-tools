@@ -102,7 +102,8 @@ async function resolveRepoContext(repoName: string | undefined): Promise<RepoCon
   if (!repoName) return { repoIdentity: null };
   const repoPath = repoIndex()[repoName];
   if (!repoPath) fail(`repo "${repoName}" is not registered in ~/.mattstack/rt/repos.json`);
-  const identity = await deriveRepoIdentity(repoPath);
+  const derived = await deriveRepoIdentity(repoPath);
+  const identity = derived.kind === "remote" ? derived.id : null;
   if (!identity) {
     console.error(
       `${dim}identity: none derivable for ${repoName} — repo sections unreachable (see rt.repoIdentityOverrides)${reset}`,
@@ -223,9 +224,9 @@ export async function settingsSet(args: string[]): Promise<void> {
   if (repoName) {
     repoPath = repoIndex()[repoName];
     if (!repoPath) fail(`repo "${repoName}" is not registered in ~/.mattstack/rt/repos.json`);
-    const identity = await deriveRepoIdentity(repoPath);
-    if (!identity) fail(`repo "${repoName}"'s remote does not normalize to an identity — repo-scoped settings are unreachable for it (see \`rt settings explain\`)`);
-    repoIdentity = identity;
+    const derived = await deriveRepoIdentity(repoPath);
+    if (derived.kind !== "remote") fail(`repo "${repoName}"'s remote does not normalize to an identity — repo-scoped settings are unreachable for it (see \`rt settings explain\`)`);
+    repoIdentity = derived.id;
   }
 
   try {

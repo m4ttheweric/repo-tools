@@ -326,7 +326,8 @@ export async function toggleHooks(args: string[], ctx: CommandContext): Promise<
     process.exit(1);
   }
 
-  const repoIdentity = remoteUrl ? identityFromRemote(remoteUrl) : null;
+  const derivedIdentity = remoteUrl ? identityFromRemote(remoteUrl) : null;
+  const repoIdentity = derivedIdentity && derivedIdentity.kind === "remote" ? derivedIdentity.id : null;
   const config = loadHooksConfig(dataDir, discoveredHooks, repoIdentity);
 
   // Always regenerate shims and ensure hooksPath is set

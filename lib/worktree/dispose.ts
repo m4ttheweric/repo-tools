@@ -82,8 +82,8 @@ export const STATUS_FAILED_BLOCKER = "<status-failed>";
 export async function classifyDirtyAsync(
   worktreePath: string,
 ): Promise<{ discard: string[]; blockers: string[] }> {
-  const repoIdentity = await deriveRepoIdentity(worktreePath);
-  const rules = loadSyncConfig(repoIdentity).autoResolve;
+  const derived = await deriveRepoIdentity(worktreePath);
+  const rules = loadSyncConfig(derived.kind === "remote" ? derived.id : null).autoResolve;
   const status = await runGit(worktreePath, ["status", "--porcelain"]);
   if (status.exitCode !== 0) {
     return { discard: [], blockers: [STATUS_FAILED_BLOCKER] };

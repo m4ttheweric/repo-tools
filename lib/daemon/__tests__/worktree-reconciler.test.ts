@@ -71,7 +71,7 @@ async function ensureIdentity(repoPath: string, repoName: string): Promise<strin
   }
 
   const direct = await deriveRepoIdentity(repoPath);
-  if (direct) return direct;
+  if (direct.kind === "remote") return direct.id;
 
   const identity = `rttest.local/${repoName}`;
   const store = readMachineStore();

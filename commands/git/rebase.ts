@@ -242,7 +242,9 @@ export async function rebaseOnto(opts: RebaseOptions): Promise<RebaseResult> {
   }
 
   // 4. Load auto-resolve rules
-  const rules = opts.autoResolve ?? loadSyncConfig(await deriveRepoIdentity(cwd)).autoResolve;
+  const derivedIdentity = opts.autoResolve ? null : await deriveRepoIdentity(cwd);
+  const rules = opts.autoResolve
+    ?? loadSyncConfig(derivedIdentity && derivedIdentity.kind === "remote" ? derivedIdentity.id : null).autoResolve;
 
   // 5. Dry run
   if (dryRun) {

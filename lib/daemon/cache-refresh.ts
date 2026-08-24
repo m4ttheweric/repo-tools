@@ -204,7 +204,8 @@ export function createCacheRefresher(deps: CacheRefresherDeps): () => Promise<vo
         if (!existsSync(repoPath)) continue;
         try {
           const worktreeRoots = listWorktreeRoots(repoPath);
-          const repoIdentity = await deriveRepoIdentity(repoPath);
+          const derivedIdentity = await deriveRepoIdentity(repoPath);
+          const repoIdentity = derivedIdentity.kind === "remote" ? derivedIdentity.id : null;
           const summary = await reconcileForRepo({ repoIdentity, worktreeRoots });
           if (summary.skipped) {
             if (summary.skipped === "malformed-template") {

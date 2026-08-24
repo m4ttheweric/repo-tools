@@ -94,7 +94,8 @@ export async function runInterception(
   // `rt.repoIdentityOverrides` resolves to its upstream identity here too. A
   // rule with no recorded remote resolves with a null identity: repo-scoped
   // sections are unreachable, only global scopes answer.
-  const repoIdentity = rule.repoRemote === null ? null : identityFromRemote(rule.repoRemote);
+  const derivedIdentity = rule.repoRemote === null ? null : identityFromRemote(rule.repoRemote);
+  const repoIdentity = derivedIdentity && derivedIdentity.kind === "remote" ? derivedIdentity.id : null;
   const repoCfg = loadEndpointConfig({ repoIdentity, repoName: rule.repo });
   const roleCfg = repoCfg.roles[match.role];
   if (!roleCfg) {

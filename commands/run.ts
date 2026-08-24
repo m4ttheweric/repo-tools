@@ -152,7 +152,8 @@ async function selectPackageAndScript(
   const { runNavPicker } = await import("../lib/navigate.ts");
   const packages = getWorkspacePackages(worktreePath);
   const label = contextLabel ? `${contextLabel}` : "";
-  const repoIdentity = await deriveRepoIdentity(worktreePath);
+  const derivedIdentity = await deriveRepoIdentity(worktreePath);
+  const repoIdentity = derivedIdentity.kind === "remote" ? derivedIdentity.id : null;
   let cameFromScript = false;
   const q: QueuedItem[] = queue ?? [];
 
@@ -676,7 +677,8 @@ export async function runCommand(
     // ── Preset direct invoke: `rt run <preset-name>` ──────────────────────
     const presetArg = args.find((a) => !a.startsWith("-") && a !== "again");
     if (presetArg) {
-      const preset = findPreset(await deriveRepoIdentity(worktreePath), presetArg);
+      const derivedIdentity = await deriveRepoIdentity(worktreePath);
+      const preset = findPreset(derivedIdentity.kind === "remote" ? derivedIdentity.id : null, presetArg);
       if (preset) {
         await launchPreset(preset, worktreePath);
         return;

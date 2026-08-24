@@ -6,9 +6,10 @@
  */
 
 import { execSync } from "child_process";
-import { existsSync, readdirSync, readFileSync, mkdirSync } from "fs";
+import { existsSync, readdirSync, readFileSync, mkdirSync, realpathSync } from "fs";
 import { basename, join, resolve } from "path";
 import { repoDataDir } from "./rt-paths.ts";
+import { identityFromRemote, serializeIdentity } from "./settings/identity.ts";
 
 // ─── Re-exports ──────────────────────────────────────────────────────────────
 
@@ -28,6 +29,8 @@ export const RT_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 
 export interface RepoIdentity {
   repoName: string;
+  /** Serialized wire identity (rt-client's `RepoIdentity`) — the store/index key. */
+  identity: string;
   repoRoot: string;
   dataDir: string;
   remoteUrl: string;
@@ -55,28 +58,95 @@ function deriveBaseUrl(remoteUrl: string): string {
     .replace(/^git@([^:]+):(.*)/, "https://$1/$2");
 }
 
-export function getRepoIdentity(): RepoIdentity | null {
-  const repoRoot = getRepoRoot();
-  if (!repoRoot) return null;
+function getRemoteUrlForRoot(repoRoot: string): string | null {
+  try {
+    return execSync("git remote get-url origin", {
+      cwd: repoRoot, encoding: "utf8", stdio: "pipe",
+    }).trim();
+  } catch {
+    return null;
+  }
+}
 
+/**
+ * Reads the origin remote the same way rt-client's async `deriveRepoIdentity`
+ * does (`git config --get remote.origin.url`), not `getRemoteUrlForRoot`'s
+ * `git remote get-url origin` — under an `insteadOf` rewrite the two spellings
+ * diverge and would mint two identities for one repo.
+ */
+function readOriginRemoteForIdentity(repoRoot: string): string | null {
+  try {
+    const out = execSync("git config --get remote.origin.url", {
+      cwd: repoRoot, encoding: "utf8", stdio: "pipe",
+    }).trim();
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Main-worktree realpath, computed the same way rt-client's async
+ * `deriveRepoIdentity` computes it, so a `path`-kind identity derived here
+ * (sync) and there (async) agree byte-for-byte.
+ */
+function mainWorktreeRoot(repoRoot: string): string {
+  let target = repoRoot;
+  try {
+    const gitCommonDir = execSync("git rev-parse --path-format=absolute --git-common-dir", {
+      cwd: repoRoot, encoding: "utf8", stdio: "pipe",
+    }).trim();
+    if (gitCommonDir) target = join(gitCommonDir, "..");
+  } catch {
+    // not a git dir / git unavailable: fall back to the repo root itself
+  }
+  // realpath throws on a path that no longer exists; degrade to the literal
+  // path so a gone worktree still derives an identity instead of throwing.
+  try {
+    return realpathSync(target);
+  } catch {
+    return target;
+  }
+}
+
+/**
+ * Core identity derivation for an arbitrary repo root (does not depend on
+ * cwd). `getRepoIdentity()` is the cwd-based entry point every existing
+ * caller uses.
+ */
+export function getRepoIdentityForRoot(repoRoot: string): RepoIdentity | null {
   // A repo is identified by its origin remote when it has one. Local-only repos
-  // (no remote) still get an identity derived from the repo root's directory
-  // name so local commands (run, commit, nav, code) work. Remote-oriented
+  // (no remote) still get an identity derived from the main worktree's realpath
+  // so local commands (run, commit, nav, code) work. Remote-oriented
   // commands (mr, open) gate themselves on remoteUrl/baseUrl being non-empty.
-  const remoteUrl = getRemoteUrl();
+  const remoteUrl = getRemoteUrlForRoot(repoRoot);
   const repoName = remoteUrl ? deriveRepoName(remoteUrl) : basename(repoRoot);
-  const dataDir = repoDataDir(repoName);
+
+  const originRemote = readOriginRemoteForIdentity(repoRoot);
+  const remoteIdentity = originRemote ? identityFromRemote(originRemote) : null;
+  const identity = serializeIdentity(
+    remoteIdentity ?? { kind: "path", id: mainWorktreeRoot(repoRoot) },
+  );
+
+  const dataDir = repoDataDir(identity);
   mkdirSync(dataDir, { recursive: true });
 
-  updateRepoIndex(repoName, repoRoot);
+  updateRepoIndex(identity, repoRoot);
 
   return {
     repoName,
+    identity,
     repoRoot,
     dataDir,
     remoteUrl: remoteUrl ?? "",
     baseUrl: remoteUrl ? deriveBaseUrl(remoteUrl) : "",
   };
+}
+
+export function getRepoIdentity(): RepoIdentity | null {
+  const repoRoot = getRepoRoot();
+  if (!repoRoot) return null;
+  return getRepoIdentityForRoot(repoRoot);
 }
 
 /**

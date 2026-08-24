@@ -486,7 +486,8 @@ export async function manageTracking(args: string[] = []): Promise<void> {
     // block, not a bare delete — otherwise the merge in loadRepoTracking
     // resurrects team intent for it on the very next read.
     const repoPath = readRepoIndex()[repoArg];
-    const identity = repoPath ? await deriveRepoIdentity(repoPath) : null;
+    const derived = repoPath ? await deriveRepoIdentity(repoPath) : null;
+    const identity = derived && derived.kind === "remote" ? derived.id : null;
     if (identity && teamNamesIdentity(identity)) {
       rawTracking[repoArg] = { mode: "off" };
       offMarker = true;

@@ -43,7 +43,9 @@ const url = (port: number): string => `http://localhost:${port}`;
 async function repoIdentityFor(ctx: HandlerContext, repo: string): Promise<string | null> {
   try {
     const repoPath = ctx.repoIndex()[repo];
-    return repoPath ? await deriveRepoIdentity(repoPath) : null;
+    if (!repoPath) return null;
+    const identity = await deriveRepoIdentity(repoPath);
+    return identity.kind === "remote" ? identity.id : null;
   } catch (err) {
     ctx.log.warn({ err, repo }, "repo identity derivation failed; resolving endpoint config without repo scopes");
     return null;

@@ -148,8 +148,8 @@ export async function deriveRepoIdentity(repoPath: string): Promise<RepoIdentity
     }
     const top = await runCapture(["git", "-C", repoPath, "rev-parse", "--path-format=absolute", "--git-common-dir"]);
     const base = top.exitCode === 0 && top.stdout.trim()
-      ? realpathSync(join(top.stdout.trim(), ".."))
-      : realpathSync(repoPath);
+      ? safeRealpath(join(top.stdout.trim(), ".."))
+      : safeRealpath(repoPath);
     return { kind: "path", id: base };
   })();
 
@@ -160,6 +160,18 @@ export async function deriveRepoIdentity(repoPath: string): Promise<RepoIdentity
 /** Test-only: clear the derivation memo so a test can force re-derivation. */
 export function clearIdentityMemo(): void {
   memo.clear();
+}
+
+// realpath of a path that no longer exists throws ENOENT. A path-kind identity
+// may be derived for a worktree whose directory is already gone (dispose flows
+// call this on the tree being removed), and derivation must degrade to the
+// literal path there, never throw past its callers.
+function safeRealpath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
 }
 
 /**
