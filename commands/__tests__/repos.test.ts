@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { getKnownRepos } from "../../lib/repo-index.ts";
+import { getKnownRepos, loadRepoIndexEntries, updateRepoIndex } from "../../lib/repo-index.ts";
 import { loadRepoTracking } from "../../lib/repo-tracking.ts";
 import { closeStateDb } from "../../lib/state/index.ts";
-import { reposRegister, type RegisterDeps } from "../repos.ts";
+import { reposPrune, reposRegister, type RegisterDeps } from "../repos.ts";
 
 function testDeps(): RegisterDeps & { lines: string[] } {
   const lines: string[] = [];
@@ -147,5 +147,93 @@ describe("reposRegister", () => {
     // a partial apply would leave it indexed without the --track it asked for.
     expect(getKnownRepos().find((r) => r.repoName === goodName)).toBeUndefined();
     expect(loadRepoTracking()[goodName]).toBeUndefined();
+  });
+});
+
+describe("reposPrune", () => {
+  const origHome = process.env.HOME;
+  let home: string;
+
+  beforeEach(() => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "rt-repos-prune-home-")));
+    process.env.HOME = home;
+    closeStateDb();
+  });
+
+  afterEach(() => {
+    closeStateDb();
+    process.env.HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  function makeTempRepo(name: string): string {
+    const dir = join(home, name);
+    mkdirSync(dir, { recursive: true });
+    execSync("git init -q", { cwd: dir });
+    return realpathSync(dir);
+  }
+
+  test("reports a clean index as clean", async () => {
+    updateRepoIndex("alpha", makeTempRepo("alpha"));
+    const deps = testDeps();
+
+    await reposPrune([], {}, deps);
+
+    expect(deps.lines).toEqual(["repo index is clean — nothing to prune"]);
+  });
+
+  test("removes a renamed repo's retired name and says which name kept the directory", async () => {
+    const deck = makeTempRepo("deck");
+    symlinkSync(deck, join(home, "local-apps"));
+    updateRepoIndex("local-apps", join(home, "local-apps"));
+    updateRepoIndex("deck", deck);
+    const deps = testDeps();
+
+    await reposPrune([], {}, deps);
+
+    // updateRepoIndex stores what `git worktree list` reports, which resolves
+    // the symlink — so both names land on the SAME spelling here. The other
+    // shape (a row still holding the symlink path, from an older write or the
+    // legacy repos.json import) is covered in repo-index-rename.test.ts.
+    expect(deps.lines).toEqual([
+      `removed local-apps (${deck.replace(homedir(), "~")}) — same directory as deck`,
+    ]);
+    expect(loadRepoIndexEntries().map((e) => e.repoName)).toEqual(["deck"]);
+  });
+
+  test("--dry-run says what it would do and writes nothing", async () => {
+    updateRepoIndex("gone", join(home, "never-existed"));
+    const deps = testDeps();
+
+    await reposPrune(["--dry-run"], {}, deps);
+
+    expect(deps.lines).toEqual([
+      `would remove gone (${join(home, "never-existed").replace(homedir(), "~")}) — path no longer exists`,
+    ]);
+    expect(loadRepoIndexEntries().map((e) => e.repoName)).toEqual(["gone"]);
+  });
+
+  test("--json emits the removals in an envelope", async () => {
+    updateRepoIndex("gone", join(home, "never-existed"));
+    const deps = testDeps();
+
+    await reposPrune(["--json"], {}, deps);
+
+    const parsed = JSON.parse(deps.lines[0]!);
+    expect(parsed.contract).toBe(1);
+    expect(parsed.dryRun).toBe(false);
+    expect(parsed.removed).toEqual([
+      { repoName: "gone", path: join(home, "never-existed"), reason: "missing" },
+    ]);
+  });
+
+  test("an unknown flag is a usage error, not a silent no-op prune", async () => {
+    updateRepoIndex("gone", join(home, "never-existed"));
+    const deps = testDeps();
+
+    const code = await runExpectingProcessExit(() => reposPrune(["--force"], {}, deps));
+
+    expect(code).toBe(2);
+    expect(loadRepoIndexEntries().map((e) => e.repoName)).toEqual(["gone"]);
   });
 });
