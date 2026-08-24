@@ -49,8 +49,20 @@ also prints the records to create:
 generate_domain(project, service, environment, domain="switchboard.mattstack.dev", port=7940)
 ```
 
-Registered 2026-08-23; certificate status `VALIDATING_OWNERSHIP` until both
-records resolve.
+Registered 2026-08-23. **Both records are live and the certificate issued
+~3.5 minutes after they resolved:**
+
+```
+$ curl https://switchboard.mattstack.dev/healthz
+ok
+$ openssl s_client -connect switchboard.mattstack.dev:443 …
+subject=CN=switchboard.mattstack.dev
+issuer=C=US, O=Let's Encrypt, CN=YR1
+```
+
+The Let's Encrypt issuer (rather than a Cloudflare one) is the check that the
+grey cloud actually took effect — a proxied record would show Cloudflare
+terminating TLS, which is the thing this setup exists to avoid.
 
 **After it resolves**, one check that catches the common mistake:
 
