@@ -67,29 +67,37 @@ left as-is or reduced to a pointer here.
    `website/`). Get explicit approval before committing, tagging, or deploying.
    Nothing below runs until this approval is given.
 
-7. **Rehearse the pipeline.** Before the tag, not after: run `release.yml` via
-   `workflow_dispatch` on the commit you are about to tag. It builds, notarizes,
-   and clean-rooms exactly as a tag does, but stamps `v0.0.0-ci<run>`, skips the
-   release, validates the marketplace catalog without pushing it, and uploads
-   `out/` as an artifact. Watch it green before continuing. This pipeline's
-   defects have consistently been invisible until the step before them started
-   working, so a rehearsal is the only thing that finds them cheaply — a tag that
-   fails halfway has already re-signed the app and cost the user their TCC grants.
-
-8. **Commit and tag.** `RELEASE_NOTES.md` must be committed at the tagged commit,
-   because CI reads it as the release body. Scoped add only, never `git add -A`:
+7. **Commit and push the notes, without tagging.** `RELEASE_NOTES.md` must be
+   committed at the commit the tag will point to, because CI reads it as the
+   release body. Scoped add only, never `git add -A`:
    ```
    git add website RELEASE_NOTES.md
    git commit -m "chore(release): docs and notes for <tag>"
    git push origin main
+   ```
+   Stop here. The tag comes after the rehearsal, so that the commit it will
+   point at is the one that was actually exercised.
+
+8. **Rehearse the pipeline.** Run `release.yml` via `workflow_dispatch` against
+   the commit you just pushed. It builds, notarizes, and clean-rooms exactly as
+   a tag does, but stamps `v0.0.0-ci<run>`, skips the release, validates the
+   marketplace catalog without pushing it, and uploads `out/` as an artifact.
+   Watch it green before continuing. This pipeline's defects have consistently
+   been invisible until the step before them started working, so a rehearsal is
+   the only thing that finds them cheaply — a tag that fails halfway has already
+   re-signed the app and cost the user their TCC grants.
+
+9. **Tag and push.**
+   ```
    git tag -a <tag> -m "<tag>"
    git push origin <tag>
    ```
    Do NOT run `gh release create`. The tag push triggers `release.yml`, which
-   builds and notarizes the app, creates the release from `RELEASE_NOTES.md`,
-   attaches the artifacts, and installs from the zip in a clean room.
+   builds and notarizes the app, publishes the marketplace catalog, creates the
+   release from `RELEASE_NOTES.md`, attaches the artifacts, and installs from
+   the zip in a clean room.
 
-9. **Verify the publish.** Find the run (`gh run list --workflow=release.yml`)
+10. **Verify the publish.** Find the run (`gh run list --workflow=release.yml`)
    and watch it to completion (`gh run watch <run-id> --exit-status`), then confirm with
    `gh release view <tag>`: the body is your `RELEASE_NOTES.md` (not GitHub's
    auto-generated notes), and `mattstack-<ver>.dmg`, `mattstack-<ver>.zip`,
@@ -98,7 +106,7 @@ left as-is or reduced to a pointer here.
    shipping a partial release. If CI failed or the body is wrong, report it
    rather than papering over it.
 
-10. **Deploy rt.cool.** Run `bash scripts/deploy-docs.sh` (builds the site, deploys
+11. **Deploy rt.cool.** Run `bash scripts/deploy-docs.sh` (builds the site, deploys
    to Cloudflare Pages via wrangler). Needs wrangler auth (`wrangler login` or
    `CLOUDFLARE_API_TOKEN`) and the Pages project pointed at rt.cool's DNS, both
    one-time setup in the script header. If that setup is missing, tell the user
