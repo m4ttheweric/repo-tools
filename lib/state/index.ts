@@ -96,6 +96,17 @@ export {
 } from "./run-history-store.ts";
 
 export {
+  isValidChatName,
+  joinRoom,
+  leaveRoom,
+  listRooms,
+  listMembers,
+  type ChatMember,
+  type WakeMode,
+  type RoomSummary,
+} from "./chat-store.ts";
+
+export {
   importLegacyJsonFile,
   renameLegacyOutOfTheWay,
   type LegacyImportResult,
