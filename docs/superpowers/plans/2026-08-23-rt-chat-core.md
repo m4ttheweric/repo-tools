@@ -589,8 +589,24 @@ The exported wrappers here are **plan 2's entire dependency**. No `/api/chat/*` 
 
 **Interfaces:**
 - Consumes: every store function from Tasks 2–4, imported **through the barrel** `lib/state/index.ts`.
-- Produces, in `client.ts` (all returning `Promise<RtResponse<T>>`, all via `rtCommand`):
-  `chatJoin`, `chatLeave`, `chatPost`, `chatRead`, `chatRooms`, `chatWho`, `chatMark`, `chatMessages`, `chatArm`, `chatTouch`, `chatDisarm`, `eventsHead`.
+- Produces, in `client.ts` — **exact signatures, because plan 2 is written against them.** All go through `rtCommand` and therefore all resolve to `{ ok: false, error }` rather than throwing, daemon-down included:
+
+```ts
+export function chatJoin(a: { room: string; handle: string; wakeOn?: WakeMode; cwd?: string; pane?: string }, o?: RtClientOptions): Promise<RtResponse<{ handle: string; memberCount: number; unread: number }>>;
+export function chatLeave(a: { room: string; handle: string }, o?: RtClientOptions): Promise<RtResponse<Record<string, never>>>;
+export function chatPost(a: { room: string; handle: string; body: string }, o?: RtClientOptions): Promise<RtResponse<{ id: number; recipients: string[] }>>;
+export function chatRead(a: { handle: string; room?: string; limit?: number }, o?: RtClientOptions): Promise<RtResponse<{ rooms: { room: string; messages: ChatMessage[] }[] }>>;
+export function chatRooms(a: { handle: string }, o?: RtClientOptions): Promise<RtResponse<{ rooms: RoomSummary[] }>>;
+export function chatWho(a: { room: string }, o?: RtClientOptions): Promise<RtResponse<{ members: ChatMember[] }>>;
+export function chatMark(a: { handle: string; room?: string }, o?: RtClientOptions): Promise<RtResponse<Record<string, never>>>;
+export function chatMessages(a: { room: string; before?: number; limit?: number }, o?: RtClientOptions): Promise<RtResponse<{ messages: ChatMessage[] }>>;
+export function chatArm(a: { handle: string; room?: string }, o?: RtClientOptions): Promise<RtResponse<Record<string, never>>>;
+export function chatTouch(a: { handle: string }, o?: RtClientOptions): Promise<RtResponse<Record<string, never>>>;
+export function chatDisarm(a: { handle: string }, o?: RtClientOptions): Promise<RtResponse<Record<string, never>>>;
+export function eventsHead(o?: RtClientOptions): Promise<RtResponse<{ cursor: number }>>;
+```
+
+`ChatMember`, `ChatMessage`, `RoomSummary`, and `WakeMode` are re-exported from `index.ts` too — plan 2 imports the types, not just the functions.
 
 - [ ] **Step 1: Write the failing test**
 
