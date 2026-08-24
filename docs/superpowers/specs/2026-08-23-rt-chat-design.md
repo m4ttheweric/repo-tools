@@ -78,10 +78,11 @@ delivery.
   agent lives (herdr pane, repo+branch), not from a session id, so they
   survive restarts. `--as` overrides.
 
-- **The web viewer is a sibling repo, not part of rt.** Follows the `board`
-  precedent — Bun server-rendered shell plus a small React island, no
-  database of its own — and is registered with deck for HTTPS, supervision,
-  and public access control.
+- **The web viewer is a sibling repo, not part of rt.** Follows the
+  `console` precedent — Vite + React from `create-mantine-kit`, a Hono server
+  on Bun, `@mattstack/rt-client` over the unix socket, no database of its own
+  — and is registered with deck for HTTPS, supervision, and public access
+  control.
 
 - **Auth is deck's, not ours.** Deck already offers per-app gates: a
   password, a Google sign-in list of people or domains, or both, enforced at
@@ -355,51 +356,38 @@ message to either room — exactly the double-wake the lock exists to prevent.
   synchronous SQLite calls are short single-statement operations; nothing in
   the chat path blocks the loop.
 
-**REST + WS.** The daemon's `api-server.ts` on `127.0.0.1:9401` is the
-existing dashboard seam and is what the viewer consumes. New rows in
-`API_ROUTES`:
+**Transport: the viewer uses `@mattstack/rt-client` over the unix socket, not
+the `:9401` REST surface.** This is the true console precedent and it is a
+deliberate choice, recorded here because an implementer told to "follow
+console" would land on it by default anyway and should know it was intended.
 
-| method | path | cmd |
-|---|---|---|
-| GET | `/api/chat/rooms` | `chat:rooms` |
-| GET | `/api/chat/messages` | `chat:messages` |
-| GET | `/api/chat/who` | `chat:who` |
-| POST | `/api/chat/post` | `chat:post` |
-| POST | `/api/chat/join` | `chat:join` |
-| POST | `/api/chat/mark` | `chat:mark` |
+`rtCommand` speaks **HTTP over `~/.mattstack/rt/rt.sock`**. There is no
+`X-RT-Token` in that path — the token gates `:9401` only. Consequences, all
+of which simplify the design:
 
-`GET /api/chat/messages` takes `room`, `before`, and `limit` and is the
-viewer's transcript source, including its scroll-back. It is **non-mutating**:
-it never advances a cursor. `chat:read` is deliberately absent from this
-table — see below.
+- **No `/api/chat/*` rows ship in v1.** The viewer was their only consumer,
+  so they would be dead surface. Adding them later is additive.
+- **`needsToken()` is untouched**, because nothing chat-related is exposed
+  over TCP.
+- **A unix socket is the stronger boundary anyway**: filesystem permissions
+  rather than a shared secret over loopback with CORS `*`.
 
-**Every mutating chat route is added to `needsToken()`**, alongside
-`/api/events/emit`. The server binds `127.0.0.1` but sets CORS `*`; the
-`X-RT-Token` header requirement forces a preflight a hostile page cannot
-satisfy. Omitting chat from that list would let any page a browser visits
-post into rooms that steer agents.
+What plan 2 actually needs from plan 1 is therefore **not** REST routes but
+`chat:*` entries in `packages/rt-client/src/commands.ts` plus exported wrapper
+functions in `client.ts` / `index.ts` — the way console consumes
+`listRuns` / `getRun` / `abandonRun`.
 
-**`chat:read` gets no REST route at all, because it mutates.** `read`
-advances `last_read_id`, so exposing it as a `GET` would put a state-changing
-operation behind the server's "reads are free" policy. That is not a
-theoretical concern: `api-server.ts` sets `Access-Control-Allow-Origin: *`
-with `Access-Control-Allow-Headers: Content-Type`, so a plain cross-origin
-`GET` needs no preflight and **any page the browser visits could silently
-advance agents' read cursors**. The damage is not disclosure — it is
-destruction of wake state: an agent whose cursor is advanced by a hostile page
-never wakes for the mention it skipped past, and the wait path's restart-gap
-check is defeated at the same time.
-
-The split is therefore: **`GET /api/chat/messages` reads and mutates nothing;
-`POST /api/chat/mark` advances the cursor and is token-gated** like every
-other chat mutation. `rt chat read` keeps its combined read-and-advance
-behavior on the CLI, which reaches the daemon over the socket rather than
-HTTP and is not exposed to a browser.
-
-The remaining un-gated chat reads (`rooms`, `who`, `messages`) are genuinely
-read-only. Accepting that a local page could read transcripts is a conscious
-call: the public surface is protected by deck's gates, and a transcript is not
-credential material.
+**If `/api/chat/*` is ever added, this hazard returns and must be re-read.**
+`chat:read` mutates: it advances `last_read_id`. Exposing it as a `GET` would
+put a state-changing operation behind the server's "reads are free" policy,
+and `api-server.ts` sets `Access-Control-Allow-Origin: *` with
+`Access-Control-Allow-Headers: Content-Type`, so a plain cross-origin `GET`
+needs no preflight — **any page the browser visits could silently advance
+agents' read cursors**. The damage is not disclosure but destruction of wake
+state: an agent whose cursor is advanced past a mention never wakes for it,
+and the wait path's restart-gap check is defeated at the same time. The
+correct shape, whenever it ships, is a non-mutating `chat:messages` read plus
+a token-gated `POST` for `chat:mark`, with `chat:read` never exposed at all.
 
 ## The skill
 
@@ -471,13 +459,27 @@ process.
 
 Two conventions to carry over verbatim, both learned the hard way in console:
 
-- **`rt-client` throws when the daemon is unreachable** rather than returning
-  `ok: false`, and an `ok: false` means the daemon answered and refused. The
-  viewer maps those to different statuses (console uses 502 for the latter).
-- **The `/ws` route must live in the entry file, not the relay module.**
-  `hono/bun` reads the `Bun` global at module load, so a relay module that
-  imports it becomes unimportable under vitest's Node runtime. Console splits
-  them for exactly this reason; chat must too, or its relay is untestable.
+- **`rt-client` never throws — not even when the daemon is down.**
+  `rtCommand` wraps the whole fetch in try/catch and returns
+  `{ ok: false, error: "rt daemon unreachable at <sock>: ..." }` for
+  connection-refused just as for a refusal. **Console's own
+  `runs.test.ts` comment claims the opposite and is wrong**; that test passes
+  only because it mocks a rejection the real client cannot produce, so its
+  daemon-down traffic actually lands in the 502 branch its comment says it
+  does not. Do not copy that comment. The only discriminator is the
+  `rt daemon unreachable at ` prefix on the error string, or an explicit
+  health probe — and a prefix match on an error message is too fragile to
+  hang a UI state on, so chat uses the probe.
+- **The `/ws` route registers in the entry file only.** `hono/bun` reads the
+  `Bun` global at module load, so *any* module that must stay importable under
+  vitest's Node runtime cannot import it. Console registers the route in
+  `index.ts` rather than `app.ts` for exactly this reason, and keeps `ws.ts`
+  clean of it too. Chat has both an app module and a relay module, and neither
+  may import `hono/bun`.
+- **The dependency on rt-client is a relative file path to a sibling
+  checkout** (`"@mattstack/rt-client": "file:../repo-tools/packages/rt-client"`
+  in console). "Sibling repo" is load-bearing: the viewer does not build if
+  cloned without repo-tools beside it.
 
 **Request path** — identical local and remote apart from the two gates:
 
@@ -486,18 +488,22 @@ browser ──https──► Cloudflare Access (Google sign-in list)
                         │
                    Deck gateway (password)
                         │
-                   chat app server ──► daemon :9401 (holds X-RT-Token)
-                        │                    │
-                        └──── WS ────────────┘  (one subscription, fanned out)
+                   chat app server ──► rt.sock  (rt-client, commands)
+                        │
+                        └──── ws://127.0.0.1:9401/ws  (one subscription,
+                                                       fanned out to tabs)
 ```
 
-**The app server proxies for two factual reasons, not as a policy
-preference:**
+**The app server exists for one factual reason, not as a policy preference:**
+the daemon is reachable only through a unix socket and a `127.0.0.1` WS port,
+and a browser — certainly a phone — can reach neither. Every command therefore
+originates server-side.
 
-1. The daemon binds `127.0.0.1`, so a phone cannot reach `:9401` at all.
-2. `X-RT-Token` must stay server-side. Handing it to browser JS to let the
-   composer post directly would expose it to anything that can read that JS,
-   and the CORS-`*` mutation protection depends on the page *not* having it.
+That the server holds no shared secret is a property worth keeping: the
+boundary is filesystem permission on `rt.sock` plus deck's gates in front of
+the app, with no token that could leak into browser JS. An earlier draft of
+this spec routed the viewer through `:9401` with `X-RT-Token`; that is not
+what it does.
 
 **One WS subscription, fanned out — an existing pattern, not a new one.**
 Console's `src/server/ws.ts` `startRelay()` already does precisely this: one
@@ -505,7 +511,9 @@ Console's `src/server/ws.ts` `startRelay()` already does precisely this: one
 server-side to `type === 'event'` and the topic of interest, republished onto
 a Bun pub/sub topic that every browser tab subscribes to, so tab count does
 not multiply daemon load. Chat's relay is that same function with the topic
-predicate changed to chat frames. The daemon multiplexes everything —
+predicate changed to chat frames — noting that console matches a fixed topic
+with `!==` equality, while chat needs a prefix or glob match across
+`chat/<room>/msg`. The daemon multiplexes everything —
 ports, status, system-processes, discussions — through that one socket, so
 filtering server-side is what stops an unrelated daemon tick from making every
 open tab refetch.
@@ -525,7 +533,18 @@ open tab refetch.
   Posting into a room not yet joined auto-joins, consistent with
   join-creates.
 
-**Three statuses, not two:**
+**A daemon health probe is required, and it is not optional polish.**
+`subscribe()` reconnects silently forever, so a stopped daemon does not error
+— the live pane simply goes quiet. Without a probe, "the daemon is dead" and
+"every agent is idle" render identically, which defeats the one thing the
+viewer is said to earn its keep on: telling you *which* agent stopped
+listening. The viewer polls a cheap daemon command on an interval and, when it
+fails, renders a distinct **daemon down** banner and greys the member list
+rather than reporting anyone as idle or deaf. Agent status is only meaningful
+while the daemon is reachable.
+
+**Three agent statuses, not two** (all of them subordinate to the banner
+above):
 
 | dot | condition |
 |---|---|
@@ -588,9 +607,11 @@ handlers, seven integration tests carry the product:
    both. An agent in `none` mode wakes on neither.
 4. **Exit codes.** 124 on `--timeout` expiry; 69 with the daemon stopped.
    The Stop hook branches on these.
-5. **Token never reaches the browser.** Assert the `X-RT-Token` value appears
-   in nothing the app server serves to a client. Cheap, and it is the one
-   security property a later refactor could quietly break.
+5. **A stopped daemon renders as a stopped daemon.** Stop the daemon, then
+   assert the viewer shows its *daemon down* banner rather than a member list
+   of idle agents. This is the test that protects the round-4 finding: because
+   `rtCommand` never throws and `subscribe()` reconnects silently, the failure
+   is indistinguishable from a quiet fleet unless the probe is working.
 
 6. **The arm race.** Inject a post **after step 3's unread check and before
    the `events:wait` call** — not anywhere in the step-1-to-step-4 window,
@@ -599,12 +620,13 @@ handlers, seven integration tests carry the product:
    regression it exists to catch. This implies a deliberate test seam at that
    point. Assert the agent still wakes; the test must fail when step 1's
    cursor is removed, which is its entire value.
-7. **Every un-gated GET mutates nothing.** Call all three (`rooms`, `who`,
-   `messages`) and assert a whole-table snapshot of `chat_members` and
+7. **The read-only handlers mutate nothing.** Call `chat:rooms`, `chat:who`,
+   and `chat:messages` and assert a whole-table snapshot of `chat_members` and
    `chat_messages` is byte-identical afterward — not just `last_read_id`. The
    realistic drift is a future `chat:who` that stamps `last_seen_at` while
-   rendering presence, which a messages-only, column-specific assertion would
-   sail straight past.
+   rendering presence, which a column-specific assertion would sail straight
+   past. This holds the line at the handler, so it stays true if these are ever
+   exposed over REST, where a mutating "read" becomes a live vulnerability.
 
 Plus a source-guard check that `wait`'s success path writes exactly one line,
 since output rule 1 is a guarantee rather than a convention.
@@ -628,11 +650,16 @@ Deliberately excluded, with the condition under which each returns:
 ## Rollout
 
 1. Store + migration in `state.db`, with the explicit-path seam.
-2. Daemon handlers and `rt-client` command catalog entries. **Includes
-   `events:head`** — a one-line addition to `lib/daemon/events-bus.ts` and its
-   handler, outside the chat feature's own files. Called out explicitly here
-   because it is the one cross-cutting item, and cross-cutting items are what
-   get dropped when tasks go to independent agents.
+2. Daemon handlers, `chat:*` entries in
+   `packages/rt-client/src/commands.ts`, **and the exported wrapper functions
+   in `client.ts` / `index.ts`** that plan 2 consumes (the way console gets
+   `listRuns` / `getRun` / `abandonRun`). Those wrappers are plan 2's actual
+   dependency — not REST routes.
+   **Includes `events:head`**, a one-line addition to
+   `lib/daemon/events-bus.ts` and its handler, outside the chat feature's own
+   files. Called out explicitly because it is the one cross-cutting item, and
+   cross-cutting items are what get dropped when tasks go to independent
+   agents.
 3. `commands/chat.ts` — the verbs, with exit codes. **Register it in
    `lib/module-registry.ts`** (as `commands/events.ts` is) or the compiled
    binary's dynamic import fails at runtime. Add the four settings keys
@@ -643,15 +670,16 @@ Deliberately excluded, with the condition under which each returns:
    barrel.
 4. Integration tests 1–4 (these gate everything downstream).
 5. `skills/rt-chat/SKILL.md` and the `Stop` hook.
-6. `API_ROUTES` rows and `needsToken()` entries; integration test 5.
-7. Web viewer repo; `deck add`.
-8. Notifier producer for `@matt`; optional push provider.
-9. `deck domain` gates and publish.
+6. Web viewer repo (`create-mantine-kit` scaffold, Hono server, relay);
+   `deck add`; integration test 5.
+7. Notifier producer for `@matt`; optional push provider.
+8. `deck domain` gates and publish.
 
 Steps 1–5 are usable on their own: agents can coordinate from the CLI before
 any web viewer exists.
 
-**This spec decomposes into two implementation plans**, split at that seam:
-steps 1–6 in `repo-tools` (store, daemon, CLI, skill, hook, API routes) and
-steps 7–9 in the viewer repo. The second plan depends on the first's API
-routes being merged, and on nothing else.
+**This spec decomposes into two implementation plans**, split at the
+rt-client seam: steps 1–5 in `repo-tools` (store, daemon handlers, `chat:*`
+catalog entries and client wrappers, `events:head`, CLI, skill, hook) and
+steps 6–8 in the viewer repo. Plan 2's dependency on plan 1 is the **exported
+rt-client wrappers**, not REST routes — no `/api/chat/*` rows ship in v1.
