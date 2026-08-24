@@ -50,11 +50,11 @@ describe("recordRecent", () => {
     // Old connector-model recent, then reconnect via the new scan model:
     // different key, same underlying resource.
     recordRecent({ key: "acme:acme-db-qa", label: "acme-db-qa", sdmResource: "acme-db-qa" }, { db, now });
-    const state = recordRecent({ key: "sdm:acme-db-qa", label: "Acme QA", sdmResource: "acme-db-qa" }, { db, now });
+    const state = recordRecent({ key: "sdm:acme-db-qa", label: "acme qa", sdmResource: "acme-db-qa" }, { db, now });
     const forResource = state.recents.filter(r => r.sdmResource === "acme-db-qa");
     expect(forResource).toHaveLength(1);
     expect(forResource[0]!.key).toBe("sdm:acme-db-qa");
-    expect(forResource[0]!.label).toBe("Acme QA");
+    expect(forResource[0]!.label).toBe("acme qa");
     rmSync(dir, { recursive: true, force: true });
   });
 });
