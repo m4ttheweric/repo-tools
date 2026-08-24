@@ -23,7 +23,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameS
 import { homedir } from "os";
 import { basename, dirname, join, resolve as resolvePath } from "path";
 import { repoDataDir, rtDir } from "./rt-paths.ts";
-import { deleteKvValue, getKvValue, hasKvValue, listKvEntries, listKvValues, setKvValue } from "./state/index.ts";
+import { deleteKvValue, getKvValue, getStateDb, hasKvValue, listKvEntries, listKvValues, setKvValue } from "./state/index.ts";
+import { rekeyKvNamespace } from "./state/identity-migrate.ts";
 import { dim } from "./ansi.ts";
 import { getSetting } from "./settings/resolve.ts";
 
@@ -331,6 +332,36 @@ function migrateWorktreeRegistry(from: string, to: string, opts: { dryRun?: bool
   }
   deleteKvValue(WORKTREE_REGISTRY_NS, from);
   return "moved";
+}
+
+/**
+ * Guards `ensureWorktreeRegistryRekeyed` to one run per open state.db: a
+ * WeakSet keyed on the `Database` instance, not a plain module boolean, so a
+ * HOME swap (a fresh `getStateDb()` after `closeStateDb()` — every test's own
+ * isolation, and any future multi-HOME run) re-arms the check instead of
+ * skipping a namespace it has never actually looked at.
+ */
+const worktreeRegistryRekeyRuns = new WeakSet<object>();
+
+/**
+ * One-shot legacy-name -> identity re-key of the worktree registry, run from
+ * the same first-read point the prior rename migration used. Unlike the repo
+ * index itself — a disposable cache that self-heals as rt revisits each repo —
+ * a registry row left under its pre-identity name is not: the daemon's
+ * `deps.repoIndex()` only ever yields identity keys now, so a legacy-named row
+ * would silently stop being reconciled forever. `rekeyKvNamespace` is
+ * idempotent (an already-identity key is skipped), so a repeat call after a
+ * full migration costs one empty namespace scan.
+ *
+ * The guard is marked only AFTER the rekey resolves: a rejected pass must be
+ * retried on a later reconcile, not latched off for the db handle's life.
+ */
+export function ensureWorktreeRegistryRekeyed(): Promise<void> {
+  const db = getStateDb();
+  if (worktreeRegistryRekeyRuns.has(db)) return Promise.resolve();
+  return rekeyKvNamespace(WORKTREE_REGISTRY_NS).then(() => {
+    worktreeRegistryRekeyRuns.add(db);
+  });
 }
 
 /** `ts` of a run-history line. Unparseable lines sort last, keeping their order. */

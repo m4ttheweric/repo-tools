@@ -19,6 +19,7 @@ import { join } from "path";
 import { repoDataDir, rtDir } from "../rt-paths.ts";
 import { closeStateDb, getStateDb, listKvValues, setKvValue } from "../state/index.ts";
 import {
+  ensureWorktreeRegistryRekeyed,
   getKnownRepos,
   loadRepoIndexEntries,
   migrateRepoData,
@@ -459,6 +460,37 @@ describe("repo-index — rename drift (RT-60)", () => {
 
       expect(removed.find((r) => r.repoName === "repo-tools")?.retained).toBe(true);
       expect(loadRepoIndexEntries().map((e) => e.repoName).sort()).toEqual(["repo-tools", "rt"]);
+    });
+  });
+
+  // ─── worktree registry legacy rekey (RT-62) ────────────────────────────────
+
+  describe("ensureWorktreeRegistryRekeyed", () => {
+    const WT_NS = "worktree-registry";
+    const tree = (path: string) => [{ path, branch: "main", kind: "main" }];
+
+    test("moves a legacy name-keyed row onto the repo's identity, and a repeat call is a no-op", async () => {
+      const dir = realRepo("repo-tools");
+      execSync("git remote add origin https://gitlab.com/g/repo-tools.git", { cwd: dir, stdio: "pipe" });
+      indexRepoAt("repo-tools", dir, 1_000);
+      setKvValue(WT_NS, "repo-tools", tree(dir));
+
+      await ensureWorktreeRegistryRekeyed();
+
+      expect(listKvValues(WT_NS)["remote:gitlab.com%2Fg%2Frepo-tools"]).toEqual(tree(dir));
+      expect(listKvValues(WT_NS)["repo-tools"]).toBeUndefined();
+
+      await ensureWorktreeRegistryRekeyed();
+      expect(Object.keys(listKvValues(WT_NS))).toEqual(["remote:gitlab.com%2Fg%2Frepo-tools"]);
+    });
+
+    test("a legacy name absent from the repo index is left in place, warned, never dropped", async () => {
+      setKvValue(WT_NS, "never-indexed", tree("/x/gone"));
+
+      await ensureWorktreeRegistryRekeyed();
+
+      expect(listKvValues(WT_NS)["never-indexed"]).toEqual(tree("/x/gone"));
+      expect(warnSpy).toHaveBeenCalled();
     });
   });
 });

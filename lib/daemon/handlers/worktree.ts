@@ -21,6 +21,11 @@
  * Handler outcomes are `{ok:true, data}` / `{ok:false, error}` with typed
  * refusal strings; daemon.ts's handleCommand does the outcome logging, so
  * nothing here logs request/response.
+ *
+ * Every `repoName` here (payload field, registry key, `ctx.repoIndex()`
+ * lookup) is the CLI's serialized repo identity, not a display name —
+ * `index[repoName]` and `loadRegistry(repoName)` only resolve because both
+ * sides now key on that same identity string.
  */
 
 import { realpathSync, rmSync } from "fs";
