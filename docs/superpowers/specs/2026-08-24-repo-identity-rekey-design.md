@@ -135,9 +135,14 @@ deriveRepoIdentity(repoPath: string): Promise<RepoIdentity>   // no longer nulla
 serializeIdentity(id: RepoIdentity): string
 parseIdentity(wire: string): RepoIdentity
 
-// new, board's migration path (see below)
+// new, a ONE-TIME rewrite helper for board's existing config (not a runtime path)
 resolveNameToIdentity(name: string, reposJsonPath?: string): RepoIdentity | null
 ```
+
+`resolveNameToIdentity` earns its place only as the tool that rewrites board's
+existing name-valued config to `host/path` once. It is deliberately **not** a
+runtime translation layer and the daemon never calls it — see the hard-cutover
+rollout below.
 
 `deriveRepoIdentity` losing its `null` is the shape change that makes **gitq**
 fail *loud* — the one consumer that assigns the result into a `string | null`
@@ -223,12 +228,22 @@ identity. deck and local-apps use rt-client for global settings only and are
 
 Three decisions fall out:
 
-**1. board/mr-board keep working via a load-time resolver, not a config
-rewrite.** rt-client gains `resolveNameToIdentity(name)`; board calls it when
-loading `config.rtRepos` so an operator's existing name entries translate once
-and keep resolving. board's config format is unchanged and the operator does
-nothing. New entries may be authored as identities directly; the resolver
-passes an already-serialized identity through unchanged.
+**1. board/mr-board config values become remote-derived identities the
+operator writes, not rt names.** `config.rtRepos` today maps a project path to
+an rt *name* — the value that goes stale on a re-key, because a human typed it.
+The fix removes names from that file entirely: the value becomes a legible
+`host/path` (what the operator reads straight off their git remote, e.g.
+`gitlab.com/group/repo`), and board normalizes + serializes it to the wire form
+at the daemon boundary, exactly as console does with the identity in its URLs.
+No names, so nothing to go stale; no percent-encoded ugliness in a
+human-edited file; and no persistent translation layer — one identity, board is
+just its encoder at its own edge. The operator's *existing* name entries are
+rewritten to `host/path` **once**, as a one-time config migration (a small
+handful on this machine); `resolveNameToIdentity(name)` exists solely as that
+one-shot rewrite helper, not as a runtime path. Whether board can drop the map
+altogether and derive identity from the project path it already holds
+(`deriveRepoIdentity(path)`) is a board-internal simplification for its own
+implementer, noted but not mandated here.
 
 **2. console is protected by the wire form, not a route change.** Because the
 serialized identity is percent-encoded, it is already a single safe path
@@ -243,36 +258,36 @@ behavior until each app's `package.json` is explicitly raised — a deliberate,
 trackable, per-repo step — rather than silently absorbing a shape change on
 their next ordinary `bun install`.
 
-### Rollout order
+### Rollout: a coordinated hard cutover, no compat window
 
-The dependency edges are fixed even though the apps adopt on their own schedule:
+The estate is single-operator today, so there is no need to let apps adopt
+asynchronously — and asynchronous adoption is exactly what would keep a
+name/identity split alive in the daemon. **The daemon accepts identities only;
+there is no legacy-name acceptance path and no compat window.** The cost is a
+brief flag-day where the estate is inconsistent until the sequence completes;
+that is acceptable because one person controls the timing and nothing external
+depends on it.
 
-1. **rt-client** gains the tagged identity, the wire codec, and
-   `resolveNameToIdentity`; publishes 0.4.0. (The two **file:**-dep consumers,
-   console and the onboarding fork, pick this up involuntarily at their next
-   `bun install` — so their adoption commits must land in the same change, or
-   they break first.)
-2. **The rt daemon** adopts the identity keys and the new verb payloads, and is
-   rebuilt and restarted **in lockstep** — every consumer's call crosses the
-   daemon socket, so a re-keyed store with an old daemon, or vice versa, is a
-   split. The `state.db` migration runs here, on the daemon's first read.
-3. **The three published-pin consumers** (gitq, board, mr-board) bump their
-   `@mattstack/rt-client` to `^0.4.0`, adopt (gitq recompiles against the new
-   type; board wires `resolveNameToIdentity`), and republish on their own
-   schedule. Until a given app bumps, it stays on 0.3.0 and keeps working
-   against the daemon's **backward-compatible** verb handling (below).
+The dependency edges are strict and the whole thing lands as one sequence:
 
-### Daemon verb backward-compatibility window
+1. **rt-client** gains the tagged identity and the wire codec, and publishes
+   0.4.0. The two **file:**-dep consumers (console, the onboarding fork) pick it
+   up at their next `bun install`, so their adoption commits land together with
+   this — they cannot lag.
+2. **The rt daemon** adopts identity keys and the identity-only verb payloads;
+   the `state.db` one-shot migration runs on its first read. Rebuilt and
+   restarted **in lockstep** with the store re-key — a re-keyed store under an
+   old daemon, or the reverse, is the split this whole change removes.
+3. **The three published-pin consumers** (gitq, board, mr-board) bump to
+   `^0.4.0` and adopt — gitq recompiles against the new type, board switches its
+   config values to `host/path` and encodes at the boundary — as part of the
+   same landing, not on their own schedule. The major bump is what makes each
+   bump a deliberate, tracked step rather than an ambient one; it is not a
+   license to stagger.
 
-Because the published consumers adopt asynchronously, the daemon's repo-keyed
-verbs (`project-mrs:read`, `discussions:read`, `secrets:forge-token`,
-`mr:by-branch`, `runs:*`) accept **either** a legacy name **or** a serialized
-identity for the duration of the window: a payload value that `parseIdentity`
-rejects is treated as a legacy name and run through `resolveNameToIdentity`
-server-side. This lets a 0.3.0 board and a 0.4.0 gitq hit the same daemon. The
-window closes — and the name-acceptance path is deleted — once all three
-published consumers are on 0.4.0. The closure is a tracked follow-up, not part
-of this change.
+Because there is no window to close, there is no follow-up ticket for closing
+one. The sequence is done when all consumers are on 0.4.0 and the daemon has
+migrated.
 
 ## Failure handling
 
@@ -280,9 +295,10 @@ of this change.
   the name and store; never dropped, never guessed onto an identity.
 - **`deriveRepoIdentity` on a path with no readable remote:** returns
   `{kind:"path"}` — it cannot fail, which is the point of removing its `null`.
-- **A daemon-side `parseIdentity` reject in the compat window:** falls to the
-  legacy-name path; if that also fails to resolve, the verb returns its normal
-  empty/absent result, exactly as a wrong name does today (no new failure mode).
+- **A daemon-side `parseIdentity` reject:** the payload is malformed (a
+  post-cutover consumer must send a serialized identity). The verb returns its
+  normal empty/absent result, exactly as a wrong name does today — no new
+  failure mode, and no legacy-name fallback to reach for.
 - **`SQLITE_BUSY` on a migration write:** the verify-persisted step catches it;
   the legacy row survives and the migration retries on the next read.
 
@@ -301,11 +317,12 @@ of this change.
 - **register:** `rt repos register` on a checkout whose directory basename
   differs from its remote's last segment writes the **remote** identity, and a
   subsequent in-repo command resolves to the same row (no second key minted).
-- **Daemon compat window:** a verb payload carrying a legacy name resolves to the
-  same rows as the same repo's serialized identity.
-- **board resolver:** `resolveNameToIdentity` on an operator's existing name
-  yields the identity the daemon stores; an already-serialized identity passes
-  through unchanged.
+- **Daemon rejects names post-cutover:** a verb payload carrying a bare legacy
+  name (not a serialized identity) resolves nothing — there is no name path.
+- **board config migration:** `resolveNameToIdentity` on an operator's existing
+  name yields the `host/path` written back to config; and board, given a
+  `host/path` config value, sends the daemon the same serialized identity the
+  store is keyed by.
 - **console (in the console repo's suite):** a `host/path` repo's serialized
   identity round-trips through `/runs/:repo/:runId` without route breakage.
 
@@ -315,5 +332,3 @@ of this change.
   identity string*, or does the tracking map gain structure?** The former keeps
   it a flat map like today; deciding it is a one-line call in the plan, not a
   design fork.
-- **Verb compat-window closure** is scoped as a follow-up ticket, not this
-  change. Naming it here so it is not forgotten.
