@@ -38,6 +38,7 @@ import {
   setKvValue,
 } from "../state/index.ts";
 import { readOwners as readOwnersReal, type Owners } from "../home/snapshot-owners.ts";
+import { HOME_SNAPSHOT_NS, recordHomePush, type HomePushRecord } from "../home/push-record.ts";
 import { parsePorcelainZ, planSnapshot } from "./home-snapshot-plan.ts";
 
 export type SnapshotReason = "manual" | "watch" | "janitor";
@@ -194,7 +195,6 @@ async function unpushedAgainstOrigin(exec: ExecFn, cwd: string): Promise<boolean
   return ahead.exitCode === 0 && Number(ahead.stdout.trim()) > 0;
 }
 
-const HOME_SNAPSHOT_NS = "home-snapshot";
 const HOME_SNAPSHOT_KEY = "state";
 
 interface PersistedHomeSnapshotState {
@@ -243,6 +243,15 @@ function persistState(db: Database, firstSeenDirty: Record<string, number>, log:
     renameLegacyOutOfTheWay(legacyStatePath());
   } catch (err) {
     log.warn({ err }, "home-snapshot: failed to persist state");
+  }
+}
+
+/** The `home.backup` row's only source for WHY a push is failing — the one thing about a broken backup that git's own refs cannot show. Its own kv key, never HOME_SNAPSHOT_KEY, which persistState overwrites wholesale every cycle. */
+function persistPushRecord(db: Database, record: HomePushRecord, log: Logger): void {
+  try {
+    recordHomePush(db, record);
+  } catch (err) {
+    log.warn({ err }, "home-snapshot: failed to persist the last-push record");
   }
 }
 
@@ -516,6 +525,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       pushFailureBroadcast = false;
       lastPushAt = deps.now();
       lastPushError = null;
+      persistPushRecord(deps.db, { at: lastPushAt, ok: true }, deps.log);
       if (pushRetryTimer) {
         deps.clearTimeout(pushRetryTimer);
         pushRetryTimer = null;
@@ -528,6 +538,7 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       const redactedStderr = redactCredentials(result.stderr);
       pushPending = true;
       lastPushError = redactedStderr;
+      persistPushRecord(deps.db, { at: deps.now(), ok: false, error: redactedStderr }, deps.log);
       deps.log.warn({ stderr: redactedStderr }, "home-snapshot: push failed");
       // Only the FIRST failure of an unbroken streak broadcasts — a retry
       // storm (schedulePushRetry firing every pushDelaySec*5) would
@@ -664,8 +675,12 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
       // commit to the same pathspec makes it self-contained: only matched
       // paths are committed, whatever sits staged for the zone is left
       // exactly as it was.
+      //
+      // `-c commit.gpgsign=false`: a global signing config with an unusable
+      // key fails every snapshot commit outright (exit 128), and nothing
+      // about an unattended backup commit needs a signature.
       const message = reason === "manual" ? plan.message.replace(/^snapshot:/, "snapshot (manual):") : plan.message;
-      const commitResult = await deps.exec(["git", "commit", "-q", "-m", message, "--", ".", ...excludeArgs], {
+      const commitResult = await deps.exec(["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", message, "--", ".", ...excludeArgs], {
         cwd: deps.repoDir,
         timeoutMs: GIT_TIMEOUT_MS,
         stderr: "pipe",
@@ -696,8 +711,8 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
           deps.log.warn({ stderr: addResult.stderr, zone: jz.zone }, "home-snapshot: janitor add failed; skipping this zone this cycle");
           continue;
         }
-        // Same self-contained-commit reasoning as the auto commit above.
-        const commitResult = await deps.exec(["git", "commit", "-q", "-m", message, "--", jz.zone], {
+        // Same self-contained-commit and unsigned-commit reasoning as the auto commit above.
+        const commitResult = await deps.exec(["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", message, "--", jz.zone], {
           cwd: deps.repoDir,
           timeoutMs: GIT_TIMEOUT_MS,
           stderr: "pipe",
@@ -722,11 +737,13 @@ export function startHomeSnapshot(rawDeps: HomeSnapshotDeps): HomeSnapshotHandle
 
     if (committed || pushPending) {
       schedulePush();
-    } else if (reason === "janitor" && (await hasRemote(deps.exec, deps.repoDir)) && (await unpushedAgainstOrigin(deps.exec, deps.repoDir))) {
+    } else if (reason !== "watch" && (await hasRemote(deps.exec, deps.repoDir)) && (await unpushedAgainstOrigin(deps.exec, deps.repoDir))) {
       // The only path that notices a remote attached by hand after commits
-      // already existed. Confined to the janitor tick: on the watch debounce
-      // these five git spawns would run on every no-op cycle, to detect a
-      // state that only ever changes by hand.
+      // already existed. Excluded from the watch debounce (and only there):
+      // these five git spawns would otherwise run on every no-op fs cycle, to
+      // detect a state that only ever changes by hand. `rt home snapshot` is
+      // the affordance a user reaches for right after attaching a remote, so
+      // "manual" must reach this even with nothing to commit.
       schedulePush();
     }
 
