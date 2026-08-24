@@ -164,6 +164,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
   - `export function isValidChatName(name: string): boolean`
   - `export function joinRoom(args: { room: string; handle: string; wakeOn?: WakeMode; cwd?: string; pane?: string }, db?: Database): { handle: string; memberCount: number; unread: number }`
   - `export function leaveRoom(room: string, handle: string, db?: Database): void`
+  - `export interface RoomSummary { room: string; memberCount: number; unread: number; mentions: number; lastPostedAt?: number }`
   - `export function listRooms(handle: string, db?: Database): RoomSummary[]`
   - `export function listMembers(room: string, db?: Database): ChatMember[]`
 
@@ -313,10 +314,11 @@ The recipient computation added here is consumed by **both** the post path and T
 **Interfaces:**
 - Consumes: everything from Task 2; `runCriticalWrite` from Task 1.
 - Produces:
+  - `export interface ChatMessage { id: number; room: string; handle: string; body: string; mentions: string[]; replyTo?: number; postedAt: number }`
   - `export function parseMentions(body: string): string[]`
   - `export function recipientsFor(room: string, authorHandle: string, mentions: string[], db?: Database): string[]`
   - `export function postMessage(args: { room: string; handle: string; body: string }, db?: Database): { id: number; recipients: string[] } | undefined`
-  - `export function readUnread(handle: string, room: string | undefined, limit: number, db?: Database): { room: string; messages: ChatMessage[] }[]`
+  - `export function readUnread(args: { handle: string; room?: string; limit: number; sinceMs?: number }, db?: Database): { room: string; messages: ChatMessage[] }[]`
   - `export function listMessages(args: { room: string; before?: number; limit: number }, db?: Database): ChatMessage[]`
   - `export function markRead(handle: string, room?: string, db?: Database): void`
   - `export function unreadWakingCount(handle: string, db?: Database): { room: string; count: number; mentions: number }[]`
@@ -361,9 +363,9 @@ test("read returns unread, advances the cursor, and is empty on a second call", 
   joinRoom({ room: "r", handle: "a" }, db);
   joinRoom({ room: "r", handle: "b" }, db);
   postMessage({ room: "r", handle: "a", body: "one" }, db);
-  const first = readUnread("b", undefined, 20, db);
+  const first = readUnread({ handle: "b", limit: 20 }, db);
   expect(first[0]!.messages.map(m => m.body)).toEqual(["one"]);
-  expect(readUnread("b", undefined, 20, db)).toEqual([]);
+  expect(readUnread({ handle: "b", limit: 20 }, db)).toEqual([]);
 });
 
 test("listMessages does not advance any cursor", () => {
@@ -393,7 +395,7 @@ test("mark advances without returning messages", () => {
   joinRoom({ room: "r", handle: "b" }, db);
   postMessage({ room: "r", handle: "a", body: "one" }, db);
   markRead("b", "r", db);
-  expect(readUnread("b", undefined, 20, db)).toEqual([]);
+  expect(readUnread({ handle: "b", limit: 20 }, db)).toEqual([]);
 });
 ```
 
@@ -415,6 +417,12 @@ room's `MAX(id)` first. A cursor above the max can only mean a recreated
 `state.db` — ids only grow within one generation — and left alone it makes
 unread permanently empty, which looks exactly like a hung agent that never
 wakes. Same class, cause, and fix as the events bus's `Math.min(after, head)`.
+
+`--since` is a store-side filter and cannot be done client-side, so
+`sinceMs` threads all the way through: CLI flag → `chatRead` → handler →
+`readUnread`, where it becomes an extra `posted_at >= ?` predicate. `--full`
+is purely a CLI concern — it passes a large `limit` instead of the default 20
+— so it stops at the CLI and needs no store support.
 
 `readUnread` in one transaction: select `id > last_read_id` per joined room (or the one named), cap at `limit`, then set `last_read_id` to the highest id **actually returned** — not to `MAX(id)`, or a capped read silently marks unseen messages read.
 
@@ -495,7 +503,26 @@ existing `openBranchCacheStore()` call — which is to say **before**
 - *Why clear at all:* no waiter outlives the daemon (`events-bus.close()` settles every waiter, then closes the db), so any `armed_at` still set at boot is stale by definition. The agents cannot clear their own rows — `chat:disarm` is a daemon handler and the daemon is the thing that died, so each `rt chat wait` exits 69 with its row untouched. Skip this and every member reads as *live — will hear you* for ten minutes after each restart while every agent is disarmed, with nothing recovering it because the Stop hook must never re-arm after 69.
 - *Why before serving:* run it after the socket is listening and an agent that arms in the gap has its fresh `armed_at` wiped — the mirror-image bug, a genuinely armed agent rendered deaf.
 
-- [ ] **Step 5: Lock the ordering with a source guard**
+- [ ] **Step 5: Add the restart test**
+
+```ts
+// e2e/chat-presence.test.ts
+test("a daemon restart disarms everyone", async () => {
+  await rt(["chat", "join", "r", "--as", "listener"]);
+  const waiter = Bun.spawn(["rt", "chat", "wait", "--as", "listener"]);
+  await waitUntilArmed("listener");
+  await restartDaemon();
+  // The armed_at assertion is load-bearing and must survive any later
+  // simplification. The status assertion below only fails against broken code
+  // while last_seen_at is inside the 10-minute window, so a slow or paused run
+  // would read deaf and pass anyway.
+  expect(memberRow("r", "listener").armed_at).toBeNull();
+  expect(await rtJson(["chat", "who", "r"])).not.toMatchObject({ members: [{ status: "live" }] });
+  waiter.kill();
+});
+```
+
+- [ ] **Step 6: Lock the ordering with a source guard**
 
 `lib/state/__tests__/source-guards.test.ts` already has a
 `describe("daemon startup opens state.db before serving")` block that slices
@@ -505,15 +532,15 @@ that same block with the same two assertions. A prose instruction to "call it
 before serving" is exactly the kind of ordering that gets refactored away;
 this is how the repo already prevents that.
 
-- [ ] **Step 6: Run the full suite**
+- [ ] **Step 7: Run the full suite**
 
-Run: `bun test lib commands packages scripts`
+Run: `bun test lib commands packages scripts && bun test --preload ./e2e/setup.ts --timeout 60000 e2e/chat-presence.test.ts`
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add lib/state/chat-store.ts lib/state/__tests__/chat-store.test.ts lib/state/__tests__/source-guards.test.ts lib/daemon.ts
+git add lib/state/chat-store.ts lib/state/__tests__/chat-store.test.ts lib/state/__tests__/source-guards.test.ts lib/daemon.ts e2e/chat-presence.test.ts
 git commit -m "chat: presence columns and the startup clear of armed_at
 
 No waiter outlives the daemon, so every armed_at set at boot is stale.
@@ -544,12 +571,14 @@ The wait path needs the journal head. Both `events:list` shapes are wrong for it
 test("head returns the journal max id and does not fetch rows", () => {
   const bus = makeTestBus();
   expect(bus.head()).toBe(0);
-  const { id } = bus.emit({ topic: "chat/wake/a" });
+  const id = bus.emit("chat/wake/a");
   expect(bus.head()).toBe(id);
 });
 ```
 
 Use whatever bus construction the existing tests in that file already use.
+`emit` is `emit(topic: string, payload?: unknown): number` — a topic string
+and a returned id, not an object either way.
 
 - [ ] **Step 2: Run it to verify it fails**
 
@@ -595,7 +624,7 @@ The exported wrappers here are **plan 2's entire dependency**. No `/api/chat/*` 
 export function chatJoin(a: { room: string; handle: string; wakeOn?: WakeMode; cwd?: string; pane?: string }, o?: RtClientOptions): Promise<RtResponse<{ handle: string; memberCount: number; unread: number }>>;
 export function chatLeave(a: { room: string; handle: string }, o?: RtClientOptions): Promise<RtResponse<Record<string, never>>>;
 export function chatPost(a: { room: string; handle: string; body: string }, o?: RtClientOptions): Promise<RtResponse<{ id: number; recipients: string[] }>>;
-export function chatRead(a: { handle: string; room?: string; limit?: number }, o?: RtClientOptions): Promise<RtResponse<{ rooms: { room: string; messages: ChatMessage[] }[] }>>;
+export function chatRead(a: { handle: string; room?: string; limit?: number; sinceMs?: number }, o?: RtClientOptions): Promise<RtResponse<{ rooms: { room: string; messages: ChatMessage[] }[] }>>;
 export function chatRooms(a: { handle: string }, o?: RtClientOptions): Promise<RtResponse<{ rooms: RoomSummary[] }>>;
 export function chatWho(a: { room: string }, o?: RtClientOptions): Promise<RtResponse<{ members: ChatMember[] }>>;
 export function chatMark(a: { handle: string; room?: string }, o?: RtClientOptions): Promise<RtResponse<Record<string, never>>>;
@@ -603,6 +632,7 @@ export function chatMessages(a: { room: string; before?: number; limit?: number 
 export function chatArm(a: { handle: string; room?: string }, o?: RtClientOptions): Promise<RtResponse<Record<string, never>>>;
 export function chatTouch(a: { handle: string }, o?: RtClientOptions): Promise<RtResponse<Record<string, never>>>;
 export function chatDisarm(a: { handle: string }, o?: RtClientOptions): Promise<RtResponse<Record<string, never>>>;
+export function chatUnreadWaking(a: { handle: string; room?: string }, o?: RtClientOptions): Promise<RtResponse<{ rooms: { room: string; count: number; mentions: number }[] }>>;
 export function eventsHead(o?: RtClientOptions): Promise<RtResponse<{ cursor: number }>>;
 ```
 
@@ -613,30 +643,65 @@ export function eventsHead(o?: RtClientOptions): Promise<RtResponse<{ cursor: nu
 ```ts
 // lib/daemon/__tests__/chat-handlers.test.ts
 import { expect, test } from "bun:test";
-import { handleChat } from "../handlers/chat.ts";
+import { tmpdir } from "os";
+import { join } from "path";
+import { openStateDb } from "../../state/db.ts";
+import { createChatHandlers } from "../handlers/chat.ts";
+
+let n = 0;
+function freshHandlers(emitEvent: (topic: string, payload?: unknown) => number = () => 0) {
+  const db = openStateDb(join(tmpdir(), `chat-h-${process.pid}-${n++}.db`));
+  return createChatHandlers({ db, emitEvent });
+}
 
 test("chat:join returns the resolved handle and member count", async () => {
-  const res = await handleChat("chat:join", { room: "build", handle: "a" });
+  const h = freshHandlers();
+  const res = await h["chat:join"]({ room: "build", handle: "a" });
   expect(res.ok).toBe(true);
   expect(res.data).toMatchObject({ handle: "a", memberCount: 1 });
 });
 
 test("chat:join rejects an invalid handle with a reason rather than normalizing it", async () => {
-  const res = await handleChat("chat:join", { room: "build", handle: "Has@Sigil" });
+  const h = freshHandlers();
+  const res = await h["chat:join"]({ room: "build", handle: "Has@Sigil" });
   expect(res.ok).toBe(false);
   expect(res.error).toContain("handle");
 });
 
-test("chat:post returns the message id and the recipients it woke", async () => {
-  await handleChat("chat:join", { room: "r", handle: "a" });
-  await handleChat("chat:join", { room: "r", handle: "b" });
-  const res = await handleChat("chat:post", { room: "r", handle: "a", body: "@b hi" });
+test("chat:post returns the recipients and emits one wake event per recipient", async () => {
+  const emitted: string[] = [];
+  const h = freshHandlers((topic) => { emitted.push(topic); return 0; });
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:join"]({ room: "r", handle: "b" });
+  const res = await h["chat:post"]({ room: "r", handle: "a", body: "@b hi" });
   expect(res.ok).toBe(true);
   expect(res.data).toMatchObject({ recipients: ["b"] });
+  expect(emitted).toEqual(["chat/r/msg", "chat/wake/b"]);
+});
+
+test("chat:unread-waking reports what would wake a handle without advancing its cursor", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:join"]({ room: "r", handle: "b" });
+  await h["chat:post"]({ room: "r", handle: "a", body: "@b hi" });
+  expect((await h["chat:unread-waking"]({ handle: "b" })).data)
+    .toMatchObject({ rooms: [{ room: "r", count: 1, mentions: 1 }] });
+  expect((await h["chat:unread-waking"]({ handle: "b" })).data)
+    .toMatchObject({ rooms: [{ room: "r", count: 1, mentions: 1 }] });
 });
 ```
 
-Isolate the db the way the other daemon handler tests in this directory do; do not let a test touch the real `state.db`.
+**The handler shape is a `createChatHandlers` factory returning a keyed map**,
+matching `createEventsHandlers` and every other module in
+`lib/daemon/handlers/`; `buildRoutedHandlers` spreads them
+(`command-router.ts`) and callers invoke `handlers["chat:join"](payload)`.
+There is no `handleX(cmd, payload)` dispatcher anywhere in this codebase — do
+not invent one. The factory taking a `db` is also what gives these tests their
+isolation seam, so no test touches the real `state.db`.
+
+The second `chat:unread-waking` assertion is deliberate: calling it twice must
+return the same thing. It is the one read in the wake path that must **not**
+advance a cursor.
 
 - [ ] **Step 2: Run it to verify it fails**
 
@@ -645,7 +710,22 @@ Expected: FAIL — no module `../handlers/chat.ts`.
 
 - [ ] **Step 3: Write the handlers**
 
-Thin — validate, delegate to the store, shape the response. Handlers own **no** logic that Task 3 already owns.
+Thin — validate, delegate to the store, shape the response. Handlers own **no**
+logic that Task 3 already owns.
+
+`chat:unread-waking` wraps `unreadWakingCount` and is **not optional**: it is
+the only way Task 8's wait path can run its step-3 check. `chat:read` cannot
+substitute — it advances the cursor, which step 3 must not do — and
+`chat:rooms`' generic unread cannot encode the predicate, which depends on
+each member's `wake_on`.
+
+`chat:post` returns `ok: false` when `postMessage` returns `undefined`: the
+retry budget was exhausted and the message is lost. Returning `ok: true` there
+would make the one path where silence is wrong indistinguishable from the
+normal silent success.
+
+`chat:messages` defaults `limit` to 50 when omitted, so plan 2 knows what an
+omitted limit means.
 
 `chat:post` is the one with real sequencing, and the order is an invariant a comment should state:
 
@@ -659,12 +739,36 @@ Emit payloads carry pointers, never prose — chat owns the message store; the j
 
 Add each `chat:*` to `commands.ts` with exact payload and data types, then the exported wrapper in `client.ts` following `listRuns`/`getRun` exactly, re-exported from `index.ts`. Types must match the store's interfaces exactly — a drift here is a tsc error, which is the point of the catalog.
 
-- [ ] **Step 5: Run the tests**
+- [ ] **Step 5: Add the read-only invariant test**
+
+```ts
+test("the read-only handlers mutate nothing", async () => {
+  const h = freshHandlers();
+  await h["chat:join"]({ room: "r", handle: "a" });
+  await h["chat:join"]({ room: "r", handle: "b" });
+  await h["chat:post"]({ room: "r", handle: "a", body: "@b hello" });
+  const before = snapshotChatTables(h.db);
+  await h["chat:rooms"]({ handle: "b" });
+  await h["chat:who"]({ room: "r" });
+  await h["chat:messages"]({ room: "r", limit: 20 });
+  expect(snapshotChatTables(h.db)).toEqual(before);
+});
+```
+
+`snapshotChatTables(db)` selects every row of `chat_members` and
+`chat_messages` ordered by primary key and returns one comparable structure —
+a **whole-table** snapshot, not `last_read_id` alone. The realistic drift is a
+future `chat:who` that stamps `last_seen_at` while rendering presence, which a
+column-specific assertion would sail straight past. Holding this at the
+handler keeps it true if these are ever exposed over REST, where a mutating
+"read" becomes a live vulnerability.
+
+- [ ] **Step 6: Run the tests**
 
 Run: `bun test lib commands packages scripts`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add lib/daemon/handlers/chat.ts lib/daemon/command-router.ts packages/rt-client/src lib/daemon/__tests__/chat-handlers.test.ts
@@ -696,7 +800,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 | command | behavior |
 |---|---|
 | `rt chat join <room> [--as <h>] [--wake-on mention\|all\|none]` | join, creating the room if absent |
-| `rt chat leave <room>` | drop membership; kill any armed waiter |
+| `rt chat leave <room>` | drop membership **only** — the waiter kill lands in Task 8 with the pidfile |
 | `rt chat post <room> <text>` | post; **prints nothing on success** |
 | `rt chat read [room] [--limit 20] [--full] [--since <dur>]` | print unread across joined rooms or one; advance the cursor |
 | `rt chat rooms` | rooms, member counts, unread, last activity |
@@ -831,6 +935,17 @@ Expected: FAIL — no `wait` verb.
 
 - [ ] **Step 3: Implement**
 
+**`leave` gains its waiter kill here, not in Task 7**, because the pidfile it
+needs is introduced below. Extend `leave` to remove the pidfile and signal the
+process once this task's lock exists.
+
+**The test seam.** Between step 3 and step 4, if `RT_CHAT_TEST_PRE_WAIT_MARKER`
+is set, create that file and block until it is removed, giving up after 2
+seconds. It names a **path**, never a command — a seam that evaluated a shell
+string from the environment would hand arbitrary code execution to anyone who
+can set env on an `rt chat wait` invocation. This is the only way the arm-race
+window is reachable from a test.
+
 The pidfile is keyed on **handle alone**, under the rt dir — not `(room, handle)`. A room-less `wait` has no room component to key on, and because the wake topic is per-handle, two `--room`-scoped waiters for one handle are both woken by a message to either room, which is the double-wake the lock exists to prevent.
 
 `--room` filters on the wake payload's `room` and **silently re-arms** on a non-matching wake, since the topic is per-handle. Without `--room`, a wake from any joined room exits.
@@ -891,46 +1006,25 @@ test("the arm race: a post landing between the unread check and the wait is not 
   // events:wait call. Injecting anywhere earlier in the step-1-to-step-4
   // window proves nothing: step 3 catches those posts even with the step-1
   // cursor deleted, so the test would pass against the exact regression it
-  // exists to catch. RT_CHAT_TEST_PRE_WAIT_HOOK is the seam that makes the
-  // narrow window reachable; it exists only for this test.
+  // exists to catch. RT_CHAT_TEST_PRE_WAIT_MARKER names a FILE, never a
+  // command: the CLI creates it at that point and blocks until it is removed,
+  // so the test can post inside the window. A seam that evaluated a shell
+  // string from the environment would be arbitrary code execution in a
+  // shipped binary for anyone who can set env on an `rt chat wait`.
+  const marker = join(tmpdir(), `chat-race-${process.pid}`);
   await rt(["chat", "join", "r", "--as", "listener"]);
   await rt(["chat", "join", "r", "--as", "poster"]);
   const waiter = Bun.spawn(["rt", "chat", "wait", "--as", "listener", "--timeout", "20s"], {
-    env: { ...process.env, RT_CHAT_TEST_PRE_WAIT_HOOK: "rt chat post r '@listener raced' --as poster" },
+    env: { ...process.env, RT_CHAT_TEST_PRE_WAIT_MARKER: marker },
   });
+  await until(() => existsSync(marker));
+  await rt(["chat", "post", "r", "@listener raced", "--as", "poster"]);
+  rmSync(marker);
   expect(await waiter.exited).toBe(0);
 });
 
-test("read-only handlers mutate nothing", async () => {
-  await rt(["chat", "join", "r", "--as", "a"]);
-  await rt(["chat", "join", "r", "--as", "b"]);
-  await rt(["chat", "post", "r", "@b hello", "--as", "a"]);
-  const before = snapshotChatTables();
-  await rt(["chat", "rooms", "--as", "b"]);
-  await rt(["chat", "who", "r", "--as", "b"]);
-  await rtCommand("chat:messages", { room: "r", limit: 20 });
-  expect(snapshotChatTables()).toEqual(before);
-});
-
-test("daemon restart disarms everyone", async () => {
-  await rt(["chat", "join", "r", "--as", "listener"]);
-  const waiter = Bun.spawn(["rt", "chat", "wait", "--as", "listener"]);
-  await waitUntilArmed("listener");
-  await restartDaemon();
-  // The armed_at assertion is the load-bearing one and must survive any later
-  // simplification: the status assertion below only fails against broken code
-  // while last_seen_at is inside the 10-minute window, so a slow or paused run
-  // would read deaf and pass anyway.
-  expect(memberRow("r", "listener").armed_at).toBeNull();
-  expect(await rtJson(["chat", "who", "r"])).not.toMatchObject({ members: [{ status: "live" }] });
-  waiter.kill();
-});
 ```
 
-`snapshotChatTables()` selects every row of `chat_members` and `chat_messages`
-ordered by primary key and returns them as one comparable structure — a
-whole-table snapshot, not `last_read_id` alone, because the realistic drift is
-a future `chat:who` that stamps `last_seen_at` while rendering presence.
 `waitUntilArmed(...handles)` polls `chat:who` until each handle's `armed_at`
 is set; do not use a fixed sleep, which makes the wake tests flaky under load.
 
