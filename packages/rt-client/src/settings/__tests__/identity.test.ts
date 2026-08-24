@@ -12,6 +12,7 @@ import { dirname, join } from "path";
 import { runCapture } from "../exec.ts";
 import { machineSettingsPath } from "../paths.ts";
 import { normalizeRemote, identityFromRemote, deriveRepoIdentity, clearIdentityMemo } from "../identity.ts";
+import { serializeIdentity, parseIdentity, type RepoIdentity } from "../identity.ts";
 
 describe("settings/identity", () => {
   const origHome = process.env.HOME;
@@ -198,5 +199,35 @@ describe("settings/identity", () => {
         rmSync(dir, { recursive: true, force: true });
       }
     });
+  });
+});
+
+describe("identity wire codec", () => {
+  const cases: RepoIdentity[] = [
+    { kind: "remote", id: "gitlab.com/group/repo" },
+    { kind: "remote", id: "gitlab.com/group/sub/repo" },
+    { kind: "path", id: "/Users/matt/Documents/GitHub/x" },
+    { kind: "path", id: "/tmp/a dir/with spaces" },
+  ];
+
+  test("serialize then parse is the identity function", () => {
+    for (const id of cases) expect(parseIdentity(serializeIdentity(id))).toEqual(id);
+  });
+
+  test("the serialized form contains no forward slash", () => {
+    for (const id of cases) expect(serializeIdentity(id)).not.toContain("/");
+  });
+
+  test("serialized form is <kind>:<encoded>", () => {
+    expect(serializeIdentity({ kind: "remote", id: "gitlab.com/g/r" }))
+      .toBe("remote:gitlab.com%2Fg%2Fr");
+  });
+
+  test("parse rejects an unknown kind prefix", () => {
+    expect(parseIdentity("bogus:whatever")).toBeNull();
+  });
+
+  test("parse rejects a string with no kind prefix", () => {
+    expect(parseIdentity("gitlab.com/g/r")).toBeNull();
   });
 });
